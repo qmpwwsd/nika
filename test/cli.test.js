@@ -47,7 +47,7 @@ describe('cli', () => {
   test('(+) --version prints the package version', async () => {
     const r = await run(['--version']);
     assert.equal(r.code, 0);
-    assert.equal(r.stdout.trim(), 'nika 0.1.0');
+    assert.equal(r.stdout.trim(), 'nika 0.1.1'); // version bump for 0.1.1
   });
 
   test('(+) status --json lists agents grouped by project', async () => {
