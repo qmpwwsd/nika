@@ -63,6 +63,13 @@ A transcript with no user or assistant message (Claude Code sometimes leaves a o
 - Text from transcripts, reports and tmux is stripped of control and bidi characters before it reaches the page or your terminal.
 - Strict Content-Security-Policy; all session text is rendered as text, never HTML.
 
+## 0.2 (in progress)
+
+0.2 adds a desktop app (macOS and Linux, tray icon) with a privileged tier: session window with history and a live pane
+mirror, spawning agents in tmux, starting the orchestrator, adding projects and applying orchestration rules. The
+browser dashboard above stays read-only. Contracts: [docs/contracts/api-app.md](docs/contracts/api-app.md); decisions:
+[docs/adr/](docs/adr/); progress: [CHANGELOG.md](CHANGELOG.md).
+
 ## Development
 
 ```sh
