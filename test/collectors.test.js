@@ -93,6 +93,22 @@ describe('transcripts', () => {
     assert.equal(t.startedAt, NOW - 60 * 60_000);
   });
 
+  test('(+) a transcript with user or assistant lines has hasConversation true', async () => {
+    const idx = await indexTranscripts(fx.claudeDir);
+    const t = await readTranscript(idx.files.get(SID.busy), createTranscriptCache());
+    assert.equal(t.hasConversation, true);
+  });
+
+  test('(−) a title-only stub transcript has hasConversation false and no cwd', async () => {
+    const file = path.join(fx.root, 'stub', 'f1f1f1f1-f1f1-4f1f-8f1f-f1f1f1f1f1f1.jsonl');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, jsonl([{ type: 'ai-title', sessionId: 'f1f1f1f1-f1f1-4f1f-8f1f-f1f1f1f1f1f1', aiTitle: 'Stub title' }]));
+    const st = fs.statSync(file);
+    const t = await readTranscript({ path: file, mtimeMs: st.mtimeMs, size: st.size }, createTranscriptCache());
+    assert.equal(t.hasConversation, false);
+    assert.equal(t.cwd, null);
+  });
+
   test('(+) large file: reads only head and tail chunks, cuts partial lines, last values win', async () => {
     const file = path.join(fx.root, 'big', `${SID.old}.jsonl`);
     fs.mkdirSync(path.dirname(file), { recursive: true });

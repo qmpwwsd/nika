@@ -50,6 +50,8 @@ With `brew services`, set variables in the service environment (for example with
 
 It never reads `*.key` files, credentials or `.env` files, and it never writes anything.
 
+A transcript with no user or assistant message (Claude Code sometimes leaves a one-line title stub) is not an agent: nika lists it only while its session is live.
+
 ## Security
 
 **Assumption: a single-user Mac.** Browsers on other sites cannot read or drive nika, but any local process or any other user account on the same machine can open `http://127.0.0.1:3335` and read what it shows: last prompts, directories, branches, session ids, Remote Control links and report text. Do not run nika on a shared machine.

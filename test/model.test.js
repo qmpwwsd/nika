@@ -137,6 +137,35 @@ describe('collect', () => {
     }
   });
 
+  test('(−) 0.1.1: a title-only stub transcript that is not live is not listed and makes no (unknown) group', async () => {
+    const fx2 = makeFixture();
+    try {
+      const stub = 'f0f0f0f0-f0f0-4f0f-8f0f-f0f0f0f0f0f0';
+      const file = path.join(fx2.claudeDir, 'projects', '-somewhere-else', `${stub}.jsonl`);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, jsonl([{ type: 'ai-title', sessionId: stub, aiTitle: 'Stub title' }]));
+      const s = await collect({ config: fx2.config, exec: fakeExec(), now: NOW, sinceMs: Infinity });
+      assert.equal(s.snapshot.groups.flatMap((g) => g.agents).some((a) => a.id === stub), false);
+      assert.equal(s.snapshot.groups.some((g) => g.label === '(unknown)'), false);
+    } finally {
+      cleanup(fx2);
+    }
+  });
+
+  test('(+) 0.1.1: a live session whose transcript is still title-only stays listed', async () => {
+    const fx2 = makeFixture();
+    try {
+      const file = path.join(fx2.claudeDir, 'projects', fx2.repo.replace(/[^A-Za-z0-9]/g, '-'), `${SID.idle}.jsonl`);
+      fs.writeFileSync(file, jsonl([{ type: 'ai-title', sessionId: SID.idle, aiTitle: 'Stub title' }]));
+      const s = await collect({ config: fx2.config, exec: fakeExec(), now: NOW, sinceMs: Infinity });
+      const a = s.snapshot.groups.flatMap((g) => g.agents).find((x) => x.id === SID.idle);
+      assert.equal(a?.live, true);
+      assert.equal(a.cwd, fx2.repo);
+    } finally {
+      cleanup(fx2);
+    }
+  });
+
   test('(−) tmux unavailable: agents still listed, pane null, source shows the error', async () => {
     const s = await snap(7 * DAY, fakeExec({ tmuxError: 'ENOENT' }));
     assert.equal(byId(s, SID.busy).pane, null);

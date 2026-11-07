@@ -149,6 +149,9 @@ export async function readTranscript(file, cache) {
   data.cwd = fromHead.cwd ?? latest.cwd;
   data.startedAt = fromHead.startedAt ?? latest.startedAt;
   data.lastTimestamp = latest.lastTimestamp ?? fromHead.lastTimestamp;
+  // A title-only stub (one "ai-title" line, no cwd) never ran a conversation; the model hides it unless live (0.1.1).
+  const talk = (e) => e.type === 'user' || e.type === 'assistant';
+  data.hasConversation = head.some(talk) || tail.some(talk);
 
   cache?.set(key, { mtimeMs: file.mtimeMs, size: file.size, data });
   return data;

@@ -119,7 +119,7 @@ export async function collect({ config, exec, now = Date.now(), sinceMs, since =
 
   const projectCache = new Map();
   const reportPaths = new Map();
-  const entries = await mapLimit([...ids], IO_LIMIT, async (id) => {
+  const results = await mapLimit([...ids], IO_LIMIT, async (id) => {
     const reg = live.get(id) ?? null;
     const file = index.files.get(id) ?? null;
     let t = null;
@@ -130,6 +130,8 @@ export async function collect({ config, exec, now = Date.now(), sinceMs, since =
         t = null;
       }
     }
+    // Not live and no user or assistant line: a title-only stub, not an agent (it made the "(unknown)" group, 0.1.1).
+    if (!reg && t && !t.hasConversation) return null;
     const report = reports.get(id) ?? null;
     if (report?.reportPath) reportPaths.set(id, report.reportPath);
     const paneInfo = reg?.tmuxPane ? tmux.panes.get(reg.tmuxPane) ?? null : null;
@@ -181,6 +183,7 @@ export async function collect({ config, exec, now = Date.now(), sinceMs, since =
       },
     };
   });
+  const entries = results.filter(Boolean);
   foldScratchpad(entries, config.tmpRoot);
 
   const groups = new Map();
