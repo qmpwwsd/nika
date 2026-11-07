@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="nika-token" content="__NIKA_TOKEN__">
+<title>nika · Claude agents</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/app.css">
+<script type="module" src="/app.js"></script>
+</head>
+<body>
+<a class="skip" href="#groups">Skip to agents</a>
+<header class="bar">
+  <div class="bar-inner">
+    <div class="brand">
+      <svg class="logo" viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="12" r="3"/><circle cx="18" cy="6" r="3"/><circle cx="18" cy="18" r="3"/><path d="M8.6 10.6 15.4 7.4M8.6 13.4l6.8 3.2"/></svg>
+      <h1>nika</h1>
+      <span class="sub">Claude agents</span>
+    </div>
+    <p class="totals" id="totals" aria-live="polite"></p>
+    <div class="controls">
+      <label class="field search">
+        <span class="sr-only">Search agents</span>
+        <input id="search" type="search" placeholder="Search name, branch, dir…" autocomplete="off" spellcheck="false">
+      </label>
+      <label class="field">
+        <span class="field-label">Window</span>
+        <select id="since">
+          <option value="24h">24 hours</option>
+          <option value="7d">7 days</option>
+          <option value="30d">30 days</option>
+          <option value="all">All</option>
+        </select>
+      </label>
+      <label class="check"><input id="showEnded" type="checkbox"> Show ended</label>
+    </div>
+  </div>
+</header>
+
+<div id="banner" class="banner" role="status" hidden></div>
+
+<main id="groups" class="groups" aria-busy="true" tabindex="-1">
+  <div class="skeleton" aria-hidden="true">
+    <div class="sk-head"></div>
+    <div class="cards"><div class="sk-card"></div><div class="sk-card"></div><div class="sk-card"></div></div>
+    <div class="sk-head"></div>
+    <div class="cards"><div class="sk-card"></div><div class="sk-card"></div></div>
+  </div>
+  <p class="sr-only">Loading agents…</p>
+</main>
+
+<footer class="foot"><span id="updated"></span></footer>
+
+<dialog id="report" class="report" aria-labelledby="report-title">
+  <div class="report-head">
+    <h2 id="report-title">Report</h2>
+    <button type="button" class="btn" id="report-close">Close</button>
+  </div>
+  <pre id="report-body" class="report-body" tabindex="0"></pre>
+</dialog>
+
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+</body>
+</html>
