@@ -1,0 +1,6 @@
+#!/usr/bin/env node
+// Launcher: dynamic import works whether Node treats this extensionless file as CommonJS or ESM.
+import('../src/cli.js').then(({ run }) => run(), (err) => {
+  process.stderr.write(`nika: ${err.message}\n`);
+  process.exitCode = 1;
+});
