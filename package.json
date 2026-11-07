@@ -1,0 +1,29 @@
+{
+  "name": "nika",
+  "version": "0.1.0",
+  "description": "Local dashboard of Claude Code agents (sessions and subagents), grouped by project",
+  "license": "MIT",
+  "author": "qmpwwsd",
+  "type": "module",
+  "bin": {
+    "nika": "bin/nika"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "public/",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node bin/nika serve",
+    "test": "node --test \"test/*.test.js\""
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/qmpwwsd/nika.git"
+  }
+}
