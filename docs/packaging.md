@@ -211,17 +211,19 @@ class Nika < Formula
   end
 
   def install
-    libexec.install "bin", "src", "public", "templates", "package.json"
-    (bin/"nika").write_env_script libexec/"bin/nika", PATH: "#{formula_opt_bin("node")}:$PATH"
-
+    # Build the app first: the bundle copies bin, src, public, templates and package.json as resources,
+    # and libexec.install below moves them out of the build tree.
     if OS.mac?
       system "cargo", "install", "tauri-cli", "--version", "2.12.4", "--locked", "--root", buildpath/"tools"
       ENV.prepend_path "PATH", buildpath/"tools/bin"
       cd "app/src-tauri" do
-        system "cargo", "tauri", "build", "--bundles", "app"
+        system buildpath/"tools/bin/cargo-tauri", "build", "--bundles", "app"
       end
       prefix.install "app/src-tauri/target/release/bundle/macos/nika.app"
     end
+
+    libexec.install "bin", "src", "public", "templates", "package.json"
+    (bin/"nika").write_env_script libexec/"bin/nika", PATH: "#{formula_opt_bin("node")}:$PATH"
   end
 
   def caveats
