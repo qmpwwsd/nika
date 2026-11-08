@@ -5,11 +5,12 @@ import { readRegistry, processTable, isAlive } from './collect/registry.js';
 import { indexTranscripts, readTranscript, createTranscriptCache } from './collect/transcripts.js';
 import { readSubagents } from './collect/subagents.js';
 import { listPanes } from './collect/tmux.js';
-import { discoverReportDirs, indexReports } from './collect/reports.js';
+import { allReportDirs, indexReports } from './collect/reports.js';
 import { resolveProject } from './collect/projects.js';
 import { mapLimit } from './util.js';
 import { clean } from './text.js';
 import { UUID } from './ids.js';
+import { keyFor } from './store.js';
 
 const PROMPT_MAX = 200;
 const IO_LIMIT = 16;
@@ -96,7 +97,7 @@ export async function collect({ config, exec, now = Date.now(), sinceMs, since =
     processTable(exec),
     indexTranscripts(config.claudeDir),
     listPanes(exec, config.tmuxBin ?? 'tmux'),
-    discoverReportDirs(config.tmpRoot, config.reportDirs ?? []),
+    allReportDirs(config),
   ]);
   const reports = await indexReports(reportDirs);
   const sources = {
@@ -156,6 +157,7 @@ export async function collect({ config, exec, now = Date.now(), sinceMs, since =
         lastActivity: s.lastActivity,
       }))
       .sort((a, b) => (a.state === 'running' ? 0 : 1) - (b.state === 'running' ? 0 : 1) || (b.lastActivity ?? 0) - (a.lastActivity ?? 0));
+    const state = isLive ? (clean(reg.status, 32) ?? 'unknown') : 'ended';
     const activity = [reg?.updatedAt, file?.mtimeMs, t?.lastTimestamp].filter(Number.isFinite);
     return {
       project,
@@ -163,7 +165,10 @@ export async function collect({ config, exec, now = Date.now(), sinceMs, since =
         id,
         pid: reg?.pid ?? null,
         live: isLive,
-        state: isLive ? (clean(reg.status, 32) ?? 'unknown') : 'ended',
+        state,
+        role: paneInfo?.role ?? null,
+        // what a live agent that is neither busy nor idle is doing (e.g. waiting on a permission prompt)
+        attention: isLive && state !== 'busy' && state !== 'idle' ? clean(reg.status, 80) : null,
         name,
         title,
         model: clean(t?.model, 80),
@@ -191,7 +196,7 @@ export async function collect({ config, exec, now = Date.now(), sinceMs, since =
   for (const { project, agent } of entries) {
     let g = groups.get(project.key);
     if (!g) {
-      g = { key: project.key, label: clean(project.label, 120) ?? '(unknown)', root: project.root, counts: emptyCounts(), lastActivity: 0, agents: [] };
+      g = { key: keyFor(project.root ?? project.key), label: clean(project.label, 120) ?? '(unknown)', root: project.root, counts: emptyCounts(), lastActivity: 0, agents: [] };
       groups.set(project.key, g);
     }
     g.agents.push(agent);

@@ -1,3 +1,5 @@
 node_modules/
 .DS_Store
 *.log
+app/src-tauri/target/
+app/src-tauri/gen/schemas/

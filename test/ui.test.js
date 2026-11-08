@@ -1,0 +1,470 @@
+// Static and served-file checks for the main UI (public/index.html, app.js, app.css and the modules they load).
+// The browser itself is exercised by hand (Playwright); these checks keep the strict-CSP rules, the tier separation
+// and the static file list from regressing. The session window has its own checks in session-ui.test.js.
+import { test, describe, before, after } from 'node:test';
+import assert from 'node:assert/strict';
+import http from 'node:http';
+import fs from 'node:fs';
+import path from 'node:path';
+import vm from 'node:vm';
+import { pathToFileURL, fileURLToPath } from 'node:url';
+import { makeFixture, cleanup, fakeExec, NOW } from './helpers.js';
+import { createServer } from '../src/server.js';
+
+const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
+const read = (f) => fs.readFileSync(path.join(PUBLIC, f), 'utf8');
+const files = fs.readdirSync(PUBLIC);
+const JS = files.filter((f) => f.endsWith('.js'));
+const HTML = files.filter((f) => f.endsWith('.html'));
+const CSS = files.filter((f) => f.endsWith('.css'));
+
+/** Source with // and block comments removed (a `//` right after `:` is a URL, not a comment). */
+const code = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|\s)\/\/.*$/gm, '$1');
+
+// Sinks are assembled from parts so this file does not contain them either.
+const SINKS = [
+  ['inner' + 'HTML', /inner\s*HTML/],
+  ['insertAdjacent' + 'HTML', /insertAdjacent\s*HTML/],
+  ['outer' + 'HTML', /outer\s*HTML/],
+  ['document.' + 'write', /document\s*\.\s*write/],
+  ['ev' + 'al(', /\beval\s*\(/],
+  ['new Func' + 'tion', /new\s+Function\b/],
+  ['Func' + 'tion(', /\bFunction\s*\(/],
+  ["setAttribute('" + "style'", /setAttribute\s*\(\s*['"`]style['"`]/i],
+  ['css' + 'Text', /css\s*Text/],
+  ['src' + 'doc', /srcdoc/i],
+  ['createContextual' + 'Fragment', /createContextualFragment/],
+  ['DOM' + 'Parser', /DOMParser/],
+  ['javascript' + ':', /javascript\s*:/i],
+  ["setAttribute('" + "on...", /setAttribute\s*\(\s*['"`]on/i],
+  ['.on...= handler property', /\.\s*on[a-z]+\s*=[^=]/],
+  ['import' + 'Scripts / document.domain', /importScripts|document\.domain/],
+];
+const findSinks = (src) => SINKS.filter(([, re]) => re.test(code(src))).map(([name]) => name);
+
+describe('forbidden sinks in every public script', () => {
+  test('(+) the scan covers the main UI modules and the session window', () => {
+    for (const f of ['app.js', 'api.js', 'dom.js', 'ui.js', 'project.js', 'settings.js', 'session.js', 'mirror-render.js']) {
+      assert.ok(JS.includes(f), `${f} is scanned`);
+    }
+  });
+
+  for (const f of JS) {
+    test(`(−) ${f} uses no HTML-parsing, code-evaluating or style-string sink`, () => {
+      assert.deepEqual(findSinks(read(f)), []);
+    });
+  }
+
+  test('(−) the scanner itself catches each sink (so the checks above can fail)', () => {
+    const samples = [
+      'el.' + 'innerHTML = x', 'el.insertAdjacent' + "HTML('beforeend', x)", 'el.outer' + 'HTML = x', 'document.' + 'write(x)', 'ev' + 'al(x)',
+      'new Func' + 'tion(x)', "el.setAttribute('" + "style', x)", 'el.style.css' + 'Text = x', 'f.src' + 'doc = x', 'a.href = "javascript' + ':1"',
+      "el.setAttribute('on" + "click', x)", 'el.on' + 'click = f', 'new DOM' + 'Parser()',
+    ];
+    for (const s of samples) assert.notDeepEqual(findSinks(s), [], s);
+    assert.deepEqual(findSinks('// el.' + 'innerHTML is forbidden\nconst a = 1; /* ev' + 'al( */'), [], 'comments are ignored');
+  });
+
+  test('(+) untrusted text goes through textContent (dom.js h() text attribute and text nodes)', () => {
+    const dom = code(read('dom.js'));
+    assert.match(dom, /textContent/);
+    assert.match(dom, /createTextNode/);
+  });
+
+  test('(−) the main UI never builds a style string, reads cookies, or talks to another origin', () => {
+    for (const f of ['app.js', 'ui.js', 'dom.js', 'project.js', 'settings.js']) {
+      const c = code(read(f));
+      assert.doesNotMatch(c, /\.style\.cssText|setAttribute\s*\(\s*['"`]style/, f);
+      assert.doesNotMatch(c, /document\.cookie|XMLHttpRequest|WebSocket|EventSource|sendBeacon/, f);
+      assert.doesNotMatch(c, /https?:\/\/(?!claude\.ai\/code\/|www\.w3\.org\/2000\/svg)/, f); // the SVG namespace is an identifier, not a request
+    }
+  });
+
+  test('(−) no module outside api.js can read the secret or send the app header', () => {
+    for (const f of JS.filter((x) => x !== 'api.js')) {
+      assert.doesNotMatch(code(read(f)), /__NIKA_APP__|X-Nika-App/i, f);
+    }
+  });
+});
+
+describe('HTML pages under the strict CSP', () => {
+  test('(+) every page is scanned', () => {
+    assert.deepEqual(HTML.sort(), ['index.html', 'session.html']);
+  });
+
+  for (const f of HTML) {
+    test(`(−) ${f} has no inline script or style, style attribute, on* attribute or javascript: URL`, () => {
+      const src = read(f);
+      for (const m of src.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)) {
+        assert.match(m[1], /\bsrc="[^"]+"/, 'script must be external');
+        assert.equal(m[2].trim(), '', 'script must have no inline body');
+      }
+      assert.doesNotMatch(src, /<style\b/i);
+      assert.doesNotMatch(src, /\sstyle\s*=/i);
+      assert.doesNotMatch(src, /\son[a-z]+\s*=/i);
+      assert.doesNotMatch(src, /javascript:/i);
+      assert.doesNotMatch(src, /<(iframe|object|embed|base)\b/i);
+      for (const m of src.matchAll(/<form\b[^>]*>/gi)) assert.doesNotMatch(m[0], /\s(action|method)\s*=/i, 'forms are handled in JS; the CSP has form-action none');
+    });
+  }
+
+  test('(+) index.html: one module script, tokens.css then app.css, one token placeholder, no external URL', () => {
+    const src = read('index.html');
+    const scripts = [...src.matchAll(/<script\b([^>]*)>/gi)].map((m) => m[1]);
+    assert.equal(scripts.length, 1);
+    assert.match(scripts[0], /type="module"/);
+    assert.match(scripts[0], /src="\/?app\.js"/);
+    const links = [...src.matchAll(/<link\b[^>]*rel="stylesheet"[^>]*>/gi)].map((m) => /href="([^"]+)"/.exec(m[0])[1]);
+    assert.deepEqual(links.map((l) => l.replace(/^\//, '')), ['tokens.css', 'app.css']);
+    assert.equal(src.split('__NIKA_TOKEN__').length - 1, 1, 'the server replaces the placeholder once');
+    assert.deepEqual([...src.matchAll(/(?:src|href)="(https?:[^"]*)"/g)].map((m) => m[1]), []);
+  });
+
+  test('(+) index.html: ids are unique and every id the scripts look up exists', () => {
+    const src = read('index.html');
+    const ids = [...src.matchAll(/\sid="([^"]+)"/g)].map((m) => m[1]);
+    assert.equal(new Set(ids).size, ids.length, 'duplicate ids');
+    const missing = new Set();
+    // ids that the scripts create themselves (e.g. the rules dialog's alert) count as present
+    const made = new Set();
+    for (const f of ['app.js', 'ui.js', 'project.js', 'settings.js']) for (const m of code(read(f)).matchAll(/\bid:\s*'([A-Za-z0-9_-]+)'/g)) made.add(m[1]);
+    for (const f of ['app.js', 'ui.js', 'project.js', 'settings.js']) {
+      const c = code(read(f));
+      for (const m of c.matchAll(/\$\('#([A-Za-z0-9_-]+)'/g)) if (!ids.includes(m[1]) && !made.has(m[1])) missing.add(`${f}: #${m[1]}`);
+      for (const m of c.matchAll(/getElementById\('([A-Za-z0-9_-]+)'\)/g)) if (!ids.includes(m[1]) && !made.has(m[1])) missing.add(`${f}: #${m[1]}`);
+    }
+    assert.deepEqual([...missing], []);
+  });
+
+  test('(+) index.html: landmarks, skip link, live regions and a single h1 per screen', () => {
+    const src = read('index.html');
+    assert.match(src, /<a class="skip" href="#main">/);
+    assert.match(src, /<main\b[^>]*id="main"/);
+    assert.match(src, /<nav\b/);
+    assert.match(src, /id="announce"[^>]*aria-live="polite"/);
+    assert.equal((src.match(/<h1\b/g) ?? []).length, 3, 'dashboard, project and settings');
+    assert.equal((src.match(/<dialog\b/g) ?? []).length, 4, 'spawn, rules, confirm, report');
+  });
+
+  test('(+) index.html: app-only controls are marked so the browser tier removes them', () => {
+    const src = read('index.html');
+    assert.match(src, /<body[^>]*data-tier="browser"/);
+    assert.match(src, /<nav\b[^>]*data-app-only/);
+    assert.match(src, /data-browser-only/);
+  });
+});
+
+describe('permission modes and the spawn brief', () => {
+  const html = read('index.html');
+  const project = read('project.js');
+  const WARNING = /classifier approves actions without asking you/;
+
+  test('(+) every place that offers the auto mode says a classifier approves actions without asking you: the Settings option and the spawn sheet / project labels', () => {
+    const card = /<label class="radio-card">(?:(?!<\/label>)[^])*value="auto"(?:(?!<\/label>)[^])*<\/label>/.exec(html);
+    assert.ok(card, 'the Settings radio card for auto exists');
+    assert.match(card[0], WARNING);
+    const label = /PERM_LABEL = \{[^}]*\bauto: '([^']+)'/.exec(project);
+    assert.ok(label, 'project.js labels the auto mode (spawn sheet options and project view)');
+    assert.match(label[1], WARNING);
+  });
+
+  test('(−) the other modes do not claim it, and bypassPermissions is offered nowhere', () => {
+    for (const mode of ['default', 'manual', 'acceptEdits', 'plan', 'dontAsk']) {
+      const card = new RegExp(`<label class="radio-card">(?:(?!</label>)[^])*value="${mode}"(?:(?!</label>)[^])*</label>`).exec(html);
+      assert.ok(card, mode);
+      assert.doesNotMatch(card[0], WARNING, mode);
+    }
+    for (const f of [...JS, ...HTML]) assert.doesNotMatch(read(f).replace(/Bypass permissions is not offered[^<]*/, ''), /bypassPermissions/, f);
+  });
+
+  // The spawn sheet's rule is the client half of src/spawn.js (parseRequest): run the page's own function.
+  const briefProblem = (() => {
+    const m = /\nfunction briefProblem\(text, bytes\) \{[^]*?\n\}\n/.exec(project);
+    assert.ok(m, 'project.js defines briefProblem(text, bytes)');
+    return vm.runInNewContext(`${m[0]}; briefProblem`, { BRIEF_MAX: 64 * 1024 });
+  })();
+
+  test('(−) the spawn sheet refuses an empty brief, a one-word brief and an oversized one before any request', () => {
+    assert.match(briefProblem('', 0), /Write the first message/);
+    assert.match(briefProblem('  \n', 3), /Write the first message/);
+    for (const word of ['update', ' doctor ', 'mcp\n', '--help']) assert.match(briefProblem(word, word.length), /more than one word/, word);
+    assert.match(briefProblem('two words', 64 * 1024 + 1), /over 64 KB/);
+  });
+
+  test('(+) two words or two lines pass, at the size limit too', () => {
+    for (const ok of ['update docs', 'one\ntwo', ' a b ']) assert.equal(briefProblem(ok, ok.length), '', ok);
+    assert.equal(briefProblem('two words', 64 * 1024), '');
+  });
+});
+
+describe('CSS', () => {
+  test('(−) no color-mix() and no :has() in any stylesheet', () => {
+    for (const f of CSS) {
+      const c = read(f).replace(/\/\*[\s\S]*?\*\//g, '');
+      assert.doesNotMatch(c, /color-mix\s*\(/, f);
+      assert.doesNotMatch(c, /:has\s*\(/, f);
+    }
+  });
+
+  test('(+) every var(--token) used by app.css is defined in tokens.css (or app.css itself)', () => {
+    const defined = new Set([...(read('tokens.css') + read('app.css')).matchAll(/(--[a-z0-9-]+)\s*:/g)].map((m) => m[1]));
+    const used = new Set([...read('app.css').matchAll(/var\(\s*(--[a-z0-9-]+)/g)].map((m) => m[1]));
+    assert.deepEqual([...used].filter((t) => !defined.has(t)), []);
+  });
+
+  test('(+) tokens.css has the dark palette for both the OS preference and the pinned choice, and reduced motion', () => {
+    const t = read('tokens.css');
+    assert.match(t, /prefers-color-scheme:\s*dark/);
+    assert.match(t, /:root\[data-theme="dark"\]/);
+    assert.match(t, /:root\[data-theme="light"\]/);
+    assert.match(t, /prefers-reduced-motion:\s*reduce/);
+  });
+
+  // A scroll container that is not positioned lets absolutely positioned descendants (.sr-only labels) anchor to the
+  // page: the page grows as tall as the list and WebKit scrolls the whole window, leaving a blank band.
+  const unanchoredScrollers = (css) => {
+    const rules = [...css.replace(/\/\*[\s\S]*?\*\//g, '').matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => ({
+      sels: m[1].split(',').map((s) => s.trim()).filter(Boolean),
+      body: m[2],
+    }));
+    const positioned = new Set(rules.filter((r) => /(^|;)\s*position\s*:\s*(relative|absolute|fixed|sticky)/.test(r.body)).flatMap((r) => r.sels));
+    return rules.filter((r) => /overflow(-[xy])?\s*:\s*(auto|scroll)/.test(r.body)).flatMap((r) => r.sels).filter((s) => !positioned.has(s));
+  };
+
+  test('(+) every scroll container in every stylesheet is a containing block (position set)', () => {
+    for (const f of CSS) assert.deepEqual(unanchoredScrollers(read(f)), [], f);
+  });
+
+  test('(−) the scroll-container check catches an unpositioned scroller (so the check above can fail)', () => {
+    assert.deepEqual(unanchoredScrollers('.list { overflow: auto; } .ok { position: relative; overflow-y: scroll; }'), ['.list']);
+  });
+
+  test('(−) the owner-banned word never appears in the shipped UI', () => {
+    const banned = new RegExp('pony' + 'tail', 'i');
+    for (const f of files.filter((x) => /\.(js|css|html|svg)$/.test(x))) assert.doesNotMatch(read(f), banned, f);
+  });
+});
+
+describe('tier separation in the page code', () => {
+  test('(+) api.js copies the injected global into a module constant and deletes it', () => {
+    const c = code(read('api.js'));
+    assert.match(c, /const injected = window\.__NIKA_APP__/);
+    assert.match(c, /delete window\.__NIKA_APP__/);
+    assert.match(c, /X-Nika-App/);
+  });
+
+  test('(−) api.js holds no literal secret: no long token-like string literal', () => {
+    const c = code(read('api.js'));
+    const literals = [...c.matchAll(/(['"`])((?:\\.|(?!\1).){20,})\1/g)].map((m) => m[2]);
+    for (const s of literals) assert.doesNotMatch(s, /^[A-Za-z0-9+/_=-]{20,}$/, `looks like a secret: ${s}`);
+  });
+
+  test('(−) /api/app appears only in the app-tier modules (best-effort: strings in comments are ignored)', () => {
+    for (const f of JS.filter((x) => !['api.js', 'project.js', 'settings.js', 'session.js'].includes(x))) {
+      assert.doesNotMatch(code(read(f)), /\/api\/app/, `${f} is loaded on the browser tier and must not name an app route`);
+    }
+  });
+
+  test('(+) the privileged modules load only through a dynamic import behind isApp, never a static import', () => {
+    for (const f of JS.filter((x) => !['project.js', 'settings.js'].includes(x))) {
+      assert.doesNotMatch(code(read(f)), /^\s*import\b[^;]*from\s*['"]\.\/(project|settings)\.js['"]/m, `${f} must not import them statically`);
+    }
+    const app = code(read('app.js'));
+    for (const mod of ['project', 'settings']) {
+      const at = app.indexOf(`import('./${mod}.js')`);
+      assert.ok(at > 0, `app.js imports ${mod}.js dynamically`);
+      assert.match(app.slice(Math.max(0, at - 160), at), /if \(isApp\)/, `${mod}.js import sits inside an isApp guard`);
+    }
+  });
+
+  test('(+) #add-project (tray) calls the folder picker once, behind isApp, after replacing the hash', () => {
+    const app = code(read('app.js'));
+    const route = app.slice(app.indexOf('function route('), app.indexOf('function initControls('));
+    assert.match(route, /if \(isApp && location\.hash === '#add-project'\) \{\s*history\.replaceState\(null, '', '#dashboard'\);\s*hooks\.addProject\?\.\(\);\s*\}/);
+    assert.equal(route.match(/addProject/g).length, 1, 'one call in route()');
+  });
+
+  test('(−) #add-project is not a screen: parseRoute does not know it, and no other module reads it', () => {
+    const app = code(read('app.js'));
+    const parse = app.slice(app.indexOf('function parseRoute('), app.indexOf('function route('));
+    assert.doesNotMatch(parse, /add-project/);
+    assert.match(parse, /if \(isApp\) \{/); // the screen routes themselves stay app-only
+    for (const f of JS.filter((x) => x !== 'app.js')) assert.doesNotMatch(code(read(f)), /add-project/, f);
+  });
+
+  test('(+) every appFetch call site in project.js and settings.js targets an /api/app/ path', () => {
+    for (const f of ['project.js', 'settings.js']) {
+      const calls = [...code(read(f)).matchAll(/appFetch\(\s*([^,)]*)/g)].map((m) => m[1].trim());
+      const own = calls.filter((c) => !c.startsWith('path') && !c.startsWith('p,'));
+      for (const arg of own) assert.match(arg, /^[`'"]\/api\/app\//, `${f}: appFetch(${arg}`);
+    }
+  });
+});
+
+describe('api.js behaviour with a stubbed page', () => {
+  const API = pathToFileURL(path.join(PUBLIC, 'api.js')).href;
+  const saved = { window: globalThis.window, document: globalThis.document, fetch: globalThis.fetch };
+  let n = 0;
+  const load = (injected) => {
+    globalThis.window = injected ? { __NIKA_APP__: injected } : {};
+    return import(`${API}?case=${n++}`);
+  };
+  const restore = () => {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete globalThis[k];
+      else globalThis[k] = v;
+    }
+  };
+  after(restore);
+
+  test('(+) with the shell global: isApp, the global is gone, the header carries the secret, JSON is parsed', async () => {
+    const calls = [];
+    globalThis.fetch = async (url, opts) => {
+      calls.push([url, opts]);
+      return { status: 200, headers: new Map(), text: async () => '{"ok":true}' };
+    };
+    const api = await load({ secret: 'unit-test-secret', port: 1 });
+    assert.equal(globalThis.window.__NIKA_APP__, undefined, 'global deleted after the first read');
+    assert.equal(api.isApp, true);
+    const r = await api.appFetch('/api/app/me', { method: 'PUT', json: { a: 1 } });
+    assert.deepEqual([r.status, r.body], [200, { ok: true }]);
+    const [url, opts] = calls[0];
+    assert.equal(url, '/api/app/me');
+    assert.equal(opts.headers['X-Nika-App'], 'unit-test-secret');
+    assert.equal(opts.headers['Content-Type'], 'application/json');
+    assert.equal(opts.body, '{"a":1}');
+    assert.equal(opts.cache, 'no-store');
+  });
+
+  test('(+) a caller cannot override the secret header, and an error status resolves instead of throwing', async () => {
+    globalThis.fetch = async (url, opts) => ({ status: 409, headers: new Map(), text: async () => `{"seen":"${opts.headers['X-Nika-App']}"}` });
+    const api = await load({ secret: 'real', port: 1 });
+    const r = await api.appFetch('/api/app/x', { headers: { 'X-Nika-App': 'forged' } });
+    assert.deepEqual([r.status, r.body], [409, { seen: 'real' }]);
+  });
+
+  test('(−) a non-app path is refused before any request is sent', async () => {
+    let sent = 0;
+    globalThis.fetch = async () => { sent++; return { status: 200, headers: new Map(), text: async () => '{}' }; };
+    const api = await load({ secret: 'real', port: 1 });
+    for (const p of ['/api/agents', '/api/app', 'api/app/x', 'http://evil.example/api/app/x', undefined]) {
+      await assert.rejects(() => api.appFetch(p), /not an app route/, String(p));
+    }
+    assert.equal(sent, 0);
+  });
+
+  test('(−) without the shell global (browser tier): isApp is false and appFetch sends nothing', async () => {
+    let sent = 0;
+    globalThis.fetch = async () => { sent++; return { status: 200, headers: new Map(), text: async () => '{}' }; };
+    for (const bad of [undefined, { secret: '', port: 1 }, { port: 1 }, { secret: 42, port: 1 }]) {
+      const api = await load(bad);
+      assert.equal(api.isApp, false);
+      await assert.rejects(() => api.appFetch('/api/app/me'), /app tier only/);
+    }
+    assert.equal(sent, 0);
+  });
+
+  test('(−) a non-JSON error body becomes a message, a network failure rejects', async () => {
+    globalThis.fetch = async () => ({ status: 502, headers: new Map(), text: async () => '<html>bad gateway</html>' });
+    const api = await load({ secret: 's', port: 1 });
+    const r = await api.appFetch('/api/app/me');
+    assert.equal(r.status, 502);
+    assert.match(r.body.message, /bad gateway/);
+    globalThis.fetch = async () => { throw new TypeError('network down'); };
+    await assert.rejects(() => api.appFetch('/api/app/me'), /network down/);
+  });
+
+  test('(+) getJSON reads a public route and throws on a bad status', async () => {
+    const api = await load(null);
+    globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => ({ groups: [] }) });
+    assert.deepEqual(await api.getJSON('/api/agents'), { groups: [] });
+    globalThis.fetch = async () => ({ ok: false, status: 500, json: async () => ({}) });
+    await assert.rejects(() => api.getJSON('/api/agents'), /HTTP 500/);
+  });
+
+  test('(+) applyTheme pins light or dark and removes the pin for system or garbage', async () => {
+    const root = { dataset: {} };
+    globalThis.document = { documentElement: root };
+    const api = await load(null);
+    api.applyTheme('dark');
+    assert.equal(root.dataset.theme, 'dark');
+    api.applyTheme('light');
+    assert.equal(root.dataset.theme, 'light');
+    api.applyTheme('system');
+    assert.equal(root.dataset.theme, undefined);
+    api.applyTheme('dark');
+    api.applyTheme('<script>');
+    assert.equal(root.dataset.theme, undefined);
+  });
+});
+
+describe('static files served by the server', () => {
+  const fx = makeFixture();
+  const TOKEN = 'ui-test-token';
+  const CSP = [
+    "default-src 'self'", "script-src 'self'", "style-src 'self'", "img-src 'self' data:", "connect-src 'self'",
+    "frame-ancestors 'none'", "base-uri 'none'", "form-action 'none'",
+  ].join('; ');
+  const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml' };
+  let server;
+  let port;
+
+  before(async () => {
+    server = createServer({ config: fx.config, exec: fakeExec(), token: TOKEN, now: () => NOW, version: '0.2.0' });
+    await new Promise((r) => server.listen(0, '127.0.0.1', r));
+    port = server.address().port;
+  });
+  after(async () => {
+    await new Promise((r) => server.close(r));
+    cleanup(fx);
+  });
+
+  const get = (p, method = 'GET') => new Promise((resolve, reject) => {
+    const r = http.request({ host: '127.0.0.1', port, method, path: p, headers: { host: `127.0.0.1:${port}` } }, (res) => {
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks) }));
+    });
+    r.on('error', reject);
+    r.end();
+  });
+
+  test('(+) every file in public/ is served with the right type, the unchanged CSP and nosniff', async () => {
+    assert.ok(files.length >= 14, 'public/ has the main UI and the session window');
+    for (const f of files) {
+      const url = f === 'index.html' ? '/' : `/${f}`;
+      const r = await get(url);
+      assert.equal(r.status, 200, url);
+      assert.equal(r.headers['content-type'], TYPES[path.extname(f)], url);
+      assert.equal(r.headers['content-security-policy'], CSP, url);
+      assert.equal(r.headers['x-content-type-options'], 'nosniff', url);
+      assert.equal(r.headers['x-frame-options'], 'DENY', url);
+      if (f !== 'index.html') assert.equal(r.body.toString('utf8'), fs.readFileSync(path.join(PUBLIC, f), 'utf8'), `${url} is served byte for byte`);
+    }
+  });
+
+  test('(+) the page gets this process\'s token in its meta tag and no placeholder is left', async () => {
+    const r = await get('/');
+    const body = r.body.toString('utf8');
+    assert.match(body, new RegExp(`<meta name="nika-token" content="${TOKEN}">`));
+    assert.doesNotMatch(body, /__NIKA_TOKEN__/);
+  });
+
+  test('(−) an unknown path, a directory traversal, a source-tree path and /index.html all 404', async () => {
+    for (const p of ['/nope.js', '/public/app.js', '/..%2Fpackage.json', '/../package.json', '/src/server.js', '/index.html', '/app.js.map', '/tokens.css/']) {
+      const r = await get(p);
+      assert.equal(r.status, 404, p);
+    }
+  });
+
+  test('(−) the browser tier does not mount /api/app (the privileged routes exist only on the private server)', async () => {
+    for (const p of ['/api/app', '/api/app/me', '/api/app/settings', '/api/app/projects']) {
+      assert.equal((await get(p)).status, 404, p);
+    }
+  });
+
+  test('(−) static files accept GET only', async () => {
+    const r = await get('/app.js', 'POST');
+    assert.equal(r.status, 405);
+  });
+});

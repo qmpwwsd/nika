@@ -13,6 +13,16 @@ const STATIC = new Map([
   ['/', ['index.html', 'text/html; charset=utf-8']],
   ['/app.js', ['app.js', 'text/javascript; charset=utf-8']],
   ['/app.css', ['app.css', 'text/css; charset=utf-8']],
+  ['/tokens.css', ['tokens.css', 'text/css; charset=utf-8']],
+  ['/dom.js', ['dom.js', 'text/javascript; charset=utf-8']],
+  ['/api.js', ['api.js', 'text/javascript; charset=utf-8']],
+  ['/ui.js', ['ui.js', 'text/javascript; charset=utf-8']],
+  ['/project.js', ['project.js', 'text/javascript; charset=utf-8']],
+  ['/settings.js', ['settings.js', 'text/javascript; charset=utf-8']],
+  ['/session.html', ['session.html', 'text/html; charset=utf-8']],
+  ['/session.js', ['session.js', 'text/javascript; charset=utf-8']],
+  ['/session.css', ['session.css', 'text/css; charset=utf-8']],
+  ['/mirror-render.js', ['mirror-render.js', 'text/javascript; charset=utf-8']],
   ['/favicon.svg', ['favicon.svg', 'image/svg+xml']],
 ]);
 const CSP = [
@@ -29,7 +39,7 @@ const SNAPSHOT_TTL_MS = 1500;
 const BODY_LIMIT = 1024;
 const SINCE_CACHE_MAX = 16;
 
-function send(res, status, body, type = 'text/plain; charset=utf-8', extra = {}) {
+export function send(res, status, body, type = 'text/plain; charset=utf-8', extra = {}) {
   res.writeHead(status, {
     'Content-Type': type,
     'Content-Security-Policy': CSP,
@@ -44,7 +54,7 @@ function send(res, status, body, type = 'text/plain; charset=utf-8', extra = {})
   res.end(body);
 }
 
-const json = (res, status, obj) => send(res, status, JSON.stringify(obj), 'application/json; charset=utf-8');
+export const json = (res, status, obj) => send(res, status, JSON.stringify(obj), 'application/json; charset=utf-8');
 
 function sameToken(given, token) {
   const a = Buffer.from(String(given ?? ''));
@@ -52,7 +62,8 @@ function sameToken(given, token) {
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
-function readBody(req, limit) {
+/** Body as text, or null when it exceeds `limit` bytes (the rest is drained; a flood is cut off at 64 x limit). */
+export function readBody(req, limit) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     let size = 0;
@@ -79,8 +90,9 @@ function readBody(req, limit) {
  * @param {string} o.token    per-process random token required by state-changing routes
  * @param {Function} [o.now]  clock
  * @param {string} o.version
+ * @param {Function|null} [o.app]  app tier only: (req, res, url, port) => Promise<boolean>, mounted on /api/app/*
  */
-export function createServer({ config, exec, token, now = Date.now, version }) {
+export function createServer({ config, exec, token, now = Date.now, version, app = null }) {
   const collectorCache = {};
   const snapshots = new Map();
   const staticCache = new Map();
@@ -145,6 +157,11 @@ export function createServer({ config, exec, token, now = Date.now, version }) {
       }
       const p = url.pathname;
 
+      // /api/app/* belongs to the app tier's handler (its own guard); without one it does not exist (contract §4).
+      if (p === '/api/app' || p.startsWith('/api/app/')) {
+        if (app && await app(req, res, url, port)) return;
+        return send(res, 404, 'not found');
+      }
       if (p === '/api/focus') {
         if (req.method !== 'POST') return send(res, 405, 'method not allowed', undefined, { Allow: 'POST' });
         return await handleFocus(req, res, origins);

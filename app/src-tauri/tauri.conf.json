@@ -1,0 +1,42 @@
+{
+  "productName": "nika",
+  "version": "0.2.0",
+  "identifier": "io.github.qmpwwsd.nika",
+  "build": {
+    "frontendDist": "ui"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [],
+    "security": {
+      "csp": "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app", "deb", "appimage"],
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/icon.icns", "icons/icon.png"],
+    "publisher": "qmpwwsd",
+    "category": "DeveloperTool",
+    "shortDescription": "Local dashboard and control panel for Claude Code agents",
+    "resources": {
+      "../../bin": "nika/bin",
+      "../../src": "nika/src",
+      "../../public": "nika/public",
+      "../../templates": "nika/templates",
+      "../../package.json": "nika/package.json"
+    },
+    "macOS": {
+      "signingIdentity": "-",
+      "minimumSystemVersion": "12.0"
+    },
+    "linux": {
+      "deb": {
+        "desktopTemplate": "linux/nika.desktop",
+        "files": {
+          "/usr/share/applications/io.github.qmpwwsd.nika.desktop": "linux/io.github.qmpwwsd.nika.desktop"
+        }
+      }
+    }
+  }
+}

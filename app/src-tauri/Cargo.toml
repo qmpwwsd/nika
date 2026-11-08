@@ -1,0 +1,32 @@
+[package]
+name = "nika-app"
+version = "0.2.0"
+description = "nika desktop shell: tray icon, one window, supervises the private nika server"
+license = "MIT"
+edition = "2021"
+rust-version = "1.90"
+publish = false
+
+[lib]
+name = "nika_app_lib"
+
+[build-dependencies]
+tauri-build = { version = "=2.7.4", features = [] }
+
+[dependencies]
+tauri = { version = "=2.12.5", features = ["tray-icon", "image-png"] }
+tauri-plugin-single-instance = "=2.5.5"
+tauri-plugin-dialog = "=2.8.4"
+tauri-plugin-autostart = "=2.7.0"
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.154"
+
+[features]
+# `cargo tauri build` turns this on: the window then loads the embedded error page instead of a dev server
+custom-protocol = ["tauri/custom-protocol"]
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true

@@ -1,8 +1,13 @@
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import fs from 'node:fs';
+import path from 'node:path';
 import { makeFixture, cleanup, fakeExec, SID, NOW } from './helpers.js';
+import { makeWorld } from './tmux-fake.js';
 import { createServer } from '../src/server.js';
+import { ensureDir, writeAtomic } from '../src/fwrite.js';
+import { reportsDir } from '../src/paths.js';
 
 const fx = makeFixture();
 const TOKEN = 'test-token-123';
@@ -154,5 +159,132 @@ describe('focus pane', () => {
   test('(−) oversized body is 413; wrong method is 405', async () => {
     assert.equal((await focus(JSON.stringify({ pane: '%5', pad: 'x'.repeat(5000) }))).status, 413);
     assert.equal((await req('GET', '/api/focus')).status, 405);
+  });
+});
+
+describe('browser tier: /api/app is not mounted', () => {
+  const PATHS = ['/api/app', '/api/app/', '/api/app/me', '/api/app/projects', '/api/app/settings', '/api/app/spawn', '/api/app/pane/%256/keys', '/api/app/rules/apply'];
+
+  test('(−) every /api/app path is 404 for GET, POST, PUT and DELETE, with or without an X-Nika-App header', async () => {
+    for (const p of PATHS) {
+      for (const method of ['GET', 'POST', 'PUT', 'DELETE']) {
+        for (const headers of [{}, { 'x-nika-app': 'anything', 'content-type': 'application/json' }]) {
+          const r = await req(method, p, method === 'GET' ? { headers } : { headers: { ...headers, 'content-length': '2' }, body: '{}' });
+          assert.equal(r.status, 404, `${method} ${p}`);
+          assert.equal(r.body, 'not found');
+        }
+      }
+    }
+  });
+
+  test('(+) the 0.1 routes are unchanged next to it', async () => {
+    assert.equal((await req('GET', '/api/health')).status, 200);
+    assert.equal((await req('GET', '/api/agents?since=7d')).status, 200);
+    assert.equal((await req('GET', '/api/focus')).status, 405);
+    assert.equal((await req('POST', '/api/unknown', { headers: { 'content-type': 'application/json' }, body: '{}' })).status, 405);
+    assert.equal((await req('GET', '/api/application')).status, 404);
+    assert.equal((await focus({ pane: '%5' })).status, 200);
+  });
+});
+
+describe('app tier: the injected handler owns /api/app/*', () => {
+  const seen = [];
+  let appServer;
+  let appPort;
+  before(async () => {
+    const app = async (rq, rs, url, p) => {
+      seen.push([rq.method, url.pathname, p]);
+      if (url.pathname === '/api/app/claimed') {
+        rs.writeHead(200, { 'Content-Type': 'text/plain' });
+        rs.end('from app');
+        return true;
+      }
+      return false;
+    };
+    appServer = createServer({ config: fx.config, exec: fakeExec(), token: TOKEN, now: () => NOW, version: '0.2.0', app });
+    await new Promise((r) => appServer.listen(0, '127.0.0.1', r));
+    appPort = appServer.address().port;
+  });
+  after(() => new Promise((r) => appServer.close(r)));
+  const at = (method, p, headers = {}) => new Promise((resolve, reject) => {
+    const r = http.request({ host: '127.0.0.1', port: appPort, method, path: p, headers: { host: `127.0.0.1:${appPort}`, ...headers } }, (res) => {
+      let data = '';
+      res.on('data', (c) => { data += c; });
+      res.on('end', () => resolve({ status: res.statusCode, body: data }));
+    });
+    r.on('error', reject);
+    r.end();
+  });
+
+  test('(+) a claimed request is answered by the handler, which gets the request, url and listening port', async () => {
+    seen.length = 0;
+    const r = await at('POST', '/api/app/claimed');
+    assert.deepEqual([r.status, r.body], [200, 'from app']);
+    assert.deepEqual(seen, [['POST', '/api/app/claimed', appPort]]);
+  });
+
+  test('(−) a request the handler declines is 404; paths outside /api/app never reach it', async () => {
+    seen.length = 0;
+    assert.equal((await at('GET', '/api/app/other')).status, 404);
+    await at('GET', '/api/health');
+    await at('GET', '/api/application');
+    await at('GET', '//api/app/claimed');
+    assert.deepEqual(seen.map((x) => x[1]), ['/api/app/other']);
+  });
+
+  test('(−) a foreign Host is refused before the handler runs', async () => {
+    seen.length = 0;
+    assert.equal((await at('GET', '/api/app/claimed', { host: 'evil.example' })).status, 403);
+    assert.deepEqual(seen, []);
+  });
+
+  test('(+) the 0.1 routes still work on the app tier', async () => {
+    assert.equal((await at('GET', '/api/health')).status, 200);
+    assert.equal((await at('GET', '/')).status, 200);
+  });
+});
+
+describe('/api/report finds the reports of agents nika spawned', () => {
+  const DECOY = 'cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd';
+  const REPORT_ID = '12121212-1212-4212-8212-121212121212';
+  let w;
+  let nikaServer;
+  let nikaPort;
+  before(async () => {
+    w = await makeWorld();
+    const dir = reportsDir(w.project.key, w.env);
+    await ensureDir(dir);
+    await writeAtomic(dir, 'builder-1.session', `${REPORT_ID}\n`);
+    await writeAtomic(dir, 'builder-1.md', 'STATUS: DONE synthetic\n');
+    await writeAtomic(dir, 'evil.session', `${DECOY}\n`);
+    fs.writeFileSync(path.join(w.root, 'decoy.txt'), 'DECOY-CONTENT\n');
+    fs.symlinkSync(path.join(w.root, 'decoy.txt'), path.join(dir, 'evil.md'));
+    nikaServer = createServer({ config: { ...fx.config, env: w.env }, exec: fakeExec(), token: TOKEN, now: () => NOW, version: '0.2.0' });
+    await new Promise((r) => nikaServer.listen(0, '127.0.0.1', r));
+    nikaPort = nikaServer.address().port;
+  });
+  after(async () => {
+    await new Promise((r) => nikaServer.close(r));
+    w.cleanup();
+  });
+  const at = (id, p = nikaPort) => new Promise((resolve, reject) => {
+    http.get({ host: '127.0.0.1', port: p, path: `/api/report/${id}`, headers: { host: `127.0.0.1:${p}` } }, (res) => {
+      let data = '';
+      res.on('data', (c) => { data += c; });
+      res.on('end', () => resolve({ status: res.statusCode, body: data }));
+    }).on('error', reject);
+  });
+
+  test('(+) a report in nika\'s per-project reports dir is served', async () => {
+    const r = await at(REPORT_ID);
+    assert.equal(r.status, 200);
+    assert.match(r.body, /^STATUS: DONE synthetic/);
+  });
+
+  test('(−) a symlinked report there is never opened; a server without the registry env does not see the dir', async () => {
+    const evil = await at(DECOY);
+    assert.equal(evil.status, 404);
+    assert.equal(evil.body.includes('DECOY-CONTENT'), false);
+    assert.equal((await at(REPORT_ID, port)).status, 404); // the shared 0.1 test server has no env
   });
 });

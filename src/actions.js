@@ -1,6 +1,6 @@
 // The only side effects nika has: focusing a tmux pane, and reading a report file it indexed itself.
 import { listPanes } from './collect/tmux.js';
-import { discoverReportDirs, indexReports } from './collect/reports.js';
+import { allReportDirs, indexReports } from './collect/reports.js';
 import { openRegular, readAt } from './fsafe.js';
 import { UUID, PANE_ID } from './ids.js';
 
@@ -29,12 +29,12 @@ export async function focusPane(pane, exec, bin = 'tmux') {
 }
 
 /**
- * Report text for a session id, looked up in nika's own report index; the request never carries a path.
+ * Report text for a session id, looked up in nika's own report index (scratchpad dirs and nika-spawned agents' dirs); the request never carries a path.
  * The file is opened without following symlinks and must be a regular file owned by this user (review F1, F2).
  */
 export async function readReport(sessionId, config) {
   if (typeof sessionId !== 'string' || !UUID.test(sessionId)) return { status: 400, text: 'invalid session id' };
-  const index = await indexReports(await discoverReportDirs(config.tmpRoot, config.reportDirs ?? []));
+  const index = await indexReports(await allReportDirs(config));
   const entry = index.get(sessionId);
   if (!entry?.reportPath) return { status: 404, text: 'no report for this session' };
   let opened;

@@ -191,6 +191,31 @@ describe('tmux', () => {
     assert.equal(panes.get('%6').name, null);
   });
 
+  test('(+) @nika-role: "orchestrator" and "agent" are read from the last field; an empty title keeps the fields in place', () => {
+    const panes = parsePaneLines('%5\twork\t1\t[%5] build-7-1\tzsh\tagent\n%6\twork\t2\t\tclaude\torchestrator\n%7\twork\t3\tMacBook.local\tzsh\t\n');
+    assert.equal(panes.get('%5').role, 'agent');
+    assert.equal(panes.get('%6').role, 'orchestrator');
+    assert.equal(panes.get('%6').title, '');
+    assert.equal(panes.get('%6').command, 'claude');
+    assert.equal(panes.get('%7').role, null);
+  });
+
+  test('(−) @nika-role: any other value, a 0.1-style line without the field, and short lines give role null and still parse', () => {
+    const lines = ['%1\tw\t1\tt\tzsh\tadmin', '%2\tw\t1\tt\tzsh\tAgent', '%3\tw\t1\tt\tzsh\torchestrator ', '%4\tw\t1\tt\tzsh', '%8\tw\t1', '%9'];
+    const panes = parsePaneLines(`${lines.join('\n')}\n`);
+    for (const id of ['%1', '%2', '%3', '%4', '%8', '%9']) assert.equal(panes.get(id).role, null, id);
+    assert.equal(panes.get('%4').name, null);
+    assert.equal(panes.get('%4').command, 'zsh');
+  });
+
+  test('(+) listPanes asks tmux for #{@nika-role} as the last field', async () => {
+    const exec = fakeExec();
+    await listPanes(exec);
+    const format = exec.calls[0].at(-1);
+    assert.ok(format.endsWith('\t#{@nika-role}'));
+    assert.equal(format.split('\t').length, 6);
+  });
+
   test('(+) listPanes calls tmux -u list-panes -a with a fixed format', async () => {
     // -u added for review finding F10 (non-ASCII pane titles were sanitised to "_").
     const exec = fakeExec();

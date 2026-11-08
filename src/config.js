@@ -51,8 +51,38 @@ export function findTmux(env = process.env) {
   return 'tmux';
 }
 
+const isExecutable = (file) => {
+  try {
+    fs.accessSync(file, fs.constants.X_OK);
+    return fs.statSync(file).isFile();
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * claude binary as an absolute executable path, or null (never a bare name: it is run without a shell and a launchd
+ * service has a bare PATH). NIKA_CLAUDE, else absolute PATH dirs (a relative entry would resolve against the cwd),
+ * `~/.local/bin`, `~/.claude/local`, then `fallbackDirs` (a parameter so tests do not see the machine's own install).
+ */
+export function findClaude(env = process.env, fallbackDirs = ['/opt/homebrew/bin', '/usr/local/bin']) {
+  if (env.NIKA_CLAUDE) return path.isAbsolute(env.NIKA_CLAUDE) && isExecutable(env.NIKA_CLAUDE) ? env.NIKA_CLAUDE : null;
+  const home = env.HOME && path.isAbsolute(env.HOME) ? env.HOME : os.homedir();
+  const dirs = [
+    ...(env.PATH || '').split(':').filter((d) => path.isAbsolute(d)),
+    path.join(home, '.local', 'bin'), path.join(home, '.claude', 'local'), ...fallbackDirs,
+  ];
+  for (const d of dirs) {
+    const candidate = path.join(d, 'claude');
+    if (isExecutable(candidate)) return candidate;
+  }
+  return null;
+}
+
 export function defaultConfig(env = process.env) {
   return {
+    // lets collect() find the project registry and nika's own report dirs (src/collect/reports.js projectReportDirs)
+    env,
     claudeDir: env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'),
     tmpRoot: env.NIKA_TMP_ROOT || defaultTmpRoot(),
     reportDirs: (env.NIKA_REPORT_DIRS || '').split(':').filter(Boolean),

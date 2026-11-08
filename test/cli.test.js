@@ -47,7 +47,7 @@ describe('cli', () => {
   test('(+) --version prints the package version', async () => {
     const r = await run(['--version']);
     assert.equal(r.code, 0);
-    assert.equal(r.stdout.trim(), 'nika 0.1.1'); // version bump for 0.1.1
+    assert.equal(r.stdout.trim(), 'nika 0.2.0'); // version bump for 0.2.0
   });
 
   test('(+) status --json lists agents grouped by project', async () => {
@@ -75,11 +75,26 @@ describe('cli', () => {
     assert.match(b.stderr, /--since/);
   });
 
-  test('(−) open with no server running exits 1 and says how to start it', async () => {
-    const r = await run(['open'], { NIKA_PORT: String(await freePort()) });
+  // --browser: a bare `nika open` would launch the real app on a machine that has it installed
+  test('(−) open --browser with no server running exits 1 and says how to start it', async () => {
+    const r = await run(['open', '--browser'], { NIKA_PORT: String(await freePort()) });
     assert.equal(r.code, 1);
     assert.match(r.stderr, /not running/);
     assert.match(r.stderr, /brew services start nika/);
+  });
+
+  test('(−) the new commands reject bad usage with exit 2, through the real binary', async () => {
+    for (const args of [['spawn'], ['rules', 'frob'], ['projects'], ['orchestrate', 'a', 'b'], ['_run-agent'], ['doctor', 'x'], ['serve', '--bogus']]) {
+      const r = await run(args);
+      assert.equal(r.code, 2, args.join(' '));
+      assert.match(r.stderr, /usage: nika/i);
+    }
+  });
+
+  test('(+) help lists the 0.2 commands', async () => {
+    const r = await run(['help']);
+    assert.equal(r.code, 0);
+    for (const c of ['projects add', 'rules apply', 'spawn <name>', 'orchestrate', 'doctor', 'serve [--app]']) assert.ok(r.stdout.includes(c), c);
   });
 
   test('(−) serve rejects an invalid port', async () => {
