@@ -1,13 +1,20 @@
 # Changelog
 
-## Unreleased
+## 0.2.1 — 2026-11-08
 
+No app changes. This release brings the tag in line with the 0.2.0 Linux packages and adds release automation.
+
+- Packaging: the tag now contains the `Categories` line of the hidden `nika.desktop` entry, which the 0.2.0 Linux
+  packages were already built with (0.2.0's "Release fixes").
 - Releases: pushing a tag `vX.Y.Z` builds the Linux packages and creates a draft GitHub release with them, the notes
   taken from the tag's CHANGELOG section. `scripts/release-check.mjs` refuses a tag that does not match `package.json`,
   `tauri.conf.json` and `Cargo.toml` or has no CHANGELOG section. Only the draft job can write, and it runs no repository
   code. Manual dispatch stays a test build. Publishing stays manual. Procedure in `docs/packaging.md`.
 - Tests: `test/release.test.js` covers the release check and asserts the workflow rules (official actions pinned by
-  SHA, write access only in `draft-release`, no checkout there).
+  SHA, write access only in `draft-release`, no checkout there). `test/cli.test.js` reads the expected `--version`
+  from `package.json`, so a version bump needs no test edit.
+- Docs: `docs/packaging.md` shows the Homebrew formula as a template (`url` and `sha256` change with every release; the
+  tap's file is the source of truth) and has the release procedure.
 
 ## 0.2.0 — 2026-11-08
 

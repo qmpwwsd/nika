@@ -1,8 +1,8 @@
 # Building and packaging the nika app
 
-Status: 0.2.0 is released. On macOS the Homebrew formula in `qmpwwsd/homebrew-tap` builds `nika.app` from source
-(see Homebrew formula); on Linux the `.deb` and the AppImage are attached to the GitHub release (see Release build).
-You can still build from source as described below.
+Status: released ([GitHub releases](https://github.com/qmpwwsd/nika/releases)). On macOS the Homebrew formula in
+`qmpwwsd/homebrew-tap` builds `nika.app` from source (see Homebrew formula); on Linux the `.deb` and the AppImage are
+attached to each GitHub release (see Release build). You can still build from source as described below.
 
 Decision record: [ADR 0009](adr/0009-packaging.md). Shell facts: [architecture](architecture.md). Threats:
 [security](security.md).
@@ -218,19 +218,20 @@ publishes a release, never creates or moves a tag and never touches the tap. `te
 
 Steps 2 to 4 each need the owner's approval.
 
-## Homebrew formula (0.2.0)
+## Homebrew formula
 
-Lives in the separate repo `qmpwwsd/homebrew-tap` as `Formula/nika.rb`; this copy matches it. `sha256` is the one of
-the tag's tarball (`https://github.com/qmpwwsd/nika/archive/refs/tags/v0.2.0.tar.gz`). On macOS it builds `nika.app` from source (ad hoc signed by the bundler, no Gatekeeper
-quarantine because it is built locally) and installs it in the keg; on Linux it installs the CLI only (the desktop app
-comes from the `.deb` or AppImage). The browser-tier service is unchanged from 0.1.
+Lives in the separate repo `qmpwwsd/homebrew-tap` as `Formula/nika.rb`, which is the source of truth. The copy below
+is its shape: a release changes only `url` (the new tag) and `sha256` (of that tag's tarball, which can only be
+computed once the tag exists, so this copy cannot carry it). On macOS it builds `nika.app` from source (ad hoc signed by
+the bundler, no Gatekeeper quarantine because it is built locally) and installs it in the keg; on Linux it installs the
+CLI only (the desktop app comes from the `.deb` or AppImage). The browser-tier service is unchanged from 0.1.
 
 ```ruby
 class Nika < Formula
   desc "Local dashboard and control panel for Claude Code agents"
   homepage "https://github.com/qmpwwsd/nika"
-  url "https://github.com/qmpwwsd/nika/archive/refs/tags/v0.2.0.tar.gz"
-  sha256 "56ea8d9603581a4f543673d3dcd7dbbb380b27b2ae48d92103ca24b1f067985a"
+  url "https://github.com/qmpwwsd/nika/archive/refs/tags/vX.Y.Z.tar.gz"
+  sha256 "<sha256 of the vX.Y.Z tarball>"
   license "MIT"
 
   depends_on "node"
