@@ -41,13 +41,10 @@ jobs:
           cargo --version
       - name: Install tauri-cli
         run: cargo install tauri-cli --version 2.12.4 --locked
-      # --verbose: the bundler prints linuxdeploy's own output only in verbose mode, and that is where an AppImage
-      # failure is explained. NO_STRIP: linuxdeploy's bundled strip fails on some system libraries ("failed to run
-      # linuxdeploy" in 0.2.0's first run); unstripped libraries only make the AppImage larger.
+      # --verbose: the bundler prints linuxdeploy's and appimagetool's own output only in verbose mode, and that is
+      # where an AppImage failure is explained (0.2.0: "Categories entry not found in desktop file").
       - name: Build the .deb and the AppImage
         working-directory: app/src-tauri
-        env:
-          NO_STRIP: "true"
         run: cargo tauri build --verbose --bundles deb,appimage
       - name: Check the .deb
         run: |

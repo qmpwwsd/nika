@@ -93,7 +93,8 @@ looks for the same file name.
 Tauri's bundler always names its own entry `<productName>.desktop` (`nika.desktop`). The `.deb` therefore also
 installs `/usr/share/applications/io.github.qmpwwsd.nika.desktop` (`bundle.linux.deb.files`), and the generated
 `nika.desktop` is marked `NoDisplay=true` so the menu shows nika once. The AppImage carries only `nika.desktop`; run it
-directly or put it on `PATH` as `nika-app`.
+directly or put it on `PATH` as `nika-app`. Both entries need a `Categories` line: `appimagetool` refuses a desktop
+file without one (`test/packaging.test.js` checks it).
 
 Verified on a local Debian 12 build (`cargo tauri build --bundles deb`, arm64): `dpkg-deb -I` shows `Depends:
 libayatana-appindicator3-1, libwebkit2gtk-4.1-0, libgtk-3-0` (the bundler adds them itself), and `dpkg-deb -c` lists
@@ -182,7 +183,7 @@ window loaded. Without a tray host the icon is simply not shown.
 `.github/workflows/release-linux.yml` builds the Linux packages. It is manual (`workflow_dispatch`), runs on Ubuntu 22.04
 with a read-only token and **produces workflow artifacts only**: it never creates a tag, a release or a release asset.
 Clean build, no caches. Steps: install the dependencies, `cargo install tauri-cli --version 2.12.4 --locked`,
-`cargo tauri build --bundles deb,appimage`, check the `.deb` with `dpkg-deb` (Depends names WebKitGTK 4.1 and
+`cargo tauri build --verbose --bundles deb,appimage` (verbose, so linuxdeploy and appimagetool errors are in the log), check the `.deb` with `dpkg-deb` (Depends names WebKitGTK 4.1 and
 AppIndicator; the package contains the desktop entry `io.github.qmpwwsd.nika.desktop` and the bundled `nika/bin/nika`),
 write `SHA256SUMS`, upload the `.deb`, the `.AppImage` and `SHA256SUMS` as the artifact `nika-linux` (kept 14 days).
 
