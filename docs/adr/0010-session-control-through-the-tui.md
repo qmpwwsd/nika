@@ -10,10 +10,13 @@ prompts and commands exist only as screen text and keys.
 
 ## Decision
 Drive the TUI through the 0.2 pane path. Read: the mirror's `capture-pane` rows go through pure parsers
-(`src/mode.js`) that turn the footer into a mode and the bottom rows into a permission prompt. Act: allow-listed keys
-through `src/keys.js` (`Escape` = Stop; `C-u`, `/exit`, `Enter` = End session; `BTab` = next mode; a digit answers a
-prompt), sequenced by `src/session-control.js`: the mode switch runs only while idle, at most 6 presses, footer re-read
-after each; End never kills. Commands: a curated built-in list plus the frontmatter of command and skill files
+(`src/mode.js`) that turn the last non-blank row into a mode and the bottom rows into a permission prompt. Act through
+`src/keys.js`: allow-listed named keys (`Escape` = Stop; `C-u`, then the literal text `/exit`, then `Enter` = End
+session; `BTab` = next mode) and, to answer a prompt, one digit sent as literal text (`send-keys -l --`), not as a named
+key. `src/session-control.js` sequences them: the mode switch runs only while idle, at most 6 presses, footer re-read
+after each. End takes a fresh capture, cancels a busy turn or an open prompt with `Escape`, and types `/exit` only when
+no prompt or dialog is left on screen, so it can never answer one; it never kills. A prompt answer needs a fresh capture
+whose prompt signature (`sig`, a hash of the prompt rows) matches the one the page showed. Commands: a curated built-in list plus the frontmatter of command and skill files
 (first 4 KB). The phrases, layouts and the Claude Code version they were checked against live in
 `docs/contracts/claude-tui.md`. Every parser fails closed: unrecognized text is `unknown` or `null`, the control hides
 or the switch stops with 409. Manual only on its positive footer marker; any unrecognized footer with `bypass` reads as
@@ -21,9 +24,10 @@ bypass.
 
 ## Alternatives
 - Headless `claude -p --input-format stream-json`: loses the TUI the owner works in and the pane mirror built on it,
-  and Claude Code documents no stdin control messages for mode switches or prompt answers. Rejected (spec non-goal).
-- Claude Agent SDK: an npm dependency (rule: zero dependencies), and nika would own the agent processes (rule 12:
-  nika never kills or owns them). Rejected.
+  and the CLI's stream-json input documents no control messages for mode switches or prompt answers. Rejected (spec
+  non-goal).
+- Claude Agent SDK: it has such controls, but it is an npm dependency (rule: zero dependencies), it runs without the
+  TUI the owner works in, and nika would own the agent processes (rule 12: nika never kills or owns them). Rejected.
 
 ## Consequences
 The parsers depend on Claude Code's TUI text. `claude-tui.md` records the checked version (2.1.319); each release
@@ -31,5 +35,6 @@ re-checks it, and a changed phrase hides the control ("Not supported with this C
 guessing. The bypass phrase is not verified yet, so the substring rule stands until 0.4. Switching passes through
 other modes (possibly Auto or Bypass), which is why it is idle-only and re-checks before every press (T23). End relies
 on Claude obeying `/exit`; if it does not, nika reports `ended: false` and leaves the pane alone. Prompt labels can hold
-folder paths: shown in the app, never logged. Pane actions keep the 0.2 eligibility check (T26); command files are
+folder paths: shown in the app, never logged. Pane actions keep the 0.2 eligibility check, and prompt answers add the
+fresh parse and signature check (T26); command files are
 agent-writable and read as frontmatter only (T22).

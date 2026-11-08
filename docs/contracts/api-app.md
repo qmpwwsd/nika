@@ -1,6 +1,6 @@
 # nika 0.2–0.3 contracts — app tier
 
-Source of truth for every builder from 0.2 on (0.3 adds session control: mode, prompt, end, commands, models; ADR
+Source of truth for every builder from 0.2 on (0.3 adds session control: mode, prompt answer, end, commands, models; ADR
 0010, TUI facts in `docs/contracts/claude-tui.md`). Routes, messages, schema fields and argv shapes below are fixed; a change
 here is a change for every phase and needs the orchestrator's sign-off. Rules: `rules/project-rules.md`; decisions:
 `docs/adr/`.
@@ -15,8 +15,8 @@ Id shapes come from `src/ids.js`:
 | `AGENT_NAME` | `^[a-z0-9][a-z0-9-]{0,39}$` |
 | `MODEL_ID` | `^(?:claude-[a-z0-9-]{3,60}\|opus\|sonnet\|haiku\|fable\|best\|opusplan)(?:\[1m\])?$` (0.3; brackets are argv only, never a shell, and contain no `#`) |
 | `MODES` | `manual acceptEdits plan auto bypassPermissions dontAsk` — a pane's mode as read from Claude's footer (`manual` = Claude's `default`); `unknown` when unreadable |
-| `MODE_TARGETS` | `manual acceptEdits plan auto` — what the mode switch accepts (`dontAsk` is not in Claude's Shift+Tab cycle; `bypassPermissions` is never a target in 0.3, spec §6.3: only panes nika launched with bypass allowed, which arrives in 0.4) |
-| `COMMAND_NAME` | `^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$` — a listed slash command or skill name, without the leading `/` |
+| `MODE_TARGETS` | `manual acceptEdits plan auto` — what the mode switch accepts (`dontAsk` is not a target; whether it is in Claude's Shift+Tab cycle is unverified, `claude-tui.md` §7; `bypassPermissions` is never a target in 0.3, spec §6.3: only panes nika launched with bypass allowed, which arrives in 0.4) |
+| `COMMAND_NAME` | `^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$` — the bare name of a listed slash command or skill (no leading `/`, before any `<plugin>:` prefix) |
 | `TMUX_SESSION` | `^[A-Za-z0-9_][A-Za-z0-9_-]{0,47}$` (never starts with `-`) |
 | `PLUGIN_NAME` | `^[A-Za-z0-9._-]{1,100}@[A-Za-z0-9._-]{1,100}$` |
 | `RC_PREFIX` | `^[a-z0-9][a-z0-9-]{0,19}$` |
@@ -44,7 +44,8 @@ Common error body: `{"error": "<code>", "message": "<short text>"}`; codes used 
 `invalid` 400, `unsupported_media` 415, `too_large` 413, `conflict` 409, `busy` 429, `tmux_unavailable` 503,
 `claude_unavailable` 503, `tmux_failed` 502 (a tmux call failed unexpectedly), `limit` 409 (maxAgents reached), `foreign` 409 (rules file not written by nika, apply without
 `overwriteForeign`), `refused` 409 (a write-safety check failed; `"code"` carries the fwrite/OS code such as `ESYMLINK`),
-and for the mode switch (0.3) `not-idle`, `mode-unknown`, `not-in-cycle`, `busy-switching`, all 409.
+and for session control (0.3) `not-idle`, `mode-unknown`, `not-in-cycle`, `busy-switching`, `no-prompt`,
+`prompt-changed`, all 409. The 0.3 codes are hyphenated, as the spec names them; the older codes keep their underscores.
 
 ## 3. Routes
 
@@ -108,24 +109,27 @@ never settings, hooks or keys), ≤ 200, sorted.
                 { "name": "config", "description": "…", "argHint": "[key=value]", "source": "builtin", "dialog": true },
                 { "name": "demo:lint", "description": "…", "argHint": "", "source": "plugin", "plugin": "demo" } ] }
 ```
-`source` ∈ `builtin user project plugin`; built-ins come first. `name` is `COMMAND_NAME` (no leading `/`; the palette
-inserts `/<name> `); `argHint` is `""` when none; `dialog: true` marks a built-in that opens a TUI dialog
-(`claude-tui.md` §4); `plugin` is set for plugin entries. Without `project`: built-ins and user entries only.
+`source` ∈ `builtin user project plugin`; built-ins come first. `name` has no leading `/` (the palette inserts
+`/<name> `): the bare name for built-in, user and project entries, `<plugin>:<name>` for plugin entries. `argHint` is
+`""` when none; `dialog: true` marks a built-in that opens a TUI dialog (`claude-tui.md` §4); `plugin` is set for
+plugin entries. Without `project`: built-in, user and plugin entries (plugins install at user level); with it, project
+entries too.
 
 | Source | Files (top-level only) | Name |
 |---|---|---|
 | builtin | none: curated list in `src/commands-builtin.js` from `claude-tui.md` §4 | as listed |
 | user | `<claude dir>/commands/*.md`, `<claude dir>/skills/*/SKILL.md` | command: file name without `.md`; skill: frontmatter `name`, else the folder name |
 | project | `<project>/.claude/commands/*.md`, `<project>/.claude/skills/*/SKILL.md` | same |
-| plugin | for each `installed_plugins.json` entry: `<installPath>/commands/*.md`, `<installPath>/skills/*/SKILL.md` | `<plugin>:<name>`, plugin = the key part before `@` |
+| plugin | per `installed_plugins.json` key, one install record: the first whose `installPath` resolves inside `<claude dir>/plugins/cache`; then `<installPath>/commands/*.md`, `<installPath>/skills/*/SKILL.md` | `<plugin>:<name>`, `<plugin>` = the key part before `@` |
 
 Reads: the first 4 KB of each file through `fsafe` (no symlinks, regular user-owned files); only the YAML frontmatter
 (between a leading `---` line and the next `---`, `key: value` scalars); keys `name`, `description`, `argument-hint`,
-`user-invocable` (`false` hides the entry); bodies are never read. `installPath` is used only when its realpath is
-inside `<claude dir>/plugins/cache`, else that plugin is skipped. Names not matching `COMMAND_NAME` and command files
-in subfolders are skipped (they still work when typed). Text through `clean()`, description ≤ 200 chars; the page
-renders with `textContent`. Bounds: ≤ 200 files per folder, ≤ 1000 entries, cached 10 s per project. A skill wins over a
-command of the same name and source. Paths are never returned (T22).
+`user-invocable` (`false` hides the entry); bodies are never read. A plugin key with no install record inside the
+cache is skipped. `COMMAND_NAME` applies to the bare name (before the `<plugin>:` prefix); names that miss it and
+command files in subfolders are skipped (they still work when typed). Text through `clean()`, description ≤ 200
+chars; the page renders with `textContent`. Same name within one source: a skill wins over a command. Across sources
+every entry is kept, each with its `source`. Bounds: ≤ 200 files per folder, ≤ 1000 entries in total (built-ins
+count), cached 10 s per project. Paths are never returned (T22).
 
 ### `GET /api/app/models`
 ```json
@@ -157,28 +161,37 @@ one capture in flight per pane (others wait for it), `ETag` = hash of the rows; 
 { "cols": 120, "rows": [ [ { "t": "text", "s": { "b": true, "fg": 4, "bg": null, "u": false, "i": false, "d": false } } ] ],
   "cursor": { "x": 0, "y": 0, "visible": true }, "etag": "<hex>",
   "mode": "plan", "modeConfirmed": true,
-  "prompt": { "question": "Do you want to proceed?", "options": [ { "n": 1, "label": "Yes" }, { "n": 2, "label": "No" } ] } }
+  "prompt": { "question": "Do you want to proceed?", "options": [ { "n": 1, "label": "Yes" }, { "n": 2, "label": "No" } ],
+              "sig": "<16 hex>" } }
 ```
 Only SGR codes 0, 1, 2, 3, 4, 7, 22–24, 27, 30–37, 39, 40–47, 49, 90–97, 100–107 and 38/48;5;n or ;2;r;g;b survive
 (colours as 0–255 or `[r,g,b]`; reverse video adds `"r": true` to the style only while it is on); everything else (OSC, DCS, other CSI, C0/C1) is dropped server-side (T9).
 
 0.3 fields, parsed server-side from the same rows (`src/mode.js`, phrases and layouts in `claude-tui.md` §1–§2):
-- `mode` ∈ `MODES` or `unknown`, from the bottom 6 rows. `manual` only on Claude's positive marker (`manual mode`);
-  no recognized phrase → `unknown`, never `manual`; an unrecognized footer that contains `bypass` →
-  `bypassPermissions` (fail loud); a permission prompt or dialog covering the footer → `unknown`.
-- `modeConfirmed` (boolean): `false` when the footer reads `unknown` and nika started the pane, so `mode` is the launch
-  mode nika recorded for it (`started` entry, §9: the `--permission-mode` passed, `manual` when none); `true` otherwise.
-- `prompt`: `{ "question", "options": [ { "n", "label" } ] }` when the bottom rows hold Claude's permission prompt (a
-  question line ending in `?` directly above option 1, options numbered from 1 without gaps, wrapped rows joined with
-  one space), else `null`. Question and labels pass through `clean()`; question ≤ 200 chars, labels ≤ 80 chars. Unknown layouts (such as the
-  unnumbered folder-trust dialog) give `null`, so no buttons. A digit answers without Enter; the page sends it through
-  the keys route. Labels can hold the user's folder paths: shown in the app only, never logged.
+- `mode` ∈ `MODES` or `unknown`, read from the last non-blank row only (any number of trailing blank rows are
+  skipped; Claude draws the mode line there). `manual` only on Claude's positive marker (`manual mode`); no recognized
+  phrase → `unknown`, never `manual`; an unrecognized footer that contains `bypass` → `bypassPermissions` (fail loud);
+  a last row starting with `/`, optionally after `❯` (the slash-command menu), → `unknown`; a permission prompt or
+  dialog covering the footer → `unknown`.
+- `modeConfirmed` (boolean): `mode` is the footer reading, except that for a pane nika started whose footer reads
+  `unknown`, `mode` is the recorded launch mode (`started` entry, §9: the `--permission-mode` passed, `manual` when
+  none) and `modeConfirmed` is `false`; otherwise `true`. The switcher is disabled while `mode` is `unknown` or
+  `modeConfirmed` is `false` (the mode route would answer 409).
+- `prompt`: `{ "question", "options": [ { "n", "label" } ], "sig" }` when Claude's permission prompt is on screen,
+  else `null`. Layout (`claude-tui.md` §2), all within the last 15 non-blank rows: the closing hint row starting with
+  `Esc to cancel` is the last non-blank row; the options sit directly above it, at least 2, numbered `1..k` without gaps
+  (wrapped rows without a number join the label with one space); the question sits directly above option 1 and ends in
+  `?`. Question and labels pass through `clean()`; question ≤ 200 chars, labels ≤ 80 chars. Unknown layouts (such as
+  the unnumbered folder-trust dialog) give `null`, so no buttons. `sig` = the first 16 hex chars of sha256 over the
+  text of the last 15 non-blank rows (row texts joined with `\n`), computed in `src/api-app.js` (not in `src/mode.js`);
+  the answer route checks it. Labels can hold the user's folder paths: shown in the app only, never logged.
 
 ### `GET /api/app/modes`
 `200 { "modes": { "%3": { "mode": "plan", "confirmed": true } } }` — one entry per eligible pane (same rule as
-capture), keyed by `PANE_ID`; `mode` and `confirmed` as capture's `mode` and `modeConfirmed`. Reads go through the
-mirror's capture cache (250 ms per pane, one capture in flight per pane), at most 4 captures at once; a pane whose
-capture fails is left out. The dashboard polls it on the app tier only; `/api/agents` (both tiers) gains no mode.
+capture), keyed by `PANE_ID`; `mode` and `confirmed` as capture's `mode` and `modeConfirmed` (the key stays
+`confirmed`). Reads go through the mirror's capture cache (250 ms per pane, one capture in flight per pane), at most 4
+captures at once; a pane whose capture fails is left out. The app-tier dashboard polls it every 3 s. This route is the
+"app-tier snapshot" mode of spec §6.1: `/api/agents`, shared by both tiers, stays unchanged and gains no mode.
 
 ### `POST /api/app/pane/:id/keys` (body ≤ 20 KB)
 ```json
@@ -196,35 +209,55 @@ window is this route with `{ "keys": [ "Escape" ] }` (ends the turn; the session
 ```json
 { "target": "plan" }
 ```
-`target` ∈ `MODE_TARGETS`; anything else (`bypassPermissions`, `dontAsk`, `default`, missing) → `400 invalid`. Same
-pane rule as capture → 404. Idle = the registry state of the live session on that pane is `idle` (a pane with no live
-session is never idle) and the fresh capture has no `prompt`; checked before every press. Steps: read the mode from the
-footer; `unknown` → 409 `mode-unknown` with no press (an unreadable footer can mean a dialog is open, and the recorded
-launch mode is never used to press blind); equal to `target` → done; else press `BTab` (through the keys path, so
-presses count toward its 20 requests/s per pane), re-read the footer every 300 ms for up to 1.8 s until the mode
-changes, repeat; at most 6 presses. The cycle may pass through `bypassPermissions` on the way when Claude's cycle holds
-it (a session the user launched with bypass allowed); nika never targets it (rule 12).
+Success: `200 { "mode": "plan", "presses": 2 }`. Checks and steps, in this order:
 
-| Status | Body | When |
-|---|---|---|
-| 200 | `{ "mode": "plan", "presses": 2 }` | target reached (`presses` 0 when it already was) |
-| 400 | `invalid` | bad `target` |
-| 404 | `not_found` | ineligible pane |
-| 409 | `not-idle` | busy or a permission prompt open, before the first press or between presses |
-| 409 | `mode-unknown` | footer unrecognized at the start, or no change within 1.8 s of a press |
-| 409 | `not-in-cycle` | back at the start mode without the target, or 6 presses used |
-| 409 | `busy-switching` | a switch is already running on this pane (one per pane) |
-| 404 / 429 / 5xx | the keys route's error body plus `"presses"` | a `BTab` send failed (pane gone, rate limit, tmux unavailable or erroring); the switch stops |
+1. `target` ∉ `MODE_TARGETS` (`bypassPermissions`, `dontAsk`, `default`, missing, …) → `400 invalid`.
+2. Ineligible pane (same rule as capture) → `404 not_found`.
+3. A switch is already running on this pane (one per pane) → 409 `busy-switching`.
+4. Fresh capture. The registry state of the live session on that pane is not `idle` (a pane with no live session is
+   never idle), or a `prompt` is on screen → 409 `not-idle`, also when the mode already equals the target.
+5. Footer `unknown` → 409 `mode-unknown`, no press (an unreadable footer can mean a dialog is open; the recorded launch
+   mode is never used to press blind).
+6. Mode equals `target` → `200 { "mode", "presses": 0 }`.
+7. Loop: press `BTab` through the keys path (presses count toward its 20 requests/s per pane); a failed send → that
+   send's status and body plus `"presses"`. Re-read the footer every 300 ms for up to 1.8 s until the mode differs
+   from the pre-press mode; an `unknown` read keeps polling; still `unknown` or unchanged at 1.8 s → 409
+   `mode-unknown`. Then: target reached → 200; back at the start mode → 409 `not-in-cycle`; 6 presses used → 409
+   `not-in-cycle`; else re-run step 4's idle check (→ 409 `not-idle`) and press again.
 
-A 409 or a failed send after some presses leaves Claude in the mode the last press reached; the page reads it from the
-next capture.
+The cycle may pass through `bypassPermissions` on the way when Claude's cycle holds it (a session the user launched
+with bypass allowed); nika never targets it (rule 12). A 409 or a failed send after some presses leaves Claude in the
+mode the last press reached; the page reads it from the next capture.
+
+### `POST /api/app/pane/:id/answer` (body ≤ 4 KB, `CAP.small`)
+```json
+{ "n": 1, "sig": "<16 hex>" }
+```
+Answers a permission prompt with a fresh parse (T26); "Esc = No" stays the keys route with `{ "keys": [ "Escape" ] }`.
+
+1. `n` not an integer 1–9, or `sig` not 16 lowercase hex chars → `400 invalid`.
+2. Ineligible pane (same rule as capture) → `404 not_found`.
+3. Fresh capture (bypassing the 250 ms cache). No `prompt` on screen → 409 `no-prompt`.
+4. The prompt's `sig` differs from the body's → 409 `prompt-changed`.
+5. `n` is not among the prompt's options → `400 invalid`.
+6. Send the digit as literal text through the keys path (`send-keys -l -- <n>`, counts toward its 20 requests/s per
+   pane; no Enter, `claude-tui.md` §2) → `200 { "answered": 1 }`; a failed send → that send's status and body.
 
 ### `POST /api/app/pane/:id/end` (body ≤ 4 KB, `CAP.small`)
-Body `{}`. Same pane rule as capture → 404. When the live session's registry state is `busy`, sends `Escape` and waits
-1 s; then `C-u`, the text `/exit`, `Enter` (`send-keys -- C-u`, `send-keys -l -- /exit`, `send-keys -- Enter`, §8).
-Then it checks the pane every 500 ms for up to 3 s. Response `200 { "ended": true }` when the pane is gone or no longer
-runs claude (`CLAUDE_COMMAND`), `200 { "ended": false }` otherwise or when a key send fails (for example 429; the
-sequence stops there). Never `kill-pane`, never a signal. The eligibility cache is reset afterwards.
+Body `{}`. Steps, in this order:
+
+1. Ineligible pane (same rule as capture) → `404 not_found`.
+2. Fresh capture. When the registry state of the live session on that pane is not `idle` or a `prompt` is on screen:
+   send `Escape` (cancel, the "No" path of a prompt), wait 1 s, capture again.
+3. A `prompt` still on screen → 409 `not-idle`, nothing typed. Footer `unknown` (a dialog may be open) → 409
+   `mode-unknown`, nothing typed. So End can never answer a prompt or a dialog.
+4. Send `C-u`, the text `/exit`, `Enter` (`send-keys -- C-u`, `send-keys -l -- /exit`, `send-keys -- Enter`, §8).
+5. Check the pane every 500 ms for up to 3 s: gone or no longer running claude (`CLAUDE_COMMAND`) →
+   `200 { "ended": true }`; else `200 { "ended": false }`.
+
+When any key send fails (for example 429) the sequence stops and the pane is checked once: gone or no longer running
+claude → `{ "ended": true }`, else `{ "ended": false }`. Never `kill-pane`, never a signal. The eligibility cache is
+reset afterwards.
 
 ### `POST /api/app/spawn` (body ≤ 80 KB)
 ```json
