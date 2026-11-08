@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Release notes: `scripts/release-check.mjs` joins the CHANGELOG's hard-wrapped lines, so a draft release no longer
+  shows a line break in the middle of each sentence (GitHub renders every newline of a release body as one). Code
+  blocks, tables, quotes and list markers are kept; `test/release.test.js` covers both directions.
+
 ## 0.2.1 — 2026-11-08
 
 No app changes. This release brings the tag in line with the 0.2.0 Linux packages and adds release automation.

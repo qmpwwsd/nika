@@ -2,8 +2,8 @@
 // Release check, run by .github/workflows/release-linux.yml on a tag push before anything is built.
 // Usage: node scripts/release-check.mjs <tag> [--root <repo>] [--notes <file>]
 // Refuses (exit 1) unless the tag is vX.Y.Z, package.json, app/src-tauri/tauri.conf.json and app/src-tauri/Cargo.toml
-// all carry X.Y.Z, and CHANGELOG.md has a non-empty "## X.Y.Z" section. That section becomes the draft release's
-// notes: written to --notes, else printed. Bad usage exits 2. Node stdlib only.
+// all carry X.Y.Z, and CHANGELOG.md has a non-empty "## X.Y.Z" section. That section, with its wrapped lines joined,
+// becomes the draft release's notes: written to --notes, else printed. Bad usage exits 2. Node stdlib only.
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -41,7 +41,39 @@ export function changelogSection(text, version) {
   return lines.slice(start + 1, end).join('\n').trim();
 }
 
-/** Throws with a readable reason unless the tag can be released; returns the release notes. */
+/**
+ * Joins hard-wrapped lines: GitHub renders every newline of a release body as a line break, while CHANGELOG.md wraps
+ * at about 120 characters. A line continues the one before unless it is blank, a list item (`- `, `* `, `+ `, `1. `),
+ * a heading, a quote, a table row or a code fence; code blocks stay verbatim. Words and blank lines are unchanged.
+ */
+export function unwrapMarkdown(text) {
+  const out = [];
+  let fence = false;
+  let joinable = false;
+  for (const line of text.split('\n')) {
+    if (/^\s*(```|~~~)/.test(line)) {
+      fence = !fence;
+      out.push(line);
+      joinable = false;
+      continue;
+    }
+    if (fence) {
+      out.push(line);
+      continue;
+    }
+    const t = line.trim();
+    const startsBlock = t === '' || /^([-*+] |\d+\. |#{1,6} |> |\|)/.test(t);
+    if (!startsBlock && joinable) {
+      out[out.length - 1] += ` ${t}`;
+      continue;
+    }
+    out.push(line);
+    joinable = t !== '' && !/^(#{1,6} |> |\|)/.test(t);
+  }
+  return out.join('\n');
+}
+
+/** Throws with a readable reason unless the tag can be released; returns the release notes (unwrapped). */
 export function releaseCheck(root, tag) {
   const version = tagVersion(tag);
   const wrong = Object.entries(versionFiles(root)).filter(([, v]) => v !== version);
@@ -51,7 +83,7 @@ export function releaseCheck(root, tag) {
   const notes = changelogSection(fs.readFileSync(path.join(root, 'CHANGELOG.md'), 'utf8'), version);
   if (notes === null) throw new Error(`CHANGELOG.md has no "## ${version}" section`);
   if (notes === '') throw new Error(`the "## ${version}" section of CHANGELOG.md is empty`);
-  return notes;
+  return unwrapMarkdown(notes);
 }
 
 function main(argv) {
