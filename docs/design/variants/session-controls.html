@@ -1,0 +1,1018 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>nika 0.3 session controls (design mock)</title>
+<style>
+/* nika 0.3 session controls mock. Tokens = public/tokens.css plus spec §2.8. No color-mix(), no :has(). */
+:root {
+  --font: system-ui, -apple-system, "Segoe UI", Cantarell, "Noto Sans", Ubuntu, sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, "DejaVu Sans Mono", "Liberation Mono", monospace;
+  --fs-cap: 0.6875rem; --fs-small: 0.75rem; --fs-body: 0.8125rem; --fs-h3: 0.875rem; --fs-h2: 0.9375rem; --fs-h1: 1.125rem;
+  --r-sm: 4px; --r-md: 6px; --r-lg: 10px; --h-ctl: 28px;
+  color-scheme: light;
+}
+.th-light {
+  color-scheme: light;
+  --bg: #f3f4f6; --bg-alt: #e8eaee; --surface: #ffffff; --surface-2: #f1f3f6; --surface-3: #e3e7ed;
+  --line: #dde1e7; --line-strong: #868e9a; --text: #16181d; --text-muted: #545b66;
+  --accent: #1d55d0; --on-accent: #ffffff; --accent-soft: #e4ecfc; --focus: #1d55d0; --accent-hover: #1c4ebb;
+  --busy: #17753a; --busy-soft: #e1f4e7; --idle: #8a5300; --idle-soft: #fcf0d8;
+  --attn: #b0125c; --attn-soft: #fce6ef; --attn-row: #fdf1f6; --ended: #5f6772; --ended-soft: #edeff2;
+  --danger: #b42318; --danger-soft: #fde9e7;
+  --elev-2: 0 8px 24px -8px rgb(16 20 28 / 28%); --elev-3: 0 24px 56px -12px rgb(16 20 28 / 38%); --scrim: rgb(16 20 28 / 45%);
+  /* §2.8 permission modes, light */
+  --m-manual: #56575c;  --m-manual-soft: #ececef;  --m-manual-line: #86878d;
+  --m-edits: #5137c4;   --m-edits-soft: #eeebfd;   --m-edits-line: #7a64e0;
+  --m-plan: #0b6868;    --m-plan-soft: #ddf2f1;    --m-plan-line: #2a8e8e;
+  --m-auto: #625a00;    --m-auto-soft: #f6f2c0;    --m-auto-line: #968a00;
+  --m-bypass: #b3261e;  --m-bypass-soft: #fde7e5;  --m-bypass-line: #c0261c; --m-bypass-on: #ffffff; --m-bypass-stripe: #16181d;
+  --m-dontask: #8a2597; --m-dontask-soft: #f7e4f8; --m-dontask-line: #a843b3;
+  --m-unknown: #545b66; --m-unknown-soft: #ffffff; --m-unknown-line: #7c8490;
+  --shell: #16181d; --on-shell: #ffffff;
+}
+.th-dark {
+  color-scheme: dark;
+  --bg: #16181c; --bg-alt: #1c1f24; --surface: #202328; --surface-2: #272b31; --surface-3: #30353c;
+  --line: #30353d; --line-strong: #6f7783; --text: #e9ebef; --text-muted: #a4abb6;
+  --accent: #7fa8ff; --on-accent: #0b1a3a; --accent-soft: #1d2b4a; --focus: #7fa8ff; --accent-hover: #8cb0fd;
+  --busy: #5fd08a; --busy-soft: #173523; --idle: #f0b45a; --idle-soft: #3a2b12;
+  --attn: #ff80b5; --attn-soft: #41182c; --attn-row: #321d2a; --ended: #9aa3ae; --ended-soft: #2a3038;
+  --danger: #ff8a80; --danger-soft: #431b18;
+  --elev-2: 0 8px 24px -8px rgb(0 0 0 / 60%); --elev-3: 0 24px 56px -12px rgb(0 0 0 / 70%); --scrim: rgb(0 0 0 / 60%);
+  /* §2.8 permission modes, dark */
+  --m-manual: #c4c5ca;  --m-manual-soft: #2d2e33;  --m-manual-line: #8c8d93;
+  --m-edits: #b9aeff;   --m-edits-soft: #29244d;   --m-edits-line: #8e7ff0;
+  --m-plan: #72cfcf;    --m-plan-soft: #13302f;    --m-plan-line: #3aa2a2;
+  --m-auto: #e9d84c;    --m-auto-soft: #33310f;    --m-auto-line: #bcae22;
+  --m-bypass: #ff6b61;  --m-bypass-soft: #46191a;  --m-bypass-line: #ff5a4f; --m-bypass-on: #2a0605; --m-bypass-stripe: #ffd8d4;
+  --m-dontask: #eaa0ea; --m-dontask-soft: #3a1d3d; --m-dontask-line: #c46fc8;
+  --m-unknown: #a4abb6; --m-unknown-soft: #202328; --m-unknown-line: #6f7783;
+  --shell: #e9ebef; --on-shell: #16181d;
+}
+/* one class per mode: sets the "current mode" trio used by tags, frames, segments and the message box edge */
+.m-manual  { --mc: var(--m-manual);  --mc-soft: var(--m-manual-soft);  --mc-line: var(--m-manual-line); }
+.m-edits   { --mc: var(--m-edits);   --mc-soft: var(--m-edits-soft);   --mc-line: var(--m-edits-line); }
+.m-plan    { --mc: var(--m-plan);    --mc-soft: var(--m-plan-soft);    --mc-line: var(--m-plan-line); }
+.m-auto    { --mc: var(--m-auto);    --mc-soft: var(--m-auto-soft);    --mc-line: var(--m-auto-line); }
+.m-bypass  { --mc: var(--m-bypass);  --mc-soft: var(--m-bypass-soft);  --mc-line: var(--m-bypass-line); }
+.m-dontask { --mc: var(--m-dontask); --mc-soft: var(--m-dontask-soft); --mc-line: var(--m-dontask-line); }
+.m-unknown { --mc: var(--m-unknown); --mc-soft: var(--m-unknown-soft); --mc-line: var(--m-unknown-line); }
+
+/* ---------- page (mock chrome, not part of the design) ---------- */
+*, *::before, *::after { box-sizing: border-box; }
+html, body { margin: 0; }
+body { background: #d9dce2; color: #16181d; font: var(--fs-body)/1.45 var(--font); -webkit-font-smoothing: antialiased; }
+.sprite { position: absolute; width: 0; height: 0; overflow: hidden; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+.doc { padding: 28px 24px 12px; max-width: 1480px; margin: 0 auto; }
+.doc h1 { margin: 0 0 6px; font-size: 1.5rem; font-weight: 650; letter-spacing: -0.01em; }
+.doc p { margin: 0 0 12px; max-width: 76ch; color: #3d434c; }
+.doc nav { display: flex; flex-wrap: wrap; gap: 6px 16px; }
+.doc nav a, section a { color: #1d55d0; }
+main { max-width: 1480px; margin: 0 auto; padding: 0 24px 64px; }
+section { padding-top: 28px; }
+section > h2 { margin: 0 0 4px; font-size: 1.125rem; font-weight: 650; }
+section > .intro { margin: 0 0 12px; max-width: 80ch; color: #3d434c; }
+.pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.stack { display: grid; gap: 12px; }
+@media (max-width: 1100px) { .pair { grid-template-columns: minmax(0, 1fr); } }
+.th { background: var(--bg); color: var(--text); padding: 12px 14px 16px; border-radius: var(--r-lg); min-width: 0; }
+.th-l { margin: 0 0 10px; font-size: var(--fs-small); font-weight: 600; color: var(--text-muted); }
+.th-l.sub { margin-top: 16px; }
+.th code { font-family: var(--mono); font-size: 0.92em; }
+.muted { color: var(--text-muted); }
+.hint { margin: 6px 0 0; font-size: var(--fs-small); color: var(--text-muted); }
+
+/* ---------- shared base (as public/session.css) ---------- */
+button, input, select, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; }
+.mono, code, kbd { font-family: var(--mono); }
+.th :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.sp { flex: 1; }
+.ic { width: 14px; height: 14px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+kbd { font-size: var(--fs-cap); padding: 0 4px; border: 1px solid var(--line-strong); border-radius: var(--r-sm); background: var(--surface); color: var(--text); }
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: var(--h-ctl); padding: 0 10px; border: 1px solid var(--line-strong); border-radius: var(--r-md); background: var(--surface); color: var(--text); font-weight: 500; text-decoration: none; white-space: nowrap; }
+.btn:hover { background: var(--surface-2); }
+.btn[aria-disabled="true"] { opacity: 0.5; cursor: not-allowed; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
+.btn.icon { min-width: var(--h-ctl); padding: 0; }
+.btn.ghost { border-color: transparent; background: transparent; }
+.btn.danger { color: var(--danger); border-color: var(--danger); }
+.btn.danger:hover { background: var(--danger-soft); }
+.btn.danger.fill { background: var(--danger); color: var(--surface); font-weight: 600; }
+.model { padding: 1px 8px; border-radius: var(--r-sm); background: var(--surface-2); color: var(--text); font-weight: 600; font-size: var(--fs-small); }
+.key { min-height: 26px; min-width: 32px; padding: 0 8px; border: 1px solid var(--line-strong); border-bottom-width: 2px; border-radius: var(--r-sm); background: var(--surface); font: 600 var(--fs-small)/1 var(--mono); color: var(--text); }
+.st { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; color: var(--st-c); font-weight: 600; font-size: var(--fs-small); }
+.st[data-s="busy"] { --st-c: var(--busy); --st-bg: var(--busy-soft); }
+.st[data-s="idle"] { --st-c: var(--idle); --st-bg: var(--idle-soft); }
+.st[data-s="attn"] { --st-c: var(--attn); --st-bg: var(--attn-soft); }
+.st[data-s="ended"] { --st-c: var(--ended); --st-bg: var(--ended-soft); }
+.st.pill { padding: 2px 10px 2px 8px; border-radius: 999px; background: var(--st-bg); }
+.st-g { position: relative; flex: none; width: 10px; height: 10px; }
+.st[data-s="busy"] .st-g { border-radius: 50%; background: var(--st-c); }
+.st[data-s="idle"] .st-g { border-radius: 50%; border: 2px solid var(--st-c); }
+.st[data-s="attn"] .st-g { width: 9px; height: 9px; margin: 0 0.5px; transform: rotate(45deg); background: var(--st-c); }
+.st[data-s="ended"] .st-g { width: 8px; height: 8px; margin: 1px; border-radius: 1px; background: var(--st-c); opacity: 0.85; }
+.spin { flex: none; width: 12px; height: 12px; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; animation: spin 0.8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spin { animation: none; border-right-color: currentColor; border-style: dotted; } }
+
+/* ========== §2.8 mode tag ========== */
+.mode {
+  display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 8px 0 6px;
+  border: 1px solid var(--mc-line); border-radius: var(--r-sm); background: var(--mc-soft); color: var(--mc);
+  font-size: var(--fs-small); font-weight: 600; white-space: nowrap; vertical-align: middle;
+}
+.mode .mnote { font-weight: 400; padding-left: 5px; margin-left: 1px; border-left: 1px dashed var(--mc-line); }
+.mode[data-confirmed="false"] { border-style: dashed; background: transparent; }
+.mode.m-unknown { border-style: dashed; background: transparent; }
+.mode.m-bypass { background: var(--m-bypass); border-color: var(--m-bypass); color: var(--m-bypass-on); }
+.mode.m-bypass .mnote { border-left-color: var(--m-bypass-on); }
+.mode.m-bypass[data-confirmed="false"] { border-style: solid; } /* bypass never looks weaker */
+.mode.icon-only { padding: 0 4px; gap: 0; }
+
+/* ========== §9.1 window frame and message box edge ========== */
+.win { position: relative; background: var(--bg); border: 1px solid var(--line); border-radius: var(--r-md); overflow: hidden; }
+.win > .frame { height: 3px; background: var(--mc-line); }
+.win[data-confirmed="false"] > .frame, .win.m-unknown > .frame { background: repeating-linear-gradient(90deg, var(--mc-line) 0 10px, transparent 10px 16px); }
+.win.m-bypass > .frame { background: repeating-linear-gradient(135deg, var(--m-bypass-line) 0 6px, var(--m-bypass-stripe) 6px 10px); }
+.inbox { display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 5px 6px 5px 10px; border: 1px solid var(--line-strong); border-radius: var(--r-md); background: var(--surface); box-shadow: inset 3px 0 0 var(--mc-line); }
+.inbox .prompt { font: 700 var(--fs-small)/20px var(--mono); color: var(--text-muted); }
+.inbox .field { flex: 1; min-width: 0; font: var(--fs-small)/20px var(--mono); }
+.inbox .ph { color: var(--text-muted); }
+.inbox .caret { display: inline-block; width: 1px; height: 14px; margin-left: 1px; vertical-align: -2px; background: var(--text); }
+.inbox[data-palette="open"] { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--mc-line), 0 0 0 1px var(--accent); }
+
+/* mode cards */
+.minis { display: grid; grid-template-columns: repeat(auto-fill, minmax(196px, 1fr)); gap: 12px; }
+.mini { margin: 0; display: flex; flex-direction: column; }
+.mini-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; padding: 8px 10px; background: var(--surface); border-bottom: 1px solid var(--line); }
+.mini-name { font-weight: 600; white-space: nowrap; }
+.mini-term { padding: 6px 10px; background: #16181d; font: var(--fs-cap)/1.4 var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mini-inbox { margin: 8px 10px; min-height: 32px; }
+.mini figcaption { padding: 0 10px 10px; font-size: var(--fs-small); color: var(--text-muted); }
+.mini figcaption b { color: var(--text); }
+
+/* tag sheet */
+.sheet { width: 100%; border-collapse: collapse; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-md); }
+.sheet th, .sheet td { text-align: left; padding: 7px 10px; border-top: 1px solid var(--line); font-size: var(--fs-small); }
+.sheet thead th { border-top: 0; color: var(--text-muted); font-weight: 600; }
+.sheet tbody th { font-weight: 600; }
+
+/* ========== §9.2 session window ========== */
+.win.full { border-radius: var(--r-lg); box-shadow: var(--elev-2); }
+.bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; min-height: 48px; padding: 6px 16px; background: var(--surface); border-bottom: 1px solid var(--line); }
+.bar .title { font-size: var(--fs-h1); font-weight: 600; }
+.crumb { display: inline-flex; align-items: center; gap: 4px; min-height: 24px; color: var(--accent); }
+.meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; color: var(--text-muted); font-size: var(--fs-small); }
+.meta .mono { color: var(--text); }
+.term-head { display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 4px 8px 4px 14px; background: var(--surface); border-bottom: 1px solid var(--line); }
+.live { display: inline-flex; gap: 6px; align-items: center; font-size: var(--fs-small); color: var(--text-muted); }
+.live::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--busy); }
+.seg { display: inline-flex; border: 1px solid var(--line-strong); border-radius: var(--r-md); overflow: hidden; }
+.seg button { min-height: 24px; padding: 0 8px; border: 0; background: var(--surface); font-size: var(--fs-small); }
+.seg button[aria-pressed="true"] { background: var(--text); color: var(--surface); }
+.onoff { font-size: var(--fs-cap); font-weight: 700; padding: 0 5px; border-radius: var(--r-sm); border: 1px solid currentColor; line-height: 14px; }
+.btn.pass[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.term { padding: 10px 12px; background: #16181d; color: #dadee5; font: var(--fs-small)/1.35 var(--mono); white-space: pre; overflow: auto; }
+.tl { display: block; min-height: 1.35em; }
+.composer { border-top: 1px solid var(--line); background: var(--surface); padding: 8px 12px 10px; display: grid; gap: 8px; }
+.composer.demo { border: 1px solid var(--line); border-radius: var(--r-md); }
+.keys { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.keys .lbl { font-size: var(--fs-small); color: var(--text-muted); margin-right: 4px; }
+.hintline { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: var(--fs-small); color: var(--text-muted); }
+.hintline .echo { margin-left: auto; color: var(--text); font-weight: 600; }
+
+/* ========== §9.3 mode switcher ========== */
+.msw { display: inline-flex; flex-wrap: wrap; gap: 2px; padding: 2px; border: 1px solid var(--line-strong); border-radius: var(--r-md); background: var(--surface); }
+.msw button { display: inline-flex; align-items: center; gap: 5px; min-height: 24px; padding: 0 8px; border: 1px solid transparent; border-radius: var(--r-sm); background: transparent; color: var(--text); font-size: var(--fs-small); font-weight: 500; }
+.msw button .ic { color: var(--text-muted); }
+.msw button:hover { background: var(--surface-2); }
+.msw button[aria-pressed="true"] { background: var(--mc-soft); border-color: var(--mc-line); color: var(--mc); font-weight: 600; }
+.msw button[aria-pressed="true"] .ic { color: inherit; }
+.msw button.m-bypass { color: var(--m-bypass); }
+.msw button.m-bypass .ic { color: inherit; }
+.msw button.m-bypass[aria-pressed="true"] { background: var(--m-bypass); border-color: var(--m-bypass); color: var(--m-bypass-on); }
+.msw button[aria-disabled="true"] { opacity: 0.45; cursor: not-allowed; }
+.msw button[aria-disabled="true"]:hover { background: transparent; }
+.msw button[aria-pressed="true"][aria-disabled="true"] { opacity: 1; }
+.msw button.out { text-decoration: line-through; text-decoration-thickness: 1px; }
+.msw button[aria-busy="true"] { border: 1px dashed var(--mc-line); color: var(--mc); font-weight: 600; }
+.msw.narrow button { padding: 0 6px; }
+.msw-why { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-small); color: var(--text-muted); }
+.msw-why .key { margin-left: 2px; }
+
+/* state sheets */
+.states { display: grid; gap: 8px; }
+.state { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-md); padding: 8px 10px 10px; }
+.state-h { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; margin-bottom: 8px; }
+.state-t { font-weight: 600; font-size: var(--fs-small); }
+.state-n { font-size: var(--fs-small); color: var(--text-muted); }
+.state-b { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; }
+.state-b.col { display: block; }
+
+/* ========== §9.4 quick actions ========== */
+.qa { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.qa .btn { min-height: 28px; font-size: var(--fs-small); }
+.qa .btn.stop.on { border-color: var(--text); font-weight: 600; }
+.qa .btn.stop.on .ic { fill: currentColor; }
+.qa .btn .ic + .mono { margin-left: -2px; }
+.popwrap { position: relative; display: inline-flex; }
+.pop { margin-top: 6px; max-width: 360px; padding: 10px 12px; display: grid; gap: 8px; background: var(--surface); border: 1px solid var(--line-strong); border-radius: var(--r-md); box-shadow: var(--elev-2); }
+.pop-l { font-weight: 600; font-size: var(--fs-small); }
+.pop select { min-height: 32px; padding: 0 8px; border: 1px solid var(--line-strong); border-radius: var(--r-md); background: var(--surface); }
+.pop-h { margin: 0; font-size: var(--fs-small); color: var(--text-muted); }
+.pop-f { display: flex; justify-content: flex-end; gap: 8px; }
+
+/* ========== §9.5 permission prompt ========== */
+.ask { padding: 10px 12px; border-radius: var(--r-md); background: var(--attn-row); box-shadow: inset 3px 0 0 var(--attn); display: grid; gap: 6px; }
+.ask-h { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; font-size: var(--fs-small); }
+.ask-what code { font-size: var(--fs-small); }
+.ask-q { margin: 0; font-weight: 600; }
+.ask-opts { display: grid; gap: 4px; }
+.pbtn { display: flex; align-items: flex-start; gap: 10px; min-height: 32px; padding: 6px 10px; text-align: left; border: 1px solid var(--line-strong); border-radius: var(--r-md); background: var(--surface); color: var(--text); overflow-wrap: anywhere; }
+.pbtn:hover { background: var(--surface-2); }
+.pbtn kbd { flex: none; min-width: 22px; text-align: center; font-weight: 700; border-bottom-width: 2px; }
+.pbtn.esc { color: var(--text-muted); border-style: dashed; }
+.ask-hint { margin: 0; font-size: var(--fs-small); color: var(--text-muted); }
+
+/* ========== §9.6 shell toggle ========== */
+.shell { display: inline-flex; align-items: center; gap: 5px; min-height: 26px; padding: 0 6px 0 5px; border: 1px solid var(--line-strong); border-radius: var(--r-sm); background: var(--surface); color: var(--text-muted); font-size: var(--fs-small); font-weight: 600; }
+.shell .onoff { color: var(--text-muted); }
+.shell[aria-pressed="true"] { background: var(--shell); border-color: var(--shell); color: var(--on-shell); }
+.shell[aria-pressed="true"] .onoff { color: var(--on-shell); }
+.inbox.shell-on { border: 2px solid var(--shell); padding: 4px 5px 4px 9px; box-shadow: none; }
+.inbox.shell-on .prompt { color: var(--shell); }
+
+/* ========== §9.7 command palette ========== */
+.pal { border: 1px solid var(--line-strong); border-radius: var(--r-md); background: var(--surface); box-shadow: var(--elev-2); overflow: hidden; }
+.pal-h { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; padding: 6px 10px; border-bottom: 1px solid var(--line); font-size: var(--fs-small); }
+.pal-k { color: var(--text-muted); display: inline-flex; gap: 4px; align-items: center; }
+.pal-k kbd + kbd { margin-left: -1px; }
+.pal-l { list-style: none; margin: 0; padding: 4px 0; max-height: 360px; overflow: auto; }
+.pal-o { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 1px 12px; padding: 6px 10px 6px 12px; border-left: 3px solid transparent; }
+.pal-o[aria-selected="true"] { background: var(--accent-soft); border-left-color: var(--accent); }
+.pal-n { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pal-a { color: var(--text-muted); font-size: var(--fs-small); }
+.pal-s { justify-self: end; align-self: start; font-size: var(--fs-cap); font-weight: 600; padding: 1px 6px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--surface-2); color: var(--text-muted); white-space: nowrap; }
+.pal-o[aria-selected="true"] .pal-s { background: var(--surface); }
+.pal-d { grid-column: 1; min-width: 0; color: var(--text-muted); font-size: var(--fs-small); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pal-o[aria-selected="true"] .pal-d { color: var(--text); }
+.pal-dlg { grid-column: 1 / -1; display: inline-flex; align-items: center; gap: 5px; font-size: var(--fs-small); color: var(--idle); font-weight: 600; }
+
+/* ========== §9.8 end dialog ========== */
+.dlgs { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
+.scrim { background: var(--scrim); padding: 24px 14px; border-radius: var(--r-md); display: grid; place-items: center; }
+.dlg { width: 100%; max-width: 440px; background: var(--surface); color: var(--text); border-radius: var(--r-lg); box-shadow: var(--elev-3); padding: 16px; display: grid; gap: 10px; }
+.dlg p { margin: 0; }
+.dlg-t { margin: 0; font-size: var(--fs-h2); font-weight: 600; }
+.dlg-n { color: var(--text-muted); font-size: var(--fs-small); }
+.dlg-alert { display: flex; gap: 8px; align-items: flex-start; padding: 8px 10px; border-radius: var(--r-md); background: var(--danger-soft); color: var(--danger); font-weight: 600; }
+.dlg-alert .ic { margin-top: 2px; }
+.dlg-f { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+
+/* ========== §9.9 dashboard rows ========== */
+.rows { list-style: none; margin: 0; padding: 0; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg); overflow: hidden; }
+.row { display: grid; align-items: center; gap: 4px 12px; min-height: 40px; padding: 4px 8px 4px 12px; grid-template-columns: 104px 128px minmax(110px, 1fr) 64px minmax(0, 2.4fr) 48px 40px 28px; border-top: 1px solid var(--line); }
+.row:first-child { border-top: 0; }
+.row[data-s="attn"] { background: var(--attn-row); box-shadow: inset 3px 0 0 var(--attn); }
+.row[data-s="attn"] .what { color: var(--attn); font-weight: 600; }
+.row[data-s="ended"] .name { color: var(--text-muted); }
+.row .name { font-weight: 600; color: var(--text); text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row .what { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row[data-s="busy"] .what, .row[data-s="ended"] .what { color: var(--text-muted); }
+.c-act, .c-pane { color: var(--text-muted); font-size: var(--fs-small); text-align: right; }
+.row.narrow { grid-template-columns: 24px 32px minmax(0, 1fr); }
+.row.narrow .st { font-size: 0; gap: 0; padding: 0; background: none; }
+.narrow-rows { max-width: 420px; }
+
+/* mock only: draws the focus ring where focus lands on open */
+.th .ring { outline: 2px solid var(--focus); outline-offset: 2px; }
+.rows-scroll { overflow-x: auto; }
+.rows-scroll .rows { min-width: 900px; }
+.term { max-width: 100%; }
+.pbtn[aria-disabled="true"] { opacity: 0.5; cursor: not-allowed; }
+.pbtn-off { display: flex; align-items: flex-start; gap: 10px; min-height: 32px; padding: 6px 10px; border: 1px dashed var(--line-strong); border-radius: var(--r-md); color: var(--text); overflow-wrap: anywhere; }
+.pbtn-off kbd { flex: none; min-width: 22px; text-align: center; color: var(--text-muted); }
+.pnote { display: block; font-size: var(--fs-small); color: var(--text-muted); }
+.echo-s { color: var(--text); font-weight: 600; margin-right: 6px; }
+.ask .problem { margin: 0; font-size: var(--fs-small); font-weight: 600; color: var(--idle); }
+
+</style>
+</head>
+<body>
+<svg class="sprite" width="0" height="0" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg">
+  <!-- permission modes (spec §2.8.3) -->
+  <symbol id="i-m-manual" viewBox="0 0 16 16"><path d="M4.5 9V5.5M7 8V3M9.5 8V3.5M12 9V5.5M4.5 9v1.5a4 4 0 0 0 4 4h.5a3 3 0 0 0 3-3V9M4.5 11 2.9 9.4"/></symbol>
+  <symbol id="i-m-edits" viewBox="0 0 16 16"><path d="M10.5 2.8l2.7 2.7L6 12.7l-3.3.6.6-3.3zM9 4.3l2.7 2.7"/></symbol>
+  <symbol id="i-m-plan" viewBox="0 0 16 16"><path d="M1.8 4.2 5.6 2.6l4.8 1.6 3.8-1.6v9.2l-3.8 1.6-4.8-1.6-3.8 1.6zM5.6 2.6v9.2M10.4 4.2v9.2"/></symbol>
+  <symbol id="i-m-auto" viewBox="0 0 16 16"><path d="M9 1.8 3.6 9h4l-.8 5.2L12.4 7h-4z"/></symbol>
+  <symbol id="i-m-bypass" viewBox="0 0 16 16"><path d="M8 1.8 13 3.6V8c0 3-2.1 5.1-5 6.4C5.1 13.1 3 11 3 8V3.6zM2.2 2.2l11.6 11.6"/></symbol>
+  <symbol id="i-m-dontask" viewBox="0 0 16 16"><rect x="3.2" y="7" width="9.6" height="7" rx="1.5"/><path d="M5.3 7V5.2a2.7 2.7 0 0 1 5.4 0V7M8 9.8v1.4"/></symbol>
+  <symbol id="i-m-unknown" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.2"/><path d="M6.2 6.3a1.9 1.9 0 1 1 2.7 1.7c-.6.3-.9.7-.9 1.3v.3M8 11.5v.2"/></symbol>
+  <!-- session controls (spec §9) -->
+  <symbol id="i-shell" viewBox="0 0 16 16"><path d="M10.8 4.6C10.3 3.7 9.3 3.2 8 3.2c-1.6 0-2.7.8-2.7 2 0 2.8 5.6 1.5 5.6 4.5 0 1.3-1.2 2.1-2.9 2.1-1.4 0-2.5-.6-3-1.5M8 1.8v12.4"/></symbol>
+  <symbol id="i-stop" viewBox="0 0 16 16"><rect x="4" y="4" width="8" height="8" rx="1.2"/></symbol>
+  <symbol id="i-compact" viewBox="0 0 16 16"><path d="M6 2.5V6H2.5M10 2.5V6h3.5M6 13.5V10H2.5M10 13.5V10h3.5"/></symbol>
+  <symbol id="i-clear" viewBox="0 0 16 16"><path d="M7 13.5h6.5M3.1 9.5l6.1-6.1a1.2 1.2 0 0 1 1.7 0l2.2 2.2a1.2 1.2 0 0 1 0 1.7L7 13.5H5L3.1 11.6a1.4 1.4 0 0 1 0-2.1zM6 6.6l3.4 3.4"/></symbol>
+  <symbol id="i-model" viewBox="0 0 16 16"><rect x="4" y="4" width="8" height="8" rx="1.5"/><path d="M6.5 1.8V4M9.5 1.8V4M6.5 12v2.2M9.5 12v2.2M1.8 6.5H4M1.8 9.5H4M12 6.5h2.2M12 9.5h2.2"/></symbol>
+  <symbol id="i-rewind" viewBox="0 0 16 16"><path d="M2.5 8a5.5 5.5 0 1 0 1.6-3.9M2.5 2.5v2.6h2.6"/></symbol>
+  <symbol id="i-end" viewBox="0 0 16 16"><path d="M8 1.8V8M4.6 4.2a5 5 0 1 0 6.8 0"/></symbol>
+  <symbol id="i-cmd" viewBox="0 0 16 16"><rect x="1.8" y="1.8" width="12.4" height="12.4" rx="2"/><path d="M9.8 4.5 6.2 11.5"/></symbol>
+  <symbol id="i-dialog" viewBox="0 0 16 16"><rect x="1.8" y="2.8" width="12.4" height="10.4" rx="1.5"/><path d="M1.8 5.8h12.4"/></symbol>
+  <symbol id="i-chev" viewBox="0 0 16 16"><path d="m4.5 6.5 3.5 3.5 3.5-3.5"/></symbol>
+  <symbol id="i-info" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.2"/><path d="M8 7.3v3.9M8 4.9v.1"/></symbol>
+  <!-- existing (public/session.html, variants) -->
+  <symbol id="i-back" viewBox="0 0 16 16"><path d="M10 3 5 8l5 5"/></symbol>
+  <symbol id="i-ext" viewBox="0 0 16 16"><path d="M9 2.5h4.5V7M13.5 2.5 7.5 8.5M12 9.5v3.5a1 1 0 0 1-1 1H3.5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1H7"/></symbol>
+  <symbol id="i-kbd" viewBox="0 0 16 16"><rect x="1.5" y="4" width="13" height="8.5" rx="1.5"/><path d="M4 7h1M7 7h1M10 7h1M4.5 10h7"/></symbol>
+  <symbol id="i-send" viewBox="0 0 16 16"><path d="M2.5 8h10M8.5 3.5 13 8l-4.5 4.5"/></symbol>
+  <symbol id="i-warn" viewBox="0 0 16 16"><path d="M8 2 1.5 13.5h13z"/><path d="M8 6.5v3.5M8 11.8v.2"/></symbol>
+</svg>
+
+<header class="doc">
+  <h1>Permission modes and session controls</h1>
+  <p>Design mock for nika 0.3, the visual half of <code>docs/design/spec.md</code> §2.8 and §9. Static: every state is drawn, nothing is wired. Light on the left, dark on the right (stacked on narrow windows). All names, paths and panes are synthetic.</p>
+  <nav aria-label="Sections"><a href="#s-modes">Modes</a><a href="#s-tags">Tags</a><a href="#s-window">Session window</a><a href="#s-switch">Mode switcher</a><a href="#s-qa">Quick actions</a><a href="#s-prompt">Permission prompt</a><a href="#s-shell">Shell</a><a href="#s-palette">Commands</a><a href="#s-end">End session</a><a href="#s-rows">Dashboard rows</a></nav>
+</header>
+<main>
+<section id="s-modes" aria-labelledby="s-modes-h"><h2 id="s-modes-h">Every mode at a glance</h2><p class="intro">Each mode changes three things at once: the 3 px frame along the top of the window, the tag in the header, and the left edge of the message box. Colour, icon and word always travel together. The dark strip in each card is Claude’s own footer, in Claude’s colour, so the app and the mirror can be compared.</p><div class="pair"><div class="th th-light"><p class="th-l">Light</p><div class="minis"><figure class="mini win m-manual" data-confirmed="true">
+  <div class="frame" aria-hidden="true"></div>
+  <div class="mini-bar"><span class="mini-name">builder-1</span><span class="mode m-manual" data-confirmed="true" title="Permission mode: Manual"><svg class="ic" aria-hidden="true"><use href="#i-m-manual"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Manual</span></span></div>
+  <div class="mini-term"><span style="color:#949494">⏸ manual mode on</span></div>
+  <div class="inbox mini-inbox"><span class="prompt" aria-hidden="true">›</span><span class="ph">Message builder-1…</span></div>
+  <figcaption><b>Manual</b>: hand, graphite. Claude asks before every tool. Claude’s footer: grey 246.</figcaption>
+</figure>
+<figure class="mini win m-edits" data-confirmed="true">
+  <div class="frame" aria-hidden="true"></div>
+  <div class="mini-bar"><span class="mini-name">builder-1</span><span class="mode m-edits" data-confirmed="true" title="Permission mode: Accept edits"><svg class="ic" aria-hidden="true"><use href="#i-m-edits"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Accept edits</span></span></div>
+  <div class="mini-term"><span style="color:#afafff">⏵⏵ accept edits on</span></div>
+  <div class="inbox mini-inbox"><span class="prompt" aria-hidden="true">›</span><span class="ph">Message builder-1…</span></div>
+  <figcaption><b>Accept edits</b>: pencil, violet. File edits run without asking. Footer: 147.</figcaption>
+</figure>
+<figure class="mini win m-plan" data-confirmed="true">
+  <div class="frame" aria-hidden="true"></div>
+  <div class="mini-bar"><span class="mini-name">builder-1</span><span class="mode m-plan" data-confirmed="true" title="Permission mode: Plan"><svg class="ic" aria-hidden="true"><use href="#i-m-plan"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Plan</span></span></div>
+  <div class="mini-term"><span style="color:#5fafaf">⏸ plan mode on</span></div>
+  <div class="inbox mini-inbox"><span class="prompt" aria-hidden="true">›</span><span class="ph">Message builder-1…</span></div>
+  <figcaption><b>Plan</b>: folded map, teal. Claude plans and changes nothing. Footer: 73.</figcaption>
+</figure>
+<figure class="mini win m-auto" data-confirmed="true">
+  <div class="frame" aria-hidden="true"></div>
+  <div class="mini-bar"><span class="mini-name">builder-1</span><span class="mode m-auto" data-confirmed="true" title="Permission mode: Auto"><svg class="ic" aria-hidden="true"><use href="#i-m-auto"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Auto</span></span></div>
+  <div class="mini-term"><span style="color:#ffd700">⏵⏵ auto mode on</span></div>
+  <div class="inbox mini-inbox"><span class="prompt" aria-hidden="true">›</span><span class="ph">Message builder-1…</span></div>
+  <figcaption><b>Auto</b>: bolt, gold. Claude decides what needs asking. Footer: 220.</figcaption>
+</figure>
+<figure class="mini win m-bypass" data-confirmed="true">
+  <div class="frame" aria-hidden="true"></div>
+  <div class="mini-bar"><span class="mini-name">builder-1</span><span class="mode m-bypass" data-confirmed="true" title="Permission mode: Bypass"><svg class="ic" aria-hidden="true"><use href="#i-m-bypass"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Bypass</span></span></div>
+  <div class="mini-term"><span style="color:#ff5f5f">(phrase not observed yet)</span></div>
+  <div class="inbox mini-inbox"><span class="prompt" aria-hidden="true">›</span><span class="ph">Message builder-1…</span></div>
+  <figcaption><b>Bypass</b>: shield with a slash, red. The only filled tag and the only striped frame. Every tool runs without asking.</figcaption>
+</figure>
+<figure class="mini win m-dontask" data-confirmed="true">
+  <div class="frame" aria-hidden="true"></div>
+  <div class="mini-bar"><span class="mini-name">builder-1</span><span class="mode m-dontask" data-confirmed="true" title="Permission mode: Don't ask"><svg class="ic" aria-hidden="true"><use href="#i-m-dontask"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Don't ask</span></span></div>
+  <div class="mini-term"><span style="color:#ff87af">⏵⏵ don't ask on</span></div>
+  <div class="inbox mini-inbox"><span class="prompt" aria-hidden="true">›</span><span class="ph">Message builder-1…</span></div>
+  <figcaption><b>Don’t ask</b>: lock, orchid. Tools that aren’t pre-approved are refused. Claude’s footer is pink 211; nika moves it off pink (§2.8).</figcaption>
+</figure>
+<figure class="mini win m-unknown" data-confirmed="true">
+  <div class="frame" aria-hidden="true"></div>
+  <div class="mini-bar"><span class="mini-name">builder-1</span><span class="mode m-unknown" data-confirmed="true" title="Permission mode: Mode ?"><svg class="ic" aria-hidden="true"><use href="#i-m-unknown"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Mode ?</span></span></div>
+  <div class="mini-term"><span style="color:#808080">(a dialog covers the footer)</span></div>
+  <div class="inbox mini-inbox"><span class="prompt" aria-hidden="true">›</span><span class="ph">Message builder-1…</span></div>
+  <figcaption><b>Mode ?</b>: question mark, grey, dashed. No footer phrase recognised, for example while a dialog is open.</figcaption>
+</figure><figure class="mini win m-plan" data-confirmed="false">
+  <div class="frame" aria-hidden="true"></div>
+  <div class="mini-bar"><span class="mini-name">builder-1</span><span class="mode m-plan" data-confirmed="false" title="Permission mode: Plan (launch setting, not confirmed by Claude yet)"><svg class="ic" aria-hidden="true"><use href="#i-m-plan"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Plan</span><span class="mnote">unconfirmed</span></span></div>
+  <div class="mini-term"><span style="color:#5fafaf">⏸ plan mode on</span></div>
+  <div class="inbox mini-inbox"><span class="prompt" aria-hidden="true">›</span><span class="ph">Message builder-1…</span></div>
+  <figcaption><b>Plan, unconfirmed</b>: nika launched it with <code>--permission-mode plan</code> and the footer hasn’t confirmed it yet. Dashed frame, hollow tag, the word “unconfirmed”.</figcaption>
+</figure></div></div><div class="th th-dark"><p class="th-l">Dark</p><div class="minis"><figure class="mini win m-manual" data-confirmed="true">
+  <div class="frame" aria-hidden="true"></div>
+  <div class="mini-bar"><span class="mini-name">builder-1</span><span class="mode m-manual" data-confirmed="true" title="Permission mode: Manual"><svg class="ic" aria-hidden="true"><use href="#i-m-manual"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Manual</span></span></div>
+  <div class="mini-term"><span style="color:#949494">⏸ manual mode on</span></div>
+  <div class="inbox mini-inbox"><span class="prompt" aria-hidden="true">›</span><span class="ph">Message builder-1…</span></div>
+  <figcaption><b>Manual</b>: hand, graphite. Claude asks before every tool. Claude’s footer: grey 246.</figcaption>
+</figure>
+<figure class="mini win m-edits" data-confirmed="true">
+  <div class="frame" aria-hidden="true"></div>
+  <div class="mini-bar"><span class="mini-name">builder-1</span><span class="mode m-edits" data-confirmed="true" title="Permission mode: Accept edits"><svg class="ic" aria-hidden="true"><use href="#i-m-edits"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Accept edits</span></span></div>
+  <div class="mini-term"><span style="color:#afafff">⏵⏵ accept edits on</span></div>
+  <div class="inbox mini-inbox"><span class="prompt" aria-hidden="true">›</span><span class="ph">Message builder-1…</span></div>
+  <figcaption><b>Accept edits</b>: pencil, violet. File edits run without asking. Footer: 147.</figcaption>
+</figure>
+<figure class="mini win m-plan" data-confirmed="true">
+  <div class="frame" aria-hidden="true"></div>
+  <div class="mini-bar"><span class="mini-name">builder-1</span><span class="mode m-plan" data-confirmed="true" title="Permission mode: Plan"><svg class="ic" aria-hidden="true"><use href="#i-m-plan"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Plan</span></span></div>
+  <div class="mini-term"><span style="color:#5fafaf">⏸ plan mode on</span></div>
+  <div class="inbox mini-inbox"><span class="prompt" aria-hidden="true">›</span><span class="ph">Message builder-1…</span></div>
+  <figcaption><b>Plan</b>: folded map, teal. Claude plans and changes nothing. Footer: 73.</figcaption>
+</figure>
+<figure class="mini win m-auto" data-confirmed="true">
+  <div class="frame" aria-hidden="true"></div>
+  <div class="mini-bar"><span class="mini-name">builder-1</span><span class="mode m-auto" data-confirmed="true" title="Permission mode: Auto"><svg class="ic" aria-hidden="true"><use href="#i-m-auto"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Auto</span></span></div>
+  <div class="mini-term"><span style="color:#ffd700">⏵⏵ auto mode on</span></div>
+  <div class="inbox mini-inbox"><span class="prompt" aria-hidden="true">›</span><span class="ph">Message builder-1…</span></div>
+  <figcaption><b>Auto</b>: bolt, gold. Claude decides what needs asking. Footer: 220.</figcaption>
+</figure>
+<figure class="mini win m-bypass" data-confirmed="true">
+  <div class="frame" aria-hidden="true"></div>
+  <div class="mini-bar"><span class="mini-name">builder-1</span><span class="mode m-bypass" data-confirmed="true" title="Permission mode: Bypass"><svg class="ic" aria-hidden="true"><use href="#i-m-bypass"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Bypass</span></span></div>
+  <div class="mini-term"><span style="color:#ff5f5f">(phrase not observed yet)</span></div>
+  <div class="inbox mini-inbox"><span class="prompt" aria-hidden="true">›</span><span class="ph">Message builder-1…</span></div>
+  <figcaption><b>Bypass</b>: shield with a slash, red. The only filled tag and the only striped frame. Every tool runs without asking.</figcaption>
+</figure>
+<figure class="mini win m-dontask" data-confirmed="true">
+  <div class="frame" aria-hidden="true"></div>
+  <div class="mini-bar"><span class="mini-name">builder-1</span><span class="mode m-dontask" data-confirmed="true" title="Permission mode: Don't ask"><svg class="ic" aria-hidden="true"><use href="#i-m-dontask"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Don't ask</span></span></div>
+  <div class="mini-term"><span style="color:#ff87af">⏵⏵ don't ask on</span></div>
+  <div class="inbox mini-inbox"><span class="prompt" aria-hidden="true">›</span><span class="ph">Message builder-1…</span></div>
+  <figcaption><b>Don’t ask</b>: lock, orchid. Tools that aren’t pre-approved are refused. Claude’s footer is pink 211; nika moves it off pink (§2.8).</figcaption>
+</figure>
+<figure class="mini win m-unknown" data-confirmed="true">
+  <div class="frame" aria-hidden="true"></div>
+  <div class="mini-bar"><span class="mini-name">builder-1</span><span class="mode m-unknown" data-confirmed="true" title="Permission mode: Mode ?"><svg class="ic" aria-hidden="true"><use href="#i-m-unknown"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Mode ?</span></span></div>
+  <div class="mini-term"><span style="color:#808080">(a dialog covers the footer)</span></div>
+  <div class="inbox mini-inbox"><span class="prompt" aria-hidden="true">›</span><span class="ph">Message builder-1…</span></div>
+  <figcaption><b>Mode ?</b>: question mark, grey, dashed. No footer phrase recognised, for example while a dialog is open.</figcaption>
+</figure><figure class="mini win m-plan" data-confirmed="false">
+  <div class="frame" aria-hidden="true"></div>
+  <div class="mini-bar"><span class="mini-name">builder-1</span><span class="mode m-plan" data-confirmed="false" title="Permission mode: Plan (launch setting, not confirmed by Claude yet)"><svg class="ic" aria-hidden="true"><use href="#i-m-plan"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Plan</span><span class="mnote">unconfirmed</span></span></div>
+  <div class="mini-term"><span style="color:#5fafaf">⏸ plan mode on</span></div>
+  <div class="inbox mini-inbox"><span class="prompt" aria-hidden="true">›</span><span class="ph">Message builder-1…</span></div>
+  <figcaption><b>Plan, unconfirmed</b>: nika launched it with <code>--permission-mode plan</code> and the footer hasn’t confirmed it yet. Dashed frame, hollow tag, the word “unconfirmed”.</figcaption>
+</figure></div></div></div></section>
+<section id="s-tags" aria-labelledby="s-tags-h"><h2 id="s-tags-h">Mode tags next to status pills</h2><p class="intro">Modes are square-cornered tags with an edge; agent status stays a round pill with a glyph. Bypass is the only filled tag. Unconfirmed tags are hollow and dashed and carry the word. Icon-only tags appear only in narrow dashboard rows, where the name stays in the accessible name and tooltip.</p><div class="pair"><div class="th th-light"><p class="th-l">Light</p><table class="sheet"><thead><tr><th scope="col">Mode</th><th scope="col">Tag</th><th scope="col">Unconfirmed</th><th scope="col">Icon only (≤ 860 px rows)</th></tr></thead><tbody><tr><th scope="row">Manual</th><td><span class="mode m-manual" data-confirmed="true" title="Permission mode: Manual"><svg class="ic" aria-hidden="true"><use href="#i-m-manual"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Manual</span></span></td><td><span class="mode m-manual" data-confirmed="false" title="Permission mode: Manual (launch setting, not confirmed by Claude yet)"><svg class="ic" aria-hidden="true"><use href="#i-m-manual"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Manual</span><span class="mnote">unconfirmed</span></span></td><td><span class="mode m-manual icon-only" data-confirmed="true" title="Permission mode: Manual"><svg class="ic" aria-hidden="true"><use href="#i-m-manual"/></svg><span class="sr-only">Permission mode: Manual</span></span></td></tr><tr><th scope="row">Accept edits</th><td><span class="mode m-edits" data-confirmed="true" title="Permission mode: Accept edits"><svg class="ic" aria-hidden="true"><use href="#i-m-edits"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Accept edits</span></span></td><td><span class="mode m-edits" data-confirmed="false" title="Permission mode: Accept edits (launch setting, not confirmed by Claude yet)"><svg class="ic" aria-hidden="true"><use href="#i-m-edits"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Accept edits</span><span class="mnote">unconfirmed</span></span></td><td><span class="mode m-edits icon-only" data-confirmed="true" title="Permission mode: Accept edits"><svg class="ic" aria-hidden="true"><use href="#i-m-edits"/></svg><span class="sr-only">Permission mode: Accept edits</span></span></td></tr><tr><th scope="row">Plan</th><td><span class="mode m-plan" data-confirmed="true" title="Permission mode: Plan"><svg class="ic" aria-hidden="true"><use href="#i-m-plan"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Plan</span></span></td><td><span class="mode m-plan" data-confirmed="false" title="Permission mode: Plan (launch setting, not confirmed by Claude yet)"><svg class="ic" aria-hidden="true"><use href="#i-m-plan"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Plan</span><span class="mnote">unconfirmed</span></span></td><td><span class="mode m-plan icon-only" data-confirmed="true" title="Permission mode: Plan"><svg class="ic" aria-hidden="true"><use href="#i-m-plan"/></svg><span class="sr-only">Permission mode: Plan</span></span></td></tr><tr><th scope="row">Auto</th><td><span class="mode m-auto" data-confirmed="true" title="Permission mode: Auto"><svg class="ic" aria-hidden="true"><use href="#i-m-auto"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Auto</span></span></td><td><span class="mode m-auto" data-confirmed="false" title="Permission mode: Auto (launch setting, not confirmed by Claude yet)"><svg class="ic" aria-hidden="true"><use href="#i-m-auto"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Auto</span><span class="mnote">unconfirmed</span></span></td><td><span class="mode m-auto icon-only" data-confirmed="true" title="Permission mode: Auto"><svg class="ic" aria-hidden="true"><use href="#i-m-auto"/></svg><span class="sr-only">Permission mode: Auto</span></span></td></tr><tr><th scope="row">Bypass</th><td><span class="mode m-bypass" data-confirmed="true" title="Permission mode: Bypass"><svg class="ic" aria-hidden="true"><use href="#i-m-bypass"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Bypass</span></span></td><td><span class="mode m-bypass" data-confirmed="false" title="Permission mode: Bypass (launch setting, not confirmed by Claude yet)"><svg class="ic" aria-hidden="true"><use href="#i-m-bypass"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Bypass</span><span class="mnote">unconfirmed</span></span></td><td><span class="mode m-bypass icon-only" data-confirmed="true" title="Permission mode: Bypass"><svg class="ic" aria-hidden="true"><use href="#i-m-bypass"/></svg><span class="sr-only">Permission mode: Bypass</span></span></td></tr><tr><th scope="row">Don't ask</th><td><span class="mode m-dontask" data-confirmed="true" title="Permission mode: Don't ask"><svg class="ic" aria-hidden="true"><use href="#i-m-dontask"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Don't ask</span></span></td><td><span class="mode m-dontask" data-confirmed="false" title="Permission mode: Don't ask (launch setting, not confirmed by Claude yet)"><svg class="ic" aria-hidden="true"><use href="#i-m-dontask"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Don't ask</span><span class="mnote">unconfirmed</span></span></td><td><span class="mode m-dontask icon-only" data-confirmed="true" title="Permission mode: Don't ask"><svg class="ic" aria-hidden="true"><use href="#i-m-dontask"/></svg><span class="sr-only">Permission mode: Don't ask</span></span></td></tr><tr><th scope="row">Mode ?</th><td><span class="mode m-unknown" data-confirmed="true" title="Permission mode: Mode ?"><svg class="ic" aria-hidden="true"><use href="#i-m-unknown"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Mode ?</span></span></td><td><span class="muted">does not apply</span></td><td><span class="mode m-unknown icon-only" data-confirmed="true" title="Permission mode: Mode ?"><svg class="ic" aria-hidden="true"><use href="#i-m-unknown"/></svg><span class="sr-only">Permission mode: Mode ?</span></span></td></tr>
+<tr><th scope="row">Status pill, for comparison</th><td><span class="st pill" data-s="idle"><span class="st-g" aria-hidden="true"></span>Waiting</span></td><td><span class="st pill" data-s="attn"><span class="st-g" aria-hidden="true"></span>Needs you</span></td><td><span class="st pill" data-s="busy"><span class="st-g" aria-hidden="true"></span>Working</span></td></tr></tbody></table></div><div class="th th-dark"><p class="th-l">Dark</p><table class="sheet"><thead><tr><th scope="col">Mode</th><th scope="col">Tag</th><th scope="col">Unconfirmed</th><th scope="col">Icon only (≤ 860 px rows)</th></tr></thead><tbody><tr><th scope="row">Manual</th><td><span class="mode m-manual" data-confirmed="true" title="Permission mode: Manual"><svg class="ic" aria-hidden="true"><use href="#i-m-manual"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Manual</span></span></td><td><span class="mode m-manual" data-confirmed="false" title="Permission mode: Manual (launch setting, not confirmed by Claude yet)"><svg class="ic" aria-hidden="true"><use href="#i-m-manual"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Manual</span><span class="mnote">unconfirmed</span></span></td><td><span class="mode m-manual icon-only" data-confirmed="true" title="Permission mode: Manual"><svg class="ic" aria-hidden="true"><use href="#i-m-manual"/></svg><span class="sr-only">Permission mode: Manual</span></span></td></tr><tr><th scope="row">Accept edits</th><td><span class="mode m-edits" data-confirmed="true" title="Permission mode: Accept edits"><svg class="ic" aria-hidden="true"><use href="#i-m-edits"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Accept edits</span></span></td><td><span class="mode m-edits" data-confirmed="false" title="Permission mode: Accept edits (launch setting, not confirmed by Claude yet)"><svg class="ic" aria-hidden="true"><use href="#i-m-edits"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Accept edits</span><span class="mnote">unconfirmed</span></span></td><td><span class="mode m-edits icon-only" data-confirmed="true" title="Permission mode: Accept edits"><svg class="ic" aria-hidden="true"><use href="#i-m-edits"/></svg><span class="sr-only">Permission mode: Accept edits</span></span></td></tr><tr><th scope="row">Plan</th><td><span class="mode m-plan" data-confirmed="true" title="Permission mode: Plan"><svg class="ic" aria-hidden="true"><use href="#i-m-plan"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Plan</span></span></td><td><span class="mode m-plan" data-confirmed="false" title="Permission mode: Plan (launch setting, not confirmed by Claude yet)"><svg class="ic" aria-hidden="true"><use href="#i-m-plan"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Plan</span><span class="mnote">unconfirmed</span></span></td><td><span class="mode m-plan icon-only" data-confirmed="true" title="Permission mode: Plan"><svg class="ic" aria-hidden="true"><use href="#i-m-plan"/></svg><span class="sr-only">Permission mode: Plan</span></span></td></tr><tr><th scope="row">Auto</th><td><span class="mode m-auto" data-confirmed="true" title="Permission mode: Auto"><svg class="ic" aria-hidden="true"><use href="#i-m-auto"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Auto</span></span></td><td><span class="mode m-auto" data-confirmed="false" title="Permission mode: Auto (launch setting, not confirmed by Claude yet)"><svg class="ic" aria-hidden="true"><use href="#i-m-auto"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Auto</span><span class="mnote">unconfirmed</span></span></td><td><span class="mode m-auto icon-only" data-confirmed="true" title="Permission mode: Auto"><svg class="ic" aria-hidden="true"><use href="#i-m-auto"/></svg><span class="sr-only">Permission mode: Auto</span></span></td></tr><tr><th scope="row">Bypass</th><td><span class="mode m-bypass" data-confirmed="true" title="Permission mode: Bypass"><svg class="ic" aria-hidden="true"><use href="#i-m-bypass"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Bypass</span></span></td><td><span class="mode m-bypass" data-confirmed="false" title="Permission mode: Bypass (launch setting, not confirmed by Claude yet)"><svg class="ic" aria-hidden="true"><use href="#i-m-bypass"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Bypass</span><span class="mnote">unconfirmed</span></span></td><td><span class="mode m-bypass icon-only" data-confirmed="true" title="Permission mode: Bypass"><svg class="ic" aria-hidden="true"><use href="#i-m-bypass"/></svg><span class="sr-only">Permission mode: Bypass</span></span></td></tr><tr><th scope="row">Don't ask</th><td><span class="mode m-dontask" data-confirmed="true" title="Permission mode: Don't ask"><svg class="ic" aria-hidden="true"><use href="#i-m-dontask"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Don't ask</span></span></td><td><span class="mode m-dontask" data-confirmed="false" title="Permission mode: Don't ask (launch setting, not confirmed by Claude yet)"><svg class="ic" aria-hidden="true"><use href="#i-m-dontask"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Don't ask</span><span class="mnote">unconfirmed</span></span></td><td><span class="mode m-dontask icon-only" data-confirmed="true" title="Permission mode: Don't ask"><svg class="ic" aria-hidden="true"><use href="#i-m-dontask"/></svg><span class="sr-only">Permission mode: Don't ask</span></span></td></tr><tr><th scope="row">Mode ?</th><td><span class="mode m-unknown" data-confirmed="true" title="Permission mode: Mode ?"><svg class="ic" aria-hidden="true"><use href="#i-m-unknown"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Mode ?</span></span></td><td><span class="muted">does not apply</span></td><td><span class="mode m-unknown icon-only" data-confirmed="true" title="Permission mode: Mode ?"><svg class="ic" aria-hidden="true"><use href="#i-m-unknown"/></svg><span class="sr-only">Permission mode: Mode ?</span></span></td></tr>
+<tr><th scope="row">Status pill, for comparison</th><td><span class="st pill" data-s="idle"><span class="st-g" aria-hidden="true"></span>Waiting</span></td><td><span class="st pill" data-s="attn"><span class="st-g" aria-hidden="true"></span>Needs you</span></td><td><span class="st pill" data-s="busy"><span class="st-g" aria-hidden="true"></span>Working</span></td></tr></tbody></table></div></div></section>
+<section id="s-window" aria-labelledby="s-window-h"><h2 id="s-window-h">Session window</h2><p class="intro">Plan mode, Claude waiting. Header: name, status, mode tag, model, pane, branch, then the mode switcher. Quick actions sit right above the message box. The transcript column is left out to save space.</p><div class="stack"><div class="th th-light"><p class="th-l">Light</p><div class="win full m-plan" data-confirmed="true">
+  <div class="frame" aria-hidden="true"></div>
+  <header class="bar">
+    <a class="crumb" href="#s-window"><svg class="ic" aria-hidden="true"><use href="#i-back"/></svg>demo-api</a>
+    <span class="title">builder-1</span>
+    <span class="st pill" data-s="idle"><span class="st-g" aria-hidden="true"></span>Waiting</span>
+    <span class="mode m-plan" data-confirmed="true" title="Permission mode: Plan"><svg class="ic" aria-hidden="true"><use href="#i-m-plan"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Plan</span></span>
+    <span class="meta"><span class="model">sonnet</span><span>pane <span class="mono">%12</span></span><span class="mono">feat/cursor-pages</span></span>
+    <span class="sp"></span>
+    <div class="msw" role="toolbar" aria-label="Permission mode"><button type="button" class="m-manual" aria-pressed="false" tabindex="-1" title="Switch to Manual"><svg class="ic" aria-hidden="true"><use href="#i-m-manual"/></svg><span>Manual</span></button><button type="button" class="m-edits" aria-pressed="false" tabindex="-1" title="Switch to Accept edits"><svg class="ic" aria-hidden="true"><use href="#i-m-edits"/></svg><span>Accept edits</span></button><button type="button" class="m-plan" aria-pressed="true" tabindex="0" title="Switch to Plan"><svg class="ic" aria-hidden="true"><use href="#i-m-plan"/></svg><span>Plan</span></button><button type="button" class="m-auto" aria-pressed="false" tabindex="-1" title="Switch to Auto"><svg class="ic" aria-hidden="true"><use href="#i-m-auto"/></svg><span>Auto</span></button></div>
+    <a class="btn" href="#s-window"><svg class="ic" aria-hidden="true"><use href="#i-ext"/></svg>Open in claude.ai</a>
+  </header>
+  <div class="term-head"><span class="live">Live · 92 × 30</span><span class="sp"></span><span class="seg"><button type="button" aria-pressed="true">Dark</button><button type="button" aria-pressed="false">Light</button></span><button type="button" class="btn pass" aria-pressed="false"><svg class="ic" aria-hidden="true"><use href="#i-kbd"/></svg>Type into pane<span class="onoff" aria-hidden="true">off</span><kbd>Ctrl+]</kbd></button></div>
+  <div class="term"><span class="tl" style="color:#dadee5">⏺ Read src/collect/agents.js (212 lines)</span><span class="tl" style="color:#dadee5">⏺ Plan: add a cursor to listAgents</span><span class="tl">  1. Accept ?after=&lt;cursor&gt; on the route</span><span class="tl">  2. Return nextCursor with each page</span><span class="tl">  3. Tests for an empty page and the last page</span><span class="tl"></span><span class="tl" style="color:#868e9b">╭──────────────────────────────────────────────────────────╮</span><span class="tl" style="color:#868e9b">│ &gt;                                                        │</span><span class="tl" style="color:#868e9b">╰──────────────────────────────────────────────────────────╯</span><span class="tl" style="color:#5fafaf">  ⏸ plan mode on (shift+tab to cycle)</span></div>
+  <div class="composer">
+    <div class="qa" role="toolbar" aria-label="Session actions">
+  <button type="button" class="btn stop" aria-disabled="true" tabindex="0" title="Nothing to stop: Claude is waiting"><svg class="ic" aria-hidden="true"><use href="#i-stop"/></svg>Stop</button>
+  <button type="button" class="btn" tabindex="-1" title="Sends /compact: summarises the conversation to free context"><svg class="ic" aria-hidden="true"><use href="#i-compact"/></svg>Compact</button>
+  <button type="button" class="btn" tabindex="-1" title="Sends /clear after you confirm"><svg class="ic" aria-hidden="true"><use href="#i-clear"/></svg>Clear…</button>
+  <span class="popwrap"><button type="button" class="btn" tabindex="-1" aria-expanded="false" aria-controls="model-pop"><svg class="ic" aria-hidden="true"><use href="#i-model"/></svg>Model: <span class="mono">sonnet</span><svg class="ic" aria-hidden="true"><use href="#i-chev"/></svg></button></span>
+  <button type="button" class="btn" tabindex="-1" title="Esc Esc on an empty prompt: opens Claude’s rewind menu in the terminal"><svg class="ic" aria-hidden="true"><use href="#i-rewind"/></svg>Rewind</button>
+  <span class="sp"></span>
+  <button type="button" class="btn danger" tabindex="-1" title="Claude exits and the pane closes"><svg class="ic" aria-hidden="true"><use href="#i-end"/></svg>End session…</button>
+</div>
+    <div class="inbox m-plan">
+  <button type="button" class="shell" aria-pressed="false" title="Shell mode: send the text as a ! command"><svg class="ic" aria-hidden="true"><use href="#i-shell"/></svg><span>Shell</span><span class="onoff" aria-hidden="true">off</span></button>
+  <span class="prompt" aria-hidden="true">›</span>
+  <span class="field" role="textbox" aria-label="Message to the agent"><span class="ph">Message builder-1…</span></span>
+  <button type="button" class="btn ghost icon" aria-label="Commands (/)" title="Commands: type / or click"><svg class="ic" aria-hidden="true"><use href="#i-cmd"/></svg></button>
+  <button type="button" class="btn primary icon" aria-label="Send (Enter)"><svg class="ic" aria-hidden="true"><use href="#i-send"/></svg></button>
+</div>
+    <div class="keys" role="group" aria-label="Send a key to the pane"><span class="lbl" aria-hidden="true">Keys</span><button type="button" class="key">Esc</button><button type="button" class="key">Ctrl-C</button><button type="button" class="key">Tab</button><button type="button" class="key">Shift-Tab</button><button type="button" class="key" aria-label="Up arrow">↑</button><button type="button" class="key" aria-label="Down arrow">↓</button><button type="button" class="key">Enter</button></div>
+    <div class="hintline"><span><kbd>Enter</kbd> send</span><span><kbd>/</kbd> commands</span><span><kbd>Esc</kbd> goes to the pane</span><span class="echo">Permission mode: Plan</span></div>
+  </div>
+</div></div><div class="th th-dark"><p class="th-l">Dark</p><div class="win full m-plan" data-confirmed="true">
+  <div class="frame" aria-hidden="true"></div>
+  <header class="bar">
+    <a class="crumb" href="#s-window"><svg class="ic" aria-hidden="true"><use href="#i-back"/></svg>demo-api</a>
+    <span class="title">builder-1</span>
+    <span class="st pill" data-s="idle"><span class="st-g" aria-hidden="true"></span>Waiting</span>
+    <span class="mode m-plan" data-confirmed="true" title="Permission mode: Plan"><svg class="ic" aria-hidden="true"><use href="#i-m-plan"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Plan</span></span>
+    <span class="meta"><span class="model">sonnet</span><span>pane <span class="mono">%12</span></span><span class="mono">feat/cursor-pages</span></span>
+    <span class="sp"></span>
+    <div class="msw" role="toolbar" aria-label="Permission mode"><button type="button" class="m-manual" aria-pressed="false" tabindex="-1" title="Switch to Manual"><svg class="ic" aria-hidden="true"><use href="#i-m-manual"/></svg><span>Manual</span></button><button type="button" class="m-edits" aria-pressed="false" tabindex="-1" title="Switch to Accept edits"><svg class="ic" aria-hidden="true"><use href="#i-m-edits"/></svg><span>Accept edits</span></button><button type="button" class="m-plan" aria-pressed="true" tabindex="0" title="Switch to Plan"><svg class="ic" aria-hidden="true"><use href="#i-m-plan"/></svg><span>Plan</span></button><button type="button" class="m-auto" aria-pressed="false" tabindex="-1" title="Switch to Auto"><svg class="ic" aria-hidden="true"><use href="#i-m-auto"/></svg><span>Auto</span></button></div>
+    <a class="btn" href="#s-window"><svg class="ic" aria-hidden="true"><use href="#i-ext"/></svg>Open in claude.ai</a>
+  </header>
+  <div class="term-head"><span class="live">Live · 92 × 30</span><span class="sp"></span><span class="seg"><button type="button" aria-pressed="true">Dark</button><button type="button" aria-pressed="false">Light</button></span><button type="button" class="btn pass" aria-pressed="false"><svg class="ic" aria-hidden="true"><use href="#i-kbd"/></svg>Type into pane<span class="onoff" aria-hidden="true">off</span><kbd>Ctrl+]</kbd></button></div>
+  <div class="term"><span class="tl" style="color:#dadee5">⏺ Read src/collect/agents.js (212 lines)</span><span class="tl" style="color:#dadee5">⏺ Plan: add a cursor to listAgents</span><span class="tl">  1. Accept ?after=&lt;cursor&gt; on the route</span><span class="tl">  2. Return nextCursor with each page</span><span class="tl">  3. Tests for an empty page and the last page</span><span class="tl"></span><span class="tl" style="color:#868e9b">╭──────────────────────────────────────────────────────────╮</span><span class="tl" style="color:#868e9b">│ &gt;                                                        │</span><span class="tl" style="color:#868e9b">╰──────────────────────────────────────────────────────────╯</span><span class="tl" style="color:#5fafaf">  ⏸ plan mode on (shift+tab to cycle)</span></div>
+  <div class="composer">
+    <div class="qa" role="toolbar" aria-label="Session actions">
+  <button type="button" class="btn stop" aria-disabled="true" tabindex="0" title="Nothing to stop: Claude is waiting"><svg class="ic" aria-hidden="true"><use href="#i-stop"/></svg>Stop</button>
+  <button type="button" class="btn" tabindex="-1" title="Sends /compact: summarises the conversation to free context"><svg class="ic" aria-hidden="true"><use href="#i-compact"/></svg>Compact</button>
+  <button type="button" class="btn" tabindex="-1" title="Sends /clear after you confirm"><svg class="ic" aria-hidden="true"><use href="#i-clear"/></svg>Clear…</button>
+  <span class="popwrap"><button type="button" class="btn" tabindex="-1" aria-expanded="false" aria-controls="model-pop"><svg class="ic" aria-hidden="true"><use href="#i-model"/></svg>Model: <span class="mono">sonnet</span><svg class="ic" aria-hidden="true"><use href="#i-chev"/></svg></button></span>
+  <button type="button" class="btn" tabindex="-1" title="Esc Esc on an empty prompt: opens Claude’s rewind menu in the terminal"><svg class="ic" aria-hidden="true"><use href="#i-rewind"/></svg>Rewind</button>
+  <span class="sp"></span>
+  <button type="button" class="btn danger" tabindex="-1" title="Claude exits and the pane closes"><svg class="ic" aria-hidden="true"><use href="#i-end"/></svg>End session…</button>
+</div>
+    <div class="inbox m-plan">
+  <button type="button" class="shell" aria-pressed="false" title="Shell mode: send the text as a ! command"><svg class="ic" aria-hidden="true"><use href="#i-shell"/></svg><span>Shell</span><span class="onoff" aria-hidden="true">off</span></button>
+  <span class="prompt" aria-hidden="true">›</span>
+  <span class="field" role="textbox" aria-label="Message to the agent"><span class="ph">Message builder-1…</span></span>
+  <button type="button" class="btn ghost icon" aria-label="Commands (/)" title="Commands: type / or click"><svg class="ic" aria-hidden="true"><use href="#i-cmd"/></svg></button>
+  <button type="button" class="btn primary icon" aria-label="Send (Enter)"><svg class="ic" aria-hidden="true"><use href="#i-send"/></svg></button>
+</div>
+    <div class="keys" role="group" aria-label="Send a key to the pane"><span class="lbl" aria-hidden="true">Keys</span><button type="button" class="key">Esc</button><button type="button" class="key">Ctrl-C</button><button type="button" class="key">Tab</button><button type="button" class="key">Shift-Tab</button><button type="button" class="key" aria-label="Up arrow">↑</button><button type="button" class="key" aria-label="Down arrow">↓</button><button type="button" class="key">Enter</button></div>
+    <div class="hintline"><span><kbd>Enter</kbd> send</span><span><kbd>/</kbd> commands</span><span><kbd>Esc</kbd> goes to the pane</span><span class="echo">Permission mode: Plan</span></div>
+  </div>
+</div></div></div></section>
+<section id="s-switch" aria-labelledby="s-switch-h"><h2 id="s-switch-h">Mode switcher</h2><p class="intro">A segmented toolbar: one Tab stop, ← → move, Enter or Space switches. It never hides; when it can’t act it says why, right next to it. The pressed segment keeps full strength even while the rest is dimmed.</p><div class="pair"><div class="th th-light"><p class="th-l">Light</p><div class="states"><div class="state"><div class="state-h"><span class="state-t">Ready</span><span class="state-n">Claude waits at its prompt. The pressed segment repeats the header tag.</span></div><div class="state-b"><span class="mode m-plan" data-confirmed="true" title="Permission mode: Plan"><svg class="ic" aria-hidden="true"><use href="#i-m-plan"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Plan</span></span><div class="msw" role="toolbar" aria-label="Permission mode"><button type="button" class="m-manual" aria-pressed="false" tabindex="-1" title="Switch to Manual"><svg class="ic" aria-hidden="true"><use href="#i-m-manual"/></svg><span>Manual</span></button><button type="button" class="m-edits" aria-pressed="false" tabindex="-1" title="Switch to Accept edits"><svg class="ic" aria-hidden="true"><use href="#i-m-edits"/></svg><span>Accept edits</span></button><button type="button" class="m-plan" aria-pressed="true" tabindex="0" title="Switch to Plan"><svg class="ic" aria-hidden="true"><use href="#i-m-plan"/></svg><span>Plan</span></button><button type="button" class="m-auto" aria-pressed="false" tabindex="-1" title="Switch to Auto"><svg class="ic" aria-hidden="true"><use href="#i-m-auto"/></svg><span>Auto</span></button></div></div></div>
+<div class="state"><div class="state-h"><span class="state-t">Switching</span><span class="state-n">The tag follows the footer as it changes; the other segments wait.</span></div><div class="state-b"><span class="mode m-manual" data-confirmed="true" title="Permission mode: Manual"><svg class="ic" aria-hidden="true"><use href="#i-m-manual"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Manual</span></span><div class="msw" role="toolbar" aria-label="Permission mode" data-blocked="true"><button type="button" class="m-manual" aria-pressed="true" aria-disabled="true" tabindex="0" title="Switch to Manual"><svg class="ic" aria-hidden="true"><use href="#i-m-manual"/></svg><span>Manual</span></button><button type="button" class="m-edits" aria-pressed="false" aria-disabled="true" tabindex="-1" title="Switch to Accept edits"><svg class="ic" aria-hidden="true"><use href="#i-m-edits"/></svg><span>Accept edits</span></button><button type="button" class="m-plan" aria-pressed="false" aria-disabled="true" tabindex="-1" title="Switch to Plan"><svg class="ic" aria-hidden="true"><use href="#i-m-plan"/></svg><span>Plan</span></button><button type="button" class="m-auto" aria-pressed="false" aria-busy="true" tabindex="-1" title="Switching to Auto"><span class="spin" aria-hidden="true"></span><span>Auto</span></button></div><span class="msw-why"><svg class="ic" aria-hidden="true"><use href="#i-info"/></svg><span>Switching to Auto… Shift-Tab 2 of at most 6.</span></span></div></div>
+<div class="state"><div class="state-h"><span class="state-t">Busy</span><span class="state-n">Current segment stays at full strength; the others dim.</span></div><div class="state-b"><span class="mode m-edits" data-confirmed="true" title="Permission mode: Accept edits"><svg class="ic" aria-hidden="true"><use href="#i-m-edits"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Accept edits</span></span><div class="msw" role="toolbar" aria-label="Permission mode" data-blocked="true"><button type="button" class="m-manual" aria-pressed="false" aria-disabled="true" tabindex="-1" title="Switch to Manual"><svg class="ic" aria-hidden="true"><use href="#i-m-manual"/></svg><span>Manual</span></button><button type="button" class="m-edits" aria-pressed="true" aria-disabled="true" tabindex="0" title="Switch to Accept edits"><svg class="ic" aria-hidden="true"><use href="#i-m-edits"/></svg><span>Accept edits</span></button><button type="button" class="m-plan" aria-pressed="false" aria-disabled="true" tabindex="-1" title="Switch to Plan"><svg class="ic" aria-hidden="true"><use href="#i-m-plan"/></svg><span>Plan</span></button><button type="button" class="m-auto" aria-pressed="false" aria-disabled="true" tabindex="-1" title="Switch to Auto"><svg class="ic" aria-hidden="true"><use href="#i-m-auto"/></svg><span>Auto</span></button></div><span class="msw-why"><svg class="ic" aria-hidden="true"><use href="#i-info"/></svg><span>Switch when Claude is waiting for you.</span></span></div></div>
+<div class="state"><div class="state-h"><span class="state-t">Prompt open</span></div><div class="state-b"><span class="mode m-auto" data-confirmed="true" title="Permission mode: Auto"><svg class="ic" aria-hidden="true"><use href="#i-m-auto"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Auto</span></span><div class="msw" role="toolbar" aria-label="Permission mode" data-blocked="true"><button type="button" class="m-manual" aria-pressed="false" aria-disabled="true" tabindex="-1" title="Switch to Manual"><svg class="ic" aria-hidden="true"><use href="#i-m-manual"/></svg><span>Manual</span></button><button type="button" class="m-edits" aria-pressed="false" aria-disabled="true" tabindex="-1" title="Switch to Accept edits"><svg class="ic" aria-hidden="true"><use href="#i-m-edits"/></svg><span>Accept edits</span></button><button type="button" class="m-plan" aria-pressed="false" aria-disabled="true" tabindex="-1" title="Switch to Plan"><svg class="ic" aria-hidden="true"><use href="#i-m-plan"/></svg><span>Plan</span></button><button type="button" class="m-auto" aria-pressed="true" aria-disabled="true" tabindex="0" title="Switch to Auto"><svg class="ic" aria-hidden="true"><use href="#i-m-auto"/></svg><span>Auto</span></button></div><span class="msw-why"><svg class="ic" aria-hidden="true"><use href="#i-info"/></svg><span>Answer the prompt first.</span></span></div></div>
+<div class="state"><div class="state-h"><span class="state-t">Mode unconfirmed</span><span class="state-n">Launch mode not yet seen in the footer: no switching until it is.</span></div><div class="state-b"><span class="mode m-plan" data-confirmed="false" title="Permission mode: Plan (launch setting, not confirmed by Claude yet)"><svg class="ic" aria-hidden="true"><use href="#i-m-plan"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Plan</span><span class="mnote">unconfirmed</span></span><div class="msw" role="toolbar" aria-label="Permission mode" data-blocked="true"><button type="button" class="m-manual" aria-pressed="false" aria-disabled="true" tabindex="-1" title="Switch to Manual"><svg class="ic" aria-hidden="true"><use href="#i-m-manual"/></svg><span>Manual</span></button><button type="button" class="m-edits" aria-pressed="false" aria-disabled="true" tabindex="-1" title="Switch to Accept edits"><svg class="ic" aria-hidden="true"><use href="#i-m-edits"/></svg><span>Accept edits</span></button><button type="button" class="m-plan" aria-pressed="true" aria-disabled="true" tabindex="0" title="Switch to Plan"><svg class="ic" aria-hidden="true"><use href="#i-m-plan"/></svg><span>Plan</span></button><button type="button" class="m-auto" aria-pressed="false" aria-disabled="true" tabindex="-1" title="Switch to Auto"><svg class="ic" aria-hidden="true"><use href="#i-m-auto"/></svg><span>Auto</span></button></div><span class="msw-why"><svg class="ic" aria-hidden="true"><use href="#i-info"/></svg><span>Waiting for Claude to confirm the mode.</span></span></div></div>
+<div class="state"><div class="state-h"><span class="state-t">Mode unknown</span><span class="state-n">Offers the raw key instead, as spec §6.3 says.</span></div><div class="state-b"><span class="mode m-unknown" data-confirmed="true" title="Permission mode: Mode ?"><svg class="ic" aria-hidden="true"><use href="#i-m-unknown"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Mode ?</span></span><div class="msw" role="toolbar" aria-label="Permission mode" data-blocked="true"><button type="button" class="m-manual" aria-pressed="false" aria-disabled="true" tabindex="0" title="Switch to Manual"><svg class="ic" aria-hidden="true"><use href="#i-m-manual"/></svg><span>Manual</span></button><button type="button" class="m-edits" aria-pressed="false" aria-disabled="true" tabindex="-1" title="Switch to Accept edits"><svg class="ic" aria-hidden="true"><use href="#i-m-edits"/></svg><span>Accept edits</span></button><button type="button" class="m-plan" aria-pressed="false" aria-disabled="true" tabindex="-1" title="Switch to Plan"><svg class="ic" aria-hidden="true"><use href="#i-m-plan"/></svg><span>Plan</span></button><button type="button" class="m-auto" aria-pressed="false" aria-disabled="true" tabindex="-1" title="Switch to Auto"><svg class="ic" aria-hidden="true"><use href="#i-m-auto"/></svg><span>Auto</span></button></div><span class="msw-why"><svg class="ic" aria-hidden="true"><use href="#i-info"/></svg><span>nika can’t read the mode.</span><button type="button" class="key">Shift-Tab</button></span></div></div>
+<div class="state"><div class="state-h"><span class="state-t">Not in cycle</span><span class="state-n">After a 409 not-in-cycle: that segment stays off for this pane.</span></div><div class="state-b"><span class="mode m-manual" data-confirmed="true" title="Permission mode: Manual"><svg class="ic" aria-hidden="true"><use href="#i-m-manual"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Manual</span></span><div class="msw" role="toolbar" aria-label="Permission mode"><button type="button" class="m-manual" aria-pressed="true" tabindex="0" title="Switch to Manual"><svg class="ic" aria-hidden="true"><use href="#i-m-manual"/></svg><span>Manual</span></button><button type="button" class="m-edits" aria-pressed="false" tabindex="-1" title="Switch to Accept edits"><svg class="ic" aria-hidden="true"><use href="#i-m-edits"/></svg><span>Accept edits</span></button><button type="button" class="m-plan" aria-pressed="false" tabindex="-1" title="Switch to Plan"><svg class="ic" aria-hidden="true"><use href="#i-m-plan"/></svg><span>Plan</span></button><button type="button" class="m-auto out" aria-pressed="false" aria-disabled="true" tabindex="-1" title="Auto isn't in this session's Shift-Tab cycle"><svg class="ic" aria-hidden="true"><use href="#i-m-auto"/></svg><span>Auto</span></button></div><span class="msw-why"><svg class="ic" aria-hidden="true"><use href="#i-info"/></svg><span>Auto isn’t in this session’s Shift-Tab cycle.</span></span></div></div>
+<div class="state"><div class="state-h"><span class="state-t">Bypass current (0.3)</span><span class="state-n">Bypass is never a target in 0.3. The red tag names the mode; switching away still works.</span></div><div class="state-b"><span class="mode m-bypass" data-confirmed="true" title="Permission mode: Bypass"><svg class="ic" aria-hidden="true"><use href="#i-m-bypass"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Bypass</span></span><div class="msw" role="toolbar" aria-label="Permission mode"><button type="button" class="m-manual" aria-pressed="false" tabindex="0" title="Switch to Manual"><svg class="ic" aria-hidden="true"><use href="#i-m-manual"/></svg><span>Manual</span></button><button type="button" class="m-edits" aria-pressed="false" tabindex="-1" title="Switch to Accept edits"><svg class="ic" aria-hidden="true"><use href="#i-m-edits"/></svg><span>Accept edits</span></button><button type="button" class="m-plan" aria-pressed="false" tabindex="-1" title="Switch to Plan"><svg class="ic" aria-hidden="true"><use href="#i-m-plan"/></svg><span>Plan</span></button><button type="button" class="m-auto" aria-pressed="false" tabindex="-1" title="Switch to Auto"><svg class="ic" aria-hidden="true"><use href="#i-m-auto"/></svg><span>Auto</span></button></div></div></div>
+<div class="state"><div class="state-h"><span class="state-t">Don’t ask current</span><span class="state-n">Never a target; nika does not switch to or from it.</span></div><div class="state-b"><span class="mode m-dontask" data-confirmed="true" title="Permission mode: Don't ask"><svg class="ic" aria-hidden="true"><use href="#i-m-dontask"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Don't ask</span></span><div class="msw" role="toolbar" aria-label="Permission mode" data-blocked="true"><button type="button" class="m-manual" aria-pressed="false" aria-disabled="true" tabindex="0" title="Switch to Manual"><svg class="ic" aria-hidden="true"><use href="#i-m-manual"/></svg><span>Manual</span></button><button type="button" class="m-edits" aria-pressed="false" aria-disabled="true" tabindex="-1" title="Switch to Accept edits"><svg class="ic" aria-hidden="true"><use href="#i-m-edits"/></svg><span>Accept edits</span></button><button type="button" class="m-plan" aria-pressed="false" aria-disabled="true" tabindex="-1" title="Switch to Plan"><svg class="ic" aria-hidden="true"><use href="#i-m-plan"/></svg><span>Plan</span></button><button type="button" class="m-auto" aria-pressed="false" aria-disabled="true" tabindex="-1" title="Switch to Auto"><svg class="ic" aria-hidden="true"><use href="#i-m-auto"/></svg><span>Auto</span></button></div><span class="msw-why"><svg class="ic" aria-hidden="true"><use href="#i-info"/></svg><span>Don’t ask is on. Change it in the terminal.</span></span></div></div>
+<div class="state"><div class="state-h"><span class="state-t">Narrow window (≤ 760 px)</span><span class="state-n">Icons only; names in tooltips and accessible names. The tag keeps its word.</span></div><div class="state-b"><span class="mode m-plan" data-confirmed="true" title="Permission mode: Plan"><svg class="ic" aria-hidden="true"><use href="#i-m-plan"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Plan</span></span><div class="msw narrow" role="toolbar" aria-label="Permission mode"><button type="button" class="m-manual" aria-pressed="false" tabindex="-1" title="Switch to Manual"><svg class="ic" aria-hidden="true"><use href="#i-m-manual"/></svg><span class="sr-only">Manual</span></button><button type="button" class="m-edits" aria-pressed="false" tabindex="-1" title="Switch to Accept edits"><svg class="ic" aria-hidden="true"><use href="#i-m-edits"/></svg><span class="sr-only">Accept edits</span></button><button type="button" class="m-plan" aria-pressed="true" tabindex="0" title="Switch to Plan"><svg class="ic" aria-hidden="true"><use href="#i-m-plan"/></svg><span class="sr-only">Plan</span></button><button type="button" class="m-auto" aria-pressed="false" tabindex="-1" title="Switch to Auto"><svg class="ic" aria-hidden="true"><use href="#i-m-auto"/></svg><span class="sr-only">Auto</span></button></div></div></div>
+<div class="state"><div class="state-h"><span class="state-t">0.4 preview: Bypass in cycle</span><span class="state-n">Only for panes nika launched with bypass allowed (0.4). Red even when not pressed.</span></div><div class="state-b"><span class="mode m-manual" data-confirmed="true" title="Permission mode: Manual"><svg class="ic" aria-hidden="true"><use href="#i-m-manual"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Manual</span></span><div class="msw" role="toolbar" aria-label="Permission mode"><button type="button" class="m-manual" aria-pressed="true" tabindex="0" title="Switch to Manual"><svg class="ic" aria-hidden="true"><use href="#i-m-manual"/></svg><span>Manual</span></button><button type="button" class="m-edits" aria-pressed="false" tabindex="-1" title="Switch to Accept edits"><svg class="ic" aria-hidden="true"><use href="#i-m-edits"/></svg><span>Accept edits</span></button><button type="button" class="m-plan" aria-pressed="false" tabindex="-1" title="Switch to Plan"><svg class="ic" aria-hidden="true"><use href="#i-m-plan"/></svg><span>Plan</span></button><button type="button" class="m-auto" aria-pressed="false" tabindex="-1" title="Switch to Auto"><svg class="ic" aria-hidden="true"><use href="#i-m-auto"/></svg><span>Auto</span></button><button type="button" class="m-bypass" aria-pressed="false" tabindex="-1" title="Switch to Bypass"><svg class="ic" aria-hidden="true"><use href="#i-m-bypass"/></svg><span>Bypass</span></button></div></div></div>
+<div class="state"><div class="state-h"><span class="state-t">0.4 preview: Bypass current</span><span class="state-n">Not in 0.3.</span></div><div class="state-b"><span class="mode m-bypass" data-confirmed="true" title="Permission mode: Bypass"><svg class="ic" aria-hidden="true"><use href="#i-m-bypass"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Bypass</span></span><div class="msw" role="toolbar" aria-label="Permission mode"><button type="button" class="m-manual" aria-pressed="false" tabindex="-1" title="Switch to Manual"><svg class="ic" aria-hidden="true"><use href="#i-m-manual"/></svg><span>Manual</span></button><button type="button" class="m-edits" aria-pressed="false" tabindex="-1" title="Switch to Accept edits"><svg class="ic" aria-hidden="true"><use href="#i-m-edits"/></svg><span>Accept edits</span></button><button type="button" class="m-plan" aria-pressed="false" tabindex="-1" title="Switch to Plan"><svg class="ic" aria-hidden="true"><use href="#i-m-plan"/></svg><span>Plan</span></button><button type="button" class="m-auto" aria-pressed="false" tabindex="-1" title="Switch to Auto"><svg class="ic" aria-hidden="true"><use href="#i-m-auto"/></svg><span>Auto</span></button><button type="button" class="m-bypass" aria-pressed="true" tabindex="0" title="Switch to Bypass"><svg class="ic" aria-hidden="true"><use href="#i-m-bypass"/></svg><span>Bypass</span></button></div></div></div></div></div><div class="th th-dark"><p class="th-l">Dark</p><div class="states"><div class="state"><div class="state-h"><span class="state-t">Ready</span><span class="state-n">Claude waits at its prompt. The pressed segment repeats the header tag.</span></div><div class="state-b"><span class="mode m-plan" data-confirmed="true" title="Permission mode: Plan"><svg class="ic" aria-hidden="true"><use href="#i-m-plan"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Plan</span></span><div class="msw" role="toolbar" aria-label="Permission mode"><button type="button" class="m-manual" aria-pressed="false" tabindex="-1" title="Switch to Manual"><svg class="ic" aria-hidden="true"><use href="#i-m-manual"/></svg><span>Manual</span></button><button type="button" class="m-edits" aria-pressed="false" tabindex="-1" title="Switch to Accept edits"><svg class="ic" aria-hidden="true"><use href="#i-m-edits"/></svg><span>Accept edits</span></button><button type="button" class="m-plan" aria-pressed="true" tabindex="0" title="Switch to Plan"><svg class="ic" aria-hidden="true"><use href="#i-m-plan"/></svg><span>Plan</span></button><button type="button" class="m-auto" aria-pressed="false" tabindex="-1" title="Switch to Auto"><svg class="ic" aria-hidden="true"><use href="#i-m-auto"/></svg><span>Auto</span></button></div></div></div>
+<div class="state"><div class="state-h"><span class="state-t">Switching</span><span class="state-n">The tag follows the footer as it changes; the other segments wait.</span></div><div class="state-b"><span class="mode m-manual" data-confirmed="true" title="Permission mode: Manual"><svg class="ic" aria-hidden="true"><use href="#i-m-manual"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Manual</span></span><div class="msw" role="toolbar" aria-label="Permission mode" data-blocked="true"><button type="button" class="m-manual" aria-pressed="true" aria-disabled="true" tabindex="0" title="Switch to Manual"><svg class="ic" aria-hidden="true"><use href="#i-m-manual"/></svg><span>Manual</span></button><button type="button" class="m-edits" aria-pressed="false" aria-disabled="true" tabindex="-1" title="Switch to Accept edits"><svg class="ic" aria-hidden="true"><use href="#i-m-edits"/></svg><span>Accept edits</span></button><button type="button" class="m-plan" aria-pressed="false" aria-disabled="true" tabindex="-1" title="Switch to Plan"><svg class="ic" aria-hidden="true"><use href="#i-m-plan"/></svg><span>Plan</span></button><button type="button" class="m-auto" aria-pressed="false" aria-busy="true" tabindex="-1" title="Switching to Auto"><span class="spin" aria-hidden="true"></span><span>Auto</span></button></div><span class="msw-why"><svg class="ic" aria-hidden="true"><use href="#i-info"/></svg><span>Switching to Auto… Shift-Tab 2 of at most 6.</span></span></div></div>
+<div class="state"><div class="state-h"><span class="state-t">Busy</span><span class="state-n">Current segment stays at full strength; the others dim.</span></div><div class="state-b"><span class="mode m-edits" data-confirmed="true" title="Permission mode: Accept edits"><svg class="ic" aria-hidden="true"><use href="#i-m-edits"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Accept edits</span></span><div class="msw" role="toolbar" aria-label="Permission mode" data-blocked="true"><button type="button" class="m-manual" aria-pressed="false" aria-disabled="true" tabindex="-1" title="Switch to Manual"><svg class="ic" aria-hidden="true"><use href="#i-m-manual"/></svg><span>Manual</span></button><button type="button" class="m-edits" aria-pressed="true" aria-disabled="true" tabindex="0" title="Switch to Accept edits"><svg class="ic" aria-hidden="true"><use href="#i-m-edits"/></svg><span>Accept edits</span></button><button type="button" class="m-plan" aria-pressed="false" aria-disabled="true" tabindex="-1" title="Switch to Plan"><svg class="ic" aria-hidden="true"><use href="#i-m-plan"/></svg><span>Plan</span></button><button type="button" class="m-auto" aria-pressed="false" aria-disabled="true" tabindex="-1" title="Switch to Auto"><svg class="ic" aria-hidden="true"><use href="#i-m-auto"/></svg><span>Auto</span></button></div><span class="msw-why"><svg class="ic" aria-hidden="true"><use href="#i-info"/></svg><span>Switch when Claude is waiting for you.</span></span></div></div>
+<div class="state"><div class="state-h"><span class="state-t">Prompt open</span></div><div class="state-b"><span class="mode m-auto" data-confirmed="true" title="Permission mode: Auto"><svg class="ic" aria-hidden="true"><use href="#i-m-auto"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Auto</span></span><div class="msw" role="toolbar" aria-label="Permission mode" data-blocked="true"><button type="button" class="m-manual" aria-pressed="false" aria-disabled="true" tabindex="-1" title="Switch to Manual"><svg class="ic" aria-hidden="true"><use href="#i-m-manual"/></svg><span>Manual</span></button><button type="button" class="m-edits" aria-pressed="false" aria-disabled="true" tabindex="-1" title="Switch to Accept edits"><svg class="ic" aria-hidden="true"><use href="#i-m-edits"/></svg><span>Accept edits</span></button><button type="button" class="m-plan" aria-pressed="false" aria-disabled="true" tabindex="-1" title="Switch to Plan"><svg class="ic" aria-hidden="true"><use href="#i-m-plan"/></svg><span>Plan</span></button><button type="button" class="m-auto" aria-pressed="true" aria-disabled="true" tabindex="0" title="Switch to Auto"><svg class="ic" aria-hidden="true"><use href="#i-m-auto"/></svg><span>Auto</span></button></div><span class="msw-why"><svg class="ic" aria-hidden="true"><use href="#i-info"/></svg><span>Answer the prompt first.</span></span></div></div>
+<div class="state"><div class="state-h"><span class="state-t">Mode unconfirmed</span><span class="state-n">Launch mode not yet seen in the footer: no switching until it is.</span></div><div class="state-b"><span class="mode m-plan" data-confirmed="false" title="Permission mode: Plan (launch setting, not confirmed by Claude yet)"><svg class="ic" aria-hidden="true"><use href="#i-m-plan"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Plan</span><span class="mnote">unconfirmed</span></span><div class="msw" role="toolbar" aria-label="Permission mode" data-blocked="true"><button type="button" class="m-manual" aria-pressed="false" aria-disabled="true" tabindex="-1" title="Switch to Manual"><svg class="ic" aria-hidden="true"><use href="#i-m-manual"/></svg><span>Manual</span></button><button type="button" class="m-edits" aria-pressed="false" aria-disabled="true" tabindex="-1" title="Switch to Accept edits"><svg class="ic" aria-hidden="true"><use href="#i-m-edits"/></svg><span>Accept edits</span></button><button type="button" class="m-plan" aria-pressed="true" aria-disabled="true" tabindex="0" title="Switch to Plan"><svg class="ic" aria-hidden="true"><use href="#i-m-plan"/></svg><span>Plan</span></button><button type="button" class="m-auto" aria-pressed="false" aria-disabled="true" tabindex="-1" title="Switch to Auto"><svg class="ic" aria-hidden="true"><use href="#i-m-auto"/></svg><span>Auto</span></button></div><span class="msw-why"><svg class="ic" aria-hidden="true"><use href="#i-info"/></svg><span>Waiting for Claude to confirm the mode.</span></span></div></div>
+<div class="state"><div class="state-h"><span class="state-t">Mode unknown</span><span class="state-n">Offers the raw key instead, as spec §6.3 says.</span></div><div class="state-b"><span class="mode m-unknown" data-confirmed="true" title="Permission mode: Mode ?"><svg class="ic" aria-hidden="true"><use href="#i-m-unknown"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Mode ?</span></span><div class="msw" role="toolbar" aria-label="Permission mode" data-blocked="true"><button type="button" class="m-manual" aria-pressed="false" aria-disabled="true" tabindex="0" title="Switch to Manual"><svg class="ic" aria-hidden="true"><use href="#i-m-manual"/></svg><span>Manual</span></button><button type="button" class="m-edits" aria-pressed="false" aria-disabled="true" tabindex="-1" title="Switch to Accept edits"><svg class="ic" aria-hidden="true"><use href="#i-m-edits"/></svg><span>Accept edits</span></button><button type="button" class="m-plan" aria-pressed="false" aria-disabled="true" tabindex="-1" title="Switch to Plan"><svg class="ic" aria-hidden="true"><use href="#i-m-plan"/></svg><span>Plan</span></button><button type="button" class="m-auto" aria-pressed="false" aria-disabled="true" tabindex="-1" title="Switch to Auto"><svg class="ic" aria-hidden="true"><use href="#i-m-auto"/></svg><span>Auto</span></button></div><span class="msw-why"><svg class="ic" aria-hidden="true"><use href="#i-info"/></svg><span>nika can’t read the mode.</span><button type="button" class="key">Shift-Tab</button></span></div></div>
+<div class="state"><div class="state-h"><span class="state-t">Not in cycle</span><span class="state-n">After a 409 not-in-cycle: that segment stays off for this pane.</span></div><div class="state-b"><span class="mode m-manual" data-confirmed="true" title="Permission mode: Manual"><svg class="ic" aria-hidden="true"><use href="#i-m-manual"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Manual</span></span><div class="msw" role="toolbar" aria-label="Permission mode"><button type="button" class="m-manual" aria-pressed="true" tabindex="0" title="Switch to Manual"><svg class="ic" aria-hidden="true"><use href="#i-m-manual"/></svg><span>Manual</span></button><button type="button" class="m-edits" aria-pressed="false" tabindex="-1" title="Switch to Accept edits"><svg class="ic" aria-hidden="true"><use href="#i-m-edits"/></svg><span>Accept edits</span></button><button type="button" class="m-plan" aria-pressed="false" tabindex="-1" title="Switch to Plan"><svg class="ic" aria-hidden="true"><use href="#i-m-plan"/></svg><span>Plan</span></button><button type="button" class="m-auto out" aria-pressed="false" aria-disabled="true" tabindex="-1" title="Auto isn't in this session's Shift-Tab cycle"><svg class="ic" aria-hidden="true"><use href="#i-m-auto"/></svg><span>Auto</span></button></div><span class="msw-why"><svg class="ic" aria-hidden="true"><use href="#i-info"/></svg><span>Auto isn’t in this session’s Shift-Tab cycle.</span></span></div></div>
+<div class="state"><div class="state-h"><span class="state-t">Bypass current (0.3)</span><span class="state-n">Bypass is never a target in 0.3. The red tag names the mode; switching away still works.</span></div><div class="state-b"><span class="mode m-bypass" data-confirmed="true" title="Permission mode: Bypass"><svg class="ic" aria-hidden="true"><use href="#i-m-bypass"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Bypass</span></span><div class="msw" role="toolbar" aria-label="Permission mode"><button type="button" class="m-manual" aria-pressed="false" tabindex="0" title="Switch to Manual"><svg class="ic" aria-hidden="true"><use href="#i-m-manual"/></svg><span>Manual</span></button><button type="button" class="m-edits" aria-pressed="false" tabindex="-1" title="Switch to Accept edits"><svg class="ic" aria-hidden="true"><use href="#i-m-edits"/></svg><span>Accept edits</span></button><button type="button" class="m-plan" aria-pressed="false" tabindex="-1" title="Switch to Plan"><svg class="ic" aria-hidden="true"><use href="#i-m-plan"/></svg><span>Plan</span></button><button type="button" class="m-auto" aria-pressed="false" tabindex="-1" title="Switch to Auto"><svg class="ic" aria-hidden="true"><use href="#i-m-auto"/></svg><span>Auto</span></button></div></div></div>
+<div class="state"><div class="state-h"><span class="state-t">Don’t ask current</span><span class="state-n">Never a target; nika does not switch to or from it.</span></div><div class="state-b"><span class="mode m-dontask" data-confirmed="true" title="Permission mode: Don't ask"><svg class="ic" aria-hidden="true"><use href="#i-m-dontask"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Don't ask</span></span><div class="msw" role="toolbar" aria-label="Permission mode" data-blocked="true"><button type="button" class="m-manual" aria-pressed="false" aria-disabled="true" tabindex="0" title="Switch to Manual"><svg class="ic" aria-hidden="true"><use href="#i-m-manual"/></svg><span>Manual</span></button><button type="button" class="m-edits" aria-pressed="false" aria-disabled="true" tabindex="-1" title="Switch to Accept edits"><svg class="ic" aria-hidden="true"><use href="#i-m-edits"/></svg><span>Accept edits</span></button><button type="button" class="m-plan" aria-pressed="false" aria-disabled="true" tabindex="-1" title="Switch to Plan"><svg class="ic" aria-hidden="true"><use href="#i-m-plan"/></svg><span>Plan</span></button><button type="button" class="m-auto" aria-pressed="false" aria-disabled="true" tabindex="-1" title="Switch to Auto"><svg class="ic" aria-hidden="true"><use href="#i-m-auto"/></svg><span>Auto</span></button></div><span class="msw-why"><svg class="ic" aria-hidden="true"><use href="#i-info"/></svg><span>Don’t ask is on. Change it in the terminal.</span></span></div></div>
+<div class="state"><div class="state-h"><span class="state-t">Narrow window (≤ 760 px)</span><span class="state-n">Icons only; names in tooltips and accessible names. The tag keeps its word.</span></div><div class="state-b"><span class="mode m-plan" data-confirmed="true" title="Permission mode: Plan"><svg class="ic" aria-hidden="true"><use href="#i-m-plan"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Plan</span></span><div class="msw narrow" role="toolbar" aria-label="Permission mode"><button type="button" class="m-manual" aria-pressed="false" tabindex="-1" title="Switch to Manual"><svg class="ic" aria-hidden="true"><use href="#i-m-manual"/></svg><span class="sr-only">Manual</span></button><button type="button" class="m-edits" aria-pressed="false" tabindex="-1" title="Switch to Accept edits"><svg class="ic" aria-hidden="true"><use href="#i-m-edits"/></svg><span class="sr-only">Accept edits</span></button><button type="button" class="m-plan" aria-pressed="true" tabindex="0" title="Switch to Plan"><svg class="ic" aria-hidden="true"><use href="#i-m-plan"/></svg><span class="sr-only">Plan</span></button><button type="button" class="m-auto" aria-pressed="false" tabindex="-1" title="Switch to Auto"><svg class="ic" aria-hidden="true"><use href="#i-m-auto"/></svg><span class="sr-only">Auto</span></button></div></div></div>
+<div class="state"><div class="state-h"><span class="state-t">0.4 preview: Bypass in cycle</span><span class="state-n">Only for panes nika launched with bypass allowed (0.4). Red even when not pressed.</span></div><div class="state-b"><span class="mode m-manual" data-confirmed="true" title="Permission mode: Manual"><svg class="ic" aria-hidden="true"><use href="#i-m-manual"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Manual</span></span><div class="msw" role="toolbar" aria-label="Permission mode"><button type="button" class="m-manual" aria-pressed="true" tabindex="0" title="Switch to Manual"><svg class="ic" aria-hidden="true"><use href="#i-m-manual"/></svg><span>Manual</span></button><button type="button" class="m-edits" aria-pressed="false" tabindex="-1" title="Switch to Accept edits"><svg class="ic" aria-hidden="true"><use href="#i-m-edits"/></svg><span>Accept edits</span></button><button type="button" class="m-plan" aria-pressed="false" tabindex="-1" title="Switch to Plan"><svg class="ic" aria-hidden="true"><use href="#i-m-plan"/></svg><span>Plan</span></button><button type="button" class="m-auto" aria-pressed="false" tabindex="-1" title="Switch to Auto"><svg class="ic" aria-hidden="true"><use href="#i-m-auto"/></svg><span>Auto</span></button><button type="button" class="m-bypass" aria-pressed="false" tabindex="-1" title="Switch to Bypass"><svg class="ic" aria-hidden="true"><use href="#i-m-bypass"/></svg><span>Bypass</span></button></div></div></div>
+<div class="state"><div class="state-h"><span class="state-t">0.4 preview: Bypass current</span><span class="state-n">Not in 0.3.</span></div><div class="state-b"><span class="mode m-bypass" data-confirmed="true" title="Permission mode: Bypass"><svg class="ic" aria-hidden="true"><use href="#i-m-bypass"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Bypass</span></span><div class="msw" role="toolbar" aria-label="Permission mode"><button type="button" class="m-manual" aria-pressed="false" tabindex="-1" title="Switch to Manual"><svg class="ic" aria-hidden="true"><use href="#i-m-manual"/></svg><span>Manual</span></button><button type="button" class="m-edits" aria-pressed="false" tabindex="-1" title="Switch to Accept edits"><svg class="ic" aria-hidden="true"><use href="#i-m-edits"/></svg><span>Accept edits</span></button><button type="button" class="m-plan" aria-pressed="false" tabindex="-1" title="Switch to Plan"><svg class="ic" aria-hidden="true"><use href="#i-m-plan"/></svg><span>Plan</span></button><button type="button" class="m-auto" aria-pressed="false" tabindex="-1" title="Switch to Auto"><svg class="ic" aria-hidden="true"><use href="#i-m-auto"/></svg><span>Auto</span></button><button type="button" class="m-bypass" aria-pressed="true" tabindex="0" title="Switch to Bypass"><svg class="ic" aria-hidden="true"><use href="#i-m-bypass"/></svg><span>Bypass</span></button></div></div></div></div></div></div></section>
+<section id="s-qa" aria-labelledby="s-qa-h"><h2 id="s-qa-h">Quick actions</h2><p class="intro">Stop is always in the first slot so the row never shifts; it is live only while Claude works. Compact, Clear, Model and Rewind are live only while Claude waits. End session is the only red action and is pushed to the far right.</p><div class="pair"><div class="th th-light"><p class="th-l">Light</p><div class="states">
+<div class="state"><div class="state-h"><span class="state-t">Claude waiting</span></div><div class="state-b col"><div class="qa" role="toolbar" aria-label="Session actions">
+  <button type="button" class="btn stop" aria-disabled="true" tabindex="0" title="Nothing to stop: Claude is waiting"><svg class="ic" aria-hidden="true"><use href="#i-stop"/></svg>Stop</button>
+  <button type="button" class="btn" tabindex="-1" title="Sends /compact: summarises the conversation to free context"><svg class="ic" aria-hidden="true"><use href="#i-compact"/></svg>Compact</button>
+  <button type="button" class="btn" tabindex="-1" title="Sends /clear after you confirm"><svg class="ic" aria-hidden="true"><use href="#i-clear"/></svg>Clear…</button>
+  <span class="popwrap"><button type="button" class="btn" tabindex="-1" aria-expanded="false" aria-controls="model-pop"><svg class="ic" aria-hidden="true"><use href="#i-model"/></svg>Model: <span class="mono">sonnet</span><svg class="ic" aria-hidden="true"><use href="#i-chev"/></svg></button></span>
+  <button type="button" class="btn" tabindex="-1" title="Esc Esc on an empty prompt: opens Claude’s rewind menu in the terminal"><svg class="ic" aria-hidden="true"><use href="#i-rewind"/></svg>Rewind</button>
+  <span class="sp"></span>
+  <button type="button" class="btn danger" tabindex="-1" title="Claude exits and the pane closes"><svg class="ic" aria-hidden="true"><use href="#i-end"/></svg>End session…</button>
+</div></div></div>
+<div class="state"><div class="state-h"><span class="state-t">Claude working</span><span class="state-n">Stop is live; the rest wait for the prompt.</span></div><div class="state-b col"><div class="qa" role="toolbar" aria-label="Session actions">
+  <button type="button" class="btn stop on" tabindex="0" title="Press Esc in the pane: ends this turn, keeps the work, also stops running subagents"><svg class="ic" aria-hidden="true"><use href="#i-stop"/></svg>Stop</button>
+  <button type="button" class="btn" tabindex="-1" aria-disabled="true" title="Available when Claude is waiting for you"><svg class="ic" aria-hidden="true"><use href="#i-compact"/></svg>Compact</button>
+  <button type="button" class="btn" tabindex="-1" aria-disabled="true" title="Available when Claude is waiting for you"><svg class="ic" aria-hidden="true"><use href="#i-clear"/></svg>Clear…</button>
+  <span class="popwrap"><button type="button" class="btn" tabindex="-1" aria-expanded="false" aria-controls="model-pop" aria-disabled="true" title="Available when Claude is waiting for you"><svg class="ic" aria-hidden="true"><use href="#i-model"/></svg>Model: <span class="mono">sonnet</span><svg class="ic" aria-hidden="true"><use href="#i-chev"/></svg></button></span>
+  <button type="button" class="btn" tabindex="-1" aria-disabled="true" title="Available when Claude is waiting for you"><svg class="ic" aria-hidden="true"><use href="#i-rewind"/></svg>Rewind</button>
+  <span class="sp"></span>
+  <button type="button" class="btn danger" tabindex="-1" title="Claude exits and the pane closes"><svg class="ic" aria-hidden="true"><use href="#i-end"/></svg>End session…</button>
+</div></div></div>
+<div class="state"><div class="state-h"><span class="state-t">Text in the message box</span><span class="state-n">Rewind needs an empty prompt.</span></div><div class="state-b col"><div class="qa" role="toolbar" aria-label="Session actions">
+  <button type="button" class="btn stop" aria-disabled="true" tabindex="0" title="Nothing to stop: Claude is waiting"><svg class="ic" aria-hidden="true"><use href="#i-stop"/></svg>Stop</button>
+  <button type="button" class="btn" tabindex="-1" title="Sends /compact: summarises the conversation to free context"><svg class="ic" aria-hidden="true"><use href="#i-compact"/></svg>Compact</button>
+  <button type="button" class="btn" tabindex="-1" title="Sends /clear after you confirm"><svg class="ic" aria-hidden="true"><use href="#i-clear"/></svg>Clear…</button>
+  <span class="popwrap"><button type="button" class="btn" tabindex="-1" aria-expanded="false" aria-controls="model-pop"><svg class="ic" aria-hidden="true"><use href="#i-model"/></svg>Model: <span class="mono">sonnet</span><svg class="ic" aria-hidden="true"><use href="#i-chev"/></svg></button></span>
+  <button type="button" class="btn" tabindex="-1" aria-disabled="true" title="Empty the message box first"><svg class="ic" aria-hidden="true"><use href="#i-rewind"/></svg>Rewind</button>
+  <span class="sp"></span>
+  <button type="button" class="btn danger" tabindex="-1" title="Claude exits and the pane closes"><svg class="ic" aria-hidden="true"><use href="#i-end"/></svg>End session…</button>
+</div></div></div>
+<div class="state"><div class="state-h"><span class="state-t">Model open</span></div><div class="state-b col"><div class="qa" role="toolbar" aria-label="Session actions">
+  <button type="button" class="btn stop" aria-disabled="true" tabindex="0" title="Nothing to stop: Claude is waiting"><svg class="ic" aria-hidden="true"><use href="#i-stop"/></svg>Stop</button>
+  <button type="button" class="btn" tabindex="-1" title="Sends /compact: summarises the conversation to free context"><svg class="ic" aria-hidden="true"><use href="#i-compact"/></svg>Compact</button>
+  <button type="button" class="btn" tabindex="-1" title="Sends /clear after you confirm"><svg class="ic" aria-hidden="true"><use href="#i-clear"/></svg>Clear…</button>
+  <span class="popwrap"><button type="button" class="btn" tabindex="-1" aria-expanded="true" aria-controls="model-pop"><svg class="ic" aria-hidden="true"><use href="#i-model"/></svg>Model: <span class="mono">sonnet</span><svg class="ic" aria-hidden="true"><use href="#i-chev"/></svg></button></span>
+  <button type="button" class="btn" tabindex="-1" title="Esc Esc on an empty prompt: opens Claude’s rewind menu in the terminal"><svg class="ic" aria-hidden="true"><use href="#i-rewind"/></svg>Rewind</button>
+  <span class="sp"></span>
+  <button type="button" class="btn danger" tabindex="-1" title="Claude exits and the pane closes"><svg class="ic" aria-hidden="true"><use href="#i-end"/></svg>End session…</button>
+</div><div class="pop" id="model-pop" role="group" aria-label="Switch model">
+  <label for="mp-sel" class="pop-l">Model for builder-1</label>
+  <select id="mp-sel">
+    <optgroup label="Latest"><option>Fable 5.1 (claude-fable-5-1)</option><option>Opus 5.5 (claude-opus-5-5)</option><option selected>Sonnet 5.5 (claude-sonnet-5-5)</option><option>Haiku 5.5 (claude-haiku-5-5)</option></optgroup>
+    <optgroup label="Aliases"><option>best</option><option>opus</option><option>sonnet</option><option>haiku</option><option>opusplan</option><option>opus[1m]</option><option>sonnet[1m]</option></optgroup>
+    <optgroup label="Older"><option>claude-opus-5</option><option>claude-sonnet-4-6</option></optgroup>
+    <option>Custom ID…</option>
+  </select>
+  <p class="pop-h">Sends <code>/model claude-sonnet-5-5</code> and Enter.</p>
+  <div class="pop-f"><button type="button" class="btn">Cancel</button><button type="button" class="btn primary">Switch model</button></div>
+</div></div></div></div></div><div class="th th-dark"><p class="th-l">Dark</p><div class="states">
+<div class="state"><div class="state-h"><span class="state-t">Claude waiting</span></div><div class="state-b col"><div class="qa" role="toolbar" aria-label="Session actions">
+  <button type="button" class="btn stop" aria-disabled="true" tabindex="0" title="Nothing to stop: Claude is waiting"><svg class="ic" aria-hidden="true"><use href="#i-stop"/></svg>Stop</button>
+  <button type="button" class="btn" tabindex="-1" title="Sends /compact: summarises the conversation to free context"><svg class="ic" aria-hidden="true"><use href="#i-compact"/></svg>Compact</button>
+  <button type="button" class="btn" tabindex="-1" title="Sends /clear after you confirm"><svg class="ic" aria-hidden="true"><use href="#i-clear"/></svg>Clear…</button>
+  <span class="popwrap"><button type="button" class="btn" tabindex="-1" aria-expanded="false" aria-controls="model-pop"><svg class="ic" aria-hidden="true"><use href="#i-model"/></svg>Model: <span class="mono">sonnet</span><svg class="ic" aria-hidden="true"><use href="#i-chev"/></svg></button></span>
+  <button type="button" class="btn" tabindex="-1" title="Esc Esc on an empty prompt: opens Claude’s rewind menu in the terminal"><svg class="ic" aria-hidden="true"><use href="#i-rewind"/></svg>Rewind</button>
+  <span class="sp"></span>
+  <button type="button" class="btn danger" tabindex="-1" title="Claude exits and the pane closes"><svg class="ic" aria-hidden="true"><use href="#i-end"/></svg>End session…</button>
+</div></div></div>
+<div class="state"><div class="state-h"><span class="state-t">Claude working</span><span class="state-n">Stop is live; the rest wait for the prompt.</span></div><div class="state-b col"><div class="qa" role="toolbar" aria-label="Session actions">
+  <button type="button" class="btn stop on" tabindex="0" title="Press Esc in the pane: ends this turn, keeps the work, also stops running subagents"><svg class="ic" aria-hidden="true"><use href="#i-stop"/></svg>Stop</button>
+  <button type="button" class="btn" tabindex="-1" aria-disabled="true" title="Available when Claude is waiting for you"><svg class="ic" aria-hidden="true"><use href="#i-compact"/></svg>Compact</button>
+  <button type="button" class="btn" tabindex="-1" aria-disabled="true" title="Available when Claude is waiting for you"><svg class="ic" aria-hidden="true"><use href="#i-clear"/></svg>Clear…</button>
+  <span class="popwrap"><button type="button" class="btn" tabindex="-1" aria-expanded="false" aria-controls="model-pop" aria-disabled="true" title="Available when Claude is waiting for you"><svg class="ic" aria-hidden="true"><use href="#i-model"/></svg>Model: <span class="mono">sonnet</span><svg class="ic" aria-hidden="true"><use href="#i-chev"/></svg></button></span>
+  <button type="button" class="btn" tabindex="-1" aria-disabled="true" title="Available when Claude is waiting for you"><svg class="ic" aria-hidden="true"><use href="#i-rewind"/></svg>Rewind</button>
+  <span class="sp"></span>
+  <button type="button" class="btn danger" tabindex="-1" title="Claude exits and the pane closes"><svg class="ic" aria-hidden="true"><use href="#i-end"/></svg>End session…</button>
+</div></div></div>
+<div class="state"><div class="state-h"><span class="state-t">Text in the message box</span><span class="state-n">Rewind needs an empty prompt.</span></div><div class="state-b col"><div class="qa" role="toolbar" aria-label="Session actions">
+  <button type="button" class="btn stop" aria-disabled="true" tabindex="0" title="Nothing to stop: Claude is waiting"><svg class="ic" aria-hidden="true"><use href="#i-stop"/></svg>Stop</button>
+  <button type="button" class="btn" tabindex="-1" title="Sends /compact: summarises the conversation to free context"><svg class="ic" aria-hidden="true"><use href="#i-compact"/></svg>Compact</button>
+  <button type="button" class="btn" tabindex="-1" title="Sends /clear after you confirm"><svg class="ic" aria-hidden="true"><use href="#i-clear"/></svg>Clear…</button>
+  <span class="popwrap"><button type="button" class="btn" tabindex="-1" aria-expanded="false" aria-controls="model-pop"><svg class="ic" aria-hidden="true"><use href="#i-model"/></svg>Model: <span class="mono">sonnet</span><svg class="ic" aria-hidden="true"><use href="#i-chev"/></svg></button></span>
+  <button type="button" class="btn" tabindex="-1" aria-disabled="true" title="Empty the message box first"><svg class="ic" aria-hidden="true"><use href="#i-rewind"/></svg>Rewind</button>
+  <span class="sp"></span>
+  <button type="button" class="btn danger" tabindex="-1" title="Claude exits and the pane closes"><svg class="ic" aria-hidden="true"><use href="#i-end"/></svg>End session…</button>
+</div></div></div>
+<div class="state"><div class="state-h"><span class="state-t">Model open</span></div><div class="state-b col"><div class="qa" role="toolbar" aria-label="Session actions">
+  <button type="button" class="btn stop" aria-disabled="true" tabindex="0" title="Nothing to stop: Claude is waiting"><svg class="ic" aria-hidden="true"><use href="#i-stop"/></svg>Stop</button>
+  <button type="button" class="btn" tabindex="-1" title="Sends /compact: summarises the conversation to free context"><svg class="ic" aria-hidden="true"><use href="#i-compact"/></svg>Compact</button>
+  <button type="button" class="btn" tabindex="-1" title="Sends /clear after you confirm"><svg class="ic" aria-hidden="true"><use href="#i-clear"/></svg>Clear…</button>
+  <span class="popwrap"><button type="button" class="btn" tabindex="-1" aria-expanded="true" aria-controls="model-pop"><svg class="ic" aria-hidden="true"><use href="#i-model"/></svg>Model: <span class="mono">sonnet</span><svg class="ic" aria-hidden="true"><use href="#i-chev"/></svg></button></span>
+  <button type="button" class="btn" tabindex="-1" title="Esc Esc on an empty prompt: opens Claude’s rewind menu in the terminal"><svg class="ic" aria-hidden="true"><use href="#i-rewind"/></svg>Rewind</button>
+  <span class="sp"></span>
+  <button type="button" class="btn danger" tabindex="-1" title="Claude exits and the pane closes"><svg class="ic" aria-hidden="true"><use href="#i-end"/></svg>End session…</button>
+</div><div class="pop" id="model-pop" role="group" aria-label="Switch model">
+  <label for="mp-sel" class="pop-l">Model for builder-1</label>
+  <select id="mp-sel">
+    <optgroup label="Latest"><option>Fable 5.1 (claude-fable-5-1)</option><option>Opus 5.5 (claude-opus-5-5)</option><option selected>Sonnet 5.5 (claude-sonnet-5-5)</option><option>Haiku 5.5 (claude-haiku-5-5)</option></optgroup>
+    <optgroup label="Aliases"><option>best</option><option>opus</option><option>sonnet</option><option>haiku</option><option>opusplan</option><option>opus[1m]</option><option>sonnet[1m]</option></optgroup>
+    <optgroup label="Older"><option>claude-opus-5</option><option>claude-sonnet-4-6</option></optgroup>
+    <option>Custom ID…</option>
+  </select>
+  <p class="pop-h">Sends <code>/model claude-sonnet-5-5</code> and Enter.</p>
+  <div class="pop-f"><button type="button" class="btn">Cancel</button><button type="button" class="btn primary">Switch model</button></div>
+</div></div></div></div></div></div></section>
+<section id="s-prompt" aria-labelledby="s-prompt-h"><h2 id="s-prompt-h">Permission prompt buttons</h2><p class="intro">When Claude asks, the attention note above the message box turns into one button per option, in Claude’s order and words. Labels come from the pane and are set as text. A button posts the option number to the answer route.</p><div class="pair"><div class="th th-light"><p class="th-l">Light</p><div class="states">
+<div class="state"><div class="state-h"><span class="state-t">Asking</span></div><div class="state-b col"><div class="composer demo"><div class="ask" role="group" aria-labelledby="ask-q-a">
+  <div class="ask-h"><span class="st pill" data-s="attn"><span class="st-g" aria-hidden="true"></span>Needs you</span><span class="ask-what">Bash command: <code>npm run build</code></span></div>
+  <p class="ask-q" id="ask-q-a">Do you want to proceed?</p>
+  <div class="ask-opts"><button type="button" class="pbtn"><kbd>1</kbd><span>Yes</span></button><button type="button" class="pbtn"><kbd>2</kbd><span>Yes, and always allow access to ~/projects/demo-api from this project</span></button><button type="button" class="pbtn"><kbd>3</kbd><span>Yes, and switch to auto mode · auto mode handles these prompts for you</span></button><button type="button" class="pbtn"><kbd>4</kbd><span>No</span></button>
+  <button type="button" class="pbtn esc"><kbd>Esc</kbd><span>Cancel, same as No</span></button></div>
+  <p class="ask-hint">Each button presses its number in the pane. Claude answers at once; no Enter.</p>
+  
+</div><div class="inbox m-auto">
+  <button type="button" class="shell" aria-pressed="false" title="Shell mode: send the text as a ! command"><svg class="ic" aria-hidden="true"><use href="#i-shell"/></svg><span>Shell</span><span class="onoff" aria-hidden="true">off</span></button>
+  <span class="prompt" aria-hidden="true">›</span>
+  <span class="field" role="textbox" aria-label="Message to the agent"><span class="ph">Message builder-1…</span></span>
+  <button type="button" class="btn ghost icon" aria-label="Commands (/)" title="Commands: type / or click"><svg class="ic" aria-hidden="true"><use href="#i-cmd"/></svg></button>
+  <button type="button" class="btn primary icon" aria-label="Send (Enter)"><svg class="ic" aria-hidden="true"><use href="#i-send"/></svg></button>
+</div></div></div></div>
+<div class="state"><div class="state-h"><span class="state-t">An option with “bypass”</span><span class="state-n">No button: nika never moves a session into bypass. Synthetic label.</span></div><div class="state-b col"><div class="ask" role="group" aria-labelledby="ask-q-b">
+  <div class="ask-h"><span class="st pill" data-s="attn"><span class="st-g" aria-hidden="true"></span>Needs you</span><span class="ask-what">Bash command: <code>npm run build</code></span></div>
+  <p class="ask-q" id="ask-q-b">Do you want to proceed?</p>
+  <div class="ask-opts"><button type="button" class="pbtn"><kbd>1</kbd><span>Yes</span></button><div class="pbtn-off"><kbd>2</kbd><span>Yes, and bypass permissions for this session<span class="pnote">Answer this one in the terminal</span></span></div><button type="button" class="pbtn"><kbd>3</kbd><span>No</span></button>
+  <button type="button" class="pbtn esc"><kbd>Esc</kbd><span>Cancel, same as No</span></button></div>
+  <p class="ask-hint">Each button presses its number in the pane. Claude answers at once; no Enter.</p>
+  
+</div></div></div>
+<div class="state"><div class="state-h"><span class="state-t">After a press, question changed</span><span class="state-n">409 prompt-changed. 409 no-prompt says “The question is gone.”</span></div><div class="state-b col"><div class="ask" role="group" aria-labelledby="ask-q-c">
+  <div class="ask-h"><span class="st pill" data-s="attn"><span class="st-g" aria-hidden="true"></span>Needs you</span><span class="ask-what">Bash command: <code>npm run build</code></span></div>
+  <p class="ask-q" id="ask-q-c">Do you want to proceed?</p>
+  <div class="ask-opts"><button type="button" class="pbtn" aria-disabled="true"><kbd>1</kbd><span>Yes</span></button><button type="button" class="pbtn" aria-disabled="true"><kbd>2</kbd><span>Yes, and always allow access to ~/projects/demo-api from this project</span></button><button type="button" class="pbtn" aria-disabled="true"><kbd>3</kbd><span>Yes, and switch to auto mode · auto mode handles these prompts for you</span></button><button type="button" class="pbtn" aria-disabled="true"><kbd>4</kbd><span>No</span></button>
+  <button type="button" class="pbtn esc" aria-disabled="true"><kbd>Esc</kbd><span>Cancel, same as No</span></button></div>
+  <p class="ask-hint"><span class="echo-s">Sent 1 to %12</span> Buttons stay off until the question changes.</p>
+  <p class="problem" role="alert">The question changed; check the session.</p>
+</div></div></div></div></div><div class="th th-dark"><p class="th-l">Dark</p><div class="states">
+<div class="state"><div class="state-h"><span class="state-t">Asking</span></div><div class="state-b col"><div class="composer demo"><div class="ask" role="group" aria-labelledby="ask-q-a">
+  <div class="ask-h"><span class="st pill" data-s="attn"><span class="st-g" aria-hidden="true"></span>Needs you</span><span class="ask-what">Bash command: <code>npm run build</code></span></div>
+  <p class="ask-q" id="ask-q-a">Do you want to proceed?</p>
+  <div class="ask-opts"><button type="button" class="pbtn"><kbd>1</kbd><span>Yes</span></button><button type="button" class="pbtn"><kbd>2</kbd><span>Yes, and always allow access to ~/projects/demo-api from this project</span></button><button type="button" class="pbtn"><kbd>3</kbd><span>Yes, and switch to auto mode · auto mode handles these prompts for you</span></button><button type="button" class="pbtn"><kbd>4</kbd><span>No</span></button>
+  <button type="button" class="pbtn esc"><kbd>Esc</kbd><span>Cancel, same as No</span></button></div>
+  <p class="ask-hint">Each button presses its number in the pane. Claude answers at once; no Enter.</p>
+  
+</div><div class="inbox m-auto">
+  <button type="button" class="shell" aria-pressed="false" title="Shell mode: send the text as a ! command"><svg class="ic" aria-hidden="true"><use href="#i-shell"/></svg><span>Shell</span><span class="onoff" aria-hidden="true">off</span></button>
+  <span class="prompt" aria-hidden="true">›</span>
+  <span class="field" role="textbox" aria-label="Message to the agent"><span class="ph">Message builder-1…</span></span>
+  <button type="button" class="btn ghost icon" aria-label="Commands (/)" title="Commands: type / or click"><svg class="ic" aria-hidden="true"><use href="#i-cmd"/></svg></button>
+  <button type="button" class="btn primary icon" aria-label="Send (Enter)"><svg class="ic" aria-hidden="true"><use href="#i-send"/></svg></button>
+</div></div></div></div>
+<div class="state"><div class="state-h"><span class="state-t">An option with “bypass”</span><span class="state-n">No button: nika never moves a session into bypass. Synthetic label.</span></div><div class="state-b col"><div class="ask" role="group" aria-labelledby="ask-q-b">
+  <div class="ask-h"><span class="st pill" data-s="attn"><span class="st-g" aria-hidden="true"></span>Needs you</span><span class="ask-what">Bash command: <code>npm run build</code></span></div>
+  <p class="ask-q" id="ask-q-b">Do you want to proceed?</p>
+  <div class="ask-opts"><button type="button" class="pbtn"><kbd>1</kbd><span>Yes</span></button><div class="pbtn-off"><kbd>2</kbd><span>Yes, and bypass permissions for this session<span class="pnote">Answer this one in the terminal</span></span></div><button type="button" class="pbtn"><kbd>3</kbd><span>No</span></button>
+  <button type="button" class="pbtn esc"><kbd>Esc</kbd><span>Cancel, same as No</span></button></div>
+  <p class="ask-hint">Each button presses its number in the pane. Claude answers at once; no Enter.</p>
+  
+</div></div></div>
+<div class="state"><div class="state-h"><span class="state-t">After a press, question changed</span><span class="state-n">409 prompt-changed. 409 no-prompt says “The question is gone.”</span></div><div class="state-b col"><div class="ask" role="group" aria-labelledby="ask-q-c">
+  <div class="ask-h"><span class="st pill" data-s="attn"><span class="st-g" aria-hidden="true"></span>Needs you</span><span class="ask-what">Bash command: <code>npm run build</code></span></div>
+  <p class="ask-q" id="ask-q-c">Do you want to proceed?</p>
+  <div class="ask-opts"><button type="button" class="pbtn" aria-disabled="true"><kbd>1</kbd><span>Yes</span></button><button type="button" class="pbtn" aria-disabled="true"><kbd>2</kbd><span>Yes, and always allow access to ~/projects/demo-api from this project</span></button><button type="button" class="pbtn" aria-disabled="true"><kbd>3</kbd><span>Yes, and switch to auto mode · auto mode handles these prompts for you</span></button><button type="button" class="pbtn" aria-disabled="true"><kbd>4</kbd><span>No</span></button>
+  <button type="button" class="pbtn esc" aria-disabled="true"><kbd>Esc</kbd><span>Cancel, same as No</span></button></div>
+  <p class="ask-hint"><span class="echo-s">Sent 1 to %12</span> Buttons stay off until the question changes.</p>
+  <p class="problem" role="alert">The question changed; check the session.</p>
+</div></div></div></div></div></div></section>
+<section id="s-shell" aria-labelledby="s-shell-h"><h2 id="s-shell-h">Shell toggle</h2><p class="intro">Shell has its own look: ink. On, the toggle fills, says “on”, the prompt sign turns into “!”, and the message box gets a heavy ink edge in place of the mode edge. It turns itself off after each send.</p><div class="pair"><div class="th th-light"><p class="th-l">Light</p><div class="states">
+<div class="state"><div class="state-h"><span class="state-t">Shell off</span></div><div class="state-b col"><div class="inbox m-edits">
+  <button type="button" class="shell" aria-pressed="false" title="Shell mode: send the text as a ! command"><svg class="ic" aria-hidden="true"><use href="#i-shell"/></svg><span>Shell</span><span class="onoff" aria-hidden="true">off</span></button>
+  <span class="prompt" aria-hidden="true">›</span>
+  <span class="field" role="textbox" aria-label="Message to the agent"><span class="ph">Message builder-1…</span></span>
+  <button type="button" class="btn ghost icon" aria-label="Commands (/)" title="Commands: type / or click"><svg class="ic" aria-hidden="true"><use href="#i-cmd"/></svg></button>
+  <button type="button" class="btn primary icon" aria-label="Send (Enter)"><svg class="ic" aria-hidden="true"><use href="#i-send"/></svg></button>
+</div></div></div>
+<div class="state"><div class="state-h"><span class="state-t">Shell on</span><span class="state-n">Enter sends Ctrl-U, then ! and the text, then Enter.</span></div><div class="state-b col"><div class="inbox m-edits shell-on">
+  <button type="button" class="shell" aria-pressed="true" title="Shell mode: send the text as a ! command"><svg class="ic" aria-hidden="true"><use href="#i-shell"/></svg><span>Shell</span><span class="onoff" aria-hidden="true">on</span></button>
+  <span class="prompt" aria-hidden="true">!</span>
+  <span class="field" role="textbox" aria-label="Message to the agent"><span class="typed">git status --short<span class="caret"></span></span></span>
+  <button type="button" class="btn ghost icon" aria-label="Commands (/)" title="Commands: type / or click" aria-disabled="true"><svg class="ic" aria-hidden="true"><use href="#i-cmd"/></svg></button>
+  <button type="button" class="btn primary icon" aria-label="Send (Enter)"><svg class="ic" aria-hidden="true"><use href="#i-send"/></svg></button>
+</div><p class="hint">Shell on: Enter runs this through Claude’s ! mode, then shell turns off.</p></div></div></div></div><div class="th th-dark"><p class="th-l">Dark</p><div class="states">
+<div class="state"><div class="state-h"><span class="state-t">Shell off</span></div><div class="state-b col"><div class="inbox m-edits">
+  <button type="button" class="shell" aria-pressed="false" title="Shell mode: send the text as a ! command"><svg class="ic" aria-hidden="true"><use href="#i-shell"/></svg><span>Shell</span><span class="onoff" aria-hidden="true">off</span></button>
+  <span class="prompt" aria-hidden="true">›</span>
+  <span class="field" role="textbox" aria-label="Message to the agent"><span class="ph">Message builder-1…</span></span>
+  <button type="button" class="btn ghost icon" aria-label="Commands (/)" title="Commands: type / or click"><svg class="ic" aria-hidden="true"><use href="#i-cmd"/></svg></button>
+  <button type="button" class="btn primary icon" aria-label="Send (Enter)"><svg class="ic" aria-hidden="true"><use href="#i-send"/></svg></button>
+</div></div></div>
+<div class="state"><div class="state-h"><span class="state-t">Shell on</span><span class="state-n">Enter sends Ctrl-U, then ! and the text, then Enter.</span></div><div class="state-b col"><div class="inbox m-edits shell-on">
+  <button type="button" class="shell" aria-pressed="true" title="Shell mode: send the text as a ! command"><svg class="ic" aria-hidden="true"><use href="#i-shell"/></svg><span>Shell</span><span class="onoff" aria-hidden="true">on</span></button>
+  <span class="prompt" aria-hidden="true">!</span>
+  <span class="field" role="textbox" aria-label="Message to the agent"><span class="typed">git status --short<span class="caret"></span></span></span>
+  <button type="button" class="btn ghost icon" aria-label="Commands (/)" title="Commands: type / or click" aria-disabled="true"><svg class="ic" aria-hidden="true"><use href="#i-cmd"/></svg></button>
+  <button type="button" class="btn primary icon" aria-label="Send (Enter)"><svg class="ic" aria-hidden="true"><use href="#i-send"/></svg></button>
+</div><p class="hint">Shell on: Enter runs this through Claude’s ! mode, then shell turns off.</p></div></div></div></div></div></section>
+<section id="s-palette" aria-labelledby="s-palette-h"><h2 id="s-palette-h">Command palette</h2><p class="intro">Typing / as the first character opens the list above the message box. Each row: name and arguments, where it comes from, what it does, and a note when it opens a dialog inside the terminal.</p><div class="pair"><div class="th th-light"><p class="th-l">Light</p><div class="composer demo"><div class="pal" id="palette">
+  <div class="pal-h"><span><b>Commands</b> <span class="muted">6 match /co</span></span><span class="pal-k"><kbd>↑</kbd><kbd>↓</kbd> choose <kbd>Enter</kbd> insert <kbd>Esc</kbd> close</span></div>
+  <ul role="listbox" aria-label="Commands" class="pal-l"><li role="option" id="pal-0" aria-selected="true" class="pal-o">
+    <span class="pal-n"><span class="mono"><b>/compact</b></span> <span class="mono pal-a">[instructions]</span></span>
+    <span class="pal-s">Built-in</span>
+    <span class="pal-d">Summarize the conversation to free context</span>
+    
+  </li><li role="option" id="pal-1" aria-selected="false" class="pal-o">
+    <span class="pal-n"><span class="mono"><b>/config</b></span> <span class="mono pal-a">[key=value]</span></span>
+    <span class="pal-s">Built-in</span>
+    <span class="pal-d">Open settings; key=value sets one directly</span>
+    <span class="pal-dlg"><svg class="ic" aria-hidden="true"><use href="#i-dialog"/></svg>Opens a dialog in the terminal</span>
+  </li><li role="option" id="pal-2" aria-selected="false" class="pal-o">
+    <span class="pal-n"><span class="mono"><b>/context</b></span> <span class="mono pal-a">[all]</span></span>
+    <span class="pal-s">Built-in</span>
+    <span class="pal-d">Show context usage</span>
+    
+  </li><li role="option" id="pal-3" aria-selected="false" class="pal-o">
+    <span class="pal-n"><span class="mono"><b>/copy</b></span> <span class="mono pal-a">[N]</span></span>
+    <span class="pal-s">Built-in</span>
+    <span class="pal-d">Copy the last response</span>
+    <span class="pal-dlg"><svg class="ic" aria-hidden="true"><use href="#i-dialog"/></svg>Opens a dialog in the terminal</span>
+  </li><li role="option" id="pal-4" aria-selected="false" class="pal-o">
+    <span class="pal-n"><span class="mono"><b>/commit-notes</b></span></span>
+    <span class="pal-s">Project</span>
+    <span class="pal-d">Draft release notes from the commits on this branch</span>
+    
+  </li><li role="option" id="pal-5" aria-selected="false" class="pal-o">
+    <span class="pal-n"><span class="mono"><b>/demo-tools:coverage</b></span> <span class="mono pal-a">[path]</span></span>
+    <span class="pal-s">Plugin demo-tools</span>
+    <span class="pal-d">Show test coverage for a folder</span>
+    
+  </li></ul>
+</div><div class="inbox m-plan" data-palette="open">
+  <button type="button" class="shell" aria-pressed="false" title="Shell mode: send the text as a ! command"><svg class="ic" aria-hidden="true"><use href="#i-shell"/></svg><span>Shell</span><span class="onoff" aria-hidden="true">off</span></button>
+  <span class="prompt" aria-hidden="true">›</span>
+  <span class="field" role="textbox" aria-label="Message to the agent"><span class="typed">/co<span class="caret"></span></span></span>
+  <button type="button" class="btn ghost icon" aria-label="Commands (/)" title="Commands: type / or click" aria-disabled="true"><svg class="ic" aria-hidden="true"><use href="#i-cmd"/></svg></button>
+  <button type="button" class="btn primary icon" aria-label="Send (Enter)"><svg class="ic" aria-hidden="true"><use href="#i-send"/></svg></button>
+</div></div></div><div class="th th-dark"><p class="th-l">Dark</p><div class="composer demo"><div class="pal" id="palette">
+  <div class="pal-h"><span><b>Commands</b> <span class="muted">6 match /co</span></span><span class="pal-k"><kbd>↑</kbd><kbd>↓</kbd> choose <kbd>Enter</kbd> insert <kbd>Esc</kbd> close</span></div>
+  <ul role="listbox" aria-label="Commands" class="pal-l"><li role="option" id="pal-0" aria-selected="true" class="pal-o">
+    <span class="pal-n"><span class="mono"><b>/compact</b></span> <span class="mono pal-a">[instructions]</span></span>
+    <span class="pal-s">Built-in</span>
+    <span class="pal-d">Summarize the conversation to free context</span>
+    
+  </li><li role="option" id="pal-1" aria-selected="false" class="pal-o">
+    <span class="pal-n"><span class="mono"><b>/config</b></span> <span class="mono pal-a">[key=value]</span></span>
+    <span class="pal-s">Built-in</span>
+    <span class="pal-d">Open settings; key=value sets one directly</span>
+    <span class="pal-dlg"><svg class="ic" aria-hidden="true"><use href="#i-dialog"/></svg>Opens a dialog in the terminal</span>
+  </li><li role="option" id="pal-2" aria-selected="false" class="pal-o">
+    <span class="pal-n"><span class="mono"><b>/context</b></span> <span class="mono pal-a">[all]</span></span>
+    <span class="pal-s">Built-in</span>
+    <span class="pal-d">Show context usage</span>
+    
+  </li><li role="option" id="pal-3" aria-selected="false" class="pal-o">
+    <span class="pal-n"><span class="mono"><b>/copy</b></span> <span class="mono pal-a">[N]</span></span>
+    <span class="pal-s">Built-in</span>
+    <span class="pal-d">Copy the last response</span>
+    <span class="pal-dlg"><svg class="ic" aria-hidden="true"><use href="#i-dialog"/></svg>Opens a dialog in the terminal</span>
+  </li><li role="option" id="pal-4" aria-selected="false" class="pal-o">
+    <span class="pal-n"><span class="mono"><b>/commit-notes</b></span></span>
+    <span class="pal-s">Project</span>
+    <span class="pal-d">Draft release notes from the commits on this branch</span>
+    
+  </li><li role="option" id="pal-5" aria-selected="false" class="pal-o">
+    <span class="pal-n"><span class="mono"><b>/demo-tools:coverage</b></span> <span class="mono pal-a">[path]</span></span>
+    <span class="pal-s">Plugin demo-tools</span>
+    <span class="pal-d">Show test coverage for a folder</span>
+    
+  </li></ul>
+</div><div class="inbox m-plan" data-palette="open">
+  <button type="button" class="shell" aria-pressed="false" title="Shell mode: send the text as a ! command"><svg class="ic" aria-hidden="true"><use href="#i-shell"/></svg><span>Shell</span><span class="onoff" aria-hidden="true">off</span></button>
+  <span class="prompt" aria-hidden="true">›</span>
+  <span class="field" role="textbox" aria-label="Message to the agent"><span class="typed">/co<span class="caret"></span></span></span>
+  <button type="button" class="btn ghost icon" aria-label="Commands (/)" title="Commands: type / or click" aria-disabled="true"><svg class="ic" aria-hidden="true"><use href="#i-cmd"/></svg></button>
+  <button type="button" class="btn primary icon" aria-label="Send (Enter)"><svg class="ic" aria-hidden="true"><use href="#i-send"/></svg></button>
+</div></div></div></div></section>
+<section id="s-end" aria-labelledby="s-end-h"><h2 id="s-end-h">End session</h2><p class="intro">A confirm dialog, focus on Cancel. While nika waits for Claude to exit, Escape and Cancel do nothing. If Claude keeps running, the dialog says so and offers only Close.</p><div class="pair"><div class="th th-light"><p class="th-l">Light</p><div class="dlgs"><div class="scrim"><div class="dlg" role="dialog" aria-modal="true" aria-labelledby="end-h-default">
+  <h4 id="end-h-default" class="dlg-t">End builder-1’s session?</h4>
+  
+  <p>Claude exits and the pane closes. Resume later with Copy resume command.</p>
+  <p class="dlg-n">Claude is working. nika presses Esc first to end the turn, then ends the session.</p>
+  
+  <div class="dlg-f"><button type="button" class="btn ring">Cancel</button><button type="button" class="btn danger fill">End session</button></div>
+</div></div><div class="scrim"><div class="dlg" role="dialog" aria-modal="true" aria-labelledby="end-h-ending">
+  <h4 id="end-h-ending" class="dlg-t">End builder-1’s session?</h4>
+  
+  <p>Claude exits and the pane closes. Resume later with Copy resume command.</p>
+  
+  <p class="dlg-n" aria-live="polite">Waiting for Claude to exit…</p>
+  <div class="dlg-f"><button type="button" class="btn" aria-disabled="true">Cancel</button><button type="button" class="btn danger fill" aria-disabled="true" aria-busy="true"><span class="spin" aria-hidden="true"></span>Ending…</button></div>
+</div></div><div class="scrim"><div class="dlg" role="dialog" aria-modal="true" aria-labelledby="end-h-failed">
+  <h4 id="end-h-failed" class="dlg-t">End builder-1’s session?</h4>
+  <div class="dlg-alert" role="alert"><svg class="ic" aria-hidden="true"><use href="#i-warn"/></svg><span>Claude didn't exit; use Stop or the terminal.</span></div>
+  <p>Claude exits and the pane closes. Resume later with Copy resume command.</p>
+  
+  
+  <div class="dlg-f"><button type="button" class="btn">Close</button></div>
+</div></div></div></div><div class="th th-dark"><p class="th-l">Dark</p><div class="dlgs"><div class="scrim"><div class="dlg" role="dialog" aria-modal="true" aria-labelledby="end-h-default">
+  <h4 id="end-h-default" class="dlg-t">End builder-1’s session?</h4>
+  
+  <p>Claude exits and the pane closes. Resume later with Copy resume command.</p>
+  <p class="dlg-n">Claude is working. nika presses Esc first to end the turn, then ends the session.</p>
+  
+  <div class="dlg-f"><button type="button" class="btn ring">Cancel</button><button type="button" class="btn danger fill">End session</button></div>
+</div></div><div class="scrim"><div class="dlg" role="dialog" aria-modal="true" aria-labelledby="end-h-ending">
+  <h4 id="end-h-ending" class="dlg-t">End builder-1’s session?</h4>
+  
+  <p>Claude exits and the pane closes. Resume later with Copy resume command.</p>
+  
+  <p class="dlg-n" aria-live="polite">Waiting for Claude to exit…</p>
+  <div class="dlg-f"><button type="button" class="btn" aria-disabled="true">Cancel</button><button type="button" class="btn danger fill" aria-disabled="true" aria-busy="true"><span class="spin" aria-hidden="true"></span>Ending…</button></div>
+</div></div><div class="scrim"><div class="dlg" role="dialog" aria-modal="true" aria-labelledby="end-h-failed">
+  <h4 id="end-h-failed" class="dlg-t">End builder-1’s session?</h4>
+  <div class="dlg-alert" role="alert"><svg class="ic" aria-hidden="true"><use href="#i-warn"/></svg><span>Claude didn't exit; use Stop or the terminal.</span></div>
+  <p>Claude exits and the pane closes. Resume later with Copy resume command.</p>
+  
+  
+  <div class="dlg-f"><button type="button" class="btn">Close</button></div>
+</div></div></div></div></div></section>
+<section id="s-rows" aria-labelledby="s-rows-h"><h2 id="s-rows-h">Dashboard rows</h2><p class="intro">A mode column right after status, app tier only. Rows without a live pane leave it empty. An unconfirmed mode is a hollow dashed tag; the word moves to the tooltip and the accessible name. At ≤ 860 px the tag drops to its icon, like the status column drops to its glyph.</p><div class="stack"><div class="th th-light"><p class="th-l">Light</p><div class="rows-scroll"><ul class="rows" aria-label="demo-api agents">
+<li class="row" data-s="attn">
+  <span class="c-st"><span class="st pill" data-s="attn"><span class="st-g" aria-hidden="true"></span>Needs you</span></span>
+  <span class="c-mode"><span class="mode m-edits" data-confirmed="true" title="Permission mode: Accept edits"><svg class="ic" aria-hidden="true"><use href="#i-m-edits"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Accept edits</span></span></span>
+  <a class="name" href="#s-rows">reviewer-2</a>
+  <span class="c-model"><span class="model">opus</span></span>
+  <span class="what">Asking to run a command</span>
+  <span class="c-act">4 min</span><span class="c-pane mono">%14</span>
+  <button type="button" class="btn icon ghost" aria-label="More for reviewer-2">⋯</button>
+</li>
+<li class="row" data-s="busy">
+  <span class="c-st"><span class="st pill" data-s="busy"><span class="st-g" aria-hidden="true"></span>Working</span></span>
+  <span class="c-mode"><span class="mode m-bypass" data-confirmed="true" title="Permission mode: Bypass"><svg class="ic" aria-hidden="true"><use href="#i-m-bypass"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Bypass</span></span></span>
+  <a class="name" href="#s-rows">migrator</a>
+  <span class="c-model"><span class="model">sonnet</span></span>
+  <span class="what">Re-run the schema migration on the scratch database</span>
+  <span class="c-act">now</span><span class="c-pane mono">%15</span>
+  <button type="button" class="btn icon ghost" aria-label="More for migrator">⋯</button>
+</li>
+<li class="row" data-s="busy">
+  <span class="c-st"><span class="st pill" data-s="busy"><span class="st-g" aria-hidden="true"></span>Working</span></span>
+  <span class="c-mode"><span class="mode m-plan" data-confirmed="true" title="Permission mode: Plan"><svg class="ic" aria-hidden="true"><use href="#i-m-plan"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Plan</span></span></span>
+  <a class="name" href="#s-rows">builder-1</a>
+  <span class="c-model"><span class="model">sonnet</span></span>
+  <span class="what">Implement cursor pagination for the agents route</span>
+  <span class="c-act">now</span><span class="c-pane mono">%12</span>
+  <button type="button" class="btn icon ghost" aria-label="More for builder-1">⋯</button>
+</li>
+<li class="row" data-s="busy">
+  <span class="c-st"><span class="st pill" data-s="busy"><span class="st-g" aria-hidden="true"></span>Working</span></span>
+  <span class="c-mode"><span class="mode m-plan" data-confirmed="false" title="Permission mode: Plan (launch setting, not confirmed by Claude yet)"><svg class="ic" aria-hidden="true"><use href="#i-m-plan"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Plan</span><span class="sr-only">, unconfirmed</span></span></span>
+  <a class="name" href="#s-rows">designer</a>
+  <span class="c-model"><span class="model">opus</span></span>
+  <span class="what">Starting…</span>
+  <span class="c-act">now</span><span class="c-pane mono">%16</span>
+  <button type="button" class="btn icon ghost" aria-label="More for designer">⋯</button>
+</li>
+<li class="row" data-s="idle">
+  <span class="c-st"><span class="st pill" data-s="idle"><span class="st-g" aria-hidden="true"></span>Waiting</span></span>
+  <span class="c-mode"><span class="mode m-auto" data-confirmed="true" title="Permission mode: Auto"><svg class="ic" aria-hidden="true"><use href="#i-m-auto"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Auto</span></span></span>
+  <a class="name" href="#s-rows">scout-1</a>
+  <span class="c-model"><span class="model">haiku</span></span>
+  <span class="what">List every caller of parseFooter</span>
+  <span class="c-act">11 min</span><span class="c-pane mono">%13</span>
+  <button type="button" class="btn icon ghost" aria-label="More for scout-1">⋯</button>
+</li>
+<li class="row" data-s="idle">
+  <span class="c-st"><span class="st pill" data-s="idle"><span class="st-g" aria-hidden="true"></span>Waiting</span></span>
+  <span class="c-mode"><span class="mode m-manual" data-confirmed="true" title="Permission mode: Manual"><svg class="ic" aria-hidden="true"><use href="#i-m-manual"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Manual</span></span></span>
+  <a class="name" href="#s-rows">orchestrator</a>
+  <span class="c-model"><span class="model">opus</span></span>
+  <span class="what">Split the 0.3 plan into tasks</span>
+  <span class="c-act">2 min</span><span class="c-pane mono">%10</span>
+  <button type="button" class="btn icon ghost" aria-label="More for orchestrator">⋯</button>
+</li>
+<li class="row" data-s="idle">
+  <span class="c-st"><span class="st pill" data-s="idle"><span class="st-g" aria-hidden="true"></span>Waiting</span></span>
+  <span class="c-mode"><span class="mode m-dontask" data-confirmed="true" title="Permission mode: Don't ask"><svg class="ic" aria-hidden="true"><use href="#i-m-dontask"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Don't ask</span></span></span>
+  <a class="name" href="#s-rows">auditor</a>
+  <span class="c-model"><span class="model">sonnet</span></span>
+  <span class="what">Check the deny lists</span>
+  <span class="c-act">25 min</span><span class="c-pane mono">%17</span>
+  <button type="button" class="btn icon ghost" aria-label="More for auditor">⋯</button>
+</li>
+<li class="row" data-s="idle">
+  <span class="c-st"><span class="st pill" data-s="idle"><span class="st-g" aria-hidden="true"></span>Waiting</span></span>
+  <span class="c-mode"><span class="mode m-unknown" data-confirmed="true" title="Permission mode: Mode ?"><svg class="ic" aria-hidden="true"><use href="#i-m-unknown"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Mode ?</span></span></span>
+  <a class="name" href="#s-rows">docs-writer</a>
+  <span class="c-model"><span class="model">sonnet</span></span>
+  <span class="what">Update the packaging guide</span>
+  <span class="c-act">6 min</span><span class="c-pane mono">%18</span>
+  <button type="button" class="btn icon ghost" aria-label="More for docs-writer">⋯</button>
+</li>
+<li class="row" data-s="ended">
+  <span class="c-st"><span class="st pill" data-s="ended"><span class="st-g" aria-hidden="true"></span>Ended</span></span>
+  <span class="c-mode"><span class="sr-only">No live pane, mode not shown</span></span>
+  <a class="name" href="#s-rows">builder-0</a>
+  <span class="c-model"><span class="model">sonnet</span></span>
+  <span class="what">Fix the hygiene scan</span>
+  <span class="c-act">1 h</span><span class="c-pane mono">–</span>
+  <button type="button" class="btn icon ghost" aria-label="More for builder-0">⋯</button>
+</li>
+</ul></div><p class="th-l sub">≤ 860 px</p><ul class="rows narrow-rows" aria-label="Narrow rows"><li class="row narrow" data-s="attn"><span class="c-st"><span class="st pill" data-s="attn"><span class="st-g" aria-hidden="true"></span>Needs you</span></span><span class="c-mode"><span class="mode m-edits icon-only" data-confirmed="true" title="Permission mode: Accept edits"><svg class="ic" aria-hidden="true"><use href="#i-m-edits"/></svg><span class="sr-only">Permission mode: Accept edits</span></span></span><a class="name" href="#s-rows">reviewer-2</a></li><li class="row narrow" data-s="busy"><span class="c-st"><span class="st pill" data-s="busy"><span class="st-g" aria-hidden="true"></span>Working</span></span><span class="c-mode"><span class="mode m-bypass icon-only" data-confirmed="true" title="Permission mode: Bypass"><svg class="ic" aria-hidden="true"><use href="#i-m-bypass"/></svg><span class="sr-only">Permission mode: Bypass</span></span></span><a class="name" href="#s-rows">migrator</a></li><li class="row narrow" data-s="busy"><span class="c-st"><span class="st pill" data-s="busy"><span class="st-g" aria-hidden="true"></span>Working</span></span><span class="c-mode"><span class="mode m-plan icon-only" data-confirmed="false" title="Permission mode: Plan (launch setting, not confirmed by Claude yet)"><svg class="ic" aria-hidden="true"><use href="#i-m-plan"/></svg><span class="sr-only">Permission mode: Plan, unconfirmed</span></span></span><a class="name" href="#s-rows">designer</a></li><li class="row narrow" data-s="idle"><span class="c-st"><span class="st pill" data-s="idle"><span class="st-g" aria-hidden="true"></span>Waiting</span></span><span class="c-mode"><span class="mode m-auto icon-only" data-confirmed="true" title="Permission mode: Auto"><svg class="ic" aria-hidden="true"><use href="#i-m-auto"/></svg><span class="sr-only">Permission mode: Auto</span></span></span><a class="name" href="#s-rows">scout-1</a></li><li class="row narrow" data-s="idle"><span class="c-st"><span class="st pill" data-s="idle"><span class="st-g" aria-hidden="true"></span>Waiting</span></span><span class="c-mode"><span class="mode m-manual icon-only" data-confirmed="true" title="Permission mode: Manual"><svg class="ic" aria-hidden="true"><use href="#i-m-manual"/></svg><span class="sr-only">Permission mode: Manual</span></span></span><a class="name" href="#s-rows">orchestrator</a></li><li class="row narrow" data-s="idle"><span class="c-st"><span class="st pill" data-s="idle"><span class="st-g" aria-hidden="true"></span>Waiting</span></span><span class="c-mode"><span class="mode m-dontask icon-only" data-confirmed="true" title="Permission mode: Don't ask"><svg class="ic" aria-hidden="true"><use href="#i-m-dontask"/></svg><span class="sr-only">Permission mode: Don't ask</span></span></span><a class="name" href="#s-rows">auditor</a></li><li class="row narrow" data-s="idle"><span class="c-st"><span class="st pill" data-s="idle"><span class="st-g" aria-hidden="true"></span>Waiting</span></span><span class="c-mode"><span class="mode m-unknown icon-only" data-confirmed="true" title="Permission mode: Mode ?"><svg class="ic" aria-hidden="true"><use href="#i-m-unknown"/></svg><span class="sr-only">Permission mode: Mode ?</span></span></span><a class="name" href="#s-rows">docs-writer</a></li></ul></div><div class="th th-dark"><p class="th-l">Dark</p><div class="rows-scroll"><ul class="rows" aria-label="demo-api agents">
+<li class="row" data-s="attn">
+  <span class="c-st"><span class="st pill" data-s="attn"><span class="st-g" aria-hidden="true"></span>Needs you</span></span>
+  <span class="c-mode"><span class="mode m-edits" data-confirmed="true" title="Permission mode: Accept edits"><svg class="ic" aria-hidden="true"><use href="#i-m-edits"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Accept edits</span></span></span>
+  <a class="name" href="#s-rows">reviewer-2</a>
+  <span class="c-model"><span class="model">opus</span></span>
+  <span class="what">Asking to run a command</span>
+  <span class="c-act">4 min</span><span class="c-pane mono">%14</span>
+  <button type="button" class="btn icon ghost" aria-label="More for reviewer-2">⋯</button>
+</li>
+<li class="row" data-s="busy">
+  <span class="c-st"><span class="st pill" data-s="busy"><span class="st-g" aria-hidden="true"></span>Working</span></span>
+  <span class="c-mode"><span class="mode m-bypass" data-confirmed="true" title="Permission mode: Bypass"><svg class="ic" aria-hidden="true"><use href="#i-m-bypass"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Bypass</span></span></span>
+  <a class="name" href="#s-rows">migrator</a>
+  <span class="c-model"><span class="model">sonnet</span></span>
+  <span class="what">Re-run the schema migration on the scratch database</span>
+  <span class="c-act">now</span><span class="c-pane mono">%15</span>
+  <button type="button" class="btn icon ghost" aria-label="More for migrator">⋯</button>
+</li>
+<li class="row" data-s="busy">
+  <span class="c-st"><span class="st pill" data-s="busy"><span class="st-g" aria-hidden="true"></span>Working</span></span>
+  <span class="c-mode"><span class="mode m-plan" data-confirmed="true" title="Permission mode: Plan"><svg class="ic" aria-hidden="true"><use href="#i-m-plan"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Plan</span></span></span>
+  <a class="name" href="#s-rows">builder-1</a>
+  <span class="c-model"><span class="model">sonnet</span></span>
+  <span class="what">Implement cursor pagination for the agents route</span>
+  <span class="c-act">now</span><span class="c-pane mono">%12</span>
+  <button type="button" class="btn icon ghost" aria-label="More for builder-1">⋯</button>
+</li>
+<li class="row" data-s="busy">
+  <span class="c-st"><span class="st pill" data-s="busy"><span class="st-g" aria-hidden="true"></span>Working</span></span>
+  <span class="c-mode"><span class="mode m-plan" data-confirmed="false" title="Permission mode: Plan (launch setting, not confirmed by Claude yet)"><svg class="ic" aria-hidden="true"><use href="#i-m-plan"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Plan</span><span class="sr-only">, unconfirmed</span></span></span>
+  <a class="name" href="#s-rows">designer</a>
+  <span class="c-model"><span class="model">opus</span></span>
+  <span class="what">Starting…</span>
+  <span class="c-act">now</span><span class="c-pane mono">%16</span>
+  <button type="button" class="btn icon ghost" aria-label="More for designer">⋯</button>
+</li>
+<li class="row" data-s="idle">
+  <span class="c-st"><span class="st pill" data-s="idle"><span class="st-g" aria-hidden="true"></span>Waiting</span></span>
+  <span class="c-mode"><span class="mode m-auto" data-confirmed="true" title="Permission mode: Auto"><svg class="ic" aria-hidden="true"><use href="#i-m-auto"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Auto</span></span></span>
+  <a class="name" href="#s-rows">scout-1</a>
+  <span class="c-model"><span class="model">haiku</span></span>
+  <span class="what">List every caller of parseFooter</span>
+  <span class="c-act">11 min</span><span class="c-pane mono">%13</span>
+  <button type="button" class="btn icon ghost" aria-label="More for scout-1">⋯</button>
+</li>
+<li class="row" data-s="idle">
+  <span class="c-st"><span class="st pill" data-s="idle"><span class="st-g" aria-hidden="true"></span>Waiting</span></span>
+  <span class="c-mode"><span class="mode m-manual" data-confirmed="true" title="Permission mode: Manual"><svg class="ic" aria-hidden="true"><use href="#i-m-manual"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Manual</span></span></span>
+  <a class="name" href="#s-rows">orchestrator</a>
+  <span class="c-model"><span class="model">opus</span></span>
+  <span class="what">Split the 0.3 plan into tasks</span>
+  <span class="c-act">2 min</span><span class="c-pane mono">%10</span>
+  <button type="button" class="btn icon ghost" aria-label="More for orchestrator">⋯</button>
+</li>
+<li class="row" data-s="idle">
+  <span class="c-st"><span class="st pill" data-s="idle"><span class="st-g" aria-hidden="true"></span>Waiting</span></span>
+  <span class="c-mode"><span class="mode m-dontask" data-confirmed="true" title="Permission mode: Don't ask"><svg class="ic" aria-hidden="true"><use href="#i-m-dontask"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Don't ask</span></span></span>
+  <a class="name" href="#s-rows">auditor</a>
+  <span class="c-model"><span class="model">sonnet</span></span>
+  <span class="what">Check the deny lists</span>
+  <span class="c-act">25 min</span><span class="c-pane mono">%17</span>
+  <button type="button" class="btn icon ghost" aria-label="More for auditor">⋯</button>
+</li>
+<li class="row" data-s="idle">
+  <span class="c-st"><span class="st pill" data-s="idle"><span class="st-g" aria-hidden="true"></span>Waiting</span></span>
+  <span class="c-mode"><span class="mode m-unknown" data-confirmed="true" title="Permission mode: Mode ?"><svg class="ic" aria-hidden="true"><use href="#i-m-unknown"/></svg><span class="sr-only">Permission mode: </span><span class="ml">Mode ?</span></span></span>
+  <a class="name" href="#s-rows">docs-writer</a>
+  <span class="c-model"><span class="model">sonnet</span></span>
+  <span class="what">Update the packaging guide</span>
+  <span class="c-act">6 min</span><span class="c-pane mono">%18</span>
+  <button type="button" class="btn icon ghost" aria-label="More for docs-writer">⋯</button>
+</li>
+<li class="row" data-s="ended">
+  <span class="c-st"><span class="st pill" data-s="ended"><span class="st-g" aria-hidden="true"></span>Ended</span></span>
+  <span class="c-mode"><span class="sr-only">No live pane, mode not shown</span></span>
+  <a class="name" href="#s-rows">builder-0</a>
+  <span class="c-model"><span class="model">sonnet</span></span>
+  <span class="what">Fix the hygiene scan</span>
+  <span class="c-act">1 h</span><span class="c-pane mono">–</span>
+  <button type="button" class="btn icon ghost" aria-label="More for builder-0">⋯</button>
+</li>
+</ul></div><p class="th-l sub">≤ 860 px</p><ul class="rows narrow-rows" aria-label="Narrow rows"><li class="row narrow" data-s="attn"><span class="c-st"><span class="st pill" data-s="attn"><span class="st-g" aria-hidden="true"></span>Needs you</span></span><span class="c-mode"><span class="mode m-edits icon-only" data-confirmed="true" title="Permission mode: Accept edits"><svg class="ic" aria-hidden="true"><use href="#i-m-edits"/></svg><span class="sr-only">Permission mode: Accept edits</span></span></span><a class="name" href="#s-rows">reviewer-2</a></li><li class="row narrow" data-s="busy"><span class="c-st"><span class="st pill" data-s="busy"><span class="st-g" aria-hidden="true"></span>Working</span></span><span class="c-mode"><span class="mode m-bypass icon-only" data-confirmed="true" title="Permission mode: Bypass"><svg class="ic" aria-hidden="true"><use href="#i-m-bypass"/></svg><span class="sr-only">Permission mode: Bypass</span></span></span><a class="name" href="#s-rows">migrator</a></li><li class="row narrow" data-s="busy"><span class="c-st"><span class="st pill" data-s="busy"><span class="st-g" aria-hidden="true"></span>Working</span></span><span class="c-mode"><span class="mode m-plan icon-only" data-confirmed="false" title="Permission mode: Plan (launch setting, not confirmed by Claude yet)"><svg class="ic" aria-hidden="true"><use href="#i-m-plan"/></svg><span class="sr-only">Permission mode: Plan, unconfirmed</span></span></span><a class="name" href="#s-rows">designer</a></li><li class="row narrow" data-s="idle"><span class="c-st"><span class="st pill" data-s="idle"><span class="st-g" aria-hidden="true"></span>Waiting</span></span><span class="c-mode"><span class="mode m-auto icon-only" data-confirmed="true" title="Permission mode: Auto"><svg class="ic" aria-hidden="true"><use href="#i-m-auto"/></svg><span class="sr-only">Permission mode: Auto</span></span></span><a class="name" href="#s-rows">scout-1</a></li><li class="row narrow" data-s="idle"><span class="c-st"><span class="st pill" data-s="idle"><span class="st-g" aria-hidden="true"></span>Waiting</span></span><span class="c-mode"><span class="mode m-manual icon-only" data-confirmed="true" title="Permission mode: Manual"><svg class="ic" aria-hidden="true"><use href="#i-m-manual"/></svg><span class="sr-only">Permission mode: Manual</span></span></span><a class="name" href="#s-rows">orchestrator</a></li><li class="row narrow" data-s="idle"><span class="c-st"><span class="st pill" data-s="idle"><span class="st-g" aria-hidden="true"></span>Waiting</span></span><span class="c-mode"><span class="mode m-dontask icon-only" data-confirmed="true" title="Permission mode: Don't ask"><svg class="ic" aria-hidden="true"><use href="#i-m-dontask"/></svg><span class="sr-only">Permission mode: Don't ask</span></span></span><a class="name" href="#s-rows">auditor</a></li><li class="row narrow" data-s="idle"><span class="c-st"><span class="st pill" data-s="idle"><span class="st-g" aria-hidden="true"></span>Waiting</span></span><span class="c-mode"><span class="mode m-unknown icon-only" data-confirmed="true" title="Permission mode: Mode ?"><svg class="ic" aria-hidden="true"><use href="#i-m-unknown"/></svg><span class="sr-only">Permission mode: Mode ?</span></span></span><a class="name" href="#s-rows">docs-writer</a></li></ul></div></div></section>
+</main>
+</body>
+</html>
