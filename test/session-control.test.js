@@ -30,7 +30,6 @@ const toRow = (r) => {
   const m = /^❯ (.*)$/.exec(r);
   return m ? [sp(`${PROMPT_CHAR}${NB}`), sp(m[1])] : r === '' ? [] : [sp(r)];
 };
-const emptyRow = (r) => r[0]?.t.startsWith(PROMPT_CHAR) && r.slice(1).every((x) => x.s.d || x.t.trim() === '');
 
 /**
  * A fake pane: it renders an input box between two rule rows and a footer (or a permission prompt) from its fields and
@@ -105,7 +104,11 @@ function world(opts = {}) {
           const before = w.box.map(toRow);
           w.box = before.slice();
           const last = w.box.at(-1);
-          w.box[w.box.length - 1] = emptyRow(last) ? [sp(`${PROMPT_CHAR}${NB}`), sp(body.text, false, { fg: 153 })] : [...last, sp(body.text)];
+          // the placeholder and the cursor cell make way for the typed text; plain whitespace in front of them (typed by the user) stays
+          const lead = last.slice(1);
+          const stop = lead.findIndex((x) => x.s.d || x.s.r);
+          const kept = stop < 0 ? lead : lead.slice(0, stop);
+          w.box[w.box.length - 1] = [last[0].t === PROMPT_CHAR ? sp(`${PROMPT_CHAR}${NB}`) : last[0], ...kept, sp(body.text, false, { fg: 153 })];
           w.afterType?.(body);
           if (w.typeLag > 0) w.boxStale = { box: before, left: w.typeLag };
         }
@@ -574,7 +577,7 @@ describe('endSession (+)', () => {
       [[sp(`${PROMPT_CHAR} `), sp('Try "x"', true)]],
       [[sp(PROMPT_CHAR)]],
       [[sp(`${PROMPT_CHAR}\xa0`)]],
-      [[sp(`${PROMPT_CHAR}\xa0`), sp('  '), sp('Try "x"', true), sp(' ', false)]],
+      [[sp(`${PROMPT_CHAR}\xa0`), sp('Try "x"', true), sp(' ', false)]],
     ];
     for (const box of boxes) {
       const w = world({ box });
@@ -1011,16 +1014,16 @@ describe('settle after typing (settleTries, settlePollMs)', () => {
     const w = world({ typeLag: 99 }); // the box still looks empty when the cleanup looks: nothing to remove
     assert.deepEqual(await w.control().endSession('%2'), code(409, 'not-at-prompt'));
     assert.deepEqual(keysOf(w), ['text:/exit']);
-    assert.equal(w.captures.length, 1 + 4 + 1, 'the first read, settleTries reads, one cleanup read');
-    assert.deepEqual(w.slept, [150, 150, 150, 150]);
+    assert.equal(w.captures.length, 1 + 4 + 2, 'the first read, settleTries reads, one cleanup read and its confirming read');
+    assert.deepEqual(w.slept, [150, 150, 150, 150, 150], 'four settle waits, one before the confirming cleanup read');
     const c = world({ typeLag: 99 });
     assert.deepEqual(await c.control().runCommand('%2', '/compact'), code(409, 'not-at-prompt'));
     assert.deepEqual(keysOf(c), ['text:/compact']);
-    assert.equal(c.captures.length, 1 + 4 + 1);
+    assert.equal(c.captures.length, 1 + 4 + 2);
     const part = world({ afterType: () => { part.box = [`${PROMPT_CHAR} /ex`]; } });
     assert.deepEqual(await part.control().endSession('%2'), code(409, 'not-at-prompt'));
     assert.deepEqual(keysOf(part), ['text:/exit', 'C-u']);
-    assert.equal(part.captures.length, 1 + 4 + 2, 'a cleanup read that finds the remainder, one that finds it gone');
+    assert.equal(part.captures.length, 1 + 4 + 3, 'a cleanup read that finds the remainder, one that finds it gone, its confirming read');
   });
 
   test('(−) the wrong text on every read (a second row appears) ends in not-at-prompt after settleTries reads, nothing removed', async () => {
@@ -1048,7 +1051,7 @@ describe('settle after typing (settleTries, settlePollMs)', () => {
     const w = world({ typeLag: 99, captureFailOn: 3 }); // 1st: before typing, 2nd: first try after typing, 3rd: second try fails
     assert.deepEqual(await w.control().runCommand('%2', '/compact'), { status: 404, body: { error: 'not_found', message: 'gone' } });
     assert.deepEqual(keysOf(w), ['text:/compact']);
-    assert.equal(w.captures.length, 4, 'the cleanup read is the 4th');
+    assert.equal(w.captures.length, 5, 'the cleanup read is the 4th, its confirming read the 5th');
     const e = world({ typeLag: 99, captureFailOn: 3 });
     assert.deepEqual(await e.control().endSession('%2'), { status: 200, body: { ended: false } });
     assert.equal(e.cmdCalls, 1);
@@ -1057,14 +1060,14 @@ describe('settle after typing (settleTries, settlePollMs)', () => {
   test('(−) the loop is bounded by count: a frozen clock and a never-matching box still stop after settleTries reads', async () => {
     const w = world({ typeLag: 99 });
     assert.deepEqual(await w.control({ now: () => 0 }).runCommand('%2', '/compact'), code(409, 'not-at-prompt'));
-    assert.equal(w.captures.length, 1 + 4 + 1);
+    assert.equal(w.captures.length, 1 + 4 + 2);
   });
 
   test('(+) settleTries and settlePollMs are honoured (and at least one read always happens)', async () => {
     const w = world({ typeLag: 99 });
     await w.control({ settleTries: 2, settlePollMs: 40 }).runCommand('%2', '/compact');
-    assert.deepEqual(w.slept, [40, 40]);
-    assert.equal(w.captures.length, 1 + 2 + 1, 'including the one cleanup read');
+    assert.deepEqual(w.slept, [40, 40, 40], 'two settle waits and the wait before the confirming cleanup read');
+    assert.equal(w.captures.length, 1 + 2 + 2, 'including the cleanup read and its confirming read');
     const one = world({});
     assert.equal((await one.control({ settleTries: 0 }).runCommand('%2', '/compact')).status, 200, 'a bad count still reads once');
     assert.equal(one.captures.length, 1 + 1);
@@ -1080,14 +1083,14 @@ describe('cleanup of nika\'s own text', () => {
     assert.deepEqual(await w.control().runCommand('%2', '/model aaaabbbb'), code(409, 'not-at-prompt'));
     assert.deepEqual(keysOf(w), ['text:/model aaaabbbb', 'C-u', 'C-u']);
     assert.ok(!keysOf(w).includes('Enter'));
-    assert.equal(w.captures.length, 1 + 4 + 3, 'cleanup reads: two with a remainder, one with an empty box');
+    assert.equal(w.captures.length, 1 + 4 + 4, 'cleanup reads: two with a remainder, then an empty box and the confirming read');
   });
 
   test('(+) the cleanup waits settlePollMs before reading again after a C-u, never before its first read', async () => {
     const w = world({});
     w.afterType = wrapped(w, '/model aaaa', 'bbbb');
     await w.control().runCommand('%2', '/model aaaabbbb');
-    assert.deepEqual(w.slept, [150, 150, 150, 150, 150, 150], 'four settle waits, then one before each read that follows a C-u');
+    assert.deepEqual(w.slept, [150, 150, 150, 150, 150, 150, 150], 'four settle waits, one before each read that follows a C-u, one before the confirming read');
   });
 
   test('(+) a word-wrap that drops the space at the break still counts as nika\'s text', async () => {
@@ -1205,5 +1208,137 @@ describe('stray i and the vim evidence', () => {
     w.rows = () => base().map((row) => row.map((x) => (x.t.startsWith('-- INSERT --') ? { ...x, t: x.t.replace('-- INSERT -- ', '--\xa0INSERT\xa0-- ') } : x)));
     assert.deepEqual(await w.control().runCommand('%2', '/clear'), { status: 200, body: { sent: true } });
     assert.deepEqual(keysOf(w), ['text:i', 'text:/clear', 'Enter']);
+  });
+});
+
+describe('Claude\'s own cursor, the separator and a late redraw', () => {
+  const rev = { r: true };
+  const cursorOnPlaceholder = [sp(`${PROMPT_CHAR}${NB}`), sp('T', false, rev), sp('ry "fix lint errors"', true)];
+
+  test('(+) the placeholder with a reverse-video, non-dim first character (Claude\'s cursor) is an empty box: End proceeds', async () => {
+    const w = world({ box: [cursorOnPlaceholder] });
+    assert.deepEqual(await w.control().endSession('%2'), { status: 200, body: { ended: true } });
+    assert.deepEqual(keysOf(w), ['text:/exit', 'Enter']);
+    const dimCursor = world({ box: [[sp(`${PROMPT_CHAR}${NB}`), sp('T', true, rev), sp('ry "x"', true)]] });
+    assert.deepEqual(await dimCursor.control().runCommand('%2', '/compact'), { status: 200, body: { sent: true } }, 'a dim reverse first character too');
+  });
+
+  test('(+) an empty box with only a reverse-video space cursor (or plain whitespace) is empty', async () => {
+    const boxes = [
+      [[sp(`${PROMPT_CHAR}${NB}`), sp(' ', false, rev)]],
+      [[sp(PROMPT_CHAR), sp(NB, false, rev)]],
+    ];
+    for (const box of boxes) {
+      const w = world({ box });
+      assert.deepEqual(await w.control().endSession('%2'), { status: 200, body: { ended: true } }, JSON.stringify(box));
+      assert.deepEqual(keysOf(w), ['text:/exit', 'Enter']);
+    }
+  });
+
+  test('(−) a reverse-video first character followed by a non-dim character is a draft: 409 input-not-empty, nothing typed', async () => {
+    const boxes = [
+      [[sp(`${PROMPT_CHAR}${NB}`), sp('T', false, rev), sp('ry')]],
+      [[sp(`${PROMPT_CHAR}${NB}`), sp('T', false, rev), sp('r', true), sp('y')]],
+      [[sp(`${PROMPT_CHAR}${NB}`), sp('x', false, rev)]], // a lone reverse character is not a placeholder
+      [[sp(`${PROMPT_CHAR}${NB}`), sp('T', false, rev), sp(' ', false, rev), sp('ry', false)]],
+      [[sp(`${PROMPT_CHAR}${NB}`), sp('a', false, rev), sp('b', false, rev)]], // two reverse characters, none dim
+    ];
+    for (const box of boxes) {
+      const end = world({ box });
+      assert.deepEqual(await end.control().endSession('%2'), code(409, 'input-not-empty'), JSON.stringify(box));
+      assert.deepEqual(end.sent, []);
+      const cmd = world({ box });
+      assert.deepEqual(await cmd.control().runCommand('%2', '/compact'), code(409, 'input-not-empty'));
+      assert.deepEqual(cmd.sent, []);
+    }
+  });
+
+  test('(−) a reverse-video cell only counts as the first visible character, never later in the row', async () => {
+    const w = world({ box: [[sp(`${PROMPT_CHAR}${NB}`), sp('Try', true), sp('x', false, rev)]] });
+    assert.deepEqual(await w.control().endSession('%2'), code(409, 'input-not-empty'));
+    assert.deepEqual(w.sent, []);
+  });
+
+  test('(−) a box of typed spaces: after /exit it reads "❯   /exit", so no Enter; nika\'s text is cleaned up with C-u; 409 not-at-prompt', async () => {
+    const w = world({ box: [[sp(`${PROMPT_CHAR}${NB}`), sp('  ')]] });
+    assert.deepEqual(await w.control().endSession('%2'), code(409, 'not-at-prompt'));
+    assert.deepEqual(keysOf(w), ['text:/exit', 'C-u']);
+    assert.ok(w.captures.length >= 5);
+    const cmd = world({ box: [[sp(`${PROMPT_CHAR}${NB}`), sp('   ')]] });
+    assert.deepEqual(await cmd.control().runCommand('%2', '/compact'), code(409, 'not-at-prompt'));
+    assert.deepEqual(keysOf(cmd), ['text:/compact', 'C-u']);
+  });
+
+  test('(−) exactly one separator: more spaces, a missing space or a tab-like gap before the text never match', async () => {
+    const rows = [
+      [sp(`${PROMPT_CHAR}${NB}`), sp(' /exit')],
+      [sp(`${PROMPT_CHAR}${NB}${NB}`), sp('/exit')],
+      [sp(`${PROMPT_CHAR}`), sp('/exit')], // no separator at all
+      [sp(`${PROMPT_CHAR}${NB}`), sp('/exit', false), sp('x')],
+    ];
+    for (const row of rows) {
+      const w = world({ afterType: () => { w.box = [row]; } });
+      assert.deepEqual(await w.control().endSession('%2'), code(409, 'not-at-prompt'), JSON.stringify(row));
+      assert.ok(!keysOf(w).includes('Enter'), JSON.stringify(row));
+    }
+  });
+
+  test('(+) typed text with a trailing reverse-video space cursor, or trailing plain spaces, still matches', async () => {
+    for (const tail of [[sp(' ', false, rev)], [sp('  ')], [sp(NB, false, rev)], []]) {
+      const w = world({ afterType: () => { w.box = [[sp(`${PROMPT_CHAR}${NB}`), sp('/exit', false, { fg: 153 }), ...tail]]; } });
+      assert.deepEqual(await w.control().endSession('%2'), { status: 200, body: { ended: true } }, JSON.stringify(tail));
+      assert.deepEqual(keysOf(w), ['text:/exit', 'Enter']);
+    }
+  });
+
+  test('(+) the separator may be a plain space or a no-break space', async () => {
+    for (const sep of [' ', NB]) {
+      const w = world({ afterType: () => { w.box = [[sp(`${PROMPT_CHAR}${sep}`), sp('/exit')]]; } });
+      assert.deepEqual(await w.control().endSession('%2'), { status: 200, body: { ended: true } });
+    }
+  });
+
+  test('(+) late redraw: the first cleanup read is empty, the second shows nika\'s text, so C-u is sent', async () => {
+    // typeLag 5: the four settle reads and the first cleanup read still show the old (empty) box; the next read shows "/ex"
+    const w = world({ typeLag: 5 });
+    w.afterType = () => { w.box = [`${PROMPT_CHAR} /ex`]; };
+    assert.deepEqual(await w.control().endSession('%2'), code(409, 'not-at-prompt'));
+    assert.deepEqual(keysOf(w), ['text:/exit', 'C-u']);
+    assert.equal(w.captures.length, 1 + 4 + 2 + 2, 'round 1: empty then the remainder; round 2: empty and confirmed empty');
+  });
+
+  test('(−) the box stays empty on the confirming read: nothing is sent', async () => {
+    const w = world({ swallow: true });
+    assert.deepEqual(await w.control().endSession('%2'), code(409, 'not-at-prompt'));
+    assert.deepEqual(keysOf(w), ['text:/exit']);
+    assert.equal(w.captures.length, 1 + 4 + 2);
+    assert.deepEqual(w.slept, [150, 150, 150, 150, 150], 'the confirming read follows a settlePollMs wait');
+  });
+
+  test('(−) the confirming read that finds no box, or fails, ends the cleanup', async () => {
+    const gone = world({ swallow: true });
+    const base = gone.mirror.capture;
+    let n = 0;
+    gone.mirror.capture = async (...a) => { n += 1; if (n === 6) gone.box = null; return base(...a); }; // 6th = the confirming read
+    assert.deepEqual(await gone.control().endSession('%2'), code(409, 'not-at-prompt'));
+    assert.deepEqual(keysOf(gone), ['text:/exit']);
+    const failed = world({ swallow: true, captureFailOn: 7 });
+    assert.deepEqual(await failed.control().endSession('%2'), code(409, 'not-at-prompt'));
+    assert.deepEqual(keysOf(failed), ['text:/exit']);
+  });
+
+  test('(−) the cleanup stays bounded when the redraw flickers: at most 6 rounds, so at most 6 C-u and 12 cleanup reads', async () => {
+    const w = world({});
+    w.afterType = () => { w.box = [`${PROMPT_CHAR} /ex`]; };
+    const base = w.mirror.capture;
+    let flip = 0;
+    w.mirror.capture = async (...a) => { // from the first read after typing on, every other read shows an empty box
+      if (w.sent.some((b) => b.text === '/exit')) { flip += 1; w.box = flip % 2 === 0 ? [PLACEHOLDER_BOX] : [`${PROMPT_CHAR} /ex`]; }
+      return base(...a);
+    };
+    assert.deepEqual(await w.control().endSession('%2'), code(409, 'not-at-prompt'));
+    assert.ok(keysOf(w).filter((k) => k === 'C-u').length <= 6);
+    assert.ok(w.captures.length - 1 - 4 <= 12, `cleanup reads: ${w.captures.length - 5}`);
+    assert.ok(!keysOf(w).includes('Enter'));
   });
 });

@@ -157,7 +157,11 @@ same menu. Removed and hidden commands are left out.
 - The input box is drawn between two rule rows made only of `─`; the input row starts with `❯` followed by a no-break
   space (U+00A0, not U+0020; `capture-pane` and the mirror keep it). Empty, it shows a placeholder such as
   `❯ Try "edit <filepath> to..."`, drawn dim (SGR 2) after the `❯`; typed text is never dim, so a draft that starts
-  with `Try "` reads the same but is not dim (checked 2026-11-09). A user status line (free content) and the mode line sit below
+  with `Try "` reads the same but is not dim (checked 2026-11-09). When Claude draws its own cursor (native cursor off
+  and the terminal focused, which is the default in tmux), the first placeholder character is drawn in reverse video
+  (SGR 7) and the rest dim; with no placeholder the cursor is a reverse-video space (read from the 2.1.319 source, not
+  yet seen live: the 2026-11-09 check showed no cursor cell). nika reads a first reverse-video character followed only by
+  dim text as the placeholder too. A user status line (free content) and the mode line sit below
   the lower rule.
 - After typing `/exit` (no Enter) the box holds one row `❯ /exit`, and the command menu above the box highlights
   `❯ /exit` with `Exit the CLI`; Enter then runs it.

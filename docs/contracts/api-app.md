@@ -291,7 +291,8 @@ Body `{}`. Steps, in this order:
    (a dialog may be open) → 409 `mode-unknown`, nothing typed. So End can never answer a prompt or a dialog.
 4. Input box (`claude-tui.md` §5: the rows between the last two rule rows made only of `─`; the no-break space after
    `❯` compares as a space): it must be exactly one row reading `❯` alone, or `❯` followed only by dim text (the
-   placeholder; a draft is never dim, whatever it says); anything else (a draft, several rows, no box found) → 409
+   placeholder; a draft is never dim, whatever it says), where the first character may be reverse video (Claude's
+   cursor over the placeholder) and whitespace may be plain; anything else (a draft, several rows, no box found) → 409
    `input-not-empty`, nothing typed ("Claude's input has text; clear it first").
 5. Vim: when this pane's mode line has shown `-- INSERT --` before (remembered per pane id by the capture route, like
    the held mode, or seen in any capture this action took) and the current mode line lacks it, Claude's input is in
@@ -299,8 +300,9 @@ Body `{}`. Steps, in this order:
    the box reads exactly `❯ i` (vim was turned off; the `i` landed as text), remove it with one `C-u`; then 409
    `mode-unknown`.
 6. Send the text `/exit` (`send-keys -l -- /exit`), take fresh captures (up to 4, 150 ms apart, stopping at a match):
-   the input box must be exactly one row `❯ /exit`. If not, clean up and answer 409 `not-at-prompt`, no Enter. Clean
-   up = up to 6 rounds, 150 ms apart, of: fresh capture; box empty → done; the box's text (rows joined, `❯` and row indents removed)
+   the input box must be exactly one row `❯ /exit` (one separator space after `❯`, then the text, then only
+   whitespace). If not, clean up and answer 409 `not-at-prompt`, no Enter. Clean
+   up = up to 6 rounds, 150 ms apart, of: fresh capture; box empty → read once more after 150 ms (a late redraw), still empty → done; the box's text (rows joined, `❯` and row indents removed)
    is a non-empty prefix of what nika typed (spaces ignored: a word-wrap can drop one) → send `C-u`; anything else → stop and leave it (it is not only nika's
    text). `C-u` clears one visual row (`claude-tui.md` §5), hence the rounds. Else send `Enter`.
 7. Check the pane every 500 ms for up to 3 s (by count, not by clock): gone or no longer running claude

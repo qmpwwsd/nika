@@ -39,39 +39,50 @@ function inputBox(rows) {
 }
 
 /**
- * One input row: after the optional indent it starts with the prompt character. Returns the text after it (no-break
- * spaces as spaces, trimmed), whether a space follows the prompt character, and whether all / any of the visible
- * characters are dim (the placeholder is dim, typed text never is), or null when the row is not an input row.
+ * One input row: after the optional indent it starts with the prompt character. Returns whether exactly one space
+ * (no-break spaces count as spaces) follows it (`spaced`), the characters after that separator (`body`, each with its
+ * dim and reverse-video flag), their visible (non-space) ones (`shown`), whether any of them is dim, and the text after
+ * the prompt character with the surrounding spaces trimmed. Null when the row is not an input row.
  */
 function inputRow(row) {
   const chars = [];
   for (const sp of Array.isArray(row) ? row : []) {
     const dim = sp?.s?.d === true;
-    for (const ch of typeof sp?.t === 'string' ? sp.t : '') chars.push({ ch: plain(ch), dim });
+    const rev = sp?.s?.r === true;
+    for (const ch of typeof sp?.t === 'string' ? sp.t : '') chars.push({ ch: plain(ch), dim, rev });
   }
   let at = 0;
   while (chars[at]?.ch === ' ') at += 1;
   if (chars[at]?.ch !== PROMPT_CHAR) return null;
   const rest = chars.slice(at + 1);
-  const shown = rest.filter((c) => c.ch !== ' ');
+  const spaced = rest.length === 0 || rest[0].ch === ' ';
+  const body = spaced ? rest.slice(1) : rest;
+  const shown = body.filter((c) => c.ch !== ' ');
   return {
-    text: rest.map((c) => c.ch).join('').replace(/^ +| +$/g, ''),
-    spaced: rest.length === 0 || rest[0].ch === ' ',
-    allDim: shown.length > 0 && shown.every((c) => c.dim),
+    spaced,
+    body,
+    shown,
     anyDim: shown.some((c) => c.dim),
+    text: rest.map((c) => c.ch).join('').replace(/^ +| +$/g, ''),
   };
 }
 
-/** Exactly one row: the prompt character alone, or followed only by dim text (a draft is never dim, whatever it says). */
+/**
+ * Exactly one row: the prompt character, a separator space, then nothing or whitespace (a reverse-video space is
+ * Claude's cursor), or the placeholder: dim text, whose first character may be reverse video (the cursor over it) and
+ * then not dim. Any other visible character is a draft (typed text is never dim, whatever it says).
+ */
 function boxIsEmpty(box) {
   const row = box?.length === 1 ? inputRow(box[0]) : null;
-  return row !== null && row.spaced && (row.text === '' || row.allDim);
+  if (row === null || !row.spaced) return false;
+  const tail = row.shown[0]?.rev ? row.shown.slice(1) : row.shown;
+  return row.shown.length === 0 || (tail.length > 0 && tail.every((c) => c.dim));
 }
 
-/** Exactly one row reading `❯ <text>` in plain (not dim) text. */
+/** Exactly one row: the prompt character, exactly one separator, then exactly `text` in plain (not dim) characters, then only whitespace. */
 function boxReads(box, text) {
   const row = box?.length === 1 ? inputRow(box[0]) : null;
-  return row !== null && row.spaced && !row.anyDim && row.text === plain(text).trim();
+  return row !== null && row.spaced && !row.anyDim && row.body.map((c) => c.ch).join('').replace(/ +$/, '') === plain(text).replace(/ +$/, '');
 }
 
 /**
@@ -85,7 +96,7 @@ function isRemnant(box, typed) {
   return joined !== '' && plain(typed).replace(/ /g, '').startsWith(joined);
 }
 
-const insertShown = (rows) => INSERT_PREFIX.test(plain(lastNonBlank(rows, 1)[0] ?? ''));
+export const insertShown = (rows) => INSERT_PREFIX.test(plain(lastNonBlank(rows, 1)[0] ?? ''));
 
 /**
  * The raw rows of option n (wrapped rows included), or null. promptFromRows cuts a label at 80 characters, so a
@@ -202,15 +213,23 @@ export function createSessionControl({
 
   /**
    * Removes what nika typed once the box did not read exactly that. `C-u` clears one visual row, so: up to CLEAN_ROUNDS
-   * rounds of a fresh capture; no box, an empty box, or text that is not (the start of) what nika typed (a user's draft)
-   * ends it without sending anything; otherwise one `C-u`. A failed capture or send ends it.
+   * rounds of a fresh capture; no box, or text that is not (the start of) what nika typed (a user's draft), ends it
+   * without sending anything; otherwise one `C-u`. An empty box may be a late redraw, so it is read once more after
+   * settlePollMs (a round takes at most two reads, so at most 2 * CLEAN_ROUNDS reads and CLEAN_ROUNDS C-u); still
+   * empty ends it. A failed capture or send ends it.
    */
   async function cleanUp(pane, typed, ctx) {
     for (let round = 0; round < CLEAN_ROUNDS; round += 1) {
       if (round > 0) await sleep(settlePollMs); // let Claude redraw after the C-u
-      const seen = await look(pane, ctx);
+      let seen = await look(pane, ctx);
       if (seen.res) return;
-      const box = inputBox(seen.rows);
+      let box = inputBox(seen.rows);
+      if (box !== null && boxIsEmpty(box)) { // maybe Claude has not redrawn yet: look once more
+        await sleep(settlePollMs);
+        seen = await look(pane, ctx);
+        if (seen.res) return;
+        box = inputBox(seen.rows);
+      }
       if (box === null || box.length === 0 || boxIsEmpty(box) || !isRemnant(box, typed)) return;
       if ((await keys.send(pane, { keys: ['C-u'] })).status !== 200) return;
     }
