@@ -2,7 +2,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import * as mode from '../src/mode.js';
 import {
-  MODES, MODE_TARGETS, PROMPT_ROWS, FOOTER, rowText, lastNonBlank, modeFromRows, promptFromRows,
+  MODES, MODE_TARGETS, PROMPT_ROWS, FOOTER, OPTION, rowText, lastNonBlank, modeFromRows, promptFromRows,
 } from '../src/mode.js';
 import { parseCapture } from '../src/mirror.js';
 
@@ -34,6 +34,18 @@ describe('constants', () => {
     assert.ok(!MODE_TARGETS.includes('dontAsk'));
     assert.ok(MODE_TARGETS.every((m) => MODES.includes(m)));
     assert.equal('FOOTER_ROWS' in mode, false);
+  });
+});
+
+describe('OPTION', () => {
+  test('(+) is exported and reads the number and the label of an option row, with or without the selection marker', () => {
+    assert.deepEqual(OPTION.exec('  2. Yes, and more')?.slice(1), ['2', 'Yes, and more']);
+    assert.deepEqual(OPTION.exec('❯ 1. Yes')?.slice(1), ['1', 'Yes']);
+    assert.equal(OPTION.exec('10. ten')?.[1], '10', 'a two-digit number is seen so that it can be refused');
+  });
+
+  test('(−) a wrapped label row, a number without a dot and prose do not match', () => {
+    for (const row of ['      wrapped label', '2 Yes', 'Do you want to proceed?', '1.Yes', '']) assert.equal(OPTION.exec(row), null, row);
   });
 });
 

@@ -47,8 +47,9 @@ export function modeFromRows(rows) {
 }
 
 // Option row: optional spaces, optional selection marker, `<n>. <label>`. Matches any number so that a `10.` row is
-// seen (and refused) instead of being glued to the previous label as a wrapped row.
-const OPTION = /^\s*(?:\u276f\s*)?(\d{1,3})\.\s+(.*)$/;
+// seen (and refused) instead of being glued to the previous label as a wrapped row. Exported so that the answer route
+// reads the raw option rows with the same pattern.
+export const OPTION = /^\s*(?:\u276f\s*)?(\d{1,3})\.\s+(.*)$/;
 // A digit answers a prompt without Enter, so Claude's options are numbered 1..9.
 const MAX_OPTIONS = 9;
 
