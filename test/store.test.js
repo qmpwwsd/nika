@@ -173,6 +173,57 @@ describe('updateSettings', () => {
   });
 });
 
+describe('ui.theme', () => {
+  const dirOf = (env) => { fs.mkdirSync(configDir(env), { recursive: true, mode: 0o700 }); return path.join(configDir(env), 'config.json'); };
+
+  test('(+) default is system; light and dark are saved, merged one level deep and reloaded', async () => {
+    const env = fresh('ui1');
+    assert.deepEqual(defaults().ui, { theme: 'system' });
+    assert.deepEqual((await loadConfig(env)).config.ui, { theme: 'system' });
+    assert.equal((await updateSettings({ ui: { theme: 'dark' } }, env)).ui.theme, 'dark');
+    assert.equal((await loadConfig(env)).config.ui.theme, 'dark');
+    assert.equal((await updateSettings({ permissionMode: 'plan' }, env)).ui.theme, 'dark', 'an unrelated patch keeps the theme');
+    assert.equal((await updateSettings({ ui: { theme: 'light' } }, env)).ui.theme, 'light');
+    assert.equal((await updateSettings({ ui: { theme: 'system' } }, env)).ui.theme, 'system');
+  });
+
+  test('(+) a config.json written before 0.2 (no ui group) loads with the default and no warning', async () => {
+    const env = fresh('ui2');
+    fs.writeFileSync(dirOf(env), JSON.stringify({ permissionMode: 'plan' }));
+    const r = await loadConfig(env);
+    assert.deepEqual(r.config.ui, { theme: 'system' });
+    assert.deepEqual(r.warnings, []);
+  });
+
+  test('(−) a bad value in config.json falls back to system with a warning; unknown ui keys are dropped', async () => {
+    const env = fresh('ui3');
+    for (const bad of ['sepia', 'DARK', '', null, 1, ['dark'], { theme: 'dark' }]) {
+      fs.writeFileSync(dirOf(env), JSON.stringify({ ui: { theme: bad } }));
+      const r = await loadConfig(env);
+      assert.equal(r.config.ui.theme, 'system', JSON.stringify(bad));
+      assert.ok(r.warnings.some((w) => w.includes('ui.theme')), JSON.stringify(bad));
+    }
+    fs.writeFileSync(dirOf(env), JSON.stringify({ ui: { theme: 'light', accent: 'red' } }));
+    const r = await loadConfig(env);
+    assert.deepEqual(r.config.ui, { theme: 'light' });
+    assert.ok(r.warnings.some((w) => w.includes('unknown key ui.accent')));
+    fs.writeFileSync(dirOf(env), JSON.stringify({ ui: 'dark' }));
+    const s = await loadConfig(env);
+    assert.deepEqual(s.config.ui, { theme: 'system' });
+    assert.ok(s.warnings.some((w) => w.includes('ui invalid')));
+  });
+
+  test('(−) updateSettings and saveConfig refuse a bad theme (EINVAL) and leave the file alone', async () => {
+    const env = fresh('ui4');
+    await updateSettings({ ui: { theme: 'dark' } }, env);
+    for (const patch of [{ ui: { theme: 'sepia' } }, { ui: { theme: null } }, { ui: { theme: 5 } }, { ui: 'dark' }, { ui: { accent: 'red' } }, { ui: null }]) {
+      await assert.rejects(updateSettings(patch, env), { code: 'EINVAL' }, JSON.stringify(patch));
+    }
+    await assert.rejects(saveConfig({ ...defaults(), ui: { theme: 'neon' } }, env), { code: 'EINVAL' });
+    assert.equal((await loadConfig(env)).config.ui.theme, 'dark');
+  });
+});
+
 describe('mutation queue', () => {
   const dirs = (env, n) => Array.from({ length: n }, (_, i) => {
     const d = path.join(root, path.basename(path.dirname(env.NIKA_CONFIG_DIR)), `proj-${i}`);

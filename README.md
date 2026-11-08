@@ -90,6 +90,26 @@ mirror, spawning agents in tmux, starting the orchestrator, adding projects and 
 browser dashboard above stays read-only. Contracts: [docs/contracts/api-app.md](docs/contracts/api-app.md); decisions:
 [docs/adr/](docs/adr/); progress: [CHANGELOG.md](CHANGELOG.md).
 
+### Using the app
+
+- **Dashboard.** One line says how many agents need you, are waiting or are working. Agents that need you are listed first
+  under "Waiting on you", then every project with its agents (needs you, waiting, working, ended). Filter by text, change the
+  time window, show or hide ended agents. Click a row to open its session window.
+- **Add a project.** The sidebar "+" (or `Mod+O`) opens the native folder picker. The project page notes when the folder is
+  not a git repository. A new project has no orchestration rules yet: use **Apply rules** to preview the exact diffs, then
+  confirm. nika writes only the files shown in the preview, keeps a backup outside the repository and never runs git.
+- **Start an orchestrator / spawn an agent.** From a project: **Start orchestrator** opens its tmux session and pane;
+  **Spawn agent** opens a side sheet (name, model, brief up to 64 KB, permission mode, pane placement). A project at its
+  agent limit shows why and what to do. `bypassPermissions` is not offered.
+- **Settings** (`Mod+,`). Appearance (System, Light, Dark), model names per role, Remote Control, default permission mode and
+  pane placement, the per-project agent limit, plugins per project and the rules template. One Save button; invalid fields
+  are marked in place.
+- **Keyboard.** `Mod+1` dashboard, `Mod+,` settings, `Mod+O` add project, `Mod+F` filter, `Mod+[` (macOS) or `Alt+Left`
+  (Linux) back to the dashboard, `Mod+Enter` confirm the open dialog or save settings. `Mod` is Command on macOS and Control on Linux.
+
+The browser dashboard at `http://127.0.0.1:3335` shows the same list without any of these controls; its only action is
+**Focus pane**.
+
 ## Development
 
 ```sh

@@ -217,6 +217,29 @@ function settingsWith(current, selected) {
   return text;
 }
 
+/**
+ * What the preview may show of settings.local.json: `{"enabledPlugins": …}` before and after (pretty JSON), and how many
+ * other top-level keys the file has. The values of those keys (env, permissions, hooks, …) never leave this module. A
+ * missing file shows an empty "before". Never throws: an unreadable file is only ever `unchanged` (no selection).
+ */
+function settingsView(current, next) {
+  const parse = (text) => {
+    try {
+      const v = text === null ? null : JSON.parse(text);
+      return isPlain(v) ? v : {};
+    } catch {
+      return {};
+    }
+  };
+  const block = (obj) => `${JSON.stringify({ enabledPlugins: obj.enabledPlugins }, null, 2)}\n`;
+  const after = parse(next);
+  return {
+    from: current === null ? '' : block(parse(current)),
+    to: block(after),
+    keptKeys: Object.keys(after).filter((k) => k !== 'enabledPlugins').length,
+  };
+}
+
 // ------------------------------------------------------------------------------------------------------------------ plan
 
 async function checkProject(project) {
@@ -283,7 +306,11 @@ async function plan(project, ctx = {}) {
 
   for (const f of files) {
     f.action = f.next === null || f.next === f.current ? 'unchanged' : f.current === null ? 'create' : 'update';
-    f.diff = f.action === 'unchanged' ? '' : unifiedDiff(f.current ?? '', f.next, f.path);
+    let [from, to] = [f.current ?? '', f.next];
+    if (f.path === SETTINGS) {
+      ({ from, to, keptKeys: f.extra.keptKeys } = settingsView(f.current, f.next)); // the hash below still covers the whole file
+    }
+    f.diff = f.action === 'unchanged' ? '' : unifiedDiff(from, to, f.path);
   }
   const hash = sha(JSON.stringify(files.map((f) => [f.path, f.current === null ? null : sha(f.current), f.next])));
   return { files, hash, warnings, backupDir: path.join(backupsDir(project.key, env), stamp(nowMs(ctx))) };

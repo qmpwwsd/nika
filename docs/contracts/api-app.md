@@ -80,6 +80,18 @@ is always `400`. Per-project plugin names must be ⊂ the installed names from `
 
 `Settings` = the `config.json` schema (§6) without `projects`.
 
+### `GET /api/app/templates`
+`200 { "templates": [ "<name>.md", … ] }` — file names (`^[A-Za-z0-9_-]{1,64}\.md$`, regular user-owned files via
+`fsafe`, ≤ 50, sorted) in `configDir()/templates/`; `[]` when the folder is missing. Names only, never contents or
+paths. Users add templates by copying a file into that folder (`nika doctor` prints it).
+
+### Dashboard snapshot additions (`GET /api/agents`, both tiers)
+Each group gains `"key": "<keyFor(repo root)>"` (16 hex, matches a registered project's key when the repo is
+registered). Each agent gains `"role": "orchestrator" | "agent" | null` (from the pane's `@nika-role`, read with
+`list-panes -a -F …\t#{@nika-role}`) and `"attention": "<clean(registry status, 80)>" | null` — set only when a live
+agent's state is neither busy nor idle (e.g. waiting on a permission prompt), else null. No paths or transcript text
+are added.
+
 ### `GET /api/app/plugins`
 `200 { "plugins": [ "<PLUGIN_NAME>", … ] }` — installed plugin names read from Claude Code's config dir (names only,
 never settings, hooks or keys), ≤ 200, sorted.
@@ -89,7 +101,7 @@ never settings, hooks or keys), ≤ 200, sorted.
 `before` a byte offset returned as `nextBefore` by the previous page (default: end of file). The server reads at most
 1 MB per request, 4 requests in flight, and drops any single entry over 32 KB (`"truncated": true`).
 ```json
-{ "entries": [ { "at": "<ISO>", "role": "user" | "assistant", "kind": "text" | "thinking" | "tool_use" | "tool_result",
+{ "entries": [ { "id": "<byte offset of the line>:<block index>", "at": "<ISO>", "role": "user" | "assistant", "kind": "text" | "thinking" | "tool_use" | "tool_result",
                  "text": "<cleanBlock()>", "tool": "<name>?", "truncated": false } ],
   "nextBefore": 123456 | null }
 ```
@@ -146,7 +158,7 @@ this process); otherwise a `new-window -n orchestrator` is added. The UI opens t
 { "hash": "<sha256 hex of every planned write>", "files": [
     { "path": "rules/orchestration.md", "action": "create" | "update" | "unchanged", "diff": "<unified>", "foreign": false },
     { "path": "CLAUDE.md", "action": "update", "diff": "…" },
-    { "path": ".claude/settings.local.json", "action": "update", "diff": "…", "keysPreserved": true },
+    { "path": ".claude/settings.local.json", "action": "update", "diff": "<enabledPlugins block only>", "keysPreserved": true, "keptKeys": 3 },
     { "path": ".gitignore", "action": "update", "diff": "…", "optional": true } ],
   "warnings": [ "settings.local.json is not gitignored" ], "backupDir": "<stateDir>/backups/<key>/<ISO>" }
 ```
@@ -155,6 +167,9 @@ this process); otherwise a `new-window -n orchestrator` is added. The UI opens t
 (`checkComponents` → backup → `writeAtomic`) and never touch git. Response `200 { "written": [ "rules/orchestration.md",
 "CLAUDE.md", ".claude/settings.local.json" ], "backupDir": "<abs>" }`.
 
+The preview `diff` for `.claude/settings.local.json` is computed between `{"enabledPlugins": <old>}` and
+`{"enabledPlugins": <new>}` (pretty JSON) only, plus `keptKeys` = the number of other top-level keys; the values of
+other keys (`env`, `permissions`, `hooks`, …) never reach the page. The plan `hash` still covers the full file.
 In `.claude/settings.local.json` only `enabledPlugins` is written; every other key is copied verbatim and deep-equal
 asserted before the write; `hooks permissions env apiKeyHelper mcpServers model` are never read or written; invalid
 JSON or a `__proto__` key → `400 invalid` (T5).
@@ -208,9 +223,11 @@ warning in `loadConfig().warnings`; a tampered or unreadable file never throws):
   "limits": { "maxAgents": 3 },
   "plugins": { "perProject": { "<PROJECT_KEY>": [ "<PLUGIN_NAME>" ] } },
   "projects": [ { "key": "<PROJECT_KEY>", "dir": "<abs realpath>", "name": "<basename>", "addedAt": "<ISO>" } ],
-  "rules": { "localTemplate": null }
+  "rules": { "localTemplate": null },
+  "ui": { "theme": "system" }
 }
 ```
+`ui.theme` ∈ `system light dark` (default `system` = follow `prefers-color-scheme`).
 Field rules: `models.*` `MODEL_ID`; `remoteControl.prefix` `""` (= project name) or `RC_PREFIX`; `permissionMode` ∈
 `PERMISSION_MODES`; `panePlacement` ∈ `PANE_PLACEMENTS`; `limits.maxAgents` 1–8 (there is no turn limit: Claude Code
 has no `--max-turns` for interactive sessions); `plugins.perProject` ≤ 200 names per project, keys must be registered

@@ -4,6 +4,7 @@ import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import http from 'node:http';
+import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { createServer } from '../src/server.js';
@@ -382,9 +383,121 @@ describe('settings', () => {
     assert.equal((await loadConfig(w.env)).config.limits.maxAgents, 2);
   });
 
+  test('(+) ui.theme: default system; light, dark and system are saved and read back', async () => {
+    assert.deepEqual((await a.call('GET', '/api/app/settings')).body.ui, { theme: 'system' });
+    for (const theme of ['dark', 'light', 'system']) {
+      const r = await put({ ui: { theme } });
+      assert.equal(r.status, 200);
+      assert.deepEqual(r.body.ui, { theme });
+      assert.equal((await loadConfig(w.env)).config.ui.theme, theme);
+      assert.deepEqual((await a.call('GET', '/api/app/settings')).body.ui, { theme });
+    }
+  });
+
+  test('(−) ui.theme: a bad value, a non-object ui and an unknown ui key are 400 naming the field; the saved theme stays', async () => {
+    assert.equal((await put({ ui: { theme: 'dark' } })).status, 200);
+    const bad = await put({ ui: { theme: 'sepia' } });
+    assert.equal(bad.status, 400);
+    assert.match(bad.body.message, /ui\.theme/);
+    for (const patch of [{ ui: { theme: null } }, { ui: { theme: 1 } }, { ui: 'dark' }, { ui: { accent: 'red' } }]) {
+      assert.equal((await put(patch)).status, 400, JSON.stringify(patch));
+    }
+    assert.equal((await loadConfig(w.env)).config.ui.theme, 'dark');
+    assert.equal((await put({ ui: { theme: 'system' } })).status, 200);
+  });
+
   test('(−) POST /settings is 405; a text/plain PUT is 415', async () => {
     assert.equal((await a.call('POST', '/api/app/settings', { json: {} })).status, 405);
     assert.equal((await a.call('PUT', '/api/app/settings', { body: '{}', headers: { 'content-type': 'text/plain' } })).status, 415);
+  });
+});
+
+describe('templates', () => {
+  const secretBody = 'TEMPLATE-BODY-MUST-NOT-LEAK {{models.builder}}\n';
+  /** A server whose config dir is fresh; `files(dir)` builds the templates folder (or nothing). */
+  async function withTemplates(files) {
+    const cfg = fs.mkdtempSync(path.join(fx.root, 'cfg-'));
+    const dir = path.join(configDir({ NIKA_CONFIG_DIR: cfg }), 'templates'); // <cfg>/nika/templates
+    if (files) {
+      fs.mkdirSync(dir, { recursive: true });
+      files(dir);
+    }
+    return { ...(await boot({ ctxOver: { env: { NIKA_CONFIG_DIR: cfg } } })), dir, cfg };
+  }
+  const names = async (a) => (await a.call('GET', '/api/app/templates')).body.templates;
+
+  test('(+) lists the file names in configDir/templates, sorted, and nothing else', async () => {
+    const a = await withTemplates((dir) => {
+      for (const n of ['b.md', 'a.md', 'Z_9-x.md', `${'n'.repeat(64)}.md`]) fs.writeFileSync(path.join(dir, n), secretBody);
+    });
+    const r = await a.call('GET', '/api/app/templates');
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.body, { templates: ['Z_9-x.md', 'a.md', 'b.md', `${'n'.repeat(64)}.md`] });
+    assert.deepEqual(Object.keys(r.body), ['templates']);
+    assert.equal(r.raw.includes('MUST-NOT-LEAK'), false, 'no contents');
+    assert.equal(r.raw.includes(a.cfg), false, 'no paths');
+  });
+
+  test('(+) [] when the templates folder or the whole config dir is missing; an empty folder is []', async () => {
+    assert.deepEqual(await names(await withTemplates(null)), []);
+    assert.deepEqual(await names(await withTemplates(() => {})), []);
+    const gone = await withTemplates(null);
+    fs.rmSync(gone.cfg, { recursive: true });
+    assert.deepEqual(await names(gone), []);
+  });
+
+  test('(−) names that do not match ^[A-Za-z0-9_-]{1,64}\\.md$ are left out', async () => {
+    const a = await withTemplates((dir) => {
+      for (const n of ['ok.md', 'x.txt', '.hidden.md', 'a b.md', 'a.md.bak', 'a.MD', 'ünï.md', '.md', `${'n'.repeat(65)}.md`, 'a;b.md', 'README']) fs.writeFileSync(path.join(dir, n), 'x');
+    });
+    assert.deepEqual(await names(a), ['ok.md']);
+  });
+
+  test('(−) a symlink, a folder, a FIFO and a hard-linked file are not templates (fsafe)', async () => {
+    const a = await withTemplates((dir) => {
+      fs.writeFileSync(path.join(dir, 'real.md'), 'x');
+      fs.writeFileSync(path.join(fx.root, 'outside.txt'), 'x');
+      fs.symlinkSync(path.join(fx.root, 'outside.txt'), path.join(dir, 'link.md'));
+      fs.symlinkSync(path.join(dir, 'real.md'), path.join(dir, 'alias.md'));
+      fs.mkdirSync(path.join(dir, 'folder.md'));
+      execFileSync('mkfifo', [path.join(dir, 'pipe.md')]);
+      fs.writeFileSync(path.join(fx.root, 'shared.txt'), 'x');
+      fs.linkSync(path.join(fx.root, 'shared.txt'), path.join(dir, 'hard.md'));
+    });
+    assert.deepEqual(await names(a), ['real.md']);
+  });
+
+  test('(−) a templates folder that is a symlink is not followed: []', async () => {
+    const cfg = fs.mkdtempSync(path.join(fx.root, 'cfg-'));
+    const real = fs.mkdtempSync(path.join(fx.root, 'elsewhere-'));
+    fs.writeFileSync(path.join(real, 'a.md'), 'x');
+    fs.mkdirSync(path.join(cfg, 'nika'));
+    fs.symlinkSync(real, path.join(cfg, 'nika', 'templates'));
+    const a = await boot({ ctxOver: { env: { NIKA_CONFIG_DIR: cfg } } });
+    assert.deepEqual(await names(a), []);
+  });
+
+  test('(−) at most 50 names: the first 50 in sorted order', async () => {
+    const all = Array.from({ length: 60 }, (_, i) => `t${String(i).padStart(2, '0')}.md`);
+    const a = await withTemplates((dir) => { for (const n of all) fs.writeFileSync(path.join(dir, n), 'x'); });
+    assert.deepEqual(await names(a), all.slice(0, 50));
+  });
+
+  test('(−) invalid files do not use up the 50: a folder of broken entries ahead of good ones still lists the good ones', async () => {
+    const a = await withTemplates((dir) => {
+      for (let i = 0; i < 55; i += 1) fs.mkdirSync(path.join(dir, `a${String(i).padStart(2, '0')}.md`));
+      fs.writeFileSync(path.join(dir, 'z.md'), 'x');
+    });
+    assert.deepEqual(await names(a), ['z.md']);
+  });
+
+  test('(−) POST is 405 (Allow: GET); without the secret it is 403', async () => {
+    const a = await withTemplates(() => {});
+    const m = await a.call('POST', '/api/app/templates', { json: {} });
+    assert.equal(m.status, 405);
+    assert.equal(m.headers.allow, 'GET');
+    assert.equal((await a.call('GET', '/api/app/templates', { headers: { 'x-nika-app': null } })).status, 403);
+    assert.equal((await a.call('GET', '/api/app/templates/')).status, 404);
   });
 });
 

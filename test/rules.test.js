@@ -383,6 +383,100 @@ describe('settings.local.json merge (T5)', () => {
   });
 });
 
+describe('settings.local.json preview: enabledPlugins block only (contract §3)', () => {
+  const settings = '.claude/settings.local.json';
+  const SECRETS = ['SYNTH-SECRET-ENV-VALUE', 'SYNTH-SECRET-ALLOW', 'SYNTH-SECRET-DENY', 'SYNTH-SECRET-HOOK', 'SYNTH-SECRET-HELPER', 'SYNTH-SECRET-MCP', 'SYNTH-SECRET-MODEL'];
+  const WITH_SECRETS = {
+    env: { TOKEN: SECRETS[0] },
+    permissions: { allow: [`Bash(${SECRETS[1]}:*)`], deny: [`Read(${SECRETS[2]})`] },
+    hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: `echo ${SECRETS[3]}` }] }] },
+    enabledPlugins: { 'old-one@demo-market': true, 'off-one@demo-market': false, 'keep@demo-market': true },
+    apiKeyHelper: `echo ${SECRETS[4]}`,
+    mcpServers: { demo: { command: 'demo', args: [SECRETS[5]] } },
+    model: SECRETS[6],
+  };
+  const leaks = (body) => SECRETS.filter((x) => JSON.stringify(body).includes(x));
+
+  test('(+) update: the diff is the enabledPlugins block before and after, keptKeys counts the other keys', async () => {
+    const w = await world({ plugins: ['keep@demo-market', 'new-one@demo-market'] });
+    put(w, settings, JSON.stringify({ ...WITH_SECRETS }));
+    const s = entry(await prev(w), settings);
+    assert.deepEqual(Object.keys(s), ['path', 'action', 'diff', 'keysPreserved', 'keptKeys']);
+    assert.deepEqual([s.action, s.keysPreserved, s.keptKeys], ['update', true, 6]);
+    assert.equal(s.diff, [
+      '--- a/.claude/settings.local.json', '+++ b/.claude/settings.local.json', '@@ -1,7 +1,7 @@',
+      ' {', '   "enabledPlugins": {', '-    "old-one@demo-market": true,', '     "off-one@demo-market": false,',
+      '-    "keep@demo-market": true', '+    "keep@demo-market": true,', '+    "new-one@demo-market": true', '   }', ' }', '',
+    ].join('\n'));
+  });
+
+  test('(+) a file without enabledPlugins: before is {} and the block is added; a new file has an empty before and keptKeys 0', async () => {
+    const w = await world({ plugins: ['alpha@demo-market'] });
+    put(w, settings, '{"model":"x","env":{"A":"1"}}');
+    const s = entry(await prev(w), settings);
+    assert.deepEqual([s.action, s.keptKeys], ['update', 2]);
+    assert.equal(s.diff, '--- a/.claude/settings.local.json\n+++ b/.claude/settings.local.json\n@@ -1 +1,5 @@\n-{}\n+{\n+  "enabledPlugins": {\n+    "alpha@demo-market": true\n+  }\n+}\n');
+    const v = await world({ plugins: ['alpha@demo-market'] });
+    const created = entry(await prev(v), settings);
+    assert.deepEqual([created.action, created.keptKeys], ['create', 0]);
+    assert.match(created.diff, /^--- a\/\.claude\/settings\.local\.json\n\+\+\+ b\/\.claude\/settings\.local\.json\n@@ -0,0 \+1,5 @@\n/);
+  });
+
+  test('(+) unchanged: empty diff, keptKeys still counts the other keys; a missing file gives 0', async () => {
+    const w = await world({ plugins: ['keep@demo-market'] });
+    put(w, settings, '{"enabledPlugins":{"keep@demo-market":true},"env":{"A":"1"},"model":"x"}');
+    const s = entry(await prev(w), settings);
+    assert.deepEqual([s.action, s.diff, s.keptKeys], ['unchanged', '', 2]);
+    const v = await world();
+    assert.deepEqual([entry(await prev(v), settings).action, entry(await prev(v), settings).keptKeys], ['unchanged', 0]);
+  });
+
+  test('(−) no value of env, permissions, hooks, apiKeyHelper, mcpServers or model appears anywhere in the preview response', async () => {
+    for (const plugins of [['keep@demo-market', 'new-one@demo-market'], [], undefined]) {
+      const w = await world({ plugins, git: true });
+      put(w, settings, JSON.stringify(WITH_SECRETS));
+      const body = await prev(w);
+      assert.deepEqual(leaks(body), [], JSON.stringify(plugins));
+      for (const key of ['env', 'permissions', 'hooks', 'apiKeyHelper', 'mcpServers', 'model', 'TOKEN']) {
+        assert.equal(entry(body, settings).diff.includes(`"${key}"`), false, `${key} in the diff`);
+      }
+    }
+  });
+
+  test('(−) the secrets stay out of an error response too, and a settings file that is not valid JSON never has its text echoed', async () => {
+    const w = await world({ plugins: ['alpha@demo-market'] });
+    put(w, settings, `{"env":{"TOKEN":"${SECRETS[0]}"},"enabledPlugins":[]}`);
+    const r = await preview(w.project, w.ctx);
+    assert.equal(r.status, 400);
+    assert.deepEqual(leaks(r.body), []);
+    const v = await world();
+    put(v, settings, `not json ${SECRETS[0]}`);
+    const none = await prev(v);
+    assert.deepEqual([entry(none, settings).action, entry(none, settings).diff, entry(none, settings).keptKeys], ['unchanged', '', 0]);
+    assert.deepEqual(leaks(none), []);
+  });
+
+  test('(+) the plan hash still covers the full file: a change to a hidden value is a different hash and apply refuses the stale one', async () => {
+    const w = await world({ plugins: ['keep@demo-market'] });
+    put(w, settings, JSON.stringify(WITH_SECRETS));
+    const a = await prev(w);
+    put(w, settings, JSON.stringify({ ...WITH_SECRETS, env: { TOKEN: 'SYNTH-OTHER-VALUE' } }));
+    const b = await prev(w);
+    assert.equal(entry(a, settings).diff, entry(b, settings).diff, 'the page cannot tell the two files apart');
+    assert.notEqual(a.hash, b.hash);
+    const before = snapshot(w.dir);
+    const stale = await go(w, a);
+    assert.deepEqual([stale.status, stale.body.error], [409, 'conflict']);
+    assert.deepEqual(snapshot(w.dir), before);
+    const ok = await go(w, b);
+    assert.equal(ok.status, 200, JSON.stringify(ok.body));
+    const out = JSON.parse(get(w, settings));
+    assert.deepEqual(out.env, { TOKEN: 'SYNTH-OTHER-VALUE' });
+    assert.deepEqual(out.hooks, WITH_SECRETS.hooks);
+    assert.deepEqual(out.enabledPlugins, { 'off-one@demo-market': false, 'keep@demo-market': true });
+  });
+});
+
 describe('apply', () => {
   test('(+) writes exactly the allowed files with the right modes; the repo gets nothing else; no git', async () => {
     const w = await world({ plugins: ['alpha@demo-market'] });

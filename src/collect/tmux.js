@@ -1,14 +1,16 @@
 // tmux panes on the default server. A pane name is taken only from the spawn convention title "[%<id>] <name>".
-const FORMAT = '#{pane_id}\t#{session_name}\t#{window_index}\t#{pane_title}\t#{pane_current_command}';
+// `@nika-role` is the pane option that marks a pane started by nika (orchestrator | agent); last field, empty when unset.
+const FORMAT = '#{pane_id}\t#{session_name}\t#{window_index}\t#{pane_title}\t#{pane_current_command}\t#{@nika-role}';
+const ROLES = new Set(['orchestrator', 'agent']);
 const SPAWN_TITLE = /^\[%\d+\]\s+(.+)$/;
 
 export function parsePaneLines(stdout) {
   const panes = new Map();
   for (const line of stdout.split('\n')) {
-    const [id, session, windowIndex, title = '', command = ''] = line.split('\t');
+    const [id, session, windowIndex, title = '', command = '', role = ''] = line.split('\t');
     if (!/^%\d+$/.test(id ?? '')) continue;
     const m = SPAWN_TITLE.exec(title.trim());
-    panes.set(id, { id, session: session ?? null, windowIndex: windowIndex ?? null, title, command, name: m ? m[1].trim() : null });
+    panes.set(id, { id, session: session ?? null, windowIndex: windowIndex ?? null, title, command, name: m ? m[1].trim() : null, role: ROLES.has(role) ? role : null });
   }
   return panes;
 }

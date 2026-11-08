@@ -1,0 +1,101 @@
+/* nika 0.2 design tokens (docs/design/spec.md section 2.1). Neutral chrome, colour means status only.
+   Theme: the OS decides (prefers-color-scheme); :root[data-theme="light"|"dark"] overrides it (Settings, ui.theme).
+   No color-mix() and no :has() anywhere (WebKitGTK older than 2.42): every mixed colour below is precomputed. */
+:root {
+  color-scheme: light dark;
+  /* type */
+  --font: system-ui, -apple-system, "Segoe UI", Cantarell, "Noto Sans", Ubuntu, sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, "DejaVu Sans Mono", "Liberation Mono", monospace;
+  --fs-cap: 0.6875rem;
+  --fs-small: 0.75rem;
+  --fs-body: 0.8125rem;
+  --fs-h3: 0.875rem;
+  --fs-h2: 0.9375rem;
+  --fs-h1: 1.125rem;
+  --fs-display: 1.375rem;
+  --fs-term: 0.75rem;
+  --lh-body: 1.45;
+  /* space (4px grid) */
+  --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-5: 20px; --sp-6: 24px; --sp-8: 32px;
+  /* shape and sizes */
+  --r-sm: 4px; --r-md: 6px; --r-lg: 10px;
+  --h-ctl: 28px; --h-ctl-lg: 32px; --side-w: 232px; --side-rail: 60px;
+  /* motion */
+  --dur-1: 120ms; --dur-2: 200ms; --dur-3: 320ms; --ease: cubic-bezier(0.2, 0, 0, 1);
+  /* elevation */
+  --elev-1: 0 1px 2px rgb(16 20 28 / 8%);
+  --elev-2: 0 8px 24px -8px rgb(16 20 28 / 28%);
+  --elev-3: 0 24px 56px -12px rgb(16 20 28 / 38%);
+  --scrim: rgb(16 20 28 / 45%);
+  /* colour roles: light */
+  --bg: #f3f4f6; --bg-alt: #e8eaee; --surface: #ffffff; --surface-2: #f1f3f6; --surface-3: #e3e7ed;
+  --line: #dde1e7; --line-strong: #868e9a;
+  --text: #16181d; --text-muted: #545b66;
+  --accent: #1d55d0; --on-accent: #ffffff; --accent-soft: #e4ecfc; --focus: #1d55d0; --accent-hover: #1c4ebb;
+  /* status: shared by every screen */
+  --busy: #17753a; --busy-soft: #e1f4e7;
+  --idle: #8a5300; --idle-soft: #fcf0d8;
+  --attn: #b0125c; --attn-soft: #fce6ef; --attn-row: #fdf1f6;
+  --ended: #5f6772; --ended-soft: #edeff2;
+  --danger: #b42318; --danger-soft: #fde9e7;
+  --diff-add: #e3f5e8; --diff-del: #fce9e9;
+  /* precomputed alpha edges and veils (were color-mix) */
+  --busy-line: rgb(23 117 58 / 45%); --idle-line: rgb(138 83 0 / 45%);
+  --danger-line: rgb(180 35 24 / 45%); --accent-line: rgb(29 85 208 / 35%);
+  --veil: rgb(255 255 255 / 86%);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --elev-1: none;
+    --elev-2: 0 8px 24px -8px rgb(0 0 0 / 60%);
+    --elev-3: 0 24px 56px -12px rgb(0 0 0 / 70%);
+    --scrim: rgb(0 0 0 / 60%);
+    --bg: #16181c; --bg-alt: #1c1f24; --surface: #202328; --surface-2: #272b31; --surface-3: #30353c;
+    --line: #30353d; --line-strong: #6f7783;
+    --text: #e9ebef; --text-muted: #a4abb6;
+    --accent: #7fa8ff; --on-accent: #0b1a3a; --accent-soft: #1d2b4a; --focus: #7fa8ff; --accent-hover: #8cb0fd;
+    --busy: #5fd08a; --busy-soft: #173523;
+    --idle: #f0b45a; --idle-soft: #3a2b12;
+    --attn: #ff80b5; --attn-soft: #41182c; --attn-row: #321d2a;
+    --ended: #9aa3ae; --ended-soft: #2a3038;
+    --danger: #ff8a80; --danger-soft: #431b18;
+    --diff-add: #163322; --diff-del: #3d1b1e;
+    --busy-line: rgb(95 208 138 / 45%); --idle-line: rgb(240 180 90 / 45%);
+    --danger-line: rgb(255 138 128 / 45%); --accent-line: rgb(127 168 255 / 35%);
+    --veil: rgb(32 35 40 / 86%);
+  }
+}
+
+:root[data-theme="light"] { color-scheme: light; }
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --elev-1: none;
+  --elev-2: 0 8px 24px -8px rgb(0 0 0 / 60%);
+  --elev-3: 0 24px 56px -12px rgb(0 0 0 / 70%);
+  --scrim: rgb(0 0 0 / 60%);
+  --bg: #16181c; --bg-alt: #1c1f24; --surface: #202328; --surface-2: #272b31; --surface-3: #30353c;
+  --line: #30353d; --line-strong: #6f7783;
+  --text: #e9ebef; --text-muted: #a4abb6;
+  --accent: #7fa8ff; --on-accent: #0b1a3a; --accent-soft: #1d2b4a; --focus: #7fa8ff; --accent-hover: #8cb0fd;
+  --busy: #5fd08a; --busy-soft: #173523;
+  --idle: #f0b45a; --idle-soft: #3a2b12;
+  --attn: #ff80b5; --attn-soft: #41182c; --attn-row: #321d2a;
+  --ended: #9aa3ae; --ended-soft: #2a3038;
+  --danger: #ff8a80; --danger-soft: #431b18;
+  --diff-add: #163322; --diff-del: #3d1b1e;
+  --busy-line: rgb(95 208 138 / 45%); --idle-line: rgb(240 180 90 / 45%);
+  --danger-line: rgb(255 138 128 / 45%); --accent-line: rgb(127 168 255 / 35%);
+  --veil: rgb(32 35 40 / 86%);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root { --dur-1: 0ms; --dur-2: 0ms; --dur-3: 0ms; }
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}

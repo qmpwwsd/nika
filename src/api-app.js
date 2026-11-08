@@ -3,14 +3,17 @@
 // router only validates, picks the module and sends its { status, body } result; the modules do the work.
 // Nothing here takes a file path from a request: ids are checked against ids.js shapes, projects are looked up by key.
 import crypto from 'node:crypto';
+import fs from 'node:fs/promises';
 import path from 'node:path';
 import { send, json, readBody } from './server.js';
-import { loadConfig, removeProject, updateSettings } from './store.js';
+import { loadConfig, removeProject, updateSettings, TEMPLATE_NAME } from './store.js';
+import { openRegular, isRealDir } from './fsafe.js';
 import { configDir, stateDir } from './paths.js';
 import { clean } from './text.js';
 import { UUID, PANE_ID, PROJECT_KEY, CLAUDE_COMMAND } from './ids.js';
 
 const ELIGIBILITY_TTL_MS = 1000; // pane list + live-agent snapshot, so a 4 Hz capture does not run collect() 4 times a second
+const TEMPLATES_MAX = 50;
 const CAP = { small: 4 * 1024, settings: 16 * 1024, keys: 20 * 1024, spawn: 80 * 1024 };
 const isPlain = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const err = (status, error, message) => ({ status, body: { error, message } });
@@ -25,6 +28,28 @@ function param(raw, shape) {
     // not a valid escape sequence: the raw form is all there is
   }
   return candidates.find((c) => shape.test(c)) ?? null;
+}
+
+/** Names (never contents) of the local rule templates in `dir`: regular files owned by the user (fsafe), sorted, at most 50. */
+async function listTemplates(dir) {
+  if (!(await isRealDir(dir))) return [];
+  let names;
+  try {
+    names = (await fs.readdir(dir)).filter((n) => TEMPLATE_NAME.test(n)).sort();
+  } catch {
+    return [];
+  }
+  const out = [];
+  for (const name of names) {
+    if (out.length === TEMPLATES_MAX) break;
+    try {
+      await (await openRegular(path.join(dir, name))).handle.close();
+      out.push(name);
+    } catch {
+      // a symlink, FIFO, hard link or foreign-owned file is not a template
+    }
+  }
+  return out;
 }
 
 /**
@@ -164,6 +189,11 @@ export function createAppApi({ secret, ctx, deps }) {
   });
 
   route('GET', /^\/api\/app\/plugins$/, 0, async () => ({ status: 200, body: { plugins: await deps.listPlugins(ctx.claudeDir) } }));
+
+  route('GET', /^\/api\/app\/templates$/, 0, async () => ({
+    status: 200,
+    body: { templates: await listTemplates(path.join(configDir(ctx.env), 'templates')) },
+  }));
 
   // --- sessions and panes ---
 

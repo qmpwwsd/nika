@@ -12,7 +12,8 @@ import { PROJECT_KEY, MODEL_ID, RC_PREFIX, PLUGIN_NAME, PERMISSION_MODES, PANE_P
 const CONFIG_MAX = 256 * 1024;
 const PLUGINS_MAX = 200;
 const PROJECTS_MAX = 100;
-const TEMPLATE_NAME = /^[A-Za-z0-9_-]{1,64}\.md$/;
+export const TEMPLATE_NAME = /^[A-Za-z0-9_-]{1,64}\.md$/;
+const THEMES = ['system', 'light', 'dark']; // system = follow prefers-color-scheme
 const hasOwn = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
 const isPlainObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 
@@ -26,6 +27,7 @@ export function defaults() {
     plugins: { perProject: {} },
     projects: [],
     rules: { localTemplate: null },
+    ui: { theme: 'system' },
   };
 }
 
@@ -77,6 +79,7 @@ const SCHEMA = {
   plugins: { perProject },
   projects,
   rules: { localTemplate: (v) => (v === null ? v : str(TEMPLATE_NAME)(v)) },
+  ui: { theme: oneOf(THEMES) },
 };
 
 /** Walks SCHEMA: unknown keys dropped, bad values replaced by defaults; every deviation is a warning. */

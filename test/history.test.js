@@ -30,6 +30,16 @@ const assistant = (blocks, i = 0) => ({ type: 'assistant', timestamp: ts(i), mes
 const say = (text, i) => assistant([{ type: 'text', text }], i);
 const get = (fx, q = {}, deps = {}) => readHistory(A, q, { claudeDir: fx.claudeDir, ...deps });
 const texts = (r) => r.body.entries.map((e) => e.text);
+/** Byte offset of the start of every line of a transcript file. */
+const lineOffsets = (file) => {
+  const out = [];
+  let off = 0;
+  for (const l of fs.readFileSync(file, 'utf8').split('\n').slice(0, -1)) {
+    out.push(off);
+    off += Buffer.byteLength(l) + 1;
+  }
+  return out;
+};
 
 /** Pages back from EOF until nextBefore is null; returns every entry, oldest first, and the number of requests. */
 async function readAll(fx, limit, deps) {
@@ -61,14 +71,15 @@ describe('readHistory: normalising entries', () => {
     const r = await get(fx);
     assert.equal(r.status, 200);
     assert.equal(r.body.nextBefore, null);
+    const o = lineOffsets(fx.file);
     assert.deepEqual(r.body.entries, [
-      { at: ts(1), role: 'user', kind: 'text', text: 'please list files', truncated: false },
-      { at: ts(2), role: 'assistant', kind: 'thinking', text: 'plan it', truncated: false },
-      { at: ts(2), role: 'assistant', kind: 'text', text: 'Looking.', truncated: false },
-      { at: ts(2), role: 'assistant', kind: 'tool_use', text: '{"command":"ls -la","description":"list"}', tool: 'Bash', truncated: false },
-      { at: ts(3), role: 'user', kind: 'tool_result', text: 'a.txt\nb.txt', truncated: false },
-      { at: ts(4), role: 'user', kind: 'tool_result', text: 'one\ntwo', truncated: false },
-      { at: ts(5), role: 'assistant', kind: 'text', text: 'Done.', truncated: false },
+      { id: `${o[1]}:0`, at: ts(1), role: 'user', kind: 'text', text: 'please list files', truncated: false },
+      { id: `${o[2]}:0`, at: ts(2), role: 'assistant', kind: 'thinking', text: 'plan it', truncated: false },
+      { id: `${o[2]}:1`, at: ts(2), role: 'assistant', kind: 'text', text: 'Looking.', truncated: false },
+      { id: `${o[2]}:2`, at: ts(2), role: 'assistant', kind: 'tool_use', text: '{"command":"ls -la","description":"list"}', tool: 'Bash', truncated: false },
+      { id: `${o[3]}:0`, at: ts(3), role: 'user', kind: 'tool_result', text: 'a.txt\nb.txt', truncated: false },
+      { id: `${o[4]}:0`, at: ts(4), role: 'user', kind: 'tool_result', text: 'one\ntwo', truncated: false },
+      { id: `${o[6]}:0`, at: ts(5), role: 'assistant', kind: 'text', text: 'Done.', truncated: false },
     ]);
   });
 
@@ -237,6 +248,59 @@ describe('readHistory: paging', () => {
     const r = await get(fx, { before: mid });
     assert.equal(r.status, 200);
     assert.deepEqual(texts(r), ['m0000', 'm0001']);
+  });
+});
+
+describe('readHistory: entry ids', () => {
+  const many = (count) => Array.from({ length: count }, (_, i) => say(`m${String(i).padStart(4, '0')}`, i));
+  const idOf = (e) => e.id.split(':').map(Number);
+
+  test('(+) id is "<byte offset of the line>:<block index>"; the block index counts skipped blocks too', async () => {
+    const fx = setup([user('héllo 日本', 1), assistant([{ type: 'thinking', thinking: '' }, { type: 'image' }, { type: 'text', text: 'third block' }], 2), say('tail', 3)]);
+    const o = lineOffsets(fx.file);
+    assert.ok(o[1] > 12, 'offsets are bytes, not characters');
+    const { entries } = (await get(fx)).body;
+    assert.deepEqual(entries.map((e) => e.id), [`${o[0]}:0`, `${o[1]}:2`, `${o[2]}:0`]);
+    for (const e of entries) assert.match(e.id, /^\d+:\d+$/);
+  });
+
+  test('(+) the same entry has the same id on every page, whatever the page size or window start', async () => {
+    const fx = setup(many(120));
+    const o = lineOffsets(fx.file);
+    const small = await readAll(fx, 7);
+    const big = await readAll(fx, 200);
+    assert.deepEqual(small.entries.map((e) => e.id), o.map((off) => `${off}:0`));
+    assert.deepEqual(big.entries.map((e) => e.id), small.entries.map((e) => e.id));
+    assert.equal(new Set(small.entries.map((e) => e.id)).size, 120, 'ids are unique');
+    const page = await get(fx, { limit: 3, before: o[100] });
+    assert.deepEqual(page.body.entries.map((e) => e.id), [97, 98, 99].map((i) => `${o[i]}:0`));
+  });
+
+  test('(+) ids do not move when the transcript grows at the end; ids stay unique inside a multi-block line', async () => {
+    const lines = [say('one', 1), assistant([{ type: 'text', text: 'a' }, { type: 'text', text: 'b' }], 2), say('three', 3)];
+    const fx = setup(lines);
+    const before = (await get(fx)).body.entries.map((e) => [e.id, e.text]);
+    fs.appendFileSync(fx.file, `${JSON.stringify(say('four', 4))}\n`);
+    const after = (await get(fx)).body.entries.map((e) => [e.id, e.text]);
+    assert.deepEqual(after.slice(0, before.length), before);
+    assert.equal(new Set(after.map(([id]) => id)).size, after.length);
+  });
+
+  test('(+) a window that starts mid-line does not shift the ids of the whole lines after it', async () => {
+    const lines = Array.from({ length: 1500 }, (_, i) => say(`${String(i).padStart(5, '0')} ${'日本語'.repeat(300)}`, i % 60));
+    const fx = setup(lines);
+    const o = lineOffsets(fx.file);
+    const { entries } = await readAll(fx, 200);
+    assert.ok(entries.length === 1500);
+    entries.forEach((e, i) => assert.equal(e.id, `${o[i]}:0`));
+  });
+
+  test('(−) lines that give no entries leave no id; offsets of the entries after them still count the skipped bytes', async () => {
+    const fx = setup([{ type: 'summary', summary: 'x' }, '{broken json', say('kept', 1)]);
+    const o = lineOffsets(fx.file);
+    const { entries } = (await get(fx)).body;
+    assert.deepEqual(entries.map((e) => e.id), [`${o[2]}:0`]);
+    assert.ok(idOf(entries[0])[0] > 0);
   });
 });
 

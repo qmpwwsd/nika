@@ -13,6 +13,16 @@ const STATIC = new Map([
   ['/', ['index.html', 'text/html; charset=utf-8']],
   ['/app.js', ['app.js', 'text/javascript; charset=utf-8']],
   ['/app.css', ['app.css', 'text/css; charset=utf-8']],
+  ['/tokens.css', ['tokens.css', 'text/css; charset=utf-8']],
+  ['/dom.js', ['dom.js', 'text/javascript; charset=utf-8']],
+  ['/api.js', ['api.js', 'text/javascript; charset=utf-8']],
+  ['/ui.js', ['ui.js', 'text/javascript; charset=utf-8']],
+  ['/project.js', ['project.js', 'text/javascript; charset=utf-8']],
+  ['/settings.js', ['settings.js', 'text/javascript; charset=utf-8']],
+  ['/session.html', ['session.html', 'text/html; charset=utf-8']],
+  ['/session.js', ['session.js', 'text/javascript; charset=utf-8']],
+  ['/session.css', ['session.css', 'text/css; charset=utf-8']],
+  ['/mirror-render.js', ['mirror-render.js', 'text/javascript; charset=utf-8']],
   ['/favicon.svg', ['favicon.svg', 'image/svg+xml']],
 ]);
 const CSP = [

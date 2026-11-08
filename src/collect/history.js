@@ -96,19 +96,22 @@ function fromBlock(b) {
   return null;
 }
 
-/** One transcript line → history entries (a message may hold several blocks). Non-conversation lines give none. */
-function entriesOf(line) {
+/**
+ * One transcript line → history entries (a message may hold several blocks). Non-conversation lines give none.
+ * `off` is the byte offset of the line; an entry id is "<off>:<index of its block>", the same on every page.
+ */
+function entriesOf(line, off) {
   if ((line.type !== 'user' && line.type !== 'assistant') || !line.message || typeof line.message !== 'object') return [];
   const { content } = line.message;
   const blocks = typeof content === 'string' ? [{ type: 'text', text: content }] : Array.isArray(content) ? content : [];
   const at = isoOf(line.timestamp);
   const out = [];
-  for (const b of blocks) {
+  for (const [i, b] of blocks.entries()) {
     const part = fromBlock(b);
     if (!part) continue;
     const { text, truncated } = fit(part.raw);
     if (!text && part.kind !== 'tool_result') continue; // empty text/thinking is noise; an empty tool result still happened
-    const entry = { at, role: line.type, kind: part.kind, text };
+    const entry = { id: `${off}:${i}`, at, role: line.type, kind: part.kind, text };
     if (part.kind === 'tool_use' && part.tool) entry.tool = part.tool;
     entry.truncated = truncated;
     out.push(entry);
@@ -135,7 +138,7 @@ function pageOf(buf, start, limit) {
       let entries = [];
       try {
         const v = JSON.parse(buf.toString('utf8', a, b));
-        if (v && typeof v === 'object') entries = entriesOf(v);
+        if (v && typeof v === 'object') entries = entriesOf(v, start + a);
       } catch {
         // corrupt line, or a line cut by the window end
       }

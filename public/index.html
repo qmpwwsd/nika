@@ -7,60 +7,204 @@
 <meta name="nika-token" content="__NIKA_TOKEN__">
 <title>nika · Claude agents</title>
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/tokens.css">
 <link rel="stylesheet" href="/app.css">
 <script type="module" src="/app.js"></script>
 </head>
-<body>
-<a class="skip" href="#groups">Skip to agents</a>
-<header class="bar">
-  <div class="bar-inner">
-    <div class="brand">
-      <svg class="logo" viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="12" r="3"/><circle cx="18" cy="6" r="3"/><circle cx="18" cy="18" r="3"/><path d="M8.6 10.6 15.4 7.4M8.6 13.4l6.8 3.2"/></svg>
-      <h1>nika</h1>
-      <span class="sub">Claude agents</span>
+<body data-tier="browser">
+<a class="skip" href="#main">Skip to content</a>
+<svg class="sprite" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false">
+  <symbol id="i-logo" viewBox="0 0 24 24"><circle cx="6" cy="12" r="3"/><circle cx="18" cy="6" r="3"/><circle cx="18" cy="18" r="3"/><path d="M8.6 10.6 15.4 7.4M8.6 13.4l6.8 3.2"/></symbol>
+  <symbol id="i-grid" viewBox="0 0 16 16"><rect x="2" y="2" width="5" height="5" rx="1"/><rect x="9" y="2" width="5" height="5" rx="1"/><rect x="2" y="9" width="5" height="5" rx="1"/><rect x="9" y="9" width="5" height="5" rx="1"/></symbol>
+  <symbol id="i-gear" viewBox="0 0 16 16"><circle cx="8" cy="8" r="2.4"/><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 16 16"><path d="M8 3v10M3 8h10"/></symbol>
+  <symbol id="i-play" viewBox="0 0 16 16"><path d="M5 3.5v9l7-4.5z"/></symbol>
+  <symbol id="i-spawn" viewBox="0 0 16 16"><circle cx="6" cy="5.5" r="2.5"/><path d="M1.5 13.5c.6-2.6 2.4-4 4.5-4s3.9 1.4 4.5 4M12.5 5v5M10 7.5h5"/></symbol>
+  <symbol id="i-term" viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><path d="M4.5 6l2 2-2 2M8.5 10.5h3"/></symbol>
+  <symbol id="i-back" viewBox="0 0 16 16"><path d="M10 3 5 8l5 5"/></symbol>
+  <symbol id="i-search" viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3.5 3.5"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 16 16"><rect x="5" y="5" width="8.5" height="8.5" rx="1.5"/><path d="M3 10.5V3.5A1 1 0 0 1 4 2.5h6.5"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 16 16"><path d="M1.5 4a1 1 0 0 1 1-1h3.5l1.5 1.5h6a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1z"/></symbol>
+  <symbol id="i-warn" viewBox="0 0 16 16"><path d="M8 2 1.5 13.5h13z"/><path d="M8 6.5v3.5M8 11.8v.2"/></symbol>
+  <symbol id="i-check" viewBox="0 0 16 16"><path d="m3 8.5 3 3 7-7"/></symbol>
+  <symbol id="i-x" viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8"/></symbol>
+</svg>
+
+<div class="app">
+  <nav class="side" aria-label="Main" data-app-only>
+    <div class="brand"><svg class="logo" aria-hidden="true"><use href="#i-logo"/></svg><b>nika</b><span id="brand-ver"></span></div>
+    <div class="nav">
+      <a href="#dashboard" data-nav="dashboard"><svg class="ic" aria-hidden="true"><use href="#i-grid"/></svg><span class="label">Dashboard</span><kbd data-mod="1"></kbd></a>
+      <a href="#settings" data-nav="settings"><svg class="ic" aria-hidden="true"><use href="#i-gear"/></svg><span class="label">Settings</span><kbd data-mod=","></kbd></a>
     </div>
-    <p class="totals" id="totals" aria-live="polite"></p>
-    <div class="controls">
-      <label class="field search">
-        <span class="sr-only">Search agents</span>
-        <input id="search" type="search" placeholder="Search name, branch, dir…" autocomplete="off" spellcheck="false">
-      </label>
-      <label class="field">
-        <span class="field-label">Window</span>
-        <select id="since">
-          <option value="24h">24 hours</option>
-          <option value="7d">7 days</option>
-          <option value="30d">30 days</option>
-          <option value="all">All</option>
-        </select>
-      </label>
-      <label class="check"><input id="showEnded" type="checkbox"> Show ended</label>
+    <div class="side-h"><h2 id="side-p">Projects</h2><button type="button" class="btn icon ghost" id="side-add" aria-label="Add project" title="Add project"><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg></button></div>
+    <ul class="side-projects" id="side-projects" aria-labelledby="side-p"></ul>
+    <div class="side-foot" id="env" aria-label="Environment"></div>
+  </nav>
+
+  <main class="main" id="main" tabindex="-1">
+    <div id="banners"></div>
+
+    <section class="screen" data-screen="dashboard" aria-labelledby="dash-h">
+      <header class="bar">
+        <span class="brand-inline" data-browser-only><svg class="logo" aria-hidden="true"><use href="#i-logo"/></svg><b>nika</b></span>
+        <h1 id="dash-h" tabindex="-1">Agents</h1>
+        <p class="dash-sum" id="dash-sum" aria-label="Totals"></p>
+        <span class="sp"></span>
+        <label class="search"><span class="sr-only">Filter agents</span><svg class="ic" aria-hidden="true"><use href="#i-search"/></svg><input type="search" id="dash-filter" placeholder="Filter" autocomplete="off" spellcheck="false"></label>
+        <label class="inline-field"><span>Window</span>
+          <select id="dash-since"><option value="24h">24 hours</option><option value="7d">7 days</option><option value="30d">30 days</option><option value="all">All</option></select>
+        </label>
+        <label class="check center"><input type="checkbox" id="dash-ended"> Show ended</label>
+      </header>
+      <div class="scroll" id="dash-body" aria-busy="true">
+        <div class="grp" aria-hidden="true">
+          <div class="sk sk-title"></div>
+          <div class="rows"><div class="sk-row"><div class="sk"></div><div class="sk"></div><div class="sk"></div><div class="sk"></div></div><div class="sk-row"><div class="sk"></div><div class="sk"></div><div class="sk"></div><div class="sk"></div></div></div>
+        </div>
+        <p class="sr-only">Loading agents…</p>
+      </div>
+    </section>
+
+    <section class="screen" data-screen="project" aria-labelledby="proj-h" hidden data-app-only>
+      <header class="bar">
+        <a class="crumb" href="#dashboard"><svg class="ic" aria-hidden="true"><use href="#i-back"/></svg>Dashboard</a>
+        <h1 id="proj-h" tabindex="-1"></h1>
+        <span id="proj-rules"></span>
+        <span class="sp"></span>
+        <span class="bar-actions" id="proj-actions"></span>
+      </header>
+      <div class="scroll" id="proj-body" aria-busy="true">
+        <div class="proj-grid">
+          <section aria-labelledby="proj-agents-h"><h2 id="proj-agents-h">Agents</h2><div id="proj-agents"></div></section>
+          <aside aria-label="Project setup" id="proj-setup"></aside>
+        </div>
+      </div>
+    </section>
+
+    <section class="screen" data-screen="settings" aria-labelledby="set-h" hidden data-app-only>
+      <header class="bar"><h1 id="set-h" tabindex="-1">Settings</h1><p class="sub">Saved to <code>config.json</code> in nika's config folder</p></header>
+      <div class="scroll">
+        <form id="set-form" novalidate>
+          <div class="set-grid">
+            <nav class="set-index" aria-label="Settings sections">
+              <a href="#settings" data-jump="s-appearance">Appearance</a><a href="#settings" data-jump="s-models">Models</a><a href="#settings" data-jump="s-rc">Remote Control</a><a href="#settings" data-jump="s-perm">Permission mode</a><a href="#settings" data-jump="s-panes">Panes and limits</a><a href="#settings" data-jump="s-plugins">Plugins</a><a href="#settings" data-jump="s-tpl">Rules template</a>
+            </nav>
+            <div>
+              <div class="alert err-sum" data-kind="danger" role="alert" id="set-sum" hidden tabindex="-1"><svg class="ic" aria-hidden="true"><use href="#i-warn"/></svg><p id="set-sum-text"></p></div>
+
+              <section class="set-sec" id="s-appearance" aria-labelledby="s-appearance-h">
+                <h2 id="s-appearance-h">Appearance</h2>
+                <p>Follow the operating system, or always use one theme.</p>
+                <fieldset><legend class="sr-only">Theme</legend>
+                  <div class="seg-cards">
+                    <label class="radio-card"><input type="radio" name="theme" value="system"><span><b>System</b><span>Follows your light or dark setting.</span></span></label>
+                    <label class="radio-card"><input type="radio" name="theme" value="light"><span><b>Light</b><span>Always light.</span></span></label>
+                    <label class="radio-card"><input type="radio" name="theme" value="dark"><span><b>Dark</b><span>Always dark.</span></span></label>
+                  </div>
+                </fieldset>
+              </section>
+
+              <section class="set-sec" id="s-models" aria-labelledby="s-models-h">
+                <h2 id="s-models-h">Models</h2>
+                <p>Which model plays each role when nika starts an orchestrator or spawns an agent.</p>
+                <datalist id="model-list"><option value="opus"></option><option value="sonnet"></option><option value="haiku"></option><option value="fable"></option></datalist>
+                <div class="grid2">
+                  <div class="field"><label for="set-model-orchestrator">Orchestrator</label><input type="text" id="set-model-orchestrator" data-rx="model" list="model-list" aria-describedby="set-model-orchestrator-err" spellcheck="false"><p class="err" id="set-model-orchestrator-err" hidden></p></div>
+                  <div class="field"><label for="set-model-reasoner">Reasoner</label><input type="text" id="set-model-reasoner" data-rx="model" list="model-list" aria-describedby="set-model-reasoner-err" spellcheck="false"><p class="err" id="set-model-reasoner-err" hidden></p></div>
+                  <div class="field"><label for="set-model-builder">Builder</label><input type="text" id="set-model-builder" data-rx="model" list="model-list" aria-describedby="set-model-builder-help set-model-builder-err" spellcheck="false"><p class="help" id="set-model-builder-help">Model id or alias: opus, sonnet, haiku, fable.</p><p class="err" id="set-model-builder-err" hidden></p></div>
+                  <div class="field"><label for="set-model-scout">Scout</label><input type="text" id="set-model-scout" data-rx="model" list="model-list" aria-describedby="set-model-scout-err" spellcheck="false"><p class="err" id="set-model-scout-err" hidden></p></div>
+                </div>
+              </section>
+
+              <section class="set-sec" id="s-rc" aria-labelledby="s-rc-h">
+                <h2 id="s-rc-h">Remote Control</h2>
+                <p>Lets you follow and answer new agents from claude.ai. Off by default.</p>
+                <label class="inline"><input type="checkbox" role="switch" class="switch" id="set-rc" aria-describedby="set-rc-help"> <span>Make new agents reachable from claude.ai</span></label>
+                <p class="help" id="set-rc-help">Applies to agents started after you save. Running agents keep their setting.</p>
+                <div class="field narrow"><label for="set-rc-prefix">Name prefix</label><input type="text" id="set-rc-prefix" data-rx="prefix" placeholder="project name" aria-describedby="set-rc-prefix-help set-rc-prefix-err" spellcheck="false"><p class="help" id="set-rc-prefix-help">Agents appear as <code>prefix-agent-name</code>. Empty uses the project name.</p><p class="err" id="set-rc-prefix-err" hidden></p></div>
+              </section>
+
+              <section class="set-sec" id="s-perm" aria-labelledby="s-perm-h">
+                <h2 id="s-perm-h">Permission mode</h2>
+                <p>What new agents may do without asking. You can override it per agent when you spawn one.</p>
+                <fieldset><legend class="sr-only">Permission mode for new agents</legend>
+                  <label class="radio-card"><input type="radio" name="perm" value="default"><span><b>Claude Code default (no flag)</b><span>nika passes no permission flag; Claude Code asks before the first use of each tool.</span></span></label>
+                  <label class="radio-card"><input type="radio" name="perm" value="manual"><span><b>Manual: ask every time</b><span>Same behaviour as the default, passed explicitly as <code>--permission-mode manual</code>.</span></span></label>
+                  <label class="radio-card"><input type="radio" name="perm" value="acceptEdits"><span><b>Accept edits</b><span>Edits files and runs common file commands (mkdir, mv, cp) in the project without asking.</span></span></label>
+                  <label class="radio-card"><input type="radio" name="perm" value="plan"><span><b>Plan</b><span>Reads and explores; does not edit source files.</span></span></label>
+                  <label class="radio-card"><input type="radio" name="perm" value="auto"><span><b>Auto</b><span>No routine prompts; a background check reviews shell commands and network requests first.</span></span></label>
+                  <label class="radio-card"><input type="radio" name="perm" value="dontAsk"><span><b>Don't ask</b><span>Never prompts: anything not allowed in advance is refused.</span></span></label>
+                </fieldset>
+                <p class="help">Bypass permissions is not offered. nika refuses it for every agent it starts.</p>
+              </section>
+
+              <section class="set-sec" id="s-panes" aria-labelledby="s-panes-h">
+                <h2 id="s-panes-h">Panes and limits</h2>
+                <fieldset><legend>Where new agent panes open</legend>
+                  <label class="radio-card"><input type="radio" name="place" value="beside"><span><b>Beside</b><span>A new pane to the right in the project's tmux window.</span></span></label>
+                  <label class="radio-card"><input type="radio" name="place" value="under-last"><span><b>Under the last agent</b><span>Stacks below the most recently started agent pane.</span></span></label>
+                </fieldset>
+                <div class="field"><label for="set-max">Agents per project at once</label>
+                  <div class="inline"><span class="stepper"><button type="button" class="btn" data-step="-1" aria-label="One fewer">−</button><input type="number" id="set-max" min="1" max="8" aria-describedby="set-max-help set-max-err"><button type="button" class="btn" data-step="1" aria-label="One more">+</button></span></div>
+                  <p class="help" id="set-max-help">1 to 8. Counts only agents nika spawned that are still running.</p><p class="err" id="set-max-err" hidden></p></div>
+              </section>
+
+              <section class="set-sec" id="s-plugins" aria-labelledby="s-plugins-h">
+                <h2 id="s-plugins-h">Plugins per project</h2>
+                <p>Installed plugins to turn on in a project. nika writes them into <code>.claude/settings.local.json</code> when you apply rules.</p>
+                <div class="field narrow"><label for="set-plug-proj">Project</label><select id="set-plug-proj"></select></div>
+                <fieldset><legend id="set-plug-legend">Plugins</legend><div class="plug-list" id="set-plugs"></div>
+                  <p class="help" id="set-plug-help">Ticked plugins are turned on and other plugins that are on in that file are removed when you apply rules. Leave all unticked to leave the file's plugins as they are.</p></fieldset>
+              </section>
+
+              <section class="set-sec" id="s-tpl" aria-labelledby="s-tpl-h">
+                <h2 id="s-tpl-h">Rules template</h2>
+                <div class="field wide"><label for="set-tpl">Template for rules/orchestration.md</label><select id="set-tpl" aria-describedby="set-tpl-help"></select><p class="help" id="set-tpl-help">Local templates are Markdown files in the <code>templates</code> folder next to config.json. Projects whose rules came from another template show “Rules outdated”.</p></div>
+              </section>
+            </div>
+          </div>
+          <div class="savebar" id="set-bar" hidden><span>Unsaved changes</span><span class="sp"></span><button type="button" class="btn" id="set-discard">Discard</button><button type="submit" class="btn primary" id="set-save">Save changes</button></div>
+        </form>
+      </div>
+    </section>
+  </main>
+</div>
+
+<dialog id="dlg-spawn" class="sheet" aria-labelledby="sp-h" aria-describedby="sp-d" data-app-only>
+  <form id="spawn-form" class="dlg-form" novalidate>
+    <div class="dlg-head"><div><h2 id="sp-h" tabindex="-1">Spawn agent</h2><p id="sp-d"></p></div><button type="button" class="btn icon ghost" data-close aria-label="Close"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button></div>
+    <div class="dlg-body">
+      <div class="alert" data-kind="danger" role="alert" id="sp-alert" hidden tabindex="-1"><svg class="ic" aria-hidden="true"><use href="#i-warn"/></svg><p id="sp-alert-text"></p></div>
+      <div class="field"><label for="sp-name">Name</label><input type="text" id="sp-name" data-rx="agent" autocomplete="off" spellcheck="false" aria-describedby="sp-name-help sp-name-err"><p class="help" id="sp-name-help">Lowercase letters, digits and dashes. Used for the pane title and the report file.</p><p class="err" id="sp-name-err" hidden></p></div>
+      <div class="field"><label for="sp-model">Model</label><select id="sp-model"></select></div>
+      <div class="field"><label for="sp-brief">Brief</label><textarea id="sp-brief" rows="8" aria-describedby="sp-brief-help sp-brief-err"></textarea><p class="help" id="sp-brief-help">The agent's first message. It never passes through the tmux command line.</p><p class="err" id="sp-brief-err" hidden></p><span class="counter num" id="sp-count"></span></div>
+      <div class="grid2">
+        <div class="field"><label for="sp-perm">Permission mode</label><select id="sp-perm"></select></div>
+        <fieldset><legend>Pane</legend><div id="sp-place"></div></fieldset>
+      </div>
     </div>
-  </div>
-</header>
+    <div class="dlg-foot"><span class="help" id="sp-note"></span><span class="sp"></span><button type="button" class="btn lg" data-close id="sp-cancel">Cancel</button><button type="submit" class="btn primary lg" id="sp-go">Spawn agent</button></div>
+  </form>
+</dialog>
 
-<div id="banner" class="banner" role="status" hidden></div>
+<dialog id="dlg-rules" class="dlg-rules" aria-labelledby="ru-h" aria-describedby="ru-d" data-app-only>
+  <div class="dlg-head"><div><h2 id="ru-h" tabindex="-1">Apply rules</h2><p id="ru-d">Review each change. nika writes only after you confirm and keeps a backup outside the repository. It never runs git.</p></div><button type="button" class="btn icon ghost" data-close id="ru-x" aria-label="Close"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button></div>
+  <div class="dlg-main" id="ru-main"></div>
+  <div class="dlg-foot" id="ru-foot"></div>
+</dialog>
 
-<main id="groups" class="groups" aria-busy="true" tabindex="-1">
-  <div class="skeleton" aria-hidden="true">
-    <div class="sk-head"></div>
-    <div class="cards"><div class="sk-card"></div><div class="sk-card"></div><div class="sk-card"></div></div>
-    <div class="sk-head"></div>
-    <div class="cards"><div class="sk-card"></div><div class="sk-card"></div></div>
-  </div>
-  <p class="sr-only">Loading agents…</p>
-</main>
+<dialog id="dlg-confirm" class="dlg-confirm" aria-labelledby="cf-h" aria-describedby="cf-d" data-app-only>
+  <div class="dlg-head"><div><h2 id="cf-h" tabindex="-1"></h2><p id="cf-d"></p></div></div>
+  <div class="dlg-foot"><span class="sp"></span><button type="button" class="btn lg" data-close id="cf-cancel">Cancel</button><button type="button" class="btn danger lg" id="cf-ok"></button></div>
+</dialog>
 
-<footer class="foot"><span id="updated"></span></footer>
-
-<dialog id="report" class="report" aria-labelledby="report-title">
-  <div class="report-head">
-    <h2 id="report-title">Report</h2>
-    <button type="button" class="btn" id="report-close">Close</button>
-  </div>
+<dialog id="dlg-report" class="dlg-report" aria-labelledby="report-title">
+  <div class="dlg-head"><div><h2 id="report-title" tabindex="-1">Report</h2></div><button type="button" class="btn icon ghost" data-close aria-label="Close"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button></div>
   <pre id="report-body" class="report-body" tabindex="0"></pre>
 </dialog>
 
-<div id="toast" class="toast" role="status" aria-live="polite"></div>
+<div id="announce" class="sr-only" aria-live="polite"></div>
+<div id="toasts" class="toasts"></div>
 </body>
 </html>

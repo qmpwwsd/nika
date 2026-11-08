@@ -91,7 +91,16 @@ Only `enabledPlugins` is written, and only for projects that have a plugin selec
 diff (`src/diff.js`, 3 lines of context, `--- a/<path>` / `+++ b/<path>`), plus `foreign`, `keysPreserved` and `optional`
 flags, `warnings`, the `backupDir` and a `hash`. The hash is a sha256 over every listed file's path, the hash of its
 current content and the content planned for it, so it changes when the project files or the settings that feed the
-template change. `apply` recomputes the plan: a different hash is `409 conflict`, a foreign rules file without
+template change.
+
+For `.claude/settings.local.json` the preview shows less than it plans. Its `diff` is computed only between
+`{"enabledPlugins": <old>}` and `{"enabledPlugins": <new>}` (pretty JSON; a missing file has an empty
+"before", a file without `enabledPlugins` has `{}`), and the entry carries `keptKeys`, the number of other top-level keys the
+file has. The values of those keys (`env`, `permissions`, `hooks`, ...) never reach the page, not even in an error
+message. The `hash` still covers the full file, so a change to a hidden value after the preview makes `apply` answer
+`409 conflict`.
+
+`apply` recomputes the plan: a different hash is `409 conflict`, a foreign rules file without
 `overwriteForeign` is `409 foreign`, a refusal by the write layer is `409 refused` with the fwrite `code`. The optional
 `.gitignore` entry is written only with `gitignore: true`.
 
@@ -108,6 +117,8 @@ folder is created only when something was backed up. To restore, copy the file b
 lives at `<config dir>/templates/<name>` (default `~/.config/nika/templates/`), a copy made when the template was imported,
 never a path into a repository. It is read through `src/fsafe.js` (regular file owned by the user, no symlink, at most
 256 KB, valid UTF-8; the `templates` folder must be a real folder) and rendered with the same placeholders, marker and
-rules as the built-in one; it must not contain unknown placeholders. A missing or unsafe local template is a refusal
+rules as the built-in one; it must not contain unknown placeholders. `GET /api/app/templates` lists the file names in that
+folder (names matching the pattern above, regular user-owned files only, sorted, at most 50; `[]` when the folder is
+missing), never contents or paths. A missing or unsafe local template is a refusal
 (`409 refused`, code `ENOENT`, `ESYMLINK`, `EFBIG`, ...), never a silent fallback to the built-in template. The marker's
 version is always the current `TEMPLATE_VERSION`: for a local template it means "rendered by this nika's placeholder set".
