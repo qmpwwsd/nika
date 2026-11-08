@@ -10,6 +10,8 @@ export const MODEL_ID = /^(?:claude-[a-z0-9-]{3,60}|opus|sonnet|haiku|fable|best
 export const TMUX_SESSION = /^[A-Za-z0-9_][A-Za-z0-9_-]{0,47}$/;
 /** `<plugin>@<marketplace>` as Claude Code lists installed plugins. */
 export const PLUGIN_NAME = /^[A-Za-z0-9._-]{1,100}@[A-Za-z0-9._-]{1,100}$/;
+/** Bare name of a listed slash command or skill: no leading `/`, before any `<plugin>:` prefix. Names that miss it are skipped, not cleaned. */
+export const COMMAND_NAME = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/;
 /** Remote Control session-name prefix. */
 export const RC_PREFIX = /^[a-z0-9][a-z0-9-]{0,19}$/;
 /** Full Remote Control session name: `<prefix>-<agent name>` or the orchestrator's session name, lower-cased. */
