@@ -60,8 +60,16 @@ describe('parseFrontmatter', () => {
     assert.deepEqual(parseFrontmatter('---\r\nname: demo\r\ndescription: text\r\n---\r\nbody\r\n'), { name: 'demo', description: 'text' });
   });
 
-  test('(+) a block scalar indicator is not shown as the value', () => {
-    assert.deepEqual(parseFrontmatter('---\ndescription: >-\n  folded text\nname: demo\n---\n'), { description: '', name: 'demo' });
+  test('(+) a description written as a folded or literal block joins its indented lines with one space', () => {
+    for (const header of ['>', '>-', '|', '|-']) {
+      const text = `---\ndescription: ${header}\n  first line\n\n    second  line\n\tthird\nname: demo\n---\nbody\n`;
+      assert.deepEqual(parseFrontmatter(text), { description: 'first line second  line third', name: 'demo' }, header);
+    }
+    assert.deepEqual(parseFrontmatter('---\nname: demo\ndescription: |\n  last one\n---\n'), { name: 'demo', description: 'last one' });
+  });
+
+  test('(−) a block header on any other key gives an empty value, and its lines are ignored', () => {
+    assert.deepEqual(parseFrontmatter('---\nargument-hint: >\n  [text]\nname: |-\n  other\ndescription: ok\n---\n'), { 'argument-hint': '', name: '', description: 'ok' });
   });
 
   test('(−) no leading --- gives {}', () => {
@@ -70,8 +78,10 @@ describe('parseFrontmatter', () => {
     }
   });
 
-  test('(−) a frontmatter block that is never closed gives {}', () => {
-    assert.deepEqual(parseFrontmatter('---\nname: demo\ndescription: text\n'), {});
+  test('(−) a frontmatter block that is never closed gives null (the caller skips the file)', () => {
+    assert.equal(parseFrontmatter('---\nname: demo\ndescription: text\n'), null);
+    assert.equal(parseFrontmatter('---\n'), null);
+    assert.equal(parseFrontmatter('---'), null);
   });
 
   test('(−) indented lines, list items, comments and lines without a key are ignored', () => {
@@ -271,10 +281,15 @@ describe('listCommands', () => {
     const m = machine();
     // closes inside the head: the body past 4 KB is never needed
     write(path.join(m.claudeDir, 'commands', 'closed.md'), `${doc({ description: 'early text' }, 'x'.repeat(10_000))}`);
-    // the closing --- lies past 4 KB, so nothing in this block counts, not even the key before the cut
+    // the closing --- lies past 4 KB, so a hide flag may sit in the part that was not read: the file is skipped
     write(path.join(m.claudeDir, 'commands', 'open.md'), `---\ndescription: early text\nfiller: ${'y'.repeat(5000)}\nuser-invocable: false\n---\nbody\n`);
+    write(path.join(m.claudeDir, 'skills', 'open-skill', 'SKILL.md'), `---\nname: open-skill\nfiller: ${'y'.repeat(5000)}\n---\nbody\n`);
+    // an opening --- that never closes, however short the file
+    write(path.join(m.claudeDir, 'commands', 'unclosed.md'), '---\ndescription: text\n');
+    // no frontmatter at all: listed with an empty description
+    write(path.join(m.claudeDir, 'commands', 'plain.md'), '# Just a body\n');
     const got = Object.fromEntries(nonBuiltin(await list(m)).map((e) => [e.name, e.description]));
-    assert.deepEqual(got, { closed: 'early text', open: '' });
+    assert.deepEqual(got, { closed: 'early text', plain: '' });
   });
 
   test('(−) a name with spaces, <, or a leading dash or dot is skipped; 100 chars fit, 101 do not', async () => {
@@ -304,6 +319,24 @@ describe('listCommands', () => {
     assert.equal(by.markup.argHint, '<b>[arg]</b>');
     assert.equal(by.escapes.description, 'x [2J y z');
     assert.equal(by.long.description.length, 200);
+  });
+
+  test('(+) a block-scalar description is listed as one line, cut at 200 chars', async () => {
+    const m = machine();
+    write(path.join(m.claudeDir, 'commands', 'folded.md'), '---\ndescription: >-\n  Review the\n  open changes\nargument-hint: [target]\n---\nbody\n');
+    write(path.join(m.claudeDir, 'skills', 'literal', 'SKILL.md'), `---\nname: literal\ndescription: |\n  ${'word '.repeat(80)}\n---\nbody\n`);
+    const by = Object.fromEntries(nonBuiltin(await list(m)).map((e) => [e.name, e]));
+    assert.equal(by.folded.description, 'Review the open changes');
+    assert.equal(by.folded.argHint, '[target]');
+    assert.equal(by.literal.description.length, 200);
+    assert.ok(by.literal.description.startsWith('word word word'));
+  });
+
+  test('(+) a hidden skill does not shadow a command of the same name', async () => {
+    const m = machine();
+    skill(m.claudeDir, 'deploy', { 'user-invocable': 'false' });
+    command(m.claudeDir, 'deploy', { description: 'the command' });
+    assert.deepEqual(nonBuiltin(await list(m)).map((e) => [e.name, e.description]), [['deploy', 'the command']]);
   });
 
   test('(−) the 1001st entry is dropped; built-ins count and come first', async () => {
@@ -366,5 +399,139 @@ describe('listCommands', () => {
       for (const k of Object.keys(e)) assert.ok(allowed.has(k), k);
       assert.ok(!JSON.stringify(e).includes(m.base));
     }
+  });
+
+  test('(+) the user source follows symlinked commands/ and skills/ folders (dotfile managers link them)', async () => {
+    const m = machine();
+    const dotfiles = path.join(m.base, 'dotfiles');
+    command(dotfiles, 'linked-command');
+    skill(dotfiles, 'linked-skill');
+    fs.mkdirSync(m.claudeDir, { recursive: true });
+    fs.symlinkSync(path.join(dotfiles, 'commands'), path.join(m.claudeDir, 'commands'));
+    fs.symlinkSync(path.join(dotfiles, 'skills'), path.join(m.claudeDir, 'skills'));
+    assert.deepEqual(names(nonBuiltin(await list(m))).sort(), ['linked-command', 'linked-skill']);
+  });
+
+  test('(−) a plugin install whose commands/ or skills/ is a symlink out of the cache is not read', async () => {
+    const m = machine();
+    const outside = path.join(m.base, 'outside');
+    command(outside, 'sneak');
+    skill(outside, 'sneaky');
+    const linked = cacheDir(m.claudeDir, 'market-one', 'linked', '1.0.0');
+    fs.mkdirSync(linked, { recursive: true });
+    fs.symlinkSync(path.join(outside, 'commands'), path.join(linked, 'commands'));
+    fs.symlinkSync(path.join(outside, 'skills'), path.join(linked, 'skills'));
+    registerPlugins(m.claudeDir, { 'linked@market-one': linked });
+    assert.deepEqual(nonBuiltin(await list(m)), []);
+  });
+
+  test('(−) a plugin skill folder that links out of the cache is skipped; one that links inside the cache is followed', async () => {
+    const m = machine();
+    const outside = path.join(m.base, 'outside', 'skills', 'escaped');
+    write(path.join(outside, 'SKILL.md'), doc({ description: 'outside' }));
+    const shared = cacheDir(m.claudeDir, 'market-one', 'shared-skill');
+    write(path.join(shared, 'SKILL.md'), doc({ description: 'inside' }));
+    const install = cacheDir(m.claudeDir, 'market-one', 'demo', '1.0.0');
+    skill(install, 'real', { description: 'regular' });
+    fs.symlinkSync(outside, path.join(install, 'skills', 'escaped'));
+    fs.symlinkSync(shared, path.join(install, 'skills', 'shared'));
+    registerPlugins(m.claudeDir, { 'demo@market-one': install });
+    assert.deepEqual(nonBuiltin(await list(m)).map((e) => [e.name, e.description]), [['demo:real', 'regular'], ['demo:shared', 'inside']]);
+  });
+
+  test('(−) a project whose .claude/commands or .claude/skills is a symlink is not read, even when it points inside the project', async () => {
+    const a = machine();
+    write(path.join(a.projectDir, 'shared-commands', 'x.md'), doc({}));
+    fs.mkdirSync(path.join(a.projectDir, '.claude'), { recursive: true });
+    fs.symlinkSync(path.join(a.projectDir, 'shared-commands'), path.join(a.projectDir, '.claude', 'commands'));
+    skill(path.join(a.projectDir, '.claude'), 'ok');
+    assert.deepEqual(names(nonBuiltin(await list(a, { project: true }))), ['ok']);
+
+    const b = machine();
+    write(path.join(b.projectDir, 'shared-skills', 'y', 'SKILL.md'), doc({}));
+    fs.mkdirSync(path.join(b.projectDir, '.claude'), { recursive: true });
+    fs.symlinkSync(path.join(b.projectDir, 'shared-skills'), path.join(b.projectDir, '.claude', 'skills'));
+    command(path.join(b.projectDir, '.claude'), 'ok');
+    assert.deepEqual(names(nonBuiltin(await list(b, { project: true }))), ['ok']);
+  });
+
+  test('(−) a project whose .claude folder links outside the project is not read', async () => {
+    const m = machine();
+    const outside = path.join(m.base, 'elsewhere');
+    command(outside, 'sneak');
+    skill(outside, 'sneaky');
+    fs.mkdirSync(m.projectDir, { recursive: true });
+    fs.symlinkSync(outside, path.join(m.projectDir, '.claude'));
+    assert.deepEqual(nonBuiltin(await list(m, { project: true })), []);
+  });
+
+  test('(−) a project skill folder that links outside the project is skipped; one that links inside is followed', async () => {
+    const m = machine();
+    write(path.join(m.base, 'elsewhere', 'SKILL.md'), doc({ description: 'outside' }));
+    write(path.join(m.projectDir, 'tools', 'inner', 'SKILL.md'), doc({ description: 'inside' }));
+    skill(path.join(m.projectDir, '.claude'), 'real', { description: 'regular' });
+    const skills = path.join(m.projectDir, '.claude', 'skills');
+    fs.symlinkSync(path.join(m.base, 'elsewhere'), path.join(skills, 'escaped'));
+    fs.symlinkSync(path.join(m.projectDir, 'tools', 'inner'), path.join(skills, 'inner'));
+    assert.deepEqual(nonBuiltin(await list(m, { project: true })).map((e) => [e.name, e.description]), [['inner', 'inside'], ['real', 'regular']]);
+  });
+
+  test('(−) at most 2000 files are opened per scan; what was found before is returned', async () => {
+    const m = machine();
+    const hidden = { 'user-invocable': 'false' };
+    const pad = (i) => String(i).padStart(3, '0');
+    const fill = (dir, mark) => {
+      for (let i = 0; i < 200; i += 1) skill(dir, `hs${pad(i)}`, hidden);
+      for (let i = 0; i < 199; i += 1) command(dir, `h${pad(i)}`, hidden);
+      command(dir, mark); // the 200th command file
+    };
+    fill(m.claudeDir, 'user-mark'); // two folders with 200 files each: 400 opens
+    fill(path.join(m.projectDir, '.claude'), 'project-mark'); // 800
+    const keys = {};
+    for (const p of ['a', 'b', 'c', 'd', 'e', 'f', 'g']) {
+      const install = cacheDir(m.claudeDir, 'market-one', p, '1.0.0');
+      for (let i = 0; i < 199; i += 1) command(install, `h${pad(i)}`, hidden);
+      command(install, 'seen'); // 200 files in the folder: 1000, 1200, ... 2000 after f
+      keys[`${p}@market-one`] = install;
+    }
+    registerPlugins(m.claudeDir, keys);
+    const got = nonBuiltin(await list(m, { project: true }));
+    assert.deepEqual(names(got), ['user-mark', 'project-mark', 'a:seen', 'b:seen', 'c:seen', 'd:seen', 'e:seen', 'f:seen']);
+  });
+
+  test('(+) calls that arrive during a scan share it', async () => {
+    const m = machine();
+    command(m.claudeDir, 'one');
+    const now = (clock += 60_000);
+    const [a, b, c] = await Promise.all([list(m, { now }), list(m, { now }), list(m, { now })]);
+    assert.equal(a, b);
+    assert.equal(a, c);
+    assert.equal(await list(m, { now: now + 1 }), a); // and the finished scan is the cached one
+    assert.notEqual(await list(m, { project: true, now }), a); // another project is another scan
+  });
+
+  test('(−) the returned array and its entries are frozen, so a caller cannot change the cached result', async () => {
+    const m = machine();
+    command(m.claudeDir, 'one');
+    const got = await listCommands({ claudeDir: m.claudeDir, now: 9_000_000 });
+    assert.ok(Object.isFrozen(got));
+    assert.ok(got.every((e) => Object.isFrozen(e)));
+    assert.throws(() => got.push({ name: 'x' }), TypeError);
+    assert.throws(() => { got[0].name = 'changed'; }, TypeError);
+    assert.throws(() => { got.at(-1).description = 'changed'; }, TypeError);
+    const again = await listCommands({ claudeDir: m.claudeDir, now: 9_000_001 });
+    assert.equal(again, got);
+    assert.equal(again[0].name, BUILTIN_COMMANDS[0].name);
+  });
+
+  test('(+) same-named plugins from two marketplaces: the first full name wins, other names are kept', async () => {
+    const m = machine();
+    const one = cacheDir(m.claudeDir, 'market-one', 'dup', '1.0.0');
+    const two = cacheDir(m.claudeDir, 'market-two', 'dup', '1.0.0');
+    command(one, 'fmt', { description: 'from market one' });
+    command(two, 'fmt', { description: 'from market two' });
+    command(two, 'extra', { description: 'only in two' });
+    registerPlugins(m.claudeDir, { 'dup@market-two': two, 'dup@market-one': one });
+    assert.deepEqual(nonBuiltin(await list(m)).map((e) => [e.name, e.description]), [['dup:fmt', 'from market one'], ['dup:extra', 'only in two']]);
   });
 });
