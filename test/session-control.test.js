@@ -5,7 +5,9 @@ import { promptFromRows } from '../src/mode.js';
 
 // Synthetic screens only. The phrases follow docs/contracts/claude-tui.md sections 1, 2 and 5; symbols are escapes.
 const DEF = { b: false, fg: null, bg: null, u: false, i: false, d: false };
-const rowsOf = (...lines) => lines.map((l) => (l === '' ? [] : [{ t: l, s: DEF }]));
+const rowsOf = (...lines) => lines.map((l) => (Array.isArray(l) ? l : l === '' ? [] : [{ t: l, s: DEF }]));
+const NB = '\xa0'; // Claude draws a no-break space after the prompt character
+const sp = (t, d = false, extra = {}) => ({ t, s: { ...DEF, d, ...extra } });
 const RULE = '─'.repeat(40);
 const PROMPT_CHAR = '❯';
 const PHRASE = {
@@ -19,8 +21,16 @@ const PHRASE = {
 };
 const CYCLE = ['auto', 'manual', 'acceptEdits', 'plan'];
 const OPTIONS = ['Yes', 'Yes, and always allow this for the project', 'No'];
-const EMPTY_BOX = PROMPT_CHAR;
-const PLACEHOLDER_BOX = `${PROMPT_CHAR} Try "edit a file to..."`;
+const EMPTY_BOX = PROMPT_CHAR; // the prompt character alone
+// Real-shaped rows (span lists as the mirror delivers them): the prompt character and a no-break space, then a dim placeholder.
+const PLACEHOLDER_BOX = [sp(`${PROMPT_CHAR}${NB}`), sp('Try "fix lint errors"', true)];
+/** A box row from a string: `❯ text` becomes the real shape (no-break space, then non-dim text); a span list stays as it is. */
+const toRow = (r) => {
+  if (Array.isArray(r)) return r;
+  const m = /^❯ (.*)$/.exec(r);
+  return m ? [sp(`${PROMPT_CHAR}${NB}`), sp(m[1])] : r === '' ? [] : [sp(r)];
+};
+const emptyRow = (r) => r[0]?.t.startsWith(PROMPT_CHAR) && r.slice(1).every((x) => x.s.d || x.t.trim() === '');
 
 /**
  * A fake pane: it renders an input box between two rule rows and a footer (or a permission prompt) from its fields and
@@ -28,8 +38,10 @@ const PLACEHOLDER_BOX = `${PROMPT_CHAR} Try "edit a file to..."`;
  * on vim input mode (`vimMode` insert shows the `-- INSERT --` prefix, normal shows none, Escape switches to normal and
  * the text `i` back unless `insertWorks` is false); `swallow` drops typed text; `afterType(body)` may change the box
  * after text was typed. `typeLag` / `insertLag` make that many captures after the typed text / the `i` still show the old
- * box / no INSERT prefix (Claude redraws a few hundred ms later). `script` replaces the mode cycle after each BTab (the last entry repeats); `lag` makes the first
- * n captures after a press read `unknown`. The clock only moves when the controller sleeps.
+ * box / no INSERT prefix (Claude redraws a few hundred ms later). `C-u` removes one visual row (the last row of a
+ * wrapped box, or the whole text of a single row), unless `cuWorks` is false. Box rows may be strings or span lists.
+ * `script` replaces the mode cycle after each BTab (the last entry repeats); `lag` makes the first n captures after a
+ * press read `unknown`. The clock only moves when the controller sleeps.
  */
 function world(opts = {}) {
   const w = {
@@ -37,8 +49,8 @@ function world(opts = {}) {
     cycle: CYCLE, script: null, lag: 0, lagLeft: 0, cmd: 'claude', cmdAfter: 'zsh', exitAfter: 1000, enterAt: null,
     t: 1_000_000, slept: [], sent: [], captures: [], stateCalls: 0, cmdCalls: 0, presses: 0, hold: null,
     captureFail: null, captureFailOn: null, failSend: null, stateOf: null, onKeys: null,
-    box: [EMPTY_BOX], vim: false, vimMode: 'insert', insertWorks: true, swallow: false, afterType: null,
-    typeLag: 0, boxStale: null, insertLag: 0, insertLeft: 0,
+    box: [PLACEHOLDER_BOX], vim: false, vimMode: 'insert', insertWorks: true, swallow: false, afterType: null,
+    typeLag: 0, boxStale: null, insertLag: 0, insertLeft: 0, cuWorks: true, captureFailFrom: null,
     ...opts,
   };
   w.rows = () => {
@@ -52,14 +64,14 @@ function world(opts = {}) {
     const shown = w.lagLeft > 0 ? 'unknown' : w.mode;
     const line = `${w.vim && w.vimMode === 'insert' && w.insertLeft <= 0 ? '-- INSERT -- ' : ''}${PHRASE[shown]}`;
     const shownBox = w.boxStale?.left > 0 ? w.boxStale.box : w.box;
-    const box = shownBox === null ? [] : ['', RULE, ...shownBox, RULE];
+    const box = shownBox === null ? [] : ['', RULE, ...shownBox.map(toRow), RULE];
     return rowsOf('earlier output', ...box, line);
   };
   w.mirror = {
     async capture(pane, inm, o) {
       w.captures.push({ pane, o });
       if (pane === '%1' && w.hold) await w.hold;
-      if (w.captureFail || w.captureFailOn === w.captures.length) return w.captureFail ?? { status: 404, body: { error: 'not_found', message: 'gone' } };
+      if (w.captureFail || w.captureFailOn === w.captures.length || (w.captureFailFrom !== null && w.captures.length >= w.captureFailFrom)) return w.captureFail ?? { status: 404, body: { error: 'not_found', message: 'gone' } };
       const res = { status: 200, body: { rows: w.rows() } };
       if (w.lagLeft > 0) w.lagLeft -= 1;
       if (w.boxStale?.left > 0) w.boxStale.left -= 1;
@@ -82,14 +94,18 @@ function world(opts = {}) {
       }
       if (key === 'Enter') w.enterAt ??= w.t;
       if (key === 'Escape' && w.vim) w.vimMode = 'normal';
-      if (key === 'C-u' && w.box) { w.box[w.box.length - 1] = w.box.length === 1 ? EMPTY_BOX : ''; w.boxStale = null; }
+      if (key === 'C-u' && w.box) {
+        if (w.cuWorks) w.box = w.box.length > 1 ? w.box.slice(0, -1) : [PLACEHOLDER_BOX];
+        w.boxStale = null;
+      }
       if (body.text !== undefined) {
         if (w.vim && w.vimMode === 'normal') { // vim commands, not text
           if (body.text === 'i' && w.insertWorks) { w.vimMode = 'insert'; w.insertLeft = w.insertLag; }
         } else if (!w.swallow && w.box) {
-          const before = [...w.box];
+          const before = w.box.map(toRow);
+          w.box = before.slice();
           const last = w.box.at(-1);
-          w.box[w.box.length - 1] = last === EMPTY_BOX || last.startsWith(`${PROMPT_CHAR} Try `) ? `${PROMPT_CHAR} ${body.text}` : last + body.text;
+          w.box[w.box.length - 1] = emptyRow(last) ? [sp(`${PROMPT_CHAR}${NB}`), sp(body.text, false, { fg: 153 })] : [...last, sp(body.text)];
           w.afterType?.(body);
           if (w.typeLag > 0) w.boxStale = { box: before, left: w.typeLag };
         }
@@ -544,10 +560,27 @@ describe('endSession (+)', () => {
     assert.deepEqual(w.slept, [150, 500, 500], 'one settle wait before the check after typing, no escape wait, then two exit checks');
   });
 
-  test('(+) the placeholder counts as an empty box', async () => {
-    const w = world({ box: [PLACEHOLDER_BOX] });
+  test('(+) the real-shaped placeholder (no-break space after the prompt character, dim text) counts as an empty box', async () => {
+    const w = world({});
+    const row = w.rows().find((r) => r[0]?.t.startsWith(PROMPT_CHAR));
+    assert.equal(row[0].t, `${PROMPT_CHAR}\xa0`, 'the fake draws what real Claude draws');
+    assert.equal(row[1].s.d, true);
     assert.deepEqual(await w.control().endSession('%2'), { status: 200, body: { ended: true } });
     assert.deepEqual(keysOf(w), ['text:/exit', 'Enter']);
+  });
+
+  test('(+) an empty box in other shapes: plain space, prompt character alone, whitespace-only non-dim spans', async () => {
+    const boxes = [
+      [[sp(`${PROMPT_CHAR} `), sp('Try "x"', true)]],
+      [[sp(PROMPT_CHAR)]],
+      [[sp(`${PROMPT_CHAR}\xa0`)]],
+      [[sp(`${PROMPT_CHAR}\xa0`), sp('  '), sp('Try "x"', true), sp(' ', false)]],
+    ];
+    for (const box of boxes) {
+      const w = world({ box });
+      assert.deepEqual(await w.control().endSession('%2'), { status: 200, body: { ended: true } }, JSON.stringify(box));
+      assert.deepEqual(keysOf(w), ['text:/exit', 'Enter']);
+    }
   });
 
   test('(+) busy: Escape first, one escWaitMs wait, state and screen read again, then the same sequence', async () => {
@@ -650,6 +683,31 @@ describe('endSession (−)', () => {
     }
   });
 
+  test('(−) a non-dim draft that starts like the placeholder (Try "npm test" and tell me) is a draft: 409 input-not-empty, nothing typed', async () => {
+    const boxes = [
+      [[sp(`${PROMPT_CHAR}${NB}`), sp('Try "npm test" and tell me')]],
+      [[sp(`${PROMPT_CHAR}${NB}`), sp('Try "npm test"', true), sp(' and tell me')]], // dim then plain text
+      [[sp(`${PROMPT_CHAR}${NB}`), sp('Try', true), sp('x')]],
+      [[sp(`${PROMPT_CHAR}${NB}`, true), sp('draft')]],
+    ];
+    for (const box of boxes) {
+      const end = world({ box });
+      assert.deepEqual(await end.control().endSession('%2'), code(409, 'input-not-empty'), JSON.stringify(box));
+      assert.deepEqual(end.sent, []);
+      const cmd = world({ box });
+      assert.deepEqual(await cmd.control().runCommand('%2', '/compact'), code(409, 'input-not-empty'));
+      assert.deepEqual(cmd.sent, []);
+    }
+  });
+
+  test('(−) text without the prompt character, or a prompt character glued to the text, is not an empty box', async () => {
+    for (const box of [[[sp('Try "x"', true)]], [[sp(`${PROMPT_CHAR}Try "x"`, true)]], [[sp('> Try "x"', true)]], [[]]]) {
+      const w = world({ box });
+      assert.deepEqual(await w.control().endSession('%2'), code(409, 'input-not-empty'), JSON.stringify(box));
+      assert.deepEqual(w.sent, []);
+    }
+  });
+
   test('(−) no input box found (no rule rows, or nothing between them): 409 input-not-empty, nothing typed', async () => {
     for (const box of [null, []]) {
       const w = world({ box });
@@ -667,24 +725,37 @@ describe('endSession (−)', () => {
     w.rows = base;
   });
 
-  test('(−) the box does not read exactly "/exit" after typing: C-u sent, 409 not-at-prompt, no Enter', async () => {
+  test('(−) the box does not read exactly "/exit" after typing: 409 not-at-prompt, no Enter, only nika\'s own text is cleaned up', async () => {
     const swallowed = world({ swallow: true });
     assert.deepEqual(await swallowed.control().endSession('%2'), code(409, 'not-at-prompt'));
-    assert.deepEqual(keysOf(swallowed), ['text:/exit', 'C-u']);
+    assert.deepEqual(keysOf(swallowed), ['text:/exit'], 'nothing on screen to clean up, so no C-u');
     const extraRow = world({ afterType: () => { extraRow.box = [`${PROMPT_CHAR} /exit`, '  more']; } });
     assert.deepEqual(await extraRow.control().endSession('%2'), code(409, 'not-at-prompt'));
-    assert.deepEqual(keysOf(extraRow), ['text:/exit', 'C-u']);
+    assert.deepEqual(keysOf(extraRow), ['text:/exit'], 'the second row is not nika\'s text, so nothing is removed');
     const extraText = world({ afterType: () => { extraText.box = [`${PROMPT_CHAR} /exit now`]; } });
     assert.deepEqual(await extraText.control().endSession('%2'), code(409, 'not-at-prompt'));
-    assert.ok(!keysOf(extraText).includes('Enter'));
+    assert.deepEqual(keysOf(extraText), ['text:/exit'], '"/exit now" is not a prefix of what nika typed: no C-u, no Enter');
+    const partial = world({ afterType: () => { partial.box = [`${PROMPT_CHAR} /ex`]; } });
+    assert.deepEqual(await partial.control().endSession('%2'), code(409, 'not-at-prompt'));
+    assert.deepEqual(keysOf(partial), ['text:/exit', 'C-u'], 'a prefix of nika\'s text is removed with one C-u');
   });
 
-  test('(−) a failed capture after typing: C-u is tried, the sequence stops, the pane is checked once', async () => {
-    const w = world({ captureFailOn: 2 }); // 1st capture: before typing, 2nd: the check after typing
+  test('(−) a dim "/exit" (ghost text) is never taken as typed: 409 not-at-prompt, no Enter, no C-u', async () => {
+    const w = world({ afterType: () => { w.box = [[sp(`${PROMPT_CHAR}${NB}`), sp('/exit', true)]]; } });
+    assert.deepEqual(await w.control().endSession('%2'), code(409, 'not-at-prompt'));
+    assert.deepEqual(keysOf(w), ['text:/exit']);
+  });
+
+  test('(−) a failed capture after typing: the cleanup still removes nika\'s text, the sequence stops, the pane is checked once', async () => {
+    const w = world({ captureFailOn: 2 }); // 1st capture: before typing, 2nd: the check after typing; the cleanup's capture works
     const r = await w.control().endSession('%2');
     assert.deepEqual(r, { status: 200, body: { ended: false } });
     assert.deepEqual(keysOf(w), ['text:/exit', 'C-u']);
     assert.equal(w.cmdCalls, 1);
+    const dead = world({ captureFailFrom: 2 }); // every capture after the first fails: the cleanup ends at once
+    assert.deepEqual(await dead.control().endSession('%2'), { status: 200, body: { ended: false } });
+    assert.deepEqual(keysOf(dead), ['text:/exit']);
+    assert.equal(dead.cmdCalls, 1);
   });
 
   test('(−) vim: i does not bring INSERT: 409 mode-unknown, /exit is never typed', async () => {
@@ -705,7 +776,7 @@ describe('endSession (−)', () => {
     assert.deepEqual(keysOf(cap), ['text:i']);
   });
 
-  test('(−) without vimOf a missing INSERT prefix is not vim: no i is typed', async () => {
+  test('(+) vimOf false and no INSERT seen in this action: no i is typed, the command runs', async () => {
     const w = world({ vim: false, vimMode: 'normal' });
     assert.deepEqual((await w.control().endSession('%2')).body, { ended: true });
     assert.deepEqual(keysOf(w), ['text:/exit', 'Enter']);
@@ -867,16 +938,17 @@ describe('runCommand', () => {
     }
   });
 
-  test('(−) a text that wraps onto a second row fails the exact check: C-u, 409 not-at-prompt, no Enter', async () => {
+  test('(−) a text that wraps onto a second row fails the exact check: both rows are cleaned up (two C-u), 409 not-at-prompt, no Enter', async () => {
     const w = world({ afterType: () => { w.box = [`${PROMPT_CHAR} /model aaaa`, '  bbbb']; } });
     assert.deepEqual(await w.control().runCommand('%2', '/model aaaabbbb'), code(409, 'not-at-prompt'));
-    assert.deepEqual(keysOf(w), ['text:/model aaaabbbb', 'C-u']);
+    assert.deepEqual(keysOf(w), ['text:/model aaaabbbb', 'C-u', 'C-u']);
+    assert.deepEqual(w.box, [PLACEHOLDER_BOX], 'the fake box is empty again');
   });
 
-  test('(−) typed text that never shows: C-u, 409 not-at-prompt, no Enter', async () => {
+  test('(−) typed text that never shows: nothing to clean up, 409 not-at-prompt, no Enter', async () => {
     const w = world({ swallow: true });
     assert.deepEqual(await w.control().runCommand('%2', '/compact'), code(409, 'not-at-prompt'));
-    assert.deepEqual(keysOf(w), ['text:/compact', 'C-u']);
+    assert.deepEqual(keysOf(w), ['text:/compact']);
   });
 
   test('(−) vim: i does not bring INSERT: 409 mode-unknown, the command is never typed', async () => {
@@ -896,13 +968,13 @@ describe('runCommand', () => {
     assert.deepEqual(keysOf(onEnter), ['text:/compact', 'Enter']);
   });
 
-  test('(−) a failed capture passes its status through: before typing nothing is sent, after typing C-u is tried', async () => {
+  test('(−) a failed capture passes its status through: before typing nothing is sent, after typing nika\'s text is cleaned up', async () => {
     const before = world({ captureFail: { status: 404, body: { error: 'not_found', message: 'gone' } } });
     assert.deepEqual(await before.control().runCommand('%2', '/compact'), { status: 404, body: { error: 'not_found', message: 'gone' } });
     assert.deepEqual(before.sent, []);
     const after = world({ captureFailOn: 2 });
     assert.deepEqual(await after.control().runCommand('%2', '/compact'), { status: 404, body: { error: 'not_found', message: 'gone' } });
-    assert.deepEqual(keysOf(after), ['text:/compact', 'C-u']);
+    assert.deepEqual(keysOf(after), ['text:/compact', 'C-u'], 'the cleanup still removes nika\'s own text');
   });
 
   test('(−) a text that is not a non-empty string is 400 invalid before any read', async () => {
@@ -935,23 +1007,27 @@ describe('settle after typing (settleTries, settlePollMs)', () => {
     assert.deepEqual(w.slept, [150, 150]);
   });
 
-  test('(−) the box never matches within settleTries: exactly settleTries reads, then C-u, 409 not-at-prompt, no Enter', async () => {
-    const w = world({ typeLag: 99 });
+  test('(−) the box never matches within settleTries: exactly settleTries reads, then the cleanup, 409 not-at-prompt, no Enter', async () => {
+    const w = world({ typeLag: 99 }); // the box still looks empty when the cleanup looks: nothing to remove
     assert.deepEqual(await w.control().endSession('%2'), code(409, 'not-at-prompt'));
-    assert.deepEqual(keysOf(w), ['text:/exit', 'C-u']);
-    assert.equal(w.captures.length, 1 + 4, 'default settleTries is 4');
+    assert.deepEqual(keysOf(w), ['text:/exit']);
+    assert.equal(w.captures.length, 1 + 4 + 1, 'the first read, settleTries reads, one cleanup read');
     assert.deepEqual(w.slept, [150, 150, 150, 150]);
     const c = world({ typeLag: 99 });
     assert.deepEqual(await c.control().runCommand('%2', '/compact'), code(409, 'not-at-prompt'));
-    assert.deepEqual(keysOf(c), ['text:/compact', 'C-u']);
-    assert.equal(c.captures.length, 1 + 4);
+    assert.deepEqual(keysOf(c), ['text:/compact']);
+    assert.equal(c.captures.length, 1 + 4 + 1);
+    const part = world({ afterType: () => { part.box = [`${PROMPT_CHAR} /ex`]; } });
+    assert.deepEqual(await part.control().endSession('%2'), code(409, 'not-at-prompt'));
+    assert.deepEqual(keysOf(part), ['text:/exit', 'C-u']);
+    assert.equal(part.captures.length, 1 + 4 + 2, 'a cleanup read that finds the remainder, one that finds it gone');
   });
 
-  test('(−) the wrong text on every read (a draft row appears) still ends in C-u, not-at-prompt after settleTries reads', async () => {
+  test('(−) the wrong text on every read (a second row appears) ends in not-at-prompt after settleTries reads, nothing removed', async () => {
     const w = world({ afterType: () => { w.box = [`${PROMPT_CHAR} /exit`, '  more']; } });
     assert.deepEqual(await w.control().endSession('%2'), code(409, 'not-at-prompt'));
-    assert.equal(w.captures.length, 1 + 4);
-    assert.ok(!keysOf(w).includes('Enter'));
+    assert.equal(w.captures.length, 1 + 4 + 1);
+    assert.deepEqual(keysOf(w), ['text:/exit']);
   });
 
   test('(+) INSERT appears on the 2nd capture after i: the sequence continues', async () => {
@@ -968,11 +1044,11 @@ describe('settle after typing (settleTries, settlePollMs)', () => {
     assert.equal(w.captures.length, 1 + 4 + 4);
   });
 
-  test('(−) a failed capture inside the loop ends it: C-u is tried, the failure is passed on, nothing more is read', async () => {
+  test('(−) a failed capture inside the loop ends it: the failure is passed on after one cleanup read, nothing more is read', async () => {
     const w = world({ typeLag: 99, captureFailOn: 3 }); // 1st: before typing, 2nd: first try after typing, 3rd: second try fails
     assert.deepEqual(await w.control().runCommand('%2', '/compact'), { status: 404, body: { error: 'not_found', message: 'gone' } });
-    assert.deepEqual(keysOf(w), ['text:/compact', 'C-u']);
-    assert.equal(w.captures.length, 3);
+    assert.deepEqual(keysOf(w), ['text:/compact']);
+    assert.equal(w.captures.length, 4, 'the cleanup read is the 4th');
     const e = world({ typeLag: 99, captureFailOn: 3 });
     assert.deepEqual(await e.control().endSession('%2'), { status: 200, body: { ended: false } });
     assert.equal(e.cmdCalls, 1);
@@ -981,16 +1057,153 @@ describe('settle after typing (settleTries, settlePollMs)', () => {
   test('(−) the loop is bounded by count: a frozen clock and a never-matching box still stop after settleTries reads', async () => {
     const w = world({ typeLag: 99 });
     assert.deepEqual(await w.control({ now: () => 0 }).runCommand('%2', '/compact'), code(409, 'not-at-prompt'));
-    assert.equal(w.captures.length, 1 + 4);
+    assert.equal(w.captures.length, 1 + 4 + 1);
   });
 
   test('(+) settleTries and settlePollMs are honoured (and at least one read always happens)', async () => {
     const w = world({ typeLag: 99 });
     await w.control({ settleTries: 2, settlePollMs: 40 }).runCommand('%2', '/compact');
     assert.deepEqual(w.slept, [40, 40]);
-    assert.equal(w.captures.length, 1 + 2);
+    assert.equal(w.captures.length, 1 + 2 + 1, 'including the one cleanup read');
     const one = world({});
     assert.equal((await one.control({ settleTries: 0 }).runCommand('%2', '/compact')).status, 200, 'a bad count still reads once');
     assert.equal(one.captures.length, 1 + 1);
+  });
+});
+
+describe('cleanup of nika\'s own text', () => {
+  const wrapped = (w, first, second) => () => { w.box = [`${PROMPT_CHAR} ${first}`, `  ${second}`]; };
+
+  test('(+) a wrapped two-row remainder is removed with two C-u (one per visual row), then 409 not-at-prompt', async () => {
+    const w = world({});
+    w.afterType = wrapped(w, '/model aaaa', 'bbbb');
+    assert.deepEqual(await w.control().runCommand('%2', '/model aaaabbbb'), code(409, 'not-at-prompt'));
+    assert.deepEqual(keysOf(w), ['text:/model aaaabbbb', 'C-u', 'C-u']);
+    assert.ok(!keysOf(w).includes('Enter'));
+    assert.equal(w.captures.length, 1 + 4 + 3, 'cleanup reads: two with a remainder, one with an empty box');
+  });
+
+  test('(+) the cleanup waits settlePollMs before reading again after a C-u, never before its first read', async () => {
+    const w = world({});
+    w.afterType = wrapped(w, '/model aaaa', 'bbbb');
+    await w.control().runCommand('%2', '/model aaaabbbb');
+    assert.deepEqual(w.slept, [150, 150, 150, 150, 150, 150], 'four settle waits, then one before each read that follows a C-u');
+  });
+
+  test('(+) a word-wrap that drops the space at the break still counts as nika\'s text', async () => {
+    const w = world({});
+    w.afterType = wrapped(w, '/model aaaa', 'bbbb');
+    assert.deepEqual(await w.control().runCommand('%2', '/model aaaa bbbb'), code(409, 'not-at-prompt'));
+    assert.deepEqual(keysOf(w), ['text:/model aaaa bbbb', 'C-u', 'C-u']);
+  });
+
+  test('(−) the cleanup stops without C-u when the box holds text that is not a prefix of nika\'s text', async () => {
+    for (const rows of [[`${PROMPT_CHAR} /model zzzz`], [`${PROMPT_CHAR} my draft`, '  more'], [`${PROMPT_CHAR} /model aaaa`, '  bbbb extra'], [`${PROMPT_CHAR} /model aaaabbbbcccc`]]) {
+      const w = world({});
+      w.afterType = () => { w.box = rows; };
+      assert.deepEqual(await w.control().runCommand('%2', '/model aaaabbbb'), code(409, 'not-at-prompt'), JSON.stringify(rows));
+      assert.deepEqual(keysOf(w), ['text:/model aaaabbbb'], JSON.stringify(rows));
+    }
+  });
+
+  test('(−) a dim-only box (the placeholder) is empty, even when what nika typed starts like it; a row without the prompt character is not nika\'s', async () => {
+    const dim = world({ swallow: true }); // the typed text never shows, the dim placeholder stays
+    assert.deepEqual(await dim.control().runCommand('%2', 'Try "fix lint errors" now'), code(409, 'not-at-prompt'));
+    assert.deepEqual(keysOf(dim), ['text:Try "fix lint errors" now'], 'no C-u: the placeholder is not nika\'s text');
+    const bare = world({});
+    bare.afterType = () => { bare.box = [[sp('/mod')]]; };
+    await bare.control().runCommand('%2', '/model aaaa');
+    assert.deepEqual(keysOf(bare), ['text:/model aaaa']);
+  });
+
+  test('(−) the cleanup is bounded at 6 rounds when C-u does not clear anything', async () => {
+    const w = world({ cuWorks: false });
+    w.afterType = () => { w.box = [`${PROMPT_CHAR} /ex`]; };
+    assert.deepEqual(await w.control().endSession('%2'), code(409, 'not-at-prompt'));
+    assert.equal(keysOf(w).filter((k) => k === 'C-u').length, 6);
+    assert.equal(w.captures.length, 1 + 4 + 6);
+    assert.ok(!keysOf(w).includes('Enter'));
+  });
+
+  test('(−) a failed C-u send ends the cleanup, a failed capture ends it, neither changes the 409', async () => {
+    const send = world({});
+    send.afterType = () => { send.box = [`${PROMPT_CHAR} /ex`]; };
+    send.failSend = (b) => (b.keys?.[0] === 'C-u' ? { status: 429, body: { error: 'busy', message: 'slow' } } : null);
+    assert.deepEqual(await send.control().endSession('%2'), code(409, 'not-at-prompt'));
+    assert.equal(keysOf(send).filter((k) => k === 'C-u').length, 1, 'one attempt, then it stops');
+    const cap = world({});
+    cap.afterType = () => { cap.box = [`${PROMPT_CHAR} /ex`]; };
+    cap.captureFailFrom = 7; // 1st read, 4 settle reads, the cleanup's first read works, the next fails
+    assert.deepEqual(await cap.control().endSession('%2'), code(409, 'not-at-prompt'));
+    assert.equal(keysOf(cap).filter((k) => k === 'C-u').length, 1);
+  });
+
+  test('(−) no input box on screen during the cleanup: nothing is sent', async () => {
+    const w = world({});
+    w.afterType = () => { w.box = null; };
+    assert.deepEqual(await w.control().endSession('%2'), code(409, 'not-at-prompt'));
+    assert.deepEqual(keysOf(w), ['text:/exit']);
+  });
+});
+
+describe('stray i and the vim evidence', () => {
+  test('(+) vim off but vimOf says on: the i lands as text, one C-u removes it, then 409 mode-unknown', async () => {
+    const w = world({ vim: false });
+    assert.deepEqual(await w.control({ vimOf: () => true }).endSession('%2'), code(409, 'mode-unknown'));
+    assert.deepEqual(keysOf(w), ['text:i', 'C-u']);
+    assert.deepEqual(w.box, [PLACEHOLDER_BOX], 'the fake box is empty again');
+    assert.equal(w.captures.length, 1 + 4, 'bounded: the first read plus settleTries reads, no cleanup rounds');
+  });
+
+  test('(+) the same for a command', async () => {
+    const w = world({ vim: false });
+    assert.deepEqual(await w.control({ vimOf: () => true }).runCommand('%2', '/clear'), code(409, 'mode-unknown'));
+    assert.deepEqual(keysOf(w), ['text:i', 'C-u']);
+  });
+
+  test('(−) i did not land as text (vim normal, i ignored): no C-u, 409 mode-unknown', async () => {
+    const w = world({ vim: true, vimMode: 'normal', insertWorks: false });
+    assert.deepEqual(await w.control().endSession('%2'), code(409, 'mode-unknown'));
+    assert.deepEqual(keysOf(w), ['text:i']);
+  });
+
+  test('(−) the box holds more than a lone i (a draft appeared, a dim i): no C-u, 409 mode-unknown', async () => {
+    const draft = world({ vim: true, vimMode: 'normal', insertWorks: false });
+    draft.afterType = () => {};
+    draft.onKeys = (b) => { if (b.text === 'i') draft.box = [`${PROMPT_CHAR} i love it`]; };
+    assert.deepEqual(await draft.control().endSession('%2'), code(409, 'mode-unknown'));
+    assert.deepEqual(keysOf(draft), ['text:i']);
+    const dim = world({ vim: true, vimMode: 'normal', insertWorks: false });
+    dim.onKeys = (b) => { if (b.text === 'i') dim.box = [[sp(`${PROMPT_CHAR}${NB}`), sp('i', true)]]; };
+    assert.deepEqual(await dim.control().endSession('%2'), code(409, 'mode-unknown'));
+    assert.deepEqual(keysOf(dim), ['text:i']);
+  });
+
+  test('(+) INSERT seen in End\'s own first capture: i is sent after Escape even though vimOf says false', async () => {
+    const w = world({ vim: true, vimMode: 'insert', state: 'busy' });
+    w.onKeys = (b) => { if (b.keys?.[0] === 'Escape') w.state = 'idle'; };
+    assert.deepEqual(await w.control({ vimOf: () => false }).endSession('%2'), { status: 200, body: { ended: true } });
+    assert.deepEqual(keysOf(w), ['Escape', 'text:i', 'text:/exit', 'Enter']);
+  });
+
+  test('(+) INSERT still shown after Escape (Claude was not in vim normal mode): no i, even though vimOf says true', async () => {
+    const w = world({ vim: true, vimMode: 'insert', state: 'busy' });
+    w.onKeys = (b) => { if (b.keys?.[0] === 'Escape') { w.state = 'idle'; w.vimMode = 'insert'; } }; // runs after the fake's own Escape handling
+    assert.deepEqual(await w.control({ vimOf: () => true }).endSession('%2'), { status: 200, body: { ended: true } });
+    assert.deepEqual(keysOf(w), ['Escape', 'text:/exit', 'Enter']);
+  });
+
+  test('(−) no INSERT in any capture and vimOf false: no i (a non-vim pane is never touched with i)', async () => {
+    const w = world({ vim: false });
+    assert.deepEqual(await w.control({ vimOf: () => false }).runCommand('%2', '/clear'), { status: 200, body: { sent: true } });
+    assert.deepEqual(keysOf(w), ['text:/clear', 'Enter']);
+  });
+
+  test('(+) the INSERT prefix is read with a no-break space inside it as well', async () => {
+    const w = world({ vim: true, vimMode: 'normal' });
+    const base = w.rows;
+    w.rows = () => base().map((row) => row.map((x) => (x.t.startsWith('-- INSERT --') ? { ...x, t: x.t.replace('-- INSERT -- ', '--\xa0INSERT\xa0-- ') } : x)));
+    assert.deepEqual(await w.control().runCommand('%2', '/clear'), { status: 200, body: { sent: true } });
+    assert.deepEqual(keysOf(w), ['text:i', 'text:/clear', 'Enter']);
   });
 });

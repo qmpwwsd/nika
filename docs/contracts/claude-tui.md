@@ -154,12 +154,15 @@ same menu. Removed and hidden commands are left out.
 
 - `/exit` (alias `/quit`) exits Claude Code. Observed: Claude quit and its tmux pane closed; the tmux session ended
   because it was its last pane.
-- The input box is drawn between two rule rows made only of `─`; the input row starts with `❯ `. Empty, it shows a
-  placeholder such as `❯ Try "edit <filepath> to..."`. A user status line (free content) and the mode line sit below
+- The input box is drawn between two rule rows made only of `─`; the input row starts with `❯` followed by a no-break
+  space (U+00A0, not U+0020; `capture-pane` and the mirror keep it). Empty, it shows a placeholder such as
+  `❯ Try "edit <filepath> to..."`, drawn dim (SGR 2) after the `❯`; typed text is never dim, so a draft that starts
+  with `Try "` reads the same but is not dim (checked 2026-11-09). A user status line (free content) and the mode line sit below
   the lower rule.
 - After typing `/exit` (no Enter) the box holds one row `❯ /exit`, and the command menu above the box highlights
   `❯ /exit` with `Exit the CLI`; Enter then runs it.
-- `C-u` clears only the line the cursor is on. With a two-line draft, `C-u` left the first line, and `/exit` typed
+- `C-u` clears only the visual row the cursor is on: on a single line soft-wrapped onto two rows it removed only the
+  wrapped tail and left the first row (checked 2026-11-09). With a two-line draft, `C-u` left the first line, and `/exit` typed
   next became the draft's second line (no command menu): Enter would have sent the draft plus `/exit` as a prompt.
 - Vim input mode: the mode line starts with `-- INSERT --` in insert mode; in normal mode it shows no prefix at all
   (checked 2026-11-09; §1's `-- NORMAL --` was not seen). `Escape` switches insert to normal. Keys typed in normal
