@@ -170,6 +170,12 @@ describe('handshake: a valid hello', () => {
     const me = await h.call('GET', '/api/app/me');
     assert.equal(me.status, 200);
     assert.equal(me.body.version, VERSION);
+    const cmds = await h.call('GET', '/api/app/commands'); // listCommands is wired into the real deps
+    assert.equal(cmds.status, 200);
+    assert.equal(Array.isArray(cmds.body.commands) && cmds.body.commands.length > 0, true);
+    const models = await h.call('GET', '/api/app/models');
+    assert.equal(models.status, 200);
+    assert.equal(models.body.models.length > 0, true);
     assert.equal(me.body.tier, 'app');
     assert.equal((await h.call('GET', '/api/app/me', { headers: { 'x-nika-app': OTHER } })).status, 403);
     assert.equal((await h.call('GET', '/api/health')).status, 200); // the 0.1 routes ride along

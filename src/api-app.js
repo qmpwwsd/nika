@@ -10,10 +10,18 @@ import { loadConfig, removeProject, updateSettings, TEMPLATE_NAME } from './stor
 import { openRegular, isRealDir } from './fsafe.js';
 import { configDir, stateDir } from './paths.js';
 import { clean } from './text.js';
-import { UUID, PANE_ID, PROJECT_KEY, CLAUDE_COMMAND } from './ids.js';
+import { UUID, PANE_ID, PROJECT_KEY, CLAUDE_COMMAND, COMMAND_NAME } from './ids.js';
+import { mapLimit } from './util.js';
+import { MODE_TARGETS, modeFromRows, promptFromRows } from './mode.js';
+import { MODEL_CATALOG } from './models.js';
+import { createSessionControl, promptSig, insertShown } from './session-control.js';
 
 const ELIGIBILITY_TTL_MS = 1000; // pane list + live-agent snapshot, so a 4 Hz capture does not run collect() 4 times a second
 const TEMPLATES_MAX = 50;
+const MODES_AT_ONCE = 4; // captures in flight for GET /modes
+const COMMAND_MAX = 200; // characters of a slash command typed into Claude
+const CONTROL = /[\u0000-\u001f\u007f-\u009f]/; // C0, DEL, C1
+const SIG = /^[0-9a-f]{16}$/;
 const CAP = { small: 4 * 1024, settings: 16 * 1024, keys: 20 * 1024, spawn: 80 * 1024 };
 const isPlain = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const err = (status, error, message) => ({ status, body: { error, message } });
@@ -28,6 +36,13 @@ function param(raw, shape) {
     // not a valid escape sequence: the raw form is all there is
   }
   return candidates.find((c) => shape.test(c)) ?? null;
+}
+
+/** `/` + a COMMAND_NAME, optionally followed by one space and arguments; at most COMMAND_MAX characters, no control characters. */
+function isCommandText(text) {
+  if (typeof text !== 'string' || !text.startsWith('/') || [...text].length > COMMAND_MAX || CONTROL.test(text)) return false;
+  const space = text.indexOf(' ');
+  return COMMAND_NAME.test(text.slice(1, space < 0 ? undefined : space));
 }
 
 /** Names (never contents) of the local rule templates in `dir`: regular files owned by the user (fsafe), sorted, at most 50. */
@@ -57,13 +72,16 @@ async function listTemplates(dir) {
  * @param {string} o.secret  the 43-char secret received on stdin
  * @param {object} o.ctx     { env, exec, tmuxBin, claudeBin, nikaArgv, claudeDir, now, started }; handed to the modules as is
  * @param {object} o.deps    { version, collect() → snapshot, listPanes() → { panes, error }, readHistory, listPlugins, rulesState,
- *                           preview, apply, spawnAgent, startOrchestrator, mirror, keys, picker }
+ *                           preview, apply, spawnAgent, startOrchestrator, mirror, keys, picker, listCommands;
+ *                           createSessionControl, a test seam for the factory in session-control.js }
  * @returns {(req, res, url, port) => Promise<boolean>} true when it handled the request (every /api/app/* request)
  */
 export function createAppApi({ secret, ctx, deps }) {
   const secretHash = sha256(secret);
   const historyCache = {};
   let eligibility = null; // { at, promise }
+  const held = new Map(); // pane id → the last mode read from its footer (shown while a prompt or dialog covers the footer)
+  const vim = new Map(); // pane id → true once its mode line has shown -- INSERT -- (Claude's input is in vim mode)
 
   const guard = (req, port) => {
     const given = req.headers['x-nika-app'];
@@ -83,9 +101,14 @@ export function createAppApi({ secret, ctx, deps }) {
       const [{ panes, error }, snapshot] = await Promise.all([deps.listPanes(), deps.collect().catch(() => null)]);
       // pane ids restart with the tmux server: a stale `started` entry must not make a stranger's pane eligible
       if (!error) for (const id of [...ctx.started.keys()]) if (!panes.has(id)) ctx.started.delete(id);
-      const live = new Set();
-      for (const g of snapshot?.groups ?? []) for (const a of g.agents) if (a.live && a.pane?.id) live.add(a.pane.id);
-      return { panes, error, live };
+      // pane id → registry state of its live agent; two live agents claiming one pane is ambiguous, so never idle (null)
+      const live = new Map();
+      for (const g of snapshot?.groups ?? []) for (const a of g.agents) if (a.live && a.pane?.id) live.set(a.pane.id, live.has(a.pane.id) ? null : (a.state ?? null));
+      const e = { panes, error, live };
+      // a reused pane id starts fresh; a failed tmux list or registry read proves nothing, so one blip keeps the memory
+      // (losing vim memory would let End type into a vim normal-mode input without `i` first)
+      if (!error && snapshot) for (const id of [...held.keys(), ...vim.keys()]) if (!isEligible(e, id)) { held.delete(id); vim.delete(id); }
+      return e;
     })();
     eligibility = { at: t, promise };
     promise.catch(() => {
@@ -94,18 +117,51 @@ export function createAppApi({ secret, ctx, deps }) {
     return promise;
   }
 
+  // the registry's `tmuxPane` is agent-writable, and tmux can reuse a pane id after a restart: a pane qualifies, through
+  // the registry or because nika started it, only while it really runs claude, so neither a forged entry nor a stale id
+  // can route typed text into a shell pane (a started `_run-agent` pane shows as `node`)
+  const isEligible = (e, id) => {
+    const pane = e.panes.get(id);
+    return Boolean(pane) && CLAUDE_COMMAND.test(String(pane.command ?? '').trim()) && (e.live.has(id) || ctx.started.has(id));
+  };
+
   async function eligiblePane(raw) {
     const id = param(raw, PANE_ID);
     if (!id) return { failure: err(404, 'not_found', 'pane not found') };
     const e = await loadEligibility();
-    // the registry's `tmuxPane` is agent-writable, and tmux can reuse a pane id after a restart: a pane qualifies, through
-    // the registry or because nika started it, only while it really runs claude, so neither a forged entry nor a stale id
-    // can route typed text into a shell pane (a started `_run-agent` pane shows as `node`)
-    const pane = e.panes.get(id);
-    const runsClaude = CLAUDE_COMMAND.test(String(pane?.command ?? '').trim());
-    if (pane && runsClaude && (e.live.has(id) || ctx.started.has(id))) return { id };
+    if (isEligible(e, id)) return { id };
     return { failure: err(404, 'not_found', e.error ? clean(e.error, 200) : 'pane not found') };
   }
+
+  /**
+   * { mode, modeConfirmed, prompt } of a pane's screen (contract §3). A footer that reads is shown and remembered; when it
+   * does not (a prompt or dialog covers it) the last remembered mode, else the mode a nika-started pane was launched with,
+   * is shown with modeConfirmed false; with neither the mode is `unknown`. The prompt carries the sig the answer route checks.
+   */
+  function readScreen(id, rows) {
+    const footer = modeFromRows(rows);
+    if (insertShown(rows)) vim.set(id, true);
+    if (footer !== 'unknown') held.set(id, footer);
+    const mode = footer !== 'unknown' ? footer : (held.get(id) ?? ctx.started.get(id)?.mode ?? 'unknown');
+    const prompt = promptFromRows(rows);
+    return { mode, modeConfirmed: footer !== 'unknown' || mode === 'unknown', prompt: prompt && { ...prompt, sig: promptSig(rows) } };
+  }
+
+  // One controller for the whole server: its per-pane lock covers mode, answer, command and End together.
+  const control = (deps.createSessionControl ?? createSessionControl)({
+    mirror: deps.mirror,
+    keys: deps.keys,
+    // a failed listing throws: it proves nothing about the pane (null would read as "gone")
+    paneCommand: async (id) => {
+      const { panes, error } = await deps.listPanes();
+      if (error) throw new Error(error);
+      const pane = panes.get(id);
+      return pane ? String(pane.command ?? '').trim() : null;
+    },
+    stateOf: async (id) => (await loadEligibility()).live.get(id) ?? null,
+    vimOf: (id) => vim.get(id) === true,
+    now: () => ctx.now(),
+  });
 
   // --- projects ---
 
@@ -209,7 +265,21 @@ export function createAppApi({ secret, ctx, deps }) {
     if (failure) return failure;
     const r = await deps.mirror.capture(id, req.headers['if-none-match']);
     const headers = r.etag ? { ETag: `"${r.etag}"` } : {};
-    return r.status === 304 ? { status: 304, body: null, headers } : { status: r.status, body: r.body, headers };
+    if (r.status === 304) return { status: 304, body: null, headers };
+    // a new object: the mirror's cached body is shared and stays as captured
+    return { status: r.status, body: r.status === 200 ? { ...r.body, ...readScreen(id, r.body.rows) } : r.body, headers };
+  });
+
+  route('GET', /^\/api\/app\/modes$/, 0, async () => {
+    const e = await loadEligibility();
+    const ids = [...e.panes.keys()].filter((id) => isEligible(e, id));
+    const read = await mapLimit(ids, MODES_AT_ONCE, async (id) => {
+      const r = await deps.mirror.capture(id).catch(() => null);
+      if (r?.status !== 200) return null; // a pane whose capture fails is left out
+      const { mode, modeConfirmed } = readScreen(id, r.body.rows);
+      return [id, { mode, confirmed: modeConfirmed }];
+    });
+    return { status: 200, body: { modes: Object.fromEntries(read.filter(Boolean)) } };
   });
 
   route('POST', /^\/api\/app\/pane\/([^/]+)\/keys$/, CAP.keys, async ({ params, body }) => {
@@ -217,6 +287,49 @@ export function createAppApi({ secret, ctx, deps }) {
     if (failure) return failure;
     return deps.keys.send(id, { text: body.text, paste: body.paste, keys: body.keys });
   });
+
+  // --- session control (0.3): each route validates, checks the pane, then hands over to the shared controller ---
+
+  route('POST', /^\/api\/app\/pane\/([^/]+)\/mode$/, CAP.small, async ({ params, body }) => {
+    if (!MODE_TARGETS.includes(body.target)) return err(400, 'invalid', `target must be one of ${MODE_TARGETS.join(', ')}`);
+    const { id, failure } = await eligiblePane(params[0]);
+    return failure ?? control.switchMode(id, body.target);
+  });
+
+  route('POST', /^\/api\/app\/pane\/([^/]+)\/answer$/, CAP.small, async ({ params, body }) => {
+    const { n, sig } = body;
+    if (!Number.isInteger(n) || n < 1 || n > 9 || typeof sig !== 'string' || !SIG.test(sig)) return err(400, 'invalid', 'n must be an integer 1-9 and sig 16 lowercase hex characters');
+    const { id, failure } = await eligiblePane(params[0]);
+    return failure ?? control.answer(id, { n, sig });
+  });
+
+  route('POST', /^\/api\/app\/pane\/([^/]+)\/command$/, CAP.small, async ({ params, body }) => {
+    if (!isCommandText(body.text)) return err(400, 'invalid', `text must be / and a command name, optionally one space and arguments (at most ${COMMAND_MAX} characters, no control characters)`);
+    const { id, failure } = await eligiblePane(params[0]);
+    return failure ?? control.runCommand(id, body.text);
+  });
+
+  route('POST', /^\/api\/app\/pane\/([^/]+)\/end$/, CAP.small, async ({ params }) => {
+    const { id, failure } = await eligiblePane(params[0]);
+    if (failure) return failure;
+    try {
+      return await control.endSession(id);
+    } finally {
+      eligibility = null; // the pane may be gone
+    }
+  });
+
+  route('GET', /^\/api\/app\/commands$/, 0, async ({ query }) => {
+    let projectDir;
+    if (query.has('project')) {
+      const { project, failure } = await projectOf({ project: query.get('project') });
+      if (failure) return failure;
+      projectDir = project.dir;
+    }
+    return { status: 200, body: { commands: await deps.listCommands({ claudeDir: ctx.claudeDir, projectDir, now: ctx.now() }) } };
+  });
+
+  route('GET', /^\/api\/app\/models$/, 0, async () => ({ status: 200, body: { models: MODEL_CATALOG } }));
 
   // --- agents ---
 

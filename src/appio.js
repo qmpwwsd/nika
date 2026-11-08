@@ -15,6 +15,7 @@ import { addProject, keyFor } from './store.js';
 import { listPanes } from './collect/tmux.js';
 import { readHistory } from './collect/history.js';
 import { listPlugins } from './collect/plugins.js';
+import { listCommands } from './collect/commands.js';
 import { createMirror } from './mirror.js';
 import { createKeys } from './keys.js';
 import { rulesState, preview, apply } from './rules.js';
@@ -176,7 +177,7 @@ export function serveApp({ config, env = process.env, stdin, stdout, stderr, exe
         version: VERSION,
         collect: snapshot,
         listPanes: () => listPanes(exec, tmuxBin),
-        readHistory, listPlugins, rulesState, preview, apply, spawnAgent, startOrchestrator,
+        readHistory, listPlugins, listCommands, rulesState, preview, apply, spawnAgent, startOrchestrator,
         mirror: createMirror({ exec, tmuxBin, now }),
         keys: createKeys({ exec, tmuxBin, now }),
         picker,

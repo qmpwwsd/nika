@@ -66,7 +66,7 @@ describe('spawnAgent: placement and files', () => {
     assert.equal(read(w, 'builder-1.brief.md'), 'Do the thing.');
     assert.deepEqual(JSON.parse(read(w, 'builder-1.agent.json')), { model: 'sonnet', permissionMode: 'default', rc: '' });
     assert.equal(read(w, '.last-pane'), '%20\n');
-    assert.deepEqual(ctx.started.get('%20'), { key: w.project.key, name: 'builder-1', sessionId: null, role: 'agent' });
+    assert.deepEqual(ctx.started.get('%20'), { key: w.project.key, name: 'builder-1', sessionId: null, role: 'agent', mode: 'manual' });
     assert.equal(exec.panes.find((p) => p.id === '%20').title, '[%20] builder-1');
     assert.equal(exec.panes.find((p) => p.id === '%20').role, 'agent');
     assert.equal(exec.panes.find((p) => p.id === '%20').agent, `${w.project.key}/builder-1`);
@@ -163,6 +163,20 @@ describe('spawnAgent: placement and files', () => {
     await spawnAgent(req(w, { name: 'two', permissionMode: 'plan' }), w.ctx(exec));
     assert.equal(JSON.parse(read(w, 'one.agent.json')).permissionMode, 'acceptEdits');
     assert.equal(JSON.parse(read(w, 'two.agent.json')).permissionMode, 'plan');
+  });
+
+  test('(+) started records the launch permission mode: request, else settings; `default` (no flag) is manual', async () => {
+    const w = await world({ permissionMode: 'acceptEdits' });
+    const exec = fakeTmux({ panes: BASE_PANES() });
+    const ctx = w.ctx(exec);
+    const modeOf = async (over) => {
+      const r = await spawnAgent(req(w, over), ctx);
+      assert.equal(r.status, 200);
+      return ctx.started.get(r.body.pane).mode;
+    };
+    assert.equal(await modeOf({ name: 'one' }), 'acceptEdits');
+    assert.equal(await modeOf({ name: 'two', permissionMode: 'plan' }), 'plan');
+    assert.equal(await modeOf({ name: 'three', permissionMode: 'default' }), 'manual');
   });
 
   test('(+) Remote Control name: <prefix>-<name> reduced to RC_PREFIX, project name when the prefix is empty, `rc` overrides', async () => {

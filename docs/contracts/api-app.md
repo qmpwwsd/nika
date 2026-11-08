@@ -231,8 +231,8 @@ order:
 1. `target` ∉ `MODE_TARGETS` (`bypassPermissions`, `dontAsk`, `default`, missing, …) → `400 invalid`.
 2. Ineligible pane (same rule as capture) → `404 not_found`.
 3. Another control action (mode switch, answer or End) is running on this pane → 409 `busy-switching`.
-4. Fresh capture. The registry state of the live session on that pane is not `idle` (a pane with no live session is
-   never idle), or a `prompt` is on screen → 409 `not-idle`, also when the mode already equals the target.
+4. Fresh capture. The registry state of the live session on that pane is not `idle` (a pane with no live session, or one
+   claimed by two live sessions, is never idle; the state comes from the eligibility snapshot, at most 1 s old), or a `prompt` is on screen → 409 `not-idle`, also when the mode already equals the target.
 5. Footer `unknown` → 409 `mode-unknown`, no press (an unreadable footer can mean a dialog is open; the recorded launch
    mode is never used to press blind).
 6. Mode equals `target` → `200 { "mode", "presses": 0 }`. Mode `dontAsk` → 409 `not-in-cycle`, no press (nika never
