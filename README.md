@@ -19,10 +19,30 @@ nika                         # opens the dashboard in your browser
 
 | Command | Does |
 |---|---|
-| `nika` / `nika open` | open the dashboard (the server must be running) |
+| `nika` / `nika open` | open the desktop app when it is installed, else the browser dashboard (the server must be running); see [CLI (0.2)](#cli-02) |
 | `nika serve` | run the server in the foreground (what `brew services` runs) |
 | `nika status` | print agents grouped by project; `--json`, `--since 24h\|7d\|30d\|all`, `--full` |
 | `nika --version` | print the version |
+
+## CLI (0.2)
+
+`nika` and `nika open` start the desktop app when it is installed and fall back to the browser dashboard (the 0.1 behaviour: `nika serve` must be running). `nika open --app` fails with an install hint when the app is missing; `nika open --browser` skips the app. macOS looks the app up by bundle id (`open -b io.github.qmpwwsd.nika`); Linux runs `nika-app` from `PATH`, then `gtk-launch io.github.qmpwwsd.nika`.
+
+| Command | Does |
+|---|---|
+| `nika app` | open the desktop app; fails with an install hint when it is missing |
+| `nika serve --app` | the app tier's private server on a random port; the app starts it and talks to it over stdin/stdout, so it refuses a terminal on stdin (exit 2) |
+| `nika projects list` | registered projects: key, name, rules state, folder |
+| `nika projects add <dir>` / `remove <key>` | register a folder (stored as its real path) or unregister it; project files are never touched |
+| `nika rules preview [dir]` | print the diffs of the orchestration rules nika would write into the project, plus warnings |
+| `nika rules apply [dir]` | preview, ask `Apply? [y/N]`, then write; `--yes` skips the question (required without a terminal), `--overwrite-foreign` replaces a `rules/orchestration.md` nika did not write, `--gitignore` also adds `.claude/settings.local.json` to `.gitignore`. Backups go to nika's state folder, never into the repository; nika never runs git |
+| `nika spawn <name> <model> <brief>` | start an agent in a tmux pane. Needs `$TMUX` (run it inside tmux) or `--session <name>`. `<brief>` is a file (at most 64 KB) or `-` for stdin. Options: `--project <dir>`, `--permission-mode <mode>` (`bypassPermissions` is refused), `--rc <prefix\|off>`, `--under <%pane>`. Prints pane, session and report path |
+| `nika orchestrate [dir]` | create or reuse the project's tmux session and start the orchestrator pane. On a terminal it then attaches (inside tmux: switches the client to the session; otherwise `tmux attach-session`); `--detached`, or output that is not a terminal, only prints the session and pane |
+| `nika doctor` | node, tmux, claude and app status, nika's config and state folders with their modes, and config warnings |
+
+`[dir]` is optional: it defaults to the registered project that contains the current directory (an explicit `dir` must be the project folder itself). Register a folder first with `nika projects add <dir>`.
+
+Exit codes: `0` ok, `1` runtime error, `2` usage, `3` refused (invalid input, limit reached, foreign rules file without `--overwrite-foreign`, declined confirmation).
 
 ## Configuration
 

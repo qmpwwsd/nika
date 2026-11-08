@@ -145,9 +145,10 @@ describe('updateSettings', () => {
     assert.equal(c.models.scout, 'haiku');
     assert.equal(c.models.orchestrator, 'claude-fable-5-1');
     assert.deepEqual(c.remoteControl, { enabled: true, prefix: 'team-x' });
-    assert.deepEqual(c.limits, { maxAgents: 5, maxTurns: 80 });
+    assert.deepEqual(c.limits, { maxAgents: 5 });
     assert.equal(c.permissionMode, 'plan');
     assert.deepEqual((await loadConfig(env)).config, c);
+    for (const m of ['default', 'manual', 'acceptEdits', 'auto', 'dontAsk']) assert.equal((await updateSettings({ permissionMode: m }, env)).permissionMode, m);
   });
 
   test('(−) bypassPermissions, bad model, unknown key, projects, bad plugin name and bad prefix are rejected', async () => {
@@ -162,11 +163,70 @@ describe('updateSettings', () => {
       { remoteControl: { prefix: '-x' } },
       { panePlacement: 'floating' },
       { limits: { maxAgents: 0 } },
+      { limits: { maxTurns: 80 } },
       { models: null },
       { limits: 'x' },
       { plugins: [] },
       'nope',
     ]) await assert.rejects(updateSettings(patch, env), { code: 'EINVAL' }, JSON.stringify(patch));
+    assert.deepEqual((await loadConfig(env)).config, defaults());
+  });
+});
+
+describe('mutation queue', () => {
+  const dirs = (env, n) => Array.from({ length: n }, (_, i) => {
+    const d = path.join(root, path.basename(path.dirname(env.NIKA_CONFIG_DIR)), `proj-${i}`);
+    fs.mkdirSync(d, { recursive: true });
+    return d;
+  });
+
+  test('(+) ten concurrent addProject calls are all saved', async () => {
+    const env = fresh('q1');
+    const added = await Promise.all(dirs(env, 10).map((d) => addProject(d, env)));
+    assert.equal(new Set(added.map((p) => p.key)).size, 10);
+    const saved = await listProjects(env);
+    assert.deepEqual(saved.map((p) => p.key).sort(), added.map((p) => p.key).sort());
+  });
+
+  test('(+) concurrent add, remove and settings changes all land, in call order', async () => {
+    const env = fresh('q2');
+    const [a, b, c] = dirs(env, 3);
+    const first = await addProject(a, env);
+    const [, , , removed, settings] = await Promise.all([
+      addProject(b, env),
+      addProject(c, env),
+      updateSettings({ limits: { maxAgents: 4 } }, env),
+      removeProject(first.key, env),
+      updateSettings({ permissionMode: 'plan' }, env),
+    ]);
+    assert.equal(removed, true);
+    assert.equal(settings.permissionMode, 'plan');
+    const { config } = await loadConfig(env);
+    assert.deepEqual(config.projects.map((p) => path.basename(p.dir)).sort(), ['proj-1', 'proj-2']);
+    assert.equal(config.limits.maxAgents, 4);
+    assert.equal(config.permissionMode, 'plan');
+  });
+
+  test('(−) a rejected mutation does not block or lose the ones queued after it', async () => {
+    const env = fresh('q3');
+    const [a, b] = dirs(env, 2);
+    const results = await Promise.allSettled([
+      addProject(a, env),
+      addProject('relative/dir', env),
+      updateSettings({ permissionMode: 'bypassPermissions' }, env),
+      removeProject('nothere', env),
+      saveConfig({ ...defaults(), shell: true }, env),
+      addProject(b, env),
+    ]);
+    assert.deepEqual(results.map((r) => r.status), ['fulfilled', 'rejected', 'rejected', 'rejected', 'rejected', 'fulfilled']);
+    assert.deepEqual(results.slice(1, 5).map((r) => r.reason.code), ['EPATH', 'EINVAL', 'EINVAL', 'EINVAL']);
+    assert.equal((await listProjects(env)).length, 2);
+  });
+
+  test('(−) updateSettings refuses an own __proto__ key and leaves the prototype and the file alone', async () => {
+    const env = fresh('q4');
+    await assert.rejects(updateSettings(JSON.parse('{"__proto__":{"limits":{"maxAgents":8}}}'), env), { code: 'EINVAL' });
+    assert.equal(({}).limits, undefined);
     assert.deepEqual((await loadConfig(env)).config, defaults());
   });
 });

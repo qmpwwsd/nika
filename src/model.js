@@ -5,7 +5,7 @@ import { readRegistry, processTable, isAlive } from './collect/registry.js';
 import { indexTranscripts, readTranscript, createTranscriptCache } from './collect/transcripts.js';
 import { readSubagents } from './collect/subagents.js';
 import { listPanes } from './collect/tmux.js';
-import { discoverReportDirs, indexReports } from './collect/reports.js';
+import { allReportDirs, indexReports } from './collect/reports.js';
 import { resolveProject } from './collect/projects.js';
 import { mapLimit } from './util.js';
 import { clean } from './text.js';
@@ -96,7 +96,7 @@ export async function collect({ config, exec, now = Date.now(), sinceMs, since =
     processTable(exec),
     indexTranscripts(config.claudeDir),
     listPanes(exec, config.tmuxBin ?? 'tmux'),
-    discoverReportDirs(config.tmpRoot, config.reportDirs ?? []),
+    allReportDirs(config),
   ]);
   const reports = await indexReports(reportDirs);
   const sources = {

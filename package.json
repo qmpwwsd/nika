@@ -12,6 +12,7 @@
     "bin/",
     "src/",
     "public/",
+    "templates/",
     "README.md",
     "LICENSE"
   ],

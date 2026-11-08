@@ -22,7 +22,7 @@ export function defaults() {
     remoteControl: { enabled: false, prefix: '' },
     permissionMode: 'default',
     panePlacement: 'beside',
-    limits: { maxAgents: 3, maxTurns: 80 },
+    limits: { maxAgents: 3 },
     plugins: { perProject: {} },
     projects: [],
     rules: { localTemplate: null },
@@ -73,7 +73,7 @@ const SCHEMA = {
   remoteControl: { enabled: bool, prefix: (v) => (v === '' ? v : str(RC_PREFIX)(v)) },
   permissionMode: oneOf(PERMISSION_MODES),
   panePlacement: oneOf(PANE_PLACEMENTS),
-  limits: { maxAgents: intIn(1, 8), maxTurns: intIn(1, 1000) },
+  limits: { maxAgents: intIn(1, 8) },
   plugins: { perProject },
   projects,
   rules: { localTemplate: (v) => (v === null ? v : str(TEMPLATE_NAME)(v)) },
@@ -118,8 +118,17 @@ export async function loadConfig(env = process.env) {
   return { config: validate(raw, SCHEMA, defaults(), warnings), warnings, file };
 }
 
-/** Re-validates and writes config.json (0600) through fwrite; returns the file path. */
-export async function saveConfig(config, env = process.env) {
+// Mutations (read-modify-write of config.json) of this process run one at a time, so concurrent API calls cannot lose
+// each other's update. Across processes the last atomic rename wins.
+let queue = Promise.resolve();
+function serial(fn) {
+  const run = queue.then(fn);
+  queue = run.catch(() => {}); // a failed mutation must not block the next one
+  return run;
+}
+
+/** Re-validates and writes config.json (0600) through fwrite; returns the file path. Runs inside the queue. */
+async function writeConfig(config, env) {
   const warnings = [];
   const valid = validate(config, SCHEMA, defaults(), warnings);
   if (warnings.length) throw Object.assign(new Error(warnings.join('; ')), { code: 'EINVAL', warnings });
@@ -127,32 +136,41 @@ export async function saveConfig(config, env = process.env) {
   return writeAtomic(dir, 'config.json', `${JSON.stringify(valid, null, 2)}\n`);
 }
 
+/** Re-validates and writes config.json (0600) through fwrite; returns the file path. */
+export function saveConfig(config, env = process.env) {
+  return serial(() => writeConfig(config, env));
+}
+
 /** Registers a project dir (realpath; existing dir); returns the existing entry on a duplicate. */
-export async function addProject(dir, env = process.env) {
-  if (typeof dir !== 'string' || !path.isAbsolute(dir)) throw Object.assign(new Error('project dir must be absolute'), { code: 'EPATH' });
-  const real = await fs.realpath(dir);
-  if (!(await fs.stat(real)).isDirectory()) throw Object.assign(new Error('not a directory'), { code: 'ENOTDIR' });
-  const key = keyFor(real);
-  const { config } = await loadConfig(env);
-  const existing = config.projects.find((p) => p.key === key);
-  if (existing) return existing;
-  const name = clean(path.basename(real), 255) ?? key;
-  const project = { key, dir: real, name, addedAt: new Date().toISOString() };
-  config.projects.push(project);
-  await saveConfig(config, env);
-  return project;
+export function addProject(dir, env = process.env) {
+  return serial(async () => {
+    if (typeof dir !== 'string' || !path.isAbsolute(dir)) throw Object.assign(new Error('project dir must be absolute'), { code: 'EPATH' });
+    const real = await fs.realpath(dir);
+    if (!(await fs.stat(real)).isDirectory()) throw Object.assign(new Error('not a directory'), { code: 'ENOTDIR' });
+    const key = keyFor(real);
+    const { config } = await loadConfig(env);
+    const existing = config.projects.find((p) => p.key === key);
+    if (existing) return existing;
+    const name = clean(path.basename(real), 255) ?? key;
+    const project = { key, dir: real, name, addedAt: new Date().toISOString() };
+    config.projects.push(project);
+    await writeConfig(config, env);
+    return project;
+  });
 }
 
 /** Removes a project and its per-project plugin list; true when something was removed. */
-export async function removeProject(key, env = process.env) {
-  if (!PROJECT_KEY.test(key)) throw Object.assign(new Error('invalid project key'), { code: 'EINVAL' });
-  const { config } = await loadConfig(env);
-  const before = config.projects.length;
-  config.projects = config.projects.filter((p) => p.key !== key);
-  delete config.plugins.perProject[key];
-  if (config.projects.length === before) return false;
-  await saveConfig(config, env);
-  return true;
+export function removeProject(key, env = process.env) {
+  return serial(async () => {
+    if (!PROJECT_KEY.test(key)) throw Object.assign(new Error('invalid project key'), { code: 'EINVAL' });
+    const { config } = await loadConfig(env);
+    const before = config.projects.length;
+    config.projects = config.projects.filter((p) => p.key !== key);
+    delete config.plugins.perProject[key];
+    if (config.projects.length === before) return false;
+    await writeConfig(config, env);
+    return true;
+  });
 }
 
 export async function listProjects(env = process.env) {
@@ -163,17 +181,21 @@ export async function listProjects(env = process.env) {
  * Merges a settings patch (every top-level key except `projects`; object groups merge one level deep,
  * `plugins.perProject` is replaced as a whole) and saves it. Throws EINVAL on any invalid or unknown value.
  */
-export async function updateSettings(patch, env = process.env) {
-  const bad = (m) => Object.assign(new Error(m), { code: 'EINVAL' });
-  if (!isPlainObject(patch)) throw bad('settings must be an object');
-  if (hasOwn(patch, 'projects')) throw bad('projects are managed with nika projects add|remove');
-  if (patch.permissionMode === 'bypassPermissions') throw bad('bypassPermissions is never allowed');
-  const { config } = await loadConfig(env);
-  const next = { ...config };
-  for (const k of Object.keys(patch)) {
-    const node = SCHEMA[k];
-    next[k] = node && typeof node !== 'function' && isPlainObject(patch[k]) && isPlainObject(config[k]) ? { ...config[k], ...patch[k] } : patch[k];
-  }
-  await saveConfig(next, env);
-  return (await loadConfig(env)).config;
+export function updateSettings(patch, env = process.env) {
+  return serial(async () => {
+    const bad = (m) => Object.assign(new Error(m), { code: 'EINVAL' });
+    if (!isPlainObject(patch)) throw bad('settings must be an object');
+    if (hasOwn(patch, 'projects')) throw bad('projects are managed with nika projects add|remove');
+    if (patch.permissionMode === 'bypassPermissions') throw bad('bypassPermissions is never allowed');
+    // own keys only: `__proto__` from JSON.parse must never reach the `next[k] =` assignment below
+    for (const k of Object.keys(patch)) if (!hasOwn(SCHEMA, k)) throw bad(`unknown key ${clean(k, 40) ?? '?'}`);
+    const { config } = await loadConfig(env);
+    const next = { ...config };
+    for (const k of Object.keys(patch)) {
+      const node = SCHEMA[k];
+      next[k] = typeof node !== 'function' && isPlainObject(patch[k]) && isPlainObject(config[k]) ? { ...config[k], ...patch[k] } : patch[k];
+    }
+    await writeConfig(next, env);
+    return (await loadConfig(env)).config;
+  });
 }

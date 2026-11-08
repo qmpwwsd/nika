@@ -12,11 +12,15 @@ export const TMUX_SESSION = /^[A-Za-z0-9_][A-Za-z0-9_-]{0,47}$/;
 export const PLUGIN_NAME = /^[A-Za-z0-9._-]{1,100}@[A-Za-z0-9._-]{1,100}$/;
 /** Remote Control session-name prefix. */
 export const RC_PREFIX = /^[a-z0-9][a-z0-9-]{0,19}$/;
+/** Full Remote Control session name: `<prefix>-<agent name>` or the orchestrator's session name, lower-cased. */
+export const RC_NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
 /** Named keys `POST /api/app/pane/:id/keys` may send; everything else is refused. */
 export const KEY_NAME = new Set([
   'Enter', 'Escape', 'Tab', 'BTab', 'Up', 'Down', 'Left', 'Right', 'Home', 'End', 'PPage', 'NPage', 'BSpace', 'DC',
   'C-c', 'C-u', 'C-k', 'C-a', 'C-e', 'C-l', 'C-r', 'C-w',
 ]);
-/** `bypassPermissions` is never accepted (T4). */
-export const PERMISSION_MODES = ['default', 'acceptEdits', 'plan', 'auto'];
+/** `#{pane_current_command}` of a pane running Claude Code: `claude`, `node`, or (native builds) its version, e.g. 2.1.319. */
+export const CLAUDE_COMMAND = /^(?:claude|node|\d+\.\d+\.\d+[\w.+-]*)$/;
+/** `default` = no `--permission-mode` flag; `bypassPermissions` is never accepted (T4). */
+export const PERMISSION_MODES = ['default', 'manual', 'acceptEdits', 'plan', 'auto', 'dontAsk'];
 export const PANE_PLACEMENTS = ['beside', 'under-last'];

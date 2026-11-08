@@ -7,6 +7,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { UUID } from '../ids.js';
 import { readHead, isRealDir } from '../fsafe.js';
+import { listProjects } from '../store.js';
+import { reportsDir } from '../paths.js';
 import { mapLimit } from '../util.js';
 
 const NAME = /^([a-z0-9][a-z0-9._-]{0,127})\.session$/;
@@ -39,6 +41,23 @@ export async function discoverReportDirs(tmpRoot, extraDirs = []) {
     }
   }
   return [...found];
+}
+
+/** nika's own report dir of every registered project (spawned agents write there); a symlinked dir is not followed. */
+export async function projectReportDirs(env) {
+  const dirs = [];
+  if (!env) return dirs; // a config without env (tests, 0.1 callers) has no registry
+  for (const p of await listProjects(env)) {
+    const dir = reportsDir(p.key, env);
+    if (await isRealDir(dir)) dirs.push(dir);
+  }
+  return dirs;
+}
+
+/** Every report dir for a config: the scratchpad ones, `reportDirs`, and nika's own per-project dirs. */
+export async function allReportDirs(config) {
+  const own = await projectReportDirs(config.env);
+  return discoverReportDirs(config.tmpRoot, [...(config.reportDirs ?? []), ...own]);
 }
 
 async function safeText(file, max) {
