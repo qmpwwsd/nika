@@ -181,16 +181,42 @@ window loaded. Without a tray host the icon is simply not shown.
 
 ## Release build
 
-`.github/workflows/release-linux.yml` builds the Linux packages. It is manual (`workflow_dispatch`), runs on Ubuntu 22.04
-with a read-only token and **produces workflow artifacts only**: it never creates a tag, a release or a release asset.
-Clean build, no caches. Steps: install the dependencies, `cargo install tauri-cli --version 2.12.4 --locked`,
-`cargo tauri build --verbose --bundles deb,appimage` (verbose, so linuxdeploy and appimagetool errors are in the log), check the `.deb` with `dpkg-deb` (Depends names WebKitGTK 4.1 and
-AppIndicator; the package contains the desktop entry `io.github.qmpwwsd.nika.desktop` and the bundled `nika/bin/nika`),
-write `SHA256SUMS`, upload the `.deb`, the `.AppImage` and `SHA256SUMS` as the artifact `nika-linux` (kept 14 days).
+`.github/workflows/release-linux.yml` builds the Linux packages on Ubuntu 22.04. Clean build, no caches. It runs in two
+ways:
 
-The owner starts it: Actions tab, `release-linux`, "Run workflow" (or `gh workflow run release-linux.yml --ref <branch>`).
-Download the artifact (`gh run download <run-id> -n nika-linux`), check `sha256sum -c SHA256SUMS`, and publish by hand if
-wanted.
+- **Push of a tag `vX.Y.Z`**: the release path. The `build` job first runs `scripts/release-check.mjs`, which refuses the
+  tag unless `package.json`, `app/src-tauri/tauri.conf.json` and `app/src-tauri/Cargo.toml` all carry `X.Y.Z` and
+  `CHANGELOG.md` has a non-empty `## X.Y.Z` section. Then it builds. The `draft-release` job downloads the files, checks
+  them against `SHA256SUMS` and creates a **draft** GitHub release named `nika X.Y.Z`, with that CHANGELOG section as
+  notes and the `.deb`, the `.AppImage` and `SHA256SUMS` attached. It refuses if a release for the tag already exists.
+- **Manual dispatch** (Actions tab, or `gh workflow run release-linux.yml --ref <branch>`): a test build. Workflow
+  artifacts only (`gh run download <run-id> -n nika-linux`), no release, even when dispatched on a tag.
+
+Build steps: install the dependencies, `cargo install tauri-cli --version 2.12.4 --locked`,
+`cargo tauri build --verbose --bundles deb,appimage` (verbose, so linuxdeploy and appimagetool errors are in the log),
+check the `.deb` with `dpkg-deb` (Depends names WebKitGTK 4.1 and AppIndicator; the package contains the desktop entry
+`io.github.qmpwwsd.nika.desktop` and the bundled `nika/bin/nika`), write `SHA256SUMS`, upload the `.deb`, the
+`.AppImage` and `SHA256SUMS` as the artifact `nika-linux` (kept 14 days).
+
+Permissions: the workflow token is read-only; only `draft-release` gets `contents: write`, and it checks out no code,
+so nothing from the repository or its dependencies runs with write access. There are no secrets. The workflow never
+publishes a release, never creates or moves a tag and never touches the tap. `test/release.test.js` asserts these rules
+(official `actions/*` pinned by SHA, write access only in `draft-release`, no checkout there).
+
+### Release procedure
+
+1. On a branch: set the version in `package.json`, `app/src-tauri/tauri.conf.json`, `app/src-tauri/Cargo.toml` and
+   `Cargo.lock` (`cargo update -p nika-app --offline` after the `Cargo.toml` edit), and rename `## Unreleased` in
+   `CHANGELOG.md` to `## X.Y.Z — <date>`. `node scripts/release-check.mjs vX.Y.Z` must print the notes. Merge through a
+   PR.
+2. Tag the merge commit on `master` (`git tag -a vX.Y.Z -m "nika X.Y.Z"`) and push the tag. The workflow builds and
+   creates the draft (about 10 minutes).
+3. Review the draft on GitHub (notes, the three files) and publish it.
+4. Update the tap: `url` to the new tag, `sha256` of the tag tarball
+   (`curl -sL https://github.com/qmpwwsd/nika/archive/refs/tags/vX.Y.Z.tar.gz | shasum -a 256`), commit `nika X.Y.Z`,
+   push. Check with `brew update && brew upgrade --build-from-source nika`, then `brew services restart nika`.
+
+Steps 2 to 4 each need the owner's approval.
 
 ## Homebrew formula (0.2.0)
 

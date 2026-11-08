@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Releases: pushing a tag `vX.Y.Z` builds the Linux packages and creates a draft GitHub release with them, the notes
+  taken from the tag's CHANGELOG section. `scripts/release-check.mjs` refuses a tag that does not match `package.json`,
+  `tauri.conf.json` and `Cargo.toml` or has no CHANGELOG section. Only the draft job can write, and it runs no repository
+  code. Manual dispatch stays a test build. Publishing stays manual. Procedure in `docs/packaging.md`.
+- Tests: `test/release.test.js` covers the release check and asserts the workflow rules (official actions pinned by
+  SHA, write access only in `draft-release`, no checkout there).
+
 ## 0.2.0 — 2026-11-08
 
 Phase 1 (contracts and foundations):

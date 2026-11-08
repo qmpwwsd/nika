@@ -1,14 +1,24 @@
-# Linux release build for nika: the .deb and the AppImage, as workflow artifacts and nothing else.
-# Manual only (workflow_dispatch). Read-only token: this workflow never creates a tag, a release or a release asset.
-# The owner downloads the artifact, checks SHA256SUMS and publishes by hand. Clean build: no caches.
+# Linux release build for nika: the .deb and the AppImage.
+# - Manual dispatch: workflow artifacts only (a test build).
+# - Push of a tag vX.Y.Z: the same build, then a DRAFT GitHub release with the files and the tag's CHANGELOG section.
+#   The draft is private until the owner reviews and publishes it; this workflow never publishes a release, never
+#   creates or moves a tag and never touches the Homebrew tap.
+# Least privilege: the build job (which compiles third-party crates) has a read-only token; only draft-release, which
+# runs no repository code, gets contents: write. Clean build: no caches.
 # Actions are pinned by full commit SHA (the comment names the tag); only official actions/* are used.
 name: release-linux
 
 on:
   workflow_dispatch:
+  push:
+    tags: ['v*']
 
 permissions:
   contents: read
+
+concurrency:
+  group: release-linux-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -19,6 +29,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: github.event_name == 'push'
+        with:
+          node-version: 22
+      # Before the 10-minute build: the tag must be vX.Y.Z, match every version file and have a CHANGELOG section.
+      - name: Check the tag
+        if: github.event_name == 'push'
+        env:
+          TAG: ${{ github.ref_name }}
+        run: node scripts/release-check.mjs "$TAG" --notes "$RUNNER_TEMP/release-notes.md"
       # Tauri v2 Linux prerequisites (Debian/Ubuntu names), incl. the AppIndicator dev package.
       - name: Linux build dependencies
         run: |
@@ -77,3 +97,48 @@ jobs:
             dist/SHA256SUMS
           if-no-files-found: error
           retention-days: 14
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: github.event_name == 'push'
+        with:
+          name: release-notes
+          path: ${{ runner.temp }}/release-notes.md
+          if-no-files-found: error
+          retention-days: 14
+
+  # Tag push only (a manual dispatch, even on a tag, stays a test build). Runs no repository code, so no checkout: it
+  # downloads the build's files, checks them against SHA256SUMS and creates the draft. If a release for the tag already
+  # exists it changes nothing and fails. To retry after a failure, re-run the failed jobs of this run.
+  draft-release:
+    name: draft release
+    needs: build
+    if: github.event_name == 'push'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: nika-linux
+          path: dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-notes
+          path: notes
+      - name: Check the files
+        working-directory: dist
+        run: sha256sum -c SHA256SUMS
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "a release for $TAG already exists; nothing was changed" >&2
+            exit 1
+          fi
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft --verify-tag \
+            --title "nika ${TAG#v}" --notes-file notes/release-notes.md \
+            dist/*.deb dist/*.AppImage dist/SHA256SUMS
+          echo "draft release for $TAG created: review and publish it on GitHub"
