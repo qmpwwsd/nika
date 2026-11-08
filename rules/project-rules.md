@@ -37,9 +37,8 @@ Contracts: `docs/contracts/api-app.md`. Decisions: `docs/adr/`.
 
 ## Git
 
-- Default branch `master` (never `main`). 0.2 work happens on `feat/0.2-app` and reaches `master` only through a reviewed PR. Commits only with the owner's explicit approval per commit (ORCHESTRATION §19). No AI attribution lines.
-- Before each commit: `npm test` green (incl. hygiene) and `git diff master...feat/0.2-app` reviewed for paths, emails and ids.
+- Default branch `master` (never `main`), the only long-lived branch. Each change happens on a short-lived branch cut from `master` (`feat/…`, `fix/…`, `docs/…`, `release/X.Y.Z`) and reaches `master` only through a reviewed PR with all CI checks green, as a merge commit; merged branches are deleted (a PR page can restore one). Commits only with the owner's explicit approval per commit (ORCHESTRATION §19). No AI attribution lines.
+- Before each commit: `npm test` green (incl. hygiene) and `git diff master...HEAD` reviewed for paths, emails and ids.
 - Publishing (repo creation, push, tags, releases, tap updates, CI workflow dispatch) needs the owner's approval for that specific action.
-- Standing approval (owner, 2026-11-08, ORCHESTRATION §19): commits and pushes on the branch `fix/0.2.0-release` only, for the 0.2.0 release fixes. Merging its PR into `master` still needs the owner's approval.
-- Standing approval (owner, 2026-11-08, ORCHESTRATION §19): commits and pushes on the branch `feat/release-drafts` only, for the tag-triggered draft releases. Merging its PR into `master` still needs the owner's approval.
+- Standing approvals (ORCHESTRATION §19) are recorded here with their date and branch, and end when that branch is merged. Ended: `fix/0.2.0-release` and `feat/release-drafts` (both granted and merged 2026-11-08).
 - Releases (owner decision 2026-11-08): pushing a tag `vX.Y.Z` makes `release-linux.yml` build the Linux packages and create a draft release; it never publishes. Pushing the tag, publishing the draft and updating the tap each need the owner's approval. Procedure: `docs/packaging.md`, Release procedure.
