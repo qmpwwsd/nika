@@ -1,7 +1,7 @@
 # Building and packaging the nika app
 
-Status: 0.2 is in progress and **nothing is published**. You build the app from source. The Linux release workflow
-exists and builds artifacts only (see Release build); the Homebrew formula is Phase 6 and not done.
+Status: 0.2.0 is prepared and **nothing is published yet**. You build the app from source. The Linux release workflow
+exists and builds artifacts only (see Release build); the Homebrew formula below is a draft for the tap.
 
 Decision record: [ADR 0009](adr/0009-packaging.md). Shell facts: [architecture](architecture.md). Threats:
 [security](security.md).
@@ -190,8 +190,73 @@ The owner starts it: Actions tab, `release-linux`, "Run workflow" (or `gh workfl
 Download the artifact (`gh run download <run-id> -n nika-linux`), check `sha256sum -c SHA256SUMS`, and publish by hand if
 wanted.
 
-## Phase 6 (not done yet)
+## Homebrew formula (draft for 0.2.0, not published)
 
-- **Homebrew formula** in the separate repo `qmpwwsd/homebrew-tap` (`Formula/nika.rb`): build the app from source
-  (`depends_on "rust" => :build`), sign ad hoc, install the CLI and `nika.app`. Not written.
-- Every publish step (tag, release, tap pull request, workflow dispatch) needs its own approval from the owner.
+Goes to the separate repo `qmpwwsd/homebrew-tap` as `Formula/nika.rb` after the `v0.2.0` tag exists; `sha256` is filled
+in from the tag's tarball then. On macOS it builds `nika.app` from source (ad hoc signed by the bundler, no Gatekeeper
+quarantine because it is built locally) and installs it in the keg; on Linux it installs the CLI only (the desktop app
+comes from the `.deb` or AppImage). The browser-tier service is unchanged from 0.1.
+
+```ruby
+class Nika < Formula
+  desc "Local dashboard and control panel for Claude Code agents"
+  homepage "https://github.com/qmpwwsd/nika"
+  url "https://github.com/qmpwwsd/nika/archive/refs/tags/v0.2.0.tar.gz"
+  sha256 "FILL_IN_FROM_THE_v0.2.0_TARBALL"
+  license "MIT"
+
+  depends_on "node"
+  on_macos do
+    depends_on "rust" => :build
+  end
+
+  def install
+    libexec.install "bin", "src", "public", "templates", "package.json"
+    (bin/"nika").write_env_script libexec/"bin/nika", PATH: "#{formula_opt_bin("node")}:$PATH"
+
+    if OS.mac?
+      system "cargo", "install", "tauri-cli", "--version", "2.12.4", "--locked", "--root", buildpath/"tools"
+      ENV.prepend_path "PATH", buildpath/"tools/bin"
+      cd "app/src-tauri" do
+        system "cargo", "tauri", "build", "--bundles", "app"
+      end
+      prefix.install "app/src-tauri/target/release/bundle/macos/nika.app"
+    end
+  end
+
+  def caveats
+    return unless OS.mac?
+
+    <<~EOS
+      The desktop app is #{opt_prefix}/nika.app. Open it once so macOS registers it
+      (after that `nika` and `nika app` find it):
+        open #{opt_prefix}/nika.app
+      The read-only browser dashboard still runs with: brew services start nika
+    EOS
+  end
+
+  service do
+    run [opt_bin/"nika", "serve"]
+    keep_alive true
+    log_path var/"log/nika.log"
+    error_log_path var/"log/nika.log"
+    environment_variables PATH: std_service_path_env
+  end
+
+  test do
+    assert_match "nika #{version}", shell_output("#{bin}/nika --version")
+    (testpath/"claude/sessions").mkpath
+    (testpath/"claude/projects").mkpath
+    ENV["CLAUDE_CONFIG_DIR"] = testpath/"claude"
+    ENV["NIKA_TMP_ROOT"] = testpath/"tmp"
+    assert_match "\"groups\": []", shell_output("#{bin}/nika status --json --since all")
+  end
+end
+```
+
+Not verified yet (V5): the build inside Homebrew's build environment (network access for crates, the `../../`
+resource paths from `app/src-tauri`) and whether `open -b io.github.qmpwwsd.nika` finds an app that lives in the
+keg; the caveat covers the second. Check both with `brew install --build-from-source` from the tap before announcing.
+
+Every publish step (tag, GitHub release, tap pull request, `release-linux.yml` dispatch) needs its own approval from
+the owner.

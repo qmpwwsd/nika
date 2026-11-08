@@ -48,7 +48,8 @@ if [[ ${NIKA_SMOKE_NO_SANDBOX:-} == 1 ]]; then export WEBKIT_DISABLE_SANDBOX_THI
 
 echo "== run the shell under Xvfb (limit 150 s)"
 ERR="$WORK/shell.err"
-timeout -k 5 150 xvfb-run -a -s '-screen 0 1280x800x24' dbus-run-session -- "$SHELL_BIN" 2>"$ERR" &
+# Both streams: Ubuntu's xvfb-run runs the command with `2>&1`, so the probe's result line can arrive on stdout.
+timeout -k 5 150 xvfb-run -a -s '-screen 0 1280x800x24' dbus-run-session -- "$SHELL_BIN" >"$ERR" 2>&1 &
 RUN_PID=$!
 
 LINE=

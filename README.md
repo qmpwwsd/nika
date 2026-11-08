@@ -88,14 +88,14 @@ A transcript with no user or assistant message (Claude Code sometimes leaves a o
 
 The desktop app's privileged tier is a separate, locked-down server; its threat model and residual risks are in [docs/security.md](docs/security.md).
 
-## Desktop app (0.2, in progress)
+## Desktop app (0.2)
 
 0.2 adds a desktop app (macOS and Linux, tray icon) with a privileged tier: session window with history and a live pane
 mirror, spawning agents in tmux, starting the orchestrator, adding projects and applying orchestration rules. The
 browser dashboard above stays read-only.
 
-**The app is not released yet.** There is no Homebrew formula, download or package for it today. You build it from a
-checkout of this repository.
+**The app is not published yet.** Until the Homebrew tap and the Linux packages are updated, you build it from a
+checkout of this repository ([docs/packaging.md](docs/packaging.md) has the steps and the draft formula).
 
 You need Node 22 or newer, tmux and Claude Code on the machine. The app does not bundle Node.
 
