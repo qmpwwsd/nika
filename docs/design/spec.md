@@ -640,7 +640,7 @@ Monospace textarea with a "›" prompt, grows 1 → 8 lines (20 px each), then s
 
 ### 3.11 Key chips
 
-26 px high, min 32 wide, mono 12/600, 2 px bottom border (keycap). Set: Esc · Ctrl-C · Tab · Shift-Tab · ↑ ↓ ← → · Enter. Arrow chips have `aria-label="Up arrow"` etc. Pressed: bottom border 1 px + 1 px translate. Disabled with the composer. Clicking a chip sends the key and returns focus to the composer.
+26 px high, min 32 wide, mono 12/600, 2 px bottom border (keycap). Set: Esc · Ctrl-C · Tab · Shift-Tab · ↑ ↓ ← → · Enter. Arrow chips have `aria-label="Up arrow"` etc. Pressed: bottom border 1 px + 1 px translate. Disabled with the composer. While the status is Needs you, the Shift-Tab chip is aria-disabled with `title` "Answer the prompt first" (in a permission prompt Shift-Tab can pick an "allow for this session" option; contract §3: no Shift-Tab shortcut while a prompt is open). Passthrough keeps sending what the user types. Clicking a chip sends the key and returns focus to the composer.
 
 ### 3.12 Menus, tabs, skeletons
 
@@ -989,7 +989,7 @@ Anatomy: `div.msw[role="toolbar"][aria-label="Permission mode"][aria-describedby
 | — | pane gone | all aria-disabled, none pressed | "The pane is gone." |
 | — | tmux error (captures fail, §3.9) | same | "nika couldn't reach tmux." |
 | — | no capture yet | same | "Connecting to the pane…" |
-| 1 | permission prompt or dialog open (`prompt` ≠ null) | none pressed; the held mode's segment `.held`; all aria-disabled. **No Shift-Tab chip**, even when the mode is unknown | "Answer the prompt first." |
+| 1 | permission prompt or dialog open (`prompt` ≠ null, or status Needs you) | none pressed; the held mode's segment `.held`; all aria-disabled. **No Shift-Tab chip**, even when the mode is unknown | "Answer the prompt first." |
 | 2 | Claude working | all aria-disabled (pressed stays full) | "Switch when Claude is waiting for you." |
 | 3 | mode unconfirmed (`modeConfirmed: false`, no prompt) | none pressed; the held or launch mode's segment `.held`; all aria-disabled | "Waiting for Claude to confirm the mode." |
 | 4 | mode unknown | none pressed, all aria-disabled | "nika can't read the mode." + key chip **Shift-Tab** (sends `BTab`, the 0.2 key route) |
@@ -1040,7 +1040,7 @@ One toolbar (`#qa`, `role="toolbar"`, `aria-label="Session actions"`) at the top
 - Clear confirm (440 px confirm dialog, §3.6): title "Clear builder-1's conversation?", body "Claude starts a new conversation with empty context.", buttons Cancel (initial focus) · **Clear conversation** (danger).
 - Model popover: disclosure (`aria-expanded`, `aria-controls="model-pop"`), not a menu. Content: label "Model for builder-1", the §6.9 `<select>` (Latest / Aliases / Older optgroups, then "Custom ID…" which reveals a text field; Aliases: best, fable, opus, sonnet, haiku, opusplan, opus[1m], sonnet[1m]), a muted line "Types `/model <id>` and Enter.", footer Cancel · **Switch model** (primary). Opening focuses the select; Esc or Cancel closes and returns focus to the Model button; Tab out of the popover closes it. Custom field error: "Use a model id such as claude-sonnet-5-5, or an alias such as opus or sonnet[1m]." A change never fires on `<select>` change (arrow keys on a closed GTK select would send several `/model`s); only Switch model sends.
 - After any send, the existing echo says what went out ("Sent /compact + Enter to %12").
-- Command route failures, in the composer's problem line (`role="alert"`), fixed copy (never the server's text), the button re-enabled: 409 `input-not-empty`: "Claude's input has text; clear it first." · 409 `not-at-prompt`: "Claude's input didn't take the command; nothing was sent." · 409 `not-idle`: "Compact, Clear, Model and Rewind are ready when Claude waits for you." · 409 `mode-unknown`: "Claude's screen isn't at the prompt; use the terminal." · 409 `busy-switching`: "Another action is running on this session." · 429: "Too many keys at once; try again." · 404: "The session is gone." · 5xx, network error: "nika couldn't reach tmux."
+- Command route failures, in the composer's problem line (`role="alert"`), fixed copy (never the server's text), the button re-enabled: 409 `input-not-empty`: "Claude's input has text; clear it first." · 409 `not-at-prompt`: "Claude's input didn't take the command; nothing was submitted." · 409 `not-idle`: "Compact, Clear, Model and Rewind are ready when Claude waits for you." · 409 `mode-unknown`: "Claude's screen isn't at the prompt; use the terminal." · 409 `busy-switching`: "Another action is running on this session." · 429: "Too many keys at once; try again." · 404: "The session is gone." · 5xx, network error: "nika couldn't reach tmux."
 
 **States.** A disabled row also says why in words: a reason line `p#qa-why.qa-why` (info icon + text, 12 px `--text-muted`, 6 px under the row, referenced by the toolbar's `aria-describedby`), not only the `title`s. One line, the first matching row wins.
 
@@ -1166,7 +1166,7 @@ Confirm dialog, 440 px (§3.6), opened from the quick-actions row, the dashboard
 | ending | End session shows a spinner + "Ending…", `aria-busy`; Cancel aria-disabled; Esc does nothing (the `cancel` event is prevented); polite line "Waiting for Claude to exit…" |
 | ended (`ended: true`) | dialog closes; toast "Session ended" (`role="status"`); the mirror shows the pane-gone overlay; focus goes to the screen `h1` (dashboard: the row's ⋯ button, or the `h1` if the row is gone) |
 | failed (`ended: false`) | alert at the top of the body (`role="alert"`, `--danger-soft`, warn icon, 600): **"Claude didn't exit; use Stop or the terminal."**; focus moves to the alert; the footer has only Close |
-| refused or error | same alert slot, fixed copy (never the server's text); footer Close. 409 `not-idle`: "Claude didn't stop after Esc; use the terminal." · 409 `mode-unknown`: "Claude's screen isn't at the prompt; use the terminal." · 409 `input-not-empty`: "Claude's input has text; clear it first." · 409 `not-at-prompt`: "Claude's input didn't take /exit; nothing was sent." · 409 `busy-switching`: "Another action is running on this session." · 404: "The session is gone." · 5xx, network error: "nika couldn't reach tmux." |
+| refused or error | same alert slot, fixed copy (never the server's text); footer Close. 409 `not-idle`: "Claude didn't stop after Esc; use the terminal." · 409 `mode-unknown`: "Claude's screen isn't at the prompt; use the terminal." · 409 `input-not-empty`: "Claude's input has text; clear it first." · 409 `not-at-prompt`: "Claude's input didn't take /exit; nothing was submitted." · 409 `busy-switching`: "Another action is running on this session." · 404: "The session is gone." · 5xx, network error: "nika couldn't reach tmux." |
 
 "Copy resume command" lives in the dashboard row menu (§3.12). The session header has no menu in 0.3, so it is not added there; the body names the row-menu item as is.
 
