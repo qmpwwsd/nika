@@ -45,7 +45,7 @@ Common error body: `{"error": "<code>", "message": "<short text>"}`; codes used 
 `claude_unavailable` 503, `tmux_failed` 502 (a tmux call failed unexpectedly), `limit` 409 (maxAgents reached), `foreign` 409 (rules file not written by nika, apply without
 `overwriteForeign`), `refused` 409 (a write-safety check failed; `"code"` carries the fwrite/OS code such as `ESYMLINK`),
 and for session control (0.3) `not-idle`, `mode-unknown`, `not-in-cycle`, `busy-switching`, `no-prompt`,
-`prompt-changed`, `already-answered`, all 409. The 0.3 codes are hyphenated, as the spec names them; the older codes keep their underscores.
+`prompt-changed`, `already-answered`, `input-not-empty`, `not-at-prompt`, all 409. The 0.3 codes are hyphenated, as the spec names them; the older codes keep their underscores.
 
 ## 3. Routes
 
@@ -123,13 +123,20 @@ entries too.
 | plugin | per `installed_plugins.json` key, one install record: the first whose `installPath` resolves inside `<claude dir>/plugins/cache`; then `<installPath>/commands/*.md`, `<installPath>/skills/*/SKILL.md` | `<plugin>:<name>`, `<plugin>` = the key part before `@` |
 
 Reads: the first 4 KB of each file through `fsafe` (no symlinks, regular user-owned files); only the YAML frontmatter
-(between a leading `---` line and the next `---`, `key: value` scalars); keys `name`, `description`, `argument-hint`,
-`user-invocable` (`false` hides the entry); bodies are never read. A plugin key with no install record inside the
+(between a leading `---` line and the next `---`, `key: value` scalars; `description` may also be a `>`, `>-`, `|` or
+`|-` block scalar, its lines joined with one space); a frontmatter that opens but does not close inside the 4 KB head
+skips the file (the hide flag could lie past the cut); keys `name`, `description`, `argument-hint`, `user-invocable`
+(`false` hides the entry); bodies are never read. Containment: a plugin's `commands/` and `skills/` folders and each
+skill folder must resolve inside the plugins cache; a project's `.claude/commands` and `.claude/skills` must be real
+folders and each skill folder must resolve inside the project; the user's own folders may be links (dotfile managers
+link them). The check runs before the read (a swap in between needs write access to that folder, as `docs/security.md`
+T8). A plugin key with no install record inside the
 cache is skipped. `COMMAND_NAME` applies to the bare name (before the `<plugin>:` prefix); names that miss it and
 command files in subfolders are skipped (they still work when typed). Text through `clean()`, description ≤ 200
 chars; the page renders with `textContent`. Same name within one source: a skill wins over a command. Across sources
-every entry is kept, each with its `source`. Bounds: ≤ 200 files per folder, ≤ 1000 entries in total (built-ins
-count), cached 10 s per project. Paths are never returned (T22).
+every entry is kept, each with its `source`. Bounds: ≤ 200 files per folder, ≤ 2000 files opened per scan, ≤ 1000 entries in total
+(built-ins count), cached 10 s per project with one scan in flight per project; within the plugin source the first entry
+with a given full name wins. Paths are never returned (T22).
 
 ### `GET /api/app/models`
 ```json
@@ -176,10 +183,14 @@ Only SGR codes 0, 1, 2, 3, 4, 7, 22–24, 27, 30–37, 39, 40–47, 49, 90–97,
   (after that prefix) is `bypass` or `bypassPermissions` (any case) → `bypassPermissions` (fail loud); so the
   slash-command menu (rows starting with `/` or `❯ /`) reads `unknown`, and a permission prompt or dialog covering the
   footer → `unknown`.
-- `modeConfirmed` (boolean): `mode` is the footer reading, except that for a pane nika started whose footer reads
-  `unknown`, `mode` is the recorded launch mode (`started` entry, §9: the `--permission-mode` passed, `manual` when
-  none) and `modeConfirmed` is `false`; otherwise `true`. The switcher is disabled while `mode` is `unknown` or
-  `modeConfirmed` is `false` (the mode route would answer 409).
+- `modeConfirmed` (boolean): `true` when `mode` is the footer reading. When the footer reads `unknown` (a permission
+  prompt or dialog covers it, or the text is unrecognized), `mode` is the last mode read from this pane's footer (kept
+  in memory per pane id, dropped when the pane leaves the eligible set), else, for a pane nika started, the recorded
+  launch mode (`started` entry, §9: the `--permission-mode` passed, `manual` when none), and `modeConfirmed` is
+  `false`; with neither, `mode` is `unknown` and `modeConfirmed` is `true`. A held or launch value is display only:
+  the mode route reads the footer itself and never uses it. The switcher is disabled while `mode` is `unknown`,
+  `modeConfirmed` is `false` or a `prompt` is open (the mode route would answer 409), and the page offers no
+  Shift-Tab shortcut while a `prompt` is open.
 - `prompt`: `{ "question", "options": [ { "n", "label" } ], "sig" }` when Claude's permission prompt is on screen,
   else `null`. Layout (`claude-tui.md` §2), all within the last 15 non-blank rows: the closing hint row starting with
   `Esc to cancel` is the last non-blank row; the options sit directly above it, at least 2, numbered `1..k` (one digit each) without gaps
@@ -254,18 +265,41 @@ Answers a permission prompt with a fresh parse (T26); "Esc = No" stays the keys 
 6. Send the digit as literal text through the keys path (`send-keys -l -- <n>`, counts toward its 20 requests/s per
    pane; no Enter, `claude-tui.md` §2) → `200 { "answered": 1 }`; a failed send → that send's status and body.
 
+### `POST /api/app/pane/:id/command` (body ≤ 4 KB, `CAP.small`)
+```json
+{ "text": "/compact" }
+```
+Types one slash command into Claude's input and presses Enter, safely; the quick actions (Compact, Clear, Model) use
+it. `text` = `/` + a `COMMAND_NAME`, optionally one space and arguments, ≤ 200 chars, no C0/C1 controls, else
+`400 invalid`. The composer's own Send stays the keys route (the user's typing passes through as in 0.2).
+
+1. Ineligible pane → `404 not_found`. Another control action running on this pane → 409 `busy-switching`.
+2. Fresh capture and registry state: not `idle`, or a `prompt` on screen → 409 `not-idle` (no Escape here; Stop is
+   its own button). Footer `unknown` → 409 `mode-unknown`.
+3. The input-box, vim and typing checks of End's steps 4–6 with `text` in place of `/exit` (a text that wraps onto a
+   second row fails the exact one-row check → `C-u`, 409 `not-at-prompt`) → `200 { "sent": true }`; a failed send
+   → that send's status and body.
+
 ### `POST /api/app/pane/:id/end` (body ≤ 4 KB, `CAP.small`)
 Body `{}`. Steps, in this order:
 
 1. Ineligible pane (same rule as capture) → `404 not_found`. Another control action running on this pane → 409
    `busy-switching`.
-2. Fresh capture. When the registry state of the live session on that pane is not `idle` or a `prompt` is on screen:
-   send `Escape` (cancel, the "No" path of a prompt), wait 1 s, capture again.
-3. A `prompt` still on screen → 409 `not-idle`, nothing typed. Footer `unknown` (a dialog may be open) → 409
-   `mode-unknown`, nothing typed. So End can never answer a prompt or a dialog.
-4. Send `C-u`, the text `/exit`, `Enter` (`send-keys -- C-u`, `send-keys -l -- /exit`, `send-keys -- Enter`, §8).
-5. Check the pane every 500 ms for up to 3 s: gone or no longer running claude (`CLAUDE_COMMAND`) →
-   `200 { "ended": true }`; else `200 { "ended": false }`.
+2. Fresh capture and registry state. When the state is not `idle` or a `prompt` is on screen: send `Escape` (cancel,
+   the "No" path of a prompt), wait 1 s, then take a fresh capture and read the registry state again.
+3. The state is still not `idle`, or a `prompt` is still on screen → 409 `not-idle`, nothing typed. Footer `unknown`
+   (a dialog may be open) → 409 `mode-unknown`, nothing typed. So End can never answer a prompt or a dialog.
+4. Input box (`claude-tui.md` §5: the rows between the last two rule rows made only of `─`): it must be exactly one
+   row reading `❯` alone or `❯ Try "…` (the placeholder); anything else (a draft, several rows, no box found) → 409
+   `input-not-empty`, nothing typed ("Claude's input has text; clear it first").
+5. Vim: when this pane's mode line has shown `-- INSERT --` before (remembered per pane id by the capture route, like
+   the held mode) and the current mode line lacks it, Claude's input is in vim normal mode: send the text `i`, take a
+   fresh capture, and require `-- INSERT --` now, else 409 `mode-unknown`.
+6. Send the text `/exit` (`send-keys -l -- /exit`), take a fresh capture: the input box must be exactly one row
+   `❯ /exit`. If not, send `C-u` (removes what nika typed: the box was empty) and answer 409 `not-at-prompt`; no
+   Enter. Else send `Enter`.
+7. Check the pane every 500 ms for up to 3 s (by count, not by clock): gone or no longer running claude
+   (`CLAUDE_COMMAND`, after trimming) → `200 { "ended": true }`; else `200 { "ended": false }`.
 
 When any key send fails (for example 429) the sequence stops and the pane is checked once: gone or no longer running
 claude → `{ "ended": true }`, else `{ "ended": false }`. Never `kill-pane`, never a signal. The eligibility cache is

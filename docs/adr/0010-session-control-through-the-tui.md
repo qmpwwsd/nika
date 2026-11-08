@@ -11,11 +11,13 @@ prompts and commands exist only as screen text and keys.
 ## Decision
 Drive the TUI through the 0.2 pane path. Read: the mirror's `capture-pane` rows go through pure parsers
 (`src/mode.js`) that turn the last non-blank row into a mode and the bottom rows into a permission prompt. Act through
-`src/keys.js`: allow-listed named keys (`Escape` = Stop; `C-u`, then the literal text `/exit`, then `Enter` = End
-session; `BTab` = next mode) and, to answer a prompt, one digit sent as literal text (`send-keys -l --`), not as a named
+`src/keys.js`: allow-listed named keys (`Escape` = Stop; `BTab` = next mode; `Enter`, `C-u`) and, to answer a prompt, one digit sent as literal text (`send-keys -l --`), not as a named
 key. `src/session-control.js` sequences them: the mode switch runs only while idle, at most 6 presses, footer re-read
 after each. End takes a fresh capture, cancels a busy turn or an open prompt with `Escape`, and types `/exit` only when
-no prompt or dialog is left on screen, so it can never answer one; it never kills. A prompt answer needs a fresh capture
+no prompt or dialog is left on screen, so it can never answer one; it never kills. End and the quick-action commands
+(`/compact`, `/clear`, `/model <id>`) share one typing path: the input box must be empty (vim normal mode is turned to
+insert with `i` first), nika types the command, and presses `Enter` only when the box reads exactly `❯ <command>`, else it
+removes its own text with `C-u` and refuses. A user's draft is never sent and never cleared. A prompt answer needs a fresh capture
 whose prompt signature (`sig`, a hash of the last 15 non-blank rows) matches the one the page showed. Commands: a curated built-in list plus the frontmatter of command and skill files
 (first 4 KB). The phrases, layouts and the Claude Code version they were checked against live in
 `docs/contracts/claude-tui.md`. Every parser fails closed: unrecognized text is `unknown` or `null`, the control hides

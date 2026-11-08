@@ -153,8 +153,19 @@ same menu. Removed and hidden commands are left out.
 ## 5. Ending a session
 
 - `/exit` (alias `/quit`) exits Claude Code. Observed: Claude quit and its tmux pane closed; the tmux session ended
-  because it was its last pane. nika sends `C-u`, then `/exit`, then `Enter`.
-- With the command menu open, the exact `/exit` is highlighted and Enter runs it.
+  because it was its last pane.
+- The input box is drawn between two rule rows made only of `─`; the input row starts with `❯ `. Empty, it shows a
+  placeholder such as `❯ Try "edit <filepath> to..."`. A user status line (free content) and the mode line sit below
+  the lower rule.
+- After typing `/exit` (no Enter) the box holds one row `❯ /exit`, and the command menu above the box highlights
+  `❯ /exit` with `Exit the CLI`; Enter then runs it.
+- `C-u` clears only the line the cursor is on. With a two-line draft, `C-u` left the first line, and `/exit` typed
+  next became the draft's second line (no command menu): Enter would have sent the draft plus `/exit` as a prompt.
+- Vim input mode: the mode line starts with `-- INSERT --` in insert mode; in normal mode it shows no prefix at all
+  (checked 2026-11-09; §1's `-- NORMAL --` was not seen). `Escape` switches insert to normal. Keys typed in normal
+  mode are vim commands: after `Escape`, typing `/exit` and Enter did not exit; Claude received a stray prompt.
+- So nika types `/exit` only into an empty input box in insert mode and presses Enter only when the box reads exactly
+  `❯ /exit` (contract §3, End).
 - A pane nika spawned runs `_run-agent` (node), which writes `.rc` after claude exits and then exits, so the pane
   closes too.
 - tmux: `capture-pane -t '=<session>'` fails ("can't find pane"); nika targets panes by `%<n>` only.
