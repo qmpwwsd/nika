@@ -10,6 +10,7 @@ import { resolveProject } from './collect/projects.js';
 import { mapLimit } from './util.js';
 import { clean } from './text.js';
 import { UUID } from './ids.js';
+import { MODEL_CATALOG } from './models.js';
 import { keyFor } from './store.js';
 
 const PROMPT_MAX = 200;
@@ -18,9 +19,12 @@ const LIVE_ORDER = { busy: 0, idle: 1 };
 
 const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 
-/** 'claude-opus-5-5' → 'Opus 5.5', 'claude-haiku-4-5-20251001' → 'Haiku 4.5', 'sonnet' → 'Sonnet'. */
+const CATALOG_LABEL = new Map(MODEL_CATALOG.map((m) => [m.id, m.label]));
+
+/** Catalog label first ('opusplan' → 'Opus plan, Sonnet build'), else derived: 'claude-haiku-4-5-20251001' → 'Haiku 4.5'. */
 export function modelLabel(id) {
   if (!id) return null;
+  if (CATALOG_LABEL.has(id)) return CATALOG_LABEL.get(id);
   const m = /^claude-(opus|sonnet|haiku|fable)-(\d+)(?:-(\d{1,2}))?(?:-\d{8})?$/.exec(id);
   if (m) return `${cap(m[1])} ${m[2]}${m[3] ? `.${m[3]}` : ''}`;
   if (/^(opus|sonnet|haiku|fable)$/.test(id)) return cap(id);

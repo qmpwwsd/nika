@@ -163,7 +163,7 @@ export function sessionHref({ session, pane, project }) {
 /* ---------- forms ---------- */
 export const RX = {
   agent: [/^[a-z0-9][a-z0-9-]{0,39}$/, 'Lowercase letters, digits and dashes, up to 40, starting with a letter or digit.'],
-  model: [/^(?:claude-[a-z0-9-]{3,60}|opus|sonnet|haiku|fable)$/, 'Use a model id such as claude-sonnet-5-5, or opus, sonnet, haiku, fable.'],
+  model: [/^(?:claude-[a-z0-9-]{3,60}|opus|sonnet|haiku|fable|best|opusplan)(?:\[1m\])?$/, 'Use a model id such as claude-sonnet-5-5, an alias (opus, sonnet, haiku, fable, best, opusplan), or add [1m] for 1M context.'],
   prefix: [/^(?:[a-z0-9][a-z0-9-]{0,19})?$/, 'Lowercase letters, digits and dashes, up to 20, starting with a letter or digit. Leave empty to use the project name.'],
 };
 

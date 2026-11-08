@@ -49,7 +49,7 @@ describe('collect', () => {
     const a = byId(await snap(), SID.busy);
     assert.equal(a.subagents.length, 2);
     assert.deepEqual(a.subagents.map((x) => [x.id, x.state]), [['bbb222', 'running'], ['aaa111', 'finished']]);
-    assert.equal(a.subagents[0].modelLabel, 'Sonnet');
+    assert.equal(a.subagents[0].modelLabel, 'Sonnet (latest)');
   });
 
   test('(−) dead pid becomes ended from its transcript; reused pid without transcript is dropped', async () => {
@@ -287,7 +287,7 @@ describe('helpers', () => {
     assert.equal(modelLabel('claude-haiku-4-5-20251001'), 'Haiku 4.5');
     assert.equal(modelLabel('claude-fable-5-1'), 'Fable 5.1');
     assert.equal(modelLabel('claude-sonnet-5'), 'Sonnet 5');
-    assert.equal(modelLabel('sonnet'), 'Sonnet');
+    assert.equal(modelLabel('sonnet'), 'Sonnet (latest)');
   });
 
   test('(−) modelLabel keeps unknown ids and returns null for empty', () => {

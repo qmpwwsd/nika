@@ -607,6 +607,14 @@ describe('runAgent', () => {
     assert.equal(read(w, 'builder-1.remote'), 'my-app-builder-1\n');
   });
 
+  test('(+) a bracketed alias such as opus[1m] reaches claude as one argv element, no shell', async () => {
+    const { run } = await prepared({ model: 'opus[1m]' });
+    const { spawn } = await run();
+    const args = spawn.calls[0].args;
+    assert.equal(args[args.indexOf('--model') + 1], 'opus[1m]');
+    assert.equal(spawn.calls[0].opts.shell, false);
+  });
+
   test('(+) every permission mode but default is passed through; default passes no flag', async () => {
     for (const permissionMode of ['manual', 'acceptEdits', 'plan', 'auto', 'dontAsk']) {
       const { run } = await prepared({ permissionMode });
