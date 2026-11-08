@@ -16,7 +16,7 @@ session; `BTab` = next mode) and, to answer a prompt, one digit sent as literal 
 key. `src/session-control.js` sequences them: the mode switch runs only while idle, at most 6 presses, footer re-read
 after each. End takes a fresh capture, cancels a busy turn or an open prompt with `Escape`, and types `/exit` only when
 no prompt or dialog is left on screen, so it can never answer one; it never kills. A prompt answer needs a fresh capture
-whose prompt signature (`sig`, a hash of the prompt rows) matches the one the page showed. Commands: a curated built-in list plus the frontmatter of command and skill files
+whose prompt signature (`sig`, a hash of the last 15 non-blank rows) matches the one the page showed. Commands: a curated built-in list plus the frontmatter of command and skill files
 (first 4 KB). The phrases, layouts and the Claude Code version they were checked against live in
 `docs/contracts/claude-tui.md`. Every parser fails closed: unrecognized text is `unknown` or `null`, the control hides
 or the switch stops with 409. Manual only on its positive footer marker; any unrecognized footer with `bypass` reads as
