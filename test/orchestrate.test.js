@@ -3,7 +3,7 @@ import { test, describe, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { startOrchestrator, sessionNameFor, reduceRc } from '../src/orchestrate.js';
+import { startOrchestrator, sessionNameFor, reduceRc, tmuxLiteral } from '../src/orchestrate.js';
 import { configDir } from '../src/paths.js';
 import { addProject } from '../src/store.js';
 import { fakeTmux, makeWorld, TMUX, CLAUDE } from './tmux-fake.js';
@@ -18,6 +18,36 @@ after(() => worlds.forEach((w) => w.cleanup()));
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const claudeFlags = (argv) => argv.slice(argv.indexOf('--') + 2);
+
+describe('tmux format injection in -c (start-directory is format-expanded; #(cmd) runs cmd)', () => {
+  test('(+) tmuxLiteral doubles every # and leaves other text alone', () => {
+    assert.equal(tmuxLiteral('/p/plain dir'), '/p/plain dir');
+    assert.equal(tmuxLiteral('/p/a#(touch x)#{session_name}##'), '/p/a##(touch x)##{session_name}####');
+  });
+
+  test('(−) a project dir with #(…) and #{…} reaches tmux -c escaped, so tmux never runs or expands it', async () => {
+    const w = await world();
+    const dir = path.join(w.root, 'evil#(touch PWNED)#{session_name}');
+    fs.mkdirSync(dir);
+    const project = await addProject(dir, w.env);
+    const exec = fakeTmux();
+    const r = await startOrchestrator(project.key, w.ctx(exec));
+    assert.equal(r.status, 200);
+    const argv = exec.of('new-session')[0];
+    assert.equal(argv[argv.indexOf('-c') + 1], path.join(fs.realpathSync(w.root), 'evil##(touch PWNED)##{session_name}'));
+  });
+
+  test('(−) source invariant: every tmux -c argument in src/ goes through tmuxLiteral()', () => {
+    const src = path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'src');
+    const offenders = [];
+    for (const file of fs.readdirSync(src, { recursive: true }).filter((f) => f.endsWith('.js'))) {
+      for (const m of fs.readFileSync(path.join(src, file), 'utf8').matchAll(/'-c',\s*([^,\]\)]+)/g)) {
+        if (!m[1].trim().startsWith('tmuxLiteral(')) offenders.push(`${file}: ${m[0]}`);
+      }
+    }
+    assert.deepEqual(offenders, []);
+  });
+});
 
 describe('startOrchestrator: new session', () => {
   test('(+) no tmux server: has-session fails, new-session runs claude with the exact flags (argv snapshot)', async () => {

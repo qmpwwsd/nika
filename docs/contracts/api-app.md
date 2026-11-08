@@ -180,7 +180,9 @@ No other channel exists: no Tauri IPC, no HTTP client in Rust.
 Limits: one open `pick-folder` at a time; `status` fields are integers ≥ 0; names are `clean()`ed; `attention` = live
 agents whose registry status is neither busy nor idle (e.g. waiting on a permission prompt); `projects[].key` is
 `keyFor(repo root)`, never a path. Pane eligibility (§3 capture/keys): a registry pane qualifies only while its
-`pane_current_command` is claude-like (`CLAUDE_COMMAND` in `src/ids.js`), because `tmuxPane` is agent-writable. The secret never
+`pane_current_command` is claude-like (`CLAUDE_COMMAND` in `src/ids.js`), because `tmuxPane` is agent-writable. This
+is a safety net for the user, not a boundary against agents: a same-user agent able to forge the registry can already
+run `tmux send-keys` itself; `node` stays accepted because npm-installed Claude Code runs as `node`. The secret never
 appears in argv, env, logs, files or HTML; the shell injects it into the page with an `initialization_script` guarded
 by `location.origin`, and `public/api.js` copies it to a module constant and deletes the global (ADR 0002).
 
@@ -273,6 +275,9 @@ multi-argument shell-commands (tmux execs them directly, no `sh -c`, T6).
 | send paste | `tmux -u load-buffer -b nika-<16 hex> -` (paste bytes on stdin; argv over ~16 KB fails with "command too long") then `tmux -u paste-buffer -p -d -b nika-<16 hex> -t %n`; on a paste failure `delete-buffer -b nika-<hex>` |
 | send key | `tmux -u send-keys -t %n -- <KEY_NAME>` |
 | focus | `tmux -u switch-client -t %n` / `select-window -t %n` / `select-pane -t %n` (0.1) |
+
+`-c <projectDir>` is always passed through `tmuxLiteral()` (every `#` doubled): tmux format-expands start-directory,
+and `#(cmd)` in a path would run `cmd` (verified on tmux 3.8). Shell-command argv after `--` is not expanded.
 
 Session targets always carry the trailing colon (`=<session>:`) where tmux expects a window or pane: `split-window -t
 =name` fails with "can't find pane", `=name:` works.

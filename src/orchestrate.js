@@ -50,6 +50,12 @@ export function reduceRc(text, fallback, full = false) {
 /** `--permission-mode` pair; `default` passes no flag, `bypassPermissions` is refused (rules constraint 12). */
 export const permissionFlags = (mode) => (mode === 'default' ? [] : ['--permission-mode', mode]);
 
+/**
+ * tmux expands formats in `-c start-directory`: `#{…}` is substituted and `#(cmd)` RUNS cmd through the shell
+ * (verified on tmux 3.8). A project path is user data, so every `#` is doubled: `##` is tmux's literal `#`.
+ */
+export const tmuxLiteral = (s) => String(s).replaceAll('#', '##');
+
 /** Pane tagged `orchestrator` in the session's `orchestrator` window that runs claude, or null (agent panes never match). */
 async function findOrchestratorPane(ctx, session) {
   let stdout;
@@ -103,8 +109,8 @@ export async function startOrchestrator(projectKey, ctx) {
       if (pane) return { status: 200, body: { pane, session, sessionId: ctx.started?.get(pane)?.sessionId ?? null, created: false } };
     }
     const { stdout } = await tmux(ctx, ...(exists
-      ? ['new-window', '-t', `=${session}:`, '-n', 'orchestrator', '-c', project.dir, ...run]
-      : ['new-session', '-d', '-s', session, '-n', 'orchestrator', '-c', project.dir, '-x', '200', '-y', '50', ...run]));
+      ? ['new-window', '-t', `=${session}:`, '-n', 'orchestrator', '-c', tmuxLiteral(project.dir), ...run]
+      : ['new-session', '-d', '-s', session, '-n', 'orchestrator', '-c', tmuxLiteral(project.dir), '-x', '200', '-y', '50', ...run]));
     const pane = String(stdout).trim();
     if (!PANE_ID.test(pane)) return fail(502, 'tmux_failed', 'tmux did not return a pane id');
     ctx.started?.set(pane, { key: projectKey, name: 'orchestrator', sessionId, role: 'orchestrator' });

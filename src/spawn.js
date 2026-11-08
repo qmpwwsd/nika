@@ -14,7 +14,7 @@ import { openRegular, readAt, readHead } from './fsafe.js';
 import { listPanes } from './collect/tmux.js';
 import { clean } from './text.js';
 import { PROJECT_KEY, AGENT_NAME, MODEL_ID, TMUX_SESSION, PANE_ID, RC_PREFIX, RC_NAME, PERMISSION_MODES } from './ids.js';
-import { fail, binsMissing, tmux, tmuxFail, tagPane, sessionNameFor, reduceRc, permissionFlags } from './orchestrate.js';
+import { fail, binsMissing, tmux, tmuxFail, tagPane, sessionNameFor, reduceRc, permissionFlags, tmuxLiteral } from './orchestrate.js';
 
 const BRIEF_MAX = 64 * 1024;
 const AGENT_JSON_MAX = 4096;
@@ -118,7 +118,7 @@ async function doSpawn(v, project, config, ctx) {
 
   let pane;
   try {
-    const { stdout } = await tmux(ctx, 'split-window', ...target, '-c', project.dir, '-P', '-F', '#{pane_id}', '--', ...ctx.nikaArgv, '_run-agent', project.key, v.name);
+    const { stdout } = await tmux(ctx, 'split-window', ...target, '-c', tmuxLiteral(project.dir), '-P', '-F', '#{pane_id}', '--', ...ctx.nikaArgv, '_run-agent', project.key, v.name);
     pane = stdout.trim();
   } catch (err) {
     return tmuxFail(err);
