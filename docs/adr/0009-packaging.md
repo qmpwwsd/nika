@@ -20,3 +20,10 @@ tap PR) is a separate owner approval.
 
 ## Consequences
 Build from source takes minutes on first install. CI runs `npm test`, `cargo test`, `cargo audit` on macOS and Ubuntu.
+
+## Update 2026-11-08 (owner decision)
+After 0.2.0, pushing a tag `vX.Y.Z` runs `release-linux.yml`, which builds the Linux packages and creates the draft
+release itself (notes from the tag's CHANGELOG section; the tag must match every version file). Manual dispatch stays a
+test build with artifacts only. Publishing the draft and updating the tap stay manual, each with the owner's approval.
+Only the `draft-release` job has write access, and it runs no repository code. Steps: `docs/packaging.md`, Release
+procedure.

@@ -92,7 +92,9 @@ Accepted, with the reason.
 - Build tools (`tauri-cli`, `cargo-audit`) are installed with `cargo install --locked` at pinned versions and are never
   compiled into the app.
 - CI uses only official `actions/*` actions pinned by full commit SHA, a read-only token, no secrets and no publish
-  step.
+  step. The one exception is the `draft-release` job of `release-linux.yml`, which runs on a tag push: it has
+  `contents: write` to create a draft release. It checks out no code, so no repository or dependency code runs with
+  that token, and it never publishes (the owner does). `test/release.test.js` asserts these rules.
 - Node code has no npm dependencies.
 
 ## Reporting a vulnerability
