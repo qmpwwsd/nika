@@ -58,6 +58,12 @@ Phase 6 (security review fixes, Linux checks):
 - Release prep: version 0.2.0 in `package.json`, `tauri.conf.json` and `Cargo.toml`; draft Homebrew formula in `docs/packaging.md` (builds `nika.app` from source on macOS, CLI only on Linux).
 - CI: push runs only on `master` (pull requests run once); new `linux-verify` and `gui-smoke` jobs. `release-linux.yml` (manual, read-only token) builds the `.deb` and AppImage, checks the package, and uploads them with `SHA256SUMS` as run artifacts.
 
+Release fixes (after the `v0.2.0` tag; the app code is unchanged):
+
+- The hidden `nika.desktop` entry gets the `Categories` line `appimagetool` requires (the first AppImage build failed there); `test/packaging.test.js` checks both desktop entries. The Linux packages of 0.2.0 are built with it.
+- `release-linux.yml` builds with `--verbose`, so linuxdeploy and appimagetool errors reach the log.
+- Homebrew formula: build the app before `libexec.install` moves the resource folders, and run `cargo-tauri` directly. Verified with `brew upgrade --build-from-source` (V5); README and `docs/packaging.md` describe the published install.
+
 ## 0.1.1 — 2026-11-08
 
 - Hide title-only stub transcripts: a transcript with no user or assistant message is listed only while its session is live.

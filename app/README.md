@@ -86,6 +86,7 @@ from `icons/source-1024.png` with `cargo tauri icon` and the unused mobile and W
 The deb bundler names the desktop entry `<productName>.desktop` (`nika.desktop`) and cannot be told otherwise, while
 `gtk-launch io.github.qmpwwsd.nika` (used by `nika app` and `nika doctor`) needs `io.github.qmpwwsd.nika.desktop`.
 `linux/io.github.qmpwwsd.nika.desktop` is therefore added to the deb as an extra file, and the generated
-`nika.desktop` is hidden with `NoDisplay=true` (`linux/nika.desktop` is its template). The AppImage keeps the default
+`nika.desktop` is hidden with `NoDisplay=true` (`linux/nika.desktop` is its template; it keeps a `Categories` line,
+which `appimagetool` requires). The AppImage keeps the default
 `nika.desktop` inside the image. The AppIndicator, WebKitGTK and GTK dependencies of the deb are added by
 `cargo tauri build` itself from the features and the build host; the CI image needs `libayatana-appindicator3-dev`.

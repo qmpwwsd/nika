@@ -1,7 +1,8 @@
 # Building and packaging the nika app
 
-Status: 0.2.0 is prepared and **nothing is published yet**. You build the app from source. The Linux release workflow
-exists and builds artifacts only (see Release build); the Homebrew formula below is a draft for the tap.
+Status: 0.2.0 is released. On macOS the Homebrew formula in `qmpwwsd/homebrew-tap` builds `nika.app` from source
+(see Homebrew formula); on Linux the `.deb` and the AppImage are attached to the GitHub release (see Release build).
+You can still build from source as described below.
 
 Decision record: [ADR 0009](adr/0009-packaging.md). Shell facts: [architecture](architecture.md). Threats:
 [security](security.md).
@@ -93,7 +94,8 @@ looks for the same file name.
 Tauri's bundler always names its own entry `<productName>.desktop` (`nika.desktop`). The `.deb` therefore also
 installs `/usr/share/applications/io.github.qmpwwsd.nika.desktop` (`bundle.linux.deb.files`), and the generated
 `nika.desktop` is marked `NoDisplay=true` so the menu shows nika once. The AppImage carries only `nika.desktop`; run it
-directly or put it on `PATH` as `nika-app`.
+directly or put it on `PATH` as `nika-app`. Both entries need a `Categories` line: `appimagetool` refuses a desktop
+file without one (`test/packaging.test.js` checks it).
 
 Verified on a local Debian 12 build (`cargo tauri build --bundles deb`, arm64): `dpkg-deb -I` shows `Depends:
 libayatana-appindicator3-1, libwebkit2gtk-4.1-0, libgtk-3-0` (the bundler adds them itself), and `dpkg-deb -c` lists
@@ -182,7 +184,7 @@ window loaded. Without a tray host the icon is simply not shown.
 `.github/workflows/release-linux.yml` builds the Linux packages. It is manual (`workflow_dispatch`), runs on Ubuntu 22.04
 with a read-only token and **produces workflow artifacts only**: it never creates a tag, a release or a release asset.
 Clean build, no caches. Steps: install the dependencies, `cargo install tauri-cli --version 2.12.4 --locked`,
-`cargo tauri build --bundles deb,appimage`, check the `.deb` with `dpkg-deb` (Depends names WebKitGTK 4.1 and
+`cargo tauri build --verbose --bundles deb,appimage` (verbose, so linuxdeploy and appimagetool errors are in the log), check the `.deb` with `dpkg-deb` (Depends names WebKitGTK 4.1 and
 AppIndicator; the package contains the desktop entry `io.github.qmpwwsd.nika.desktop` and the bundled `nika/bin/nika`),
 write `SHA256SUMS`, upload the `.deb`, the `.AppImage` and `SHA256SUMS` as the artifact `nika-linux` (kept 14 days).
 
@@ -190,10 +192,10 @@ The owner starts it: Actions tab, `release-linux`, "Run workflow" (or `gh workfl
 Download the artifact (`gh run download <run-id> -n nika-linux`), check `sha256sum -c SHA256SUMS`, and publish by hand if
 wanted.
 
-## Homebrew formula (draft for 0.2.0, not published)
+## Homebrew formula (0.2.0)
 
-Goes to the separate repo `qmpwwsd/homebrew-tap` as `Formula/nika.rb` after the `v0.2.0` tag exists; `sha256` is filled
-in from the tag's tarball then. On macOS it builds `nika.app` from source (ad hoc signed by the bundler, no Gatekeeper
+Lives in the separate repo `qmpwwsd/homebrew-tap` as `Formula/nika.rb`; this copy matches it. `sha256` is the one of
+the tag's tarball (`https://github.com/qmpwwsd/nika/archive/refs/tags/v0.2.0.tar.gz`). On macOS it builds `nika.app` from source (ad hoc signed by the bundler, no Gatekeeper
 quarantine because it is built locally) and installs it in the keg; on Linux it installs the CLI only (the desktop app
 comes from the `.deb` or AppImage). The browser-tier service is unchanged from 0.1.
 
@@ -202,7 +204,7 @@ class Nika < Formula
   desc "Local dashboard and control panel for Claude Code agents"
   homepage "https://github.com/qmpwwsd/nika"
   url "https://github.com/qmpwwsd/nika/archive/refs/tags/v0.2.0.tar.gz"
-  sha256 "FILL_IN_FROM_THE_v0.2.0_TARBALL"
+  sha256 "56ea8d9603581a4f543673d3dcd7dbbb380b27b2ae48d92103ca24b1f067985a"
   license "MIT"
 
   depends_on "node"
@@ -211,17 +213,19 @@ class Nika < Formula
   end
 
   def install
-    libexec.install "bin", "src", "public", "templates", "package.json"
-    (bin/"nika").write_env_script libexec/"bin/nika", PATH: "#{formula_opt_bin("node")}:$PATH"
-
+    # Build the app first: the bundle copies bin, src, public, templates and package.json as resources,
+    # and libexec.install below moves them out of the build tree.
     if OS.mac?
       system "cargo", "install", "tauri-cli", "--version", "2.12.4", "--locked", "--root", buildpath/"tools"
       ENV.prepend_path "PATH", buildpath/"tools/bin"
       cd "app/src-tauri" do
-        system "cargo", "tauri", "build", "--bundles", "app"
+        system buildpath/"tools/bin/cargo-tauri", "build", "--bundles", "app"
       end
       prefix.install "app/src-tauri/target/release/bundle/macos/nika.app"
     end
+
+    libexec.install "bin", "src", "public", "templates", "package.json"
+    (bin/"nika").write_env_script libexec/"bin/nika", PATH: "#{formula_opt_bin("node")}:$PATH"
   end
 
   def caveats
@@ -254,9 +258,13 @@ class Nika < Formula
 end
 ```
 
-Not verified yet (V5): the build inside Homebrew's build environment (network access for crates, the `../../`
-resource paths from `app/src-tauri`) and whether `open -b io.github.qmpwwsd.nika` finds an app that lives in the
-keg; the caveat covers the second. Check both with `brew install --build-from-source` from the tap before announcing.
+Verified on 2026-11-08 (V5; macOS on Apple silicon, Homebrew rust 1.99.1): `brew upgrade --build-from-source` from the
+tap builds `tauri-cli`, then the app bundle (about 3 minutes for the app), and installs it in the keg; `brew test`
+passes. After `open "$(brew --prefix nika)/nika.app"` once, `open -b io.github.qmpwwsd.nika` and `nika app` find it,
+and a second launch focuses the running app. Two lessons from that run: the app must be built before
+`libexec.install` moves the resource folders out of the build tree, and the build needs free disk space (on a full
+disk the linker wrote a broken `cargo-tauri`, which then failed to execute with no other message). After an upgrade,
+`brew services restart nika`: the running service still serves the removed old version's files.
 
 Every publish step (tag, GitHub release, tap pull request, `release-linux.yml` dispatch) needs its own approval from
 the owner.

@@ -40,3 +40,4 @@ Contracts: `docs/contracts/api-app.md`. Decisions: `docs/adr/`.
 - Default branch `master` (never `main`). 0.2 work happens on `feat/0.2-app` and reaches `master` only through a reviewed PR. Commits only with the owner's explicit approval per commit (ORCHESTRATION §19). No AI attribution lines.
 - Before each commit: `npm test` green (incl. hygiene) and `git diff master...feat/0.2-app` reviewed for paths, emails and ids.
 - Publishing (repo creation, push, tags, releases, tap updates, CI workflow dispatch) needs the owner's approval for that specific action.
+- Standing approval (owner, 2026-11-08, ORCHESTRATION §19): commits and pushes on the branch `fix/0.2.0-release` only, for the 0.2.0 release fixes. Merging its PR into `master` still needs the owner's approval.
