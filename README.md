@@ -16,7 +16,7 @@ nika                         # opens the dashboard in your browser
 ```
 
 This is the browser tier. It stays read-only: it lists agents and can only focus a tmux pane. The privileged features of
-the [desktop app](#desktop-app-02-in-progress) are never available on `http://127.0.0.1:3335`.
+the [desktop app](#desktop-app-02) are never available on `http://127.0.0.1:3335`.
 
 ## Commands
 
@@ -94,12 +94,32 @@ The desktop app's privileged tier is a separate, locked-down server; its threat 
 mirror, spawning agents in tmux, starting the orchestrator, adding projects and applying orchestration rules. The
 browser dashboard above stays read-only.
 
-**The app is not published yet.** Until the Homebrew tap and the Linux packages are updated, you build it from a
-checkout of this repository ([docs/packaging.md](docs/packaging.md) has the steps and the draft formula).
-
 You need Node 22 or newer, tmux and Claude Code on the machine. The app does not bundle Node.
 
-### macOS
+### Install
+
+**macOS.** The Homebrew formula builds the app from source (Homebrew installs Rust as a build dependency; the build
+takes a few minutes and needs a few GB of free disk space):
+
+```sh
+brew install qmpwwsd/tap/nika             # or, from 0.1: brew update && brew upgrade nika
+open "$(brew --prefix nika)/nika.app"     # once, so macOS registers the app; after that `nika` opens it
+brew autoremove                           # optional: removes Rust and the other build-only dependencies
+```
+
+After an upgrade, restart the browser dashboard with `brew services restart nika`.
+
+**Linux (x86_64).** Download the `.deb` or the AppImage and `SHA256SUMS` from the
+[latest release](https://github.com/qmpwwsd/nika/releases/latest), then:
+
+```sh
+sha256sum -c SHA256SUMS --ignore-missing
+sudo apt install ./nika_*_amd64.deb       # Debian and Ubuntu; or run the AppImage directly
+```
+
+Or build the app yourself from a checkout, as below.
+
+### Build from source: macOS
 
 ```sh
 brew install rustup
@@ -113,7 +133,7 @@ The bundle is `app/src-tauri/target/release/bundle/macos/nika.app`. Copy it to `
 signed ad hoc and not notarized, so a copy moved to another Mac is blocked by Gatekeeper (details in
 [docs/packaging.md](docs/packaging.md)).
 
-### Linux
+### Build from source: Linux
 
 ```sh
 sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev \
