@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { tagVersion, changelogSection, versionFiles, releaseCheck } from '../scripts/release-check.mjs';
+import { tagVersion, changelogSection, versionFiles, releaseCheck, unwrapMarkdown } from '../scripts/release-check.mjs';
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SCRIPT = path.join(ROOT, 'scripts', 'release-check.mjs');
@@ -76,6 +76,39 @@ describe('release check', () => {
     const out = path.join(dir, 'notes.md');
     execFileSync(process.execPath, [SCRIPT, 'v1.2.3', '--root', dir, '--notes', out]);
     assert.equal(fs.readFileSync(out, 'utf8'), '- One change.\n');
+  });
+
+  test('(+) notes: wrapped paragraphs and list items become one line each; words and blank lines are kept', () => {
+    const wrapped = [
+      'Intro sentence that is', 'wrapped here.', '',
+      '- First item that', '  goes on.', '- Second item.', '  - Nested item', '    continued.', '',
+      '1. Numbered', '   item.', '',
+      '## Heading', 'Para after heading', 'still the same para.',
+    ].join('\n');
+    const out = unwrapMarkdown(wrapped);
+    assert.equal(out, [
+      'Intro sentence that is wrapped here.', '',
+      '- First item that goes on.', '- Second item.', '  - Nested item continued.', '',
+      '1. Numbered item.', '',
+      '## Heading', 'Para after heading still the same para.',
+    ].join('\n'));
+    const words = (s) => s.split(/\s+/).filter(Boolean).join(' ');
+    assert.equal(words(out), words(wrapped));
+  });
+
+  test('(+) this repository: the release notes contain no wrapped continuation lines', () => {
+    const { version } = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
+    for (const line of releaseCheck(ROOT, `v${version}`).split('\n')) {
+      assert.doesNotMatch(line, /^\s+(?![-*+] |\d+\. )\S/, `continuation line left: ${line}`);
+    }
+  });
+
+  test('(−) notes: code fences, tables, quotes and list markers are never joined to the line before', () => {
+    const text = [
+      'Text', '```sh', 'brew install x', '  --flag', '```', 'After fence',
+      '| a | b |', '| - | - |', '> quote', '> more', '- item', '* star', '+ plus', '2. two',
+    ].join('\n');
+    assert.equal(unwrapMarkdown(text), text);
   });
 
   test('(−) tag shapes other than vX.Y.Z are refused', () => {

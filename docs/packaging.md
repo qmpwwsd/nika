@@ -189,6 +189,8 @@ ways:
   `CHANGELOG.md` has a non-empty `## X.Y.Z` section. Then it builds. The `draft-release` job downloads the files, checks
   them against `SHA256SUMS` and creates a **draft** GitHub release named `nika X.Y.Z`, with that CHANGELOG section as
   notes and the `.deb`, the `.AppImage` and `SHA256SUMS` attached. It refuses if a release for the tag already exists.
+  The script joins the CHANGELOG's wrapped lines (GitHub shows every newline of a release body as a line break), so
+  each paragraph and list item is one line; code blocks, tables and quotes stay as written.
 - **Manual dispatch** (Actions tab, or `gh workflow run release-linux.yml --ref <branch>`): a test build. Workflow
   artifacts only (`gh run download <run-id> -n nika-linux`), no release, even when dispatched on a tag.
 
