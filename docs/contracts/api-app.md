@@ -201,6 +201,21 @@ run `tmux send-keys` itself; `node` stays accepted because npm-installed Claude 
 appears in argv, env, logs, files or HTML; the shell injects it into the page with an `initialization_script` guarded
 by `location.origin`, and `public/api.js` copies it to a module constant and deletes the global (ADR 0002).
 
+Child process (desktop shell). Argv is fixed: `<node> <root>/bin/nika serve --app`, where `<root>` is the bundle's
+resource directory in release builds and the repository root in debug builds (never an env var). The environment is
+built from scratch (`env_clear`) and holds only: `PATH` (the node binary's directory, then
+`/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin`), `HOME`, `NIKA_APP=1` and, when set
+in the app's own environment, `CLAUDE_CONFIG_DIR`, `NIKA_CONFIG_DIR`, `XDG_CONFIG_HOME`, `XDG_STATE_HOME`,
+`TMUX_TMPDIR`, `LANG`, `LC_ALL`, `LC_CTYPE`. `NIKA_NODE` (an absolute path to an executable node) only chooses the
+interpreter and is not passed on; without it the shell takes the first executable `node` in `/opt/homebrew/bin`,
+`/opt/homebrew/opt/node/bin`, `/usr/local/bin`, `$HOME/.local/bin`, `/usr/bin`. `ready` must arrive within 10 s with
+`proto` 1 and a port in 1-65535, otherwise the shell kills the child and shows its local error page.
+
+Tray navigation (shell to page). The tray rows and "Add project…" point the window at the server's origin with a
+fragment: `#project/<key>` (key `^[a-z0-9]{16}$`, checked by the shell) opens that project, and `#add-project` starts
+the folder-picker flow once (`hooks.addProject()` in `public/app.js`), then the page replaces the hash with
+`#dashboard`. The browser tier (:3335) ignores `#add-project`.
+
 ## 6. Config and state (`src/paths.js`, `src/store.js`, `src/fwrite.js`)
 
 | Path | Mode | Content |

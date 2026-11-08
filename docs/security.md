@@ -1,0 +1,92 @@
+# nika security
+
+What nika defends against, how, and which test proves it. The binding rules are in
+[`rules/project-rules.md`](../rules/project-rules.md) (section "Security constraints"). The wire details are in
+[`docs/contracts/api-app.md`](contracts/api-app.md). The reasons are in [`docs/adr/`](adr/).
+
+## Trust model
+
+- nika is for **one user on one machine**. It does not defend against another process of the same user that is already
+  hostile, with one exception: it tries hard to keep a prompt-injected **agent** (a `claude` process in tmux) from
+  driving nika.
+- Everything an agent can write is untrusted: transcripts, report files, the session registry, tmux pane titles and
+  pane content, project files. nika reads these through `src/fsafe.js`, validates ids with `src/ids.js` and cleans text
+  with `src/text.js`. The page renders them with `textContent`.
+- Two tiers, two trust levels:
+  - **Browser tier**, `nika serve` on `127.0.0.1:3335`. Read-only. Its only side effect is tmux focus. Any local
+    process can read it.
+  - **App tier**, `nika serve --app`, a child of the desktop app on a random port. Reachable only with a per-launch
+    secret. The privileged routes (`/api/app/*`) are never mounted on :3335.
+- nika has no telemetry. The only outbound connection it ever causes is the `claude.ai` link you click, opened by your
+  system browser.
+
+## Threat model
+
+"Tests" lists the files under `test/` that cover the threat. "Shell" means `cargo test` in `app/src-tauri`.
+
+| # | Threat | Mitigation, as implemented | Tests |
+|---|---|---|---|
+| T1 | The app secret leaks | 32 random bytes (base64url) travel only over the child's stdin in the `hello` line. They never reach argv, env, disk, logs, stdout or HTML markup. The server never echoes a bad `hello`. The shell hands the secret to the page through an `initialization_script` that runs only when `location.origin` is the server's; `public/api.js` copies it to a module constant and deletes the global; no other script mentions it. The child's env is cleared first, so it holds no secret. | `appio.test.js` (refused `hello` is never echoed; the secret appears nowhere on stdout or stderr), `ui.test.js` (`api.js` deletes the global; no other module reads the secret; no literal secret), `session-ui.test.js`. Shell (`cargo test` in `app/src-tauri`): `child.rs` (`child_env_has_only_the_allowed_keys`, `real_child_hello_env_argv_and_stop_ladder`), `secret.rs` (`debug_never_prints_the_secret`). |
+| T2 | A browser tab or another local process calls privileged routes | Random port per launch. Every `/api/app/*` request needs `X-Nika-App` (timing-safe compare), a matching `Origin` and `Sec-Fetch-Site` when present, and `Content-Type: application/json` for writes. `Host` must be `127.0.0.1:<port>` or `localhost:<port>`. Responses are `no-store` with no CORS headers. A wrong guard gives one and the same 403 body. The routes are not mounted on :3335 (404). | `api-app.test.js` (guard: secret, Origin, Sec-Fetch-Site, Host, JSON, body caps), `server.test.js` (browser tier: `/api/app` is 404 for every method), `appio.test.js` (TTY stdin refused). |
+| T3 | A prompt-injected agent types into another session | The agent has no secret and no webview. Keystrokes go only to a pane that is in the current `list-panes` output and either runs a live Claude session (its current command must look like claude) or was started by nika. Text is at most 1024 chars with no controls, named keys come from a fixed allow-list (at most 8), paste is at most 16 KB, 20 requests per second per pane. Spawned agents are denied `Bash(nika:*)`, `Bash(tmux:*)` and `Bash(claude:*)`. | `keys.test.js` (text, keys, paste, limits, rate limit), `api-app.test.js` (pane eligibility, forged registry entry refused), `spawn.test.js` (deny list in the claude argv). |
+| T4 | Escalation through unsandboxed or bypass sessions | `bypassPermissions` is refused in the store, in the API and when spawning; a tampered config or `.agent.json` falls back or is refused. Spawned agents also get a deny list for `.env*` and `*.key` and are denied `git add`, `git commit` and `git push`. | `store.test.js`, `api-app.test.js` (settings and spawn), `spawn.test.js` (including a tampered `.agent.json`), `orchestrate.test.js`, `cli-commands.test.js`. |
+| T5 | Settings tampering through "apply rules" | Only `enabledPlugins` is written to `.claude/settings.local.json`. Every other key is copied verbatim and deep-equal asserted before the write. `hooks`, `permissions`, `env`, `apiKeyHelper`, `mcpServers` and `model` are never read or written. Invalid JSON or a `__proto__` key is refused. The preview shows the `enabledPlugins` block only. | `rules.test.js` ("settings.local.json merge (T5)", preview block only, errors never echo file text), `api-app.test.js` (rules). |
+| T6 | Command injection through tmux | Every subprocess runs through `execFile` with a fixed argv, never a shell. tmux shell-commands are passed as several arguments, so tmux execs them without `sh -c`. Session names match a fixed pattern, targets are exact (`=name`, `%n`), and `#` in a start directory is doubled so tmux cannot format-expand it. The brief never goes through argv; `_run-agent` reads it from a 0600 file. | `orchestrate.test.js` (format injection in `-c`, names), `spawn.test.js` (argv snapshots with an injected exec), `cli-commands.test.js`, `test/tmux-fake.js` (shared fake tmux). |
+| T7 | `send-keys` option injection | Text is sent as `send-keys -l -- <text>` as one argv element, so tmux never reads it as a key name or option. Named keys are sent one call each. | `keys.test.js` (text that looks like options stays one element). |
+| T8 | Symlink, hard link or traversal in write targets | Writes go only through `src/fwrite.js`: real user-owned directories, never world-writable; targets absent or regular, user-owned, single-link; an O_EXCL temp file, fsync, then rename. The project root is the realpath taken at add time and is re-checked. `rules` and `.claude` must be absent or real directories. A `rules/orchestration.md` that nika did not write needs an explicit overwrite flag. | `fwrite.test.js`, `fwrite-project.test.js`, `rules.test.js` ("symlinks and hard links (T8)"). Reads: `security.test.js` (F1, F2). |
+| T9 | Terminal escapes in the pane mirror | The server keeps only a whitelist of SGR codes. OSC (including 52 and 8), DCS, APC, PM, SOS, other CSI, C0, C1 and bidi controls are dropped. The client re-validates every value and renders spans with `textContent`. | `mirror.test.js` (hostile input, fuzz), `mirror-render.test.js`, `api-app.test.js` (capture), `ui.test.js` and `session-ui.test.js` (no HTML-parsing sinks). |
+| T10 | Webview navigation, popups, remote code | The webview navigates only to `http://127.0.0.1:<port>` and the local error page. `https://claude.ai/code/session_<id>` opens in the system browser with a fixed argv (`/usr/bin/open` or `xdg-open`). Every other navigation is blocked and new windows are denied. No Tauri capability is granted to the server origin and `withGlobalTauri` is false, so the page has no `window.__TAURI__`. The page ships a strict CSP with no inline script or style. | Shell: `nav.rs` (`other_origins_denied`, `claude_matcher_accepts_only_session_links`, `init_script_guards_origin_and_stays_configurable`). `ui.test.js`, `session-ui.test.js` and `server.test.js` (CSP on every static file, no inline script or style, no forbidden sinks). |
+| T11 | Denial of service (huge transcripts, floods) | History reads are windows of at most 1 MB, entries over 32 KB are dropped, 4 requests in flight. Captures are cached 250 ms per pane with one in flight. Bodies have per-route caps. Keystrokes are rate limited. Fan-out uses `mapLimit`. Lines over 64 KB on the stdio protocol are ignored. | `history.test.js` (paging, concurrency), `mirror.test.js` (caps, cache), `keys.test.js` (rate limit), `security.test.js` (F5), `api-app.test.js` (413). |
+| T12 | Report-directory poisoning | Report dirs and files are opened without following symlinks, must be real directories and regular files owned by you, and are read with a size cap. nika's own reports live in its state dir (0700). Report files are found by session id in an index nika built; no request carries a path. | `security.test.js` (F1 symlinks, F2 FIFOs), `collectors.test.js` (reports), `spawn.test.js` (reports of nika-spawned agents). |
+| T13 | Linux specifics | The AppIndicator dependency is documented ([`packaging.md`](packaging.md)). The browser opens through a fixed argv. `ps` runs with the C locale and its empty output means "unknown", not "dead". The app lookup on Linux is `nika-app` on PATH, then `gtk-launch`. | `collectors.test.js` (liveness and `ps`), `cli-commands.test.js` (open and app). Shell: `nav.rs` (`open_argv_is_fixed`). Open: the `ps` start-time format on Linux is still to be checked in the Linux container run (Phase 6). |
+| T14 | Private data in the public repository | `test/hygiene.test.js` fails on home paths, Claude scratchpad paths, emails, real-looking session ids and UUIDs, Anthropic API keys and `.local` hosts anywhere in the repo, docs and workflow included. Fixtures are synthetic. Rule templates are written from scratch. | `hygiene.test.js`, `rules.test.js` (built-in template placeholders). |
+| T15 | Backups leak into repositories | Backups go only to `${XDG_STATE_HOME or ~/.local/state}/nika/backups/<key>/<ISO>/`, never into the project. | `rules.test.js` (backup folder, two applies in one second), `fwrite.test.js` (`backupFile`). |
+| T16 | `settings.local.json` is not gitignored in the target | The preview warns. Applying can add one `.gitignore` line, off by default, and only when you tick it. | `rules.test.js` (warning; `.gitignore` is opt-in), `cli-commands.test.js` (`--gitignore`). |
+| T17 | Telemetry | No outbound network from nika. A test fails if `src/` imports `https`, `net`, `dgram` or `tls`, or calls `fetch` or `http.request` for anything but `127.0.0.1`. The Rust side has no HTTP-client crate in its approved list (see `rules/project-rules.md`). | `hygiene.test.js` ("T17 no telemetry", covers `src/`). The Rust side is checked by the crate approval and review of `Cargo.lock`, not by an automated test. |
+
+## Residual risks
+
+Accepted, with the reason.
+
+- **a. Single-user machine.** Any local process, or another account on the same machine, can read :3335: last prompts,
+  directories, branches, session ids and report text. Accepted because the tier is read-only, holds no secret and no
+  full transcript, and the README says so. Do not run nika on a shared machine.
+- **b. Pane eligibility is a safety net.** A registry pane qualifies only while its current command looks like
+  claude, but the registry (`sessions/<pid>.json`) is agent-writable. A same-user agent that can forge it can already
+  run `tmux send-keys` itself. Accepted because spawned agents are denied `Bash(tmux:*)` and the check still stops
+  honest mistakes, such as typing into a shell pane (contract section 5).
+- **c. Spawned agents share a reports dir.** Each gets `--add-dir <reports dir>` (`src/spawn.js:266`). An agent can
+  therefore read and write the report and brief files of sibling agents of the same project. Accepted because they
+  work in the same repository anyway. `_run-agent` re-validates what it reads (`.agent.json`, bypass refused), and
+  the dashboard cleans every string.
+- **d. The secret lives in webview memory.** It stays in the page's module constant for the page's lifetime. A script
+  injection in the page could read it. Accepted because the strict CSP, `textContent` rendering and the sink tests
+  make injection unlikely, and the secret is useless after the app quits.
+- **e. The app is ad-hoc signed, not notarized.** There is no paid Apple identity. A local build runs on the machine
+  that built it; a copy moved to another Mac is quarantined by Gatekeeper. Accepted until a signing identity exists;
+  see [`packaging.md`](packaging.md).
+- **f. AppIndicator on Linux.** The tray needs AppIndicator support. Some desktops (stock GNOME) show no tray icon
+  without an extension. Accepted because the window still works: closing it only hides it, and starting the app again
+  focuses the existing window.
+- **g. Tauri's internal IPC bridge is present in every page.** Tauri injects `__TAURI_INTERNALS__` into the webview,
+  including the server's page. No capability file exists, so every command is denied (checked live: plugin, app and
+  webview commands all return "not allowed"). Accepted because adding a capability for the server origin is forbidden
+  by `rules/project-rules.md` §13.
+- **h. `cargo audit` warnings on Linux crates.** Tauri's Linux stack pulls in GTK and zbus crates that RustSec marks
+  unmaintained (`proc-macro-error`, `zbus_names`, `zvariant`, `zvariant_derive`) or unsound (`glib` 0.18). They are
+  transitive, have no vulnerability advisory, and are not reachable from page content. Accepted until Tauri moves
+  off them; CI fails only on vulnerabilities.
+
+## Supply chain
+
+- Rust crates are limited to the approved list, versions pinned, `Cargo.lock` committed, `cargo audit` in CI.
+- Build tools (`tauri-cli`, `cargo-audit`) are installed with `cargo install --locked` at pinned versions and are never
+  compiled into the app.
+- CI uses only official `actions/*` actions pinned by full commit SHA, a read-only token, no secrets and no publish
+  step.
+- Node code has no npm dependencies.
+
+## Reporting a vulnerability
+
+Open a private security advisory on GitHub: `https://github.com/qmpwwsd/nika/security/advisories/new`. Please do not
+file a public issue for a vulnerability. Say which tier is affected, how to reproduce it, and which version you used.

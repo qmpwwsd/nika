@@ -1,0 +1,90 @@
+# CI for nika: Node tests and the Rust desktop shell on macOS and Linux.
+# Read-only token, no secrets, no release or publish steps (the release workflow is Phase 6).
+# Actions are pinned by full commit SHA (the comment names the tag); only official actions/* are used.
+name: ci
+
+on:
+  push:
+    branches: [master, 'feat/**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  node:
+    name: node (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      # Zero npm dependencies: no install step. The tests use a fake tmux, so none is installed here.
+      - run: npm test
+
+  rust:
+    name: rust (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-22.04]
+    defaults:
+      run:
+        working-directory: app/src-tauri
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Tauri v2 Linux prerequisites (docs: start/prerequisites, Debian/Ubuntu), incl. the AppIndicator dev package.
+      - name: Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+      # rustup is already on the runners; no third-party Rust action.
+      - name: Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustc --version
+          cargo --version
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            app/src-tauri/target
+          key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('app/src-tauri/Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-${{ runner.arch }}-
+      - name: Test
+        run: cargo test --locked
+      - name: Build
+        run: cargo build --locked
+      - name: Audit dependencies
+        run: |
+          cargo install cargo-audit --version 0.22.2 --locked
+          cargo audit

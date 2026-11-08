@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=nika
+Comment=Local dashboard and control panel for Claude Code agents
+Exec=nika-app
+Icon=nika-app
+Terminal=false
+Categories=Development;
+StartupWMClass=nika-app

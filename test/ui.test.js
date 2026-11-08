@@ -214,6 +214,21 @@ describe('tier separation in the page code', () => {
     }
   });
 
+  test('(+) #add-project (tray) calls the folder picker once, behind isApp, after replacing the hash', () => {
+    const app = code(read('app.js'));
+    const route = app.slice(app.indexOf('function route('), app.indexOf('function initControls('));
+    assert.match(route, /if \(isApp && location\.hash === '#add-project'\) \{\s*history\.replaceState\(null, '', '#dashboard'\);\s*hooks\.addProject\?\.\(\);\s*\}/);
+    assert.equal(route.match(/addProject/g).length, 1, 'one call in route()');
+  });
+
+  test('(−) #add-project is not a screen: parseRoute does not know it, and no other module reads it', () => {
+    const app = code(read('app.js'));
+    const parse = app.slice(app.indexOf('function parseRoute('), app.indexOf('function route('));
+    assert.doesNotMatch(parse, /add-project/);
+    assert.match(parse, /if \(isApp\) \{/); // the screen routes themselves stay app-only
+    for (const f of JS.filter((x) => x !== 'app.js')) assert.doesNotMatch(code(read(f)), /add-project/, f);
+  });
+
   test('(+) every appFetch call site in project.js and settings.js targets an /api/app/ path', () => {
     for (const f of ['project.js', 'settings.js']) {
       const calls = [...code(read(f)).matchAll(/appFetch\(\s*([^,)]*)/g)].map((m) => m[1].trim());

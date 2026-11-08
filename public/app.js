@@ -424,6 +424,11 @@ function parseRoute() {
 }
 
 function route(initial = false) {
+  // the tray's "Add project…" navigates here: act once, then leave no trace in the URL (browser tier: ignored)
+  if (isApp && location.hash === '#add-project') {
+    history.replaceState(null, '', '#dashboard');
+    hooks.addProject?.();
+  }
   state.route = parseRoute();
   const name = state.route.name;
   for (const s of $$('[data-screen]')) s.hidden = s.dataset.screen !== name;

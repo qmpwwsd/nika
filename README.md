@@ -7,13 +7,16 @@ A local dashboard of every Claude Code agent on your Mac: live sessions (working
 - Actions per agent: **Focus pane** (switches tmux to it), **Open in claude.ai** (Remote Control sessions), **Copy resume** (`cd … && claude --resume <id>`), **Report** (spawn report file).
 - Read-only apart from Focus pane. Zero dependencies (Node stdlib). Binds `127.0.0.1` only.
 
-## Install
+## Install (browser dashboard)
 
 ```sh
 brew install qmpwwsd/tap/nika
 brew services start nika     # runs at login on http://127.0.0.1:3335
 nika                         # opens the dashboard in your browser
 ```
+
+This is the browser tier. It stays read-only: it lists agents and can only focus a tmux pane. The privileged features of
+the [desktop app](#desktop-app-02-in-progress) are never available on `http://127.0.0.1:3335`.
 
 ## Commands
 
@@ -68,7 +71,7 @@ With `brew services`, set variables in the service environment (for example with
 | `<scratchpad>/reports/<name>.session\|.md\|.rc` | agent role name, `STATUS:` line, report text |
 | `<cwd>/.git`, `commondir` | repository root for grouping |
 
-It never reads `*.key` files, credentials or `.env` files, and it never writes anything.
+It never reads `*.key` files, credentials or `.env` files. The browser tier never writes anything; what the app tier and the CLI write is listed in [docs/architecture.md](docs/architecture.md#where-writes-happen).
 
 A transcript with no user or assistant message (Claude Code sometimes leaves a one-line title stub) is not an agent: nika lists it only while its session is live.
 
@@ -83,12 +86,59 @@ A transcript with no user or assistant message (Claude Code sometimes leaves a o
 - Text from transcripts, reports and tmux is stripped of control and bidi characters before it reaches the page or your terminal.
 - Strict Content-Security-Policy; all session text is rendered as text, never HTML.
 
-## 0.2 (in progress)
+The desktop app's privileged tier is a separate, locked-down server; its threat model and residual risks are in [docs/security.md](docs/security.md).
+
+## Desktop app (0.2, in progress)
 
 0.2 adds a desktop app (macOS and Linux, tray icon) with a privileged tier: session window with history and a live pane
 mirror, spawning agents in tmux, starting the orchestrator, adding projects and applying orchestration rules. The
-browser dashboard above stays read-only. Contracts: [docs/contracts/api-app.md](docs/contracts/api-app.md); decisions:
-[docs/adr/](docs/adr/); progress: [CHANGELOG.md](CHANGELOG.md).
+browser dashboard above stays read-only.
+
+**The app is not released yet.** There is no Homebrew formula, download or package for it today. You build it from a
+checkout of this repository.
+
+You need Node 22 or newer, tmux and Claude Code on the machine. The app does not bundle Node.
+
+### macOS
+
+```sh
+brew install rustup
+export PATH="$(brew --prefix rustup)/bin:$HOME/.cargo/bin:$PATH"   # the Homebrew rustup is keg-only
+rustup default stable
+cargo install tauri-cli --version 2.12.4 --locked
+cd app/src-tauri && cargo tauri build --bundles app
+```
+
+The bundle is `app/src-tauri/target/release/bundle/macos/nika.app`. Copy it to `~/Applications` and open it once. It is
+signed ad hoc and not notarized, so a copy moved to another Mac is blocked by Gatekeeper (details in
+[docs/packaging.md](docs/packaging.md)).
+
+### Linux
+
+```sh
+sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev \
+  libayatana-appindicator3-dev librsvg2-dev      # Debian and Ubuntu build dependencies
+cargo install tauri-cli --version 2.12.4 --locked   # with Rust installed through rustup
+cd app/src-tauri && cargo tauri build --bundles deb,appimage
+```
+
+At runtime the app needs WebKitGTK 4.1 and AppIndicator (`libayatana-appindicator3-1`) for the tray icon.
+
+### Run it
+
+```sh
+nika app      # or just: nika
+```
+
+`nika` opens the app when it is installed and falls back to the browser dashboard. A tray icon appears (no Dock icon on
+macOS). Closing the window only hides it. **Quit nika** in the tray menu stops the app and its private server; your tmux
+sessions and agents keep running. "Start at login" is off by default.
+
+More: [docs/packaging.md](docs/packaging.md) (build details, signing, Linux packages),
+[docs/security.md](docs/security.md) (threat model, residual risks, how to report a vulnerability),
+[docs/architecture.md](docs/architecture.md) (processes, boot sequence, module map). Contracts:
+[docs/contracts/api-app.md](docs/contracts/api-app.md); decisions: [docs/adr/](docs/adr/); progress:
+[CHANGELOG.md](CHANGELOG.md).
 
 ### Using the app
 
@@ -116,6 +166,7 @@ The browser dashboard at `http://127.0.0.1:3335` shows the same list without any
 npm test                  # node --test, no dependencies
 node bin/nika serve       # http://127.0.0.1:3335
 node bin/nika status
+(cd app/src-tauri && cargo test --locked)   # the desktop shell, needs Rust
 ```
 
 ## Uninstall
