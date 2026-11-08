@@ -1,0 +1,1734 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>nika 0.2 · Variant A · Console</title>
+<style>
+/* ===== Variant A tokens: "Console". Grey chrome; colour only ever means status. ===== */
+:root {
+  --font: system-ui, -apple-system, "Segoe UI", Cantarell, "Noto Sans", Ubuntu, sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, "DejaVu Sans Mono", "Liberation Mono", monospace;
+  --fs-cap: 0.6875rem; --fs-small: 0.75rem; --fs-body: 0.8125rem; --fs-h3: 0.875rem; --fs-h2: 0.9375rem; --fs-h1: 1.125rem; --fs-display: 1.375rem; --fs-term: 0.75rem;
+  --lh-body: 1.45;
+  --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-5: 20px; --sp-6: 24px; --sp-8: 32px;
+  --r-sm: 4px; --r-md: 6px; --r-lg: 10px;
+  --h-ctl: 28px; --h-ctl-lg: 32px; --side-w: 232px;
+  --dur-1: 120ms; --dur-2: 200ms; --dur-3: 320ms; --ease: cubic-bezier(0.2, 0, 0, 1);
+  --elev-1: 0 1px 2px rgb(16 20 28 / 8%);
+  --elev-2: 0 8px 24px -8px rgb(16 20 28 / 28%);
+  --elev-3: 0 24px 56px -12px rgb(16 20 28 / 38%);
+  --scrim: rgb(16 20 28 / 45%);
+  --stage: #d3d7de;
+  --bg: #f3f4f6; --bg-alt: #e8eaee; --surface: #ffffff; --surface-2: #f1f3f6; --surface-3: #e3e7ed;
+  --line: #dde1e7; --line-strong: #868e9a;
+  --text: #16181d; --text-muted: #545b66;
+  --accent: #1d55d0; --on-accent: #ffffff; --accent-soft: #e4ecfc; --focus: #1d55d0;
+  --busy: #17753a; --busy-soft: #e1f4e7; --idle: #8a5300; --idle-soft: #fcf0d8;
+  --attn: #b0125c; --attn-soft: #fce6ef; --ended: #5f6772; --ended-soft: #edeff2;
+  --danger: #b42318; --danger-soft: #fde9e7; --diff-add: #e3f5e8; --diff-del: #fce9e9;
+}
+:root[data-theme="dark"] {
+  --elev-1: none; --elev-2: 0 8px 24px -8px rgb(0 0 0 / 60%); --elev-3: 0 24px 56px -12px rgb(0 0 0 / 70%);
+  --scrim: rgb(0 0 0 / 60%); --stage: #0c0d10;
+  --bg: #16181c; --bg-alt: #1c1f24; --surface: #202328; --surface-2: #272b31; --surface-3: #30353c;
+  --line: #30353d; --line-strong: #6f7783;
+  --text: #e9ebef; --text-muted: #a4abb6;
+  --accent: #7fa8ff; --on-accent: #0b1a3a; --accent-soft: #1d2b4a; --focus: #7fa8ff;
+  --busy: #5fd08a; --busy-soft: #173523; --idle: #f0b45a; --idle-soft: #3a2b12;
+  --attn: #ff80b5; --attn-soft: #41182c; --ended: #9aa3ae; --ended-soft: #2a3038;
+  --danger: #ff8a80; --danger-soft: #431b18; --diff-add: #163322; --diff-del: #3d1b1e;
+}
+/* ===== shared mockup base (identical in a.html, b.html, c.html) ===== */
+*, *::before, *::after { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  display: flex; flex-direction: column; height: 100vh;
+  background: var(--stage); color: var(--text);
+  font: var(--fs-body)/var(--lh-body) var(--font);
+  -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility;
+}
+:root { color-scheme: light; }
+:root[data-theme="dark"] { color-scheme: dark; } /* native controls and scrollbars follow the chosen theme */
+[hidden] { display: none !important; }
+button, input, select, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; }
+button:disabled { cursor: not-allowed; }
+a { color: var(--accent); }
+code, kbd, pre, .mono { font-family: var(--mono); }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+.skip { position: absolute; left: 8px; top: -60px; z-index: 50; padding: 8px 12px; background: var(--surface); color: var(--accent); border-radius: 6px; }
+.skip:focus { top: 8px; }
+.num { font-variant-numeric: tabular-nums; }
+
+/* ---------- mockup chrome: not part of the design ---------- */
+.mock {
+  flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px;
+  padding: 6px 12px; background: var(--bg-alt); color: var(--text-muted);
+  border-bottom: 1px dashed var(--line-strong); font: 12px/1.3 system-ui, -apple-system, sans-serif;
+}
+.mock strong { color: var(--text); font-weight: 600; }
+.mock label { display: inline-flex; align-items: center; gap: 6px; }
+.mock select { min-height: 26px; padding: 0 4px; background: var(--surface); border: 1px solid var(--line-strong); border-radius: 4px; }
+.mock .mk-links { margin-left: auto; display: flex; gap: 10px; }
+.mock .mk-links a[aria-current] { color: var(--text); font-weight: 600; text-decoration: none; }
+.stage { flex: 1; min-height: 0; overflow: auto; display: flex; }
+.win {
+  position: relative; flex: 1; min-width: 0; min-height: 0; overflow: hidden;
+  container: win / inline-size; background: var(--bg); color: var(--text);
+}
+.stage.sized { padding: 16px; }
+.stage.sized .win { flex: none; margin: 0 auto; border: 1px solid var(--line-strong); border-radius: 10px; box-shadow: 0 18px 40px -18px rgb(0 0 0 / 35%); }
+[data-world] { height: 100%; }
+.screen { min-height: 0; }
+
+/* ---------- status glyphs (shape + colour + text; never colour alone) ---------- */
+.st { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; color: var(--st-c); }
+.st[data-s="busy"] { --st-c: var(--busy); --st-bg: var(--busy-soft); }
+.st[data-s="idle"] { --st-c: var(--idle); --st-bg: var(--idle-soft); }
+.st[data-s="attn"] { --st-c: var(--attn); --st-bg: var(--attn-soft); }
+.st[data-s="ended"] { --st-c: var(--ended); --st-bg: var(--ended-soft); }
+.st-g { position: relative; flex: none; width: 10px; height: 10px; }
+.st[data-s="busy"] .st-g { border-radius: 50%; background: var(--st-c); }
+.st[data-s="busy"] .st-g::after {
+  content: ""; position: absolute; inset: -3px; border-radius: 50%;
+  border: 1.5px solid transparent; border-top-color: var(--st-c);
+  animation: st-spin 1.1s linear infinite;
+}
+.st[data-s="idle"] .st-g { border-radius: 50%; border: 2px solid var(--st-c); }
+.st[data-s="attn"] .st-g { width: 9px; height: 9px; margin: 0 0.5px; transform: rotate(45deg); background: var(--st-c); }
+.st[data-s="ended"] .st-g { width: 8px; height: 8px; margin: 1px; border-radius: 1px; background: var(--st-c); opacity: 0.85; }
+@keyframes st-spin { to { transform: rotate(360deg); } }
+
+/* ---------- terminal mirror: shared palette, dark by default, per-viewer light toggle ---------- */
+.term {
+  --term-bg: #16181d; --term-fg: #dadee5; --term-cursor: #f2f4f7;
+  --a0: #3b4048; --a1: #f47c7f; --a2: #7fd187; --a3: #e8c27e; --a4: #72b4ff; --a5: #d58cec; --a6: #5cc9d9; --a7: #c9cdd5;
+  --a8: #868e9b; --a9: #ff9696; --a10: #9be69b; --a11: #f6d892; --a12: #97caff; --a13: #e5a9f6; --a14: #83deec; --a15: #f3f5f8;
+  background: var(--term-bg); color: var(--term-fg);
+}
+.term[data-surface="light"] {
+  --term-bg: #fbfbfc; --term-fg: #1f2329; --term-cursor: #1f2329;
+  --a0: #1f2329; --a1: #c0222b; --a2: #1b7a35; --a3: #875800; --a4: #0b58c2; --a5: #8a3aae; --a6: #0a6e80; --a7: #58606b;
+  --a8: #6b7380; --a9: #a10e24; --a10: #126128; --a11: #6c4700; --a12: #0a4aa3; --a13: #742a99; --a14: #085a6a; --a15: #3b424b;
+}
+.term-pre { margin: 0; font: var(--fs-term)/1.35 var(--mono); white-space: pre; tab-size: 8; }
+.term-pre .tl { display: block; min-height: 1.35em; }
+.f0{color:var(--a0)}.f1{color:var(--a1)}.f2{color:var(--a2)}.f3{color:var(--a3)}.f4{color:var(--a4)}.f5{color:var(--a5)}.f6{color:var(--a6)}.f7{color:var(--a7)}
+.f8{color:var(--a8)}.f9{color:var(--a9)}.f10{color:var(--a10)}.f11{color:var(--a11)}.f12{color:var(--a12)}.f13{color:var(--a13)}.f14{color:var(--a14)}.f15{color:var(--a15)}
+.b0{background:var(--a0)}.b1{background:var(--a1)}.b2{background:var(--a2)}.b3{background:var(--a3)}.b4{background:var(--a4)}.b5{background:var(--a5)}.b6{background:var(--a6)}.b7{background:var(--a7)}
+.b8{background:var(--a8)}.b9{background:var(--a9)}.b10{background:var(--a10)}.b11{background:var(--a11)}.b12{background:var(--a12)}.b13{background:var(--a13)}.b14{background:var(--a14)}.b15{background:var(--a15)}
+.fdb { color: var(--term-bg); } .bdf { background: var(--term-fg); }
+.sb { font-weight: 700; } .sd { opacity: 0.6; } .si { font-style: italic; } .su { text-decoration: underline; }
+.tc { background: var(--term-cursor); color: var(--term-bg); }
+.term:not(:focus-within) .tc { background: transparent; outline: 1px solid var(--term-cursor); outline-offset: -1px; color: inherit; }
+
+/* ---------- diff viewer ---------- */
+.diff { margin: 0; font: 12px/1.5 var(--mono); white-space: pre; overflow: auto; background: var(--surface); }
+.diff .dl { display: grid; grid-template-columns: 3.5em 3.5em 1.5em 1fr; min-width: max-content; }
+.diff .dn { color: var(--text-muted); text-align: right; padding-right: 0.6em; user-select: none; }
+.diff .dm { text-align: center; user-select: none; }
+.diff .d-add { background: var(--diff-add); }
+.diff .d-add .dm { color: var(--busy); font-weight: 700; }
+.diff .d-del { background: var(--diff-del); }
+.diff .d-del .dm { color: var(--danger); font-weight: 700; }
+.diff .d-hunk { color: var(--text-muted); background: var(--surface-2); }
+.diff .d-note { color: var(--text-muted); font-style: italic; padding: 6px 12px; white-space: normal; }
+
+/* ---------- history entries (structure shared, look per variant) ---------- */
+.hx-text { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; }
+.hx-code { white-space: pre; overflow: auto; margin: 0; font: 12px/1.45 var(--mono); max-height: 22em; }
+.hx-clamp { display: -webkit-box; -webkit-line-clamp: 12; -webkit-box-orient: vertical; overflow: hidden; }
+.hx-trunc { color: var(--text-muted); font-style: italic; }
+
+/* ---------- disclosure menus ---------- */
+.menu-wrap { position: relative; display: inline-block; }
+.menu {
+  position: absolute; right: 0; top: calc(100% + 4px); z-index: 30; min-width: 220px; margin: 0; padding: 4px; list-style: none;
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-md); box-shadow: var(--elev-2);
+}
+.menu button, .menu a { display: flex; width: 100%; align-items: center; gap: 8px; min-height: 30px; padding: 4px 10px; border: 0; border-radius: var(--r-sm); background: none; text-align: left; text-decoration: none; color: var(--text); }
+.menu button:hover, .menu a:hover { background: var(--surface-2); }
+
+/* ---------- toasts ---------- */
+.toasts { position: fixed; z-index: 60; left: 50%; bottom: 20px; transform: translateX(-50%); display: grid; gap: 8px; width: min(440px, calc(100vw - 32px)); pointer-events: none; }
+.toast {
+  pointer-events: auto; display: flex; align-items: center; gap: 10px; padding: 10px 12px 10px 14px;
+  background: var(--text); color: var(--bg); border-radius: var(--r-md); box-shadow: var(--elev-2);
+  animation: toast-in var(--dur-2) var(--ease);
+}
+.toast p { margin: 0; flex: 1; overflow-wrap: anywhere; }
+.toast button { flex: none; min-height: 28px; padding: 0 10px; border: 1px solid currentColor; border-radius: var(--r-sm); background: none; color: inherit; }
+.toast[data-kind="error"] { background: var(--danger); color: #fff; }
+@keyframes toast-in { from { opacity: 0; transform: translateY(6px); } }
+.spin { display: inline-block; width: 12px; height: 12px; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; animation: st-spin 0.8s linear infinite; vertical-align: -2px; }
+
+/* ---------- skeleton ---------- */
+.sk { border-radius: var(--r-sm); background: linear-gradient(90deg, var(--surface-2) 25%, var(--surface-3) 50%, var(--surface-2) 75%); background-size: 200% 100%; animation: sk 1.4s linear infinite; }
+@keyframes sk { to { background-position: -200% 0; } }
+
+/* ---------- dialogs ---------- */
+dialog { color: var(--text); background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg); box-shadow: var(--elev-3); padding: 0; max-width: calc(100vw - 32px); max-height: calc(100vh - 32px); }
+dialog::backdrop { background: var(--scrim); }
+dialog[open] { animation: dlg-in var(--dur-2) var(--ease); }
+@keyframes dlg-in { from { opacity: 0; transform: translateY(8px) scale(0.99); } }
+
+/* ---------- reduced motion (OS setting, or the mock toggle) ---------- */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; scroll-behavior: auto !important; }
+}
+:root[data-motion="reduce"] *, :root[data-motion="reduce"] *::before, :root[data-motion="reduce"] *::after {
+  animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important;
+}
+
+
+/* ===== Variant A components ===== */
+.ic { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.ic.fill { fill: currentColor; stroke: none; }
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: var(--h-ctl); padding: 0 10px;
+  border: 1px solid var(--line-strong); border-radius: var(--r-md); background: var(--surface); color: var(--text);
+  font-size: var(--fs-body); font-weight: 500; text-decoration: none; white-space: nowrap;
+  transition: background var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease);
+}
+.btn:hover { background: var(--surface-2); }
+.btn:active { background: var(--surface-3); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.btn.primary:hover { background: color-mix(in srgb, var(--accent) 88%, var(--text)); }
+.btn.ghost { border-color: transparent; background: transparent; }
+.btn.ghost:hover { background: var(--surface-3); }
+.btn.icon { width: var(--h-ctl); padding: 0; }
+.btn.danger { color: var(--danger); border-color: var(--danger); }
+.btn.link { border: 0; background: none; min-height: 24px; padding: 0; color: var(--accent); text-decoration: underline; }
+.btn:disabled, .btn[aria-disabled="true"] { opacity: 0.5; }
+.btn[aria-busy="true"] { pointer-events: none; }
+.btn.lg { min-height: var(--h-ctl-lg); padding: 0 14px; }
+kbd { font: var(--fs-cap)/1 var(--mono); padding: 2px 5px; border: 1px solid var(--line-strong); border-bottom-width: 2px; border-radius: 4px; color: var(--text-muted); background: var(--surface); }
+.model { font: 600 var(--fs-small)/1 var(--font); color: var(--text-muted); padding: 3px 6px; border-radius: var(--r-sm); background: var(--surface-2); border: 1px solid var(--line); }
+.tag { display: inline-flex; align-items: center; min-height: 20px; font-size: var(--fs-cap); font-weight: 600; padding: 0 6px; border-radius: var(--r-sm); color: var(--accent); background: var(--accent-soft); }
+.tag.muted { color: var(--text-muted); background: var(--surface-2); border: 1px solid var(--line); }
+.rules { display: inline-flex; align-items: center; gap: 5px; min-height: 22px; padding: 0 8px; border-radius: 999px; font-size: var(--fs-small); font-weight: 600; border: 1px solid; white-space: nowrap; }
+.rules-g { font-weight: 700; }
+.rules[data-r="nika"] { color: var(--busy); background: var(--busy-soft); border-color: transparent; }
+.rules[data-r="outdated"] { color: var(--idle); background: var(--idle-soft); border-color: transparent; }
+.rules[data-r="foreign"] { color: var(--attn); background: var(--attn-soft); border-color: transparent; }
+.rules[data-r="none"] { color: var(--text-muted); background: transparent; border-color: var(--line-strong); }
+.st-l { font-weight: 600; font-size: var(--fs-small); }
+.pill-st { padding: 2px 8px 2px 7px; border-radius: 999px; background: var(--st-bg); }
+
+/* fields */
+.field { display: grid; gap: 4px; align-content: start; }
+.field > label, .field > .lbl { font-weight: 600; }
+.help { margin: 0; color: var(--text-muted); font-size: var(--fs-small); }
+.err { margin: 0; display: flex; gap: 6px; align-items: flex-start; color: var(--danger); font-size: var(--fs-small); font-weight: 600; }
+.err::before { content: "!"; flex: none; display: inline-grid; place-items: center; width: 14px; height: 14px; margin-top: 1px; border-radius: 50%; background: var(--danger); color: var(--surface); font-size: 10px; }
+input[type="text"], input[type="search"], input[type="number"], select, textarea {
+  min-height: var(--h-ctl-lg); padding: 4px 10px; border: 1px solid var(--line-strong); border-radius: var(--r-md);
+  background: var(--surface); color: var(--text); width: 100%;
+}
+textarea { resize: vertical; line-height: 1.45; }
+input:hover, select:hover, textarea:hover { border-color: var(--text-muted); }
+input[aria-invalid="true"], select[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--danger); box-shadow: inset 0 0 0 1px var(--danger); }
+input:disabled, select:disabled, textarea:disabled { background: var(--surface-2); color: var(--text-muted); }
+input[type="checkbox"], input[type="radio"] { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); flex: none; }
+.check { display: flex; gap: 8px; align-items: flex-start; min-height: 24px; }
+.check input { margin-top: 2px; }
+.switch { appearance: none; -webkit-appearance: none; width: 34px !important; height: 20px !important; border-radius: 999px; background: var(--line-strong); position: relative; transition: background var(--dur-1) var(--ease); }
+.switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: var(--surface); transition: transform var(--dur-1) var(--ease); }
+.switch:checked { background: var(--accent); }
+.switch:checked::after { transform: translateX(14px); }
+.banner { display: flex; gap: 10px; align-items: flex-start; margin: var(--sp-3) var(--sp-4) 0; padding: 10px 12px; border-radius: var(--r-md); border: 1px solid; }
+.banner .ic { margin-top: 1px; }
+.banner p { margin: 0; flex: 1; }
+.banner strong { display: block; }
+.banner[data-kind="danger"] { background: var(--danger-soft); border-color: color-mix(in srgb, var(--danger) 45%, transparent); }
+.banner[data-kind="danger"] .ic { color: var(--danger); }
+.banner[data-kind="warn"] { background: var(--idle-soft); border-color: color-mix(in srgb, var(--idle) 45%, transparent); }
+.banner[data-kind="warn"] .ic { color: var(--idle); }
+.banner[data-kind="info"] { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 35%, transparent); }
+.banner[data-kind="info"] .ic { color: var(--accent); }
+
+/* ===== shell: sidebar + main ===== */
+.app { display: grid; grid-template-columns: var(--side-w) minmax(0, 1fr); height: 100%; }
+.side { display: flex; flex-direction: column; min-height: 0; background: var(--bg-alt); border-right: 1px solid var(--line); }
+.brand { display: flex; align-items: center; gap: 8px; padding: 14px 14px 10px; }
+.brand .logo { width: 20px; height: 20px; fill: none; stroke: var(--text); stroke-width: 2; }
+.brand .logo circle:first-child { fill: var(--text); }
+.brand b { font-size: var(--fs-h2); letter-spacing: -0.01em; }
+.brand span { color: var(--text-muted); font-size: var(--fs-small); }
+.nav { display: grid; gap: 1px; padding: 0 8px; }
+.nav a, .side-projects a {
+  display: flex; align-items: center; gap: 8px; min-height: 30px; padding: 0 8px; border-radius: var(--r-md);
+  color: var(--text); text-decoration: none;
+}
+.nav a:hover, .side-projects a:hover { background: var(--surface-3); }
+.nav a[aria-current], .side-projects a[aria-current] { background: var(--surface); box-shadow: var(--elev-1); font-weight: 600; }
+.nav kbd { margin-left: auto; }
+.side-h { display: flex; align-items: center; justify-content: space-between; padding: 16px 8px 4px 16px; }
+.side-h h2 { margin: 0; font-size: var(--fs-small); font-weight: 600; color: var(--text-muted); }
+.side-projects { list-style: none; margin: 0; padding: 0 8px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 1px; overflow: auto; min-height: 0; }
+.side-projects .label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mono-av { flex: none; width: 20px; height: 20px; border-radius: 5px; display: grid; place-items: center; font-size: 10px; font-weight: 700; background: var(--surface-3); color: var(--text-muted); }
+.cnt { display: inline-flex; align-items: center; gap: 4px; font-size: var(--fs-small); font-variant-numeric: tabular-nums; color: var(--text-muted); }
+.cnt[data-s="attn"] { color: var(--attn); font-weight: 700; }
+.cnt[data-s="attn"]::before { content: ""; width: 7px; height: 7px; transform: rotate(45deg); background: currentColor; }
+.side-foot { margin-top: auto; padding: 10px 16px 12px; border-top: 1px solid var(--line); font-size: var(--fs-small); color: var(--text-muted); display: grid; gap: 2px; }
+.env-ok::before, .env-bad::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; background: var(--busy); vertical-align: 1px; }
+.env-bad { color: var(--danger); font-weight: 600; }
+.env-bad::before { background: var(--danger); border-radius: 1px; transform: rotate(45deg); }
+.main { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.main > .screen { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; min-height: 52px; padding: 8px var(--sp-4); border-bottom: 1px solid var(--line); background: var(--surface); }
+.bar h1 { margin: 0; font-size: var(--fs-h1); letter-spacing: -0.01em; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bar .sub { margin: 0; color: var(--text-muted); }
+.bar .sp { flex: 1; }
+.crumb { display: inline-flex; align-items: center; gap: 2px; color: var(--text-muted); text-decoration: none; }
+.crumb:hover { color: var(--text); }
+.scroll { flex: 1; min-height: 0; overflow: auto; scroll-padding-bottom: 64px; }
+.search { position: relative; width: 220px; }
+.search .ic { position: absolute; left: 9px; top: 50%; translate: 0 -50%; color: var(--text-muted); }
+.search input { padding-left: 30px; min-height: var(--h-ctl); }
+
+/* dashboard */
+.dash-sum { display: flex; gap: 14px; margin: 0; font-size: var(--fs-small); }
+.dash-sum span { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; }
+.dash-sum [data-s] { color: var(--st-c); }
+.queue { margin: var(--sp-4); border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface); box-shadow: var(--elev-1); overflow: hidden; }
+.queue > h2, .grp-head h2 { margin: 0; font-size: var(--fs-h2); }
+.queue > h2 { padding: 10px 14px 8px; display: flex; gap: 8px; align-items: baseline; }
+.queue > h2 small { font-weight: 400; color: var(--text-muted); font-size: var(--fs-small); }
+.grp { margin: var(--sp-5) var(--sp-4); }
+.grp-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 0 2px 8px; }
+.grp-head h2 { min-width: 0; max-width: 32ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.grp-head h2 a { color: var(--text); text-decoration: none; }
+.grp-head h2 a:hover { text-decoration: underline; }
+.path { color: var(--text-muted); font-size: var(--fs-small); max-width: 40ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.grp-counts { margin: 0; display: flex; gap: 10px; font-size: var(--fs-small); color: var(--text-muted); }
+.grp-counts [data-s="attn"] { color: var(--attn); font-weight: 700; }
+.grp-actions { margin-left: auto; display: flex; gap: 6px; }
+.rows { list-style: none; margin: 0; padding: 0; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg); overflow: hidden; }
+.queue .rows { border: 0; border-radius: 0; border-top: 1px solid var(--line); }
+.row {
+  display: grid; align-items: center; gap: 4px 12px; min-height: 40px; padding: 4px 8px 4px 12px;
+  grid-template-columns: 104px minmax(120px, 1.1fr) 64px minmax(0, 2.4fr) 56px 44px 32px;
+  border-top: 1px solid var(--line); cursor: default;
+}
+.row:first-child { border-top: 0; }
+.row:hover { background: var(--surface-2); }
+.row[data-s="attn"] { background: color-mix(in srgb, var(--attn-soft) 55%, var(--surface)); box-shadow: inset 3px 0 0 var(--attn); }
+.row[data-s="ended"] .c-name .name { color: var(--text-muted); }
+.c-name { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.name { font-weight: 600; color: var(--text); text-decoration: none; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+a.name:hover { text-decoration: underline; }
+.c-what { min-width: 0; display: flex; align-items: center; gap: 8px; }
+.what { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.row[data-s="busy"] .what, .row[data-s="ended"] .what { color: var(--text-muted); }
+.proj-chip { flex: none; font-size: var(--fs-small); color: var(--text-muted); }
+.branch { flex: 0 1 auto; max-width: 22ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-cap); color: var(--text-muted); background: var(--surface-2); border: 1px solid var(--line); padding: 1px 5px; border-radius: var(--r-sm); }
+.c-act, .c-pane { color: var(--text-muted); font-size: var(--fs-small); text-align: right; }
+.c-pane { font-family: var(--mono); }
+.more-row { display: flex; justify-content: center; padding: 8px; border-top: 1px solid var(--line); }
+details.ended > summary { cursor: pointer; padding: 8px 2px; color: var(--text-muted); width: fit-content; min-height: 24px; }
+details.ended > summary:hover { color: var(--text); }
+.empty { margin: var(--sp-8) auto; max-width: 460px; text-align: center; padding: var(--sp-6); }
+.empty .ic { width: 28px; height: 28px; color: var(--text-muted); }
+.empty h2 { font-size: var(--fs-display); margin: 10px 0 6px; letter-spacing: -0.01em; }
+.empty p { color: var(--text-muted); margin: 0 0 16px; }
+.empty .row-actions { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+.no-agents { padding: 14px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; color: var(--text-muted); }
+.no-agents span { flex: 1; min-width: 160px; }
+.sk-row { height: 40px; border-top: 1px solid var(--line); display: grid; grid-template-columns: 90px 160px 1fr 60px; gap: 16px; align-items: center; padding: 0 12px; }
+.sk-row .sk { height: 10px; }
+.stale .rows { opacity: 0.6; }
+.rows { container: rows / inline-size; }
+.proj-grid .grp { margin: 0; }
+/* rows adapt to their own width (sidebar, project column or full window) */
+@container rows (max-width: 860px) {
+  .row { grid-template-columns: 22px minmax(110px, 1fr) minmax(0, 2fr) 52px 32px; }
+  .row .st-l { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  .row .c-model, .row .c-pane { display: none; }
+}
+@container rows (max-width: 600px) {
+  .row { grid-template-columns: 22px minmax(0, 1fr) 44px 32px; }
+  .row .c-what { grid-column: 2 / -1; grid-row: 2; }
+  .row .c-act { grid-row: 1; grid-column: 3; }
+}
+@container win (max-width: 900px) {
+  .app { --side-w: 60px; }
+  .side .label, .side .side-h h2, .brand b, .brand span, .nav kbd, .side .cnt-txt, .side-foot .long { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .side-h { justify-content: center; padding: 12px 0 4px; }
+  .nav a, .side-projects a { justify-content: center; padding: 0; position: relative; min-height: 36px; }
+  .side-projects .cnt { position: absolute; top: 2px; right: 6px; }
+  .side-projects .cnt:not([data-s="attn"]) { display: none; }
+  .brand { justify-content: center; padding: 14px 0; }
+  .side-foot { padding: 10px 0; text-align: center; }
+  .grp-actions .btn .lbl { display: none; }
+  .grp-actions .btn { width: var(--h-ctl); padding: 0; }
+  .search { width: 160px; }
+}
+@container win (max-width: 760px) {
+  .path { display: none; }
+}
+
+/* project view */
+.proj-grid { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: var(--sp-4); padding: var(--sp-4); align-items: start; }
+.proj-grid > section > h2, .card > h2 { margin: 0 0 8px; font-size: var(--fs-h2); }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg); padding: 14px; box-shadow: var(--elev-1); display: grid; gap: 10px; }
+.card + .card { margin-top: var(--sp-3); }
+.card p { margin: 0; }
+.card .muted { color: var(--text-muted); font-size: var(--fs-small); }
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; margin: 0; font-size: var(--fs-small); }
+.kv dt { color: var(--text-muted); }
+.kv dd { margin: 0; font-weight: 600; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { display: inline-flex; align-items: center; min-height: 24px; padding: 0 8px; border-radius: var(--r-sm); border: 1px solid var(--line); background: var(--surface-2); font-size: var(--fs-small); font-family: var(--mono); }
+.limit { display: flex; gap: 8px; align-items: flex-start; padding: 8px 10px; border-radius: var(--r-md); background: var(--idle-soft); color: var(--text); font-size: var(--fs-small); }
+.limit .ic { color: var(--idle); }
+@container win (max-width: 1000px) { .proj-grid { grid-template-columns: minmax(0, 1fr); } }
+
+/* sheet dialog (spawn) */
+dialog.sheet { margin: 0 0 0 auto; height: 100vh; max-height: 100vh; width: min(480px, 100vw); border-radius: 0; border-width: 0 0 0 1px; display: none; }
+dialog.sheet[open] { display: flex; flex-direction: column; animation: sheet-in var(--dur-3) var(--ease); }
+@keyframes sheet-in { from { transform: translateX(24px); opacity: 0; } }
+.dlg-head { display: flex; align-items: flex-start; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--line); }
+.dlg-head h2 { margin: 0; font-size: var(--fs-h1); outline: none; }
+.dlg-head p { margin: 2px 0 0; color: var(--text-muted); }
+.dlg-head .btn { margin-left: auto; }
+.dlg-body { flex: 1; overflow: auto; padding: 16px; display: grid; gap: 16px; align-content: start; }
+.dlg-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--line); background: var(--surface); }
+.dlg-foot .sp { flex: 1; }
+fieldset { border: 0; margin: 0; padding: 0; display: grid; gap: 6px; min-width: 0; }
+legend { font-weight: 600; padding: 0; margin-bottom: 4px; }
+.radio-card { display: flex; gap: 10px; align-items: flex-start; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--r-md); }
+.radio-card:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
+.radio-card input { margin-top: 2px; }
+.radio-card b { display: block; font-weight: 600; }
+.radio-card span { color: var(--text-muted); font-size: var(--fs-small); }
+.counter { justify-self: end; font-size: var(--fs-small); color: var(--text-muted); }
+.alert { display: flex; gap: 10px; padding: 10px 12px; border-radius: var(--r-md); border: 1px solid; }
+.alert p { margin: 0; }
+.alert[data-kind="danger"] { background: var(--danger-soft); border-color: color-mix(in srgb, var(--danger) 45%, transparent); }
+.alert[data-kind="danger"] .ic { color: var(--danger); }
+.alert[data-kind="warn"] { background: var(--idle-soft); border-color: color-mix(in srgb, var(--idle) 45%, transparent); }
+.alert[data-kind="warn"] .ic { color: var(--idle); }
+.alert[data-kind="ok"] { background: var(--busy-soft); border-color: color-mix(in srgb, var(--busy) 45%, transparent); }
+.alert[data-kind="ok"] .ic { color: var(--busy); }
+
+/* rules dialog */
+dialog.dlg-rules { width: min(980px, calc(100vw - 32px)); height: min(720px, calc(100vh - 32px)); display: none; }
+dialog.dlg-rules[open] { display: flex; flex-direction: column; }
+.rules-body { flex: 1; min-height: 0; display: grid; grid-template-columns: 260px minmax(0, 1fr); }
+.files { border-right: 1px solid var(--line); overflow: auto; padding: 8px; display: grid; gap: 2px; align-content: start; background: var(--bg); }
+.files button { display: grid; grid-template-columns: auto 1fr; gap: 2px 8px; align-items: center; text-align: left; padding: 8px; border: 0; border-radius: var(--r-md); background: none; min-height: 44px; }
+.files button:hover { background: var(--surface-2); }
+.files button[aria-current="true"] { background: var(--surface); box-shadow: var(--elev-1); outline: 1px solid var(--line); }
+.files .fp { font-family: var(--mono); font-size: var(--fs-small); overflow-wrap: anywhere; }
+.files .fa { grid-column: 2; font-size: var(--fs-cap); color: var(--text-muted); }
+.act { display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: var(--r-sm); font: 700 11px/1 var(--mono); }
+.act[data-a="create"] { color: var(--busy); background: var(--busy-soft); }
+.act[data-a="update"] { color: var(--idle); background: var(--idle-soft); }
+.act[data-a="unchanged"] { color: var(--ended); background: var(--ended-soft); }
+.act[data-a="foreign"] { color: var(--attn); background: var(--attn-soft); }
+.file-view { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.file-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+.file-head code { font-weight: 600; }
+.file-view .diff { flex: 1; }
+.rules-notes { display: grid; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--line); background: var(--bg); }
+.rules-notes .check { font-size: var(--fs-body); }
+.rules-notes .muted { color: var(--text-muted); font-size: var(--fs-small); margin: 0; }
+.success { flex: 1; overflow: auto; padding: 24px; display: grid; gap: 12px; align-content: start; }
+.success ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; }
+.success li { display: flex; gap: 8px; align-items: center; font-family: var(--mono); font-size: var(--fs-small); }
+.success li .ic { color: var(--busy); }
+.pathbox { display: flex; gap: 8px; align-items: center; padding: 6px 6px 6px 10px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface-2); font: var(--fs-small) var(--mono); overflow-wrap: anywhere; }
+.pathbox span { flex: 1; }
+@container win (max-width: 900px) { .rules-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); } .files { grid-auto-flow: column; grid-auto-columns: minmax(180px, 1fr); overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--line); } }
+
+/* settings */
+.set-grid { display: grid; grid-template-columns: 180px minmax(0, 640px); gap: var(--sp-6); padding: var(--sp-4) var(--sp-4) 96px; }
+.set-index { position: sticky; top: 16px; align-self: start; display: grid; gap: 1px; }
+.set-index a { color: var(--text-muted); text-decoration: none; padding: 4px 8px; border-radius: var(--r-sm); min-height: 28px; display: flex; align-items: center; }
+.set-index a:hover { color: var(--text); background: var(--surface-3); }
+.set-sec { padding: 0 0 var(--sp-6); margin-bottom: var(--sp-6); border-bottom: 1px solid var(--line); display: grid; gap: 14px; scroll-margin-top: 16px; }
+.set-sec h2 { margin: 0; font-size: var(--fs-h2); }
+.set-sec > p { margin: -8px 0 0; color: var(--text-muted); }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 16px; }
+.inline { display: flex; align-items: center; gap: 10px; }
+.stepper { display: inline-flex; align-items: center; gap: 0; }
+.stepper input { width: 64px; text-align: center; border-radius: 0; }
+.stepper .btn { border-radius: 0; min-height: var(--h-ctl-lg); width: var(--h-ctl-lg); padding: 0; }
+.stepper .btn:first-child { border-radius: var(--r-md) 0 0 var(--r-md); border-right: 0; }
+.stepper .btn:last-child { border-radius: 0 var(--r-md) var(--r-md) 0; border-left: 0; }
+.plug-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 4px 12px; max-height: 220px; overflow: auto; padding: 8px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); }
+.plug-list label { font-family: var(--mono); font-size: var(--fs-small); align-items: center; }
+.savebar { position: sticky; bottom: 0; display: flex; align-items: center; gap: 8px; padding: 10px var(--sp-4); background: var(--surface); border-top: 1px solid var(--line); box-shadow: 0 -8px 16px -12px rgb(0 0 0 / 30%); }
+.savebar .sp { flex: 1; }
+.err-sum { margin: 0 0 var(--sp-4); }
+@container win (max-width: 900px) { .set-grid { grid-template-columns: minmax(0, 1fr); } .set-index { display: none; } .grid2 { grid-template-columns: 1fr; } }
+
+/* session */
+.sess-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; color: var(--text-muted); font-size: var(--fs-small); }
+.sess-meta .mono { color: var(--text); }
+.split { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(300px, 38%) minmax(0, 1fr); }
+.pane-tabs { display: none; }
+.hist { min-height: 0; display: flex; flex-direction: column; border-right: 1px solid var(--line); background: var(--surface); }
+.hist-head, .term-head { display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 4px 8px 4px 14px; border-bottom: 1px solid var(--line); }
+.hist-head h2, .term-head h2 { margin: 0; font-size: var(--fs-h3); }
+.hist-scroll { flex: 1; overflow: auto; padding: 8px 0 16px; }
+.older { display: flex; justify-content: center; padding: 6px; }
+.hx-list { list-style: none; margin: 0; padding: 0 14px; display: grid; gap: 2px; }
+.hx { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 0 10px; padding: 8px 0; border-top: 1px solid var(--line); }
+.hx-meta { display: grid; align-content: start; gap: 2px; font-size: var(--fs-small); }
+.hx-who { font-weight: 600; }
+.hx[data-role="user"][data-kind="text"] .hx-who { color: var(--accent); }
+.hx-at { color: var(--text-muted); font-size: var(--fs-cap); }
+.hx > :not(.hx-meta) { grid-column: 2; }
+.hx[data-role="user"][data-kind="text"] .hx-text { background: var(--accent-soft); padding: 6px 10px; border-radius: var(--r-md); }
+.hx-fold summary { cursor: pointer; display: flex; gap: 8px; align-items: center; min-height: 24px; color: var(--text-muted); }
+.hx-fold summary:hover { color: var(--text); }
+.hx-kind { font-size: var(--fs-cap); font-weight: 700; padding: 1px 6px; border-radius: var(--r-sm); background: var(--surface-3); color: var(--text); }
+.hx-sum { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: var(--fs-small); }
+.hx-fold .hx-code, .hx-fold .hx-text { margin-top: 6px; padding: 8px 10px; background: var(--surface-2); border-radius: var(--r-md); }
+.hx .btn.link { justify-self: start; font-size: var(--fs-small); }
+.hx-start { text-align: center; color: var(--text-muted); font-size: var(--fs-small); padding: 8px; }
+.termcol { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.term-head { background: var(--surface); }
+.term-head .live-dot { display: inline-flex; gap: 6px; align-items: center; font-size: var(--fs-small); color: var(--text-muted); }
+.term-head .live-dot::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--busy); }
+.is-paused .term-head .live-dot::before { background: var(--idle); border-radius: 1px; }
+.seg { display: inline-flex; border: 1px solid var(--line-strong); border-radius: var(--r-md); overflow: hidden; }
+.seg button { min-height: 24px; padding: 0 8px; border: 0; background: var(--surface); font-size: var(--fs-small); }
+.seg button[aria-pressed="true"] { background: var(--text); color: var(--surface); }
+.termbox { position: relative; flex: 1; min-height: 120px; display: flex; flex-direction: column; }
+.term { flex: 1; min-height: 0; overflow: auto; padding: 10px 12px; outline: none; }
+.is-pass .term { box-shadow: inset 0 0 0 2px var(--accent); }
+.pass-banner { display: flex; align-items: center; gap: 10px; padding: 6px 12px; background: var(--accent); color: var(--on-accent); font-weight: 600; font-size: var(--fs-small); }
+.pass-banner kbd { color: var(--on-accent); border-color: currentColor; background: transparent; }
+.pass-banner .btn { margin-left: auto; min-height: 24px; background: transparent; color: inherit; border-color: currentColor; }
+.jump { position: absolute; right: 16px; bottom: 12px; box-shadow: var(--elev-2); }
+.paused-note { display: none; }
+.is-paused .paused-note { display: block; position: absolute; left: 12px; bottom: 14px; font-size: var(--fs-small); padding: 2px 8px; border-radius: 999px; background: var(--idle-soft); color: var(--idle); font-weight: 600; }
+.term-over { position: absolute; inset: 0; display: grid; place-items: center; padding: 24px; background: color-mix(in srgb, var(--surface) 86%, transparent); text-align: center; }
+.term-over > div { max-width: 420px; display: grid; gap: 8px; justify-items: center; }
+.term-over h3 { margin: 0; font-size: var(--fs-h2); }
+.term-over p { margin: 0; color: var(--text-muted); }
+.composer { border-top: 1px solid var(--line); background: var(--surface); padding: 8px 12px 10px; display: grid; gap: 6px; }
+.attn-note { display: flex; gap: 8px; align-items: flex-start; padding: 8px 10px; border-radius: var(--r-md); background: var(--attn-soft); font-size: var(--fs-small); }
+.attn-note .st { margin-top: 2px; }
+.attn-note p { margin: 0; }
+.keys { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.keys .lbl { font-size: var(--fs-small); color: var(--text-muted); margin-right: 4px; }
+.key { min-height: 26px; min-width: 32px; padding: 0 8px; border: 1px solid var(--line-strong); border-bottom-width: 2px; border-radius: var(--r-sm); background: var(--surface); font: 600 var(--fs-small)/1 var(--mono); color: var(--text); }
+.key:hover { background: var(--surface-2); }
+.key:active { border-bottom-width: 1px; transform: translateY(1px); }
+.key:disabled { opacity: 0.45; }
+.inbox { display: flex; align-items: flex-end; gap: 8px; padding: 6px 6px 6px 10px; border: 1px solid var(--line-strong); border-radius: var(--r-md); background: var(--surface); }
+.inbox:focus-within { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.inbox .prompt { font: 700 var(--fs-term)/20px var(--mono); color: var(--text-muted); padding-bottom: 4px; }
+.inbox textarea { border: 0; box-shadow: none; padding: 4px 0; min-height: 28px; height: 28px; max-height: 176px; resize: none; font: var(--fs-term)/20px var(--mono); background: transparent; outline: none; }
+.inbox textarea:disabled { background: transparent; }
+.paste-chip { display: inline-flex; gap: 6px; align-items: center; font-size: var(--fs-small); padding: 2px 4px 2px 8px; border-radius: var(--r-sm); background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.paste-chip button { min-height: 20px; border: 0; background: none; color: inherit; text-decoration: underline; }
+.hintline { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: var(--fs-small); color: var(--text-muted); }
+.hintline .echo { margin-left: auto; color: var(--text); font-weight: 600; }
+.rate { color: var(--idle); }
+@container win (max-width: 1000px) {
+  .split { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+  .pane-tabs { display: flex; gap: 4px; padding: 6px 12px; border-bottom: 1px solid var(--line); background: var(--surface); }
+  .pane-tabs button { min-height: 28px; padding: 0 12px; border: 0; border-radius: var(--r-md); background: none; font-weight: 600; color: var(--text-muted); }
+  .pane-tabs button[aria-selected="true"] { background: var(--surface-3); color: var(--text); }
+  .split[data-tab="term"] .hist, .split[data-tab="hist"] .termcol { display: none; }
+  .hist { border-right: 0; }
+  .sess-meta .hide-narrow { display: none; }
+}
+@container win (max-width: 760px) { .hintline .tip { display: none; } .bar .btn .lbl { display: none; } }
+
+/* tray world */
+.desk { height: 100%; overflow: auto; background: linear-gradient(160deg, color-mix(in srgb, var(--accent) 22%, var(--bg)), var(--bg) 60%); }
+.menubar { display: flex; justify-content: flex-end; align-items: center; gap: 16px; height: 28px; padding: 0 14px; background: color-mix(in srgb, var(--surface) 70%, transparent); backdrop-filter: blur(12px); font-size: var(--fs-small); }
+.tray-icon { display: inline-grid; place-items: center; width: 26px; height: 22px; border-radius: 5px; background: var(--surface-3); position: relative; }
+.tray-icon svg { width: 16px; height: 16px; fill: none; stroke: var(--text); stroke-width: 2.2; }
+.tray-icon svg circle:first-child { fill: var(--text); }
+.tray-icon[data-attn]::after { content: ""; position: absolute; right: 2px; top: 2px; width: 6px; height: 6px; border-radius: 50%; background: var(--text); box-shadow: 0 0 0 1.5px var(--surface-3); }
+.tray-wrap { display: flex; flex-wrap: wrap; gap: 24px; justify-content: flex-end; padding: 4px 14px 24px; align-items: flex-start; }
+.tray { width: 380px; padding: 5px; border-radius: 10px; background: color-mix(in srgb, var(--surface) 92%, transparent); border: 1px solid var(--line); box-shadow: var(--elev-3); backdrop-filter: blur(20px); list-style: none; margin: 0; font-size: var(--fs-body); }
+.tray li[role="separator"] { height: 1px; margin: 5px 8px; background: var(--line); }
+.tray .ti { display: flex; align-items: center; gap: 8px; min-height: 26px; padding: 0 10px; border-radius: 5px; }
+.tray .ti.act-i:hover, .tray .ti.act-i:focus-visible { background: var(--accent); color: var(--on-accent); outline: none; }
+.tray .ti.act-i:hover .cnt, .tray .ti.act-i:hover .tsub { color: inherit; }
+.tray .ti.status { color: var(--text-muted); font-size: var(--fs-small); }
+.tray .ti .tn { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tray .tick { width: 14px; text-align: center; }
+.tray .tsub { color: var(--text-muted); font-size: var(--fs-small); }
+.tray-notes { max-width: 420px; display: grid; gap: 12px; }
+.tray-notes .card h2 { font-size: var(--fs-h2); }
+
+/* browser world */
+.browser { height: 100%; display: flex; flex-direction: column; }
+.chrome { display: flex; align-items: center; gap: 10px; height: 38px; padding: 0 12px; background: var(--bg-alt); border-bottom: 1px solid var(--line); }
+.chrome .dots { display: flex; gap: 6px; }
+.chrome .dots i { width: 10px; height: 10px; border-radius: 50%; background: var(--line-strong); }
+.chrome .url { flex: 1; max-width: 520px; margin: 0 auto; height: 24px; display: flex; align-items: center; padding: 0 10px; border-radius: 6px; background: var(--surface); color: var(--text-muted); font-size: var(--fs-small); }
+.browser .bar { background: var(--surface); }
+</style>
+</head>
+<body>
+<header id="mock" class="mock" aria-label="Mockup controls (not part of the design)"></header>
+<div class="stage">
+<div class="win">
+<a class="skip" href="#main">Skip to content</a>
+<svg xmlns="http://www.w3.org/2000/svg" class="sprite" aria-hidden="true" style="display:none">
+  <symbol id="i-logo" viewBox="0 0 24 24"><circle cx="6" cy="12" r="3"/><circle cx="18" cy="6" r="3"/><circle cx="18" cy="18" r="3"/><path d="M8.6 10.6 15.4 7.4M8.6 13.4l6.8 3.2"/></symbol>
+  <symbol id="i-grid" viewBox="0 0 16 16"><rect x="2" y="2" width="5" height="5" rx="1"/><rect x="9" y="2" width="5" height="5" rx="1"/><rect x="2" y="9" width="5" height="5" rx="1"/><rect x="9" y="9" width="5" height="5" rx="1"/></symbol>
+  <symbol id="i-gear" viewBox="0 0 16 16"><circle cx="8" cy="8" r="2.4"/><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 16 16"><path d="M8 3v10M3 8h10"/></symbol>
+  <symbol id="i-play" viewBox="0 0 16 16"><path d="M5 3.5v9l7-4.5z"/></symbol>
+  <symbol id="i-spawn" viewBox="0 0 16 16"><circle cx="6" cy="5.5" r="2.5"/><path d="M1.5 13.5c.6-2.6 2.4-4 4.5-4s3.9 1.4 4.5 4M12.5 5v5M10 7.5h5"/></symbol>
+  <symbol id="i-term" viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><path d="M4.5 6l2 2-2 2M8.5 10.5h3"/></symbol>
+  <symbol id="i-ext" viewBox="0 0 16 16"><path d="M9 2.5h4.5V7M13.5 2.5 7.5 8.5M12 9.5v3.5a1 1 0 0 1-1 1H3.5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1H7"/></symbol>
+  <symbol id="i-back" viewBox="0 0 16 16"><path d="M10 3 5 8l5 5"/></symbol>
+  <symbol id="i-search" viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3.5 3.5"/></symbol>
+  <symbol id="i-kbd" viewBox="0 0 16 16"><rect x="1.5" y="4" width="13" height="8.5" rx="1.5"/><path d="M4 7h1M7 7h1M10 7h1M4.5 10h7"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 16 16"><rect x="5" y="5" width="8.5" height="8.5" rx="1.5"/><path d="M3 10.5V3.5A1 1 0 0 1 4 2.5h6.5"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 16 16"><path d="M1.5 4a1 1 0 0 1 1-1h3.5l1.5 1.5h6a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1z"/></symbol>
+  <symbol id="i-warn" viewBox="0 0 16 16"><path d="M8 2 1.5 13.5h13z"/><path d="M8 6.5v3.5M8 11.8v.2"/></symbol>
+  <symbol id="i-check" viewBox="0 0 16 16"><path d="m3 8.5 3 3 7-7"/></symbol>
+  <symbol id="i-x" viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8"/></symbol>
+  <symbol id="i-down" viewBox="0 0 16 16"><path d="M8 3v10M3.5 8.5 8 13l4.5-4.5"/></symbol>
+  <symbol id="i-history" viewBox="0 0 16 16"><path d="M2.5 8a5.5 5.5 0 1 0 1.6-3.9M2.5 2.5v2.6h2.6M8 5v3.2l2 1.3"/></symbol>
+  <symbol id="i-send" viewBox="0 0 16 16"><path d="M8 13V3M3.5 7.5 8 3l4.5 4.5"/></symbol>
+</svg>
+
+
+<!-- ================= APP WORLD ================= -->
+<div class="app" data-world="app">
+  <nav class="side" aria-label="nika">
+    <div class="brand"><svg class="logo" aria-hidden="true"><use href="#i-logo"/></svg><b>nika</b><span>0.2</span></div>
+    <div class="nav">
+      <a href="#dashboard" data-go="dashboard" data-nav="dashboard"><svg class="ic" aria-hidden="true"><use href="#i-grid"/></svg><span class="label">Dashboard</span><kbd>⌘1</kbd></a>
+      <a href="#settings" data-go="settings" data-nav="settings"><svg class="ic" aria-hidden="true"><use href="#i-gear"/></svg><span class="label">Settings</span><kbd>⌘,</kbd></a>
+    </div>
+    <div class="side-h"><h2 id="side-p">Projects</h2><button type="button" class="btn icon ghost" data-add aria-label="Add project (⌘O)" title="Add project (⌘O)"><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg></button></div>
+    <ul class="side-projects" id="side-projects" aria-labelledby="side-p"></ul>
+    <div class="side-foot" id="env" aria-label="Environment"></div>
+  </nav>
+
+  <main class="main" id="main" tabindex="-1">
+    <!-- ---------- 1. Dashboard ---------- -->
+    <section class="screen" data-screen="dashboard" data-title="1 · Dashboard" data-nav-as="dashboard" data-states="normal,many,loading,empty-projects,empty-agents,error-tmux,error-claude,offline" aria-labelledby="dash-h">
+      <header class="bar">
+        <h1 id="dash-h">Agents</h1>
+        <p class="dash-sum" id="dash-sum" aria-label="Totals"></p>
+        <span class="sp"></span>
+        <label class="search"><span class="sr-only">Filter agents</span><svg class="ic" aria-hidden="true"><use href="#i-search"/></svg><input type="search" id="dash-filter" placeholder="Filter  ⌘F" autocomplete="off" spellcheck="false"></label>
+        <label class="check" style="align-items:center"><input type="checkbox" id="dash-ended"> Show ended</label>
+      </header>
+      <div class="banner" data-kind="danger" role="alert" data-when="error-tmux"><svg class="ic" aria-hidden="true"><use href="#i-warn"/></svg><p><strong>tmux not found</strong>nika needs tmux to start agents, mirror their panes and type into them. Install it with <code>brew install tmux</code>, then check again. The list below still updates.</p><button type="button" class="btn">Check again</button></div>
+      <div class="banner" data-kind="warn" role="alert" data-when="error-claude"><svg class="ic" aria-hidden="true"><use href="#i-warn"/></svg><p><strong>Claude Code not found</strong>Starting an orchestrator and spawning agents are off until <code>claude</code> is on your PATH. Running agents still show up here.</p><button type="button" class="btn">Check again</button></div>
+      <div class="banner" data-kind="danger" role="alert" data-when="offline"><svg class="ic" aria-hidden="true"><use href="#i-warn"/></svg><p><strong>Lost connection to the nika server</strong>Showing the list from 14:02. Retrying every 3 seconds.</p><button type="button" class="btn">Retry now</button></div>
+      <div class="scroll" id="dash-body"></div>
+    </section>
+
+    <!-- ---------- 2. Project view ---------- -->
+    <section class="screen" data-screen="project" data-title="2 · Project view" data-states="outdated,nika-limit,foreign,none" aria-labelledby="proj-h">
+      <header class="bar">
+        <a class="crumb" href="#dashboard" data-go="dashboard"><svg class="ic" aria-hidden="true"><use href="#i-back"/></svg>Dashboard</a>
+        <h1 id="proj-h"></h1>
+        <span id="proj-rules"></span>
+        <span class="sp"></span>
+        <span id="proj-actions" style="display:flex;gap:6px"></span>
+      </header>
+      <div class="scroll"><div class="proj-grid">
+        <section aria-labelledby="proj-agents-h"><h2 id="proj-agents-h">Agents</h2><div id="proj-agents"></div></section>
+        <aside aria-label="Project setup" id="proj-setup"></aside>
+      </div></div>
+    </section>
+
+    <!-- ---------- 4. Settings ---------- -->
+    <section class="screen" data-screen="settings" data-title="4 · Settings" data-nav-as="settings" data-states="default,errors" aria-labelledby="set-h">
+      <header class="bar"><h1 id="set-h">Settings</h1><p class="sub">Saved to <code>~/.config/nika/config.json</code></p></header>
+      <div class="scroll">
+      <form data-settings novalidate id="set-form">
+        <div class="set-grid">
+          <nav class="set-index" aria-label="Settings sections">
+            <a href="#s-models">Models</a><a href="#s-rc">Remote Control</a><a href="#s-perm">Permission mode</a><a href="#s-panes">Panes and limits</a><a href="#s-plugins">Plugins</a><a href="#s-tpl">Rules template</a>
+          </nav>
+          <div>
+            <div class="alert err-sum" data-kind="danger" role="alert" data-err-summary hidden tabindex="-1"><svg class="ic" aria-hidden="true"><use href="#i-warn"/></svg><p><strong data-err-n></strong> Each one is marked below.</p></div>
+            <section class="set-sec" id="s-models" aria-labelledby="s-models-h">
+              <h2 id="s-models-h">Models</h2>
+              <p>Which model plays each role when nika starts an orchestrator or spawns an agent.</p>
+              <datalist id="model-list"><option value="opus"><option value="sonnet"><option value="haiku"><option value="fable"><option value="claude-fable-5-1"><option value="claude-opus-5-5"><option value="claude-sonnet-5-5"><option value="claude-haiku-5-5"></datalist>
+              <div class="grid2">
+                <div class="field"><label for="set-model-orch">Orchestrator</label><input type="text" id="set-model-orch" data-rx="model" list="model-list" value="claude-fable-5-1" aria-describedby="set-model-orch-err" spellcheck="false"><p class="err" id="set-model-orch-err" hidden></p></div>
+                <div class="field"><label for="set-model-reason">Reasoner</label><input type="text" id="set-model-reason" data-rx="model" list="model-list" value="claude-opus-5-5" aria-describedby="set-model-reason-err" spellcheck="false"><p class="err" id="set-model-reason-err" hidden></p></div>
+                <div class="field"><label for="set-model-builder">Builder</label><input type="text" id="set-model-builder" data-rx="model" list="model-list" value="claude-sonnet-5-5" aria-describedby="set-model-builder-help set-model-builder-err" spellcheck="false"><p class="help" id="set-model-builder-help">Model id or alias: opus, sonnet, haiku, fable.</p><p class="err" id="set-model-builder-err" hidden></p></div>
+                <div class="field"><label for="set-model-scout">Scout</label><input type="text" id="set-model-scout" data-rx="model" list="model-list" value="claude-haiku-5-5" aria-describedby="set-model-scout-err" spellcheck="false"><p class="err" id="set-model-scout-err" hidden></p></div>
+              </div>
+            </section>
+            <section class="set-sec" id="s-rc" aria-labelledby="s-rc-h">
+              <h2 id="s-rc-h">Remote Control</h2>
+              <p>Lets you follow and answer new agents from claude.ai. Off by default.</p>
+              <label class="inline"><input type="checkbox" role="switch" class="switch" id="set-rc" aria-describedby="set-rc-help"> <span>Make new agents reachable from claude.ai</span></label>
+              <p class="help" id="set-rc-help">Applies to agents started after you save. Running agents keep their setting.</p>
+              <div class="field" style="max-width:320px"><label for="set-rc-prefix">Name prefix</label><input type="text" id="set-rc-prefix" data-rx="prefix" placeholder="project name" aria-describedby="set-rc-prefix-help set-rc-prefix-err" spellcheck="false"><p class="help" id="set-rc-prefix-help">Agents appear as <code>prefix-agent-name</code>. Empty uses the project name.</p><p class="err" id="set-rc-prefix-err" hidden></p></div>
+            </section>
+            <section class="set-sec" id="s-perm" aria-labelledby="s-perm-h">
+              <h2 id="s-perm-h">Permission mode</h2>
+              <p>What new agents may do without asking. You can override it per agent when you spawn one.</p>
+              <fieldset><legend class="sr-only">Permission mode for new agents</legend>
+                <label class="radio-card"><input type="radio" name="perm" value="default" checked><span><b>Default</b><span>Claude Code’s own default: asks before the first use of each tool. nika passes no flag.</span></span></label>
+                <label class="radio-card"><input type="radio" name="perm" value="manual"><span><b>Manual</b><span>Same behaviour as Default, passed explicitly as <code>--permission-mode manual</code>.</span></span></label>
+                <label class="radio-card"><input type="radio" name="perm" value="acceptEdits"><span><b>Accept edits</b><span>Edits files and runs common file commands (mkdir, mv, cp) in the project without asking.</span></span></label>
+                <label class="radio-card"><input type="radio" name="perm" value="plan"><span><b>Plan</b><span>Reads and explores; does not edit source files.</span></span></label>
+                <label class="radio-card"><input type="radio" name="perm" value="auto"><span><b>Auto</b><span>No routine prompts; a background check reviews shell commands and network requests first.</span></span></label>
+                <label class="radio-card"><input type="radio" name="perm" value="dontAsk"><span><b>Don’t ask</b><span>Never prompts: anything not allowed in advance is refused.</span></span></label>
+              </fieldset>
+              <p class="help">Bypass permissions is not offered. nika refuses it for every agent it starts.</p>
+            </section>
+            <section class="set-sec" id="s-panes" aria-labelledby="s-panes-h">
+              <h2 id="s-panes-h">Panes and limits</h2>
+              <fieldset><legend>Where new agent panes open</legend>
+                <label class="radio-card"><input type="radio" name="place" value="beside" checked><span><b>Beside</b><span>A new pane to the right in the project’s tmux window.</span></span></label>
+                <label class="radio-card"><input type="radio" name="place" value="under-last"><span><b>Under the last agent</b><span>Stacks below the most recently started agent pane.</span></span></label>
+              </fieldset>
+              <div class="field"><label for="set-max">Agents per project at once</label>
+                <div class="inline"><span class="stepper"><button type="button" class="btn" data-step="-1" aria-label="One fewer">−</button><input type="number" id="set-max" min="1" max="8" value="3" aria-describedby="set-max-help set-max-err"><button type="button" class="btn" data-step="1" aria-label="One more">+</button></span></div>
+                <p class="help" id="set-max-help">1 to 8. Counts only agents nika spawned that are still running.</p><p class="err" id="set-max-err" hidden></p></div>
+            </section>
+            <section class="set-sec" id="s-plugins" aria-labelledby="s-plugins-h">
+              <h2 id="s-plugins-h">Plugins per project</h2>
+              <p>Installed plugins to turn on in a project. nika writes them into <code>.claude/settings.local.json</code> when you apply rules.</p>
+              <div class="field" style="max-width:320px"><label for="set-plug-proj">Project</label><select id="set-plug-proj"><option>demo-api</option><option selected>web-console</option><option>infra-scripts-and-deployment-tooling-for-staging</option><option>docs-site</option></select></div>
+              <fieldset><legend>Plugins for web-console <span class="help" style="font-weight:400">(1 of 6 on)</span></legend><div class="plug-list" id="set-plugs"></div></fieldset>
+            </section>
+            <section class="set-sec" id="s-tpl" aria-labelledby="s-tpl-h">
+              <h2 id="s-tpl-h">Rules template</h2>
+              <div class="field" style="max-width:420px"><label for="set-tpl">Template for rules/orchestration.md</label><select id="set-tpl" aria-describedby="set-tpl-help"><option selected>Built-in template (version 4)</option><option>team-rules.md (local copy)</option></select><p class="help" id="set-tpl-help">Local templates live in <code>~/.config/nika/templates/</code>. Projects whose rules came from another template show “Rules outdated”.</p></div>
+            </section>
+          </div>
+        </div>
+        <div class="savebar" data-dirty hidden><span data-dirty-n>Unsaved changes</span><span class="sp"></span><button type="reset" class="btn">Discard</button><button type="submit" class="btn primary">Save changes</button></div>
+      </form>
+      </div>
+    </section>
+
+    <!-- ---------- 5. Session window ---------- -->
+    <section class="screen" data-screen="session" data-title="5 · Session window" data-states="live,paused,passthrough,permission,pane-gone,rate-limited,tmux-error" aria-labelledby="sess-h">
+      <header class="bar">
+        <a class="crumb" href="#project" data-go="project/nika-limit"><svg class="ic" aria-hidden="true"><use href="#i-back"/></svg><span id="sess-proj">demo-api</span></a>
+        <h1 id="sess-h">builder-1</h1>
+        <span id="sess-st"></span>
+        <span class="sess-meta"><span class="model" id="sess-model">sonnet</span><span class="hide-narrow">pane <span class="mono" id="sess-pane">%12</span></span><span class="hide-narrow mono">feat/pagination</span></span>
+        <span class="sp"></span>
+        <button type="button" class="btn" title="Switch tmux to this pane"><svg class="ic" aria-hidden="true"><use href="#i-term"/></svg><span class="lbl">Focus in tmux</span></button>
+        <a class="btn" href="#session" title="Opens claude.ai in your browser" onclick="event.preventDefault();toast('Opens claude.ai/code/session_01AbCdEf in your browser')"><svg class="ic" aria-hidden="true"><use href="#i-ext"/></svg><span class="lbl">Open in claude.ai</span><span class="sr-only">(opens your browser)</span></a>
+      </header>
+      <div class="pane-tabs" role="tablist" aria-label="Session panels"><button type="button" role="tab" id="tab-term" aria-selected="true" aria-controls="sess-term">Terminal</button><button type="button" role="tab" id="tab-hist" aria-selected="false" aria-controls="sess-hist">Transcript</button></div>
+      <div class="split" id="sess-split" data-tab="term" data-session data-agent="builder-1" data-pane="%12">
+        <section class="hist" id="sess-hist" aria-labelledby="hist-h">
+          <div class="hist-head"><h2 id="hist-h">Transcript</h2><span class="sp" style="flex:1"></span><span class="help">13 entries</span></div>
+          <div class="hist-scroll" tabindex="0" aria-label="Transcript, oldest first">
+            <div class="older" data-older><button type="button" class="btn" id="load-older">Load older entries</button></div>
+            <ol class="hx-list" id="hx-list"></ol>
+          </div>
+        </section>
+        <section class="termcol" id="sess-term" aria-labelledby="term-h">
+          <div class="term-head">
+            <h2 id="term-h" class="sr-only">Live terminal</h2>
+            <span class="live-dot" id="live-label">Live · 92 × 30</span>
+            <span class="sp" style="flex:1"></span>
+            <span class="seg" role="group" aria-label="Terminal colours"><button type="button" aria-pressed="true" data-surface="dark">Dark</button><button type="button" aria-pressed="false" data-surface="light">Light</button></span>
+            <button type="button" class="btn" data-pass-toggle aria-pressed="false" title="Type straight into the pane (Ctrl+])"><svg class="ic" aria-hidden="true"><use href="#i-kbd"/></svg><span class="lbl">Type into pane</span><kbd>⌃]</kbd></button>
+          </div>
+          <div class="pass-banner" data-pass hidden role="status">Keys go straight to pane %12. Press <kbd>Ctrl</kbd>+<kbd>]</kbd> to leave. <button type="button" class="btn" data-pass-toggle>Leave</button></div>
+          <div class="termbox">
+            <div class="term" data-term tabindex="0" role="region" aria-label="Live terminal of builder-1, pane %12"><pre class="term-pre" data-term-pre></pre></div>
+            <span class="paused-note">Paused while you scroll</span>
+            <button type="button" class="btn primary jump" data-live hidden><svg class="ic" aria-hidden="true"><use href="#i-down"/></svg>Jump to live</button>
+            <div class="term-over" data-when="pane-gone"><div><h3>Pane %12 is gone</h3><p>The agent ended or its pane was closed. The transcript stays available on the left.</p><button type="button" class="btn" data-go="dashboard">Back to the dashboard</button></div></div>
+            <div class="term-over" data-when="tmux-error" role="alert"><div><h3>tmux did not answer</h3><p>tmux_failed: capture-pane exited with code 1. nika retries every 2 seconds.</p><button type="button" class="btn">Retry now</button></div></div>
+          </div>
+          <div class="composer">
+            <div class="attn-note" data-when="permission" role="status"><span class="st" data-s="attn"><span class="st-g" aria-hidden="true"></span></span><p><strong>reviewer-2 is asking to run a command.</strong> Answer in the terminal: <kbd>↑</kbd> <kbd>↓</kbd> to choose, <kbd>Enter</kbd> to confirm, <kbd>Esc</kbd> to refuse.</p></div>
+            <div class="keys" role="group" aria-label="Send a key to the pane">
+              <span class="lbl" aria-hidden="true">Keys</span>
+              <button type="button" class="key" data-key="Escape" title="Send Escape (interrupts Claude)">Esc</button>
+              <button type="button" class="key" data-key="C-c" title="Send Ctrl-C">Ctrl-C</button>
+              <button type="button" class="key" data-key="Tab">Tab</button>
+              <button type="button" class="key" data-key="BTab" title="Shift-Tab cycles Claude’s permission mode">Shift-Tab</button>
+              <button type="button" class="key" data-key="Up" aria-label="Up arrow">↑</button>
+              <button type="button" class="key" data-key="Down" aria-label="Down arrow">↓</button>
+              <button type="button" class="key" data-key="Left" aria-label="Left arrow">←</button>
+              <button type="button" class="key" data-key="Right" aria-label="Right arrow">→</button>
+              <button type="button" class="key" data-key="Enter">Enter</button>
+            </div>
+            <div class="inbox">
+              <span class="prompt" aria-hidden="true">›</span>
+              <label for="composer" class="sr-only">Message to builder-1. Enter sends, Shift+Enter adds a line, Escape goes to the pane.</label>
+              <textarea id="composer" data-composer rows="1" spellcheck="false" placeholder="Message builder-1…"></textarea>
+              <span class="paste-chip" data-paste-chip hidden><span data-paste-n></span><button type="button" data-paste-clear>Clear</button></span>
+              <button type="button" class="btn primary icon" data-send aria-label="Send (Enter)" title="Send (Enter)"><svg class="ic" aria-hidden="true"><use href="#i-send"/></svg></button>
+            </div>
+            <div class="hintline">
+              <span class="tip"><kbd>Enter</kbd> send</span><span class="tip"><kbd>⇧ Enter</kbd> new line</span><span class="tip"><kbd>Esc</kbd> goes to the pane</span><span class="tip"><kbd>⌃]</kbd> type into pane</span>
+              <span class="rate" data-when="rate-limited" role="alert">Too many keys at once: nika sends up to 20 a second. Your text is kept; sending again in 1 s.</span>
+              <span class="echo" data-echo aria-live="polite"></span>
+            </div>
+          </div>
+        </section>
+      </div>
+    </section>
+  </main>
+</div>
+
+<!-- ================= TRAY WORLD ================= -->
+<div data-world="tray" hidden>
+  <section class="screen desk" data-screen="tray" data-title="6 · Tray menu + Add project" data-states="menu,attention,add-project" aria-label="Desktop with the nika tray menu (mock)">
+    <div class="menubar" aria-hidden="true"><span>Wi-Fi</span><span class="tray-icon" id="tray-icon"><svg><use href="#i-logo"/></svg></span><span>Sun 14:02</span></div>
+    <div class="tray-wrap">
+      <div class="tray-notes">
+        <div class="card"><h2>Tray icon</h2><p>Monochrome template image. A dot appears on the icon while any agent needs you; the menu’s first line says how many. The icon never blinks.</p><p class="muted">Linux: the same menu through the system tray (AppIndicator). The status line is a disabled item.</p></div>
+        <div class="card" data-when="add-project"><h2>Add project</h2><p>Entry points: the + next to Projects in the sidebar, “Add project…” in this menu, <kbd>⌘O</kbd>, and the empty dashboard. The folder picker itself is the system dialog.</p>
+          <div class="chips"><button type="button" class="btn primary" data-sim="done"><svg class="ic" aria-hidden="true"><use href="#i-folder"/></svg>Add project…</button><button type="button" class="btn" data-sim="cancelled">Simulate cancel</button><button type="button" class="btn" data-sim="busy">Simulate picker already open</button></div>
+          <p class="muted">Pending shows a spinner toast while the system dialog is open. Done adds the project to the sidebar and offers Apply rules. Cancel is quiet.</p></div>
+      </div>
+      <ul class="tray" role="menu" aria-label="nika tray menu" id="tray-menu"></ul>
+    </div>
+  </section>
+</div>
+
+<!-- ================= BROWSER WORLD ================= -->
+<div data-world="browser" hidden>
+  <section class="screen browser" data-screen="browser" data-title="7 · Browser tier (read-only)" data-states="normal" aria-labelledby="br-h">
+    <div class="chrome" aria-hidden="true"><span class="dots"><i></i><i></i><i></i></span><span class="url">127.0.0.1:3335</span></div>
+    <header class="bar"><svg class="ic" aria-hidden="true" style="width:20px;height:20px"><use href="#i-logo"/></svg><h1 id="br-h">nika</h1><p class="dash-sum" id="br-sum"></p><span class="sp"></span><label class="search"><span class="sr-only">Filter agents</span><svg class="ic" aria-hidden="true"><use href="#i-search"/></svg><input type="search" placeholder="Filter" autocomplete="off"></label></header>
+    <div class="banner" data-kind="info" role="note"><svg class="ic" aria-hidden="true"><use href="#i-term"/></svg><p><strong>Read-only view</strong>Starting agents, typing into sessions, rules and settings live in the nika app. Run <code>nika app</code> to open it.</p></div>
+    <div class="scroll" id="br-body"></div>
+  </section>
+</div>
+
+<!-- ---------- 2b. Spawn agent (sheet) ---------- -->
+<dialog class="sheet" data-screen="spawn" data-host="project" data-title="2b · Spawn agent (sheet)" data-states="form,errors,limit,starting" aria-labelledby="sp-h" aria-describedby="sp-d">
+  <form method="dialog" novalidate id="spawn-form" style="display:contents">
+    <div class="dlg-head"><div><h2 id="sp-h" tabindex="-1">Spawn agent</h2><p id="sp-d">In web-console. Opens a new tmux pane and starts Claude Code with your brief.</p></div><button type="button" class="btn icon ghost" data-close aria-label="Close"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button></div>
+    <div class="dlg-body">
+      <div class="alert" data-kind="danger" role="alert" data-when="limit"><svg class="ic" aria-hidden="true"><use href="#i-warn"/></svg><p><strong>3 of 3 agents are already running in demo-api.</strong> Wait for one to finish, or raise “Agents per project” in Settings.</p></div>
+      <div class="field"><label for="sp-name">Name</label><input type="text" id="sp-name" data-rx="agent" value="builder-3" autofocus aria-describedby="sp-name-help sp-name-err" spellcheck="false"><p class="help" id="sp-name-help">Lowercase letters, digits and dashes. Used for the pane title and the report file.</p><p class="err" id="sp-name-err" hidden></p></div>
+      <div class="field"><label for="sp-model">Model</label><select id="sp-model"><option>Builder · claude-sonnet-5-5</option><option>Reasoner · claude-opus-5-5</option><option>Scout · claude-haiku-5-5</option><option>Orchestrator · claude-fable-5-1</option></select></div>
+      <div class="field"><label for="sp-brief">Brief</label><textarea id="sp-brief" rows="8" aria-describedby="sp-brief-help sp-brief-err">Fix the overflowing settings table on screens under 760 px wide. Keep the column order. Add a visual test for 720 px.</textarea><p class="help" id="sp-brief-help">The agent’s first message. It never passes through the tmux command line.</p><p class="err" id="sp-brief-err" hidden></p><span class="counter num">118 / 65,536 bytes</span></div>
+      <div class="grid2">
+        <div class="field"><label for="sp-perm">Permission mode</label><select id="sp-perm"><option>Default (from settings)</option><option>Manual</option><option>Accept edits</option><option>Plan</option><option>Auto</option><option>Don’t ask</option></select></div>
+        <fieldset><legend>Pane</legend><label class="check"><input type="radio" name="sp-place" checked> Beside</label><label class="check"><input type="radio" name="sp-place"> Under builder-ui (%22)</label></fieldset>
+      </div>
+      <label class="check"><input type="checkbox" class="switch" role="switch"> Reachable from claude.ai (Remote Control)</label>
+    </div>
+    <div class="dlg-foot"><span class="help" data-when="form errors starting">2 of 3 agents running in web-console</span><span class="sp"></span><button type="button" class="btn lg" data-close>Cancel</button><button type="button" class="btn primary lg" id="sp-go" data-when="form errors limit">Spawn agent</button><button type="button" class="btn primary lg" aria-busy="true" disabled data-when="starting"><span class="spin" aria-hidden="true"></span>Starting builder-3…</button></div>
+  </form>
+</dialog>
+
+<!-- ---------- 3. Apply rules dialog ---------- -->
+<dialog class="dlg-rules" data-screen="rules" data-host="project" data-title="3 · Apply rules (dialog)" data-states="preview,foreign,applying,success,conflict,refused" aria-labelledby="ru-h" aria-describedby="ru-d">
+  <div class="dlg-head"><div><h2 id="ru-h" tabindex="-1">Apply rules to web-console</h2><p id="ru-d">Review each change. nika writes only after you confirm and keeps a backup outside the repository. It never runs git.</p></div><button type="button" class="btn icon ghost" data-close aria-label="Close"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button></div>
+  <div class="rules-body" data-when="preview foreign applying conflict refused">
+    <nav class="files" aria-label="Files to change" id="ru-files"></nav>
+    <section class="file-view" aria-live="off" id="ru-view"></section>
+  </div>
+  <div class="rules-notes" data-when="preview foreign applying">
+    <div class="alert" data-kind="warn" id="ru-warn"><svg class="ic" aria-hidden="true"><use href="#i-warn"/></svg><div><p><strong>.claude/settings.local.json is not gitignored.</strong> It may end up in a commit.</p><label class="check"><input type="checkbox" id="ru-gitignore"> Also add it to <code>.gitignore</code></label></div></div>
+    <label class="check" data-when="foreign"><input type="checkbox" id="ru-foreign"> <span>Replace <code>rules/orchestration.md</code>, which nika did not write. A backup is kept.</span></label>
+    <p class="muted">Backup folder: <code id="ru-backup"></code></p>
+  </div>
+  <div class="alert" data-kind="danger" role="alert" data-when="conflict" style="margin:12px 16px"><svg class="ic" aria-hidden="true"><use href="#i-warn"/></svg><p><strong>The files changed after this preview, so nothing was written.</strong> Refresh the preview to see the current changes, then apply again.</p></div>
+  <div class="alert" data-kind="danger" role="alert" data-when="refused" style="margin:12px 16px"><svg class="ic" aria-hidden="true"><use href="#i-warn"/></svg><p><strong>nika refused to write: rules/ is a symbolic link (ESYMLINK).</strong> Nothing was changed. Replace the link with a real folder, then try again.</p></div>
+  <div class="success" data-when="success" role="status">
+    <div class="alert" data-kind="ok"><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg><p><strong>Rules applied to web-console.</strong> 3 files written. Review and commit them yourself; nika did not run git.</p></div>
+    <ul><li><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg>rules/orchestration.md</li><li><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg>CLAUDE.md</li><li><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg>.claude/settings.local.json</li></ul>
+    <p class="help">Previous versions are in the backup folder:</p>
+    <div class="pathbox"><span>~/.local/state/nika/backups/1b2c3d4e5f6a7b8c/2026-11-08T14-02-11Z</span><button type="button" class="btn icon ghost" aria-label="Copy backup path" onclick="toast('Copied backup path')"><svg class="ic" aria-hidden="true"><use href="#i-copy"/></svg></button></div>
+  </div>
+  <div class="dlg-foot">
+    <span class="help" data-when="preview foreign applying" id="ru-sum"></span><span class="sp"></span>
+    <button type="button" class="btn lg" data-close data-when="preview foreign applying conflict refused">Cancel</button>
+    <button type="button" class="btn primary lg" id="ru-apply" data-when="preview foreign">Apply rules</button>
+    <button type="button" class="btn primary lg" disabled aria-busy="true" data-when="applying"><span class="spin" aria-hidden="true"></span>Applying…</button>
+    <button type="button" class="btn primary lg" data-when="conflict" data-go="rules/preview">Refresh preview</button>
+    <button type="button" class="btn primary lg" data-close data-when="success" autofocus>Done</button>
+  </div>
+</dialog>
+
+<div id="announce" class="sr-only" aria-live="polite"></div>
+<div id="toasts" class="toasts"></div>
+</div>
+</div>
+
+<script>
+window.VARIANT = { name: 'Variant A: Console', file: 'a' };
+</script>
+<script>
+/* ===== shared mockup runtime (identical in a.html, b.html, c.html) =====
+   Synthetic data only. Every data string is rendered with textContent, as the real app must do. */
+'use strict';
+const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+
+/** Same contract as h() in public/app.js: text goes through textContent, never innerHTML. */
+function h(tag, attrs, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs ?? {})) {
+    if (v === null || v === undefined || v === false) continue;
+    if (k === 'class') e.className = v;
+    else if (k === 'text') e.textContent = v;
+    else if (k.startsWith('on')) e.addEventListener(k.slice(2), v);
+    else e.setAttribute(k, v === true ? '' : String(v));
+  }
+  for (const c of kids.flat(Infinity)) {
+    if (c === null || c === undefined || c === false) continue;
+    e.append(c instanceof Node ? c : document.createTextNode(String(c)));
+  }
+  return e;
+}
+
+/* ---------- synthetic data ---------- */
+const U = (d) => `${d.repeat(8)}-${d.repeat(4)}-4${d.repeat(3)}-8${d.repeat(3)}-${d.repeat(12)}`;
+const PROJECTS = [
+  { key: '0a1b2c3d4e5f6a7b', name: 'demo-api', dir: '~/projects/demo-api', rules: { state: 'nika', settingsIgnored: true, git: true }, plugins: ['lint-helper@demo-market', 'test-runner@demo-market'] },
+  { key: '1b2c3d4e5f6a7b8c', name: 'web-console', dir: '~/projects/web-console', rules: { state: 'outdated', settingsIgnored: false, git: true }, plugins: ['reply-style@demo-market'] },
+  { key: '2c3d4e5f6a7b8c9d', name: 'infra-scripts-and-deployment-tooling-for-staging', dir: '~/projects/infra-scripts-and-deployment-tooling-for-staging', rules: { state: 'foreign', settingsIgnored: true, git: true }, plugins: [] },
+  { key: '3d4e5f6a7b8c9d0e', name: 'docs-site', dir: '~/projects/docs-site', rules: { state: 'none', settingsIgnored: false, git: true }, plugins: [] },
+];
+const UNREGISTERED = [{ key: 'repo:scratch-notes', name: 'scratch-notes', dir: '~/scratch-notes', registered: false }];
+const PLUGINS = ['docs-search@demo-market', 'lint-helper@demo-market', 'reply-style@demo-market', 'review-kit@team-market', 'test-runner@demo-market', 'commit-helper@team-market'];
+// act / started: minutes ago
+const AGENTS = [
+  { id: U('1'), name: 'orchestrator', project: 'demo-api', role: 'orchestrator', model: 'fable', state: 'busy', pane: '%3', branch: 'feat/pagination', act: 0.3, started: 95, prompt: 'Split the pagination work between two builders and a reviewer', remote: true },
+  { id: U('2'), name: 'builder-1', project: 'demo-api', role: 'agent', model: 'sonnet', state: 'busy', pane: '%12', branch: 'feat/pagination', act: 0.1, started: 42, prompt: 'Implement cursor pagination in src/paginate.js with tests', remote: true },
+  { id: U('3'), name: 'reviewer-2', project: 'demo-api', role: 'agent', model: 'opus', state: 'attn', reason: 'Asking to run a command', pane: '%14', branch: 'feat/pagination', act: 4, started: 30, prompt: 'Review the pagination diff and run the build' },
+  { id: U('4'), name: 'scout-1', project: 'demo-api', role: 'agent', model: 'haiku', state: 'idle', pane: '%13', branch: 'feat/pagination', act: 11, started: 50, prompt: 'List every caller of paginate()', report: 'Found 7 callers in 4 files' },
+  { id: U('5'), name: 'builder-0', project: 'demo-api', role: 'agent', model: 'sonnet', state: 'ended', act: 180, started: 260, prompt: 'Add the request id middleware', report: 'Done: middleware added, 12 tests green', exit: 0 },
+  { id: U('6'), name: 'orchestrator', project: 'web-console', role: 'orchestrator', model: 'fable', state: 'idle', pane: '%21', branch: 'master', act: 26, started: 120, prompt: 'Plan the table overflow fix', remote: true },
+  { id: U('7'), name: 'builder-ui', project: 'web-console', role: 'agent', model: 'sonnet', state: 'busy', pane: '%22', branch: 'fix/table-overflow', act: 0.5, started: 18, prompt: 'Fix the overflowing table on narrow screens' },
+  { id: U('8'), name: 'designer', project: 'web-console', role: 'agent', model: 'opus', state: 'attn', reason: 'Asking you a question', pane: '%23', branch: 'fix/table-overflow', act: 2, started: 16, prompt: 'Propose two layouts for the settings table' },
+  { id: U('9'), name: 'migrate-terraform-state-to-new-backend-2', project: 'infra-scripts-and-deployment-tooling-for-staging', role: 'agent', model: 'sonnet', state: 'busy', pane: '%31', branch: 'chore/move-terraform-state-to-the-new-backend-and-lock-table', act: 1, started: 64, prompt: 'Move the terraform state to the new backend and verify the lock table before and after the move, then write a short report' },
+  { id: U('a'), name: 'ops-check', project: 'infra-scripts-and-deployment-tooling-for-staging', role: 'agent', model: 'haiku', state: 'ended', act: 600, started: 640, prompt: 'Check the staging scripts for unpinned versions', report: 'Stopped: terraform is not installed', exit: 1 },
+  { id: U('b'), name: 'untitled session', project: 'scratch-notes', role: null, model: 'sonnet', state: 'idle', pane: null, act: 8, started: 33, prompt: 'Summarise these meeting notes' },
+];
+const MANY = Array.from({ length: 54 }, (_, i) => ({
+  id: U('c'), name: `worker-${String(i + 1).padStart(2, '0')}`, project: 'demo-api', role: 'agent', model: ['sonnet', 'haiku', 'opus'][i % 3],
+  state: i < 2 ? 'attn' : i < 9 ? 'idle' : i < 30 ? 'busy' : 'ended', reason: i < 2 ? 'Asking to run a command' : undefined, pane: i < 30 ? `%${100 + i}` : null, act: i * 3 + 1, started: 200, prompt: `Shard ${i + 1} of the fixture rewrite`,
+}));
+const ME = { tier: 'app', version: '0.2.0', tmux: true, claude: true };
+const STATUS = {
+  busy: { label: 'Working', long: 'Working' },
+  idle: { label: 'Waiting', long: 'Waiting for your next prompt' },
+  attn: { label: 'Needs you', long: 'Needs your attention' },
+  ended: { label: 'Ended', long: 'Ended' },
+};
+const ORDER = { attn: 0, idle: 1, busy: 2, ended: 3 };
+const RULES = {
+  none: { label: 'No rules', hint: 'No rules/orchestration.md yet', glyph: '–' },
+  nika: { label: 'Rules current', hint: 'Written by nika from the current template', glyph: '✓' },
+  outdated: { label: 'Rules outdated', hint: 'Written by nika from an older template', glyph: '↻' },
+  foreign: { label: 'Rules not by nika', hint: 'rules/orchestration.md was not written by nika', glyph: '!' },
+};
+const MODELS = ['opus', 'sonnet', 'haiku', 'fable'];
+
+/* ---------- small builders shared by all variants ---------- */
+const byProject = (name, list = AGENTS) => list.filter((a) => a.project === name).sort((a, b) => ORDER[a.state] - ORDER[b.state] || a.act - b.act);
+const projectOf = (a) => PROJECTS.find((p) => p.name === a.project) ?? UNREGISTERED.find((p) => p.name === a.project);
+function counts(list) {
+  const c = { attn: 0, idle: 0, busy: 0, ended: 0, live: 0 };
+  for (const a of list) { c[a.state] += 1; if (a.state !== 'ended') c.live += 1; }
+  return c;
+}
+function ago(m) {
+  if (m < 1) return 'now';
+  if (m < 60) return `${Math.round(m)} min`;
+  if (m < 1440) return `${Math.round(m / 60)} h`;
+  return `${Math.round(m / 1440)} d`;
+}
+function statusEl(state, { compact = false, long = false } = {}) {
+  const s = STATUS[state];
+  return h('span', { class: 'st', 'data-s': state },
+    h('span', { class: 'st-g', 'aria-hidden': 'true' }),
+    h('span', { class: compact ? 'sr-only' : 'st-l', text: long ? s.long : s.label }));
+}
+const modelEl = (m) => h('span', { class: 'model', 'data-m': m, title: `Model: ${m}`, text: m });
+function rulesEl(state) {
+  const r = RULES[state];
+  return h('span', { class: 'rules', 'data-r': state, title: r.hint }, h('span', { class: 'rules-g', 'aria-hidden': 'true', text: r.glyph }), r.label);
+}
+function countsLine(c) {
+  const parts = [];
+  if (c.attn) parts.push(['attn', `${c.attn} need${c.attn === 1 ? 's' : ''} you`]);
+  if (c.idle) parts.push(['idle', `${c.idle} waiting`]);
+  if (c.busy) parts.push(['busy', `${c.busy} working`]);
+  if (c.ended) parts.push(['ended', `${c.ended} ended`]);
+  return parts;
+}
+
+/** Native tray items are plain strings: name cut at 28 characters, then counts in words (never colour). */
+function trayLabel(p) {
+  const c = counts(byProject(p.name));
+  const name = p.name.length > 28 ? `${p.name.slice(0, 27)}…` : p.name;
+  const parts = countsLine({ ...c, ended: 0 }).map(([, t]) => t);
+  return `${name} — ${parts.length ? parts.join(', ') : 'no agents'}`;
+}
+
+/* ---------- live region + toasts ---------- */
+function announce(msg) {
+  const r = $('#announce');
+  r.textContent = '';
+  setTimeout(() => { r.textContent = msg; }, 30);
+}
+function toast(msg, { kind = 'info', action = null, ms = 4200 } = {}) {
+  const box = $('#toasts');
+  const t = h('div', { class: 'toast', 'data-kind': kind, role: kind === 'error' ? 'alert' : 'status' },
+    h('p', { text: msg }),
+    action ? h('button', { type: 'button', text: action.label, onclick: () => { action.run(); t.remove(); } }) : null);
+  box.append(t);
+  if (ms) setTimeout(() => t.remove(), ms);
+  return t;
+}
+
+/* ---------- disclosure menus: one open at a time, Esc closes and returns focus ---------- */
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-menu-btn]');
+  for (const m of $$('[data-menu]:not([hidden])')) if (!btn || m.previousElementSibling !== btn) closeMenu(m, false);
+  if (btn) {
+    const m = btn.nextElementSibling;
+    const open = m.hidden;
+    m.hidden = !open;
+    btn.setAttribute('aria-expanded', String(open));
+    if (open) $('button, a', m)?.focus();
+  }
+});
+function closeMenu(m, focus = true) {
+  m.hidden = true;
+  m.previousElementSibling?.setAttribute('aria-expanded', 'false');
+  if (focus) m.previousElementSibling?.focus();
+}
+function menu(label, items) {
+  const id = `m${Math.random().toString(36).slice(2, 8)}`;
+  return h('div', { class: 'menu-wrap' },
+    h('button', { type: 'button', class: 'btn icon ghost', 'data-menu-btn': true, 'aria-expanded': 'false', 'aria-controls': id, 'aria-label': label, title: label }, h('span', { 'aria-hidden': 'true', text: '⋯' })),
+    h('ul', { class: 'menu', id, 'data-menu': true, hidden: true }, items.map(([text, run]) => h('li', null, h('button', { type: 'button', text, onclick: run })))));
+}
+function agentMenu(a) {
+  const items = [['Copy resume command', () => toast(`Copied: claude --resume ${a.id}`)]];
+  if (a.report) items.push(['Show report', () => toast(`Report of ${a.name}: ${a.report}`)]);
+  if (a.remote) items.push(['Open in claude.ai ↗', () => toast('Opens claude.ai/code/session_01AbCdEf in your browser')]);
+  if (a.pane) items.push([`Focus pane ${a.pane} in tmux`, () => toast(`Focused tmux pane ${a.pane}`)]);
+  return menu(`More actions for ${a.name}`, items);
+}
+
+/* ---------- terminal mirror: contract §3 capture rows → DOM via textContent ---------- */
+// Mock row markup: ⟪f2.b:text⟫ = fg 2 bold; f0–15 / g0–15 = 16-colour fg/bg; c208 = 256-colour fg; b i u d r = SGR flags.
+function parseRow(str) {
+  const out = [];
+  const re = /⟪([a-z0-9.]*):([^⟫]*)⟫/g;
+  let m; let last = 0;
+  while ((m = re.exec(str))) {
+    if (m.index > last) out.push({ t: str.slice(last, m.index), s: {} });
+    const s = {};
+    for (const p of m[1].split('.')) {
+      if (/^f\d+$/.test(p)) s.fg = Number(p.slice(1));
+      else if (/^g\d+$/.test(p)) s.bg = Number(p.slice(1));
+      else if (/^c\d+$/.test(p)) s.fg = Number(p.slice(1));
+      else if (p) s[{ b: 'b', i: 'i', u: 'u', d: 'd', r: 'r' }[p]] = true;
+    }
+    out.push({ t: m[2], s });
+    last = re.lastIndex;
+  }
+  if (last < str.length) out.push({ t: str.slice(last), s: {} });
+  return out;
+}
+function xterm256(n) {
+  if (n < 232) { const L = [0, 95, 135, 175, 215, 255]; const i = n - 16; return `rgb(${L[Math.floor(i / 36)]} ${L[Math.floor(i / 6) % 6]} ${L[i % 6]})`; }
+  const g = 8 + 10 * (n - 232); return `rgb(${g} ${g} ${g})`;
+}
+function segSpan(t, s) {
+  if (!s.fg && s.fg !== 0 && !s.bg && s.bg !== 0 && !s.b && !s.d && !s.i && !s.u && !s.r) return document.createTextNode(t);
+  const e = document.createElement('span');
+  e.textContent = t;
+  let fg = s.fg; let bg = s.bg;
+  if (s.r) { [fg, bg] = [bg ?? 'bg', fg ?? 'fg']; }
+  const paint = (v, pre, prop) => {
+    if (v === 'bg') e.classList.add('fdb');
+    else if (v === 'fg') e.classList.add('bdf');
+    else if (typeof v === 'number' && v < 16) e.classList.add(`${pre}${v}`);
+    else if (typeof v === 'number') e.style[prop] = xterm256(v); // CSSOM: allowed under the real app's CSP
+    else if (Array.isArray(v)) e.style[prop] = `rgb(${v.join(' ')})`;
+  };
+  paint(fg, 'f', 'color'); paint(bg, 'b', 'backgroundColor');
+  if (s.b) e.classList.add('sb'); if (s.d) e.classList.add('sd'); if (s.i) e.classList.add('si'); if (s.u) e.classList.add('su');
+  return e;
+}
+function renderMirror(pre, cap) {
+  const frag = document.createDocumentFragment();
+  cap.rows.forEach((row, y) => {
+    const line = h('span', { class: 'tl' });
+    let x = 0;
+    const cur = cap.cursor.visible && cap.cursor.y === y ? cap.cursor.x : -1;
+    for (const seg of row) {
+      const t = seg.t;
+      if (cur >= x && cur < x + t.length) {
+        const k = cur - x;
+        if (k) line.append(segSpan(t.slice(0, k), seg.s));
+        line.append(h('span', { class: 'tc', text: t[k] }));
+        if (k + 1 < t.length) line.append(segSpan(t.slice(k + 1), seg.s));
+      } else line.append(segSpan(t, seg.s));
+      x += t.length; // shortcut: counts UTF-16 units; the real renderer counts terminal columns (wide chars = 2)
+    }
+    if (cur >= x) line.append(' '.repeat(cur - x), h('span', { class: 'tc', text: ' ' }));
+    line.append('\n');
+    frag.append(line);
+  });
+  pre.replaceChildren(frag);
+}
+const COLS = 92;
+const visible = (s) => s.replace(/⟪[a-z0-9.]*:|⟫/g, '').length;
+const pad = (s, n = COLS - 2) => s + ' '.repeat(Math.max(0, n - visible(s)));
+function boxRows(inner) {
+  const w = COLS - 2;
+  return [`⟪f8:╭${'─'.repeat(w)}╮⟫`, ...inner.map((s) => `⟪f8:│⟫${pad(s)}⟪f8:│⟫`), `⟪f8:╰${'─'.repeat(w)}╯⟫`];
+}
+const CAP_WORKING = {
+  cols: COLS,
+  rows: [
+    ...Array.from({ length: 14 }, (_, i) => `⟪f8:     ✔ routes/items case ${i + 1}⟫`),
+    '⟪f8:  ⎿  Read 64 lines⟫', '',
+    '⟪f15.b:●⟫ I will add a cursor that survives inserts, then cover it with three tests.', '',
+    '⟪f2.b:●⟫ ⟪b:Update⟫(src/paginate.js)',
+    '⟪f8:  ⎿  Updated src/paginate.js with 18 additions and 4 removals⟫',
+    '⟪f8:       21⟫ ⟪f1: -export function paginate(rows, page = 0, size = 20) {⟫',
+    '⟪f8:       21⟫ ⟪f2: +export function paginate(rows, { cursor = null, size = 20 } = {}) {⟫',
+    '⟪f8:       22⟫ ⟪f2: +  const start = cursor === null ? 0 : indexAfter(rows, cursor);⟫',
+    '⟪f8:       23⟫    return rows.slice(start, start + size);', '',
+    '⟪f2.b:●⟫ ⟪b:Bash⟫(npm test)',
+    '⟪f8:  ⎿  > node --test "test/*.test.js"⟫',
+    '     ⟪f2:✔⟫ paginate returns the first page ⟪f8:(2.1ms)⟫',
+    '     ⟪f2:✔⟫ paginate rejects a negative size ⟪f8:(0.4ms)⟫',
+    '     ⟪f1:✖⟫ paginate keeps the cursor stable after an insert ⟪f8:(5.8ms)⟫',
+    '       ⟪f1:AssertionError: expected 20, got 19⟫',
+    '     ⟪f8:… +38 lines (ctrl+r to expand)⟫', '',
+    '⟪f15.b:●⟫ The cursor test fails because indexAfter counts from 1. Fixing it.', '',
+    '⟪f2.b:●⟫ ⟪b:Update⟫(src/paginate.js)',
+    '⟪f8:  ⎿  Updated src/paginate.js with 1 addition and 1 removal⟫',
+    '⟪f8:       40⟫ ⟪f1: -  return rows.findIndex((r) => r.id === cursor) + 2;⟫',
+    '⟪f8:       40⟫ ⟪f2: +  return rows.findIndex((r) => r.id === cursor) + 1;⟫', '',
+    '⟪c208:✻ Re-running the tests…⟫ ⟪f8:(14s · ↓ 1.2k tokens · esc to interrupt)⟫', '',
+    ...boxRows([' > ']),
+    '  ⟪f5:⏵⏵ accept edits on⟫ ⟪f8:(shift+tab to cycle)⟫',
+  ].map(parseRow),
+  cursor: { x: 4, y: 43, visible: true },
+};
+const CAP_PERMISSION = {
+  cols: COLS,
+  rows: [
+    '⟪f15.b:●⟫ The diff looks right. I will rebuild the bundle to check the types.', '',
+    '⟪f3.b:●⟫ ⟪b:Bash⟫(rm -rf dist && npm run build)',
+    ...boxRows([
+      ' ⟪b:Bash command⟫', '',
+      '   rm -rf dist && npm run build',
+      '   ⟪f8:Clean and rebuild the bundle⟫', '',
+      ' Do you want to proceed?',
+      ' ⟪f4.b:❯ 1. Yes⟫',
+      '   2. Yes, and don\'t ask again for npm run build commands',
+      '   3. No, and tell Claude what to do differently ⟪f8:(esc)⟫',
+    ]),
+  ].map(parseRow),
+  cursor: { x: 0, y: 0, visible: false },
+};
+// A tail of the last rows, for compact previews (variant C tiles).
+const tail = (cap, n) => ({ cols: cap.cols, rows: cap.rows.slice(-n), cursor: { visible: false, x: 0, y: 0 } });
+
+/* ---------- unified diff → lines with old/new numbers and a +/− marker (non-colour cue) ---------- */
+function renderDiff(diffText) {
+  const pre = h('pre', { class: 'diff', tabindex: '0' });
+  let o = 0; let n = 0;
+  for (const line of diffText.split('\n')) {
+    if (line.startsWith('---') || line.startsWith('+++')) continue;
+    const m = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
+    if (m || line.startsWith('@@')) { if (m) { o = Number(m[1]); n = Number(m[2]); } pre.append(h('span', { class: 'dl d-hunk' }, h('span', { class: 'dn' }), h('span', { class: 'dn' }), h('span', { class: 'dm' }), h('span', { text: line }))); continue; }
+    const k = line[0];
+    const cls = k === '+' ? 'd-add' : k === '-' ? 'd-del' : 'd-ctx';
+    const on = k === '+' ? '' : String(o || ''); const nn = k === '-' ? '' : String(n || '');
+    if (k !== '+') o += 1; if (k !== '-') n += 1;
+    pre.append(h('span', { class: `dl ${cls}` },
+      h('span', { class: 'dn', text: on }), h('span', { class: 'dn', text: nn }),
+      h('span', { class: 'dm', text: k === '+' ? '+' : k === '-' ? '−' : '' }),
+      h('span', { text: line.slice(1) || ' ' })));
+  }
+  return pre;
+}
+const RULES_PREVIEW = {
+  hash: 'c0ffee…', backupDir: '~/.local/state/nika/backups/1b2c3d4e5f6a7b8c/2026-11-08T14-02-11Z',
+  warnings: ['settings.local.json is not gitignored'],
+  files: [
+    { path: 'rules/orchestration.md', action: 'update', foreign: false, diff: [
+      '@@ -1,9 +1,11 @@', ' # Orchestration rules', ' ', ' Written by nika from the built-in template.', '-Template version 3.', '+Template version 4.', ' ', ' ## Roles', ' ',
+      '-Builders run in acceptEdits mode.', '+Builders use the permission mode set in nika.', '+Every agent writes its report to the path in its brief.', ' | Role | Model |', '@@ -22,4 +24,4 @@', ' ## Hand-off', ' ', '-Report in the chat.', '+Report in the file named in the brief, then stop.', ' ',
+    ].join('\n') },
+    { path: 'CLAUDE.md', action: 'update', diff: ['@@ -1,3 +1,5 @@', ' # web-console', ' ', ' Run npm test before you hand over.', '+', '+@rules/orchestration.md'].join('\n') },
+    { path: '.claude/settings.local.json', action: 'update', keysPreserved: true, otherKeys: 3, diff: ['@@ enabledPlugins @@', '   "enabledPlugins": {', '-    "lint-helper@demo-market": true', '+    "reply-style@demo-market": true', '   },'].join('\n') },
+    { path: '.gitignore', action: 'update', optional: true, diff: ['@@ -4,2 +4,3 @@', ' node_modules/', ' dist/', '+.claude/settings.local.json'].join('\n') },
+    { path: 'README.md', action: 'unchanged', diff: '' },
+  ],
+};
+const RULES_FOREIGN_DIFF = [
+  '@@ -1,6 +1,14 @@', '-# Team agent notes', '-', '-Ask before running migrations.', '-Use the staging profile.', '+# Orchestration rules', '+', '+Written by nika from the built-in template.', '+Template version 4.', '+', '+## Roles', '+', '+| Role | Model |', '+|---|---|', '+| Orchestrator | claude-fable-5-1 |', '+| Builder | claude-sonnet-5-5 |',
+].join('\n');
+
+/* ---------- transcript history (contract §3 entries) ---------- */
+const HISTORY = [
+  { at: '13:20', role: 'user', kind: 'text', text: 'You are builder-1 in demo-api.\nImplement cursor pagination in src/paginate.js. Keep page= working for one release.\nWrite your report to the file named at the end of this brief.' },
+  { at: '13:20', role: 'assistant', kind: 'thinking', text: 'The helper takes a page number today. Routes pass page from the query string. A cursor needs a stable key; every row has an id. Keep page as a fallback and log a deprecation warning once per process.' },
+  { at: '13:21', role: 'assistant', kind: 'text', text: 'I will read the helper and its callers first.' },
+  { at: '13:21', role: 'assistant', kind: 'tool_use', tool: 'Read', text: '{ "file_path": "src/paginate.js" }' },
+  { at: '13:21', role: 'user', kind: 'tool_result', text: Array.from({ length: 64 }, (_, i) => `${String(i + 1).padStart(3)}  ${['export function paginate(rows, page = 0, size = 20) {', '  const start = page * size;', '  return rows.slice(start, start + size);', '}', ''][i % 5]}`).join('\n') },
+  { at: '13:24', role: 'assistant', kind: 'text', text: ['Plan:', '1. Add an options object { cursor, size } and keep the positional page argument for one release.', '2. indexAfter(rows, cursor) finds the row after the cursor id.', '3. Callers in src/routes pass the cursor from the query string.', '4. Tests: first page, negative size, stable cursor after an insert.', '', 'Risks:', '- Two callers sort after paginating; the cursor would skip rows there.', '- The admin export calls paginate with size 0 to mean "all".', '', 'Open points for the orchestrator:', '- Should size 0 keep meaning "all"? I will keep it and add a test.', '- The deprecation warning goes to the existing logger, once per process.', '', 'Files I expect to touch:', '- src/paginate.js', '- src/routes/items.js', '- src/routes/admin-export.js', '- test/paginate.test.js', '', 'I will not touch the database layer.', 'I will not change the public response shape.', '', 'Starting with the helper.'].join('\n') },
+  { at: '13:31', role: 'assistant', kind: 'tool_use', tool: 'Bash', text: 'npm test' },
+  { at: '13:31', role: 'user', kind: 'tool_result', text: ['> node --test "test/*.test.js"', '✔ paginate returns the first page (2.1ms)', '✔ paginate rejects a negative size (0.4ms)', '✖ paginate keeps the cursor stable after an insert (5.8ms)', '  AssertionError: expected 20, got 19', ...Array.from({ length: 38 }, (_, i) => `✔ routes/items case ${i + 1}`)].join('\n') },
+  { at: '13:32', role: 'assistant', kind: 'text', text: 'The cursor test fails because indexAfter counts from 1. Fixing it.' },
+  { at: '13:32', role: 'assistant', kind: 'tool_use', tool: 'Edit', text: '{ "file_path": "src/paginate.js", "old_string": "+ 2;", "new_string": "+ 1;" }' },
+  { at: '13:33', role: 'user', kind: 'tool_result', text: 'The file src/paginate.js has been updated.\n' + 'x'.repeat(220), truncated: true },
+  { at: '13:35', role: 'user', kind: 'text', text: 'Also log the deprecation warning only once per process, please.' },
+  { at: '13:35', role: 'assistant', kind: 'text', text: 'Will do. Re-running the tests after the fix.' },
+];
+const words = (s) => s.split(/\s+/).filter(Boolean).length;
+function historyEntry(e) {
+  const li = h('li', { class: 'hx', 'data-role': e.role, 'data-kind': e.kind });
+  const meta = h('div', { class: 'hx-meta' },
+    h('span', { class: 'hx-who', text: e.kind === 'tool_result' ? 'Tool result' : e.role === 'user' ? 'You' : 'Claude' }),
+    h('time', { class: 'hx-at num', text: e.at }));
+  if (e.kind === 'text') {
+    const lines = e.text.split('\n').length;
+    const body = h('p', { class: `hx-text${lines > 12 ? ' hx-clamp' : ''}`, text: e.text });
+    li.append(meta, body);
+    if (lines > 12) {
+      li.append(h('button', { type: 'button', class: 'btn link', 'aria-expanded': 'false', text: `Show all ${lines} lines`, onclick: (ev) => { body.classList.remove('hx-clamp'); ev.currentTarget.remove(); } }));
+    }
+  } else {
+    const label = e.kind === 'thinking' ? `${words(e.text)} words`
+      : e.kind === 'tool_use' ? e.text.split('\n')[0].slice(0, 80)
+        : `${e.text.split('\n').length} lines`;
+    li.append(meta, h('details', { class: 'hx-fold' },
+      h('summary', null, h('span', { class: 'hx-kind', text: e.kind === 'thinking' ? 'Thinking' : e.kind === 'tool_use' ? e.tool : 'Output' }), h('span', { class: 'hx-sum', text: label })),
+      e.kind === 'thinking' ? h('p', { class: 'hx-text', text: e.text }) : h('pre', { class: 'hx-code', tabindex: '0', text: e.text })));
+  }
+  if (e.truncated) li.append(h('p', { class: 'hx-trunc', text: 'This entry is over 32 KB; nika shows the first part only.' }));
+  return li;
+}
+function renderHistory(list, { older = true } = {}) {
+  list.replaceChildren(...HISTORY.map(historyEntry));
+  const top = list.previousElementSibling;
+  if (top?.matches('[data-older]')) top.hidden = !older;
+}
+
+/* ---------- session window behaviour ---------- */
+const KEYMAP = { Enter: 'Enter', Escape: 'Escape', Tab: 'Tab', Backspace: 'BSpace', Delete: 'DC', ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right', Home: 'Home', End: 'End', PageUp: 'PPage', PageDown: 'NPage' };
+const CTRLMAP = { c: 'C-c', u: 'C-u', k: 'C-k', a: 'C-a', e: 'C-e', l: 'C-l', r: 'C-r', w: 'C-w' };
+const KEYLABEL = { Enter: '⏎ Enter', Escape: 'Esc', Tab: 'Tab', BTab: 'Shift-Tab', BSpace: '⌫', DC: 'Del', Up: '↑', Down: '↓', Left: '←', Right: '→', 'C-c': 'Ctrl-C' };
+function initSession(root) {
+  const term = $('[data-term]', root);
+  const pre = $('[data-term-pre]', root);
+  const live = $('[data-live]', root);
+  const ta = $('[data-composer]', root);
+  const echo = $('[data-echo]', root);
+  const passBanner = $('[data-pass]', root);
+  const pasteChip = $('[data-paste-chip]', root);
+  let passOn = false;
+  let pasted = false;
+  const say = (msg) => { if (echo) echo.textContent = msg; };
+  const sendKey = (k) => say(`Sent ${KEYLABEL[k] ?? k} to ${root.dataset.pane}`);
+  const atBottom = () => term.scrollHeight - term.scrollTop - term.clientHeight < 8;
+  const sync = () => { const paused = !atBottom(); root.classList.toggle('is-paused', paused); live.hidden = !paused; };
+  root.mirrorShow = (cap) => { renderMirror(pre, cap); term.scrollTop = term.scrollHeight; sync(); };
+  term.addEventListener('scroll', sync);
+  live.addEventListener('click', () => { term.scrollTop = term.scrollHeight; sync(); ta?.focus(); });
+  const grow = () => { ta.style.height = 'auto'; ta.style.height = `${Math.min(ta.scrollHeight, 8 * 20 + 16)}px`; };
+  const setPaste = (on, n = 0) => { pasted = on; pasteChip.hidden = !on; if (on) $('[data-paste-n]', pasteChip).textContent = `Pasted ${n} lines · sends as one paste`; };
+  function send() {
+    const v = ta.value;
+    if (!v.trim()) { sendKey('Enter'); return; }
+    const multi = pasted || v.includes('\n');
+    say(multi ? `Sent a paste of ${v.split('\n').length} lines + Enter to ${root.dataset.pane}` : `Sent ${v.length} characters + Enter to ${root.dataset.pane}`);
+    ta.value = ''; setPaste(false); grow();
+  }
+  function setPass(on) {
+    passOn = on;
+    root.classList.toggle('is-pass', on);
+    passBanner.hidden = !on;
+    term.setAttribute('role', on ? 'application' : 'region');
+    term.setAttribute('aria-label', on ? `Terminal passthrough for ${root.dataset.agent}. Every key goes to pane ${root.dataset.pane}. Press Control and ] to leave.` : `Live terminal of ${root.dataset.agent}, pane ${root.dataset.pane}`);
+    $$('[data-pass-toggle]', root).forEach((b) => b.setAttribute('aria-pressed', String(on)));
+    if (on) { term.focus(); say('Passthrough on: keys go straight to the pane'); } else { say('Passthrough off: typing goes to the input box'); ta?.focus(); }
+  }
+  ta.addEventListener('input', grow);
+  ta.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
+    else if (e.key === 'Escape') { e.preventDefault(); sendKey('Escape'); }
+    else if (e.ctrlKey && e.key === ']') { e.preventDefault(); setPass(true); }
+    else if (e.ctrlKey && !e.metaKey && e.key.toLowerCase() === 'c' && ta.selectionStart === ta.selectionEnd) { e.preventDefault(); sendKey('C-c'); }
+  });
+  ta.addEventListener('paste', (e) => {
+    const t = e.clipboardData?.getData('text') ?? '';
+    if (t.includes('\n')) setTimeout(() => { setPaste(true, t.split('\n').length); grow(); });
+  });
+  $('[data-paste-clear]', root)?.addEventListener('click', () => { ta.value = ''; setPaste(false); grow(); ta.focus(); });
+  $$('[data-key]', root).forEach((b) => b.addEventListener('click', () => { sendKey(b.dataset.key); }));
+  $$('[data-pass-toggle]', root).forEach((b) => b.addEventListener('click', () => setPass(!passOn)));
+  $('[data-send]', root)?.addEventListener('click', () => { send(); ta.focus(); });
+  let buf = ''; let timer = null;
+  term.addEventListener('keydown', (e) => {
+    if (!passOn) return;
+    if (e.ctrlKey && e.key === ']') { e.preventDefault(); setPass(false); return; }
+    if (e.metaKey) return; // OS and app shortcuts keep working; Cmd+V arrives as a paste event
+    e.stopPropagation(); // in passthrough only Ctrl+] belongs to nika
+    let key = null;
+    if (e.key === 'Tab' && e.shiftKey) key = 'BTab';
+    else if (e.ctrlKey) key = CTRLMAP[e.key.toLowerCase()] ?? null;
+    else if (KEYMAP[e.key]) key = KEYMAP[e.key];
+    else if (e.key.length === 1 && !e.altKey) {
+      e.preventDefault(); buf += e.key; clearTimeout(timer);
+      timer = setTimeout(() => { say(`Sent “${buf}” to ${root.dataset.pane}`); buf = ''; }, 120); // batched: ≤ 10 requests/s
+      return;
+    }
+    e.preventDefault();
+    if (key) sendKey(key); else say(`Not sent: ${e.ctrlKey ? 'Ctrl-' : ''}${e.altKey ? 'Alt-' : ''}${e.key} is not on the allow-list`);
+  });
+  term.addEventListener('paste', (e) => { if (passOn) { e.preventDefault(); say(`Sent a paste of ${(e.clipboardData?.getData('text') ?? '').split('\n').length} lines`); } });
+  term.addEventListener('focusout', () => { if (passOn) setPass(false); });
+  root.setPass = setPass;
+  root.reset = () => { if (passOn) setPass(false); setPaste(false); say(''); };
+}
+
+/* ---------- settings validation (client side mirrors the server rules; the server's 400 names the field) ---------- */
+const RX = {
+  model: [/^(claude-[a-z0-9-]{3,60}|opus|sonnet|haiku|fable)$/, 'Use a model id such as claude-sonnet-5-5, or opus, sonnet, haiku, fable.'],
+  prefix: [/^$|^[a-z0-9][a-z0-9-]{0,19}$/, 'Lowercase letters, digits and dashes, up to 20, starting with a letter or digit. Leave empty to use the project name.'],
+  agent: [/^[a-z0-9][a-z0-9-]{0,39}$/, 'Lowercase letters, digits and dashes, up to 40, starting with a letter or digit.'],
+};
+function validateForm(form) {
+  const bad = [];
+  for (const input of $$('[data-rx]', form)) {
+    const [re, msg] = RX[input.dataset.rx];
+    const ok = re.test(input.value.trim()) && !(input.dataset.rx !== 'prefix' && !input.value.trim());
+    setFieldError(input, ok ? '' : msg);
+    if (!ok) bad.push(input);
+  }
+  for (const input of $$('input[type="number"]', form)) {
+    const v = Number(input.value); const ok = Number.isInteger(v) && v >= Number(input.min) && v <= Number(input.max);
+    setFieldError(input, ok ? '' : `Choose a whole number from ${input.min} to ${input.max}.`);
+    if (!ok) bad.push(input);
+  }
+  return bad;
+}
+function setFieldError(input, msg) {
+  const err = document.getElementById(`${input.id}-err`);
+  input.setAttribute('aria-invalid', msg ? 'true' : 'false');
+  if (err) { err.textContent = msg; err.hidden = !msg; }
+}
+function initSettings(form) {
+  const bar = $('[data-dirty]', form.closest('[data-screen]'));
+  const summary = $('[data-err-summary]', form.closest('[data-screen]'));
+  let dirty = 0;
+  form.addEventListener('input', () => { dirty += 1; if (bar) { bar.hidden = false; $('[data-dirty-n]', bar).textContent = 'Unsaved changes'; } });
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const bad = validateForm(form);
+    if (summary) { summary.hidden = !bad.length; $('[data-err-n]', summary).textContent = `${bad.length} field${bad.length === 1 ? ' needs' : 's need'} a fix before saving.`; }
+    if (bad.length) { bad[0].focus(); return; }
+    if (bar) bar.hidden = true;
+    dirty = 0;
+    toast('Settings saved');
+  });
+  form.addEventListener('reset', () => { setTimeout(() => { $$('[aria-invalid="true"]', form).forEach((i) => setFieldError(i, '')); if (bar) bar.hidden = true; if (summary) summary.hidden = true; }); });
+  form.showErrors = () => { $('#set-model-builder', form).value = 'sonet'; $('#set-rc-prefix', form).value = 'Team_Prefix'; $('#set-max', form).value = '12'; form.requestSubmit(); };
+}
+
+/* ---------- add project flow (contract: POST pick → 202 reqId → poll GET pick/:reqId) ---------- */
+function addProjectFlow(outcome = 'done') {
+  if (outcome === 'busy') { toast('A folder picker is already open. Finish or cancel it first.', { kind: 'error' }); return; }
+  const t = toast('Choose a folder in the system dialog…', { ms: 0 });
+  $('p', t).prepend(h('span', { class: 'spin', 'aria-hidden': 'true' }), ' ');
+  setTimeout(() => {
+    t.remove();
+    if (outcome === 'cancelled') toast('No folder chosen. Nothing was added.');
+    else toast('Added docs-site. Its rules are not set up yet.', { action: { label: 'Apply rules', run: () => go('rules', 'preview') } });
+  }, 1600);
+}
+
+/* ---------- dialogs: native showModal (inert background, Esc = cancel), focus returns to the opener ---------- */
+let opener = null;
+function openDialog(dlg) {
+  opener = document.activeElement;
+  if (!dlg.open) dlg.showModal();
+  const first = $('[autofocus]', dlg) ?? $('h2', dlg);
+  if (first) { if (!first.hasAttribute('tabindex') && first.tagName === 'H2') first.setAttribute('tabindex', '-1'); first.focus(); }
+}
+document.addEventListener('close', (e) => { if (e.target.tagName === 'DIALOG') { opener?.focus?.(); } }, true);
+document.addEventListener('click', (e) => {
+  const c = e.target.closest('[data-close]');
+  if (c) c.closest('dialog')?.close();
+});
+
+/* ---------- router, states and mock controls ---------- */
+const V = window.VARIANT; // per-variant hooks: { name, render: { [screen]: (state) => void } }
+function screens() { return $$('[data-screen]'); }
+function enter(el, st) {
+  el.dataset.state = st;
+  for (const n of $$('[data-when]', el)) n.hidden = !n.dataset.when.split(' ').includes(st);
+  V.render?.[el.dataset.screen]?.(st, el);
+}
+function go(name, state) {
+  const el = $(`[data-screen="${name}"]`) ?? $('[data-screen]');
+  const states = (el.dataset.states ?? 'default').split(',');
+  const st = states.includes(state) ? state : states[0];
+  for (const d of $$('dialog[open]')) if (d !== el) d.close();
+  const host = el.tagName === 'DIALOG' ? $(`[data-screen="${el.dataset.host}"]`) : el;
+  for (const w of $$('[data-world]')) w.hidden = !w.contains(host);
+  for (const s of screens()) if (s.tagName !== 'DIALOG') s.hidden = s !== host;
+  if (host !== el) enter(host, host.dataset.state ?? (host.dataset.states ?? 'default').split(',')[0]);
+  enter(el, st);
+  for (const n of $$('[data-nav]')) n.toggleAttribute('aria-current', n.dataset.nav === (el.dataset.navAs ?? host.dataset.navAs ?? name));
+  for (const n of $$('[data-nav][aria-current]')) n.setAttribute('aria-current', 'page');
+  if (el.tagName === 'DIALOG') openDialog(el);
+  const mkS = $('#mk-screen'); const mkSt = $('#mk-state');
+  mkS.value = name;
+  mkSt.replaceChildren(...states.map((s) => h('option', { value: s, text: s })));
+  mkSt.value = st;
+  history.replaceState(null, '', `#${name}${st !== states[0] ? `/${st}` : ''}`);
+  current = { name, st };
+}
+let current = { name: 'dashboard', st: 'normal' };
+document.addEventListener('click', (e) => {
+  const a = e.target.closest('[data-go]');
+  if (!a) return;
+  e.preventDefault();
+  const [n, s] = a.dataset.go.split('/');
+  go(n, s);
+});
+function applyTheme(pref) {
+  const dark = pref === 'dark' || (pref === 'system' && matchMedia('(prefers-color-scheme: dark)').matches);
+  document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+}
+function buildMock() {
+  const bar = $('#mock');
+  const theme = (() => { try { return localStorage.getItem('nika-mock-theme') ?? 'system'; } catch { return 'system'; } })();
+  const sel = (id, label, opts, val, on) => h('label', null, label, h('select', { id, onchange: (e) => on(e.target.value) }, opts.map(([v, t]) => h('option', { value: v, text: t, selected: v === val }))));
+  bar.append(
+    h('strong', { text: `nika 0.2 mockup · ${V.name}` }),
+    sel('mk-screen', 'Screen', screens().map((s) => [s.dataset.screen, s.dataset.title]), 'dashboard', (v) => go(v)),
+    sel('mk-state', 'State', [], '', (v) => go(current.name, v)),
+    sel('mk-theme', 'Theme', [['system', 'System'], ['light', 'Light'], ['dark', 'Dark']], theme, (v) => { try { localStorage.setItem('nika-mock-theme', v); } catch { /* per-viewer only */ } applyTheme(v); }),
+    sel('mk-size', 'Window', [['fit', 'Fit'], ['720x480', '720 × 480'], ['1024x700', '1024 × 700'], ['1440x900', '1440 × 900']], 'fit', (v) => {
+      const win = $('.win'); const stage = $('.stage');
+      stage.classList.toggle('sized', v !== 'fit');
+      const [w, hh] = v === 'fit' ? ['', ''] : v.split('x').map((n) => `${n}px`);
+      win.style.width = w; win.style.height = hh;
+    }),
+    h('label', null, h('input', { type: 'checkbox', onchange: (e) => { document.documentElement.dataset.motion = e.target.checked ? 'reduce' : ''; } }), 'Reduced motion'),
+    h('span', { class: 'mk-links' }, ['a', 'b', 'c'].map((x) => h('a', { href: `${x}.html`, 'aria-current': V.file === x ? 'page' : null, text: `Variant ${x.toUpperCase()}` }))),
+  );
+  // ?theme=dark&size=720x480 preselect the controls (handy for screenshots)
+  const qp = new URLSearchParams(location.search);
+  if (['light', 'dark', 'system'].includes(qp.get('theme'))) { $('#mk-theme').value = qp.get('theme'); }
+  if ([...$('#mk-size').options].some((o) => o.value === qp.get('size'))) { $('#mk-size').value = qp.get('size'); $('#mk-size').dispatchEvent(new Event('change')); }
+  applyTheme($('#mk-theme').value);
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => applyTheme($('#mk-theme').value));
+}
+const MAC = /Mac|iPhone|iPad/.test(navigator.platform);
+document.addEventListener('keydown', (e) => {
+  const mod = MAC ? e.metaKey : e.ctrlKey;
+  if (e.key === 'Escape') {
+    const m = $('[data-menu]:not([hidden])');
+    if (m) { e.preventDefault(); e.stopPropagation(); closeMenu(m); return; }
+  }
+  if ((MAC && e.metaKey && e.key === '[') || (!MAC && e.altKey && e.key === 'ArrowLeft')) { e.preventDefault(); (V.back ?? (() => go('dashboard')))(); return; }
+  if (mod && !e.altKey) {
+    if (e.key === ',') { e.preventDefault(); go('settings'); return; }
+    if (e.key === '1') { e.preventDefault(); go('dashboard'); return; }
+    if (e.key.toLowerCase() === 'o' && !e.shiftKey) { e.preventDefault(); addProjectFlow(); return; }
+  }
+  V.keys?.(e, mod);
+});
+window.addEventListener('DOMContentLoaded', () => {
+  buildMock();
+  V.init?.();
+  for (const s of $$('[data-session]')) initSession(s);
+  for (const f of $$('form[data-settings]')) initSettings(f);
+  const [n, s] = location.hash.slice(1).split('/');
+  go(n || 'dashboard', s);
+});
+
+</script>
+<script>
+/* ===== Variant A rendering ===== */
+(() => {
+const V = window.VARIANT;
+const icon = (id) => { const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); s.setAttribute('class', 'ic'); s.setAttribute('aria-hidden', 'true'); const u = document.createElementNS('http://www.w3.org/2000/svg', 'use'); u.setAttribute('href', `#${id}`); s.append(u); return s; };
+const PSTATE = { 'demo-api': 'nika-limit', 'web-console': 'outdated', 'infra-scripts-and-deployment-tooling-for-staging': 'foreign', 'docs-site': 'none' };
+let blocked = null; // reason privileged actions are off (tmux / claude missing)
+function act(label, ic, run, { primary = false } = {}) {
+  return h('button', { type: 'button', class: `btn${primary ? ' primary' : ''}`, 'aria-disabled': blocked ? 'true' : null, title: blocked ?? label,
+    onclick: () => (blocked ? toast(blocked, { kind: 'error' }) : run()) }, icon(ic), h('span', { class: 'lbl', text: label }));
+}
+function row(a, { tier = 'app', showProject = false } = {}) {
+  const target = a.state === 'attn' ? 'session/permission' : a.pane ? 'session' : 'session/pane-gone';
+  const what = a.state === 'attn' ? a.reason : a.state === 'ended' ? (a.report ?? `Exited with code ${a.exit}`) : a.prompt;
+  const li = h('li', { class: 'row', 'data-s': a.state },
+    h('div', { class: 'c-st' }, statusEl(a.state)),
+    h('div', { class: 'c-name' },
+      tier === 'app' ? h('a', { class: 'name', href: '#session', 'data-go': target, title: a.name, text: a.name }) : h('span', { class: 'name', title: a.name, text: a.name }),
+      a.role === 'orchestrator' ? h('span', { class: 'tag', text: 'orchestrator' }) : null),
+    h('div', { class: 'c-model' }, modelEl(a.model)),
+    h('div', { class: 'c-what' }, showProject ? h('span', { class: 'proj-chip', text: a.project.length > 18 ? `${a.project.slice(0, 17)}…` : a.project, title: a.project }) : null,
+      h('span', { class: 'what', title: a.prompt, text: what }), !showProject && a.branch ? h('code', { class: 'branch', title: a.branch, text: a.branch }) : null),
+    h('div', { class: 'c-act num', title: a.state === 'ended' ? 'Ended' : 'Last activity' }, h('span', { class: 'sr-only', text: 'Last activity: ' }), ago(a.act)),
+    h('div', { class: 'c-pane', title: a.pane ? `tmux pane ${a.pane}` : 'No tmux pane' }, h('span', { class: 'sr-only', text: 'Pane ' }), a.pane ?? '–'),
+    h('div', { class: 'c-actions' }, tier === 'app' ? agentMenu(a) : menu(`Actions for ${a.name}`, [
+      ...(a.pane ? [[`Focus pane ${a.pane} in tmux`, () => toast(`Focused tmux pane ${a.pane}`)]] : []),
+      ['Copy resume command', () => toast('Copied resume command')],
+      ...(a.report ? [['Show report', () => toast(a.report)]] : [])])));
+  if (tier === 'app') li.addEventListener('click', (e) => { if (!e.target.closest('a, button, [data-menu]')) $('a.name', li).click(); });
+  return li;
+}
+function rows(list, opts) { return h('ul', { class: 'rows', 'aria-label': opts.label }, list.map((a) => row(a, opts))); }
+function group(p, list, { tier = 'app', showEnded = false, cap = 0 } = {}) {
+  const live = list.filter((a) => a.state !== 'ended'); const ended = list.filter((a) => a.state === 'ended');
+  const c = counts(list); const reg = p.registered !== false;
+  const hasOrch = live.some((a) => a.role === 'orchestrator');
+  const shown = cap && live.length > cap ? live.slice(0, cap) : live;
+  const ul = shown.length ? rows(shown, { tier, label: `${p.name} agents` }) : null;
+  if (ul && shown.length < live.length) {
+    const more = h('li', { class: 'more-row' }, h('button', { type: 'button', class: 'btn', text: `Show ${live.length - shown.length} more live agents`, onclick: () => { more.replaceWith(...live.slice(cap).map((a) => row(a, { tier }))); } }));
+    ul.append(more);
+  }
+  return h('section', { class: 'grp', 'aria-labelledby': `g-${p.key}` },
+    h('header', { class: 'grp-head' },
+      h('h2', { id: `g-${p.key}` }, tier === 'app' && reg ? h('a', { href: '#project', 'data-go': `project/${PSTATE[p.name]}`, title: p.name, text: p.name }) : h('span', { title: p.name, text: p.name })),
+      h('span', { class: 'path mono', title: p.dir, text: p.dir }),
+      tier === 'app' && p.rules ? rulesEl(p.rules.state) : null,
+      !reg && tier === 'app' ? h('span', { class: 'tag muted', title: 'Agents run here, but the repository is not a nika project', text: 'Not a nika project' }) : null,
+      h('p', { class: 'grp-counts' }, countsLine(c).map(([s, t]) => h('span', { 'data-s': s, text: t }))),
+      tier === 'app' && reg ? h('div', { class: 'grp-actions' },
+        hasOrch ? h('button', { type: 'button', class: 'btn', 'data-go': 'session' }, icon('i-term'), h('span', { class: 'lbl', text: 'Open orchestrator' }))
+          : act('Start orchestrator', 'i-play', () => toast(`Started the orchestrator for ${p.name} in tmux session ${p.name.slice(0, 20)}`, { action: { label: 'Open', run: () => go('session') } })),
+        act('Spawn agent', 'i-spawn', () => go('spawn'))) : null),
+    ul ?? (tier === 'app' && reg ? h('div', { class: 'rows no-agents' }, h('span', { text: 'No agents running.' }), act('Start orchestrator', 'i-play', () => toast(`Started the orchestrator for ${p.name}`), { primary: true }), act('Spawn agent', 'i-spawn', () => go('spawn'))) : null),
+    ended.length ? h('details', { class: 'ended', open: showEnded || !live.length }, h('summary', { text: `Ended (${ended.length})` }), rows(ended, { tier, label: `${p.name} ended agents` })) : null);
+}
+function summary(el, c) {
+  el.replaceChildren(...countsLine(c).map(([s, t]) => h('span', { 'data-s': s }, h('span', { class: 'st', 'data-s': s }, h('span', { class: 'st-g', 'aria-hidden': 'true' })), t)));
+}
+function sidebar(list) {
+  $('#side-projects').replaceChildren(...PROJECTS.map((p) => {
+    const c = counts(byProject(p.name, list));
+    return h('li', null, h('a', { href: '#project', 'data-go': `project/${PSTATE[p.name]}`, 'data-nav': `p:${p.name}`, title: p.name },
+      h('span', { class: 'mono-av', 'aria-hidden': 'true', text: p.name.split('-').map((w) => w[0]).join('').slice(0, 2).toUpperCase() }),
+      h('span', { class: 'label', text: p.name }),
+      c.attn ? h('span', { class: 'cnt', 'data-s': 'attn' }, h('span', { class: 'sr-only', text: ', needs you: ' }), String(c.attn))
+        : c.live ? h('span', { class: 'cnt' }, h('span', { class: 'sr-only', text: ', live agents: ' }), String(c.live)) : null));
+  }));
+}
+function env(state) {
+  const tmuxOk = state !== 'error-tmux'; const claudeOk = state !== 'error-claude';
+  $('#env').replaceChildren(
+    h('span', { class: tmuxOk ? 'env-ok' : 'env-bad' }, h('span', { class: 'long', text: tmuxOk ? 'tmux 3.5a' : 'tmux missing' })),
+    h('span', { class: claudeOk ? 'env-ok' : 'env-bad' }, h('span', { class: 'long', text: claudeOk ? 'claude 2.1.319' : 'claude missing' })),
+    h('span', { class: 'long', text: 'nika 0.2.0 · app' }));
+}
+function dashboard(st) {
+  const body = $('#dash-body');
+  const showEnded = $('#dash-ended').checked;
+  const q = $('#dash-filter').value.trim().toLowerCase();
+  blocked = st === 'error-tmux' ? 'Needs tmux. Install it, then check again.' : st === 'error-claude' ? 'Needs Claude Code (claude) on your PATH.' : null;
+  env(st);
+  let list = st === 'many' ? [...MANY, ...AGENTS.filter((a) => a.project !== 'demo-api')] : AGENTS;
+  if (st === 'empty-agents' || st === 'empty-projects') list = [];
+  if (q) list = list.filter((a) => `${a.name} ${a.prompt} ${a.project} ${a.branch ?? ''}`.toLowerCase().includes(q));
+  sidebar(st === 'empty-projects' ? [] : list);
+  $('#side-projects').hidden = st === 'empty-projects';
+  summary($('#dash-sum'), counts(list));
+  body.classList.toggle('stale', st === 'offline');
+  if (st === 'loading') {
+    body.replaceChildren(h('div', { class: 'grp', 'aria-busy': 'true' }, h('span', { class: 'sr-only', text: 'Loading agents…' }),
+      [1, 2].map(() => h('div', { 'aria-hidden': 'true' }, h('div', { class: 'sk', style: 'height:14px;width:160px;margin:20px 0 10px' }), h('div', { class: 'rows' }, [1, 2, 3].map(() => h('div', { class: 'sk-row' }, h('div', { class: 'sk' }), h('div', { class: 'sk' }), h('div', { class: 'sk' }), h('div', { class: 'sk' }))))))));
+    return;
+  }
+  if (st === 'empty-projects') {
+    body.replaceChildren(h('div', { class: 'empty' }, icon('i-folder'), h('h2', { text: 'Add your first project' }),
+      h('p', { text: 'nika groups Claude Code agents by git repository. Add a repository to start an orchestrator, spawn agents and set up its rules.' }),
+      h('div', { class: 'row-actions' }, h('button', { type: 'button', class: 'btn primary lg', 'data-add': true }, icon('i-plus'), 'Add project…')),
+      h('p', { style: 'margin-top:14px' }, 'Or from a terminal: ', h('code', { text: 'nika projects add ~/projects/demo-api' }))));
+    return;
+  }
+  const attn = list.filter((a) => a.state === 'attn' || a.state === 'idle').sort((a, b) => ORDER[a.state] - ORDER[b.state] || b.act - a.act);
+  const parts = [];
+  if (attn.length) {
+    parts.push(h('section', { class: 'queue', 'aria-labelledby': 'q-h' },
+      h('h2', { id: 'q-h' }, 'Waiting on you', h('small', { text: `${attn.length} agents · longest wait first within each status` })),
+      rows(attn.slice(0, 6), { label: 'Agents waiting on you', showProject: true })));
+  }
+  for (const p of [...PROJECTS, ...UNREGISTERED]) {
+    const pl = byProject(p.name, list);
+    if (!pl.length && (p.registered === false || q)) continue;
+    parts.push(group(p, pl, { showEnded, cap: st === 'many' ? 8 : 0 }));
+  }
+  if (q && !list.length) parts.push(h('div', { class: 'empty' }, h('h2', { text: 'No agent matches' }), h('p', { text: `Nothing matches “${q}”. Clear the filter to see every agent.` })));
+  body.replaceChildren(...parts);
+}
+function project(st, el) {
+  const name = Object.keys(PSTATE).find((k) => PSTATE[k] === st);
+  const p = PROJECTS.find((x) => x.name === name);
+  const list = byProject(p.name);
+  const live = list.filter((a) => a.state !== 'ended');
+  const atLimit = st === 'nika-limit';
+  el.dataset.navAs = `p:${p.name}`;
+  $('#proj-h').textContent = p.name; $('#proj-h').title = p.name;
+  $('#proj-rules').replaceChildren(rulesEl(p.rules.state));
+  $('#sp-d').textContent = `In ${p.name}. Opens a new tmux pane and starts Claude Code with your brief.`;
+  $('#proj-actions').replaceChildren(
+    live.some((a) => a.role === 'orchestrator') ? h('button', { type: 'button', class: 'btn', 'data-go': 'session' }, icon('i-term'), h('span', { class: 'lbl', text: 'Open orchestrator' })) : act('Start orchestrator', 'i-play', () => toast(`Started the orchestrator for ${p.name}`)),
+    h('button', { type: 'button', class: 'btn primary', 'aria-disabled': atLimit ? 'true' : null, 'aria-describedby': atLimit ? 'limit-note' : null, onclick: () => go('spawn', atLimit ? 'limit' : 'form') }, icon('i-spawn'), h('span', { class: 'lbl', text: 'Spawn agent' })),
+    menu(`More actions for ${p.name}`, [['Copy folder path', () => toast(`Copied ${p.dir}`)], ['Remove from nika…', () => toast('Asks first. Removes the project from nika only; no files change.')]]));
+  $('#proj-agents').replaceChildren(group({ ...p, key: `pv-${p.key}` }, list, { showEnded: true }));
+  $('#proj-agents .grp-head')?.remove();
+  const ruleText = { nika: 'rules/orchestration.md matches the current template.', outdated: 'Written by nika from template version 3. Version 4 is available.', foreign: 'rules/orchestration.md exists but nika did not write it. Applying replaces it after you confirm; a backup is kept.', none: 'This project has no rules/orchestration.md yet. Agents start without orchestration rules.' }[p.rules.state];
+  $('#proj-setup').replaceChildren(
+    h('div', { class: 'card' }, h('h2', { text: 'Rules' }), rulesEl(p.rules.state), h('p', { text: ruleText }),
+      !p.rules.settingsIgnored ? h('p', { class: 'muted', text: '.claude/settings.local.json is not in .gitignore.' }) : null,
+      h('div', null, h('button', { type: 'button', class: `btn${p.rules.state === 'nika' ? '' : ' primary'}`, 'data-go': `rules/${p.rules.state === 'foreign' ? 'foreign' : 'preview'}`, text: p.rules.state === 'nika' ? 'Preview rules' : p.rules.state === 'none' ? 'Set up rules…' : 'Update rules…' }))),
+    h('div', { class: 'card' }, h('h2', { text: 'Plugins' }),
+      p.plugins.length ? h('div', { class: 'chips' }, p.plugins.map((x) => h('span', { class: 'chip', text: x }))) : h('p', { class: 'muted', text: 'No plugins chosen. Agents use only what the project already enables.' }),
+      h('p', { class: 'muted', text: 'Written into .claude/settings.local.json when you apply rules.' }),
+      h('div', null, h('a', { class: 'btn', href: '#settings', 'data-go': 'settings', text: 'Choose plugins…' }))),
+    h('div', { class: 'card' }, h('h2', { text: 'New agents' }),
+      h('dl', { class: 'kv' }, h('dt', { text: 'Permission mode' }), h('dd', { text: 'Default' }), h('dt', { text: 'Pane' }), h('dd', { text: 'Beside' }), h('dt', { text: 'Running' }), h('dd', { class: 'num', text: `${live.filter((a) => a.role === 'agent').length} of 3` })),
+      atLimit ? h('p', { class: 'limit', id: 'limit-note' }, icon('i-warn'), h('span', { text: 'Limit reached: 3 of 3 agents are running. Spawning is off until one ends.' })) : null));
+}
+function rules(st) {
+  const foreign = st === 'foreign';
+  const p = foreign ? PROJECTS[2] : PROJECTS[1];
+  const host = $('[data-screen="project"]');
+  const want = foreign ? 'foreign' : 'outdated';
+  if (host.dataset.state !== want && ['preview', 'foreign'].includes(st)) enter(host, want);
+  $('#ru-h').textContent = `Apply rules to ${p.name.length > 32 ? `${p.name.slice(0, 31)}…` : p.name}`;
+  const files = RULES_PREVIEW.files.map((f, i) => (i === 0 && foreign ? { ...f, foreign: true, diff: RULES_FOREIGN_DIFF } : f));
+  const gi = $('#ru-gitignore');
+  const nav = $('#ru-files'); const view = $('#ru-view');
+  $('#ru-warn').hidden = foreign;
+  $('#ru-backup').textContent = RULES_PREVIEW.backupDir;
+  const label = (f) => (f.foreign ? 'replace (not by nika)' : f.optional && !gi.checked ? 'skipped unless you tick .gitignore' : f.action);
+  function show(i) {
+    const f = files[i];
+    for (const b of $$('button', nav)) b.setAttribute('aria-current', String(b.dataset.i === String(i)));
+    view.replaceChildren(
+      h('div', { class: 'file-head' }, h('code', { text: f.path }), h('span', { class: 'act', 'data-a': f.foreign ? 'foreign' : f.action, 'aria-hidden': 'true', text: f.foreign ? '!' : f.action[0].toUpperCase() }), h('span', { class: 'help', text: label(f) }),
+        f.keysPreserved ? h('span', { class: 'help', text: `· only enabledPlugins changes; ${f.otherKeys} other keys kept as they are (values not shown)` }) : null),
+      f.action === 'unchanged' ? h('p', { class: 'diff d-note', text: 'Already up to date. nika will not touch this file.' }) : renderDiff(f.diff));
+  }
+  function list() {
+    nav.replaceChildren(...files.map((f, i) => h('button', { type: 'button', 'data-i': i, onclick: () => show(i) },
+      h('span', { class: 'act', 'data-a': f.foreign ? 'foreign' : f.action, 'aria-hidden': 'true', text: f.foreign ? '!' : f.action[0].toUpperCase() }),
+      h('span', { class: 'fp', text: f.path }), h('span', { class: 'fa', text: label(f) }))));
+    show(Number($('[aria-current="true"]', nav)?.dataset.i ?? 0));
+  }
+  gi.onchange = list;
+  const fo = $('#ru-foreign');
+  fo.checked = false;
+  const apply = $('#ru-apply');
+  const sync = () => { apply.disabled = foreign && !fo.checked; };
+  fo.onchange = sync; sync();
+  apply.onclick = () => { go('rules', 'applying'); setTimeout(() => { if (current.name === 'rules' && current.st === 'applying') { go('rules', 'success'); announce('Rules applied. 3 files written.'); } }, 1100); };
+  $('#ru-sum').textContent = `${files.filter((f) => f.action !== 'unchanged' && !f.optional).length} files change · ${files.filter((f) => f.action === 'unchanged').length} unchanged`;
+  if (foreign) $('#ru-sum').textContent += ' · tick the replace box to enable Apply';
+  list();
+}
+function spawn(st, dlg) {
+  const f = $('#spawn-form');
+  if (st === 'limit') enter($('[data-screen="project"]'), 'nika-limit');
+  if (st === 'errors') { $('#sp-name').value = 'Builder 3'; $('#sp-brief').value = ''; validateForm(f); setFieldError($('#sp-brief'), 'Write a brief: it is the agent’s first message.'); }
+  else { $('#sp-name').value = 'builder-3'; setFieldError($('#sp-name'), ''); setFieldError($('#sp-brief'), ''); }
+  $('#sp-go').disabled = st === 'limit';
+  $('#sp-go').onclick = () => {
+    const bad = validateForm(f);
+    if (!$('#sp-brief').value.trim()) { setFieldError($('#sp-brief'), 'Write a brief: it is the agent’s first message.'); bad.push($('#sp-brief')); }
+    if (bad.length) { bad[0].focus(); return; }
+    go('spawn', 'starting');
+    setTimeout(() => { dlg.close(); toast('Spawned builder-3 in pane %24', { action: { label: 'Open session', run: () => go('session') } }); }, 1200);
+  };
+}
+function session(st, el) {
+  const split = $('#sess-split');
+  const perm = st === 'permission';
+  $('#sess-h').textContent = perm ? 'reviewer-2' : 'builder-1';
+  $('#sess-st').replaceChildren(statusEl(st === 'pane-gone' ? 'ended' : perm ? 'attn' : 'busy'));
+  $('#sess-st .st').classList.add('pill-st');
+  $('#sess-model').textContent = perm ? 'opus' : 'sonnet';
+  $('#sess-pane').textContent = perm ? '%14' : '%12';
+  split.dataset.agent = perm ? 'reviewer-2' : 'builder-1'; split.dataset.pane = perm ? '%14' : '%12';
+  $('#composer').placeholder = `Message ${split.dataset.agent}…`;
+  $('label[for="composer"]').textContent = `Message to ${split.dataset.agent}. Enter sends, Shift+Enter adds a line, Escape goes to the pane.`;
+  split.reset?.();
+  split.mirrorShow?.(perm ? CAP_PERMISSION : CAP_WORKING);
+  const off = st === 'pane-gone' || st === 'tmux-error';
+  for (const b of $$('.composer button, .composer textarea, [data-pass-toggle]', split)) b.disabled = off;
+  $('#live-label').textContent = off ? 'Not live' : st === 'paused' ? 'Paused · 92 × 30' : 'Live · 92 × 30';
+  if (st === 'paused') { const t = $('[data-term]', split); t.scrollTop = 0; t.dispatchEvent(new Event('scroll')); }
+  if (st === 'passthrough') setTimeout(() => split.setPass(true), 50);
+  else if (!off) setTimeout(() => $('#composer').focus(), 50);
+}
+function tray(st) {
+  const c = counts(AGENTS);
+  const items = [
+    h('li', { class: 'ti status', role: 'none' }, h('span', { text: `${c.attn} need you · ${c.idle} waiting · ${c.busy} working` })),
+    h('li', { role: 'none' }, h('div', { class: 'ti act-i', role: 'menuitem', tabindex: '0', text: 'Open nika' })),
+    h('li', { role: 'separator' }),
+    ...PROJECTS.slice(0, 8).map((p) => h('li', { role: 'none' }, h('div', { class: 'ti act-i', role: 'menuitem', tabindex: '-1' }, h('span', { class: 'tn', text: trayLabel(p) })))),
+    h('li', { role: 'separator' }),
+    h('li', { role: 'none' }, h('div', { class: 'ti act-i', role: 'menuitem', tabindex: '-1', text: 'Add project…' })),
+    h('li', { role: 'none' }, h('div', { class: 'ti act-i', role: 'menuitemcheckbox', 'aria-checked': 'true', tabindex: '-1' }, h('span', { class: 'tick', 'aria-hidden': 'true', text: '✓' }), 'Start at login')),
+    h('li', { role: 'separator' }),
+    h('li', { role: 'none' }, h('div', { class: 'ti act-i', role: 'menuitem', tabindex: '-1', text: 'Quit nika' })),
+  ];
+  $('#tray-icon').toggleAttribute('data-attn', st !== 'menu');
+  if (st === 'menu') items[0].firstChild.textContent = `${c.idle} waiting · ${c.busy} working`;
+  $('#tray-menu').replaceChildren(...items);
+}
+function browser() {
+  const list = AGENTS;
+  summary($('#br-sum'), counts(list));
+  const groups = [...PROJECTS, ...UNREGISTERED].map((p) => ({ ...p, rules: null, registered: true })).filter((p) => byProject(p.name).length);
+  $('#br-body').replaceChildren(...groups.map((p) => group(p, byProject(p.name), { tier: 'browser' })));
+}
+V.render = { dashboard, project, rules, spawn, session, tray, browser };
+V.back = () => (current.name === 'session' ? go('project', 'nika-limit') : go('dashboard'));
+V.keys = (e, mod) => { if (mod && e.key.toLowerCase() === 'f' && current.name === 'dashboard') { e.preventDefault(); $('#dash-filter').focus(); } };
+V.init = () => {
+  sidebar(AGENTS); env('normal');
+  $('#dash-filter').addEventListener('input', () => dashboard(current.st));
+  $('#dash-ended').addEventListener('change', () => dashboard(current.st));
+  document.addEventListener('click', (e) => { const b = e.target.closest('[data-add]'); if (b) addProjectFlow(); const s = e.target.closest('[data-sim]'); if (s) addProjectFlow(s.dataset.sim); });
+  renderHistory($('#hx-list'));
+  $('#load-older').addEventListener('click', (e) => { const b = e.currentTarget; b.textContent = 'Loading…'; b.setAttribute('aria-busy', 'true'); setTimeout(() => { b.parentElement.replaceWith(h('p', { class: 'hx-start', text: 'Start of the session · 13:20' })); }, 700); });
+  for (const b of $$('[data-surface]')) b.addEventListener('click', () => { $('[data-term]').dataset.surface = b.dataset.surface; for (const x of $$('[data-surface]')) x.setAttribute('aria-pressed', String(x === b)); });
+  for (const t of $$('.pane-tabs [role="tab"]')) t.addEventListener('click', () => { for (const x of $$('.pane-tabs [role="tab"]')) x.setAttribute('aria-selected', String(x === t)); $('#sess-split').dataset.tab = t.id === 'tab-hist' ? 'hist' : 'term'; });
+  for (const b of $$('[data-step]')) b.addEventListener('click', () => { const i = $('#set-max'); i.value = Math.min(8, Math.max(1, Number(i.value) + Number(b.dataset.step))); i.dispatchEvent(new Event('input', { bubbles: true })); });
+  const plugs = $('#set-plugs');
+  plugs.replaceChildren(...PLUGINS.map((x, i) => h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: x === 'reply-style@demo-market', id: `pl-${i}` }), x)));
+  const rc = $('#set-rc'); const pre = $('#set-rc-prefix'); const syncRc = () => { pre.disabled = !rc.checked; }; rc.addEventListener('change', syncRc); syncRc();
+  const sv = window.VARIANT.render;
+  sv.settings = (st) => { if (st === 'errors') { rc.checked = true; syncRc(); setTimeout(() => $('#set-form').showErrors(), 30); } };
+};
+})();
+</script>
+</body>
+</html>

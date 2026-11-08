@@ -1,0 +1,1582 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>nika 0.2 · Variant B · Queue</title>
+<style>
+/* ===== Variant B tokens: "Queue". One column, ordered by who needs you; calm, rounded, roomy. ===== */
+:root {
+  --font: ui-rounded, "SF Pro Rounded", system-ui, -apple-system, "Segoe UI", Cantarell, "Noto Sans", sans-serif;
+  --font-read: system-ui, -apple-system, "Segoe UI", Cantarell, "Noto Sans", sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, "DejaVu Sans Mono", "Liberation Mono", monospace;
+  --fs-cap: 0.75rem; --fs-small: 0.8125rem; --fs-body: 0.9375rem; --fs-h3: 1rem; --fs-h2: 1.125rem; --fs-h1: 1.375rem; --fs-display: 1.75rem; --fs-term: 0.8125rem;
+  --lh-body: 1.5;
+  --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-5: 20px; --sp-6: 24px; --sp-8: 32px; --sp-10: 40px;
+  --r-sm: 8px; --r-md: 12px; --r-lg: 18px; --r-pill: 999px;
+  --h-ctl: 36px; --col: 760px;
+  --dur-1: 140ms; --dur-2: 220ms; --dur-3: 360ms; --ease: cubic-bezier(0.2, 0, 0, 1);
+  --elev-1: 0 1px 2px rgb(40 30 80 / 6%), 0 2px 8px -4px rgb(40 30 80 / 10%);
+  --elev-2: 0 10px 28px -10px rgb(40 30 80 / 30%);
+  --elev-3: 0 28px 64px -16px rgb(40 30 80 / 40%);
+  --scrim: rgb(28 24 48 / 42%);
+  --stage: #dcd9e6;
+  --bg: #f1f0f6; --bg-alt: #e9e7f1; --surface: #ffffff; --surface-2: #f7f6fb; --surface-3: #ebe8f6;
+  --line: #e0dde9; --line-strong: #8a869c;
+  --text: #1c1a2b; --text-muted: #57536a;
+  --accent: #5a3dcc; --on-accent: #ffffff; --accent-soft: #ece8fd; --focus: #5a3dcc;
+  --busy: #17753a; --busy-soft: #e1f4e7; --idle: #8a5300; --idle-soft: #fcf0d8;
+  --attn: #b0125c; --attn-soft: #fce6ef; --ended: #5f6772; --ended-soft: #edeff2;
+  --danger: #b42318; --danger-soft: #fde9e7; --diff-add: #e3f5e8; --diff-del: #fce9e9;
+}
+:root[data-theme="dark"] {
+  --elev-1: none; --elev-2: 0 10px 28px -10px rgb(0 0 0 / 60%); --elev-3: 0 28px 64px -16px rgb(0 0 0 / 70%);
+  --scrim: rgb(0 0 0 / 60%); --stage: #0d0c12;
+  --bg: #16141d; --bg-alt: #1b1924; --surface: #211e2b; --surface-2: #292635; --surface-3: #332f44;
+  --line: #36324a; --line-strong: #787290;
+  --text: #eeecf6; --text-muted: #aca7c2;
+  --accent: #b6a6ff; --on-accent: #1d1442; --accent-soft: #2e2754; --focus: #b6a6ff;
+  --busy: #5fd08a; --busy-soft: #173523; --idle: #f0b45a; --idle-soft: #3a2b12;
+  --attn: #ff80b5; --attn-soft: #41182c; --ended: #9aa3ae; --ended-soft: #2a3038;
+  --danger: #ff8a80; --danger-soft: #431b18; --diff-add: #163322; --diff-del: #3d1b1e;
+}
+/* ===== shared mockup base (identical in a.html, b.html, c.html) ===== */
+*, *::before, *::after { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  display: flex; flex-direction: column; height: 100vh;
+  background: var(--stage); color: var(--text);
+  font: var(--fs-body)/var(--lh-body) var(--font);
+  -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility;
+}
+:root { color-scheme: light; }
+:root[data-theme="dark"] { color-scheme: dark; } /* native controls and scrollbars follow the chosen theme */
+[hidden] { display: none !important; }
+button, input, select, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; }
+button:disabled { cursor: not-allowed; }
+a { color: var(--accent); }
+code, kbd, pre, .mono { font-family: var(--mono); }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+.skip { position: absolute; left: 8px; top: -60px; z-index: 50; padding: 8px 12px; background: var(--surface); color: var(--accent); border-radius: 6px; }
+.skip:focus { top: 8px; }
+.num { font-variant-numeric: tabular-nums; }
+
+/* ---------- mockup chrome: not part of the design ---------- */
+.mock {
+  flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px;
+  padding: 6px 12px; background: var(--bg-alt); color: var(--text-muted);
+  border-bottom: 1px dashed var(--line-strong); font: 12px/1.3 system-ui, -apple-system, sans-serif;
+}
+.mock strong { color: var(--text); font-weight: 600; }
+.mock label { display: inline-flex; align-items: center; gap: 6px; }
+.mock select { min-height: 26px; padding: 0 4px; background: var(--surface); border: 1px solid var(--line-strong); border-radius: 4px; }
+.mock .mk-links { margin-left: auto; display: flex; gap: 10px; }
+.mock .mk-links a[aria-current] { color: var(--text); font-weight: 600; text-decoration: none; }
+.stage { flex: 1; min-height: 0; overflow: auto; display: flex; }
+.win {
+  position: relative; flex: 1; min-width: 0; min-height: 0; overflow: hidden;
+  container: win / inline-size; background: var(--bg); color: var(--text);
+}
+.stage.sized { padding: 16px; }
+.stage.sized .win { flex: none; margin: 0 auto; border: 1px solid var(--line-strong); border-radius: 10px; box-shadow: 0 18px 40px -18px rgb(0 0 0 / 35%); }
+[data-world] { height: 100%; }
+.screen { min-height: 0; }
+
+/* ---------- status glyphs (shape + colour + text; never colour alone) ---------- */
+.st { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; color: var(--st-c); }
+.st[data-s="busy"] { --st-c: var(--busy); --st-bg: var(--busy-soft); }
+.st[data-s="idle"] { --st-c: var(--idle); --st-bg: var(--idle-soft); }
+.st[data-s="attn"] { --st-c: var(--attn); --st-bg: var(--attn-soft); }
+.st[data-s="ended"] { --st-c: var(--ended); --st-bg: var(--ended-soft); }
+.st-g { position: relative; flex: none; width: 10px; height: 10px; }
+.st[data-s="busy"] .st-g { border-radius: 50%; background: var(--st-c); }
+.st[data-s="busy"] .st-g::after {
+  content: ""; position: absolute; inset: -3px; border-radius: 50%;
+  border: 1.5px solid transparent; border-top-color: var(--st-c);
+  animation: st-spin 1.1s linear infinite;
+}
+.st[data-s="idle"] .st-g { border-radius: 50%; border: 2px solid var(--st-c); }
+.st[data-s="attn"] .st-g { width: 9px; height: 9px; margin: 0 0.5px; transform: rotate(45deg); background: var(--st-c); }
+.st[data-s="ended"] .st-g { width: 8px; height: 8px; margin: 1px; border-radius: 1px; background: var(--st-c); opacity: 0.85; }
+@keyframes st-spin { to { transform: rotate(360deg); } }
+
+/* ---------- terminal mirror: shared palette, dark by default, per-viewer light toggle ---------- */
+.term {
+  --term-bg: #16181d; --term-fg: #dadee5; --term-cursor: #f2f4f7;
+  --a0: #3b4048; --a1: #f47c7f; --a2: #7fd187; --a3: #e8c27e; --a4: #72b4ff; --a5: #d58cec; --a6: #5cc9d9; --a7: #c9cdd5;
+  --a8: #868e9b; --a9: #ff9696; --a10: #9be69b; --a11: #f6d892; --a12: #97caff; --a13: #e5a9f6; --a14: #83deec; --a15: #f3f5f8;
+  background: var(--term-bg); color: var(--term-fg);
+}
+.term[data-surface="light"] {
+  --term-bg: #fbfbfc; --term-fg: #1f2329; --term-cursor: #1f2329;
+  --a0: #1f2329; --a1: #c0222b; --a2: #1b7a35; --a3: #875800; --a4: #0b58c2; --a5: #8a3aae; --a6: #0a6e80; --a7: #58606b;
+  --a8: #6b7380; --a9: #a10e24; --a10: #126128; --a11: #6c4700; --a12: #0a4aa3; --a13: #742a99; --a14: #085a6a; --a15: #3b424b;
+}
+.term-pre { margin: 0; font: var(--fs-term)/1.35 var(--mono); white-space: pre; tab-size: 8; }
+.term-pre .tl { display: block; min-height: 1.35em; }
+.f0{color:var(--a0)}.f1{color:var(--a1)}.f2{color:var(--a2)}.f3{color:var(--a3)}.f4{color:var(--a4)}.f5{color:var(--a5)}.f6{color:var(--a6)}.f7{color:var(--a7)}
+.f8{color:var(--a8)}.f9{color:var(--a9)}.f10{color:var(--a10)}.f11{color:var(--a11)}.f12{color:var(--a12)}.f13{color:var(--a13)}.f14{color:var(--a14)}.f15{color:var(--a15)}
+.b0{background:var(--a0)}.b1{background:var(--a1)}.b2{background:var(--a2)}.b3{background:var(--a3)}.b4{background:var(--a4)}.b5{background:var(--a5)}.b6{background:var(--a6)}.b7{background:var(--a7)}
+.b8{background:var(--a8)}.b9{background:var(--a9)}.b10{background:var(--a10)}.b11{background:var(--a11)}.b12{background:var(--a12)}.b13{background:var(--a13)}.b14{background:var(--a14)}.b15{background:var(--a15)}
+.fdb { color: var(--term-bg); } .bdf { background: var(--term-fg); }
+.sb { font-weight: 700; } .sd { opacity: 0.6; } .si { font-style: italic; } .su { text-decoration: underline; }
+.tc { background: var(--term-cursor); color: var(--term-bg); }
+.term:not(:focus-within) .tc { background: transparent; outline: 1px solid var(--term-cursor); outline-offset: -1px; color: inherit; }
+
+/* ---------- diff viewer ---------- */
+.diff { margin: 0; font: 12px/1.5 var(--mono); white-space: pre; overflow: auto; background: var(--surface); }
+.diff .dl { display: grid; grid-template-columns: 3.5em 3.5em 1.5em 1fr; min-width: max-content; }
+.diff .dn { color: var(--text-muted); text-align: right; padding-right: 0.6em; user-select: none; }
+.diff .dm { text-align: center; user-select: none; }
+.diff .d-add { background: var(--diff-add); }
+.diff .d-add .dm { color: var(--busy); font-weight: 700; }
+.diff .d-del { background: var(--diff-del); }
+.diff .d-del .dm { color: var(--danger); font-weight: 700; }
+.diff .d-hunk { color: var(--text-muted); background: var(--surface-2); }
+.diff .d-note { color: var(--text-muted); font-style: italic; padding: 6px 12px; white-space: normal; }
+
+/* ---------- history entries (structure shared, look per variant) ---------- */
+.hx-text { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; }
+.hx-code { white-space: pre; overflow: auto; margin: 0; font: 12px/1.45 var(--mono); max-height: 22em; }
+.hx-clamp { display: -webkit-box; -webkit-line-clamp: 12; -webkit-box-orient: vertical; overflow: hidden; }
+.hx-trunc { color: var(--text-muted); font-style: italic; }
+
+/* ---------- disclosure menus ---------- */
+.menu-wrap { position: relative; display: inline-block; }
+.menu {
+  position: absolute; right: 0; top: calc(100% + 4px); z-index: 30; min-width: 220px; margin: 0; padding: 4px; list-style: none;
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-md); box-shadow: var(--elev-2);
+}
+.menu button, .menu a { display: flex; width: 100%; align-items: center; gap: 8px; min-height: 30px; padding: 4px 10px; border: 0; border-radius: var(--r-sm); background: none; text-align: left; text-decoration: none; color: var(--text); }
+.menu button:hover, .menu a:hover { background: var(--surface-2); }
+
+/* ---------- toasts ---------- */
+.toasts { position: fixed; z-index: 60; left: 50%; bottom: 20px; transform: translateX(-50%); display: grid; gap: 8px; width: min(440px, calc(100vw - 32px)); pointer-events: none; }
+.toast {
+  pointer-events: auto; display: flex; align-items: center; gap: 10px; padding: 10px 12px 10px 14px;
+  background: var(--text); color: var(--bg); border-radius: var(--r-md); box-shadow: var(--elev-2);
+  animation: toast-in var(--dur-2) var(--ease);
+}
+.toast p { margin: 0; flex: 1; overflow-wrap: anywhere; }
+.toast button { flex: none; min-height: 28px; padding: 0 10px; border: 1px solid currentColor; border-radius: var(--r-sm); background: none; color: inherit; }
+.toast[data-kind="error"] { background: var(--danger); color: #fff; }
+@keyframes toast-in { from { opacity: 0; transform: translateY(6px); } }
+.spin { display: inline-block; width: 12px; height: 12px; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; animation: st-spin 0.8s linear infinite; vertical-align: -2px; }
+
+/* ---------- skeleton ---------- */
+.sk { border-radius: var(--r-sm); background: linear-gradient(90deg, var(--surface-2) 25%, var(--surface-3) 50%, var(--surface-2) 75%); background-size: 200% 100%; animation: sk 1.4s linear infinite; }
+@keyframes sk { to { background-position: -200% 0; } }
+
+/* ---------- dialogs ---------- */
+dialog { color: var(--text); background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg); box-shadow: var(--elev-3); padding: 0; max-width: calc(100vw - 32px); max-height: calc(100vh - 32px); }
+dialog::backdrop { background: var(--scrim); }
+dialog[open] { animation: dlg-in var(--dur-2) var(--ease); }
+@keyframes dlg-in { from { opacity: 0; transform: translateY(8px) scale(0.99); } }
+
+/* ---------- reduced motion (OS setting, or the mock toggle) ---------- */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; scroll-behavior: auto !important; }
+}
+:root[data-motion="reduce"] *, :root[data-motion="reduce"] *::before, :root[data-motion="reduce"] *::after {
+  animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important;
+}
+
+
+/* ===== Variant B components ===== */
+.ic { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: var(--h-ctl); padding: 0 16px;
+  border: 1px solid var(--line-strong); border-radius: var(--r-pill); background: var(--surface); color: var(--text);
+  font-weight: 600; text-decoration: none; white-space: nowrap; transition: background var(--dur-1) var(--ease);
+}
+.btn:hover { background: var(--surface-3); }
+.btn:active { transform: translateY(1px); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.btn.primary:hover { background: color-mix(in srgb, var(--accent) 86%, var(--text)); }
+.btn.ghost { border-color: transparent; background: transparent; }
+.btn.ghost:hover { background: var(--surface-3); }
+.btn.icon { width: var(--h-ctl); padding: 0; }
+.btn.sm { min-height: 30px; padding: 0 12px; font-size: var(--fs-small); }
+.btn.link { border: 0; background: none; min-height: 24px; padding: 0; color: var(--accent); text-decoration: underline; font-weight: 600; }
+.btn:disabled, .btn[aria-disabled="true"] { opacity: 0.5; }
+kbd { font: var(--fs-cap)/1 var(--mono); padding: 2px 6px; border: 1px solid var(--line-strong); border-radius: 6px; color: var(--text-muted); background: var(--surface); }
+.model { font-size: var(--fs-small); color: var(--text-muted); }
+.rules { display: inline-flex; align-items: center; gap: 6px; min-height: 26px; padding: 0 12px; border-radius: var(--r-pill); font-size: var(--fs-small); font-weight: 700; }
+.rules-g { display: inline-grid; place-items: center; width: 16px; height: 16px; border-radius: 50%; background: currentColor; }
+.rules-g { color: inherit; }
+.rules[data-r="nika"] { color: var(--busy); background: var(--busy-soft); }
+.rules[data-r="outdated"] { color: var(--idle); background: var(--idle-soft); }
+.rules[data-r="foreign"] { color: var(--attn); background: var(--attn-soft); }
+.rules[data-r="none"] { color: var(--text-muted); background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line-strong); }
+.rules .rules-g { background: none; width: auto; }
+.st-l { font-weight: 700; }
+.chip { display: inline-flex; align-items: center; gap: 6px; min-height: 28px; padding: 0 12px; border-radius: var(--r-pill); background: var(--surface); border: 1px solid var(--line); font-size: var(--fs-small); font-weight: 600; color: var(--text); }
+button.chip:hover { background: var(--surface-3); }
+button.chip[aria-pressed="true"] { background: var(--text); color: var(--surface); border-color: var(--text); }
+.chip .n { font-variant-numeric: tabular-nums; color: var(--attn); }
+button.chip[aria-pressed="true"] .n { color: inherit; }
+.field { display: grid; gap: 6px; align-content: start; }
+.field > label, .lbl { font-weight: 700; }
+.help { margin: 0; color: var(--text-muted); font-size: var(--fs-small); font-family: var(--font-read); }
+.err { margin: 0; color: var(--danger); font-size: var(--fs-small); font-weight: 700; }
+.err::before { content: "⚠ "; }
+input[type="text"], input[type="search"], input[type="number"], select, textarea {
+  min-height: 40px; padding: 6px 14px; border: 1px solid var(--line-strong); border-radius: var(--r-md); background: var(--surface); color: var(--text); width: 100%;
+}
+textarea { font-family: var(--font-read); line-height: 1.5; resize: vertical; }
+input[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--danger); box-shadow: inset 0 0 0 1px var(--danger); }
+input:disabled { background: var(--surface-2); color: var(--text-muted); }
+input[type="checkbox"], input[type="radio"] { width: 18px; height: 18px; margin: 0; accent-color: var(--accent); flex: none; }
+.check { display: flex; gap: 10px; align-items: flex-start; min-height: 28px; }
+.check input { margin-top: 2px; }
+.switch { appearance: none; -webkit-appearance: none; width: 40px !important; height: 24px !important; border-radius: 999px; background: var(--line-strong); position: relative; }
+.switch::after { content: ""; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%; background: var(--surface); transition: transform var(--dur-1) var(--ease); }
+.switch:checked { background: var(--accent); }
+.switch:checked::after { transform: translateX(16px); }
+.note { display: flex; gap: 12px; align-items: flex-start; padding: 14px 16px; border-radius: var(--r-md); background: var(--surface); box-shadow: inset 4px 0 0 var(--k, var(--accent)), var(--elev-1); }
+.note .ic { color: var(--k, var(--accent)); margin-top: 2px; }
+.note p { margin: 0; flex: 1; }
+.note strong { display: block; }
+.note[data-kind="danger"] { --k: var(--danger); }
+.note[data-kind="warn"] { --k: var(--idle); }
+.note[data-kind="ok"] { --k: var(--busy); }
+
+/* ===== shell ===== */
+.app { height: 100%; display: flex; flex-direction: column; }
+.top { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 12px; height: 60px; padding: 0 20px; background: var(--bg); }
+.brand { display: flex; align-items: center; gap: 10px; font-size: var(--fs-h2); font-weight: 800; letter-spacing: -0.01em; }
+.brand svg { width: 22px; height: 22px; fill: none; stroke: var(--accent); stroke-width: 2.2; }
+.brand svg circle:first-child { fill: var(--accent); }
+.tabs { display: flex; gap: 2px; padding: 4px; background: var(--bg-alt); border-radius: var(--r-pill); }
+.tabs a { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 0 16px; border-radius: var(--r-pill); color: var(--text-muted); text-decoration: none; font-weight: 700; }
+.tabs a:hover { color: var(--text); }
+.tabs a[aria-current] { background: var(--surface); color: var(--text); box-shadow: var(--elev-1); }
+.tabs .badge { min-width: 20px; height: 20px; padding: 0 6px; border-radius: 10px; background: var(--attn); color: var(--surface); font-size: var(--fs-cap); display: inline-grid; place-items: center; font-variant-numeric: tabular-nums; }
+.top-right { display: flex; justify-content: flex-end; align-items: center; gap: 10px; }
+.env { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-small); color: var(--text-muted); }
+.env [aria-hidden] { color: var(--busy); }
+.env[data-bad], .env[data-bad] [aria-hidden] { color: var(--danger); font-weight: 700; }
+.main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.main > .screen { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.scroll { flex: 1; min-height: 0; overflow: auto; scroll-padding-bottom: 96px; }
+.col { width: min(var(--col), 100% - 40px); margin: 0 auto; padding: 24px 0 64px; }
+.hero { margin: 8px 0 20px; }
+.hero h1 { margin: 0; font-size: var(--fs-display); line-height: 1.2; letter-spacing: -0.02em; font-weight: 800; }
+.hero p { margin: 6px 0 0; color: var(--text-muted); font-size: var(--fs-h3); }
+.filters { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 24px; }
+.sec { margin: 0 0 28px; }
+.sec > h2 { display: flex; align-items: baseline; gap: 8px; margin: 0 0 10px; font-size: var(--fs-h2); }
+.sec > h2 small { font-size: var(--fs-small); color: var(--text-muted); font-weight: 600; }
+.stack { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+
+/* big attention card */
+.qcard { position: relative; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 14px; padding: 16px 18px 16px 20px; border-radius: var(--r-lg); background: var(--surface); box-shadow: var(--elev-1); overflow: hidden; }
+.qcard::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 6px; background: var(--st-c); }
+.qcard[data-s="attn"] { --st-c: var(--attn); }
+.qcard[data-s="idle"] { --st-c: var(--idle); }
+.qcard .gl { grid-row: 1 / 4; padding-top: 6px; }
+.qcard .gl .st-g { width: 14px; height: 14px; }
+.qcard[data-s="attn"] .gl .st-g { width: 12px; height: 12px; }
+.qhead { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; min-width: 0; }
+.qhead h3 { margin: 0; font-size: var(--fs-h2); min-width: 0; overflow-wrap: anywhere; }
+.qhead h3 a { color: var(--text); text-decoration: none; }
+.qhead h3 a:hover { text-decoration: underline; }
+.qproj { color: var(--text-muted); font-size: var(--fs-small); font-weight: 600; max-width: 30ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.qwhy { margin: 0; font-family: var(--font-read); font-size: var(--fs-h3); overflow-wrap: anywhere; }
+.qmeta { margin: 0; display: flex; flex-wrap: wrap; gap: 4px 14px; color: var(--text-muted); font-size: var(--fs-small); }
+.qmeta .st { font-weight: 700; }
+.qacts { grid-column: 2; display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.qcard.small { padding: 12px 16px 12px 20px; }
+.qcard.small .qacts { margin-top: 6px; }
+/* compact working list */
+.wlist { list-style: none; margin: 0; padding: 4px; border-radius: var(--r-lg); background: var(--surface); box-shadow: var(--elev-1); }
+.wrow { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; gap: 2px 12px; align-items: center; padding: 10px 12px; border-radius: var(--r-md); }
+.wrow:hover { background: var(--surface-2); }
+.wrow + .wrow { box-shadow: 0 -1px 0 var(--line); }
+.wrow .wn { display: flex; gap: 8px; align-items: baseline; min-width: 0; }
+.wrow .wn a { font-weight: 700; color: var(--text); text-decoration: none; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wrow .wn a:hover { text-decoration: underline; }
+.wrow .wn span { color: var(--text-muted); font-size: var(--fs-small); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wrow .wp { grid-column: 2; color: var(--text-muted); font-family: var(--font-read); font-size: var(--fs-small); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wrow .wt { grid-row: 1 / 3; grid-column: 3; color: var(--text-muted); font-size: var(--fs-small); font-variant-numeric: tabular-nums; display: flex; gap: 6px; align-items: center; }
+.wrow[data-s="ended"] .wn a { color: var(--text-muted); }
+details.more > summary { cursor: pointer; display: inline-flex; align-items: center; gap: 8px; min-height: 32px; font-weight: 700; color: var(--text-muted); }
+details.more > summary:hover { color: var(--text); }
+details.more[open] > summary { margin-bottom: 10px; }
+.empty { text-align: left; padding: 8px 0; }
+.empty h1 { font-size: var(--fs-display); margin: 0 0 8px; letter-spacing: -0.02em; }
+.empty p { color: var(--text-muted); font-size: var(--fs-h3); margin: 0 0 18px; max-width: 52ch; font-family: var(--font-read); }
+.empty .acts { display: flex; flex-wrap: wrap; gap: 10px; }
+.startlist { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.startlist li { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 12px 16px; border-radius: var(--r-lg); background: var(--surface); box-shadow: var(--elev-1); }
+.startlist li b { flex: 1; min-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sk-card { height: 104px; border-radius: var(--r-lg); }
+.stale { opacity: 0.6; }
+
+/* projects list */
+.pgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 330px), 1fr)); gap: 14px; }
+.pcard { display: grid; gap: 10px; padding: 18px; border-radius: var(--r-lg); background: var(--surface); box-shadow: var(--elev-1); }
+.pcard h2 { margin: 0; font-size: var(--fs-h2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pcard h2 a { color: var(--text); text-decoration: none; }
+.pcard h2 a:hover { text-decoration: underline; }
+.pcard .path { color: var(--text-muted); font: var(--fs-cap) var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pcard .counts { margin: 0; color: var(--text-muted); font-size: var(--fs-small); }
+.pcard .counts b { color: var(--attn); }
+.pcard .acts { display: flex; flex-wrap: wrap; gap: 8px; }
+
+/* project view */
+.phead { display: grid; gap: 8px; margin: 8px 0 24px; }
+.back { display: inline-flex; align-items: center; gap: 4px; color: var(--text-muted); text-decoration: none; font-weight: 700; width: fit-content; min-height: 28px; }
+.back:hover { color: var(--text); }
+.phead h1 { margin: 0; font-size: var(--fs-display); letter-spacing: -0.02em; overflow-wrap: anywhere; line-height: 1.15; }
+.phead .path { color: var(--text-muted); font: var(--fs-small) var(--mono); overflow-wrap: anywhere; }
+.phead .acts { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 8px; align-items: center; }
+.setup { list-style: none; margin: 0; padding: 0; border-radius: var(--r-lg); background: var(--surface); box-shadow: var(--elev-1); }
+.setup > li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 16px; align-items: center; padding: 16px 18px; }
+.setup > li + li { border-top: 1px solid var(--line); }
+.setup h3 { margin: 0; font-size: var(--fs-h3); }
+.setup p { margin: 0; color: var(--text-muted); font-size: var(--fs-small); font-family: var(--font-read); grid-column: 1; }
+.setup .right { grid-column: 2; grid-row: 1 / 3; }
+.setup .full { grid-column: 1 / -1; }
+.plugpick { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 6px 14px; padding: 12px; border-radius: var(--r-md); background: var(--surface-2); }
+.plugpick label { font: var(--fs-small) var(--mono); align-items: center; }
+.limitnote { color: var(--idle) !important; font-weight: 700; }
+
+/* dialogs */
+dialog.modal { width: min(640px, calc(100vw - 32px)); max-height: calc(100vh - 48px); border-radius: 22px; border: 0; display: none; }
+dialog.modal[open] { display: flex; flex-direction: column; }
+dialog.wide { width: min(880px, calc(100vw - 32px)); height: min(760px, calc(100vh - 48px)); }
+.mhead { display: flex; align-items: flex-start; gap: 12px; padding: 22px 24px 8px; }
+.mhead h2 { margin: 0; font-size: var(--fs-h1); outline: none; letter-spacing: -0.01em; }
+.mhead p { margin: 4px 0 0; color: var(--text-muted); font-family: var(--font-read); }
+.mhead .btn { margin-left: auto; }
+.mbody { flex: 1; min-height: 0; overflow: auto; padding: 12px 24px 20px; display: grid; gap: 18px; align-content: start; }
+.mfoot { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 14px 24px 20px; }
+.mfoot .sp { flex: 1; }
+.steps { display: flex; gap: 8px; list-style: none; margin: 0; padding: 0 24px 6px; counter-reset: s; }
+.steps li { display: flex; align-items: center; gap: 8px; color: var(--text-muted); font-weight: 700; font-size: var(--fs-small); counter-increment: s; }
+.steps li::before { content: counter(s); display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; border: 1.5px solid currentColor; font-size: var(--fs-cap); }
+.steps li + li::after { order: -1; content: ""; width: 24px; height: 1.5px; background: var(--line-strong); }
+.steps li[aria-current="step"] { color: var(--accent); }
+.steps li[aria-current="step"]::before { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+.fold { border-radius: var(--r-md); background: var(--surface); box-shadow: inset 0 0 0 1px var(--line); overflow: hidden; }
+.fold > summary { cursor: pointer; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 12px 14px; min-height: 48px; }
+.fold > summary code { font-weight: 700; }
+.fold > summary .help { flex-basis: 100%; }
+.fold[open] > summary { border-bottom: 1px solid var(--line); }
+.fold .diff { max-height: 320px; }
+.act { display: inline-flex; align-items: center; min-height: 22px; padding: 0 8px; border-radius: var(--r-pill); font-size: var(--fs-cap); font-weight: 800; }
+.act[data-a="create"] { color: var(--busy); background: var(--busy-soft); }
+.act[data-a="update"] { color: var(--idle); background: var(--idle-soft); }
+.act[data-a="unchanged"] { color: var(--ended); background: var(--ended-soft); }
+.act[data-a="foreign"] { color: var(--attn); background: var(--attn-soft); }
+.confirm { display: grid; gap: 14px; }
+.confirm .check { padding: 12px 14px; border-radius: var(--r-md); background: var(--surface-2); }
+.pathbox { display: flex; gap: 8px; align-items: center; padding: 8px 8px 8px 14px; border-radius: var(--r-md); background: var(--surface-2); font: var(--fs-small) var(--mono); overflow-wrap: anywhere; }
+.pathbox span { flex: 1; }
+.done-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.done-list li { display: flex; gap: 10px; align-items: center; font: var(--fs-small) var(--mono); }
+.done-list .ic { color: var(--busy); }
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr)); gap: 8px; }
+.tile { display: flex; gap: 10px; align-items: flex-start; padding: 12px 14px; border-radius: var(--r-md); background: var(--surface); box-shadow: inset 0 0 0 1px var(--line); cursor: pointer; }
+.tile:has(input:checked) { box-shadow: inset 0 0 0 2px var(--accent); background: var(--accent-soft); }
+.tile b { display: block; }
+.tile span span { color: var(--text-muted); font-size: var(--fs-small); font-family: var(--font-read); }
+fieldset { border: 0; margin: 0; padding: 0; min-width: 0; display: grid; gap: 8px; }
+legend { padding: 0; font-weight: 700; margin-bottom: 8px; }
+
+/* settings */
+.qset { display: grid; gap: 14px; }
+.qbox { padding: 20px; border-radius: var(--r-lg); background: var(--surface); box-shadow: var(--elev-1); display: grid; gap: 14px; scroll-margin-top: 16px; }
+.qbox > h2 { margin: 0; font-size: var(--fs-h2); }
+.qbox > p { margin: -8px 0 0; color: var(--text-muted); font-family: var(--font-read); }
+.g2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 16px; }
+.inline { display: flex; align-items: center; gap: 12px; }
+.stepper { display: inline-flex; align-items: center; gap: 8px; }
+.stepper input { width: 72px; text-align: center; font-size: var(--fs-h2); font-weight: 800; }
+.floatbar { position: sticky; bottom: 16px; margin: 0 auto; width: fit-content; display: flex; align-items: center; gap: 10px; padding: 8px 8px 8px 20px; border-radius: var(--r-pill); background: var(--text); color: var(--surface); box-shadow: var(--elev-3); font-weight: 700; }
+.floatbar .btn { border-color: transparent; }
+.floatbar .btn:not(.primary) { background: transparent; color: inherit; }
+.floatbar .btn.primary { background: var(--surface); color: var(--text); }
+@container win (max-width: 820px) { .g2 { grid-template-columns: 1fr; } }
+
+/* session: focus mode */
+.sbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; min-height: 60px; padding: 8px 16px; background: var(--bg); }
+.sbar h1 { margin: 0; font-size: var(--fs-h1); letter-spacing: -0.01em; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sbar .meta { color: var(--text-muted); font-size: var(--fs-small); display: flex; gap: 10px; align-items: center; }
+.sbar .sp { flex: 1; }
+.sbar .pillst { padding: 3px 10px 3px 8px; border-radius: var(--r-pill); background: var(--st-bg); }
+.focus { flex: 1; min-height: 0; display: grid; grid-template-columns: 0 minmax(0, 1fr); position: relative; padding: 0 16px 16px; gap: 0; transition: grid-template-columns var(--dur-3) var(--ease); }
+.focus.hist-open { grid-template-columns: 380px minmax(0, 1fr); gap: 16px; }
+.drawer { min-height: 0; overflow: hidden; border-radius: var(--r-lg); background: var(--surface); box-shadow: var(--elev-1); display: flex; flex-direction: column; }
+.focus:not(.hist-open) .drawer { visibility: hidden; }
+.drawer-head { display: flex; align-items: center; gap: 8px; padding: 12px 12px 8px 18px; }
+.drawer-head h2 { margin: 0; font-size: var(--fs-h3); flex: 1; }
+.drawer-scroll { flex: 1; overflow: auto; padding: 0 14px 18px; }
+.older { display: flex; justify-content: center; padding: 4px 0 12px; }
+.hx-list { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
+.hx { display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; max-width: 92%; min-width: 0; font-family: var(--font-read); }
+/* focus mode: the session replaces the main navigation */
+.app:has([data-screen="session"]:not([hidden])) .top { display: none; }
+.hx-meta { display: flex; gap: 8px; font-size: var(--fs-cap); color: var(--text-muted); font-family: var(--font); font-weight: 700; }
+.hx[data-role="user"][data-kind="text"] { justify-self: end; }
+.hx[data-role="user"][data-kind="text"] .hx-meta { justify-content: flex-end; }
+.hx[data-role="user"][data-kind="text"] .hx-text { background: var(--accent); color: var(--on-accent); padding: 10px 14px; border-radius: 18px 18px 6px 18px; }
+.hx[data-kind="text"][data-role="assistant"] .hx-text { background: var(--surface-2); padding: 10px 14px; border-radius: 18px 18px 18px 6px; }
+.hx-fold summary { cursor: pointer; display: inline-flex; gap: 8px; align-items: center; min-height: 28px; padding: 0 12px; border-radius: var(--r-pill); background: var(--surface-2); color: var(--text-muted); font-size: var(--fs-small); max-width: 100%; }
+.hx-fold summary:hover { color: var(--text); }
+.hx-kind { font-weight: 800; color: var(--text); font-family: var(--font); }
+.hx-sum { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: var(--fs-cap); }
+.hx-fold[open] summary { margin-bottom: 6px; }
+.hx-fold .hx-code, .hx-fold .hx-text { padding: 10px 12px; border-radius: var(--r-md); background: var(--surface-2); }
+.hx-trunc, .hx .btn.link { font-size: var(--fs-small); }
+.hx-start { text-align: center; color: var(--text-muted); font-size: var(--fs-small); }
+.stage-term { min-width: 0; min-height: 0; display: flex; flex-direction: column; border-radius: var(--r-lg); overflow: hidden; box-shadow: var(--elev-2); background: var(--surface); }
+.termbox { position: relative; flex: 1; min-height: 120px; display: flex; }
+.term { flex: 1; min-height: 0; overflow: auto; padding: 16px 18px; outline: none; }
+.is-pass .term { box-shadow: inset 0 0 0 3px var(--accent); }
+.tbar { display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: var(--term-bg, #16181d); }
+.livechip { display: inline-flex; align-items: center; gap: 6px; padding: 2px 10px; border-radius: var(--r-pill); background: rgb(95 208 138 / 16%); color: #8fe0aa; font-size: var(--fs-cap); font-weight: 800; }
+.livechip::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.is-paused .livechip { background: rgb(240 180 90 / 16%); color: #f0c47a; }
+.tbar .tb { margin-left: auto; display: flex; gap: 6px; }
+.tbar .btn { min-height: 28px; font-size: var(--fs-small); padding: 0 12px; background: rgb(255 255 255 / 8%); color: #dadee5; border-color: rgb(255 255 255 / 22%); }
+.tbar .btn[aria-pressed="true"] { background: #dadee5; color: #16181d; }
+.term[data-surface="light"] ~ * { }
+.jump { position: absolute; left: 50%; bottom: 16px; translate: -50% 0; box-shadow: var(--elev-3); }
+.over { position: absolute; inset: 0; display: grid; place-items: center; padding: 24px; background: color-mix(in srgb, var(--bg) 88%, transparent); text-align: center; }
+.over > div { max-width: 420px; display: grid; gap: 10px; justify-items: center; }
+.over h3 { margin: 0; font-size: var(--fs-h1); }
+.over p { margin: 0; color: var(--text-muted); font-family: var(--font-read); }
+.pass { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px 16px; background: var(--accent); color: var(--on-accent); font-weight: 700; }
+.pass kbd { color: inherit; border-color: currentColor; background: transparent; }
+.pass .btn { margin-left: auto; min-height: 28px; background: transparent; color: inherit; border-color: currentColor; }
+.cli { margin: 0 12px 12px; padding: 10px 12px 10px; border-radius: var(--r-lg); background: var(--surface); box-shadow: inset 0 0 0 1.5px var(--line-strong); display: grid; gap: 8px; }
+.cli:focus-within { box-shadow: inset 0 0 0 2px var(--accent); }
+.cli-in { display: flex; align-items: flex-end; gap: 10px; }
+.cli-in .prompt { font: 800 var(--fs-h2)/26px var(--mono); color: var(--accent); }
+.cli-in textarea { border: 0; padding: 3px 0; min-height: 32px; height: 32px; max-height: 176px; resize: none; font: var(--fs-term)/22px var(--mono); background: transparent; outline: none; box-shadow: none; }
+.cli-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.key { min-height: 28px; padding: 0 10px; border-radius: var(--r-pill); border: 1px solid var(--line); background: var(--surface-2); font: 700 var(--fs-cap)/1 var(--mono); color: var(--text); }
+.key:hover { background: var(--surface-3); }
+.key:disabled { opacity: 0.45; }
+.cli-foot .echo { margin-left: auto; font-size: var(--fs-small); font-weight: 700; }
+.cli-foot .tip { font-size: var(--fs-small); color: var(--text-muted); }
+.paste-chip { display: inline-flex; gap: 6px; align-items: center; font-size: var(--fs-small); padding: 2px 4px 2px 10px; border-radius: var(--r-pill); background: var(--accent-soft); color: var(--accent); font-weight: 700; }
+.paste-chip button { min-height: 22px; border: 0; background: none; color: inherit; text-decoration: underline; }
+.askcard { margin: 12px 12px 0; display: flex; gap: 12px; align-items: flex-start; padding: 12px 14px; border-radius: var(--r-md); background: var(--attn-soft); }
+.askcard p { margin: 0; font-family: var(--font-read); }
+.rate { color: var(--idle); font-weight: 700; font-size: var(--fs-small); }
+@container win (max-width: 1180px) {
+  .focus.hist-open { grid-template-columns: minmax(0, 1fr); }
+  .focus.hist-open .drawer { position: absolute; z-index: 5; inset: 0 auto 16px 16px; width: min(400px, calc(100% - 48px)); box-shadow: var(--elev-3); }
+}
+@container win (max-width: 820px) {
+  .top { grid-template-columns: auto 1fr auto; padding: 0 12px; }
+  .top .brand span, .top .env span, .top .add .lbl, .sbar .lbl { display: none; }
+  .tabs a { padding: 0 12px; }
+  .cli-foot .tip { display: none; }
+  .sbar .meta .hide-narrow { display: none; }
+}
+
+/* tray + browser */
+.desk { height: 100%; overflow: auto; background: radial-gradient(120% 80% at 80% 0%, var(--accent-soft), var(--bg) 70%); }
+.menubar { display: flex; justify-content: flex-end; align-items: center; gap: 16px; height: 28px; padding: 0 14px; background: color-mix(in srgb, var(--surface) 70%, transparent); font-size: var(--fs-small); }
+.tray-icon { display: inline-grid; place-items: center; width: 26px; height: 22px; border-radius: 6px; background: var(--surface-3); position: relative; }
+.tray-icon svg { width: 16px; height: 16px; fill: none; stroke: var(--text); stroke-width: 2.2; }
+.tray-icon svg circle:first-child { fill: var(--text); }
+.tray-icon[data-attn]::after { content: ""; position: absolute; right: 2px; top: 2px; width: 6px; height: 6px; border-radius: 50%; background: var(--text); box-shadow: 0 0 0 1.5px var(--surface-3); }
+.tray-wrap { display: flex; flex-wrap: wrap-reverse; gap: 24px; justify-content: flex-end; padding: 4px 14px 24px; }
+.tray { width: 380px; padding: 6px; border-radius: 12px; background: color-mix(in srgb, var(--surface) 94%, transparent); box-shadow: var(--elev-3); list-style: none; margin: 0; font-family: system-ui, -apple-system, sans-serif; font-size: 13px; }
+.tray li[role="separator"] { height: 1px; margin: 5px 8px; background: var(--line); }
+.tray .ti { display: flex; align-items: center; gap: 8px; min-height: 26px; padding: 0 10px; border-radius: 6px; }
+.tray .ti.act-i:hover { background: var(--accent); color: var(--on-accent); }
+.tray .ti.status { color: var(--text-muted); }
+.tray .ti.lead { font-weight: 700; }
+.tray .tick { width: 14px; text-align: center; }
+.tray-notes { max-width: 440px; display: grid; gap: 14px; align-content: start; }
+.tray-notes .qbox p { margin: 0; font-family: var(--font-read); }
+.browser { height: 100%; display: flex; flex-direction: column; }
+.chrome { display: flex; align-items: center; gap: 10px; height: 38px; padding: 0 12px; background: var(--bg-alt); }
+.chrome .dots { display: flex; gap: 6px; }
+.chrome .dots i { width: 10px; height: 10px; border-radius: 50%; background: var(--line-strong); }
+.chrome .url { flex: 1; max-width: 520px; margin: 0 auto; height: 24px; display: flex; align-items: center; padding: 0 12px; border-radius: 12px; background: var(--surface); color: var(--text-muted); font-size: var(--fs-small); }
+</style>
+</head>
+<body>
+<header id="mock" class="mock" aria-label="Mockup controls (not part of the design)"></header>
+<div class="stage">
+<div class="win">
+<a class="skip" href="#main">Skip to content</a>
+<svg xmlns="http://www.w3.org/2000/svg" class="sprite" aria-hidden="true" style="display:none">
+  <symbol id="i-logo" viewBox="0 0 24 24"><circle cx="6" cy="12" r="3"/><circle cx="18" cy="6" r="3"/><circle cx="18" cy="18" r="3"/><path d="M8.6 10.6 15.4 7.4M8.6 13.4l6.8 3.2"/></symbol>
+  <symbol id="i-grid" viewBox="0 0 16 16"><rect x="2" y="2" width="5" height="5" rx="1"/><rect x="9" y="2" width="5" height="5" rx="1"/><rect x="2" y="9" width="5" height="5" rx="1"/><rect x="9" y="9" width="5" height="5" rx="1"/></symbol>
+  <symbol id="i-gear" viewBox="0 0 16 16"><circle cx="8" cy="8" r="2.4"/><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 16 16"><path d="M8 3v10M3 8h10"/></symbol>
+  <symbol id="i-play" viewBox="0 0 16 16"><path d="M5 3.5v9l7-4.5z"/></symbol>
+  <symbol id="i-spawn" viewBox="0 0 16 16"><circle cx="6" cy="5.5" r="2.5"/><path d="M1.5 13.5c.6-2.6 2.4-4 4.5-4s3.9 1.4 4.5 4M12.5 5v5M10 7.5h5"/></symbol>
+  <symbol id="i-term" viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><path d="M4.5 6l2 2-2 2M8.5 10.5h3"/></symbol>
+  <symbol id="i-ext" viewBox="0 0 16 16"><path d="M9 2.5h4.5V7M13.5 2.5 7.5 8.5M12 9.5v3.5a1 1 0 0 1-1 1H3.5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1H7"/></symbol>
+  <symbol id="i-back" viewBox="0 0 16 16"><path d="M10 3 5 8l5 5"/></symbol>
+  <symbol id="i-search" viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3.5 3.5"/></symbol>
+  <symbol id="i-kbd" viewBox="0 0 16 16"><rect x="1.5" y="4" width="13" height="8.5" rx="1.5"/><path d="M4 7h1M7 7h1M10 7h1M4.5 10h7"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 16 16"><rect x="5" y="5" width="8.5" height="8.5" rx="1.5"/><path d="M3 10.5V3.5A1 1 0 0 1 4 2.5h6.5"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 16 16"><path d="M1.5 4a1 1 0 0 1 1-1h3.5l1.5 1.5h6a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1z"/></symbol>
+  <symbol id="i-warn" viewBox="0 0 16 16"><path d="M8 2 1.5 13.5h13z"/><path d="M8 6.5v3.5M8 11.8v.2"/></symbol>
+  <symbol id="i-check" viewBox="0 0 16 16"><path d="m3 8.5 3 3 7-7"/></symbol>
+  <symbol id="i-x" viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8"/></symbol>
+  <symbol id="i-down" viewBox="0 0 16 16"><path d="M8 3v10M3.5 8.5 8 13l4.5-4.5"/></symbol>
+  <symbol id="i-history" viewBox="0 0 16 16"><path d="M2.5 8a5.5 5.5 0 1 0 1.6-3.9M2.5 2.5v2.6h2.6M8 5v3.2l2 1.3"/></symbol>
+  <symbol id="i-send" viewBox="0 0 16 16"><path d="M8 13V3M3.5 7.5 8 3l4.5 4.5"/></symbol>
+</svg>
+
+
+<div class="app" data-world="app">
+  <header class="top" id="topbar">
+    <div class="brand"><svg aria-hidden="true"><use href="#i-logo"/></svg>nika</div>
+    <nav class="tabs" aria-label="Main">
+      <a href="#dashboard" data-go="dashboard" data-nav="dashboard">Now <span class="badge" id="now-badge" aria-label="2 need you">2</span></a>
+      <a href="#projects" data-go="projects" data-nav="projects">Projects</a>
+      <a href="#settings" data-go="settings" data-nav="settings">Settings</a>
+    </nav>
+    <div class="top-right">
+      <span class="env" id="env"></span>
+      <button type="button" class="btn sm add" data-add title="Add project (⌘O)"><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg><span class="lbl">Add project</span></button>
+    </div>
+  </header>
+
+  <main class="main" id="main" tabindex="-1">
+    <!-- 1. Now -->
+    <section class="screen" data-screen="dashboard" data-title="1 · Now (dashboard)" data-nav-as="dashboard" data-states="normal,many,loading,empty-projects,empty-agents,error-tmux,error-claude,offline" aria-labelledby="now-h">
+      <div class="scroll"><div class="col" id="now"></div></div>
+    </section>
+
+    <!-- 1b. Projects list -->
+    <section class="screen" data-screen="projects" data-title="1b · Projects list" data-nav-as="projects" data-states="normal" aria-labelledby="pl-h">
+      <div class="scroll"><div class="col" style="--col: 1040px">
+        <div class="hero"><h1 id="pl-h">Projects</h1><p>Git repositories nika manages. Agents in other repositories still show under Now.</p></div>
+        <div class="pgrid" id="pgrid"></div>
+      </div></div>
+    </section>
+
+    <!-- 2. Project view -->
+    <section class="screen" data-screen="project" data-title="2 · Project view" data-nav-as="projects" data-states="outdated,nika-limit,foreign,none" aria-labelledby="pv-h">
+      <div class="scroll"><div class="col" id="pv"></div></div>
+    </section>
+
+    <!-- 4. Settings -->
+    <section class="screen" data-screen="settings" data-title="4 · Settings" data-nav-as="settings" data-states="default,errors" aria-labelledby="set-h">
+      <div class="scroll"><div class="col">
+        <div class="hero"><h1 id="set-h">Settings</h1><p>Defaults for agents nika starts. Saved to <code>~/.config/nika/config.json</code>.</p></div>
+        <form data-settings novalidate id="set-form" class="qset">
+          <div class="note" data-kind="danger" role="alert" data-err-summary hidden><svg class="ic" aria-hidden="true"><use href="#i-warn"/></svg><p><strong data-err-n></strong>Each one is marked below.</p></div>
+          <section class="qbox" aria-labelledby="q1"><h2 id="q1">Which model plays each role?</h2><p>Used when nika starts an orchestrator or spawns an agent.</p>
+            <datalist id="model-list"><option value="opus"><option value="sonnet"><option value="haiku"><option value="fable"><option value="claude-fable-5-1"><option value="claude-opus-5-5"><option value="claude-sonnet-5-5"><option value="claude-haiku-5-5"></datalist>
+            <div class="g2">
+              <div class="field"><label for="set-model-orch">Orchestrator</label><input type="text" id="set-model-orch" data-rx="model" list="model-list" value="claude-fable-5-1" spellcheck="false" aria-describedby="set-model-orch-err"><p class="err" id="set-model-orch-err" hidden></p></div>
+              <div class="field"><label for="set-model-reason">Reasoner</label><input type="text" id="set-model-reason" data-rx="model" list="model-list" value="claude-opus-5-5" spellcheck="false" aria-describedby="set-model-reason-err"><p class="err" id="set-model-reason-err" hidden></p></div>
+              <div class="field"><label for="set-model-builder">Builder</label><input type="text" id="set-model-builder" data-rx="model" list="model-list" value="claude-sonnet-5-5" spellcheck="false" aria-describedby="set-model-builder-err"><p class="err" id="set-model-builder-err" hidden></p></div>
+              <div class="field"><label for="set-model-scout">Scout</label><input type="text" id="set-model-scout" data-rx="model" list="model-list" value="claude-haiku-5-5" spellcheck="false" aria-describedby="set-model-scout-err"><p class="err" id="set-model-scout-err" hidden></p></div>
+            </div>
+            <p class="help">A model id like claude-sonnet-5-5, or an alias: opus, sonnet, haiku, fable.</p>
+          </section>
+          <section class="qbox" aria-labelledby="q2"><h2 id="q2">Should new agents be reachable from claude.ai?</h2><p>Remote Control lets you follow and answer an agent from the browser or your phone.</p>
+            <label class="inline"><input type="checkbox" role="switch" class="switch" id="set-rc"> <span>Yes, turn on Remote Control for new agents</span></label>
+            <div class="field" style="max-width:340px"><label for="set-rc-prefix">Name prefix</label><input type="text" id="set-rc-prefix" data-rx="prefix" placeholder="project name" spellcheck="false" aria-describedby="set-rc-prefix-help set-rc-prefix-err"><p class="help" id="set-rc-prefix-help">Agents appear as prefix-agent-name. Empty uses the project name.</p><p class="err" id="set-rc-prefix-err" hidden></p></div>
+          </section>
+          <section class="qbox" aria-labelledby="q3"><h2 id="q3">What may new agents do without asking?</h2><p>You can still choose per agent when you spawn one.</p>
+            <fieldset><legend class="sr-only">Permission mode</legend><div class="tiles">
+              <label class="tile"><input type="radio" name="perm" checked><span><b>Default</b><span>Asks before the first use of each tool. No flag is passed.</span></span></label>
+              <label class="tile"><input type="radio" name="perm"><span><b>Manual</b><span>Same as Default, passed explicitly.</span></span></label>
+              <label class="tile"><input type="radio" name="perm"><span><b>Accept edits</b><span>Edits files and runs mkdir, mv, cp in the project without asking.</span></span></label>
+              <label class="tile"><input type="radio" name="perm"><span><b>Plan</b><span>Reads and explores. No edits to source files.</span></span></label>
+              <label class="tile"><input type="radio" name="perm"><span><b>Auto</b><span>No routine prompts; a background check reviews commands first.</span></span></label>
+              <label class="tile"><input type="radio" name="perm"><span><b>Don’t ask</b><span>Never prompts. Anything not allowed in advance is refused.</span></span></label>
+            </div></fieldset>
+            <p class="help">Bypass permissions is never offered.</p>
+          </section>
+          <section class="qbox" aria-labelledby="q4"><h2 id="q4">Where do new agent panes open?</h2>
+            <fieldset><legend class="sr-only">Pane placement</legend><div class="tiles">
+              <label class="tile"><input type="radio" name="place" checked><span><b>Beside</b><span>To the right, in the project’s tmux window.</span></span></label>
+              <label class="tile"><input type="radio" name="place"><span><b>Under the last agent</b><span>Stacked below the newest agent pane.</span></span></label>
+            </div></fieldset>
+          </section>
+          <section class="qbox" aria-labelledby="q5"><h2 id="q5">How many agents may run at once in a project?</h2>
+            <div class="field"><label for="set-max" class="sr-only">Agents per project</label>
+              <div class="stepper"><button type="button" class="btn icon" data-step="-1" aria-label="One fewer">−</button><input type="number" id="set-max" min="1" max="8" value="3" aria-describedby="set-max-help set-max-err"><button type="button" class="btn icon" data-step="1" aria-label="One more">+</button></div>
+              <p class="help" id="set-max-help">From 1 to 8. Counts running agents nika spawned.</p><p class="err" id="set-max-err" hidden></p></div>
+          </section>
+          <section class="qbox" aria-labelledby="q6"><h2 id="q6">Which plugins does each project use?</h2><p>Written into the project’s .claude/settings.local.json when you apply rules.</p>
+            <div class="field" style="max-width:340px"><label for="set-plug-proj">Project</label><select id="set-plug-proj"><option>demo-api</option><option selected>web-console</option><option>infra-scripts-and-deployment-tooling-for-staging</option><option>docs-site</option></select></div>
+            <div class="plugpick" id="set-plugs" role="group" aria-label="Plugins for web-console"></div>
+          </section>
+          <section class="qbox" aria-labelledby="q7"><h2 id="q7">Which rules template?</h2>
+            <div class="field" style="max-width:420px"><label for="set-tpl" class="sr-only">Rules template</label><select id="set-tpl"><option>Built-in template (version 4)</option><option>team-rules.md (local copy)</option></select><p class="help">Local templates live in ~/.config/nika/templates/.</p></div>
+          </section>
+          <div class="floatbar" data-dirty hidden><span data-dirty-n>Unsaved changes</span><button type="reset" class="btn sm">Discard</button><button type="submit" class="btn sm primary">Save</button></div>
+        </form>
+      </div></div>
+    </section>
+
+    <!-- 5. Session: focus mode -->
+    <section class="screen" data-screen="session" data-title="5 · Session (focus mode)" data-states="live,history-open,paused,passthrough,permission,pane-gone,rate-limited,tmux-error" aria-labelledby="sess-h">
+      <header class="sbar">
+        <a class="btn ghost icon" href="#dashboard" data-go="dashboard" aria-label="Back to Now (⌘[)" title="Back (⌘[)"><svg class="ic" aria-hidden="true"><use href="#i-back"/></svg></a>
+        <h1 id="sess-h">builder-1</h1>
+        <span id="sess-st"></span>
+        <span class="meta"><span id="sess-proj">demo-api</span><span class="model hide-narrow" id="sess-model">sonnet</span><span class="mono hide-narrow" id="sess-pane">%12</span></span>
+        <span class="sp"></span>
+        <button type="button" class="btn sm" id="hist-btn" aria-expanded="false" aria-controls="drawer" title="Transcript (⌘⇧H)"><svg class="ic" aria-hidden="true"><use href="#i-history"/></svg><span class="lbl">Transcript</span></button>
+        <button type="button" class="btn sm ghost" title="Switch tmux to this pane"><svg class="ic" aria-hidden="true"><use href="#i-term"/></svg><span class="lbl">Focus in tmux</span></button>
+        <a class="btn sm ghost" href="#session" onclick="event.preventDefault();toast('Opens claude.ai/code/session_01AbCdEf in your browser')"><svg class="ic" aria-hidden="true"><use href="#i-ext"/></svg><span class="lbl">claude.ai</span><span class="sr-only">(opens your browser)</span></a>
+      </header>
+      <div class="focus" id="focus" data-session data-agent="builder-1" data-pane="%12">
+        <aside class="drawer" id="drawer" aria-labelledby="hist-h">
+          <div class="drawer-head"><h2 id="hist-h">Transcript</h2><button type="button" class="btn icon ghost" id="hist-close" aria-label="Close transcript"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button></div>
+          <div class="drawer-scroll" tabindex="0" aria-label="Transcript, oldest first">
+            <div class="older" data-older><button type="button" class="btn sm" id="load-older">Load older</button></div>
+            <ol class="hx-list" id="hx-list"></ol>
+          </div>
+        </aside>
+        <section class="stage-term" aria-label="Live terminal and input">
+          <div class="tbar"><span class="livechip" id="live-label">Live</span><span class="sr-only">92 columns</span>
+            <span class="tb"><button type="button" class="btn" aria-pressed="false" data-surface-toggle title="Light terminal colours">Light terminal</button><button type="button" class="btn" data-pass-toggle aria-pressed="false" title="Type straight into the pane (Ctrl+])"><svg class="ic" aria-hidden="true"><use href="#i-kbd"/></svg>Type into pane</button></span></div>
+          <div class="pass" data-pass hidden role="status">Every key now goes to pane %12. Press <kbd>Ctrl</kbd> <kbd>]</kbd> to leave. <button type="button" class="btn" data-pass-toggle>Leave</button></div>
+          <div class="termbox term" style="padding:0">
+            <div class="term" data-term tabindex="0" role="region" aria-label="Live terminal of builder-1, pane %12"><pre class="term-pre" data-term-pre></pre></div>
+            <button type="button" class="btn primary jump" data-live hidden><svg class="ic" aria-hidden="true"><use href="#i-down"/></svg>Paused · jump to live</button>
+            <div class="over" data-when="pane-gone"><div><h3>This pane is gone</h3><p>builder-1 ended or its pane was closed. The transcript is still here.</p><button type="button" class="btn" data-hist-open>Open transcript</button></div></div>
+            <div class="over" data-when="tmux-error" role="alert"><div><h3>tmux did not answer</h3><p>capture-pane failed (tmux_failed). nika tries again every 2 seconds.</p><button type="button" class="btn primary">Try now</button></div></div>
+          </div>
+          <div class="askcard" data-when="permission" role="status"><span class="st" data-s="attn"><span class="st-g" aria-hidden="true"></span></span><p><strong>reviewer-2 is asking to run a command.</strong> Choose with ↑ ↓ and press Enter, or Esc to say no.</p></div>
+          <div class="cli">
+            <div class="cli-in"><span class="prompt" aria-hidden="true">›</span><label for="composer" class="sr-only">Message to builder-1. Enter sends, Shift+Enter adds a line, Escape goes to the pane.</label><textarea id="composer" data-composer rows="1" spellcheck="false" placeholder="Reply to builder-1"></textarea><span class="paste-chip" data-paste-chip hidden><span data-paste-n></span><button type="button" data-paste-clear>Clear</button></span><button type="button" class="btn primary icon" data-send aria-label="Send (Enter)"><svg class="ic" aria-hidden="true"><use href="#i-send"/></svg></button></div>
+            <div class="cli-foot" role="group" aria-label="Send a key to the pane">
+              <button type="button" class="key" data-key="Escape">Esc</button><button type="button" class="key" data-key="C-c">Ctrl-C</button><button type="button" class="key" data-key="Tab">Tab</button><button type="button" class="key" data-key="BTab">Shift-Tab</button><button type="button" class="key" data-key="Up" aria-label="Up arrow">↑</button><button type="button" class="key" data-key="Down" aria-label="Down arrow">↓</button><button type="button" class="key" data-key="Left" aria-label="Left arrow">←</button><button type="button" class="key" data-key="Right" aria-label="Right arrow">→</button><button type="button" class="key" data-key="Enter">Enter</button>
+              <span class="tip">Enter sends · Shift+Enter new line · Esc goes to the pane</span>
+              <span class="rate" data-when="rate-limited" role="alert">Slow down: up to 20 keys a second. Your text is kept.</span>
+              <span class="echo" data-echo aria-live="polite"></span>
+            </div>
+          </div>
+        </section>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div data-world="tray" hidden>
+  <section class="screen desk" data-screen="tray" data-title="6 · Tray menu + Add project" data-states="attention,menu,add-project" aria-label="Desktop with the nika tray menu (mock)">
+    <div class="menubar" aria-hidden="true"><span>Wi-Fi</span><span class="tray-icon" id="tray-icon"><svg><use href="#i-logo"/></svg></span><span>Sun 14:02</span></div>
+    <div class="tray-wrap">
+      <div class="tray-notes">
+        <div class="qbox"><h2>The tray leads with what needs you</h2><p>When an agent needs you, the first item says so and opens Now. The icon gets a dot; it never blinks or bounces.</p></div>
+        <div class="qbox" data-when="add-project"><h2>Add a project</h2><p>Opens the system folder picker. nika keeps the folder’s real path and shows it under Projects.</p>
+          <div class="inline" style="flex-wrap:wrap"><button type="button" class="btn primary" data-sim="done"><svg class="ic" aria-hidden="true"><use href="#i-folder"/></svg>Add project…</button><button type="button" class="btn sm" data-sim="cancelled">Simulate cancel</button><button type="button" class="btn sm" data-sim="busy">Simulate picker already open</button></div></div>
+      </div>
+      <ul class="tray" role="menu" aria-label="nika tray menu" id="tray-menu"></ul>
+    </div>
+  </section>
+</div>
+
+<div data-world="browser" hidden>
+  <section class="screen browser" data-screen="browser" data-title="7 · Browser tier (read-only)" data-states="normal" aria-labelledby="br-h">
+    <div class="chrome" aria-hidden="true"><span class="dots"><i></i><i></i><i></i></span><span class="url">127.0.0.1:3335</span></div>
+    <div class="scroll"><div class="col" id="br"></div></div>
+  </section>
+</div>
+
+<!-- 2b. Spawn -->
+<dialog class="modal" data-screen="spawn" data-host="project" data-title="2b · Spawn agent (dialog)" data-states="form,errors,limit,starting" aria-labelledby="sp-h">
+  <div class="mhead"><div><h2 id="sp-h" tabindex="-1">Spawn an agent in web-console</h2><p>It opens in a new tmux pane and starts with your brief.</p></div><button type="button" class="btn icon ghost" data-close aria-label="Close"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button></div>
+  <form class="mbody" id="spawn-form" novalidate>
+    <div class="note" data-kind="danger" role="alert" data-when="limit"><svg class="ic" aria-hidden="true"><use href="#i-warn"/></svg><p><strong>demo-api already runs 3 of 3 agents.</strong>Wait for one to finish, or allow more in Settings.</p></div>
+    <div class="field"><label for="sp-brief">What should it do?</label><textarea id="sp-brief" rows="6" autofocus aria-describedby="sp-brief-help sp-brief-err">Fix the overflowing settings table on screens under 760 px wide. Keep the column order. Add a visual test for 720 px.</textarea><p class="help" id="sp-brief-help">This is the agent’s first message.</p><p class="err" id="sp-brief-err" hidden></p></div>
+    <div class="g2">
+      <div class="field"><label for="sp-name">Name</label><input type="text" id="sp-name" data-rx="agent" value="builder-3" spellcheck="false" aria-describedby="sp-name-err"><p class="err" id="sp-name-err" hidden></p></div>
+      <div class="field"><label for="sp-model">Role and model</label><select id="sp-model"><option>Builder · claude-sonnet-5-5</option><option>Reasoner · claude-opus-5-5</option><option>Scout · claude-haiku-5-5</option><option>Orchestrator · claude-fable-5-1</option></select></div>
+    </div>
+    <details class="more"><summary>More options: permission mode, pane, Remote Control</summary>
+      <div class="g2"><div class="field"><label for="sp-perm">Permission mode</label><select id="sp-perm"><option>Default (from settings)</option><option>Manual</option><option>Accept edits</option><option>Plan</option><option>Auto</option><option>Don’t ask</option></select></div>
+      <fieldset><legend>Pane</legend><label class="check"><input type="radio" name="sp-place" checked> Beside</label><label class="check"><input type="radio" name="sp-place"> Under builder-ui (%22)</label></fieldset></div>
+      <label class="check" style="margin-top:12px"><input type="checkbox" role="switch" class="switch"> Reachable from claude.ai</label>
+    </details>
+  </form>
+  <div class="mfoot"><span class="help" data-when="form errors">2 of 3 agents running</span><span class="sp"></span><button type="button" class="btn" data-close>Cancel</button><button type="button" class="btn primary" id="sp-go" data-when="form errors limit">Spawn agent</button><button type="button" class="btn primary" disabled aria-busy="true" data-when="starting"><span class="spin" aria-hidden="true"></span>Starting builder-3…</button></div>
+</dialog>
+
+<!-- 3. Apply rules: two steps -->
+<dialog class="modal wide" data-screen="rules" data-host="project" data-title="3 · Apply rules (2-step dialog)" data-states="review,confirm,foreign,applying,success,conflict,refused" aria-labelledby="ru-h">
+  <div class="mhead"><div><h2 id="ru-h" tabindex="-1">Update the rules of web-console</h2><p id="ru-sub"></p></div><button type="button" class="btn icon ghost" data-close aria-label="Close"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button></div>
+  <ol class="steps" data-when="review confirm foreign applying" aria-label="Steps"><li id="step1">Review changes</li><li id="step2">Confirm</li></ol>
+  <div class="mbody" data-when="review"><div id="ru-folds" style="display:grid;gap:10px"></div></div>
+  <div class="mbody confirm" data-when="confirm foreign applying">
+    <div class="note" data-kind="warn" id="ru-warn"><svg class="ic" aria-hidden="true"><use href="#i-warn"/></svg><div><p><strong>.claude/settings.local.json is not gitignored.</strong> It could end up in a commit.</p><label class="check" style="margin-top:8px"><input type="checkbox" id="ru-gitignore"> Add it to .gitignore as well</label></div></div>
+    <div class="note" data-kind="danger" data-when="foreign"><svg class="ic" aria-hidden="true"><use href="#i-warn"/></svg><div><p><strong>rules/orchestration.md was not written by nika.</strong> Someone wrote it by hand or with another tool.</p><label class="check" style="margin-top:8px"><input type="checkbox" id="ru-foreign"> Replace it. nika keeps a backup.</label></div></div>
+    <div><p class="lbl" style="margin:0 0 6px">Backups go to</p><div class="pathbox"><span id="ru-backup"></span></div></div>
+    <p class="help">nika writes the files, then stops. It never runs git add, commit or push.</p>
+  </div>
+  <div class="mbody" data-when="conflict"><div class="note" data-kind="danger" role="alert"><svg class="ic" aria-hidden="true"><use href="#i-warn"/></svg><p><strong>Something changed these files after the preview.</strong>Nothing was written. Review the new changes, then confirm again.</p></div></div>
+  <div class="mbody" data-when="refused"><div class="note" data-kind="danger" role="alert"><svg class="ic" aria-hidden="true"><use href="#i-warn"/></svg><p><strong>nika refused to write.</strong>rules/ is a symbolic link (ESYMLINK). Nothing was changed. Replace the link with a real folder and try again.</p></div></div>
+  <div class="mbody" data-when="success" role="status">
+    <div class="note" data-kind="ok"><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg><p><strong>Done. The rules of web-console are current.</strong>Review the changes and commit them when you are ready.</p></div>
+    <ul class="done-list"><li><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg>rules/orchestration.md</li><li><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg>CLAUDE.md</li><li><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg>.claude/settings.local.json</li></ul>
+    <div class="pathbox"><span>~/.local/state/nika/backups/1b2c3d4e5f6a7b8c/2026-11-08T14-02-11Z</span><button type="button" class="btn icon ghost" aria-label="Copy backup path" onclick="toast('Copied backup path')"><svg class="ic" aria-hidden="true"><use href="#i-copy"/></svg></button></div>
+  </div>
+  <div class="mfoot">
+    <span class="sp"></span>
+    <button type="button" class="btn" data-close data-when="review conflict refused">Cancel</button>
+    <button type="button" class="btn" data-when="confirm foreign" data-go="rules/review">Back</button>
+    <button type="button" class="btn primary" data-when="review" data-go="rules/confirm">Continue</button>
+    <button type="button" class="btn primary" id="ru-apply" data-when="confirm foreign">Apply 3 changes</button>
+    <button type="button" class="btn primary" disabled aria-busy="true" data-when="applying"><span class="spin" aria-hidden="true"></span>Applying…</button>
+    <button type="button" class="btn primary" data-when="conflict" data-go="rules/review">Review again</button>
+    <button type="button" class="btn primary" data-close data-when="success" autofocus>Done</button>
+  </div>
+</dialog>
+
+<div id="announce" class="sr-only" aria-live="polite"></div>
+<div id="toasts" class="toasts"></div>
+</div>
+</div>
+
+<script>
+window.VARIANT = { name: 'Variant B: Queue', file: 'b' };
+</script>
+<script>
+/* ===== shared mockup runtime (identical in a.html, b.html, c.html) =====
+   Synthetic data only. Every data string is rendered with textContent, as the real app must do. */
+'use strict';
+const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+
+/** Same contract as h() in public/app.js: text goes through textContent, never innerHTML. */
+function h(tag, attrs, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs ?? {})) {
+    if (v === null || v === undefined || v === false) continue;
+    if (k === 'class') e.className = v;
+    else if (k === 'text') e.textContent = v;
+    else if (k.startsWith('on')) e.addEventListener(k.slice(2), v);
+    else e.setAttribute(k, v === true ? '' : String(v));
+  }
+  for (const c of kids.flat(Infinity)) {
+    if (c === null || c === undefined || c === false) continue;
+    e.append(c instanceof Node ? c : document.createTextNode(String(c)));
+  }
+  return e;
+}
+
+/* ---------- synthetic data ---------- */
+const U = (d) => `${d.repeat(8)}-${d.repeat(4)}-4${d.repeat(3)}-8${d.repeat(3)}-${d.repeat(12)}`;
+const PROJECTS = [
+  { key: '0a1b2c3d4e5f6a7b', name: 'demo-api', dir: '~/projects/demo-api', rules: { state: 'nika', settingsIgnored: true, git: true }, plugins: ['lint-helper@demo-market', 'test-runner@demo-market'] },
+  { key: '1b2c3d4e5f6a7b8c', name: 'web-console', dir: '~/projects/web-console', rules: { state: 'outdated', settingsIgnored: false, git: true }, plugins: ['reply-style@demo-market'] },
+  { key: '2c3d4e5f6a7b8c9d', name: 'infra-scripts-and-deployment-tooling-for-staging', dir: '~/projects/infra-scripts-and-deployment-tooling-for-staging', rules: { state: 'foreign', settingsIgnored: true, git: true }, plugins: [] },
+  { key: '3d4e5f6a7b8c9d0e', name: 'docs-site', dir: '~/projects/docs-site', rules: { state: 'none', settingsIgnored: false, git: true }, plugins: [] },
+];
+const UNREGISTERED = [{ key: 'repo:scratch-notes', name: 'scratch-notes', dir: '~/scratch-notes', registered: false }];
+const PLUGINS = ['docs-search@demo-market', 'lint-helper@demo-market', 'reply-style@demo-market', 'review-kit@team-market', 'test-runner@demo-market', 'commit-helper@team-market'];
+// act / started: minutes ago
+const AGENTS = [
+  { id: U('1'), name: 'orchestrator', project: 'demo-api', role: 'orchestrator', model: 'fable', state: 'busy', pane: '%3', branch: 'feat/pagination', act: 0.3, started: 95, prompt: 'Split the pagination work between two builders and a reviewer', remote: true },
+  { id: U('2'), name: 'builder-1', project: 'demo-api', role: 'agent', model: 'sonnet', state: 'busy', pane: '%12', branch: 'feat/pagination', act: 0.1, started: 42, prompt: 'Implement cursor pagination in src/paginate.js with tests', remote: true },
+  { id: U('3'), name: 'reviewer-2', project: 'demo-api', role: 'agent', model: 'opus', state: 'attn', reason: 'Asking to run a command', pane: '%14', branch: 'feat/pagination', act: 4, started: 30, prompt: 'Review the pagination diff and run the build' },
+  { id: U('4'), name: 'scout-1', project: 'demo-api', role: 'agent', model: 'haiku', state: 'idle', pane: '%13', branch: 'feat/pagination', act: 11, started: 50, prompt: 'List every caller of paginate()', report: 'Found 7 callers in 4 files' },
+  { id: U('5'), name: 'builder-0', project: 'demo-api', role: 'agent', model: 'sonnet', state: 'ended', act: 180, started: 260, prompt: 'Add the request id middleware', report: 'Done: middleware added, 12 tests green', exit: 0 },
+  { id: U('6'), name: 'orchestrator', project: 'web-console', role: 'orchestrator', model: 'fable', state: 'idle', pane: '%21', branch: 'master', act: 26, started: 120, prompt: 'Plan the table overflow fix', remote: true },
+  { id: U('7'), name: 'builder-ui', project: 'web-console', role: 'agent', model: 'sonnet', state: 'busy', pane: '%22', branch: 'fix/table-overflow', act: 0.5, started: 18, prompt: 'Fix the overflowing table on narrow screens' },
+  { id: U('8'), name: 'designer', project: 'web-console', role: 'agent', model: 'opus', state: 'attn', reason: 'Asking you a question', pane: '%23', branch: 'fix/table-overflow', act: 2, started: 16, prompt: 'Propose two layouts for the settings table' },
+  { id: U('9'), name: 'migrate-terraform-state-to-new-backend-2', project: 'infra-scripts-and-deployment-tooling-for-staging', role: 'agent', model: 'sonnet', state: 'busy', pane: '%31', branch: 'chore/move-terraform-state-to-the-new-backend-and-lock-table', act: 1, started: 64, prompt: 'Move the terraform state to the new backend and verify the lock table before and after the move, then write a short report' },
+  { id: U('a'), name: 'ops-check', project: 'infra-scripts-and-deployment-tooling-for-staging', role: 'agent', model: 'haiku', state: 'ended', act: 600, started: 640, prompt: 'Check the staging scripts for unpinned versions', report: 'Stopped: terraform is not installed', exit: 1 },
+  { id: U('b'), name: 'untitled session', project: 'scratch-notes', role: null, model: 'sonnet', state: 'idle', pane: null, act: 8, started: 33, prompt: 'Summarise these meeting notes' },
+];
+const MANY = Array.from({ length: 54 }, (_, i) => ({
+  id: U('c'), name: `worker-${String(i + 1).padStart(2, '0')}`, project: 'demo-api', role: 'agent', model: ['sonnet', 'haiku', 'opus'][i % 3],
+  state: i < 2 ? 'attn' : i < 9 ? 'idle' : i < 30 ? 'busy' : 'ended', reason: i < 2 ? 'Asking to run a command' : undefined, pane: i < 30 ? `%${100 + i}` : null, act: i * 3 + 1, started: 200, prompt: `Shard ${i + 1} of the fixture rewrite`,
+}));
+const ME = { tier: 'app', version: '0.2.0', tmux: true, claude: true };
+const STATUS = {
+  busy: { label: 'Working', long: 'Working' },
+  idle: { label: 'Waiting', long: 'Waiting for your next prompt' },
+  attn: { label: 'Needs you', long: 'Needs your attention' },
+  ended: { label: 'Ended', long: 'Ended' },
+};
+const ORDER = { attn: 0, idle: 1, busy: 2, ended: 3 };
+const RULES = {
+  none: { label: 'No rules', hint: 'No rules/orchestration.md yet', glyph: '–' },
+  nika: { label: 'Rules current', hint: 'Written by nika from the current template', glyph: '✓' },
+  outdated: { label: 'Rules outdated', hint: 'Written by nika from an older template', glyph: '↻' },
+  foreign: { label: 'Rules not by nika', hint: 'rules/orchestration.md was not written by nika', glyph: '!' },
+};
+const MODELS = ['opus', 'sonnet', 'haiku', 'fable'];
+
+/* ---------- small builders shared by all variants ---------- */
+const byProject = (name, list = AGENTS) => list.filter((a) => a.project === name).sort((a, b) => ORDER[a.state] - ORDER[b.state] || a.act - b.act);
+const projectOf = (a) => PROJECTS.find((p) => p.name === a.project) ?? UNREGISTERED.find((p) => p.name === a.project);
+function counts(list) {
+  const c = { attn: 0, idle: 0, busy: 0, ended: 0, live: 0 };
+  for (const a of list) { c[a.state] += 1; if (a.state !== 'ended') c.live += 1; }
+  return c;
+}
+function ago(m) {
+  if (m < 1) return 'now';
+  if (m < 60) return `${Math.round(m)} min`;
+  if (m < 1440) return `${Math.round(m / 60)} h`;
+  return `${Math.round(m / 1440)} d`;
+}
+function statusEl(state, { compact = false, long = false } = {}) {
+  const s = STATUS[state];
+  return h('span', { class: 'st', 'data-s': state },
+    h('span', { class: 'st-g', 'aria-hidden': 'true' }),
+    h('span', { class: compact ? 'sr-only' : 'st-l', text: long ? s.long : s.label }));
+}
+const modelEl = (m) => h('span', { class: 'model', 'data-m': m, title: `Model: ${m}`, text: m });
+function rulesEl(state) {
+  const r = RULES[state];
+  return h('span', { class: 'rules', 'data-r': state, title: r.hint }, h('span', { class: 'rules-g', 'aria-hidden': 'true', text: r.glyph }), r.label);
+}
+function countsLine(c) {
+  const parts = [];
+  if (c.attn) parts.push(['attn', `${c.attn} need${c.attn === 1 ? 's' : ''} you`]);
+  if (c.idle) parts.push(['idle', `${c.idle} waiting`]);
+  if (c.busy) parts.push(['busy', `${c.busy} working`]);
+  if (c.ended) parts.push(['ended', `${c.ended} ended`]);
+  return parts;
+}
+
+/** Native tray items are plain strings: name cut at 28 characters, then counts in words (never colour). */
+function trayLabel(p) {
+  const c = counts(byProject(p.name));
+  const name = p.name.length > 28 ? `${p.name.slice(0, 27)}…` : p.name;
+  const parts = countsLine({ ...c, ended: 0 }).map(([, t]) => t);
+  return `${name} — ${parts.length ? parts.join(', ') : 'no agents'}`;
+}
+
+/* ---------- live region + toasts ---------- */
+function announce(msg) {
+  const r = $('#announce');
+  r.textContent = '';
+  setTimeout(() => { r.textContent = msg; }, 30);
+}
+function toast(msg, { kind = 'info', action = null, ms = 4200 } = {}) {
+  const box = $('#toasts');
+  const t = h('div', { class: 'toast', 'data-kind': kind, role: kind === 'error' ? 'alert' : 'status' },
+    h('p', { text: msg }),
+    action ? h('button', { type: 'button', text: action.label, onclick: () => { action.run(); t.remove(); } }) : null);
+  box.append(t);
+  if (ms) setTimeout(() => t.remove(), ms);
+  return t;
+}
+
+/* ---------- disclosure menus: one open at a time, Esc closes and returns focus ---------- */
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-menu-btn]');
+  for (const m of $$('[data-menu]:not([hidden])')) if (!btn || m.previousElementSibling !== btn) closeMenu(m, false);
+  if (btn) {
+    const m = btn.nextElementSibling;
+    const open = m.hidden;
+    m.hidden = !open;
+    btn.setAttribute('aria-expanded', String(open));
+    if (open) $('button, a', m)?.focus();
+  }
+});
+function closeMenu(m, focus = true) {
+  m.hidden = true;
+  m.previousElementSibling?.setAttribute('aria-expanded', 'false');
+  if (focus) m.previousElementSibling?.focus();
+}
+function menu(label, items) {
+  const id = `m${Math.random().toString(36).slice(2, 8)}`;
+  return h('div', { class: 'menu-wrap' },
+    h('button', { type: 'button', class: 'btn icon ghost', 'data-menu-btn': true, 'aria-expanded': 'false', 'aria-controls': id, 'aria-label': label, title: label }, h('span', { 'aria-hidden': 'true', text: '⋯' })),
+    h('ul', { class: 'menu', id, 'data-menu': true, hidden: true }, items.map(([text, run]) => h('li', null, h('button', { type: 'button', text, onclick: run })))));
+}
+function agentMenu(a) {
+  const items = [['Copy resume command', () => toast(`Copied: claude --resume ${a.id}`)]];
+  if (a.report) items.push(['Show report', () => toast(`Report of ${a.name}: ${a.report}`)]);
+  if (a.remote) items.push(['Open in claude.ai ↗', () => toast('Opens claude.ai/code/session_01AbCdEf in your browser')]);
+  if (a.pane) items.push([`Focus pane ${a.pane} in tmux`, () => toast(`Focused tmux pane ${a.pane}`)]);
+  return menu(`More actions for ${a.name}`, items);
+}
+
+/* ---------- terminal mirror: contract §3 capture rows → DOM via textContent ---------- */
+// Mock row markup: ⟪f2.b:text⟫ = fg 2 bold; f0–15 / g0–15 = 16-colour fg/bg; c208 = 256-colour fg; b i u d r = SGR flags.
+function parseRow(str) {
+  const out = [];
+  const re = /⟪([a-z0-9.]*):([^⟫]*)⟫/g;
+  let m; let last = 0;
+  while ((m = re.exec(str))) {
+    if (m.index > last) out.push({ t: str.slice(last, m.index), s: {} });
+    const s = {};
+    for (const p of m[1].split('.')) {
+      if (/^f\d+$/.test(p)) s.fg = Number(p.slice(1));
+      else if (/^g\d+$/.test(p)) s.bg = Number(p.slice(1));
+      else if (/^c\d+$/.test(p)) s.fg = Number(p.slice(1));
+      else if (p) s[{ b: 'b', i: 'i', u: 'u', d: 'd', r: 'r' }[p]] = true;
+    }
+    out.push({ t: m[2], s });
+    last = re.lastIndex;
+  }
+  if (last < str.length) out.push({ t: str.slice(last), s: {} });
+  return out;
+}
+function xterm256(n) {
+  if (n < 232) { const L = [0, 95, 135, 175, 215, 255]; const i = n - 16; return `rgb(${L[Math.floor(i / 36)]} ${L[Math.floor(i / 6) % 6]} ${L[i % 6]})`; }
+  const g = 8 + 10 * (n - 232); return `rgb(${g} ${g} ${g})`;
+}
+function segSpan(t, s) {
+  if (!s.fg && s.fg !== 0 && !s.bg && s.bg !== 0 && !s.b && !s.d && !s.i && !s.u && !s.r) return document.createTextNode(t);
+  const e = document.createElement('span');
+  e.textContent = t;
+  let fg = s.fg; let bg = s.bg;
+  if (s.r) { [fg, bg] = [bg ?? 'bg', fg ?? 'fg']; }
+  const paint = (v, pre, prop) => {
+    if (v === 'bg') e.classList.add('fdb');
+    else if (v === 'fg') e.classList.add('bdf');
+    else if (typeof v === 'number' && v < 16) e.classList.add(`${pre}${v}`);
+    else if (typeof v === 'number') e.style[prop] = xterm256(v); // CSSOM: allowed under the real app's CSP
+    else if (Array.isArray(v)) e.style[prop] = `rgb(${v.join(' ')})`;
+  };
+  paint(fg, 'f', 'color'); paint(bg, 'b', 'backgroundColor');
+  if (s.b) e.classList.add('sb'); if (s.d) e.classList.add('sd'); if (s.i) e.classList.add('si'); if (s.u) e.classList.add('su');
+  return e;
+}
+function renderMirror(pre, cap) {
+  const frag = document.createDocumentFragment();
+  cap.rows.forEach((row, y) => {
+    const line = h('span', { class: 'tl' });
+    let x = 0;
+    const cur = cap.cursor.visible && cap.cursor.y === y ? cap.cursor.x : -1;
+    for (const seg of row) {
+      const t = seg.t;
+      if (cur >= x && cur < x + t.length) {
+        const k = cur - x;
+        if (k) line.append(segSpan(t.slice(0, k), seg.s));
+        line.append(h('span', { class: 'tc', text: t[k] }));
+        if (k + 1 < t.length) line.append(segSpan(t.slice(k + 1), seg.s));
+      } else line.append(segSpan(t, seg.s));
+      x += t.length; // shortcut: counts UTF-16 units; the real renderer counts terminal columns (wide chars = 2)
+    }
+    if (cur >= x) line.append(' '.repeat(cur - x), h('span', { class: 'tc', text: ' ' }));
+    line.append('\n');
+    frag.append(line);
+  });
+  pre.replaceChildren(frag);
+}
+const COLS = 92;
+const visible = (s) => s.replace(/⟪[a-z0-9.]*:|⟫/g, '').length;
+const pad = (s, n = COLS - 2) => s + ' '.repeat(Math.max(0, n - visible(s)));
+function boxRows(inner) {
+  const w = COLS - 2;
+  return [`⟪f8:╭${'─'.repeat(w)}╮⟫`, ...inner.map((s) => `⟪f8:│⟫${pad(s)}⟪f8:│⟫`), `⟪f8:╰${'─'.repeat(w)}╯⟫`];
+}
+const CAP_WORKING = {
+  cols: COLS,
+  rows: [
+    ...Array.from({ length: 14 }, (_, i) => `⟪f8:     ✔ routes/items case ${i + 1}⟫`),
+    '⟪f8:  ⎿  Read 64 lines⟫', '',
+    '⟪f15.b:●⟫ I will add a cursor that survives inserts, then cover it with three tests.', '',
+    '⟪f2.b:●⟫ ⟪b:Update⟫(src/paginate.js)',
+    '⟪f8:  ⎿  Updated src/paginate.js with 18 additions and 4 removals⟫',
+    '⟪f8:       21⟫ ⟪f1: -export function paginate(rows, page = 0, size = 20) {⟫',
+    '⟪f8:       21⟫ ⟪f2: +export function paginate(rows, { cursor = null, size = 20 } = {}) {⟫',
+    '⟪f8:       22⟫ ⟪f2: +  const start = cursor === null ? 0 : indexAfter(rows, cursor);⟫',
+    '⟪f8:       23⟫    return rows.slice(start, start + size);', '',
+    '⟪f2.b:●⟫ ⟪b:Bash⟫(npm test)',
+    '⟪f8:  ⎿  > node --test "test/*.test.js"⟫',
+    '     ⟪f2:✔⟫ paginate returns the first page ⟪f8:(2.1ms)⟫',
+    '     ⟪f2:✔⟫ paginate rejects a negative size ⟪f8:(0.4ms)⟫',
+    '     ⟪f1:✖⟫ paginate keeps the cursor stable after an insert ⟪f8:(5.8ms)⟫',
+    '       ⟪f1:AssertionError: expected 20, got 19⟫',
+    '     ⟪f8:… +38 lines (ctrl+r to expand)⟫', '',
+    '⟪f15.b:●⟫ The cursor test fails because indexAfter counts from 1. Fixing it.', '',
+    '⟪f2.b:●⟫ ⟪b:Update⟫(src/paginate.js)',
+    '⟪f8:  ⎿  Updated src/paginate.js with 1 addition and 1 removal⟫',
+    '⟪f8:       40⟫ ⟪f1: -  return rows.findIndex((r) => r.id === cursor) + 2;⟫',
+    '⟪f8:       40⟫ ⟪f2: +  return rows.findIndex((r) => r.id === cursor) + 1;⟫', '',
+    '⟪c208:✻ Re-running the tests…⟫ ⟪f8:(14s · ↓ 1.2k tokens · esc to interrupt)⟫', '',
+    ...boxRows([' > ']),
+    '  ⟪f5:⏵⏵ accept edits on⟫ ⟪f8:(shift+tab to cycle)⟫',
+  ].map(parseRow),
+  cursor: { x: 4, y: 43, visible: true },
+};
+const CAP_PERMISSION = {
+  cols: COLS,
+  rows: [
+    '⟪f15.b:●⟫ The diff looks right. I will rebuild the bundle to check the types.', '',
+    '⟪f3.b:●⟫ ⟪b:Bash⟫(rm -rf dist && npm run build)',
+    ...boxRows([
+      ' ⟪b:Bash command⟫', '',
+      '   rm -rf dist && npm run build',
+      '   ⟪f8:Clean and rebuild the bundle⟫', '',
+      ' Do you want to proceed?',
+      ' ⟪f4.b:❯ 1. Yes⟫',
+      '   2. Yes, and don\'t ask again for npm run build commands',
+      '   3. No, and tell Claude what to do differently ⟪f8:(esc)⟫',
+    ]),
+  ].map(parseRow),
+  cursor: { x: 0, y: 0, visible: false },
+};
+// A tail of the last rows, for compact previews (variant C tiles).
+const tail = (cap, n) => ({ cols: cap.cols, rows: cap.rows.slice(-n), cursor: { visible: false, x: 0, y: 0 } });
+
+/* ---------- unified diff → lines with old/new numbers and a +/− marker (non-colour cue) ---------- */
+function renderDiff(diffText) {
+  const pre = h('pre', { class: 'diff', tabindex: '0' });
+  let o = 0; let n = 0;
+  for (const line of diffText.split('\n')) {
+    if (line.startsWith('---') || line.startsWith('+++')) continue;
+    const m = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
+    if (m || line.startsWith('@@')) { if (m) { o = Number(m[1]); n = Number(m[2]); } pre.append(h('span', { class: 'dl d-hunk' }, h('span', { class: 'dn' }), h('span', { class: 'dn' }), h('span', { class: 'dm' }), h('span', { text: line }))); continue; }
+    const k = line[0];
+    const cls = k === '+' ? 'd-add' : k === '-' ? 'd-del' : 'd-ctx';
+    const on = k === '+' ? '' : String(o || ''); const nn = k === '-' ? '' : String(n || '');
+    if (k !== '+') o += 1; if (k !== '-') n += 1;
+    pre.append(h('span', { class: `dl ${cls}` },
+      h('span', { class: 'dn', text: on }), h('span', { class: 'dn', text: nn }),
+      h('span', { class: 'dm', text: k === '+' ? '+' : k === '-' ? '−' : '' }),
+      h('span', { text: line.slice(1) || ' ' })));
+  }
+  return pre;
+}
+const RULES_PREVIEW = {
+  hash: 'c0ffee…', backupDir: '~/.local/state/nika/backups/1b2c3d4e5f6a7b8c/2026-11-08T14-02-11Z',
+  warnings: ['settings.local.json is not gitignored'],
+  files: [
+    { path: 'rules/orchestration.md', action: 'update', foreign: false, diff: [
+      '@@ -1,9 +1,11 @@', ' # Orchestration rules', ' ', ' Written by nika from the built-in template.', '-Template version 3.', '+Template version 4.', ' ', ' ## Roles', ' ',
+      '-Builders run in acceptEdits mode.', '+Builders use the permission mode set in nika.', '+Every agent writes its report to the path in its brief.', ' | Role | Model |', '@@ -22,4 +24,4 @@', ' ## Hand-off', ' ', '-Report in the chat.', '+Report in the file named in the brief, then stop.', ' ',
+    ].join('\n') },
+    { path: 'CLAUDE.md', action: 'update', diff: ['@@ -1,3 +1,5 @@', ' # web-console', ' ', ' Run npm test before you hand over.', '+', '+@rules/orchestration.md'].join('\n') },
+    { path: '.claude/settings.local.json', action: 'update', keysPreserved: true, otherKeys: 3, diff: ['@@ enabledPlugins @@', '   "enabledPlugins": {', '-    "lint-helper@demo-market": true', '+    "reply-style@demo-market": true', '   },'].join('\n') },
+    { path: '.gitignore', action: 'update', optional: true, diff: ['@@ -4,2 +4,3 @@', ' node_modules/', ' dist/', '+.claude/settings.local.json'].join('\n') },
+    { path: 'README.md', action: 'unchanged', diff: '' },
+  ],
+};
+const RULES_FOREIGN_DIFF = [
+  '@@ -1,6 +1,14 @@', '-# Team agent notes', '-', '-Ask before running migrations.', '-Use the staging profile.', '+# Orchestration rules', '+', '+Written by nika from the built-in template.', '+Template version 4.', '+', '+## Roles', '+', '+| Role | Model |', '+|---|---|', '+| Orchestrator | claude-fable-5-1 |', '+| Builder | claude-sonnet-5-5 |',
+].join('\n');
+
+/* ---------- transcript history (contract §3 entries) ---------- */
+const HISTORY = [
+  { at: '13:20', role: 'user', kind: 'text', text: 'You are builder-1 in demo-api.\nImplement cursor pagination in src/paginate.js. Keep page= working for one release.\nWrite your report to the file named at the end of this brief.' },
+  { at: '13:20', role: 'assistant', kind: 'thinking', text: 'The helper takes a page number today. Routes pass page from the query string. A cursor needs a stable key; every row has an id. Keep page as a fallback and log a deprecation warning once per process.' },
+  { at: '13:21', role: 'assistant', kind: 'text', text: 'I will read the helper and its callers first.' },
+  { at: '13:21', role: 'assistant', kind: 'tool_use', tool: 'Read', text: '{ "file_path": "src/paginate.js" }' },
+  { at: '13:21', role: 'user', kind: 'tool_result', text: Array.from({ length: 64 }, (_, i) => `${String(i + 1).padStart(3)}  ${['export function paginate(rows, page = 0, size = 20) {', '  const start = page * size;', '  return rows.slice(start, start + size);', '}', ''][i % 5]}`).join('\n') },
+  { at: '13:24', role: 'assistant', kind: 'text', text: ['Plan:', '1. Add an options object { cursor, size } and keep the positional page argument for one release.', '2. indexAfter(rows, cursor) finds the row after the cursor id.', '3. Callers in src/routes pass the cursor from the query string.', '4. Tests: first page, negative size, stable cursor after an insert.', '', 'Risks:', '- Two callers sort after paginating; the cursor would skip rows there.', '- The admin export calls paginate with size 0 to mean "all".', '', 'Open points for the orchestrator:', '- Should size 0 keep meaning "all"? I will keep it and add a test.', '- The deprecation warning goes to the existing logger, once per process.', '', 'Files I expect to touch:', '- src/paginate.js', '- src/routes/items.js', '- src/routes/admin-export.js', '- test/paginate.test.js', '', 'I will not touch the database layer.', 'I will not change the public response shape.', '', 'Starting with the helper.'].join('\n') },
+  { at: '13:31', role: 'assistant', kind: 'tool_use', tool: 'Bash', text: 'npm test' },
+  { at: '13:31', role: 'user', kind: 'tool_result', text: ['> node --test "test/*.test.js"', '✔ paginate returns the first page (2.1ms)', '✔ paginate rejects a negative size (0.4ms)', '✖ paginate keeps the cursor stable after an insert (5.8ms)', '  AssertionError: expected 20, got 19', ...Array.from({ length: 38 }, (_, i) => `✔ routes/items case ${i + 1}`)].join('\n') },
+  { at: '13:32', role: 'assistant', kind: 'text', text: 'The cursor test fails because indexAfter counts from 1. Fixing it.' },
+  { at: '13:32', role: 'assistant', kind: 'tool_use', tool: 'Edit', text: '{ "file_path": "src/paginate.js", "old_string": "+ 2;", "new_string": "+ 1;" }' },
+  { at: '13:33', role: 'user', kind: 'tool_result', text: 'The file src/paginate.js has been updated.\n' + 'x'.repeat(220), truncated: true },
+  { at: '13:35', role: 'user', kind: 'text', text: 'Also log the deprecation warning only once per process, please.' },
+  { at: '13:35', role: 'assistant', kind: 'text', text: 'Will do. Re-running the tests after the fix.' },
+];
+const words = (s) => s.split(/\s+/).filter(Boolean).length;
+function historyEntry(e) {
+  const li = h('li', { class: 'hx', 'data-role': e.role, 'data-kind': e.kind });
+  const meta = h('div', { class: 'hx-meta' },
+    h('span', { class: 'hx-who', text: e.kind === 'tool_result' ? 'Tool result' : e.role === 'user' ? 'You' : 'Claude' }),
+    h('time', { class: 'hx-at num', text: e.at }));
+  if (e.kind === 'text') {
+    const lines = e.text.split('\n').length;
+    const body = h('p', { class: `hx-text${lines > 12 ? ' hx-clamp' : ''}`, text: e.text });
+    li.append(meta, body);
+    if (lines > 12) {
+      li.append(h('button', { type: 'button', class: 'btn link', 'aria-expanded': 'false', text: `Show all ${lines} lines`, onclick: (ev) => { body.classList.remove('hx-clamp'); ev.currentTarget.remove(); } }));
+    }
+  } else {
+    const label = e.kind === 'thinking' ? `${words(e.text)} words`
+      : e.kind === 'tool_use' ? e.text.split('\n')[0].slice(0, 80)
+        : `${e.text.split('\n').length} lines`;
+    li.append(meta, h('details', { class: 'hx-fold' },
+      h('summary', null, h('span', { class: 'hx-kind', text: e.kind === 'thinking' ? 'Thinking' : e.kind === 'tool_use' ? e.tool : 'Output' }), h('span', { class: 'hx-sum', text: label })),
+      e.kind === 'thinking' ? h('p', { class: 'hx-text', text: e.text }) : h('pre', { class: 'hx-code', tabindex: '0', text: e.text })));
+  }
+  if (e.truncated) li.append(h('p', { class: 'hx-trunc', text: 'This entry is over 32 KB; nika shows the first part only.' }));
+  return li;
+}
+function renderHistory(list, { older = true } = {}) {
+  list.replaceChildren(...HISTORY.map(historyEntry));
+  const top = list.previousElementSibling;
+  if (top?.matches('[data-older]')) top.hidden = !older;
+}
+
+/* ---------- session window behaviour ---------- */
+const KEYMAP = { Enter: 'Enter', Escape: 'Escape', Tab: 'Tab', Backspace: 'BSpace', Delete: 'DC', ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right', Home: 'Home', End: 'End', PageUp: 'PPage', PageDown: 'NPage' };
+const CTRLMAP = { c: 'C-c', u: 'C-u', k: 'C-k', a: 'C-a', e: 'C-e', l: 'C-l', r: 'C-r', w: 'C-w' };
+const KEYLABEL = { Enter: '⏎ Enter', Escape: 'Esc', Tab: 'Tab', BTab: 'Shift-Tab', BSpace: '⌫', DC: 'Del', Up: '↑', Down: '↓', Left: '←', Right: '→', 'C-c': 'Ctrl-C' };
+function initSession(root) {
+  const term = $('[data-term]', root);
+  const pre = $('[data-term-pre]', root);
+  const live = $('[data-live]', root);
+  const ta = $('[data-composer]', root);
+  const echo = $('[data-echo]', root);
+  const passBanner = $('[data-pass]', root);
+  const pasteChip = $('[data-paste-chip]', root);
+  let passOn = false;
+  let pasted = false;
+  const say = (msg) => { if (echo) echo.textContent = msg; };
+  const sendKey = (k) => say(`Sent ${KEYLABEL[k] ?? k} to ${root.dataset.pane}`);
+  const atBottom = () => term.scrollHeight - term.scrollTop - term.clientHeight < 8;
+  const sync = () => { const paused = !atBottom(); root.classList.toggle('is-paused', paused); live.hidden = !paused; };
+  root.mirrorShow = (cap) => { renderMirror(pre, cap); term.scrollTop = term.scrollHeight; sync(); };
+  term.addEventListener('scroll', sync);
+  live.addEventListener('click', () => { term.scrollTop = term.scrollHeight; sync(); ta?.focus(); });
+  const grow = () => { ta.style.height = 'auto'; ta.style.height = `${Math.min(ta.scrollHeight, 8 * 20 + 16)}px`; };
+  const setPaste = (on, n = 0) => { pasted = on; pasteChip.hidden = !on; if (on) $('[data-paste-n]', pasteChip).textContent = `Pasted ${n} lines · sends as one paste`; };
+  function send() {
+    const v = ta.value;
+    if (!v.trim()) { sendKey('Enter'); return; }
+    const multi = pasted || v.includes('\n');
+    say(multi ? `Sent a paste of ${v.split('\n').length} lines + Enter to ${root.dataset.pane}` : `Sent ${v.length} characters + Enter to ${root.dataset.pane}`);
+    ta.value = ''; setPaste(false); grow();
+  }
+  function setPass(on) {
+    passOn = on;
+    root.classList.toggle('is-pass', on);
+    passBanner.hidden = !on;
+    term.setAttribute('role', on ? 'application' : 'region');
+    term.setAttribute('aria-label', on ? `Terminal passthrough for ${root.dataset.agent}. Every key goes to pane ${root.dataset.pane}. Press Control and ] to leave.` : `Live terminal of ${root.dataset.agent}, pane ${root.dataset.pane}`);
+    $$('[data-pass-toggle]', root).forEach((b) => b.setAttribute('aria-pressed', String(on)));
+    if (on) { term.focus(); say('Passthrough on: keys go straight to the pane'); } else { say('Passthrough off: typing goes to the input box'); ta?.focus(); }
+  }
+  ta.addEventListener('input', grow);
+  ta.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
+    else if (e.key === 'Escape') { e.preventDefault(); sendKey('Escape'); }
+    else if (e.ctrlKey && e.key === ']') { e.preventDefault(); setPass(true); }
+    else if (e.ctrlKey && !e.metaKey && e.key.toLowerCase() === 'c' && ta.selectionStart === ta.selectionEnd) { e.preventDefault(); sendKey('C-c'); }
+  });
+  ta.addEventListener('paste', (e) => {
+    const t = e.clipboardData?.getData('text') ?? '';
+    if (t.includes('\n')) setTimeout(() => { setPaste(true, t.split('\n').length); grow(); });
+  });
+  $('[data-paste-clear]', root)?.addEventListener('click', () => { ta.value = ''; setPaste(false); grow(); ta.focus(); });
+  $$('[data-key]', root).forEach((b) => b.addEventListener('click', () => { sendKey(b.dataset.key); }));
+  $$('[data-pass-toggle]', root).forEach((b) => b.addEventListener('click', () => setPass(!passOn)));
+  $('[data-send]', root)?.addEventListener('click', () => { send(); ta.focus(); });
+  let buf = ''; let timer = null;
+  term.addEventListener('keydown', (e) => {
+    if (!passOn) return;
+    if (e.ctrlKey && e.key === ']') { e.preventDefault(); setPass(false); return; }
+    if (e.metaKey) return; // OS and app shortcuts keep working; Cmd+V arrives as a paste event
+    e.stopPropagation(); // in passthrough only Ctrl+] belongs to nika
+    let key = null;
+    if (e.key === 'Tab' && e.shiftKey) key = 'BTab';
+    else if (e.ctrlKey) key = CTRLMAP[e.key.toLowerCase()] ?? null;
+    else if (KEYMAP[e.key]) key = KEYMAP[e.key];
+    else if (e.key.length === 1 && !e.altKey) {
+      e.preventDefault(); buf += e.key; clearTimeout(timer);
+      timer = setTimeout(() => { say(`Sent “${buf}” to ${root.dataset.pane}`); buf = ''; }, 120); // batched: ≤ 10 requests/s
+      return;
+    }
+    e.preventDefault();
+    if (key) sendKey(key); else say(`Not sent: ${e.ctrlKey ? 'Ctrl-' : ''}${e.altKey ? 'Alt-' : ''}${e.key} is not on the allow-list`);
+  });
+  term.addEventListener('paste', (e) => { if (passOn) { e.preventDefault(); say(`Sent a paste of ${(e.clipboardData?.getData('text') ?? '').split('\n').length} lines`); } });
+  term.addEventListener('focusout', () => { if (passOn) setPass(false); });
+  root.setPass = setPass;
+  root.reset = () => { if (passOn) setPass(false); setPaste(false); say(''); };
+}
+
+/* ---------- settings validation (client side mirrors the server rules; the server's 400 names the field) ---------- */
+const RX = {
+  model: [/^(claude-[a-z0-9-]{3,60}|opus|sonnet|haiku|fable)$/, 'Use a model id such as claude-sonnet-5-5, or opus, sonnet, haiku, fable.'],
+  prefix: [/^$|^[a-z0-9][a-z0-9-]{0,19}$/, 'Lowercase letters, digits and dashes, up to 20, starting with a letter or digit. Leave empty to use the project name.'],
+  agent: [/^[a-z0-9][a-z0-9-]{0,39}$/, 'Lowercase letters, digits and dashes, up to 40, starting with a letter or digit.'],
+};
+function validateForm(form) {
+  const bad = [];
+  for (const input of $$('[data-rx]', form)) {
+    const [re, msg] = RX[input.dataset.rx];
+    const ok = re.test(input.value.trim()) && !(input.dataset.rx !== 'prefix' && !input.value.trim());
+    setFieldError(input, ok ? '' : msg);
+    if (!ok) bad.push(input);
+  }
+  for (const input of $$('input[type="number"]', form)) {
+    const v = Number(input.value); const ok = Number.isInteger(v) && v >= Number(input.min) && v <= Number(input.max);
+    setFieldError(input, ok ? '' : `Choose a whole number from ${input.min} to ${input.max}.`);
+    if (!ok) bad.push(input);
+  }
+  return bad;
+}
+function setFieldError(input, msg) {
+  const err = document.getElementById(`${input.id}-err`);
+  input.setAttribute('aria-invalid', msg ? 'true' : 'false');
+  if (err) { err.textContent = msg; err.hidden = !msg; }
+}
+function initSettings(form) {
+  const bar = $('[data-dirty]', form.closest('[data-screen]'));
+  const summary = $('[data-err-summary]', form.closest('[data-screen]'));
+  let dirty = 0;
+  form.addEventListener('input', () => { dirty += 1; if (bar) { bar.hidden = false; $('[data-dirty-n]', bar).textContent = 'Unsaved changes'; } });
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const bad = validateForm(form);
+    if (summary) { summary.hidden = !bad.length; $('[data-err-n]', summary).textContent = `${bad.length} field${bad.length === 1 ? ' needs' : 's need'} a fix before saving.`; }
+    if (bad.length) { bad[0].focus(); return; }
+    if (bar) bar.hidden = true;
+    dirty = 0;
+    toast('Settings saved');
+  });
+  form.addEventListener('reset', () => { setTimeout(() => { $$('[aria-invalid="true"]', form).forEach((i) => setFieldError(i, '')); if (bar) bar.hidden = true; if (summary) summary.hidden = true; }); });
+  form.showErrors = () => { $('#set-model-builder', form).value = 'sonet'; $('#set-rc-prefix', form).value = 'Team_Prefix'; $('#set-max', form).value = '12'; form.requestSubmit(); };
+}
+
+/* ---------- add project flow (contract: POST pick → 202 reqId → poll GET pick/:reqId) ---------- */
+function addProjectFlow(outcome = 'done') {
+  if (outcome === 'busy') { toast('A folder picker is already open. Finish or cancel it first.', { kind: 'error' }); return; }
+  const t = toast('Choose a folder in the system dialog…', { ms: 0 });
+  $('p', t).prepend(h('span', { class: 'spin', 'aria-hidden': 'true' }), ' ');
+  setTimeout(() => {
+    t.remove();
+    if (outcome === 'cancelled') toast('No folder chosen. Nothing was added.');
+    else toast('Added docs-site. Its rules are not set up yet.', { action: { label: 'Apply rules', run: () => go('rules', 'preview') } });
+  }, 1600);
+}
+
+/* ---------- dialogs: native showModal (inert background, Esc = cancel), focus returns to the opener ---------- */
+let opener = null;
+function openDialog(dlg) {
+  opener = document.activeElement;
+  if (!dlg.open) dlg.showModal();
+  const first = $('[autofocus]', dlg) ?? $('h2', dlg);
+  if (first) { if (!first.hasAttribute('tabindex') && first.tagName === 'H2') first.setAttribute('tabindex', '-1'); first.focus(); }
+}
+document.addEventListener('close', (e) => { if (e.target.tagName === 'DIALOG') { opener?.focus?.(); } }, true);
+document.addEventListener('click', (e) => {
+  const c = e.target.closest('[data-close]');
+  if (c) c.closest('dialog')?.close();
+});
+
+/* ---------- router, states and mock controls ---------- */
+const V = window.VARIANT; // per-variant hooks: { name, render: { [screen]: (state) => void } }
+function screens() { return $$('[data-screen]'); }
+function enter(el, st) {
+  el.dataset.state = st;
+  for (const n of $$('[data-when]', el)) n.hidden = !n.dataset.when.split(' ').includes(st);
+  V.render?.[el.dataset.screen]?.(st, el);
+}
+function go(name, state) {
+  const el = $(`[data-screen="${name}"]`) ?? $('[data-screen]');
+  const states = (el.dataset.states ?? 'default').split(',');
+  const st = states.includes(state) ? state : states[0];
+  for (const d of $$('dialog[open]')) if (d !== el) d.close();
+  const host = el.tagName === 'DIALOG' ? $(`[data-screen="${el.dataset.host}"]`) : el;
+  for (const w of $$('[data-world]')) w.hidden = !w.contains(host);
+  for (const s of screens()) if (s.tagName !== 'DIALOG') s.hidden = s !== host;
+  if (host !== el) enter(host, host.dataset.state ?? (host.dataset.states ?? 'default').split(',')[0]);
+  enter(el, st);
+  for (const n of $$('[data-nav]')) n.toggleAttribute('aria-current', n.dataset.nav === (el.dataset.navAs ?? host.dataset.navAs ?? name));
+  for (const n of $$('[data-nav][aria-current]')) n.setAttribute('aria-current', 'page');
+  if (el.tagName === 'DIALOG') openDialog(el);
+  const mkS = $('#mk-screen'); const mkSt = $('#mk-state');
+  mkS.value = name;
+  mkSt.replaceChildren(...states.map((s) => h('option', { value: s, text: s })));
+  mkSt.value = st;
+  history.replaceState(null, '', `#${name}${st !== states[0] ? `/${st}` : ''}`);
+  current = { name, st };
+}
+let current = { name: 'dashboard', st: 'normal' };
+document.addEventListener('click', (e) => {
+  const a = e.target.closest('[data-go]');
+  if (!a) return;
+  e.preventDefault();
+  const [n, s] = a.dataset.go.split('/');
+  go(n, s);
+});
+function applyTheme(pref) {
+  const dark = pref === 'dark' || (pref === 'system' && matchMedia('(prefers-color-scheme: dark)').matches);
+  document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+}
+function buildMock() {
+  const bar = $('#mock');
+  const theme = (() => { try { return localStorage.getItem('nika-mock-theme') ?? 'system'; } catch { return 'system'; } })();
+  const sel = (id, label, opts, val, on) => h('label', null, label, h('select', { id, onchange: (e) => on(e.target.value) }, opts.map(([v, t]) => h('option', { value: v, text: t, selected: v === val }))));
+  bar.append(
+    h('strong', { text: `nika 0.2 mockup · ${V.name}` }),
+    sel('mk-screen', 'Screen', screens().map((s) => [s.dataset.screen, s.dataset.title]), 'dashboard', (v) => go(v)),
+    sel('mk-state', 'State', [], '', (v) => go(current.name, v)),
+    sel('mk-theme', 'Theme', [['system', 'System'], ['light', 'Light'], ['dark', 'Dark']], theme, (v) => { try { localStorage.setItem('nika-mock-theme', v); } catch { /* per-viewer only */ } applyTheme(v); }),
+    sel('mk-size', 'Window', [['fit', 'Fit'], ['720x480', '720 × 480'], ['1024x700', '1024 × 700'], ['1440x900', '1440 × 900']], 'fit', (v) => {
+      const win = $('.win'); const stage = $('.stage');
+      stage.classList.toggle('sized', v !== 'fit');
+      const [w, hh] = v === 'fit' ? ['', ''] : v.split('x').map((n) => `${n}px`);
+      win.style.width = w; win.style.height = hh;
+    }),
+    h('label', null, h('input', { type: 'checkbox', onchange: (e) => { document.documentElement.dataset.motion = e.target.checked ? 'reduce' : ''; } }), 'Reduced motion'),
+    h('span', { class: 'mk-links' }, ['a', 'b', 'c'].map((x) => h('a', { href: `${x}.html`, 'aria-current': V.file === x ? 'page' : null, text: `Variant ${x.toUpperCase()}` }))),
+  );
+  // ?theme=dark&size=720x480 preselect the controls (handy for screenshots)
+  const qp = new URLSearchParams(location.search);
+  if (['light', 'dark', 'system'].includes(qp.get('theme'))) { $('#mk-theme').value = qp.get('theme'); }
+  if ([...$('#mk-size').options].some((o) => o.value === qp.get('size'))) { $('#mk-size').value = qp.get('size'); $('#mk-size').dispatchEvent(new Event('change')); }
+  applyTheme($('#mk-theme').value);
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => applyTheme($('#mk-theme').value));
+}
+const MAC = /Mac|iPhone|iPad/.test(navigator.platform);
+document.addEventListener('keydown', (e) => {
+  const mod = MAC ? e.metaKey : e.ctrlKey;
+  if (e.key === 'Escape') {
+    const m = $('[data-menu]:not([hidden])');
+    if (m) { e.preventDefault(); e.stopPropagation(); closeMenu(m); return; }
+  }
+  if ((MAC && e.metaKey && e.key === '[') || (!MAC && e.altKey && e.key === 'ArrowLeft')) { e.preventDefault(); (V.back ?? (() => go('dashboard')))(); return; }
+  if (mod && !e.altKey) {
+    if (e.key === ',') { e.preventDefault(); go('settings'); return; }
+    if (e.key === '1') { e.preventDefault(); go('dashboard'); return; }
+    if (e.key.toLowerCase() === 'o' && !e.shiftKey) { e.preventDefault(); addProjectFlow(); return; }
+  }
+  V.keys?.(e, mod);
+});
+window.addEventListener('DOMContentLoaded', () => {
+  buildMock();
+  V.init?.();
+  for (const s of $$('[data-session]')) initSession(s);
+  for (const f of $$('form[data-settings]')) initSettings(f);
+  const [n, s] = location.hash.slice(1).split('/');
+  go(n || 'dashboard', s);
+});
+
+</script>
+<script>
+/* ===== Variant B rendering ===== */
+(() => {
+const V = window.VARIANT;
+const icon = (id) => { const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); s.setAttribute('class', 'ic'); s.setAttribute('aria-hidden', 'true'); const u = document.createElementNS('http://www.w3.org/2000/svg', 'use'); u.setAttribute('href', `#${id}`); s.append(u); return s; };
+const PSTATE = { 'demo-api': 'nika-limit', 'web-console': 'outdated', 'infra-scripts-and-deployment-tooling-for-staging': 'foreign', 'docs-site': 'none' };
+let blocked = null;
+let filter = 'all';
+const sessTarget = (a) => (a.state === 'attn' ? 'session/permission' : a.pane ? 'session' : 'session/pane-gone');
+function guarded(label, ic, run, cls = 'btn sm') {
+  return h('button', { type: 'button', class: cls, 'aria-disabled': blocked ? 'true' : null, onclick: () => (blocked ? toast(blocked, { kind: 'error' }) : run()) }, icon(ic), label);
+}
+function qcard(a, { small = false, tier = 'app' } = {}) {
+  const why = a.state === 'attn' ? a.reason : a.prompt;
+  return h('li', { class: `qcard${small ? ' small' : ''}`, 'data-s': a.state },
+    h('span', { class: 'gl' }, statusEl(a.state, { compact: true })),
+    h('div', { class: 'qhead' },
+      h('h3', null, tier === 'app' ? h('a', { href: '#session', 'data-go': sessTarget(a), text: a.name }) : a.name),
+      h('span', { class: 'qproj', title: a.project, text: a.project })),
+    h('p', { class: 'qwhy', text: a.state === 'attn' ? why : `Last asked: ${why}` }),
+    h('p', { class: 'qmeta' }, h('span', { text: `${a.state === 'attn' ? 'Waiting on you' : 'Idle'} for ${ago(a.act)}` }), h('span', { class: 'model', text: a.model }), a.pane ? h('span', { class: 'mono', text: a.pane }) : h('span', { text: 'not in tmux' })),
+    h('div', { class: 'qacts' },
+      tier === 'app' ? h('a', { class: `btn ${small ? 'sm' : ''} ${a.state === 'attn' ? 'primary' : ''}`, href: '#session', 'data-go': sessTarget(a) }, icon('i-term'), a.state === 'attn' ? 'Answer' : 'Reply') : null,
+      a.pane ? h('button', { type: 'button', class: `btn ${small ? 'sm' : ''} ghost`, onclick: () => toast(`Focused tmux pane ${a.pane}`) }, 'Focus in tmux') : null,
+      tier === 'app' ? agentMenu(a) : menu(`Actions for ${a.name}`, [['Copy resume command', () => toast('Copied resume command')]])));
+}
+function wrow(a, { tier = 'app' } = {}) {
+  return h('li', { class: 'wrow', 'data-s': a.state },
+    statusEl(a.state, { compact: true }),
+    h('div', { class: 'wn' }, tier === 'app' ? h('a', { href: '#session', 'data-go': sessTarget(a), title: a.name, text: a.name }) : h('b', { text: a.name }), h('span', { title: a.project, text: `${a.project} · ${a.model}` })),
+    h('div', { class: 'wp', title: a.prompt, text: a.state === 'ended' ? (a.report ?? `Exited with code ${a.exit}`) : a.prompt }),
+    h('div', { class: 'wt' }, h('span', { class: 'sr-only', text: a.state === 'ended' ? 'ended ' : 'active ' }), ago(a.act), a.state === 'ended' && tier === 'app' ? agentMenu(a) : null));
+}
+function now(st, tier = 'app') {
+  const root = tier === 'app' ? $('#now') : $('#br');
+  blocked = st === 'error-tmux' ? 'Needs tmux. Install it, then try again.' : st === 'error-claude' ? 'Needs Claude Code (claude) on your PATH.' : null;
+  envLine(st);
+  let list = st === 'many' ? [...MANY, ...AGENTS.filter((a) => a.project !== 'demo-api')] : AGENTS;
+  if (st === 'empty-agents' || st === 'empty-projects') list = [];
+  const all = counts(list);
+  $('#now-badge').hidden = !all.attn; $('#now-badge').textContent = String(all.attn); $('#now-badge').setAttribute('aria-label', `${all.attn} need you`);
+  if (filter !== 'all') list = list.filter((a) => a.project === filter);
+  const c = counts(list);
+  const parts = [];
+  if (st === 'loading') {
+    root.replaceChildren(h('div', { class: 'hero', 'aria-busy': 'true' }, h('div', { class: 'sk', style: 'height:30px;width:280px' }), h('span', { class: 'sr-only', text: 'Loading agents…' })), h('div', { class: 'stack', 'aria-hidden': 'true' }, [1, 2, 3].map(() => h('div', { class: 'sk sk-card' }))));
+    return;
+  }
+  if (st === 'empty-projects') {
+    root.replaceChildren(h('div', { class: 'empty' }, h('h1', { id: 'now-h', text: 'Add a project to begin.' }),
+      h('p', { text: 'A project is a git repository. nika starts an orchestrator there, spawns agents into tmux panes and keeps the rules in step.' }),
+      h('div', { class: 'acts' }, h('button', { type: 'button', class: 'btn primary', 'data-add': true }, icon('i-folder'), 'Choose a folder…')),
+      h('p', { class: 'help', style: 'margin-top:16px' }, 'From a terminal: ', h('code', { text: 'nika projects add ~/projects/demo-api' }))));
+    return;
+  }
+  const sentence = c.attn ? `${c.attn === 1 ? '1 agent needs' : `${c.attn} agents need`} you.` : c.idle ? 'Nothing is blocked.' : c.busy ? 'Everyone is working.' : 'Nothing is running.';
+  const sub = [c.idle ? `${c.idle} waiting for a prompt` : null, c.busy ? `${c.busy} working` : null, c.ended ? `${c.ended} ended today` : null].filter(Boolean).join(', ')
+    || 'start an orchestrator to plan the work, or spawn one agent for a single task';
+  parts.push(h('div', { class: 'hero' }, h('h1', { id: tier === 'app' ? 'now-h' : 'br-h', text: tier === 'app' ? sentence : `nika · ${sentence}` }), sub ? h('p', { text: `${sub[0].toUpperCase()}${sub.slice(1)}.` }) : null));
+  if (tier === 'browser') parts.push(h('div', { class: 'note', role: 'note', style: 'margin-bottom:20px' }, icon('i-term'), h('p', null, h('strong', { text: 'This page only shows agents.' }), 'To start agents, reply to them or change rules, open the nika app: ', h('code', { text: 'nika app' }))));
+  if (st === 'error-tmux') parts.push(h('div', { class: 'note', 'data-kind': 'danger', role: 'alert', style: 'margin-bottom:20px' }, icon('i-warn'), h('p', null, h('strong', { text: 'tmux is not installed.' }), 'Without it nika cannot start agents or show their panes. Install it with brew install tmux, then press Try again.'), h('button', { type: 'button', class: 'btn sm', text: 'Try again' })));
+  if (st === 'error-claude') parts.push(h('div', { class: 'note', 'data-kind': 'warn', role: 'alert', style: 'margin-bottom:20px' }, icon('i-warn'), h('p', null, h('strong', { text: 'Claude Code is not on your PATH.' }), 'Starting and spawning agents are off until it is.'), h('button', { type: 'button', class: 'btn sm', text: 'Try again' })));
+  if (st === 'offline') parts.push(h('div', { class: 'note', 'data-kind': 'danger', role: 'alert', style: 'margin-bottom:20px' }, icon('i-warn'), h('p', null, h('strong', { text: 'Lost the nika server.' }), 'This is the list from 14:02. Reconnecting every 3 seconds.')));
+  if (tier === 'app' && st !== 'empty-agents') {
+    const projs = [...PROJECTS, ...UNREGISTERED].filter((p) => byProject(p.name, st === 'many' ? [...MANY, ...AGENTS] : AGENTS).length);
+    parts.push(h('div', { class: 'filters', role: 'group', 'aria-label': 'Show agents of' },
+      h('button', { type: 'button', class: 'chip', 'aria-pressed': String(filter === 'all'), onclick: () => { filter = 'all'; now(st); } }, 'All projects'),
+      projs.map((p) => { const pc = counts(byProject(p.name, st === 'many' ? [...MANY, ...AGENTS] : AGENTS)); return h('button', { type: 'button', class: 'chip', title: p.name, 'aria-pressed': String(filter === p.name), onclick: () => { filter = p.name; now(st); } }, p.name.length > 22 ? `${p.name.slice(0, 21)}…` : p.name, pc.attn ? h('span', { class: 'n' }, h('span', { class: 'sr-only', text: ', needs you: ' }), String(pc.attn)) : null); })));
+  }
+  if (st === 'empty-agents') {
+    parts.push(h('section', { class: 'sec', 'aria-labelledby': 'start-h' }, h('h2', { id: 'start-h', text: 'Start something' }),
+      h('ul', { class: 'startlist' }, PROJECTS.map((p) => h('li', null, h('b', { title: p.name, text: p.name }), guarded('Start orchestrator', 'i-play', () => toast(`Started the orchestrator for ${p.name}`), 'btn sm primary'), guarded('Spawn agent', 'i-spawn', () => go('spawn')))))));
+  }
+  const by = (s) => list.filter((a) => a.state === s).sort((a, b) => b.act - a.act);
+  const attn = by('attn'); const idle = by('idle'); const busy = list.filter((a) => a.state === 'busy'); const ended = list.filter((a) => a.state === 'ended');
+  if (attn.length) parts.push(h('section', { class: 'sec', 'aria-labelledby': 's-attn' }, h('h2', { id: 's-attn' }, 'Needs you', h('small', { text: 'longest wait first' })), h('ul', { class: 'stack' }, attn.map((a) => qcard(a, { tier })))));
+  if (idle.length) parts.push(h('section', { class: 'sec', 'aria-labelledby': 's-idle' }, h('h2', { id: 's-idle' }, 'Your turn', h('small', { text: 'finished and waiting for a prompt' })), h('ul', { class: 'stack' }, idle.map((a) => qcard(a, { small: true, tier })))));
+  if (busy.length) {
+    const cap = 6; const shown = busy.slice(0, cap);
+    const ul = h('ul', { class: 'wlist' }, shown.map((a) => wrow(a, { tier })));
+    if (busy.length > cap) ul.append(h('li', { class: 'wrow' }, h('span'), h('button', { type: 'button', class: 'btn link', text: `Show ${busy.length - cap} more working`, onclick: (e) => { e.currentTarget.closest('li').replaceWith(...busy.slice(cap).map((a) => wrow(a, { tier }))); } })));
+    parts.push(h('section', { class: 'sec', 'aria-labelledby': 's-busy' }, h('h2', { id: 's-busy' }, 'Working', h('small', { text: `${busy.length}` })), ul));
+  }
+  if (ended.length) parts.push(h('details', { class: 'more sec' }, h('summary', { text: `Ended (${ended.length})` }), h('ul', { class: 'wlist' }, ended.map((a) => wrow(a, { tier })))));
+  root.replaceChildren(...parts);
+  root.classList.toggle('stale', st === 'offline');
+}
+function envLine(st) {
+  const bad = st === 'error-tmux' ? 'tmux missing' : st === 'error-claude' ? 'claude missing' : null;
+  const e = $('#env');
+  e.toggleAttribute('data-bad', Boolean(bad));
+  e.replaceChildren(h('span', { 'aria-hidden': 'true', text: bad ? '◆' : '●' }), h('span', { text: bad ?? 'tmux and claude ready' }));
+}
+function projects() {
+  $('#pgrid').replaceChildren(...PROJECTS.map((p) => {
+    const c = counts(byProject(p.name));
+    return h('article', { class: 'pcard', 'aria-labelledby': `pc-${p.key}` },
+      h('h2', { id: `pc-${p.key}` }, h('a', { href: '#project', 'data-go': `project/${PSTATE[p.name]}`, title: p.name, text: p.name })),
+      h('span', { class: 'path', title: p.dir, text: p.dir }),
+      h('div', null, rulesEl(p.rules.state)),
+      h('p', { class: 'counts' }, c.attn ? h('b', { text: `${c.attn} needs you · ` }) : null, c.live ? `${c.live} live, ${c.ended} ended` : 'No agents running'),
+      h('div', { class: 'acts' }, guarded('Spawn agent', 'i-spawn', () => go('spawn')), c.live ? null : guarded('Start orchestrator', 'i-play', () => toast(`Started the orchestrator for ${p.name}`))));
+  }));
+}
+function project(st, el) {
+  const name = Object.keys(PSTATE).find((k) => PSTATE[k] === st);
+  const p = PROJECTS.find((x) => x.name === name);
+  const list = byProject(p.name); const live = list.filter((a) => a.state !== 'ended');
+  const atLimit = st === 'nika-limit';
+  $('#sp-h').textContent = `Spawn an agent in ${p.name.length > 30 ? `${p.name.slice(0, 29)}…` : p.name}`;
+  const orch = live.find((a) => a.role === 'orchestrator');
+  let plugOpen = false;
+  const plugBox = h('div', { class: 'plugpick full', hidden: true, role: 'group', 'aria-label': `Plugins for ${p.name}` }, PLUGINS.map((x) => h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: p.plugins.includes(x) }), x)));
+  const ruleText = { nika: 'Matches the current template.', outdated: 'Written by nika from an older template. An update is ready.', foreign: 'This file exists but nika did not write it. You decide whether to replace it.', none: 'No orchestration rules yet. Set them up so every agent starts with the same ground rules.' }[p.rules.state];
+  $('#pv').replaceChildren(
+    h('div', { class: 'phead' },
+      h('a', { class: 'back', href: '#projects', 'data-go': 'projects' }, icon('i-back'), 'Projects'),
+      h('h1', { id: 'pv-h', text: p.name }),
+      h('span', { class: 'path', text: p.dir }),
+      h('div', { class: 'acts' },
+        orch ? h('a', { class: 'btn', href: '#session', 'data-go': 'session' }, icon('i-term'), 'Open orchestrator') : guarded('Start orchestrator', 'i-play', () => toast(`Started the orchestrator for ${p.name}`), 'btn'),
+        h('button', { type: 'button', class: 'btn primary', 'aria-disabled': atLimit ? 'true' : null, onclick: () => go('spawn', atLimit ? 'limit' : 'form') }, icon('i-spawn'), 'Spawn agent'),
+        atLimit ? h('span', { class: 'help limitnote', text: '3 of 3 agents running: the limit for this project.' }) : null,
+        menu(`More for ${p.name}`, [['Copy folder path', () => toast(`Copied ${p.dir}`)], ['Remove from nika…', () => toast('Asks first. Only removes it from nika; no files change.')]]))),
+    h('section', { class: 'sec', 'aria-labelledby': 'pv-ag' }, h('h2', { id: 'pv-ag' }, 'Agents', h('small', { text: live.length ? `${live.length} live` : 'none running' })),
+      live.length ? h('ul', { class: 'wlist' }, list.map((a) => wrow(a))) : h('p', { class: 'help', text: 'Start the orchestrator, or spawn a single agent for a focused task.' })),
+    h('section', { class: 'sec', 'aria-labelledby': 'pv-set' }, h('h2', { id: 'pv-set', text: 'Setup' }),
+      h('ul', { class: 'setup' },
+        h('li', null, h('h3', null, 'Rules ', rulesEl(p.rules.state)), h('p', { text: ruleText }),
+          h('div', { class: 'right' }, h('button', { type: 'button', class: `btn sm${p.rules.state === 'nika' ? '' : ' primary'}`, 'data-go': `rules/${p.rules.state === 'foreign' ? 'foreign' : 'review'}`, text: p.rules.state === 'nika' ? 'Review' : p.rules.state === 'none' ? 'Set up' : 'Update' }))),
+        h('li', null, h('h3', { text: 'Plugins' }), h('p', { text: p.plugins.length ? p.plugins.join(', ') : 'None chosen.' }),
+          h('div', { class: 'right' }, h('button', { type: 'button', class: 'btn sm', 'aria-expanded': 'false', onclick: (e) => { plugOpen = !plugOpen; plugBox.hidden = !plugOpen; e.currentTarget.setAttribute('aria-expanded', String(plugOpen)); e.currentTarget.textContent = plugOpen ? 'Done' : 'Choose'; } }, 'Choose')), plugBox),
+        h('li', null, h('h3', { text: 'New agents' }), h('p', { text: `Default permissions, panes open beside, up to 3 at once.${!p.rules.settingsIgnored ? ' settings.local.json is not gitignored.' : ''}` }), h('div', { class: 'right' }, h('a', { class: 'btn sm ghost', href: '#settings', 'data-go': 'settings', text: 'Settings' }))))));
+}
+function rules(st) {
+  const foreign = st === 'foreign';
+  const p = foreign ? PROJECTS[2] : PROJECTS[1];
+  const host = $('[data-screen="project"]');
+  if (['review', 'foreign'].includes(st) && host.dataset.state !== (foreign ? 'foreign' : 'outdated')) enter(host, foreign ? 'foreign' : 'outdated');
+  $('#ru-h').textContent = foreign ? 'Replace the rules of infra-scripts…' : 'Update the rules of web-console';
+  $('#ru-sub').textContent = foreign ? 'One file was not written by nika. Look at it closely before you replace it.' : 'nika will change 3 files. Nothing is written until you confirm.';
+  $('#step1').toggleAttribute('aria-current', st === 'review'); $('#step2').toggleAttribute('aria-current', st !== 'review');
+  if (st === 'review') $('#step1').setAttribute('aria-current', 'step'); else $('#step2').setAttribute('aria-current', 'step');
+  const files = RULES_PREVIEW.files.map((f, i) => (i === 0 && foreign ? { ...f, foreign: true, diff: RULES_FOREIGN_DIFF } : f));
+  $('#ru-folds').replaceChildren(...files.map((f, i) => h('details', { class: 'fold', open: i === 0 },
+    h('summary', null, h('code', { text: f.path }), h('span', { class: 'act', 'data-a': f.foreign ? 'foreign' : f.action, text: f.foreign ? 'replace' : f.optional ? 'optional' : f.action }),
+      f.keysPreserved ? h('span', { class: 'help', text: `Only enabledPlugins changes. ${f.otherKeys} other keys stay as they are.` }) : null,
+      f.optional ? h('span', { class: 'help', text: 'Written only if you tick “Add it to .gitignore” in the next step.' }) : null),
+    f.action === 'unchanged' ? h('p', { class: 'help', style: 'padding:12px 14px', text: 'Already current. nika leaves it alone.' }) : renderDiff(f.diff))));
+  $('#ru-warn').hidden = foreign;
+  $('#ru-backup').textContent = RULES_PREVIEW.backupDir;
+  const fo = $('#ru-foreign'); const ap = $('#ru-apply');
+  if (st !== 'applying') fo.checked = false;
+  const sync = () => { ap.disabled = st === 'foreign' && !fo.checked; };
+  fo.onchange = sync; sync();
+  ap.onclick = () => { go('rules', 'applying'); setTimeout(() => { if (current.name === 'rules') { go('rules', 'success'); announce('Rules applied. 3 files written.'); } }, 1100); };
+}
+function spawn(st, dlg) {
+  if (st === 'limit') enter($('[data-screen="project"]'), 'nika-limit');
+  const f = $('#spawn-form');
+  if (st === 'errors') { $('#sp-name').value = 'Builder 3'; $('#sp-brief').value = ''; validateForm(f); setFieldError($('#sp-brief'), 'Write what the agent should do.'); }
+  else { $('#sp-name').value = 'builder-3'; setFieldError($('#sp-name'), ''); setFieldError($('#sp-brief'), ''); }
+  $('#sp-go').disabled = st === 'limit';
+  $('#sp-go').onclick = () => {
+    const bad = validateForm(f);
+    if (!$('#sp-brief').value.trim()) { setFieldError($('#sp-brief'), 'Write what the agent should do.'); bad.unshift($('#sp-brief')); }
+    if (bad.length) { bad[0].focus(); return; }
+    go('spawn', 'starting');
+    setTimeout(() => { dlg.close(); toast('builder-3 is starting in pane %24', { action: { label: 'Open', run: () => go('session') } }); }, 1200);
+  };
+}
+function setHist(open) {
+  $('#focus').classList.toggle('hist-open', open);
+  $('#hist-btn').setAttribute('aria-expanded', String(open));
+  if (open) $('#drawer .drawer-scroll').focus();
+}
+function session(st) {
+  const f = $('#focus'); const perm = st === 'permission';
+  const name = perm ? 'reviewer-2' : 'builder-1';
+  $('#sess-h').textContent = name;
+  $('#sess-st').replaceChildren(statusEl(st === 'pane-gone' ? 'ended' : perm ? 'attn' : 'busy'));
+  $('#sess-st .st').classList.add('pillst');
+  $('#sess-model').textContent = perm ? 'opus' : 'sonnet'; $('#sess-pane').textContent = perm ? '%14' : '%12';
+  f.dataset.agent = name; f.dataset.pane = perm ? '%14' : '%12';
+  $('#composer').placeholder = `Reply to ${name}`;
+  f.reset?.(); f.mirrorShow?.(perm ? CAP_PERMISSION : CAP_WORKING);
+  const off = st === 'pane-gone' || st === 'tmux-error';
+  for (const b of $$('.cli button, .cli textarea, [data-pass-toggle]', f)) b.disabled = off;
+  $('#live-label').textContent = off ? 'Not live' : st === 'paused' ? 'Paused' : 'Live';
+  setHist(st === 'history-open' || st === 'pane-gone');
+  if (st === 'paused') { const t = $('[data-term]', f); t.scrollTop = 0; t.dispatchEvent(new Event('scroll')); }
+  if (st === 'passthrough') setTimeout(() => f.setPass(true), 50); else if (!off && st !== 'history-open') setTimeout(() => $('#composer').focus(), 50);
+}
+function tray(st) {
+  const c = counts(AGENTS);
+  $('#tray-icon').toggleAttribute('data-attn', st !== 'menu');
+  const lead = st !== 'menu' ? [h('li', { role: 'none' }, h('div', { class: 'ti act-i lead', role: 'menuitem', tabindex: '0', text: `${c.attn} agents need you — show` }))] : [];
+  $('#tray-menu').replaceChildren(
+    ...lead,
+    h('li', { class: 'ti status', role: 'none', text: `${c.idle} waiting, ${c.busy} working` }),
+    h('li', { role: 'separator' }),
+    h('li', { role: 'none' }, h('div', { class: 'ti act-i', role: 'menuitem', tabindex: '-1', text: 'Open nika' })),
+    h('li', { role: 'separator' }),
+    ...PROJECTS.slice(0, 8).map((p) => h('li', { role: 'none' }, h('div', { class: 'ti act-i', role: 'menuitem', tabindex: '-1', text: trayLabel(p) }))),
+    h('li', { role: 'separator' }),
+    h('li', { role: 'none' }, h('div', { class: 'ti act-i', role: 'menuitem', tabindex: '-1', text: 'Add project…' })),
+    h('li', { role: 'none' }, h('div', { class: 'ti act-i', role: 'menuitemcheckbox', 'aria-checked': 'true', tabindex: '-1' }, h('span', { class: 'tick', 'aria-hidden': 'true', text: '✓' }), 'Start at login')),
+    h('li', { role: 'separator' }),
+    h('li', { role: 'none' }, h('div', { class: 'ti act-i', role: 'menuitem', tabindex: '-1', text: 'Quit nika' })));
+}
+V.render = { dashboard: (st) => now(st), projects, project, rules, spawn, session, tray, browser: () => now('normal', 'browser') };
+V.back = () => (current.name === 'session' ? go('dashboard') : current.name === 'project' ? go('projects') : go('dashboard'));
+V.keys = (e, mod) => {
+  if (mod && e.shiftKey && e.key.toLowerCase() === 'h' && current.name === 'session') { e.preventDefault(); setHist(!$('#focus').classList.contains('hist-open')); }
+  if (e.key === 'Escape' && $('#focus').classList.contains('hist-open') && $('#drawer').contains(document.activeElement)) { e.preventDefault(); setHist(false); $('#hist-btn').focus(); }
+};
+V.init = () => {
+  envLine('normal');
+  document.addEventListener('click', (e) => { if (e.target.closest('[data-add]')) addProjectFlow(); const s = e.target.closest('[data-sim]'); if (s) addProjectFlow(s.dataset.sim); if (e.target.closest('[data-hist-open]')) setHist(true); });
+  $('#hist-btn').addEventListener('click', () => setHist(!$('#focus').classList.contains('hist-open')));
+  $('#hist-close').addEventListener('click', () => { setHist(false); $('#hist-btn').focus(); });
+  renderHistory($('#hx-list'));
+  $('#load-older').addEventListener('click', (e) => { const b = e.currentTarget; b.textContent = 'Loading…'; setTimeout(() => b.parentElement.replaceWith(h('p', { class: 'hx-start', text: 'This is where the session began, at 13:20.' })), 700); });
+  $('[data-surface-toggle]').addEventListener('click', (e) => { const t = $('[data-term]'); const light = t.dataset.surface !== 'light'; t.dataset.surface = light ? 'light' : 'dark'; t.parentElement.dataset.surface = t.dataset.surface; e.currentTarget.setAttribute('aria-pressed', String(light)); });
+  for (const b of $$('[data-step]')) b.addEventListener('click', () => { const i = $('#set-max'); i.value = Math.min(8, Math.max(1, Number(i.value) + Number(b.dataset.step))); i.dispatchEvent(new Event('input', { bubbles: true })); });
+  $('#set-plugs').replaceChildren(...PLUGINS.map((x) => h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: x === 'reply-style@demo-market' }), x)));
+  const rc = $('#set-rc'); const pre = $('#set-rc-prefix'); const syncRc = () => { pre.disabled = !rc.checked; }; rc.addEventListener('change', syncRc); syncRc();
+  V.render.settings = (st) => { if (st === 'errors') { rc.checked = true; syncRc(); setTimeout(() => $('#set-form').showErrors(), 30); } };
+};
+})();
+</script>
+</body>
+</html>
