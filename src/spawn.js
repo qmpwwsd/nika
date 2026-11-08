@@ -19,10 +19,13 @@ import { fail, binsMissing, tmux, tmuxFail, tagPane, sessionNameFor, reduceRc, p
 const BRIEF_MAX = 64 * 1024;
 const AGENT_JSON_MAX = 4096;
 const GUARD_TEMPLATE = new URL('../templates/guard-prompt.txt', import.meta.url);
-const PANE_FILE = /^([a-z0-9][a-z0-9-]{0,39})\.pane$/;
+// tmux's record of nika's agent panes: pane id, `@nika-role`, `@nika-agent` = `<project key>/<name>` (set by tagPane at creation)
+const AGENT_LIST = '#{pane_id}\t#{@nika-role}\t#{@nika-agent}';
 const DENIED_TOOLS = ['Bash(nika:*)', 'Bash(tmux:*)', 'Bash(claude:*)', 'Bash(git add:*)', 'Bash(git commit:*)', 'Bash(git push:*)'];
 const DENY_SETTINGS = JSON.stringify({ permissions: { deny: ['Read(**/.env*)', 'Edit(**/.env*)', 'Read(**/*.key)', 'Edit(**/*.key)'] } });
 const isPlainObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+// The brief is claude's positional prompt after `--`; a lone word such as `update` or `doctor` can be read as a subcommand.
+const isOneWord = (brief) => !/\s/.test(brief.trim());
 
 // --- spawnAgent ---------------------------------------------------------------------------------------------------
 
@@ -36,6 +39,7 @@ function parseRequest(req) {
   if (typeof name !== 'string' || !AGENT_NAME.test(name)) return invalid('invalid agent name');
   if (typeof model !== 'string' || !MODEL_ID.test(model)) return invalid('invalid model');
   if (typeof brief !== 'string' || !brief.trim() || brief.includes('\0')) return invalid('brief must be a non-empty string without NUL');
+  if (isOneWord(brief)) return invalid('brief must be more than one word');
   if (Buffer.byteLength(brief) > BRIEF_MAX) return invalid(`brief is larger than ${BRIEF_MAX / 1024} KB`);
   if (permissionMode === 'bypassPermissions') return invalid('bypassPermissions is never allowed');
   if (permissionMode !== undefined && !PERMISSION_MODES.includes(permissionMode)) return invalid('invalid permissionMode');
@@ -56,23 +60,27 @@ function serial(key, fn) {
   return run;
 }
 
-/** Live nika agents of a project as Map<name, paneId>: `<name>.pane` files (written by _run-agent) and started panes. */
-async function liveAgents(dir, key, panes, started) {
+/** `<project key>/<name>` → [key, name], or null: anything else (agent-writable, never trusted) is ignored. */
+function parseTag(tag) {
+  const parts = String(tag).split('/');
+  return parts.length === 2 && PROJECT_KEY.test(parts[0]) && AGENT_NAME.test(parts[1]) ? parts : null;
+}
+
+/**
+ * Live agents of a project as Map<name, paneId>: the panes in any tmux session with `@nika-role` agent and an
+ * `@nika-agent` tag `<key>/<name>` for this key (F5), plus the panes this process started. `<name>.pane` files are
+ * agent-writable and display-only: they never count. Throws the tmux error when the listing fails.
+ */
+async function liveAgents(ctx, key, panes) {
   const live = new Map();
-  let names = [];
-  try {
-    names = await fs.readdir(dir);
-  } catch (err) {
-    if (err.code !== 'ENOENT') throw err;
+  const { stdout } = await tmux(ctx, 'list-panes', '-a', '-F', AGENT_LIST);
+  for (const line of String(stdout).split('\n')) {
+    const [pane, role = '', tag = ''] = line.split('\t');
+    const parsed = role.trim() === 'agent' && PANE_ID.test(pane ?? '') ? parseTag(tag) : null;
+    if (parsed?.[0] === key) live.set(parsed[1], pane);
   }
-  for (const file of names) {
-    const m = PANE_FILE.exec(file);
-    if (!m) continue;
-    const pane = await readHead(path.join(dir, file), 32).then((t) => t.trim(), () => null);
-    if (pane && PANE_ID.test(pane) && panes.has(pane)) live.set(m[1], pane);
-  }
-  for (const [pane, rec] of started ?? []) {
-    if (!panes.has(pane)) started.delete(pane);
+  for (const [pane, rec] of ctx.started ?? []) {
+    if (!panes.has(pane)) ctx.started.delete(pane);
     else if (rec.key === key && rec.role !== 'orchestrator') live.set(rec.name, pane);
   }
   return live;
@@ -98,7 +106,12 @@ async function doSpawn(v, project, config, ctx) {
   }
 
   const dir = reportsDir(project.key, ctx.env);
-  const live = await liveAgents(dir, project.key, panes, ctx.started);
+  let live;
+  try {
+    live = await liveAgents(ctx, project.key, panes);
+  } catch (err) {
+    return tmuxFail(err);
+  }
   if (live.has(v.name)) return fail(409, 'conflict', `agent ${v.name} is already running`);
   if (live.size >= config.limits.maxAgents) return fail(409, 'limit', `${live.size} of ${config.limits.maxAgents} agents are already running`);
 
@@ -125,7 +138,7 @@ async function doSpawn(v, project, config, ctx) {
   }
   if (!PANE_ID.test(pane)) return fail(502, 'tmux_failed', 'tmux did not return a pane id');
   ctx.started?.set(pane, { key: project.key, name: v.name, sessionId: null, role: 'agent' });
-  await tagPane(ctx, pane, 'agent');
+  await tagPane(ctx, pane, 'agent', `${project.key}/${v.name}`);
   // The agent is already running: a failure below only costs the title or the under-last placement.
   await writeAtomic(dir, '.last-pane', `${pane}\n`).catch(() => {});
   await tmux(ctx, 'select-pane', '-t', pane, '-T', `[${pane}] ${v.name}`).catch(() => {});
@@ -171,6 +184,7 @@ async function readBrief(file) {
     if (st.size > BRIEF_MAX) throw refusal(`brief is larger than ${BRIEF_MAX / 1024} KB`);
     const brief = await readAt(handle, 0, st.size);
     if (!brief.trim() || brief.includes('\0')) throw refusal('brief is empty or contains NUL');
+    if (isOneWord(brief)) throw refusal('brief must be more than one word');
     return brief;
   } finally {
     await handle.close();

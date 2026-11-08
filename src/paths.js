@@ -30,7 +30,12 @@ export function reportsDir(key, env = process.env) {
   return path.join(projectStateDir(key, env), 'reports');
 }
 
-/** Where `nika rules apply` copies a project's files before overwriting them (never inside the repo, T15). */
+/** All backups of `nika rules apply`: one folder per project below it (`nika doctor` prints this). */
+export function backupsRoot(env = process.env) {
+  return path.join(stateDir(env), 'backups');
+}
+
+/** Where `nika rules apply` copies a project's files before overwriting them (never inside the repo, T15); the last 10 are kept. */
 export function backupsDir(key, env = process.env) {
-  return path.join(stateDir(env), 'backups', checkKey(key));
+  return path.join(backupsRoot(env), checkKey(key));
 }

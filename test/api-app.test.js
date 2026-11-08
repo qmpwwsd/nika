@@ -588,6 +588,33 @@ describe('pane capture and keys', () => {
     }
   });
 
+  test('(+) a started pane that runs claude, node (npm install, _run-agent) or a native version string is eligible for capture and keys', async () => {
+    const a = await boot();
+    a.ctx.started.set('%8', { key: w.project.key, name: 'x', sessionId: null, role: 'agent' });
+    for (const command of ['claude', 'node', '2.1.319']) {
+      a.deps.state.panes = new Map([['%8', { command }]]);
+      a.clock.t += 2000; // past the eligibility cache
+      assert.equal((await a.call('GET', '/api/app/pane/%258/capture')).status, 200, command);
+      assert.equal((await a.call('POST', '/api/app/pane/%258/keys', { json: { text: 'hi' } })).status, 200, command);
+    }
+  });
+
+  test('(−) a started pane whose id is now a shell (tmux reused it) is 404 for capture and keys and never reaches tmux; the record is kept while the pane exists', async () => {
+    const a = await boot();
+    a.ctx.started.set('%8', { key: w.project.key, name: 'x', sessionId: null, role: 'agent' });
+    for (const command of ['zsh', 'bash', 'vim', '', 'claudex']) {
+      a.deps.state.panes = new Map([['%8', { command }]]);
+      a.deps.calls.length = 0;
+      a.clock.t += 2000;
+      assert.equal((await a.call('GET', '/api/app/pane/%258/capture')).status, 404, command);
+      assert.equal((await a.call('POST', '/api/app/pane/%258/keys', { json: { text: 'rm -rf x' } })).status, 404, command);
+      assert.equal(a.deps.calls.some((c) => c[0] === 'capture' || c[0] === 'keys'), false, command);
+    }
+    a.deps.state.panes = new Map([['%8', { command: 'node' }]]);
+    a.clock.t += 2000;
+    assert.equal((await a.call('GET', '/api/app/pane/%258/capture')).status, 200); // it runs claude again
+  });
+
   test('(−) when tmux cannot be listed nothing is eligible: 404 that says why; started entries are kept', async () => {
     const a = await boot();
     a.deps.state.panes = new Map();
@@ -663,7 +690,7 @@ describe('spawn and orchestrator', () => {
   test('(+) a successful spawn makes its new pane eligible at once, without waiting for the 1 s cache', async () => {
     const a = await boot();
     assert.equal((await a.call('GET', '/api/app/pane/%259/capture')).status, 404); // not in the (now cached) list yet
-    a.deps.state.panes = new Map([...a.deps.state.panes, ['%9', {}]]);
+    a.deps.state.panes = new Map([...a.deps.state.panes, ['%9', { command: 'node' }]]); // an agent pane runs `_run-agent` as node
     a.ctx.started.set('%9', { key: w.project.key, name: 'new', sessionId: null, role: 'agent' });
     assert.equal((await a.call('GET', '/api/app/pane/%259/capture')).status, 404); // still the cached list
     assert.equal((await a.call('POST', '/api/app/spawn', { json: { name: 'new' } })).status, 200);

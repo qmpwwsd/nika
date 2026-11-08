@@ -20,10 +20,15 @@ export function binsMissing(ctx) {
 export const tmux = (ctx, ...args) => ctx.exec(ctx.tmuxBin, ['-u', ...args]);
 
 /**
- * Marks a pane nika created (`@nika-role` = orchestrator | agent) so the orchestrator is never confused with the agents
- * split into its window. Best effort: the pane already runs, an untagged one is just never reused.
+ * Marks a pane nika created: `@nika-role` = orchestrator | agent so the orchestrator is never confused with the agents
+ * split into its window; for an agent also `@nika-agent` = `<project key>/<name>`, so maxAgents and the duplicate-name
+ * check count tmux's own record instead of agent-writable files (F5). Best effort: the pane already runs, an untagged one
+ * is just not counted and never reused.
  */
-export const tagPane = (ctx, pane, role) => tmux(ctx, 'set-option', '-p', '-t', pane, '@nika-role', role).catch(() => {});
+export async function tagPane(ctx, pane, role, agentTag) {
+  await tmux(ctx, 'set-option', '-p', '-t', pane, '@nika-role', role).catch(() => {});
+  if (agentTag) await tmux(ctx, 'set-option', '-p', '-t', pane, '@nika-agent', agentTag).catch(() => {});
+}
 
 /** Maps a failed tmux call to an error response. */
 export function tmuxFail(err) {

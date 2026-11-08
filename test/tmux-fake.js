@@ -12,22 +12,28 @@ export const NIKA_ARGV = ['/usr/bin/node', '/opt/nika/bin/nika'];
 const tmuxError = (message, code = 1) => Object.assign(new Error(message), { code, stderr: `${message}\n` });
 
 /**
- * panes: [{ id, session, window, windowName, title, command, role }] (role = @nika-role, '' = untagged). Options: enoent (every call fails like a missing
+ * panes: [{ id, session, window, windowName, title, command, role, agent }] (role = @nika-role, agent = @nika-agent = `<project key>/<name>`, '' = untagged). Options: enoent (every call fails like a missing
  * binary), failOn (sub-commands that exit 1), commandOf (pane_current_command of a pane created by new-session /
  * new-window / split-window, by default `claude` for the first two and `node` for split-window).
  */
 export function fakeTmux({ panes = [], enoent = false, failOn = [], nextId = 20 } = {}) {
-  const state = panes.map((p) => ({ window: 0, windowName: 'zsh', title: '', command: 'zsh', ...p }));
+  const state = panes.map((p) => ({ window: 0, windowName: 'zsh', title: '', command: 'zsh', role: '', agent: '', ...p }));
   const calls = [];
   let counter = nextId;
   const sessions = () => new Set(state.map((p) => p.session));
   const noServer = () => tmuxError('no server running on /tmp/tmux-1/default');
   const create = (session, windowName, command) => {
-    const pane = { id: `%${counter++}`, session, window: state.filter((p) => p.session === session).length, windowName, title: '', command, role: '' };
+    const pane = { id: `%${counter++}`, session, window: state.filter((p) => p.session === session).length, windowName, title: '', command, role: '', agent: '' };
     state.push(pane);
     return `${pane.id}\n`;
   };
   const after = (args, flag) => args[args.indexOf(flag) + 1];
+  // the format variables nika uses; like tmux, an unset @option expands to an empty string
+  const fields = { pane_id: 'id', session_name: 'session', window_index: 'window', pane_title: 'title', pane_current_command: 'command', '@nika-role': 'role', '@nika-agent': 'agent' };
+  const expand = (format, p) => format.replace(/#\{([^}]+)\}/g, (m, k) => {
+    if (!Object.hasOwn(fields, k)) throw new Error(`unexpected format variable ${k}`);
+    return String(p[fields[k]] ?? '');
+  });
   const exec = async (cmd, args) => {
     calls.push([cmd, ...args]);
     if (enoent) throw Object.assign(new Error('spawn tmux ENOENT'), { code: 'ENOENT' });
@@ -38,7 +44,7 @@ export function fakeTmux({ panes = [], enoent = false, failOn = [], nextId = 20 
       case 'list-panes': {
         if (!state.length) throw noServer();
         if (rest.includes('-a')) {
-          return { stdout: `${state.map((p) => [p.id, p.session, p.window, p.title, p.command].join('\t')).join('\n')}\n`, stderr: '' };
+          return { stdout: `${state.map((p) => expand(after(rest, '-F'), p)).join('\n')}\n`, stderr: '' };
         }
         // like tmux: `:=name` matches the window name exactly; `:name` tries exact, then prefix
         const m = /^=([^:]+):(=?)(.+)$/.exec(after(rest, '-t'));
@@ -69,14 +75,13 @@ export function fakeTmux({ panes = [], enoent = false, failOn = [], nextId = 20 
         if (!host) throw tmuxError(`can't find pane: ${target}`);
         return { stdout: create(host.session, host.windowName, 'node'), stderr: '' };
       }
-      case 'set-option': { // only `-p -t %n @nika-role <orchestrator|agent>`, the one pane option nika sets
+      case 'set-option': { // only `-p -t %n @nika-role <orchestrator|agent>` and `-p -t %n @nika-agent <key>/<name>`, the pane options nika sets
         const [flag, t, pane, key, value] = rest;
         const target = state.find((p) => p.id === pane);
-        if (flag !== '-p' || t !== '-t' || key !== '@nika-role' || !['orchestrator', 'agent'].includes(value) || rest.length !== 5) {
-          throw new Error(`unexpected set-option ${rest.join(' ')}`);
-        }
+        const valid = key === '@nika-role' ? ['orchestrator', 'agent'].includes(value) : key === '@nika-agent' && /^[a-z0-9]{16}\/[a-z0-9][a-z0-9-]{0,39}$/.test(value);
+        if (flag !== '-p' || t !== '-t' || !valid || rest.length !== 5) throw new Error(`unexpected set-option ${rest.join(' ')}`);
         if (!target) throw tmuxError("can't find pane");
-        target.role = value;
+        target[key === '@nika-role' ? 'role' : 'agent'] = value;
         return { stdout: '', stderr: '' };
       }
       case 'select-pane': {

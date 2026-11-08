@@ -7,7 +7,7 @@ import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { openRegular, isRealDir } from './fsafe.js';
-import { ensureDir, writeAtomic, checkComponents, backupFile } from './fwrite.js';
+import { ensureDir, writeAtomic, checkComponents, backupFile, pruneBackups } from './fwrite.js';
 import { configDir, backupsDir } from './paths.js';
 import { loadConfig, keyFor } from './store.js';
 import { PROJECT_KEY } from './ids.js';
@@ -23,6 +23,7 @@ const SETTINGS = '.claude/settings.local.json';
 const GITIGNORE = '.gitignore';
 const IMPORT_LINE = '@rules/orchestration.md';
 const FILE_MAX = 1024 * 1024;
+const BACKUPS_KEEP = 10; // backup folders kept per project
 const TEMPLATE_MAX = 256 * 1024;
 const BUILTIN = fileURLToPath(new URL('../templates/orchestration.md', import.meta.url));
 const MARKER = /^<!-- nika:orchestration v(\d{1,6}) sha256:([0-9a-f]{64}) -->\n/;
@@ -263,7 +264,7 @@ function nowMs(ctx) {
   return Number.isFinite(n) ? n : Date.now();
 }
 
-/** `YYYYMMDDTHHMMSSZ` */
+/** `YYYYMMDDTHHMMSSZ` (pruneBackups in fwrite.js recognises this format, plus the `-<n>` suffix freshBackupDir adds) */
 const stamp = (ms) => new Date(ms).toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
 
 /** Reads the project and computes every planned write; throws a `fail` / fwrite error on anything unsafe. */
@@ -401,9 +402,11 @@ export async function apply(project, opts, ctx = {}) {
     }
     for (const { f, c, mode } of prepared) {
       await ensureDir(c.dir, 0o755, PROJ);
-      await writeAtomic(c.dir, c.name, f.next, { mode, ...PROJ });
+      await writeAtomic(c.dir, c.name, f.next, { mode, root: dir, ...PROJ });
       written.push(f.path);
     }
+    // the writes are done: a failed prune (unsafe folder, race) must not turn a successful apply into an error
+    if (written.length) await pruneBackups(path.dirname(backupDir), BACKUPS_KEEP, path.basename(backupDir)).catch(() => {});
     return { status: 200, body: { written, backupDir } };
   } catch (err) {
     const res = toResult(err);

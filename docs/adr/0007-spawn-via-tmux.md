@@ -20,3 +20,8 @@ and refuses `bypassPermissions`. Spawned agents get `--disallowedTools` for nest
 ## Consequences
 Argv shapes are frozen in `docs/contracts/api-app.md` §8 and snapshot-tested with an injected exec. nika never kills
 or owns agent processes; the orchestrator pane is a normal `claude` in a `tmux` window nika merely created.
+
+The deny lists are advisory, not a boundary (2026-11-08 review): Claude Code matches permission rules against the literal
+command text, so a full path, `sh -c` or a script passes; the boundary is the single-user trust model plus the app
+secret. A Claude Code sandbox is planned as an optional Settings switch. The agent limit and the duplicate-name check count
+the panes tmux reports with `@nika-role` `agent` and `@nika-agent <project key>/<name>` (any session, parsed strictly), not the agent-writable `<name>.pane` files.

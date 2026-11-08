@@ -77,8 +77,8 @@ Only `enabledPlugins` is written, and only for projects that have a plugin selec
 - Every selected plugin is set to `true`.
 - Entries that are `true` in the file but not selected are removed.
 - Entries that are `false` and not selected stay as they are.
-- Every other key is copied verbatim and in order; `hooks`, `permissions`, `env`, `apiKeyHelper`, `mcpServers` and `model`
-  are never read or interpreted. After the merge the written text is parsed again and every other key must be deep-equal
+- Every other key is copied verbatim and in order. The file is parsed as JSON for that, but `hooks`, `permissions`, `env`,
+  `apiKeyHelper`, `mcpServers`, `model` and every other key are never interpreted, shown or sent. After the merge the written text is parsed again and every other key must be deep-equal
   to the original, otherwise the apply is refused.
 - Invalid JSON, a non-object, an empty file, a non-object `enabledPlugins`, or a `__proto__`, `constructor` or `prototype`
   key at any depth is `400 invalid`.
@@ -109,7 +109,11 @@ message. The `hash` still covers the full file, so a change to a hidden value af
 Before a file that exists is overwritten, its current content is copied to
 `${XDG_STATE_HOME or ~/.local/state}/nika/backups/<key>/<YYYYMMDDTHHMMSSZ>/<relative path>` (folders 0700, files 0600),
 never into the repository. If that folder name already exists (two applies in one second) `-1`, `-2`, ... is appended. The
-folder is created only when something was backed up. To restore, copy the file back by hand.
+folder is created only when something was backed up. The copies are byte-for-byte, so a backup of
+`.claude/settings.local.json` holds whatever the original held. The last 10 backup folders of a project are kept: after a
+successful apply the older ones are removed (only entries named like these stamps that are real directories owned by you;
+a symlink, a file or any other name in that folder is left alone). `nika doctor` prints the folder. To restore, copy the
+file back by hand.
 
 ## Local template
 

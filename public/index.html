@@ -133,7 +133,7 @@
                   <label class="radio-card"><input type="radio" name="perm" value="manual"><span><b>Manual: ask every time</b><span>Same behaviour as the default, passed explicitly as <code>--permission-mode manual</code>.</span></span></label>
                   <label class="radio-card"><input type="radio" name="perm" value="acceptEdits"><span><b>Accept edits</b><span>Edits files and runs common file commands (mkdir, mv, cp) in the project without asking.</span></span></label>
                   <label class="radio-card"><input type="radio" name="perm" value="plan"><span><b>Plan</b><span>Reads and explores; does not edit source files.</span></span></label>
-                  <label class="radio-card"><input type="radio" name="perm" value="auto"><span><b>Auto</b><span>No routine prompts; a background check reviews shell commands and network requests first.</span></span></label>
+                  <label class="radio-card"><input type="radio" name="perm" value="auto"><span><b>Auto</b><span>A classifier approves actions without asking you. It reviews shell commands and network requests first; choose it only when you accept that.</span></span></label>
                   <label class="radio-card"><input type="radio" name="perm" value="dontAsk"><span><b>Don't ask</b><span>Never prompts: anything not allowed in advance is refused.</span></span></label>
                 </fieldset>
                 <p class="help">Bypass permissions is not offered. nika refuses it for every agent it starts.</p>
@@ -178,7 +178,7 @@
       <div class="alert" data-kind="danger" role="alert" id="sp-alert" hidden tabindex="-1"><svg class="ic" aria-hidden="true"><use href="#i-warn"/></svg><p id="sp-alert-text"></p></div>
       <div class="field"><label for="sp-name">Name</label><input type="text" id="sp-name" data-rx="agent" autocomplete="off" spellcheck="false" aria-describedby="sp-name-help sp-name-err"><p class="help" id="sp-name-help">Lowercase letters, digits and dashes. Used for the pane title and the report file.</p><p class="err" id="sp-name-err" hidden></p></div>
       <div class="field"><label for="sp-model">Model</label><select id="sp-model"></select></div>
-      <div class="field"><label for="sp-brief">Brief</label><textarea id="sp-brief" rows="8" aria-describedby="sp-brief-help sp-brief-err"></textarea><p class="help" id="sp-brief-help">The agent's first message. It never passes through the tmux command line.</p><p class="err" id="sp-brief-err" hidden></p><span class="counter num" id="sp-count"></span></div>
+      <div class="field"><label for="sp-brief">Brief</label><textarea id="sp-brief" rows="8" aria-describedby="sp-brief-help sp-brief-err"></textarea><p class="help" id="sp-brief-help">The agent's first message: more than one word. It never passes through the tmux command line.</p><p class="err" id="sp-brief-err" hidden></p><span class="counter num" id="sp-count"></span></div>
       <div class="grid2">
         <div class="field"><label for="sp-perm">Permission mode</label><select id="sp-perm"></select></div>
         <fieldset><legend>Pane</legend><div id="sp-place"></div></fieldset>

@@ -1,0 +1,77 @@
+# Linux release build for nika: the .deb and the AppImage, as workflow artifacts and nothing else.
+# Manual only (workflow_dispatch). Read-only token: this workflow never creates a tag, a release or a release asset.
+# The owner downloads the artifact, checks SHA256SUMS and publishes by hand. Clean build: no caches.
+# Actions are pinned by full commit SHA (the comment names the tag); only official actions/* are used.
+name: release-linux
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build (ubuntu-22.04)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Tauri v2 Linux prerequisites (Debian/Ubuntu names), incl. the AppIndicator dev package.
+      - name: Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+      - name: Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustc --version
+          cargo --version
+      - name: Install tauri-cli
+        run: cargo install tauri-cli --version 2.12.4 --locked
+      - name: Build the .deb and the AppImage
+        working-directory: app/src-tauri
+        run: cargo tauri build --bundles deb,appimage
+      - name: Check the .deb
+        run: |
+          set -euo pipefail
+          deb="$(ls app/src-tauri/target/release/bundle/deb/*.deb)"
+          dpkg-deb -I "$deb"
+          depends="$(dpkg-deb -f "$deb" Depends)"
+          echo "Depends: $depends"
+          for pkg in libwebkit2gtk-4.1-0 libayatana-appindicator3-1; do
+            grep -qF -- "$pkg" <<<"$depends" || { echo "missing runtime dependency: $pkg" >&2; exit 1; }
+          done
+          paths="$(dpkg-deb -c "$deb" | awk '{print $NF}' | sed 's|^\./||')"
+          for path in usr/share/applications/io.github.qmpwwsd.nika.desktop usr/lib/nika/nika/bin/nika; do
+            grep -qxF -- "$path" <<<"$paths" || { echo "missing from the package: $path" >&2; exit 1; }
+          done
+          echo "deb ok"
+      - name: Collect and checksum
+        run: |
+          set -euo pipefail
+          mkdir dist
+          cp app/src-tauri/target/release/bundle/deb/*.deb app/src-tauri/target/release/bundle/appimage/*.AppImage dist/
+          cd dist
+          sha256sum -- *.deb *.AppImage | tee SHA256SUMS
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: nika-linux
+          path: |
+            dist/*.deb
+            dist/*.AppImage
+            dist/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 14

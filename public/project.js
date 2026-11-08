@@ -13,7 +13,7 @@ const PERM_LABEL = {
   manual: 'Manual: ask every time',
   acceptEdits: 'Accept edits',
   plan: 'Plan',
-  auto: 'Auto',
+  auto: 'Auto: a classifier approves actions without asking you',
   dontAsk: "Don't ask",
 };
 const PLACE_LABEL = { beside: 'Beside', 'under-last': 'Under the last agent' };
@@ -357,6 +357,13 @@ function briefCount() {
   return n;
 }
 
+/** The problem with a brief, or '' (the rules of src/spawn.js: not empty, more than one word, at most 64 KB). */
+function briefProblem(text, bytes) {
+  if (!text.trim()) return 'Write the first message for the agent.';
+  if (!/\s/.test(text.trim())) return 'The brief must be more than one word.';
+  return bytes > BRIEF_MAX ? 'The brief is over 64 KB.' : '';
+}
+
 function validateSpawn() {
   const bad = [];
   const name = $('#sp-name');
@@ -365,7 +372,7 @@ function validateSpawn() {
   if (!okName) bad.push(name);
   const brief = $('#sp-brief');
   const n = briefCount();
-  const msg = !brief.value.trim() ? 'Write the first message for the agent.' : n > BRIEF_MAX ? 'The brief is over 64 KB.' : '';
+  const msg = briefProblem(brief.value, n);
   fieldError(brief, msg);
   if (msg) bad.push(brief);
   return bad;

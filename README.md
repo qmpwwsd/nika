@@ -167,6 +167,7 @@ npm test                  # node --test, no dependencies
 node bin/nika serve       # http://127.0.0.1:3335
 node bin/nika status
 (cd app/src-tauri && cargo test --locked)   # the desktop shell, needs Rust
+docker build -f Dockerfile.test -t nika-verify . && docker run --rm nika-verify   # Linux checks (scripts/linux-verify.sh)
 ```
 
 ## Uninstall

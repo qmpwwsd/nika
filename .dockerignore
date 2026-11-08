@@ -1,0 +1,7 @@
+.git
+.claude
+.playwright-mcp
+node_modules
+app/src-tauri/target
+*.log
+**/.DS_Store

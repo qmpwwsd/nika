@@ -466,6 +466,46 @@ describe('spawn', () => {
     assert.equal(exec.calls.length, 0, 'tmux is not called for a refused brief');
   });
 
+  test('(−) a one-word brief is refused (3) from stdin and from a file before tmux is called; (+) two words pass', async () => {
+    const w = await world();
+    const exec = tmuxExec();
+    fs.writeFileSync(path.join(w.root, 'one.md'), 'update\n');
+    const fromFile = await cli(['spawn', 'builder-1', 'sonnet', path.join(w.root, 'one.md')], base(w, { exec }));
+    assert.equal(fromFile.code, 3);
+    assert.match(fromFile.err, /brief must be more than one word/);
+    const fromStdin = await cli(['spawn', 'builder-1', 'sonnet', '-'], base(w, { exec, stdin: input(' doctor ') }));
+    assert.equal(fromStdin.code, 3);
+    assert.match(fromStdin.err, /more than one word/);
+    assert.equal(exec.calls.length, 0, 'tmux is not called for a refused brief');
+    assert.equal(fs.existsSync(reportsDir(w.project.key, w.env)), false);
+    const two = await cli(['spawn', 'builder-1', 'sonnet', '-'], base(w, { exec, stdin: input('update docs') }));
+    assert.equal(two.code, 0, two.err);
+  });
+
+  test('(−) the limit and the name check read the agent panes tmux has tagged <key>/<name>, not <name>.pane files (same count as the API)', async () => {
+    const w = await world({ limits: { maxAgents: 2 } });
+    const agent = (id, tag, session = 'My-App') => ({ id, session, window: 0, windowName: 'zsh', command: 'node', role: 'agent', agent: tag });
+    // forged files: three .pane files pointing at panes that exist but are not agents
+    const dir = reportsDir(w.project.key, w.env);
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    for (const n of ['x', 'y', 'builder-1']) fs.writeFileSync(path.join(dir, `${n}.pane`), '%1\n');
+    const free = await cli(['spawn', 'builder-1', 'sonnet', '-'], base(w, { exec: tmuxExec([PANE_1, agent('%31', `${w.project.key}/a`)]), stdin: input(brief) }));
+    assert.equal(free.code, 0, free.err);
+    // tagged panes and no files: the limit applies, in any session, and so does the name check
+    const w2 = await world({ limits: { maxAgents: 2 } });
+    const k = w2.project.key;
+    const full = await cli(['spawn', 'builder-2', 'sonnet', '-'], base(w2, { exec: tmuxExec([PANE_1, agent('%31', `${k}/a`), agent('%32', `${k}/b`, 'elsewhere')]), stdin: input(brief) }));
+    assert.equal(full.code, 3);
+    assert.match(full.err, /limit: 2 of 2 agents/);
+    const dup = await cli(['spawn', 'a', 'sonnet', '-'], base(w2, { exec: tmuxExec([PANE_1, agent('%31', `${k}/a`)]), stdin: input(brief) }));
+    assert.equal(dup.code, 3);
+    assert.match(dup.err, /conflict: agent a is already running/);
+    // another project's agents (same session) and malformed tags are not this project's
+    const others = [agent('%31', '0123456789abcdef/a'), agent('%32', '0123456789abcdef/b'), agent('%33', 'a'), agent('%34', `${k}/a/b`)];
+    const fine = await cli(['spawn', 'a', 'sonnet', '-'], base(w2, { exec: tmuxExec([PANE_1, ...others]), stdin: input(brief) }));
+    assert.equal(fine.code, 0, fine.err);
+  });
+
   test('(−) an invalid name or model, an unregistered cwd and an unknown tmux session are refused (3)', async () => {
     const w = await world();
     assert.equal((await cli(['spawn', 'Bad Name', 'sonnet', '-'], base(w, { exec: tmuxExec(), stdin: input(brief) }))).code, 3);
@@ -584,6 +624,20 @@ describe('doctor', () => {
     assert.equal(r.out.includes('SECRET-VALUE-123'), false);
     assert.equal(r.out.includes('second line'), false, 'first line of --version only');
     assert.ok(exec.calls.some((c) => c[0] === TMUX && c[1] === '-V'));
+  });
+
+  test('(+) prints the backups folder with its mode and how many are kept; (−) says so when it does not exist yet', async () => {
+    const w = await world();
+    const backups = path.join(w.env.XDG_STATE_HOME, 'nika', 'backups');
+    const before = await cli(['doctor'], { env: w.cliEnv, platform: 'darwin', exec: execLog({ mdfind: () => OK }) });
+    assert.match(before.out, /^backups\s+.*backups\s+not created yet\s+\(rules apply keeps the last 10 per project\)$/m);
+    fs.mkdirSync(backups, { recursive: true });
+    fs.chmodSync(backups, 0o700);
+    const r = await cli(['doctor'], { env: w.cliEnv, platform: 'darwin', exec: execLog({ mdfind: () => OK }) });
+    assert.match(r.out, /^backups\s+.*nika\/backups\s+mode 0700\s+\(rules apply keeps the last 10 per project\)$/m);
+    fs.chmodSync(backups, 0o755);
+    const loose = await cli(['doctor'], { env: w.cliEnv, platform: 'darwin', exec: execLog({ mdfind: () => OK }) });
+    assert.match(loose.out, /^backups\s+.*mode 0755\s+\(should be 0700\)/m);
   });
 
   test('(−) missing tmux, claude and app are reported, not fatal; the app on Linux is found by its desktop entry', async () => {

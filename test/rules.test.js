@@ -569,6 +569,52 @@ describe('apply', () => {
     assert.equal(fs.readFileSync(path.join(`${b}-1`, 'CLAUDE.md'), 'utf8'), 'second\n');
   });
 
+  /** One apply per second; CLAUDE.md exists with new content each time, so every apply makes a backup folder. */
+  async function applyTimes(w, from, to) {
+    const out = [];
+    for (let i = from; i < to; i += 1) {
+      const ctx = { env: w.env, now: () => NOW + i * 1000 };
+      put(w, 'CLAUDE.md', `v${i}\n`);
+      const r = await apply(w.project, { hash: (await preview(w.project, ctx)).body.hash }, ctx);
+      assert.equal(r.status, 200, JSON.stringify(r.body));
+      out.push(path.basename(r.body.backupDir));
+    }
+    return out;
+  }
+
+  test('(+) the 11th apply prunes exactly the oldest backup folder; the newest ten and their files stay', async () => {
+    const w = await world();
+    const base = backupsDir(w.project.key, w.env);
+    const stamps = await applyTimes(w, 0, 10);
+    assert.deepEqual(fs.readdirSync(base).sort(), [...stamps].sort(), 'ten applies keep all ten');
+    stamps.push(...(await applyTimes(w, 10, 11)));
+    assert.deepEqual(fs.readdirSync(base).sort(), stamps.slice(1).sort(), 'the 11th removes the oldest only');
+    assert.equal(fs.existsSync(path.join(base, stamps[0])), false);
+    assert.equal(fs.readFileSync(path.join(base, stamps[1], 'CLAUDE.md'), 'utf8'), 'v1\n');
+    assert.equal(fs.readFileSync(path.join(base, stamps[10], 'CLAUDE.md'), 'utf8'), 'v10\n', 'the backup just made is among the kept');
+    stamps.push(...(await applyTimes(w, 11, 13)));
+    assert.deepEqual(fs.readdirSync(base).sort(), stamps.slice(3).sort(), 'every further apply removes one more');
+  });
+
+  test('(−) pruning never deletes or follows a symlink, a regular file or a foreign-named entry in the backups folder', async () => {
+    const w = await world();
+    const base = backupsDir(w.project.key, w.env);
+    const outside = path.join(w.base, 'outside');
+    fs.mkdirSync(outside, { recursive: true });
+    fs.writeFileSync(path.join(outside, 'precious'), 'PRECIOUS');
+    const stamps = await applyTimes(w, 0, 10);
+    fs.symlinkSync(outside, path.join(base, '20200101T000000Z')); // older than everything, a link out
+    fs.writeFileSync(path.join(base, '20200102T000000Z'), 'a file');
+    fs.mkdirSync(path.join(base, 'notes'));
+    fs.writeFileSync(path.join(base, 'notes', 'mine.txt'), 'mine');
+    const added = await applyTimes(w, 10, 11);
+    assert.deepEqual(fs.readdirSync(base).sort(), ['20200101T000000Z', '20200102T000000Z', 'notes', ...stamps.slice(1), ...added].sort());
+    assert.equal(fs.lstatSync(path.join(base, '20200101T000000Z')).isSymbolicLink(), true);
+    assert.equal(fs.readFileSync(path.join(outside, 'precious'), 'utf8'), 'PRECIOUS');
+    assert.equal(fs.readFileSync(path.join(base, 'notes', 'mine.txt'), 'utf8'), 'mine');
+    assert.equal(fs.readFileSync(path.join(base, '20200102T000000Z'), 'utf8'), 'a file');
+  });
+
   test('(+) .gitignore is opt-in: skipped without the flag, appended after a newline-less last line, not offered when already ignored', async () => {
     const w = await world({ plugins: ['alpha@demo-market'] });
     const body = await prev(w);
@@ -770,6 +816,22 @@ describe('symlinks and hard links (T8)', () => {
     assert.deepEqual([r.status, r.body.error, r.body.code], [409, 'refused', 'ESYMLINK']);
     assert.equal(fs.readFileSync(path.join(d, 'copy.md'), 'utf8'), '# same\n');
     assert.equal(has(w, 'rules'), false);
+  });
+});
+
+describe('post-write check (F6) is wired into every project write', () => {
+  test('(+) each writeAtomic call in src/rules.js passes the project root, so a directory swapped for a symlink is caught after the rename', () => {
+    const src = fs.readFileSync(new URL('../src/rules.js', import.meta.url), 'utf8');
+    const calls = src.match(/writeAtomic\(c\.dir[^\n]*/g) ?? [];
+    assert.ok(calls.length >= 1);
+    for (const c of calls) assert.match(c, /root: dir/, c);
+  });
+
+  test('(+) a normal apply passes the check: files land where planned, nothing is unlinked', async () => {
+    const w = await world({ plugins: ['alpha@demo-market'] });
+    const r = await go(w, await prev(w));
+    assert.deepEqual(r.body.written, ['rules/orchestration.md', 'CLAUDE.md', '.claude/settings.local.json']);
+    for (const f of r.body.written) assert.equal(has(w, f), true, f);
   });
 });
 

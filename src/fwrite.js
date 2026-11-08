@@ -12,6 +12,8 @@ const UID = typeof process.getuid === 'function' ? process.getuid() : null;
 const GID = typeof process.getgid === 'function' ? process.getgid() : null;
 const BACKUP_MAX = 1024 * 1024;
 const NAME = /^[^/\0]{1,255}$/;
+// The backup folder names src/rules.js writes: `YYYYMMDDTHHMMSSZ`, plus `-<n>` for a second backup in the same second.
+const BACKUP_STAMP = /^(\d{8}T\d{6}Z)(?:-(\d{1,2}))?$/;
 
 function refuse(code, message) {
   return Object.assign(new Error(message), { code });
@@ -52,8 +54,11 @@ async function checkTarget(target) {
   }
 }
 
-/** Atomically writes `content` to `dir/name` with `mode`; returns the target path. `project: true` as in ensureDir. */
-export async function writeAtomic(dir, name, content, { mode = 0o600, project, platform, gid } = {}) {
+/**
+ * Atomically writes `content` to `dir/name` with `mode`; returns the target path. `project: true` as in ensureDir.
+ * `root` (a project folder): after the rename the write is verified with verifyInside (F6).
+ */
+export async function writeAtomic(dir, name, content, { mode = 0o600, project, platform, gid, root } = {}) {
   if (!NAME.test(name) || name === '.' || name === '..') throw refuse('EPATH', 'invalid file name');
   await checkDir(dir, { project, platform, gid });
   const target = path.join(dir, name);
@@ -71,7 +76,31 @@ export async function writeAtomic(dir, name, content, { mode = 0o600, project, p
     await fs.unlink(tmp).catch(() => {});
     throw err;
   }
+  if (root) await verifyInside(root, target);
   return target;
+}
+
+/**
+ * Post-write check (F6): the directories from `root` down to `target` are still real directories (lstat, no symlink) and
+ * `realpath(target)` is inside `root`. A directory swapped for a symlink after the checks and before the rename leaves the
+ * file outside the project: it is unlinked and the write refused (`ESYMLINK`). A window remains between this check and
+ * the end of the call (docs/security.md T8); the swap needs write access to the project folder.
+ */
+export async function verifyInside(root, target) {
+  try {
+    const rootReal = await fs.realpath(root);
+    let dir = root;
+    for (const seg of ['', ...path.relative(root, path.dirname(target)).split(path.sep).filter(Boolean)]) {
+      dir = path.join(dir, seg);
+      const st = await fs.lstat(dir);
+      if (st.isSymbolicLink() || !st.isDirectory()) throw refuse('ESYMLINK', `${dir} is no longer a real directory`);
+    }
+    const real = await fs.realpath(target);
+    if (!real.startsWith(rootReal + path.sep)) throw refuse('ESYMLINK', `${target} resolves outside the project folder`);
+  } catch (err) {
+    await fs.unlink(target).catch(() => {});
+    throw err;
+  }
 }
 
 /**
@@ -122,4 +151,32 @@ export async function backupFile(srcAbs, backupRootAbs, relPath) {
   const { dir, name } = await checkComponents(backupRootAbs, relPath);
   await ensureDir(dir);
   return writeAtomic(dir, name, content);
+}
+
+/**
+ * Keeps the newest `keep` backup folders in `root` (`backups/<key>/`) and removes the older ones; `current` is never
+ * removed. Only entries named like a stamp nika wrote that lstat as real directories owned by this user count or go:
+ * a symlink, a regular file or any other name is never followed, counted or deleted. Returns the removed names.
+ */
+export async function pruneBackups(root, keep, current = null) {
+  try {
+    await checkDir(root);
+  } catch (err) {
+    if (err.code === 'ENOENT') return [];
+    throw err;
+  }
+  const stamps = [];
+  for (const name of await fs.readdir(root)) {
+    const m = BACKUP_STAMP.exec(name);
+    const st = m ? await fs.lstat(path.join(root, name)).catch(() => null) : null;
+    if (st?.isDirectory() && (UID === null || st.uid === UID)) stamps.push({ name, at: m[1], n: Number(m[2] ?? 0) });
+  }
+  stamps.sort((a, b) => (a.at === b.at ? a.n - b.n : a.at < b.at ? -1 : 1)); // oldest first
+  const removed = [];
+  for (const { name } of stamps.slice(0, Math.max(0, stamps.length - keep))) {
+    if (name === current) continue;
+    await fs.rm(path.join(root, name), { recursive: true, force: true }); // rm unlinks a symlink it meets, never follows it
+    removed.push(name);
+  }
+  return removed;
 }

@@ -74,7 +74,7 @@ export function createAppApi({ secret, ctx, deps }) {
     return site === undefined || site === 'same-origin' || site === 'none';
   };
 
-  // --- pane eligibility (contract §3): in the current tmux list AND a live Claude session's pane or one nika started ---
+  // --- pane eligibility (contract §3): in the current tmux list, running claude, AND a live Claude session's pane or one nika started ---
 
   function loadEligibility() {
     const t = ctx.now();
@@ -98,11 +98,12 @@ export function createAppApi({ secret, ctx, deps }) {
     const id = param(raw, PANE_ID);
     if (!id) return { failure: err(404, 'not_found', 'pane not found') };
     const e = await loadEligibility();
-    // the registry's `tmuxPane` is agent-writable: a pane qualifies through it only while it really runs claude, so a
-    // forged entry cannot route typed text into a shell pane; panes nika started are trusted by id
+    // the registry's `tmuxPane` is agent-writable, and tmux can reuse a pane id after a restart: a pane qualifies, through
+    // the registry or because nika started it, only while it really runs claude, so neither a forged entry nor a stale id
+    // can route typed text into a shell pane (a started `_run-agent` pane shows as `node`)
     const pane = e.panes.get(id);
     const runsClaude = CLAUDE_COMMAND.test(String(pane?.command ?? '').trim());
-    if (pane && ((e.live.has(id) && runsClaude) || ctx.started.has(id))) return { id };
+    if (pane && runsClaude && (e.live.has(id) || ctx.started.has(id))) return { id };
     return { failure: err(404, 'not_found', e.error ? clean(e.error, 200) : 'pane not found') };
   }
 

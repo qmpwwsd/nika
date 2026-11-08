@@ -109,8 +109,10 @@ Text is passed through `cleanBlock()` (keeps `\n` and `\t`, strips every other c
 page renders it with `textContent`.
 
 ### `GET /api/app/pane/:id/capture`
-`id` `PANE_ID`, must appear in the current `tmux list-panes -a` **and** be either a live Claude session's pane
-(registry `tmux` field) or a pane nika started (`orchestrator/start`, `spawn`). Else 404. Cached 250 ms per pane,
+`id` `PANE_ID`, must appear in the current `tmux list-panes -a`, be either a live Claude session's pane
+(registry `tmux` field) or a pane nika started (`orchestrator/start`, `spawn`), **and** its `pane_current_command` must
+look like claude (`CLAUDE_COMMAND`: `claude`, `node`, a version string) at that moment, for a started pane too (tmux can
+reuse a pane id after a restart). Else 404. Cached 250 ms per pane,
 one capture in flight per pane (others wait for it), `ETag` = hash of the rows; `If-None-Match` → 304.
 ```json
 { "cols": 120, "rows": [ [ { "t": "text", "s": { "b": true, "fg": 4, "bg": null, "u": false, "i": false, "d": false } } ] ],
@@ -132,13 +134,19 @@ the paste (no `-r`), as a terminal paste would. Every validation failure, includ
 
 ### `POST /api/app/spawn` (body ≤ 80 KB)
 ```json
-{ "project": "<PROJECT_KEY>", "name": "<AGENT_NAME>", "model": "<MODEL_ID>", "brief": "<≤ 64 KB>",
+{ "project": "<PROJECT_KEY>", "name": "<AGENT_NAME>", "model": "<MODEL_ID>", "brief": "<≤ 64 KB, more than one word>",
   "permissionMode": "<PERMISSION_MODES>?", "under": "<PANE_ID>?", "session": "<TMUX_SESSION>?", "rc": "off|<RC_PREFIX>?" }
 ```
-`permissionMode` defaults to settings; `bypassPermissions` → 400. `rc` overrides the Remote Control setting for this
+A one-word `brief` (no whitespace once trimmed) → 400 `brief must be more than one word`: the brief is claude's positional
+prompt after `--`, and a lone `update` or `doctor` could be read as a subcommand; `_run-agent` refuses a stored one-word
+brief too (exit 3). `permissionMode` defaults to settings; `bypassPermissions` → 400. `rc` overrides the Remote Control setting for this
 agent. `under`: split `-v` below that pane (unknown pane → 404, pane in another session than `session` → 400; the
 response `session` is the pane's session). Refused with `409 limit` when the project already has
-`limits.maxAgents` live nika-spawned agents. Response:
+`limits.maxAgents` live nika-spawned agents, and with `409 conflict` when one already has the same `name`. Both read the
+same list, the same on the API and the CLI path: the panes, in any tmux session, that tmux reports with `@nika-role`
+`agent` and an `@nika-agent` tag `<project key>/<name>` for this project (§8), plus panes this process started. The name
+check compares the exact `<key>/<name>`: the same name in another project is free. `<name>.pane` files never count:
+they are agent-writable and display only. Response:
 ```json
 { "pane": "%12", "session": "<tmux session>", "sessionId": "<UUID>", "reports": { "dir": "<stateDir>/projects/<key>/reports",
   "session": "<name>.session", "report": "<name>.md", "rc": "<name>.rc", "remote": "<name>.remote" } }
@@ -171,8 +179,10 @@ The preview `diff` for `.claude/settings.local.json` is computed between `{"enab
 `{"enabledPlugins": <new>}` (pretty JSON) only, plus `keptKeys` = the number of other top-level keys; the values of
 other keys (`env`, `permissions`, `hooks`, …) never reach the page. The plan `hash` still covers the full file.
 In `.claude/settings.local.json` only `enabledPlugins` is written; every other key is copied verbatim and deep-equal
-asserted before the write; `hooks permissions env apiKeyHelper mcpServers model` are never read or written; invalid
-JSON or a `__proto__` key → `400 invalid` (T5).
+asserted before the write; the file is parsed as JSON for that, but `hooks permissions env apiKeyHelper mcpServers model`
+(and every other key) are never interpreted, shown or sent; invalid JSON or a `__proto__` key → `400 invalid` (T5).
+The backup of each overwritten file is byte-for-byte (§6); after a successful apply only the newest 10 backup folders of
+the project are kept.
 
 ## 4. Guard on the browser tier
 `nika serve` (no `--app`) never mounts §3; a request to `/api/app/*` is `404 not_found` like any unknown route.
@@ -195,8 +205,9 @@ No other channel exists: no Tauri IPC, no HTTP client in Rust.
 Limits: one open `pick-folder` at a time; `status` fields are integers ≥ 0; names are `clean()`ed; `attention` = live
 agents whose registry status is neither busy nor idle (e.g. waiting on a permission prompt); `projects[].key` is
 `keyFor(repo root)`, never a path. Pane eligibility (§3 capture/keys): a registry pane qualifies only while its
-`pane_current_command` is claude-like (`CLAUDE_COMMAND` in `src/ids.js`), because `tmuxPane` is agent-writable. This
-is a safety net for the user, not a boundary against agents: a same-user agent able to forge the registry can already
+`pane_current_command` is claude-like (`CLAUDE_COMMAND` in `src/ids.js`), because `tmuxPane` is agent-writable; a pane
+nika started qualifies only while its command is claude-like too, because tmux can reuse a pane id after a restart
+(a spawned agent's pane runs `_run-agent` as `node`). This is a safety net for the user, not a boundary against agents: a same-user agent able to forge the registry can already
 run `tmux send-keys` itself; `node` stays accepted because npm-installed Claude Code runs as `node`. The secret never
 appears in argv, env, logs, files or HTML; the shell injects it into the page with an `initialization_script` guarded
 by `location.origin`, and `public/api.js` copies it to a module constant and deletes the global (ADR 0002).
@@ -224,8 +235,8 @@ the folder-picker flow once (`hooks.addProject()` in `public/app.js`), then the 
 | `…/nika/config.json` | 0600 | schema below |
 | `…/nika/templates/<name>.md` | 0600 | locally imported rule templates (copies; never a path into a repo) |
 | `${XDG_STATE_HOME \|\| ~/.local/state}/nika/` | 0700 | state dir |
-| `…/nika/projects/<key>/reports/` | 0700 | per agent: `<name>.brief.md` and `<name>.agent.json` (`{model, permissionMode, rc}`, re-validated on read) written by `spawn`; `<name>.session` (UUID), `<name>.remote` (RC name or empty), `<name>.pane` (`$TMUX_PANE`) written by `_run-agent` before claude starts and `<name>.rc` (claude's exit code, as in 0.1) after it exits; `<name>.md` written by the agent; `.last-pane` |
-| `…/nika/backups/<key>/<ISO>/<relPath>` | 0700 / 0600 | copies taken by `rules apply` before each overwrite |
+| `…/nika/projects/<key>/reports/` | 0700 | per agent: `<name>.brief.md` and `<name>.agent.json` (`{model, permissionMode, rc}`, re-validated on read) written by `spawn`; `<name>.session` (UUID), `<name>.remote` (RC name or empty), `<name>.pane` (`$TMUX_PANE`, display only: never counted) written by `_run-agent` before claude starts and `<name>.rc` (claude's exit code, as in 0.1) after it exits; `<name>.md` written by the agent; `.last-pane` |
+| `…/nika/backups/<key>/<ISO>/<relPath>` | 0700 / 0600 | byte-for-byte copies taken by `rules apply` before each overwrite (`<ISO>` = `YYYYMMDDTHHMMSSZ`, plus `-<n>` for a second apply in the same second); the newest 10 folders per project are kept: after a successful apply `pruneBackups` removes the older ones, touching only stamp-named real directories owned by the user |
 
 `config.json` schema and defaults (unknown keys are dropped, wrong types fall back to the default; both produce a
 warning in `loadConfig().warnings`; a tampered or unreadable file never throws):
@@ -262,8 +273,11 @@ Store API: `loadConfig(env) → { config, warnings, file }`, `saveConfig(config,
 `addProject(dir, env)`, `removeProject(key, env)`, `listProjects(env)`, `updateSettings(patch, env)` (throws `EINVAL`,
 never accepts `projects` or `bypassPermissions`), `keyFor(realDir)`.
 
-Write API (`src/fwrite.js`): `ensureDir(dir, mode = 0o700)`, `writeAtomic(dir, name, content, { mode = 0o600 })`,
-`checkComponents(root, relPath) → { dir, name, abs }`, `backupFile(srcAbs, backupRootAbs, relPath)`. Error codes:
+Write API (`src/fwrite.js`): `ensureDir(dir, mode = 0o700)`, `writeAtomic(dir, name, content, { mode = 0o600, root })`,
+`checkComponents(root, relPath) → { dir, name, abs }`, `backupFile(srcAbs, backupRootAbs, relPath)`,
+`verifyInside(root, target)`, `pruneBackups(root, keep, current) → removed names`. With `root` (a project folder)
+`writeAtomic` calls `verifyInside` after the rename: every directory from `root` down must still be a real directory and
+`realpath(target)` must be inside `root`, else the target is unlinked and the write refused (`ESYMLINK`). Error codes:
 `ESYMLINK` `ENOTDIR` `ENOTREG` `EOWNER` `ENLINK` `EMODE` `EPATH` `EFBIG` (plus the OS codes `ENOENT`, `ELOOP`).
 
 ## 7. CLI
@@ -279,7 +293,7 @@ Write API (`src/fwrite.js`): `ensureDir(dir, mode = 0o700)`, `writeAtomic(dir, n
 | `nika orchestrate [dir]` | create or reuse the project's tmux session and start the orchestrator pane |
 | `nika projects list\|add <dir>\|remove <key>` | project registry |
 | `nika rules preview\|apply [dir] [--yes] [--overwrite-foreign] [--gitignore]` | preview prints the diffs; apply asks for confirmation unless `--yes` |
-| `nika doctor` | prints node, tmux, claude, app, config and state paths and their modes |
+| `nika doctor` | prints node, tmux, claude, app, config, state and backups paths and their modes |
 | `nika _run-agent <key> <name>` | hidden pane wrapper: writes `<name>.session` and `<name>.rc`, runs claude |
 | `nika --version` | version |
 
@@ -296,7 +310,8 @@ multi-argument shell-commands (tmux execs them directly, no `sh -c`, T6).
 | session exists | `tmux -u has-session -t =<session>` |
 | create session + orchestrator | `tmux -u new-session -d -s <session> -n orchestrator -c <projectDir> -x 200 -y 50 -P -F #{pane_id} -- <claudeBin> <orchestrator flags>` |
 | orchestrator in existing session | `tmux -u new-window -t =<session>: -n orchestrator -c <projectDir> -P -F #{pane_id} -- <claudeBin> <orchestrator flags>` |
-| tag a pane nika created | `tmux -u set-option -p -t %n @nika-role orchestrator` (after new-session / new-window) or `… @nika-role agent` (after split-window); best effort |
+| tag a pane nika created | `tmux -u set-option -p -t %n @nika-role orchestrator` (after new-session / new-window) or `… @nika-role agent` (after split-window); for an agent also `tmux -u set-option -p -t %n @nika-agent <PROJECT_KEY>/<AGENT_NAME>`; best effort |
+| agent panes of a spawn | `tmux -u list-panes -a -F #{pane_id}\t#{@nika-role}\t#{@nika-agent}` → the panes with `@nika-role` = `agent` whose `@nika-agent` is `<key>/<name>` for the project's key: the live agents for `limits.maxAgents` and the duplicate-name check. The tag is parsed strictly (exactly one `/`, `PROJECT_KEY` before it, `AGENT_NAME` after it); anything else is agent-writable noise and is ignored, never trusted |
 | find orchestrator pane | `tmux -u list-panes -t =<session>:=orchestrator -F #{pane_id}\t#{pane_current_command}\t#{@nika-role}` → the pane with `@nika-role` = `orchestrator` whose command is claude (`claude`, `node` or a version string); agent panes split into that window never match (`:=` = exact window name; `:orchestrator` also matches `orchestrator-x`) |
 | spawn beside | `tmux -u split-window -h -t =<session>: -c <projectDir> -P -F #{pane_id} -- <nikaBin…> _run-agent <key> <name>` |
 | spawn under last | `tmux -u split-window -v -t <lastPane> -c <projectDir> -P -F #{pane_id} -- <nikaBin…> _run-agent <key> <name>` |
@@ -311,6 +326,12 @@ multi-argument shell-commands (tmux execs them directly, no `sh -c`, T6).
 `-c <projectDir>` is always passed through `tmuxLiteral()` (every `#` doubled): tmux format-expands start-directory,
 and `#(cmd)` in a path would run `cmd` (verified on tmux 3.8). Shell-command argv after `--` is not expanded.
 
+tmux also format-expands `new-session -s <session>`, `new-window -n <name>` and `select-pane -T <title>`. Those values
+are passed unescaped and are safe only because they can never contain a `#`: `TMUX_SESSION` and `AGENT_NAME` exclude it,
+the window name is the constant `orchestrator`, and the title is `[%n] <AGENT_NAME>` with `%n` a `PANE_ID`. A change that
+lets another string reach `-s`, `-n` or `-T` must escape it with `tmuxLiteral()` first. `test/spawn.test.js` ("tmux format
+expansion (T6)") asserts it.
+
 Session targets always carry the trailing colon (`=<session>:`) where tmux expects a window or pane: `split-window -t
 =name` fails with "can't find pane", `=name:` works.
 
@@ -319,20 +340,26 @@ Session targets always carry the trailing colon (`=<session>:`) where tmux expec
   `default`) `-n <session>` `[--remote-control=<rc name>]`. RC name = `remoteControl.prefix` or the session name,
   reduced to `RC_PREFIX`.
 - `_run-agent <key> <name>` reads `<reportsDir>/<name>.brief.md` (0600, written by `spawn` before `split-window`,
-  read through `fsafe`; the brief never passes through tmux argv), writes `<name>.session` (the UUID), `<name>.remote`
+  read through `fsafe`; the brief never passes through tmux argv, but it is claude's own argv, see below), writes `<name>.session` (the UUID), `<name>.remote`
   (the RC name or empty) and `<name>.pane`, then runs `claude --session-id <UUID> --model <model> [--permission-mode <m>] -n <name>
   [--remote-control=<prefix>-<name>] --add-dir <reportsDir> --append-system-prompt <templates/guard-prompt.txt
   rendered with name, report path> --settings <deny JSON> --disallowedTools Bash(nika:*) Bash(tmux:*)
   Bash(claude:*) "Bash(git add:*)" "Bash(git commit:*)" "Bash(git push:*)" -- <brief>` with inherited stdio, writes
-  claude's exit code to `<name>.rc` and exits with it. RC names match `RC_NAME`. `--disallowedTools` is variadic, so it is always followed by `--`. Deny JSON:
-  `{"permissions":{"deny":["Read(**/.env*)","Edit(**/.env*)","Read(**/*.key)","Edit(**/*.key)"]}}` (T3, T4).
+  claude's exit code to `<name>.rc` and exits with it. `_run-agent` refuses (exit 3) a brief that is empty, contains NUL
+  or is a single word. The brief, the guard prompt and the deny settings are claude's argv, so any local process can
+  read them with `ps` (single-user assumption, `docs/security.md` residual risk a). RC names match `RC_NAME`. `--disallowedTools` is variadic, so it is always followed by `--`. Deny JSON:
+  `{"permissions":{"deny":["Read(**/.env*)","Edit(**/.env*)","Read(**/*.key)","Edit(**/*.key)"]}}` (T3, T4). The deny
+  lists are advisory, not a boundary: Claude Code matches the literal command text, so `/opt/homebrew/bin/tmux …`,
+  `sh -c 'tmux …'`, `git -C . commit` or a script written with Write and run with Bash all pass, and Read/Edit denies do
+  not cover subprocesses. They stop the common invocation and honest mistakes; the boundary is the single-user trust
+  model plus the app secret (`docs/security.md`). No Claude Code sandbox in 0.2; planned as an optional Settings switch.
 - `<nikaBin…>` = `process.execPath` + absolute path of `bin/nika` (no PATH lookup inside tmux).
 
 ## 9. Module interfaces (Phase 2)
 
 Handlers return `{ status, body }` like 0.1 `focusPane` / `readReport`; the router only sends. `ctx` =
 `{ env, exec, tmuxBin, claudeBin, nikaArgv, claudeDir, now, started }` where `started` is the in-process `Map<paneId,
-{ key, name, sessionId, role: "agent" | "orchestrator" }>` of panes nika created. Pane eligibility (in `list-panes` and live Claude or `started`) is
+{ key, name, sessionId, role: "agent" | "orchestrator" }>` of panes nika created. Pane eligibility (in `list-panes`, running claude, and live Claude or `started`) is
 checked by the router before `mirror` / `keys` are called; those modules still validate `PANE_ID`.
 
 | Module | Exports |
@@ -346,6 +373,7 @@ checked by the router before `mirror` / `keys` are called; those modules still v
 | `src/rules.js` | `async rulesState(project) → { state, settingsIgnored, git }`; `preview(project, ctx) → { status, body }`; `apply(project, { hash, overwriteForeign, gitignore }, ctx) → { status, body }` |
 | `src/diff.js` | `unifiedDiff(oldText, newText, path) → string` |
 | `src/spawn.js` | `spawnAgent(req, ctx) → { status, body }`; `runAgent(key, name, ctx) → exit code` |
+| `src/orchestrate.js` (helpers) | `tagPane(ctx, pane, role, agentTag?)` sets `@nika-role` and, for an agent, `@nika-agent` = `<key>/<name>` |
 | `src/orchestrate.js` | `startOrchestrator(project, ctx) → { status, body }` |
 | `src/appio.js` | `serveApp({ config, env, stdin, stdout, stderr }) → Promise<number>` (handshake, listen, status loop, picker; resolves with the exit code 0/1/2) |
 | `src/api-app.js` | `createAppApi({ secret, ctx, deps }) → (req, res, url, port) → Promise<boolean>` (true when it handled the request) |

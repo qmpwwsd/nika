@@ -46,6 +46,17 @@ Phase 5 (desktop shell):
 - Build tools approved: `tauri-cli` 2.12.4, `cargo-audit` 0.22.2.
 - Fix: every scroll container is now a containing block, so hidden row labels no longer stretch the page; the window no longer scrolls as a whole in WebKit (blank band at the bottom, sidebar top cut off). Guarded by a CSS test.
 
+Phase 6 (security review fixes, Linux checks):
+
+- Independent security review of the branch: no Critical or High finding. Fixes below.
+- The spawned-agent deny lists are documented as advisory, not a security boundary (Claude Code rules match the literal command); no Claude Code sandbox in 0.2, planned as an optional Settings switch.
+- The spawn limit and the duplicate-name check count the panes nika tagged in tmux (`@nika-role agent`, `@nika-agent <project key>/<name>`) instead of agent-writable `<name>.pane` files, on both the API and the CLI.
+- Started panes qualify for capture and keys only while they run claude, so a reused pane id no longer qualifies. The `auto` permission mode warns that a classifier approves actions without asking you. A one-word brief is refused, because claude could read it as a subcommand.
+- `rules apply` keeps the last 10 backup folders per project (stamp-named real directories only, never following a symlink) and re-checks the folder chain after each write; `nika doctor` prints the backups folder.
+- Docs: the brief is claude's argv (visible to local processes); tmux also format-expands `-s`, `-n` and `-T` (safe because names contain no `#`); nika parses but never interprets the other keys of `settings.local.json`.
+- Linux checks: `scripts/linux-verify.sh` (tests, `ps` start-time format, `serve --app` handshake, tmux mirror, literal keys and bracketed paste) runs in Docker (`Dockerfile.test`) and in CI; `scripts/gui-smoke.sh` runs the real shell under Xvfb with a probe page and checks the secret handover, denied Tauri commands and blocked navigation on WebKitGTK.
+- CI: push runs only on `master` (pull requests run once); new `linux-verify` and `gui-smoke` jobs. `release-linux.yml` (manual, read-only token) builds the `.deb` and AppImage, checks the package, and uploads them with `SHA256SUMS` as run artifacts.
+
 ## 0.1.1 — 2026-11-08
 
 - Hide title-only stub transcripts: a transcript with no user or assistant message is listed only while its session is live.

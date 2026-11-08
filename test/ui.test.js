@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
+import vm from 'node:vm';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { makeFixture, cleanup, fakeExec, NOW } from './helpers.js';
 import { createServer } from '../src/server.js';
@@ -150,6 +151,49 @@ describe('HTML pages under the strict CSP', () => {
     assert.match(src, /<body[^>]*data-tier="browser"/);
     assert.match(src, /<nav\b[^>]*data-app-only/);
     assert.match(src, /data-browser-only/);
+  });
+});
+
+describe('permission modes and the spawn brief', () => {
+  const html = read('index.html');
+  const project = read('project.js');
+  const WARNING = /classifier approves actions without asking you/;
+
+  test('(+) every place that offers the auto mode says a classifier approves actions without asking you: the Settings option and the spawn sheet / project labels', () => {
+    const card = /<label class="radio-card">(?:(?!<\/label>)[^])*value="auto"(?:(?!<\/label>)[^])*<\/label>/.exec(html);
+    assert.ok(card, 'the Settings radio card for auto exists');
+    assert.match(card[0], WARNING);
+    const label = /PERM_LABEL = \{[^}]*\bauto: '([^']+)'/.exec(project);
+    assert.ok(label, 'project.js labels the auto mode (spawn sheet options and project view)');
+    assert.match(label[1], WARNING);
+  });
+
+  test('(−) the other modes do not claim it, and bypassPermissions is offered nowhere', () => {
+    for (const mode of ['default', 'manual', 'acceptEdits', 'plan', 'dontAsk']) {
+      const card = new RegExp(`<label class="radio-card">(?:(?!</label>)[^])*value="${mode}"(?:(?!</label>)[^])*</label>`).exec(html);
+      assert.ok(card, mode);
+      assert.doesNotMatch(card[0], WARNING, mode);
+    }
+    for (const f of [...JS, ...HTML]) assert.doesNotMatch(read(f).replace(/Bypass permissions is not offered[^<]*/, ''), /bypassPermissions/, f);
+  });
+
+  // The spawn sheet's rule is the client half of src/spawn.js (parseRequest): run the page's own function.
+  const briefProblem = (() => {
+    const m = /\nfunction briefProblem\(text, bytes\) \{[^]*?\n\}\n/.exec(project);
+    assert.ok(m, 'project.js defines briefProblem(text, bytes)');
+    return vm.runInNewContext(`${m[0]}; briefProblem`, { BRIEF_MAX: 64 * 1024 });
+  })();
+
+  test('(−) the spawn sheet refuses an empty brief, a one-word brief and an oversized one before any request', () => {
+    assert.match(briefProblem('', 0), /Write the first message/);
+    assert.match(briefProblem('  \n', 3), /Write the first message/);
+    for (const word of ['update', ' doctor ', 'mcp\n', '--help']) assert.match(briefProblem(word, word.length), /more than one word/, word);
+    assert.match(briefProblem('two words', 64 * 1024 + 1), /over 64 KB/);
+  });
+
+  test('(+) two words or two lines pass, at the size limit too', () => {
+    for (const ok of ['update docs', 'one\ntwo', ' a b ']) assert.equal(briefProblem(ok, ok.length), '', ok);
+    assert.equal(briefProblem('two words', 64 * 1024), '');
   });
 });
 

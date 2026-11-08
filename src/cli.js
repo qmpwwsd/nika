@@ -13,7 +13,7 @@ import { makeExec } from './exec.js';
 import { collect } from './model.js';
 import { createServer } from './server.js';
 import { clean, cleanBlock } from './text.js';
-import { configDir, stateDir } from './paths.js';
+import { configDir, stateDir, backupsRoot } from './paths.js';
 import { openRegular, readAt } from './fsafe.js';
 import { PROJECT_KEY } from './ids.js';
 import { addProject, listProjects, loadConfig, removeProject } from './store.js';
@@ -536,6 +536,7 @@ async function doctor(cx) {
   row('app', (await appInstalled(cx)) ? 'installed' : 'not installed');
   row('config', dirInfo(configDir(cx.env)));
   row('state', dirInfo(stateDir(cx.env)));
+  row('backups', `${dirInfo(backupsRoot(cx.env))}  (rules apply keeps the last 10 per project)`);
   for (const w of (await loadConfig(cx.env)).warnings) row('warning', `config.json: ${clean(w, 200)}`);
   return 0;
 }

@@ -6,7 +6,8 @@ import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnAgent, runAgent } from '../src/spawn.js';
-import { startOrchestrator } from '../src/orchestrate.js';
+import { startOrchestrator, sessionNameFor } from '../src/orchestrate.js';
+import { TMUX_SESSION, AGENT_NAME } from '../src/ids.js';
 import { reportsDir } from '../src/paths.js';
 import { addProject } from '../src/store.js';
 import { ensureDir, writeAtomic } from '../src/fwrite.js';
@@ -25,6 +26,8 @@ after(() => worlds.forEach((w) => w.cleanup()));
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const LIST_ALL = [TMUX, '-u', 'list-panes', '-a', '-F', '#{pane_id}\t#{session_name}\t#{window_index}\t#{pane_title}\t#{pane_current_command}\t#{@nika-role}'];
+const LIST_AGENTS = [TMUX, '-u', 'list-panes', '-a', '-F', '#{pane_id}\t#{@nika-role}\t#{@nika-agent}'];
+const OTHER_KEY = '0123456789abcdef'; // the key of some other project
 const DENY_SETTINGS = '{"permissions":{"deny":["Read(**/.env*)","Edit(**/.env*)","Read(**/*.key)","Edit(**/*.key)"]}}';
 const DENIED = ['Bash(nika:*)', 'Bash(tmux:*)', 'Bash(claude:*)', 'Bash(git add:*)', 'Bash(git commit:*)', 'Bash(git push:*)'];
 const BASE_PANES = () => [{ id: '%1', session: 'My-App', window: 0, windowName: 'orchestrator', command: 'claude' }];
@@ -51,8 +54,10 @@ describe('spawnAgent: placement and files', () => {
     });
     assert.deepEqual(exec.calls, [
       LIST_ALL,
+      LIST_AGENTS,
       [TMUX, '-u', 'split-window', '-h', '-t', '=My-App:', '-c', w.project.dir, '-P', '-F', '#{pane_id}', '--', ...NIKA_ARGV, '_run-agent', w.project.key, 'builder-1'],
       [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-role', 'agent'],
+      [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-agent', `${w.project.key}/builder-1`],
       [TMUX, '-u', 'select-pane', '-t', '%20', '-T', '[%20] builder-1'],
     ]);
     assert.equal(mode(rd(w)), 0o700);
@@ -64,6 +69,7 @@ describe('spawnAgent: placement and files', () => {
     assert.deepEqual(ctx.started.get('%20'), { key: w.project.key, name: 'builder-1', sessionId: null, role: 'agent' });
     assert.equal(exec.panes.find((p) => p.id === '%20').title, '[%20] builder-1');
     assert.equal(exec.panes.find((p) => p.id === '%20').role, 'agent');
+    assert.equal(exec.panes.find((p) => p.id === '%20').agent, `${w.project.key}/builder-1`);
   });
 
   test('(−) an agent split into the orchestrator window is tagged agent: the orchestrator lookup never returns it', async () => {
@@ -223,9 +229,23 @@ describe('spawnAgent: refusals', () => {
 
   test('(+) a brief of exactly 64 KB (bytes) is accepted', async () => {
     const w = await world();
-    const r = await spawnAgent(req(w, { brief: 'é'.repeat(32 * 1024) }), w.ctx(fakeTmux({ panes: BASE_PANES() })));
+    const r = await spawnAgent(req(w, { brief: `${'é'.repeat(32 * 1024 - 1)} x` }), w.ctx(fakeTmux({ panes: BASE_PANES() })));
     assert.equal(r.status, 200);
     assert.equal(fs.statSync(path.join(rd(w), 'builder-1.brief.md')).size, 64 * 1024);
+  });
+
+  test('(−) a one-word brief (claude could read it as a subcommand) → 400, no tmux call, no file; (+) two words or two lines pass', async () => {
+    const w = await world({ limits: { maxAgents: 8 } });
+    const exec = fakeTmux({ panes: BASE_PANES() });
+    for (const brief of ['update', 'doctor', ' mcp ', 'install\n', '\tupdate\r\n', '--help', 'é']) {
+      const r = await spawnAgent(req(w, { brief }), w.ctx(exec));
+      assert.deepEqual([r.status, r.body.error, r.body.message], [400, 'invalid', 'brief must be more than one word'], JSON.stringify(brief));
+    }
+    assert.equal(exec.calls.length, 0);
+    assert.equal(fs.existsSync(rd(w)), false);
+    for (const [i, brief] of ['update the docs', 'one\ntwo', '--help me', ' a b '].entries()) {
+      assert.equal((await spawnAgent(req(w, { name: `ok-${i}`, brief }), w.ctx(exec))).status, 200, JSON.stringify(brief));
+    }
   });
 
   test('(−) bypassPermissions is refused with 400, nothing is called or written', async () => {
@@ -333,40 +353,90 @@ describe('spawnAgent: refusals', () => {
 });
 
 describe('spawnAgent: limits and conflicts', () => {
-  const live = (names, from = 31) => names.map((n, i) => ({ id: `%${from + i}`, session: 'My-App', window: 0, windowName: 'zsh', command: 'node', n }));
+  // live agent panes as nika leaves them in tmux: `@nika-role` agent and `@nika-agent` <project key>/<name>
+  const live = (key, names, from = 31, session = 'My-App') => names.map((n, i) => ({ id: `%${from + i}`, session, window: 0, windowName: 'zsh', command: 'node', role: 'agent', agent: `${key}/${n}` }));
 
-  test('(−) maxAgents live agents (their .pane files point at live panes) → 409 limit; nothing is written for the new one', async () => {
+  test('(+) the limit counts the agent panes tagged <key>/<name> in tmux: maxAgents of them → 409 limit; nothing is written for the new one', async () => {
     const w = await world();
-    for (const [i, n] of ['a', 'b', 'c'].entries()) await put(w, `${n}.pane`, `%${31 + i}\n`);
-    const exec = fakeTmux({ panes: [...BASE_PANES(), ...live(['a', 'b', 'c'])] });
+    const exec = fakeTmux({ panes: [...BASE_PANES(), ...live(w.project.key, ['a', 'b', 'c'])] });
     const r = await spawnAgent(req(w, { name: 'd' }), w.ctx(exec));
     assert.deepEqual([r.status, r.body.error], [409, 'limit']);
     assert.equal(exec.of('split-window').length, 0);
     assert.equal(exists(w, 'd.brief.md'), false);
+    const two = fakeTmux({ panes: [...BASE_PANES(), ...live(w.project.key, ['a', 'b'])] });
+    assert.equal((await spawnAgent(req(w, { name: 'd' }), w.ctx(two))).status, 200); // two of three are below the limit
   });
 
-  test('(+) panes that are gone do not count; another project\'s agents do not count; limit follows the settings', async () => {
-    const w = await world();
-    await put(w, 'a.pane', '%31\n');
-    await put(w, 'b.pane', '%98\n'); // dead pane
-    await put(w, 'c.pane', '%99\n'); // dead pane
-    await put(w, 'junk.pane', 'not a pane\n');
-    const other = path.join(w.root, 'other-project');
-    fs.mkdirSync(other);
-    const op = await addProject(other, w.env);
-    for (const n of ['x', 'y', 'z']) {
-      await ensureDir(reportsDir(op.key, w.env));
-      await writeAtomic(reportsDir(op.key, w.env), `${n}.pane`, '%31\n');
-    }
-    const ctx = w.ctx(fakeTmux({ panes: [...BASE_PANES(), ...live(['a'])] }));
-    assert.equal((await spawnAgent(req(w, { name: 'd' }), ctx)).status, 200);
-    assert.equal((await spawnAgent(req(w, { name: 'e' }), ctx)).status, 200);
-    assert.equal((await spawnAgent(req(w, { name: 'f' }), ctx)).body.error, 'limit'); // a, d, e live
-  });
-
-  test('(−) agents started in this process count before their .pane file exists; stale started entries are dropped', async () => {
+  test('(+) a spawned agent is tagged @nika-role agent and @nika-agent <key>/<name> and counts at once', async () => {
     const w = await world({ limits: { maxAgents: 2 } });
-    const exec = fakeTmux({ panes: [...BASE_PANES(), ...live(['a', 'b'])] });
+    const exec = fakeTmux({ panes: BASE_PANES() });
+    const ctx = w.ctx(exec, { started: undefined }); // as in the CLI: no in-process record, tmux is the only memory
+    assert.equal((await spawnAgent(req(w, { name: 'one' }), ctx)).status, 200);
+    assert.equal((await spawnAgent(req(w, { name: 'two' }), ctx)).status, 200);
+    assert.deepEqual(exec.panes.filter((p) => p.role === 'agent').map((p) => p.agent), [`${w.project.key}/one`, `${w.project.key}/two`]);
+    assert.equal((await spawnAgent(req(w, { name: 'three' }), ctx)).body.error, 'limit');
+    assert.equal((await spawnAgent(req(w, { name: 'one' }), ctx)).body.error, 'conflict');
+  });
+
+  test('(+) an agent of the same project in another tmux session counts, for the limit and for the name check', async () => {
+    const w = await world();
+    const k = w.project.key;
+    const spread = fakeTmux({ panes: [...BASE_PANES(), ...live(k, ['a'], 31, 'My-App'), ...live(k, ['b'], 32, 'elsewhere'), ...live(k, ['c'], 33, 'third')] });
+    assert.equal((await spawnAgent(req(w, { name: 'd' }), w.ctx(spread))).body.error, 'limit'); // 3 of 3, in 3 sessions
+    const elsewhere = fakeTmux({ panes: [...BASE_PANES(), ...live(k, ['builder-1'], 31, 'elsewhere')] });
+    assert.equal((await spawnAgent(req(w), w.ctx(elsewhere))).body.error, 'conflict'); // same name, other session
+    const fewer = fakeTmux({ panes: [...BASE_PANES(), ...live(k, ['a'], 31, 'elsewhere'), ...live(k, ['b'], 32, 'third')] });
+    assert.equal((await spawnAgent(req(w, { name: 'd' }), w.ctx(fewer))).status, 200); // 2 of 3
+  });
+
+  test('(−) agents of another project in the same session neither count nor conflict; the same name in another project is free', async () => {
+    const w = await world();
+    const foreign = fakeTmux({ panes: [...BASE_PANES(), ...live(OTHER_KEY, ['builder-1', 'b', 'c', 'd', 'e'])] }); // five, same session, same name
+    const ctx = w.ctx(foreign);
+    assert.equal((await spawnAgent(req(w), ctx)).status, 200); // neither the limit nor the name check sees them
+    assert.equal((await spawnAgent(req(w, { name: 'second' }), ctx)).status, 200);
+    assert.equal((await spawnAgent(req(w), ctx)).body.error, 'conflict'); // but this project's own builder-1 does
+    assert.deepEqual(foreign.panes.filter((p) => p.agent.startsWith(`${w.project.key}/`)).map((p) => p.agent), [`${w.project.key}/builder-1`, `${w.project.key}/second`]);
+  });
+
+  test('(−) a malformed tag, or a good tag without the agent role, is ignored: never counted, never a conflict', async () => {
+    const w = await world({ limits: { maxAgents: 1 } });
+    const k = w.project.key;
+    const tags = [
+      'builder-1', '/builder-1', `${k}/`, k, `${k}-builder-1`, `short/builder-1`, `${k.toUpperCase()}/builder-1`, `${k}/Builder 1`, `${k}/builder-1/x`,
+      `${k}//builder-1`, ` ${k}/builder-1`, `${k}/builder-1 `, `${k}/-builder-1`, `${k}/${'a'.repeat(41)}`, `x${k}/builder-1`, `${k}\\builder-1`,
+    ];
+    for (const agent of tags) {
+      const exec = fakeTmux({ panes: [...BASE_PANES(), { id: '%31', session: 'My-App', window: 0, windowName: 'zsh', command: 'node', role: 'agent', agent }] });
+      const r = await spawnAgent(req(w), w.ctx(exec));
+      assert.equal(r.status, 200, JSON.stringify(agent)); // maxAgents is 1 and builder-1 is the name in the tag
+    }
+    for (const role of ['', 'orchestrator']) {
+      const exec = fakeTmux({ panes: [...BASE_PANES(), { id: '%31', session: 'My-App', window: 0, windowName: 'zsh', command: 'node', role, agent: `${k}/builder-1` }] });
+      assert.equal((await spawnAgent(req(w), w.ctx(exec))).status, 200, `role ${JSON.stringify(role)}`);
+    }
+    const good = fakeTmux({ panes: [...BASE_PANES(), ...live(k, ['builder-1'])] }); // the control: the same pane with a well-formed tag
+    assert.equal((await spawnAgent(req(w), w.ctx(good))).body.error, 'conflict');
+  });
+
+  test('(−) forged, extra or missing <name>.pane files change neither the limit nor the name check', async () => {
+    const w = await world();
+    // extra and forged: files claiming live panes, dead panes, panes of shells, and the name about to be used
+    for (const [n, pane] of [['x', '%1'], ['y', '%31'], ['z', '%98'], ['builder-1', '%1'], ['junk', 'not a pane']]) await put(w, `${n}.pane`, `${pane}\n`);
+    const quiet = fakeTmux({ panes: [...BASE_PANES(), ...live(w.project.key, ['a'])] });
+    assert.equal((await spawnAgent(req(w), w.ctx(quiet))).status, 200); // 5 forged files: no limit, no conflict
+    // missing: three tagged agents and no .pane file at all
+    const w2 = await world();
+    const busy = fakeTmux({ panes: [...BASE_PANES(), ...live(w2.project.key, ['a', 'b', 'builder-1'])] });
+    assert.equal(exists(w2, 'a.pane'), false);
+    assert.equal((await spawnAgent(req(w2, { name: 'd' }), w2.ctx(busy))).body.error, 'limit');
+    const named = fakeTmux({ panes: [...BASE_PANES(), ...live(w2.project.key, ['builder-1'])] });
+    assert.equal((await spawnAgent(req(w2), w2.ctx(named))).body.error, 'conflict'); // no .pane file for builder-1 either
+  });
+
+  test('(−) agents started in this process count even when the tag could not be set; stale started entries are dropped', async () => {
+    const w = await world({ limits: { maxAgents: 2 } });
+    const exec = fakeTmux({ panes: [...BASE_PANES(), ...live(w.project.key, ['a', 'b']).map((p) => ({ ...p, role: '', agent: '' }))] });
     const started = new Map([
       ['%31', { key: w.project.key, name: 'a', sessionId: null, role: 'agent' }],
       ['%32', { key: w.project.key, name: 'b', sessionId: null, role: 'agent' }],
@@ -388,19 +458,76 @@ describe('spawnAgent: limits and conflicts', () => {
     assert.equal(exec.of('split-window').length, 1);
   });
 
-  test('(−) a live agent with the same name → 409 conflict (file or in-process record); a dead one is replaced', async () => {
+  test('(−) a live agent with the same name → 409 conflict (tagged pane or in-process record); a dead one is replaced', async () => {
     const w = await world();
-    await put(w, 'builder-1.pane', '%31\n');
-    const exec = fakeTmux({ panes: [...BASE_PANES(), ...live(['builder-1'])] });
+    const exec = fakeTmux({ panes: [...BASE_PANES(), ...live(w.project.key, ['builder-1'])] });
     let r = await spawnAgent(req(w), w.ctx(exec));
     assert.deepEqual([r.status, r.body.error], [409, 'conflict']);
+    const untagged = fakeTmux({ panes: [...BASE_PANES(), ...live(w.project.key, ['builder-1']).map((p) => ({ ...p, role: '', agent: '' }))] });
     const started = new Map([['%31', { key: w.project.key, name: 'builder-1', sessionId: null, role: 'agent' }]]);
-    fs.rmSync(path.join(rd(w), 'builder-1.pane'));
-    r = await spawnAgent(req(w), w.ctx(exec, { started }));
+    r = await spawnAgent(req(w), w.ctx(untagged, { started }));
     assert.equal(r.body.error, 'conflict');
-    await put(w, 'builder-1.pane', '%98\n'); // pane died
-    r = await spawnAgent(req(w), w.ctx(fakeTmux({ panes: BASE_PANES() })));
+    r = await spawnAgent(req(w), w.ctx(fakeTmux({ panes: BASE_PANES() }))); // the pane died
     assert.equal(r.status, 200);
+  });
+
+  test('(−) a tmux failure while listing the tagged panes → 502 tmux_failed, nothing is split or written', async () => {
+    const w = await world();
+    const calls = [];
+    const base = fakeTmux({ panes: BASE_PANES() });
+    const exec = async (cmd, args) => {
+      calls.push(args[1]);
+      if (args[1] === 'list-panes' && args.some((a) => String(a).includes('@nika-agent'))) throw Object.assign(new Error('boom'), { stderr: 'boom\n' });
+      return base(cmd, args);
+    };
+    const r = await spawnAgent(req(w), w.ctx(exec));
+    assert.deepEqual([r.status, r.body.error], [502, 'tmux_failed']);
+    assert.equal(calls.includes('split-window'), false);
+    assert.equal(fs.existsSync(rd(w)), false);
+  });
+});
+
+// tmux format-expands `new-session -s`, `new-window -n`, `select-pane -T` and `-c`, not only the start directory (T6): a
+// `#(cmd)` in any of them would run cmd. Names and titles are safe only because they can never contain a `#`.
+describe('tmux format expansion (T6)', () => {
+  const HASHES = ['a#b', '#{pane_id}', 'a#(id)', '#', '##', 'x #S', '#{?#{pane_id},a,b}'];
+
+  test('(+) TMUX_SESSION and AGENT_NAME contain no # and reject every value that has one; sessionNameFor reduces it away', () => {
+    assert.equal(TMUX_SESSION.test('My-App_2'), true);
+    assert.equal(AGENT_NAME.test('builder-1'), true);
+    for (const v of HASHES) {
+      assert.equal(TMUX_SESSION.test(v), false, v);
+      assert.equal(AGENT_NAME.test(v), false, v);
+    }
+    assert.equal(TMUX_SESSION.source.includes('#'), false);
+    assert.equal(AGENT_NAME.source.includes('#'), false);
+    for (const name of HASHES) {
+      const session = sessionNameFor({ name, key: '0123456789abcdef' });
+      assert.equal(TMUX_SESSION.test(session), true, name);
+      assert.equal(session.includes('#'), false, name);
+    }
+  });
+
+  test('(−) a project folder with # in its name: no -s, -n or -T value nika passes holds a #; only -c carries ## (doubled)', async () => {
+    const w = await world();
+    const hashed = path.join(w.root, 'Hash#{pane_id}#(id) App');
+    fs.mkdirSync(hashed);
+    const project = await addProject(hashed, w.env);
+    const session = sessionNameFor(project);
+    const fresh = fakeTmux({ panes: [] });
+    const present = fakeTmux({ panes: [{ id: '%1', session, window: 0, windowName: 'zsh', command: 'zsh' }] });
+    assert.equal((await startOrchestrator(project.key, w.ctx(fresh))).body.created, true); // new-session
+    assert.equal((await startOrchestrator(project.key, w.ctx(present))).body.created, true); // new-window
+    assert.equal((await spawnAgent({ project: project.key, name: 'builder-1', model: 'sonnet', brief: 'Do the thing.' }, w.ctx(fresh))).status, 200); // split-window, select-pane
+    const values = (flag) => [fresh, present].flatMap((e) => e.calls.flatMap((c) => c.map((a, i) => (c[i - 1] === flag ? a : null)).filter((a) => a !== null)));
+    for (const flag of ['-s', '-n', '-T']) {
+      const seen = values(flag);
+      assert.ok(seen.length > 0, `${flag} was passed`);
+      for (const v of seen) assert.equal(v.includes('#'), false, `${flag} ${v}`);
+    }
+    assert.ok(values('-T').includes('[%21] builder-1'));
+    const dirs = values('-c');
+    assert.ok(dirs.length >= 3 && dirs.every((d) => d.replaceAll('##', '').includes('#') === false && d.includes('##')), JSON.stringify(dirs));
   });
 });
 
@@ -563,6 +690,7 @@ describe('runAgent', () => {
       'brief too large': (w) => fs.writeFileSync(path.join(rd(w), 'builder-1.brief.md'), 'x'.repeat(64 * 1024 + 1)),
       'brief empty': (w) => fs.writeFileSync(path.join(rd(w), 'builder-1.brief.md'), '  \n'),
       'brief NUL': (w) => fs.writeFileSync(path.join(rd(w), 'builder-1.brief.md'), 'a\0b'),
+      'brief one word': (w) => fs.writeFileSync(path.join(rd(w), 'builder-1.brief.md'), ' update\n'),
       'agent.json symlink': (w) => { fs.rmSync(path.join(rd(w), 'builder-1.agent.json')); fs.symlinkSync(outside, path.join(rd(w), 'builder-1.agent.json')); },
     };
     for (const [label, tamper] of Object.entries(cases)) {
@@ -573,6 +701,19 @@ describe('runAgent', () => {
       assert.equal(spawn.calls.length, 0, label);
       assert.equal(exists(w, 'builder-1.session'), false, label);
     }
+  });
+
+  test('(−) a stored one-word brief is refused (exit 3) with a message and claude never runs; (+) two words run', async () => {
+    const { w, run } = await prepared();
+    fs.writeFileSync(path.join(rd(w), 'builder-1.brief.md'), 'update');
+    const refused = await run();
+    assert.equal(refused.code, 3);
+    assert.equal(refused.spawn.calls.length, 0);
+    assert.match(refused.stderr.lines.join(''), /brief must be more than one word/);
+    fs.writeFileSync(path.join(rd(w), 'builder-1.brief.md'), 'update it');
+    const ok = await run();
+    assert.equal(ok.code, 0);
+    assert.equal(ok.spawn.calls[0].args.at(-1), 'update it');
   });
 
   test('(−) missing brief → exit 1; a reports dir that is not safe to write (group-writable) → exit 1, claude never starts', async () => {

@@ -126,7 +126,7 @@ nika's own files follow XDG ([ADR 0008](adr/0008-xdg-config-state.md)). Folders 
 | `${NIKA_CONFIG_DIR or XDG_CONFIG_HOME or ~/.config}/nika/config.json` | Settings and the project registry. Validated on load; garbage falls back to defaults with a warning. |
 | `…/nika/templates/<name>.md` | Rule templates you imported locally. |
 | `${XDG_STATE_HOME or ~/.local/state}/nika/projects/<key>/reports/` | Per spawned agent: brief, settings, session id, pane, exit code, report. |
-| `${XDG_STATE_HOME or ~/.local/state}/nika/backups/<key>/<ISO>/` | Copies taken before "apply rules" overwrites a file. Never inside a repo. |
+| `${XDG_STATE_HOME or ~/.local/state}/nika/backups/<key>/<ISO>/` | Byte-for-byte copies taken before "apply rules" overwrites a file; the last 10 folders per project are kept. Never inside a repo. |
 
 `<key>` is the first 16 hex characters of `sha256(realpath(project folder))`. A request never carries a path; projects
 are referenced by key.
