@@ -1,7 +1,9 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import * as mode from '../src/mode.js';
-import { MODES, MODE_TARGETS, PROMPT_ROWS, FOOTER, rowText, modeFromRows, promptFromRows } from '../src/mode.js';
+import {
+  MODES, MODE_TARGETS, PROMPT_ROWS, FOOTER, rowText, lastNonBlank, modeFromRows, promptFromRows,
+} from '../src/mode.js';
 import { parseCapture } from '../src/mirror.js';
 
 const DEF = { b: false, fg: null, bg: null, u: false, i: false, d: false };
@@ -27,7 +29,7 @@ describe('constants', () => {
     assert.equal(PROMPT_ROWS, 15);
   });
 
-  test('(-) bypassPermissions and dontAsk are never a target; FOOTER_ROWS is gone', () => {
+  test('(−) bypassPermissions and dontAsk are never a target; FOOTER_ROWS is gone', () => {
     assert.ok(!MODE_TARGETS.includes('bypassPermissions'));
     assert.ok(!MODE_TARGETS.includes('dontAsk'));
     assert.ok(MODE_TARGETS.every((m) => MODES.includes(m)));
@@ -41,10 +43,43 @@ describe('rowText', () => {
     assert.equal(rowText([]), '');
   });
 
-  test('(-) a malformed row gives an empty string, never throws', () => {
+  test('(−) a malformed row gives an empty string, never throws', () => {
     assert.equal(rowText(null), '');
     assert.equal(rowText(undefined), '');
     assert.equal(rowText([{}, null, span('x')]), 'x');
+  });
+});
+
+describe('lastNonBlank', () => {
+  test('(+) returns the texts of the last n non-blank rows, oldest first, blank rows skipped', () => {
+    const rows = rowsOf('a', '', 'b', [span('  ')], [span('c'), span('d')], '');
+    assert.deepEqual(lastNonBlank(rows, 2), ['b', 'cd']);
+    assert.deepEqual(lastNonBlank(rows, 3), ['a', 'b', 'cd']);
+    assert.deepEqual(lastNonBlank(rows, 1), ['cd']);
+    assert.deepEqual(lastNonBlank(rows, 99), ['a', 'b', 'cd'], 'n above the row count gives all of them');
+    assert.deepEqual(lastNonBlank(rowsOf('  x  '), 1), ['  x  '], 'row text is returned as is, not trimmed');
+  });
+
+  test('(+) PROMPT_ROWS gives the window promptFromRows reads', () => {
+    const rows = rowsOf(...Array.from({ length: PROMPT_ROWS + 5 }, (_, i) => `row ${i}`));
+    const win = lastNonBlank(rows, PROMPT_ROWS);
+    assert.equal(win.length, PROMPT_ROWS);
+    assert.equal(win[0], 'row 5');
+    assert.equal(win.at(-1), `row ${PROMPT_ROWS + 4}`);
+  });
+
+  test('(−) n of zero, negative or not a positive integer gives an empty list', () => {
+    const rows = rowsOf('a', 'b');
+    for (const n of [0, -1, -0, 1.5, NaN, Infinity, '2', null, undefined]) {
+      assert.deepEqual(lastNonBlank(rows, n), [], String(n));
+    }
+  });
+
+  test('(−) empty, all-blank and malformed rows give an empty list, never throw', () => {
+    assert.deepEqual(lastNonBlank([], 3), []);
+    assert.deepEqual(lastNonBlank(rowsOf('', [span(' ')]), 3), []);
+    for (const bad of [null, undefined, 'abc', 7, {}]) assert.deepEqual(lastNonBlank(bad, 3), [], String(bad));
+    assert.deepEqual(lastNonBlank([null, [{}], [null], rowsOf('x')[0]], 5), ['x']);
   });
 });
 
@@ -110,24 +145,24 @@ describe('modeFromRows: footer', () => {
     assert.equal(modeFromRows(rowsOf('BYPASS')), 'bypassPermissions');
   });
 
-  test('(-) empty or all-blank rows give unknown', () => {
+  test('(−) empty or all-blank rows give unknown', () => {
     assert.equal(modeFromRows([]), 'unknown');
     assert.equal(modeFromRows(rowsOf('', [span('  ')], '')), 'unknown');
   });
 
-  test('(-) no phrase and no Manual marker gives unknown, never manual', () => {
+  test('(−) no phrase and no Manual marker gives unknown, never manual', () => {
     assert.equal(modeFromRows(rowsOf('hello', ...BOX, '? for shortcuts')), 'unknown');
     assert.equal(modeFromRows(rowsOf(...BOX, '\u23f8 mode on')), 'unknown');
     assert.equal(modeFromRows(rowsOf(...BOX, '\u23f5\u23f5 accept on')), 'unknown');
   });
 
-  test('(-) a phrase only above the last non-blank row gives unknown', () => {
+  test('(−) a phrase only above the last non-blank row gives unknown', () => {
     assert.equal(modeFromRows(rowsOf(PHRASE.auto, '? for shortcuts')), 'unknown');
     assert.equal(modeFromRows(rowsOf(PHRASE.plan, ...BOX, 'main \u2713', '', '')), 'unknown');
     assert.equal(modeFromRows(rowsOf('bypass', ...BOX, '? for shortcuts')), 'unknown');
   });
 
-  test('(-) slash-menu overlay rows in place of the footer give unknown', () => {
+  test('(−) slash-menu overlay rows in place of the footer give unknown', () => {
     const menu = [
       '/model       Switch the model',
       '/permissions Manage allow, ask and deny rules',
@@ -138,7 +173,36 @@ describe('modeFromRows: footer', () => {
     assert.equal(modeFromRows(rowsOf(...BOX, '\u276f /plan      Enter plan mode')), 'unknown');
   });
 
-  test('(-) a phrase quoted in transcript text, not in footer position, gives unknown', () => {
+  test('(−) a token that is not at the start of the last row gives unknown', () => {
+    const cases = [
+      'docs/plan mode notes.md',
+      'Press shift+tab to leave plan mode',
+      '  ! for bash mode   shift + tab to auto-accept edits',
+      '        plan mode', // wrapped description: indented by more than 2 spaces
+      '\u2502 /plan  Enter plan mode',
+      'see auto mode on the status line',
+      '\u2502 \u23f8 manual mode on',
+    ];
+    for (const row of cases) assert.equal(modeFromRows(rowsOf(...BOX, row)), 'unknown', row);
+  });
+
+  test('(−) "bypass" not at the start of the last row, or as part of a file name, gives unknown', () => {
+    for (const row of ['bypass.js', 'bypass/list.txt', 'docs bypass notes', '\u2502 bypass permissions on', '        bypass']) {
+      assert.equal(modeFromRows(rowsOf(...BOX, row)), 'unknown', row);
+    }
+  });
+
+  test('(+) up to two spaces of indent still match; the anchored token decides when two are in a row', () => {
+    assert.equal(modeFromRows(rowsOf(...BOX, ' \u23f8 plan mode on')), 'plan');
+    assert.equal(modeFromRows(rowsOf(...BOX, '  plan mode')), 'plan');
+    assert.equal(modeFromRows(rowsOf(...BOX, `${PHRASE.acceptEdits} (shift+tab to cycle to plan mode)`)), 'acceptEdits');
+    assert.equal(modeFromRows(rowsOf(...BOX, `${PHRASE.plan} \u00b7 leave auto mode off`)), 'plan');
+    assert.equal(modeFromRows(rowsOf(...BOX, `${PHRASE.plan} \u00b7 bypass`)), 'plan', 'a later "bypass" does not count');
+    assert.equal(modeFromRows(rowsOf(...BOX, '\u23f5\u23f5 bypassPermissions on')), 'bypassPermissions');
+    assert.equal(modeFromRows(rowsOf(...BOX, `-- NORMAL -- \u23f5\u23f5 bypass permissions on${SUFFIX}`)), 'bypassPermissions');
+  });
+
+  test('(−) a phrase quoted in transcript text, not in footer position, gives unknown', () => {
     const rows = rowsOf(
       'The footer shows \u23f5\u23f5 auto mode on when it is active and plan mode otherwise.',
       '', ...BOX, '? for shortcuts',
@@ -146,7 +210,7 @@ describe('modeFromRows: footer', () => {
     assert.equal(modeFromRows(rows), 'unknown');
   });
 
-  test('(-) a permission prompt covering the footer gives unknown', () => {
+  test('(−) a permission prompt covering the footer gives unknown', () => {
     const rows = rowsOf(
       'Do you want to proceed?', '\u276f 1. Yes, and switch to auto mode', '  2. No', 'Esc to cancel \u00b7 Tab to amend',
     );
@@ -154,7 +218,7 @@ describe('modeFromRows: footer', () => {
     assert.equal(modeFromRows(rows), 'unknown');
   });
 
-  test('(-) malformed input gives unknown, never throws', () => {
+  test('(−) malformed input gives unknown, never throws', () => {
     for (const bad of [null, undefined, 'auto mode', 42, {}, [null], [[{}]], [[null]]]) {
       assert.equal(modeFromRows(bad), 'unknown', String(bad));
     }
@@ -223,7 +287,7 @@ describe('promptFromRows', () => {
     assert.deepEqual(promptFromRows(rows), { question: 'Proceed?', options: [{ n: 1, label: 'Yes' }, { n: 2, label: 'No' }] });
   });
 
-  test('(-) a numbered list in the transcript without a question line gives null', () => {
+  test('(−) a numbered list in the transcript without a question line gives null', () => {
     assert.equal(promptFromRows(rowsOf('Steps:', '1. Install', '2. Build', '', '\u2502 > \u2502', '? for shortcuts')), null);
     // Hint present but the row above option 1 is not a question.
     assert.equal(promptFromRows(rowsOf('Steps:', '1. Install', '2. Build', HINT)), null);
@@ -231,37 +295,37 @@ describe('promptFromRows', () => {
     assert.equal(promptFromRows(rowsOf('1. Yes', '2. No', HINT)), null);
   });
 
-  test('(-) no closing hint row gives null', () => {
+  test('(−) no closing hint row gives null', () => {
     assert.equal(promptFromRows(rowsOf('Proceed?', '\u276f 1. Yes', '  2. No')), null);
     assert.equal(promptFromRows(rowsOf('Proceed?', '1. Yes', '2. No', 'Tab to amend')), null);
   });
 
-  test('(-) options not consecutive from 1 give null', () => {
+  test('(−) options not consecutive from 1 give null', () => {
     assert.equal(promptFromRows(rowsOf('Proceed?', '1. Yes', '3. No', HINT)), null, 'gap');
     assert.equal(promptFromRows(rowsOf('Proceed?', '2. Yes', '3. No', HINT)), null, 'starts at 2');
     assert.equal(promptFromRows(rowsOf('Proceed?', '1. Yes', '1. No', HINT)), null, 'duplicate');
     assert.equal(promptFromRows(rowsOf('Proceed?', '1. Yes', '3. Maybe', '2. No', HINT)), null, 'out of order');
   });
 
-  test('(-) fewer than two options give null', () => {
+  test('(−) fewer than two options give null', () => {
     assert.equal(promptFromRows(rowsOf('Proceed?', '1. Yes', HINT)), null);
   });
 
-  test('(-) a question that does not end with "?" gives null', () => {
+  test('(−) a question that does not end with "?" gives null', () => {
     assert.equal(promptFromRows(rowsOf('Proceed', '1. Yes', '2. No', HINT)), null);
     assert.equal(promptFromRows(rowsOf('Proceed? yes', '1. Yes', '2. No', HINT)), null);
   });
 
-  test('(-) an unindented row without a number between options gives null', () => {
+  test('(−) an unindented row without a number between options gives null', () => {
     assert.equal(promptFromRows(rowsOf('Proceed?', '1. Yes', 'stray', '2. No', HINT)), null);
   });
 
-  test('(-) an empty label gives null', () => {
+  test('(−) an empty label gives null', () => {
     assert.equal(promptFromRows(rowsOf('Proceed?', '1. Yes', [span('2.   ')], HINT)), null);
     assert.equal(promptFromRows(rowsOf('Proceed?', '1. \u0007\u202e', '2. No', HINT)), null);
   });
 
-  test('(-) control characters and bidi marks in a label or the question are removed', () => {
+  test('(−) control characters and bidi marks in a label or the question are removed', () => {
     const p = promptFromRows(rowsOf('Run it\u202e\u0007?', '1. Yes\u202e\u0007 proceed\u200b now', '2. N\u001bo', HINT));
     assert.equal(p.question, 'Run it ?');
     assert.deepEqual(p.options, [{ n: 1, label: 'Yes proceed now' }, { n: 2, label: 'N o' }]);
@@ -269,7 +333,7 @@ describe('promptFromRows', () => {
     for (const o of p.options) assert.doesNotMatch(o.label, unsafe);
   });
 
-  test('(-) the folder-trust dialog (unnumbered options, Enter to confirm) gives null', () => {
+  test('(−) the folder-trust dialog (unnumbered options, Enter to confirm) gives null', () => {
     const rows = rowsOf(
       'Do you trust the files in this folder?',
       '\u276f Yes, I trust this folder',
@@ -279,7 +343,7 @@ describe('promptFromRows', () => {
     assert.equal(promptFromRows(rows), null);
   });
 
-  test('(-) a non-blank row below the hint row gives null (stale prompt above a prompt box)', () => {
+  test('(−) a non-blank row below the hint row gives null (stale prompt above a prompt box)', () => {
     const prompt = ['Proceed?', '1. Yes', '2. No', HINT];
     assert.ok(promptFromRows(rowsOf(...prompt)), 'control: the same block as the last rows parses');
     assert.equal(promptFromRows(rowsOf(...prompt, ...BOX, PHRASE.manual)), null, 'prompt box and footer drawn after it');
@@ -288,21 +352,31 @@ describe('promptFromRows', () => {
     assert.equal(promptFromRows(rowsOf(...prompt, HINT, 'x')), null, 'a second hint is not last either');
   });
 
-  test('(-) the question must lie within the last PROMPT_ROWS non-blank rows', () => {
+  test('(−) the question must lie within the last PROMPT_ROWS non-blank rows', () => {
+    // Question + option 1 + k wrapped rows + option 2 + hint = k + 4 rows.
     const block = (k) => [
-      'Proceed?',
-      ...Array.from({ length: k }, (_, i) => `${i + 1}. Option ${i + 1}`),
-      HINT,
+      'Proceed?', '1. Yes', ...Array.from({ length: k }, (_, i) => `     wrapped ${i}`), '2. No', HINT,
     ];
-    // PROMPT_ROWS rows exactly: question + (PROMPT_ROWS - 2) options + hint.
-    assert.equal(promptFromRows(rowsOf('older row', ...block(PROMPT_ROWS - 2))).options.length, PROMPT_ROWS - 2);
-    // One option more pushes the question out of the window.
-    assert.equal(promptFromRows(rowsOf('older row', ...block(PROMPT_ROWS - 1))), null);
+    const exact = promptFromRows(rowsOf('older row', ...block(PROMPT_ROWS - 4)));
+    assert.equal(exact.options.length, 2, 'exactly PROMPT_ROWS rows parse');
+    assert.ok(exact.options[0].label.startsWith('Yes wrapped 0 wrapped 1'));
+    // One more row pushes the question out of the window.
+    assert.equal(promptFromRows(rowsOf('older row', ...block(PROMPT_ROWS - 3))), null);
     // Blank rows do not count against the window.
-    assert.ok(promptFromRows(rowsOf('', ...block(PROMPT_ROWS - 2).flatMap((r) => [r, '']))));
+    assert.ok(promptFromRows(rowsOf('', ...block(PROMPT_ROWS - 4).flatMap((r) => [r, '']))));
   });
 
-  test('(-) empty or malformed input gives null, never throws', () => {
+  test('(−) option numbers are one digit: an 11-option list gives null', () => {
+    const list = (k, pad = '') => Array.from({ length: k }, (_, i) => `${pad}${i + 1}. Option ${i + 1}`);
+    assert.equal(promptFromRows(rowsOf('Proceed?', ...list(9), HINT)).options.length, 9, 'control: 9 options parse');
+    assert.equal(promptFromRows(rowsOf('Proceed?', ...list(10), HINT)), null, '10 options');
+    assert.equal(promptFromRows(rowsOf('Proceed?', ...list(11), HINT)), null, '11 options');
+    assert.equal(promptFromRows(rowsOf('Proceed?', ...list(11, '  '), HINT)), null, '11 indented options');
+    // An indented "10." row must not be glued to option 9 as a wrapped label.
+    assert.equal(promptFromRows(rowsOf('Proceed?', ...list(9), '  10. Option 10', HINT)), null);
+  });
+
+  test('(−) empty or malformed input gives null, never throws', () => {
     assert.equal(promptFromRows([]), null);
     assert.equal(promptFromRows(rowsOf('', '')), null);
     for (const bad of [null, undefined, 'Esc to cancel', 7, {}, [null], [[{}]]]) {
