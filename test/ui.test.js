@@ -176,6 +176,25 @@ describe('CSS', () => {
     assert.match(t, /prefers-reduced-motion:\s*reduce/);
   });
 
+  // A scroll container that is not positioned lets absolutely positioned descendants (.sr-only labels) anchor to the
+  // page: the page grows as tall as the list and WebKit scrolls the whole window, leaving a blank band.
+  const unanchoredScrollers = (css) => {
+    const rules = [...css.replace(/\/\*[\s\S]*?\*\//g, '').matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => ({
+      sels: m[1].split(',').map((s) => s.trim()).filter(Boolean),
+      body: m[2],
+    }));
+    const positioned = new Set(rules.filter((r) => /(^|;)\s*position\s*:\s*(relative|absolute|fixed|sticky)/.test(r.body)).flatMap((r) => r.sels));
+    return rules.filter((r) => /overflow(-[xy])?\s*:\s*(auto|scroll)/.test(r.body)).flatMap((r) => r.sels).filter((s) => !positioned.has(s));
+  };
+
+  test('(+) every scroll container in every stylesheet is a containing block (position set)', () => {
+    for (const f of CSS) assert.deepEqual(unanchoredScrollers(read(f)), [], f);
+  });
+
+  test('(−) the scroll-container check catches an unpositioned scroller (so the check above can fail)', () => {
+    assert.deepEqual(unanchoredScrollers('.list { overflow: auto; } .ok { position: relative; overflow-y: scroll; }'), ['.list']);
+  });
+
   test('(−) the owner-banned word never appears in the shipped UI', () => {
     const banned = new RegExp('pony' + 'tail', 'i');
     for (const f of files.filter((x) => /\.(js|css|html|svg)$/.test(x))) assert.doesNotMatch(read(f), banned, f);
