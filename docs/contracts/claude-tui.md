@@ -21,8 +21,11 @@ The mode line is the last non-blank row of the pane while Claude's prompt box is
 | acceptEdits | `⏵⏵ accept edits on` | `accept edits` | 147 |
 | plan | `⏸ plan mode on` | `plan mode` | 73 |
 | dontAsk | `⏵⏵ don't ask on` | `don't ask` | 211 |
-| bypassPermissions | not observed (§7) | any footer containing `bypass` | — |
+| bypassPermissions | not observed (§7) | the word `bypass` or `bypassPermissions` | — |
 
+- nika matches a token only at the start of the mode line: after at most 2 leading spaces, the optional vim-mode
+  prefix and the optional `⏵` / `⏸` glyphs. A token anywhere else in the row (a file menu, a help line, a wrapped
+  description) does not count.
 - Manual has a positive marker: `manual mode`. A footer row with none of the tokens is `unknown`.
 - Observed Shift+Tab cycle (account with auto available, not launched with bypass): auto → manual → acceptEdits →
   plan → auto.
@@ -167,6 +170,7 @@ same menu. Removed and hidden commands are left out.
 ## 7. Not verified yet
 
 - The bypassPermissions phrase: starting a bypass session for the check was refused by the checking session's safety
-  classifier. nika treats any footer containing `bypass` as bypassPermissions; the exact phrase is checked in 0.4.
+  classifier. nika treats a mode line that starts with the word `bypass` or `bypassPermissions` as
+  bypassPermissions; the exact phrase is checked in 0.4.
 - Whether transcripts record the permission mode (V12): moved to the 0.4 plan.
 - Whether don't-ask is part of the Shift+Tab cycle: nika never switches to or from it.

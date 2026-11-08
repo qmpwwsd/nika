@@ -187,7 +187,7 @@ describe('modeFromRows: footer', () => {
   });
 
   test('(−) "bypass" not at the start of the last row, or as part of a file name, gives unknown', () => {
-    for (const row of ['bypass.js', 'bypass/list.txt', 'docs bypass notes', '\u2502 bypass permissions on', '        bypass']) {
+    for (const row of ['bypass.js', 'bypass/list.txt', 'docs bypass notes', '\u2502 bypass permissions on', '        bypass', 'bypassing the check', 'bypassed']) {
       assert.equal(modeFromRows(rowsOf(...BOX, row)), 'unknown', row);
     }
   });

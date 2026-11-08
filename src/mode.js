@@ -22,8 +22,9 @@ export const FOOTER = [
   { mode: 'plan', match: atLineStart('plan mode') },
   { mode: 'dontAsk', match: atLineStart(String.raw`don['\u2019]t ask`) },
 ];
-// Whole word starting with `bypass` (so `bypass.js` is not one); the exact phrase is not verified yet (claude-tui.md 7).
-const BYPASS = atLineStart(String.raw`bypass[a-z]*(?=\s|$)`);
+// The whole word `bypass` or `bypassPermissions` (so `bypass.js` and `bypassing` are not); the exact phrase is not
+// verified yet (claude-tui.md 7).
+const BYPASS = atLineStart(String.raw`bypass(?:permissions)?(?=\s|$)`);
 
 /** The text of one mirror row: its spans concatenated. */
 export function rowText(row) {
