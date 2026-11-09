@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Docs: README screenshots of the desktop app (light and dark) and the app icon in the title.
+
 ## 0.3.1 — 2026-11-09
 
 Dashboard fixes (desktop app; the "Show ended" fix also applies to the browser dashboard on :3335):

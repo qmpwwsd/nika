@@ -1,6 +1,13 @@
-# nika
+# <img src="app/src-tauri/icons/128x128.png" alt="" width="40" height="40"> nika
 
 A local dashboard of every Claude Code agent on your Mac: live sessions (working, waiting for input, running a shell) and recently ended ones, grouped by git repository, with their subagents nested inside.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/dashboard-dark.png">
+  <img src="docs/screenshots/dashboard-light.png" alt="The nika desktop app's dashboard: a queue of agents waiting on you, repositories with their live agents, and a sidebar with projects.">
+</picture>
+
+The desktop app's dashboard. Agents that need you come first, then every repository with its live agents. The browser dashboard shows the same list without the sidebar and the controls. All screenshots show invented data.
 
 - Groups by repository; git worktrees fold under their main repository and carry a worktree tag.
 - Shows model, branch, tmux pane, last prompt, start and last-activity time, and the `STATUS:` line of orchestrator spawn reports.
@@ -203,6 +210,43 @@ More: [docs/packaging.md](docs/packaging.md) (build details, signing, Linux pack
 The browser dashboard at `http://127.0.0.1:3335` shows the same list without any of these controls; its only action is
 **Focus pane**.
 
+### Screenshots
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/session-dark.png">
+  <img src="docs/screenshots/session-light.png" alt="The session window of an agent: its transcript on the left, a live mirror of its tmux pane on the right, and the message box, permission-mode switcher and quick actions around them.">
+</picture>
+
+**Session window.** The transcript, a live mirror of the agent's tmux pane, the message box, the permission-mode switcher and the quick actions (Stop, Compact, Clear, Model, Rewind, End session).
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/project-dark.png">
+  <img src="docs/screenshots/project-light.png" alt="A project page listing the project's agents with their subagents, and cards for its rules, plugins and the settings new agents start with.">
+</picture>
+
+**Project view.** The project's agents with their subagents, and cards for its rules, its plugins and the settings new agents start with.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/rules-dark.png">
+  <img src="docs/screenshots/rules-light.png" alt="The Apply rules dialog over a project page: the files nika would write, a diff of the selected file, and a backup folder outside the repository.">
+</picture>
+
+**Apply rules.** Every file nika would write, as a diff, and the backup folder. Nothing is written until you confirm, and nika never runs git.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/settings-dark.png">
+  <img src="docs/screenshots/settings-light.png" alt="The Settings screen with the model for each role, Remote Control and the permission mode for new agents.">
+</picture>
+
+**Settings.** The model for each role, Remote Control and the permission mode for new agents. Limits, plugins and the rules template are further down.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/spawn-dark.png">
+  <img src="docs/screenshots/spawn-light.png" alt="The Spawn agent sheet over a project page, filled in with a name, a model, a brief, a permission mode and a pane placement.">
+</picture>
+
+**Spawn agent.** A name, a model, the brief, a permission mode and where the pane opens. The agent starts in a new tmux pane.
+
 ### Session window (0.3)
 
 Click an agent to open its session window: history, a live mirror of its tmux pane and a message box. The controls below
@@ -250,6 +294,7 @@ controls and their limits are in [docs/contracts/api-app.md](docs/contracts/api-
 npm test                  # node --test, no dependencies
 node bin/nika serve       # http://127.0.0.1:3335
 node bin/nika status
+node scripts/screenshots.mjs  # rebuilds docs/screenshots/*.png; needs Google Chrome or Chromium, uses only invented data
 (cd app/src-tauri && cargo test --locked)   # the desktop shell, needs Rust
 docker build -f Dockerfile.test -t nika-verify . && docker run --rm nika-verify   # Linux checks (scripts/linux-verify.sh)
 ```
