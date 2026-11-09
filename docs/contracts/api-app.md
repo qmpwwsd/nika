@@ -45,7 +45,7 @@ Common error body: `{"error": "<code>", "message": "<short text>"}`; codes used 
 `claude_unavailable` 503, `tmux_failed` 502 (a tmux call failed unexpectedly), `limit` 409 (maxAgents reached), `foreign` 409 (rules file not written by nika, apply without
 `overwriteForeign`), `refused` 409 (a write-safety check failed; `"code"` carries the fwrite/OS code such as `ESYMLINK`),
 and for session control (0.3) `not-idle`, `mode-unknown`, `mode-unchanged`, `not-in-cycle`, `busy-switching`, `no-prompt`,
-`prompt-changed`, `already-answered`, `input-not-empty`, `not-at-prompt`, `bypass-prompt`, `screen-unclear`, all 409. The 0.3 codes are hyphenated, as the spec names them; the older codes keep their underscores.
+`prompt-changed`, `already-answered`, `input-not-empty`, `input-unreadable`, `not-at-prompt`, `bypass-prompt`, `screen-unclear`, all 409. The 0.3 codes are hyphenated, as the spec names them; the older codes keep their underscores.
 
 ## 3. Routes
 
@@ -381,7 +381,8 @@ command text starts with `/`) and takes fresh captures (up to 4, 150 ms apart) u
   (`C-u` rounds) and the answer is 409 `not-at-prompt`; no Enter.
 
 A failed send of the rest (after the `/` went in) removes nika's `/` the same way before that send's status and body are
-returned. A draft in the box is never touched: the empty-box check of step 3 comes first (409 `input-not-empty`).
+returned. A draft in the box is never touched: the empty-box check of step 3 comes first (409 `input-not-empty`; a box
+nika cannot find or read is 409 `input-unreadable`, End's step 4).
 
 ### `POST /api/app/pane/:id/stop` (body ≤ 4 KB, `CAP.small`)
 Body `{}` (a JSON object, `Content-Type: application/json`). Interrupts Claude's turn; the session stays. Same guard and
@@ -412,11 +413,17 @@ Body `{}`. Steps, in this order:
    capture and read the registry state again.
 3. The state is still not `idle`, or a `prompt` is still on screen → 409 `not-idle`, nothing typed. Footer `unknown`
    (a dialog may be open) → 409 `mode-unknown`, nothing typed. So End can never answer a prompt or a dialog.
-4. Input box (`claude-tui.md` §5: the rows between the last two rule rows made only of `─`; the no-break space after
-   `❯` compares as a space): it must be exactly one row reading `❯` alone, or `❯` followed only by dim text (the
-   placeholder; a draft is never dim, whatever it says), where the first character may be reverse video (Claude's
-   cursor over the placeholder) and whitespace may be plain; anything else (a draft, several rows, no box found) → 409
-   `input-not-empty`, nothing typed ("Claude's input has text; clear it first").
+4. Input box (`claude-tui.md` §5: the rows between the last two rule rows, each a plain rule of `─` or one that carries
+   the session name, `─── <name> ─`; the no-break space after `❯` compares as a space). Two answers, both with nothing
+   typed (0.3.4):
+   - `input-unreadable`: no box found (fewer than two rule rows, or nothing between them), or its first row is not an
+     input row (no `❯` where the box should start: a menu or another screen is drawn there). nika cannot tell a draft
+     from nothing, so it types nothing; the page says it cannot find Claude's input box and to close any menu.
+   - `input-not-empty`: the box starts with an input row and holds anything but the empty or placeholder state. It must be
+     exactly one row reading `❯` alone, or `❯` followed only by dim text (the placeholder; a draft is never dim,
+     whatever it says), where the first character may be reverse video (Claude's cursor over the placeholder) and
+     whitespace may be plain; anything else (typed text, a `Try "..."` that is not dim, several rows) is a draft, and
+     the page says to send or clear it in the terminal.
 5. Vim: when this pane's mode line has shown `-- INSERT --` before (remembered per pane id by the capture route, like
    the held mode, or seen in any capture this action took) and the current mode line lacks it, Claude's input is in
    vim normal mode: send the text `i`, take a fresh capture, and require `-- INSERT --` now. If it does not show and

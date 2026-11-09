@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+Session window (desktop app):
+
+- A **Transcript** button at the left of the terminal's header (or Cmd+Shift+H, Ctrl+Shift+H on Linux) hides the
+  transcript so the terminal has the full width, and shows it again. It is on windows wider than 1000 px; narrower ones
+  keep their Terminal and Transcript tabs. The choice is remembered until nika quits.
+- Clearer messages when End, Compact, Clear, Model or Rewind cannot type into Claude's input. A draft in the box now says
+  "Claude's input has a draft. Send or clear it in the terminal, then try again."; when nika cannot find the input box
+  at all (a menu is open, say) it says so and asks you to close the menu, instead of claiming the input has text. In both
+  cases nothing is typed. (API: 409 `input-unreadable` is new next to `input-not-empty`.)
+
 Plugins per project, and Settings (desktop app):
 
 - Plugins are chosen on each project's page. The Plugins card there is now **Project setup**; **Choose plugins…** opens a

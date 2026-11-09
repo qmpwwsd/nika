@@ -744,27 +744,33 @@ describe('endSession (−)', () => {
     }
   });
 
-  test('(−) text without the prompt character, or a prompt character glued to the text, is not an empty box', async () => {
-    for (const box of [[[sp('Try "x"', true)]], [[sp(`${PROMPT_CHAR}Try "x"`, true)]], [[sp('> Try "x"', true)]], [[]]]) {
+  test('(−) a box that starts with text but no prompt character (a menu, an empty row) is unreadable: 409 input-unreadable, nothing typed', async () => {
+    for (const box of [[[sp('Try "x"', true)]], [[sp('> Try "x"', true)]], [[]], ['  1. Yes', '  2. No'], ['', `${PROMPT_CHAR} draft`]]) {
       const w = world({ box });
-      assert.deepEqual(await w.control().endSession('%2'), code(409, 'input-not-empty'), JSON.stringify(box));
-      assert.deepEqual(w.sent, []);
+      assert.deepEqual(await w.control().endSession('%2'), code(409, 'input-unreadable'), JSON.stringify(box));
+      assert.deepEqual(w.sent, [], JSON.stringify(box));
     }
   });
 
-  test('(−) no input box found (no rule rows, or nothing between them): 409 input-not-empty, nothing typed', async () => {
+  test('(−) a prompt character glued to the text is an input row holding text: 409 input-not-empty, nothing typed', async () => {
+    const w = world({ box: [[sp(`${PROMPT_CHAR}Try "x"`, true)]] });
+    assert.deepEqual(await w.control().endSession('%2'), code(409, 'input-not-empty'));
+    assert.deepEqual(w.sent, []);
+  });
+
+  test('(−) no input box found (no rule rows, or nothing between them): 409 input-unreadable, nothing typed', async () => {
     for (const box of [null, []]) {
       const w = world({ box });
-      assert.deepEqual(await w.control().endSession('%2'), code(409, 'input-not-empty'), String(box));
+      assert.deepEqual(await w.control().endSession('%2'), code(409, 'input-unreadable'), String(box));
       assert.deepEqual(w.sent, []);
     }
   });
 
-  test('(−) a rule-like row that is not only rule characters does not make a box', async () => {
+  test('(−) a rule-like row that is not only rule characters does not make a box: 409 input-unreadable, nothing typed', async () => {
     const w = world({ box: [EMPTY_BOX] });
     const base = w.rows;
     w.rows = () => rowsOf('earlier output', 'x'.repeat(5), `${RULE} x`, EMPTY_BOX, `${RULE} x`, PHRASE.manual);
-    assert.deepEqual(await w.control().endSession('%2'), code(409, 'input-not-empty'));
+    assert.deepEqual(await w.control().endSession('%2'), code(409, 'input-unreadable'));
     assert.deepEqual(w.sent, []);
     w.rows = base;
   });
@@ -981,7 +987,7 @@ describe('a named session: the upper rule carries the session name', () => {
   });
 
   test('(+) a labelled rule with a long dash run on either side, and spaces after it: still a rule', async () => {
-    const w = named('x', { topRule: `${'─'.repeat(2)} x ${'─'.repeat(60)}  ` });
+    const w = named('x', { topRule: `${'─'.repeat(60)} x ${'─'.repeat(60)}  ` });
     assert.deepEqual(await w.control().runCommand('%2', '/compact'), { status: 200, body: { sent: true } });
   });
 
@@ -1000,10 +1006,10 @@ describe('a named session: the upper rule carries the session name', () => {
     ];
     for (const topRule of bad) {
       const end = named('x', { topRule });
-      assert.deepEqual(await end.control().endSession('%2'), code(409, 'input-not-empty'), JSON.stringify(topRule));
+      assert.deepEqual(await end.control().endSession('%2'), code(409, 'input-unreadable'), JSON.stringify(topRule));
       assert.deepEqual(end.sent, [], JSON.stringify(topRule));
       const cmd = named('x', { topRule });
-      assert.deepEqual(await cmd.control().runCommand('%2', '/compact'), code(409, 'input-not-empty'), JSON.stringify(topRule));
+      assert.deepEqual(await cmd.control().runCommand('%2', '/compact'), code(409, 'input-unreadable'), JSON.stringify(topRule));
       assert.deepEqual(cmd.sent, [], JSON.stringify(topRule));
     }
   });
@@ -1013,8 +1019,8 @@ describe('a named session: the upper rule carries the session name', () => {
       for (const rows of [[only, ...[PLACEHOLDER_BOX], PHRASE.auto], [PLACEHOLDER_BOX, only, PHRASE.auto]]) {
         const w = named('solo');
         w.rows = () => rowsOf('earlier output', ...rows);
-        assert.deepEqual(await w.control().endSession('%2'), code(409, 'input-not-empty'));
-        assert.deepEqual(await w.control().runCommand('%2', '/compact'), code(409, 'input-not-empty'));
+        assert.deepEqual(await w.control().endSession('%2'), code(409, 'input-unreadable'));
+        assert.deepEqual(await w.control().runCommand('%2', '/compact'), code(409, 'input-unreadable'));
         assert.deepEqual(w.sent, []);
       }
     }
@@ -1029,6 +1035,103 @@ describe('a named session: the upper rule carries the session name', () => {
       assert.deepEqual(await cmd.control().runCommand('%2', '/compact'), code(409, 'input-not-empty'), JSON.stringify(box));
       assert.deepEqual(cmd.sent, []);
     }
+  });
+});
+
+describe('0.3.4: input-not-empty (a draft) and input-unreadable (no input box found) are two answers', () => {
+  const named = (name, opts = {}) => world({ mode: 'auto', vim: true, vimMode: 'insert', topRule: labelled(name), ...opts });
+  /** Runs End and Compact on the same screen: [code, sent keys] of each. */
+  const both = async (make) => {
+    const out = [];
+    for (const run of [(w) => w.control().endSession('%2'), (w) => w.control().runCommand('%2', '/compact')]) {
+      const w = make();
+      out.push([await run(w), w.sent]);
+    }
+    return out;
+  };
+
+  test('(+) a draft under a plain rule and under a labelled rule is input-not-empty; nothing is sent', async () => {
+    const drafts = [[`${PROMPT_CHAR} half-written note`], [`${PROMPT_CHAR} first line`, '  second line'], [[sp(`${PROMPT_CHAR}${NB}`), sp('Try "fix lint errors"')]]];
+    for (const box of drafts) {
+      for (const make of [() => world({ box }), () => named('sprint-planning', { box })]) {
+        for (const [res, sent] of await both(make)) {
+          assert.deepEqual(res, code(409, 'input-not-empty'), JSON.stringify(box));
+          assert.deepEqual(sent, [], JSON.stringify(box));
+        }
+      }
+    }
+  });
+
+  test('(+) no rule rows, one rule row, or two with nothing between them is input-unreadable; nothing is sent', async () => {
+    const screens = {
+      'no box at all': () => world({ box: null }),
+      'one plain rule row': () => { const w = world({}); w.rows = () => rowsOf('earlier output', RULE, PLACEHOLDER_BOX, PHRASE.manual); return w; },
+      'one labelled rule row': () => { const w = world({}); w.rows = () => rowsOf('earlier output', labelled('solo'), PLACEHOLDER_BOX, PHRASE.manual); return w; },
+      'two rules, nothing between': () => world({ box: [] }),
+    };
+    for (const [name, make] of Object.entries(screens)) {
+      for (const [res, sent] of await both(make)) {
+        assert.deepEqual(res, code(409, 'input-unreadable'), name);
+        assert.deepEqual(sent, [], name);
+      }
+    }
+  });
+
+  test('(+) a box whose first row is not a prompt row (a menu, text, a blank row) is input-unreadable under either rule, even with a prompt row further down', async () => {
+    const boxes = [['  1. Yes', '  2. No'], ['Select a model', `${PROMPT_CHAR} sonnet`], ['', `${PROMPT_CHAR} draft`], [[sp('> not the prompt character')]], [[]]];
+    for (const box of boxes) {
+      for (const make of [() => world({ box }), () => named('review-agent-2', { box })]) {
+        for (const [res, sent] of await both(make)) {
+          assert.deepEqual(res, code(409, 'input-unreadable'), JSON.stringify(box));
+          assert.deepEqual(sent, [], JSON.stringify(box));
+        }
+      }
+    }
+  });
+
+  test('(−) the split only changes the code: an empty or placeholder box still types, and a draft is still never touched', async () => {
+    for (const box of [[EMPTY_BOX], [PLACEHOLDER_BOX]]) {
+      const w = named('sprint-planning', { box });
+      assert.deepEqual(await w.control().endSession('%2'), { status: 200, body: { ended: true } });
+      assert.deepEqual(w.sent, [{ text: '/exit' }, { keys: ['Enter'] }]);
+    }
+  });
+
+  test('(−) T35: a rule-shaped or labelled row in the status line below the lower rule moves the box: 409 input-unreadable, nothing sent', async () => {
+    const status = '  Model-X  proj  branch  | effort: high';
+    const belows = [
+      [RULE, status], [status, RULE], [status, RULE, '  second row'], // a plain rule row above, below or between the status rows
+      [labelled('status-line'), status], [status, labelled('status-line')], [RULE],
+    ];
+    for (const below of belows) {
+      for (const make of [() => world({ below }), () => named('sprint-planning', { below })]) {
+        for (const [res, sent] of await both(make)) {
+          assert.deepEqual(res, code(409, 'input-unreadable'), JSON.stringify(below));
+          assert.deepEqual(sent, [], JSON.stringify(below));
+        }
+      }
+    }
+  });
+
+  test('(+) the / probe (vim never seen) against a labelled top rule: / alone, the rest, Enter', async () => {
+    for (const [run, rest] of [[(w) => w.control().runCommand('%2', '/compact'), 'compact'], [(w) => w.control().endSession('%2'), 'exit']]) {
+      const w = named('sprint-planning', { vim: false, below: ['  Model-X  proj  branch  | effort: high'] });
+      const res = await run(w);
+      assert.equal(res.status, 200, rest);
+      assert.deepEqual(w.sent, [{ text: '/' }, { text: rest }, { keys: ['Enter'] }], rest);
+    }
+  });
+
+  test('(+) the / probe in an unseen vim normal mode against a labelled top rule: history search, Escape, i, INSERT, the whole text, Enter', async () => {
+    const w = named('review-agent-2', { vimMode: 'normal' });
+    assert.deepEqual(await w.control({ vimOf: () => false }).runCommand('%2', '/compact'), { status: 200, body: { sent: true } });
+    assert.deepEqual(keysOf(w), ['text:/', 'Escape', 'text:i', 'text:/compact', 'Enter']);
+  });
+
+  test('(−) the / probe against a labelled rule when the typed slash never shows: 409 not-at-prompt, only the slash was sent', async () => {
+    const w = named('sprint-planning', { vim: false, swallow: true });
+    assert.deepEqual(await w.control().runCommand('%2', '/compact'), code(409, 'not-at-prompt'));
+    assert.deepEqual(keysOf(w), ['text:/']);
   });
 });
 
@@ -1086,10 +1189,10 @@ describe('runCommand', () => {
     assert.deepEqual(w.sent, []);
   });
 
-  test('(−) a draft in the box (one row or two) or no box: 409 input-not-empty, nothing sent', async () => {
-    for (const box of [[`${PROMPT_CHAR} draft`], [`${PROMPT_CHAR} one`, '  two'], null]) {
+  test('(−) a draft in the box (one row or two): 409 input-not-empty; no box: 409 input-unreadable; nothing sent', async () => {
+    for (const [box, error] of [[[`${PROMPT_CHAR} draft`], 'input-not-empty'], [[`${PROMPT_CHAR} one`, '  two'], 'input-not-empty'], [null, 'input-unreadable']]) {
       const w = world({ box });
-      assert.deepEqual(await w.control().runCommand('%2', '/compact'), code(409, 'input-not-empty'), JSON.stringify(box));
+      assert.deepEqual(await w.control().runCommand('%2', '/compact'), code(409, error), JSON.stringify(box));
       assert.deepEqual(w.sent, []);
     }
   });
@@ -1854,9 +1957,9 @@ describe('A5 (m2, F3): the first-character probe in typeCommand', () => {
   });
 
   test('(−) a draft in the box is never touched: the empty-box check runs before the probe, nothing is typed', async () => {
-    for (const box of [[`${PROMPT_CHAR} half-written note`], [`${PROMPT_CHAR}`, '  second line'], null]) {
+    for (const [box, error] of [[[`${PROMPT_CHAR} half-written note`], 'input-not-empty'], [[`${PROMPT_CHAR}`, '  second line'], 'input-not-empty'], [null, 'input-unreadable']]) {
       const w = world({ box });
-      assert.deepEqual(await w.control().runCommand('%2', '/compact'), code(409, 'input-not-empty'), JSON.stringify(box));
+      assert.deepEqual(await w.control().runCommand('%2', '/compact'), code(409, error), JSON.stringify(box));
       assert.deepEqual(w.sent, [], JSON.stringify(box));
     }
   });

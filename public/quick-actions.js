@@ -170,7 +170,8 @@ export const promptOff = ({ pending = false, lock = null, sig = null } = {}) => 
 /** The command route's failures (spec 9.4), for Compact, Clear and Model. */
 export function commandFailure({ status, code } = {}) {
   if (status === 409) {
-    if (code === 'input-not-empty') return "Claude's input has text; clear it first.";
+    if (code === 'input-not-empty') return "Claude's input has a draft. Send or clear it in the terminal, then try again.";
+    if (code === 'input-unreadable') return "nika can't find Claude's input box, so nothing was typed. Close any menu in the terminal (Esc), then try again.";
     if (code === 'not-at-prompt') return "Claude's input didn't take the command; nothing was submitted.";
     if (code === 'not-idle') return WHY.working;
     if (code === 'mode-unknown') return "Claude's screen isn't at the prompt; use the terminal.";
@@ -265,7 +266,8 @@ export function composerKey(e, s) {
 }
 
 /**
- * The End route's result (spec 9.8): { ended: true, text: '' } closes the dialog; otherwise `text` goes in the alert slot. A 200
+ * The End route's result (spec 9.8): { ended: true, text: '' } closes the dialog; otherwise `text` goes in the alert slot (`kind: 'warn'`
+ * for the two input-box refusals, which the user fixes in the terminal; no kind = the dialog's danger look). A 200
  * `ended: false` with `reason: 'keys'` means a key send failed (a rate limit, say), so a plain retry may work.
  */
 export function endOutcome({ status, code, ended, reason } = {}) {
@@ -273,11 +275,12 @@ export function endOutcome({ status, code, ended, reason } = {}) {
     if (ended === true) return { ended: true, text: '' };
     return { ended: false, text: reason === 'keys' ? "nika couldn't send the keys; try again." : "Claude didn't exit; use Stop or the terminal." };
   }
-  const no = (text) => ({ ended: false, text });
+  const no = (text, kind) => (kind ? { ended: false, text, kind } : { ended: false, text }); // kind: the alert's look; none = the dialog's danger
   if (status === 409) {
     if (code === 'not-idle') return no("Claude didn't stop after Esc; use the terminal.");
     if (code === 'mode-unknown') return no("Claude's screen isn't at the prompt; use the terminal.");
-    if (code === 'input-not-empty') return no("Claude's input has text; clear it first.");
+    if (code === 'input-not-empty') return no("Claude's input has a draft, so nika didn't type /exit. Send or clear it in the terminal, then try again.", 'warn');
+    if (code === 'input-unreadable') return no("nika can't find Claude's input box, so it didn't type /exit. Close any menu in the terminal (Esc), then try again.", 'warn');
     if (code === 'not-at-prompt') return no("Claude's input didn't take /exit; nothing was submitted.");
     if (code === 'busy-switching') return no(BUSY);
   }

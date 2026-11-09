@@ -226,7 +226,7 @@ The browser dashboard at `http://127.0.0.1:3335` shows the same list without any
   <img src="docs/screenshots/session-light.png" alt="The session window of an agent: its transcript on the left, a live mirror of its tmux pane on the right, the quick actions above the message box and the permission-mode switcher under it.">
 </picture>
 
-**Session window.** The transcript, a live mirror of the agent's tmux pane, the quick actions (Stop, Compact, Clear, Model, Rewind, End session), the message box and, under it, the permission-mode switcher.
+**Session window.** The transcript, a live mirror of the agent's tmux pane, the quick actions (Stop, Compact, Clear, Model, Rewind, End session), the message box and, under it, the permission-mode switcher. The **Transcript** button (or `Mod+Shift+H`) hides the transcript so the terminal takes the full width.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/project-dark.png">
@@ -258,7 +258,10 @@ The browser dashboard at `http://127.0.0.1:3335` shows the same list without any
 
 ### Session window (0.3)
 
-Click an agent to open its session window: history, a live mirror of its tmux pane and a message box. The controls below
+Click an agent to open its session window: history, a live mirror of its tmux pane and a message box. On windows wider
+than 1000 px the **Transcript** button at the left of the terminal's header (or `Mod+Shift+H`) hides the transcript so the
+terminal has the full width, and shows it again; narrower windows use the Terminal and Transcript tabs instead. The
+choice is kept until nika quits. The controls below
 work on a pane that is a live Claude session (or one nika started) and runs `claude` right now. They read Claude's
 screen, so a screen nika does not recognize shows "Mode ?" or leaves a control disabled, with the reason under it.
 
@@ -284,8 +287,10 @@ screen, so a screen nika does not recognize shows "Mode ?" or leaves a control d
   then types `/exit` and Enter. It never kills the pane; if Claude does not exit it says so ("Claude didn't exit; use
   Stop or the terminal.").
 - **Claude's input must be empty.** Compact, Clear, Model, Rewind and End type into Claude's own input and press Enter only when
-  it reads exactly that command. If there is text in it, they refuse with "Claude's input has text; clear it first." and
-  leave your text alone.
+  it reads exactly that command. If there is a draft in it, they refuse with "Claude's input has a draft. Send or clear it
+  in the terminal, then try again." and leave your text alone. If nika cannot find the input box (a menu or another
+  screen is open in the pane), they refuse with "nika can't find Claude's input box, so nothing was typed. Close any menu
+  in the terminal (Esc), then try again." and type nothing.
 - **Shell.** The Shell toggle sends the line through Claude's `!` mode (Ctrl-U first, which clears the current line of Claude's
   input, then `!`, the line and Enter) and then turns itself off.
 - **Send and Shell wait for a question.** While Claude asks for permission, Send (a line, a paste, or Enter from an

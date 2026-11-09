@@ -41,6 +41,7 @@ export const SHORTCUTS = [
   row('dashboard', 'browser', 'Dialogs and menus', 'Close', one('Esc'), 'Close the open menu'),
 
   row('session', 'app', 'Window', 'Back', BACK, 'Back to the dashboard'),
+  row('session', 'app', 'Window', 'Show or hide transcript', { mac: [[CMD, SHIFT, 'H']], other: [['Ctrl', 'Shift', 'H']] }, 'Give the terminal the full width (wide windows; narrow ones have tabs)'),
   row('session', 'app', 'Window', 'Keyboard shortcuts', HELP, 'Show this list'),
   row('session', 'app', 'Message box', 'Send', one('Enter'), 'Send the text, then Enter, to Claude (empty box: Enter only)'),
   row('session', 'app', 'Message box', 'New line', { mac: [[SHIFT, 'Enter']], other: [['Shift', 'Enter']] }, 'Start a new line in the message box'),
@@ -100,11 +101,27 @@ export function wantsBack(e, { mac, passthrough, dialogOpen }) {
   return mac ? e.key === '[' && e.metaKey && !e.altKey : e.key === 'ArrowLeft' && e.altKey && !e.metaKey;
 }
 
+/**
+ * Mod+Shift+H shows or hides the session window's transcript (spec 4.1): Command or Ctrl (the platform's, alone), Shift, no Alt, the
+ * H key in either case. Not over a dialog; not in passthrough on Linux (Ctrl+] is the only key nika keeps there), while macOS's Command
+ * key stays the app's, as for Mod+/.
+ */
+export function wantsHistToggle(e, { mac, passthrough, dialogOpen }) {
+  if (dialogOpen || e.altKey || !e.shiftKey || (passthrough && !mac)) return false;
+  const modKey = mac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
+  return modKey && typeof e.key === 'string' && e.key.toLowerCase() === 'h';
+}
+
 // ---- hints for the buttons and the Back link ---------------------------------------------------------------------------------
 
 /** `title` and `aria-keyshortcuts` of a Back link (spec 3.13). */
 export function backHint({ label, mac }) {
   return { title: `Back to ${label} (${mac ? `${CMD}[` : `Alt+${LEFT}`})`, keys: mac ? 'Meta+BracketLeft' : 'Alt+ArrowLeft' };
+}
+
+/** `title` and `aria-keyshortcuts` of the session window's transcript toggle (spec 4.1). */
+export function histHint({ mac }) {
+  return { title: `Show or hide the transcript (${mac ? `${CMD}${SHIFT}H` : 'Ctrl+Shift+H'})`, keys: mac ? 'Meta+Shift+H' : 'Control+Shift+H' };
 }
 
 /** `title` and `aria-keyshortcuts` of the Keyboard shortcuts button; with the setting off only Mod+/ is named, because "?" does nothing. */

@@ -283,7 +283,8 @@ describe('commandFailure (spec 9.4 command route failures, fixed copy)', () => {
   const f = (status, code) => commandFailure({ status, code });
 
   test('(+) every 409 code, 429, 404, 5xx and network error', () => {
-    assert.equal(f(409, 'input-not-empty'), "Claude's input has text; clear it first.");
+    assert.equal(f(409, 'input-not-empty'), "Claude's input has a draft. Send or clear it in the terminal, then try again.");
+    assert.equal(f(409, 'input-unreadable'), "nika can't find Claude's input box, so nothing was typed. Close any menu in the terminal (Esc), then try again.");
     assert.equal(f(409, 'not-at-prompt'), "Claude's input didn't take the command; nothing was submitted.");
     assert.equal(f(409, 'not-idle'), 'Compact, Clear, Model and Rewind are ready when Claude waits for you.');
     assert.equal(f(409, 'mode-unknown'), "Claude's screen isn't at the prompt; use the terminal.");
@@ -296,7 +297,22 @@ describe('commandFailure (spec 9.4 command route failures, fixed copy)', () => {
   test("(−) an answer the table does not know (400, an unknown 409) gets a plain fallback, never the server's text", () => {
     assert.equal(f(400, 'invalid'), "nika couldn't send that command.");
     assert.equal(f(409, 'new-code'), "nika couldn't send that command.");
-    assert.equal(commandFailure({ status: 409, code: 'input-not-empty', message: 'evil' }), "Claude's input has text; clear it first.");
+    for (const code of ['input-empty', 'input-not-readable', 'INPUT-UNREADABLE', undefined]) assert.equal(f(409, code), "nika couldn't send that command.", String(code));
+    assert.equal(commandFailure({ status: 409, code: 'input-not-empty', message: 'evil' }), "Claude's input has a draft. Send or clear it in the terminal, then try again.");
+    assert.equal(commandFailure({ status: 409, code: 'input-unreadable', message: 'evil' }), "nika can't find Claude's input box, so nothing was typed. Close any menu in the terminal (Esc), then try again.");
+  });
+
+  test('(−) the two input-box codes never get each other\'s text, a draft is not "can\'t find", and neither one says "has text"', () => {
+    const draft = f(409, 'input-not-empty');
+    const lost = f(409, 'input-unreadable');
+    assert.notEqual(draft, lost);
+    assert.doesNotMatch(draft, /can't find/);
+    assert.doesNotMatch(lost, /draft/);
+    for (const text of [draft, lost]) assert.doesNotMatch(text, /has text|clear it first/);
+  });
+
+  test('(+) both input-box refusals are warnings the user can act on (kind warn)', () => {
+    assert.equal(problemKind(409), 'warn');
   });
 });
 
@@ -334,10 +350,25 @@ describe('endOutcome (spec 9.8)', () => {
   test('(+) refusals use fixed copy per 409 code', () => {
     assert.equal(o(409, 'not-idle').text, "Claude didn't stop after Esc; use the terminal.");
     assert.equal(o(409, 'mode-unknown').text, "Claude's screen isn't at the prompt; use the terminal.");
-    assert.equal(o(409, 'input-not-empty').text, "Claude's input has text; clear it first.");
+    assert.equal(o(409, 'input-not-empty').text, "Claude's input has a draft, so nika didn't type /exit. Send or clear it in the terminal, then try again.");
+    assert.equal(o(409, 'input-unreadable').text, "nika can't find Claude's input box, so it didn't type /exit. Close any menu in the terminal (Esc), then try again.");
     assert.equal(o(409, 'not-at-prompt').text, "Claude's input didn't take /exit; nothing was submitted.");
     assert.equal(o(409, 'busy-switching').text, 'Another action is running on this session.');
-    for (const code of ['not-idle', 'mode-unknown', 'input-not-empty', 'not-at-prompt', 'busy-switching']) assert.equal(o(409, code).ended, false, code);
+    for (const code of ['not-idle', 'mode-unknown', 'input-not-empty', 'input-unreadable', 'not-at-prompt', 'busy-switching']) assert.equal(o(409, code).ended, false, code);
+  });
+
+  test('(+) the two input-box refusals are warnings (kind warn), not dangers; the other refusals keep the dialog\'s default', () => {
+    assert.equal(o(409, 'input-not-empty').kind, 'warn');
+    assert.equal(o(409, 'input-unreadable').kind, 'warn');
+    for (const code of ['not-idle', 'mode-unknown', 'not-at-prompt', 'busy-switching']) assert.equal(o(409, code).kind, undefined, code);
+    assert.equal(o(404).kind, undefined);
+  });
+
+  test('(−) an unknown 409 code (or the server\'s own text) still gets the generic line, never a guess', () => {
+    for (const code of ['new-code', 'input-empty', 'input-not-readable', 'INPUT-UNREADABLE', undefined]) {
+      assert.deepEqual(endOutcome({ status: 409, code, message: 'evil' }), { ended: false, text: "nika couldn't end the session." }, String(code));
+    }
+    assert.equal(endOutcome({ status: 409, code: 'input-unreadable', message: 'evil' }).text, o(409, 'input-unreadable').text, 'the server text is ignored');
   });
 
   test('(+) 404, 429, 5xx and network error', () => {

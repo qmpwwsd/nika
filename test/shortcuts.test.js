@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { SHORTCUTS, shortcutsFor, isMac, isTextEntry, wantsHelp, wantsBack, backHint, helpHint, passKeyLabel, hintTips, openShortcuts } from '../public/shortcuts.js';
+import { SHORTCUTS, shortcutsFor, isMac, isTextEntry, wantsHelp, wantsBack, wantsHistToggle, backHint, helpHint, histHint, passKeyLabel, hintTips, openShortcuts } from '../public/shortcuts.js';
 import { initDialogs, initMenus, openDialog } from '../public/ui.js';
 
 const SRC = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public', 'shortcuts.js'), 'utf8');
@@ -206,6 +206,7 @@ describe('shortcutsFor: the session window', () => {
   const EXPECT = [
     ['Window', [
       ['Back', `Alt+${LEFT}`, 'Back to the dashboard'],
+      ['Show or hide transcript', 'Ctrl+Shift+H', 'Give the terminal the full width (wide windows; narrow ones have tabs)'],
       ['Keyboard shortcuts', '? or Ctrl+/', 'Show this list'],
     ]],
     ['Message box', [
@@ -238,6 +239,7 @@ describe('shortcutsFor: the session window', () => {
   test('(+) macOS shows its own glyphs for Back, Shift+Enter, Ctrl+C and Ctrl+]', () => {
     const by = Object.fromEntries(shortcutsFor({ window: 'session', tier: 'app', mac: true }).flatMap((g) => g.rows).map((r) => [`${r.name}`, cell(r)]));
     assert.equal(by.Back, `${CMD}+[`);
+    assert.equal(by['Show or hide transcript'], `${CMD}+${SHIFT}+H`);
     assert.equal(by['New line'], `${SHIFT}+Enter`);
     assert.equal(by.Interrupt, `${CTRL}+C`);
     assert.equal(by['Next permission mode'], `${SHIFT}+Tab`);
@@ -245,6 +247,17 @@ describe('shortcutsFor: the session window', () => {
     assert.equal(by['Arrow keys in Claude'], `${UP} ${DOWN} ${LEFT} ${RIGHT}`);
     assert.equal(by['Type into the pane'], `${CTRL}+]`);
     assert.equal(by['Keyboard shortcuts'], `? or ${CMD}+/`);
+  });
+
+  test('(+) 0.3.4: the transcript row sits in the Window group right after Back, and only in the session window', () => {
+    for (const mac of [false, true]) {
+      const names = shortcutsFor({ window: 'session', tier: 'app', mac })[0].rows.map((r) => r.name);
+      assert.deepEqual(names, ['Back', 'Show or hide transcript', 'Keyboard shortcuts']);
+    }
+    for (const tier of ['app', 'browser']) {
+      const all = shortcutsFor({ window: 'dashboard', tier, mac: false }).flatMap((g) => g.rows).map((r) => r.name);
+      assert.ok(!all.includes('Show or hide transcript'), `the dashboard (${tier}) has no transcript`);
+    }
   });
 
   test('(−) the window is app-tier only: the browser tier gets no session rows', () => {
@@ -267,7 +280,7 @@ describe('shortcutsFor: filtering and shape', () => {
   });
 
   test('(+) every row is complete data: both platforms, at least one key, a description', () => {
-    assert.equal(SHORTCUTS.length, 27, '10 dashboard rows (8 app, 2 browser) and 17 session rows');
+    assert.equal(SHORTCUTS.length, 28, '10 dashboard rows (8 app, 2 browser) and 18 session rows');
     for (const r of SHORTCUTS) {
       assert.ok(['dashboard', 'session'].includes(r.window), r.name);
       assert.ok(['app', 'browser', 'both'].includes(r.tier), r.name);
@@ -377,6 +390,44 @@ describe('wantsBack', () => {
   });
 });
 
+describe('wantsHistToggle (0.3.4, spec 4.1: Mod+Shift+H shows or hides the transcript)', () => {
+  const H = { mac: false, passthrough: false, dialogOpen: false };
+
+  test('(+) Ctrl+Shift+H on Linux and Command+Shift+H on macOS, with the key as "H" or "h"', () => {
+    assert.equal(wantsHistToggle(ev('H', { ctrlKey: true, shiftKey: true }), H), true);
+    assert.equal(wantsHistToggle(ev('h', { ctrlKey: true, shiftKey: true }), H), true);
+    assert.equal(wantsHistToggle(ev('H', { metaKey: true, shiftKey: true }), { ...H, mac: true }), true);
+    assert.equal(wantsHistToggle(ev('h', { metaKey: true, shiftKey: true }), { ...H, mac: true }), true);
+  });
+
+  test('(−) Alt held, or no Shift, is not the toggle', () => {
+    assert.equal(wantsHistToggle(ev('H', { ctrlKey: true, shiftKey: true, altKey: true }), H), false);
+    assert.equal(wantsHistToggle(ev('H', { metaKey: true, shiftKey: true, altKey: true }), { ...H, mac: true }), false);
+    assert.equal(wantsHistToggle(ev('h', { ctrlKey: true }), H), false, 'Ctrl+H alone is not it');
+    assert.equal(wantsHistToggle(ev('h', { metaKey: true }), { ...H, mac: true }), false, 'Command+H alone (hide the app) is not it');
+    assert.equal(wantsHistToggle(ev('H', { shiftKey: true }), H), false, 'a capital H with no Mod is typing');
+  });
+
+  test('(−) the other platform\'s Mod, both Mods, other keys and a missing key are not the toggle', () => {
+    assert.equal(wantsHistToggle(ev('H', { metaKey: true, shiftKey: true }), H), false);
+    assert.equal(wantsHistToggle(ev('H', { ctrlKey: true, shiftKey: true }), { ...H, mac: true }), false);
+    assert.equal(wantsHistToggle(ev('H', { ctrlKey: true, metaKey: true, shiftKey: true }), H), false);
+    assert.equal(wantsHistToggle(ev('H', { ctrlKey: true, metaKey: true, shiftKey: true }), { ...H, mac: true }), false);
+    for (const key of ['J', 'Enter', '/', ' ', '']) assert.equal(wantsHistToggle(ev(key, { ctrlKey: true, shiftKey: true }), H), false, key);
+    assert.equal(wantsHistToggle({ ctrlKey: true, shiftKey: true }, H), false, 'no key at all');
+  });
+
+  test('(−) passthrough on Linux keeps the key for the pane; on macOS the Command key stays the app\'s', () => {
+    assert.equal(wantsHistToggle(ev('H', { ctrlKey: true, shiftKey: true }), { ...H, passthrough: true }), false);
+    assert.equal(wantsHistToggle(ev('H', { metaKey: true, shiftKey: true }), { ...H, mac: true, passthrough: true }), true);
+  });
+
+  test('(−) not while a dialog is open', () => {
+    assert.equal(wantsHistToggle(ev('H', { ctrlKey: true, shiftKey: true }), { ...H, dialogOpen: true }), false);
+    assert.equal(wantsHistToggle(ev('H', { metaKey: true, shiftKey: true }), { ...H, mac: true, dialogOpen: true }), false);
+  });
+});
+
 describe('isTextEntry', () => {
   const el = (tag, more = {}) => ({ tagName: tag, isContentEditable: false, closest: () => null, ...more });
 
@@ -398,6 +449,11 @@ describe('button and link hints', () => {
   test('(+) the Back title and aria-keyshortcuts follow the platform (spec 3.13)', () => {
     assert.deepEqual(backHint({ label: 'Dashboard', mac: true }), { title: `Back to Dashboard (${CMD}[)`, keys: 'Meta+BracketLeft' });
     assert.deepEqual(backHint({ label: 'demo-api', mac: false }), { title: `Back to demo-api (Alt+${LEFT})`, keys: 'Alt+ArrowLeft' });
+  });
+
+  test('(+) the transcript toggle names Mod+Shift+H in its title and aria-keyshortcuts (0.3.4)', () => {
+    assert.deepEqual(histHint({ mac: true }), { title: `Show or hide the transcript (${CMD}${SHIFT}H)`, keys: 'Meta+Shift+H' });
+    assert.deepEqual(histHint({ mac: false }), { title: 'Show or hide the transcript (Ctrl+Shift+H)', keys: 'Control+Shift+H' });
   });
 
   test('(+) the Keyboard shortcuts button names "?" while the setting is on, and both keys in aria-keyshortcuts', () => {
