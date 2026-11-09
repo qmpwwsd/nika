@@ -178,8 +178,8 @@ describe('ui.theme', () => {
 
   test('(+) default is system; light and dark are saved, merged one level deep and reloaded', async () => {
     const env = fresh('ui1');
-    assert.deepEqual(defaults().ui, { theme: 'system' });
-    assert.deepEqual((await loadConfig(env)).config.ui, { theme: 'system' });
+    assert.deepEqual(defaults().ui, { theme: 'system', singleKeyShortcuts: true });
+    assert.deepEqual((await loadConfig(env)).config.ui, { theme: 'system', singleKeyShortcuts: true });
     assert.equal((await updateSettings({ ui: { theme: 'dark' } }, env)).ui.theme, 'dark');
     assert.equal((await loadConfig(env)).config.ui.theme, 'dark');
     assert.equal((await updateSettings({ permissionMode: 'plan' }, env)).ui.theme, 'dark', 'an unrelated patch keeps the theme');
@@ -191,7 +191,7 @@ describe('ui.theme', () => {
     const env = fresh('ui2');
     fs.writeFileSync(dirOf(env), JSON.stringify({ permissionMode: 'plan' }));
     const r = await loadConfig(env);
-    assert.deepEqual(r.config.ui, { theme: 'system' });
+    assert.deepEqual(r.config.ui, { theme: 'system', singleKeyShortcuts: true });
     assert.deepEqual(r.warnings, []);
   });
 
@@ -205,11 +205,11 @@ describe('ui.theme', () => {
     }
     fs.writeFileSync(dirOf(env), JSON.stringify({ ui: { theme: 'light', accent: 'red' } }));
     const r = await loadConfig(env);
-    assert.deepEqual(r.config.ui, { theme: 'light' });
+    assert.deepEqual(r.config.ui, { theme: 'light', singleKeyShortcuts: true });
     assert.ok(r.warnings.some((w) => w.includes('unknown key ui.accent')));
     fs.writeFileSync(dirOf(env), JSON.stringify({ ui: 'dark' }));
     const s = await loadConfig(env);
-    assert.deepEqual(s.config.ui, { theme: 'system' });
+    assert.deepEqual(s.config.ui, { theme: 'system', singleKeyShortcuts: true });
     assert.ok(s.warnings.some((w) => w.includes('ui invalid')));
   });
 
@@ -221,6 +221,50 @@ describe('ui.theme', () => {
     }
     await assert.rejects(saveConfig({ ...defaults(), ui: { theme: 'neon' } }, env), { code: 'EINVAL' });
     assert.equal((await loadConfig(env)).config.ui.theme, 'dark');
+  });
+});
+
+describe('ui.singleKeyShortcuts', () => {
+  const fileOf = (env) => { fs.mkdirSync(configDir(env), { recursive: true, mode: 0o700 }); return path.join(configDir(env), 'config.json'); };
+
+  test('(+) defaults to true, also for a config.json written before 0.3, with no warning', async () => {
+    const env = fresh('sk1');
+    assert.equal(defaults().ui.singleKeyShortcuts, true);
+    assert.equal((await loadConfig(env)).config.ui.singleKeyShortcuts, true);
+    fs.writeFileSync(fileOf(env), JSON.stringify({ ui: { theme: 'dark' } }));
+    const r = await loadConfig(env);
+    assert.equal(r.config.ui.singleKeyShortcuts, true);
+    assert.deepEqual(r.warnings, []);
+  });
+
+  test('(+) false round-trips, merges one level deep with the theme, and survives an unrelated patch', async () => {
+    const env = fresh('sk2');
+    assert.deepEqual((await updateSettings({ ui: { singleKeyShortcuts: false } }, env)).ui, { theme: 'system', singleKeyShortcuts: false });
+    assert.equal((await loadConfig(env)).config.ui.singleKeyShortcuts, false);
+    assert.deepEqual((await updateSettings({ ui: { theme: 'dark' } }, env)).ui, { theme: 'dark', singleKeyShortcuts: false }, 'a theme patch keeps the switch');
+    assert.equal((await updateSettings({ permissionMode: 'plan' }, env)).ui.singleKeyShortcuts, false);
+    assert.equal((await updateSettings({ ui: { singleKeyShortcuts: true } }, env)).ui.singleKeyShortcuts, true);
+    assert.equal(JSON.parse(fs.readFileSync(fileOf(env), 'utf8')).ui.singleKeyShortcuts, true);
+  });
+
+  test('(−) a non-boolean value in config.json reads as true, with a warning naming the field', async () => {
+    const env = fresh('sk3');
+    for (const bad of ['false', 'no', 0, 1, null, [], {}, [false]]) {
+      fs.writeFileSync(fileOf(env), JSON.stringify({ ui: { singleKeyShortcuts: bad } }));
+      const r = await loadConfig(env);
+      assert.equal(r.config.ui.singleKeyShortcuts, true, JSON.stringify(bad));
+      assert.ok(r.warnings.some((w) => w.includes('ui.singleKeyShortcuts')), JSON.stringify(bad));
+    }
+  });
+
+  test('(−) updateSettings and saveConfig refuse a non-boolean (EINVAL) and leave the saved value alone', async () => {
+    const env = fresh('sk4');
+    await updateSettings({ ui: { singleKeyShortcuts: false } }, env);
+    for (const bad of ['false', 0, null, [], {}, 'off']) {
+      await assert.rejects(updateSettings({ ui: { singleKeyShortcuts: bad } }, env), { code: 'EINVAL' }, JSON.stringify(bad));
+    }
+    await assert.rejects(saveConfig({ ...defaults(), ui: { theme: 'system', singleKeyShortcuts: 'yes' } }, env), { code: 'EINVAL' });
+    assert.equal((await loadConfig(env)).config.ui.singleKeyShortcuts, false);
   });
 });
 

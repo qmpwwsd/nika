@@ -3,6 +3,9 @@
 // (read-only, 127.0.0.1:3335) never loads them. Every server string is rendered through h() (textContent).
 import { isApp, getJSON } from './api.js';
 import { h, icon } from './dom.js';
+import { modeEl, rowMode, canEndRow } from './modes.js';
+import { wantsHelp, wantsBack, isTextEntry, openShortcuts, helpHint, backHint } from './shortcuts.js';
+import { copyBanner } from './app-copy.js';
 import {
   $, $$, MAC, SHAPE, ORDER, state, hooks, load, save, timeEl, tickTimes, announce, toast, copyText,
   statusEl, modelEl, rulesEl, countsLine, sessionHref, menuEl, menuIsOpen, openDialog, initDialogs, initMenus,
@@ -128,19 +131,57 @@ function endedText(a) {
   return a.lastPrompt || 'Ended';
 }
 
+/** The Ended disclosure draws its rows under this scope, so a row's menu button has a different data-fk once its agent is ended. */
+const endedScope = (scope) => `${scope}-e`;
+
+/**
+ * "End session..." (app tier): loads the End dialog on first use, puts focus on the row's menu button so Cancel returns there, and
+ * opens it. `working` and `promptOpen` only choose the dialog's muted line. A chunk that fails to load or a dialog that throws shows
+ * one fixed toast: the error's own text never reaches the page.
+ */
+async function endSession(a, menuFk, endedFk) {
+  if (!isApp) return;
+  try {
+    const { openEndDialog } = await import('./end-dialog.js');
+    $(`[data-fk="${CSS.escape(menuFk)}"]`)?.focus();
+    openEndDialog({ pane: a.pane.id, name: a.name, working: a.state === 'busy', promptOpen: Boolean(a.attention), onEnded: () => afterEnd(a, endedFk) });
+  } catch {
+    toast("Couldn't open the End dialog.", { kind: 'error' });
+  }
+}
+
+/**
+ * Claude exited: toast, read the list again, then focus the row's menu button. /api/agents is cached for 1.5 s, so the list can
+ * still show the agent live (its row is about to move into Ended and would drop focus): focus the button only when the agent now
+ * shows as ended and its row, in the Ended group, is on screen. Otherwise (still live, gone, or the group is collapsed) the heading.
+ */
+async function afterEnd(a, endedFk) {
+  toast('Session ended');
+  await refresh();
+  const now = (state.data?.groups ?? []).flatMap((g) => g.agents).find((x) => x.id === a.id);
+  const btn = now && sOf(now) === 'ended' ? $(`[data-fk="${CSS.escape(endedFk)}"]`) : null;
+  if (btn && btn.offsetParent !== null) btn.focus();
+  else $('.screen:not([hidden]) h1')?.focus();
+}
+
 function rowEl(a, g, { scope, showProject = false }) {
   const s = sOf(a);
+  const mode = isApp ? rowMode(a, state.modes.map) : null;
   const href = isApp ? sessionHref({ session: a.id, pane: a.pane?.id, project: g.project?.key }) : null;
-  const fk = (k) => `${k}:${scope}:${a.id}`;
+  const fk = (k, sc = scope) => `${k}:${sc}:${a.id}`;
   const what = s === 'attn' ? reasonOf(a) : s === 'ended' ? endedText(a) : a.lastPrompt || '(no prompt yet)';
 
   const items = [{ text: 'Copy resume command', run: () => copyText(a.resumeCmd, 'resume command') }];
   if (a.report?.hasFile) items.push({ text: 'Show report', run: () => showReport(a) });
   if (a.bridgeUrl && SHAPE.claudeUrl.test(a.bridgeUrl)) items.push({ text: 'Open in claude.ai ↗', href: a.bridgeUrl });
   if (a.live && a.pane) items.push({ text: `Focus pane ${a.pane.id} in tmux`, run: () => focusPane(a.pane.id) });
+  if (isApp && canEndRow(a, state.modes.map)) {
+    items.push({ text: 'End session…', run: () => endSession(a, fk('m'), fk('m', endedScope(scope))) });
+  }
 
   const li = h('li', { class: 'row', 'data-s': s },
     h('div', { class: 'c-st' }, statusEl(s)),
+    isApp ? h('div', { class: 'c-mode' }, mode && modeEl(mode.mode, { confirmed: mode.confirmed, compact: true })) : null,
     h('div', { class: 'c-name' },
       href ? h('a', { class: 'name', href, 'data-fk': fk('n'), title: a.name, text: a.name }) : h('span', { class: 'name', title: a.name, text: a.name }),
       a.role === 'orchestrator' ? h('span', { class: 'tag', text: 'orchestrator' }) : null),
@@ -190,7 +231,7 @@ export function agentNodes(g, q, scope, { endedOpen = false } = {}) {
     const open = state.open.has(id) || (def && !state.open.has(`!${id}`));
     const d = h('details', { class: 'ended', open },
       h('summary', { 'data-fk': `sum:${id}`, text: `Ended (${ended.length})` }),
-      rowsEl(ended, g, { scope: `${scope}-e` }, `${g.label} ended agents`));
+      rowsEl(ended, g, { scope: endedScope(scope) }, `${g.label} ended agents`));
     d.addEventListener('toggle', () => {
       if (d.open) { state.open.add(id); state.open.delete(`!${id}`); } else { state.open.delete(id); state.open.add(`!${id}`); }
     });
@@ -284,7 +325,7 @@ export function swap(host, nodes) {
 
 let dashSig = '';
 function renderDashboard(force) {
-  const sig = JSON.stringify([state.data.groups, isApp ? state.projects : null, state.filter, state.showEnded, [...state.open], [...state.expanded], state.me?.tmux, state.me?.claude, state.error]);
+  const sig = JSON.stringify([state.data.groups, isApp ? state.projects : null, isApp ? state.modes.map : null, state.filter, state.showEnded, [...state.open], [...state.expanded], state.me?.tmux, state.me?.claude, state.error]);
   if (!force && (sig === dashSig || interacting())) return;
   dashSig = sig;
   const body = $('#dash-body');
@@ -314,6 +355,17 @@ function bannerList() {
   if (isApp && state.me && state.me.claude === false) {
     out.push({ id: 'claude', kind: 'warn', title: 'Claude Code not found', text: 'Starting an orchestrator and spawning agents are off until claude is on your PATH. Running agents still show up here.', action: { label: 'Check again', run: () => hooks.checkEnv?.() } });
   }
+  // Add to Applications (spec 3.14): macOS app tier, dashboard screen only; the server decides, the page only draws
+  const copy = isApp && state.route.name === 'dashboard' ? copyBanner(state.me?.appCopy, state.appCopyUi) : null;
+  if (copy) {
+    out.push({
+      id: 'app-copy', kind: 'info', icon: 'apps', title: copy.title, text: copy.text, busy: state.appCopyUi.busy, error: state.appCopyUi.error,
+      actions: [
+        { fk: 'primary', label: copy.primary.label, busyLabel: copy.primary.busy, primary: true, run: () => hooks.appCopyInstall?.() },
+        { fk: 'ghost', label: copy.ghost.label, run: () => hooks.appCopyDismiss?.() },
+      ],
+    });
+  }
   const problems = Object.entries(state.data?.sources ?? {}).filter(([k, v]) => v !== 'ok' && !(k === 'tmux' && isApp && state.me?.tmux === false));
   if (problems.length) {
     out.push({ id: 'sources', kind: 'warn', title: 'Some sources are unavailable', text: `The list may be incomplete. ${problems.map(([k, v]) => `${k}: ${v}`).join(' · ')}` });
@@ -321,15 +373,26 @@ function bannerList() {
   return out;
 }
 
+function bannerEl(b) {
+  const busy = b.busy === true;
+  const buttons = (b.actions ?? []).map((a) => h('button', {
+    type: 'button', class: `btn ${a.primary ? 'primary' : 'ghost'}`, 'data-fk': `banner:${b.id}:${a.fk}`,
+    'aria-disabled': busy ? 'true' : null, 'aria-busy': busy && a.primary ? 'true' : null, onclick: () => { if (!busy) a.run(); },
+  }, busy && a.primary ? [h('span', { class: 'spin', 'aria-hidden': 'true' }), ' ', a.busyLabel] : a.label));
+  return h('div', { class: 'banner', 'data-kind': b.kind, 'data-id': b.id, role: b.kind === 'info' ? 'note' : shownBanners.has(b.id) ? null : 'alert' },
+    icon(b.icon ?? (b.kind === 'info' ? 'term' : 'warn')),
+    h('p', null, h('strong', { text: b.title }), ' ', b.text, b.cmd ? [' ', h('code', { text: b.cmd })] : null,
+      b.error ? h('span', { class: 'banner-err', role: 'alert' }, icon('warn'), h('span', { text: b.error })) : null),
+    buttons.length ? h('div', { class: 'acts' }, buttons) : null,
+    b.action ? h('button', { type: 'button', class: 'btn', text: b.action.label, onclick: b.action.run }) : null);
+}
+
 function renderBanners() {
   const list = bannerList();
-  const sig = JSON.stringify(list.map(({ id, kind, title, text, cmd }) => [id, kind, title, text, cmd]));
+  const sig = JSON.stringify(list.map(({ id, kind, title, text, cmd, busy, error }) => [id, kind, title, text, cmd, busy, error]));
   if (sig === bannerSig) return;
   bannerSig = sig;
-  $('#banners').replaceChildren(...list.map((b) => h('div', { class: 'banner', 'data-kind': b.kind, role: b.kind === 'info' ? 'note' : shownBanners.has(b.id) ? null : 'alert' },
-    icon(b.kind === 'info' ? 'term' : 'warn'),
-    h('p', null, h('strong', { text: b.title }), b.text, b.cmd ? [' ', h('code', { text: b.cmd })] : null),
-    b.action ? h('button', { type: 'button', class: 'btn', text: b.action.label, onclick: b.action.run }) : null)));
+  swap($('#banners'), list.map(bannerEl));
   shownBanners.clear();
   for (const b of list) shownBanners.add(b.id);
 }
@@ -371,6 +434,7 @@ function renderChrome() {
 }
 
 export function render(force = false) {
+  syncHints();
   if (!state.data) return;
   renderChrome();
   hooks.renderSide?.();
@@ -444,6 +508,29 @@ function route(initial = false) {
   if (!initial) $(`[data-screen="${name}"] h1`)?.focus();
 }
 
+/* ---------- keyboard shortcuts window (docs/design/spec.md 4.6; the rules and the copy are in shortcuts.js) ---------- */
+/** "?" needs the Settings switch, which only the app tier can store: the browser tier never answers to it (Mod+/ still does). */
+function singleKey() {
+  return isApp && state.settings?.ui?.singleKeyShortcuts !== false;
+}
+
+function openKbd(opener) {
+  openShortcuts({ window: 'dashboard', tier: isApp ? 'app' : 'browser', mac: MAC, singleKey: singleKey(), opener });
+}
+
+let hintSig = null;
+/** The buttons' title and aria-keyshortcuts name "?" only while the switch is on; a Settings save redraws through render(). */
+function syncHints() {
+  const on = singleKey();
+  if (on === hintSig) return;
+  hintSig = on;
+  const hint = helpHint({ mac: MAC, singleKey: on });
+  for (const b of $$('[data-kbd-open]')) {
+    b.title = hint.title;
+    b.setAttribute('aria-keyshortcuts', hint.keys);
+  }
+}
+
 /* ---------- controls and keyboard ---------- */
 function initControls() {
   const since = $('#dash-since');
@@ -475,6 +562,12 @@ function initControls() {
     if (!document.hidden) refresh();
   });
   window.addEventListener('hashchange', () => route());
+  for (const b of $$('[data-kbd-open]')) b.addEventListener('click', () => openKbd(b));
+  for (const a of $$('a.back')) {
+    const hint = backHint({ label: $('span', a).textContent, mac: MAC });
+    a.title = hint.title;
+    a.setAttribute('aria-keyshortcuts', hint.keys);
+  }
   // key hints in the sidebar follow the platform (Cmd on macOS, Ctrl elsewhere)
   for (const k of $$('kbd[data-mod]')) k.textContent = `${MAC ? '⌘' : 'Ctrl+'}${k.dataset.mod}`;
   for (const a of $$('[data-nav]')) a.setAttribute('aria-keyshortcuts', `${MAC ? 'Meta' : 'Control'}+${a.dataset.nav === 'settings' ? ',' : '1'}`);
@@ -493,6 +586,11 @@ function initKeys() {
       }
       return;
     }
+    if (wantsHelp(e, { mac: MAC, singleKey: singleKey(), textEntry: isTextEntry(e.target), passthrough: false, dialogOpen: Boolean(modal) })) {
+      e.preventDefault();
+      openKbd(document.activeElement);
+      return;
+    }
     if (!isApp || modal) return;
     if (mod && !e.altKey && !e.shiftKey && e.key === '1') {
       e.preventDefault();
@@ -506,7 +604,7 @@ function initKeys() {
     } else if (mod && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'f' && state.route.name === 'dashboard') {
       e.preventDefault();
       $('#dash-filter').focus();
-    } else if ((MAC ? e.metaKey && e.key === '[' : e.altKey && e.key === 'ArrowLeft') && state.route.name !== 'dashboard') {
+    } else if (wantsBack(e, { mac: MAC }) && state.route.name !== 'dashboard') {
       e.preventDefault();
       location.hash = '#dashboard';
     }

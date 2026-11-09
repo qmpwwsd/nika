@@ -259,6 +259,55 @@ describe('createMirror', () => {
     assert.equal(exec.calls.length, 6, 'refetched at 250 ms');
   });
 
+  test('(+) capture with fresh: true runs tmux again inside the 250 ms window and refreshes the cache', async () => {
+    t = 30_000;
+    const exec = fakeTmux();
+    const mirror = createMirror({ exec, now: clock });
+    const first = mirror.capture('%1');
+    await tick(exec);
+    await first;
+    assert.equal(exec.calls.length, 2);
+    t += 10;
+    const plain = await mirror.capture('%1');
+    assert.equal(plain.status, 200);
+    assert.equal(exec.calls.length, 2, 'a plain capture still hits the cache');
+    const fresh = mirror.capture('%1', undefined, { fresh: true });
+    await tick(exec);
+    assert.equal((await fresh).status, 200);
+    assert.equal(exec.calls.length, 4, 'fresh skips the cache');
+    t += 245; // 255 ms after the first capture (expired), 245 after the fresh one: the fresh result is what the cache holds
+    const after = await mirror.capture('%1');
+    assert.equal(after.status, 200);
+    assert.equal(exec.calls.length, 4, 'the fresh capture refreshed the cache');
+  });
+
+  test('(−) fresh does not join a capture already in flight, and a plain request still shares a single one', async () => {
+    t = 40_000;
+    const exec = fakeTmux();
+    const mirror = createMirror({ exec, now: clock });
+    const old = mirror.capture('%1'); // in flight, started before the fresh request
+    const fresh = mirror.capture('%1', undefined, { fresh: true });
+    const plain = mirror.capture('%1'); // joins the plain one, not a second one
+    await tick(exec);
+    const rs = await Promise.all([old, fresh, plain]);
+    assert.deepEqual(rs.map((r) => r.status), [200, 200, 200]);
+    assert.equal(exec.calls.length, 4, 'one plain capture and one fresh capture, two tmux calls each');
+  });
+
+  test('(−) fresh with an If-None-Match that matches still answers 304, and a bad option object is ignored', async () => {
+    t = 50_000;
+    const exec = fakeTmux();
+    const mirror = createMirror({ exec, now: clock });
+    const a = mirror.capture('%1', undefined, { fresh: true });
+    await tick(exec);
+    const { etag } = await a;
+    const b = mirror.capture('%1', `"${etag}"`, { fresh: true });
+    await tick(exec);
+    assert.equal((await b).status, 304);
+    const c = mirror.capture('%1', undefined, null); // null options must not throw
+    assert.equal((await c).status, 200);
+  });
+
   test('(+) concurrent requests for one pane share a single capture (single flight)', async () => {
     t = 9_000;
     const exec = fakeTmux();

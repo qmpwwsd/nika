@@ -20,7 +20,7 @@ Related: [contracts](contracts/api-app.md) (routes, stdio protocol, schemas), [A
 | Tier | Process | Routes | Can do |
 |---|---|---|---|
 | Browser (read-only) | `nika serve` on :3335 | `/`, static files, `/api/health`, `/api/agents`, `/api/report/:id`, `POST /api/focus` | list agents, focus a tmux pane |
-| App (privileged) | `nika serve --app`, child of the app | all of the above plus `/api/app/*` | history, pane mirror and input, spawn, start orchestrator, add project, settings, apply rules |
+| App (privileged) | `nika serve --app`, child of the app | all of the above plus `/api/app/*` | history, pane mirror and input, session control (mode, answer a prompt, slash commands, models, End), spawn, start orchestrator, add project, settings, apply rules, the app copy in `~/Applications` (macOS) |
 
 `/api/app/*` is not mounted on :3335 (404). The page shows privileged controls only when `/api/app/me` answers. See
 [ADR 0004](adr/0004-two-tiers.md).
@@ -57,6 +57,24 @@ is [ADR 0002](adr/0002-private-server-stdin-secret.md).
 The shell is deliberately small (ADR 0001): tray, one window, folder picker, "start at login", child supervision. The
 webview may load only its own origin; no Tauri capability is granted to it.
 
+## Session control (0.3)
+
+The permission mode, permission prompts, slash commands and End are read from and typed into Claude's TUI in the tmux
+pane; Claude Code has no other channel into a running interactive session ([ADR 0010](adr/0010-session-control-through-the-tui.md)).
+
+1. `mirror.js` captures the pane; `mode.js` reads the mode from the last non-blank row and the permission prompt from
+   the bottom 15 rows. Unrecognized text is `unknown` / `null`, so a control hides instead of guessing.
+2. `api-app.js` adds `mode`, `modeConfirmed` and `prompt` (with its `sig`) to the capture, and serves
+   `GET /api/app/modes` for the dashboard's mode tags. While a prompt or dialog covers the footer, they show the last
+   mode read from that pane (or the launch mode of a pane nika started) as unconfirmed; that value is display only.
+3. `session-control.js` runs the four actions (`/mode`, `/answer`, `/command`, `/end`): a fresh capture first, one
+   action per pane at a time, keys only through `keys.js`. `/stop` (an `Escape`, twice in vim insert mode) takes no lock. Bad input is a 400; a screen that does not match is a 409; either way nothing is typed.
+4. The page draws what the routes return (`session.js` with `modes.js`, `quick-actions.js`, `palette.js`,
+   `end-dialog.js`); every string is fixed copy or set with `textContent`.
+
+Routes: [`contracts/api-app.md` section 3](contracts/api-app.md). Parsed screen text:
+[`contracts/claude-tui.md`](contracts/claude-tui.md). Threats: T22, T23 and T26 in [security](security.md).
+
 ## Module map
 
 ### `src/` (Node, ES modules)
@@ -64,22 +82,27 @@ webview may load only its own origin; no Tauri capability is granted to it.
 | File | Does |
 |---|---|
 | `actions.js` | The browser tier's only side effects: focus a tmux pane, read an indexed report. |
-| `api-app.js` | Router and guard for `/api/app/*`. Validates, picks the module, sends its `{ status, body }`. |
+| `api-app.js` | Router and guard for `/api/app/*`. Validates, picks the module, sends its `{ status, body }`. Keeps the per-pane held mode and vim memory and builds the session controller. |
+| `appcopy.js` | The macOS copy of `nika.app` in `~/Applications` (ADR 0011): state, install, dismiss and the refresh after an upgrade. Fixed target, source only from this install, built in a temp folder and swapped in with rename. |
 | `appio.js` | The app-tier process: stdio handshake, private server, status feed, folder picker relay. |
-| `cli.js` | The `nika` command: `serve`, `open`, `app`, `status`, `projects`, `rules`, `spawn`, `orchestrate`, `doctor`, `_run-agent`. |
+| `cli.js` | The `nika` command: `serve`, `open`, `app` (`app install`), `status`, `projects`, `rules`, `spawn`, `orchestrate`, `doctor`, `_run-agent`. |
+| `commands-builtin.js` | The curated built-in slash commands for the palette, from `claude-tui.md` section 4. Nothing is read from disk. |
 | `config.js` | Defaults from the environment, port and `--since` parsing, `findTmux`, `findClaude`. |
 | `diff.js` | Unified diff for the rules preview. |
 | `exec.js` | `makeExec()`: `execFile` with a timeout and optional stdin input. |
 | `fsafe.js` | Safe reads of agent-writable files (no symlink, no FIFO, owned by you, size cap). |
 | `fwrite.js` | The only writer: atomic, symlink-safe writes and backups. |
-| `ids.js` | Id shapes (pane, project key, agent name, model, session, key names) checked at every boundary. |
+| `ids.js` | Id shapes (pane, project key, agent name, model, command name, session, key names) checked at every boundary. |
 | `keys.js` | Keystrokes and bracketed paste into a tmux pane. |
-| `mirror.js` | `capture-pane` output turned into rows of whitelisted styled spans. |
+| `mirror.js` | `capture-pane` output turned into rows of whitelisted styled spans; a `fresh` capture skips the 250 ms cache for the control actions. |
+| `mode.js` | Pure parsers over mirror rows: the permission mode from the footer and the permission prompt. They fail closed. |
 | `model.js` | `collect()`: merges every source into agent records and groups them by project. |
+| `models.js` | The static model catalog behind the model dropdowns (`GET /api/app/models`). |
 | `orchestrate.js` | Starts a project's orchestrator in a tmux session. |
 | `paths.js` | nika's own config and state dirs (XDG). |
 | `rules.js` | Renders, previews, hashes and applies the orchestration rules to a project. |
 | `server.js` | The HTTP server both tiers share: Host check, static files with the CSP, the 0.1 routes, a mount hook for the app tier. |
+| `session-control.js` | The four controls on a live pane: switch the mode, End, run a slash command, answer a prompt. One lock per pane, keys only through `keys.js`, fail closed, never kills. |
 | `spawn.js` | `spawnAgent()` splits a pane; `runAgent()` is the `_run-agent` wrapper that runs `claude` with the safety flags. |
 | `store.js` | The validated `config.json` and the project registry. |
 | `text.js` | `clean()` and `cleanBlock()`: strip controls and bidi marks from agent-controlled text. |
@@ -90,8 +113,9 @@ webview may load only its own origin; no Tauri capability is granted to it.
 
 | File | Reads |
 |---|---|
+| `commands.js` | Slash commands and skills for the palette: the built-in list plus the frontmatter (first 4 KB, never the body) of command and skill files in the user, project and plugin folders (app tier). |
 | `history.js` | A session transcript, paginated from disk, newest page first (app tier). |
-| `plugins.js` | Installed Claude Code plugin names (names only). |
+| `plugins.js` | Installed Claude Code plugin names; `listPluginDirs` also returns each plugin's `installPath`, only when it resolves inside the plugins cache. |
 | `projects.js` | Groups a working directory under its git repository; worktrees fold under the main repository. Never runs git. |
 | `registry.js` | The live session registry, one `<pid>.json` per running Claude Code process. |
 | `reports.js` | Spawn report files (`.session`, `.md`, `.rc`) in the scratchpad and in nika's own report dirs. |
@@ -106,12 +130,19 @@ webview may load only its own origin; no Tauri capability is granted to it.
 | `index.html`, `session.html` | The main page and the session window. |
 | `tokens.css`, `app.css`, `session.css` | Design tokens and styles (light, dark, system). |
 | `api.js` | The only client of the app tier: takes the secret once and sends `X-Nika-App`. In the browser tier it refuses to run. |
-| `app.js` | Main page: shell, dashboard, router and the poll loop. Runs in both tiers. |
+| `app-copy.js` | The Add to Applications banner: which banner `appCopy` shows and its fixed copy. Pure; the two POSTs live in `project.js`. |
+| `app.js` | Main page: shell, dashboard (in the app tier: mode tags, the row menu's End and the Add to Applications banner), router, the poll loop and the Keyboard shortcuts keys. Runs in both tiers. |
 | `ui.js` | Shared state and widgets for the main page. |
 | `dom.js` | `h()`: builds DOM with `textContent`, never parses markup. |
-| `project.js` | App tier only: projects, add project, start orchestrator, project view, spawn sheet, apply-rules dialog. |
+| `end-dialog.js` | The End-session dialog, shared by the session window and the dashboard row menu. |
+| `modes.js` | Permission modes in the UI: labels, icons, the switcher's state and the dashboard's mode map and tag. |
+| `models-ui.js` | The model dropdown shared by the session window, Settings and the spawn sheet: groups from the catalog, the Custom ID field and its `MODEL_ID` check. |
+| `palette.js` | The slash-command palette's rules and copy (ranking, views, insertion). No DOM, no requests. |
+| `project.js` | App tier only: projects, add project, start orchestrator, project view, spawn sheet, apply-rules dialog, the poll of `/api/app/modes`, the Add to Applications install and dismiss requests. |
+| `quick-actions.js` | The quick actions', prompt buttons', End dialog's and Shell mode's rules and fixed copy. No DOM, no requests. |
 | `settings.js` | App tier only: the settings screen. |
-| `session.js` | App tier only: the session window (history, live mirror, composer). |
+| `session.js` | App tier only: the session window (history, live mirror, composer, mode switcher, quick actions, prompt buttons, Shell mode, command palette). |
+| `shortcuts.js` | The Keyboard shortcuts window and the key rules around it (`?`, Mod+/, Back). Static copy, both tiers. |
 | `mirror-render.js` | Pane-mirror helpers: render model, cursor, key handling. Re-validates every value. |
 
 Also: `bin/nika` (launcher), `templates/` (generic rules, brief and guard prompt, written from scratch), `app/src-tauri`
@@ -136,12 +167,17 @@ Claude Code's own files (`sessions/`, `projects/`) are read, never written. The 
 
 ### Where writes happen
 
-Only through `src/fwrite.js`: real user-owned folders, targets absent or regular single-link files, an O_EXCL temp file
-with fsync, then rename. nika writes:
+Only through `src/fwrite.js`, with one exception (the app copy, below): real user-owned folders, targets absent or
+regular single-link files, an O_EXCL temp file with fsync, then rename. nika writes:
 
 - its own config and state files (above);
 - into a registered project, only after a diff preview, your confirmation and a hash check: `rules/orchestration.md`,
   one `@rules/orchestration.md` line in `CLAUDE.md`, `enabledPlugins` in `.claude/settings.local.json`, and,
-  if you opt in, one `.gitignore` line.
+  if you opt in, one `.gitignore` line;
+- macOS only, on `nika app install`, the app's Add/Update button, or a launch command refreshing a copy nika made
+  earlier: `~/Applications/nika.app`, a `ditto` copy of the app that came with this install. Fixed target, never
+  `/Applications`; it is replaced only when it is a real folder you own that is nika's bundle, built in a temp folder
+  next to it and swapped in with rename (`src/appcopy.js`; its small state marker goes through `fwrite.js`).
+  Policy: [ADR 0011](adr/0011-app-copy-in-applications.md).
 
 nika never runs `git add`, `commit` or `push`. Policy: [ADR 0006](adr/0006-project-write-policy.md).

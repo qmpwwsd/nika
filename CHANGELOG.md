@@ -1,6 +1,66 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 — 2026-11-09
+
+Session control (desktop app; the browser dashboard on :3335 stays read-only):
+
+- Permission modes: the session window shows Claude's mode in a tag, a frame along the top and the message-box edge
+  (Manual, Accept edits, Plan, Auto, Bypass, Don't ask, or "Mode ?" when nika cannot read it) and switches between
+  Manual, Accept edits, Plan and Auto. It switches only while Claude waits for you, never to Bypass or Don't ask, and
+  announces each change. While a question covers Claude's footer, the tag shows the last known mode as unconfirmed.
+- Prompt buttons: when Claude asks for permission, the session window shows one button per option and an Esc button
+  (cancel, same as No). An option that mentions bypass has no button; answer it in the terminal.
+- Quick actions: Stop (while Claude works), Compact, Clear (asks first), Model, Rewind and End session. Compact, Clear,
+  Model and End type into Claude's input only when it is empty and press Enter only when it reads exactly that
+  command; otherwise they refuse ("Claude's input has text; clear it first." when it holds a draft) and leave your draft alone.
+  Stop works in vim input mode and has its own route, `POST /api/app/pane/:id/stop`: the first Esc only leaves insert
+  mode, so Stop (and End, when Claude is busy) sends a second Esc when the first one did not end the turn. It sends
+  nothing when Claude is idle, and gives a clear reason when it refuses (a question is open, Claude is already waiting,
+  the input mode is unreadable, or another window is already stopping). A command in flight does not block it. Rewind
+  types `/rewind` and Enter through the command route (same rules as Compact) instead of Esc Esc, so it no longer
+  depends on the message box being empty in nika.
+- End session: asks first, presses Esc when Claude is busy or asking (which answers No), then types `/exit`. It never
+  kills the pane. Also in the dashboard row menu.
+- Shell mode: a toggle in the message box that sends your line through Claude's `!` mode, then turns itself off.
+- Command palette: `/` or the Commands button lists Claude's built-in commands and the commands and skills from
+  `~/.claude`, the project and installed plugins, each with a source tag. nika reads only the first 4 KB of each file.
+- Dashboard: rows with a live pane carry the same mode tag, and the row menu has End session.
+- Model dropdowns in Settings, the spawn sheet and the session's Model action list the current models, aliases (`best`,
+  `opusplan`, `opus[1m]`, `sonnet[1m]` and more) and older models, with a Custom ID field.
+- Back is a button with a shortcut (`Cmd+[` on macOS, `Alt+Left` on Linux) in the project view and the session window.
+- Keyboard shortcuts window: `?` or `Cmd+/` (`Ctrl+/` on Linux; the browser dashboard has only that), or the Keyboard
+  shortcuts button. Settings, Appearance has a Single-key shortcuts switch that turns `?` off.
+- Add to Applications (macOS): `nika app install` copies the app into `~/Applications` so Spotlight and Launchpad find
+  it, and the dashboard offers the same once. After `brew upgrade`, `nika`, `nika open` and `nika app` update a copy
+  nika made (the app also offers Update app), and `nika doctor` reports it. nika never writes to `/Applications` and
+  never replaces anything in `~/Applications/nika.app` that is not nika's own bundle.
+- Send and Shell wait while Claude asks for permission: nothing goes to the pane, the text stays in the box and a line says
+  to answer with the buttons or in the terminal (or, when there are no buttons, in the terminal or with Type into pane).
+  The Enter and Shift-Tab chips are off too. A prompt that mentions bypass has no answer buttons; the keys route's refusal
+  shows a fixed line.
+- The session window follows the pane to its new session after `/clear`, when exactly one live session has the pane.
+- Switching modes reports a stop in Bypass, or a footer nika could not read after a press, as an alert; a press that
+  leaves the mode unchanged says so calmly ("The mode didn't change; try again or use the terminal."); with no readable
+  mode the Shift-Tab chip is gone (use the terminal).
+- Small fixes: the Back button names the project only when you came from one; the claude.ai link and the shortcuts button
+  stay together in the header; the shortcuts window's tables scroll inside their own box at 320 px; a dialog opened from a
+  menu item returns focus to the menu's button; the passthrough key reads `⌃]` on a Mac; the message box area no longer
+  widens the session window past 320 px.
+- Bypass guard: nika's keys route refuses Enter, Shift-Tab, a digit or a paste while a permission prompt that mentions bypass is
+  on screen (the question included); answer those in the terminal. When Claude shows something nika cannot read and it
+  mentions bypass, the refusal says so ("nika can't tell what Claude is showing; use the terminal."). The prompt buttons read the whole prompt, not only
+  the option: the capture's `prompt` carries `bypass`, the same window test the answer route applies, and the page draws no
+  answer button when it is true (an answer the route still refuses with 400 says to use the terminal and locks that question).
+- Switching modes never stops quietly in Bypass: it keeps pressing while the footer reads Bypass even if Claude looks
+  busy, retries once when the key limit hits, and otherwise reports that Claude is still in Bypass.
+- App tier API (never mounted on :3335): `GET /api/app/modes`, `/commands` and `/models`; `POST /api/app/pane/:id/mode`,
+  `/answer`, `/command`, `/stop` and `/end`; `POST /api/app/app-copy`. The capture gains `mode`, `modeConfirmed` and `prompt`,
+  `/api/app/me` gains `appCopy`, and the config gains `ui.singleKeyShortcuts`. `MODEL_ID` accepts `best`, `opusplan` and
+  the `[1m]` suffix.
+- Docs: ADR 0010 (session control through the TUI) and 0011 (app copy), `docs/contracts/claude-tui.md` (the Claude Code
+  screen text nika parses, checked against 2.1.319), threats T22, T23, T26 and T33 in `docs/security.md`.
+
+Other:
 
 - Release notes: `scripts/release-check.mjs` joins the CHANGELOG's hard-wrapped lines, so a draft release no longer
   shows a line break in the middle of each sentence (GitHub renders every newline of a release body as one). Code

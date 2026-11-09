@@ -1,6 +1,7 @@
-# nika 0.2 contracts — app tier
+# nika 0.2–0.3 contracts — app tier
 
-Source of truth for every builder in 0.2. Routes, messages, schema fields and argv shapes below are fixed; a change
+Source of truth for every builder from 0.2 on (0.3 adds session control: mode, prompt answer, end, commands, models; ADR
+0010, TUI facts in `docs/contracts/claude-tui.md`). Routes, messages, schema fields and argv shapes below are fixed; a change
 here is a change for every phase and needs the orchestrator's sign-off. Rules: `rules/project-rules.md`; decisions:
 `docs/adr/`.
 
@@ -12,7 +13,10 @@ Id shapes come from `src/ids.js`:
 | `PANE_ID` | `^%\d{1,6}$` |
 | `PROJECT_KEY` | `^[a-z0-9]{16}$` — first 16 hex chars of `sha256(realpath(project dir))` |
 | `AGENT_NAME` | `^[a-z0-9][a-z0-9-]{0,39}$` |
-| `MODEL_ID` | `^claude-[a-z0-9-]{3,60}$` or one of `opus sonnet haiku fable` |
+| `MODEL_ID` | `^(?:claude-[a-z0-9-]{3,60}\|opus\|sonnet\|haiku\|fable\|best\|opusplan)(?:\[1m\])?$` (0.3; brackets are argv only, never a shell, and contain no `#`) |
+| `MODES` | `manual acceptEdits plan auto bypassPermissions dontAsk` — a pane's mode as read from Claude's footer (`manual` = Claude's `default`); `unknown` when unreadable |
+| `MODE_TARGETS` | `manual acceptEdits plan auto` — what the mode switch accepts (`dontAsk` is not a target; whether it is in Claude's Shift+Tab cycle is unverified, `claude-tui.md` §7; `bypassPermissions` is never a target in 0.3, spec §6.3: only panes nika launched with bypass allowed, which arrives in 0.4) |
+| `COMMAND_NAME` | `^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$` — the bare name of a listed slash command or skill (no leading `/`, before any `<plugin>:` prefix) |
 | `TMUX_SESSION` | `^[A-Za-z0-9_][A-Za-z0-9_-]{0,47}$` (never starts with `-`) |
 | `PLUGIN_NAME` | `^[A-Za-z0-9._-]{1,100}@[A-Za-z0-9._-]{1,100}$` |
 | `RC_PREFIX` | `^[a-z0-9][a-z0-9-]{0,19}$` |
@@ -39,15 +43,34 @@ Id shapes come from `src/ids.js`:
 Common error body: `{"error": "<code>", "message": "<short text>"}`; codes used below: `forbidden` 403, `not_found` 404,
 `invalid` 400, `unsupported_media` 415, `too_large` 413, `conflict` 409, `busy` 429, `tmux_unavailable` 503,
 `claude_unavailable` 503, `tmux_failed` 502 (a tmux call failed unexpectedly), `limit` 409 (maxAgents reached), `foreign` 409 (rules file not written by nika, apply without
-`overwriteForeign`), `refused` 409 (a write-safety check failed; `"code"` carries the fwrite/OS code such as `ESYMLINK`).
+`overwriteForeign`), `refused` 409 (a write-safety check failed; `"code"` carries the fwrite/OS code such as `ESYMLINK`),
+and for session control (0.3) `not-idle`, `mode-unknown`, `mode-unchanged`, `not-in-cycle`, `busy-switching`, `no-prompt`,
+`prompt-changed`, `already-answered`, `input-not-empty`, `not-at-prompt`, `bypass-prompt`, `screen-unclear`, all 409. The 0.3 codes are hyphenated, as the spec names them; the older codes keep their underscores.
 
 ## 3. Routes
 
 ### `GET /api/app/me`
 Response `200`:
 ```json
-{ "tier": "app", "version": "0.2.0", "platform": "darwin", "tmux": true, "claude": true, "configDir": "<abs>", "stateDir": "<abs>" }
+{ "tier": "app", "version": "0.2.0", "platform": "darwin", "tmux": true, "claude": true, "configDir": "<abs>", "stateDir": "<abs>",
+  "appCopy": { "state": "missing", "managed": false, "dismissed": false, "version": null, "available": "0.3.0", "running": false } }
 ```
+`appCopy` (0.3, macOS; ADR 0011): the copy of the app in `~/Applications`. `state` ∈ `unsupported` (not macOS) ·
+`no-source` (no nika.app to copy from) · `missing` (no `~/Applications/nika.app`) · `current` (it is nika at the
+source's version) · `stale` (it is nika at another version) · `foreign` (`~/Applications` is not a plain folder you own, or
+that path is a symlink, not a folder you own, or not nika's bundle id). `version` = the copy's version, `available` = the source's version, `managed` = nika made the
+copy (state marker), `dismissed` = "Not now" was chosen on the Add prompt, `running` = this server runs from the copy.
+
+### `POST /api/app/app-copy` (body ≤ 4 KB, `CAP.small`)
+`{ "action": "install" }` copies or updates the app in `~/Applications`; `{ "action": "dismiss" }` records "Not now"
+(the Add prompt is not shown again; the command still works). Any other body → `400 invalid`. One copy at a time → 409
+`copy-busy`. Not macOS → 409 `unsupported`; no source → 409 `no-source`; the target is not nika (or `~/Applications`
+is not a plain folder you own) → 409 `foreign-target` (nothing written); the copy failed → `500 copy-failed` (temp copy removed,
+the old copy left in place); `dismiss` could not record the choice → `500 dismiss-failed` ("nika could not record your choice"). Success →
+`200 { "state": "current", "version": "0.3.0", "restart": false }`; `restart: true` when this server runs from the copy it
+just replaced (the page says to quit and reopen nika). `dismiss` → `200 { "dismissed": true }`. The error body is the common
+`{ "error": "<code>", "message": "<fixed text>" }` with the code above (never a path or OS text), and the body must be exactly
+`{ "action": … }` (extra keys → `400 invalid`). Steps and checks: §6 "App copy".
 
 ### Projects
 
@@ -96,6 +119,50 @@ are added.
 `200 { "plugins": [ "<PLUGIN_NAME>", … ] }` — installed plugin names read from Claude Code's config dir (names only,
 never settings, hooks or keys), ≤ 200, sorted.
 
+### `GET /api/app/commands?project=<key>`
+`project` is optional; a malformed key → `400 invalid`, a key that is not a registered project → `404 not_found`.
+```json
+{ "commands": [ { "name": "compact", "description": "Summarize the conversation to free context", "argHint": "[instructions]", "source": "builtin" },
+                { "name": "config", "description": "…", "argHint": "[key=value]", "source": "builtin", "dialog": true },
+                { "name": "demo:lint", "description": "…", "argHint": "", "source": "plugin", "plugin": "demo" } ] }
+```
+`source` ∈ `builtin user project plugin`; built-ins come first. `name` has no leading `/` (the palette inserts
+`/<name> `): the bare name for built-in, user and project entries, `<plugin>:<name>` for plugin entries. `argHint` is
+`""` when none; `dialog: true` marks a built-in that opens a TUI dialog (`claude-tui.md` §4); `plugin` is set for
+plugin entries. Without `project`: built-in, user and plugin entries (plugins install at user level); with it, project
+entries too.
+
+| Source | Files (top-level only) | Name |
+|---|---|---|
+| builtin | none: curated list in `src/commands-builtin.js` from `claude-tui.md` §4 | as listed |
+| user | `<claude dir>/commands/*.md`, `<claude dir>/skills/*/SKILL.md` | command: file name without `.md`; skill: frontmatter `name`, else the folder name |
+| project | `<project>/.claude/commands/*.md`, `<project>/.claude/skills/*/SKILL.md` | same |
+| plugin | per `installed_plugins.json` key, one install record: the first whose `installPath` resolves inside `<claude dir>/plugins/cache`; then `<installPath>/commands/*.md`, `<installPath>/skills/*/SKILL.md` | `<plugin>:<name>`, `<plugin>` = the key part before `@` |
+
+Reads: the first 4 KB of each file through `fsafe` (no symlinks, regular user-owned files); only the YAML frontmatter
+(between a leading `---` line and the next `---`, `key: value` scalars; `description` may also be a `>`, `>-`, `|` or
+`|-` block scalar, its lines joined with one space); a frontmatter that opens but does not close inside the 4 KB head
+skips the file (the hide flag could lie past the cut); keys `name`, `description`, `argument-hint`, `user-invocable`
+(`false` hides the entry); bodies are never read. Containment: a plugin's `commands/` and `skills/` folders and each
+skill folder must resolve inside the plugins cache; a project's `.claude/commands` and `.claude/skills` must be real
+folders and each skill folder must resolve inside the project; the user's own folders may be links (dotfile managers
+link them). The check runs before the read (a swap in between needs write access to that folder, as `docs/security.md`
+T8). A plugin key with no install record inside the
+cache is skipped. `COMMAND_NAME` applies to the bare name (before the `<plugin>:` prefix); names that miss it and
+command files in subfolders are skipped (they still work when typed). Text through `clean()`, description ≤ 200
+chars; the page renders with `textContent`. Same name within one source: a skill wins over a command. Across sources
+every entry is kept, each with its `source`. Bounds: ≤ 200 files per folder, ≤ 2000 files opened per scan, ≤ 1000 entries in total
+(built-ins count), cached 10 s per project with one scan in flight per project; within the plugin source the first entry
+with a given full name wins. Paths are never returned (T22).
+
+### `GET /api/app/models`
+```json
+{ "models": [ { "id": "claude-opus-5-5", "label": "Opus 5.5", "group": "latest" },
+              { "id": "opusplan", "label": "Opus plan, Sonnet build", "group": "alias", "note": "Opus in plan mode, Sonnet otherwise" } ] }
+```
+The static catalog in `src/models.js`, in catalog order; `group` ∈ `latest alias older`; IDs from `claude-tui.md` §6
+only. No network call. A custom ID is accepted wherever a model is, when it matches `MODEL_ID`.
+
 ### `GET /api/app/session/:id/history?before=<n>&limit=<n>`
 `id` must be a `UUID` present in nika's transcript index (never a path from the request). `limit` 1–200 (default 50),
 `before` a byte offset returned as `nextBefore` by the previous page (default: end of file). The server reads at most
@@ -105,7 +172,10 @@ never settings, hooks or keys), ≤ 200, sorted.
                  "text": "<cleanBlock()>", "tool": "<name>?", "truncated": false } ],
   "nextBefore": 123456 | null }
 ```
-Text is passed through `cleanBlock()` (keeps `\n` and `\t`, strips every other control and bidi code point) and the
+Text is passed through `cleanBlock()` (first removes whole terminal escape sequences: CSI `ESC [ … final`, OSC
+`ESC ] … BEL|ESC \` (an unterminated OSC drops the rest of the text) and two-character `ESC @`–`ESC _`, so `ESC[2mCompactedESC[22m`
+reads `Compacted` and a link's text stays while its target goes; a literal `[2m` without ESC is text and stays; then keeps
+`\n` and `\t` and strips every other control and bidi code point; `clean()` does the same for one line) and the
 page renders it with `textContent`.
 
 ### `GET /api/app/pane/:id/capture`
@@ -113,13 +183,54 @@ page renders it with `textContent`.
 (registry `tmux` field) or a pane nika started (`orchestrator/start`, `spawn`), **and** its `pane_current_command` must
 look like claude (`CLAUDE_COMMAND`: `claude`, `node`, a version string) at that moment, for a started pane too (tmux can
 reuse a pane id after a restart). Else 404. Cached 250 ms per pane,
-one capture in flight per pane (others wait for it), `ETag` = hash of the rows; `If-None-Match` → 304.
+one capture in flight per pane (others wait for it), `ETag` = hash of the mirror's rows hash **and** the `mode` and `modeConfirmed` the
+response shows (so a held mode that changed over unchanged rows is never hidden behind a 304); `If-None-Match` → 304.
 ```json
 { "cols": 120, "rows": [ [ { "t": "text", "s": { "b": true, "fg": 4, "bg": null, "u": false, "i": false, "d": false } } ] ],
-  "cursor": { "x": 0, "y": 0, "visible": true }, "etag": "<hex>" }
+  "cursor": { "x": 0, "y": 0, "visible": true }, "etag": "<hex>",
+  "mode": "plan", "modeConfirmed": true,
+  "prompt": { "question": "Do you want to proceed?", "options": [ { "n": 1, "label": "Yes" }, { "n": 2, "label": "No" } ],
+              "sig": "<16 hex>", "bypass": false } }
 ```
 Only SGR codes 0, 1, 2, 3, 4, 7, 22–24, 27, 30–37, 39, 40–47, 49, 90–97, 100–107 and 38/48;5;n or ;2;r;g;b survive
 (colours as 0–255 or `[r,g,b]`; reverse video adds `"r": true` to the style only while it is on); everything else (OSC, DCS, other CSI, C0/C1) is dropped server-side (T9).
+
+0.3 fields, parsed server-side from the same rows (`src/mode.js`, phrases and layouts in `claude-tui.md` §1–§2):
+- `mode` ∈ `MODES` or `unknown`, read from the last non-blank row only (any number of trailing blank rows are
+  skipped; Claude draws the mode line there). A token counts only at the start of that row: after at most 2 leading
+  spaces, an optional `-- INSERT --` / `-- NORMAL --` prefix and optional `⏵` / `⏸` glyphs; a token elsewhere in the
+  row (a file menu, a help line, a wrapped description) never counts. `manual` only on Claude's positive marker
+  (`manual mode`); no recognized phrase → `unknown`, never `manual`; an otherwise unrecognized footer whose first word
+  (after that prefix) is `bypass` or `bypassPermissions` (any case) → `bypassPermissions` (fail loud); so the
+  slash-command menu (rows starting with `/` or `❯ /`) reads `unknown`, and a permission prompt or dialog covering the
+  footer → `unknown`.
+- `modeConfirmed` (boolean): `true` when `mode` is the footer reading. When the footer reads `unknown` (a permission
+  prompt or dialog covers it, or the text is unrecognized), `mode` is the last mode read from this pane's footer (kept
+  in memory per pane id, dropped when the pane leaves the eligible set), else, for a pane nika started, the recorded
+  launch mode (`started` entry, §9: the `--permission-mode` passed, `manual` when none), and `modeConfirmed` is
+  `false`; with neither, `mode` is `unknown` and `modeConfirmed` is `true`. A held or launch value is display only:
+  the mode route reads the footer itself and never uses it. The switcher is disabled while `mode` is `unknown`,
+  `modeConfirmed` is `false` or a `prompt` is open (the mode route would answer 409), and the page offers no
+  Shift-Tab shortcut while a `prompt` is open.
+- `prompt`: `{ "question", "options": [ { "n", "label" } ], "sig", "bypass" }` when Claude's permission prompt is on screen,
+  else `null`. Layout (`claude-tui.md` §2), all within the last 15 non-blank rows: the closing hint row starting with
+  `Esc to cancel` is the last non-blank row; the options sit directly above it, at least 2, numbered `1..k` (one digit each) without gaps
+  (wrapped rows without a number join the label with one space); the question sits directly above option 1 and ends in
+  `?`. Question and labels pass through `clean()`; question ≤ 200 chars, labels ≤ 80 chars. Unknown layouts (such as
+  the unnumbered folder-trust dialog) give `null`, so no buttons. `sig` = the first 16 hex chars of sha256 over
+  `lastNonBlank(rows, PROMPT_ROWS).join('\n')` (both from `src/mode.js`, so the window cannot drift), computed in
+  `src/api-app.js`; the answer route checks it. `bypass` (boolean) = `bypassWindow(rows)`, the test the answer route and the
+  keys guard apply: the prompt window (the same last 15 non-blank rows as `sig`, so also the tool-call lines above the
+  question) mentions bypass (NFKC, letters only, any case). When `true` the page draws no answer button at all (every
+  option as text with "Answer this one in the terminal"; Esc stays), because the answer route refuses every option
+  with 400 then. An option whose label contains `bypass` (any case) also gets no button when `bypass` is `false` (rule 12). Labels can hold the user's folder paths: shown in the app only, never logged.
+
+### `GET /api/app/modes`
+`200 { "modes": { "%3": { "mode": "plan", "confirmed": true } } }` — one entry per eligible pane (same rule as
+capture), keyed by `PANE_ID`; `mode` and `confirmed` as capture's `mode` and `modeConfirmed` (the key stays
+`confirmed`). Reads go through the mirror's capture cache (250 ms per pane, one capture in flight per pane), at most 4
+captures at once; a pane whose capture fails is left out. The app-tier dashboard polls it every 3 s. This route is the
+"app-tier snapshot" mode of spec §6.1: `/api/agents`, shared by both tiers, stays unchanged and gains no mode.
 
 ### `POST /api/app/pane/:id/keys` (body ≤ 20 KB)
 ```json
@@ -130,7 +241,185 @@ control → 400. `paste`: `\r\n` and `\r` become `\n`; every other C0 except `\n
 the bracketed-paste end marker cannot be forged), then sent with bracketed paste (§8); tmux turns `\n` into CR inside
 the paste (no `-r`), as a terminal paste would. Every validation failure, including size, is `400 invalid`. `keys` ≤ 8 entries, each ∈
 `KEY_NAME`, sent after the text or paste. Same pane rule as capture. 20 requests/s per pane → **429**. Response
-`200 { "sent": { "text": 12, "paste": 0, "keys": 1 } }` (counts of characters / keys sent).
+`200 { "sent": { "text": 12, "paste": 0, "keys": 1 } }` (counts of characters / keys sent). Stop is no longer this route:
+it is `POST /api/app/pane/:id/stop` below (a bare `Escape` does not interrupt Claude while its input is in vim insert mode).
+
+Bypass-prompt guard (0.3, T26). `Enter` confirms the highlighted option of a permission prompt, a digit picks one, and
+`BTab` (Shift-Tab) can pick "allow for this session", so a request whose `keys` contains `Enter` or `BTab`, whose `text`
+contains an ASCII digit `[0-9]`, or that has any `paste`, first takes a fresh capture (never the 250 ms cache) and looks at
+the screen:
+
+- the capture fails → that status and body, nothing sent;
+- the prompt window, `bypassWindow(rows)` in `src/mode.js` (the last 15 non-blank rows, the same window the `sig` covers;
+  `mentionsBypass`: NFKC, letters only, any case, so `By-pass` and full-width letters count), mentions bypass **and** a
+  permission prompt is on screen (`prompt` non-null) → `409 { "error": "bypass-prompt", "message": "Answer this prompt in
+  the terminal" }`, nothing sent;
+- the window mentions bypass, no prompt parses, **and** the footer is unreadable (`mode` would be `unknown`: a dialog nika
+  does not parse, with another hint row, or Claude's slash-command menu, may be open) → `409 { "error": "screen-unclear",
+  "message": "nika can't tell what Claude is showing; use the terminal" }`, nothing sent. This is the unreadable-footer
+  case of the guard, with its own code so the page does not call a slash menu whose command has "bypass" in its name a
+  bypass prompt;
+- a readable footer, whatever it says, is not a prompt: a session that runs in bypass can still be typed to (and leave it
+  with Shift-Tab), and the word in plain output does not block;
+- else the request goes out as before.
+
+A request with none of those (letters without digits, arrows, `Escape`, key chips other than `BTab`) skips the capture and
+is as fast as in 0.2. The mode route's own presses go through `keys.send` directly, not this route, so mode switching is
+unaffected. The page's passthrough posts to this route as well (Shift+Tab maps to `{ "keys": ["BTab"] }`), so it is
+guarded like Send: nothing in nika can answer such a prompt, only the terminal itself (outside nika) can. nika never moves a session into bypass (rule 12). The guard's
+capture runs before the per-pane rate limit (T11).
+
+### `POST /api/app/pane/:id/mode` (body ≤ 4 KB, `CAP.small`)
+```json
+{ "target": "plan" }
+```
+Success: `200 { "mode": "plan", "presses": 2 }`. In this route, answer and End a *fresh capture* skips the mirror's
+250 ms cache, and one control action (mode switch, answer or End) runs per pane at a time. Checks and steps, in this
+order:
+
+1. `target` ∉ `MODE_TARGETS` (`bypassPermissions`, `dontAsk`, `default`, missing, …) → `400 invalid`.
+2. Ineligible pane (same rule as capture) → `404 not_found`.
+3. Another control action (mode switch, answer or End) is running on this pane → 409 `busy-switching`.
+4. Fresh capture. The registry state of the live session on that pane is not `idle` (a pane with no live session, or one
+   claimed by two live sessions, is never idle; the state comes from the eligibility snapshot, at most 1 s old), or a `prompt` is on screen → 409 `not-idle`, also when the mode already equals the target.
+5. Footer `unknown` → 409 `mode-unknown`, no press (an unreadable footer can mean a dialog is open; the recorded launch
+   mode is never used to press blind).
+6. Mode equals `target` → `200 { "mode", "presses": 0 }`. Mode `dontAsk` → 409 `not-in-cycle`, no press (nika never
+   switches to or from it, `claude-tui.md` §7).
+7. Loop: press `BTab` through the keys path (presses count toward its 20 requests/s per pane); a failed send → that
+   send's status and body plus `"presses"`. Re-read the footer (fresh captures) every 300 ms for up to 1.8 s until the mode differs
+   from the pre-press mode; an `unknown` read keeps polling; at 1.8 s: every read was readable and equal to the pre-press
+   mode (the key did not register, or Claude redrew late) → 409 `mode-unchanged` (`presses`); any read was `unknown` → 409
+   `mode-unknown`. Then: target reached → 200; back at the start mode → 409 `not-in-cycle`; 6 presses used → 409
+   `not-in-cycle`; else re-run step 4's idle check with the registry state read again (→ 409 `not-idle`) and press
+   again.
+
+The cycle may pass through `bypassPermissions` on the way when Claude's cycle holds it (a session the user launched
+with bypass allowed); nika never targets it (rule 12). A 409 or a failed send after some presses leaves Claude in the
+mode the last press reached; the page reads it from the next capture. Bypass is never left behind silently (0.3, T23):
+
+- **`presses` in every failure.** Every non-200 answer after at least one press carries `"presses": <n>` in its body, the
+  409s of the footer wait and the idle re-check included (a failed send carries it also with 0).
+- **The held mode is forgotten.** When such an answer comes back, the route sets the pane's held mode to `unknown`
+  (it was the last footer reading, and the footer has changed since), so the next capture whose footer cannot be read
+  reports `mode: "unknown"` instead of a mode that is no longer true, and a started pane's launch mode no longer stands in.
+- **No registry wait inside bypass.** When the footer read after a press is `bypassPermissions`, the next press does not
+  need registry state `idle` (Claude in bypass runs its tools unasked, and a busy registry must not stop the switch from
+  leaving it): a fresh capture is taken, a permission prompt on screen or an unreadable footer ends the switch with
+  409 `{ "error": "stopped-in-bypass", "presses": n }`, otherwise the loop presses again within the same 6-press limit.
+- **One retry of the press that leaves bypass.** A key send answering 429 while the footer last read
+  `bypassPermissions` waits 1 s and is tried once more; a second failure is `stopped-in-bypass`.
+- **Every other ending in bypass is loud.** Not in the cycle, 6 presses used, a failed send, an unchanged footer
+  (`mode-unchanged` becomes `stopped-in-bypass` when that unchanged mode is `bypassPermissions`), or a
+  footer that stays unreadable after a press that started in `bypassPermissions` (that press may have changed nothing),
+  while the last footer reading is `bypassPermissions` → 409 `stopped-in-bypass` with `presses` (the page tells the user
+  Claude may still be in Bypass). A footer that stays unreadable after a press that started in any other mode (the screen
+  never showed bypass) is 409 `mode-unknown` with `presses`; a footer that stayed readable and equal to that mode is 409
+  `mode-unchanged` with `presses` (the page says "The mode didn't change; try again or use the terminal." in a calm line,
+  with no Bypass alert).
+
+### `POST /api/app/pane/:id/answer` (body ≤ 4 KB, `CAP.small`)
+```json
+{ "n": 1, "sig": "<16 hex>" }
+```
+Answers a permission prompt with a fresh parse (T26); "Esc = No" stays the keys route with `{ "keys": [ "Escape" ] }`.
+
+1. `n` not an integer 1–9, or `sig` not 16 lowercase hex chars → `400 invalid`.
+2. Ineligible pane (same rule as capture) → `404 not_found`. Another control action running on this pane → 409
+   `busy-switching`.
+3. Fresh capture. No `prompt` on screen → 409 `no-prompt`.
+4. The prompt's `sig` differs from the body's → 409 `prompt-changed`. The same `sig` was answered on this pane in the
+   last 3 s (a double click, or a second window, before Claude redraws) → 409 `already-answered`, nothing sent.
+5. `n` is not among the prompt's options, or the prompt mentions bypass anywhere in its window: the last 15 non-blank
+   rows (question included, not only the option's label), the option's label or its full wrapped text (`mentionsBypass`,
+   any case; rule 12: nika never moves a session into bypass) → `400 invalid`, "this option is answered in the terminal".
+6. Send the digit as literal text through the keys path (`send-keys -l -- <n>`, counts toward its 20 requests/s per
+   pane; no Enter, `claude-tui.md` §2) → `200 { "answered": 1 }`; a failed send → that send's status and body.
+
+### `POST /api/app/pane/:id/command` (body ≤ 4 KB, `CAP.small`)
+```json
+{ "text": "/compact" }
+```
+Types one slash command into Claude's input and presses Enter, safely; the quick actions (Compact, Clear, Model, and
+Rewind, which sends `/rewind`) use it. `text` = `/` + a `COMMAND_NAME`, optionally one space and arguments, ≤ 200 chars, no C0/C1 controls, else
+`400 invalid`. The composer's own Send stays the keys route (the user's typing passes through as in 0.2).
+
+1. Ineligible pane → `404 not_found`. Another control action running on this pane → 409 `busy-switching`.
+2. Fresh capture and registry state: not `idle`, or a `prompt` on screen → 409 `not-idle` (no Escape here; Stop is
+   its own button). Footer `unknown` → 409 `mode-unknown`.
+3. The input-box, vim and typing checks of End's steps 4–6 with `text` in place of `/exit` (a text that wraps onto a
+   second row fails the exact one-row check → `C-u`, 409 `not-at-prompt`) → `200 { "sent": true }`; a failed send
+   → that send's status and body.
+
+First-character probe (End's step 5 and this route, 0.3). Vim normal mode draws no marker, and a `/` typed there
+opens a history search instead of a slash (`claude-tui.md` §5). So when nothing says vim is on (no remembered
+`-- INSERT --` for the pane, none seen in this action) and `-- INSERT --` is not shown, nika types `/` alone (every
+command text starts with `/`) and takes fresh captures (up to 4, 150 ms apart) until one of three things shows:
+
+- the input box reads exactly `❯ /`: the plain input; nika types `text` without its first character and goes on to the
+  exact read-back of the whole text and Enter;
+- a row of the last 3 non-blank rows holds `Esc i / for slash commands` (the history search): nika sends `Escape`, waits
+  until the empty input box is back, then takes the vim road (`i`, require `-- INSERT --`, which records vim for this action only; the pane's own memory is the capture route's)
+  and types the whole `text`; the box not coming back is 409 `not-at-prompt`;
+- anything else, or nothing within the reads: nika's `/` is removed as far as cleanup can tell it from a draft
+  (`C-u` rounds) and the answer is 409 `not-at-prompt`; no Enter.
+
+A failed send of the rest (after the `/` went in) removes nika's `/` the same way before that send's status and body are
+returned. A draft in the box is never touched: the empty-box check of step 3 comes first (409 `input-not-empty`).
+
+### `POST /api/app/pane/:id/stop` (body ≤ 4 KB, `CAP.small`)
+Body `{}` (a JSON object, `Content-Type: application/json`). Interrupts Claude's turn; the session stays. Same guard and
+pane rule as the other control routes. It does **not** take the per-pane lock (a mode switch, command or End that is
+waiting must not block Stop), but there is one interrupt per pane at a time (End's interrupt shares it). Steps:
+
+1. Ineligible pane → `404 not_found`.
+2. Fresh capture and registry state. A permission prompt on screen → 409 `prompt-open` (Stop never answers a prompt; use
+   the prompt buttons or Esc). The state is not a non-empty string other than `idle` (idle, no live session, two sessions
+   on the pane) → 409 `not-busy`, nothing sent.
+3. Interrupt. Without `-- INSERT --` on screen: one `Escape`. With `-- INSERT --` (Claude's vim insert mode; the first
+   `Escape` only leaves it, `claude-tui.md` §5): send `Escape`, take fresh captures (up to 4, 150 ms apart) until
+   `-- INSERT --` is gone (still shown → 409 `mode-unknown`, no second key), read the registry state again **uncached**
+   (the server drops its 1 s eligibility snapshot first), and send a second `Escape` only if it is still busy. Another
+   interrupt (a Stop, or End's) already running on the pane → 409 `stopping`, nothing sent.
+4. `200 { "stopped": true, "presses": 1 }` (or `2`). A failed capture or key send → its status and body.
+
+### `POST /api/app/pane/:id/end` (body ≤ 4 KB, `CAP.small`)
+Body `{}`. Steps, in this order:
+
+1. Ineligible pane (same rule as capture) → `404 not_found`. Another control action running on this pane → 409
+   `busy-switching`.
+2. Fresh capture and registry state. A `prompt` on screen: send `Escape` once (cancel, the "No" path). A registry state
+   that is a non-empty string other than `idle` (busy): interrupt as the stop route above does (in vim insert mode two
+   `Escape`s, the second only while the registry still says busy, read uncached; a Stop already interrupting the pane →
+   409 `not-idle`, nothing sent). No state at all (no live session on the pane, or two
+   claim it) with no prompt on screen → 409 `not-idle`, **no key sent**. After an `Escape`: wait 1 s, then take a fresh
+   capture and read the registry state again.
+3. The state is still not `idle`, or a `prompt` is still on screen → 409 `not-idle`, nothing typed. Footer `unknown`
+   (a dialog may be open) → 409 `mode-unknown`, nothing typed. So End can never answer a prompt or a dialog.
+4. Input box (`claude-tui.md` §5: the rows between the last two rule rows made only of `─`; the no-break space after
+   `❯` compares as a space): it must be exactly one row reading `❯` alone, or `❯` followed only by dim text (the
+   placeholder; a draft is never dim, whatever it says), where the first character may be reverse video (Claude's
+   cursor over the placeholder) and whitespace may be plain; anything else (a draft, several rows, no box found) → 409
+   `input-not-empty`, nothing typed ("Claude's input has text; clear it first").
+5. Vim: when this pane's mode line has shown `-- INSERT --` before (remembered per pane id by the capture route, like
+   the held mode, or seen in any capture this action took) and the current mode line lacks it, Claude's input is in
+   vim normal mode: send the text `i`, take a fresh capture, and require `-- INSERT --` now. If it does not show and
+   the box reads exactly `❯ i` (vim was turned off; the `i` landed as text), remove it with one `C-u`; then 409
+   `mode-unknown`.
+6. Send the text `/exit` (`send-keys -l -- /exit`), take fresh captures (up to 4, 150 ms apart, stopping at a match):
+   the input box must be exactly one row `❯ /exit` (one separator space after `❯`, then the text, then only
+   whitespace). If not, clean up and answer 409 `not-at-prompt`, no Enter. Clean
+   up = up to 6 rounds, 150 ms apart, of: fresh capture; box empty → read once more after 150 ms (a late redraw), still empty → done; the box's text (rows joined, `❯` and row indents removed)
+   is a non-empty prefix of what nika typed (spaces ignored: a word-wrap can drop one) → send `C-u`; anything else → stop and leave it (it is not only nika's
+   text). `C-u` clears one visual row (`claude-tui.md` §5), hence the rounds. Else send `Enter`.
+7. Check the pane every 500 ms for up to 3 s (by count, not by clock): gone or no longer running claude
+   (`CLAUDE_COMMAND`, after trimming) → `200 { "ended": true }`; else `200 { "ended": false }`.
+
+When any key send (or a capture) fails (for example 429) the sequence stops and the pane is checked once: gone or no longer
+running claude → `{ "ended": true }`, else `{ "ended": false, "reason": "keys" }`. `reason` appears only here, never on
+`ended: true`, never on the plain `ended: false` of step 7 (every key went out and Claude did not exit) and never on a 409:
+the page says "nika couldn't send the keys; try again." for `"keys"` and "Claude didn't exit; use Stop or the terminal."
+otherwise. Never `kill-pane`, never a signal. The eligibility cache is reset afterwards.
 
 ### `POST /api/app/spawn` (body ≤ 80 KB)
 ```json
@@ -250,10 +539,12 @@ warning in `loadConfig().warnings`; a tampered or unreadable file never throws):
   "plugins": { "perProject": { "<PROJECT_KEY>": [ "<PLUGIN_NAME>" ] } },
   "projects": [ { "key": "<PROJECT_KEY>", "dir": "<abs realpath>", "name": "<basename>", "addedAt": "<ISO>" } ],
   "rules": { "localTemplate": null },
-  "ui": { "theme": "system" }
+  "ui": { "theme": "system", "singleKeyShortcuts": true }
 }
 ```
-`ui.theme` ∈ `system light dark` (default `system` = follow `prefers-color-scheme`).
+`ui.theme` ∈ `system light dark` (default `system` = follow `prefers-color-scheme`). `ui.singleKeyShortcuts` boolean
+(default `true`; a missing or non-boolean value reads as the default): whether `?` opens Keyboard shortcuts (design spec
+§4.6). Mod+/ always does.
 Field rules: `models.*` `MODEL_ID`; `remoteControl.prefix` `""` (= project name) or `RC_PREFIX`; `permissionMode` ∈
 `PERMISSION_MODES`; `panePlacement` ∈ `PANE_PLACEMENTS`; `limits.maxAgents` 1–8 (there is no turn limit: Claude Code
 has no `--max-turns` for interactive sessions); `plugins.perProject` ≤ 200 names per project, keys must be registered
@@ -280,6 +571,36 @@ Write API (`src/fwrite.js`): `ensureDir(dir, mode = 0o700)`, `writeAtomic(dir, n
 `realpath(target)` must be inside `root`, else the target is unlinked and the write refused (`ESYMLINK`). Error codes:
 `ESYMLINK` `ENOTDIR` `ENOTREG` `EOWNER` `ENLINK` `EMODE` `EPATH` `EFBIG` (plus the OS codes `ENOENT`, `ELOOP`).
 
+### App copy (`src/appcopy.js`, macOS only, ADR 0011)
+- Target: exactly `<home>/Applications/nika.app` (`os.homedir()`); never `/Applications`, never sudo, never a path from a
+  request or a file. `~/Applications` is created 0700 when absent; when present it must be a real folder you own.
+- Source (never from a request or the state marker), first match: the app bundle this process runs from (its root is
+  `<x>.app/Contents/Resources/nika`) unless that is the target; the Homebrew keg app next to this install
+  (`<root>/../nika.app` when `<root>` is `libexec`); the fixed Homebrew paths `/opt/homebrew/opt/nika/nika.app`,
+  `/usr/local/opt/nika/nika.app`. A source counts only when it is a real folder whose `Contents/Info.plist` (read through
+  `fsafe`, ≤ 64 KB, XML) names `CFBundleIdentifier` `io.github.qmpwwsd.nika`; its `CFBundleShortVersionString` is the
+  `available` version.
+- The target counts as nika only when it is a real folder (not a symlink) you own whose Info.plist names the same bundle id;
+  anything else is `foreign` and is never touched.
+- Copy: a fresh temp folder `~/Applications/.nika-copy-XXXXXX` (`mkdtemp`, 0700); `/usr/bin/ditto <source>
+  <tmp>/nika.app` (`execFile`, fixed argv; keeps the ad hoc signature, adds no quarantine); the copy's Info.plist must
+  name the bundle id and the source's version; then rename the old target (if any) into the temp folder, rename the new
+  copy to the target, and remove the temp folder (it holds only what nika made). A failed step removes the temp folder
+  and moves the old copy back. Then `lsregister -f <target>` (`execFile`, fixed path; failure ignored) so LaunchServices
+  and Spotlight see it at once.
+- After the swap the temp folder is removed only if `~/Applications` is still a real folder you own, not group/world-writable,
+  and the temp folder is still the very directory `mkdtemp` made (not a symlink, same device and inode); otherwise it is
+  left where it is and the install still reports success (the copy is in place).
+- Marker: `<state>/app-copy.json` `{ "managed": true, "version": "0.3.0", "dismissed": false }` (0600, `fwrite`), written
+  after a successful copy, a dismiss, or an explicit install over a current copy nika did not make (nothing is copied then;
+  the copy is only recorded as managed, `dismissed` kept). A launch command never writes it for an unmanaged copy. If the
+  marker write fails after a copy, the route still returns 200 and `nika app install` prints one stderr line ("could not
+  record the copy as managed; nika won't refresh it"). It never holds a path.
+- Refresh: `nika`, `nika open` and `nika app` refresh a **managed** copy whose version differs from this CLI's version
+  when the source has this CLI's version (that is, after `brew upgrade`), then launch the copy with `open <target>`;
+  an unmanaged or foreign copy is never touched. They print "updated the nika app in ~/Applications to X.Y.Z (if nika
+  was open, quit and reopen it)".
+
 ## 7. CLI
 
 | Command | Does |
@@ -287,6 +608,7 @@ Write API (`src/fwrite.js`): `ensureDir(dir, mode = 0o700)`, `writeAtomic(dir, n
 | `nika` | opens the app when installed (macOS `open -b io.github.qmpwwsd.nika`, Linux `nika-app` then `gtk-launch io.github.qmpwwsd.nika`), else the browser dashboard |
 | `nika open [--app\|--browser]` | force one of the two |
 | `nika app` | launch the desktop app (same lookup as `open --app`, does not block); exit 1 with an install hint when it is missing |
+| `nika app install` | macOS: copy or update the app in `~/Applications` (§6 "App copy"); prints "added nika X.Y.Z to ~/Applications (find it with Spotlight)", "updated …" or "already current"; exit 1 with the reason for `no-source` / `foreign-target` / `copy-failed`; Linux: exit 1, "the .deb or AppImage installs the desktop entry" |
 | `nika serve [--app]` | browser tier on `NIKA_PORT` (3335) · app tier on port 0 with the stdio protocol (§5); `--app` refuses a TTY stdin |
 | `nika status [--json] [--since w] [--full]` | unchanged from 0.1 |
 | `nika spawn <name> <model> <brief> [--project dir] [--permission-mode m] [--rc prefix\|off] [--under %pane] [--session name]` | spawn an agent in tmux (needs `$TMUX` or `--session`); `brief` is a file path or `-` for stdin |
@@ -359,7 +681,8 @@ Session targets always carry the trailing colon (`=<session>:`) where tmux expec
 
 Handlers return `{ status, body }` like 0.1 `focusPane` / `readReport`; the router only sends. `ctx` =
 `{ env, exec, tmuxBin, claudeBin, nikaArgv, claudeDir, now, started }` where `started` is the in-process `Map<paneId,
-{ key, name, sessionId, role: "agent" | "orchestrator" }>` of panes nika created. Pane eligibility (in `list-panes`, running claude, and live Claude or `started`) is
+{ key, name, sessionId, role: "agent" | "orchestrator", mode }>` of panes nika created (`mode`, 0.3: the permission
+mode passed at launch, `manual` when none). Pane eligibility (in `list-panes`, running claude, and live Claude or `started`) is
 checked by the router before `mirror` / `keys` are called; those modules still validate `PANE_ID`.
 
 | Module | Exports |

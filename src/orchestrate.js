@@ -54,6 +54,8 @@ export function reduceRc(text, fallback, full = false) {
 
 /** `--permission-mode` pair; `default` passes no flag, `bypassPermissions` is refused (rules constraint 12). */
 export const permissionFlags = (mode) => (mode === 'default' ? [] : ['--permission-mode', mode]);
+/** The mode Claude starts in for that setting: no flag (`default`) starts in manual. Recorded in `started` (capture shows it while the footer is covered). */
+export const launchMode = (mode) => (mode === 'default' ? 'manual' : mode);
 
 /**
  * tmux expands formats in `-c start-directory`: `#{…}` is substituted and `#(cmd)` RUNS cmd through the shell
@@ -80,7 +82,7 @@ async function findOrchestratorPane(ctx, session) {
 
 /**
  * @param {string} projectKey registered PROJECT_KEY
- * @param {object} ctx { env, exec, tmuxBin, claudeBin, started: Map<paneId, { key, name, sessionId, role }> }
+ * @param {object} ctx { env, exec, tmuxBin, claudeBin, started: Map<paneId, { key, name, sessionId, role, mode }> }
  * @returns {Promise<{ status: number, body: object }>} 200 { pane, session, sessionId, created }
  */
 export async function startOrchestrator(projectKey, ctx) {
@@ -118,7 +120,7 @@ export async function startOrchestrator(projectKey, ctx) {
       : ['new-session', '-d', '-s', session, '-n', 'orchestrator', '-c', tmuxLiteral(project.dir), '-x', '200', '-y', '50', ...run]));
     const pane = String(stdout).trim();
     if (!PANE_ID.test(pane)) return fail(502, 'tmux_failed', 'tmux did not return a pane id');
-    ctx.started?.set(pane, { key: projectKey, name: 'orchestrator', sessionId, role: 'orchestrator' });
+    ctx.started?.set(pane, { key: projectKey, name: 'orchestrator', sessionId, role: 'orchestrator', mode: launchMode(config.permissionMode) });
     await tagPane(ctx, pane, 'orchestrator');
     return { status: 200, body: { pane, session, sessionId, created: true } };
   } catch (err) {

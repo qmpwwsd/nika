@@ -20,6 +20,7 @@ import { addProject, listProjects, loadConfig, removeProject } from './store.js'
 import { rulesState, preview as rulesPreview, apply as rulesApply } from './rules.js';
 import { spawnAgent, runAgent } from './spawn.js';
 import { startOrchestrator } from './orchestrate.js';
+import { INSTALL_ROOT, targetPath, appCopyState, installAppCopy, refreshManagedCopy } from './appcopy.js';
 
 const VERSION = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 const ENDED_SHOWN = 5;
@@ -31,11 +32,20 @@ const NIKA_BIN = fileURLToPath(new URL('../bin/nika', import.meta.url));
 const NO_APP = `the nika app is not installed (looked for the macOS bundle ${APP_ID}, or on Linux nika-app on PATH and the ${APP_ID} desktop entry)
 install it, or use the browser dashboard: nika open --browser`;
 
+// Fixed texts for the app copy (ADR 0011): the module's errors carry only a code, so no path or OS text can reach a terminal.
+const COPY_FAILURES = {
+  'no-source': "nika can't find its own app to copy. Reinstall it with Homebrew: brew reinstall nika",
+  'foreign-target': "~/Applications or ~/Applications/nika.app isn't a folder nika can safely replace. Move it away, then run nika app install again.",
+  'copy-busy': 'nika is already copying the app.',
+  'copy-failed': "nika couldn't copy the app to ~/Applications. An existing copy was left as it was.",
+};
+
 const USAGE = `usage: nika [command]
 
 commands:
   open [--app|--browser]  open the app when installed, else the browser dashboard (default)
   app                  open the desktop app (fails when it is not installed)
+  app install          copy the app into ~/Applications so Spotlight finds it (macOS)
   serve [--app]        run the dashboard server on 127.0.0.1 (brew services runs this)
                          --app: private app-tier server on a random port, for the desktop app (needs a pipe on stdin)
   status [options]     print agents grouped by project
@@ -232,13 +242,43 @@ function startDetached(spawn, bin) {
   });
 }
 
+// Everything the app copy needs besides the exec: where this install lives, whose HOME, which state dir. `io.home`, `io.root`
+// and `io.brewApps` are test seams; nothing here comes from a request or an argument.
+const copyArgs = (cx) => ({ root: cx.root, home: cx.home, platform: cx.platform, stateDir: stateDir(cx.env) });
+const copyDeps = (cx) => ({ exec: cx.execT(120_000), ...(cx.brewApps ? { brewApps: cx.brewApps } : {}) });
+
 /**
- * Starts the desktop app: macOS `open -b <bundle id>` (non-zero = not installed, verified on macOS: exit 1 and a
- * LaunchServices message on stderr); Linux `nika-app` on PATH, else `gtk-launch <id>`. True when it was launched.
+ * After `brew upgrade`: brings a copy nika made up to this version. Never blocks a launch: a failure is one line on stderr.
+ * Reads the copy's state once and returns it (as it stands after the refresh; null when it could not be read), so the
+ * launch decides what to open without a second read.
+ */
+async function refreshCopy(cx) {
+  let copy = null;
+  try {
+    copy = await appCopyState(copyArgs(cx), copyDeps(cx));
+    if ((await refreshManagedCopy({ ...copyArgs(cx), version: VERSION }, copyDeps(cx), copy)) === 'updated') {
+      cx.out.write(`updated the nika app in ~/Applications to ${VERSION} (if nika was open, quit and reopen it)\n`);
+      copy = { ...copy, state: 'current', version: copy.available };
+    }
+  } catch (err) {
+    cx.err.write(`nika: could not update the app in ~/Applications (${COPY_FAILURES[err?.code] ? err.code : 'copy-failed'})\n`);
+  }
+  return copy;
+}
+
+/**
+ * Starts the desktop app: macOS opens the copy nika manages in ~/Applications by path (after refreshing it), else
+ * `open -b <bundle id>` (non-zero = not installed, verified on macOS: exit 1 and a LaunchServices message on stderr);
+ * Linux `nika-app` on PATH, else `gtk-launch <id>`. True when it was launched.
  */
 async function launchApp(cx) {
   const tried = (cmd, args) => cx.execT(10_000)(cmd, args).then(() => true, () => false);
-  if (cx.platform === 'darwin') return tried('open', ['-b', APP_ID]);
+  if (cx.platform === 'darwin') {
+    const copy = await refreshCopy(cx);
+    // with two copies the bundle id is ambiguous: the one nika made is opened by its path
+    if (copy?.managed && (copy.state === 'current' || copy.state === 'stale') && (await tried('open', [targetPath(cx.home)]))) return true;
+    return tried('open', ['-b', APP_ID]);
+  }
   const bin = onPath('nika-app', cx.env);
   return bin ? startDetached(cx.spawn, bin) : tried('gtk-launch', [APP_ID]);
 }
@@ -268,7 +308,27 @@ async function openCmd(rest, cx) {
   return openBrowser(cx);
 }
 
+/** `nika app install` (macOS): copy or update the app in ~/Applications. */
+async function appInstallCmd(cx) {
+  if (cx.platform !== 'darwin') throw new CliError('the .deb or AppImage installs the desktop entry; there is nothing to copy on this system', 1);
+  let r;
+  try {
+    r = await installAppCopy(copyArgs(cx), copyDeps(cx));
+  } catch (err) {
+    throw new CliError(COPY_FAILURES[err?.code] ?? COPY_FAILURES['copy-failed'], 1);
+  }
+  if (r.changed === 'added') cx.out.write(`added nika ${r.version} to ~/Applications (find it with Spotlight)\n`);
+  else if (r.changed === 'updated') cx.out.write(`updated nika in ~/Applications to ${r.version} (if nika was open, quit and reopen it)\n`);
+  else cx.out.write(`already current: nika ${r.version} is in ~/Applications\n`);
+  if (r.recorded === false) cx.err.write("nika: could not record the copy as managed; nika won't refresh it\n");
+  return 0;
+}
+
 async function appCmd(rest, cx) {
+  if (rest[0] === 'install') {
+    parse(rest.slice(1));
+    return appInstallCmd(cx);
+  }
   parse(rest);
   if (!(await launchApp(cx))) throw new CliError(NO_APP, 1);
   cx.out.write('opened the nika app\n');
@@ -516,6 +576,19 @@ function dirInfo(dir) {
   }
 }
 
+/** What `nika doctor` adds to the app row about the copy in ~/Applications (macOS); empty when there is nothing to say. */
+async function copyNote(cx) {
+  const c = await appCopyState(copyArgs(cx), copyDeps(cx)).catch(() => null);
+  if (!c) return '';
+  const note = {
+    missing: 'not in ~/Applications: run nika app install',
+    current: `~/Applications copy: ${c.version}, ${c.managed ? 'managed' : 'not managed'} by nika`,
+    stale: `~/Applications copy is ${c.version ?? 'of another version'}, ${c.available} is available: run nika app install`,
+    foreign: "~/Applications or ~/Applications/nika.app isn't a folder nika can safely replace",
+  }[c.state];
+  return note ? `  (${note})` : '';
+}
+
 async function doctor(cx) {
   const row = (k, v) => cx.out.write(`${k.padEnd(7)} ${v}\n`);
   const firstLine = async (bin, arg) => {
@@ -533,7 +606,7 @@ async function doctor(cx) {
   const claudeBin = findClaude(cx.env);
   const claudeV = claudeBin ? await firstLine(claudeBin, '--version') : null;
   row('claude', !claudeBin ? 'not found (add it to PATH or set NIKA_CLAUDE)' : `${tilde(claudeBin)}  ${claudeV ?? '--version failed'}`);
-  row('app', (await appInstalled(cx)) ? 'installed' : 'not installed');
+  row('app', `${(await appInstalled(cx)) ? 'installed' : 'not installed'}${await copyNote(cx)}`);
   row('config', dirInfo(configDir(cx.env)));
   row('state', dirInfo(stateDir(cx.env)));
   row('backups', `${dirInfo(backupsRoot(cx.env))}  (rules apply keeps the last 10 per project)`);
@@ -549,10 +622,11 @@ function toJson(v) {
 export async function main(argv, env = process.env, io = { out: process.stdout, err: process.stderr }) {
   const [cmd = 'open', ...rest] = argv;
   const config = defaultConfig(env);
-  // `io` may carry test doubles: in (stdin), cwd, platform, exec, spawn, serveApp.
+  // `io` may carry test doubles: in (stdin), cwd, platform, exec, spawn, serveApp, and for the app copy home, root, brewApps.
   const cx = {
     env, config, out: io.out, err: io.err, stdin: io.in ?? process.stdin, cwd: io.cwd ?? process.cwd(),
     platform: io.platform ?? process.platform, spawn: io.spawn ?? nodeSpawn, execT: (timeout) => io.exec ?? makeExec({ timeout }),
+    home: io.home ?? os.homedir(), root: io.root ?? INSTALL_ROOT, brewApps: io.brewApps,
   };
   try {
     switch (cmd) {

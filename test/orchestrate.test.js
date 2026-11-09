@@ -65,7 +65,16 @@ describe('startOrchestrator: new session', () => {
         '--session-id', r.body.sessionId, '--model', 'claude-fable-5-1', '-n', 'My-App'],
       [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-role', 'orchestrator'],
     ]);
-    assert.deepEqual(ctx.started.get('%20'), { key: w.project.key, name: 'orchestrator', sessionId: r.body.sessionId, role: 'orchestrator' });
+    assert.deepEqual(ctx.started.get('%20'), { key: w.project.key, name: 'orchestrator', sessionId: r.body.sessionId, role: 'orchestrator', mode: 'manual' });
+  });
+
+  test('(+) started records the launch permission mode from the settings', async () => {
+    for (const [permissionMode, mode] of [['plan', 'plan'], ['acceptEdits', 'acceptEdits'], ['default', 'manual']]) {
+      const w = await world({ permissionMode });
+      const ctx = w.ctx(fakeTmux());
+      const r = await startOrchestrator(w.project.key, ctx);
+      assert.equal(ctx.started.get(r.body.pane).mode, mode, permissionMode);
+    }
   });
 
   test('(+) other sessions exist but not this one: still new-session; a longer name is not a prefix match', async () => {

@@ -10,6 +10,9 @@ import vm from 'node:vm';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { makeFixture, cleanup, fakeExec, NOW } from './helpers.js';
 import { createServer } from '../src/server.js';
+import { CUSTOM as CUSTOM_VALUE } from '../public/models-ui.js';
+import { wantsHelp, wantsBack, isTextEntry, helpHint, backHint } from '../public/shortcuts.js';
+import { copyBanner, copyErrorText, copyToast } from '../public/app-copy.js';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const read = (f) => fs.readFileSync(path.join(PUBLIC, f), 'utf8');
@@ -143,7 +146,7 @@ describe('HTML pages under the strict CSP', () => {
     assert.match(src, /<nav\b/);
     assert.match(src, /id="announce"[^>]*aria-live="polite"/);
     assert.equal((src.match(/<h1\b/g) ?? []).length, 3, 'dashboard, project and settings');
-    assert.equal((src.match(/<dialog\b/g) ?? []).length, 4, 'spawn, rules, confirm, report');
+    assert.equal((src.match(/<dialog\b/g) ?? []).length, 6, 'spawn, rules, confirm, report, end, keyboard shortcuts');
   });
 
   test('(+) index.html: app-only controls are marked so the browser tier removes them', () => {
@@ -174,7 +177,16 @@ describe('permission modes and the spawn brief', () => {
       assert.ok(card, mode);
       assert.doesNotMatch(card[0], WARNING, mode);
     }
-    for (const f of [...JS, ...HTML]) assert.doesNotMatch(read(f).replace(/Bypass permissions is not offered[^<]*/, ''), /bypassPermissions/, f);
+    for (const f of [...JS, ...HTML]) {
+      let text = read(f).replace(/Bypass permissions is not offered[^<]*/, '');
+      // modes.js must name the mode to show it (a session already in bypass gets the loud Bypass tag); it may do so only
+      // in its display table, its loud-note check and bypassTag(), and its switch targets never include it
+      if (f.endsWith('modes.js')) {
+        assert.match(text, /export const MODE_TARGETS = \['manual', 'acceptEdits', 'plan', 'auto'\];/, f);
+        text = text.replace(/\n {2}bypassPermissions: \{ label: 'Bypass',[^\n]*/, '').replace(/key === 'bypassPermissions' \?/, '').replace(/bypassTag = \(\) => modeEl\('bypassPermissions'\);/, '');
+      }
+      assert.doesNotMatch(text, /bypassPermissions/, f);
+    }
   });
 
   // The spawn sheet's rule is the client half of src/spawn.js (parseRequest): run the page's own function.
@@ -239,9 +251,315 @@ describe('CSS', () => {
     assert.deepEqual(unanchoredScrollers('.list { overflow: auto; } .ok { position: relative; overflow-y: scroll; }'), ['.list']);
   });
 
+  // The End dialog must look the same on both pages, so the shared rules live once, in tokens.css (both pages load it).
+  const ruleSelectors = (css) => [...css.replace(/\/\*[\s\S]*?\*\//g, '').matchAll(/([^{}]+)\{[^{}]*\}/g)].flatMap((m) => m[1].split(',').map((x) => x.trim()));
+  const keyframes = (css) => [...css.replace(/\/\*[\s\S]*?\*\//g, '').matchAll(/@keyframes\s+([\w-]+)/g)].map((m) => m[1]);
+  const SHARED = ['dialog', 'dialog::backdrop', 'dialog[open]', 'dialog.dlg-confirm', '.dlg-head', '.dlg-head h2', '.dlg-body', '.dlg-foot', '.alert', '.alert p', '.alert .ic',
+    '.alert[data-kind="danger"]', '.alert[data-kind="danger"] .ic', '.toasts', '.toast', '.toast p', '.spin', '.btn.danger', '.btn.danger:hover', '.btn.danger.fill', '.btn.danger.fill:hover'];
+
+  test('(+) dialog, alert and toast rules (and .spin, .btn.danger and their keyframes) are defined once, in tokens.css', () => {
+    const tokens = ruleSelectors(read('tokens.css'));
+    for (const sel of SHARED) assert.equal(tokens.filter((x) => x === sel).length, 1, `${sel} once in tokens.css`);
+    for (const f of ['app.css', 'session.css']) {
+      const own = ruleSelectors(read(f));
+      for (const sel of SHARED) assert.equal(own.includes(sel), false, `${sel} is not repeated in ${f}`);
+    }
+    for (const name of ['dlg-in', 'toast-in', 'st-spin']) {
+      assert.equal(keyframes(read('tokens.css')).filter((x) => x === name).length, 1, `@keyframes ${name} once in tokens.css`);
+      for (const f of ['app.css', 'session.css']) assert.equal(keyframes(read(f)).includes(name), false, `@keyframes ${name} is not repeated in ${f}`);
+    }
+  });
+
+  test('(−) both pages load tokens.css before their own sheet, and the page-only dialog variants stay where they are used', () => {
+    for (const [page, own] of [['index.html', 'app.css'], ['session.html', 'session.css']]) {
+      const links = [...read(page).matchAll(/<link\b[^>]*rel="stylesheet"[^>]*href="\/?([^"]+)"/g)].map((m) => m[1]);
+      assert.ok(links.indexOf('tokens.css') >= 0 && links.indexOf('tokens.css') < links.indexOf(own), page);
+    }
+    const app = ruleSelectors(read('app.css'));
+    for (const sel of ['dialog.sheet', 'dialog.dlg-report', 'dialog.dlg-rules']) assert.ok(app.includes(sel), `${sel} stays in app.css`);
+    assert.equal(ruleSelectors(read('tokens.css')).includes('dialog.sheet'), false, 'the side sheet is a dashboard-only dialog');
+  });
+
+  test('(+) the End dialog alert keeps its 600 weight on both pages, and the muted lines in a dialog use the small size', () => {
+    const tokens = read('tokens.css').replace(/\/\*[\s\S]*?\*\//g, '');
+    assert.match(tokens, /\.dlg-confirm \.alert \{[^}]*font-weight: 600/);
+    assert.match(tokens, /\.dlg-body \.muted \{[^}]*font-size: var\(--fs-small\)/);
+    assert.match(tokens, /\.dlg-body p \{[^}]*margin: 0/);
+  });
+
+  test('(+) .btn.danger.fill is the filled danger button of spec 9.8: danger fill and border, surface text, and the fill survives hover', () => {
+    const tokens = read('tokens.css').replace(/\/\*[\s\S]*?\*\//g, '');
+    assert.match(tokens, /\.btn\.danger\.fill \{[^}]*background: var\(--danger\);[^}]*color: var\(--surface\);[^}]*border-color: var\(--danger\);/);
+    const hover = /\.btn\.danger\.fill:hover \{([^}]*)\}/.exec(tokens)?.[1] ?? '';
+    assert.match(hover, /background: var\(--danger\);/, 'hover keeps the fill');
+    assert.match(hover, /border-color: var\(--danger\);/);
+    assert.match(hover, /color: var\(--surface\);/);
+    assert.doesNotMatch(hover, /danger-soft/, 'the pale hover of the plain danger button would wash the label out');
+    assert.ok(tokens.indexOf('.btn.danger.fill {') > tokens.indexOf('.btn.danger:hover {'), 'declared after the plain danger rules, so the fill wins by order as well');
+  });
+
+  test('(+) End session in the dashboard dialog and in the session window is the filled danger button', () => {
+    for (const page of ['index.html', 'session.html']) {
+      const btn = new RegExp('<button\\b[^>]*\\bid="end-go"[^>]*>').exec(read(page))?.[0] ?? '';
+      assert.match(btn, /class="btn danger fill"/, page);
+    }
+  });
+
+  test('(−) fill is on those two buttons only: the quick-actions End, the Clear dialog and the dashboard confirm stay plain danger', () => {
+    const tagOf = (page, id) => new RegExp(`<button\\b[^>]*\\bid="${id}"[^>]*>`).exec(read(page))?.[0] ?? '';
+    for (const [page, id] of [['index.html', 'cf-ok'], ['session.html', 'qa-end'], ['session.html', 'clear-go']]) {
+      const btn = tagOf(page, id);
+      assert.match(btn, /class="btn danger\b/, `${page} #${id} is still danger`);
+      assert.doesNotMatch(btn, /\bfill\b/, `${page} #${id} is not filled`);
+    }
+    const uses = ['index.html', 'session.html'].flatMap((f) => [...read(f).matchAll(/class="[^"]*\bfill\b[^"]*"/g)]);
+    assert.equal(uses.length, 2, 'two buttons use .fill, nothing else');
+  });
+
   test('(−) the owner-banned word never appears in the shipped UI', () => {
     const banned = new RegExp('pony' + 'tail', 'i');
     for (const f of files.filter((x) => /\.(js|css|html|svg)$/.test(x))) assert.doesNotMatch(read(f), banned, f);
+  });
+});
+
+describe('model pickers in the markup', () => {
+  const html = read('index.html');
+  const ROLES = ['orchestrator', 'reasoner', 'builder', 'scout'];
+  const select = (id) => new RegExp(`<select\\b[^>]*\\bid="${id}"[^>]*>[\\s\\S]*?</select>`).exec(html)?.[0] ?? '';
+  const tag = (id) => new RegExp(`<[a-z]+\\b[^>]*\\bid="${id}"[^>]*>`).exec(html)?.[0] ?? '';
+
+  test('(+) settings markup has four selects, each with a Custom ID option, and a hidden custom field with its own error slot', () => {
+    for (const r of ROLES) {
+      const sel = select(`set-model-${r}`);
+      assert.ok(sel, `select for ${r}`);
+      assert.match(sel, /<option value="__custom__">Custom ID…<\/option>/, `${r} has the Custom ID option`);
+      assert.match(html, new RegExp(`<label for="set-model-${r}">`));
+      const custom = tag(`set-model-${r}-custom`);
+      assert.match(custom, /^<input type="text"/, r);
+      assert.match(custom, /\bhidden\b/, `${r}: hidden until Custom ID is chosen`);
+      assert.match(custom, /\baria-label="Custom model ID for/, r);
+      assert.match(tag(`set-model-${r}-custom-err`), /class="err"[^>]*\bhidden\b|\bhidden\b[^>]*class="err"/, r);
+    }
+    assert.equal(CUSTOM_VALUE, '__custom__');
+  });
+
+  test('(−) the model datalist and every free-text model input without a dropdown are gone from Settings', () => {
+    assert.doesNotMatch(html, /<datalist\b/);
+    assert.doesNotMatch(html, /\blist="model-list"/);
+    assert.doesNotMatch(html, /data-rx="model"/);
+    for (const r of ROLES) assert.doesNotMatch(tag(`set-model-${r}`), /^<input/, `${r} is a select now`);
+  });
+
+  test('(+) the spawn sheet model is a select with a hidden custom field and an error slot', () => {
+    assert.match(select('sp-model'), /^<select\b/);
+    assert.match(tag('sp-model-custom'), /^<input type="text"[^>]*\bhidden\b/);
+    assert.match(tag('sp-model-custom-err'), /\bhidden\b/);
+  });
+
+  test('(−) the model rule lives once: ui.js has no second copy of MODEL_ID in RX', () => {
+    assert.doesNotMatch(code(read('ui.js')), /model:\s*\[\s*\//);
+  });
+});
+
+describe('Back button and the Keyboard shortcuts window on the dashboard (spec 3.13, 4.6)', () => {
+  const html = read('index.html');
+  const tokens = read('tokens.css').replace(/\/\*[\s\S]*?\*\//g, '');
+  const selectors = (css) => [...css.replace(/\/\*[\s\S]*?\*\//g, '').matchAll(/([^{}]+)\{[^{}]*\}/g)].flatMap((m) => m[1].split(',').map((x) => x.trim()));
+  const tag = (src, re) => re.exec(src)?.[0] ?? '';
+  /** Source of a top-level `function name(...) { ... }` (it ends at the first line that is just a closing brace). */
+  const topFn = (src, name) => {
+    const m = new RegExp(`\nfunction ${name}\\([^)]*\\) \\{[^]*?\n\\}\n`).exec(src);
+    assert.ok(m, `app.js defines ${name}()`);
+    return m[0];
+  };
+
+  test('(+) the project view back link is a .back button: icon, then the label in a span, to #dashboard', () => {
+    assert.match(html, /<a class="back" href="#dashboard"><svg class="ic" aria-hidden="true"><use href="#i-back"\/><\/svg><span>Dashboard<\/span><\/a>/);
+  });
+
+  test('(−) no .crumb is left: not in a page, not in a stylesheet', () => {
+    for (const f of HTML) assert.doesNotMatch(read(f), /class="[^"]*\bcrumb\b/, f);
+    for (const f of CSS) assert.equal(selectors(read(f)).some((x) => /\.crumb\b/.test(x)), false, f);
+  });
+
+  test('(+) .back is defined once, in tokens.css, with the values of spec 3.13 (and not again in a page sheet)', () => {
+    for (const sel of ['.back', '.back span', '.back:hover', '.back:active', '.back:focus-visible']) {
+      assert.equal(selectors(read('tokens.css')).filter((x) => x === sel).length, 1, `${sel} once in tokens.css`);
+      for (const f of ['app.css', 'session.css']) assert.equal(selectors(read(f)).includes(sel), false, `${sel} is not repeated in ${f}`);
+    }
+    const body = /\.back \{([^}]*)\}/.exec(tokens)[1];
+    for (const decl of ['display: inline-flex', 'align-items: center', 'gap: 4px', 'height: 28px', 'max-width: 28ch', 'padding: 0 8px 0 4px', 'border-radius: var(--r-sm)', 'color: var(--text-muted)', 'font-weight: 600', 'text-decoration: none']) {
+      assert.ok(body.includes(decl), decl);
+    }
+    assert.match(tokens, /\.back span \{[^}]*overflow: hidden;[^}]*text-overflow: ellipsis;[^}]*white-space: nowrap/);
+    assert.match(tokens, /\.back:hover \{[^}]*background: var\(--surface-3\);[^}]*color: var\(--text\)/);
+    assert.match(tokens, /\.back:active \{[^}]*background: var\(--surface-3\)/);
+    assert.match(tokens, /\.back:focus-visible \{[^}]*outline: 2px solid var\(--focus\);[^}]*outline-offset: 2px/);
+  });
+
+  test('(+) #kbd-dlg is a native dialog for both tiers: labelled, with the heading, the window line, the body and the footer', () => {
+    const dlg = /<dialog\b[^>]*\bid="kbd-dlg"[^>]*>[\s\S]*?<\/dialog>/.exec(html)?.[0] ?? '';
+    assert.ok(dlg, 'index.html has #kbd-dlg');
+    assert.match(dlg, /<dialog\b[^>]*\bclass="dlg-kbd"/);
+    assert.match(dlg, /\baria-labelledby="kbd-h"/);
+    assert.doesNotMatch(dlg, /data-app-only/, 'the browser tier has the window too (Mod+/)');
+    assert.match(dlg, /<h2 id="kbd-h" tabindex="-1">Keyboard shortcuts<\/h2>/);
+    for (const id of ['kbd-sub', 'kbd-body', 'kbd-foot']) assert.match(dlg, new RegExp(`\\bid="${id}"`), id);
+    assert.match(dlg, /class="dlg-head"/);
+    assert.match(dlg, /class="dlg-body"/);
+    assert.match(dlg, /class="dlg-foot"/);
+    assert.match(tokens, /dialog\.dlg-kbd \{[^}]*width: min\(560px, calc\(100vw - 32px\)\)/);
+    assert.match(tokens, /dialog\.dlg-kbd \{[^}]*max-height: min\(720px, calc\(100vh - 32px\)\)/);
+  });
+
+  test('(+) the sidebar footer (app tier) has the Keyboard shortcuts button; the browser tier gets its own in the dashboard bar', () => {
+    const nav = /<nav class="side"[\s\S]*?<\/nav>/.exec(html)[0];
+    const btn = tag(nav, /<button\b[^>]*\bdata-kbd-open\b[^>]*>[\s\S]*?<\/button>/);
+    assert.ok(btn, 'a button in the app-only sidebar');
+    assert.match(btn, /class="btn icon ghost"/);
+    assert.match(btn, /aria-label="Keyboard shortcuts"/);
+    assert.match(btn, /aria-keyshortcuts="[^"]+"/);
+    assert.match(btn, /title="Keyboard shortcuts \(\?\)"/);
+    assert.match(btn, /<use href="#i-kbd"\/>/);
+    assert.ok(nav.indexOf('data-kbd-open') > nav.indexOf('class="side-foot"'), 'in the footer');
+    const bar = /<header class="bar">[\s\S]*?<\/header>/.exec(html)[0];
+    const alt = tag(bar, /<button\b[^>]*\bdata-kbd-open\b[^>]*>[\s\S]*?<\/button>/);
+    assert.ok(alt, 'the dashboard bar has one too');
+    assert.match(alt, /\bdata-browser-only\b/, 'removed on the app tier so there is one button per tier');
+    assert.match(alt, /aria-label="Keyboard shortcuts"/);
+    assert.match(alt, /aria-keyshortcuts="[^"]+"/);
+    assert.equal((html.match(/data-kbd-open/g) ?? []).length, 2);
+  });
+
+  test('(+) the i-kbd icon is in the sprite, byte for byte as in the session window', () => {
+    const sym = (src) => /<symbol id="i-kbd"[^>]*>[\s\S]*?<\/symbol>/.exec(src)?.[0];
+    assert.ok(sym(html));
+    assert.equal(sym(html), sym(read('session.html')));
+  });
+
+  test('(+) Settings > Appearance has the Single-key shortcuts checkbox with its help text', () => {
+    const sec = /<section class="set-sec" id="s-appearance"[\s\S]*?<\/section>/.exec(html)[0];
+    const input = tag(sec, /<input\b[^>]*\bid="set-singlekey"[^>]*>/);
+    assert.match(input, /type="checkbox"/);
+    assert.match(input, /aria-describedby="set-singlekey-help"/);
+    assert.doesNotMatch(input, /\bchecked\b/, 'the page sets it from the saved value');
+    assert.match(sec, /<span>Single-key shortcuts<\/span>/);
+    assert.match(sec, /<p class="help" id="set-singlekey-help">Press \? to show keyboard shortcuts\. Turn this off if you use speech input or single-key commands\.<\/p>/);
+  });
+
+  test('(+) settings.js reads the checkbox from the saved value (default on) and saves it next to the theme', () => {
+    const src = code(read('settings.js'));
+    assert.match(src, /\$\('#set-singlekey'\)\.checked = s\.ui\?\.singleKeyShortcuts !== false/);
+    assert.match(src, /ui: \{ theme: radio\('theme'\), singleKeyShortcuts: \$\('#set-singlekey'\)\.checked \}/);
+  });
+
+  test('(+) app.js imports the shortcut rules from shortcuts.js, and ui.js takes MAC from isMac (one platform test)', () => {
+    assert.match(read('app.js'), /import \{[^}]*\bwantsHelp\b[^}]*\} from '\.\/shortcuts\.js';/);
+    assert.match(code(read('ui.js')), /export const MAC = isMac\(navigator\);/);
+    assert.doesNotMatch(code(read('ui.js')), /\/Mac\|iPhone\|iPad\//);
+  });
+
+  // The keydown handler of app.js, run for real: the shortcut rules (shortcuts.js) are the real ones, the page is a stub.
+  const keyRig = ({ isApp = true, settings = { ui: { singleKeyShortcuts: true } }, route = 'dashboard', dialog = false, mac = false } = {}) => {
+    const app = read('app.js');
+    const log = { kbd: [], hash: [], prevented: 0 };
+    let handler;
+    const state = { settings, route: { name: route } };
+    const ctx = {
+      isApp, state, MAC: mac, hooks: {}, wantsHelp, wantsBack, isTextEntry,
+      openKbd: (opener) => log.kbd.push(opener),
+      location: { set hash(v) { log.hash.push(v); } },
+      $: (sel) => (sel === 'dialog[open]' && dialog ? { id: 'open-dialog' } : null),
+      document: { activeElement: { id: 'active' }, addEventListener: (type, fn) => { if (type === 'keydown') handler = fn; } },
+    };
+    vm.runInNewContext(`${topFn(app, 'singleKey')}\n${topFn(app, 'initKeys')}\ninitKeys()`, ctx);
+    return {
+      log,
+      press: (key, more = {}, target = { tagName: 'BUTTON' }) => {
+        const e = { key, ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, target, preventDefault() { log.prevented += 1; }, ...more };
+        handler(e);
+        return log.prevented;
+      },
+    };
+  };
+
+  test('(+) app tier: "?" outside text entry and Mod+/ open the window for the focused control', () => {
+    const r = keyRig();
+    r.press('?', { shiftKey: true });
+    assert.deepEqual(r.log.kbd, [{ id: 'active' }]);
+    r.press('/', { ctrlKey: true });
+    assert.equal(r.log.kbd.length, 2);
+    assert.equal(r.log.prevented, 2, 'both are consumed');
+    const mac = keyRig({ mac: true });
+    mac.press('/', { metaKey: true });
+    assert.equal(mac.log.kbd.length, 1);
+  });
+
+  test('(−) app tier: "?" does nothing in an input, a textarea, a select, with a dialog open or with the setting off', () => {
+    for (const target of [{ tagName: 'INPUT' }, { tagName: 'TEXTAREA' }, { tagName: 'SELECT' }, { tagName: 'DIV', isContentEditable: true }]) {
+      const r = keyRig();
+      r.press('?', {}, target);
+      assert.equal(r.log.kbd.length, 0, target.tagName);
+    }
+    const dlg = keyRig({ dialog: true });
+    dlg.press('?');
+    dlg.press('/', { ctrlKey: true });
+    assert.equal(dlg.log.kbd.length, 0, 'also not the shortcuts window itself');
+    const off = keyRig({ settings: { ui: { singleKeyShortcuts: false } } });
+    off.press('?');
+    assert.equal(off.log.kbd.length, 0);
+    off.press('/', { ctrlKey: true });
+    assert.equal(off.log.kbd.length, 1, 'Mod+/ always works');
+  });
+
+  test('(+) a settings answer without the field (or no answer yet) counts as on', () => {
+    for (const settings of [null, {}, { ui: {} }, { ui: { singleKeyShortcuts: 'no' } }]) {
+      const r = keyRig({ settings });
+      r.press('?');
+      assert.equal(r.log.kbd.length, 1, JSON.stringify(settings));
+    }
+  });
+
+  test('(−) browser tier: "?" never opens it (the setting cannot be stored there); Mod+/ does', () => {
+    const r = keyRig({ isApp: false, settings: null });
+    r.press('?');
+    assert.equal(r.log.kbd.length, 0);
+    r.press('/', { ctrlKey: true });
+    assert.equal(r.log.kbd.length, 1);
+  });
+
+  test('(+) Back: Alt+Left on Linux and Command+[ on macOS go to the dashboard from another screen', () => {
+    const lin = keyRig({ route: 'project' });
+    lin.press('ArrowLeft', { altKey: true });
+    assert.deepEqual(lin.log.hash, ['#dashboard']);
+    const mac = keyRig({ route: 'settings', mac: true });
+    mac.press('[', { metaKey: true });
+    assert.deepEqual(mac.log.hash, ['#dashboard']);
+  });
+
+  test('(−) Back does nothing on the dashboard, in a dialog, on the browser tier, or with the wrong platform key', () => {
+    const cases = [keyRig({ route: 'dashboard' }), keyRig({ route: 'project', dialog: true }), keyRig({ route: 'project', isApp: false }), keyRig({ route: 'project', mac: true })];
+    for (const r of cases) r.press('ArrowLeft', { altKey: true });
+    for (const r of cases) assert.deepEqual(r.log.hash, []);
+  });
+
+  test('(+) the buttons\' title and aria-keyshortcuts follow the Settings switch and the platform', () => {
+    const app = read('app.js');
+    const buttons = [{ attrs: {} }, { attrs: {} }].map((b) => ({ ...b, setAttribute(k, v) { this.attrs[k] = v; } }));
+    const state = { settings: { ui: { singleKeyShortcuts: true } } };
+    const ctx = { isApp: true, state, MAC: false, helpHint, $$: () => buttons };
+    const sync = vm.runInNewContext(`let hintSig = null;\n${topFn(app, 'singleKey')}\n${topFn(app, 'syncHints')}\nsyncHints`, ctx);
+    sync();
+    assert.deepEqual(buttons.map((b) => [b.title, b.attrs['aria-keyshortcuts']]), Array(2).fill(['Keyboard shortcuts (?)', 'Shift+Slash Control+Slash']));
+    state.settings = { ui: { singleKeyShortcuts: false } };
+    sync();
+    assert.deepEqual(buttons.map((b) => [b.title, b.attrs['aria-keyshortcuts']]), Array(2).fill(['Keyboard shortcuts (Ctrl+/)', 'Control+Slash']));
+  });
+
+  test('(+) every back link gets its title and aria-keyshortcuts from backHint with its own label', () => {
+    const src = code(read('app.js'));
+    assert.match(src, /for \(const a of \$\$\('a\.back'\)\) \{[^}]*backHint\(\{ label: \$\('span', a\)\.textContent, mac: MAC \}\)/);
+    assert.deepEqual(backHint({ label: 'Dashboard', mac: false }).keys, 'Alt+ArrowLeft');
   });
 });
 
@@ -260,7 +578,8 @@ describe('tier separation in the page code', () => {
   });
 
   test('(−) /api/app appears only in the app-tier modules (best-effort: strings in comments are ignored)', () => {
-    for (const f of JS.filter((x) => !['api.js', 'project.js', 'settings.js', 'session.js'].includes(x))) {
+    // end-dialog.js serves the app tier only (the session window, and the dashboard's End item behind isApp)
+    for (const f of JS.filter((x) => !['api.js', 'project.js', 'settings.js', 'session.js', 'end-dialog.js'].includes(x))) {
       assert.doesNotMatch(code(read(f)), /\/api\/app/, `${f} is loaded on the browser tier and must not name an app route`);
     }
   });
@@ -270,11 +589,36 @@ describe('tier separation in the page code', () => {
       assert.doesNotMatch(code(read(f)), /^\s*import\b[^;]*from\s*['"]\.\/(project|settings)\.js['"]/m, `${f} must not import them statically`);
     }
     const app = code(read('app.js'));
-    for (const mod of ['project', 'settings']) {
+    for (const mod of ['project', 'settings', 'end-dialog']) {
       const at = app.indexOf(`import('./${mod}.js')`);
       assert.ok(at > 0, `app.js imports ${mod}.js dynamically`);
-      assert.match(app.slice(Math.max(0, at - 160), at), /if \(isApp\)/, `${mod}.js import sits inside an isApp guard`);
+      assert.match(app.slice(Math.max(0, at - 160), at), /if \(!?isApp\)/, `${mod}.js import sits inside an isApp guard`);
     }
+  });
+
+  test('(+) end-dialog.js loads on the dashboard only through a dynamic import behind isApp (the End item is built only on the app tier)', () => {
+    for (const f of JS.filter((x) => x !== 'session.js')) {
+      assert.doesNotMatch(code(read(f)), /^\s*import\b[^;]*from\s*['"]\.\/end-dialog\.js['"]/m, `${f} must not import it statically`);
+    }
+    const app = code(read('app.js'));
+    assert.equal(app.split("import('./end-dialog.js')").length - 1, 1, 'one dynamic import');
+    const loader = app.slice(app.indexOf('async function endSession('), app.indexOf("import('./end-dialog.js')"));
+    assert.match(loader, /^async function endSession\([^)]*\) \{\s*if \(!isApp\) return;/, 'the loader refuses outside the app tier');
+    assert.equal(app.match(/endSession\(/g).length, 2, 'its definition and one call');
+    assert.match(app, /if \(isApp && canEndRow\([^)]*\)\) \{\s*items\.push\(\{ text: 'End session…'[^}]*endSession\(/, 'the one call sits behind isApp');
+  });
+
+  test('(−) the End dialog of the dashboard is app-only markup, with every id end-dialog.js looks up', () => {
+    const html = read('index.html');
+    const dlg = /<dialog\b[^>]*\bid="end-dlg"[^>]*>[\s\S]*?<\/dialog>/.exec(html)?.[0] ?? '';
+    assert.ok(dlg, 'index.html has #end-dlg');
+    assert.match(dlg, /<dialog\b[^>]*\bdata-app-only\b/, 'removed from the browser tier at boot');
+    assert.match(dlg, /<dialog\b[^>]*\bclass="dlg-confirm"/);
+    assert.match(dlg, /<dialog\b[^>]*\baria-labelledby="end-h"[^>]*\baria-describedby="end-d"|<dialog\b[^>]*\baria-describedby="end-d"[^>]*\baria-labelledby="end-h"/);
+    const ids = new Set([...html.matchAll(/\sid="([^"]+)"/g)].map((m) => m[1]));
+    const used = [...code(read('end-dialog.js')).matchAll(/getElementById\('([^']+)'\)|\bel\('([A-Za-z0-9-]+)'\)/g)].map((m) => m[1] ?? m[2]);
+    assert.ok(used.length >= 6);
+    assert.deepEqual(used.filter((id) => !ids.has(id)), []);
   });
 
   test('(+) #add-project (tray) calls the folder picker once, behind isApp, after replacing the hash', () => {
@@ -298,6 +642,234 @@ describe('tier separation in the page code', () => {
       const own = calls.filter((c) => !c.startsWith('path') && !c.startsWith('p,'));
       for (const arg of own) assert.match(arg, /^[`'"]\/api\/app\//, `${f}: appFetch(${arg}`);
     }
+  });
+});
+
+// ---- the Add to Applications notice (docs/design/spec.md 3.14, ADR 0011) ----------------------------------------------
+describe('Add to Applications notice (spec 3.14)', () => {
+  const MISSING = { state: 'missing', managed: false, dismissed: false, version: null, available: '0.3.0', running: false };
+  const STALE = { state: 'stale', managed: true, dismissed: false, version: '0.2.0', available: '0.3.0', running: false };
+  const UI = { busy: false, error: null, hidden: false };
+  const fn = (src, head) => {
+    const at = src.indexOf(head);
+    assert.ok(at >= 0, `${head} exists`);
+    return src.slice(at, src.indexOf('\n}\n', at) + 2);
+  };
+
+  test('(+) missing and not dismissed: the Add banner with its exact copy and buttons', () => {
+    assert.deepEqual(copyBanner(MISSING, UI), {
+      mode: 'add', title: 'Add nika to Applications', text: 'so Spotlight and Launchpad can find it.',
+      primary: { label: 'Add to Applications', busy: 'Adding…' }, ghost: { label: 'Not now' },
+    });
+  });
+
+  test('(+) stale and managed: the Update banner names the installed version', () => {
+    assert.deepEqual(copyBanner(STALE, UI), {
+      mode: 'update', title: 'nika 0.3.0 is installed.', text: 'Update the app in Applications to match.',
+      primary: { label: 'Update app', busy: 'Updating…' }, ghost: { label: 'Not now' },
+    });
+  });
+
+  test('(−) no banner for current, foreign, no-source, unsupported (Linux), a dismissed Add, an unmanaged stale copy, or a copy with no source version', () => {
+    const none = [
+      { ...MISSING, state: 'current', version: '0.3.0' },
+      { ...MISSING, state: 'foreign' },
+      { ...MISSING, state: 'no-source', available: null },
+      { ...MISSING, state: 'unsupported', available: null },
+      { ...MISSING, dismissed: true },
+      { ...MISSING, available: null },
+      { ...STALE, managed: false },
+      { ...STALE, available: null },
+      { ...MISSING, state: 'bogus' },
+      null, undefined, 'missing', 42, [], {},
+    ];
+    for (const c of none) assert.equal(copyBanner(c, UI), null, JSON.stringify(c));
+  });
+
+  test('(−) "Not now" hides either banner until the next launch (the page keeps that in memory only)', () => {
+    assert.equal(copyBanner(MISSING, { ...UI, hidden: true }), null);
+    assert.equal(copyBanner(STALE, { ...UI, hidden: true }), null);
+    assert.notEqual(copyBanner(STALE, { ...UI, busy: true }), null, 'busy keeps it on screen');
+  });
+
+  test('(+) the toasts: Added, Updated, and Updated with a restart', () => {
+    assert.equal(copyToast('add', { version: '0.3.0', restart: false }), 'nika is in Applications. Open it from Spotlight or Launchpad.');
+    assert.equal(copyToast('update', { version: '0.3.0', restart: false }), 'Updated the app in Applications to 0.3.0.');
+    assert.equal(copyToast('update', { version: '0.3.0', restart: true }), 'Updated to 0.3.0. Quit and reopen nika to use it.');
+  });
+
+  test('(+) errors are fixed copy chosen by the server\'s code', () => {
+    const e = (status, error) => ({ status, body: { error, message: 'ignored' } });
+    assert.equal(copyErrorText(e(409, 'foreign-target')), "~/Applications or ~/Applications/nika.app isn't a folder nika can safely replace. Move it away, then try again.");
+    assert.equal(copyErrorText(e(409, 'no-source')), "nika can't find its own app to copy. Reinstall it with Homebrew.");
+    assert.equal(copyErrorText(e(409, 'copy-busy')), 'nika is already copying the app.');
+    assert.equal(copyErrorText(e(500, 'copy-failed')), "nika couldn't copy the app to Applications.");
+  });
+
+  test('(−) any other failure (5xx, 403, network, a hostile message or code) is the generic line, never the server\'s text', () => {
+    const generic = "nika couldn't copy the app to Applications.";
+    for (const res of [null, undefined, { status: 500, body: { error: 'internal', message: '<img src=x onerror=alert(1)>' } }, { status: 403, body: { error: 'forbidden' } },
+      { status: 409, body: { error: 'unsupported', message: '/some/path' } }, { status: 409, body: { error: '__proto__' } }, { status: 409, body: { error: 'constructor' } }, { status: 409, body: null }, { status: 200, body: {} }]) {
+      assert.equal(copyErrorText(res), generic, JSON.stringify(res));
+    }
+  });
+
+  test('(−) the module is pure: it names no app route, does no network, storage or timer work and imports nothing', () => {
+    const src = code(read('app-copy.js'));
+    assert.doesNotMatch(src, /\/api\/app|\bfetch\s*\(|XMLHttpRequest|localStorage|sessionStorage|setTimeout|setInterval|document\.cookie/);
+    assert.deepEqual([...src.matchAll(/from '([^']+)'/g)].map((m) => m[1]), []);
+  });
+
+  test('(+) the server serves /app-copy.js as JavaScript; the page sprite has the i-apps symbol', () => {
+    assert.match(read('../src/server.js'), /\['\/app-copy\.js', \['app-copy\.js', 'text\/javascript; charset=utf-8'\]\]/);
+    assert.match(read('index.html'), /<symbol id="i-apps" viewBox="0 0 16 16">(?:<rect [^>]*\/>){4}<\/symbol>/);
+  });
+
+  // app.js cannot be imported (it starts the page); its bannerList is run in a vm against stubs
+  function bannerRig({ isApp = true, route = 'dashboard', me = { appCopy: MISSING, tmux: true, claude: true }, ui = { ...UI } } = {}) {
+    const calls = [];
+    const ctx = {
+      isApp, copyBanner, REFRESH_MS: 3000, Object, Date,
+      state: { route: { name: route }, me, appCopyUi: ui, data: { sources: {} }, error: null },
+      hooks: { appCopyInstall: () => calls.push('install'), appCopyDismiss: () => calls.push('dismiss'), checkEnv: () => {} },
+      refresh() {},
+    };
+    const list = vm.runInNewContext(`${fn(read('app.js'), 'function bannerList(')}\nbannerList`, ctx);
+    return { ids: () => list().map((b) => b.id), get: () => list().find((b) => b.id === 'app-copy'), calls, ctx };
+  }
+
+  test('(+) the dashboard banner list gets the app-copy banner (info kind, i-apps icon) for missing and for stale+managed, wired to the hooks', () => {
+    const add = bannerRig().get();
+    assert.equal(add.kind, 'info');
+    assert.equal(add.icon, 'apps');
+    assert.equal(add.title, 'Add nika to Applications');
+    assert.equal(JSON.stringify(add.actions.map((a) => [a.label, Boolean(a.primary)])), JSON.stringify([['Add to Applications', true], ['Not now', false]]));
+    const rig = bannerRig({ me: { appCopy: STALE } });
+    const up = rig.get();
+    assert.equal(up.title, 'nika 0.3.0 is installed.');
+    up.actions[0].run();
+    up.actions[1].run();
+    assert.deepEqual(rig.calls, ['install', 'dismiss']);
+    assert.equal(up.busy, false);
+    assert.equal(bannerRig({ ui: { ...UI, busy: true, error: 'x' } }).get().busy, true);
+    assert.equal(bannerRig({ ui: { ...UI, error: 'oops' } }).get().error, 'oops');
+  });
+
+  test('(−) no app-copy banner on the browser tier, on Linux, off the dashboard screen, or for any other state', () => {
+    assert.equal(JSON.stringify(bannerRig({ isApp: false, me: null }).ids()), '["ro"]', 'browser tier: only the read-only note');
+    assert.equal(bannerRig({ isApp: false, me: { appCopy: MISSING } }).get(), undefined, 'even with an appCopy in hand');
+    assert.equal(bannerRig({ me: { appCopy: { ...MISSING, state: 'unsupported', available: null }, tmux: true, claude: true } }).get(), undefined, 'Linux');
+    assert.equal(bannerRig({ route: 'project' }).get(), undefined);
+    assert.equal(bannerRig({ route: 'settings' }).get(), undefined);
+    assert.equal(bannerRig({ me: { appCopy: { ...MISSING, dismissed: true } } }).get(), undefined);
+    assert.equal(bannerRig({ me: null }).get(), undefined);
+  });
+
+  test('(+) the banner renderer draws the primary and the ghost button, a busy state with aria-busy and aria-disabled, and an alert line', () => {
+    const el = code(fn(read('app.js'), 'function bannerEl('));
+    assert.match(el, /'aria-busy': busy && a\.primary \? 'true' : null/);
+    assert.match(el, /'aria-disabled': busy \? 'true' : null/);
+    assert.match(el, /onclick: \(\) => \{ if \(!busy\) a\.run\(\); \}/, 'a press while busy does nothing');
+    assert.match(el, /class: 'banner-err', role: 'alert'/);
+    assert.match(el, /\{ text: b\.title \}/, 'texts go through textContent');
+    const r = code(fn(read('app.js'), 'function renderBanners('));
+    assert.match(r, /swap\(\$\('#banners'\)/, 'focus stays on the same control across redraws');
+    assert.match(r, /busy, error \}\) => \[id, kind, title, text, cmd, busy, error\]/, 'a busy or failed state redraws');
+  });
+
+  // project.js holds the app-tier part: the two POSTs; run in a vm against stubs
+  function actionRig({ answers = [], me = { appCopy: MISSING }, ui = { ...UI } } = {}) {
+    const calls = [];
+    const toasts = [];
+    const queue = [...answers];
+    const ctx = {
+      state: { me, appCopyUi: ui }, copyBanner, copyErrorText, copyToast, Promise,
+      appFetch: async (p, o) => {
+        calls.push([p, o.method, o.json]);
+        const a = queue.shift();
+        if (a instanceof Error) throw a;
+        return a;
+      },
+      loadMe: async () => { ctx.state.me = { appCopy: { ...MISSING, state: 'current', version: '0.3.0' } }; },
+      render: () => calls.push('render'),
+      toast: (m, o) => toasts.push([m, o?.kind ?? 'info']),
+      $: () => ({ contains: () => false, focus() {} }),
+      Boolean,
+      document: { activeElement: null },
+    };
+    const P = read('project.js');
+    const src = `${fn(P, 'function offered(')}\n${fn(P, 'function keepFocus(')}\n${fn(P, 'async function appCopyInstall(')}\n${fn(P, 'async function appCopyDismiss(')}\n({ appCopyInstall, appCopyDismiss })`;
+    return { calls, toasts, ctx, api: vm.runInNewContext(src, ctx) };
+  }
+
+  test('(+) pressing Add posts exactly { action: "install" }, shows busy, toasts on 200, and re-reads me', async () => {
+    const rig = actionRig({ answers: [{ status: 200, body: { state: 'current', version: '0.3.0', restart: false } }] });
+    const p = rig.api.appCopyInstall();
+    assert.equal(rig.ctx.state.appCopyUi.busy, true, 'busy while the request runs');
+    await p;
+    assert.equal(JSON.stringify(rig.calls.filter((c) => Array.isArray(c))), JSON.stringify([['/api/app/app-copy', 'POST', { action: 'install' }]]));
+    assert.deepEqual(rig.toasts, [['nika is in Applications. Open it from Spotlight or Launchpad.', 'info']]);
+    assert.equal(rig.ctx.state.appCopyUi.busy, false);
+    assert.equal(rig.ctx.state.appCopyUi.error, null);
+    assert.equal(rig.ctx.state.me.appCopy.state, 'current');
+  });
+
+  test('(+) Update with restart true says to quit and reopen', async () => {
+    const rig = actionRig({ me: { appCopy: STALE }, answers: [{ status: 200, body: { state: 'current', version: '0.3.0', restart: true } }] });
+    await rig.api.appCopyInstall();
+    assert.deepEqual(rig.toasts, [['Updated to 0.3.0. Quit and reopen nika to use it.', 'info']]);
+  });
+
+  test('(−) a refusal or a network failure stays in the banner as fixed copy, with the buttons free again and no toast', async () => {
+    for (const [answer, text] of [
+      [{ status: 409, body: { error: 'foreign-target', message: 'x' } }, "~/Applications or ~/Applications/nika.app isn't a folder nika can safely replace. Move it away, then try again."],
+      [{ status: 409, body: { error: 'copy-busy', message: 'x' } }, 'nika is already copying the app.'],
+      [{ status: 500, body: { error: 'copy-failed', message: 'x' } }, "nika couldn't copy the app to Applications."],
+      [new Error('network down'), "nika couldn't copy the app to Applications."],
+    ]) {
+      const rig = actionRig({ answers: [answer] });
+      await rig.api.appCopyInstall();
+      assert.equal(rig.ctx.state.appCopyUi.error, text);
+      assert.equal(rig.ctx.state.appCopyUi.busy, false);
+      assert.deepEqual(rig.toasts, []);
+    }
+  });
+
+  test('(−) a second press while busy sends nothing; with no banner on offer nothing is sent either', async () => {
+    const rig = actionRig({ answers: [{ status: 200, body: { state: 'current', version: '0.3.0', restart: false } }] });
+    const first = rig.api.appCopyInstall();
+    await rig.api.appCopyInstall();
+    await first;
+    assert.equal(rig.calls.filter((c) => Array.isArray(c)).length, 1);
+    const none = actionRig({ me: { appCopy: { ...MISSING, state: 'current' } } });
+    await none.api.appCopyInstall();
+    await none.api.appCopyDismiss();
+    assert.deepEqual(none.calls, []);
+  });
+
+  test('(+) Not now on Add posts { action: "dismiss" } and hides the banner; on Update it only hides it (nothing is posted)', async () => {
+    const add = actionRig({ answers: [{ status: 200, body: { dismissed: true } }] });
+    await add.api.appCopyDismiss();
+    assert.equal(JSON.stringify(add.calls.filter((c) => Array.isArray(c))), JSON.stringify([['/api/app/app-copy', 'POST', { action: 'dismiss' }]]));
+    assert.equal(add.ctx.state.appCopyUi.hidden, true);
+    const up = actionRig({ me: { appCopy: STALE } });
+    await up.api.appCopyDismiss();
+    assert.deepEqual(up.calls.filter((c) => Array.isArray(c)), []);
+    assert.equal(up.ctx.state.appCopyUi.hidden, true);
+  });
+
+  test('(−) a failed dismiss still hides the banner for this session and shows no error', async () => {
+    const rig = actionRig({ answers: [new Error('down')] });
+    await rig.api.appCopyDismiss();
+    assert.equal(rig.ctx.state.appCopyUi.hidden, true);
+    assert.equal(rig.ctx.state.appCopyUi.error, null);
+  });
+
+  test('(+) initApp registers the two hooks; app.js reaches the route only through them', () => {
+    const init = fn(read('project.js'), 'export async function initApp(');
+    assert.match(init, /hooks\.appCopyInstall = appCopyInstall;/);
+    assert.match(init, /hooks\.appCopyDismiss = appCopyDismiss;/);
+    assert.doesNotMatch(code(read('app.js')), /\/api\/app/);
   });
 });
 
@@ -443,6 +1015,13 @@ describe('static files served by the server', () => {
     }
   });
 
+  test('(+) /shortcuts.js is served (both tiers load it) byte for byte, as JavaScript', async () => {
+    const r = await get('/shortcuts.js');
+    assert.equal(r.status, 200);
+    assert.equal(r.headers['content-type'], 'text/javascript; charset=utf-8');
+    assert.equal(r.body.toString('utf8'), fs.readFileSync(path.join(PUBLIC, 'shortcuts.js'), 'utf8'));
+  });
+
   test('(+) the page gets this process\'s token in its meta tag and no placeholder is left', async () => {
     const r = await get('/');
     const body = r.body.toString('utf8');
@@ -466,5 +1045,78 @@ describe('static files served by the server', () => {
   test('(−) static files accept GET only', async () => {
     const r = await get('/app.js', 'POST');
     assert.equal(r.status, 405);
+  });
+});
+
+describe('ui.js restoreFocus: a dialog opened from a menu item gives focus back to the menu button (Task 14b, B9)', () => {
+  const src = read('ui.js');
+  const head = src.indexOf('function restoreFocus(dlg)');
+  const body = src.slice(head, src.indexOf('\n}\n', head) + 2);
+  const node = (name, over = {}) => ({ name, isConnected: true, focused: 0, focus() { this.focused += 1; }, closest: () => null, ...over });
+  /** restoreFocus as shipped, run against a tiny page: `$` answers from `byQuery`, `openers` holds what openDialog would have stored. */
+  const rig = ({ opener, fk = null, menu = null, button = null, openDialogs = false, heading = node('h1') }) => {
+    const asked = [];
+    const byQuery = (sel) => {
+      asked.push(sel);
+      if (sel === 'dialog[open]') return openDialogs ? node('dialog') : null;
+      if (menu && sel === `[aria-controls="${menu.id}"]`) return button;
+      if (sel === '.screen:not([hidden]) h1') return heading;
+      return null;
+    };
+    const dlg = {};
+    const openers = new Map([[dlg, { el: opener, fk }]]);
+    const run = vm.runInNewContext(`${body}; restoreFocus`, { $: byQuery, openers, CSS: { escape: (s) => s } });
+    return { run: () => run(dlg), asked, heading, openers, dlg };
+  };
+  const menuItem = (menu, over = {}) => node('item', { closest: (s) => (s === '.menu' ? menu : null), ...over });
+
+  test('(+) the opener sat in a closed menu: the button that names the menu in aria-controls gets the focus, not the hidden item', () => {
+    const menu = { id: 'menu-7', hidden: true };
+    const button = node('menu button');
+    const item = menuItem(menu);
+    const r = rig({ opener: item, menu, button });
+    r.run();
+    assert.equal(button.focused, 1);
+    assert.equal(item.focused, 0, 'a hidden control cannot take focus');
+    assert.equal(r.heading.focused, 0);
+    assert.equal(r.openers.has(r.dlg), false, 'the stored opener is consumed as before');
+  });
+
+  test('(+) a closed menu whose button cannot be found falls back to the screen heading, as for a gone opener', () => {
+    const menu = { id: 'menu-8', hidden: true };
+    const item = menuItem(menu);
+    const r = rig({ opener: item, menu, button: null });
+    r.run();
+    assert.equal(item.focused, 0);
+    assert.equal(r.heading.focused, 1);
+  });
+
+  test('(−) an opener in an open menu, or outside any menu, keeps the focus as today', () => {
+    const open = { id: 'menu-9', hidden: false };
+    const inOpen = menuItem(open);
+    rig({ opener: inOpen, menu: open, button: node('b') }).run();
+    assert.equal(inOpen.focused, 1);
+    const plain = node('plain button');
+    const r = rig({ opener: plain });
+    r.run();
+    assert.equal(plain.focused, 1);
+    assert.equal(r.heading.focused, 0);
+  });
+
+  test('(−) a gone opener still falls back to its data-fk, then the heading; another open dialog still blocks the restore', () => {
+    const gone = node('gone', { isConnected: false });
+    const r = rig({ opener: gone });
+    r.run();
+    assert.equal(r.heading.focused, 1);
+    assert.equal(gone.focused, 0);
+    const blocked = rig({ opener: node('x'), openDialogs: true });
+    blocked.run();
+    assert.equal(blocked.heading.focused, 0);
+    assert.equal(blocked.openers.has(blocked.dlg), true, 'untouched: the other dialog will restore it');
+  });
+
+  test('(+) the source asks for the menu through aria-controls and the id, never through sibling order', () => {
+    assert.match(body, /\.closest\('\.menu'\)/);
+    assert.match(body, /aria-controls="\$\{CSS\.escape\(/);
   });
 });

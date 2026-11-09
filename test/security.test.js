@@ -135,7 +135,7 @@ describe('F4 terminal escapes', () => {
     for (const v of [a.name, a.title, a.lastPrompt, a.gitBranch]) {
       assert.equal(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/.test(v), false, JSON.stringify(v));
     }
-    assert.equal(a.title, 'fix ]0;PWNED [2J ok');
+    assert.equal(a.title, 'fix ok', 'the OSC title and the CSI erase go whole, not just their escape byte');
   });
 
   test('(−) nika status prints no ESC bytes', async () => {
@@ -144,7 +144,8 @@ describe('F4 terminal escapes', () => {
         env: { ...process.env, CLAUDE_CONFIG_DIR: dir, NIKA_TMP_ROOT: path.join(fx.root, 'none'), NIKA_TMUX: '/nonexistent/tmux', NO_COLOR: '1' },
       }, (err, stdout) => resolve(stdout));
     });
-    assert.match(out, /PWNED/);
+    assert.match(out, /fix ok/);
+    assert.doesNotMatch(out, /PWNED/);
     assert.equal(out.includes('\u001b'), false);
     assert.equal(out.includes('\u0007'), false);
   });

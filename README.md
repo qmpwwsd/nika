@@ -29,11 +29,12 @@ the [desktop app](#desktop-app-02) are never available on `http://127.0.0.1:3335
 
 ## CLI (0.2)
 
-`nika` and `nika open` start the desktop app when it is installed and fall back to the browser dashboard (the 0.1 behaviour: `nika serve` must be running). `nika open --app` fails with an install hint when the app is missing; `nika open --browser` skips the app. macOS looks the app up by bundle id (`open -b io.github.qmpwwsd.nika`); Linux runs `nika-app` from `PATH`, then `gtk-launch io.github.qmpwwsd.nika`.
+`nika` and `nika open` start the desktop app when it is installed and fall back to the browser dashboard (the 0.1 behaviour: `nika serve` must be running). `nika open --app` fails with an install hint when the app is missing; `nika open --browser` skips the app. macOS opens the copy `nika app install` made in `~/Applications` by path, else looks the app up by bundle id (`open -b io.github.qmpwwsd.nika`); Linux runs `nika-app` from `PATH`, then `gtk-launch io.github.qmpwwsd.nika`.
 
 | Command | Does |
 |---|---|
 | `nika app` | open the desktop app; fails with an install hint when it is missing |
+| `nika app install` | macOS: copy or update the app in `~/Applications` (Spotlight, Launchpad); Linux: the `.deb` or AppImage installs the desktop entry |
 | `nika serve --app` | the app tier's private server on a random port; the app starts it and talks to it over stdin/stdout, so it refuses a terminal on stdin (exit 2) |
 | `nika projects list` | registered projects: key, name, rules state, folder |
 | `nika projects add <dir>` / `remove <key>` | register a folder (stored as its real path) or unregister it; project files are never touched |
@@ -73,6 +74,8 @@ With `brew services`, set variables in the service environment (for example with
 
 It never reads `*.key` files, credentials or `.env` files. The browser tier never writes anything; what the app tier and the CLI write is listed in [docs/architecture.md](docs/architecture.md#where-writes-happen).
 
+The app tier also reads, on demand: full transcripts (in pages), the screen of Claude's tmux panes (to mirror a pane and to read its permission mode and questions), and the first 4 KB of command and skill files in the Claude config folder, the project and installed plugins (front matter only, never the body). The exact list is in [rules/project-rules.md](rules/project-rules.md).
+
 A transcript with no user or assistant message (Claude Code sometimes leaves a one-line title stub) is not an agent: nika lists it only while its session is live.
 
 ## Security
@@ -91,8 +94,9 @@ The desktop app's privileged tier is a separate, locked-down server; its threat 
 ## Desktop app (0.2)
 
 0.2 adds a desktop app (macOS and Linux, tray icon) with a privileged tier: session window with history and a live pane
-mirror, spawning agents in tmux, starting the orchestrator, adding projects and applying orchestration rules. The
-browser dashboard above stays read-only.
+mirror, spawning agents in tmux, starting the orchestrator, adding projects and applying orchestration rules. 0.3 adds
+session control to that window: permission modes, permission prompts, quick actions, slash commands and End (see
+[Session window (0.3)](#session-window-03)). The browser dashboard above stays read-only.
 
 You need Node 22 or newer, tmux and Claude Code on the machine. The app does not bundle Node.
 
@@ -103,10 +107,14 @@ takes a few minutes and needs a few GB of free disk space):
 
 ```sh
 brew install qmpwwsd/tap/nika             # or, from 0.1: brew update && brew upgrade nika
-open "$(brew --prefix nika)/nika.app"     # once, so macOS registers the app; after that `nika` opens it
+nika app install                          # once: copies the app to ~/Applications so Spotlight and Launchpad find it
 brew autoremove                           # optional: removes Rust and the other build-only dependencies
 ```
 
+The desktop app lives in the Homebrew folder, which Spotlight does not index; `nika app install` copies it into
+`~/Applications` (the app also offers an "Add to Applications" button once). After `brew upgrade`, running `nika` brings
+that copy up to date; a launch (`nika`, `nika open`, `nika app`) never touches a copy nika did not make, and nika never
+replaces anything in `~/Applications/nika.app` that is not nika's own bundle. It never writes to `/Applications`.
 After an upgrade, restart the browser dashboard with `brew services restart nika`.
 
 **Linux (x86_64).** Download the `.deb` or the AppImage and `SHA256SUMS` from the
@@ -164,21 +172,71 @@ More: [docs/packaging.md](docs/packaging.md) (build details, signing, Linux pack
 
 - **Dashboard.** One line says how many agents need you, are waiting or are working. Agents that need you are listed first
   under "Waiting on you", then every project with its agents (needs you, waiting, working, ended). Filter by text, change the
-  time window, show or hide ended agents. Click a row to open its session window.
+  time window, show or hide ended agents. Click a row to open its session window. Rows whose Claude pane nika can read
+  also show the agent's permission mode as a tag, and their menu has **End session…**.
 - **Add a project.** The sidebar "+" (or `Mod+O`) opens the native folder picker. The project page notes when the folder is
   not a git repository. A new project has no orchestration rules yet: use **Apply rules** to preview the exact diffs, then
   confirm. nika writes only the files shown in the preview, keeps a backup outside the repository and never runs git.
 - **Start an orchestrator / spawn an agent.** From a project: **Start orchestrator** opens its tmux session and pane;
   **Spawn agent** opens a side sheet (name, model, brief up to 64 KB, permission mode, pane placement). A project at its
   agent limit shows why and what to do. `bypassPermissions` is not offered.
-- **Settings** (`Mod+,`). Appearance (System, Light, Dark), model names per role, Remote Control, default permission mode and
-  pane placement, the per-project agent limit, plugins per project and the rules template. One Save button; invalid fields
-  are marked in place.
+- **Settings** (`Mod+,`). Appearance (System, Light, Dark) and the **Single-key shortcuts** switch, the model per role (a
+  list of current models and aliases, or a custom ID), Remote Control, default permission mode and pane placement, the
+  per-project agent limit, plugins per project and the rules template. One Save button; invalid fields are marked in place.
 - **Keyboard.** `Mod+1` dashboard, `Mod+,` settings, `Mod+O` add project, `Mod+F` filter, `Mod+[` (macOS) or `Alt+Left`
-  (Linux) back to the dashboard, `Mod+Enter` confirm the open dialog or save settings. `Mod` is Command on macOS and Control on Linux.
+  (Linux) back (the project view and Settings go to the dashboard; the session window goes to its project, or the
+  dashboard when it has none), `Mod+Enter` confirm the open
+  dialog or save settings, `?` or `Mod+/` the Keyboard shortcuts window. `Mod` is Command on macOS and Control on Linux.
+- **Keyboard shortcuts window.** `?` or `Mod+/`, or the Keyboard shortcuts button (sidebar footer, session header), lists
+  the shortcuts of the screen you are on. `?` is ignored while you type in a field or in the pane mirror, while "Type into
+  the pane" is on and while a dialog is open; turn it off in Settings, Appearance, **Single-key shortcuts** (useful with
+  speech input). `Mod+/` also works in fields and with the setting off (not while a dialog is open, nor
+  in passthrough on Linux). The browser dashboard has the same window with `Mod+/` only, from a button in
+  its top bar.
 
 The browser dashboard at `http://127.0.0.1:3335` shows the same list without any of these controls; its only action is
 **Focus pane**.
+
+### Session window (0.3)
+
+Click an agent to open its session window: history, a live mirror of its tmux pane and a message box. The controls below
+work on a pane that is a live Claude session (or one nika started) and runs `claude` right now. They read Claude's
+screen, so a screen nika does not recognize shows "Mode ?" or leaves a control disabled, with the reason under it.
+
+- **Modes.** A tag in the header, a frame along the top and the message-box edge show Claude's permission mode: Manual,
+  Accept edits, Plan, Auto, Bypass, Don't ask, or "Mode ?". The switcher moves between Manual, Accept edits, Plan and
+  Auto by pressing Shift-Tab for you, only while Claude is waiting for you with no question open; it reads the screen
+  again after every press (at most 6). Bypass and Don't ask are shown, never chosen. While a question covers Claude's
+  footer, the tag shows the last known mode, marked unconfirmed (dashed).
+- **Questions.** When Claude asks for permission, one button per option answers it (nika types that option's number),
+  plus an Esc button (cancel, same as No). An option that mentions bypass has no button: answer it in the terminal.
+- **Quick actions.** **Stop** (live only while Claude works; it presses Esc, and Esc twice when Claude's input is in
+  vim insert mode, and it also stops running subagents), **Compact**, **Clear** (asks first), **Model** (the list, or a
+  custom ID), **Rewind** (types `/rewind` and Enter, which opens Claude's rewind menu in the pane for you to pick a
+  point) and **End session**. Compact, Clear, Model and Rewind are live while Claude waits for you; a line under the row
+  says why one is off.
+- **End session.** Asks first. If Claude is busy or asking, nika presses Esc once (which answers a question with No),
+  then types `/exit` and Enter. It never kills the pane; if Claude does not exit it says so ("Claude didn't exit; use
+  Stop or the terminal.").
+- **Claude's input must be empty.** Compact, Clear, Model, Rewind and End type into Claude's own input and press Enter only when
+  it reads exactly that command. If there is text in it, they refuse with "Claude's input has text; clear it first." and
+  leave your text alone.
+- **Shell.** The Shell toggle sends the line through Claude's `!` mode (Ctrl-U first, which clears the current line of Claude's
+  input, then `!`, the line and Enter) and then turns itself off.
+- **Send and Shell wait for a question.** While Claude asks for permission, Send (a line, a paste, or Enter from an empty
+  box) and Shell send nothing and say "Answer the prompt with the buttons above or in the terminal."; your text stays in
+  the box. The Enter and Shift-Tab chips are off too. A question nika cannot parse has no buttons: the line and the note
+  then say to answer in the terminal or turn on Type into pane. A question that mentions bypass anywhere on its screen
+  gets no answer buttons at all, and nika refuses Enter, Shift-Tab, digits and pastes to it: answer in the terminal.
+- **After `/clear`.** When Claude starts a new conversation in the pane, the window follows it to the new session (the
+  transcript starts over) instead of showing the ended one.
+- **Commands.** Type `/` at the start of an empty message box, or press Commands, to filter Claude's built-in commands
+  and the commands and skills from your Claude config folder, the project and installed plugins, each with a source tag.
+  Enter inserts `/name `; a second Enter sends it.
+
+If a screen nika cannot read blocks a control, use the key chips under the message box or your terminal. The routes behind these
+controls and their limits are in [docs/contracts/api-app.md](docs/contracts/api-app.md) (section 3); the threats, in
+[docs/security.md](docs/security.md) (T22, T23, T26).
 
 ## Development
 

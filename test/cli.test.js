@@ -86,7 +86,7 @@ describe('cli', () => {
   });
 
   test('(−) the new commands reject bad usage with exit 2, through the real binary', async () => {
-    for (const args of [['spawn'], ['rules', 'frob'], ['projects'], ['orchestrate', 'a', 'b'], ['_run-agent'], ['doctor', 'x'], ['serve', '--bogus']]) {
+    for (const args of [['spawn'], ['rules', 'frob'], ['projects'], ['orchestrate', 'a', 'b'], ['_run-agent'], ['doctor', 'x'], ['serve', '--bogus'], ['app', 'install', 'x'], ['app', 'bogus']]) {
       const r = await run(args);
       assert.equal(r.code, 2, args.join(' '));
       assert.match(r.stderr, /usage: nika/i);
@@ -96,7 +96,7 @@ describe('cli', () => {
   test('(+) help lists the 0.2 commands', async () => {
     const r = await run(['help']);
     assert.equal(r.code, 0);
-    for (const c of ['projects add', 'rules apply', 'spawn <name>', 'orchestrate', 'doctor', 'serve [--app]']) assert.ok(r.stdout.includes(c), c);
+    for (const c of ['projects add', 'rules apply', 'spawn <name>', 'orchestrate', 'doctor', 'serve [--app]', 'app install']) assert.ok(r.stdout.includes(c), c);
   });
 
   test('(−) serve rejects an invalid port', async () => {

@@ -21,6 +21,7 @@ Mockups (self-contained, offline, open by double-click):
 | `docs/design/variants/a.html` | **A · Console** (recommended) | Sidebar of projects, dense agent rows, split session window |
 | `docs/design/variants/b.html` | B · Queue | Attention-first "Now" feed, calm cards, full-screen focus session |
 | `docs/design/variants/c.html` | C · Board | One lane per project with live terminal tails, ⌘K palette, tmux status line |
+| `docs/design/variants/session-controls.html` | 0.3 session controls (§2.8, §9) | Every permission mode in light and dark, switcher states, quick actions, prompt buttons, shell, palette, End dialog, dashboard rows. Static, no mock bar |
 
 Each mockup has a dashed **mock bar** on top (not part of the design): Screen, State, Theme (System/Light/Dark), Window size (Fit, 720×480, 1024×700, 1440×900), Reduced motion, and links between variants. URLs keep state: `a.html#session/permission`, `c.html?theme=dark&size=720x480#dashboard/many`.
 
@@ -342,6 +343,168 @@ The mirror is dark by default in both app themes (terminal output is authored fo
 
 Colours 16–255 and `[r,g,b]` are absolute: they are set through CSSOM (`span.style.color = …`) and are **not** remapped by the light surface. This is why the mirror defaults to dark.
 
+### 2.8 Permission modes (0.3)
+
+Owner requirement (2026-11-08): "All modes must change visual styling, because it don't understand if smth enabled." Every permission mode has its own colour, icon and word wherever it shows (session header, window frame, message box, switcher, dashboard rows, later graph nodes). Colour never travels alone. Mockup: `docs/design/variants/session-controls.html`.
+
+#### 2.8.1 Tokens
+
+Three tokens per mode, light and dark:
+
+- `--m-<mode>`: text and icon colour of the tag; text of the pressed switcher segment.
+- `--m-<mode>-soft`: tag fill, pressed segment fill. Always carries its own `--m-<mode>` text (§2.1 rule).
+- `--m-<mode>-line`: tag edge, the 3 px window frame, the message-box edge, the pressed segment edge.
+
+Bypass adds `--m-bypass-on` (text on the solid bypass fill) and `--m-bypass-stripe` (second colour of the striped frame). Shell (§9.6) adds `--shell` and `--on-shell`, aliases of `--text` and `--surface`.
+
+```css
+:root { /* light */
+  --m-manual: #56575c;  --m-manual-soft: #ececef;  --m-manual-line: #86878d;
+  --m-edits: #5137c4;   --m-edits-soft: #eeebfd;   --m-edits-line: #7a64e0;
+  --m-plan: #0b6868;    --m-plan-soft: #ddf2f1;    --m-plan-line: #2a8e8e;
+  --m-auto: #625a00;    --m-auto-soft: #f6f2c0;    --m-auto-line: #968a00;
+  --m-bypass: #b3261e;  --m-bypass-soft: #fde7e5;  --m-bypass-line: #c0261c; --m-bypass-on: #ffffff; --m-bypass-stripe: #16181d;
+  --m-dontask: #8a2597; --m-dontask-soft: #f7e4f8; --m-dontask-line: #a843b3;
+  --m-unknown: #545b66; --m-unknown-soft: #ffffff; --m-unknown-line: #7c8490;
+  --shell: var(--text); --on-shell: var(--surface);
+}
+/* dark: in tokens.css put this in BOTH dark blocks (the prefers-color-scheme one and :root[data-theme="dark"]) */
+  --m-manual: #c4c5ca;  --m-manual-soft: #2d2e33;  --m-manual-line: #8c8d93;
+  --m-edits: #b9aeff;   --m-edits-soft: #29244d;   --m-edits-line: #8e7ff0;
+  --m-plan: #72cfcf;    --m-plan-soft: #13302f;    --m-plan-line: #3aa2a2;
+  --m-auto: #e9d84c;    --m-auto-soft: #33310f;    --m-auto-line: #bcae22;
+  --m-bypass: #ff6b61;  --m-bypass-soft: #46191a;  --m-bypass-line: #ff5a4f; --m-bypass-on: #2a0605; --m-bypass-stripe: #ffd8d4;
+  --m-dontask: #eaa0ea; --m-dontask-soft: #3a1d3d; --m-dontask-line: #c46fc8;
+  --m-unknown: #a4abb6; --m-unknown-soft: #202328; --m-unknown-line: #6f7783;
+```
+
+`--shell` and `--on-shell` are `var()` aliases, so they follow the theme without a dark copy. All values are plain hex: no `color-mix()`, no alpha (an alpha edge would make the 3:1 figure depend on what is behind it).
+
+One class per mode sets a local "current mode" trio; tags, frames, segments and the message box read only `--mc*`:
+
+```css
+.m-manual  { --mc: var(--m-manual);  --mc-soft: var(--m-manual-soft);  --mc-line: var(--m-manual-line); }
+.m-edits   { --mc: var(--m-edits);   --mc-soft: var(--m-edits-soft);   --mc-line: var(--m-edits-line); }
+.m-plan    { --mc: var(--m-plan);    --mc-soft: var(--m-plan-soft);    --mc-line: var(--m-plan-line); }
+.m-auto    { --mc: var(--m-auto);    --mc-soft: var(--m-auto-soft);    --mc-line: var(--m-auto-line); }
+.m-bypass  { --mc: var(--m-bypass);  --mc-soft: var(--m-bypass-soft);  --mc-line: var(--m-bypass-line); }
+.m-dontask { --mc: var(--m-dontask); --mc-soft: var(--m-dontask-soft); --mc-line: var(--m-dontask-line); }
+.m-unknown { --mc: var(--m-unknown); --mc-soft: var(--m-unknown-soft); --mc-line: var(--m-unknown-line); }
+```
+
+Where the CSS lives: the `--m-*` and `--shell` tokens, the `.m-*` classes, `.mode` (§2.8.5), `.onoff` (§9.6) and `.msw` (§9.3) go in `public/tokens.css`, which both the dashboard and the session window load. Page-only rules stay with their page: the frame, the message-box edge, quick actions, prompt panel and palette in `public/session.css`; the row mode column in `public/app.css`.
+
+| API `mode` | `MODE_META.cls` | Label | Icon (`#i-m-*`) | Claude's footer (xterm-256) | nika hue |
+|---|---|---|---|---|---|
+| `manual` | `m-manual` | Manual | hand | `⏸ manual mode on`, 246 grey | graphite (neutral) |
+| `acceptEdits` | `m-edits` | Accept edits | pencil | `⏵⏵ accept edits on`, 147 lavender | violet, hue 251 |
+| `plan` | `m-plan` | Plan | folded map | `⏸ plan mode on`, 73 teal | teal, hue 180 |
+| `auto` | `m-auto` | Auto | bolt | `⏵⏵ auto mode on`, 220 gold | gold, hue 55 |
+| `bypassPermissions` | `m-bypass` | Bypass | shield with a slash | not observed (claude-tui.md §7) | red, filled, striped frame |
+| `dontAsk` | `m-dontask` | Don't ask | padlock | `⏵⏵ don't ask on`, 211 pink | orchid, hue 293–300 (not pink, see 2.8.4) |
+| `unknown` | `m-unknown` | Mode ? | question mark in a circle | no recognised phrase | grey, dashed |
+
+#### 2.8.2 Contrast (computed, WCAG 2.x relative luminance)
+
+Text pairs need 4.5:1, frames and edges 3:1. "Edge" is the lowest of the line colour against `--bg`, `--surface` and `--surface-2` (the frame touches the header `--surface` and the window chrome; the tag edge sits on `--surface`, `--surface-2` on row hover, `--attn-row` in attention rows). 0 failures.
+
+| Mode | Light: text on soft | text on `--surface` | text on `--attn-row` | edge ≥ | Dark: text on soft | text on `--surface` | text on `--attn-row` | edge ≥ |
+|---|--:|--:|--:|--:|--:|--:|--:|--:|
+| Manual | 6.11 | 7.21 | 6.55 | 3.22 | 7.86 | 9.15 | 9.06 | 4.30 |
+| Accept edits | 6.66 | 7.80 | 7.09 | 4.00 | 7.26 | 7.93 | 7.85 | 4.37 |
+| Plan | 5.65 | 6.57 | 5.98 | 3.53 | 7.74 | 8.66 | 8.58 | 4.65 |
+| Auto | 6.16 | 7.04 | 6.40 | 3.18 | 9.07 | 10.80 | 10.70 | 6.24 |
+| Bypass | 5.52 | 6.54 | 5.94 | 5.34 | 5.32 | 5.65 | 5.60 | 4.63 |
+| Don't ask | 6.23 | 7.52 | 6.84 | 4.59 | 7.53 | 8.04 | 7.97 | 4.37 |
+| Mode ? | 6.85 | 6.85 | 6.23 | 3.40 | 6.81 | 6.81 | 6.75 | 3.14 |
+
+Other pairs:
+
+| Pair | Needs | Light | Dark |
+|---|---|--:|--:|
+| `--m-bypass-on` on `--m-bypass` (filled tag, pressed segment) | 4.5:1 | 6.54 | 6.68 |
+| `--m-bypass` fill against `--bg` / `--surface` | 3:1 | 5.94 / 6.54 | 6.37 / 5.65 |
+| `--m-bypass-stripe` against `--bg` / `--surface` | 3:1 | 16.14 / 17.76 | 13.56 / 12.03 |
+| `--on-shell` on `--shell` (shell chip on) | 4.5:1 | 17.76 | 13.20 |
+| `--shell` edge against `--surface` | 3:1 | 17.76 | 13.20 |
+| `--idle` on `--accent-soft` (palette "Opens a dialog" note on the active row) | 4.5:1 | 5.34 | 7.60 |
+| `--surface` on `--danger` (End session button, filled) | 4.5:1 | 6.57 | 6.90 |
+| `--danger` on `--danger-soft` (End failure alert) | 4.5:1 | 5.63 | 6.53 |
+
+Unconfirmed tags are hollow, so their text sits on whatever is behind (`--surface` or `--attn-row`): the "text on `--surface`" and "text on `--attn-row`" columns cover them. `--m-unknown-line` is darker than `--line-strong` in light (#7c8490 vs #868e9a) because `--line-strong` is 2.98:1 on `--surface-2`.
+
+#### 2.8.3 Icons
+
+16×16 stroke symbols in the existing sprite style (`fill: none; stroke: currentColor; stroke-width: 1.6; round caps and joins`), drawn from scratch:
+
+```html
+<symbol id="i-m-manual" viewBox="0 0 16 16"><path d="M4.5 9V5.5M7 8V3M9.5 8V3.5M12 9V5.5M4.5 9v1.5a4 4 0 0 0 4 4h.5a3 3 0 0 0 3-3V9M4.5 11 2.9 9.4"/></symbol>
+<symbol id="i-m-edits" viewBox="0 0 16 16"><path d="M10.5 2.8l2.7 2.7L6 12.7l-3.3.6.6-3.3zM9 4.3l2.7 2.7"/></symbol>
+<symbol id="i-m-plan" viewBox="0 0 16 16"><path d="M1.8 4.2 5.6 2.6l4.8 1.6 3.8-1.6v9.2l-3.8 1.6-4.8-1.6-3.8 1.6zM5.6 2.6v9.2M10.4 4.2v9.2"/></symbol>
+<symbol id="i-m-auto" viewBox="0 0 16 16"><path d="M9 1.8 3.6 9h4l-.8 5.2L12.4 7h-4z"/></symbol>
+<symbol id="i-m-bypass" viewBox="0 0 16 16"><path d="M8 1.8 13 3.6V8c0 3-2.1 5.1-5 6.4C5.1 13.1 3 11 3 8V3.6zM2.2 2.2l11.6 11.6"/></symbol>
+<symbol id="i-m-dontask" viewBox="0 0 16 16"><rect x="3.2" y="7" width="9.6" height="7" rx="1.5"/><path d="M5.3 7V5.2a2.7 2.7 0 0 1 5.4 0V7M8 9.8v1.4"/></symbol>
+<symbol id="i-m-unknown" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.2"/><path d="M6.2 6.3a1.9 1.9 0 1 1 2.7 1.7c-.6.3-.9.7-.9 1.3v.3M8 11.5v.2"/></symbol>
+```
+
+Session-control icons (§9) live in the same sprite: `i-shell` (`$`), `i-stop`, `i-compact`, `i-clear`, `i-model`, `i-rewind`, `i-end` (power), `i-cmd` (slash in a box), `i-dialog` (window), `i-chev`, `i-info`. Their paths are in the mockup's sprite; copy them from there.
+
+#### 2.8.4 Why these hues
+
+- **Close to Claude's footer, so the mirror and the app agree**: Manual grey, Accept edits lavender/violet, Plan teal, Auto gold.
+- **Don't ask is orchid, not Claude's pink 211** (owner decision 2026-11-09, final). Pink 211 (#ff87af) is almost exactly nika's `--attn` in dark (#ff80b5), and "Needs you" must stay unique. Orchid sits between Accept edits (251) and Needs you (330). Don't ask is the rarest mode (nika never switches to or from it).
+- **Plan uses a map, not ⏸.** Claude draws ⏸ for both Manual and Plan, and nika's mirror already uses a square for "Paused".
+- **Auto gold (hue 55) vs Waiting amber (hue 36)**: kept apart by hue, by shape (square tag vs round pill) and by the bolt.
+- **Manual graphite vs Ended grey**: Ended is a round pill with a small square glyph; Manual is a square tag with a hand.
+- **Bypass is the loudest**: the only filled tag, the only striped frame and a red message-box edge (0.4 adds a red switcher segment, §9.3).
+
+#### 2.8.5 The mode tag
+
+Modes are **square-cornered tags with an edge**; agent status stays a **round pill with a glyph** (§2.2). The two never share a shape, so "what the agent is doing" and "what it may do" can't be confused even in greyscale.
+
+```css
+.mode { display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 8px 0 6px;
+  border: 1px solid var(--mc-line); border-radius: var(--r-sm); background: var(--mc-soft); color: var(--mc);
+  font-size: var(--fs-small); font-weight: 600; white-space: nowrap; }
+.mode .ic { width: 14px; height: 14px; }
+.mode[data-confirmed="false"], .mode.m-unknown { border-style: dashed; background: transparent; }
+.mode .mnote { font-weight: 400; padding-left: 5px; border-left: 1px dashed var(--mc-line); }   /* "unconfirmed" */
+.mode.m-bypass { background: var(--m-bypass); border-color: var(--m-bypass); color: var(--m-bypass-on); }
+.mode.m-bypass[data-confirmed="false"] { border-style: solid; }   /* bypass never looks weaker */
+.mode.m-bypass .mnote { border-left-color: var(--m-bypass-on); }
+.mode.icon-only { padding: 0 4px; gap: 0; }   /* label moves to .sr-only and title */
+```
+
+Markup (`modeEl`): `span.mode.<cls>[data-confirmed][title]` > icon (`aria-hidden`) + `span.sr-only` "Permission mode: " + `span` label + optional `span.mnote` "unconfirmed". `title` = "Permission mode: Plan" or, unconfirmed, "Permission mode: Plan (not confirmed: Claude's footer is covered or not shown yet)".
+
+| Variant | Where | Look |
+|---|---|---|
+| full | session header | icon + label (+ "unconfirmed") |
+| compact | dashboard rows ≥ 860 px | icon + label; an unconfirmed tag is hollow and dashed, the word "unconfirmed" goes to `.sr-only` and `title` (keeps the 128 px column) |
+| icon-only | dashboard rows ≤ 860 px | icon in the 24 px box, edge and fill as above; label in `.sr-only` + `title` (same rule as the status glyph in §3.3) |
+
+#### 2.8.6 Confirmed, unconfirmed, unknown
+
+| State | When | Frame | Tag | Words |
+|---|---|---|---|---|
+| confirmed | the footer shows the mode (`modeConfirmed: true`, `mode` ≠ `unknown`) | solid 3 px `--mc-line` | filled, solid edge | label |
+| unconfirmed (held) | `modeConfirmed: false`. The footer is covered (permission prompt, dialog) or unreadable, and `mode` is a held value: the last mode read on this pane, else, for a pane nika started, its launch mode (also before the footer first shows) | dashed 3 px (10 px on, 6 px off) in `--mc-line` | hollow, dashed edge | label + "unconfirmed" |
+| unknown | `mode: "unknown"` with `modeConfirmed: true`: the footer is unreadable and nika has neither read a mode on this pane nor launched it | dashed, `--m-unknown-line` | hollow, dashed, grey | "Mode ?" |
+| bypass, either | footer contains "bypass", or launched with it (0.4) | hazard stripes, never dashed | filled, solid | "Bypass" (+ "unconfirmed") |
+
+A held value and a launch value look the same: there is no third style. A held value keeps its mode's colour but is always dashed and says "unconfirmed", so it never claims more than nika saw. Unknown never takes a mode colour; it appears only when nika has no reading at all. The usual case is a prompt: while it covers the footer, the window shows the held mode, dashed, not "Mode ?".
+
+#### 2.8.7 Announcements
+
+One polite region per session window (`#mode-live`, `aria-live="polite"`), separate from the global announcer so a mode change is never swallowed by a status message.
+
+- Change: "builder-1: permission mode is now Plan."
+- Bypass: "builder-1: permission mode is now Bypass. Claude runs every tool without asking."
+- Unconfirmed at open: "builder-1 started in Plan mode, not confirmed yet."
+- A switch from nika (§9.3): only the final mode is announced, once, after the mode route answers. The tag follows each capture on the way, silently. Ending where it started: nothing.
+- Same mode, confirmed ↔ unconfirmed (a prompt covers the footer, then leaves): nothing; the prompt has its own announcement (§9.5). Becomes unknown, or from unknown back to the same mode: nothing.
+- At most one message per capture; flapping between a mode and unknown within 3 s is not announced.
+
 ---
 
 ## 3. Component inventory
@@ -477,7 +640,7 @@ Monospace textarea with a "›" prompt, grows 1 → 8 lines (20 px each), then s
 
 ### 3.11 Key chips
 
-26 px high, min 32 wide, mono 12/600, 2 px bottom border (keycap). Set: Esc · Ctrl-C · Tab · Shift-Tab · ↑ ↓ ← → · Enter. Arrow chips have `aria-label="Up arrow"` etc. Pressed: bottom border 1 px + 1 px translate. Disabled with the composer. Clicking a chip sends the key and returns focus to the composer.
+26 px high, min 32 wide, mono 12/600, 2 px bottom border (keycap). Set: Esc · Ctrl-C · Tab · Shift-Tab · ↑ ↓ ← → · Enter. Arrow chips have `aria-label="Up arrow"` etc. Pressed: bottom border 1 px + 1 px translate. Disabled with the composer. While the status is Needs you, the Shift-Tab chip is aria-disabled with `title` "Answer the prompt first" (in a permission prompt Shift-Tab can pick an "allow for this session" option; contract §3: no Shift-Tab shortcut while a prompt is open). Passthrough keeps sending what the user types. Clicking a chip sends the key and returns focus to the composer.
 
 ### 3.12 Menus, tabs, skeletons
 
@@ -487,9 +650,59 @@ Monospace textarea with a "›" prompt, grows 1 → 8 lines (20 px each), then s
 
 ---
 
+### 3.13 Back button (owner request 2026-11-09)
+
+One look on every screen with a back link (project view, session window): a **ghost button**, not a text link.
+`<a class="back" href="…">` with the `i-back` icon and the label (the session window keeps its project name or
+"Dashboard" in `#proj`). Rules live in `public/tokens.css` (both pages load it), and both pages drop their `.crumb` rules.
+
+```css
+.back { display: inline-flex; align-items: center; gap: 4px; height: 28px; max-width: 28ch; padding: 0 8px 0 4px;
+  border-radius: var(--r-sm); color: var(--text-muted); font-weight: 600; text-decoration: none; }
+.back span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.back:hover { background: var(--surface-3); color: var(--text); }
+.back:active { background: var(--surface-3); }
+.back:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+```
+
+`title` "Back to <label> (⌘[)" on macOS, "Back to <label> (Alt+←)" on Linux; `aria-keyshortcuts` "Meta+BracketLeft" /
+"Alt+ArrowLeft". The session window gains the same shortcut (it had none): ⌘[ / Alt+← follows the button's `href`,
+except while passthrough is on (Linux Alt+← then goes to the pane rules: not on the allow-list, not sent; macOS ⌘[ stays
+an app shortcut, §4.2).
+
+**(0.3 build, 2026-11-09)** Settings has no back link: the screen never had one, and its header holds only the `h1` and
+a one-line note. ⌘[ / Alt+← still goes back to the dashboard from Settings (§4.6 table). So the screens
+with a back link are the project view and the session window.
+
+### 3.14 Add to Applications notice (owner request 2026-11-09, ADR 0011)
+
+App tier, macOS, dashboard screen only: a page-level **info banner** (§3.8) at the top of the dashboard's main area,
+driven by `GET /api/app/me` `appCopy` (read at load and after each action). One banner at a time:
+
+| `appCopy` | Banner text | Buttons |
+|---|---|---|
+| `state: missing`, a source, not `dismissed` | **Add nika to Applications** so Spotlight and Launchpad can find it. | **Add to Applications** (primary, small) · Not now (ghost) |
+| `state: stale`, `managed` | **nika <available> is installed.** Update the app in Applications to match. | **Update app** (primary, small) · Not now (ghost) |
+| anything else | no banner | — |
+
+- "Not now" on Add posts `{ "action": "dismiss" }` (never asked again; `nika app install` still works). "Not now" on Update
+  only hides the banner until the next launch (nothing is posted).
+- Pressing the primary button: spinner + "Adding…" / "Updating…", `aria-busy`, both buttons aria-disabled.
+- 200: the banner leaves; toast (`role="status"`) "nika is in Applications. Open it from Spotlight or Launchpad." (Add) or
+  "Updated the app in Applications to <version>." (Update); with `restart: true`: "Updated to <version>. Quit and reopen
+  nika to use it."
+- Errors stay in the banner as one alert line (`role="alert"`), fixed copy, the buttons re-enabled:
+  `foreign-target` "~/Applications or ~/Applications/nika.app isn't a folder nika can safely replace. Move it away, then try again." · `no-source` "nika can't find
+  its own app to copy. Reinstall it with Homebrew." · `copy-busy` "nika is already copying the app." · `copy-failed`, 5xx,
+  network "nika couldn't copy the app to Applications."
+- Icon: `i-apps` (a 2×2 grid of rounded squares, 16 px, same stroke as the set). Every string is static copy plus the
+  server's version number (rendered with `textContent`).
+
 ## 4. Keyboard model
 
-Mod = ⌘ on macOS, Ctrl on Linux. No single-character shortcuts (WCAG 2.1.4); 0.1's "/" to filter is replaced by Mod+F.
+Mod = ⌘ on macOS, Ctrl on Linux. No single-character shortcuts (WCAG 2.1.4), with one exception the owner asked for
+(2026-11-09): `?` opens Keyboard shortcuts (§4.6), only outside text entry and with a Settings switch to turn it off.
+0.1's "/" to filter is replaced by Mod+F.
 
 ### 4.1 Global
 
@@ -502,6 +715,7 @@ Mod = ⌘ on macOS, Ctrl on Linux. No single-character shortcuts (WCAG 2.1.4); 0
 | Mod+K | Command palette | C only; Phase 5 for A |
 | ⌘[ (macOS), Alt+← (Linux) | Back | session → project/dashboard |
 | Mod+Enter | Submit the open form (Spawn agent, Save settings) | |
+| ? · Mod+/ | Keyboard shortcuts (§4.6) | `?` only outside text entry and while "Single-key shortcuts" is on |
 | Mod+Shift+H | Toggle transcript drawer | B only |
 | Tab / Shift+Tab | Normal order: skip link → sidebar → main → … | |
 
@@ -547,6 +761,79 @@ Native `<dialog>.showModal()`: background is inert, Tab cycles inside, Esc fires
 - First tab stop: "Skip to content" → `#main` (`tabindex="-1"`).
 - Session: a second skip link "Skip to message input" → composer.
 - Landmarks: `nav` (sidebar, labelled "Main"), `main`, `aside` (project cards), `header` (screen bar), `footer` only in C (status line).
+
+### 4.6 Keyboard shortcuts window (owner request 2026-11-09)
+
+**Open.** `?` (Shift+/ on most layouts: match `e.key === '?'`, no Ctrl, ⌘ or Alt) or Mod+/ (`e.key === '/'` with Mod), or
+the **Keyboard shortcuts** button. `?` is ignored when the focus is in an `input`, `textarea`, `select` or
+contenteditable element, in the terminal mirror, while passthrough is on, while any dialog is open, or when the setting
+"Single-key shortcuts" is off. Mod+/ works everywhere except in passthrough on Linux (Ctrl+] is the only key nika keeps
+there; macOS ⌘/ stays an app shortcut, §4.2) and while another dialog is open. Pressing either key again with the window
+open does nothing; Esc or Close closes it and focus returns to the opener (§4.4).
+
+**Button.** Ghost icon button, icon `i-kbd` (a keyboard outline, 16 px, same stroke as the set), `aria-label="Keyboard
+shortcuts"`, `title` "Keyboard shortcuts (?)" (just "(⌘/)" / "(Ctrl+/)" when the setting is off), `aria-keyshortcuts`
+"Shift+Slash Meta+Slash" (Linux "Shift+Slash Control+Slash"). Dashboard: in the sidebar footer on the app tier; the browser tier has no
+sidebar, so there it sits in the dashboard bar (0.3 build, 2026-11-09; its `title` names only Mod+/, because `?` is
+app-tier only). Session window: in the header bar, at the far right.
+
+**Dialog.** Native `<dialog id="kbd-dlg">`, 560 wide (min(560, vw−32)), max height min(720, vh−32), body scrolls. Header:
+`h2` "Keyboard shortcuts" (initial focus, `tabindex="-1"`) and a muted line naming the window ("Dashboard" / "Session
+window"). Body: one section per group, `h3` + `<table>` with a visually hidden `caption` (the group name),
+`<th scope="col">` Name · Shortcut · Description; Shortcut cells use `<kbd>` per key joined by "+", alternatives joined by
+" or "; mono 12 for keys. Footer: on the app tier a muted line "Single-key shortcuts: On" (or "Off") + link button
+"Change in Settings" (dashboard: goes to `#settings` and closes; session window: opens the dashboard's Settings in the same
+window), then **Close** (secondary). The browser tier footer has only Close. Content is static copy from one module
+(`public/shortcuts.js`), filtered by window, tier and platform; nothing in it comes from the server.
+
+Key labels: macOS ⌘ ⌥ ⇧ ⌃ and the arrows; Linux Ctrl, Alt, Shift and the arrows. Mod = ⌘ / Ctrl. "⌘[ / Alt+←" in the
+tables means ⌘[ on macOS and Alt+← on Linux: each platform shows only its own.
+
+**Content.** Exact copy; list only what the window and tier support.
+
+Dashboard (app tier):
+
+| Group | Name | Shortcut | Description |
+|---|---|---|---|
+| Navigation | Dashboard | Mod+1 | Show all projects and agents |
+| | Settings | Mod+, | Open Settings |
+| | Add project | Mod+O | Choose a folder to add as a project |
+| | Filter agents | Mod+F | Move to the agent filter (dashboard) |
+| | Back | ⌘[ / Alt+← | Go back to the dashboard (project view, Settings) |
+| | Keyboard shortcuts | ? or Mod+/ | Show this list |
+| Dialogs and menus | Run the main action | Mod+Enter | Spawn, save or apply in the open dialog or in Settings |
+| | Close | Esc | Close the open menu or dialog |
+
+Dashboard (browser tier): Keyboard shortcuts — Mod+/ — Show this list; Close — Esc — Close the open menu. (`?` is app-tier
+only: the browser tier cannot store the setting that turns it off.)
+
+Session window:
+
+| Group | Name | Shortcut | Description |
+|---|---|---|---|
+| Window | Back | ⌘[ / Alt+← | Back to the dashboard |
+| | Keyboard shortcuts | ? or Mod+/ | Show this list |
+| Message box | Send | Enter | Send the text, then Enter, to Claude (empty box: Enter only) |
+| | New line | Shift+Enter | Start a new line in the message box |
+| | Press Esc in Claude | Esc | Stop Claude's turn or close Claude's menu (when nothing in nika is open) |
+| | Interrupt | Ctrl+C | Send Ctrl-C to Claude (when no text is selected) |
+| | Commands | / | Open the command list (at the start of an empty box) |
+| | Type into the pane | Ctrl+] | Send every key straight to Claude's terminal |
+| Typing into the pane | Stop typing into the pane | Ctrl+] | Keys go to the message box again |
+| Mode switcher | Move between modes | ← → Home End | Moves focus; does not switch |
+| | Switch | Enter or Space | Switch to the focused mode |
+| Command list | Move | ↑ ↓ | Move through the commands |
+| | Insert | Enter or Tab | Put the command in the message box |
+| | Close | Esc | Close the list and keep the text |
+
+`/` and the command-list rows appear once the palette ships (Task 11); "Interrupt" keeps the composer's selection rule.
+
+**Settings.** Settings → Appearance gets a checkbox **Single-key shortcuts** (on by default), help text "Press ? to show
+keyboard shortcuts. Turn this off if you use speech input or single-key commands." Stored as `ui.singleKeyShortcuts`
+(boolean) through the existing settings route. The session window reads it from `GET /api/app/settings` once at load.
+
+**A11y.** Every row is reachable as table text (no hover-only content); the dialog follows §4.4; the button's `title`
+and `aria-keyshortcuts` name both keys; WCAG 2.1.4 is met by the Settings switch and by ignoring `?` in text entry.
 
 ---
 
@@ -758,6 +1045,294 @@ Tails only for tiles in the viewport (IntersectionObserver), max 12 panes, 1 Hz,
 ### 8.7 Mock-only things to drop
 
 The mock bar, `data-world`, the `.stage/.win` frame, `?theme`/`?size` params, simulated toasts ("Simulate cancel/busy"), the fake desktop and browser chrome.
+
+---
+
+## 9. Session controls (0.3)
+
+Product spec: `docs/superpowers/specs/2026-11-08-control-panel-design.md` §6.2–§6.9. Tokens and the mode tag: §2.8. Mockup: `docs/design/variants/session-controls.html`. App tier only; the browser tier on :3335 renders none of this (not disabled: absent). Every string from a pane (prompt labels, question) or from a command file (name, description) is set with `textContent`.
+
+### 9.1 Window frame and message-box edge
+
+The session window carries the current mode in three places at once: a 3 px frame along the top of the window, the header tag, and a 3 px left edge on the message box.
+
+```css
+.mode-frame { flex: none; height: 0; }   /* div.mode-frame, aria-hidden, first child of body */
+body[data-mode] .mode-frame { height: 3px; background: var(--mc-line); }
+body[data-confirmed="false"] .mode-frame, body.m-unknown .mode-frame {
+  background: repeating-linear-gradient(90deg, var(--mc-line) 0 10px, transparent 10px 16px); }
+body.m-bypass .mode-frame {   /* after the rule above: bypass is never dashed */
+  background: repeating-linear-gradient(135deg, var(--m-bypass-line) 0 6px, var(--m-bypass-stripe) 6px 10px); }
+
+/* message-box edge: public/session.css:163 sets box-shadow on focus, which would drop the edge.
+   Replace that rule with this pair (the fallback keeps the edge off when body has no mode class). */
+.inbox { box-shadow: inset 3px 0 0 var(--mc-line, transparent); }
+.inbox:focus-within { border-color: var(--accent);
+  box-shadow: inset 3px 0 0 var(--mc-line, transparent), 0 0 0 1px var(--accent); }
+```
+
+The edge and the focus ring are two shadows in one declaration, so focus adds the ring without removing the mode. Shell on replaces both (§9.6).
+
+`body` gets `data-mode="<api mode>"`, the mode class (`m-plan` …) and `data-confirmed`. No pane, pane gone, or no capture yet: no class, no frame (height 0), no edge, no tag. The frame is decoration (`aria-hidden`); the tag and the live region carry the meaning.
+
+### 9.2 Header
+
+Order: back crumb · `h1` name · status pill · **mode tag** (`#sess-mode`) · model · pane · branch · spacer · **mode switcher** (`#mode-switch`) · Open in claude.ai.
+
+- The tag sits right after the status pill so the two read together ("Waiting", "Plan").
+- The header wraps (it already has `flex-wrap`); the switcher moves to a second line before anything is hidden.
+- The tag is never focusable and never a button; the switcher is the control.
+
+### 9.3 Mode switcher
+
+Segmented toolbar: Manual, Accept edits, Plan, Auto (`MODE_TARGETS`). Don't ask is never a segment. **Bypass is never a segment in 0.3** (product spec §6.3: only for panes nika launched with bypass allowed, which arrives in 0.4; the mode route refuses it as a target). A bypass footer in 0.3 shows only as the current-mode tag, with the switcher in its "Bypass current (0.3)" state below. The two Bypass segment rows below are the 0.4 look.
+
+Anatomy: `div.msw[role="toolbar"][aria-label="Permission mode"][aria-describedby="msw-why"]` > `button.<mode cls>[aria-pressed]` (icon + label) ×4 (×5 in 0.4 with Bypass), then `span#msw-why.msw-why` (info icon + reason text) when the switcher can't act. `#msw-why` is not a live region (it flips with every working/waiting change); a result message (below) is announced once through the window's announcer. The switcher is disabled while a `prompt` is open, `mode` is `unknown` or `modeConfirmed` is `false` (`docs/contracts/api-app.md`: the route would answer 409).
+
+| Segment state | Look |
+|---|---|
+| default | transparent, `--text` label, `--text-muted` icon; hover `--surface-2` |
+| pressed (current mode, confirmed) | `--mc-soft` fill, `--mc-line` edge, `--mc` text and icon, 600 |
+| held (prompt open or unconfirmed) | `.held`: **not pressed** (`aria-pressed="false"`), 1 px dashed `--mc-line` edge, `--mc` text and icon, no fill, 100 % opacity, `title` "Plan, not confirmed". Same dashed language as the tag; no segment is pressed while the mode is not confirmed. None when the held mode is not a segment (Don't ask, Bypass) |
+| Bypass, not pressed (0.4 only) | `--m-bypass` text and icon (red even when idle, so it is never picked by accident) |
+| Bypass, pressed (0.4 only) | `--m-bypass` fill, `--m-bypass-on` text |
+| switching (target) | 12 px spinner in place of the icon, 1 px dashed `--mc-line` edge, `aria-busy="true"` |
+| aria-disabled | 45 % opacity, `cursor: not-allowed`; **the pressed segment and a held one stay at 100 %** so the mode stays readable |
+| not in cycle | aria-disabled + label struck through + `title` "Auto isn't in this session's Shift-Tab cycle" |
+
+```css
+.msw button.held { border: 1px dashed var(--mc-line); color: var(--mc); opacity: 1; }
+.msw button.held .ic { color: inherit; }
+.msw-why.err { color: var(--idle); font-weight: 600; }   /* result messages; the icon becomes i-warn */
+```
+
+**Why the switcher can't act.** The first reason that applies wins. Before all of them, a window with no mode at all (no tag, no frame) shows the "not connected" rows.
+
+| # | Switcher state | Segments | Reason line (`#msw-why`, exact copy) |
+|---|---|---|---|
+| — | pane gone | all aria-disabled, none pressed | "The pane is gone." |
+| — | tmux error (captures fail, §3.9) | same | "nika couldn't reach tmux." |
+| — | no capture yet | same | "Connecting to the pane…" |
+| 1 | permission prompt or dialog open (`prompt` ≠ null, or status Needs you) | none pressed; the held mode's segment `.held`; all aria-disabled. **No Shift-Tab chip**, even when the mode is unknown | "Answer the prompt first." |
+| 2 | Claude working | all aria-disabled (pressed stays full) | "Switch when Claude is waiting for you." |
+| 3 | mode unconfirmed (`modeConfirmed: false`, no prompt) | none pressed; the held or launch mode's segment `.held`; all aria-disabled | "Waiting for Claude to confirm the mode." |
+| 4 | mode unknown | none pressed, all aria-disabled | "nika can't read the mode." + key chip **Shift-Tab** (sends `BTab`, the 0.2 key route) |
+| 5 | Don't ask current | none pressed, all aria-disabled | "Don't ask is on. Change it in the terminal." |
+| — | ready (Claude idle, no prompt, mode confirmed) | all live, current pressed | none |
+| — | switching | target busy, others aria-disabled; the pressed segment follows the footer | "Switching… up to 6 Shift-Tab presses." (no live count) |
+| — | Bypass current (0.3) | Manual, Accept edits, Plan, Auto live, none pressed (switching away is allowed; only bypass as a target is refused) | none: the red tag next to it names the mode |
+
+Paused and passthrough (§3.9) change nothing: a paused mirror still applies captures, and clicking a segment moves focus out of the mirror, which already leaves passthrough.
+
+**Results of a switch** (`POST /api/app/pane/:id/mode`). Messages replace the reason line in its error look (`.msw-why.err`, warn icon) and stay until the next switch request, until a reason 1–5 applies, or until the pane's mode changes after the response.
+
+| Response | Message (exact copy) | Also |
+|---|---|---|
+| 200 | none | focus stays on the segment; `#mode-live` says "builder-1: permission mode is now Plan." (§2.8.7) |
+| any non-200 after presses, the next capture reads a confirmed mode other than the start mode | "Stopped at Accept edits." | the tag already shows the mode reached; `#mode-live` announces it once. Wins over the rows below |
+| 409 `not-in-cycle`, the next capture is back at the start mode | "Auto isn't in this session's Shift-Tab cycle." | that target struck through. Strikes clear when the pane's mode changes; a used-up press budget that stopped elsewhere is the row above, never a strike |
+| 409 `not-idle` | "Switch when Claude is waiting for you." | |
+| 409 `mode-unknown` | "nika can't read the mode." | |
+| 409 `mode-unchanged` | "The mode didn't change; try again or use the terminal." | calm: no alert, no Bypass tag (the footer read fine and did not move; a footer that reads Bypass is `stopped-in-bypass` instead) |
+| 409 `busy-switching` | "Another action is running on this session." | |
+| 404 | "The session is gone." | the window goes to its pane-gone state (§3.9) |
+| 429 | "Too many keys at once; try again." | |
+| 5xx, network error | "nika couldn't reach tmux." | |
+
+Behaviour: the header tag follows the footer during the switch (each capture), so the user sees the cycle pass through modes; only the final mode is announced. The response's `presses` is used only for the echo ("Sent 2 × Shift-Tab to %12"), never as a live count. There is no cancel: at most 6 presses, each followed by up to 1.8 s of polling (about 11 s worst case).
+
+Keyboard: one Tab stop (roving `tabindex`: the pressed segment, else the first). ← → move focus and wrap; Home / End jump. **Moving never switches**; Enter or Space switches. Activating the pressed segment or an aria-disabled one does nothing (aria-disabled segments stay focusable so their `title` and `#msw-why` can be read).
+
+≤ 760 px: segments show icons only; the label moves to `aria-label` and `title` (the existing rule that hides header button labels). The tag keeps its word.
+
+### 9.4 Quick actions
+
+One toolbar (`#qa`, `role="toolbar"`, `aria-label="Session actions"`) at the top of the composer, above the prompt panel and the message box. 28 px buttons, 12 px text, icon + word. End session sits alone at the far right.
+
+| Button | Icon | Sends | Live when | Otherwise (aria-disabled `title`) |
+|---|---|---|---|---|
+| Stop | `i-stop` (filled while live) | `POST /api/app/pane/:id/stop` with `{}` (contract §3): Esc, and a second Esc in vim insert mode | Claude is working | "Nothing to stop: Claude is waiting" |
+| Compact | `i-compact` | `/compact` (command route, contract §3) | Claude is waiting | "Available when Claude is waiting for you" |
+| Clear… | `i-clear` | after confirm: `/clear` (command route) | Claude is waiting | same |
+| Model: `<model>` ▾ | `i-model`, `i-chev` | opens the model popover; Switch model sends `/model <id>` (command route) | Claude is waiting | same |
+| Rewind | `i-rewind` | `/rewind` (command route, contract §3) | Claude is waiting | "Available when Claude is waiting for you" |
+| End session… | `i-end` | opens the End dialog (§9.8) | pane eligible and the agent is not `ended` | "No live session on this pane" (an `ended` agent: no request goes out, the route could only answer 409 `not-idle`) |
+
+- **Stop is always in the first slot**, live only while Claude works and aria-disabled while Claude waits, so the row never shifts under the pointer (owner decision 2026-11-09). Live look: `--text` edge, 600, filled square. `title`: "Stops this turn (Esc in the pane; twice in vim insert mode). Keeps the work, also stops running subagents". **(Built amendment 2026-11-09, task 14b: Stop posts to its own route instead of the keys route; results below.)**
+- Compact, Clear, Model and Rewind are aria-disabled while Claude works (owner decision 2026-11-09), the same idle rule as the mode switch.
+- Compact, Clear, Model and Rewind go through the command route (contract §3 `/command`): nika types the command only into Claude's empty input and presses Enter only when the input reads exactly that command, so a draft typed in the terminal is never sent or cleared. Compact `title`: "Types /compact and Enter: summarises the conversation to free context". Clear `title`: "Types /clear and Enter after you confirm". Rewind `title`: "Types /rewind and Enter: opens Claude's rewind menu in the pane". **(Built amendment 2026-11-09, task 14b: Rewind types `/rewind` through the command route instead of Esc Esc. It no longer reads nika's message box, so the old "Empty the message box first" state is gone; the route's own rule (Claude's input must be empty) applies, with the shared failure copy below.)**
+- End session uses the Danger button (§3.1) and ends with "…" because it opens a dialog; so does Clear.
+- Clear confirm (440 px confirm dialog, §3.6): title "Clear builder-1's conversation?", body "Claude starts a new conversation with empty context.", buttons Cancel (initial focus) · **Clear conversation** (danger).
+- Model popover: disclosure (`aria-expanded`, `aria-controls="model-pop"`), not a menu. Content: label "Model for builder-1", the §6.9 `<select>` (Latest / Aliases / Older optgroups, then "Custom ID…" which reveals a text field; Aliases: best, fable, opus, sonnet, haiku, opusplan, opus[1m], sonnet[1m]), a muted line "Types `/model <id>` and Enter.", footer Cancel · **Switch model** (primary). Opening focuses the select; Esc or Cancel closes and returns focus to the Model button; Tab out of the popover closes it. Custom field error: "Use a model id such as claude-sonnet-5-5, or an alias such as opus or sonnet[1m]." A change never fires on `<select>` change (arrow keys on a closed GTK select would send several `/model`s); only Switch model sends.
+- After any send, the existing echo says what went out ("Sent /compact + Enter to %12"). Rewind says "Opened Rewind in %12: pick a point in the pane" (the menu is in the pane, not in nika). Stop says "Stopped builder-1's turn".
+- Stop failures (**built amendment 2026-11-09, task 14b**), fixed copy in the problem line, never the server's text: 409 `prompt-open`: "Answer the prompt first. Esc = No is in the prompt panel." · 409 `not-busy`: "Nothing to stop: Claude is waiting." · 409 `stopping` (another window is already stopping this pane): "Already stopping the turn." · 409 `mode-unknown`: "Claude's input stayed in vim insert mode; press Esc in the terminal." · 429: "Too many keys at once; try again." · 404: "The session is gone." (and the pane-gone state, §3.9) · 5xx, network error: "nika couldn't reach tmux." · anything else: "nika couldn't stop the turn." A command in flight (Compact waiting on the control lock) does not block Stop; only a Stop already in flight ignores a second click.
+- Command route failures, in the composer's problem line (`role="alert"`), fixed copy (never the server's text), the button re-enabled: 409 `input-not-empty`: "Claude's input has text; clear it first." · 409 `not-at-prompt`: "Claude's input didn't take the command; nothing was submitted." · 409 `not-idle`: "Compact, Clear, Model and Rewind are ready when Claude waits for you." · 409 `mode-unknown`: "Claude's screen isn't at the prompt; use the terminal." · 409 `busy-switching`: "Another action is running on this session." · 429: "Too many keys at once; try again." · 404: "The session is gone." · 5xx, network error: "nika couldn't reach tmux."
+
+**States.** A disabled row also says why in words: a reason line `p#qa-why.qa-why` (info icon + text, 12 px `--text-muted`, 6 px under the row, referenced by the toolbar's `aria-describedby`), not only the `title`s. One line, the first matching row wins.
+
+| Window state | Stop | Compact · Clear · Model · Rewind | End session… | Reason line (exact copy) |
+|---|---|---|---|---|
+| pane gone | aria-disabled | aria-disabled | aria-disabled, `title` "The pane is gone" | "The pane is gone." |
+| tmux error (§3.9) | aria-disabled | aria-disabled | aria-disabled | "nika couldn't reach tmux." |
+| no capture yet | aria-disabled | aria-disabled | aria-disabled | "Connecting to the pane…" |
+| Needs you, prompt panel shown (§9.5) | aria-disabled, `title` "Esc = No is in the prompt panel" | aria-disabled | live (the dialog has its prompt-open line, §9.8) | "Answer the prompt first. Esc = No is in the prompt panel." |
+| Needs you, unknown layout (`prompt: null`) | aria-disabled (Esc is in the key chips and the 0.2 note) | aria-disabled | live | "Answer the prompt first." |
+| Claude working | **live** | aria-disabled | live (Esc first, §9.8) | "Compact, Clear, Model and Rewind are ready when Claude waits for you." |
+| Claude waiting | aria-disabled | live | live | none (Stop being off needs no line) |
+
+While a mode switch from this window is in flight, Compact, Clear, Model and Rewind are also aria-disabled, with no extra line (the switcher's "Switching…" line explains it); End stays live and the route answers `busy-switching` (§9.8). Paused and passthrough change nothing (same reason as §9.3).
+
+```css
+.qa-why { margin: 6px 0 0; display: flex; align-items: center; gap: 6px; font-size: var(--fs-small); color: var(--text-muted); }
+```
+
+Keyboard: one Tab stop, ← → / Home / End, Enter or Space activates.
+
+≤ 760 px: Compact, Clear, Rewind become icon buttons (`aria-label` = the word, `title` as above); Stop, Model and End session keep their words.
+
+### 9.5 Permission-prompt buttons
+
+When the capture has `prompt`, the attention note above the message box becomes a prompt panel (`#prompt-btns`, `role="group"`, `aria-labelledby` → the question).
+
+- Panel: `--attn-row` fill + 3 px `--attn` left edge (as attention rows). Line 1 reuses the 0.2 attention note (`#attn-note`): the "Needs you" status pill + `#attn-text`, cut to the attention reason (`agent.attention`, e.g. "Asking to run a command") in `--attn`, 600 (`.ask-reason`). nika does not parse the prompt's own title line (no "Bash command: …" line). Line 2: the question, 600.
+- One button per option, full width, in Claude's order: keycap digit (`kbd`, 700) + the label as text, wrapping (labels ≤ 80 chars after `clean()`). Secondary-button look, left-aligned, min height 32. A button posts `{ n, sig }` to `POST /api/app/pane/:id/answer` (`docs/contracts/api-app.md`).
+- **An option whose label contains "bypass" (any case) gets no button** (rule 12; the answer route refuses it): it shows as a plain row, same height, dashed `--line-strong` edge, no fill, the digit in a muted keycap, the label as text, and a second line in `--text-muted`: "Answer this one in the terminal". It is not focusable.
+- **A prompt that mentions bypass anywhere gets no answer button at all** (built amendment 2026-11-09, task 14b; the answer route refuses every option with 400 when the prompt window - the last 15 non-blank rows, tool-call lines above the question included - mentions bypass, NFKC, letters only). The capture's `prompt.bypass` carries that same test (contract §3), and the page hides every answer button when it is `true`; the page's own checks of the question and the labels stay as a second line. Every option is drawn as the plain row above, with "Answer this one in the terminal"; only the Esc button stays. If the route still answers 400, the problem line says "Answer this prompt in the terminal." and the question is locked like an answered one.
+- Last: a dashed-edge button "Esc" + "Cancel, same as No" (sends `Escape` through the keys route).
+- Muted hint under the buttons: "Each button presses its number in the pane. Claude answers at once; no Enter."
+- On press: all option buttons (and Esc) go aria-disabled while the request runs. After a 200 they stay aria-disabled **until the question changes** (a new `sig`) or the prompt is gone; echo "Sent 2 to %12". The panel leaves when a capture shows no prompt.
+- Answer route results, in the problem line (`role="alert"`), exact copy:
+
+| Response | Message | Buttons after |
+|---|---|---|
+| 200 | none (echo only) | disabled until the question changes |
+| 409 `prompt-changed` | "The question changed; check the session." | disabled until the question changes |
+| 409 `already-answered` | none | disabled until the question changes (it was answered already, by a double click or in a second window) |
+| 409 `no-prompt` | "The question is gone." | re-enabled (the panel leaves with the next capture) |
+| 409 `busy-switching` | "Another action is running on this session." | re-enabled |
+| 400 (built amendment, task 14b) | "Answer this prompt in the terminal." | disabled until the question changes (the route refuses this prompt; a retry would get the same answer) |
+| 429 | "Too many keys at once; try again." | re-enabled |
+| 404 | "The session is gone." | re-enabled; the window then goes to its pane-gone state (§3.9), which removes the panel |
+| 5xx, network error | "nika couldn't reach tmux." | re-enabled |
+
+Rule: the buttons re-enable after any non-200 except `prompt-changed`, `already-answered` and 400.
+- **Send, Shell and the lone Enter wait while a question is open** (built amendment 2026-11-09, task 14b). While a prompt is on screen, or the agent is "Needs you", the message box sends nothing: not a line, a paste, a Shell line or the Enter of an empty box (Enter would confirm the highlighted option). The text stays in the box and the problem line (`role="alert"`) says "Answer the prompt with the buttons above or in the terminal." while the panel shows an answer button, and "Answer the prompt in the terminal, or turn on Type into pane." when it shows none (a layout nika cannot parse), and "Answer this prompt in the terminal." for a prompt the capture marks `bypass` (Type into pane uses the keys route, which refuses Enter, digits and paste there). The Enter and Shift-Tab key chips go aria-disabled with the title "Answer the prompt first"; the Esc chip does not. A keys-route 409 `bypass-prompt` shows "Answer this prompt in the terminal."; a 409 `screen-unclear` (an unreadable footer whose window mentions bypass, such as a slash menu for a command named like that) shows "nika can't tell what Claude is showing; use the terminal." Passthrough is the raw terminal path and is unchanged (it too posts to the keys route, so Enter, Shift-Tab, digits and paste there meet the same guard).
+- Unknown layout (`prompt: null` while the status is "Needs you"): no buttons; the 0.2 note changes in 0.3 (built amendment, task 14b), because nika now blocks Enter there: "<name> needs you: <reason>. Answer it in the terminal, or turn on Type into pane (⌃] on a Mac, Ctrl+] elsewhere)." The gate now holds for every dialog nika cannot parse, not only bypass ones.
+- Option labels can contain folder paths: shown in the app only, never logged.
+
+Keyboard and focus: each button is a Tab stop (they are the main action while Claude asks). The panel appearing never moves focus; the live region says "builder-1 asks: Do you want to proceed? 4 choices above the message box." Shift+Tab from the message box reaches the shell toggle, then the last option.
+
+### 9.6 Shell toggle (and the on/off rule)
+
+Every on/off control shows its state in words as well as colour: a small `.onoff` chip ("on" / "off", 11 px 700, 1 px `currentColor` edge, `aria-hidden`) inside the button, next to `aria-pressed`. This applies to Shell and to the existing "Type into pane" toggle.
+
+Shell: a 26 px toggle at the left edge inside the message box: `i-shell` (`$`) + "Shell" + chip.
+
+| | Off | On |
+|---|---|---|
+| toggle | `--surface`, `--line-strong` edge, `--text-muted`, chip "off" | `--shell` fill, `--on-shell` text, chip "on" |
+| message box | mode edge (§9.1), prompt sign "›" | 2 px `--shell` border instead of the mode edge, prompt sign "!" in `--shell` |
+| placeholder | "Message builder-1…" | "Shell command for Claude's ! mode…" |
+| hint line | — | "Shell on: Enter runs this through Claude's ! mode, then shell turns off." |
+
+Ink is shell's own colour: it is not a mode hue, a status hue or the accent, and it matches the terminal look of the mirror. (Claude's own `!` mode border is pink, which would collide with Needs you.)
+
+Sending in shell mode: `C-u`, then `!` + text, then `Enter` (spec §6.5). Shell turns **off after each successful send** (owner decision 2026-11-09), like Claude's `!` mode, so a following normal message can't run as a command. A failed send keeps Shell on and keeps the text (the 0.2 problem line says why), so a retry still goes as a command. Enter with an empty box does nothing in shell mode (no lone `!` is sent). Live region: "Shell mode on" / "Shell mode off".
+
+The 2 px ink border replaces the 1 px border and the mode edge; the padding drops by 1 px so the text doesn't move. Focus keeps the ink border and adds a 2 px accent ring outside it:
+
+```css
+.inbox.shell-on { border: 2px solid var(--shell); padding: 5px 5px 5px 9px; box-shadow: none; }
+.inbox.shell-on:focus-within { border-color: var(--shell); box-shadow: 0 0 0 2px var(--accent); }
+.inbox.shell-on .prompt { color: var(--shell); }
+```
+
+While Shell is on, the command palette never opens (§9.7).
+
+Keyboard: a Tab stop before the textarea; Enter or Space toggles and leaves focus on the toggle; the composer keeps its text.
+
+"Type into pane" keeps its 0.2 behaviour (accent-soft when pressed, accent banner) and gains the chip.
+
+### 9.7 Command palette
+
+A list that opens above the message box (absolute, anchored to the box's left and right edges, opens upward, `--elev-2`, `--line-strong` edge, `--r-md`, max-height 360 px, scrolls).
+
+Opens when the message box starts with `/` and the text after it has no whitespace (`paletteQuery`), or from the **Commands** button (`i-cmd` ghost icon button inside the box, before Send; `aria-label="Commands (/)"`; with an empty box it inserts `/` and opens; with text in the box it is aria-disabled, `title` "Empty the message box to pick a command"). **Never while Shell is on**: a `/` there is shell text, and the Commands button is aria-disabled with `title` "Turn Shell off to pick a command".
+
+Anatomy: header row "**Commands**" + muted "6 match /co" on the left, key hints right (`↑ ↓` choose, `Enter` insert, `Esc` close); then `ul#palette[role="listbox"][aria-label="Commands"]` of `li[role="option"][aria-selected]`:
+
+```text
+┌──────────────────────────────────────────────────────────────┐
+│▌/compact [instructions]                             Built-in │  name 600 mono, argument hint mono muted, source tag right
+│ Summarize the conversation to free context                   │  description, muted, one line, ellipsis (full text in title)
+│ /config [key=value]                                 Built-in │
+│ Open settings; key=value sets one directly                   │
+│ ▭ Opens a dialog in the terminal                             │  only when dialog: true; --idle, 600, i-dialog
+└──────────────────────────────────────────────────────────────┘
+```
+
+- Source tag: "Built-in", "Personal" (`~/.claude`), "Project", "Plugin demo-tools". 11 px 600, `--surface-2`, `--line` edge, `--text-muted`.
+- Active option: `--accent-soft` fill + 3 px `--accent` left edge; its description turns `--text`.
+- Order: `rankCommands` (exact name match first, then name prefix, then name substring, then description), ≤ 50.
+- **The first option is active on open and after every keystroke that filters**, so Enter always has a target while the list has one.
+- Empty: "No command matches /xyz. Enter sends the text as typed." Loading: "Loading commands…". Error: "Couldn't load the command list. Enter sends the text as typed."
+- The hint line gains a tip "`/` commands". After insert, it shows the argument hint: "Arguments: [model]" (a textarea placeholder can't show it once there is text).
+
+Keyboard (focus never leaves the textarea): ↑ ↓ move the active option (no wrap); Enter or Tab inserts `/<name> ` and closes; Esc closes and keeps the text (an Esc ladder step before "send Escape to the pane"); typing filters and makes the first option active again; a space closes it. Enter on an exact match inserts it like any other option (`/compact` + Enter gives `/compact `; a second Enter sends). With no match (empty list, loading or error), Enter sends the text as typed. Click inserts.
+
+ARIA: the textarea gets `aria-controls="palette"` and, while an option is active, `aria-activedescendant`. Polite announcement on open and when the count changes (debounced 400 ms): "6 commands. Up and Down to choose, Enter to insert, Escape to close."
+
+### 9.8 End-session dialog
+
+Confirm dialog, 440 px (§3.6), opened from the quick-actions row, the dashboard row menu ("End session…") and, in 0.4, the graph node menu.
+
+| State | Content |
+|---|---|
+| default | title "End builder-1's session?"; body "Claude exits and the pane closes. Resume later with Copy resume command."; footer Cancel (**initial focus**) · **End session** (danger, filled) |
+| default, Claude working | as default + a muted line "Claude is working. nika presses Esc first to end the turn, then ends the session." |
+| default, prompt open | as default + a muted line "Claude is asking a question. nika presses Esc first, which answers No." |
+| ending | End session shows a spinner + "Ending…", `aria-busy`; Cancel aria-disabled; Esc does nothing (the `cancel` event is prevented); polite line "Waiting for Claude to exit…" |
+| ended (`ended: true`) | dialog closes; toast "Session ended" (`role="status"`); the mirror shows the pane-gone overlay; focus goes to the screen `h1` (dashboard: the row's ⋯ button, or the `h1` if the row is gone) |
+| failed (`ended: false`) | alert at the top of the body (`role="alert"`, `--danger-soft`, warn icon, 600): **"Claude didn't exit; use Stop or the terminal."**; with `reason: "keys"` (a key send failed, a rate limit say): **"nika couldn't send the keys; try again."**; focus moves to the alert; the footer has only Close |
+| refused or error | same alert slot, fixed copy (never the server's text); footer Close. 409 `not-idle`: "Claude didn't stop after Esc; use the terminal." · 409 `mode-unknown`: "Claude's screen isn't at the prompt; use the terminal." · 409 `input-not-empty`: "Claude's input has text; clear it first." · 409 `not-at-prompt`: "Claude's input didn't take /exit; nothing was submitted." · 409 `busy-switching`: "Another action is running on this session." · 404: "The session is gone." · 5xx, network error: "nika couldn't reach tmux." |
+
+"Copy resume command" lives in the dashboard row menu (§3.12). The session header has no menu in 0.3, so it is not added there; the body names the row-menu item as is.
+
+**(0.3 build, 2026-11-09)** The dialog's **End session** button is `.btn.danger.fill` (danger, filled: `--danger` fill, `--surface` text, §2.8.2), defined once in `public/tokens.css` for both pages. The quick-actions **End session…** button and the Clear dialog's **Clear conversation** stay plain Danger (§3.1).
+
+### 9.9 Dashboard row mode tag
+
+- App tier only: a mode column after status, 128 px. The browser tier keeps the 0.2 grids. App-tier grids, per container width (`public/app.css` container queries):
+
+```css
+.row { grid-template-columns: 104px 128px minmax(120px, 1.1fr) 88px minmax(0, 2.4fr) 56px 44px 32px; }
+@container (max-width: 860px) {   /* status glyph, mode icon, name, what, age, ⋯ */
+  .row { grid-template-columns: 22px 24px minmax(110px, 1fr) minmax(0, 2fr) 52px 32px; } }
+@container (max-width: 600px) {   /* what drops to line 2 under name */
+  .row { grid-template-columns: 22px 24px minmax(0, 1fr) 44px 32px; }
+  .row .c-what { grid-column: 3 / -1; grid-row: 2; }
+  .row .c-act { grid-row: 1; grid-column: 4; } }
+```
+
+- The compact tag (§2.8.5). Rows without an eligible pane (ended, not in tmux) leave the cell empty. Attention rows keep their tint and left bar; the tag keeps its own fill on top.
+- A "Needs you" row shows the held mode (the prompt covers the footer): hollow, dashed, its mode colour, "unconfirmed" in `.sr-only` and `title`. Never "Mode ?" unless nika has no reading at all (§2.8.6).
+- ≤ 860 px container: icon-only tag (24×24), next to the glyph-only status.
+- Row SR text (§5.5) gains the mode after the status: "reviewer-2, Needs you: Asking to run a command, Accept edits mode, unconfirmed, model opus, demo-api, 4 minutes ago, pane %14". Confirmed: "Plan mode".
+- Row menu: "End session…" for live agents with an eligible pane (opens §9.8).
+
+### 9.10 Focus order and Esc ladder
+
+Session window Tab order: skip links → back crumb → mode switcher (1 stop) → Open in claude.ai → [Terminal / Transcript tabs when narrow] → transcript → Dark/Light → Type into pane → mirror → quick actions (1 stop) → [model popover while open] → prompt option buttons → shell toggle → message box → Commands → Send → key chips. Opening the session still focuses the message box (§4.2).
+
+Esc ladder (§4.3) gains two rungs, in this order: model popover or row menu → **palette** → dialog → B drawer → pane.
+
+### 9.11 Responsive summary
+
+| Width | Header | Switcher | Quick actions | Palette |
+|---|---|---|---|---|
+| ≥ 1000 | one line when it fits | labels | labels, reason line under the row | full width of the message box |
+| 760–999 | wraps; switcher on line 2 | labels | labels, may wrap; End stays right | same |
+| < 760 | as 0.2 (labels of header buttons hidden) | icons only, names in `aria-label` + `title` | Compact, Clear, Rewind icon only | same, source tags stay |
 
 ### 8.8 WebView support
 

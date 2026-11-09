@@ -11,6 +11,7 @@
 <script type="module" src="session.js"></script>
 </head>
 <body class="sess">
+<div class="mode-frame" aria-hidden="true"></div>
 <a class="skip" href="#sess-main">Skip to content</a>
 <a class="skip skip-2" href="#composer">Skip to message input</a>
 <svg class="sprite" width="0" height="0" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg">
@@ -19,19 +20,46 @@
   <symbol id="i-kbd" viewBox="0 0 16 16"><rect x="1.5" y="4" width="13" height="8.5" rx="1.5"/><path d="M4 7h1M7 7h1M10 7h1M4.5 10h7"/></symbol>
   <symbol id="i-send" viewBox="0 0 16 16"><path d="M2.5 8h10M8.5 3.5 13 8l-4.5 4.5"/></symbol>
   <symbol id="i-down" viewBox="0 0 16 16"><path d="M8 3v10M3.5 8.5 8 13l4.5-4.5"/></symbol>
+  <symbol id="i-info" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.2"/><path d="M8 7.3v3.9M8 4.9v.1"/></symbol>
+  <symbol id="i-warn" viewBox="0 0 16 16"><path d="M8 2 1.5 13.5h13z"/><path d="M8 6.5v3.5M8 11.8v.2"/></symbol>
+  <symbol id="i-m-manual" viewBox="0 0 16 16"><path d="M4.5 9V5.5M7 8V3M9.5 8V3.5M12 9V5.5M4.5 9v1.5a4 4 0 0 0 4 4h.5a3 3 0 0 0 3-3V9M4.5 11 2.9 9.4"/></symbol>
+  <symbol id="i-m-edits" viewBox="0 0 16 16"><path d="M10.5 2.8l2.7 2.7L6 12.7l-3.3.6.6-3.3zM9 4.3l2.7 2.7"/></symbol>
+  <symbol id="i-m-plan" viewBox="0 0 16 16"><path d="M1.8 4.2 5.6 2.6l4.8 1.6 3.8-1.6v9.2l-3.8 1.6-4.8-1.6-3.8 1.6zM5.6 2.6v9.2M10.4 4.2v9.2"/></symbol>
+  <symbol id="i-m-auto" viewBox="0 0 16 16"><path d="M9 1.8 3.6 9h4l-.8 5.2L12.4 7h-4z"/></symbol>
+  <symbol id="i-m-bypass" viewBox="0 0 16 16"><path d="M8 1.8 13 3.6V8c0 3-2.1 5.1-5 6.4C5.1 13.1 3 11 3 8V3.6zM2.2 2.2l11.6 11.6"/></symbol>
+  <symbol id="i-m-dontask" viewBox="0 0 16 16"><rect x="3.2" y="7" width="9.6" height="7" rx="1.5"/><path d="M5.3 7V5.2a2.7 2.7 0 0 1 5.4 0V7M8 9.8v1.4"/></symbol>
+  <symbol id="i-m-unknown" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.2"/><path d="M6.2 6.3a1.9 1.9 0 1 1 2.7 1.7c-.6.3-.9.7-.9 1.3v.3M8 11.5v.2"/></symbol>
+  <symbol id="i-shell" viewBox="0 0 16 16"><path d="M10.8 4.6C10.3 3.7 9.3 3.2 8 3.2c-1.6 0-2.7.8-2.7 2 0 2.8 5.6 1.5 5.6 4.5 0 1.3-1.2 2.1-2.9 2.1-1.4 0-2.5-.6-3-1.5M8 1.8v12.4"/></symbol>
+  <symbol id="i-stop" viewBox="0 0 16 16"><rect x="4" y="4" width="8" height="8" rx="1.2"/></symbol>
+  <symbol id="i-compact" viewBox="0 0 16 16"><path d="M6 2.5V6H2.5M10 2.5V6h3.5M6 13.5V10H2.5M10 13.5V10h3.5"/></symbol>
+  <symbol id="i-clear" viewBox="0 0 16 16"><path d="M7 13.5h6.5M3.1 9.5l6.1-6.1a1.2 1.2 0 0 1 1.7 0l2.2 2.2a1.2 1.2 0 0 1 0 1.7L7 13.5H5L3.1 11.6a1.4 1.4 0 0 1 0-2.1zM6 6.6l3.4 3.4"/></symbol>
+  <symbol id="i-model" viewBox="0 0 16 16"><rect x="4" y="4" width="8" height="8" rx="1.5"/><path d="M6.5 1.8V4M9.5 1.8V4M6.5 12v2.2M9.5 12v2.2M1.8 6.5H4M1.8 9.5H4M12 6.5h2.2M12 9.5h2.2"/></symbol>
+  <symbol id="i-rewind" viewBox="0 0 16 16"><path d="M2.5 8a5.5 5.5 0 1 0 1.6-3.9M2.5 2.5v2.6h2.6"/></symbol>
+  <symbol id="i-end" viewBox="0 0 16 16"><path d="M8 1.8V8M4.6 4.2a5 5 0 1 0 6.8 0"/></symbol>
+  <symbol id="i-chev" viewBox="0 0 16 16"><path d="m4.5 6.5 3.5 3.5 3.5-3.5"/></symbol>
+  <symbol id="i-cmd" viewBox="0 0 16 16"><rect x="1.8" y="1.8" width="12.4" height="12.4" rx="2"/><path d="M9.8 4.5 6.2 11.5"/></symbol>
+  <symbol id="i-dialog" viewBox="0 0 16 16"><rect x="1.8" y="2.8" width="12.4" height="10.4" rx="1.5"/><path d="M1.8 5.8h12.4"/></symbol>
 </svg>
 
 <header class="bar" id="bar">
-  <a class="crumb" id="back" href="/#dashboard"><svg class="ic" aria-hidden="true"><use href="#i-back"/></svg><span id="proj">Dashboard</span></a>
+  <a class="back" id="back" href="/#dashboard"><svg class="ic" aria-hidden="true"><use href="#i-back"/></svg><span id="proj">Dashboard</span></a>
   <h1 id="sess-h">Session</h1>
   <span id="sess-st" class="st-slot"></span>
+  <span id="sess-mode" hidden></span>
   <span class="sess-meta">
     <span class="model" id="sess-model" hidden></span>
     <span class="hide-narrow" id="meta-pane" hidden>pane <span class="mono" id="sess-pane"></span></span>
     <span class="hide-narrow mono" id="sess-branch" hidden></span>
   </span>
   <span class="sp"></span>
-  <a class="btn" id="claude-link" href="https://claude.ai/code/" target="_blank" rel="noopener noreferrer" title="Opens claude.ai in your browser" hidden><svg class="ic" aria-hidden="true"><use href="#i-ext"/></svg><span class="lbl">Open in claude.ai</span><span class="sr-only">(opens your browser)</span></a>
+  <div class="bar-end">
+    <div class="msw" id="mode-switch" role="toolbar" aria-label="Permission mode" aria-describedby="msw-why" hidden></div>
+    <span class="msw-why" id="msw-why" hidden></span>
+    <span class="bar-tools">
+      <a class="btn" id="claude-link" href="https://claude.ai/code/" target="_blank" rel="noopener noreferrer" title="Opens claude.ai in your browser" hidden><svg class="ic" aria-hidden="true"><use href="#i-ext"/></svg><span class="lbl">Open in claude.ai</span><span class="sr-only">(opens your browser)</span></a>
+      <button type="button" class="btn ghost icon" id="kbd-open" aria-label="Keyboard shortcuts" aria-keyshortcuts="Shift+Slash Control+Slash" title="Keyboard shortcuts (?)"><svg class="ic" aria-hidden="true"><use href="#i-kbd"/></svg></button>
+    </span>
+  </div>
 </header>
 
 <div class="notice" id="notice" role="status" hidden></div>
@@ -62,10 +90,10 @@
           <button type="button" aria-pressed="true" data-surface="dark">Dark</button>
           <button type="button" aria-pressed="false" data-surface="light">Light</button>
         </span>
-        <button type="button" class="btn" id="pass-toggle" aria-pressed="false" aria-keyshortcuts="Control+]" title="Type straight into the pane (Ctrl+])"><svg class="ic" aria-hidden="true"><use href="#i-kbd"/></svg><span class="lbl">Type into pane</span><kbd>Ctrl+]</kbd></button>
+        <button type="button" class="btn" id="pass-toggle" aria-pressed="false" aria-keyshortcuts="Control+]" title="Type straight into the pane (Ctrl+])"><svg class="ic" aria-hidden="true"><use href="#i-kbd"/></svg><span class="lbl">Type into pane</span><span class="onoff" id="pass-onoff" aria-hidden="true">off</span><kbd data-passkey>Ctrl+]</kbd></button>
       </div>
       <div class="pass-banner" id="pass-banner" hidden>
-        <span>Keys go straight to pane <span id="pb-pane" class="mono"></span>. Press <kbd>Ctrl</kbd>+<kbd>]</kbd> to leave.</span>
+        <span>Keys go straight to pane <span id="pb-pane" class="mono"></span>. Press <kbd data-passkey>Ctrl+]</kbd> to leave.</span>
         <button type="button" class="btn" id="pass-leave">Leave</button>
       </div>
       <div class="termbox">
@@ -75,13 +103,48 @@
         <div class="term-over" id="term-over"><div><h3 id="over-title">Connecting&hellip;</h3><p id="over-text"></p><button type="button" class="btn" id="over-retry" hidden>Retry now</button></div></div>
       </div>
       <div class="composer" id="composer-box">
+        <div class="qa" id="qa" role="toolbar" aria-label="Session actions" aria-describedby="qa-why">
+          <button type="button" class="btn stop" id="qa-stop" tabindex="0" aria-disabled="true" title="Nothing to stop: Claude is waiting"><svg class="ic" aria-hidden="true"><use href="#i-stop"/></svg><span class="lbl">Stop</span></button>
+          <button type="button" class="btn q-narrow" id="qa-compact" tabindex="-1" aria-disabled="true" aria-label="Compact" title="Types /compact and Enter: summarises the conversation to free context"><svg class="ic" aria-hidden="true"><use href="#i-compact"/></svg><span class="lbl">Compact</span></button>
+          <button type="button" class="btn q-narrow" id="qa-clear" tabindex="-1" aria-disabled="true" aria-label="Clear" title="Types /clear and Enter after you confirm"><svg class="ic" aria-hidden="true"><use href="#i-clear"/></svg><span class="lbl">Clear&hellip;</span></button>
+          <button type="button" class="btn" id="qa-model" tabindex="-1" aria-disabled="true" aria-expanded="false" aria-controls="model-pop" title="Switch the model"><svg class="ic" aria-hidden="true"><use href="#i-model"/></svg><span id="qa-model-lbl">Model</span><span class="mono" id="qa-model-name"></span><svg class="ic" aria-hidden="true"><use href="#i-chev"/></svg></button>
+          <button type="button" class="btn q-narrow" id="qa-rewind" tabindex="-1" aria-disabled="true" aria-label="Rewind" title="Types /rewind and Enter: opens Claude&rsquo;s rewind menu in the pane"><svg class="ic" aria-hidden="true"><use href="#i-rewind"/></svg><span class="lbl">Rewind</span></button>
+          <span class="sp"></span>
+          <button type="button" class="btn danger" id="qa-end" tabindex="-1" aria-disabled="true" title="Claude exits and the pane closes"><svg class="ic" aria-hidden="true"><use href="#i-end"/></svg><span class="lbl">End session&hellip;</span></button>
+        </div>
+        <p class="qa-why" id="qa-why" hidden></p>
+        <div class="pop" id="model-pop" role="group" aria-label="Switch model" hidden>
+          <label for="model-sel" class="pop-l" id="model-label">Model</label>
+          <select id="model-sel"></select>
+          <div class="pop-custom" id="model-custom-wrap" hidden>
+            <label for="model-custom" class="sr-only">Custom model ID</label>
+            <input type="text" id="model-custom" class="pop-input mono" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="claude-sonnet-5-5" aria-describedby="model-custom-err">
+            <p class="field-err" id="model-custom-err" hidden></p>
+          </div>
+          <p class="pop-h" id="model-note" hidden>The model list did not load. Type a model ID.</p>
+          <p class="pop-h">Types <code id="model-cmd">/model</code> and Enter.</p>
+          <div class="pop-f"><button type="button" class="btn" id="model-cancel">Cancel</button><button type="button" class="btn primary" id="model-go">Switch model</button></div>
+        </div>
         <div class="attn-note" id="attn-note" hidden><span class="st" data-s="attn"><span class="st-g" aria-hidden="true"></span></span><p id="attn-text"></p></div>
+        <div class="ask" id="prompt-btns" role="group" aria-labelledby="ask-q" hidden>
+          <div class="ask-h"><span class="st pill" data-s="attn"><span class="st-g" aria-hidden="true"></span>Needs you</span><span class="ask-reason" id="ask-reason"></span></div>
+          <p class="ask-q" id="ask-q" tabindex="-1"></p>
+          <div class="ask-opts" id="ask-opts"></div>
+          <p class="ask-hint">Each button presses its number in the pane. Claude answers at once; no Enter. <span class="ask-lock" id="ask-lock" hidden>Buttons stay off until the question changes.</span></p>
+        </div>
         <div class="inbox">
+          <button type="button" class="shell" id="shell-toggle" aria-pressed="false" title="Shell mode: send the text as a ! command"><svg class="ic" aria-hidden="true"><use href="#i-shell"/></svg><span>Shell</span><span class="onoff" aria-hidden="true">off</span></button>
           <span class="prompt" aria-hidden="true">&rsaquo;</span>
           <label for="composer" class="sr-only" id="composer-label">Message to the agent. Enter sends, Shift+Enter adds a line, Escape goes to the pane.</label>
-          <textarea id="composer" rows="1" spellcheck="false" autocomplete="off" autocapitalize="off" placeholder="Message the agent&hellip;"></textarea>
+          <textarea id="composer" rows="1" spellcheck="false" autocomplete="off" autocapitalize="off" aria-controls="palette" placeholder="Message the agent&hellip;"></textarea>
           <span class="paste-chip" id="paste-chip" hidden><span id="paste-n"></span><button type="button" id="paste-clear">Clear</button></span>
+          <button type="button" class="btn ghost icon" id="cmd-btn" aria-label="Commands (/)" title="Commands (/)" aria-disabled="false"><svg class="ic" aria-hidden="true"><use href="#i-cmd"/></svg></button>
           <button type="button" class="btn primary icon" id="send" aria-label="Send (Enter)" title="Send (Enter)"><svg class="ic" aria-hidden="true"><use href="#i-send"/></svg></button>
+          <div class="pal" id="pal" hidden>
+            <div class="pal-h"><span><b>Commands</b> <span class="muted" id="pal-count"></span></span><span class="pal-k"><kbd>&uarr;</kbd><kbd>&darr;</kbd> choose <kbd>Enter</kbd> insert <kbd>Esc</kbd> close</span></div>
+            <p class="pal-note" id="pal-note" hidden></p>
+            <ul class="pal-l" id="palette" role="listbox" aria-label="Commands" hidden></ul>
+          </div>
         </div>
         <div class="keys" role="group" aria-label="Send a key to the pane">
           <span class="lbl" aria-hidden="true">Keys</span>
@@ -96,7 +159,9 @@
           <button type="button" class="key" data-key="Enter">Enter</button>
         </div>
         <div class="hintline">
-          <span class="tip"><kbd>Enter</kbd> send</span><span class="tip"><kbd>Shift</kbd>+<kbd>Enter</kbd> new line</span><span class="tip"><kbd>Esc</kbd> goes to the pane</span><span class="tip"><kbd>Ctrl</kbd>+<kbd>]</kbd> type into pane</span>
+          <span class="tip"><kbd>Enter</kbd> send</span><span class="tip"><kbd>/</kbd> commands</span><span class="tip"><kbd>Shift</kbd>+<kbd>Enter</kbd> new line</span><span class="tip"><kbd>Esc</kbd> goes to the pane</span><span class="tip"><kbd data-passkey>Ctrl+]</kbd> type into pane</span>
+          <span class="arg-hint" id="arg-hint" hidden></span>
+          <span class="shell-hint" id="shell-hint" hidden>Shell on: Enter runs this through Claude&rsquo;s ! mode, then shell turns off.</span>
           <span class="problem" id="problem" role="alert"></span>
           <span class="echo" id="echo" aria-live="polite"></span>
         </div>
@@ -110,6 +175,31 @@
   </section>
 </main>
 
+<dialog id="end-dlg" class="dlg-confirm" aria-labelledby="end-h" aria-describedby="end-d">
+  <div class="dlg-head"><h2 id="end-h" tabindex="-1">End session?</h2></div>
+  <div class="dlg-body">
+    <div class="alert" id="end-alert" data-kind="danger" role="alert" tabindex="-1" hidden><svg class="ic" aria-hidden="true"><use href="#i-warn"/></svg><p id="end-alert-text"></p></div>
+    <p id="end-d">Claude exits and the pane closes. Resume later with Copy resume command.</p>
+    <p class="muted" id="end-note" hidden></p>
+    <p class="muted" id="end-wait" aria-live="polite"></p>
+  </div>
+  <div class="dlg-foot"><span class="sp"></span><button type="button" class="btn" id="end-cancel" autofocus>Cancel</button><button type="button" class="btn danger fill" id="end-go">End session</button></div>
+</dialog>
+
+<dialog id="clear-dlg" class="dlg-confirm" aria-labelledby="clear-h" aria-describedby="clear-d">
+  <div class="dlg-head"><h2 id="clear-h" tabindex="-1">Clear conversation?</h2></div>
+  <div class="dlg-body"><p id="clear-d">Claude starts a new conversation with empty context.</p></div>
+  <div class="dlg-foot"><span class="sp"></span><button type="button" class="btn" id="clear-cancel" autofocus>Cancel</button><button type="button" class="btn danger" id="clear-go">Clear conversation</button></div>
+</dialog>
+
+<dialog id="kbd-dlg" class="dlg-kbd" data-own-focus aria-labelledby="kbd-h" aria-describedby="kbd-sub">
+  <div class="dlg-head"><div><h2 id="kbd-h" tabindex="-1">Keyboard shortcuts</h2><p id="kbd-sub"></p></div></div>
+  <div class="dlg-body" id="kbd-body"></div>
+  <div class="dlg-foot" id="kbd-foot"></div>
+</dialog>
+
+<div class="toasts" id="toasts"></div>
 <div class="sr-only" id="announcer" aria-live="polite"></div>
+<div class="sr-only" id="mode-live" aria-live="polite"></div>
 </body>
 </html>

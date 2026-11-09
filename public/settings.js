@@ -4,7 +4,8 @@
 import { appFetch, applyTheme } from './api.js';
 import { h } from './dom.js';
 import { $, $$, state, hooks, RX, toast, errText, fieldError, syncRadioCards } from './ui.js';
-import { loadSettings } from './project.js';
+import { CUSTOM, MODEL_ID, MODEL_HINT, fillModelSelect } from './models-ui.js';
+import { loadSettings, loadModels } from './project.js';
 import { render } from './app.js';
 
 let installed = [];
@@ -12,6 +13,10 @@ let templates = [];
 let work = { perProject: {} }; // working copy of plugins.perProject (the PUT replaces the whole map)
 let dirty = false;
 let wired = false;
+
+const ROLES = ['orchestrator', 'reasoner', 'builder', 'scout'];
+const roleSel = (r) => $(`#set-model-${r}`);
+const roleCustom = (r) => $(`#set-model-${r}-custom`);
 
 const form = () => $('#set-form');
 const radio = (name) => $(`input[name="${name}"]:checked`, form())?.value;
@@ -67,11 +72,26 @@ function renderTemplates(current) {
   $('#set-tpl').value = current ?? '';
 }
 
+/** Each role is a select (catalog, then Custom ID); a saved value outside the catalog opens as Custom ID with its field filled. */
+function fillRoles(models) {
+  for (const r of ROLES) {
+    const value = models?.[r] ?? '';
+    const custom = fillModelSelect(roleSel(r), state.models, value);
+    roleCustom(r).value = custom ? value : '';
+    roleCustom(r).hidden = !custom;
+  }
+}
+
+function roleValue(r) {
+  return roleSel(r).value === CUSTOM ? roleCustom(r).value.trim() : roleSel(r).value;
+}
+
 function populate() {
   const s = state.settings;
   if (!s) return;
   setRadio('theme', s.ui?.theme ?? 'system');
-  for (const role of ['orchestrator', 'reasoner', 'builder', 'scout']) $(`#set-model-${role}`).value = s.models?.[role] ?? '';
+  $('#set-singlekey').checked = s.ui?.singleKeyShortcuts !== false;
+  fillRoles(s.models);
   $('#set-rc').checked = Boolean(s.remoteControl?.enabled);
   $('#set-rc-prefix').value = s.remoteControl?.prefix ?? '';
   $('#set-rc-prefix').disabled = !$('#set-rc').checked;
@@ -101,6 +121,12 @@ function validate() {
     const ok = re.test(input.value.trim()) && (input.dataset.rx === 'prefix' || input.value.trim() !== '');
     fieldError(input, ok ? '' : msg);
     if (!ok) bad.push(input);
+  }
+  for (const r of ROLES) {
+    const input = roleCustom(r);
+    const invalid = !input.hidden && !MODEL_ID.test(input.value.trim());
+    fieldError(input, invalid ? MODEL_HINT : '');
+    if (invalid) bad.push(input);
   }
   const max = $('#set-max');
   const n = Number(max.value);
@@ -132,14 +158,14 @@ async function save(e) {
     r = await appFetch('/api/app/settings', {
       method: 'PUT',
       json: {
-        models: Object.fromEntries(['orchestrator', 'reasoner', 'builder', 'scout'].map((k) => [k, $(`#set-model-${k}`).value.trim()])),
+        models: Object.fromEntries(ROLES.map((role) => [role, roleValue(role)])),
         remoteControl: { enabled: $('#set-rc').checked, prefix: $('#set-rc-prefix').value.trim() },
         permissionMode: radio('perm'),
         panePlacement: radio('place'),
         limits: { maxAgents: Number($('#set-max').value) },
         plugins: { perProject: work.perProject },
         rules: { localTemplate: $('#set-tpl').value || null },
-        ui: { theme: radio('theme') },
+        ui: { theme: radio('theme'), singleKeyShortcuts: $('#set-singlekey').checked },
       },
     });
   } catch {
@@ -170,6 +196,15 @@ function wire() {
   f.addEventListener('submit', save);
   $('#set-discard').addEventListener('click', () => populate());
   $('#set-plug-proj').addEventListener('change', renderPlugins);
+  for (const r of ROLES) {
+    roleSel(r).addEventListener('change', () => { // Custom ID shows its field; any other choice hides it and drops its error
+      roleCustom(r).hidden = roleSel(r).value !== CUSTOM;
+      fieldError(roleCustom(r), '');
+    });
+    roleCustom(r).addEventListener('blur', () => {
+      if (!roleCustom(r).hidden) fieldError(roleCustom(r), MODEL_ID.test(roleCustom(r).value.trim()) ? '' : MODEL_HINT);
+    });
+  }
   for (const input of $$('[data-rx]', f)) {
     input.addEventListener('blur', () => {
       if (input.disabled) return;
@@ -199,6 +234,7 @@ function wire() {
 hooks.enterSettings = async () => {
   if (!wired) wire();
   if (!state.settings) await loadSettings().catch(() => null);
+  if (!state.models) await loadModels().catch(() => null); // the first load may have failed; without a catalog only Custom ID is offered
   if (!state.settings) {
     summary('Settings could not be loaded. Check that nika is still running, then open Settings again.');
     return;

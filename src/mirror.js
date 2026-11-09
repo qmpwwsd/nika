@@ -164,7 +164,7 @@ export function parseCapture(text, cols) {
 
 const intOf = (v) => (typeof v === 'string' && /^\d{1,5}$/.test(v) ? Number(v) : null);
 
-function matches(header, etag) {
+export function matches(header, etag) {
   if (typeof header !== 'string') return false;
   return header.split(',').some((t) => {
     const v = t.trim();
@@ -174,7 +174,8 @@ function matches(header, etag) {
 
 /**
  * Pane mirror with a 250 ms cache per pane and one tmux capture in flight per pane (others wait for it).
- * `now` is a () => ms clock. capture(pane, ifNoneMatch) → { status, body, etag }; status 304 has body null.
+ * `now` is a () => ms clock. capture(pane, ifNoneMatch, { fresh }) → { status, body, etag }; status 304 has body null.
+ * `fresh: true` skips the cache and starts its own tmux capture (it refreshes the cache), for the control actions.
  * The caller has already checked that the pane may be mirrored; the pane id is still validated here.
  */
 export function createMirror({ exec, tmuxBin = 'tmux', now = Date.now } = {}) {
@@ -199,28 +200,32 @@ export function createMirror({ exec, tmuxBin = 'tmux', now = Date.now } = {}) {
     }
   }
 
-  function load(pane) {
+  const run = (pane, t) => fetchPane(pane).then((result) => {
+    if (result.status === 200) {
+      for (const [k, v] of cache) if (t - v.at >= TTL_MS) cache.delete(k);
+      cache.set(pane, { at: t, result });
+    }
+    return result;
+  });
+
+  function load(pane, fresh) {
     const t = clock();
+    // fresh: a control action must see the screen as it is now, so it never reads the cache or joins a capture that started earlier
+    if (fresh) return run(pane, t);
     const hit = cache.get(pane);
     if (hit && t >= hit.at && t - hit.at < TTL_MS) return hit.result;
     let pending = inflight.get(pane);
     if (!pending) {
-      pending = fetchPane(pane).then((result) => {
-        if (result.status === 200) {
-          for (const [k, v] of cache) if (t - v.at >= TTL_MS) cache.delete(k);
-          cache.set(pane, { at: t, result });
-        }
-        return result;
-      }).finally(() => inflight.delete(pane));
+      pending = run(pane, t).finally(() => inflight.delete(pane));
       inflight.set(pane, pending);
     }
     return pending;
   }
 
   return {
-    async capture(pane, ifNoneMatch) {
+    async capture(pane, ifNoneMatch, opts) {
       if (typeof pane !== 'string' || !PANE_ID.test(pane)) return { status: 400, body: { error: 'invalid', message: 'invalid pane id' } };
-      const result = await load(pane);
+      const result = await load(pane, opts?.fresh === true);
       if (result.status === 200 && matches(ifNoneMatch, result.etag)) return { status: 304, body: null, etag: result.etag };
       return result;
     },

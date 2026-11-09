@@ -4,12 +4,14 @@ export const PANE_ID = /^%\d{1,6}$/;
 /** First 16 hex chars of sha256(realpath of the project dir). */
 export const PROJECT_KEY = /^[a-z0-9]{16}$/;
 export const AGENT_NAME = /^[a-z0-9][a-z0-9-]{0,39}$/;
-/** Full model id, or a Claude Code alias. */
-export const MODEL_ID = /^(?:claude-[a-z0-9-]{3,60}|opus|sonnet|haiku|fable)$/;
+/** Full model id, a Claude Code alias, or either with the 1M-context suffix. The brackets are safe: the id is only ever one argv element, never a shell word. */
+export const MODEL_ID = /^(?:claude-[a-z0-9-]{3,60}|opus|sonnet|haiku|fable|best|opusplan)(?:\[1m\])?$/;
 /** tmux session name; never starts with `-` so it cannot be read as an option. */
 export const TMUX_SESSION = /^[A-Za-z0-9_][A-Za-z0-9_-]{0,47}$/;
 /** `<plugin>@<marketplace>` as Claude Code lists installed plugins. */
 export const PLUGIN_NAME = /^[A-Za-z0-9._-]{1,100}@[A-Za-z0-9._-]{1,100}$/;
+/** Bare name of a listed slash command or skill: no leading `/`, before any `<plugin>:` prefix. Names that miss it are skipped, not cleaned. */
+export const COMMAND_NAME = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/;
 /** Remote Control session-name prefix. */
 export const RC_PREFIX = /^[a-z0-9][a-z0-9-]{0,19}$/;
 /** Full Remote Control session name: `<prefix>-<agent name>` or the orchestrator's session name, lower-cased. */

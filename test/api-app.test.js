@@ -7,18 +7,22 @@ import http from 'node:http';
 import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { createServer } from '../src/server.js';
 import { createAppApi } from '../src/api-app.js';
 import { readHistory } from '../src/collect/history.js';
 import { loadConfig, addProject } from '../src/store.js';
 import { configDir, stateDir } from '../src/paths.js';
+import { lastNonBlank, modeFromRows, PROMPT_ROWS } from '../src/mode.js';
+import { MODEL_CATALOG } from '../src/models.js';
 import { makeWorld } from './tmux-fake.js';
 import { makeFixture, cleanup, SID } from './helpers.js';
 
 const SECRET = 'Zm9vYmFyZm9vYmFyZm9vYmFyZm9vYmFyZm9vYmFyZm9v'.slice(0, 43);
 const REQ_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const WRONG_SAME_LENGTH = 'x'.repeat(SECRET.length);
-const SNAPSHOT = { groups: [{ agents: [{ live: true, pane: { id: '%6' } }, { live: false, pane: { id: '%7' } }, { live: true, pane: null }] }] };
+const APP_COPY = { state: 'missing', managed: false, dismissed: false, version: null, available: '9.9.9', running: false };
+const SNAPSHOT = { groups: [{ agents: [{ live: true, state: 'idle', pane: { id: '%6' } }, { live: false, state: 'ended', pane: { id: '%7' } }, { live: true, state: 'idle', pane: null }] }] };
 
 const w = await makeWorld();
 const fx = makeFixture();
@@ -51,6 +55,11 @@ function makeDeps(over = {}) {
     mirror: { capture: rec('capture', async (pane, inm) => (inm === '"abc"' ? { status: 304, body: null, etag: 'abc' } : { status: 200, body: { cols: 80, rows: [], cursor: { x: 0, y: 0, visible: true }, etag: 'abc' }, etag: 'abc' })) },
     keys: { send: rec('keys', async (pane, body) => (body.text === 'busy' ? { status: 429, body: { error: 'busy', message: 'x' } } : body.text === 'bad' ? { status: 400, body: { error: 'invalid', message: 'x' } } : { status: 200, body: { sent: { text: 1, paste: 0, keys: 0 } } })) },
     picker: { start: () => null, status: () => null },
+    appCopy: {
+      state: rec('appCopyState', async () => APP_COPY),
+      install: rec('appCopyInstall', async () => ({ state: 'current', version: '9.9.9', restart: false, changed: 'added' })),
+      dismiss: rec('appCopyDismiss', async () => {}),
+    },
     ...over,
   };
   deps.calls = calls;
@@ -228,7 +237,7 @@ describe('me and plugins', () => {
   test('(+) me reports tier, version, platform, tools and the nika dirs', async () => {
     const r = await a.call('GET', '/api/app/me');
     assert.deepEqual(r.body, {
-      tier: 'app', version: '9.9.9', platform: process.platform, tmux: true, claude: true, configDir: configDir(w.env), stateDir: stateDir(w.env),
+      tier: 'app', version: '9.9.9', platform: process.platform, tmux: true, claude: true, configDir: configDir(w.env), stateDir: stateDir(w.env), appCopy: APP_COPY,
     });
   });
 
@@ -245,6 +254,95 @@ describe('me and plugins', () => {
     assert.deepEqual(r.body, { plugins: ['alpha@market', 'beta@market'] });
     assert.equal(a.deps.calls.find((c) => c[0] === 'listPlugins')[1], a.ctx.claudeDir);
     assert.equal((await a.call('POST', '/api/app/plugins', { json: {} })).status, 405);
+  });
+});
+
+describe('app copy (ADR 0011)', () => {
+  const bodyOf = (r) => r.body;
+
+  test('(+) me carries appCopy from the module; (−) a module that throws leaves me working with a "no-source" copy', async () => {
+    const a = await boot();
+    assert.deepEqual((await a.call('GET', '/api/app/me')).body.appCopy, APP_COPY);
+    const b = await boot({ deps: makeDeps({ appCopy: { ...makeDeps().appCopy, state: async () => { throw new Error('/some/private/path exploded'); } } }) });
+    const r = await b.call('GET', '/api/app/me');
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.body.appCopy, { state: 'no-source', managed: false, dismissed: false, version: null, available: null, running: false });
+    assert.equal(r.raw.includes('exploded'), false);
+  });
+
+  test('(+) install answers 200 with the module result (restart false or true); the request carries no path to the module', async () => {
+    const a = await boot();
+    const r = await a.call('POST', '/api/app/app-copy', { json: { action: 'install' } });
+    assert.equal(r.status, 200);
+    assert.deepEqual(bodyOf(r), { state: 'current', version: '9.9.9', restart: false });
+    assert.deepEqual(a.deps.calls.filter((c) => c[0] === 'appCopyInstall'), [['appCopyInstall']], 'called with no argument at all');
+    const b = await boot({ deps: makeDeps({ appCopy: { ...makeDeps().appCopy, install: async () => ({ state: 'current', version: '9.9.9', restart: true, changed: 'updated' }) } }) });
+    assert.equal((await b.call('POST', '/api/app/app-copy', { json: { action: 'install' } })).body.restart, true);
+  });
+
+  test('(+) dismiss records "Not now" and does not copy', async () => {
+    const a = await boot();
+    const r = await a.call('POST', '/api/app/app-copy', { json: { action: 'dismiss' } });
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.body, { dismissed: true });
+    assert.deepEqual(a.deps.calls.filter((c) => c[0].startsWith('appCopy')).map((c) => c[0]), ['appCopyDismiss']);
+  });
+
+  test('(−) any other body is 400 invalid and reaches no module: unknown action, missing, non-string, extra keys, a path', async () => {
+    const a = await boot();
+    for (const json of [{}, { action: 'remove' }, { action: 'Install' }, { action: ['install'] }, { action: 1 }, { action: null }, { action: 'install', source: '/x' }, { action: 'install', path: '/x' }, { source: '/x' }]) {
+      const r = await a.call('POST', '/api/app/app-copy', { json });
+      assert.equal(r.status, 400, JSON.stringify(json));
+      assert.equal(r.body.error, 'invalid');
+    }
+    assert.deepEqual(a.deps.calls.filter((c) => c[0].startsWith('appCopy')), []);
+  });
+
+  test('(+) a copy whose marker could not be written is still 200 with the contract\'s three fields', async () => {
+    const a = await boot({ deps: makeDeps({ appCopy: { ...makeDeps().appCopy, install: async () => ({ state: 'current', version: '9.9.9', restart: false, changed: 'added', recorded: false }) } }) });
+    const r = await a.call('POST', '/api/app/app-copy', { json: { action: 'install' } });
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.body, { state: 'current', version: '9.9.9', restart: false });
+  });
+
+  test('(−) the module\'s refusals are 409 with a fixed body: foreign-target, no-source, copy-busy, unsupported', async () => {
+    for (const code of ['foreign-target', 'no-source', 'copy-busy', 'unsupported']) {
+      const a = await boot({ deps: makeDeps({ appCopy: { ...makeDeps().appCopy, install: async () => { throw Object.assign(new Error(code), { code }); } } }) });
+      const r = await a.call('POST', '/api/app/app-copy', { json: { action: 'install' } });
+      assert.equal(r.status, 409, code);
+      assert.equal(r.body.error, code);
+      assert.equal(typeof r.body.message, 'string');
+      if (code === 'foreign-target') assert.equal(r.body.message, "~/Applications or ~/Applications/nika.app isn't a folder nika can safely replace");
+    }
+  });
+
+  test('(−) copy-failed and any unexpected error are 500 copy-failed with fixed text: no path, no OS error text', async () => {
+    for (const thrown of [Object.assign(new Error('copy-failed'), { code: 'copy-failed' }), Object.assign(new Error('EACCES: /some/private/path/nika.app'), { code: 'EACCES' }), new Error('boom')]) {
+      const a = await boot({ deps: makeDeps({ appCopy: { ...makeDeps().appCopy, install: async () => { throw thrown; } } }) });
+      const r = await a.call('POST', '/api/app/app-copy', { json: { action: 'install' } });
+      assert.equal(r.status, 500);
+      assert.equal(r.body.error, 'copy-failed');
+      assert.equal(r.raw.includes('private'), false);
+      assert.equal(r.raw.includes('EACCES'), false);
+    }
+    const d = await boot({ deps: makeDeps({ appCopy: { ...makeDeps().appCopy, dismiss: async () => { throw new Error('/some/private/path'); } } }) });
+    const r = await d.call('POST', '/api/app/app-copy', { json: { action: 'dismiss' } });
+    assert.equal(r.status, 500);
+    assert.equal(r.body.error, 'dismiss-failed', 'its own code, not the copy-failed text');
+    assert.equal(r.body.message.includes('copy'), false);
+    assert.equal(r.raw.includes('private'), false);
+  });
+
+  test('(−) the guard applies: no secret 403, text/plain 415, a body over 4 KB 413, GET 405', async () => {
+    const a = await boot();
+    assert.equal((await a.call('POST', '/api/app/app-copy', { json: { action: 'install' }, headers: { 'x-nika-app': null } })).status, 403);
+    assert.equal((await a.call('POST', '/api/app/app-copy', { json: { action: 'install' }, headers: { origin: 'http://evil.example' } })).status, 403);
+    assert.equal((await a.call('POST', '/api/app/app-copy', { body: '{"action":"install"}', headers: { 'content-type': 'text/plain' } })).status, 415);
+    assert.equal((await a.call('POST', '/api/app/app-copy', { json: { action: 'install', pad: 'x'.repeat(4200) } })).status, 413);
+    const get = await a.call('GET', '/api/app/app-copy');
+    assert.equal(get.status, 405);
+    assert.equal(get.headers.allow, 'POST');
+    assert.deepEqual(a.deps.calls.filter((c) => c[0] === 'appCopyInstall'), []);
   });
 });
 
@@ -384,13 +482,13 @@ describe('settings', () => {
   });
 
   test('(+) ui.theme: default system; light, dark and system are saved and read back', async () => {
-    assert.deepEqual((await a.call('GET', '/api/app/settings')).body.ui, { theme: 'system' });
+    assert.deepEqual((await a.call('GET', '/api/app/settings')).body.ui, { theme: 'system', singleKeyShortcuts: true });
     for (const theme of ['dark', 'light', 'system']) {
       const r = await put({ ui: { theme } });
       assert.equal(r.status, 200);
-      assert.deepEqual(r.body.ui, { theme });
+      assert.deepEqual(r.body.ui, { theme, singleKeyShortcuts: true });
       assert.equal((await loadConfig(w.env)).config.ui.theme, theme);
-      assert.deepEqual((await a.call('GET', '/api/app/settings')).body.ui, { theme });
+      assert.deepEqual((await a.call('GET', '/api/app/settings')).body.ui, { theme, singleKeyShortcuts: true });
     }
   });
 
@@ -404,6 +502,27 @@ describe('settings', () => {
     }
     assert.equal((await loadConfig(w.env)).config.ui.theme, 'dark');
     assert.equal((await put({ ui: { theme: 'system' } })).status, 200);
+  });
+
+  test('(+) ui.singleKeyShortcuts: false is saved next to the theme and read back; true restores it', async () => {
+    const off = await put({ ui: { singleKeyShortcuts: false } });
+    assert.equal(off.status, 200);
+    assert.equal(off.body.ui.singleKeyShortcuts, false);
+    assert.equal((await put({ ui: { theme: 'dark' } })).body.ui.singleKeyShortcuts, false, 'a theme-only PUT keeps the switch');
+    assert.equal((await a.call('GET', '/api/app/settings')).body.ui.singleKeyShortcuts, false);
+    assert.equal((await loadConfig(w.env)).config.ui.singleKeyShortcuts, false);
+    assert.equal((await put({ ui: { theme: 'system', singleKeyShortcuts: true } })).body.ui.singleKeyShortcuts, true);
+  });
+
+  test('(−) ui.singleKeyShortcuts: a non-boolean is 400 naming the field; the saved value stays', async () => {
+    assert.equal((await put({ ui: { singleKeyShortcuts: false } })).status, 200);
+    for (const bad of ['false', 0, null, []]) {
+      const r = await put({ ui: { singleKeyShortcuts: bad } });
+      assert.equal(r.status, 400, JSON.stringify(bad));
+      assert.match(r.body.message, /ui\.singleKeyShortcuts/);
+    }
+    assert.equal((await loadConfig(w.env)).config.ui.singleKeyShortcuts, false);
+    assert.equal((await put({ ui: { singleKeyShortcuts: true } })).status, 200);
   });
 
   test('(−) POST /settings is 405; a text/plain PUT is 415', async () => {
@@ -540,13 +659,23 @@ describe('pane capture and keys', () => {
     const a = await boot();
     const r = await a.call('GET', '/api/app/pane/%256/capture');
     assert.equal(r.status, 200);
-    assert.equal(r.headers.etag, '"abc"');
-    assert.equal(r.body.etag, 'abc');
+    assert.match(r.body.etag, /^[0-9a-f]{32}$/, 'hex, as the page accepts it');
+    assert.equal(r.headers.etag, `"${r.body.etag}"`);
     assert.equal(a.deps.calls.find((c) => c[0] === 'capture')[1], '%6');
-    const again = await a.call('GET', '/api/app/pane/%256/capture', { headers: { 'if-none-match': '"abc"' } });
+    const again = await a.call('GET', '/api/app/pane/%256/capture', { headers: { 'if-none-match': r.headers.etag } });
     assert.equal(again.status, 304);
     assert.equal(again.raw, '');
-    assert.equal(again.headers.etag, '"abc"');
+    assert.equal(again.headers.etag, r.headers.etag);
+  });
+
+  test('(−) an If-None-Match that is not the current ETag (the mirror\'s own rows hash included) gets the full 200', async () => {
+    const a = await boot();
+    const r = await a.call('GET', '/api/app/pane/%256/capture');
+    for (const inm of ['"abc"', '"0000"', 'W/"nope"', '']) {
+      const again = await a.call('GET', '/api/app/pane/%256/capture', { headers: { 'if-none-match': inm } });
+      assert.equal(again.status, 200, inm);
+      assert.equal(again.body.etag, r.body.etag);
+    }
   });
 
   test('(+) a pane nika started is eligible; the unencoded %-form of the id works too', async () => {
@@ -758,5 +887,1009 @@ describe('rules', () => {
     assert.equal((await a.call('POST', '/api/app/rules/apply', { json: { hash: 'h' } })).status, 400);
     assert.equal((await a.call('POST', '/api/app/rules/apply', { json: { project: '0123456789abcdef', hash: 'h' } })).status, 404);
     assert.equal((await a.call('PUT', '/api/app/rules/apply', { json: {} })).status, 405);
+  });
+});
+
+// --- 0.3 session control: capture fields, modes, mode / answer / command / end routes, commands, models ---
+
+const rowsOf = (lines) => lines.map((t) => [{ t, s: { b: false, fg: null, bg: null, u: false, i: false, d: false } }]);
+const FOOTER = { plan: '  ⏸ plan mode on (shift+tab to cycle)', accept: '  ⏵⏵ accept edits on (shift+tab to cycle)', insert: '-- INSERT --' };
+const PROMPT = ['Edit file notes.txt', ' Do you want to proceed?', ' ❯ 1. Yes', '   2. Yes, allow all edits during this session', '   3. No', ' Esc to cancel'];
+const BYPASS_QUESTION_PROMPT = ['Edit file notes.txt', ' Switch to bypass permissions mode?', ' ❯ 1. Yes', '   2. No', ' Esc to cancel'];
+const BYPASS_PROMPT = ['Edit file notes.txt', ' Do you want to proceed?', ' ❯ 1. Yes', '   2. Yes, and bypass permissions for this session', '   3. No', ' Esc to cancel'];
+const sigOf = (lines) => createHash('sha256').update(lastNonBlank(rowsOf(lines), PROMPT_ROWS).join('\n')).digest('hex').slice(0, 16);
+
+/** Mirror whose screens the test sets per pane: screens['%6'] = rowsOf([...]); null = the capture fails (503). `seen` lists the captured panes. */
+function screenMirror(screens, { delay = 0 } = {}) {
+  const seen = [];
+  const m = {
+    seen, opts: [], inflight: 0, peak: 0,
+    capture: async (pane, inm, o) => {
+      seen.push(pane);
+      m.opts.push(o);
+      m.inflight += 1;
+      m.peak = Math.max(m.peak, m.inflight);
+      if (delay) await new Promise((r) => setTimeout(r, delay));
+      m.inflight -= 1;
+      if (screens[pane] === null) return { status: 503, body: { error: 'tmux_unavailable', message: 'x' } };
+      return { status: 200, body: { cols: 80, rows: screens[pane] ?? [], cursor: { x: 0, y: 0, visible: true }, etag: 'abc' }, etag: 'abc' };
+    },
+  };
+  return m;
+}
+
+/** A session-control factory that records what the router builds it with and what the routes call. `answers` overrides a method's result. */
+function fakeControl(answers = {}) {
+  const f = { calls: [], opts: null };
+  const method = (name, fallback) => async (...args) => {
+    f.calls.push([name, ...args]);
+    return answers[name] ?? fallback(...args);
+  };
+  f.factory = (opts) => {
+    f.opts = opts;
+    return {
+      switchMode: method('switchMode', (pane, target) => ({ status: 200, body: { mode: target, presses: 1 } })),
+      endSession: method('endSession', () => ({ status: 200, body: { ended: true } })),
+      runCommand: method('runCommand', () => ({ status: 200, body: { sent: true } })),
+      answer: method('answer', (pane, b) => ({ status: 200, body: { answered: b.n } })),
+      stop: method('stop', () => ({ status: 200, body: { stopped: true, presses: 1 } })),
+    };
+  };
+  return f;
+}
+
+/** A server whose pane screens the test controls; `over` replaces deps, `ctlAnswers` the fake control's results. */
+async function bootScreens({ over = {}, fake = true, ctlAnswers } = {}) {
+  const screens = {};
+  const mirror = screenMirror(screens);
+  const control = fake ? fakeControl(ctlAnswers) : null;
+  const a = await boot({ deps: makeDeps({ mirror, ...(control ? { createSessionControl: control.factory } : {}), ...over }) });
+  return { a, screens, mirror, control };
+}
+const pane = (a, id, suffix, opts) => a.call(opts?.method ?? 'GET', `/api/app/pane/${id.replace('%', '%25')}/${suffix}`, opts);
+const leaveAndReturn = async (a, id) => { // the pane drops out of the tmux list for one refresh, then comes back
+  const entry = a.deps.state.panes.get(id);
+  a.deps.state.panes.delete(id);
+  a.clock.t += 2000;
+  assert.equal((await pane(a, id, 'capture')).status, 404);
+  a.deps.state.panes.set(id, entry);
+  a.clock.t += 2000;
+};
+
+describe('capture: mode, modeConfirmed, prompt', () => {
+  test('(+) a readable footer: mode with modeConfirmed true, prompt null, the mirror fields kept', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = rowsOf(['hello', FOOTER.plan]);
+    const r = await pane(a, '%6', 'capture');
+    assert.equal(r.status, 200);
+    assert.equal(r.body.mode, 'plan');
+    assert.equal(r.body.modeConfirmed, true);
+    assert.equal(r.body.prompt, null);
+    assert.equal(r.body.cols, 80);
+    assert.match(r.body.etag, /^[0-9a-f]{32}$/);
+    assert.equal(r.headers.etag, `"${r.body.etag}"`);
+  });
+
+  test('(+) a permission prompt on screen: question, options and a 16-hex sig', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = rowsOf(PROMPT);
+    const r = await pane(a, '%6', 'capture');
+    assert.deepEqual(r.body.prompt, {
+      question: 'Do you want to proceed?',
+      options: [{ n: 1, label: 'Yes' }, { n: 2, label: 'Yes, allow all edits during this session' }, { n: 3, label: 'No' }],
+      sig: sigOf(PROMPT),
+      bypass: false,
+    });
+    assert.match(r.body.prompt.sig, /^[0-9a-f]{16}$/);
+  });
+
+  test('(+) prompt.bypass is true when the prompt window mentions bypass: in the question, in an option, or only in the lines above the question', async () => {
+    const { a, screens } = await bootScreens();
+    const quiet = ['Run: claude --dangerously-skip-permissions (bypass)', ...PROMPT.slice(1)];
+    for (const lines of [BYPASS_QUESTION_PROMPT, BYPASS_PROMPT, ['Allow tool call Bypass-Check?', ...PROMPT.slice(1)], quiet]) {
+      screens['%6'] = rowsOf(lines);
+      const r = await pane(a, '%6', 'capture');
+      assert.equal(r.body.prompt.bypass, true, lines[0]);
+      assert.equal(r.body.prompt.sig, sigOf(lines));
+    }
+  });
+
+  test('(−) prompt.bypass is false for a prompt that does not mention it, also when the word is above the 15-row window; no prompt, no field', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = rowsOf(PROMPT);
+    assert.equal((await pane(a, '%6', 'capture')).body.prompt.bypass, false);
+    const old = ['bypass permissions was mentioned long ago', ...Array.from({ length: 14 }, (_, i) => `output line ${i}`), ...PROMPT];
+    screens['%6'] = rowsOf(old);
+    assert.equal((await pane(a, '%6', 'capture')).body.prompt.bypass, false, 'outside the last 15 non-blank rows');
+    screens['%6'] = rowsOf(['bypass permissions is on', FOOTER.plan]);
+    assert.equal((await pane(a, '%6', 'capture')).body.prompt, null, 'plain output is not a prompt');
+  });
+
+  test('(+) prompt.sig equals sha256(lastNonBlank(rows, PROMPT_ROWS).join("\\n")).slice(0, 16); another screen gives another sig', async () => {
+    const { a, screens } = await bootScreens();
+    const lines = ['', ...PROMPT, '', ''];
+    screens['%6'] = rowsOf(lines);
+    const want = createHash('sha256').update(lastNonBlank(rowsOf(lines), PROMPT_ROWS).join('\n')).digest('hex').slice(0, 16);
+    assert.equal((await pane(a, '%6', 'capture')).body.prompt.sig, want);
+    screens['%6'] = rowsOf(BYPASS_PROMPT);
+    assert.notEqual((await pane(a, '%6', 'capture')).body.prompt.sig, want);
+  });
+
+  test('(+) a started pane with an unknown footer: the launch mode, modeConfirmed false', async () => {
+    const { a, screens } = await bootScreens();
+    a.ctx.started.set('%8', { key: w.project.key, name: 'x', sessionId: null, role: 'agent', mode: 'acceptEdits' });
+    screens['%8'] = rowsOf(['❯ ']);
+    const r = await pane(a, '%8', 'capture');
+    assert.equal(r.body.mode, 'acceptEdits');
+    assert.equal(r.body.modeConfirmed, false);
+  });
+
+  test('(+) a prompt covering the footer after a plan footer was read: mode plan, modeConfirmed false; the footer back: confirmed again', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = rowsOf(['text', FOOTER.plan]);
+    await pane(a, '%6', 'capture');
+    screens['%6'] = rowsOf(PROMPT);
+    const covered = await pane(a, '%6', 'capture');
+    assert.equal(covered.body.mode, 'plan');
+    assert.equal(covered.body.modeConfirmed, false);
+    assert.notEqual(covered.body.prompt, null);
+    screens['%6'] = rowsOf(['text', FOOTER.accept]);
+    const back = await pane(a, '%6', 'capture');
+    assert.equal(back.body.mode, 'acceptEdits');
+    assert.equal(back.body.modeConfirmed, true);
+  });
+
+  test('(+) the footer read beats the launch mode; the held mode beats the launch mode', async () => {
+    const { a, screens } = await bootScreens();
+    a.ctx.started.set('%8', { key: w.project.key, name: 'x', sessionId: null, role: 'agent', mode: 'manual' });
+    screens['%8'] = rowsOf(['text', FOOTER.plan]);
+    assert.equal((await pane(a, '%8', 'capture')).body.mode, 'plan');
+    screens['%8'] = rowsOf(PROMPT);
+    const held = await pane(a, '%8', 'capture');
+    assert.deepEqual([held.body.mode, held.body.modeConfirmed], ['plan', false]);
+  });
+
+  test('(−) a pane never read and not started, footer unknown: mode unknown, modeConfirmed true', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = rowsOf(['just some text']);
+    const r = await pane(a, '%6', 'capture');
+    assert.equal(r.body.mode, 'unknown');
+    assert.equal(r.body.modeConfirmed, true);
+    assert.equal(r.body.prompt, null);
+  });
+
+  test('(−) the held mode is dropped when the pane leaves the eligible set: a reused pane id starts unknown', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = rowsOf(['text', FOOTER.plan]);
+    await pane(a, '%6', 'capture');
+    await leaveAndReturn(a, '%6');
+    screens['%6'] = rowsOf(['a stranger']);
+    const r = await pane(a, '%6', 'capture');
+    assert.equal(r.status, 200);
+    assert.deepEqual([r.body.mode, r.body.modeConfirmed], ['unknown', true]);
+  });
+
+  test('(+) a failed tmux list or registry read keeps the held mode and the vim memory (one blip proves nothing)', async () => {
+    let fail = false;
+    const { a, screens, control } = await bootScreens({ over: { collect: async () => { if (fail) throw new Error('ps'); return SNAPSHOT; } } });
+    screens['%6'] = rowsOf(['text', `${FOOTER.insert} ⏵⏸ plan mode on (shift+tab to cycle)`]);
+    await pane(a, '%6', 'capture');
+    assert.equal(control.opts.vimOf('%6'), true);
+    const panes = a.deps.state.panes;
+    a.deps.state.panes = new Map();
+    a.deps.state.error = 'tmux unavailable: no server running';
+    a.clock.t += 2000;
+    assert.equal((await pane(a, '%6', 'capture')).status, 404);
+    a.deps.state.panes = panes;
+    a.deps.state.error = undefined;
+    fail = true;
+    a.clock.t += 2000;
+    await pane(a, '%6', 'capture');
+    fail = false;
+    a.clock.t += 2000;
+    screens['%6'] = rowsOf(['a dialog covers the footer']);
+    const r = await pane(a, '%6', 'capture');
+    assert.deepEqual([r.body.mode, r.body.modeConfirmed], ['plan', false]);
+    assert.equal(control.opts.vimOf('%6'), true);
+  });
+
+  test('(−) a pane that stops running claude (shell) also drops its held mode', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = rowsOf(['text', FOOTER.plan]);
+    await pane(a, '%6', 'capture');
+    a.deps.state.panes.set('%6', { command: 'zsh' });
+    a.clock.t += 2000;
+    assert.equal((await pane(a, '%6', 'capture')).status, 404);
+    a.deps.state.panes.set('%6', { command: 'claude' });
+    a.clock.t += 2000;
+    screens['%6'] = rowsOf(['prompt-less text']);
+    assert.equal((await pane(a, '%6', 'capture')).body.mode, 'unknown');
+  });
+
+  test('(−) a failing capture and a 304 carry no mode fields; the shared cached body is not mutated', async () => {
+    const shared = { cols: 80, rows: rowsOf(['t', FOOTER.plan]), cursor: { x: 0, y: 0, visible: true }, etag: 'abc' };
+    const a = await boot({ deps: makeDeps({ mirror: { capture: async () => ({ status: 200, body: shared, etag: 'abc' }) } }) });
+    const first = await pane(a, '%6', 'capture');
+    assert.equal(first.body.mode, 'plan');
+    assert.equal('mode' in shared, false);
+    assert.equal(shared.etag, 'abc', 'the shared body keeps the mirror\'s own ETag');
+    const again = await pane(a, '%6', 'capture', { headers: { 'if-none-match': first.headers.etag } });
+    assert.equal(again.status, 304);
+    assert.equal(again.raw, '');
+    const down = await boot({ deps: makeDeps({ mirror: { capture: async () => ({ status: 503, body: { error: 'tmux_unavailable', message: 'x' } }) } }) });
+    const r = await pane(down, '%6', 'capture');
+    assert.equal(r.status, 503);
+    assert.equal('mode' in r.body, false);
+  });
+});
+
+describe('capture: the ETag covers the mode shown, not only the rows (final review, Minor 3)', () => {
+  const lost = { status: 409, body: { error: 'mode-unknown', presses: 1 } };
+
+  test('(−) same rows, held mode changed by a failed switch: the page\'s If-None-Match no longer gets a 304, it gets 200 with the new mode', async () => {
+    const { a, screens } = await bootScreens({ ctlAnswers: { switchMode: lost } });
+    screens['%6'] = rowsOf(['text', FOOTER.plan]);
+    assert.equal((await pane(a, '%6', 'capture')).body.mode, 'plan');
+    screens['%6'] = rowsOf(['dialog over the footer', 'a footer nobody recognises']); // the footer is covered: the held mode is shown
+    const covered = await pane(a, '%6', 'capture');
+    assert.deepEqual([covered.body.mode, covered.body.modeConfirmed], ['plan', false]);
+    const same = await pane(a, '%6', 'capture', { headers: { 'if-none-match': covered.headers.etag } });
+    assert.equal(same.status, 304, 'nothing changed: still a 304');
+    assert.equal((await pane(a, '%6', 'mode', { method: 'POST', json: { target: 'manual' } })).status, 409); // 1 press, then the held mode is forgotten
+    const after = await pane(a, '%6', 'capture', { headers: { 'if-none-match': covered.headers.etag } });
+    assert.equal(after.status, 200);
+    assert.deepEqual([after.body.mode, after.body.modeConfirmed], ['unknown', true]);
+    assert.notEqual(after.body.etag, covered.body.etag);
+    assert.equal(after.headers.etag, `"${after.body.etag}"`);
+    assert.equal((await pane(a, '%6', 'capture', { headers: { 'if-none-match': after.headers.etag } })).status, 304, 'and the new answer can be revalidated');
+  });
+
+  test('(+) the same rows with the same mode keep one ETag; a different mode over the same rows is another', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = rowsOf(['same text', FOOTER.plan]);
+    const plan = await pane(a, '%6', 'capture');
+    assert.equal((await pane(a, '%6', 'capture')).body.etag, plan.body.etag);
+    screens['%6'] = rowsOf(['same text', FOOTER.accept]); // the fake mirror reports one rows hash for every screen
+    assert.notEqual((await pane(a, '%6', 'capture')).body.etag, plan.body.etag);
+  });
+});
+
+describe('GET /api/app/modes', () => {
+  test('(+) lists eligible panes only, with mode and confirmed', async () => {
+    const { a, screens, mirror } = await bootScreens();
+    a.ctx.started.set('%8', { key: w.project.key, name: 'x', sessionId: null, role: 'agent', mode: 'acceptEdits' });
+    screens['%6'] = rowsOf(['t', FOOTER.plan]);
+    screens['%8'] = rowsOf(PROMPT);
+    const r = await a.call('GET', '/api/app/modes');
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.body, { modes: { '%6': { mode: 'plan', confirmed: true }, '%8': { mode: 'acceptEdits', confirmed: false } } });
+    assert.deepEqual(mirror.seen.sort(), ['%6', '%8']); // %5 is a shell, %7 is not a live session
+  });
+
+  test('(+) the modes it reads feed the held mode of capture', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = rowsOf(['t', FOOTER.plan]);
+    await a.call('GET', '/api/app/modes');
+    screens['%6'] = rowsOf(PROMPT);
+    assert.deepEqual((await pane(a, '%6', 'capture')).body.mode, 'plan');
+  });
+
+  test('(−) a pane whose capture fails is left out; no eligible pane (or tmux down) gives an empty map', async () => {
+    const { a, screens } = await bootScreens();
+    a.ctx.started.set('%8', { key: w.project.key, name: 'x', sessionId: null, role: 'agent', mode: 'plan' });
+    screens['%6'] = rowsOf(['t', FOOTER.plan]);
+    screens['%8'] = null;
+    assert.deepEqual((await a.call('GET', '/api/app/modes')).body, { modes: { '%6': { mode: 'plan', confirmed: true } } });
+    a.deps.state.panes = new Map();
+    a.deps.state.error = 'tmux unavailable: no server running';
+    a.clock.t += 2000;
+    assert.deepEqual((await a.call('GET', '/api/app/modes')).body, { modes: {} });
+  });
+
+  test('(−) at most 4 captures at once', async () => {
+    const screens = {};
+    const mirror = screenMirror(screens, { delay: 10 });
+    const a = await boot({ deps: makeDeps({ mirror }) });
+    a.deps.state.panes = new Map();
+    for (let i = 10; i < 20; i += 1) {
+      a.deps.state.panes.set(`%${i}`, { command: 'claude' });
+      a.ctx.started.set(`%${i}`, { key: w.project.key, name: `n${i}`, sessionId: null, role: 'agent', mode: 'plan' });
+    }
+    const r = await a.call('GET', '/api/app/modes');
+    assert.equal(Object.keys(r.body.modes).length, 10);
+    assert.equal(mirror.peak, 4);
+  });
+
+  test('(−) POST is 405; without the secret 403', async () => {
+    const { a } = await bootScreens();
+    assert.equal((await a.call('POST', '/api/app/modes', { json: {} })).status, 405);
+    assert.equal((await a.call('GET', '/api/app/modes', { headers: { 'x-nika-app': null } })).status, 403);
+  });
+});
+
+describe('session control: wiring', () => {
+  test('(+) one controller is built per server, with the registry state of the live agent and the vim memory', async () => {
+    let built = 0;
+    const control = fakeControl();
+    const a = await boot({ deps: makeDeps({ createSessionControl: (o) => { built += 1; return control.factory(o); } }) });
+    for (let i = 0; i < 3; i += 1) await a.call('POST', '/api/app/pane/%256/mode', { json: { target: 'plan' } });
+    assert.equal(built, 1);
+    const { stateOf, vimOf, mirror, keys, paneCommand } = control.opts;
+    assert.equal(await stateOf('%6'), 'idle');
+    assert.equal(await stateOf('%7'), null); // not live
+    assert.equal(await stateOf('%99'), null);
+    assert.equal(vimOf('%6'), false);
+    assert.equal(mirror, a.deps.mirror);
+    assert.equal(keys, a.deps.keys);
+    assert.equal(await paneCommand('%6'), 'claude');
+    assert.equal(await paneCommand('%99'), null); // gone
+  });
+
+  test('(+) stateOf follows the snapshot: busy, and a pane with two live agents is not idle', async () => {
+    const control = fakeControl();
+    const live = (id, state) => ({ live: true, state, pane: { id } });
+    let agents = [live('%6', 'busy')];
+    const a = await boot({ deps: makeDeps({ collect: async () => ({ groups: [{ agents }] }), createSessionControl: control.factory }) });
+    await a.call('POST', '/api/app/pane/%256/mode', { json: { target: 'plan' } });
+    assert.equal(await control.opts.stateOf('%6'), 'busy');
+    agents = [live('%6', 'idle'), live('%6', 'idle')];
+    a.clock.t += 2000;
+    assert.equal(await control.opts.stateOf('%6'), null); // ambiguous: never idle
+  });
+
+  test('(+) stateOf with { fresh: true } drops the cached snapshot and reads the registry again; without it the cache (1 s) still answers', async () => {
+    const control = fakeControl();
+    const live = (state) => ({ live: true, state, pane: { id: '%6' } });
+    let agents = [live('busy')];
+    let reads = 0;
+    const a = await boot({ deps: makeDeps({ collect: async () => { reads += 1; return { groups: [{ agents }] }; }, createSessionControl: control.factory }) });
+    await a.call('POST', '/api/app/pane/%256/mode', { json: { target: 'plan' } });
+    assert.equal(await control.opts.stateOf('%6'), 'busy');
+    const before = reads;
+    agents = [live('idle')];
+    assert.equal(await control.opts.stateOf('%6'), 'busy', 'the cached snapshot, as before');
+    assert.equal(await control.opts.stateOf('%6', {}), 'busy', 'an options object without fresh changes nothing');
+    assert.equal(reads, before);
+    assert.equal(await control.opts.stateOf('%6', { fresh: true }), 'idle');
+    assert.equal(reads, before + 1);
+    assert.equal(await control.opts.stateOf('%6'), 'idle', 'the new snapshot is cached again');
+    assert.equal(reads, before + 1);
+  });
+
+  test('(−) fresh with a failing registry read is no state at all (never idle), and the next plain read is not poisoned', async () => {
+    const control = fakeControl();
+    let fail = false;
+    const a = await boot({ deps: makeDeps({ collect: async () => { if (fail) throw new Error('ps'); return { groups: [{ agents: [{ live: true, state: 'busy', pane: { id: '%6' } }] }] }; }, createSessionControl: control.factory }) });
+    await a.call('POST', '/api/app/pane/%256/mode', { json: { target: 'plan' } });
+    fail = true;
+    assert.equal(await control.opts.stateOf('%6', { fresh: true }), null, 'the snapshot is gone and none could be read: no live session');
+    fail = false;
+    a.clock.t += 2000; // the failed snapshot is cached like any other, until it expires
+    assert.equal(await control.opts.stateOf('%6'), 'busy');
+  });
+
+  test('(−) paneCommand throws when tmux cannot be listed, so End never reports a pane gone on a failed lookup', async () => {
+    const control = fakeControl();
+    const a = await boot({ deps: makeDeps({ createSessionControl: control.factory }) });
+    a.deps.state.panes = new Map();
+    a.deps.state.error = 'tmux unavailable: no server running';
+    await assert.rejects(() => control.opts.paneCommand('%6'));
+  });
+
+  test('(+) vimOf is true after a capture whose mode line shows -- INSERT --; (−) a reused pane id that left the eligible set starts false', async () => {
+    const { a, screens, control } = await bootScreens();
+    assert.equal((await pane(a, '%6', 'mode', { method: 'POST', json: { target: 'plan' } })).status, 200); // builds nothing new; opts are set at boot
+    screens['%6'] = rowsOf(['text', `${FOOTER.insert} ⏵⏵ accept edits on`]);
+    screens['%8'] = rowsOf(['text', FOOTER.plan]);
+    a.ctx.started.set('%8', { key: w.project.key, name: 'x', sessionId: null, role: 'agent', mode: 'plan' });
+    assert.equal(control.opts.vimOf('%6'), false);
+    await pane(a, '%6', 'capture');
+    await pane(a, '%8', 'capture');
+    assert.equal(control.opts.vimOf('%6'), true);
+    assert.equal(control.opts.vimOf('%8'), false); // another pane, no INSERT seen
+    screens['%6'] = rowsOf(['text', FOOTER.plan]); // the line no longer shows INSERT: the memory stays
+    await pane(a, '%6', 'capture');
+    assert.equal(control.opts.vimOf('%6'), true);
+    await leaveAndReturn(a, '%6');
+    assert.equal(control.opts.vimOf('%6'), false);
+  });
+});
+
+describe('POST /api/app/pane/:id/mode', () => {
+  test('(+) passes the pane and target to sessionControl and relays its answer', async () => {
+    const { a, control } = await bootScreens();
+    const r = await pane(a, '%6', 'mode', { method: 'POST', json: { target: 'plan', extra: 'dropped' } });
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.body, { mode: 'plan', presses: 1 });
+    assert.deepEqual(control.calls, [['switchMode', '%6', 'plan']]);
+  });
+
+  test('(+) a started pane is eligible; the controller\'s 409 is relayed as it is', async () => {
+    const { a, control } = await bootScreens({ ctlAnswers: { switchMode: { status: 409, body: { error: 'not-idle' } } } });
+    a.ctx.started.set('%8', { key: w.project.key, name: 'x', sessionId: null, role: 'agent', mode: 'plan' });
+    const r = await pane(a, '%8', 'mode', { method: 'POST', json: { target: 'auto' } });
+    assert.deepEqual([r.status, r.body], [409, { error: 'not-idle' }]);
+    assert.deepEqual(control.calls, [['switchMode', '%8', 'auto']]);
+  });
+
+  test('(−) a target outside manual / acceptEdits / plan / auto is 400 before any pane check, and sessionControl is not called', async () => {
+    const { a, control } = await bootScreens();
+    for (const target of ['bypassPermissions', 'dontAsk', 'default', '', undefined, 5, null, ['plan'], { a: 1 }]) {
+      for (const id of ['%6', '%5']) {
+        const r = await pane(a, id, 'mode', { method: 'POST', json: { target } });
+        assert.equal(r.status, 400, `${JSON.stringify(target)} on ${id}`);
+        assert.equal(r.body.error, 'invalid');
+      }
+    }
+    assert.deepEqual(control.calls, []);
+  });
+
+  test('(−) an ineligible pane (zsh, not live, unknown id, bad id) is 404 and sessionControl is not called', async () => {
+    const { a, control } = await bootScreens();
+    for (const id of ['%5', '%7', '%99', 'abc', '..']) {
+      const r = await a.call('POST', `/api/app/pane/${id.replace('%', '%25')}/mode`, { json: { target: 'plan' } });
+      assert.equal(r.status, 404, id);
+    }
+    assert.deepEqual(control.calls, []);
+  });
+
+  test('(−) without the app secret 403; text/plain 415; GET 405; a body over 4 KB 413 -- sessionControl is not called', async () => {
+    const { a, control } = await bootScreens();
+    assert.equal((await pane(a, '%6', 'mode', { method: 'POST', json: { target: 'plan' }, headers: { 'x-nika-app': null } })).status, 403);
+    assert.equal((await pane(a, '%6', 'mode', { method: 'POST', body: '{"target":"plan"}', headers: { 'content-type': 'text/plain' } })).status, 415);
+    assert.equal((await pane(a, '%6', 'mode')).status, 405);
+    assert.equal((await pane(a, '%6', 'mode', { method: 'POST', json: { target: 'plan', pad: 'x'.repeat(5000) } })).status, 413);
+    assert.deepEqual(control.calls, []);
+  });
+});
+
+describe('POST /api/app/pane/:id/answer', () => {
+  const answer = (a, json, id = '%6') => pane(a, id, 'answer', { method: 'POST', json });
+  const keyCalls = (a) => a.deps.calls.filter((c) => c[0] === 'keys');
+
+  test('(+) a matching sig sends the digit as text and returns answered', async () => {
+    const { a, screens } = await bootScreens({ fake: false });
+    screens['%6'] = rowsOf(PROMPT);
+    const sig = (await pane(a, '%6', 'capture')).body.prompt.sig;
+    const r = await answer(a, { n: 2, sig });
+    assert.deepEqual([r.status, r.body], [200, { answered: 2 }]);
+    assert.deepEqual(keyCalls(a), [['keys', '%6', { text: '2' }]]);
+  });
+
+  test('(+) the same sig answered twice within 3 s is 409 already-answered, and answers again after the hold', async () => {
+    const { a, screens } = await bootScreens({ fake: false });
+    screens['%6'] = rowsOf(PROMPT);
+    const sig = sigOf(PROMPT);
+    assert.equal((await answer(a, { n: 1, sig })).status, 200);
+    const again = await answer(a, { n: 1, sig });
+    assert.deepEqual([again.status, again.body.error], [409, 'already-answered']);
+    assert.equal(keyCalls(a).length, 1);
+    a.clock.t += 3100;
+    assert.equal((await answer(a, { n: 1, sig })).status, 200);
+  });
+
+  test('(−) the prompt rows changed since the capture: 409 prompt-changed, nothing sent', async () => {
+    const { a, screens } = await bootScreens({ fake: false });
+    screens['%6'] = rowsOf(PROMPT);
+    const sig = sigOf(PROMPT);
+    screens['%6'] = rowsOf(['Edit file other.txt', ...PROMPT.slice(1)]);
+    const r = await answer(a, { n: 1, sig });
+    assert.deepEqual([r.status, r.body.error], [409, 'prompt-changed']);
+    assert.deepEqual(keyCalls(a), []);
+  });
+
+  test('(−) no prompt on screen: 409 no-prompt, nothing sent', async () => {
+    const { a, screens } = await bootScreens({ fake: false });
+    screens['%6'] = rowsOf(['just text', FOOTER.plan]);
+    const r = await answer(a, { n: 1, sig: sigOf(PROMPT) });
+    assert.deepEqual([r.status, r.body.error], [409, 'no-prompt']);
+    assert.deepEqual(keyCalls(a), []);
+  });
+
+  test('(−) n not among the options: 400, nothing sent', async () => {
+    const { a, screens } = await bootScreens({ fake: false });
+    screens['%6'] = rowsOf(PROMPT);
+    const r = await answer(a, { n: 7, sig: sigOf(PROMPT) });
+    assert.deepEqual([r.status, r.body.error], [400, 'invalid']);
+    assert.deepEqual(keyCalls(a), []);
+  });
+
+  test('(−) a prompt whose window mentions bypass (an option or the question) is 400 for every option, nothing sent; a clean prompt still answers', async () => {
+    const { a, screens } = await bootScreens({ fake: false });
+    for (const lines of [BYPASS_PROMPT, BYPASS_QUESTION_PROMPT]) {
+      screens['%6'] = rowsOf(lines);
+      const sig = sigOf(lines);
+      for (const n of [1, 2]) {
+        const r = await answer(a, { n, sig });
+        assert.deepEqual([r.status, r.body.error], [400, 'invalid'], `option ${n}`);
+      }
+    }
+    assert.deepEqual(keyCalls(a), []);
+    screens['%6'] = rowsOf(PROMPT);
+    assert.equal((await answer(a, { n: 3, sig: sigOf(PROMPT) })).status, 200);
+  });
+
+  test('(−) n not an integer 1-9 or sig not 16 lowercase hex: 400 before any pane work; ineligible pane 404', async () => {
+    const { a, control } = await bootScreens();
+    const sig = 'abcdef0123456789';
+    for (const body of [
+      { n: 0, sig }, { n: 10, sig }, { n: 1.5, sig }, { n: '1', sig }, { n: null, sig }, { sig }, { n: 1 },
+      { n: 1, sig: 'ABCDEF0123456789' }, { n: 1, sig: 'abcdef012345678' }, { n: 1, sig: `${sig}0` }, { n: 1, sig: 5 }, { n: 1, sig: 'ghijklmnopqrstuv' },
+    ]) {
+      const r = await answer(a, body);
+      assert.equal(r.status, 400, JSON.stringify(body));
+      assert.equal(r.body.error, 'invalid');
+    }
+    assert.equal((await answer(a, { n: 1, sig: 'abcdef012345678' }, '%5')).status, 400); // body first, as in the contract
+    assert.equal((await answer(a, { n: 1, sig }, '%5')).status, 404);
+    assert.equal((await answer(a, { n: 1, sig }, '%7')).status, 404);
+    assert.deepEqual(control.calls, []);
+  });
+
+  test('(+) a valid body is passed to sessionControl.answer as { n, sig } only; its answer is relayed', async () => {
+    const { a, control } = await bootScreens({ ctlAnswers: { answer: { status: 409, body: { error: 'busy-switching' } } } });
+    const r = await answer(a, { n: 3, sig: 'abcdef0123456789', extra: 1 });
+    assert.deepEqual([r.status, r.body], [409, { error: 'busy-switching' }]);
+    assert.deepEqual(control.calls, [['answer', '%6', { n: 3, sig: 'abcdef0123456789' }]]);
+  });
+
+  test('(−) without the secret 403; text/plain 415; GET 405', async () => {
+    const { a, control } = await bootScreens();
+    const body = { n: 1, sig: 'abcdef0123456789' };
+    assert.equal((await pane(a, '%6', 'answer', { method: 'POST', json: body, headers: { 'x-nika-app': null } })).status, 403);
+    assert.equal((await pane(a, '%6', 'answer', { method: 'POST', body: JSON.stringify(body), headers: { 'content-type': 'text/plain' } })).status, 415);
+    assert.equal((await pane(a, '%6', 'answer')).status, 405);
+    assert.deepEqual(control.calls, []);
+  });
+});
+
+describe('POST /api/app/pane/:id/command', () => {
+  const command = (a, json, id = '%6') => pane(a, id, 'command', { method: 'POST', json });
+
+  test('(+) a slash command is passed to sessionControl.runCommand and its result returned', async () => {
+    const { a, control } = await bootScreens();
+    for (const text of ['/compact', '/model opus', '/demo:lint src/a.js --fix', '/clear ', '/a.b_c-d', `/${'a'.repeat(100)}`, `/compact ${'x'.repeat(191)}`, '/memo café über']) {
+      const r = await command(a, { text });
+      assert.deepEqual([r.status, r.body], [200, { sent: true }], text);
+    }
+    assert.equal(control.calls.length, 8);
+    assert.deepEqual(control.calls[0], ['runCommand', '%6', '/compact']);
+    assert.deepEqual(control.calls[1], ['runCommand', '%6', '/model opus']);
+  });
+
+  test('(+) the controller\'s 409 is relayed', async () => {
+    const { a } = await bootScreens({ ctlAnswers: { runCommand: { status: 409, body: { error: 'input-not-empty' } } } });
+    const r = await command(a, { text: '/compact' });
+    assert.deepEqual([r.status, r.body], [409, { error: 'input-not-empty' }]);
+  });
+
+  test('(−) text that is not / + COMMAND_NAME (+ one space and args), over 200 chars or with a control char is 400; runCommand is not called', async () => {
+    const { a, control } = await bootScreens();
+    for (const text of [
+      'compact', '/', '/ compact', '//x', '/.x', '/-x', '/x;y', '/x|y arg', '/../etc', '/a/b', ` /compact`, '/ ', '',
+      `/${'a'.repeat(101)}`, `/compact ${'x'.repeat(192)}`, '/compact\n', '/compact\nfoo', '/compact\tfoo', '/compact\u001b[A', '/compact\r', '/comp\u0000act', '/compact \u0085', '/compact \u007f',
+      5, null, undefined, ['/compact'], { text: '/compact' },
+    ]) {
+      const r = await command(a, { text });
+      assert.equal(r.status, 400, JSON.stringify(text));
+      assert.equal(r.body.error, 'invalid');
+    }
+    assert.deepEqual(control.calls, []);
+  });
+
+  test('(−) an ineligible pane is 404 and runCommand is not called; 403 / 415 / 405 as for every write', async () => {
+    const { a, control } = await bootScreens();
+    assert.equal((await command(a, { text: '/compact' }, '%5')).status, 404);
+    assert.equal((await command(a, { text: '/compact' }, '%7')).status, 404);
+    assert.equal((await pane(a, '%6', 'command', { method: 'POST', json: { text: '/compact' }, headers: { 'x-nika-app': null } })).status, 403);
+    assert.equal((await pane(a, '%6', 'command', { method: 'POST', body: '{"text":"/compact"}', headers: { 'content-type': 'text/plain' } })).status, 415);
+    assert.equal((await pane(a, '%6', 'command')).status, 405);
+    assert.deepEqual(control.calls, []);
+  });
+});
+
+describe('POST /api/app/pane/:id/end', () => {
+  const end = (a, json = {}, id = '%6') => pane(a, id, 'end', { method: 'POST', json });
+
+  test('(+) returns ended and resets the eligibility cache', async () => {
+    const { a, control } = await bootScreens();
+    const collects = () => a.deps.calls.filter((c) => c[0] === 'collect').length;
+    const r = await end(a);
+    assert.deepEqual([r.status, r.body], [200, { ended: true }]);
+    assert.deepEqual(control.calls, [['endSession', '%6']]);
+    assert.equal(collects(), 1);
+    await pane(a, '%6', 'capture'); // within the 1 s window: the cache would have served this
+    assert.equal(collects(), 2);
+  });
+
+  test('(+) the eligibility cache is also reset when End answers 409 or ended false (with or without reason keys, relayed as the controller sent it)', async () => {
+    for (const answers of [{ status: 409, body: { error: 'not-idle' } }, { status: 200, body: { ended: false } }, { status: 200, body: { ended: false, reason: 'keys' } }]) {
+      const { a } = await bootScreens({ ctlAnswers: { endSession: answers } });
+      const r = await end(a);
+      assert.deepEqual([r.status, r.body], [answers.status, answers.body]);
+      await pane(a, '%6', 'capture');
+      assert.equal(a.deps.calls.filter((c) => c[0] === 'collect').length, 2);
+    }
+  });
+
+  test('(−) a pane that is not in list-panes (or not Claude) is 404 and endSession is not called', async () => {
+    const { a, control } = await bootScreens();
+    assert.equal((await end(a, {}, '%99')).status, 404);
+    assert.equal((await end(a, {}, '%5')).status, 404);
+    assert.equal((await end(a, {}, '%7')).status, 404);
+    assert.deepEqual(control.calls, []);
+  });
+
+  test('(−) without the secret 403; text/plain 415; GET 405; invalid JSON 400', async () => {
+    const { a, control } = await bootScreens();
+    assert.equal((await pane(a, '%6', 'end', { method: 'POST', json: {}, headers: { 'x-nika-app': null } })).status, 403);
+    assert.equal((await pane(a, '%6', 'end', { method: 'POST', body: '{}', headers: { 'content-type': 'text/plain' } })).status, 415);
+    assert.equal((await pane(a, '%6', 'end')).status, 405);
+    assert.equal((await pane(a, '%6', 'end', { method: 'POST', body: '[]', headers: { 'content-type': 'application/json' } })).status, 400);
+    assert.deepEqual(control.calls, []);
+  });
+});
+
+describe('POST /api/app/pane/:id/keys: the bypass prompt guard (A2, H2)', () => {
+  const keysTo = (a, json, id = '%6') => pane(a, id, 'keys', { method: 'POST', json });
+  const sent = (a) => a.deps.calls.filter((c) => c[0] === 'keys');
+  const BYPASS = { status: 409, error: 'bypass-prompt', message: 'Answer this prompt in the terminal' };
+
+  test('(+) Enter with no prompt on screen: one fresh capture first, then the keys are sent as before', async () => {
+    const { a, screens, mirror } = await bootScreens();
+    screens['%6'] = rowsOf(['hello', FOOTER.plan]);
+    const r = await keysTo(a, { keys: ['Enter'] });
+    assert.equal(r.status, 200);
+    assert.deepEqual(mirror.seen, ['%6']);
+    assert.deepEqual(mirror.opts, [{ fresh: true }], 'the capture is fresh, never the cached one');
+    assert.deepEqual(sent(a).map((c) => c.slice(1)), [['%6', { text: undefined, paste: undefined, keys: ['Enter'] }]]);
+  });
+
+  test('(+) Enter, a digit or a paste on a prompt that does not mention bypass: sent', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = rowsOf(PROMPT);
+    for (const json of [{ keys: ['Enter'] }, { text: '2' }, { text: 'git log -3' }, { paste: 'one\ntwo' }, { text: 'x', keys: ['Enter'] }]) {
+      assert.equal((await keysTo(a, json)).status, 200, JSON.stringify(json));
+    }
+    assert.equal(sent(a).length, 5);
+  });
+
+  test('(+) letters, arrows, Escape and the like skip the capture and go through even while a bypass prompt is open', async () => {
+    const { a, screens, mirror } = await bootScreens();
+    screens['%6'] = rowsOf(BYPASS_PROMPT);
+    for (const json of [{ text: 'hello world' }, { keys: ['Up', 'Down', 'Left', 'Right'] }, { keys: ['Escape'] }, { keys: ['C-u', 'Tab'] }, { text: 'abc', keys: ['C-c'] }]) {
+      assert.equal((await keysTo(a, json)).status, 200, JSON.stringify(json));
+    }
+    assert.equal(sent(a).length, 5);
+    assert.deepEqual(mirror.seen, [], 'not one capture: typing stays as fast as in 0.2');
+  });
+
+  test('(+) BTab with no prompt on screen: one fresh capture first, then it is sent (mode switching by chip is unaffected)', async () => {
+    const { a, screens, mirror } = await bootScreens();
+    screens['%6'] = rowsOf(['hello', FOOTER.plan]);
+    assert.equal((await keysTo(a, { keys: ['BTab'] })).status, 200);
+    assert.deepEqual(mirror.opts, [{ fresh: true }]);
+    screens['%6'] = rowsOf(PROMPT);
+    assert.equal((await keysTo(a, { keys: ['Up', 'BTab'] })).status, 200, 'a prompt that does not mention bypass: sent, like Enter');
+    screens['%6'] = rowsOf(['working...', '  ⏵⏵ bypass permissions on (shift+tab to cycle)']);
+    assert.equal((await keysTo(a, { keys: ['BTab'] })).status, 200, 'a readable bypass footer is not a prompt: Shift-Tab is how a session leaves bypass');
+    assert.deepEqual(sent(a).map((c) => c[2].keys), [['BTab'], ['Up', 'BTab'], ['BTab']]);
+  });
+
+  test('(−) BTab on a bypass prompt (Shift-Tab can pick "allow for this session"): 409 bypass-prompt and nothing is sent', async () => {
+    const { a, screens } = await bootScreens();
+    for (const lines of [BYPASS_PROMPT, BYPASS_QUESTION_PROMPT]) {
+      screens['%6'] = rowsOf(lines);
+      for (const json of [{ keys: ['BTab'] }, { keys: ['Up', 'BTab'] }, { text: 'x', keys: ['BTab'] }]) {
+        const r = await keysTo(a, json);
+        assert.deepEqual([r.status, r.body.error, r.body.message], [BYPASS.status, BYPASS.error, BYPASS.message], JSON.stringify(json));
+      }
+    }
+    assert.deepEqual(sent(a), []);
+  });
+
+  test('(−) Enter on a bypass prompt: 409 bypass-prompt and nothing is sent', async () => {
+    const { a, screens } = await bootScreens();
+    for (const lines of [BYPASS_PROMPT, BYPASS_QUESTION_PROMPT]) {
+      screens['%6'] = rowsOf(lines);
+      const r = await keysTo(a, { keys: ['Enter'] });
+      assert.deepEqual([r.status, r.body.error, r.body.message], [BYPASS.status, BYPASS.error, BYPASS.message]);
+    }
+    assert.deepEqual(sent(a), []);
+  });
+
+  test('(−) text with a digit (git log -3) or any other digit, and any paste, on a bypass prompt: 409 bypass-prompt, nothing sent', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = rowsOf(BYPASS_PROMPT);
+    for (const json of [{ text: 'git log -3' }, { text: '1' }, { text: 'abc9' }, { paste: 'one line' }, { paste: '' }, { text: 'ok', keys: ['Enter'] }, { text: 'hello', paste: 'x' }]) {
+      const r = await keysTo(a, json);
+      assert.deepEqual([r.status, r.body.error], [409, 'bypass-prompt'], JSON.stringify(json));
+    }
+    assert.deepEqual(sent(a), []);
+  });
+
+  test('(−) a bypass word in plain output (no prompt on screen) does not block Enter; only a prompt does', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = rowsOf(['the notes talk about bypass permissions', FOOTER.plan]);
+    assert.equal((await keysTo(a, { keys: ['Enter'] })).status, 200);
+    const filler = Array.from({ length: 16 }, (_, i) => `output row ${i}`);
+    screens['%6'] = rowsOf(['the notes talk about bypass permissions', ...filler, ...PROMPT]);
+    assert.equal((await keysTo(a, { keys: ['Enter'] })).status, 200, 'older than the 15-row prompt window: it does not count');
+    screens['%6'] = rowsOf(['the notes talk about bypass permissions', ...PROMPT]);
+    assert.equal((await keysTo(a, { keys: ['Enter'] })).status, 409, 'inside the window (fail closed): it does');
+  });
+
+  test('(−) a dialog nika does not parse (another hint row, unreadable footer) whose window mentions bypass: Enter, a digit, a paste and BTab are 409 screen-unclear, nothing sent', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = rowsOf(['Allow bypass permissions for this folder?', ' Enter to confirm · Esc to cancel']);
+    assert.equal((await pane(a, '%6', 'capture')).body.prompt, null, 'the page has no buttons for it either');
+    for (const json of [{ keys: ['Enter'] }, { text: '1' }, { paste: 'x' }, { keys: ['BTab'] }]) {
+      const r = await keysTo(a, json);
+      assert.deepEqual([r.status, r.body.error, r.body.message], [409, 'screen-unclear', "nika can't tell what Claude is showing; use the terminal"], JSON.stringify(json));
+    }
+    assert.deepEqual(sent(a), []);
+  });
+
+  test('(−) the slash menu is an unreadable footer too: a command with "bypass" in its name does not read as a bypass prompt', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = rowsOf(['❯ /byp', '  /bypass-cache   Skip the cache for one run', '  /bypass-ci      Rerun without CI']);
+    const r = await keysTo(a, { keys: ['Enter'] });
+    assert.deepEqual([r.status, r.body.error], [409, 'screen-unclear']);
+    assert.deepEqual(sent(a), []);
+  });
+
+  test('(+) a parsed prompt keeps bypass-prompt even though its footer is unreadable (a prompt covers the footer)', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = rowsOf(BYPASS_PROMPT);
+    assert.equal(modeFromRows(rowsOf(BYPASS_PROMPT)), 'unknown');
+    assert.equal((await keysTo(a, { keys: ['Enter'] })).body.error, 'bypass-prompt');
+  });
+
+  test('(+) the same unreadable dialog without the word, or a readable footer that itself says bypass, or a bypass word in output with a readable footer: sent', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = rowsOf(['Trust the files in this folder?', ' Enter to confirm · Esc to cancel']);
+    assert.equal((await keysTo(a, { keys: ['Enter'] })).status, 200);
+    screens['%6'] = rowsOf(['working...', '  ⏵⏵ bypass permissions on (shift+tab to cycle)']);
+    assert.equal((await pane(a, '%6', 'capture')).body.mode, 'bypassPermissions');
+    assert.equal((await keysTo(a, { keys: ['Enter'] })).status, 200, 'a session in bypass can still be typed to; the footer is not a prompt');
+    assert.equal((await keysTo(a, { text: 'git log -3' })).status, 200);
+    screens['%6'] = rowsOf(['notes about bypass', FOOTER.plan]);
+    assert.equal((await keysTo(a, { keys: ['Enter'] })).status, 200);
+    assert.equal(sent(a).length, 4);
+  });
+
+  test('(−) the capture fails: its status and body, nothing sent', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = null;
+    const r = await keysTo(a, { keys: ['Enter'] });
+    assert.deepEqual([r.status, r.body], [503, { error: 'tmux_unavailable', message: 'x' }]);
+    assert.deepEqual(sent(a), []);
+    screens['%6'] = rowsOf(['text']);
+    assert.equal((await keysTo(a, { text: 'letters only' })).status, 200, 'and a request without Enter / digit / paste does not care');
+  });
+
+  test('(−) an ineligible pane is still 404 before any capture; module 400 and 429 are still relayed after a clean capture', async () => {
+    const { a, screens, mirror } = await bootScreens();
+    screens['%6'] = rowsOf(['text']);
+    assert.equal((await keysTo(a, { keys: ['Enter'] }, '%5')).status, 404);
+    assert.deepEqual(mirror.seen, []);
+    assert.equal((await keysTo(a, { text: 'busy', keys: ['Enter'] })).status, 429);
+    assert.equal((await keysTo(a, { text: 'bad', keys: ['Enter'] })).status, 400);
+  });
+});
+
+describe('POST /api/app/pane/:id/mode: a switch that fails after a press forgets the held mode (A1, H1)', () => {
+  const modeTo = (a, id = '%6', target = 'manual') => pane(a, id, 'mode', { method: 'POST', json: { target } });
+  const lost = { status: 409, body: { error: 'mode-unknown', presses: 1 } };
+
+  test('(+) 409 with presses 1: the next capture with an unreadable footer reports mode unknown, not the mode held before', async () => {
+    const { a, screens } = await bootScreens({ ctlAnswers: { switchMode: lost } });
+    screens['%6'] = rowsOf(['text', FOOTER.plan]);
+    assert.equal((await pane(a, '%6', 'capture')).body.mode, 'plan');
+    const r = await modeTo(a);
+    assert.deepEqual([r.status, r.body], [409, { error: 'mode-unknown', presses: 1 }], 'the body is relayed as it is');
+    screens['%6'] = rowsOf(['text', 'a footer nobody recognises']);
+    const c = await pane(a, '%6', 'capture');
+    assert.equal(c.body.mode, 'unknown');
+    assert.equal(c.body.modeConfirmed, true);
+    screens['%6'] = rowsOf(['text', FOOTER.accept]);
+    assert.equal((await pane(a, '%6', 'capture')).body.mode, 'acceptEdits', 'a readable footer is trusted again at once');
+  });
+
+  test('(+) the same for a pane nika started: its launch mode is not shown in place of the footer either', async () => {
+    const { a, screens } = await bootScreens({ ctlAnswers: { switchMode: lost } });
+    a.ctx.started.set('%8', { key: w.project.key, name: 'x', sessionId: null, role: 'agent', mode: 'manual' });
+    screens['%8'] = rowsOf(['text', FOOTER.plan]);
+    assert.equal((await pane(a, '%8', 'capture')).body.mode, 'plan');
+    assert.equal((await modeTo(a, '%8')).status, 409);
+    screens['%8'] = rowsOf(['text', 'a footer nobody recognises']);
+    assert.equal((await pane(a, '%8', 'capture')).body.mode, 'unknown');
+    const other = await bootScreens({ ctlAnswers: { switchMode: lost } });
+    other.a.ctx.started.set('%8', { key: w.project.key, name: 'x', sessionId: null, role: 'agent', mode: 'manual' });
+    other.screens['%8'] = rowsOf(['❯ ']);
+    assert.equal((await modeTo(other.a, '%8')).status, 409);
+    assert.equal((await pane(other.a, '%8', 'capture')).body.mode, 'unknown', 'never read before: the launch mode is stale after a press');
+  });
+
+  test('(−) every non-200 with presses above 0 does it (stopped-in-bypass, not-idle, a 429), a 200 and a 409 without presses do not', async () => {
+    for (const answer of [{ status: 409, body: { error: 'stopped-in-bypass', presses: 2 } }, { status: 409, body: { error: 'not-idle', presses: 1 } }, { status: 429, body: { error: 'busy', message: 'x', presses: 3 } }]) {
+      const { a, screens } = await bootScreens({ ctlAnswers: { switchMode: answer } });
+      screens['%6'] = rowsOf(['text', FOOTER.plan]);
+      await pane(a, '%6', 'capture');
+      await modeTo(a);
+      screens['%6'] = rowsOf(['text', 'a footer nobody recognises']);
+      assert.equal((await pane(a, '%6', 'capture')).body.mode, 'unknown', answer.body.error);
+    }
+    for (const answer of [{ status: 200, body: { mode: 'manual', presses: 2 } }, { status: 409, body: { error: 'not-idle' } }, { status: 429, body: { error: 'busy', message: 'x', presses: 0 } }]) {
+      const { a, screens } = await bootScreens({ ctlAnswers: { switchMode: answer } });
+      screens['%6'] = rowsOf(['text', FOOTER.plan]);
+      await pane(a, '%6', 'capture');
+      await modeTo(a);
+      screens['%6'] = rowsOf(['text', 'a footer nobody recognises']);
+      const c = await pane(a, '%6', 'capture');
+      assert.deepEqual([c.body.mode, c.body.modeConfirmed], ['plan', false], JSON.stringify(answer));
+    }
+  });
+});
+
+describe('POST /api/app/pane/:id/stop (A3, F1)', () => {
+  const stop = (a, json = {}, id = '%6') => pane(a, id, 'stop', { method: 'POST', json });
+  const busySnapshot = { groups: [{ agents: [{ live: true, state: 'busy', pane: { id: '%6' } }] }] };
+
+  test('(+) passes the pane to sessionControl.stop and relays its answer', async () => {
+    const { a, control } = await bootScreens();
+    const r = await stop(a, { extra: 'dropped' });
+    assert.deepEqual([r.status, r.body], [200, { stopped: true, presses: 1 }]);
+    assert.deepEqual(control.calls, [['stop', '%6']]);
+  });
+
+  test('(+) a pane nika started is eligible; the controller\'s 409 is relayed as it is', async () => {
+    const { a, control } = await bootScreens({ ctlAnswers: { stop: { status: 409, body: { error: 'not-busy' } } } });
+    a.ctx.started.set('%8', { key: w.project.key, name: 'x', sessionId: null, role: 'agent', mode: 'plan' });
+    const r = await stop(a, {}, '%8');
+    assert.deepEqual([r.status, r.body], [409, { error: 'not-busy' }]);
+    assert.deepEqual(control.calls, [['stop', '%8']]);
+  });
+
+  test('(−) an ineligible pane (zsh, not live, unknown id, bad id) is 404 and stop is not called', async () => {
+    const { a, control } = await bootScreens();
+    for (const id of ['%5', '%7', '%99', 'abc', '..']) {
+      assert.equal((await a.call('POST', `/api/app/pane/${id.replace('%', '%25')}/stop`, { json: {} })).status, 404, id);
+    }
+    assert.deepEqual(control.calls, []);
+  });
+
+  test('(−) the guard: no secret 403; text/plain 415; GET 405; a body that is not a JSON object 400; over 4 KB 413 -- stop is not called', async () => {
+    const { a, control } = await bootScreens();
+    assert.equal((await pane(a, '%6', 'stop', { method: 'POST', json: {}, headers: { 'x-nika-app': null } })).status, 403);
+    assert.equal((await pane(a, '%6', 'stop', { method: 'POST', body: '{}', headers: { 'content-type': 'text/plain' } })).status, 415);
+    assert.equal((await pane(a, '%6', 'stop')).status, 405);
+    for (const body of ['[]', 'null', '5', '"x"', '{"__proto__":{}}']) {
+      assert.equal((await pane(a, '%6', 'stop', { method: 'POST', body, headers: { 'content-type': 'application/json' } })).status, 400, body);
+    }
+    assert.equal((await pane(a, '%6', 'stop', { method: 'POST', json: { pad: 'x'.repeat(5000) } })).status, 413);
+    assert.deepEqual(control.calls, []);
+  });
+
+  test('(+) with the real controller: a busy pane gets one Escape (fresh capture first); (−) an idle pane is 409 not-busy and gets none', async () => {
+    const busy = await bootScreens({ fake: false, over: { collect: async () => busySnapshot } });
+    busy.screens['%6'] = rowsOf(['working...', FOOTER.plan]);
+    const r = await stop(busy.a);
+    assert.deepEqual([r.status, r.body], [200, { stopped: true, presses: 1 }]);
+    assert.deepEqual(busy.a.deps.calls.filter((c) => c[0] === 'keys'), [['keys', '%6', { keys: ['Escape'] }]]);
+    assert.deepEqual(busy.mirror.opts, [{ fresh: true }]);
+    const idle = await bootScreens({ fake: false });
+    idle.screens['%6'] = rowsOf(['done', FOOTER.plan]);
+    const n = await stop(idle.a);
+    assert.deepEqual([n.status, n.body.error], [409, 'not-busy']);
+    assert.deepEqual(idle.a.deps.calls.filter((c) => c[0] === 'keys'), []);
+  });
+
+  test('(−) with the real controller: a prompt on screen is 409 prompt-open, no key; Stop works while another control action holds the lock', async () => {
+    const { a, screens } = await bootScreens({ fake: false, over: { collect: async () => busySnapshot } });
+    screens['%6'] = rowsOf(PROMPT);
+    const p = await stop(a);
+    assert.deepEqual([p.status, p.body.error], [409, 'prompt-open']);
+    assert.deepEqual(a.deps.calls.filter((c) => c[0] === 'keys'), []);
+
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    let entered;
+    const started = new Promise((r) => { entered = r; });
+    let captures = 0;
+    const rows = rowsOf(['working...', FOOTER.plan]);
+    const mirror = { capture: async () => { captures += 1; if (captures === 1) { entered(); await gate; } return { status: 200, body: { cols: 80, rows, cursor: { x: 0, y: 0, visible: true }, etag: 'e' }, etag: 'e' }; } };
+    const b = await boot({ deps: makeDeps({ mirror, collect: async () => busySnapshot }) });
+    const holding = pane(b, '%6', 'command', { method: 'POST', json: { text: '/compact' } }); // takes the lock, waits in its first capture
+    await started;
+    assert.equal((await pane(b, '%6', 'end', { method: 'POST', json: {} })).body.error, 'busy-switching', 'the lock is held');
+    const s = await stop(b);
+    assert.deepEqual([s.status, s.body], [200, { stopped: true, presses: 1 }], 'Stop does not wait for it');
+    release();
+    await holding;
+  });
+});
+
+describe('real controller on the router: one lock for all four routes', () => {
+  test('(−) a control action in progress makes the next one 409 busy-switching, whichever route it comes from', async () => {
+    const screens = { '%6': rowsOf(PROMPT) };
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    let entered;
+    const started = new Promise((r) => { entered = r; });
+    const mirror = { capture: async () => { entered(); await gate; return { status: 200, body: { cols: 80, rows: screens['%6'], cursor: { x: 0, y: 0, visible: true }, etag: 'e' }, etag: 'e' }; } };
+    const a = await boot({ deps: makeDeps({ mirror }) });
+    const first = pane(a, '%6', 'answer', { method: 'POST', json: { n: 1, sig: sigOf(PROMPT) } }); // holds the lock inside its fresh capture
+    await started;
+    const second = await pane(a, '%6', 'command', { method: 'POST', json: { text: '/compact' } });
+    assert.deepEqual([second.status, second.body.error], [409, 'busy-switching']);
+    assert.equal((await pane(a, '%6', 'mode', { method: 'POST', json: { target: 'plan' } })).body.error, 'busy-switching');
+    assert.equal((await pane(a, '%6', 'end', { method: 'POST', json: {} })).body.error, 'busy-switching');
+    release();
+    assert.equal((await first).status, 200);
+  });
+});
+
+describe('GET /api/app/commands', () => {
+  const list = Object.freeze([Object.freeze({ name: 'compact', description: 'Summarize', argHint: '[instructions]', source: 'builtin' }), Object.freeze({ name: 'demo:lint', description: 'Lint', argHint: '', source: 'plugin', plugin: 'demo' })]);
+  const withList = () => {
+    const calls = [];
+    return { calls, deps: { listCommands: async (o) => { calls.push(o); return list; } } };
+  };
+
+  test('(+) without a project: built-ins, user and plugin entries (no projectDir) from the Claude dir', async () => {
+    const f = withList();
+    const a = await boot({ deps: makeDeps(f.deps) });
+    const r = await a.call('GET', '/api/app/commands');
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.body, { commands: list });
+    assert.equal(f.calls.length, 1);
+    assert.equal(f.calls[0].claudeDir, a.ctx.claudeDir);
+    assert.equal(f.calls[0].projectDir, undefined);
+  });
+
+  test('(+) with a project key the registered project dir is passed (never a path from the request)', async () => {
+    const f = withList();
+    const a = await boot({ deps: makeDeps(f.deps) });
+    const r = await a.call('GET', `/api/app/commands?project=${w.project.key}`);
+    assert.equal(r.status, 200);
+    assert.equal(f.calls[0].projectDir, w.project.dir);
+    assert.equal(f.calls[0].claudeDir, a.ctx.claudeDir);
+  });
+
+  test('(−) an unknown project key is 404, a malformed or empty one 400; the module is not called', async () => {
+    const f = withList();
+    const a = await boot({ deps: makeDeps(f.deps) });
+    assert.equal((await a.call('GET', '/api/app/commands?project=0123456789abcdef')).status, 404);
+    for (const key of ['', '../x', 'ABCDEF0123456789', 'abc', `${w.project.key}0`, '%2Fetc%2Fpasswd']) {
+      const r = await a.call('GET', `/api/app/commands?project=${key}`);
+      assert.equal(r.status, 400, key);
+      assert.equal(r.body.error, 'invalid');
+    }
+    assert.equal(f.calls.length, 0);
+  });
+
+  test('(−) POST is 405; without the secret 403', async () => {
+    const f = withList();
+    const a = await boot({ deps: makeDeps(f.deps) });
+    assert.equal((await a.call('POST', '/api/app/commands', { json: {} })).status, 405);
+    assert.equal((await a.call('GET', '/api/app/commands', { headers: { 'x-nika-app': null } })).status, 403);
+    assert.equal(f.calls.length, 0);
+  });
+});
+
+describe('GET /api/app/models', () => {
+  test('(+) returns the catalog', async () => {
+    const a = await boot();
+    const r = await a.call('GET', '/api/app/models');
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.body, { models: JSON.parse(JSON.stringify(MODEL_CATALOG)) });
+    assert.ok(r.body.models.length > 0);
+  });
+
+  test('(−) POST is 405; without the secret 403', async () => {
+    const a = await boot();
+    assert.equal((await a.call('POST', '/api/app/models', { json: {} })).status, 405);
+    assert.equal((await a.call('GET', '/api/app/models', { headers: { 'x-nika-app': null } })).status, 403);
   });
 });

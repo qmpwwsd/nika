@@ -1,11 +1,12 @@
 // Shared state and widgets for the main page (dashboard, project view, settings). Every data string reaches the
 // page through h() / textContent. Nothing here talks to the server; api.js does.
 import { h } from './dom.js';
+import { isMac } from './shortcuts.js';
 
 export const $ = (s, r = document) => r.querySelector(s);
 export const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 
-export const MAC = /Mac|iPhone|iPad/i.test(navigator.userAgentData?.platform ?? navigator.platform ?? '');
+export const MAC = isMac(navigator);
 
 /** Shapes from src/ids.js; the page validates before it builds a link or a request from data. */
 export const SHAPE = {
@@ -26,7 +27,10 @@ export const state = {
   me: null, // app tier: /api/app/me
   projects: null, // app tier: /api/app/projects
   settings: null, // app tier: /api/app/settings
+  models: null, // app tier: /api/app/models (the catalog array), null until loaded
+  modes: { map: {}, misses: 0 }, // app tier: latest /api/app/modes answer by pane id (public/modes.js modesAfter)
   appError: null, // app tier: the private server refused us (403)
+  appCopyUi: { busy: false, error: null, hidden: false }, // app tier, macOS: the Add to Applications notice (spec 3.14); hidden = "Not now" this launch
   open: new Set(), // disclosure ids the user toggled ("!id" = closed on purpose)
   expanded: new Set(), // group ids whose "show more" was pressed
   route: { name: 'dashboard' },
@@ -163,7 +167,6 @@ export function sessionHref({ session, pane, project }) {
 /* ---------- forms ---------- */
 export const RX = {
   agent: [/^[a-z0-9][a-z0-9-]{0,39}$/, 'Lowercase letters, digits and dashes, up to 40, starting with a letter or digit.'],
-  model: [/^(?:claude-[a-z0-9-]{3,60}|opus|sonnet|haiku|fable)$/, 'Use a model id such as claude-sonnet-5-5, or opus, sonnet, haiku, fable.'],
   prefix: [/^(?:[a-z0-9][a-z0-9-]{0,19})?$/, 'Lowercase letters, digits and dashes, up to 20, starting with a letter or digit. Leave empty to use the project name.'],
 };
 
@@ -211,16 +214,22 @@ function restoreFocus(dlg) {
   const o = openers.get(dlg);
   openers.delete(dlg);
   let el = o?.el?.isConnected ? o.el : null;
+  const menu = el?.closest('.menu');
+  if (menu?.hidden) el = (menu.id && $(`[aria-controls="${CSS.escape(menu.id)}"]`)) || null; // an item of a closed menu cannot take focus: its button can
   if (!el && o?.fk) el = $(`[data-fk="${CSS.escape(o.fk)}"]`);
   el ??= $('.screen:not([hidden]) h1');
   el?.focus();
 }
 
-/** `dlg.dataset.busy` set: a write is in flight, so Esc and the close buttons do nothing. */
+/**
+ * `dlg.dataset.busy` set: a write is in flight, so Esc and the close buttons do nothing.
+ * `data-own-focus` in the markup: the dialog's own code puts focus back (shortcuts.js openShortcuts), so restoreFocus skips it and
+ * focus has one owner instead of two that work only by listener order.
+ */
 export function initDialogs() {
   for (const dlg of $$('dialog')) {
     dlg.addEventListener('cancel', (e) => { if (dlg.dataset.busy) e.preventDefault(); });
-    dlg.addEventListener('close', () => restoreFocus(dlg));
+    if (!dlg.hasAttribute('data-own-focus')) dlg.addEventListener('close', () => restoreFocus(dlg));
   }
   document.addEventListener('click', (e) => {
     const c = e.target.closest('[data-close]');
@@ -269,7 +278,7 @@ export function initMenus() {
     $('button, a', m)?.focus();
   });
   document.addEventListener('keydown', (e) => {
-    if (e.key !== 'Escape') return;
+    if (e.key !== 'Escape' || $('dialog[open]')) return; // an open dialog takes this Esc itself; a menu under it must not use it up
     const m = $('.menu:not([hidden])');
     if (m) {
       e.preventDefault();

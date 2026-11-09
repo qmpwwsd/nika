@@ -14,7 +14,7 @@ import { openRegular, readAt, readHead } from './fsafe.js';
 import { listPanes } from './collect/tmux.js';
 import { clean } from './text.js';
 import { PROJECT_KEY, AGENT_NAME, MODEL_ID, TMUX_SESSION, PANE_ID, RC_PREFIX, RC_NAME, PERMISSION_MODES } from './ids.js';
-import { fail, binsMissing, tmux, tmuxFail, tagPane, sessionNameFor, reduceRc, permissionFlags, tmuxLiteral } from './orchestrate.js';
+import { fail, binsMissing, tmux, tmuxFail, tagPane, sessionNameFor, reduceRc, permissionFlags, launchMode, tmuxLiteral } from './orchestrate.js';
 
 const BRIEF_MAX = 64 * 1024;
 const AGENT_JSON_MAX = 4096;
@@ -127,7 +127,8 @@ async function doSpawn(v, project, config, ctx) {
   const rc = prefix ? reduceRc(`${reduceRc(prefix, project.key)}-${v.name}`, '', true) : '';
   await ensureDir(dir);
   await writeAtomic(dir, `${v.name}.brief.md`, v.brief);
-  await writeAtomic(dir, `${v.name}.agent.json`, `${JSON.stringify({ model: v.model, permissionMode: v.permissionMode ?? config.permissionMode, rc })}\n`);
+  const permissionMode = v.permissionMode ?? config.permissionMode;
+  await writeAtomic(dir, `${v.name}.agent.json`, `${JSON.stringify({ model: v.model, permissionMode, rc })}\n`);
 
   let pane;
   try {
@@ -137,7 +138,7 @@ async function doSpawn(v, project, config, ctx) {
     return tmuxFail(err);
   }
   if (!PANE_ID.test(pane)) return fail(502, 'tmux_failed', 'tmux did not return a pane id');
-  ctx.started?.set(pane, { key: project.key, name: v.name, sessionId: null, role: 'agent' });
+  ctx.started?.set(pane, { key: project.key, name: v.name, sessionId: null, role: 'agent', mode: launchMode(permissionMode) });
   await tagPane(ctx, pane, 'agent', `${project.key}/${v.name}`);
   // The agent is already running: a failure below only costs the title or the under-last placement.
   await writeAtomic(dir, '.last-pane', `${pane}\n`).catch(() => {});

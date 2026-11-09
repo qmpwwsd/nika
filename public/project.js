@@ -6,6 +6,9 @@ import { h, icon } from './dom.js';
 import {
   $, state, hooks, RX, toast, announce, errText, copyText, setBusy, fieldError, openDialog, rulesEl, sessionHref, menuEl,
 } from './ui.js';
+import { parseModes, modesAfter } from './modes.js';
+import { copyBanner, copyErrorText, copyToast } from './app-copy.js';
+import { CUSTOM, MODEL_ID, MODEL_HINT, fillModelSelect } from './models-ui.js';
 import { buildGroups, agentNodes, swap, interacting, render } from './app.js';
 
 const PERM_LABEL = {
@@ -41,9 +44,39 @@ export async function loadSettings() {
   return r;
 }
 
+/** The model catalog for the pickers. A failed load leaves state.models as it was (null): the pickers then offer only Custom ID. */
+export async function loadModels() {
+  const r = await appFetch('/api/app/models');
+  if (r.status === 200 && Array.isArray(r.body?.models)) state.models = r.body.models;
+  return r;
+}
+
+let modesBusy = false;
+/**
+ * GET /api/app/modes (the mode tags and the End item of every row), at the poll loop's pace, one request at a time. Not awaited by
+ * pollApp: a slow tmux must not hold the list back. A failed or hung poll goes through modesAfter (old tags stay one more cycle).
+ */
+function pollModes() {
+  if (modesBusy) return;
+  modesBusy = true;
+  const ctl = new AbortController(); // AbortSignal.timeout() is missing in older macOS web views
+  const timer = setTimeout(() => ctl.abort(), 4000);
+  appFetch('/api/app/modes', { signal: ctl.signal })
+    .then((r) => (r.status === 200 ? parseModes(r.body) : null))
+    .catch(() => null)
+    .then((map) => {
+      clearTimeout(timer);
+      modesBusy = false;
+      const before = JSON.stringify(state.modes.map);
+      state.modes = modesAfter(state.modes, map);
+      if (JSON.stringify(state.modes.map) !== before) render();
+    });
+}
+
 let tick = 0;
 /** Called by the poll loop next to /api/agents; never rejects (the agents request reports connectivity). */
 async function pollApp() {
+  pollModes();
   try {
     const results = await Promise.all([loadProjects(), tick++ % 10 === 0 ? loadMe() : null]);
     state.appError = results.some((r) => r?.status === 403);
@@ -210,7 +243,7 @@ function renderProject(force) {
   const key = state.route.key;
   const p = state.projects?.find((x) => x.key === key) ?? null;
   const g = buildGroups().find((x) => x.project?.key === key) ?? null;
-  const sig = JSON.stringify([p, g?.agents, state.settings, state.me?.tmux, state.me?.claude, state.error, state.showEnded, [...state.open], [...state.expanded], key]);
+  const sig = JSON.stringify([p, g?.agents, state.modes.map, state.settings, state.me?.tmux, state.me?.claude, state.error, state.showEnded, [...state.open], [...state.expanded], key]);
   if (!force && (sig === projSig || interacting())) return;
   projSig = sig;
   const body = $('#proj-body');
@@ -326,11 +359,14 @@ function openSpawn(g) {
   $('#sp-name').value = spawnName(g);
   $('#sp-brief').value = '';
   const m = s?.models;
-  const models = m
-    ? [['Builder', m.builder], ['Reasoner', m.reasoner], ['Scout', m.scout], ['Orchestrator', m.orchestrator]]
-    : [['Opus', 'opus'], ['Sonnet', 'sonnet'], ['Haiku', 'haiku'], ['Fable', 'fable']];
-  $('#sp-model').replaceChildren(...models.map(([role, id]) => h('option', { value: id, text: m ? `${role} · ${id}` : role })));
-  if (pref.model && models.some(([, id]) => id === pref.model)) $('#sp-model').value = pref.model;
+  const roles = (m
+    ? [['Builder', m.builder], ['Reasoner', m.reasoner], ['Scout', m.scout], ['Orchestrator', m.orchestrator]].map(([role, id]) => [`${role} · ${id}`, id])
+    : [['Opus', 'opus'], ['Sonnet', 'sonnet'], ['Haiku', 'haiku'], ['Fable', 'fable']]
+  ).map(([text, value]) => ({ value, text }));
+  const custom = fillModelSelect($('#sp-model'), state.models, pref.model ?? roles[0].value, roles);
+  $('#sp-model-custom').value = custom ? pref.model : '';
+  $('#sp-model-custom').hidden = !custom;
+  fieldError($('#sp-model-custom'), '');
   $('#sp-perm').replaceChildren(
     h('option', { value: '', text: `Use my setting: ${s ? PERM_LABEL[s.permissionMode] ?? s.permissionMode : 'default'}` }),
     ...Object.entries(PERM_LABEL).map(([v, t]) => h('option', { value: v, text: t })));
@@ -364,12 +400,21 @@ function briefProblem(text, bytes) {
   return bytes > BRIEF_MAX ? 'The brief is over 64 KB.' : '';
 }
 
+/** The model id the sheet would send: the select's value, or the Custom ID field's text (trimmed) when Custom ID is selected. */
+function spawnModel() {
+  return $('#sp-model').value === CUSTOM ? $('#sp-model-custom').value.trim() : $('#sp-model').value;
+}
+
 function validateSpawn() {
   const bad = [];
   const name = $('#sp-name');
   const okName = RX.agent[0].test(name.value);
   fieldError(name, okName ? '' : RX.agent[1]);
   if (!okName) bad.push(name);
+  const model = $('#sp-model-custom');
+  const okModel = model.hidden || MODEL_ID.test(model.value.trim());
+  fieldError(model, okModel ? '' : MODEL_HINT);
+  if (!okModel) bad.push(model);
   const brief = $('#sp-brief');
   const n = briefCount();
   const msg = briefProblem(brief.value, n);
@@ -396,7 +441,8 @@ async function submitSpawn(e) {
   $('#sp-alert').hidden = true;
   const name = $('#sp-name').value;
   const place = $('input[name="sp-place"]:checked')?.value ?? 'settings';
-  const req = { project: g.project.key, name, model: $('#sp-model').value, brief: $('#sp-brief').value };
+  const model = spawnModel();
+  const req = { project: g.project.key, name, model, brief: $('#sp-brief').value };
   if ($('#sp-perm').value) req.permissionMode = $('#sp-perm').value;
   if (place === 'under' && sp.under) req.under = sp.under;
   const dlg = $('#dlg-spawn');
@@ -627,9 +673,63 @@ function rulesRender() {
   main.classList.toggle('is-success', ru.phase === 'success');
 }
 
+/* ---------- Add to Applications (spec 3.14, ADR 0011): the two POSTs behind the dashboard notice ---------- */
+/** The copy the notice is offering (what was on screen when the button was pressed), or null. */
+function offered() {
+  return copyBanner(state.me?.appCopy, state.appCopyUi)?.mode ?? null;
+}
+
+/** Focus must not fall to <body> when the banner that held it leaves. */
+function keepFocus(hadFocus) {
+  if (hadFocus && !$('#banners').contains(document.activeElement)) $('#main')?.focus({ preventScroll: true });
+}
+
+async function appCopyInstall() {
+  const ui = state.appCopyUi;
+  const mode = offered();
+  if (!mode || ui.busy) return;
+  const hadFocus = $('#banners').contains(document.activeElement);
+  ui.busy = true;
+  ui.error = null;
+  render(true);
+  let res = null;
+  try {
+    res = await appFetch('/api/app/app-copy', { method: 'POST', json: { action: 'install' } });
+  } catch {
+    // a network failure reads as the generic line below
+  }
+  ui.busy = false;
+  if (res?.status === 200 && res.body?.state === 'current') {
+    toast(copyToast(mode, res.body));
+    await loadMe().catch(() => {}); // the banner follows the server's answer
+  } else {
+    ui.error = copyErrorText(res);
+  }
+  render(true);
+  keepFocus(hadFocus);
+}
+
+async function appCopyDismiss() {
+  const ui = state.appCopyUi;
+  const mode = offered();
+  if (!mode || ui.busy) return;
+  const hadFocus = $('#banners').contains(document.activeElement);
+  ui.hidden = true; // gone for this launch whatever the server says; Update posts nothing
+  render(true);
+  keepFocus(hadFocus);
+  if (mode !== 'add') return;
+  try {
+    if ((await appFetch('/api/app/app-copy', { method: 'POST', json: { action: 'dismiss' } })).status === 200) await loadMe();
+  } catch {
+    // not asked again this launch either way
+  }
+}
+
 /* ---------- start ---------- */
 export async function initApp() {
   hooks.pollApp = pollApp;
+  hooks.appCopyInstall = appCopyInstall;
+  hooks.appCopyDismiss = appCopyDismiss;
   hooks.renderSide = renderSide;
   hooks.renderProject = renderProject;
   hooks.groupActions = groupActions;
@@ -641,10 +741,14 @@ export async function initApp() {
   $('#side-add').addEventListener('click', () => addProject());
   $('#spawn-form').addEventListener('submit', submitSpawn);
   $('#sp-brief').addEventListener('input', briefCount);
+  $('#sp-model').addEventListener('change', () => { // Custom ID shows its field; any other choice hides it and drops its error
+    $('#sp-model-custom').hidden = $('#sp-model').value !== CUSTOM;
+    fieldError($('#sp-model-custom'), '');
+  });
   for (const [id, key] of [['sp-name', 'agent']]) {
     $(`#${id}`).addEventListener('blur', () => fieldError($(`#${id}`), RX[key][0].test($(`#${id}`).value) ? '' : RX[key][1]));
   }
-  const results = await Promise.all([loadSettings(), loadMe(), loadProjects()].map((p) => p.catch(() => null)));
+  const results = await Promise.all([loadSettings(), loadMe(), loadProjects(), loadModels()].map((p) => p.catch(() => null)));
   state.appError = results.some((r) => r?.status === 403);
   renderSide();
 }

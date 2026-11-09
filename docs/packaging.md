@@ -39,7 +39,7 @@ cargo tauri build --bundles app
 - The bundle lands in `app/src-tauri/target/release/bundle/macos/nika.app`.
 
 Install it by copying `nika.app` to `~/Applications` (or `/Applications`) and opening it once. `nika` and `nika app`
-find it by bundle id.
+find it by bundle id. With the Homebrew install, `nika app install` makes that copy for you (next section).
 
 ### Signing and Gatekeeper
 
@@ -110,8 +110,9 @@ From the CLI contract ([`contracts/api-app.md` section 7](contracts/api-app.md))
 
 | Command | macOS | Linux |
 |---|---|---|
-| `nika`, `nika open` | `open -b io.github.qmpwwsd.nika`; if the app is missing, the browser dashboard | `nika-app` on `PATH`, then `gtk-launch io.github.qmpwwsd.nika`; if both fail, the browser dashboard |
+| `nika`, `nika open` | first refreshes the copy nika made in `~/Applications` after an upgrade, then `open ~/Applications/nika.app` (that copy, by path) or, without one, `open -b io.github.qmpwwsd.nika`; if the app is missing, the browser dashboard | `nika-app` on `PATH`, then `gtk-launch io.github.qmpwwsd.nika`; if both fail, the browser dashboard |
 | `nika app`, `nika open --app` | the same lookup; exit 1 with an install hint when the app is missing | the same |
+| `nika app install` | copies the app of this install into `~/Applications` (ADR 0011); prints added, updated or already current | exit 1: the `.deb` or AppImage installs the desktop entry |
 | `nika open --browser` | skips the app lookup | skips the app lookup |
 
 The browser dashboard needs `nika serve` to be running (for example `brew services start nika`). The app does not: it
@@ -261,9 +262,12 @@ class Nika < Formula
     return unless OS.mac?
 
     <<~EOS
-      The desktop app is #{opt_prefix}/nika.app. Open it once so macOS registers it
-      (after that `nika` and `nika app` find it):
-        open #{opt_prefix}/nika.app
+      The desktop app is #{opt_prefix}/nika.app. Spotlight and Launchpad do not look in the
+      Homebrew folder, so copy it to ~/Applications once (or press "Add to Applications"
+      when the app asks):
+        nika app install
+      After `brew upgrade`, running `nika` refreshes that copy (quit and reopen nika if it
+      was open).
       The read-only browser dashboard still runs with: brew services start nika
     EOS
   end
@@ -289,7 +293,8 @@ end
 
 Verified on 2026-11-08 (V5; macOS on Apple silicon, Homebrew rust 1.99.1): `brew upgrade --build-from-source` from the
 tap builds `tauri-cli`, then the app bundle (about 3 minutes for the app), and installs it in the keg; `brew test`
-passes. After `open "$(brew --prefix nika)/nika.app"` once, `open -b io.github.qmpwwsd.nika` and `nika app` find it,
+passes. After `open "$(brew --prefix nika)/nika.app"` once (or `nika app install`, which also makes Spotlight and Launchpad find it),
+`open -b io.github.qmpwwsd.nika` and `nika app` find it,
 and a second launch focuses the running app. Two lessons from that run: the app must be built before
 `libexec.install` moves the resource folders out of the build tree, and the build needs free disk space (on a full
 disk the linker wrote a broken `cargo-tauri`, which then failed to execute with no other message). After an upgrade,
