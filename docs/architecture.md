@@ -148,9 +148,10 @@ Routes: [`contracts/api-app.md` section 3](contracts/api-app.md). Parsed screen 
 | `modes.js` | Permission modes in the UI: labels, icons, the switcher's state and the dashboard's mode map and tag. |
 | `models-ui.js` | The model dropdown shared by the session window, Settings and the spawn sheet: groups from the catalog, the Custom ID field and its `MODEL_ID` check. |
 | `palette.js` | The slash-command palette's rules and copy (ranking, views, insertion). No DOM, no requests. |
-| `project.js` | App tier only: projects, add project, start orchestrator, project view, spawn sheet, apply-rules dialog, the poll of `/api/app/modes`, the Add to Applications install and dismiss requests. |
+| `plugin-view.js` | The "Choose plugins" dialog's model: the rows and their fixed order, the filter, the counts and what Save sends. Pure; the dialog itself lives in `project.js`. |
+| `project.js` | App tier only: projects, add project, start orchestrator, project view (the Project setup card and its Choose plugins dialog), spawn sheet, apply-rules dialog, the poll of `/api/app/modes`, the Add to Applications install and dismiss requests. |
 | `quick-actions.js` | The quick actions', prompt buttons', End dialog's and Shell mode's rules and fixed copy. No DOM, no requests. |
-| `settings.js` | App tier only: the settings screen. |
+| `settings.js` | App tier only: the settings screen (defaults for every project; the Save and Discard bar shows only after a real change). |
 | `session.js` | App tier only: the session window (history, live mirror, composer, mode switcher, quick actions, prompt buttons, Shell mode, command palette). |
 | `shortcuts.js` | The Keyboard shortcuts window and the key rules around it (`?`, Mod+/, Back). Static copy, both tiers. |
 | `mirror-render.js` | Pane-mirror helpers: render model, cursor, key handling. Re-validates every value. |
@@ -164,7 +165,7 @@ nika's own files follow XDG ([ADR 0008](adr/0008-xdg-config-state.md)). Folders 
 
 | Path | Holds |
 |---|---|
-| `${NIKA_CONFIG_DIR or XDG_CONFIG_HOME or ~/.config}/nika/config.json` | Settings and the project registry. Validated on load; garbage falls back to defaults with a warning. |
+| `${NIKA_CONFIG_DIR or XDG_CONFIG_HOME or ~/.config}/nika/config.json` | Settings, the project registry and each project's own settings (`perProject`, its plugins). Validated on load; garbage falls back to defaults with a warning. |
 | `…/nika/templates/<name>.md` | Rule templates you imported locally. |
 | `${XDG_STATE_HOME or ~/.local/state}/nika/projects/<key>/reports/` | Per spawned agent: brief, settings, session id, pane, exit code, report. |
 | `${XDG_STATE_HOME or ~/.local/state}/nika/backups/<key>/<ISO>/` | Byte-for-byte copies taken before "apply rules" overwrites a file; the last 10 folders per project are kept. Never inside a repo. |

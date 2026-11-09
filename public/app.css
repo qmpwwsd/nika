@@ -296,6 +296,8 @@ details.ended > summary:hover { color: var(--text); }
 .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg); padding: 14px; box-shadow: var(--elev-1); display: grid; gap: 10px; }
 .card + .card { margin-top: var(--sp-3); }
 .card h2 { margin: 0 0 -2px; font-size: var(--fs-h2); }
+.card h3 { margin: 0; font-size: var(--fs-h3); }
+.card h3 .help { margin-left: 4px; font-weight: 400; }
 .card p { margin: 0; }
 .card .muted { font-size: var(--fs-small); }
 .card > .rules { justify-self: start; }
@@ -303,7 +305,10 @@ details.ended > summary:hover { color: var(--text); }
 .kv dt { color: var(--text-muted); }
 .kv dd { margin: 0; font-weight: 600; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+ul.chips { margin: 0; padding: 0; list-style: none; }
 .chip { display: inline-flex; align-items: center; min-height: 24px; padding: 0 8px; border-radius: var(--r-sm); border: 1px solid var(--line); background: var(--surface-2); font-size: var(--fs-small); font-family: var(--mono); overflow-wrap: anywhere; }
+.chip.missing { gap: 4px; border-style: dashed; background: transparent; }
+.chip.missing .ic { flex: none; color: var(--idle); }
 .limit { display: flex; gap: 8px; align-items: flex-start; padding: 8px 10px; border-radius: var(--r-md); background: var(--idle-soft); color: var(--text); font-size: var(--fs-small); }
 .limit .ic { color: var(--idle); }
 
@@ -359,6 +364,25 @@ dialog.dlg-rules[open] { display: flex; flex-direction: column; }
 .diff .d-hunk { color: var(--text-muted); background: var(--surface-2); }
 .diff.d-note, .diff .d-note { color: var(--text-muted); font-style: italic; padding: 6px 12px; white-space: normal; display: block; }
 
+/* ---------- choose plugins dialog (docs/design/spec.md 3.15): only the list scrolls ---------- */
+dialog.dlg-plugins { width: min(560px, calc(100vw - 32px)); height: min(640px, calc(100vh - 32px)); }
+dialog.dlg-plugins[open] { display: flex; flex-direction: column; }
+.pl-main { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 10px; padding: 12px 16px; }
+.pl-main .search { width: 100%; flex: none; }
+.pl-main .help { flex: none; }
+.plug-box { flex: 1; min-height: 0; grid-template-rows: minmax(0, 1fr); }
+.plug-list { position: relative; min-height: 0; overflow: auto; display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: 2px; padding: 4px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); }
+.plug-list > p { margin: 0; padding: 8px; overflow-wrap: anywhere; }
+.plug-list > .btn { justify-self: start; margin-left: 8px; }
+.plug-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 8px; min-height: 32px; padding: 4px 8px; border-radius: var(--r-sm); }
+.plug-row:hover { background: var(--surface-2); }
+.plug-row[data-on="true"] { background: var(--accent-soft); }
+.plug-row input { margin: 0; }
+.plug-n { font-family: var(--mono); font-size: var(--fs-small); overflow-wrap: anywhere; }
+.plug-row .onoff { color: var(--accent); }
+.plug-miss { display: flex; align-items: center; gap: 4px; margin-top: 2px; font-family: var(--font); font-weight: 600; }
+.plug-miss .ic { flex: none; color: var(--idle); }
+
 /* ---------- settings ---------- */
 .set-grid { display: grid; grid-template-columns: 180px minmax(0, 640px); gap: var(--sp-6); padding: var(--sp-4) var(--sp-4) 96px; }
 .set-index { position: sticky; top: 16px; align-self: start; display: grid; gap: 1px; }
@@ -368,8 +392,6 @@ dialog.dlg-rules[open] { display: flex; flex-direction: column; }
 .set-sec h2 { margin: 0; font-size: var(--fs-h2); }
 .set-sec > p { margin: -8px 0 0; color: var(--text-muted); }
 .err-sum { margin: 0 0 var(--sp-4); }
-.plug-list { position: relative; display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 4px 12px; max-height: 220px; overflow: auto; padding: 8px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); }
-.plug-list label { font-family: var(--mono); font-size: var(--fs-small); align-items: center; }
 .savebar { position: sticky; bottom: 0; display: flex; align-items: center; gap: 8px; padding: 10px var(--sp-4); background: var(--surface); border-top: 1px solid var(--line); box-shadow: 0 -8px 16px -12px rgb(0 0 0 / 30%); }
 
 /* ---------- window width (the app's minimum window is 720 x 480) ---------- */

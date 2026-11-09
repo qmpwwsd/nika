@@ -97,11 +97,27 @@ the server re-checks (`realpath`, `isDirectory`) before `addProject`. Projects a
 ### Settings
 
 `GET /api/app/settings` → `200 Settings`. `PUT /api/app/settings` body ≤ 16 KB: a partial `Settings` (every key except
-`projects`; object groups merge one level deep; `plugins.perProject` replaces the whole map) → `200 Settings` (as
-re-read from disk) or `400 invalid` with `"message"` naming the first bad field. `permissionMode: "bypassPermissions"`
-is always `400`. Per-project plugin names must be ⊂ the installed names from `/api/app/plugins`, else `400`.
+`projects` and `perProject`; object groups merge one level deep) → `200 Settings` (as re-read from disk) or
+`400 invalid` with `"message"` naming the first bad field. `permissionMode: "bypassPermissions"` is always `400`. A body
+with `perProject` is `400` ("per-project settings are saved on the project page"), and so is the old `plugins` group
+(0.3.3 and older): it is an unknown key. Settings holds defaults for every project; the page's PUT carries the form and
+nothing else, so it can never overwrite a project's saved choices.
 
-`Settings` = the `config.json` schema (§6) without `projects`.
+`Settings` = the `config.json` schema (§6) without `projects`. It does include `perProject` (read only here), so a page can
+show a project's saved plugins without a second request.
+
+### `GET|PUT /api/app/projects/:key/config` (PUT body ≤ 16 KB, `CAP.settings`)
+One project's own settings, saved on its page (0.3.4). `:key` must match `^[a-z0-9]{16}$`, else `400 invalid`; a key that is
+not a registered project is `404 not_found`.
+- `GET` → `200 { "plugins": [ "<PLUGIN_NAME>", … ] }` (the names to turn on; `[]` when none).
+- `PUT` body `{ "plugins": [ "<PLUGIN_NAME>", … ] }` and no other key → `200 { "plugins": [ … ] }` (as saved, repeats removed).
+  `[]` removes the list (and the project's entry when nothing else is left): `enabledPlugins` is then left as it is
+  when rules are applied. Each name must be installed now (the names from `/api/app/plugins`) **or already saved for this
+  project** (so a plugin removed since can still be unticked); any other name is `400 invalid` naming it. A body that is
+  not that shape, more than 200 names, or a name that is not a `PLUGIN_NAME` is `400 invalid`; non-JSON is `415`, a body over
+  16 KB is `413`.
+The route reads and writes only this project's entry, in the store's one serial queue, so two pages saving different
+projects (or Settings and a project page) cannot overwrite each other.
 
 ### `GET /api/app/templates`
 `200 { "templates": [ "<name>.md", … ] }` — file names (`^[A-Za-z0-9_-]{1,64}\.md$`, regular user-owned files via
@@ -538,7 +554,7 @@ warning in `loadConfig().warnings`; a tampered or unreadable file never throws):
   "permissionMode": "default",
   "panePlacement": "beside",
   "limits": { "maxAgents": 3 },
-  "plugins": { "perProject": { "<PROJECT_KEY>": [ "<PLUGIN_NAME>" ] } },
+  "perProject": { "<PROJECT_KEY>": { "plugins": [ "<PLUGIN_NAME>" ] } },
   "projects": [ { "key": "<PROJECT_KEY>", "dir": "<abs realpath>", "name": "<basename>", "addedAt": "<ISO>" } ],
   "rules": { "localTemplate": null },
   "ui": { "theme": "system", "singleKeyShortcuts": true }
@@ -549,10 +565,16 @@ warning in `loadConfig().warnings`; a tampered or unreadable file never throws):
 §4.6). Mod+/ always does.
 Field rules: `models.*` `MODEL_ID`; `remoteControl.prefix` `""` (= project name) or `RC_PREFIX`; `permissionMode` ∈
 `PERMISSION_MODES`; `panePlacement` ∈ `PANE_PLACEMENTS`; `limits.maxAgents` 1–8 (there is no turn limit: Claude Code
-has no `--max-turns` for interactive sessions); `plugins.perProject` ≤ 200 names per project, keys must be registered
-projects (checked by `PUT /api/app/settings`); `projects` ≤ 100 entries, `key` must equal `keyFor(dir)`;
+has no `--max-turns` for interactive sessions); `perProject` keys are `PROJECT_KEY`s and each entry holds only `plugins`
+(≤ 200 names, deduplicated; a bad key, entry or list drops that entry with a warning, and any other inner key is dropped with
+a warning: 0.4 adds more; an empty `plugins` list, and an entry left empty, are "none": dropped on load without a warning, so
+`[]` and "no entry" are the same thing), written only by `PUT /api/app/projects/:key/config`, which checks the project is registered;
+`projects` ≤ 100 entries, `key` must equal `keyFor(dir)`;
 `rules.localTemplate` `null` or a file name `^[A-Za-z0-9_-]{1,64}\.md$` under `templates/`. Store mutations in one
 process are serialised (one promise queue in `src/store.js`); across processes the last atomic rename wins.
+**Migration (0.3.4):** a `config.json` written by 0.3.3 or older holds the lists in `plugins.perProject: { key: [names] }`.
+`loadConfig` reads it as `perProject[key] = { plugins: names }` with no warning (when both shapes are present `perProject`
+wins and the old group is dropped silently); the old group is never written back, so the next save persists the new shape.
 
 Project folders (`rules/`, `.claude/`, the repo root) are written with `writeAtomic(…, { project: true })`: a
 world-writable folder is always refused; a group-writable one is accepted only on Linux and only when its group is
@@ -560,11 +582,14 @@ the user's primary group (`process.getgid()`, the per-user group of a 002 umask)
 stay strict (no group or world write). An existing in-project file keeps its mode minus group/other write (never
 widened); a new `.claude/settings.local.json` is 0600, other new in-project files 0644; nika's own files 0600.
 `enabledPlugins`: selected plugins → `true`; `true` entries not selected → removed; `false` entries of unselected
-plugins untouched; a project with no `plugins.perProject` entry leaves `enabledPlugins` untouched.
+plugins untouched; a project with no `perProject[key].plugins` list leaves `enabledPlugins` untouched.
 
 Store API: `loadConfig(env) → { config, warnings, file }`, `saveConfig(config, env)` (re-validates, throws `EINVAL`),
-`addProject(dir, env)`, `removeProject(key, env)`, `listProjects(env)`, `updateSettings(patch, env)` (throws `EINVAL`,
-never accepts `projects` or `bypassPermissions`), `keyFor(realDir)`.
+`addProject(dir, env)`, `removeProject(key, env)` (also drops the project's `perProject` entry), `listProjects(env)`,
+`updateSettings(patch, env)` (throws `EINVAL`, never accepts `projects`, `perProject` or `bypassPermissions`),
+`getProjectConfig(key, env) → { plugins }` (`EINVAL` on a bad key), `updateProjectConfig(key, { plugins }, env)` (`EINVAL` on a
+bad key or patch: the patch must be a plain object whose only own key is `plugins`; `ENOENT` for a project that is not
+registered; `[]` removes the list), `keyFor(realDir)`.
 
 Write API (`src/fwrite.js`): `ensureDir(dir, mode = 0o700)`, `writeAtomic(dir, name, content, { mode = 0o600, root })`,
 `checkComponents(root, relPath) → { dir, name, abs }`, `backupFile(srcAbs, backupRootAbs, relPath)`,

@@ -16,6 +16,8 @@ export const TEMPLATE_NAME = /^[A-Za-z0-9_-]{1,64}\.md$/;
 const THEMES = ['system', 'light', 'dark']; // system = follow prefers-color-scheme
 const hasOwn = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
 const isPlainObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+const bad = (m) => Object.assign(new Error(m), { code: 'EINVAL' });
+const isProjectKey = (k) => typeof k === 'string' && PROJECT_KEY.test(k);
 
 export function defaults() {
   return {
@@ -24,7 +26,7 @@ export function defaults() {
     permissionMode: 'default',
     panePlacement: 'beside',
     limits: { maxAgents: 3 },
-    plugins: { perProject: {} },
+    perProject: {},
     projects: [],
     rules: { localTemplate: null },
     ui: { theme: 'system', singleKeyShortcuts: true },
@@ -37,16 +39,26 @@ const oneOf = (list) => (v) => (list.includes(v) ? v : undefined);
 const intIn = (lo, hi) => (v) => (Number.isInteger(v) && v >= lo && v <= hi ? v : undefined);
 const bool = (v) => (typeof v === 'boolean' ? v : undefined);
 
+/** A deduplicated list of at most PLUGINS_MAX plugin names, or undefined when v is anything else. */
+function pluginList(v) {
+  const ok = Array.isArray(v) && v.length <= PLUGINS_MAX && v.every((p) => typeof p === 'string' && PLUGIN_NAME.test(p));
+  return ok ? [...new Set(v)] : undefined;
+}
+
+/** perProject: { <PROJECT_KEY>: { plugins?: string[] } }. A bad key, entry or list drops that entry; other inner keys are dropped (0.4 adds more). An empty list or an empty entry is "none" and is not kept. */
 function perProject(v, warn) {
   if (!isPlainObject(v)) return undefined;
   const out = {};
   for (const key of Object.keys(v)) {
-    const list = v[key];
-    if (!PROJECT_KEY.test(key) || !Array.isArray(list) || list.length > PLUGINS_MAX || !list.every((p) => PLUGIN_NAME.test(p))) {
-      warn(`plugins.perProject.${clean(key, 40) ?? '?'} dropped`);
+    const at = `perProject.${clean(key, 40) ?? '?'}`;
+    const entry = v[key];
+    const plugins = isPlainObject(entry) && hasOwn(entry, 'plugins') ? pluginList(entry.plugins) : undefined;
+    if (!isProjectKey(key) || !isPlainObject(entry) || (hasOwn(entry, 'plugins') && plugins === undefined)) {
+      warn(`${at} dropped`);
       continue;
     }
-    out[key] = [...new Set(list)];
+    for (const k of Object.keys(entry)) if (k !== 'plugins') warn(`unknown key ${at}.${clean(k, 40) ?? '?'} dropped`);
+    if (plugins?.length) out[key] = { plugins }; // an empty list is a valid "none": no entry (the entry holds only `plugins` until 0.4)
   }
   return out;
 }
@@ -76,7 +88,7 @@ const SCHEMA = {
   permissionMode: oneOf(PERMISSION_MODES),
   panePlacement: oneOf(PANE_PLACEMENTS),
   limits: { maxAgents: intIn(1, 8) },
-  plugins: { perProject },
+  perProject,
   projects,
   rules: { localTemplate: (v) => (v === null ? v : str(TEMPLATE_NAME)(v)) },
   ui: { theme: oneOf(THEMES), singleKeyShortcuts: bool },
@@ -108,6 +120,19 @@ function configFile(env) {
   return path.join(configDir(env), 'config.json');
 }
 
+/**
+ * 0.3.3 and older kept plugin lists in `plugins.perProject: { key: [names] }`; 0.3.4 keeps them in `perProject[key].plugins`.
+ * The legacy group is converted when `perProject` is absent and dropped silently either way; the next save writes the new shape.
+ */
+function migrate(raw) {
+  if (!isPlainObject(raw) || !hasOwn(raw, 'plugins') || !isPlainObject(raw.plugins)) return raw;
+  const { plugins: legacy, ...rest } = raw;
+  if (!hasOwn(rest, 'perProject') && isPlainObject(legacy.perProject)) {
+    rest.perProject = Object.fromEntries(Object.entries(legacy.perProject).map(([k, list]) => [k, Array.isArray(list) ? { plugins: list } : list]));
+  }
+  return rest;
+}
+
 /** Never throws: a missing, unreadable or tampered file yields defaults plus warnings. */
 export async function loadConfig(env = process.env) {
   const file = configFile(env);
@@ -118,7 +143,7 @@ export async function loadConfig(env = process.env) {
   } catch (err) {
     if (err.code !== 'ENOENT') warnings.push(`config.json unreadable (${err.code || 'invalid JSON'}), defaults used`);
   }
-  return { config: validate(raw, SCHEMA, defaults(), warnings), warnings, file };
+  return { config: validate(migrate(raw), SCHEMA, defaults(), warnings), warnings, file };
 }
 
 // Mutations (read-modify-write of config.json) of this process run one at a time, so concurrent API calls cannot lose
@@ -162,14 +187,14 @@ export function addProject(dir, env = process.env) {
   });
 }
 
-/** Removes a project and its per-project plugin list; true when something was removed. */
+/** Removes a project and its per-project config; true when something was removed. */
 export function removeProject(key, env = process.env) {
   return serial(async () => {
-    if (!PROJECT_KEY.test(key)) throw Object.assign(new Error('invalid project key'), { code: 'EINVAL' });
+    if (!isProjectKey(key)) throw bad('invalid project key');
     const { config } = await loadConfig(env);
     const before = config.projects.length;
     config.projects = config.projects.filter((p) => p.key !== key);
-    delete config.plugins.perProject[key];
+    delete config.perProject[key];
     if (config.projects.length === before) return false;
     await writeConfig(config, env);
     return true;
@@ -181,14 +206,14 @@ export async function listProjects(env = process.env) {
 }
 
 /**
- * Merges a settings patch (every top-level key except `projects`; object groups merge one level deep,
- * `plugins.perProject` is replaced as a whole) and saves it. Throws EINVAL on any invalid or unknown value.
+ * Merges a settings patch (every top-level key except `projects` and `perProject`; object groups merge one level deep)
+ * and saves it. Throws EINVAL on any invalid or unknown value.
  */
 export function updateSettings(patch, env = process.env) {
   return serial(async () => {
-    const bad = (m) => Object.assign(new Error(m), { code: 'EINVAL' });
     if (!isPlainObject(patch)) throw bad('settings must be an object');
     if (hasOwn(patch, 'projects')) throw bad('projects are managed with nika projects add|remove');
+    if (hasOwn(patch, 'perProject')) throw bad('per-project settings are saved on the project page');
     if (patch.permissionMode === 'bypassPermissions') throw bad('bypassPermissions is never allowed');
     // own keys only: `__proto__` from JSON.parse must never reach the `next[k] =` assignment below
     for (const k of Object.keys(patch)) if (!hasOwn(SCHEMA, k)) throw bad(`unknown key ${clean(k, 40) ?? '?'}`);
@@ -200,5 +225,35 @@ export function updateSettings(patch, env = process.env) {
     }
     await writeConfig(next, env);
     return (await loadConfig(env)).config;
+  });
+}
+
+/** `{ plugins }` saved for a project: the names to turn on, [] when none. Throws EINVAL on a bad key. */
+export async function getProjectConfig(key, env = process.env) {
+  if (!isProjectKey(key)) throw bad('invalid project key');
+  return { plugins: (await loadConfig(env)).config.perProject[key]?.plugins ?? [] };
+}
+
+/**
+ * Sets one project's config. Today the patch is exactly `{ plugins: string[] }` (0.4 adds more); `plugins: []` removes the list
+ * and the entry with it. Runs in the serial queue, so two pages saving different projects cannot overwrite each other.
+ * Throws EINVAL (bad key or patch) or ENOENT (not a registered project); returns the project's new `{ plugins }`.
+ */
+export function updateProjectConfig(key, patch, env = process.env) {
+  return serial(async () => {
+    if (!isProjectKey(key)) throw bad('invalid project key');
+    // own keys only: an inherited or `__proto__` key never counts as `plugins`
+    if (!isPlainObject(patch) || Object.keys(patch).length !== 1 || !hasOwn(patch, 'plugins')) throw bad('patch must be { plugins: [...] }');
+    const plugins = pluginList(patch.plugins);
+    if (plugins === undefined) throw bad(`plugins must be a list of at most ${PLUGINS_MAX} plugin names like name@marketplace`);
+    const { config } = await loadConfig(env);
+    if (!config.projects.some((p) => p.key === key)) throw Object.assign(new Error('project is not registered'), { code: 'ENOENT' });
+    const entry = { ...config.perProject[key] };
+    if (plugins.length) entry.plugins = plugins;
+    else delete entry.plugins;
+    if (Object.keys(entry).length) config.perProject[key] = entry;
+    else delete config.perProject[key];
+    await writeConfig(config, env);
+    return { plugins };
   });
 }

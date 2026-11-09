@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+Plugins per project, and Settings (desktop app):
+
+- Plugins are chosen on each project's page. The Plugins card there is now **Project setup**; **Choose plugins…** opens a
+  window with a filter, a count and one scrolling list (it no longer jumps to Settings, and long plugin names wrap instead of
+  overlapping). Ticked plugins are listed first; a plugin you ticked that is no longer installed is marked "(not
+  installed)" and can still be unticked. Plugins are written to `.claude/settings.local.json` only when you apply rules,
+  as before.
+- Settings now holds only the defaults for every project. The plugins section is gone from it, so saving Settings can no
+  longer overwrite a project's plugins.
+- The Save and Discard bar in Settings appears only after you change something, and goes away when you put the values
+  back. While it is hidden, Enter and Cmd/Ctrl+Enter save nothing.
+- Existing choices carry over: nika reads the plugin lists from their old place in `config.json` and writes the new shape the
+  next time it saves. Going back to 0.3.3 loses the lists only after 0.3.4 has saved. Unticking every plugin removes the
+  list, and applying rules then leaves the project's `enabledPlugins` as they are.
+- API: `GET` and `PUT /api/app/projects/:key/config`; `PUT /api/app/settings` refuses `perProject`
+  ([ADR 0012](docs/adr/0012-per-project-config.md)).
+
 ## 0.3.3 — 2026-11-09
 
 Session window keys and the macOS window (desktop app):

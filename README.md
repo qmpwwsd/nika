@@ -202,11 +202,13 @@ More: [docs/packaging.md](docs/packaging.md) (build details, signing, Linux pack
   agent limit shows why and what to do. `bypassPermissions` is not offered.
 - **Settings** (`Mod+,`). Appearance (System, Light, Dark) and the **Single-key shortcuts** switch, the model per role (a
   list of current models and aliases, or a custom ID), Remote Control, default permission mode and pane placement, the
-  per-project agent limit, plugins per project and the rules template. One Save button; invalid fields are marked in place.
+  per-project agent limit and the rules template: defaults for every project. The Save and Discard bar appears only after a change; invalid fields are marked in place.
+- **Plugins for a project.** On the project page, the **Project setup** card lists the plugins that project turns on; **Choose plugins…**
+  opens a window to tick them (filter, count, Save). They are written into the project's `.claude/settings.local.json` when you apply rules.
 - **Keyboard.** `Mod+1` dashboard, `Mod+,` settings, `Mod+O` add project, `Mod+F` filter, `Mod+[` (macOS) or `Alt+Left`
   (Linux) back (the project view and Settings go to the dashboard; the session window goes to its project, or the
   dashboard when it has none), `Mod+Enter` confirm the open
-  dialog or save settings, `?` or `Mod+/` the Keyboard shortcuts window. `Mod` is Command on macOS and Control on Linux.
+  dialog, or save settings when there are unsaved changes, `?` or `Mod+/` the Keyboard shortcuts window. `Mod` is Command on macOS and Control on Linux.
 - **Keyboard shortcuts window.** `?` or `Mod+/`, or the Keyboard shortcuts button (sidebar footer, session header), lists
   the shortcuts of the screen you are on. `?` is ignored while you type in a field or in the pane mirror, while "Type into
   the pane" is on and while a dialog is open; turn it off in Settings, Appearance, **Single-key shortcuts** (useful with
@@ -228,10 +230,10 @@ The browser dashboard at `http://127.0.0.1:3335` shows the same list without any
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/project-dark.png">
-  <img src="docs/screenshots/project-light.png" alt="A project page listing the project's agents with their subagents, and cards for its rules, plugins and the settings new agents start with.">
+  <img src="docs/screenshots/project-light.png" alt="A project page listing the project's agents with their subagents, and cards for its rules, its project setup (plugins) and the settings new agents start with.">
 </picture>
 
-**Project view.** The project's agents with their subagents, and cards for its rules, its plugins and the settings new agents start with.
+**Project view.** The project's agents with their subagents, and cards for its rules, its project setup (plugins) and the settings new agents start with.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/rules-dark.png">
@@ -245,7 +247,7 @@ The browser dashboard at `http://127.0.0.1:3335` shows the same list without any
   <img src="docs/screenshots/settings-light.png" alt="The Settings screen with the model for each role, Remote Control and the permission mode for new agents.">
 </picture>
 
-**Settings.** The model for each role, Remote Control and the permission mode for new agents. Limits, plugins and the rules template are further down.
+**Settings.** The model for each role, Remote Control and the permission mode for new agents. Limits and the rules template are further down; plugins are chosen on each project's page.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/spawn-dark.png">

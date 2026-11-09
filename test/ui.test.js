@@ -146,7 +146,7 @@ describe('HTML pages under the strict CSP', () => {
     assert.match(src, /<nav\b/);
     assert.match(src, /id="announce"[^>]*aria-live="polite"/);
     assert.equal((src.match(/<h1\b/g) ?? []).length, 3, 'dashboard, project and settings');
-    assert.equal((src.match(/<dialog\b/g) ?? []).length, 6, 'spawn, rules, confirm, report, end, keyboard shortcuts');
+    assert.equal((src.match(/<dialog\b/g) ?? []).length, 7, 'spawn, rules, plugins, confirm, report, end, keyboard shortcuts');
   });
 
   test('(+) index.html: app-only controls are marked so the browser tier removes them', () => {

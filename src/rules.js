@@ -111,7 +111,7 @@ function valuesFor(config, project) {
     limits: { maxAgents: config.limits.maxAgents },
     permissionMode: config.permissionMode,
     remoteControl: !rc.enabled ? 'off' : `on (name prefix: ${rc.prefix || 'the project name'})`,
-    plugins: (config.plugins.perProject[project.key] ?? []).map((p) => `\`${p}\``).join(', ') || 'none',
+    plugins: (config.perProject[project.key]?.plugins ?? []).map((p) => `\`${p}\``).join(', ') || 'none',
   };
 }
 
@@ -286,7 +286,7 @@ async function plan(project, ctx = {}) {
   add(CLAUDE, claudeCurrent, claudeWith(claudeCurrent));
 
   // plugins are managed only for projects the user configured; no entry means enabledPlugins stays as it is
-  const selected = config.plugins.perProject[project.key];
+  const selected = config.perProject[project.key]?.plugins;
   const settingsCurrent = await readTarget(dir, SETTINGS);
   const settingsNext = selected === undefined ? settingsCurrent : settingsWith(settingsCurrent, selected);
   add(SETTINGS, settingsCurrent, settingsNext, { keysPreserved: true });

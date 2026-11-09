@@ -417,32 +417,138 @@ describe('projects', () => {
   });
 });
 
+describe('project config (GET|PUT /api/app/projects/:key/config)', () => {
+  let a;
+  let extra;
+  const url = (key = w.project.key) => `/api/app/projects/${key}/config`;
+  before(async () => {
+    a = await boot();
+    extra = fs.mkdtempSync(path.join(os.tmpdir(), 'nika-api-pcfg-'));
+  });
+  after(() => fs.rmSync(extra, { recursive: true, force: true }));
+  const put = (json, key) => a.call('PUT', url(key), { json });
+
+  test('(+) GET answers { plugins: [] } for a project without a list', async () => {
+    const r = await a.call('GET', url());
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.body, { plugins: [] });
+    assert.match(r.headers['cache-control'] ?? '', /no-store/);
+  });
+
+  test('(+) PUT saves installed plugins and answers 200 { plugins }; GET and the settings read them back', async () => {
+    const r = await put({ plugins: ['beta@market', 'alpha@market'] });
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.body, { plugins: ['beta@market', 'alpha@market'] });
+    assert.deepEqual((await a.call('GET', url())).body, { plugins: ['beta@market', 'alpha@market'] });
+    assert.deepEqual((await loadConfig(w.env)).config.perProject[w.project.key], { plugins: ['beta@market', 'alpha@market'] });
+    assert.deepEqual((await a.call('GET', '/api/app/settings')).body.perProject[w.project.key], { plugins: ['beta@market', 'alpha@market'] });
+  });
+
+  test('(+) a name that is saved but no longer installed is accepted again; [] removes the list', async () => {
+    assert.equal((await put({ plugins: ['alpha@market', 'beta@market'] })).status, 200);
+    const gone = await boot({ deps: makeDeps({ listPlugins: async () => ['alpha@market'] }) }); // beta@market was uninstalled since
+    const r = await gone.call('PUT', url(), { json: { plugins: ['alpha@market', 'beta@market'] } });
+    assert.equal(r.status, 200, 'beta@market is saved for this project, so it stays allowed');
+    assert.deepEqual(r.body, { plugins: ['alpha@market', 'beta@market'] });
+    const cleared = await put({ plugins: [] });
+    assert.deepEqual([cleared.status, cleared.body], [200, { plugins: [] }]);
+    assert.deepEqual((await loadConfig(w.env)).config.perProject, {});
+  });
+
+  test('(−) a name that is neither installed nor already saved for that project is 400 and nothing changes', async () => {
+    assert.equal((await put({ plugins: ['alpha@market'] })).status, 200);
+    const r = await put({ plugins: ['alpha@market', 'gamma@market'] });
+    assert.equal(r.status, 400);
+    assert.equal(r.body.error, 'invalid');
+    assert.match(r.body.message, /gamma@market is not installed/);
+    assert.deepEqual((await a.call('GET', url())).body, { plugins: ['alpha@market'] });
+    // "saved" is per project: a name saved for another project does not make it known here
+    const other = await addProject(extra, w.env);
+    const gone = await boot({ deps: makeDeps({ listPlugins: async () => [] }) });
+    assert.equal((await gone.call('PUT', url(other.key), { json: { plugins: ['alpha@market'] } })).status, 400);
+    assert.equal((await gone.call('PUT', url(), { json: { plugins: ['alpha@market'] } })).status, 200);
+    await a.call('DELETE', `/api/app/projects/${other.key}`);
+    assert.equal((await put({ plugins: [] })).status, 200);
+  });
+
+  test('(−) an unknown project is 404 not_found, a malformed key is 400, for GET and PUT', async () => {
+    for (const call of [() => a.call('GET', url('0123456789abcdef')), () => put({ plugins: [] }, '0123456789abcdef')]) {
+      const r = await call();
+      assert.equal(r.status, 404);
+      assert.equal(r.body.error, 'not_found');
+    }
+    for (const key of ['short', '0123456789ABCDEF', '0123456789abcdef0', '..%2F..%2Fetc', '%5Fx']) {
+      assert.equal((await a.call('GET', url(key))).status, 400, `GET ${key}`);
+      assert.equal((await put({ plugins: [] }, key)).status, 400, `PUT ${key}`);
+    }
+    assert.equal((await a.call('DELETE', url())).status, 405);
+  });
+
+  test('(−) a body that is not { plugins: [names] } is 400: wrong type, extra key, bad name, over 200, __proto__', async () => {
+    for (const body of [{}, { plugins: 'alpha@market' }, { plugins: null }, { plugins: [5] }, { plugins: [['alpha@market']] }, { plugins: ['alpha@market'], models: {} }, { models: {} }, { plugins: Array.from({ length: 201 }, () => 'alpha@market') }]) {
+      const r = await put(body);
+      assert.equal(r.status, 400, JSON.stringify(body).slice(0, 60));
+      assert.equal(r.body.error, 'invalid');
+    }
+    const longName = await put({ plugins: [`${'x'.repeat(300)}@market`] });
+    assert.equal(longName.status, 400);
+    assert.ok(longName.body.message.length < 120, 'the plugin name in the message is cut');
+    const proto = await a.call('PUT', url(), { body: '{"__proto__":{"plugins":["alpha@market"]}}', headers: { 'content-type': 'application/json' } });
+    assert.equal(proto.status, 400);
+    assert.deepEqual((await a.call('GET', url())).body, { plugins: [] });
+  });
+
+  test('(−) PUT needs application/json (415), stays within 16 KB (413) and needs the app secret (403)', async () => {
+    assert.equal((await a.call('PUT', url(), { body: '{"plugins":[]}', headers: { 'content-type': 'text/plain' } })).status, 415);
+    assert.equal((await a.call('PUT', url(), { body: '{"plugins":[]}', headers: { 'content-type': null } })).status, 415);
+    assert.equal((await a.call('PUT', url(), { body: JSON.stringify({ plugins: [], pad: 'x'.repeat(17 * 1024) }), headers: { 'content-type': 'application/json' } })).status, 413);
+    assert.equal((await a.call('PUT', url(), { json: { plugins: [] }, headers: { 'x-nika-app': null } })).status, 403);
+    assert.equal((await a.call('GET', url(), { headers: { 'x-nika-app': null } })).status, 403);
+    assert.equal((await a.call('PUT', url(), { json: { plugins: [] }, headers: { origin: 'http://evil.example' } })).status, 403);
+  });
+
+  test('(+) removing a project drops its list: a later GET is 404 and the config has no entry', async () => {
+    const p = await addProject(extra, w.env);
+    assert.equal((await put({ plugins: ['alpha@market'] }, p.key)).status, 200);
+    assert.deepEqual((await loadConfig(w.env)).config.perProject[p.key], { plugins: ['alpha@market'] });
+    assert.equal((await a.call('DELETE', `/api/app/projects/${p.key}`)).status, 200);
+    assert.equal((await a.call('GET', url(p.key))).status, 404);
+    assert.equal(p.key in (await loadConfig(w.env)).config.perProject, false);
+  });
+});
+
 describe('settings', () => {
   let a;
   before(async () => { a = await boot(); });
   const put = (json) => a.call('PUT', '/api/app/settings', { json });
 
-  test('(+) GET returns the config without projects', async () => {
+  test('(+) GET returns the config without projects, with perProject (an empty map to start with) and no plugins group', async () => {
     const r = await a.call('GET', '/api/app/settings');
     assert.equal(r.status, 200);
     assert.equal('projects' in r.body, false);
+    assert.equal('plugins' in r.body, false);
+    assert.deepEqual(r.body.perProject, {});
     assert.equal(r.body.limits.maxAgents, 3);
     assert.equal(r.body.permissionMode, 'default');
   });
 
-  test('(+) PUT merges a partial patch, saves it and answers with the re-read settings; per-project plugins ⊂ installed', async () => {
-    const r = await put({ limits: { maxAgents: 2 }, models: { scout: 'haiku' }, plugins: { perProject: { [w.project.key]: ['alpha@market'] } } });
+  test('(+) GET shows the plugins saved for a project under perProject[key].plugins', async () => {
+    await a.call('PUT', `/api/app/projects/${w.project.key}/config`, { json: { plugins: ['alpha@market'] } });
+    assert.deepEqual((await a.call('GET', '/api/app/settings')).body.perProject, { [w.project.key]: { plugins: ['alpha@market'] } });
+    await a.call('PUT', `/api/app/projects/${w.project.key}/config`, { json: { plugins: [] } });
+  });
+
+  test('(+) PUT merges a partial patch, saves it and answers with the re-read settings', async () => {
+    const r = await put({ limits: { maxAgents: 2 }, models: { scout: 'haiku' } });
     assert.equal(r.status, 200);
     assert.equal('projects' in r.body, false);
     assert.equal(r.body.limits.maxAgents, 2);
     assert.equal(r.body.models.scout, 'haiku');
     assert.equal(r.body.models.builder, 'claude-sonnet-5-5');
-    assert.deepEqual(r.body.plugins.perProject, { [w.project.key]: ['alpha@market'] });
     const disk = (await loadConfig(w.env)).config;
     assert.equal(disk.limits.maxAgents, 2);
     assert.equal(disk.projects.length, 1);
     assert.deepEqual((await a.call('GET', '/api/app/settings')).body, r.body);
-    assert.equal((await put({ plugins: { perProject: {} } })).status, 200); // replaces the whole map
   });
 
   test('(−) bypassPermissions is 400 and nothing is saved', async () => {
@@ -452,18 +558,25 @@ describe('settings', () => {
     assert.equal((await loadConfig(w.env)).config.permissionMode, 'default');
   });
 
-  test('(−) a perProject key that is not a registered project, an uninstalled plugin and a malformed list are 400', async () => {
-    const unknown = await put({ plugins: { perProject: { '0123456789abcdef': ['alpha@market'] } } });
-    assert.equal(unknown.status, 400);
-    assert.match(unknown.body.message, /not a registered project/);
-    const missing = await put({ plugins: { perProject: { [w.project.key]: ['alpha@market', 'gamma@market'] } } });
-    assert.equal(missing.status, 400);
-    assert.match(missing.body.message, /gamma@market is not installed/);
-    assert.equal((await put({ plugins: { perProject: { [w.project.key]: 'alpha@market' } } })).status, 400);
-    assert.equal((await put({ plugins: { perProject: [] } })).status, 400);
-    const proto = await a.call('PUT', '/api/app/settings', { body: '{"plugins":{"perProject":{"__proto__":["alpha@market"]}}}', headers: { 'content-type': 'application/json' } });
-    assert.equal(proto.status, 400); // a literal { __proto__: … } would set a prototype instead of sending the key
-    assert.deepEqual((await loadConfig(w.env)).config.plugins.perProject, {});
+  test('(−) a body with perProject or the old plugins group is 400 and the project config is not touched', async () => {
+    await a.call('PUT', `/api/app/projects/${w.project.key}/config`, { json: { plugins: ['alpha@market'] } });
+    const mine = await put({ perProject: { [w.project.key]: { plugins: ['beta@market'] } } });
+    assert.equal(mine.status, 400);
+    assert.match(mine.body.message, /project page/);
+    for (const body of [{ perProject: {} }, { perProject: [] }, { plugins: { perProject: { [w.project.key]: ['beta@market'] } } }, { plugins: [] }]) {
+      assert.equal((await put(body)).status, 400, JSON.stringify(body));
+    }
+    const proto = await a.call('PUT', '/api/app/settings', { body: '{"perProject":{"__proto__":{"plugins":["alpha@market"]}}}', headers: { 'content-type': 'application/json' } });
+    assert.equal(proto.status, 400);
+    assert.deepEqual((await loadConfig(w.env)).config.perProject, { [w.project.key]: { plugins: ['alpha@market'] } });
+    await a.call('PUT', `/api/app/projects/${w.project.key}/config`, { json: { plugins: [] } });
+  });
+
+  test('(+) a settings save leaves the project config alone (the page no longer sends plugins)', async () => {
+    await a.call('PUT', `/api/app/projects/${w.project.key}/config`, { json: { plugins: ['beta@market'] } });
+    assert.equal((await put({ limits: { maxAgents: 2 } })).status, 200);
+    assert.deepEqual((await loadConfig(w.env)).config.perProject, { [w.project.key]: { plugins: ['beta@market'] } });
+    await a.call('PUT', `/api/app/projects/${w.project.key}/config`, { json: { plugins: [] } });
   });
 
   test('(−) projects, unknown keys, bad values and a __proto__ key are 400 and name the first bad field', async () => {

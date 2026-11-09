@@ -38,7 +38,8 @@ All mock data is synthetic (`demo-api`, `builder-1`, `~/projects/…`, repeated-
 | Project | name (repo dir basename), `PROJECT_KEY` internally, never a path in a URL | `GET /api/app/projects` |
 | Agent (Claude session) | agent name (or "untitled session"), status, model, pane `%n`, branch | `/api/agents` groups + registry |
 | Rules state | `none · nika · outdated · foreign` | `projects[].rules.state` |
-| Settings | config keys (models, remoteControl, permissionMode, panePlacement, limits, plugins, rules template) | `GET/PUT /api/app/settings` |
+| Settings | defaults for every project: config keys (models, remoteControl, permissionMode, panePlacement, limits, rules template). Read only here: `perProject` | `GET/PUT /api/app/settings` |
+| Project setup (0.3.4) | one project's own settings: its plugins (0.4 adds models) | `GET/PUT /api/app/projects/:key/config` |
 | Environment | tmux present, claude present, version | `/api/app/me` + `/api/agents` errors |
 
 ### 1.2 Screens and routes (app tier)
@@ -97,7 +98,7 @@ Rules for every direction:
 
 - Shell: left sidebar 232 px (brand, Dashboard, Settings, project list with attention counts, environment footer); collapses to a 60 px icon rail at window width ≤ 900 px. Built amendment 2026-11-09 (0.3.1): with no projects the list shows "No projects yet." and "Add a repo with + to start agents and apply rules here."; below it a "Detected" sub-heading lists up to 8 unregistered repositories with live agents (needs-you count, then live count, then name), each row linking to its group heading on the dashboard plus a small "Add project" button (`aria-label` "Add <name> as a project") that opens the same folder picker; the list is hidden when empty.
 - Dashboard: "Waiting on you" queue on top, then one group per project of dense 40 px rows (status · name · model · prompt + branch · last activity · pane · ⋯).
-- Project view: agents on the left, three cards on the right (Rules, Plugins, New agents: defaults and limit).
+- Project view: agents on the left, three cards on the right (Rules, Project setup, New agents: defaults and limit). **(built amendment 2026-11-09 (0.3.4))** The Plugins card became **Project setup**; its button opens the Choose plugins dialog (§3.15) instead of leaving for Settings.
 - Spawn: right side sheet (480 px). Rules: large modal with file list + diff + notes.
 - Session: split view, transcript (38 %, min 300 px) | live terminal, composer under the terminal.
 - Strengths: highest density, everything one click away, scales to 50+ agents, closest to 0.1's mental model (groups by repo), keyboard-friendly, least novel.
@@ -589,6 +590,7 @@ Messages (exact copy):
 | Modal (rules) | min(980, vw−32) × min(720, vh−32) | title + close (×) | Cancel · primary |
 | Side sheet (spawn) | 480 × full height, right edge | title + project + close | count note · Cancel · Spawn agent |
 | Confirm (remove project) | 440 wide | title | Cancel · danger action |
+| Modal (Choose plugins, 0.3.4) | min(560, vw−32) × min(640, vh−32) | title + close (×) | Cancel · Save plugins (§3.15) |
 
 States: D (open, scrim `--scrim`), L (primary shows spinner; Esc and Cancel are disabled while a write is in flight; the `cancel` event is prevented), E (inline alert at the top of the body, focus moves to it), success (body replaced by a result list + Done, which gets focus).
 
@@ -716,6 +718,43 @@ driven by `GET /api/app/me` `appCopy` (read at load and after each action). One 
   network "nika couldn't copy the app to Applications."
 - Icon: `i-apps` (a 2×2 grid of rounded squares, 16 px, same stroke as the set). Every string is static copy plus the
   server's version number (rendered with `textContent`).
+
+### 3.15 Project setup card and Choose plugins dialog (0.3.4)
+
+Per-project settings live on the project page, not in Settings (ADR 0012). Settings keeps only the defaults for every project.
+
+**Project setup card** (`#proj-setup`, second card of the right column; the aside's `aria-label` is "Project details"):
+"Project setup", "Applies to this project only." and "Defaults are in Settings." ("Settings" links to `#settings`), then a
+**Plugins** block: `h3` with a count ("3 on"), up to 8 chips in A to Z order, "+N more" when there are more, and "Written into
+`.claude/settings.local.json` when you apply rules." A chip for a plugin that is no longer installed has a dashed edge, the
+warning icon in `--idle` and "(not installed)". With no plugin chosen: "No plugins chosen. Agents use only what the project
+already enables." Below the block, **Choose plugins…** (`button.btn`, `aria-haspopup="dialog"`, never a link).
+
+**Choose plugins dialog** (static `<dialog id="dlg-plugins">`, no `<form>`, so Enter in the filter never saves): header
+"Choose plugins for <project>" and ×; a sentence on where ticks are written; an alert slot; a full-width filter; the count
+line; one scrolling list (a `<fieldset>` with the screen-reader legend "Installed plugins"; nothing else in the dialog
+scrolls); a help line; footer Cancel · **Save plugins**.
+- Row (`label.check.plug-row`, min height 32): checkbox · `name` (mono 12, wraps anywhere) with " @market" muted · "on" (ticked
+  only, accent, hidden from screen readers). A ticked row has the `--accent-soft` fill. A row for a ticked plugin that is no
+  longer installed adds a second line, warning icon + "(not installed)"; its accessible name ends "(not installed)".
+- Order is fixed when the dialog opens: ticked plugins A to Z, then the rest. Ticking never moves a row; only the filter
+  redraws rows.
+- Filter: case-insensitive substring of `name@market`; a hidden row keeps its tick. Count line "<on> on · <n> installed", filtered
+  "Showing <k> of <n> · <on> on"; 400 ms after typing it announces "<k> plugins shown" or "No plugin matches".
+- Open: focus the filter; the ticks come from `GET /api/app/projects/:key/config`, the list from `GET /api/app/plugins`.
+- States: loading (6 skeleton lines, Save disabled, filter usable) · load error (alert, footer Cancel · Retry) · none installed
+  or ticked ("No plugins are installed in Claude Code."; filter hidden; footer Close only) · no match ("No plugin matches “<text>”."
+  and a Clear filter link-button that focuses the filter) · saving (Save "Saving…", Cancel, ×, filter and boxes disabled, the
+  dialog busy so Esc does nothing) · save error (alert, ticks kept, focus on the alert) · saved (toast "Plugins saved for
+  <name>. Apply rules to write them." with **Apply rules**).
+- Save sends `PUT /api/app/projects/:key/config` `{ "plugins": [ticked, sorted] }` only when the set changed; unchanged closes
+  with no request. `[]` means "leave `enabledPlugins` alone". Cancel, Esc and × discard silently.
+- Keys: Tab order × → alert → filter → boxes (Space) → Clear filter → Cancel → Save. Esc in a filter with text clears it, else
+  closes. Mod+Enter saves. Focus returns to **Choose plugins…**.
+
+**Settings save bar.** The bar (Save · Discard) is hidden until the form differs from what was loaded, and hidden again when
+the values are put back. Showing it announces "Unsaved changes. Save or discard them at the bottom." Discard repopulates the
+form, focuses the page heading and announces "Changes discarded." While the bar is hidden Enter and Mod+Enter send nothing.
 
 ## 4. Keyboard model
 
@@ -1002,7 +1041,7 @@ Session details:
 - Mirror never wraps or scales: a 92-column pane at 12 px mono is ~670 px; wider panes scroll horizontally inside the mirror. Font never below 11 px.
 - Height < 560 px: the hint line tips hide (the mode row stays); the transcript tab keeps "Load older" sticky at the top. **(built amendment 2026-11-09 (0.3.3))**
 
-Rules dialog ≤ 900 px: the file list becomes a horizontal strip above the diff. Settings ≤ 900 px: the in-page index hides and field pairs stack.
+Rules dialog ≤ 900 px: the file list becomes a horizontal strip above the diff. Settings ≤ 900 px: the in-page index hides and field pairs stack. **(built amendment 2026-11-09 (0.3.4))** The Choose plugins dialog is min(560, vw−32) × min(640, vh−32) at every width (so it still fits 720 × 480); only its list scrolls, and a long plugin name wraps instead of widening the row.
 
 B: centred column max 760 px; drawer pushes ≥ 1180 px and overlays below. C: lanes stack vertically ≤ 860 px with tiles in an auto-fill grid (min 240 px); the Timeline rail becomes a tab ≤ 1000 px.
 

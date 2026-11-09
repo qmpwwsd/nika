@@ -592,7 +592,7 @@ function initKeys() {
     const mod = MAC ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
     const modal = $('dialog[open]');
     if (mod && e.key === 'Enter') {
-      const go = modal ? $('.btn.primary:not(:disabled)', modal) : state.route.name === 'settings' ? $('#set-save') : null;
+      const go = modal ? $('.btn.primary:not(:disabled)', modal) : state.route.name === 'settings' && !$('#set-bar').hidden ? $('#set-save') : null; // Settings: only while there is something to save
       if (go && go.getAttribute('aria-disabled') !== 'true') {
         e.preventDefault();
         go.click();
