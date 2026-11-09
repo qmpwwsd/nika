@@ -84,6 +84,19 @@ pane; Claude Code has no other channel into a running interactive session ([ADR 
 Routes: [`contracts/api-app.md` section 3](contracts/api-app.md). Parsed screen text:
 [`contracts/claude-tui.md`](contracts/claude-tui.md). Threats: T22, T23 and T26 in [security](security.md).
 
+## Memory bounds (0.3.4)
+
+Every cache that is keyed by path or id has a cap, so a day-long run does not grow with the number of sessions it has seen.
+`util.js` `lru(max)` is a Map that drops its oldest entry past `max` (a read refreshes an entry). The parsed-transcript cache
+is an lru that `collect()` resizes to the transcripts on disk plus 64 after each pass, so entries of deleted transcripts leave
+and a transcript that is still on disk is never evicted; the command-list cache keeps 16 listings (each is reused for 10 s).
+The history route keeps one transcript index (replaced every 10 s), the mirror, rate limiter and answer guard sweep their
+per-pane entries by age, and `held`, `vim` and `ctx.started` drop a pane when the next pane list no longer has it. In the
+page, the transcript column keeps at most 500 entries: while the reader follows the tail the oldest leave from the top
+(Load older fetches them again), after Load older the newest leave from the bottom (Jump to latest returns), and a reader
+who has scrolled up loses none until they are back at the bottom. Poll timers are single chains, and the mirror timer is
+cleared before it is set again.
+
 ## Module map
 
 ### `src/` (Node, ES modules)
@@ -116,7 +129,7 @@ Routes: [`contracts/api-app.md` section 3](contracts/api-app.md). Parsed screen 
 | `store.js` | The validated `config.json` and the project registry. |
 | `text.js` | `clean()` and `cleanBlock()`: strip controls and bidi marks from agent-controlled text. |
 | `tmuxerr.js` | Maps a failed tmux call to a contract error body. |
-| `util.js` | `mapLimit`: bounded concurrency. |
+| `util.js` | `mapLimit`: bounded concurrency. `lru`: a Map capped in size (see Memory bounds). |
 
 ### `src/collect/` (read-only sources)
 

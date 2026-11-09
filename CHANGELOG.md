@@ -29,6 +29,14 @@ Plugins per project, and Settings (desktop app):
 - API: `GET` and `PUT /api/app/projects/:key/config`; `PUT /api/app/settings` refuses `perProject`
   ([ADR 0012](docs/adr/0012-per-project-config.md)).
 
+Memory (desktop app):
+
+- The parsed-transcript and command-list caches are capped, and a session window keeps at most 500 transcript entries (it
+  was 600; the oldest leave only while you follow the live end, never under a reader who has scrolled up). On 200 synthetic
+  sessions over 10 minutes the app's server measured 95 MB at start, 209 MB at peak and 200 MB at the end before this change,
+  and 95, 203 and 201 MB after: it plateaus either way (the live heap stays near 10 MB), and the caps keep it from growing
+  with the number of sessions over days.
+
 ## 0.3.3 — 2026-11-09
 
 Session window keys and the macOS window (desktop app):

@@ -749,7 +749,7 @@ async function escNo() {
 
 // ---- history -----------------------------------------------------------------------------------------------------
 
-const MAX_ENTRIES = 600; // DOM cap: older (or newer) entries are dropped from the page when more are loaded
+const MAX_ENTRIES = 500; // DOM cap: the oldest entries leave while the reader follows the live tail, the newest after Load older; a reader who scrolled up loses none
 const H = { items: [], ids: new Set(), older: null, liveEdge: true, loaded: false, busy: false };
 
 const keyOf = (id) => {
@@ -923,13 +923,13 @@ async function refreshHistory() {
     }
     const lastKey = H.items.length ? keyOf(H.items[H.items.length - 1].e.id) : -1;
     const fresh = entries.filter((e) => !H.ids.has(e.id) && keyOf(e.id) > lastKey);
-    if (!fresh.length) return;
     const sc = scroller();
     const stick = nearBottom(sc);
+    if (!fresh.length && !(stick && H.items.length > MAX_ENTRIES)) return; // a reader back at the bottom gets the cap even when nothing is new
     const top = sc.scrollTop;
     mount(fresh, 'end');
     const h0 = sc.scrollHeight;
-    trim('start');
+    if (stick) trim('start'); // only while following the tail: a reader who scrolled up keeps every entry, so the list never moves under them
     sc.scrollTop = stick ? sc.scrollHeight : top - (h0 - sc.scrollHeight);
     updateHistoryChrome();
   } finally {
