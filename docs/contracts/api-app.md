@@ -189,7 +189,7 @@ one capture in flight per pane (others wait for it), `ETag` = hash of the rows; 
   "cursor": { "x": 0, "y": 0, "visible": true }, "etag": "<hex>",
   "mode": "plan", "modeConfirmed": true,
   "prompt": { "question": "Do you want to proceed?", "options": [ { "n": 1, "label": "Yes" }, { "n": 2, "label": "No" } ],
-              "sig": "<16 hex>" } }
+              "sig": "<16 hex>", "bypass": false } }
 ```
 Only SGR codes 0, 1, 2, 3, 4, 7, 22–24, 27, 30–37, 39, 40–47, 49, 90–97, 100–107 and 38/48;5;n or ;2;r;g;b survive
 (colours as 0–255 or `[r,g,b]`; reverse video adds `"r": true` to the style only while it is on); everything else (OSC, DCS, other CSI, C0/C1) is dropped server-side (T9).
@@ -211,15 +211,18 @@ Only SGR codes 0, 1, 2, 3, 4, 7, 22–24, 27, 30–37, 39, 40–47, 49, 90–97,
   the mode route reads the footer itself and never uses it. The switcher is disabled while `mode` is `unknown`,
   `modeConfirmed` is `false` or a `prompt` is open (the mode route would answer 409), and the page offers no
   Shift-Tab shortcut while a `prompt` is open.
-- `prompt`: `{ "question", "options": [ { "n", "label" } ], "sig" }` when Claude's permission prompt is on screen,
+- `prompt`: `{ "question", "options": [ { "n", "label" } ], "sig", "bypass" }` when Claude's permission prompt is on screen,
   else `null`. Layout (`claude-tui.md` §2), all within the last 15 non-blank rows: the closing hint row starting with
   `Esc to cancel` is the last non-blank row; the options sit directly above it, at least 2, numbered `1..k` (one digit each) without gaps
   (wrapped rows without a number join the label with one space); the question sits directly above option 1 and ends in
   `?`. Question and labels pass through `clean()`; question ≤ 200 chars, labels ≤ 80 chars. Unknown layouts (such as
   the unnumbered folder-trust dialog) give `null`, so no buttons. `sig` = the first 16 hex chars of sha256 over
   `lastNonBlank(rows, PROMPT_ROWS).join('\n')` (both from `src/mode.js`, so the window cannot drift), computed in
-  `src/api-app.js`; the answer route checks it. An option whose label contains `bypass` (any case) gets no button: the
-  page shows it as text with "Answer this one in the terminal", and the answer route refuses it (rule 12). Labels can hold the user's folder paths: shown in the app only, never logged.
+  `src/api-app.js`; the answer route checks it. `bypass` (boolean) = `bypassWindow(rows)`, the test the answer route and the
+  keys guard apply: the prompt window (the same last 15 non-blank rows as `sig`, so also the tool-call lines above the
+  question) mentions bypass (NFKC, letters only, any case). When `true` the page draws no answer button at all (every
+  option as text with "Answer this one in the terminal"; Esc stays), because the answer route refuses every option
+  with 400 then. An option whose label contains `bypass` (any case) also gets no button when `bypass` is `false` (rule 12). Labels can hold the user's folder paths: shown in the app only, never logged.
 
 ### `GET /api/app/modes`
 `200 { "modes": { "%3": { "mode": "plan", "confirmed": true } } }` — one entry per eligible pane (same rule as

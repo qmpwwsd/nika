@@ -968,8 +968,31 @@ describe('capture: mode, modeConfirmed, prompt', () => {
       question: 'Do you want to proceed?',
       options: [{ n: 1, label: 'Yes' }, { n: 2, label: 'Yes, allow all edits during this session' }, { n: 3, label: 'No' }],
       sig: sigOf(PROMPT),
+      bypass: false,
     });
     assert.match(r.body.prompt.sig, /^[0-9a-f]{16}$/);
+  });
+
+  test('(+) prompt.bypass is true when the prompt window mentions bypass: in the question, in an option, or only in the lines above the question', async () => {
+    const { a, screens } = await bootScreens();
+    const quiet = ['Run: claude --dangerously-skip-permissions (bypass)', ...PROMPT.slice(1)];
+    for (const lines of [BYPASS_QUESTION_PROMPT, BYPASS_PROMPT, ['Allow tool call Bypass-Check?', ...PROMPT.slice(1)], quiet]) {
+      screens['%6'] = rowsOf(lines);
+      const r = await pane(a, '%6', 'capture');
+      assert.equal(r.body.prompt.bypass, true, lines[0]);
+      assert.equal(r.body.prompt.sig, sigOf(lines));
+    }
+  });
+
+  test('(−) prompt.bypass is false for a prompt that does not mention it, also when the word is above the 15-row window; no prompt, no field', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = rowsOf(PROMPT);
+    assert.equal((await pane(a, '%6', 'capture')).body.prompt.bypass, false);
+    const old = ['bypass permissions was mentioned long ago', ...Array.from({ length: 14 }, (_, i) => `output line ${i}`), ...PROMPT];
+    screens['%6'] = rowsOf(old);
+    assert.equal((await pane(a, '%6', 'capture')).body.prompt.bypass, false, 'outside the last 15 non-blank rows');
+    screens['%6'] = rowsOf(['bypass permissions is on', FOOTER.plan]);
+    assert.equal((await pane(a, '%6', 'capture')).body.prompt, null, 'plain output is not a prompt');
   });
 
   test('(+) prompt.sig equals sha256(lastNonBlank(rows, PROMPT_ROWS).join("\\n")).slice(0, 16); another screen gives another sig', async () => {

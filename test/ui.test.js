@@ -180,10 +180,10 @@ describe('permission modes and the spawn brief', () => {
     for (const f of [...JS, ...HTML]) {
       let text = read(f).replace(/Bypass permissions is not offered[^<]*/, '');
       // modes.js must name the mode to show it (a session already in bypass gets the loud Bypass tag); it may do so only
-      // in its display table and its loud-note check, and its switch targets never include it
+      // in its display table, its loud-note check and bypassTag(), and its switch targets never include it
       if (f.endsWith('modes.js')) {
         assert.match(text, /export const MODE_TARGETS = \['manual', 'acceptEdits', 'plan', 'auto'\];/, f);
-        text = text.replace(/\n {2}bypassPermissions: \{ label: 'Bypass',[^\n]*/, '').replace(/key === 'bypassPermissions' \?/, '');
+        text = text.replace(/\n {2}bypassPermissions: \{ label: 'Bypass',[^\n]*/, '').replace(/key === 'bypassPermissions' \?/, '').replace(/bypassTag = \(\) => modeEl\('bypassPermissions'\);/, '');
       }
       assert.doesNotMatch(text, /bypassPermissions/, f);
     }

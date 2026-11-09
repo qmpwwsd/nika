@@ -57,8 +57,8 @@ export const canEndRow = (agent, map) => rowMode(agent, map) !== null;
 
 const BYPASS_NOTE = 'Claude runs every tool without asking.';
 
-/** The Bypass tag, for the loud line of a switch that left Claude in Bypass. The mode is named once, in MODE_META (found by its class). */
-export const bypassTag = () => modeEl(Object.keys(MODE_META).find((k) => MODE_META[k].cls === 'm-bypass'));
+/** The Bypass tag, for the loud line of a switch that left Claude in Bypass. session.js calls this so that only modes.js names the mode. */
+export const bypassTag = () => modeEl('bypassPermissions');
 
 /**
  * The mode tag: span.mode.<cls>[data-confirmed][title] > icon + sr-only "Permission mode: " + label (+ "unconfirmed").

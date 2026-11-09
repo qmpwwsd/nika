@@ -327,7 +327,7 @@ export function createSessionControl({
    * `-- INSERT --` to go (still shown: 409 mode-unknown, no second key), reads the state again, and sends the second
    * Escape only if it is still busy. Otherwise (idle, no state, an ambiguous pane) no key at all.
    * The state read before the second Escape skips the registry cache. One interrupt per pane at a time (Stop and End share
-   * the flag, apart from the control lock): a second one finds it taken and answers 409 `taken` without sending anything.
+   * the flag, apart from the control lock): a second one finds it taken and answers 409 with the caller's code (Stop `stopping`, End `not-idle`), sending nothing.
    * Returns { presses } (Escapes sent), { res } (a 409 or a failed capture) or { failed } (the send that failed).
    */
   async function interrupt(pane, rows, state, ctx, taken = 'not-idle') {

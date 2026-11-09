@@ -10,14 +10,13 @@ import { toRenderModel, applyMirror, planSend, planPaste, chunkText, keyForEvent
 import { MODE_META, MODE_TARGETS, modeKey, modeEl, bypassTag, switcherState, modeNote, switchFailure } from './modes.js';
 import {
   quickState, cleanPrompt, answerOutcome, escOutcome, promptOff, promptNote, commandFailure, commandSaid, problemKind, planShell, sendGate, keysRefusal, stopOutcome, followSession,
+  hasAnswerButtons, attnNote, SESSION_ID, PANE_ID,
 } from './quick-actions.js';
 import { MODEL_ID, MODEL_HINT, CUSTOM, fillModelSelect } from './models-ui.js';
 import { openEndDialog } from './end-dialog.js';
 import { paletteQuery, cleanCommands, paletteView, commandsButton, shouldFetch, sourceLabel, insertion, moveActive } from './palette.js';
 import { isMac, isTextEntry, wantsHelp, wantsBack, backHint, helpHint, passKeyLabel, openShortcuts } from './shortcuts.js';
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const PANE_ID = /^%\d{1,6}$/;
 const PROJECT_KEY = /^[a-z0-9]{16}$/;
 const CLAUDE_SESSION = /^session_[A-Za-z0-9]{1,64}$/;
 const ENTRY_ID = /^\d{1,15}:\d{1,5}$/;
@@ -55,7 +54,7 @@ function param(name, shape) {
   return raw !== undefined && shape.test(raw) ? raw : null;
 }
 
-let sessionId = param('session', UUID); // follows the pane to its new session after /clear (followSession)
+let sessionId = param('session', SESSION_ID); // follows the pane to its new session after /clear (followSession)
 const paneId = param('pane', PANE_ID);
 const projectKey = param('project', PROJECT_KEY);
 
@@ -444,10 +443,11 @@ function roveKeys(bar, buttons) {
 
 // ---- quick actions, prompt buttons, Shell (docs/design/spec.md 9.4-9.6; rules and copy: quick-actions.js) ----------------
 
-// Q: the six toolbar buttons, the action in flight (busy: 'stop' | 'compact' | 'clear' | 'model' | 'rewind'), the model popover (pop: open?, catalog:
+// Q: the six toolbar buttons, the command in flight (busy: 'compact' | 'clear' | 'model' | 'rewind'; Stop has its own flag, stopping: the route takes no
+// control lock, so Stop must work while a command waits), the model popover (pop: open?, catalog:
 // null until GET /api/app/models answered), the reason line shown (whySig). PA: the prompt panel's question (sig), a request in
 // flight (pending) and the question that was answered (lock: its sig; the buttons stay off until a capture shows another one).
-const Q = { ready: false, b: {}, busy: null, pop: false, catalog: null, loading: false, whySig: null, nameSig: null };
+const Q = { ready: false, b: {}, busy: null, stopping: false, pop: false, catalog: null, loading: false, whySig: null, nameSig: null };
 const PA = { sig: null, pending: false, lock: null, esc: null, btns: [] };
 const S = { on: false }; // Shell mode
 // PL: the command palette (spec 9.7). open: is the list on screen; list: null until GET /api/app/commands answered; failed: the first load
@@ -468,12 +468,12 @@ function renderModelName(name) {
 
 function renderQuick() {
   if (!Q.ready) return;
-  const st = quickState({ pane: W.pane, status: A.kind, prompt: W.promptOpen, switching: SW.busy !== null || Q.busy !== null });
+  const st = quickState({ pane: W.pane, status: A.kind, prompt: W.promptOpen, switching: SW.busy !== null || Q.busy !== null || Q.stopping });
   for (const id of Object.keys(Q.b)) {
     const b = Q.b[id];
     b.setAttribute('aria-disabled', String(st[id].off));
     b.title = st[id].title;
-    if (Q.busy === id) b.setAttribute('aria-busy', 'true');
+    if (id === 'stop' ? Q.stopping : Q.busy === id) b.setAttribute('aria-busy', 'true');
     else b.removeAttribute('aria-busy');
   }
   Q.b.stop.classList.toggle('on', !st.stop.off);
@@ -504,13 +504,13 @@ async function sendCommand(text) {
   showProblem(commandFailure({ status: r.status, code: r.body?.error }), problemKind(r.status));
 }
 
-/** Stop: its own route, which handles Claude's vim insert mode (two Escapes) and never answers a prompt. Not queued behind typed keys or the control lock. */
+/** Stop: its own route, which handles Claude's vim insert mode (two Escapes) and never answers a prompt. Not queued behind typed keys or the control lock, so only a Stop in flight blocks a second click. */
 async function stop() {
-  if (Q.busy || M.gone || !paneId) return;
-  Q.busy = 'stop';
+  if (Q.stopping || M.gone || !paneId) return;
+  Q.stopping = true;
   renderQuick();
   const r = await call(`/api/app/pane/${encodeURIComponent(paneId)}/stop`, { method: 'POST', json: {} });
-  Q.busy = null;
+  Q.stopping = false;
   renderQuick();
   const out = stopOutcome({ status: r.status, code: r.body?.error, name: A.name });
   if (out.ok) {
@@ -673,7 +673,7 @@ function renderAttn() {
   const note = $('attn-note');
   const panel = W.pane === 'ok' && W.prompt !== null;
   note.hidden = A.kind !== 'attn' || panel;
-  if (!note.hidden) $('attn-text').textContent = `${A.name} needs you: ${A.attention}. Use the arrow keys and Enter to choose, or Esc to refuse.`;
+  if (!note.hidden) $('attn-text').textContent = attnNote(A.name, A.attention, passKeyLabel(MAC));
 }
 
 function optionRow(o) {
@@ -1200,7 +1200,7 @@ let sending = false;
 async function sendComposer() {
   const ta = composer();
   if (sending || ta.disabled) return;
-  const gate = sendGate({ promptOpen: W.promptOpen, status: A.kind }); // Enter would confirm the prompt's highlighted option: answer with the buttons
+  const gate = sendGate({ promptOpen: W.promptOpen, status: A.kind, buttons: W.pane === 'ok' && hasAnswerButtons(W.prompt) }); // Enter would confirm the prompt's highlighted option: answer with the buttons
   if (!gate.ok) {
     showProblem(gate.message, 'error'); // nothing is sent and the text stays in the box
     return;

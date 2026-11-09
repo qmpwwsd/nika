@@ -225,8 +225,9 @@ screen, so a screen nika does not recognize shows "Mode ?" or leaves a control d
   input, then `!`, the line and Enter) and then turns itself off.
 - **Send and Shell wait for a question.** While Claude asks for permission, Send (a line, a paste, or Enter from an empty
   box) and Shell send nothing and say "Answer the prompt with the buttons above or in the terminal."; your text stays in
-  the box. The Enter and Shift-Tab chips are off too. A question that mentions bypass gets no answer buttons at all, and
-  nika refuses Enter, digits and pastes to it: answer in the terminal.
+  the box. The Enter and Shift-Tab chips are off too. A question nika cannot parse has no buttons: the line and the note
+  then say to answer in the terminal or turn on Type into pane. A question that mentions bypass anywhere on its screen
+  gets no answer buttons at all, and nika refuses Enter, digits and pastes to it: answer in the terminal.
 - **After `/clear`.** When Claude starts a new conversation in the pane, the window follows it to the new session (the
   transcript starts over) instead of showing the ended one.
 - **Commands.** Type `/` at the start of an empty message box, or press Commands, to filter Claude's built-in commands

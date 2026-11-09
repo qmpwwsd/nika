@@ -149,7 +149,8 @@ export function createAppApi({ secret, ctx, deps }) {
   /**
    * { mode, modeConfirmed, prompt } of a pane's screen (contract §3). A footer that reads is shown and remembered; when it
    * does not (a prompt or dialog covers it) the last remembered mode, else the mode a nika-started pane was launched with,
-   * is shown with modeConfirmed false; with neither the mode is `unknown`. The prompt carries the sig the answer route checks.
+   * is shown with modeConfirmed false; with neither the mode is `unknown`. The prompt carries the sig the answer route checks and
+   * `bypass`, the answer route's own window test, so the page hides the buttons exactly when the route would refuse them.
    */
   function readScreen(id, rows) {
     const footer = modeFromRows(rows);
@@ -157,7 +158,7 @@ export function createAppApi({ secret, ctx, deps }) {
     if (footer !== 'unknown') held.set(id, footer);
     const mode = footer !== 'unknown' ? footer : (held.get(id) ?? ctx.started.get(id)?.mode ?? 'unknown');
     const prompt = promptFromRows(rows);
-    return { mode, modeConfirmed: footer !== 'unknown' || mode === 'unknown', prompt: prompt && { ...prompt, sig: promptSig(rows) } };
+    return { mode, modeConfirmed: footer !== 'unknown' || mode === 'unknown', prompt: prompt && { ...prompt, sig: promptSig(rows), bypass: bypassWindow(rows) } };
   }
 
   // One controller for the whole server: its per-pane lock covers mode, answer, command and End together.

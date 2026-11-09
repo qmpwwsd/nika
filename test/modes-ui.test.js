@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { MODE_META, MODE_TARGETS, modeKey, modeEl, switcherState, modeNote, switchFailure } from '../public/modes.js';
+import { MODE_META, MODE_TARGETS, modeKey, modeEl, bypassTag, switcherState, modeNote, switchFailure } from '../public/modes.js';
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const read = (...p) => fs.readFileSync(path.join(ROOT, ...p), 'utf8');
@@ -95,6 +95,20 @@ describe('modeEl', () => {
       assert.equal(el.find((n) => n.className === 'ml')[0].textContent, LABELS[m]);
       assert.equal(el.find((n) => n.className === 'mnote').length, 0, 'a confirmed tag has no note');
     }
+  });
+
+  test('(+) bypassTag is the confirmed Bypass tag, the same element modeEl builds for that mode (colour class, icon, label)', () => {
+    const tag = bypassTag();
+    const want = modeEl('bypassPermissions');
+    assert.equal(tag.className, want.className);
+    assert.equal(tag.className, 'mode m-bypass');
+    assert.equal(tag.textContent, want.textContent);
+    assert.equal(tag.getAttribute('data-confirmed'), 'true');
+    assert.equal(icons(tag)[0].kids[0].getAttribute('href'), '#i-m-bypass');
+  });
+
+  test('(−) bypassTag does not depend on the order or class names of the other modes: no other mode produces it', () => {
+    for (const m of MODES.filter((k) => k !== 'bypassPermissions')) assert.notEqual(modeEl(m).className, bypassTag().className, m);
   });
 
   test('(+) the screen-reader prefix is sr-only and the label is its own span', () => {

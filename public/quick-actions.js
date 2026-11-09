@@ -69,14 +69,14 @@ export function quickState({ pane = 'ok', status = null, prompt = null, switchin
 export const isBypassLabel = (label) => typeof label === 'string' && /bypass/i.test(label);
 
 /**
- * The server's `mentionsBypass` (src/mode.js: NFKC, letters only, any case) over the text the capture's prompt carries: the question,
- * every option label and the hint when there is one, joined with a space like the server's window. The answer route refuses every option
- * of such a prompt (400), so the page draws no button for any of them.
+ * The server's `mentionsBypass` (src/mode.js: NFKC, letters only, any case) over the text the capture's prompt carries: the question
+ * and every option label, joined with a space like the server's window. Only a second line of defence: the server's own window test
+ * (the whole 15-row window, tool-call lines included) arrives as `prompt.bypass`, which cleanPrompt honours first.
  */
 export function promptMentionsBypass(raw) {
   if (!raw || typeof raw !== 'object') return false;
   const labels = Array.isArray(raw.options) ? raw.options.map((o) => o?.label) : [];
-  const text = [raw.question, ...labels, raw.hint].filter((s) => typeof s === 'string').join(' ');
+  const text = [raw.question, ...labels].filter((s) => typeof s === 'string').join(' ');
   return text.normalize('NFKC').replace(/[^\p{L}]/gu, '').toLowerCase().includes('bypass');
 }
 
@@ -86,14 +86,14 @@ const LABEL_MAX = 200;
 /**
  * The capture's `prompt` as the page may use it, or null: { question, options: [{ n, label, bypass }], sig }. Anything that is not
  * exactly the contract shape (a 16-hex sig, a string question, options numbered 1-9 with a string label) gives null, and one bad
- * option is dropped. `bypass` is true for every option when the prompt as a whole mentions bypass, else for an option whose own label
- * does. Copies the data: the capture object is not kept.
+ * option is dropped. `bypass` is true for every option when the server says the prompt window mentions bypass (`prompt.bypass ===
+ * true`) or the question and labels do, else for an option whose own label does. Copies the data: the capture object is not kept.
  */
 export function cleanPrompt(raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
   const { question, options, sig } = raw;
   if (typeof question !== 'string' || typeof sig !== 'string' || !SIG.test(sig) || !Array.isArray(options)) return null;
-  const whole = promptMentionsBypass(raw); // the check sees the whole text, not the clipped one
+  const whole = raw.bypass === true || promptMentionsBypass(raw); // the check sees the whole text, not the clipped one
   const list = options
     .filter((o) => o && typeof o === 'object' && Number.isInteger(o.n) && o.n >= 1 && o.n <= 9 && typeof o.label === 'string')
     .map((o) => ({ n: o.n, label: o.label.slice(0, LABEL_MAX), bypass: whole || isBypassLabel(o.label) }));
@@ -104,10 +104,17 @@ export function cleanPrompt(raw) {
  * Does Send (text, paste, the lone Enter of an empty box) or Shell go out? Not while a permission prompt is open or the agent needs
  * you: Enter would confirm the highlighted option and a digit would pick one. The terminal (passthrough) is the raw way and is not gated here.
  */
-export function sendGate({ promptOpen = false, status = null } = {}) {
-  if (promptOpen || status === 'attn') return { ok: false, message: 'Answer the prompt with the buttons above or in the terminal.' };
-  return { ok: true };
+export function sendGate({ promptOpen = false, status = null, buttons = false } = {}) {
+  if (!promptOpen && status !== 'attn') return { ok: true };
+  // `buttons`: the prompt panel shows at least one answer button. Without one (a layout nika cannot parse, a bypass prompt) the way out is the terminal.
+  return { ok: false, message: buttons === true ? 'Answer the prompt with the buttons above or in the terminal.' : 'Answer the prompt in the terminal, or turn on Type into pane.' };
 }
+
+/** Does the prompt panel show an answer button? A bypass option is text, so a prompt of those only has none. */
+export const hasAnswerButtons = (prompt) => Array.isArray(prompt?.options) && prompt.options.some((o) => o?.bypass !== true);
+
+/** The 0.2 attention note for a "Needs you" agent whose prompt has no panel; `key` is the passthrough key as the page writes it (passKeyLabel). */
+export const attnNote = (name, attention, key) => `${name} needs you: ${attention}. Answer it in the terminal, or turn on Type into pane (${key}).`;
 
 /** The keys route's 409 `bypass-prompt` (contract section 3): fixed copy. null for every other answer, which keeps session.js's own lines. */
 export const keysRefusal = ({ status, code } = {}) => (status === 409 && code === 'bypass-prompt' ? 'Answer this prompt in the terminal.' : null);
@@ -129,7 +136,7 @@ export const problemKind = (status) => (status === 404 || unreachable(status) ? 
 
 /**
  * The answer route's result (spec 9.5): the message for the problem line ('' = none) and whether the buttons stay off until the
- * question changes (`lock`). 200, prompt-changed and already-answered lock; every other answer re-enables them.
+ * question changes (`lock`). 200, 400 (refused: answer it in the terminal), prompt-changed and already-answered lock; every other answer re-enables them.
  */
 export function answerOutcome({ status, code } = {}) {
   if (status === 200) return { message: '', lock: true };
@@ -140,6 +147,8 @@ export function answerOutcome({ status, code } = {}) {
   if (status === 429) return { message: RATE, lock: false };
   if (status === 404) return { message: GONE, lock: false };
   if (unreachable(status)) return { message: TMUX, lock: false };
+  // 400: the route refuses every option of a prompt whose window mentions bypass, which the page may not have seen; a retry gets the same answer
+  if (status === 400) return { message: 'Answer this prompt in the terminal.', lock: true };
   return { message: "nika couldn't send that answer.", lock: false };
 }
 
@@ -171,6 +180,7 @@ const STOP_409 = {
   'prompt-open': WHY.promptShown,
   'not-busy': 'Nothing to stop: Claude is waiting.',
   'mode-unknown': "Claude's input stayed in vim insert mode; press Esc in the terminal.",
+  stopping: 'Already stopping the turn.', // another window is in the middle of the same stop
 };
 
 /**
@@ -228,8 +238,9 @@ export function planShell(value) {
   return { ok: true, payloads: [{ keys: ['C-u'] }, { text: `!${v}` }, { keys: ['Enter'] }], summary: `a shell command (${v.length} characters) + Enter` };
 }
 
-const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/; // the shape session.js validates its URL with
-const PANE_ID = /^%\d{1,6}$/;
+/** The shapes session.js validates its URL with (the one copy; session.js imports them). */
+export const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+export const PANE_ID = /^%\d{1,6}$/;
 
 /**
  * After /clear the pane's Claude starts a new session id. Which id should a session window that shows `sessionId` in `paneId` follow?

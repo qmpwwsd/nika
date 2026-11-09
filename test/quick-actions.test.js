@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import { KEY_NAME } from '../src/ids.js';
 import {
   quickState, cleanPrompt, isBypassLabel, promptMentionsBypass, answerOutcome, escOutcome, promptOff, promptNote, commandFailure, commandSaid, endOutcome, endNote,
-  planShell, problemKind, sendGate, keysRefusal, stopOutcome, followSession,
+  planShell, problemKind, sendGate, keysRefusal, stopOutcome, followSession, hasAnswerButtons, attnNote, SESSION_ID, PANE_ID,
 } from '../public/quick-actions.js';
 
 const DOTS = '…';
@@ -193,13 +193,23 @@ describe('answerOutcome (spec 9.5 results table)', () => {
     assert.deepEqual(row(409, 'already-answered'), { message: '', lock: true });
   });
 
-  test('(+) every other answer re-enables the buttons: no-prompt, busy-switching, 429, 404, 5xx, network, 400', () => {
+  test('(+) every other answer re-enables the buttons: no-prompt, busy-switching, 429, 404, 5xx, network, 403', () => {
     assert.deepEqual(row(409, 'no-prompt'), { message: 'The question is gone.', lock: false });
     assert.deepEqual(row(409, 'busy-switching'), { message: 'Another action is running on this session.', lock: false });
     assert.deepEqual(row(429), { message: 'Too many keys at once; try again.', lock: false });
     assert.deepEqual(row(404), { message: 'The session is gone.', lock: false });
     for (const s of [500, 502, 503, 0]) assert.deepEqual(row(s), { message: "nika couldn't reach tmux.", lock: false }, String(s));
-    assert.deepEqual(row(400, 'invalid'), { message: "nika couldn't send that answer.", lock: false });
+    assert.deepEqual(row(403, 'forbidden'), { message: "nika couldn't send that answer.", lock: false });
+  });
+
+  test('(+) 400: the route refuses this prompt (it mentions bypass where the page could not see it): the terminal line, and the question is locked like an answered one', () => {
+    assert.deepEqual(row(400, 'invalid'), { message: 'Answer this prompt in the terminal.', lock: true });
+    assert.deepEqual(row(400), { message: 'Answer this prompt in the terminal.', lock: true }, 'whatever the code');
+  });
+
+  test('(−) the 400 line is fixed copy (server text never reaches it) and no other status takes it', () => {
+    assert.equal(answerOutcome({ status: 400, code: 'invalid', message: '<b>this option is answered in the terminal</b>' }).message, 'Answer this prompt in the terminal.');
+    for (const status of [200, 401, 403, 404, 409, 429, 500, 0]) assert.notEqual(answerOutcome({ status, code: 'invalid' }).message, 'Answer this prompt in the terminal.', String(status));
   });
 
   test('(−) an unknown 409 code or a code on a status that has none never locks', () => {
@@ -379,9 +389,20 @@ describe('whole-prompt bypass: no button at all when the prompt mentions bypass 
     assert.deepEqual(flags(raw), [true, true, true]);
   });
 
-  test('(+) the hint counts when the prompt carries one, like the server\'s prompt window', () => {
-    assert.equal(promptMentionsBypass(P({ hint: 'Esc to cancel; bypass is on' })), true);
-    assert.deepEqual(flags(P({ hint: 'Esc to cancel; bypass is on' })), [true, true]);
+  test('(+) the server\'s prompt.bypass (its whole 15-row window, tool-call lines included) flags every option, however plain the visible text', () => {
+    assert.deepEqual(flags(P({ bypass: true })), [true, true]);
+    assert.deepEqual(flags(P({ bypass: true, options: [{ n: 1, label: 'Yes' }, { n: 2, label: 'Yes, allow all edits' }, { n: 3, label: 'No' }] })), [true, true, true]);
+  });
+
+  test('(−) prompt.bypass false keeps the page\'s own checks (a label that says bypass still has no button); only a real true counts', () => {
+    assert.deepEqual(flags(P({ bypass: false })), [false, false]);
+    assert.deepEqual(flags(P({ bypass: false, options: [{ n: 1, label: 'Yes, and bypass permissions' }, { n: 2, label: 'No' }] })), [true, true]);
+    for (const odd of ['true', 1, 'yes', {}, null]) assert.deepEqual(flags(P({ bypass: odd })), [false, false], JSON.stringify(odd));
+  });
+
+  test('(−) a `hint` field is not read: the server never sends one (the window is covered by prompt.bypass instead)', () => {
+    assert.equal(promptMentionsBypass(P({ hint: 'Esc to cancel; bypass is on' })), false);
+    assert.deepEqual(flags(P({ hint: 'Esc to cancel; bypass is on' })), [false, false]);
   });
 
   test('(+) it reads like the server: letters only, any case, NFKC (By-pass, full-width letters, a word split over a wrap)', () => {
@@ -411,19 +432,55 @@ describe('whole-prompt bypass: no button at all when the prompt mentions bypass 
 });
 
 describe('sendGate: Send and Shell wait while a prompt is open (H2)', () => {
-  const NO = { ok: false, message: 'Answer the prompt with the buttons above or in the terminal.' };
+  const WITH = { ok: false, message: 'Answer the prompt with the buttons above or in the terminal.' };
+  const WITHOUT = { ok: false, message: 'Answer the prompt in the terminal, or turn on Type into pane.' };
 
-  test('(+) a prompt on screen, or the agent needing you, says no with the fixed line', () => {
-    assert.deepEqual(sendGate({ promptOpen: true, status: 'busy' }), NO);
-    assert.deepEqual(sendGate({ promptOpen: true }), NO);
-    assert.deepEqual(sendGate({ status: 'attn' }), NO);
-    assert.deepEqual(sendGate({ promptOpen: true, status: 'attn' }), NO);
+  test('(+) with answer buttons on screen the line points at them', () => {
+    assert.deepEqual(sendGate({ promptOpen: true, status: 'busy', buttons: true }), WITH);
+    assert.deepEqual(sendGate({ promptOpen: true, buttons: true }), WITH);
+    assert.deepEqual(sendGate({ status: 'attn', buttons: true }), WITH);
   });
 
-  test('(−) everything else goes out: idle, busy, ended, not known yet, no argument at all', () => {
-    for (const status of ['idle', 'busy', 'ended', null, undefined]) assert.deepEqual(sendGate({ promptOpen: false, status }), { ok: true }, String(status));
+  test('(+) without buttons (a prompt nika cannot parse, or a bypass prompt that has none) it names the terminal and Type into pane, never "buttons above"', () => {
+    for (const a of [{ promptOpen: true }, { status: 'attn' }, { promptOpen: true, status: 'attn' }, { promptOpen: true, buttons: false }, { status: 'attn', buttons: 'yes' }]) {
+      assert.deepEqual(sendGate(a), WITHOUT, JSON.stringify(a));
+    }
+  });
+
+  test('(−) everything else goes out, buttons or not: idle, busy, ended, not known yet, no argument at all', () => {
+    for (const status of ['idle', 'busy', 'ended', null, undefined]) {
+      assert.deepEqual(sendGate({ promptOpen: false, status }), { ok: true }, String(status));
+      assert.deepEqual(sendGate({ promptOpen: false, status, buttons: true }), { ok: true }, `${status} with buttons`);
+    }
     assert.deepEqual(sendGate(), { ok: true });
     assert.deepEqual(sendGate({}), { ok: true });
+  });
+});
+
+describe('hasAnswerButtons: does the prompt panel show an answer button?', () => {
+  const o = (n, bypass = false) => ({ n, label: `option ${n}`, bypass });
+
+  test('(+) at least one option without the bypass mark is a button', () => {
+    assert.equal(hasAnswerButtons({ options: [o(1), o(2)] }), true);
+    assert.equal(hasAnswerButtons({ options: [o(1, true), o(2)] }), true);
+  });
+
+  test('(−) no prompt, no options, or every option drawn as text (a bypass prompt) is no button', () => {
+    for (const p of [null, undefined, {}, { options: [] }, { options: 'x' }, { options: [o(1, true), o(2, true)] }]) assert.equal(hasAnswerButtons(p), false, JSON.stringify(p));
+    assert.equal(hasAnswerButtons(cleanPrompt({ question: 'Switch to bypass permissions?', sig: '0123456789abcdef', options: [{ n: 1, label: 'Yes' }, { n: 2, label: 'No' }] })), false, 'through cleanPrompt');
+    assert.equal(hasAnswerButtons(cleanPrompt({ question: 'Proceed?', sig: '0123456789abcdef', options: [{ n: 1, label: 'Yes' }, { n: 2, label: 'No' }] })), true, 'through cleanPrompt');
+  });
+});
+
+describe('attnNote: the note for a "Needs you" agent whose prompt nika cannot parse', () => {
+  test('(+) names the terminal and Type into pane with the key as the page writes it (Mac glyph or Ctrl+])', () => {
+    assert.equal(attnNote('builder-1', 'Asking to run a command', 'Ctrl+]'), 'builder-1 needs you: Asking to run a command. Answer it in the terminal, or turn on Type into pane (Ctrl+]).');
+    assert.equal(attnNote('builder-1', 'Asking to run a command', '\u2303]'), 'builder-1 needs you: Asking to run a command. Answer it in the terminal, or turn on Type into pane (\u2303]).');
+  });
+
+  test('(−) it no longer tells the user to press Enter or the arrow keys, which nika blocks while a prompt is open', () => {
+    const t = attnNote('a', 'b', 'Ctrl+]');
+    assert.doesNotMatch(t, /Enter|arrow|Esc to refuse/);
   });
 });
 
@@ -444,6 +501,10 @@ describe('stopOutcome: the stop route\'s answers (contract section 3, fixed copy
   test('(+) 200 says what happened, with the agent\'s name, and has no problem line', () => {
     assert.deepEqual(s(200, undefined, 'builder-1'), { ok: true, say: "Stopped builder-1's turn", message: '' });
     assert.equal(s(200).say, "Stopped Claude's turn");
+  });
+
+  test('(+) 409 stopping (a second window or tab is already stopping this pane): its own line', () => {
+    assert.deepEqual(s(409, 'stopping'), { ok: false, say: '', message: 'Already stopping the turn.' });
   });
 
   test('(+) the three 409 codes, exact copy', () => {
@@ -469,6 +530,18 @@ describe('stopOutcome: the stop route\'s answers (contract section 3, fixed copy
   test('(−) an error status is never ok, even with a stray success-looking code', () => {
     for (const status of [400, 404, 409, 429, 500, 0]) assert.equal(s(status, 'stopped').ok, false, String(status));
     assert.equal(stopOutcome().ok, false);
+  });
+});
+
+describe('SESSION_ID and PANE_ID: the one copy of the URL shapes', () => {
+  test('(+) a lower-case UUID and a pane id of 1 to 6 digits match', () => {
+    assert.match('11111111-1111-4111-8111-111111111111', SESSION_ID);
+    for (const id of ['%0', '%12', '%123456']) assert.match(id, PANE_ID, id);
+  });
+
+  test('(−) anything else does not: upper case, extra text, a path, a missing percent sign, 7 digits', () => {
+    for (const id of ['11111111-1111-4111-8111-11111111111A', '11111111-1111-4111-8111-111111111111/x', '../11111111-1111-4111-8111-111111111111', '', '1111']) assert.doesNotMatch(id, SESSION_ID, id);
+    for (const id of ['12', '%', '%x', '%1234567', '%12 ', '%12/../x', '%-1']) assert.doesNotMatch(id, PANE_ID, id);
   });
 });
 

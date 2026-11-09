@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { KEY_NAME } from '../src/ids.js';
 import { moveActive as moveActiveReal, cleanCommands as cleanCommandsReal, paletteQuery as paletteQueryReal, shouldFetch as shouldFetchReal } from '../public/palette.js';
 import { wantsHelp, wantsBack, isTextEntry, backHint, helpHint, passKeyLabel } from '../public/shortcuts.js';
-import { sendGate as sendGateReal, keysRefusal as keysRefusalReal, stopOutcome as stopOutcomeReal, commandSaid as commandSaidReal, commandFailure as commandFailureReal, problemKind as problemKindReal, followSession as followSessionReal, planShell as planShellReal, cleanPrompt as cleanPromptReal } from '../public/quick-actions.js';
+import { quickState as quickStateReal, sendGate as sendGateReal, keysRefusal as keysRefusalReal, stopOutcome as stopOutcomeReal, commandSaid as commandSaidReal, commandFailure as commandFailureReal, problemKind as problemKindReal, followSession as followSessionReal, planShell as planShellReal, cleanPrompt as cleanPromptReal, hasAnswerButtons as hasAnswerButtonsReal, attnNote as attnNoteReal, answerOutcome as answerOutcomeReal, promptOff as promptOffReal } from '../public/quick-actions.js';
 import { planSend as planSendReal } from '../public/mirror-render.js';
 import { switchFailure as switchFailureReal } from '../public/modes.js';
 
@@ -549,7 +549,7 @@ describe('quick actions, prompt buttons, End dialog and Shell (spec 9.4-9.8)', (
     assert.match(src, /quickState\(\{[^}]*prompt: W\.promptOpen/);
     assert.match(fn(src, 'function openEnd()'), /promptOpen: W\.promptOpen \|\| A\.kind === 'attn'/);
     assert.match(fn(src, 'function renderGatedKeys()'), /sendGate\(\{ promptOpen: W\.promptOpen, status: A\.kind \}\)/);
-    assert.match(fn(src, 'async function sendComposer()'), /sendGate\(\{ promptOpen: W\.promptOpen, status: A\.kind \}\)/);
+    assert.match(fn(src, 'async function sendComposer()'), /sendGate\(\{ promptOpen: W\.promptOpen, status: A\.kind, buttons: W\.pane === 'ok' && hasAnswerButtons\(W\.prompt\) \}\)/, 'the wording reads the panel; whether it is held does not');
     assert.doesNotMatch(src, /(switcherState|quickState)\(\{[^}]*prompt: W\.prompt\b/, 'no gate reads the cleaned prompt');
     assert.match(fn(src, 'function renderPrompt()'), /W\.prompt/, 'the panel does');
   });
@@ -1098,17 +1098,19 @@ describe('Task 14b: wiring of the page rules', () => {
   const el = (over = {}) => ({ attrs: {}, setAttribute(k, v) { this.attrs[k] = String(v); }, removeAttribute(k) { delete this.attrs[k]; }, ...over });
 
   // -- B1: Send and Shell wait while a prompt is open
-  const composerRig = ({ value = 'hello', promptOpen = false, kind = 'idle', shell = false } = {}) => {
+  const RAW_PROMPT = { question: 'Do you want to proceed?', sig: '0123456789abcdef', options: [{ n: 1, label: 'Yes' }, { n: 2, label: 'No' }] };
+  const composerRig = ({ value = 'hello', promptOpen = false, kind = 'idle', shell = false, prompt = promptOpen ? cleanPromptReal(RAW_PROMPT) : null, pane = 'ok' } = {}) => {
     const log = { problems: [], sent: [], said: [], shellOff: 0 };
     const ta = { value, disabled: false };
     const ctx = {
-      sending: false, composer: () => ta, S: { on: shell }, W: { promptOpen }, A: { kind }, sendGate: sendGateReal, planShell: planShellReal, planSend: planSendReal,
+      sending: false, composer: () => ta, S: { on: shell }, W: { promptOpen, prompt, pane }, A: { kind }, sendGate: sendGateReal, hasAnswerButtons: hasAnswerButtonsReal, planShell: planShellReal, planSend: planSendReal,
       showProblem: (m, k) => log.problems.push([m, k]), enqueueSeq: async (p) => { log.sent.push(p); return { ok: true }; }, $: () => el(), say: (m) => log.said.push(m),
       paneId: '%12', setShell: () => { log.shellOff += 1; }, grow() {}, updateChip() {},
     };
     return { log, ta, send: mk(['async function sendComposer()'], ctx).sendComposer };
   };
   const GATE = 'Answer the prompt with the buttons above or in the terminal.';
+  const NO_BUTTONS = 'Answer the prompt in the terminal, or turn on Type into pane.';
 
   test('(+) B1: with a prompt open Send posts nothing for a line, a paste and a lone Enter; the text stays; the fixed line shows as an error', async () => {
     for (const value of ['hello', 'line one\nline two', '', '/compact', 'x'.repeat(2000)]) {
@@ -1129,11 +1131,27 @@ describe('Task 14b: wiring of the page rules', () => {
     assert.equal(r.ta.value, 'ls -la');
   });
 
-  test('(+) B1: the agent needing you is enough, even before a capture shows the prompt', async () => {
+  test('(+) B1: the agent needing you is enough, even before a capture shows the prompt; with no buttons the line names the terminal', async () => {
     const r = composerRig({ value: 'hello', promptOpen: false, kind: 'attn' });
     await r.send();
     assert.deepEqual(r.log.sent, []);
-    assert.deepEqual(r.log.problems, [[GATE, 'error']]);
+    assert.deepEqual(r.log.problems, [[NO_BUTTONS, 'error']]);
+  });
+
+  test('(+) B1: the line tells the truth about the screen: buttons above only when the panel shows an answer button', async () => {
+    const bypass = cleanPromptReal({ ...RAW_PROMPT, question: 'Switch to bypass permissions?' });
+    assert.equal(hasAnswerButtonsReal(bypass), false, 'every option of a bypass prompt is text');
+    for (const [name, over, line] of [
+      ['plain prompt, panel shown', { promptOpen: true }, GATE],
+      ['bypass prompt: no answer button', { promptOpen: true, prompt: bypass }, NO_BUTTONS],
+      ['prompt nika cannot parse (open, no panel data)', { promptOpen: true, prompt: null }, NO_BUTTONS],
+      ['panel data but the pane is not ok (the panel is hidden then)', { promptOpen: true, pane: 'gone' }, NO_BUTTONS],
+    ]) {
+      const r = composerRig({ value: 'hello', ...over });
+      await r.send();
+      assert.deepEqual(r.log.problems, [[line, 'error']], name);
+      assert.deepEqual(r.log.sent, [], name);
+    }
   });
 
   test('(−) B1: with no prompt everything goes out as before: a line, an empty box (Enter), Shell (three bodies, then Shell off)', async () => {
@@ -1264,12 +1282,86 @@ describe('Task 14b: wiring of the page rules', () => {
     assert.match(bypass.esc.attrs.class, /\besc\b/, 'Esc = No stays');
   });
 
-  // -- B2: Stop uses its own route
-  const stopRig = ({ status = 200, body = { stopped: true, presses: 1 }, busy = null, gone = false } = {}) => {
-    const log = { calls: [], said: [], problems: [], gone: 0, cleared: 0, renders: 0 };
-    const Q = { busy };
+  // -- the attention note for a prompt nika cannot parse (no panel)
+  const attnRig = ({ mac = false, kind = 'attn', prompt = null, pane = 'ok' } = {}) => {
+    const note = { hidden: true };
+    const text = { textContent: '' };
+    const ctx = { $: (id) => (id === 'attn-note' ? note : text), W: { pane, prompt }, A: { kind, name: 'builder-1', attention: 'Asking to run a command' }, attnNote: attnNoteReal, passKeyLabel, MAC: mac };
+    mk(['function renderAttn()'], ctx).renderAttn();
+    return { note, text };
+  };
+
+  test('(+) the note for an unparseable prompt names the terminal and Type into pane, with the key as the page writes it (Mac glyph or Ctrl+])', () => {
+    const mac = attnRig({ mac: true });
+    assert.equal(mac.note.hidden, false);
+    assert.equal(mac.text.textContent, 'builder-1 needs you: Asking to run a command. Answer it in the terminal, or turn on Type into pane (\u2303]).');
+    assert.equal(attnRig({ mac: false }).text.textContent, 'builder-1 needs you: Asking to run a command. Answer it in the terminal, or turn on Type into pane (Ctrl+]).');
+  });
+
+  test('(−) the note never tells the user to press Enter (the gate blocks it); it stays hidden when the panel shows or the agent does not need you', () => {
+    assert.doesNotMatch(attnRig().text.textContent, /Enter|arrow/);
+    assert.equal(attnRig({ prompt: cleanPromptReal(RAW_PROMPT) }).note.hidden, true, 'the panel replaces the note');
+    assert.equal(attnRig({ kind: 'idle' }).note.hidden, true);
+    assert.equal(attnRig({ pane: 'gone', kind: 'attn', prompt: cleanPromptReal(RAW_PROMPT) }).note.hidden, false, 'a hidden panel does not replace it');
+  });
+
+  // -- prompt.bypass from the server and the 400 fallback
+  const promptRig = (raw) => {
+    const out = {};
+    const h = (tag, attrs, ...kids) => ({ tag, attrs: attrs ?? {}, kids: kids.flat(Infinity) });
     const ctx = {
-      Q, M: { gone }, paneId: '%12', A: { name: 'builder-1' }, renderQuick: () => { log.renders += 1; }, stopOutcome: stopOutcomeReal, problemKind: problemKindReal,
+      h, PA: { sig: null, btns: [], esc: null }, answer() {}, escNo() {}, announce() {}, promptNote: () => '', A: { name: 'builder-1' },
+      $: (id) => (out[id] ??= { textContent: '', hidden: true, replaceChildren(...n) { this.kids = n; } }),
+    };
+    const api = mk(['function optionRow(o)', 'function buildPrompt(p)'], ctx);
+    api.buildPrompt(cleanPromptReal(raw));
+    return { buttons: out['ask-opts'].kids.filter((n) => n.tag === 'button' && !/\besc\b/.test(n.attrs.class)).length, texts: out['ask-opts'].kids.filter((n) => /pbtn-off/.test(n.attrs.class)).length, esc: /\besc\b/.test(out['ask-opts'].kids.at(-1).attrs.class) };
+  };
+
+  test('(+) the server\'s prompt.bypass hides every answer button even when the visible text says nothing; Esc stays', () => {
+    assert.deepEqual(promptRig({ ...RAW_PROMPT, bypass: true }), { buttons: 0, texts: 2, esc: true });
+  });
+
+  test('(−) prompt.bypass false or absent keeps the buttons', () => {
+    assert.deepEqual(promptRig({ ...RAW_PROMPT, bypass: false }), { buttons: 2, texts: 0, esc: true });
+    assert.deepEqual(promptRig(RAW_PROMPT), { buttons: 2, texts: 0, esc: true });
+  });
+
+  const answerRig = ({ status, body = {} }) => {
+    const log = { calls: [], problems: [], said: [], renders: 0, gone: 0 };
+    const PA = { sig: RAW_PROMPT.sig, pending: false, lock: null, esc: {}, btns: [] };
+    const W = { prompt: cleanPromptReal(RAW_PROMPT) };
+    const ctx = {
+      W, PA, M: { gone: false }, paneId: '%12', promptOff: promptOffReal, answerOutcome: answerOutcomeReal, problemKind: problemKindReal, renderPrompt: () => { log.renders += 1; },
+      call: async (path, opts) => { log.calls.push([path, opts]); return { status, body }; }, clearProblem() {}, say: (m) => log.said.push(m),
+      showProblem: (m, k) => log.problems.push([m, k]), setGone: () => { log.gone += 1; },
+    };
+    return { log, PA, answer: mk(['async function answer(n)'], ctx).answer };
+  };
+
+  test('(+) a 400 from the answer route says to answer in the terminal and locks the question like an answered one (no retry loop)', async () => {
+    const r = answerRig({ status: 400, body: { error: 'invalid', message: 'this option is answered in the terminal' } });
+    await r.answer(1);
+    assert.deepEqual(r.log.problems, [['Answer this prompt in the terminal.', 'warn']]);
+    assert.equal(r.PA.lock, RAW_PROMPT.sig);
+    assert.equal(promptOffReal({ pending: r.PA.pending, lock: r.PA.lock, sig: RAW_PROMPT.sig }), true, 'every button of this question is off');
+    await r.answer(2);
+    assert.equal(r.log.calls.length, 1, 'the locked question sends nothing more');
+  });
+
+  test('(−) other failures still re-enable the buttons (a 429 is worth a retry)', async () => {
+    const r = answerRig({ status: 429 });
+    await r.answer(1);
+    assert.equal(r.PA.lock, null);
+    assert.deepEqual(r.log.problems, [['Too many keys at once; try again.', 'warn']]);
+  });
+
+  // -- B2: Stop uses its own route
+  const stopRig = ({ status = 200, body = { stopped: true, presses: 1 }, busy = null, stopping = false, gone = false } = {}) => {
+    const log = { calls: [], said: [], problems: [], gone: 0, cleared: 0, renders: 0, marks: [] };
+    const Q = { busy, stopping };
+    const ctx = {
+      Q, M: { gone }, paneId: '%12', A: { name: 'builder-1' }, renderQuick: () => { log.renders += 1; log.marks.push(Q.stopping); }, stopOutcome: stopOutcomeReal, problemKind: problemKindReal,
       call: async (path, opts) => { log.calls.push([path, opts]); return { status, body }; }, clearProblem: () => { log.cleared += 1; }, say: (m) => log.said.push(m),
       setGone: () => { log.gone += 1; }, showProblem: (m, k) => log.problems.push([m, k]),
     };
@@ -1283,8 +1375,8 @@ describe('Task 14b: wiring of the page rules', () => {
     assert.deepEqual(r.log.said, ["Stopped builder-1's turn"]);
     assert.equal(r.log.cleared, 1);
     assert.deepEqual(r.log.problems, []);
-    assert.equal(r.Q.busy, null, 'the busy mark is cleared');
-    assert.ok(r.log.renders >= 2, 'the button shows busy, then ready');
+    assert.equal(r.Q.stopping, false, 'the in-flight mark is cleared');
+    assert.deepEqual(r.log.marks, [true, false], 'the button shows busy, then ready');
   });
 
   test('(+) B2: each refusal shows its fixed line; 404 also goes to the pane-gone state', async () => {
@@ -1305,13 +1397,59 @@ describe('Task 14b: wiring of the page rules', () => {
     }
   });
 
-  test('(−) B2: a second click while Stop is in flight, or on a gone pane, sends nothing', async () => {
-    const busy = stopRig({ busy: 'stop' });
+  test('(+) B2: a command in flight (Compact waiting on the control lock) does not block Stop: the route takes no lock', async () => {
+    const r = stopRig({ busy: 'compact' });
+    await r.stop();
+    assert.equal(r.log.calls.length, 1);
+    assert.equal(r.Q.busy, 'compact', 'the command\'s own mark is left alone');
+    assert.deepEqual(r.log.said, ["Stopped builder-1's turn"]);
+  });
+
+  test('(−) B2: a second click while Stop\'s own request is in flight, or on a gone pane, sends nothing', async () => {
+    const busy = stopRig({ stopping: true });
     await busy.stop();
     assert.deepEqual(busy.log.calls, []);
+    assert.equal(busy.Q.stopping, true, 'the first request still owns the mark');
     const gone = stopRig({ gone: true });
     await gone.stop();
     assert.deepEqual(gone.log.calls, []);
+  });
+
+  test('(−) B2: the in-flight mark is cleared after a refusal too, so the next click works', async () => {
+    for (const [status, error] of [[409, 'stopping'], [409, 'not-busy'], [500, undefined], [0, undefined]]) {
+      const r = stopRig({ status, body: { error } });
+      await r.stop();
+      assert.equal(r.Q.stopping, false, `${status} ${error}`);
+    }
+  });
+
+  test('(+) B2: 409 stopping (another window is already stopping it) shows its own fixed line as a warning', async () => {
+    const r = stopRig({ status: 409, body: { error: 'stopping', message: 'server text' } });
+    await r.stop();
+    assert.deepEqual(r.log.problems, [['Already stopping the turn.', 'warn']]);
+    assert.equal(r.log.gone, 0);
+  });
+
+  test('(+) B2: while Stop is in flight the Stop button is aria-busy and the other actions wait; a command in flight marks only its own button', () => {
+    const run = ({ stopping, busy }) => {
+      const b = Object.fromEntries(['stop', 'compact', 'clear', 'model', 'rewind', 'end'].map((id) => [id, { attrs: {}, title: '', classList: { toggle() {} }, setAttribute(k, v) { this.attrs[k] = String(v); }, removeAttribute(k) { delete this.attrs[k]; } }]));
+      const why = { hidden: true, replaceChildren() {} };
+      const ctx = {
+        Q: { ready: true, b, busy, stopping, whySig: null, pop: false }, W: { pane: 'ok', promptOpen: false }, A: { kind: 'idle' }, SW: { busy: null },
+        quickState: quickStateReal, $: () => why, icon: () => ({}), h: () => ({}), closeModelPop() {},
+      };
+      mk(['function renderQuick()'], ctx).renderQuick();
+      return b;
+    };
+    const during = run({ stopping: true, busy: null });
+    assert.equal(during.stop.attrs['aria-busy'], 'true');
+    assert.equal(during.compact.attrs['aria-disabled'], 'true', 'idle again, but Stop has not answered yet');
+    assert.equal(during.compact.attrs['aria-busy'], undefined);
+    const cmd = run({ stopping: false, busy: 'compact' });
+    assert.equal(cmd.compact.attrs['aria-busy'], 'true');
+    assert.equal(cmd.stop.attrs['aria-busy'], undefined);
+    const quiet = run({ stopping: false, busy: null });
+    assert.equal(quiet.compact.attrs['aria-disabled'], 'false');
   });
 
   test('(+) B2: the Stop button runs stop(); Esc = No and the Esc key chip stay on the keys route', () => {
@@ -1494,8 +1632,19 @@ describe('Task 14b: wiring of the page rules', () => {
     assert.deepEqual(r.log.applied, [NEW]);
   });
 
+  test('(+) B8: session.js takes the session-id and pane-id shapes from quick-actions.js (one copy, no drift between the URL check and followSession)', () => {
+    assert.match(SRC, /import \{[^}]*\bSESSION_ID\b[^}]*\bPANE_ID\b[^}]*\} from '\.\/quick-actions\.js'/);
+    assert.match(SRC, /param\('pane', PANE_ID\)/);
+  });
+
+  test('(−) B8: session.js defines no id regex of its own any more', () => {
+    assert.doesNotMatch(SRC, /\/\^\[0-9a-f\]\{8\}-/, 'no UUID literal');
+    assert.doesNotMatch(SRC, /\/\^%\\d/, 'no pane id literal');
+    assert.doesNotMatch(SRC, /^const (UUID|PANE_ID) = /m);
+  });
+
   test('(+) B8: sessionId is a let, and the follow only ever puts a validated id into the address', () => {
-    assert.match(SRC, /let sessionId = param\('session', UUID\)/);
+    assert.match(SRC, /let sessionId = param\('session', SESSION_ID\)/);
     assert.match(fnOf('function followPane(id)'), /history\.replaceState\(null, '', `\?\$\{q\.join\('&'\)\}`\)/);
     assert.match(fnOf('async function refreshAgent()'), /followSession\(\{ sessionId, paneId, agents:/);
   });
@@ -1545,6 +1694,18 @@ describe('Task 14b: the header and the 320 px table (markup and stylesheet)', ()
     assert.match(rule('.bar-tools') ?? '', /flex-wrap:\s*nowrap/);
     assert.match(rule('.bar-end') ?? '', /flex-wrap:\s*wrap/);
     assert.match(rule('.bar') ?? '', /flex-wrap:\s*wrap/, 'the bar itself still wraps, so a narrow window moves the block, not a lone button');
+  });
+
+  test('(+) 320 px: .composer is a grid with one shrinkable column, so a wide child (key chips, tool row) cannot push the window sideways', () => {
+    const body = rule('.composer') ?? '';
+    assert.match(body, /display:\s*grid/);
+    assert.match(body, /grid-template-columns:\s*minmax\(0,\s*1fr\)/);
+  });
+
+  test('(−) 320 px: the one grid with a fixed pixel column (.split, 300 px) collapses to a single shrinkable column below 1000 px, so the composer fix is not undone one level up', () => {
+    const wide = [...css.matchAll(/([^{}@]+)\{[^{}]*grid-template-columns:\s*([^;}]*\b\d{3,}px\b[^;}]*)[;}]/g)].map((m) => m[1].trim());
+    assert.deepEqual(wide, ['.split'], 'a new fixed-width grid column needs its own 320 px check');
+    assert.match(css, /@media \(max-width:\s*1000px\)\s*\{[^@]*?\.split \{ grid-template-columns:\s*minmax\(0,\s*1fr\);/);
   });
 
   test('(−) B7: the grouping adds no colour and no token', () => {
