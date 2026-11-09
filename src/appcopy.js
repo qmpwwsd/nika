@@ -249,10 +249,11 @@ async function doInstall({ root, home, stateDir }, deps) {
 /**
  * The launch commands' refresh (after `brew upgrade`): updates a copy nika made when it is stale and the source has this
  * CLI's `version`. Returns 'updated' or 'none'; never touches an unmanaged, foreign or missing copy. Throws as install does.
+ * `state` is optional: an appCopyState result the caller has just read, so the launch reads the copy once.
  */
-export async function refreshManagedCopy({ version, ...args }, deps = {}) {
+export async function refreshManagedCopy({ version, ...args }, deps = {}, state) {
   if (args.platform !== 'darwin') return 'none';
-  const s = await appCopyState(args, deps);
+  const s = state ?? await appCopyState(args, deps); // `state`: an appCopyState result the caller already holds (one read per launch)
   if (!(s.managed && s.state === 'stale' && s.available === version)) return 'none';
   await installAppCopy(args, deps);
   return 'updated';

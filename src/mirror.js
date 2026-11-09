@@ -164,7 +164,7 @@ export function parseCapture(text, cols) {
 
 const intOf = (v) => (typeof v === 'string' && /^\d{1,5}$/.test(v) ? Number(v) : null);
 
-function matches(header, etag) {
+export function matches(header, etag) {
   if (typeof header !== 'string') return false;
   return header.split(',').some((t) => {
     const v = t.trim();

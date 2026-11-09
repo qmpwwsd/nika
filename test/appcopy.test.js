@@ -824,6 +824,30 @@ describe('refreshManagedCopy', () => {
     assert.equal(exec.calls[0][0], DITTO);
   });
 
+  test('(+) a state the caller already read is used as it is: no second read of the copy', async () => {
+    const w = world({ kegVersion: '0.3.0' });
+    managed(w);
+    const state = await appCopyState(w.args, { brewApps: [] });
+    let reads = 0;
+    const brewApps = new Proxy([], { get: (t, p, r) => { if (p === Symbol.iterator) reads += 1; return Reflect.get(t, p, r); } });
+    assert.equal(await refreshManagedCopy({ ...w.args, version: '0.3.0' }, { exec: fakeExec(), brewApps }, state), 'updated');
+    assert.equal(reads, 1, 'only the install looked for the source');
+    assert.equal(versionOf(w.target), '0.3.0');
+  });
+
+  test('(−) a given state decides: not managed, not stale or not this version means none, and nothing is read or run', async () => {
+    const w = world({ kegVersion: '0.3.0' });
+    managed(w);
+    const exec = fakeExec();
+    const fresh = await appCopyState(w.args, { brewApps: [] });
+    const brewApps = new Proxy([], { get: () => { throw new Error('the copy must not be read again'); } });
+    for (const [state, version] of [[{ ...fresh, managed: false }, '0.3.0'], [{ ...fresh, state: 'current' }, '0.3.0'], [{ ...fresh, available: '0.4.0' }, '0.3.0'], [fresh, '0.4.0']]) {
+      assert.equal(await refreshManagedCopy({ ...w.args, version }, { exec, brewApps }, state), 'none', JSON.stringify([state.managed, state.state, state.available, version]));
+    }
+    assert.deepEqual(exec.calls, []);
+    assert.equal(versionOf(w.target), '0.2.0');
+  });
+
   test('(−) an unmanaged copy, a foreign copy and a missing copy are never touched', async () => {
     const w = world();
     const exec = fakeExec();

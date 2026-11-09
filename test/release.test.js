@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { tagVersion, changelogSection, versionFiles, releaseCheck, unwrapMarkdown } from '../scripts/release-check.mjs';
+import { tagVersion, changelogSection, versionFiles, versionDrift, releaseCheck, unwrapMarkdown } from '../scripts/release-check.mjs';
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SCRIPT = path.join(ROOT, 'scripts', 'release-check.mjs');
@@ -118,6 +118,34 @@ describe('release check', () => {
     assert.equal(tagVersion('v10.0.12'), '10.0.12');
   });
 
+  test('(+) this repository: package.json, tauri.conf.json and Cargo.toml carry one version (the app-copy refresh depends on it)', () => {
+    assert.equal(versionDrift(ROOT), null);
+    assert.equal(new Set(Object.values(versionFiles(ROOT))).size, 1);
+  });
+
+  test('(+) a synthetic repo whose three files agree has no drift, whatever the tag says', () => {
+    const dir = fixture({ pkg: '2.0.0', conf: '2.0.0', cargo: '2.0.0' });
+    assert.equal(versionDrift(dir), null);
+    assert.throws(() => releaseCheck(dir, 'v1.2.3'), /does not match/, 'a tag mismatch is still its own error');
+  });
+
+  test('(−) drift between the three files is refused and every file with its version is named, before the tag is compared', () => {
+    for (const over of [{ conf: '1.2.4' }, { cargo: '1.2.2' }, { pkg: '1.2.4' }, { pkg: '1.2.4', conf: '1.2.5', cargo: '1.2.6' }]) {
+      const dir = fixture(over);
+      const drift = versionDrift(dir);
+      assert.match(drift, /^package\.json \(\S+\), app\/src-tauri\/tauri\.conf\.json \(\S+\), app\/src-tauri\/Cargo\.toml \(\S+\)$/, JSON.stringify(over));
+      assert.throws(() => releaseCheck(dir, 'v1.2.3'), /^Error: version files differ: package\.json .*tauri\.conf\.json .*Cargo\.toml /, JSON.stringify(over));
+    }
+    assert.throws(() => releaseCheck(fixture({ conf: '1.2.4' }), 'v1.2.4'), /version files differ/, 'a tag that matches one of the drifted files does not hide it');
+  });
+
+  test('(−) a Cargo.toml without a [package] version counts as drift', () => {
+    const dir = fixture();
+    fs.writeFileSync(path.join(dir, 'app', 'src-tauri', 'Cargo.toml'), '[dependencies]\nserde = { version = "=9.9.9" }\n');
+    assert.match(versionDrift(dir), /Cargo\.toml \(null\)/);
+    assert.throws(() => releaseCheck(dir, 'v1.2.3'), /version files differ/);
+  });
+
   test('(−) a version file that does not match the tag is named in the error', () => {
     assert.throws(() => releaseCheck(fixture({ conf: '1.2.4' }), 'v1.2.3'), /tauri\.conf\.json.*1\.2\.4/);
     assert.throws(() => releaseCheck(fixture({ cargo: '1.2.2' }), 'v1.2.3'), /Cargo\.toml.*1\.2\.2/);
@@ -163,6 +191,9 @@ describe('release check', () => {
       try { execFileSync(process.execPath, [SCRIPT, ...args], { stdio: 'pipe' }); return 0; } catch (e) { return e.status; }
     };
     assert.equal(run(['v1.2.3', '--root', dir, '--notes', out]), 1);
+    assert.equal(fs.existsSync(out), false);
+    const drifted = fixture({ conf: '1.2.4' });
+    assert.equal(run(['v1.2.3', '--root', drifted, '--notes', out]), 1, 'drift between the files exits 1 too');
     assert.equal(fs.existsSync(out), false);
     assert.equal(run([]), 2);
     assert.equal(run(['v1.2.3', '--bogus']), 2);

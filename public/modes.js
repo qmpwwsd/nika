@@ -89,6 +89,7 @@ const WHY = {
   dontAsk: "Don't ask is on. Change it in the terminal.",
   switching: `Switching${DOTS} up to 6 Shift-Tab presses.`,
   unreadAfterPress: "nika can't read the mode after pressing Shift-Tab. Check the terminal: the session may be in any mode, including Bypass permissions.",
+  unchanged: "The mode didn't change; try again or use the terminal.",
   stoppedInBypass: 'Stopped at Bypass permissions: Claude runs tools without asking. Press Shift-Tab in the terminal to leave it.',
 };
 
@@ -154,6 +155,7 @@ export function switchFailure({ status, code, start, target, mode, confirmed, pr
     if (code === 'mode-unknown') {
       return Number.isInteger(presses) && presses >= 1 ? { text: WHY.unreadAfterPress, strike: null, loud: true } : { text: WHY.unknown, strike: null };
     }
+    if (code === 'mode-unchanged') return { text: WHY.unchanged, strike: null }; // the footer read fine and did not move: calm, no Bypass alert
     if (code === 'busy-switching') return { text: 'Another action is running on this session.', strike: null };
   }
   if (status === 429) return { text: 'Too many keys at once; try again.', strike: null };

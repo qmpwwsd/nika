@@ -420,6 +420,25 @@ describe('switchFailure', () => {
     assert.equal(T({ status: 0, code: undefined }), "nika couldn't reach tmux.");
   });
 
+  test('(+) mode-unchanged: a calm line, no alert, no Bypass tag, no strike (the footer read fine and did not move)', () => {
+    const calm = { text: "The mode didn't change; try again or use the terminal.", strike: null };
+    assert.deepEqual(F({ code: 'mode-unchanged', mode: 'manual', presses: 1 }), calm);
+    assert.deepEqual(F({ code: 'mode-unchanged', mode: 'manual', presses: 3 }), calm);
+    assert.deepEqual(F({ code: 'mode-unchanged', mode: 'unknown', confirmed: true }), calm, 'the capture after it is covered by a dialog');
+    assert.equal(F({ code: 'mode-unchanged', mode: 'manual', presses: 1 }).loud, undefined);
+    assert.equal(F({ code: 'mode-unchanged', mode: 'manual', presses: 1 }).bypass, undefined);
+  });
+
+  test('(−) mode-unchanged: a confirmed mode other than the start still wins ("Stopped at"), 404 still wins, other statuses are not it, mode-unknown keeps its alert', () => {
+    assert.deepEqual(F({ code: 'mode-unchanged', mode: 'plan', presses: 1 }), { text: 'Stopped at Plan.', strike: null });
+    assert.equal(F({ status: 404, code: 'mode-unchanged', mode: 'manual' }).text, 'The session is gone.');
+    assert.equal(F({ status: 500, code: 'mode-unchanged', mode: 'manual' }).text, "nika couldn't reach tmux.");
+    assert.equal(F({ status: 400, code: 'mode-unchanged', mode: 'manual' }).text, "nika couldn't switch the mode.");
+    const loud = F({ code: 'mode-unknown', mode: 'manual', presses: 1 });
+    assert.equal(loud.loud, true);
+    assert.match(loud.text, /including Bypass permissions/);
+  });
+
   test('(+) H1: 409 stopped-in-bypass is loud, with the Bypass tag, and tells the user how to leave it', () => {
     const want = { text: 'Stopped at Bypass permissions: Claude runs tools without asking. Press Shift-Tab in the terminal to leave it.', strike: null, loud: true, bypass: true };
     assert.deepEqual(F({ code: 'stopped-in-bypass', mode: 'bypassPermissions' }), want, 'the next capture reads Bypass');

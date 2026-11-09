@@ -463,6 +463,13 @@ describe('quick actions, prompt buttons, End dialog and Shell (spec 9.4-9.8)', (
     assert.match(src, /aria-busy/);
   });
 
+  test('(+) the End dialog hands status, error code, ended and reason of the answer to endOutcome, and nothing else', () => {
+    const src = code(JS['end-dialog.js']);
+    assert.match(src, /answer = \{ status: res\.status, code: res\.body\?\.error, ended: res\.body\?\.ended, reason: res\.body\?\.reason \}/);
+    assert.match(src, /endOutcome\(answer\)/);
+    assert.match(src, /answer = \{ status: 0 \}/, 'a network failure still carries no reason');
+  });
+
   test('(+) Compact, Clear and Model go through the command route only; Shell stays on the keys route', () => {
     const src = code(JS['session.js']);
     assert.match(src, /\/command`/);

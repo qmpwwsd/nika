@@ -23,7 +23,8 @@ const HISTORY_HINT = 'Esc i / for slash commands';
 
 const conflict = (error) => ({ status: 409, body: { error } });
 const invalid = (message) => ({ status: 400, body: { error: 'invalid', message } });
-const ended = (value) => ({ status: 200, body: { ended: value } });
+// `reason: 'keys'` marks a sequence that stopped on a failed key send while the pane still runs claude: a plain retry may work
+const ended = (value, reason) => ({ status: 200, body: value || !reason ? { ended: value } : { ended: false, reason } });
 const realSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 /** Number of waits of `stepMs` that cover `totalMs` (at least one): every wait loop is bounded by this count, never by a clock. */
 const steps = (totalMs, stepMs) => Math.max(1, Math.ceil(totalMs / stepMs));
@@ -197,18 +198,21 @@ export function createSessionControl({
   }
 
   /**
-   * After a BTab: read the footer up to settleMs / pollMs times until it shows a mode other than `before`: { mode }. Unreadable
-   * or unchanged is { res: mode-unknown, mode } with what the last read showed (`before` when it never changed, else `unknown`).
+   * After a BTab: read the footer up to settleMs / pollMs times until it shows a mode other than `before`: { mode }. Otherwise
+   * { res, mode } with what the last read showed (`before` when it never changed, else `unknown`): 409 mode-unchanged when every
+   * read was readable and equal to `before` (the key did not register, or Claude redrew late), else 409 mode-unknown.
    */
   async function settle(pane, before) {
     let mode = 'unknown';
+    let unchanged = true;
     for (let i = 0; i < steps(settleMs, pollMs); i += 1) {
       await sleep(pollMs);
       const seen = await look(pane);
       mode = seen.rows ? modeFromRows(seen.rows) : 'unknown'; // a failed capture reads as unknown: keep polling
       if (mode !== 'unknown' && mode !== before) return { mode };
+      unchanged &&= mode === before;
     }
-    return { res: conflict('mode-unknown'), mode };
+    return { res: conflict(unchanged && mode === before ? 'mode-unchanged' : 'mode-unknown'), mode };
   }
 
   /**
@@ -398,7 +402,7 @@ export function createSessionControl({
       if (!seen.idle) {
         const stopped = await interrupt(pane, seen.rows, seen.state, ctx); // cancels a turn or answers a prompt with No
         if (stopped.res) return stopped.res;
-        if (stopped.failed) return ended(await isGone(pane));
+        if (stopped.failed) return ended(await isGone(pane), 'keys');
         if (stopped.presses === 0) return conflict('not-idle'); // no live session, or two claim the pane: nothing is sent
         await sleep(escWaitMs);
         seen = await readIdle(pane, ctx);
@@ -408,7 +412,7 @@ export function createSessionControl({
       if (modeFromRows(seen.rows) === 'unknown') return conflict('mode-unknown'); // a dialog may be open
       const typed = await typeCommand(pane, seen.rows, '/exit', ctx);
       if (typed?.res) return typed.res;
-      if (typed?.failed) return ended(await isGone(pane));
+      if (typed?.failed) return ended(await isGone(pane), 'keys');
       for (let i = 0; i < steps(exitWaitMs, EXIT_POLL_MS); i += 1) {
         await sleep(EXIT_POLL_MS);
         if (await isGone(pane)) return ended(true);

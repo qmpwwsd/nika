@@ -52,7 +52,7 @@ async function run() {
   let answer;
   try {
     const res = await appFetch(`/api/app/pane/${encodeURIComponent(E.pane)}/end`, { method: 'POST', json: {} });
-    answer = { status: res.status, code: res.body?.error, ended: res.body?.ended };
+    answer = { status: res.status, code: res.body?.error, ended: res.body?.ended, reason: res.body?.reason };
   } catch {
     answer = { status: 0 }; // the network failed: the same line as a tmux failure
   }

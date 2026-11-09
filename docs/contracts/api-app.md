@@ -44,8 +44,8 @@ Common error body: `{"error": "<code>", "message": "<short text>"}`; codes used 
 `invalid` 400, `unsupported_media` 415, `too_large` 413, `conflict` 409, `busy` 429, `tmux_unavailable` 503,
 `claude_unavailable` 503, `tmux_failed` 502 (a tmux call failed unexpectedly), `limit` 409 (maxAgents reached), `foreign` 409 (rules file not written by nika, apply without
 `overwriteForeign`), `refused` 409 (a write-safety check failed; `"code"` carries the fwrite/OS code such as `ESYMLINK`),
-and for session control (0.3) `not-idle`, `mode-unknown`, `not-in-cycle`, `busy-switching`, `no-prompt`,
-`prompt-changed`, `already-answered`, `input-not-empty`, `not-at-prompt`, all 409. The 0.3 codes are hyphenated, as the spec names them; the older codes keep their underscores.
+and for session control (0.3) `not-idle`, `mode-unknown`, `mode-unchanged`, `not-in-cycle`, `busy-switching`, `no-prompt`,
+`prompt-changed`, `already-answered`, `input-not-empty`, `not-at-prompt`, `bypass-prompt`, `screen-unclear`, all 409. The 0.3 codes are hyphenated, as the spec names them; the older codes keep their underscores.
 
 ## 3. Routes
 
@@ -183,7 +183,8 @@ page renders it with `textContent`.
 (registry `tmux` field) or a pane nika started (`orchestrator/start`, `spawn`), **and** its `pane_current_command` must
 look like claude (`CLAUDE_COMMAND`: `claude`, `node`, a version string) at that moment, for a started pane too (tmux can
 reuse a pane id after a restart). Else 404. Cached 250 ms per pane,
-one capture in flight per pane (others wait for it), `ETag` = hash of the rows; `If-None-Match` → 304.
+one capture in flight per pane (others wait for it), `ETag` = hash of the mirror's rows hash **and** the `mode` and `modeConfirmed` the
+response shows (so a held mode that changed over unchanged rows is never hidden behind a 304); `If-None-Match` → 304.
 ```json
 { "cols": 120, "rows": [ [ { "t": "text", "s": { "b": true, "fg": 4, "bg": null, "u": false, "i": false, "d": false } } ] ],
   "cursor": { "x": 0, "y": 0, "visible": true }, "etag": "<hex>",
@@ -243,22 +244,29 @@ the paste (no `-r`), as a terminal paste would. Every validation failure, includ
 `200 { "sent": { "text": 12, "paste": 0, "keys": 1 } }` (counts of characters / keys sent). Stop is no longer this route:
 it is `POST /api/app/pane/:id/stop` below (a bare `Escape` does not interrupt Claude while its input is in vim insert mode).
 
-Bypass-prompt guard (0.3, T26). `Enter` confirms the highlighted option of a permission prompt and a digit picks one, so a
-request whose `keys` contains `Enter`, whose `text` contains an ASCII digit `[0-9]`, or that has any `paste`, first takes a
-fresh capture (never the 250 ms cache) and looks at the screen:
+Bypass-prompt guard (0.3, T26). `Enter` confirms the highlighted option of a permission prompt, a digit picks one, and
+`BTab` (Shift-Tab) can pick "allow for this session", so a request whose `keys` contains `Enter` or `BTab`, whose `text`
+contains an ASCII digit `[0-9]`, or that has any `paste`, first takes a fresh capture (never the 250 ms cache) and looks at
+the screen:
 
 - the capture fails → that status and body, nothing sent;
 - the prompt window, `bypassWindow(rows)` in `src/mode.js` (the last 15 non-blank rows, the same window the `sig` covers;
-  `mentionsBypass`: NFKC, letters only, any case, so `By-pass` and full-width letters count), mentions bypass **and** either a
-  permission prompt is on screen (`prompt` non-null) or the footer is unreadable (`mode` would be `unknown`: a dialog nika
-  does not parse, with another hint row, may be open) → `409 { "error": "bypass-prompt", "message": "Answer this prompt in
-  the terminal" }`, nothing sent. A readable footer, whatever it says, is not a prompt: a session that runs in bypass can
-  still be typed to, and the word in plain output does not block;
+  `mentionsBypass`: NFKC, letters only, any case, so `By-pass` and full-width letters count), mentions bypass **and** a
+  permission prompt is on screen (`prompt` non-null) → `409 { "error": "bypass-prompt", "message": "Answer this prompt in
+  the terminal" }`, nothing sent;
+- the window mentions bypass, no prompt parses, **and** the footer is unreadable (`mode` would be `unknown`: a dialog nika
+  does not parse, with another hint row, or Claude's slash-command menu, may be open) → `409 { "error": "screen-unclear",
+  "message": "nika can't tell what Claude is showing; use the terminal" }`, nothing sent. This is the unreadable-footer
+  case of the guard, with its own code so the page does not call a slash menu whose command has "bypass" in its name a
+  bypass prompt;
+- a readable footer, whatever it says, is not a prompt: a session that runs in bypass can still be typed to (and leave it
+  with Shift-Tab), and the word in plain output does not block;
 - else the request goes out as before.
 
-A request with none of those three (letters without digits, arrows, `Escape`, `BTab`, key chips) skips the capture and is as
-fast as in 0.2. The page's passthrough posts to this route as well, so it is guarded like Send: nothing in nika can answer
-such a prompt, only the terminal itself (outside nika) can. nika never moves a session into bypass (rule 12). The guard's
+A request with none of those (letters without digits, arrows, `Escape`, key chips other than `BTab`) skips the capture and
+is as fast as in 0.2. The mode route's own presses go through `keys.send` directly, not this route, so mode switching is
+unaffected. The page's passthrough posts to this route as well (Shift+Tab maps to `{ "keys": ["BTab"] }`), so it is
+guarded like Send: nothing in nika can answer such a prompt, only the terminal itself (outside nika) can. nika never moves a session into bypass (rule 12). The guard's
 capture runs before the per-pane rate limit (T11).
 
 ### `POST /api/app/pane/:id/mode` (body ≤ 4 KB, `CAP.small`)
@@ -280,7 +288,8 @@ order:
    switches to or from it, `claude-tui.md` §7).
 7. Loop: press `BTab` through the keys path (presses count toward its 20 requests/s per pane); a failed send → that
    send's status and body plus `"presses"`. Re-read the footer (fresh captures) every 300 ms for up to 1.8 s until the mode differs
-   from the pre-press mode; an `unknown` read keeps polling; still `unknown` or unchanged at 1.8 s → 409
+   from the pre-press mode; an `unknown` read keeps polling; at 1.8 s: every read was readable and equal to the pre-press
+   mode (the key did not register, or Claude redrew late) → 409 `mode-unchanged` (`presses`); any read was `unknown` → 409
    `mode-unknown`. Then: target reached → 200; back at the start mode → 409 `not-in-cycle`; 6 presses used → 409
    `not-in-cycle`; else re-run step 4's idle check with the registry state read again (→ 409 `not-idle`) and press
    again.
@@ -300,11 +309,14 @@ mode the last press reached; the page reads it from the next capture. Bypass is 
   409 `{ "error": "stopped-in-bypass", "presses": n }`, otherwise the loop presses again within the same 6-press limit.
 - **One retry of the press that leaves bypass.** A key send answering 429 while the footer last read
   `bypassPermissions` waits 1 s and is tried once more; a second failure is `stopped-in-bypass`.
-- **Every other ending in bypass is loud.** Not in the cycle, 6 presses used, a failed send, an unchanged footer, or a
+- **Every other ending in bypass is loud.** Not in the cycle, 6 presses used, a failed send, an unchanged footer
+  (`mode-unchanged` becomes `stopped-in-bypass` when that unchanged mode is `bypassPermissions`), or a
   footer that stays unreadable after a press that started in `bypassPermissions` (that press may have changed nothing),
   while the last footer reading is `bypassPermissions` → 409 `stopped-in-bypass` with `presses` (the page tells the user
   Claude may still be in Bypass). A footer that stays unreadable after a press that started in any other mode (the screen
-  never showed bypass) is 409 `mode-unknown` with `presses`.
+  never showed bypass) is 409 `mode-unknown` with `presses`; a footer that stayed readable and equal to that mode is 409
+  `mode-unchanged` with `presses` (the page says "The mode didn't change; try again or use the terminal." in a calm line,
+  with no Bypass alert).
 
 ### `POST /api/app/pane/:id/answer` (body ≤ 4 KB, `CAP.small`)
 ```json
@@ -403,9 +415,11 @@ Body `{}`. Steps, in this order:
 7. Check the pane every 500 ms for up to 3 s (by count, not by clock): gone or no longer running claude
    (`CLAUDE_COMMAND`, after trimming) → `200 { "ended": true }`; else `200 { "ended": false }`.
 
-When any key send fails (for example 429) the sequence stops and the pane is checked once: gone or no longer running
-claude → `{ "ended": true }`, else `{ "ended": false }`. Never `kill-pane`, never a signal. The eligibility cache is
-reset afterwards.
+When any key send (or a capture) fails (for example 429) the sequence stops and the pane is checked once: gone or no longer
+running claude → `{ "ended": true }`, else `{ "ended": false, "reason": "keys" }`. `reason` appears only here, never on
+`ended: true`, never on the plain `ended: false` of step 7 (every key went out and Claude did not exit) and never on a 409:
+the page says "nika couldn't send the keys; try again." for `"keys"` and "Claude didn't exit; use Stop or the terminal."
+otherwise. Never `kill-pane`, never a signal. The eligibility cache is reset afterwards.
 
 ### `POST /api/app/spawn` (body ≤ 80 KB)
 ```json

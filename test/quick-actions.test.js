@@ -119,6 +119,20 @@ describe('quickState: the spec 9.4 states table, first matching row wins', () =>
     assert.ok(offs(ended, ['stop', ...FOUR]));
   });
 
+  test('(−) status ended: End is off with the title "No live session on this pane" (the route could only answer not-idle); the rest of the row is unchanged', () => {
+    const ended = quickState({ status: 'ended' });
+    assert.deepEqual(ended.end, { off: true, title: 'No live session on this pane' });
+    assert.equal(ended.reason, 'Compact, Clear, Model and Rewind are ready when Claude waits for you.');
+    assert.ok(offs(ended, ['stop', ...FOUR]));
+  });
+
+  test('(+) End stays live for every other status of a pane that is ok: idle, busy, attention, a prompt, a switch in flight, not known yet', () => {
+    for (const c of [{ status: 'idle' }, { status: 'busy' }, { status: 'attn' }, { status: null }, { status: 'idle', prompt: PROMPT }, { status: 'idle', switching: true }, {}]) {
+      assert.deepEqual(quickState(c).end, { off: false, title: 'Claude exits and the pane closes' }, JSON.stringify(c));
+    }
+    assert.equal(quickState({ pane: 'gone', status: 'ended' }).end.title, 'The pane is gone', 'a gone pane keeps its own title');
+  });
+
   test('(+) Stop is live in exactly one case: working with the pane ok and no prompt', () => {
     for (const pane of ['ok', 'gone', 'tmux', 'connecting']) {
       for (const status of [null, 'idle', 'busy', 'attn', 'ended']) {
@@ -292,6 +306,19 @@ describe('endOutcome (spec 9.8)', () => {
 
   test('(+) 200 ended:false is the failed state with the exact copy', () => {
     assert.deepEqual(o(200, undefined, false), { ended: false, text: "Claude didn't exit; use Stop or the terminal." });
+  });
+
+  test('(+) 200 ended:false with reason "keys" says the keys could not be sent, and a retry may work', () => {
+    assert.deepEqual(endOutcome({ status: 200, ended: false, reason: 'keys' }), { ended: false, text: "nika couldn't send the keys; try again." });
+  });
+
+  test('(−) any other reason, or none, keeps the "didn\'t exit" line; a reason never turns a refusal or an end into something else', () => {
+    for (const reason of [undefined, null, '', 'other', 'KEYS', 'keys ', 1, {}]) {
+      assert.deepEqual(endOutcome({ status: 200, ended: false, reason }), { ended: false, text: "Claude didn't exit; use Stop or the terminal." }, String(reason));
+    }
+    assert.deepEqual(endOutcome({ status: 200, ended: true, reason: 'keys' }), { ended: true, text: '' }, 'ended wins');
+    assert.equal(endOutcome({ status: 409, code: 'not-idle', reason: 'keys' }).text, "Claude didn't stop after Esc; use the terminal.", 'only a 200 reads the reason');
+    assert.equal(endOutcome({ status: 429, reason: 'keys' }).text, 'Too many keys at once; try again.');
   });
 
   test('(+) refusals use fixed copy per 409 code', () => {
@@ -499,6 +526,15 @@ describe('attnNote: the note for a "Needs you" agent whose prompt nika cannot pa
 describe('keysRefusal: the keys route\'s 409 bypass-prompt (fixed copy)', () => {
   test('(+) only 409 with that code has a line', () => {
     assert.equal(keysRefusal({ status: 409, code: 'bypass-prompt' }), 'Answer this prompt in the terminal.');
+  });
+
+  test('(+) 409 screen-unclear (an unreadable footer whose window mentions bypass) has its own line', () => {
+    assert.equal(keysRefusal({ status: 409, code: 'screen-unclear' }), "nika can't tell what Claude is showing; use the terminal.");
+    assert.equal(keysRefusal({ status: 409, code: 'screen-unclear', message: '<b>x</b>' }), "nika can't tell what Claude is showing; use the terminal.", 'the response text is never read');
+  });
+
+  test('(−) screen-unclear with another status is not it', () => {
+    for (const status of [200, 400, 404, 429, 500, 0]) assert.equal(keysRefusal({ status, code: 'screen-unclear' }), null, String(status));
   });
 
   test('(−) any other answer, any other code, and server text give null (deliver keeps its own lines)', () => {

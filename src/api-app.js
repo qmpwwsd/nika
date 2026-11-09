@@ -14,6 +14,7 @@ import { UUID, PANE_ID, PROJECT_KEY, CLAUDE_COMMAND, COMMAND_NAME } from './ids.
 import { mapLimit } from './util.js';
 import { MODE_TARGETS, bypassWindow, modeFromRows, promptFromRows } from './mode.js';
 import { MODEL_CATALOG } from './models.js';
+import { matches as etagMatches } from './mirror.js';
 import { createSessionControl, promptSig, insertShown } from './session-control.js';
 
 const ELIGIBILITY_TTL_MS = 1000; // pane list + live-agent snapshot, so a 4 Hz capture does not run collect() 4 times a second
@@ -23,8 +24,9 @@ const COMMAND_MAX = 200; // characters of a slash command typed into Claude
 const CONTROL = /[\u0000-\u001f\u007f-\u009f]/; // C0, DEL, C1
 const SIG = /^[0-9a-f]{16}$/;
 const CAP = { small: 4 * 1024, settings: 16 * 1024, keys: 20 * 1024, spawn: 80 * 1024 };
-// What can answer a permission prompt: Enter confirms the highlighted option, a digit picks an option, a paste may hold either.
-const answersPrompt = (b) => (Array.isArray(b.keys) && b.keys.includes('Enter')) || (typeof b.text === 'string' && /[0-9]/.test(b.text)) || (b.paste !== undefined && b.paste !== null);
+// What can answer a permission prompt: Enter confirms the highlighted option, a digit picks an option, a paste may hold either,
+// and Shift-Tab (BTab) can pick "allow for this session".
+const answersPrompt = (b) => (Array.isArray(b.keys) && (b.keys.includes('Enter') || b.keys.includes('BTab'))) || (typeof b.text === 'string' && /[0-9]/.test(b.text)) || (b.paste !== undefined && b.paste !== null);
 const isPlain = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const err = (status, error, message) => ({ status, body: { error, message } });
 // App copy (ADR 0011): fixed codes and texts only, never a path or OS error text (the module's errors carry just a code)
@@ -300,11 +302,16 @@ export function createAppApi({ secret, ctx, deps }) {
   route('GET', /^\/api\/app\/pane\/([^/]+)\/capture$/, 0, async ({ params, req }) => {
     const { id, failure } = await eligiblePane(params[0]);
     if (failure) return failure;
-    const r = await deps.mirror.capture(id, req.headers['if-none-match']);
-    const headers = r.etag ? { ETag: `"${r.etag}"` } : {};
-    if (r.status === 304) return { status: 304, body: null, headers };
+    // The mirror is asked without If-None-Match: the mode shown depends on the held map as well as on the rows, so the ETag
+    // folds it in and the 304 is decided here (a changed held mode is never hidden behind a 304 on unchanged rows).
+    const r = await deps.mirror.capture(id);
+    if (r.status !== 200) return { status: r.status, body: r.body, headers: {} };
+    const screen = readScreen(id, r.body.rows);
+    const etag = crypto.createHash('sha256').update(JSON.stringify([r.etag, screen.mode, screen.modeConfirmed])).digest('hex').slice(0, 32);
+    const headers = { ETag: `"${etag}"` };
+    if (etagMatches(req.headers['if-none-match'], etag)) return { status: 304, body: null, headers };
     // a new object: the mirror's cached body is shared and stays as captured
-    return { status: r.status, body: r.status === 200 ? { ...r.body, ...readScreen(id, r.body.rows) } : r.body, headers };
+    return { status: 200, body: { ...r.body, ...screen, etag }, headers };
   });
 
   route('GET', /^\/api\/app\/modes$/, 0, async () => {
@@ -322,15 +329,19 @@ export function createAppApi({ secret, ctx, deps }) {
   route('POST', /^\/api\/app\/pane\/([^/]+)\/keys$/, CAP.keys, async ({ params, body }) => {
     const { id, failure } = await eligiblePane(params[0]);
     if (failure) return failure;
-    // Enter, a digit or a paste could answer a permission prompt, and the answer route's bypass refusal does not reach this
-    // route: so they look at a fresh screen first, and none is sent while a prompt (or a dialog nika cannot read: its footer
-    // is unreadable) mentions bypass (T26). Typing letters, arrows, Escape and BTab stay as fast as in 0.2. The page's
-    // passthrough posts to this route too, so it is guarded as well: only the terminal itself can answer such a prompt.
+    // Enter, BTab, a digit or a paste could answer a permission prompt, and the answer route's bypass refusal does not reach
+    // this route: so they look at a fresh screen first, and none is sent while a prompt mentions bypass (409 bypass-prompt) or
+    // a dialog nika cannot read (its footer is unreadable) does (409 screen-unclear) (T26). Typing letters, arrows and Escape
+    // stay as fast as in 0.2. The page's passthrough posts to this route too, so it is guarded as well: only the terminal itself
+    // can answer such a prompt.
     if (answersPrompt(body)) {
       const cap = await deps.mirror.capture(id, undefined, { fresh: true });
       if (cap.status !== 200) return { status: cap.status, body: cap.body };
       const rows = cap.body.rows;
-      if (bypassWindow(rows) && (promptFromRows(rows) !== null || modeFromRows(rows) === 'unknown')) return err(409, 'bypass-prompt', 'Answer this prompt in the terminal');
+      if (bypassWindow(rows)) {
+        if (promptFromRows(rows) !== null) return err(409, 'bypass-prompt', 'Answer this prompt in the terminal');
+        if (modeFromRows(rows) === 'unknown') return err(409, 'screen-unclear', "nika can't tell what Claude is showing; use the terminal");
+      }
     }
     return deps.keys.send(id, { text: body.text, paste: body.paste, keys: body.keys });
   });

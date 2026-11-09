@@ -13,6 +13,12 @@ Session control (desktop app; the browser dashboard on :3335 stays read-only):
 - Quick actions: Stop (while Claude works), Compact, Clear (asks first), Model, Rewind and End session. Compact, Clear,
   Model and End type into Claude's input only when it is empty and press Enter only when it reads exactly that
   command; otherwise they refuse ("Claude's input has text; clear it first." when it holds a draft) and leave your draft alone.
+  Stop works in vim input mode and has its own route, `POST /api/app/pane/:id/stop`: the first Esc only leaves insert
+  mode, so Stop (and End, when Claude is busy) sends a second Esc when the first one did not end the turn. It sends
+  nothing when Claude is idle, and gives a clear reason when it refuses (a question is open, Claude is already waiting,
+  the input mode is unreadable, or another window is already stopping). A command in flight does not block it. Rewind
+  types `/rewind` and Enter through the command route (same rules as Compact) instead of Esc Esc, so it no longer
+  depends on the message box being empty in nika.
 - End session: asks first, presses Esc when Claude is busy or asking (which answers No), then types `/exit`. It never
   kills the pane. Also in the dashboard row menu.
 - Shell mode: a toggle in the message box that sends your line through Claude's `!` mode, then turns itself off.
@@ -28,16 +34,10 @@ Session control (desktop app; the browser dashboard on :3335 stays read-only):
   it, and the dashboard offers the same once. After `brew upgrade`, `nika`, `nika open` and `nika app` update a copy
   nika made (the app also offers Update app), and `nika doctor` reports it. nika never writes to `/Applications` and
   never replaces anything in `~/Applications/nika.app` that is not nika's own bundle.
-- Stop works in vim input mode and has its own route, `POST /api/app/pane/:id/stop`: the first Esc only leaves insert
-  mode, so Stop (and End, when Claude is busy) sends a second Esc when the first one did not end the turn. It sends
-  nothing when Claude is idle, and gives a clear reason when it refuses (a question is open, Claude is already waiting,
-  the input mode is unreadable, or another window is already stopping). A command in flight does not block it.
 - Send and Shell wait while Claude asks for permission: nothing goes to the pane, the text stays in the box and a line says
   to answer with the buttons or in the terminal (or, when there are no buttons, in the terminal or with Type into pane).
   The Enter and Shift-Tab chips are off too. A prompt that mentions bypass has no answer buttons; the keys route's refusal
   shows a fixed line.
-- Rewind types `/rewind` and Enter through the command route (same rules as Compact) instead of Esc Esc, so it no longer
-  depends on the message box being empty in nika.
 - The session window follows the pane to its new session after `/clear`, when exactly one live session has the pane.
 - Switching modes reports a stop in Bypass, or a footer nika could not read after a press, as an alert; with no readable
   mode the Shift-Tab chip is gone (use the terminal).
@@ -45,7 +45,7 @@ Session control (desktop app; the browser dashboard on :3335 stays read-only):
   stay together in the header; the shortcuts window's tables scroll inside their own box at 320 px; a dialog opened from a
   menu item returns focus to the menu's button; the passthrough key reads `⌃]` on a Mac; the message box area no longer
   widens the session window past 320 px.
-- Bypass guard: nika's keys route refuses Enter, a digit or a paste while a permission prompt that mentions bypass is
+- Bypass guard: nika's keys route refuses Enter, Shift-Tab, a digit or a paste while a permission prompt that mentions bypass is
   on screen (the question included); answer those in the terminal. The prompt buttons read the whole prompt, not only
   the option: the capture's `prompt` carries `bypass`, the same window test the answer route applies, and the page draws no
   answer button when it is true (an answer the route still refuses with 400 says to use the terminal and locks that question).

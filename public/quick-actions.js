@@ -27,6 +27,7 @@ const TITLE = {
   idleOnly: 'Available when Claude is waiting for you',
   end: 'Claude exits and the pane closes',
   endGone: 'The pane is gone',
+  endEnded: 'No live session on this pane',
 };
 
 /**
@@ -52,7 +53,7 @@ export function quickState({ pane = 'ok', status = null, prompt = null, switchin
   if (prompt) return allOff(TITLE.stopPrompt, WHY.promptShown);
   if (status === 'attn') return allOff(TITLE.stopAttn, WHY.prompt);
   if (status === 'busy') return { ...allOff(TITLE.stopIdle, WHY.working), stop: b(false, TITLE.stop) };
-  if (status === 'ended') return allOff(TITLE.stopIdle, WHY.working);
+  if (status === 'ended') return { ...allOff(TITLE.stopIdle, WHY.working), end: b(true, TITLE.endEnded) }; // nothing to end: the route could only say not-idle
   const live = !switching; // idle, or not known yet: the route checks
   return {
     stop: b(true, TITLE.stopIdle),
@@ -119,8 +120,13 @@ export const hasAnswerButtons = (prompt) => Array.isArray(prompt?.options) && pr
 /** The 0.2 attention note for a "Needs you" agent whose prompt has no panel; `key` is the passthrough key as the page writes it (passKeyLabel). */
 export const attnNote = (name, attention, key) => `${name} needs you: ${attention}. Answer it in the terminal, or turn on Type into pane (${key}).`;
 
-/** The keys route's 409 `bypass-prompt` (contract section 3): fixed copy. null for every other answer, which keeps session.js's own lines. */
-export const keysRefusal = ({ status, code } = {}) => (status === 409 && code === 'bypass-prompt' ? 'Answer this prompt in the terminal.' : null);
+const KEYS_409 = {
+  'bypass-prompt': 'Answer this prompt in the terminal.',
+  'screen-unclear': "nika can't tell what Claude is showing; use the terminal.", // an unreadable footer whose window mentions bypass
+};
+
+/** The keys route's 409 `bypass-prompt` and `screen-unclear` (contract section 3): fixed copy. null for every other answer, which keeps session.js's own lines. */
+export const keysRefusal = ({ status, code } = {}) => (status === 409 && Object.hasOwn(KEYS_409, code) ? KEYS_409[code] : null);
 
 /** What the polite region says when a prompt appears (spec 9.5). */
 export function promptNote(name, prompt) {
@@ -200,9 +206,15 @@ export function stopOutcome({ status, code, name = 'Claude' } = {}) {
   return no("nika couldn't stop the turn.");
 }
 
-/** The End route's result (spec 9.8): { ended: true, text: '' } closes the dialog; otherwise `text` goes in the alert slot. */
-export function endOutcome({ status, code, ended } = {}) {
-  if (status === 200) return ended === true ? { ended: true, text: '' } : { ended: false, text: "Claude didn't exit; use Stop or the terminal." };
+/**
+ * The End route's result (spec 9.8): { ended: true, text: '' } closes the dialog; otherwise `text` goes in the alert slot. A 200
+ * `ended: false` with `reason: 'keys'` means a key send failed (a rate limit, say), so a plain retry may work.
+ */
+export function endOutcome({ status, code, ended, reason } = {}) {
+  if (status === 200) {
+    if (ended === true) return { ended: true, text: '' };
+    return { ended: false, text: reason === 'keys' ? "nika couldn't send the keys; try again." : "Claude didn't exit; use Stop or the terminal." };
+  }
   const no = (text) => ({ ended: false, text });
   if (status === 409) {
     if (code === 'not-idle') return no("Claude didn't stop after Esc; use the terminal.");

@@ -247,15 +247,23 @@ function startDetached(spawn, bin) {
 const copyArgs = (cx) => ({ root: cx.root, home: cx.home, platform: cx.platform, stateDir: stateDir(cx.env) });
 const copyDeps = (cx) => ({ exec: cx.execT(120_000), ...(cx.brewApps ? { brewApps: cx.brewApps } : {}) });
 
-/** After `brew upgrade`: brings a copy nika made up to this version. Never blocks a launch: a failure is one line on stderr. */
+/**
+ * After `brew upgrade`: brings a copy nika made up to this version. Never blocks a launch: a failure is one line on stderr.
+ * Reads the copy's state once and returns it (as it stands after the refresh; null when it could not be read), so the
+ * launch decides what to open without a second read.
+ */
 async function refreshCopy(cx) {
+  let copy = null;
   try {
-    if ((await refreshManagedCopy({ ...copyArgs(cx), version: VERSION }, copyDeps(cx))) === 'updated') {
+    copy = await appCopyState(copyArgs(cx), copyDeps(cx));
+    if ((await refreshManagedCopy({ ...copyArgs(cx), version: VERSION }, copyDeps(cx), copy)) === 'updated') {
       cx.out.write(`updated the nika app in ~/Applications to ${VERSION} (if nika was open, quit and reopen it)\n`);
+      copy = { ...copy, state: 'current', version: copy.available };
     }
   } catch (err) {
     cx.err.write(`nika: could not update the app in ~/Applications (${COPY_FAILURES[err?.code] ? err.code : 'copy-failed'})\n`);
   }
+  return copy;
 }
 
 /**
@@ -266,8 +274,7 @@ async function refreshCopy(cx) {
 async function launchApp(cx) {
   const tried = (cmd, args) => cx.execT(10_000)(cmd, args).then(() => true, () => false);
   if (cx.platform === 'darwin') {
-    await refreshCopy(cx);
-    const copy = await appCopyState(copyArgs(cx), copyDeps(cx)).catch(() => null);
+    const copy = await refreshCopy(cx);
     // with two copies the bundle id is ambiguous: the one nika made is opened by its path
     if (copy?.managed && (copy.state === 'current' || copy.state === 'stale') && (await tried('open', [targetPath(cx.home)]))) return true;
     return tried('open', ['-b', APP_ID]);

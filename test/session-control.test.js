@@ -337,11 +337,28 @@ describe('switchMode (−)', () => {
     assert.ok(w.slept.filter((ms) => ms === 300).length >= 6, 'polled up to settleMs');
   });
 
-  test('(−) the mode does not change within settleMs: 409 mode-unknown after one press', async () => {
+  test('(−) the mode does not change within settleMs: 409 mode-unchanged (not mode-unknown: the footer read fine) after one press', async () => {
     const w = world({ mode: 'manual', script: ['manual'] });
-    assert.deepEqual(await w.control().switchMode('%2', 'plan'), { status: 409, body: { error: 'mode-unknown', presses: 1 } });
+    assert.deepEqual(await w.control().switchMode('%2', 'plan'), { status: 409, body: { error: 'mode-unchanged', presses: 1 } });
     assert.equal(w.sent.length, 1);
     assert.equal(w.slept.reduce((a, b) => a + b, 0), 1800, 'waited exactly settleMs');
+  });
+
+  test('(−) the mode stays put after a later press too: 409 mode-unchanged with both presses counted', async () => {
+    const w = world({ mode: 'manual', script: ['acceptEdits', 'acceptEdits'] });
+    assert.deepEqual(await w.control().switchMode('%2', 'auto'), { status: 409, body: { error: 'mode-unchanged', presses: 2 } });
+    assert.equal(w.sent.length, 2);
+  });
+
+  test('(+) a footer that was unreadable at any read of the window stays mode-unknown, even when the rest of the reads equal the start mode', async () => {
+    const w = world({ mode: 'manual', script: ['manual'], lag: 1 }); // the first read after the press is unreadable, the next five show manual
+    assert.deepEqual(await w.control().switchMode('%2', 'plan'), { status: 409, body: { error: 'mode-unknown', presses: 1 } });
+    assert.equal(w.sent.length, 1);
+  });
+
+  test('(+) a late redraw inside the window is still a success: the unchanged answer needs the whole window to stay put', async () => {
+    const w = world({ mode: 'manual', script: ['plan'], lag: 3 });
+    assert.deepEqual(await w.control().switchMode('%2', 'plan'), { status: 200, body: { mode: 'plan', presses: 1 } });
   });
 
   test('(−) a cycle that never reaches the target stops after 6 presses with 409 not-in-cycle', async () => {
@@ -379,7 +396,7 @@ describe('switchMode (−)', () => {
   test('(−) the settle wait is bounded by count: a frozen clock still ends after settleMs / pollMs reads', async () => {
     const w = world({ mode: 'manual', script: ['manual'] });
     const r = await w.control({ now: () => 0 }).switchMode('%2', 'plan');
-    assert.deepEqual(r, { status: 409, body: { error: 'mode-unknown', presses: 1 } });
+    assert.deepEqual(r, { status: 409, body: { error: 'mode-unchanged', presses: 1 } });
     assert.deepEqual(w.slept, [300, 300, 300, 300, 300, 300]);
   });
 
@@ -668,7 +685,7 @@ describe('endSession (+)', () => {
 
   test('(+) the options are honoured: pollMs, settleMs, maxPresses, escWaitMs, exitWaitMs, answerHoldMs', async () => {
     const w = world({ mode: 'manual', script: ['manual'] });
-    assert.deepEqual(await w.control({ pollMs: 100, settleMs: 250 }).switchMode('%2', 'plan'), { status: 409, body: { error: 'mode-unknown', presses: 1 } });
+    assert.deepEqual(await w.control({ pollMs: 100, settleMs: 250 }).switchMode('%2', 'plan'), { status: 409, body: { error: 'mode-unchanged', presses: 1 } });
     assert.deepEqual(w.slept, [100, 100, 100], 'ceil(250 / 100) reads');
     const w2 = world({ mode: 'manual', script: ['acceptEdits', 'plan', 'acceptEdits', 'plan'] });
     assert.deepEqual(await w2.control({ maxPresses: 2 }).switchMode('%2', 'auto'), { status: 409, body: { error: 'not-in-cycle', presses: 2 } });
@@ -771,14 +788,14 @@ describe('endSession (−)', () => {
   test('(−) a failed capture after typing: the cleanup still removes nika\'s text, the sequence stops, the pane is checked once', async () => {
     const w = world({ captureFailOn: 2 }); // 1st capture: before typing, 2nd: the check after the probe slash; the cleanup's capture works
     const r = await w.control().endSession('%2');
-    assert.deepEqual(r, { status: 200, body: { ended: false } });
+    assert.deepEqual(r, { status: 200, body: { ended: false, reason: 'keys' } });
     assert.deepEqual(keysOf(w), ['text:/', 'C-u']);
     assert.equal(w.cmdCalls, 1);
     const later = world({ captureFailOn: 3 }); // the check after the rest fails (the slash read fine)
-    assert.deepEqual(await later.control().endSession('%2'), { status: 200, body: { ended: false } });
+    assert.deepEqual(await later.control().endSession('%2'), { status: 200, body: { ended: false, reason: 'keys' } });
     assert.deepEqual(keysOf(later), ['text:/', 'text:exit', 'C-u'], 'the whole of nika\'s text is removed');
     const dead = world({ captureFailFrom: 2 }); // every capture after the first fails: the cleanup ends at once
-    assert.deepEqual(await dead.control().endSession('%2'), { status: 200, body: { ended: false } });
+    assert.deepEqual(await dead.control().endSession('%2'), { status: 200, body: { ended: false, reason: 'keys' } });
     assert.deepEqual(keysOf(dead), ['text:/']);
     assert.equal(dead.cmdCalls, 1);
   });
@@ -794,10 +811,10 @@ describe('endSession (−)', () => {
   test('(−) vim: a failed i send or a failed capture after it stops the sequence', async () => {
     const w = world({ vim: true, vimMode: 'normal' });
     w.failSend = () => ({ status: 429, body: { error: 'busy', message: 'slow' } });
-    assert.deepEqual(await w.control().endSession('%2'), { status: 200, body: { ended: false } });
+    assert.deepEqual(await w.control().endSession('%2'), { status: 200, body: { ended: false, reason: 'keys' } });
     assert.deepEqual(keysOf(w), ['text:i']);
     const cap = world({ vim: true, vimMode: 'normal', captureFailOn: 2 });
-    assert.deepEqual(await cap.control().endSession('%2'), { status: 200, body: { ended: false } });
+    assert.deepEqual(await cap.control().endSession('%2'), { status: 200, body: { ended: false, reason: 'keys' } });
     assert.deepEqual(keysOf(cap), ['text:i']);
   });
 
@@ -868,27 +885,49 @@ describe('endSession (−)', () => {
     const w = world({ exitAfter: 0 }); // would have exited had Enter been sent
     w.failSend = (body) => (body.text === 'exit' ? { status: 429, body: { error: 'busy', message: 'slow' } } : null);
     const r = await w.control().endSession('%2');
-    assert.deepEqual(r, { status: 200, body: { ended: false } });
+    assert.deepEqual(r, { status: 200, body: { ended: false, reason: 'keys' } });
     assert.deepEqual(keysOf(w), ['text:/', 'text:exit', 'C-u'], 'Enter is never sent; the probe\'s slash is removed');
     assert.equal(w.cmdCalls, 1);
     const slash = world({ exitAfter: 0 });
     slash.failSend = (body) => (body.text === '/' ? { status: 429, body: { error: 'busy', message: 'slow' } } : null);
-    assert.deepEqual(await slash.control().endSession('%2'), { status: 200, body: { ended: false } });
+    assert.deepEqual(await slash.control().endSession('%2'), { status: 200, body: { ended: false, reason: 'keys' } });
     assert.deepEqual(keysOf(slash), ['text:/'], 'the probe slash failed: nothing else is sent');
   });
 
   test('(−) keys.send returns 429 on Enter: sequence stopped, paneCommand checked once, ended false', async () => {
     const w = world({ exitAfter: Infinity });
     w.failSend = (body) => (body.keys?.[0] === 'Enter' ? { status: 429, body: { error: 'busy', message: 'slow' } } : null);
-    assert.deepEqual(await w.control().endSession('%2'), { status: 200, body: { ended: false } });
+    assert.deepEqual(await w.control().endSession('%2'), { status: 200, body: { ended: false, reason: 'keys' } });
     assert.deepEqual(keysOf(w), ['text:/', 'text:exit', 'Enter']);
     assert.equal(w.cmdCalls, 1);
+  });
+
+  test('(+) a failed key send during End: 200 ended false with reason "keys" (a rate limit is not "Claude didn\'t exit")', async () => {
+    const text = world({ exitAfter: 0 });
+    text.failSend = (body) => (body.text === 'exit' ? { status: 429, body: { error: 'busy', message: 'slow' } } : null);
+    assert.deepEqual(await text.control().endSession('%2'), { status: 200, body: { ended: false, reason: 'keys' } });
+    const enter = world({ exitAfter: Infinity });
+    enter.failSend = (body) => (body.keys?.[0] === 'Enter' ? { status: 429, body: { error: 'busy', message: 'slow' } } : null);
+    assert.deepEqual(await enter.control().endSession('%2'), { status: 200, body: { ended: false, reason: 'keys' } });
+    const esc = world({ state: 'busy' });
+    esc.failSend = () => ({ status: 429, body: { error: 'busy', message: 'slow' } });
+    assert.deepEqual(await esc.control().endSession('%2'), { status: 200, body: { ended: false, reason: 'keys' } });
+  });
+
+  test('(−) no reason where the keys were not the problem: pane gone after a failed send, Claude still running after the wait, a 409', async () => {
+    const gone = world({ cmd: 'zsh' });
+    gone.failSend = (body) => (body.text === 'exit' ? { status: 429, body: { error: 'busy', message: 'slow' } } : null);
+    assert.deepEqual(await gone.control().endSession('%2'), { status: 200, body: { ended: true } }, 'the pane no longer runs claude: ended, nothing to retry');
+    const waited = world({ exitAfter: Infinity });
+    assert.deepEqual(await waited.control().endSession('%2'), { status: 200, body: { ended: false } }, 'every key went out; Claude just did not exit');
+    const draft = world({ box: ['❯ a draft'] });
+    assert.deepEqual(await draft.control().endSession('%2'), code(409, 'input-not-empty'));
   });
 
   test('(−) a failed Escape stops the sequence like any failed send', async () => {
     const w = world({ state: 'busy' });
     w.failSend = () => ({ status: 429, body: { error: 'busy', message: 'slow' } });
-    assert.deepEqual(await w.control().endSession('%2'), { status: 200, body: { ended: false } });
+    assert.deepEqual(await w.control().endSession('%2'), { status: 200, body: { ended: false, reason: 'keys' } });
     assert.deepEqual(keysOf(w), ['Escape']);
   });
 
@@ -1087,7 +1126,7 @@ describe('settle after typing (settleTries, settlePollMs)', () => {
     assert.deepEqual(keysOf(w), ['text:/']);
     assert.equal(w.captures.length, 5, 'the cleanup read is the 4th, its confirming read the 5th');
     const e = world({ typeLag: 99, captureFailOn: 3 });
-    assert.deepEqual(await e.control().endSession('%2'), { status: 200, body: { ended: false } });
+    assert.deepEqual(await e.control().endSession('%2'), { status: 200, body: { ended: false, reason: 'keys' } });
     assert.equal(e.cmdCalls, 1);
   });
 
@@ -1802,6 +1841,13 @@ describe('fix round 1: a footer that stays unreadable after a press out of bypas
     assert.deepEqual(lagging.sent, [{ keys: ['BTab'] }]);
   });
 
+  test('(−) a footer that reads bypass and does not change after the press is stopped-in-bypass, never mode-unchanged', async () => {
+    const w = world({ mode: 'bypassPermissions', script: ['bypassPermissions'] });
+    assert.deepEqual(await w.control().switchMode('%2', 'manual'), { status: 409, body: { error: 'stopped-in-bypass', presses: 1 } });
+    const later = world({ mode: 'plan', script: ['bypassPermissions', 'bypassPermissions'] }); // passes into bypass, and the next press changes nothing
+    assert.deepEqual(await later.control().switchMode('%2', 'manual'), { status: 409, body: { error: 'stopped-in-bypass', presses: 2 } });
+  });
+
   test('(+) the same unreadable footer after a press that started in another mode stays 409 mode-unknown with presses (the screen never showed bypass)', async () => {
     const lagging = world({ mode: 'plan', script: ['bypassPermissions', 'manual'], lag: 99 });
     assert.deepEqual(await lagging.control().switchMode('%2', 'manual'), { status: 409, body: { error: 'mode-unknown', presses: 1 } });
@@ -1916,7 +1962,7 @@ describe('fix round 1: a failed send of the probe\'s rest removes the slash (Min
     assert.deepEqual(cmd.box, [PLACEHOLDER_BOX]);
     const end = world({});
     end.failSend = (b) => (b.text === 'exit' ? { status: 502, body: { error: 'tmux_failed', message: 'x' } } : null);
-    assert.deepEqual(await end.control().endSession('%2'), { status: 200, body: { ended: false } });
+    assert.deepEqual(await end.control().endSession('%2'), { status: 200, body: { ended: false, reason: 'keys' } });
     assert.deepEqual(keysOf(end), ['text:/', 'text:exit', 'C-u']);
   });
 

@@ -13,7 +13,7 @@ import { createAppApi } from '../src/api-app.js';
 import { readHistory } from '../src/collect/history.js';
 import { loadConfig, addProject } from '../src/store.js';
 import { configDir, stateDir } from '../src/paths.js';
-import { lastNonBlank, PROMPT_ROWS } from '../src/mode.js';
+import { lastNonBlank, modeFromRows, PROMPT_ROWS } from '../src/mode.js';
 import { MODEL_CATALOG } from '../src/models.js';
 import { makeWorld } from './tmux-fake.js';
 import { makeFixture, cleanup, SID } from './helpers.js';
@@ -659,13 +659,23 @@ describe('pane capture and keys', () => {
     const a = await boot();
     const r = await a.call('GET', '/api/app/pane/%256/capture');
     assert.equal(r.status, 200);
-    assert.equal(r.headers.etag, '"abc"');
-    assert.equal(r.body.etag, 'abc');
+    assert.match(r.body.etag, /^[0-9a-f]{32}$/, 'hex, as the page accepts it');
+    assert.equal(r.headers.etag, `"${r.body.etag}"`);
     assert.equal(a.deps.calls.find((c) => c[0] === 'capture')[1], '%6');
-    const again = await a.call('GET', '/api/app/pane/%256/capture', { headers: { 'if-none-match': '"abc"' } });
+    const again = await a.call('GET', '/api/app/pane/%256/capture', { headers: { 'if-none-match': r.headers.etag } });
     assert.equal(again.status, 304);
     assert.equal(again.raw, '');
-    assert.equal(again.headers.etag, '"abc"');
+    assert.equal(again.headers.etag, r.headers.etag);
+  });
+
+  test('(−) an If-None-Match that is not the current ETag (the mirror\'s own rows hash included) gets the full 200', async () => {
+    const a = await boot();
+    const r = await a.call('GET', '/api/app/pane/%256/capture');
+    for (const inm of ['"abc"', '"0000"', 'W/"nope"', '']) {
+      const again = await a.call('GET', '/api/app/pane/%256/capture', { headers: { 'if-none-match': inm } });
+      assert.equal(again.status, 200, inm);
+      assert.equal(again.body.etag, r.body.etag);
+    }
   });
 
   test('(+) a pane nika started is eligible; the unencoded %-form of the id works too', async () => {
@@ -956,8 +966,8 @@ describe('capture: mode, modeConfirmed, prompt', () => {
     assert.equal(r.body.modeConfirmed, true);
     assert.equal(r.body.prompt, null);
     assert.equal(r.body.cols, 80);
-    assert.equal(r.body.etag, 'abc');
-    assert.equal(r.headers.etag, '"abc"');
+    assert.match(r.body.etag, /^[0-9a-f]{32}$/);
+    assert.equal(r.headers.etag, `"${r.body.etag}"`);
   });
 
   test('(+) a permission prompt on screen: question, options and a 16-hex sig', async () => {
@@ -1098,16 +1108,49 @@ describe('capture: mode, modeConfirmed, prompt', () => {
 
   test('(−) a failing capture and a 304 carry no mode fields; the shared cached body is not mutated', async () => {
     const shared = { cols: 80, rows: rowsOf(['t', FOOTER.plan]), cursor: { x: 0, y: 0, visible: true }, etag: 'abc' };
-    const a = await boot({ deps: makeDeps({ mirror: { capture: async (id, inm) => (inm === '"abc"' ? { status: 304, body: null, etag: 'abc' } : { status: 200, body: shared, etag: 'abc' }) } }) });
-    assert.equal((await pane(a, '%6', 'capture')).body.mode, 'plan');
+    const a = await boot({ deps: makeDeps({ mirror: { capture: async () => ({ status: 200, body: shared, etag: 'abc' }) } }) });
+    const first = await pane(a, '%6', 'capture');
+    assert.equal(first.body.mode, 'plan');
     assert.equal('mode' in shared, false);
-    const again = await pane(a, '%6', 'capture', { headers: { 'if-none-match': '"abc"' } });
+    assert.equal(shared.etag, 'abc', 'the shared body keeps the mirror\'s own ETag');
+    const again = await pane(a, '%6', 'capture', { headers: { 'if-none-match': first.headers.etag } });
     assert.equal(again.status, 304);
     assert.equal(again.raw, '');
     const down = await boot({ deps: makeDeps({ mirror: { capture: async () => ({ status: 503, body: { error: 'tmux_unavailable', message: 'x' } }) } }) });
     const r = await pane(down, '%6', 'capture');
     assert.equal(r.status, 503);
     assert.equal('mode' in r.body, false);
+  });
+});
+
+describe('capture: the ETag covers the mode shown, not only the rows (final review, Minor 3)', () => {
+  const lost = { status: 409, body: { error: 'mode-unknown', presses: 1 } };
+
+  test('(−) same rows, held mode changed by a failed switch: the page\'s If-None-Match no longer gets a 304, it gets 200 with the new mode', async () => {
+    const { a, screens } = await bootScreens({ ctlAnswers: { switchMode: lost } });
+    screens['%6'] = rowsOf(['text', FOOTER.plan]);
+    assert.equal((await pane(a, '%6', 'capture')).body.mode, 'plan');
+    screens['%6'] = rowsOf(['dialog over the footer', 'a footer nobody recognises']); // the footer is covered: the held mode is shown
+    const covered = await pane(a, '%6', 'capture');
+    assert.deepEqual([covered.body.mode, covered.body.modeConfirmed], ['plan', false]);
+    const same = await pane(a, '%6', 'capture', { headers: { 'if-none-match': covered.headers.etag } });
+    assert.equal(same.status, 304, 'nothing changed: still a 304');
+    assert.equal((await pane(a, '%6', 'mode', { method: 'POST', json: { target: 'manual' } })).status, 409); // 1 press, then the held mode is forgotten
+    const after = await pane(a, '%6', 'capture', { headers: { 'if-none-match': covered.headers.etag } });
+    assert.equal(after.status, 200);
+    assert.deepEqual([after.body.mode, after.body.modeConfirmed], ['unknown', true]);
+    assert.notEqual(after.body.etag, covered.body.etag);
+    assert.equal(after.headers.etag, `"${after.body.etag}"`);
+    assert.equal((await pane(a, '%6', 'capture', { headers: { 'if-none-match': after.headers.etag } })).status, 304, 'and the new answer can be revalidated');
+  });
+
+  test('(+) the same rows with the same mode keep one ETag; a different mode over the same rows is another', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = rowsOf(['same text', FOOTER.plan]);
+    const plan = await pane(a, '%6', 'capture');
+    assert.equal((await pane(a, '%6', 'capture')).body.etag, plan.body.etag);
+    screens['%6'] = rowsOf(['same text', FOOTER.accept]); // the fake mirror reports one rows hash for every screen
+    assert.notEqual((await pane(a, '%6', 'capture')).body.etag, plan.body.etag);
   });
 });
 
@@ -1459,8 +1502,8 @@ describe('POST /api/app/pane/:id/end', () => {
     assert.equal(collects(), 2);
   });
 
-  test('(+) the eligibility cache is also reset when End answers 409 or ended false', async () => {
-    for (const answers of [{ status: 409, body: { error: 'not-idle' } }, { status: 200, body: { ended: false } }]) {
+  test('(+) the eligibility cache is also reset when End answers 409 or ended false (with or without reason keys, relayed as the controller sent it)', async () => {
+    for (const answers of [{ status: 409, body: { error: 'not-idle' } }, { status: 200, body: { ended: false } }, { status: 200, body: { ended: false, reason: 'keys' } }]) {
       const { a } = await bootScreens({ ctlAnswers: { endSession: answers } });
       const r = await end(a);
       assert.deepEqual([r.status, r.body], [answers.status, answers.body]);
@@ -1511,14 +1554,38 @@ describe('POST /api/app/pane/:id/keys: the bypass prompt guard (A2, H2)', () => 
     assert.equal(sent(a).length, 5);
   });
 
-  test('(+) letters, arrows, Escape, BTab and the like skip the capture and go through even while a bypass prompt is open', async () => {
+  test('(+) letters, arrows, Escape and the like skip the capture and go through even while a bypass prompt is open', async () => {
     const { a, screens, mirror } = await bootScreens();
     screens['%6'] = rowsOf(BYPASS_PROMPT);
-    for (const json of [{ text: 'hello world' }, { keys: ['Up', 'Down', 'Left', 'Right'] }, { keys: ['Escape'] }, { keys: ['BTab'] }, { keys: ['C-u', 'Tab'] }, { text: 'abc', keys: ['C-c'] }]) {
+    for (const json of [{ text: 'hello world' }, { keys: ['Up', 'Down', 'Left', 'Right'] }, { keys: ['Escape'] }, { keys: ['C-u', 'Tab'] }, { text: 'abc', keys: ['C-c'] }]) {
       assert.equal((await keysTo(a, json)).status, 200, JSON.stringify(json));
     }
-    assert.equal(sent(a).length, 6);
+    assert.equal(sent(a).length, 5);
     assert.deepEqual(mirror.seen, [], 'not one capture: typing stays as fast as in 0.2');
+  });
+
+  test('(+) BTab with no prompt on screen: one fresh capture first, then it is sent (mode switching by chip is unaffected)', async () => {
+    const { a, screens, mirror } = await bootScreens();
+    screens['%6'] = rowsOf(['hello', FOOTER.plan]);
+    assert.equal((await keysTo(a, { keys: ['BTab'] })).status, 200);
+    assert.deepEqual(mirror.opts, [{ fresh: true }]);
+    screens['%6'] = rowsOf(PROMPT);
+    assert.equal((await keysTo(a, { keys: ['Up', 'BTab'] })).status, 200, 'a prompt that does not mention bypass: sent, like Enter');
+    screens['%6'] = rowsOf(['working...', '  ⏵⏵ bypass permissions on (shift+tab to cycle)']);
+    assert.equal((await keysTo(a, { keys: ['BTab'] })).status, 200, 'a readable bypass footer is not a prompt: Shift-Tab is how a session leaves bypass');
+    assert.deepEqual(sent(a).map((c) => c[2].keys), [['BTab'], ['Up', 'BTab'], ['BTab']]);
+  });
+
+  test('(−) BTab on a bypass prompt (Shift-Tab can pick "allow for this session"): 409 bypass-prompt and nothing is sent', async () => {
+    const { a, screens } = await bootScreens();
+    for (const lines of [BYPASS_PROMPT, BYPASS_QUESTION_PROMPT]) {
+      screens['%6'] = rowsOf(lines);
+      for (const json of [{ keys: ['BTab'] }, { keys: ['Up', 'BTab'] }, { text: 'x', keys: ['BTab'] }]) {
+        const r = await keysTo(a, json);
+        assert.deepEqual([r.status, r.body.error, r.body.message], [BYPASS.status, BYPASS.error, BYPASS.message], JSON.stringify(json));
+      }
+    }
+    assert.deepEqual(sent(a), []);
   });
 
   test('(−) Enter on a bypass prompt: 409 bypass-prompt and nothing is sent', async () => {
@@ -1552,15 +1619,30 @@ describe('POST /api/app/pane/:id/keys: the bypass prompt guard (A2, H2)', () => 
     assert.equal((await keysTo(a, { keys: ['Enter'] })).status, 409, 'inside the window (fail closed): it does');
   });
 
-  test('(−) a dialog nika does not parse (another hint row, unreadable footer) whose window mentions bypass: Enter, a digit and a paste are 409 bypass-prompt too', async () => {
+  test('(−) a dialog nika does not parse (another hint row, unreadable footer) whose window mentions bypass: Enter, a digit, a paste and BTab are 409 screen-unclear, nothing sent', async () => {
     const { a, screens } = await bootScreens();
     screens['%6'] = rowsOf(['Allow bypass permissions for this folder?', ' Enter to confirm · Esc to cancel']);
     assert.equal((await pane(a, '%6', 'capture')).body.prompt, null, 'the page has no buttons for it either');
-    for (const json of [{ keys: ['Enter'] }, { text: '1' }, { paste: 'x' }]) {
+    for (const json of [{ keys: ['Enter'] }, { text: '1' }, { paste: 'x' }, { keys: ['BTab'] }]) {
       const r = await keysTo(a, json);
-      assert.deepEqual([r.status, r.body.error, r.body.message], [BYPASS.status, BYPASS.error, BYPASS.message], JSON.stringify(json));
+      assert.deepEqual([r.status, r.body.error, r.body.message], [409, 'screen-unclear', "nika can't tell what Claude is showing; use the terminal"], JSON.stringify(json));
     }
     assert.deepEqual(sent(a), []);
+  });
+
+  test('(−) the slash menu is an unreadable footer too: a command with "bypass" in its name does not read as a bypass prompt', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = rowsOf(['❯ /byp', '  /bypass-cache   Skip the cache for one run', '  /bypass-ci      Rerun without CI']);
+    const r = await keysTo(a, { keys: ['Enter'] });
+    assert.deepEqual([r.status, r.body.error], [409, 'screen-unclear']);
+    assert.deepEqual(sent(a), []);
+  });
+
+  test('(+) a parsed prompt keeps bypass-prompt even though its footer is unreadable (a prompt covers the footer)', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = rowsOf(BYPASS_PROMPT);
+    assert.equal(modeFromRows(rowsOf(BYPASS_PROMPT)), 'unknown');
+    assert.equal((await keysTo(a, { keys: ['Enter'] })).body.error, 'bypass-prompt');
   });
 
   test('(+) the same unreadable dialog without the word, or a readable footer that itself says bypass, or a bypass word in output with a readable footer: sent', async () => {

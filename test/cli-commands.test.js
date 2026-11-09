@@ -387,6 +387,71 @@ describe('app install and the managed copy', () => {
     assert.deepEqual(exec.calls, [['open', w.target], ['open', '-b', APP_ID]]);
   });
 
+  /** A brewApps list that counts how often it is read: one appCopyState (or one install) reads it once through findSource. */
+  const countedBrew = () => {
+    const hits = { n: 0 };
+    const brewApps = new Proxy([], { get: (t, p, r) => { if (p === Symbol.iterator) hits.n += 1; return Reflect.get(t, p, r); } });
+    return { brewApps, hits };
+  };
+
+  test('(+) a launch reads the state of the copy once and reuses it: managed current = 1 read, then open <target>', async () => {
+    const w = await copyWorld();
+    bundle(w.target, VERSION);
+    managedMarker(w, VERSION);
+    for (const argv of [[], ['open'], ['app']]) {
+      const { brewApps, hits } = countedBrew();
+      const exec = copyExec();
+      const r = await cli(argv, { ...w.io({ brewApps }), exec });
+      assert.equal(r.code, 0, r.err);
+      assert.deepEqual(exec.calls, [['open', w.target]], argv.join(' '));
+      assert.equal(hits.n, 1, `${argv.join(' ') || 'nika'}: one appCopyState read per launch`);
+    }
+  });
+
+  test('(+) a refresh launch reads once for the state and once inside the install, not a third time to decide what to open', async () => {
+    const w = await copyWorld(VERSION);
+    bundle(w.target, '0.0.1');
+    managedMarker(w, '0.0.1');
+    const { brewApps, hits } = countedBrew();
+    const exec = copyExec();
+    const r = await cli(['app'], { ...w.io({ brewApps }), exec });
+    assert.equal(r.code, 0, r.err);
+    assert.deepEqual(exec.calls.map((c) => c[0]), [DITTO, LSREGISTER, 'open']);
+    assert.deepEqual(exec.calls[2], ['open', w.target]);
+    assert.equal(hits.n, 2);
+  });
+
+  test('(−) the other launch shapes read the state at most once: unmanaged (open -b), a failed refresh (the old copy is opened), --browser and Linux read nothing', async () => {
+    const unmanaged = await copyWorld(VERSION);
+    bundle(unmanaged.target, VERSION);
+    const a = countedBrew();
+    const e1 = copyExec();
+    await cli([], { ...unmanaged.io({ brewApps: a.brewApps }), exec: e1 });
+    assert.deepEqual(e1.calls, [['open', '-b', APP_ID]]);
+    assert.equal(a.hits.n, 1);
+
+    const failing = await copyWorld(VERSION);
+    bundle(failing.target, '0.0.1');
+    managedMarker(failing, '0.0.1');
+    const b = countedBrew();
+    const e2 = copyExec({ failDitto: true });
+    const r2 = await cli(['app'], { ...failing.io({ brewApps: b.brewApps }), exec: e2 });
+    assert.equal(r2.code, 0, r2.err);
+    assert.deepEqual(e2.calls.at(-1), ['open', failing.target], 'the old copy is still opened, on the state read before the failed refresh');
+    assert.equal(b.hits.n, 2, 'the state once, the install once');
+
+    const browser = await copyWorld(VERSION);
+    const c = countedBrew();
+    const srv = await healthServer();
+    try {
+      await cli(['open', '--browser'], { ...browser.io({ brewApps: c.brewApps }), env: { ...browser.cliEnv, NIKA_PORT: String(srv.port) }, exec: copyExec() });
+    } finally {
+      await srv.close();
+    }
+    await cli(['app'], { ...browser.io({ brewApps: c.brewApps, platform: 'linux', env: { ...browser.cliEnv, PATH: '' } }), exec: execLog({ 'gtk-launch': () => OK }) });
+    assert.equal(c.hits.n, 0);
+  });
+
   test('(+) after brew upgrade a launch command refreshes a managed stale copy, says so, and opens the copy', async () => {
     const w = await copyWorld(VERSION);
     bundle(w.target, '0.0.1');

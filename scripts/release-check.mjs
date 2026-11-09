@@ -2,7 +2,8 @@
 // Release check, run by .github/workflows/release-linux.yml on a tag push before anything is built.
 // Usage: node scripts/release-check.mjs <tag> [--root <repo>] [--notes <file>]
 // Refuses (exit 1) unless the tag is vX.Y.Z, package.json, app/src-tauri/tauri.conf.json and app/src-tauri/Cargo.toml
-// all carry X.Y.Z, and CHANGELOG.md has a non-empty "## X.Y.Z" section. That section, with its wrapped lines joined,
+// all carry one version (a drift between them is named first: the app-copy refresh compares the app's version with the
+// CLI's) and it is X.Y.Z, and CHANGELOG.md has a non-empty "## X.Y.Z" section. That section, with its wrapped lines joined,
 // becomes the draft release's notes: written to --notes, else printed. Bad usage exits 2. Node stdlib only.
 import fs from 'node:fs';
 import path from 'node:path';
@@ -28,6 +29,12 @@ export function versionFiles(root) {
     'app/src-tauri/tauri.conf.json': JSON.parse(read('app/src-tauri/tauri.conf.json')).version,
     'app/src-tauri/Cargo.toml': cargoVersion ? cargoVersion[1] : null,
   };
+}
+
+/** null when package.json, tauri.conf.json and Cargo.toml carry the same version, else every file with its version, listed. */
+export function versionDrift(root) {
+  const found = Object.entries(versionFiles(root));
+  return new Set(found.map(([, v]) => v)).size > 1 ? found.map(([f, v]) => `${f} (${v})`).join(', ') : null;
 }
 
 /** Body of the "## <version>" section (heading excluded, up to the next "## " heading), trimmed; null if absent. */
@@ -76,6 +83,8 @@ export function unwrapMarkdown(text) {
 /** Throws with a readable reason unless the tag can be released; returns the release notes (unwrapped). */
 export function releaseCheck(root, tag) {
   const version = tagVersion(tag);
+  const drift = versionDrift(root);
+  if (drift) throw new Error(`version files differ: ${drift}`);
   const wrong = Object.entries(versionFiles(root)).filter(([, v]) => v !== version);
   if (wrong.length) {
     throw new Error(`${tag} does not match ${wrong.map(([f, v]) => `${f} (${v})`).join(', ')}`);
