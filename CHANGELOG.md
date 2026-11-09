@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 — 2026-11-09
 
 Session control (desktop app; the browser dashboard on :3335 stays read-only):
 
@@ -39,14 +39,16 @@ Session control (desktop app; the browser dashboard on :3335 stays read-only):
   The Enter and Shift-Tab chips are off too. A prompt that mentions bypass has no answer buttons; the keys route's refusal
   shows a fixed line.
 - The session window follows the pane to its new session after `/clear`, when exactly one live session has the pane.
-- Switching modes reports a stop in Bypass, or a footer nika could not read after a press, as an alert; with no readable
+- Switching modes reports a stop in Bypass, or a footer nika could not read after a press, as an alert; a press that
+  leaves the mode unchanged says so calmly ("The mode didn't change; try again or use the terminal."); with no readable
   mode the Shift-Tab chip is gone (use the terminal).
 - Small fixes: the Back button names the project only when you came from one; the claude.ai link and the shortcuts button
   stay together in the header; the shortcuts window's tables scroll inside their own box at 320 px; a dialog opened from a
   menu item returns focus to the menu's button; the passthrough key reads `⌃]` on a Mac; the message box area no longer
   widens the session window past 320 px.
 - Bypass guard: nika's keys route refuses Enter, Shift-Tab, a digit or a paste while a permission prompt that mentions bypass is
-  on screen (the question included); answer those in the terminal. The prompt buttons read the whole prompt, not only
+  on screen (the question included); answer those in the terminal. When Claude shows something nika cannot read and it
+  mentions bypass, the refusal says so ("nika can't tell what Claude is showing; use the terminal."). The prompt buttons read the whole prompt, not only
   the option: the capture's `prompt` carries `bypass`, the same window test the answer route applies, and the page draws no
   answer button when it is true (an answer the route still refuses with 400 says to use the terminal and locks that question).
 - Switching modes never stops quietly in Bypass: it keeps pressing while the footer reads Bypass even if Claude looks
