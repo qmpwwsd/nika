@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.3.1 — 2026-11-09
+
+Dashboard fixes (desktop app; the "Show ended" fix also applies to the browser dashboard on :3335):
 
 - Fix: "Show ended" now hides and shows the ended agents on the dashboard. Unchecked (the default), ended agents are not drawn,
   and a repository with only ended agents shows its header and "No live agents."; checked, every repository with ended agents
