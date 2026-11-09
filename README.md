@@ -171,9 +171,15 @@ More: [docs/packaging.md](docs/packaging.md) (build details, signing, Linux pack
 ### Using the app
 
 - **Dashboard.** One line says how many agents need you, are waiting or are working. Agents that need you are listed first
-  under "Waiting on you", then every project with its agents (needs you, waiting, working, ended). Filter by text, change the
-  time window, show or hide ended agents. Click a row to open its session window. Rows whose Claude pane nika can read
+  under "Waiting on you", then every repository with its live agents (needs you, waiting, working). Ended agents are hidden:
+  a repository with only ended agents says "No live agents."; tick **Show ended** to list them in an "Ended" section under
+  each repository (open; fold it by hand and it stays folded until you tick the box again). Filter by text and change the
+  time window. Click a row to open its session window. Rows whose Claude pane nika can read
   also show the agent's permission mode as a tag, and their menu has **End session…**.
+- **Sidebar.** **Projects** lists your registered projects with their live or needs-you count; with none it says "No
+  projects yet." and points to the "+". Under **Detected** it lists repositories that run live agents but are not projects
+  yet (up to 8, the ones that need you first). The row shows that repository on the dashboard; its small "+" opens the
+  folder picker, like the sidebar "+".
 - **Add a project.** The sidebar "+" (or `Mod+O`) opens the native folder picker. The project page notes when the folder is
   not a git repository. A new project has no orchestration rules yet: use **Apply rules** to preview the exact diffs, then
   confirm. nika writes only the files shown in the preview, keeps a backup outside the repository and never runs git.

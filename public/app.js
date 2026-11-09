@@ -6,6 +6,7 @@ import { h, icon } from './dom.js';
 import { modeEl, rowMode, canEndRow } from './modes.js';
 import { wantsHelp, wantsBack, isTextEntry, openShortcuts, helpHint, backHint } from './shortcuts.js';
 import { copyBanner } from './app-copy.js';
+import { endedPlan, resetEndedState } from './dash-model.js';
 import {
   $, $$, MAC, SHAPE, ORDER, state, hooks, load, save, timeEl, tickTimes, announce, toast, copyText,
   statusEl, modelEl, rulesEl, countsLine, sessionHref, menuEl, menuIsOpen, openDialog, initDialogs, initMenus,
@@ -60,6 +61,11 @@ function matches(a, g, q) {
   if (!q) return true;
   const hay = [a.name, a.title, a.gitBranch, a.cwd, a.worktree, a.modelLabel, a.lastPrompt, a.report?.status, a.pane?.id, g.label, a.attention].filter(Boolean).join('\n').toLowerCase();
   return q.split(/\s+/).every((w) => hay.includes(w));
+}
+
+/** A filtered dashboard keeps a group only for an agent that matches and is shown: ended agents count only while "Show ended" is on. */
+function groupMatches(g, q) {
+  return g.agents.some((a) => matches(a, g, q) && (state.showEnded || sOf(a) !== 'ended'));
 }
 
 const byStatus = (a, b) => ORDER[sOf(a)] - ORDER[sOf(b)] || (b.lastActivity ?? 0) - (a.lastActivity ?? 0);
@@ -207,13 +213,15 @@ function rowEl(a, g, { scope, showProject = false }) {
 const rowsEl = (list, g, opts, label) => h('ul', { class: 'rows', 'aria-label': label }, list.map((a) => rowEl(a, g, opts)));
 
 /**
- * Live rows (first ROW_CAP, then "show more"), the empty box and the "Ended" disclosure of one group.
- * Used by the dashboard and by the project view (`endedOpen`).
+ * Live rows (first ROW_CAP, then "show more"), the empty box and the "Ended" disclosure of one group (dash-model.js endedPlan).
+ * Used by the dashboard and by the project view (`endedOpen`: its Ended section is always there, open).
  */
 export function agentNodes(g, q, scope, { endedOpen = false } = {}) {
   const list = g.agents.filter((a) => matches(a, g, q)).sort(byStatus);
   const live = list.filter((a) => sOf(a) !== 'ended');
   const ended = list.filter((a) => sOf(a) === 'ended');
+  const id = `ended:${scope}`;
+  const plan = endedPlan({ live: live.length, ended: ended.length, showEnded: endedOpen || state.showEnded, collapsed: state.open.has(`!${id}`) });
   const nodes = [];
   const capId = `cap:${scope}`;
   const all = state.expanded.has(capId) || live.length <= ROW_CAP;
@@ -224,12 +232,11 @@ export function agentNodes(g, q, scope, { endedOpen = false } = {}) {
   if (ul) nodes.push(ul);
   else if (!q && isApp && g.project && !ended.length) {
     nodes.push(h('div', { class: 'rows no-agents' }, h('span', { text: 'No agents in this project.' }), hooks.groupActions?.(g, { primary: true })));
+  } else if (plan.noLiveLine) {
+    nodes.push(h('div', { class: 'rows no-agents' }, h('span', { text: 'No live agents.' })));
   }
-  if (ended.length) {
-    const id = `ended:${scope}`;
-    const def = state.showEnded || endedOpen || !live.length;
-    const open = state.open.has(id) || (def && !state.open.has(`!${id}`));
-    const d = h('details', { class: 'ended', open },
+  if (plan.endedSection) {
+    const d = h('details', { class: 'ended', open: plan.open },
       h('summary', { 'data-fk': `sum:${id}`, text: `Ended (${ended.length})` }),
       rowsEl(ended, g, { scope: endedScope(scope) }, `${g.label} ended agents`));
     d.addEventListener('toggle', () => {
@@ -270,7 +277,7 @@ function groupEl(g, q) {
   const c = g.counts;
   return h('section', { class: 'grp', 'aria-labelledby': `g-${g.key}` },
     h('header', { class: 'grp-head' },
-      h('h2', { id: `g-${g.key}` }, isApp && g.project
+      h('h2', { id: `g-${g.key}`, tabindex: '-1' }, isApp && g.project
         ? h('a', { href: `#project/${g.project.key}`, 'data-fk': `g:${g.key}`, title: g.label, text: g.label })
         : h('span', { title: g.label, text: g.label })),
       g.root ? h('span', { class: 'path mono', title: g.root, text: g.root }) : null,
@@ -299,7 +306,7 @@ function dashboardNodes() {
   if (queue) nodes.push(queue);
   let any = false;
   for (const g of groups) {
-    if (q && !g.agents.some((a) => matches(a, g, q))) continue;
+    if (q && !groupMatches(g, q)) continue;
     any = true;
     nodes.push(groupEl(g, q));
   }
@@ -546,6 +553,7 @@ function initControls() {
   ended.addEventListener('change', () => {
     state.showEnded = ended.checked;
     save('showEnded', state.showEnded);
+    resetEndedState(state.open); // every Ended section starts open again, folded by hand or not
     render(true); // a user action always redraws, even with a selection in the list
   });
   $('#dash-filter').addEventListener('input', (e) => {

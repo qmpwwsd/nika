@@ -165,6 +165,13 @@ body[data-tier="browser"] .app { grid-template-columns: minmax(0, 1fr); }
 .side-h h2 { margin: 0; font-size: var(--fs-small); font-weight: 600; color: var(--text-muted); }
 .side-projects { position: relative; list-style: none; margin: 0; padding: 0 8px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 1px; overflow: auto; min-height: 0; align-content: start; }
 .side-projects .label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.side-hint { padding: 2px 16px 6px; font-size: var(--fs-small); color: var(--text-muted); }
+.side-hint p { margin: 0; }
+.side-det { display: flex; flex-direction: column; min-height: 0; }
+.side-sub { margin: 0; padding: 12px 16px 4px; font-size: var(--fs-small); font-weight: 600; color: var(--text-muted); }
+.side-projects li.has-act { display: flex; align-items: center; gap: 2px; }
+.side-projects li.has-act a { flex: 1; min-width: 0; }
+.side-projects li.has-act .btn { flex: none; }
 .mono-av { flex: none; width: 20px; height: 20px; border-radius: 5px; display: grid; place-items: center; font-size: 10px; font-weight: 700; background: var(--surface-3); color: var(--text-muted); }
 .cnt { display: inline-flex; align-items: center; gap: 4px; font-size: var(--fs-small); font-variant-numeric: tabular-nums; color: var(--text-muted); }
 .cnt[data-s="attn"] { color: var(--attn); font-weight: 700; }
@@ -371,10 +378,12 @@ dialog.dlg-rules[open] { display: flex; flex-direction: column; }
 }
 @media (max-width: 900px) {
   .app { --side-w: var(--side-rail); }
-  .side .label, .side .side-h h2, .brand b, .brand span, .nav kbd, .side-foot .long { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .side .label, .side .side-h h2, .side .side-sub, .side .side-hint, .brand b, .brand span, .nav kbd, .side-foot .long { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   .side-h { justify-content: center; padding: 12px 0 4px; }
   .nav a, .side-projects a { justify-content: center; padding: 0; position: relative; min-height: 36px; }
   .side-projects .cnt { position: absolute; top: 2px; right: 6px; }
+  .side-projects li.has-act .btn { display: none; } /* the rail keeps one "+": the header's opens the same folder picker */
+  .side-det { margin-top: 6px; border-top: 1px solid var(--line); }
   .side-projects .cnt:not([data-s="attn"]) { display: none; }
   .brand { justify-content: center; padding: 14px 0; }
   .side-foot { padding: 10px 0; text-align: center; }

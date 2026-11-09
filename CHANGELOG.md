@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Fix: "Show ended" now hides and shows the ended agents on the dashboard. Unchecked (the default), ended agents are not drawn,
+  and a repository with only ended agents shows its header and "No live agents."; checked, every repository with ended agents
+  shows its "Ended (n)" section open (one you fold by hand stays folded until the box changes). The project view is unchanged.
+- Fix: the sidebar's Projects list is no longer blank without projects: it says "No projects yet." and how to add one, and a
+  new Detected list shows repositories that run live agents but are not projects, each with an "Add project" button (the same
+  folder picker as before) and a link to its group on the dashboard.
+
 ## 0.3.0 — 2026-11-09
 
 Session control (desktop app; the browser dashboard on :3335 stays read-only):

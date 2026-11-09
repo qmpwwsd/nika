@@ -10,6 +10,7 @@ import { parseModes, modesAfter } from './modes.js';
 import { copyBanner, copyErrorText, copyToast } from './app-copy.js';
 import { CUSTOM, MODEL_ID, MODEL_HINT, fillModelSelect } from './models-ui.js';
 import { buildGroups, agentNodes, swap, interacting, render } from './app.js';
+import { sidebarModel } from './dash-model.js';
 
 const PERM_LABEL = {
   default: 'Claude Code default (no flag)',
@@ -100,26 +101,42 @@ function limitInfo(g) {
 }
 
 /* ---------- sidebar and environment ---------- */
+/** One sidebar row's link: initials, name and the attention or live count (shared by the project list and the Detected list). */
+function sideLink(attrs, r) {
+  return h('a', attrs,
+    h('span', { class: 'mono-av', 'aria-hidden': 'true', text: r.name.split(/[-_ .]+/).filter(Boolean).map((w) => w[0]).join('').slice(0, 2).toUpperCase() || '?' }),
+    h('span', { class: 'label', text: r.name }),
+    r.attn ? h('span', { class: 'cnt', 'data-s': 'attn' }, h('span', { class: 'sr-only', text: ', needs you: ' }), String(r.attn))
+      : r.live ? h('span', { class: 'cnt' }, h('span', { class: 'sr-only', text: ', live agents: ' }), String(r.live)) : null);
+}
+
+/** A Detected row opens the dashboard and puts focus on that repository's group heading (focus scrolls it into view). */
+function showGroup(key) {
+  const focus = () => document.getElementById(`g-${key}`)?.focus();
+  if (state.route.name === 'dashboard') {
+    focus();
+    return;
+  }
+  window.addEventListener('hashchange', focus, { once: true }); // after the router has drawn the dashboard
+  location.hash = '#dashboard';
+}
+
 let sideSig = '';
 function renderSide() {
-  const projects = state.projects ?? [];
-  const groups = new Map(buildGroups().filter((g) => g.project).map((g) => [g.project.key, g]));
-  const rows = projects.map((p) => {
-    const c = groups.get(p.key)?.counts;
-    return [p.key, p.name, c?.attn ?? 0, c?.live ?? 0];
-  });
+  const { empty, rows, detected } = sidebarModel({ projects: state.projects ?? [], groups: buildGroups() });
   const cur = state.route.name === 'project' ? state.route.key : '';
   const env = [state.me?.tmux, state.me?.claude, state.me?.version];
-  const sig = JSON.stringify([rows, cur, env]);
+  const sig = JSON.stringify([rows, detected, cur, env]);
   if (sig === sideSig) return;
   sideSig = sig;
-  swap($('#side-projects'), rows.map(([key, name, attn, live]) => h('li', null,
-    h('a', { href: `#project/${key}`, 'data-fk': `side:${key}`, title: name, 'aria-current': key === cur ? 'page' : null },
-      h('span', { class: 'mono-av', 'aria-hidden': 'true', text: name.split(/[-_ .]+/).filter(Boolean).map((w) => w[0]).join('').slice(0, 2).toUpperCase() || '?' }),
-      h('span', { class: 'label', text: name }),
-      attn ? h('span', { class: 'cnt', 'data-s': 'attn' }, h('span', { class: 'sr-only', text: ', needs you: ' }), String(attn))
-        : live ? h('span', { class: 'cnt' }, h('span', { class: 'sr-only', text: ', live agents: ' }), String(live)) : null))));
-  $('#side-projects').hidden = !rows.length;
+  swap($('#side-projects'), rows.map((r) => h('li', null,
+    sideLink({ href: `#project/${r.key}`, 'data-fk': `side:${r.key}`, title: r.name, 'aria-current': r.key === cur ? 'page' : null }, r))));
+  $('#side-projects').hidden = empty;
+  $('#side-hint').hidden = !empty;
+  swap($('#side-detected'), detected.map((r) => h('li', { class: 'has-act' },
+    sideLink({ href: '#dashboard', 'data-fk': `det:${r.key}`, title: `Show ${r.name} on the dashboard`, onclick: (e) => { e.preventDefault(); showGroup(r.key); } }, r),
+    h('button', { type: 'button', class: 'btn icon ghost', 'data-fk': `detadd:${r.key}`, 'aria-label': `Add ${r.name} as a project`, title: `Add ${r.name} as a project`, onclick: () => addProject() }, icon('plus')))));
+  $('#side-det').hidden = !detected.length;
   const me = state.me;
   $('#brand-ver').textContent = me?.version ? me.version.split('.').slice(0, 2).join('.') : '';
   swap($('#env'), me ? [
