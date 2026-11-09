@@ -5,6 +5,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 import { KEY_NAME } from '../src/ids.js';
 
@@ -482,5 +483,85 @@ describe('quick actions, prompt buttons, End dialog and Shell (spec 9.4-9.8)', (
     for (const sel of ['\\.qa', '\\.qa-why', '\\.ask', '\\.pbtn', '\\.pbtn-off', '\\.pbtn\\[aria-disabled="true"\\]', '\\.pop', 'dialog', 'dialog::backdrop', '\\.dlg-foot', '\\.alert\\[data-kind="danger"\\]', '\\.toast']) {
       assert.match(css, new RegExp(`(^|[\\s,}])${sel}[\\s,{:\\[]`), sel);
     }
+  });
+
+  // -- fix round 1 (review of Task 10)
+  const fn = (src, head) => {
+    const at = src.indexOf(head);
+    assert.ok(at >= 0, head);
+    const end = src.indexOf('\n}\n', at);
+    return src.slice(at, end + 2);
+  };
+
+  test('(+) Esc = No locks the question after a 200, like an answered option; a double click sends one Escape', () => {
+    const src = code(JS['session.js']);
+    const esc = fn(src, 'async function escNo()');
+    assert.match(esc, /promptOff\(\{ pending: PA\.pending, lock: PA\.lock, sig: p\.sig \}\)/, 'refused while pending or locked');
+    assert.match(esc, /PA\.pending = true;[\s\S]*await sendKey\('Escape'\)/, 'pending is set before the request, so a second click returns at once');
+    assert.match(esc, /escOutcome\(\{ ok \}\)\.lock\) PA\.lock = p\.sig/, 'a 200 keeps the buttons off for this sig');
+    assert.match(fn(src, 'async function sendKey('), /return r\.ok/, 'sendKey reports whether the keys route answered 200');
+    assert.match(fn(src, 'async function answer('), /promptOff\(/, 'the option buttons use the same rule');
+    const render = fn(src, 'function renderPrompt()');
+    assert.match(render, /promptOff\(\{ pending: PA\.pending, lock: PA\.lock, sig: p\.sig \}\)/);
+    assert.match(render, /for \(const b of \[\.\.\.PA\.btns, PA\.esc\]\) b\.setAttribute\('aria-disabled'/, 'Esc = No is switched off with the option buttons');
+  });
+
+  test('(+) the End dialog keeps its body text when the alert shows (aria-describedby must not point at a hidden node)', () => {
+    assert.doesNotMatch(code(JS['end-dialog.js']), /end-d'\)\.hidden/);
+    assert.match(tag('end-dlg'), /aria-describedby="end-d"/);
+    assert.doesNotMatch(tag('end-d'), /\bhidden\b/);
+  });
+
+  test('(+) the model popover closing under focus (Claude turns busy or asks) hands focus to the Model button', () => {
+    const quick = fn(code(JS['session.js']), 'function renderQuick()');
+    assert.match(quick, /closeModelPop\(\$\('model-pop'\)\.contains\(document\.activeElement\)\)/);
+    assert.match(fn(code(JS['session.js']), 'function closeModelPop('), /if \(refocus\) Q\.b\.model\.focus\(\)/);
+  });
+
+  test('(+) rebuilding the prompt buttons for a new sig moves focus from the old panel to the first new button, else the composer', () => {
+    const render = fn(code(JS['session.js']), 'function renderPrompt()');
+    assert.match(render, /if \(p\.sig !== PA\.sig\) \{[\s\S]*const focused = panel\.contains\(document\.activeElement\);[\s\S]*buildPrompt\(p\);[\s\S]*if \(focused\) \(PA\.btns\[0\] \?\? composer\(\)\)\.focus\(/);
+  });
+
+  test('(+) the gates read promptOpen (any prompt in the capture); only the panel reads the cleaned prompt', () => {
+    const src = code(JS['session.js']);
+    assert.match(src, /W\.promptOpen = Boolean\(body\.prompt\)/);
+    assert.equal((src.match(/switcherState\(\{[^}]*prompt: W\.promptOpen/g) ?? []).length, 2, 'renderMode and switchTo');
+    assert.match(src, /quickState\(\{[^}]*prompt: W\.promptOpen/);
+    assert.match(fn(src, 'function openEnd()'), /promptOpen: W\.promptOpen \|\| A\.kind === 'attn'/);
+    assert.match(fn(src, 'function renderShiftTab()'), /W\.promptOpen/);
+    assert.doesNotMatch(src, /(switcherState|quickState)\(\{[^}]*prompt: W\.prompt\b/, 'no gate reads the cleaned prompt');
+    assert.match(fn(src, 'function renderPrompt()'), /W\.prompt/, 'the panel does');
+  });
+
+  test('(+) roveKeys only moves focus: arrows, Home and End never click, and Enter or Space are left to the button', () => {
+    const src = fn(JS['session.js'], 'function roveKeys(bar, buttons)');
+    assert.doesNotMatch(code(src), /\.click\(|dispatchEvent|requestSubmit/);
+    const log = [];
+    const list = ['a', 'b', 'c'].map((name) => ({ name, focus() { doc.activeElement = this; log.push(`focus ${name}`); }, click() { log.push(`click ${name}`); } }));
+    const doc = { activeElement: list[1] };
+    let handler;
+    const bar = { addEventListener: (type, fn2) => { if (type === 'keydown') handler = fn2; } };
+    vm.runInNewContext(`${src}; roveKeys`, { document: doc })(bar, () => list);
+    const press = (key, more = {}) => {
+      const e = { key, altKey: false, ctrlKey: false, metaKey: false, shiftKey: false, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; }, ...more };
+      handler(e);
+      return e.defaultPrevented;
+    };
+    assert.equal(press('ArrowRight'), true);
+    assert.equal(doc.activeElement.name, 'c');
+    press('ArrowRight');
+    assert.equal(doc.activeElement.name, 'a', 'wraps');
+    press('ArrowLeft');
+    assert.equal(doc.activeElement.name, 'c', 'wraps back');
+    press('Home');
+    assert.equal(doc.activeElement.name, 'a');
+    press('End');
+    assert.equal(doc.activeElement.name, 'c');
+    const before = log.length;
+    for (const key of ['Enter', ' ', 'Tab', 'a']) assert.equal(press(key), false, `${JSON.stringify(key)} is not handled`);
+    assert.equal(press('ArrowLeft', { shiftKey: true }), false, 'a modified arrow is not handled');
+    assert.equal(log.length, before, 'no focus change for the keys it does not handle');
+    assert.deepEqual(log.filter((l) => l.startsWith('click')), [], 'nothing was ever clicked');
   });
 });

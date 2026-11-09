@@ -7,7 +7,7 @@ import { h, icon } from './dom.js';
 import { isApp, appFetch, getJSON, applyTheme } from './api.js';
 import { toRenderModel, applyMirror, planSend, planPaste, chunkText, keyForEvent, KEY_LABEL } from './mirror-render.js';
 import { MODE_META, MODE_TARGETS, modeKey, modeEl, switcherState, modeNote, switchFailure } from './modes.js';
-import { quickState, cleanPrompt, answerOutcome, promptNote, commandFailure, problemKind, planShell } from './quick-actions.js';
+import { quickState, cleanPrompt, answerOutcome, escOutcome, promptOff, promptNote, commandFailure, problemKind, planShell } from './quick-actions.js';
 import { MODEL_ID, MODEL_HINT, CUSTOM, fillModelSelect } from './models-ui.js';
 import { openEndDialog } from './end-dialog.js';
 
@@ -212,7 +212,9 @@ function startAgentPoll() {
 // W is what the last capture said. pane: 'connecting' until one answers, 'ok' while they do, 'tmux' when they fail, 'gone'
 // on 404. last: the last real mode announced as current. msg: the result of the last switch ({ text, mode }). struck: targets
 // the Shift-Tab cycle does not hold, struck at strikeAt. SW: the switch in flight (its target) and the four segments.
-const W = { pane: 'connecting', got: false, mode: 'unknown', confirmed: true, prompt: null, last: null, msg: null, struck: new Set(), strikeAt: null, tagSig: '', whySig: '' };
+// prompt: the capture's prompt as cleanPrompt allows it, for drawing the buttons only. promptOpen: the capture has a prompt at all
+// (even an off-contract one), for every gate: the switcher, the quick actions, the Shift-Tab chip and the End note.
+const W = { pane: 'connecting', got: false, mode: 'unknown', confirmed: true, prompt: null, promptOpen: false, last: null, msg: null, struck: new Set(), strikeAt: null, tagSig: '', whySig: '' };
 const SW = { busy: null, pressed: null, parts: [], tabTitle: null };
 
 function renderTag() {
@@ -280,14 +282,14 @@ function renderWhy(st) {
 function renderShiftTab() {
   const chip = document.querySelector('.keys [data-key="BTab"]');
   SW.tabTitle ??= chip.title;
-  const held = A.kind === 'attn' || W.prompt !== null;
+  const held = A.kind === 'attn' || W.promptOpen;
   chip.setAttribute('aria-disabled', String(held));
   chip.title = held ? 'Answer the prompt first' : SW.tabTitle;
 }
 
 function renderMode() {
   if (!paneId || !SW.parts.length) return;
-  const st = switcherState({ pane: W.pane, status: A.kind, prompt: W.prompt, mode: W.mode, modeConfirmed: W.confirmed, switching: SW.busy });
+  const st = switcherState({ pane: W.pane, status: A.kind, prompt: W.promptOpen, mode: W.mode, modeConfirmed: W.confirmed, switching: SW.busy });
   // a reason, or the pane reaching another mode, ends the last result
   if (st.reason || (W.msg && W.confirmed && W.mode !== 'unknown' && W.mode !== W.msg.mode)) W.msg = null;
   renderTag();
@@ -306,6 +308,7 @@ function noteScreen(body) {
   W.mode = modeKey(body.mode);
   W.confirmed = body.modeConfirmed === true;
   W.prompt = cleanPrompt(body.prompt); // null for anything but the contract shape: no panel, no buttons
+  W.promptOpen = Boolean(body.prompt); // but an off-contract prompt still counts as a prompt for the gates
   if (W.struck.size && W.confirmed && W.mode !== 'unknown' && W.mode !== W.strikeAt) W.struck.clear();
   if (!SW.busy) { // a switch announces its end result once, when the route answers
     const n = modeNote(A.name, W.last, { mode: W.mode, confirmed: W.confirmed });
@@ -350,7 +353,7 @@ function failSwitch(r, start, target) {
 
 async function switchTo(target) {
   if (SW.busy || M.gone || !paneId || W.struck.has(target)) return;
-  const st = switcherState({ pane: W.pane, status: A.kind, prompt: W.prompt, mode: W.mode, modeConfirmed: W.confirmed, switching: null });
+  const st = switcherState({ pane: W.pane, status: A.kind, prompt: W.promptOpen, mode: W.mode, modeConfirmed: W.confirmed, switching: null });
   if (st.disabled || st.pressed === target) return; // the pressed segment and a disabled one do nothing
   const start = W.mode;
   SW.busy = target;
@@ -431,7 +434,7 @@ function renderModelName(name) {
 
 function renderQuick() {
   if (!Q.ready) return;
-  const st = quickState({ pane: W.pane, status: A.kind, prompt: W.prompt, composerEmpty: composer().value === '', switching: SW.busy !== null || Q.busy !== null });
+  const st = quickState({ pane: W.pane, status: A.kind, prompt: W.promptOpen, composerEmpty: composer().value === '', switching: SW.busy !== null || Q.busy !== null });
   for (const id of Object.keys(Q.b)) {
     const b = Q.b[id];
     b.setAttribute('aria-disabled', String(st[id].off));
@@ -446,7 +449,8 @@ function renderQuick() {
     why.hidden = !st.reason;
     why.replaceChildren(...(st.reason ? [icon('info'), h('span', { text: st.reason })] : []));
   }
-  if (Q.pop && st.model.off) closeModelPop(false); // the popover has nothing to send once Claude is busy
+  // the popover has nothing to send once Claude is busy or asks something; focus inside it moves to the Model button, not to the page
+  if (Q.pop && st.model.off) closeModelPop($('model-pop').contains(document.activeElement));
 }
 
 /** Sends one slash command through the command route, which types it only into an empty input and presses Enter when it reads exactly that. */
@@ -477,7 +481,7 @@ function openEnd() {
     pane: paneId,
     name: A.name,
     working: A.kind === 'busy',
-    promptOpen: W.prompt !== null || A.kind === 'attn',
+    promptOpen: W.promptOpen || A.kind === 'attn',
     onEnded: () => {
       toast('Session ended');
       setGone(); // the pane no longer runs Claude: the mirror shows its pane-gone state now instead of at the next capture
@@ -662,17 +666,21 @@ function renderPrompt() {
     if (focused) composer().focus({ preventScroll: true }); // the button that had focus is gone
     return;
   }
-  if (p.sig !== PA.sig) buildPrompt(p); // rebuilt only for a new question, so focus and hover survive the captures
+  if (p.sig !== PA.sig) { // rebuilt only for a new question, so focus and hover survive the captures
+    const focused = panel.contains(document.activeElement);
+    buildPrompt(p);
+    if (focused) (PA.btns[0] ?? composer()).focus({ preventScroll: true }); // the button that had focus was replaced
+  }
   const reason = $('ask-reason');
   if (reason.textContent !== A.attention) reason.textContent = A.attention;
-  const off = PA.pending || PA.lock === p.sig;
+  const off = promptOff({ pending: PA.pending, lock: PA.lock, sig: p.sig });
   for (const b of [...PA.btns, PA.esc]) b.setAttribute('aria-disabled', String(off));
   $('ask-lock').hidden = PA.lock !== p.sig;
 }
 
 async function answer(n) {
   const p = W.prompt;
-  if (!p || PA.pending || PA.lock === p.sig || M.gone) return;
+  if (!p || promptOff({ pending: PA.pending, lock: PA.lock, sig: p.sig }) || M.gone) return;
   PA.pending = true;
   renderPrompt();
   const r = await call(`/api/app/pane/${encodeURIComponent(paneId)}/answer`, { method: 'POST', json: { n, sig: p.sig } });
@@ -689,13 +697,15 @@ async function answer(n) {
   renderPrompt();
 }
 
-/** "Esc = No": the keys route with Escape, like the Esc chip. */
+/** "Esc = No": the keys route with Escape, like the Esc chip. A 200 locks the question like an answered option (no second Escape). */
 async function escNo() {
-  if (PA.pending || (W.prompt && PA.lock === W.prompt.sig)) return;
+  const p = W.prompt;
+  if (!p || promptOff({ pending: PA.pending, lock: PA.lock, sig: p.sig }) || M.gone) return;
   PA.pending = true;
   renderPrompt();
-  await sendKey('Escape');
+  const ok = await sendKey('Escape');
   PA.pending = false;
+  if (escOutcome({ ok }).lock) PA.lock = p.sig; // the question that was refused; a new one is another sig
   renderPrompt();
 }
 
@@ -1116,6 +1126,7 @@ const enqueue = (payload) => enqueueSeq([payload]);
 async function sendKey(name) {
   const r = await enqueue({ keys: [name] });
   if (r.ok) say(`Sent ${KEY_LABEL[name] ?? name} to ${paneId}`);
+  return r.ok;
 }
 
 const composer = () => $('composer');

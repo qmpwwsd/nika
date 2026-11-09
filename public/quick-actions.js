@@ -120,6 +120,12 @@ export function answerOutcome({ status, code } = {}) {
   return { message: "nika couldn't send that answer.", lock: false };
 }
 
+/** Esc = No goes through the keys route: a 200 locks the question like an answered option; any other result re-enables the buttons. */
+export const escOutcome = ({ ok } = {}) => ({ lock: ok === true });
+
+/** The option buttons and Esc = No are off while a request is in flight and for the question that was already answered (`lock` = its sig). */
+export const promptOff = ({ pending = false, lock = null, sig = null } = {}) => pending || (lock !== null && lock === sig);
+
 /** The command route's failures (spec 9.4), for Compact, Clear and Model. */
 export function commandFailure({ status, code } = {}) {
   if (status === 409) {

@@ -5,7 +5,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { KEY_NAME } from '../src/ids.js';
 import {
-  quickState, cleanPrompt, isBypassLabel, answerOutcome, promptNote, commandFailure, endOutcome, endNote, planShell, problemKind,
+  quickState, cleanPrompt, isBypassLabel, answerOutcome, escOutcome, promptOff, promptNote, commandFailure, endOutcome, endNote, planShell, problemKind,
 } from '../public/quick-actions.js';
 
 const DOTS = '…';
@@ -187,6 +187,30 @@ describe('answerOutcome (spec 9.5 results table)', () => {
 
   test('(−) the message is fixed copy: no server text can reach it', () => {
     assert.equal(answerOutcome({ status: 409, code: 'no-prompt', message: '<b>x</b>' }).message, 'The question is gone.');
+  });
+});
+
+describe('Esc = No: the same lock as an answered option (keys route, no status)', () => {
+  test('(+) a sent Escape locks the question; the buttons stay off for that sig', () => {
+    assert.deepEqual(escOutcome({ ok: true }), { lock: true });
+    assert.equal(promptOff({ lock: PROMPT.sig, sig: PROMPT.sig }), true);
+  });
+
+  test('(−) any failed send re-enables the buttons: no lock', () => {
+    for (const r of [{ ok: false }, { ok: false, message: 'The pane is gone.' }, {}, undefined, { ok: 'yes' }]) assert.deepEqual(escOutcome(r), { lock: false });
+  });
+
+  test('(+) the lock ends with the question: another sig, or none, is live again', () => {
+    assert.equal(promptOff({ lock: PROMPT.sig, sig: 'fedcba9876543210' }), false);
+    assert.equal(promptOff({ lock: null, sig: PROMPT.sig }), false);
+    assert.equal(promptOff({ lock: null, sig: null }), false, 'no lock never matches a missing sig');
+  });
+
+  test('(+) a request in flight is off whatever the lock says (a double click sends one Escape)', () => {
+    assert.equal(promptOff({ pending: true, lock: null, sig: PROMPT.sig }), true);
+    assert.equal(promptOff({ pending: true, lock: 'fedcba9876543210', sig: PROMPT.sig }), true);
+    assert.equal(promptOff({ pending: false, lock: null, sig: PROMPT.sig }), false);
+    assert.equal(promptOff(), false);
   });
 });
 

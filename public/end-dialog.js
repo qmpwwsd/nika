@@ -24,13 +24,12 @@ function focusHeading() {
 }
 
 /**
- * What the dialog shows. `alert` ('' = none) replaces the body text; `note` is the muted extra line; `busy` is the ending state;
+ * What the dialog shows. `alert` ('' = none) appears above the body text, which stays (aria-describedby points at it); `note` is the muted extra line; `busy` is the ending state;
  * `closeOnly` is the failed state, whose footer has only Close.
  */
 function draw({ alert = '', note = '', busy = false, closeOnly = false }) {
   el('end-alert-text').textContent = alert;
   el('end-alert').hidden = !alert;
-  el('end-d').hidden = Boolean(alert);
   el('end-note').textContent = alert ? '' : note;
   el('end-note').hidden = Boolean(alert) || !note;
   el('end-wait').textContent = busy ? `Waiting for Claude to exit${DOTS}` : '';
