@@ -1,5 +1,5 @@
 // The model dropdown's shared parts (docs/design/spec.md section 9.4 model popover; product spec 6.9). Used by the session window's
-// Model action now and by Settings, the spawn sheet and orchestrator start (Task 12). The catalog comes from GET /api/app/models
+// Model action, Settings and the spawn sheet. The catalog comes from GET /api/app/models
 // (src/models.js), already in display order. Pure functions are tested in Node (test/models-ui.test.js); fillModelSelect draws with
 // h(), so catalog text only ever lands in text nodes and attributes.
 import { h } from './dom.js';
@@ -33,15 +33,17 @@ export function isCatalogId(id, catalog) {
 const optionText = (x) => (x.group === 'latest' ? `${x.label} (${x.id})` : x.id);
 
 /**
- * Fills a <select> with the three optgroups and the "Custom ID..." option last, and selects `current`. Returns true when the
- * model is not in the catalog (or unknown): Custom ID is selected and the caller shows its text field with `current` in it.
+ * Fills a <select> with the three optgroups and the "Custom ID..." option last, and selects `current`. `roles` ([{ value, text }],
+ * the spawn sheet) puts a "Roles" optgroup first; a role value counts as known even when the catalog lacks it. Returns true when the
+ * model is not listed (or unknown): Custom ID is selected and the caller shows its text field with `current` in it.
  */
-export function fillModelSelect(select, catalog, current) {
+export function fillModelSelect(select, catalog, current, roles = []) {
   select.replaceChildren(
+    ...(roles.length ? [h('optgroup', { label: 'Roles' }, roles.map((r) => h('option', { value: r.value, text: r.text })))] : []),
     ...modelGroups(catalog).map((g) => h('optgroup', { label: g.label },
       g.models.map((x) => h('option', { value: x.id, title: x.note, text: optionText(x) })))),
     h('option', { value: CUSTOM, text: `Custom ID${DOTS}` }));
-  const known = isCatalogId(current, catalog);
+  const known = isCatalogId(current, catalog) || roles.some((r) => r.value === current);
   select.value = known ? current : CUSTOM;
   return !known;
 }

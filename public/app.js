@@ -3,6 +3,7 @@
 // (read-only, 127.0.0.1:3335) never loads them. Every server string is rendered through h() (textContent).
 import { isApp, getJSON } from './api.js';
 import { h, icon } from './dom.js';
+import { modeEl, rowMode, canEndRow } from './modes.js';
 import {
   $, $$, MAC, SHAPE, ORDER, state, hooks, load, save, timeEl, tickTimes, announce, toast, copyText,
   statusEl, modelEl, rulesEl, countsLine, sessionHref, menuEl, menuIsOpen, openDialog, initDialogs, initMenus,
@@ -128,8 +129,29 @@ function endedText(a) {
   return a.lastPrompt || 'Ended';
 }
 
+/**
+ * "End session..." (app tier): loads the End dialog on first use, puts focus on the row's menu button so Cancel returns there, and
+ * opens it. `working` and `promptOpen` only choose the dialog's muted line.
+ */
+async function endSession(a, menuFk) {
+  if (!isApp) return;
+  const { openEndDialog } = await import('./end-dialog.js');
+  $(`[data-fk="${CSS.escape(menuFk)}"]`)?.focus();
+  openEndDialog({ pane: a.pane.id, name: a.name, working: a.state === 'busy', promptOpen: Boolean(a.attention), onEnded: () => afterEnd(menuFk) });
+}
+
+/** Claude exited: toast, read the list again, then focus the row's menu button, or the heading when the row moved to Ended or is gone. */
+async function afterEnd(menuFk) {
+  toast('Session ended');
+  await refresh();
+  const btn = $(`[data-fk="${CSS.escape(menuFk)}"]`);
+  if (btn && btn.offsetParent !== null) btn.focus();
+  else $('.screen:not([hidden]) h1')?.focus();
+}
+
 function rowEl(a, g, { scope, showProject = false }) {
   const s = sOf(a);
+  const mode = isApp ? rowMode(a, state.modes.map) : null;
   const href = isApp ? sessionHref({ session: a.id, pane: a.pane?.id, project: g.project?.key }) : null;
   const fk = (k) => `${k}:${scope}:${a.id}`;
   const what = s === 'attn' ? reasonOf(a) : s === 'ended' ? endedText(a) : a.lastPrompt || '(no prompt yet)';
@@ -138,9 +160,13 @@ function rowEl(a, g, { scope, showProject = false }) {
   if (a.report?.hasFile) items.push({ text: 'Show report', run: () => showReport(a) });
   if (a.bridgeUrl && SHAPE.claudeUrl.test(a.bridgeUrl)) items.push({ text: 'Open in claude.ai ↗', href: a.bridgeUrl });
   if (a.live && a.pane) items.push({ text: `Focus pane ${a.pane.id} in tmux`, run: () => focusPane(a.pane.id) });
+  if (isApp && canEndRow(a, state.modes.map)) {
+    items.push({ text: 'End session…', run: () => endSession(a, fk('m')) });
+  }
 
   const li = h('li', { class: 'row', 'data-s': s },
     h('div', { class: 'c-st' }, statusEl(s)),
+    isApp ? h('div', { class: 'c-mode' }, mode && modeEl(mode.mode, { confirmed: mode.confirmed, compact: true })) : null,
     h('div', { class: 'c-name' },
       href ? h('a', { class: 'name', href, 'data-fk': fk('n'), title: a.name, text: a.name }) : h('span', { class: 'name', title: a.name, text: a.name }),
       a.role === 'orchestrator' ? h('span', { class: 'tag', text: 'orchestrator' }) : null),
@@ -284,7 +310,7 @@ export function swap(host, nodes) {
 
 let dashSig = '';
 function renderDashboard(force) {
-  const sig = JSON.stringify([state.data.groups, isApp ? state.projects : null, state.filter, state.showEnded, [...state.open], [...state.expanded], state.me?.tmux, state.me?.claude, state.error]);
+  const sig = JSON.stringify([state.data.groups, isApp ? state.projects : null, isApp ? state.modes.map : null, state.filter, state.showEnded, [...state.open], [...state.expanded], state.me?.tmux, state.me?.claude, state.error]);
   if (!force && (sig === dashSig || interacting())) return;
   dashSig = sig;
   const body = $('#dash-body');

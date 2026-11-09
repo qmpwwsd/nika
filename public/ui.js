@@ -26,6 +26,8 @@ export const state = {
   me: null, // app tier: /api/app/me
   projects: null, // app tier: /api/app/projects
   settings: null, // app tier: /api/app/settings
+  models: null, // app tier: /api/app/models (the catalog array), null until loaded
+  modes: { map: {}, misses: 0 }, // app tier: latest /api/app/modes answer by pane id (public/modes.js modesAfter)
   appError: null, // app tier: the private server refused us (403)
   open: new Set(), // disclosure ids the user toggled ("!id" = closed on purpose)
   expanded: new Set(), // group ids whose "show more" was pressed
@@ -163,7 +165,6 @@ export function sessionHref({ session, pane, project }) {
 /* ---------- forms ---------- */
 export const RX = {
   agent: [/^[a-z0-9][a-z0-9-]{0,39}$/, 'Lowercase letters, digits and dashes, up to 40, starting with a letter or digit.'],
-  model: [/^(?:claude-[a-z0-9-]{3,60}|opus|sonnet|haiku|fable|best|opusplan)(?:\[1m\])?$/, 'Use a model id such as claude-sonnet-5-5, an alias (opus, sonnet, haiku, fable, best, opusplan), or add [1m] for 1M context.'],
   prefix: [/^(?:[a-z0-9][a-z0-9-]{0,19})?$/, 'Lowercase letters, digits and dashes, up to 20, starting with a letter or digit. Leave empty to use the project name.'],
 };
 

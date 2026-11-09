@@ -1,6 +1,7 @@
 // Permission modes in the UI (docs/design/spec.md section 2.8 and 9.3; contract: docs/contracts/api-app.md section 3).
 // Pure parts, tested in Node (test/modes-ui.test.js): MODE_META, switcherState (which segments are live and why not),
 // modeNote (what the polite region says when the mode changes), switchFailure (what a failed switch says).
+// The dashboard's parts (parseModes, modesAfter, rowMode, canEndRow: the /api/app/modes poll, a row's tag and its End item) are pure too.
 // DOM part: modeEl, the tag. Every string is set as a text node or an attribute, never parsed as markup.
 // Every mode has its own colour (tokens.css), icon (the #i-m-* symbols in the page's sprite) and word: never colour alone.
 import { h, icon } from './dom.js';
@@ -23,6 +24,36 @@ export const MODE_TARGETS = ['manual', 'acceptEdits', 'plan', 'auto'];
 
 /** A mode from the server, or `unknown` for anything that is not exactly one of ours (also prototype names). */
 export const modeKey = (raw) => (typeof raw === 'string' && Object.hasOwn(MODE_META, raw) ? raw : 'unknown');
+
+/* ---------- dashboard (GET /api/app/modes: one { mode, confirmed } per eligible pane) ---------- */
+const PANE_ID = /^%\d{1,6}$/;
+
+/** The answer as a clean map { "%3": { mode, confirmed } }, or null when the body is not one (that counts as a failed poll). */
+export function parseModes(body) {
+  const raw = body?.modes;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const map = {};
+  for (const [id, e] of Object.entries(raw)) {
+    if (PANE_ID.test(id) && e && typeof e === 'object') map[id] = { mode: modeKey(e.mode), confirmed: e.confirmed === true };
+  }
+  return map;
+}
+
+/** The poll state after one poll: `map` is parseModes' result, null for a failed poll. One failure keeps the last map, the next clears it. */
+export function modesAfter(prev, map) {
+  if (map) return { map, misses: 0 };
+  const misses = (prev?.misses ?? 0) + 1;
+  return { map: misses > 1 ? {} : prev?.map ?? {}, misses };
+}
+
+/** The mode entry of an agent's row: only a live agent whose pane is in the latest answer (an ended agent's old pane id may be reused). */
+export function rowMode(agent, map) {
+  const id = agent?.live ? agent.pane?.id : null;
+  return typeof id === 'string' && map && Object.hasOwn(map, id) ? map[id] : null;
+}
+
+/** "End session..." is offered exactly where the row shows a mode: the pane is one nika can type into. */
+export const canEndRow = (agent, map) => rowMode(agent, map) !== null;
 
 const BYPASS_NOTE = 'Claude runs every tool without asking.';
 

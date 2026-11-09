@@ -10,6 +10,7 @@ import vm from 'node:vm';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { makeFixture, cleanup, fakeExec, NOW } from './helpers.js';
 import { createServer } from '../src/server.js';
+import { CUSTOM as CUSTOM_VALUE } from '../public/models-ui.js';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const read = (f) => fs.readFileSync(path.join(PUBLIC, f), 'utf8');
@@ -143,7 +144,7 @@ describe('HTML pages under the strict CSP', () => {
     assert.match(src, /<nav\b/);
     assert.match(src, /id="announce"[^>]*aria-live="polite"/);
     assert.equal((src.match(/<h1\b/g) ?? []).length, 3, 'dashboard, project and settings');
-    assert.equal((src.match(/<dialog\b/g) ?? []).length, 4, 'spawn, rules, confirm, report');
+    assert.equal((src.match(/<dialog\b/g) ?? []).length, 5, 'spawn, rules, confirm, report, end');
   });
 
   test('(+) index.html: app-only controls are marked so the browser tier removes them', () => {
@@ -248,9 +249,84 @@ describe('CSS', () => {
     assert.deepEqual(unanchoredScrollers('.list { overflow: auto; } .ok { position: relative; overflow-y: scroll; }'), ['.list']);
   });
 
+  // The End dialog must look the same on both pages, so the shared rules live once, in tokens.css (both pages load it).
+  const ruleSelectors = (css) => [...css.replace(/\/\*[\s\S]*?\*\//g, '').matchAll(/([^{}]+)\{[^{}]*\}/g)].flatMap((m) => m[1].split(',').map((x) => x.trim()));
+  const keyframes = (css) => [...css.replace(/\/\*[\s\S]*?\*\//g, '').matchAll(/@keyframes\s+([\w-]+)/g)].map((m) => m[1]);
+  const SHARED = ['dialog', 'dialog::backdrop', 'dialog[open]', 'dialog.dlg-confirm', '.dlg-head', '.dlg-head h2', '.dlg-body', '.dlg-foot', '.alert', '.alert p', '.alert .ic',
+    '.alert[data-kind="danger"]', '.alert[data-kind="danger"] .ic', '.toasts', '.toast', '.toast p', '.spin', '.btn.danger', '.btn.danger:hover'];
+
+  test('(+) dialog, alert and toast rules (and .spin, .btn.danger and their keyframes) are defined once, in tokens.css', () => {
+    const tokens = ruleSelectors(read('tokens.css'));
+    for (const sel of SHARED) assert.equal(tokens.filter((x) => x === sel).length, 1, `${sel} once in tokens.css`);
+    for (const f of ['app.css', 'session.css']) {
+      const own = ruleSelectors(read(f));
+      for (const sel of SHARED) assert.equal(own.includes(sel), false, `${sel} is not repeated in ${f}`);
+    }
+    for (const name of ['dlg-in', 'toast-in', 'st-spin']) {
+      assert.equal(keyframes(read('tokens.css')).filter((x) => x === name).length, 1, `@keyframes ${name} once in tokens.css`);
+      for (const f of ['app.css', 'session.css']) assert.equal(keyframes(read(f)).includes(name), false, `@keyframes ${name} is not repeated in ${f}`);
+    }
+  });
+
+  test('(−) both pages load tokens.css before their own sheet, and the page-only dialog variants stay where they are used', () => {
+    for (const [page, own] of [['index.html', 'app.css'], ['session.html', 'session.css']]) {
+      const links = [...read(page).matchAll(/<link\b[^>]*rel="stylesheet"[^>]*href="\/?([^"]+)"/g)].map((m) => m[1]);
+      assert.ok(links.indexOf('tokens.css') >= 0 && links.indexOf('tokens.css') < links.indexOf(own), page);
+    }
+    const app = ruleSelectors(read('app.css'));
+    for (const sel of ['dialog.sheet', 'dialog.dlg-report', 'dialog.dlg-rules']) assert.ok(app.includes(sel), `${sel} stays in app.css`);
+    assert.equal(ruleSelectors(read('tokens.css')).includes('dialog.sheet'), false, 'the side sheet is a dashboard-only dialog');
+  });
+
+  test('(+) the End dialog alert keeps its 600 weight on both pages, and the muted lines in a dialog use the small size', () => {
+    const tokens = read('tokens.css').replace(/\/\*[\s\S]*?\*\//g, '');
+    assert.match(tokens, /\.dlg-confirm \.alert \{[^}]*font-weight: 600/);
+    assert.match(tokens, /\.dlg-body \.muted \{[^}]*font-size: var\(--fs-small\)/);
+    assert.match(tokens, /\.dlg-body p \{[^}]*margin: 0/);
+  });
+
   test('(−) the owner-banned word never appears in the shipped UI', () => {
     const banned = new RegExp('pony' + 'tail', 'i');
     for (const f of files.filter((x) => /\.(js|css|html|svg)$/.test(x))) assert.doesNotMatch(read(f), banned, f);
+  });
+});
+
+describe('model pickers in the markup', () => {
+  const html = read('index.html');
+  const ROLES = ['orchestrator', 'reasoner', 'builder', 'scout'];
+  const select = (id) => new RegExp(`<select\\b[^>]*\\bid="${id}"[^>]*>[\\s\\S]*?</select>`).exec(html)?.[0] ?? '';
+  const tag = (id) => new RegExp(`<[a-z]+\\b[^>]*\\bid="${id}"[^>]*>`).exec(html)?.[0] ?? '';
+
+  test('(+) settings markup has four selects, each with a Custom ID option, and a hidden custom field with its own error slot', () => {
+    for (const r of ROLES) {
+      const sel = select(`set-model-${r}`);
+      assert.ok(sel, `select for ${r}`);
+      assert.match(sel, /<option value="__custom__">Custom ID…<\/option>/, `${r} has the Custom ID option`);
+      assert.match(html, new RegExp(`<label for="set-model-${r}">`));
+      const custom = tag(`set-model-${r}-custom`);
+      assert.match(custom, /^<input type="text"/, r);
+      assert.match(custom, /\bhidden\b/, `${r}: hidden until Custom ID is chosen`);
+      assert.match(custom, /\baria-label="Custom model ID for/, r);
+      assert.match(tag(`set-model-${r}-custom-err`), /class="err"[^>]*\bhidden\b|\bhidden\b[^>]*class="err"/, r);
+    }
+    assert.equal(CUSTOM_VALUE, '__custom__');
+  });
+
+  test('(−) the model datalist and every free-text model input without a dropdown are gone from Settings', () => {
+    assert.doesNotMatch(html, /<datalist\b/);
+    assert.doesNotMatch(html, /\blist="model-list"/);
+    assert.doesNotMatch(html, /data-rx="model"/);
+    for (const r of ROLES) assert.doesNotMatch(tag(`set-model-${r}`), /^<input/, `${r} is a select now`);
+  });
+
+  test('(+) the spawn sheet model is a select with a hidden custom field and an error slot', () => {
+    assert.match(select('sp-model'), /^<select\b/);
+    assert.match(tag('sp-model-custom'), /^<input type="text"[^>]*\bhidden\b/);
+    assert.match(tag('sp-model-custom-err'), /\bhidden\b/);
+  });
+
+  test('(−) the model rule lives once: ui.js has no second copy of MODEL_ID in RX', () => {
+    assert.doesNotMatch(code(read('ui.js')), /model:\s*\[\s*\//);
   });
 });
 
@@ -280,11 +356,36 @@ describe('tier separation in the page code', () => {
       assert.doesNotMatch(code(read(f)), /^\s*import\b[^;]*from\s*['"]\.\/(project|settings)\.js['"]/m, `${f} must not import them statically`);
     }
     const app = code(read('app.js'));
-    for (const mod of ['project', 'settings']) {
+    for (const mod of ['project', 'settings', 'end-dialog']) {
       const at = app.indexOf(`import('./${mod}.js')`);
       assert.ok(at > 0, `app.js imports ${mod}.js dynamically`);
-      assert.match(app.slice(Math.max(0, at - 160), at), /if \(isApp\)/, `${mod}.js import sits inside an isApp guard`);
+      assert.match(app.slice(Math.max(0, at - 160), at), /if \(!?isApp\)/, `${mod}.js import sits inside an isApp guard`);
     }
+  });
+
+  test('(+) end-dialog.js loads on the dashboard only through a dynamic import behind isApp (the End item is built only on the app tier)', () => {
+    for (const f of JS.filter((x) => x !== 'session.js')) {
+      assert.doesNotMatch(code(read(f)), /^\s*import\b[^;]*from\s*['"]\.\/end-dialog\.js['"]/m, `${f} must not import it statically`);
+    }
+    const app = code(read('app.js'));
+    assert.equal(app.split("import('./end-dialog.js')").length - 1, 1, 'one dynamic import');
+    const loader = app.slice(app.indexOf('async function endSession('), app.indexOf("import('./end-dialog.js')"));
+    assert.match(loader, /^async function endSession\([^)]*\) \{\s*if \(!isApp\) return;/, 'the loader refuses outside the app tier');
+    assert.equal(app.match(/endSession\(/g).length, 2, 'its definition and one call');
+    assert.match(app, /if \(isApp && canEndRow\([^)]*\)\) \{\s*items\.push\(\{ text: 'End session…'[^}]*endSession\(/, 'the one call sits behind isApp');
+  });
+
+  test('(−) the End dialog of the dashboard is app-only markup, with every id end-dialog.js looks up', () => {
+    const html = read('index.html');
+    const dlg = /<dialog\b[^>]*\bid="end-dlg"[^>]*>[\s\S]*?<\/dialog>/.exec(html)?.[0] ?? '';
+    assert.ok(dlg, 'index.html has #end-dlg');
+    assert.match(dlg, /<dialog\b[^>]*\bdata-app-only\b/, 'removed from the browser tier at boot');
+    assert.match(dlg, /<dialog\b[^>]*\bclass="dlg-confirm"/);
+    assert.match(dlg, /<dialog\b[^>]*\baria-labelledby="end-h"[^>]*\baria-describedby="end-d"|<dialog\b[^>]*\baria-describedby="end-d"[^>]*\baria-labelledby="end-h"/);
+    const ids = new Set([...html.matchAll(/\sid="([^"]+)"/g)].map((m) => m[1]));
+    const used = [...code(read('end-dialog.js')).matchAll(/getElementById\('([^']+)'\)|\bel\('([A-Za-z0-9-]+)'\)/g)].map((m) => m[1] ?? m[2]);
+    assert.ok(used.length >= 6);
+    assert.deepEqual(used.filter((id) => !ids.has(id)), []);
   });
 
   test('(+) #add-project (tray) calls the folder picker once, behind isApp, after replacing the hash', () => {

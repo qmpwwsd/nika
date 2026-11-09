@@ -481,9 +481,14 @@ describe('quick actions, prompt buttons, End dialog and Shell (spec 9.4-9.8)', (
   });
 
   test('(+) the prompt panel, quick actions and dialogs have styles: qa row, reason line, prompt buttons, dialog, toast', () => {
+    // dialog, alert and toast rules are shared with the dashboard and live once, in tokens.css (test/ui.test.js pins that)
     const css = strip(CSS);
-    for (const sel of ['\\.qa', '\\.qa-why', '\\.ask', '\\.pbtn', '\\.pbtn-off', '\\.pbtn\\[aria-disabled="true"\\]', '\\.pop', 'dialog', 'dialog::backdrop', '\\.dlg-foot', '\\.alert\\[data-kind="danger"\\]', '\\.toast']) {
+    for (const sel of ['\\.qa', '\\.qa-why', '\\.ask', '\\.pbtn', '\\.pbtn-off', '\\.pbtn\\[aria-disabled="true"\\]', '\\.pop']) {
       assert.match(css, new RegExp(`(^|[\\s,}])${sel}[\\s,{:\\[]`), sel);
+    }
+    const shared = strip(TOKENS);
+    for (const sel of ['dialog', 'dialog::backdrop', '\\.dlg-foot', '\\.alert\\[data-kind="danger"\\]', '\\.toast']) {
+      assert.match(shared, new RegExp(`(^|[\\s,}])${sel}[\\s,{:\\[]`), sel);
     }
   });
 

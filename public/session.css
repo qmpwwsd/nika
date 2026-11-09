@@ -37,10 +37,7 @@ kbd { font-size: var(--fs-cap); padding: 0 4px; border: 1px solid var(--line-str
 .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
 .btn.primary:hover { background: var(--accent-hover); }
 .btn.icon { min-width: var(--h-ctl); padding: 0; }
-.btn.danger { color: var(--danger); border-color: var(--danger); }
-.btn.danger:hover { background: var(--danger-soft); }
 .btn[aria-disabled="true"], .btn[aria-busy="true"] { cursor: not-allowed; }
-.spin { display: inline-block; width: 12px; height: 12px; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; animation: st-spin 0.8s linear infinite; vertical-align: -2px; }
 .btn[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
 .btn kbd { margin-left: 2px; }
 
@@ -78,7 +75,6 @@ body.m-bypass .mode-frame { background: repeating-linear-gradient(135deg, var(--
 .st[data-s="idle"] .st-g { border-radius: 50%; border: 2px solid var(--st-c); }
 .st[data-s="attn"] .st-g { width: 9px; height: 9px; margin: 0 0.5px; transform: rotate(45deg); background: var(--st-c); }
 .st[data-s="ended"] .st-g { width: 8px; height: 8px; margin: 1px; border-radius: 1px; background: var(--st-c); opacity: 0.85; }
-@keyframes st-spin { to { transform: rotate(360deg); } }
 
 /* layout */
 .main { flex: 1; min-height: 0; display: flex; flex-direction: column; outline: none; }
@@ -264,29 +260,7 @@ body.m-bypass .mode-frame { background: repeating-linear-gradient(135deg, var(--
 .ask-hint { margin: 0; font-size: var(--fs-small); color: var(--text-muted); }
 .ask-lock { font-weight: 600; color: var(--text); }
 
-/* dialogs (the same classes as app.css, which the dashboard page loads instead of this file) */
-dialog { color: var(--text); background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg); box-shadow: var(--elev-3); padding: 0; max-width: calc(100vw - 32px); max-height: calc(100vh - 32px); }
-dialog::backdrop { background: var(--scrim); }
-dialog[open] { animation: dlg-in var(--dur-2) var(--ease); }
-dialog.dlg-confirm { width: min(440px, calc(100vw - 32px)); }
-@keyframes dlg-in { from { opacity: 0; transform: translateY(8px) scale(0.99); } }
-.dlg-head { display: flex; align-items: flex-start; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--line); }
-.dlg-head h2 { margin: 0; font-size: var(--fs-h1); overflow-wrap: anywhere; }
-.dlg-body { padding: 16px; display: grid; gap: 12px; align-content: start; }
-.dlg-body p { margin: 0; overflow-wrap: anywhere; }
-.dlg-body p:empty { display: none; }
-.dlg-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--line); background: var(--surface); }
-.alert { display: flex; gap: 10px; padding: 10px 12px; border-radius: var(--r-md); border: 1px solid; font-weight: 600; }
-.alert p { margin: 0; }
-.alert .ic { flex: none; margin-top: 1px; }
-.alert[data-kind="danger"] { background: var(--danger-soft); border-color: var(--danger-line); }
-.alert[data-kind="danger"] .ic { color: var(--danger); }
-
-/* toast (spec 9.8: "Session ended") */
-.toasts { position: fixed; z-index: 60; left: 50%; bottom: 20px; transform: translateX(-50%); display: grid; gap: 8px; width: min(440px, calc(100vw - 32px)); pointer-events: none; }
-.toast { pointer-events: auto; display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: var(--text); color: var(--bg); border-radius: var(--r-md); box-shadow: var(--elev-2); animation: toast-in var(--dur-2) var(--ease); }
-.toast p { margin: 0; flex: 1; overflow-wrap: anywhere; }
-@keyframes toast-in { from { opacity: 0; transform: translateY(6px); } }
+/* dialogs, alerts, toasts, .spin and .btn.danger: tokens.css (shared with the dashboard, so the End dialog looks the same on both) */
 
 .empty { margin: 48px auto; max-width: 480px; padding: 0 16px; text-align: center; }
 .empty h2 { font-size: var(--fs-display); margin: 0 0 8px; }

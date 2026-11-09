@@ -79,11 +79,14 @@ describe('modelLabel', () => {
   });
 });
 
-describe('public/ui.js RX.model', () => {
-  test('(+) its regex source equals MODEL_ID source', () => {
-    const src = fs.readFileSync(new URL('../public/ui.js', import.meta.url), 'utf8');
-    const m = /^\s*model: \[\/(.+)\/, /m.exec(src);
-    assert.ok(m, 'RX.model line not found');
-    assert.equal(m[1], MODEL_ID.source);
+// The page's model-id rule is public/models-ui.js MODEL_ID (Settings, the spawn sheet and the session window all use it).
+// Task 12 removed the second copy that used to sit in public/ui.js RX.model, so one test pins the page copy to the server rule.
+describe('the page copy of MODEL_ID', () => {
+  test('(+) public/models-ui.js MODEL_ID equals the server rule, and public/ui.js keeps no copy of its own', async () => {
+    const { MODEL_ID: PAGE } = await import('../public/models-ui.js');
+    assert.equal(PAGE.source, MODEL_ID.source);
+    assert.equal(PAGE.flags, MODEL_ID.flags);
+    const ui = fs.readFileSync(new URL('../public/ui.js', import.meta.url), 'utf8');
+    assert.doesNotMatch(ui, /\bmodel: \[\//);
   });
 });
