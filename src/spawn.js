@@ -55,6 +55,7 @@ function parseRequest(req) {
   const { project, name, model, brief, permissionMode, under, session, rc, role = 'agent', parent } = req;
   if (typeof project !== 'string' || !PROJECT_KEY.test(project)) return invalid('invalid project key');
   if (typeof name !== 'string' || !AGENT_NAME.test(name)) return invalid('invalid agent name');
+  if (name === 'orchestrator') return invalid('orchestrator is reserved'); // the main orchestrator's tag is `<key>/orchestrator`: keep the two forms apart
   if (typeof model !== 'string' || !MODEL_ID.test(model)) return invalid('invalid model');
   if (typeof brief !== 'string' || !brief.trim() || brief.includes('\0')) return invalid('brief must be a non-empty string without NUL');
   if (isOneWord(brief)) return invalid('brief must be more than one word');
@@ -113,8 +114,8 @@ function liveAgents(ctx, key, tags, panes) {
 
 /**
  * What a parent pane is to `project`, from its tags alone: 'main' (the project's main orchestrator), 'sub' (one of its
- * sub-orchestrators), 'agent', or null for a pane that is not nika's, belongs to another project, or has tags that do not agree
- * (a depth that does not fit the role): such a parent is treated as no parent. `@nika-depth` is only a consistency check here.
+ * sub-orchestrators), or null for any other pane that carries a nika role: an agent, anything of another project, a tag that does not
+ * parse, a depth that does not fit the role, an unknown role value. `@nika-depth` is only a consistency check here.
  */
 function kindOf(t, project) {
   switch (t.role) {
@@ -125,8 +126,6 @@ function kindOf(t, project) {
     }
     case SUB_ROLE:
       return parseAgentTag(t.agent)?.[0] === project.key && t.depth === '2' ? 'sub' : null;
-    case 'agent':
-      return parseAgentTag(t.agent)?.[0] === project.key ? 'agent' : null;
     default:
       return null;
   }
@@ -136,15 +135,21 @@ const LEVELS = 'nika allows three levels (orchestrator, sub-orchestrators, their
 
 /**
  * Who the new pane's parent is and how deep it sits: { parent: paneId | null, depth: 1 | 2 | 3 } or { failure }. The depth follows the
- * parent's role in tmux's record (main orchestrator → 2, sub-orchestrator → 3, no usable parent → 1, "you"); nothing about it is read
- * from the request, argv, env or a file. A sub-orchestrator may only be started under the main orchestrator; an agent never parents.
- * A page request naming a pane that is gone is 404; for the CLI (`ctx.lenientParent`, its parent is `$TMUX_PANE`) it is "you".
+ * parent's role in tmux's record (main orchestrator → 2, sub-orchestrator → 3, "you" → 1); nothing about it is read from the request,
+ * argv, env or a file. "You" is only: no parent named, a pane with no `@nika-role` at all (a shell, the page's header), or, for the CLI
+ * (`ctx.lenientParent`, its parent is `$TMUX_PANE`), a pane that tmux does not list. A page request naming a pane that is gone is 404.
+ * Any other pane that carries a nika role and is not this project's orchestrator or sub-orchestrator is 409 `depth`: an agent can't
+ * parent, and neither can anything of another project or with a tag that does not agree. A sub-orchestrator is started only under
+ * the main orchestrator.
  */
 function resolveParent(v, project, tags, ctx) {
   const t = v.parent ? tags.get(v.parent) : undefined;
   if (v.parent && !t && !ctx.lenientParent) return { failure: fail(404, 'not_found', 'The parent session is no longer running, so nothing was started.') };
-  const kind = t ? kindOf(t, project) : null;
-  if (kind === 'agent') return { failure: fail(409, 'depth', `An agent can't start other agents: ${LEVELS}`) };
+  const kind = t && t.role !== '' ? kindOf(t, project) : null;
+  if (t && t.role !== '' && !kind) {
+    const who = clean(parseAgentTag(t.agent)?.[1], 48) ?? v.parent;
+    return { failure: fail(409, 'depth', `${who} can't start agents for this project: only this project's orchestrator and its sub-orchestrators can. Nothing was started.`) };
+  }
   const depth = kind === 'main' ? 2 : kind === 'sub' ? 3 : 1;
   if (v.role === 'orchestrator' && depth !== 2) return { failure: fail(409, 'depth', `That session can't start a sub-orchestrator. Only the main orchestrator can: ${LEVELS}`) };
   return { parent: kind ? v.parent : null, depth };

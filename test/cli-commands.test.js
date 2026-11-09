@@ -1144,8 +1144,36 @@ describe('spawn: nesting from $TMUX_PANE and --role (0.4)', () => {
     assert.match(a.err, /depth: That session can't start a sub-orchestrator/);
     const b = await cli(['spawn', 'child', 'haiku', '-'], at(w, '%3', { exec }));
     assert.equal(b.code, 3);
-    assert.match(b.err, /depth: An agent can't start other agents/);
+    assert.match(b.err, /depth: leaf can't start agents for this project: only this project's orchestrator and its sub-orchestrators can\. Nothing was started\./);
     assert.equal(exec.tmux.of('split-window').length, 0);
+  });
+
+  test('(−) the main orchestrator or a sub-orchestrator of ANOTHER project, running nika in this project (--project / its folder), is refused (3, depth): nothing sent', async () => {
+    const w = await world();
+    const other = '0123456789abcdef';
+    const orch = { ...PANE_1, session: 'Other', agent: `${other}/orchestrator`, depth: '1' };
+    const sub = { id: '%2', session: 'Other', window: 0, windowName: 'orchestrator', command: 'node', role: 'sub-orchestrator', agent: `${other}/planner`, depth: '2', parent: '%1' };
+    const exec = tmuxExec([orch, sub, { id: '%9', session: 'My-App', window: 0, windowName: 'zsh', command: 'zsh' }]);
+    for (const pane of ['%1', '%2']) {
+      for (const args of [['spawn', 'child', 'haiku', '-'], ['spawn', 'planner', 'haiku', '-', '--role', 'orchestrator'], ['spawn', 'child', 'haiku', '-', '--project', w.project.dir]]) {
+        const r = await cli(args, at(w, pane, { exec }));
+        assert.equal(r.code, 3, `${pane} ${args.join(' ')}: ${r.err}`);
+        assert.match(r.err, /depth: /);
+      }
+    }
+    assert.equal(exec.tmux.of('split-window').length, 0);
+    assert.equal(exec.tmux.of('set-option').length, 0);
+    assert.equal(fs.existsSync(reportsDir(w.project.key, w.env)), false);
+  });
+
+  test('(+) a pane that carries no nika role (a human\'s shell) is "you": depth 1, no parent; so is a pane that tmux does not list', async () => {
+    const w = await world();
+    const shell = { id: '%4', session: 'My-App', window: 1, windowName: 'zsh', command: 'zsh' };
+    const exec = tmuxExec([main(w), shell]);
+    assert.equal((await cli(['spawn', 'fromshell', 'haiku', '-'], at(w, '%4', { exec }))).code, 0);
+    assert.deepEqual([stored(w, 'fromshell').parent, stored(w, 'fromshell').depth, stored(w, 'fromshell').role], [null, 1, 'agent']);
+    assert.equal((await cli(['spawn', 'stale', 'haiku', '-'], at(w, '%88', { exec }))).code, 0);
+    assert.deepEqual([stored(w, 'stale').parent, stored(w, 'stale').depth], [null, 1]);
   });
 });
 

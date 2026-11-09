@@ -323,20 +323,20 @@ describe('collect: parent, depth and children (0.4, contract C6)', () => {
     assert.equal(a('b').role, 'sub-orchestrator');
   });
 
-  test('(−) bad tags are ignored: a bad depth is absent (depth 1 without a parent), a bad parent is no parent; only agents and sub-orchestrators have a parent', async () => {
+  test('(−) bad tags are ignored: a bad parent is no parent (so a root, depth 1); only agents and sub-orchestrators have a parent', async () => {
     const a = await tree([
       ['a', '%1', 'orchestrator', `${K}/orchestrator`, '3', '%2'], // a main orchestrator is depth 1 and nobody's child
       ['b', '%2', 'agent', `${K}/x`, '7', 'nope'],
       ['c', '%3', 'agent', `${K}/y`, '2', '%1 '],
       ['d', '%4', '', '', '2', '%1'], // no nika role: the tags beside it mean nothing
-      ['e', '%5', 'sub-orchestrator', `${K}/z`, '', ''], // a sub-orchestrator is depth 2 whatever its tag says
+      ['e', '%5', 'sub-orchestrator', `${K}/z`, '', ''], // no parent: a root, whatever it is called
       ['f', '%6', 'agent', `${K}/w`, '2', '%5'],
     ]);
     assert.deepEqual(view(a('a')), [null, 1, []]);
     assert.deepEqual(view(a('b')), [null, 1, []]);
-    assert.deepEqual(view(a('c')), [null, 2, []]); // the depth tag parses, the parent does not
+    assert.deepEqual(view(a('c')), [null, 1, []]); // the depth tag parses, the parent does not: nothing above it
     assert.deepEqual(view(a('d')), [null, 1, []]);
-    assert.deepEqual(view(a('e')), [null, 2, [ID('f')]]);
+    assert.deepEqual(view(a('e')), [null, 1, [ID('f')]]);
     assert.deepEqual(view(a('f')), [ID('e'), 2, []]);
   });
 
@@ -350,7 +350,24 @@ describe('collect: parent, depth and children (0.4, contract C6)', () => {
     assert.deepEqual(view(a('a')), [null, 1, []]);
     assert.deepEqual(view(a('b')), [null, 1, [ID('d')]]);
     assert.deepEqual(view(a('c')), [null, 1, []]);
-    assert.deepEqual(view(a('d')), [ID('b'), 3, []]);
+    assert.deepEqual(view(a('d')), [ID('b'), 2, []]); // one step below a root, whatever its own tag says
+  });
+
+  test('(−) depth comes from the place in the parent chain (root 1, at most 3), never from the agent\'s own @nika-depth', async () => {
+    const a = await tree([
+      ['a', '%1', 'orchestrator', `${K}/orchestrator`, '1', ''],
+      ['b', '%2', 'sub-orchestrator', `${K}/planner`, '1', '%1'], // forged: claims depth 1
+      ['c', '%3', 'agent', `${K}/build-1`, '1', '%2'], // forged: a depth-3 agent claims depth 1
+      ['d', '%4', 'agent', `${K}/build-2`, '3', ''], // forged: a root claims depth 3
+      ['e', '%5', 'agent', `${K}/build-3`, '1', '%99'], // its parent is a pane nika has no session for: one step below it
+      ['f', '%6', 'agent', `${K}/build-4`, '1', '%3'], // below an agent (nika refuses to start one; a forged tag could say so): capped at 3
+    ]);
+    assert.deepEqual(view(a('a')), [null, 1, [ID('b')]]);
+    assert.deepEqual(view(a('b')), [ID('a'), 2, [ID('c')]]);
+    assert.deepEqual(view(a('c')), [ID('b'), 3, [ID('f')]]);
+    assert.deepEqual(view(a('d')), [null, 1, []]);
+    assert.deepEqual(view(a('e')), ['%99', 2, []]);
+    assert.deepEqual(view(a('f')), [ID('c'), 3, []]);
   });
 
   test('(−) ended agents carry no parent and no depth, and children []; so does a live agent when tmux is unavailable', async () => {

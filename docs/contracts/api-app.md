@@ -191,8 +191,9 @@ and the tags of a pane with no nika role are ignored):
 - `"parent": "<session id>" | "<pane id>" | null`: the parent's session id when its pane maps to a live session in the snapshot, else
   the pane id (`%n`); `null` for a root, an ended agent, and for the main orchestrator and sessions nika did not start. Only agents and
   sub-orchestrators have a parent.
-- `"depth": 1 | 2 | 3 | null`: the main orchestrator is 1, a sub-orchestrator 2, an agent its `@nika-depth` tag (1 when it has none and no
-  parent, 2 with a parent and no tag); other live sessions 1; `null` for an ended agent. Never above 3.
+- `"depth": 1 | 2 | 3 | null`: the place in the parent chain, not the agent's own `@nika-depth` tag: a root (the main orchestrator, a
+  session with no parent) is 1 and each parent above adds one, a parent pane that maps to no session counting as one; `null` for an
+  ended agent. Never above 3.
 - `"children": ["<session id>", …]`: the live agents whose parent it is (`[]` for an ended agent or a leaf).
 A self-parent or a loop of parents is cut: every member becomes a root at depth 1. A page that gets a missing field (an older
 server, a 0.3 pane) treats the agent as a root at depth 1.
@@ -530,18 +531,22 @@ response `session` is the pane's session). Response:
 `sub-orchestrator`). Both values are checked: anything else is 400 `invalid`, as is a `parent` that is not a pane id. The parent is
 the pane the request names (`parent`; the CLI sends `$TMUX_PANE`, §7) and **only its tags in tmux decide what it is**; depth and
 role are never read from the request, argv, env or a file. From one fresh `tmux list-panes -a` (the format in §8):
-- no `parent`, a pane with no nika `@nika-role`, or a pane whose tags are another project's, malformed or do not agree → the
-  parent is "you": the child is depth 1 and its role can only be `agent`;
+- no `parent`, or a pane with no `@nika-role` at all (a shell, the page's header) → the parent is "you": the child is depth 1 and
+  its role can only be `agent`. For the CLI, a `$TMUX_PANE` that is absent, not a pane id, or not listed is "you" too;
 - a parent that is this project's **main orchestrator** (role `orchestrator` with `@nika-agent <key>/orchestrator`, or a 0.3 pane
   with no `@nika-agent` tag in the project's tmux session and the window named `orchestrator`; `@nika-depth` absent or `1`) →
   depth 2, role `agent` or `orchestrator`;
 - a parent that is this project's **sub-orchestrator** (`@nika-agent <key>/<name>` for this project and `@nika-depth 2`) → depth 3,
   role `agent` only;
-- a parent with role `agent` and a tag of this project → `409 depth`.
-`role: "orchestrator"` under anything but the main orchestrator → `409 depth`
-("That session can't start a sub-orchestrator. Only the main orchestrator can: nika allows three levels (orchestrator,
-sub-orchestrators, their agents). Nothing was started."; an agent parent: "An agent can't start other agents: …"). A `parent` pane
-that is no longer listed → `404 not_found` for a page request; the CLI treats its gone `$TMUX_PANE` as "you".
+- **any other pane that carries a nika `@nika-role` → `409 depth`**: an agent (of any project), an orchestrator or sub-orchestrator of
+  another project (a 0.3 orchestrator outside this project's session and window included), a tag that does not parse, a depth that
+  does not fit the role, or a role value nika never writes. Such a pane is never "you". Message: "<name> can't start agents for this
+  project: only this project's orchestrator and its sub-orchestrators can. Nothing was started.", with the name from the pane's
+  `@nika-agent` tag when it parses (cleaned), else the pane id.
+`role: "orchestrator"` with "you" or under a sub-orchestrator → `409 depth` ("That session can't start a sub-orchestrator. Only the
+main orchestrator can: nika allows three levels (orchestrator, sub-orchestrators, their agents). Nothing was started."). A `parent`
+pane that is no longer listed → `404 not_found` for a page request; the CLI treats its gone `$TMUX_PANE` as "you". The name
+`orchestrator` is reserved for the main orchestrator's tag: a spawn named `orchestrator` is 400 `invalid` (`orchestrator is reserved`).
 
 **Limits.** `N` = `limits.maxAgents` (1 to 8). The live set is the panes, in any tmux session, with `@nika-role` `agent` or
 `sub-orchestrator` and an `@nika-agent` tag `<project key>/<name>` for this project (§8), plus the panes this process started (its

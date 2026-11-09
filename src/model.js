@@ -92,7 +92,7 @@ function foldScratchpad(entries, tmpRoot) {
 
 /**
  * The tree fields of contract C6, from the panes' own nika tags (set by nika, read strictly by collect/tmux.js): `parent` is the
- * parent's session id when its pane maps to a live session here, else the pane id; `depth` 1 to 3; `children` the ids of the live
+ * parent's session id when its pane maps to a live session here, else the pane id; `depth` 1 to 3 from the place in the parent chain; `children` the ids of the live
  * agents whose parent it is. Only agents and sub-orchestrators have a parent. A self-parent or a loop is cut: every member of it
  * becomes a root at depth 1. Ended agents keep the null, null and [] they were built with.
  */
@@ -109,12 +109,24 @@ function linkTree(entries) {
     return false;
   };
   const loops = new Set(live.filter(inLoop)); // decided before any link is made
+  const up = (e) => (loops.has(e) ? null : parentPane(e));
+  // depth is the place in the parent chain, never the agent's own `@nika-depth` (a forged or stale tag would show as it says): a root is 1,
+  // each step up adds one (a parent pane nika has no session for counts as one step), at most 3
+  const depthOf = (e) => {
+    let depth = 1;
+    for (let pane = up(e); pane && depth < 3; ) {
+      depth += 1;
+      const next = byPane.get(pane);
+      pane = next ? up(next) : null;
+    }
+    return depth;
+  };
   for (const e of live) {
     const { agent } = e;
-    const pane = loops.has(e) ? null : parentPane(e);
+    const pane = up(e);
     const parent = byPane.get(pane);
     agent.parent = parent ? parent.agent.id : pane;
-    agent.depth = loops.has(e) || agent.role === 'orchestrator' ? 1 : agent.role === 'sub-orchestrator' ? 2 : e.tags?.depth ?? (pane ? 2 : 1);
+    agent.depth = depthOf(e);
     parent?.agent.children.push(agent.id);
   }
 }

@@ -35,7 +35,9 @@ Sub-orchestrators and limits (CLI and API; the screens follow):
 - **Three levels.** The main orchestrator can start sub-orchestrators, and a sub-orchestrator can start agents of its own.
   `nika spawn <name> <model> <brief> --role orchestrator` starts a sub-orchestrator; run from an orchestrator's pane, the
   new session becomes its child. An agent cannot start other agents, and a sub-orchestrator cannot start another
-  sub-orchestrator: nika answers "can't start a sub-orchestrator" (409 `depth`) and starts nothing.
+  sub-orchestrator: nika answers "can't start a sub-orchestrator" (409 `depth`) and starts nothing. Only this project's
+  orchestrator and its sub-orchestrators can start agents of the project: any other nika session, such as an agent or another
+  project's orchestrator, is refused the same way. The name `orchestrator` is reserved for the main orchestrator.
 - A sub-orchestrator can run only `nika spawn` and `nika status`; the other nika commands are on its deny list (advisory, like
   the agents' list). It gets its own guard prompt, written for orchestrating.
 - **Limits per parent and per project.** **Agents per orchestrator** (Settings, 1 to 8) now bounds the agents and

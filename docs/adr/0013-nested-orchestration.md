@@ -30,9 +30,12 @@ a big job can be split without one orchestrator holding every brief. Three thing
   it is a pane id (there is no `--parent` flag). Both go through one resolution from one fresh `tmux list-panes -a` with a
   fixed format: the main orchestrator of this project as parent gives depth 2 (role `agent` or `sub-orchestrator`), a
   sub-orchestrator of this project at depth 2 gives depth 3 (role `agent` only), no usable parent gives depth 1 (role `agent`
-  only). A parent whose role is `agent` is 409 `depth`. A parent that is not nika's, names another project, or carries tags
-  that do not agree is treated as no parent. A page request naming a pane that is not in the listing is 404 `not_found`; for
-  the CLI a stale `$TMUX_PANE` is "no parent". The depth is never read from the request, argv, env or a file; the parent's
+  only). "You" means only: no parent named, a pane with no `@nika-role` at all (a shell, the page's header), or, for the CLI,
+  a `$TMUX_PANE` that is absent, not a pane id, or not listed. **Every other pane that carries a nika role is 409 `depth`**: an
+  agent, anything of another project, a tag that does not parse or agree, an unknown role value. (An earlier draft treated those
+  as "you", which let an honestly tagged sub-orchestrator of project A spawn into project B at depth 1 with `--project`.) A page request naming a pane that is not in the listing is 404 `not_found`; for the CLI a stale
+  `$TMUX_PANE` is "you". The name `orchestrator` is reserved, so an agent's tag can never take the main orchestrator's form.
+  The depth is never read from the request, argv, env or a file; the parent's
   `@nika-depth` is only a consistency check.
 - **Limits.** `N = limits.maxAgents` (1–8), now read as "agents per orchestrator". The live set is the panes in any tmux
   session with role `agent` or `sub-orchestrator` and an `@nika-agent` tag for this project, plus the panes this process
@@ -48,7 +51,8 @@ a big job can be split without one orchestrator holding every brief. Three thing
   advisory (project rules, constraint 12).
 - **Read side.** `src/collect/tmux.js` reads the three tags beside the role and parses each strictly (a bad value is absent).
   `src/model.js` gives every live agent `parent` (the parent's session id when the pane maps to a known session, else the
-  pane id), `depth` (1–3) and `children`. A cycle or a self-parent is cut, and the agent becomes a root. Ended agents carry
+  pane id), `depth` (1–3, from the place in the parent chain, not from the agent's own tag, so a forged `@nika-depth` changes
+  nothing on screen) and `children`. A cycle or a self-parent is cut, and the agent becomes a root. Ended agents carry
   no parent or depth and `children: []`. The browser tier gets the same fields: they are tags nika itself wrote.
 - `TEMPLATE_VERSION` goes to 2: the rules template gains a "Sub-orchestrators" section and a reworded limit line.
 

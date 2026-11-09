@@ -244,6 +244,20 @@ describe('spawnAgent: refusals', () => {
     assert.equal(fs.existsSync(rd(w)), false);
   });
 
+  test('(−) the name `orchestrator` is reserved for the main orchestrator\'s tag, for both roles: 400, no tmux call, no file; (+) names that only contain it pass', async () => {
+    const w = await world({ limits: { maxAgents: 8 } });
+    const exec = fakeTmux({ panes: BASE_PANES() });
+    for (const over of [{ name: 'orchestrator' }, { name: 'orchestrator', role: 'orchestrator' }, { name: 'orchestrator', role: 'agent', parent: '%1' }]) {
+      const r = await spawnAgent(req(w, over), w.ctx(exec));
+      assert.deepEqual([r.status, r.body.error, r.body.message], [400, 'invalid', 'orchestrator is reserved'], JSON.stringify(over));
+    }
+    assert.equal(exec.calls.length, 0);
+    assert.equal(fs.existsSync(rd(w)), false);
+    for (const name of ['orchestrator-2', 'my-orchestrator', 'orchestrators', 'o']) {
+      assert.equal((await spawnAgent(req(w, { name }), w.ctx(exec))).status, 200, name);
+    }
+  });
+
   test('(+) a brief of exactly 64 KB (bytes) is accepted', async () => {
     const w = await world();
     const r = await spawnAgent(req(w, { brief: `${'é'.repeat(32 * 1024 - 1)} x` }), w.ctx(fakeTmux({ panes: BASE_PANES() })));
@@ -612,7 +626,7 @@ describe('spawnAgent: nesting and limits (0.4)', () => {
     for (const depth of ['1', '2', '3', '', 'x']) {
       for (const role of ['agent', 'orchestrator']) {
         const r = await refuse(w, [MAIN(w), AGENT(w, { depth })], { name: 'child', role, parent: '%3' }, 409, 'depth');
-        assert.match(r.body.message, /three levels/);
+        assert.match(r.body.message, /^helper can't start agents for this project: only this project's orchestrator and its sub-orchestrators can\. Nothing was started\.$/);
       }
     }
   });
@@ -626,7 +640,7 @@ describe('spawnAgent: nesting and limits (0.4)', () => {
     }
   });
 
-  test('(−) a parent whose tag names another project or does not parse is "you": depth 1, and never an orchestrator', async () => {
+  test('(−) a nika-tagged parent whose tag names another project or does not parse is 409 depth (never "you", never an orchestrator)', async () => {
     const w = await world();
     const bad = ['ffffffffffffffff/orchestrator', 'ffffffffffffffff/planner', 'x', `${w.project.key}/Bad Name`, `${w.project.key}`, '', `${w.project.key}/a/b`];
     for (const role of ['orchestrator', 'sub-orchestrator', 'agent']) {
@@ -635,15 +649,46 @@ describe('spawnAgent: nesting and limits (0.4)', () => {
         const panes = [{ id: '%1', session: 'My-App', window: 0, windowName: 'orchestrator', command: 'claude', role, agent, depth, parent: '' }];
         // a 0.3-looking pane (role orchestrator, no tag) in the `orchestrator` window is the legacy main orchestrator: not part of this case
         if (role === 'orchestrator' && agent === '') continue;
-        await refuse(w, panes, { name: 'planner', role: 'orchestrator', parent: '%1' }, 409, 'depth');
-        const exec = fakeTmux({ panes });
-        assert.equal((await spawnAgent(req(w, { parent: '%1' }), w.ctx(exec))).status, 200, `${role} ${JSON.stringify(agent)}`);
-        assert.deepEqual(tags(exec, '%20'), ['agent', 'builder-1', '1', ''], `${role} ${JSON.stringify(agent)}`);
+        for (const over of [{ name: 'planner', role: 'orchestrator', parent: '%1' }, { parent: '%1' }]) {
+          const r = await refuse(w, panes, over, 409, 'depth', {});
+          assert.match(r.body.message, /can't (start agents for this project: only this project's orchestrator and its sub-orchestrators can|start a sub-orchestrator)/, `${role} ${JSON.stringify(agent)}`);
+          assert.match(r.body.message, /Nothing was started\./);
+          // the same through the CLI's lenient parent: a pane that exists and carries a nika role is refused too
+          await refuse(w, panes, over, 409, 'depth', { lenientParent: true });
+        }
       }
     }
   });
 
-  test('(−) a contradictory tag (a depth that does not fit the role) or a legacy pane out of place is "you", not an orchestrator', async () => {
+  test('(−) the refusal names the parent: its name from the tag when it parses, else its pane id', async () => {
+    const w = await world();
+    const msg = async (pane) => (await refuse(w, [pane], { parent: pane.id }, 409, 'depth')).body.message;
+    assert.match(await msg(AGENT(w, { id: '%7', agent: `${w.project.key}/helper` })), /^helper can't start agents for this project: only this project's orchestrator and its sub-orchestrators can\. Nothing was started\.$/);
+    assert.match(await msg(AGENT(w, { id: '%7', agent: `${OTHER_KEY}/planner` })), /^planner can't start agents for this project/);
+    assert.match(await msg(AGENT(w, { id: '%7', agent: 'x/\u202e\u0007y' })), /^%7 can't start agents for this project/);
+  });
+
+  test('(−) a pane with a role value nika never writes (or a tagged pane with other tags missing) is 409 depth, not "you"', async () => {
+    const w = await world();
+    for (const role of ['foo', 'Agent', 'ORCHESTRATOR', 'sub_orchestrator', ' agent', 'agent ', 'x'.repeat(200)]) {
+      await refuse(w, [MAIN(w, { role })], { parent: '%1' }, 409, 'depth');
+      await refuse(w, [MAIN(w, { role })], { name: 'planner', role: 'orchestrator', parent: '%1' }, 409, 'depth', { lenientParent: true });
+    }
+  });
+
+  test('(−) an orchestrator or sub-orchestrator of another project (the CLI run from its pane with --project) is refused, nothing sent', async () => {
+    const w = await world();
+    const panes = [
+      { id: '%1', session: 'Other', window: 0, windowName: 'orchestrator', command: 'claude', role: 'orchestrator', agent: `${OTHER_KEY}/orchestrator`, depth: '1' },
+      { id: '%2', session: 'Other', window: 0, windowName: 'orchestrator', command: 'node', role: 'sub-orchestrator', agent: `${OTHER_KEY}/planner`, depth: '2', parent: '%1' },
+      { id: '%3', session: 'My-App', window: 1, windowName: 'zsh', command: 'zsh' },
+    ];
+    for (const parent of ['%1', '%2']) {
+      for (const over of [{}, { name: 'planner', role: 'orchestrator' }]) await refuse(w, panes, { ...over, parent }, 409, 'depth', { lenientParent: true });
+    }
+  });
+
+  test('(−) a contradictory tag (a depth that does not fit the role) or a legacy pane out of place is 409 depth, not an orchestrator and not "you"', async () => {
     const w = await world();
     const cases = [
       MAIN(w, { depth: '2' }), MAIN(w, { depth: '3' }), MAIN(w, { depth: 'x' }), // the main orchestrator is depth 1
@@ -655,9 +700,7 @@ describe('spawnAgent: nesting and limits (0.4)', () => {
     for (const pane of cases) {
       const panes = [pane, { id: '%9', session: 'My-App', window: 1, windowName: 'zsh', command: 'zsh' }]; // the project's session exists in every case
       await refuse(w, panes, { name: 'planner', role: 'orchestrator', parent: '%1' }, 409, 'depth');
-      const exec = fakeTmux({ panes });
-      assert.equal((await spawnAgent(req(w, { parent: '%1' }), w.ctx(exec))).status, 200, JSON.stringify(pane));
-      assert.equal(tags(exec, '%20')[2], '1', JSON.stringify(pane));
+      await refuse(w, panes, { parent: '%1' }, 409, 'depth');
     }
   });
 
