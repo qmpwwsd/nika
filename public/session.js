@@ -1200,7 +1200,7 @@ let sending = false;
 async function sendComposer() {
   const ta = composer();
   if (sending || ta.disabled) return;
-  const gate = sendGate({ promptOpen: W.promptOpen, status: A.kind, buttons: W.pane === 'ok' && hasAnswerButtons(W.prompt) }); // Enter would confirm the prompt's highlighted option: answer with the buttons
+  const gate = sendGate({ promptOpen: W.promptOpen, status: A.kind, buttons: W.pane === 'ok' && hasAnswerButtons(W.prompt), bypass: W.prompt?.bypass === true }); // Enter would confirm the prompt's highlighted option: answer with the buttons
   if (!gate.ok) {
     showProblem(gate.message, 'error'); // nothing is sent and the text stays in the box
     return;

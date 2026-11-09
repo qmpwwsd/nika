@@ -549,7 +549,7 @@ describe('quick actions, prompt buttons, End dialog and Shell (spec 9.4-9.8)', (
     assert.match(src, /quickState\(\{[^}]*prompt: W\.promptOpen/);
     assert.match(fn(src, 'function openEnd()'), /promptOpen: W\.promptOpen \|\| A\.kind === 'attn'/);
     assert.match(fn(src, 'function renderGatedKeys()'), /sendGate\(\{ promptOpen: W\.promptOpen, status: A\.kind \}\)/);
-    assert.match(fn(src, 'async function sendComposer()'), /sendGate\(\{ promptOpen: W\.promptOpen, status: A\.kind, buttons: W\.pane === 'ok' && hasAnswerButtons\(W\.prompt\) \}\)/, 'the wording reads the panel; whether it is held does not');
+    assert.match(fn(src, 'async function sendComposer()'), /sendGate\(\{ promptOpen: W\.promptOpen, status: A\.kind, buttons: W\.pane === 'ok' && hasAnswerButtons\(W\.prompt\), bypass: W\.prompt\?\.bypass === true \}\)/, 'the wording reads the panel and the capture\'s bypass mark; whether it is held does not');
     assert.doesNotMatch(src, /(switcherState|quickState)\(\{[^}]*prompt: W\.prompt\b/, 'no gate reads the cleaned prompt');
     assert.match(fn(src, 'function renderPrompt()'), /W\.prompt/, 'the panel does');
   });

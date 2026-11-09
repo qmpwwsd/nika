@@ -447,6 +447,18 @@ describe('sendGate: Send and Shell wait while a prompt is open (H2)', () => {
     }
   });
 
+  test('(+) a prompt the capture marks bypass names only the terminal: Type into pane posts to the keys route, which refuses it', () => {
+    const ONLY = { ok: false, message: 'Answer this prompt in the terminal.' };
+    for (const a of [{ promptOpen: true, bypass: true }, { status: 'attn', bypass: true }, { promptOpen: true, buttons: true, bypass: true }]) {
+      assert.deepEqual(sendGate(a), ONLY, JSON.stringify(a));
+    }
+  });
+
+  test('(−) bypass alone never blocks, and only `true` counts as bypass', () => {
+    assert.deepEqual(sendGate({ promptOpen: false, bypass: true }), { ok: true });
+    assert.deepEqual(sendGate({ promptOpen: true, bypass: 'yes' }), WITHOUT);
+  });
+
   test('(−) everything else goes out, buttons or not: idle, busy, ended, not known yet, no argument at all', () => {
     for (const status of ['idle', 'busy', 'ended', null, undefined]) {
       assert.deepEqual(sendGate({ promptOpen: false, status }), { ok: true }, String(status));

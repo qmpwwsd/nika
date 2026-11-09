@@ -104,9 +104,12 @@ export function cleanPrompt(raw) {
  * Does Send (text, paste, the lone Enter of an empty box) or Shell go out? Not while a permission prompt is open or the agent needs
  * you: Enter would confirm the highlighted option and a digit would pick one. The terminal (passthrough) is the raw way and is not gated here.
  */
-export function sendGate({ promptOpen = false, status = null, buttons = false } = {}) {
+export function sendGate({ promptOpen = false, status = null, buttons = false, bypass = false } = {}) {
   if (!promptOpen && status !== 'attn') return { ok: true };
-  // `buttons`: the prompt panel shows at least one answer button. Without one (a layout nika cannot parse, a bypass prompt) the way out is the terminal.
+  // `buttons`: the prompt panel shows at least one answer button. Without one (a layout nika cannot parse) the way out is the
+  // terminal or Type into pane. `bypass`: the capture marked the prompt (prompt.bypass); the keys route refuses Enter, digits
+  // and paste for it, so Type into pane cannot answer it either and only the terminal is named.
+  if (bypass === true) return { ok: false, message: 'Answer this prompt in the terminal.' };
   return { ok: false, message: buttons === true ? 'Answer the prompt with the buttons above or in the terminal.' : 'Answer the prompt in the terminal, or turn on Type into pane.' };
 }
 
