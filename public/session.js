@@ -335,7 +335,7 @@ function failSwitch(r, start, target) {
   }
   W.msg = { text: f.text, mode: W.mode };
   if (W.confirmed && W.mode !== 'unknown') W.last = W.mode; // the captures on the way were silent
-  announceMode(`${A.name}: ${f.text}`);
+  if (r.status !== 404) announceMode(`${A.name}: ${f.text}`); // a gone pane is announced once, by the pane-gone state
 }
 
 async function switchTo(target) {
