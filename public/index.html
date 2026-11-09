@@ -47,7 +47,12 @@
       <a href="#settings" data-nav="settings"><svg class="ic" aria-hidden="true"><use href="#i-gear"/></svg><span class="label">Settings</span><kbd data-mod=","></kbd></a>
     </div>
     <div class="side-h"><h2 id="side-p">Projects</h2><button type="button" class="btn icon ghost" id="side-add" aria-label="Add project" title="Add project"><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg></button></div>
+    <div class="side-hint" id="side-hint" hidden><p>No projects yet.</p><p>Add a repo with + to start agents and apply rules here.</p></div>
     <ul class="side-projects" id="side-projects" aria-labelledby="side-p"></ul>
+    <div class="side-det" id="side-det" hidden>
+      <h3 class="side-sub" id="side-d">Detected</h3>
+      <ul class="side-projects" id="side-detected" aria-labelledby="side-d"></ul>
+    </div>
     <div class="side-foot">
       <div class="env" id="env" aria-label="Environment"></div>
       <button type="button" class="btn icon ghost" data-kbd-open aria-label="Keyboard shortcuts" aria-keyshortcuts="Shift+Slash Control+Slash" title="Keyboard shortcuts (?)"><svg class="ic" aria-hidden="true"><use href="#i-kbd"/></svg></button>

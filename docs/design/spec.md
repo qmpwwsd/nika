@@ -73,7 +73,7 @@ Rules for every direction:
 - One window. Dialogs are modal (`<dialog>.showModal()`), never nested; opening one closes any other.
 - The session window is a screen, not a dialog: it keeps the app chrome so the user can jump to any other agent.
 - "Needs you" (attention) always sorts first, everywhere: queue, groups, tray, palette.
-- Ended agents are collapsed by default ("N ended" disclosure) and never count toward the attention badge.
+- Ended agents are collapsed by default ("N ended" disclosure) and never count toward the attention badge. Built amendment 2026-11-09 (0.3.1): on the dashboard "Show ended" hides them (off: no "Ended" section, and a group with nothing live says "No live agents."; on: every "Ended (n)" section is open until folded by hand, and the checkbox resets those folds); the project view always shows its open "Ended" section.
 - The browser tier shows the same dashboard data with every privileged control removed (not disabled) and one info line pointing to the app.
 
 ### 1.3 The three directions
@@ -95,7 +95,7 @@ Rules for every direction:
 └────────────┴──────────────────────────────────────────────────────────┘
 ```
 
-- Shell: left sidebar 232 px (brand, Dashboard, Settings, project list with attention counts, environment footer); collapses to a 60 px icon rail at window width ≤ 900 px.
+- Shell: left sidebar 232 px (brand, Dashboard, Settings, project list with attention counts, environment footer); collapses to a 60 px icon rail at window width ≤ 900 px. Built amendment 2026-11-09 (0.3.1): with no projects the list shows "No projects yet." and "Add a repo with + to start agents and apply rules here."; below it a "Detected" sub-heading lists up to 8 unregistered repositories with live agents (needs-you count, then live count, then name), each row linking to its group heading on the dashboard plus a small "Add project" button (`aria-label` "Add <name> as a project") that opens the same folder picker; the list is hidden when empty.
 - Dashboard: "Waiting on you" queue on top, then one group per project of dense 40 px rows (status · name · model · prompt + branch · last activity · pane · ⋯).
 - Project view: agents on the left, three cards on the right (Rules, Plugins, New agents: defaults and limit).
 - Spawn: right side sheet (480 px). Rules: large modal with file list + diff + notes.

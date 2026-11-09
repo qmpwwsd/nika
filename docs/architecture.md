@@ -131,6 +131,7 @@ Routes: [`contracts/api-app.md` section 3](contracts/api-app.md). Parsed screen 
 | `tokens.css`, `app.css`, `session.css` | Design tokens and styles (light, dark, system). |
 | `api.js` | The only client of the app tier: takes the secret once and sends `X-Nika-App`. In the browser tier it refuses to run. |
 | `app-copy.js` | The Add to Applications banner: which banner `appCopy` shows and its fixed copy. Pure; the two POSTs live in `project.js`. |
+| `dash-model.js` | The dashboard's Show ended rule (`endedPlan`, `resetEndedState`) and the sidebar's Projects and Detected lists (`sidebarModel`). Pure, both tiers. |
 | `app.js` | Main page: shell, dashboard (in the app tier: mode tags, the row menu's End and the Add to Applications banner), router, the poll loop and the Keyboard shortcuts keys. Runs in both tiers. |
 | `ui.js` | Shared state and widgets for the main page. |
 | `dom.js` | `h()`: builds DOM with `textContent`, never parses markup. |
