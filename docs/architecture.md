@@ -124,7 +124,7 @@ latency. `--optimize-for-size` saved about 10 MB more but made history requests 
 | `keys.js` | Keystrokes and bracketed paste into a tmux pane. |
 | `mirror.js` | `capture-pane` output turned into rows of whitelisted styled spans; a `fresh` capture skips the 250 ms cache for the control actions. |
 | `mode.js` | Pure parsers over mirror rows: the permission mode from the footer and the permission prompt. They fail closed. |
-| `model.js` | `collect()`: merges every source into agent records and groups them by project; `findSession(id)` finds one session of any age in the transcript index (the saved orchestrator's lookup); `findSessions(ids)` does the same for several ids in one index walk, with no ps, tmux or registry (the project list's lookup). |
+| `model.js` | `collect()`: merges every source into agent records and groups them by project; `findSession(id)` finds one session of any age in the transcript index (the saved orchestrator's lookup); `findSessions(ids)` does the same for several ids in one index walk, with no ps, tmux or registry (the project list's lookup). `contextOf` turns the last usage, nika's compaction setting (read through `loadConfig`, both tiers) and whether nika started the session into the agent's `context` (contract C6). |
 | `models.js` | The static model catalog behind the model dropdowns (`GET /api/app/models`), with each model's context window and `modelWindow(id)`. |
 | `orchestrate.js` | Starts or resumes a project's orchestrator in a tmux session (`launchArgv` builds its claude flags in one place) and finds an adopted orchestrator pane. |
 | `paths.js` | nika's own config and state dirs (XDG). |
@@ -149,7 +149,7 @@ latency. `--optimize-for-size` saved about 10 MB more but made history requests 
 | `reports.js` | Spawn report files (`.session`, `.md`, `.rc`) in the scratchpad and in nika's own report dirs. |
 | `subagents.js` | In-process subagents of a session. |
 | `tmux.js` | tmux panes (`list-panes -a`), pane titles and the pane tags nika sets (`@nika-role`, `@nika-agent`, `@nika-depth`, `@nika-parent`), each parsed strictly. |
-| `transcripts.js` | Session transcripts: only the head and tail are read; results are cached by path, mtime and size. |
+| `transcripts.js` | Session transcripts: only the head and tail are read; results are cached by path, mtime and size. From the tail it also keeps the context size of the last assistant entry (`usage`: the sum of the input and cache tokens, and the model id; numbers only). |
 
 ### `public/` (the page, plain browser modules, strict CSP)
 
@@ -165,7 +165,7 @@ latency. `--optimize-for-size` saved about 10 MB more but made history requests 
 | `dom.js` | `h()`: builds DOM with `textContent`, never parses markup; `roleTagEl()` draws the orchestrator badge. |
 | `end-dialog.js` | The End-session dialog, shared by the session window and the dashboard row menu. |
 | `modes.js` | Permission modes in the UI: labels, icons, the switcher's state and the dashboard's mode map and tag. |
-| `ctx.js` | Pure text helpers for token counts and the Auto-compact result line (`fmtTokens`, `compactPreview`). No DOM. |
+| `ctx.js` | Pure text helpers for token counts, the Auto-compact result line and the context meter (`fmtTokens`, `compactPreview`, `ctxView`). No DOM; `dom.js` `ctxEl` draws the meter. |
 | `models-ui.js` | The model dropdown shared by the session window, Settings and the spawn sheet: groups from the catalog, the Custom ID field and its `MODEL_ID` check. |
 | `palette.js` | The slash-command palette's rules and copy (ranking, views, insertion). No DOM, no requests. |
 | `plugin-view.js` | The "Choose plugins" dialog's model: the rows and their fixed order, the filter, the counts and what Save sends. Pure; the dialog itself lives in `project.js`. |

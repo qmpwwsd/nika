@@ -82,6 +82,23 @@ Auto-compact (desktop app):
   model a `window`. nika sets `CLAUDE_CODE_AUTO_COMPACT_WINDOW` and `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` for the new claude and
   never the `--autocompact` flag. See `docs/contracts/api-app.md` and `docs/adr/0014-auto-compact-launch-env.md`.
 
+Context indicator (both tiers):
+
+- **How full is each session.** Every row on the dashboard and the project page, in the browser and in the app, has a new
+  **Context** column: the percentage of the window the session's context fills, with a thin bar, and "–" when there is no
+  usage yet. It turns amber from 60 % and red, with a warning icon, from 80 %. The session window's header shows the same
+  meter ("Context 312k / 400k · 78 %"). Hover it for "Context: 312k of 400k tokens (compacts at 320k)"; a screen reader hears
+  "Context 78 % used, 312k of 400k tokens, compacts at 320k" and "nearly full" from 80 %.
+- The percentage is measured against the window auto-compact uses: your Settings window (cut to the model's own) when
+  auto-compact is on, the model's full window when it is off. For a session nika started, 80 % therefore means it is about to
+  compact. A session you started yourself, or one that has ended, is measured against the same window, but nika's setting
+  does not act on it, so its tooltip says nothing about compacting. Narrow rows drop the bar and keep the percentage.
+- The numbers come from the `usage` of the last assistant entry in the transcript tail. The browser tier shows them too: it
+  now reads the compaction setting from nika's own `config.json`, and sends token counts and the model's window per session,
+  numbers only and no text. A model nika does not know counts as 200k.
+- API: agents in `GET /api/agents` (both tiers) gain `context` (`tokens`, `window`, `compactAt`, `pct`, `compaction`). See
+  `docs/contracts/api-app.md`.
+
 ## 0.3.4 — 2026-11-09
 
 Session window (desktop app):

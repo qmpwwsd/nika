@@ -288,3 +288,44 @@ describe('/api/report finds the reports of agents nika spawned', () => {
     assert.equal((await at(REPORT_ID, port)).status, 404); // the shared 0.1 test server has no env
   });
 });
+
+describe('context on the browser tier (0.4 O5, R3)', () => {
+  // a server with the env (so it reads nika's config.json through loadConfig) over a fixture whose busy session has usage numbers
+  const fx2 = makeFixture();
+  const cfg = path.join(fx2.root, 'cfg');
+  let srv;
+  let p2;
+  before(async () => {
+    const slug = fx2.wt.replace(/[^A-Za-z0-9]/g, '-');
+    fs.appendFileSync(path.join(fx2.claudeDir, 'projects', slug, `${SID.busy}.jsonl`), `${JSON.stringify({
+      type: 'assistant', message: { model: 'claude-sonnet-5-5', usage: { input_tokens: 700, cache_read_input_tokens: 200, cache_creation_input_tokens: 100, output_tokens: 5 } },
+    })}\n`);
+    fs.mkdirSync(path.join(cfg, 'nika'), { recursive: true });
+    fs.writeFileSync(path.join(cfg, 'nika', 'config.json'), JSON.stringify({ compaction: { enabled: true, pct: 50, window: 200000 } }), { mode: 0o600 });
+    srv = createServer({ config: { ...fx2.config, env: { NIKA_CONFIG_DIR: cfg } }, exec: fakeExec(), token: TOKEN, now: () => NOW, version: '0.1.0' });
+    await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+    p2 = srv.address().port;
+  });
+  after(async () => {
+    await new Promise((r) => srv.close(r));
+    cleanup(fx2);
+  });
+  const agents = async () => {
+    const res = await fetch(`http://127.0.0.1:${p2}/api/agents?since=7d`);
+    const body = await res.json();
+    return body.groups.flatMap((g) => g.agents);
+  };
+
+  test('(+) /api/agents carries context numbers per session, measured against the setting nika reads from its own config.json', async () => {
+    const a = (await agents()).find((x) => x.id === SID.busy);
+    assert.deepEqual(a.context, { tokens: 1000, window: 200000, compactAt: null, pct: 0.5, compaction: 'none' });
+  });
+
+  test('(−) a session without usage has context null, and no usage field, model id or text of the transcript is added beside it', async () => {
+    const list = await agents();
+    assert.equal(list.find((x) => x.id === SID.idle).context, null);
+    const raw = JSON.stringify(list);
+    assert.equal(/input_tokens|cache_read|cache_creation|output_tokens|"usage"/.test(raw), false);
+    assert.equal(raw.includes('synthetic prompt'), false);
+  });
+});

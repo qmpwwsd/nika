@@ -176,7 +176,7 @@ describe('collect', () => {
 });
 
 describe('collect: key, role, attention (0.2 UI fields)', () => {
-  const AGENT_KEYS = ['attention', 'bridgeUrl', 'children', 'cwd', 'depth', 'gitBranch', 'id', 'lastActivity', 'lastPrompt', 'live', 'model', 'modelLabel', 'name', 'pane',
+  const AGENT_KEYS = ['attention', 'bridgeUrl', 'children', 'context', 'cwd', 'depth', 'gitBranch', 'id', 'lastActivity', 'lastPrompt', 'live', 'model', 'modelLabel', 'name', 'pane',
     'parent', 'pid', 'report', 'resumeCmd', 'role', 'startedAt', 'state', 'subagents', 'title', 'version', 'worktree'];
   const GROUP_KEYS = ['agents', 'counts', 'key', 'label', 'lastActivity', 'root'];
   const PANES = (role5, role6) => [`%5\twork\t1\t[%5] build-7-1\tzsh\t${role5}`, `%6\twork\t2\tMacBook.local\tclaude\t${role6}`];
@@ -378,6 +378,151 @@ describe('collect: parent, depth and children (0.4, contract C6)', () => {
     }
     const none = await snap(7 * DAY, fakeExec({ tmuxError: 'ENOENT' }));
     assert.deepEqual([byId(none, SID.busy).parent, byId(none, SID.busy).depth, byId(none, SID.busy).children], [null, 1, []]);
+  });
+});
+
+describe('collect: context (0.4 O5, contract C6)', () => {
+  const slug = (d) => d.replace(/[^A-Za-z0-9]/g, '-');
+  const usage = (total) => ({ input_tokens: total - 300, cache_read_input_tokens: 200, cache_creation_input_tokens: 100, output_tokens: 7 });
+  const PANES = (role5, role6) => [`%5\twork\t1\t[%5] build-7-1\tzsh\t${role5}`, `%6\twork\t2\tMacBook.local\tclaude\t${role6}`];
+  const SETTING = { enabled: true, pct: 80, window: 400000 };
+  /**
+   * One pass over a fresh machine: `last` = [session id, tokens, model] lines appended to the transcripts, `compaction` = the
+   * setting in nika's own config.json (null: no file), `roles` = the nika role tag of the panes %5 (SID.busy) and %6 (SID.idle).
+   */
+  async function run({ last = [], compaction = SETTING, roles = ['', ''], config = (c) => c, sinceMs = 7 * DAY } = {}) {
+    const fx2 = makeFixture();
+    try {
+      const where = { [SID.busy]: fx2.wt, [SID.idle]: fx2.repo, [SID.dead]: fx2.repo, [SID.ended]: fx2.repo };
+      for (const [sid, tokens, model] of last) {
+        fs.appendFileSync(path.join(fx2.claudeDir, 'projects', slug(where[sid]), `${sid}.jsonl`), jsonl([{ type: 'assistant', message: { model, usage: usage(tokens) } }]));
+      }
+      const cfgRoot = path.join(fx2.root, 'cfg');
+      if (compaction !== null) {
+        fs.mkdirSync(path.join(cfgRoot, 'nika'), { recursive: true });
+        fs.writeFileSync(path.join(cfgRoot, 'nika', 'config.json'), JSON.stringify({ compaction }), { mode: 0o600 });
+      }
+      const s = await collect({ config: config({ ...fx2.config, env: { NIKA_CONFIG_DIR: cfgRoot } }), exec: fakeExec({ tmuxLines: PANES(...roles) }), now: NOW, sinceMs });
+      return (id) => s.snapshot.groups.flatMap((g) => g.agents).find((a) => a.id === id);
+    } finally {
+      cleanup(fx2);
+    }
+  }
+
+  test('(+) on, a session nika started (its pane carries a role): the window is the setting\'s (400k on a 1M model), compactAt is the launch threshold, pct is tokens / window', async () => {
+    const get = await run({ last: [[SID.busy, 312000, 'claude-sonnet-5-5']], roles: ['orchestrator', ''] });
+    assert.deepEqual(get(SID.busy).context, { tokens: 312000, window: 400000, compactAt: 320000, pct: 78, compaction: 'on' });
+  });
+
+  test('(+) every nika role counts as started: orchestrator, sub-orchestrator and agent', async () => {
+    for (const role of ['orchestrator', 'sub-orchestrator', 'agent']) {
+      const get = await run({ last: [[SID.idle, 1000, 'claude-opus-5-5']], roles: ['', role] });
+      assert.equal(get(SID.idle).context.compaction, 'on', role);
+      assert.equal(get(SID.idle).context.compactAt, 320000, role);
+    }
+  });
+
+  test('(+) pct is rounded to one decimal and not capped', async () => {
+    const get = await run({ last: [[SID.busy, 123456, 'claude-sonnet-5-5'], [SID.idle, 500000, 'claude-opus-5-5']], roles: ['agent', 'agent'] });
+    assert.equal(get(SID.busy).context.pct, 30.9);
+    assert.equal(get(SID.idle).context.pct, 125);
+  });
+
+  test('(+) off: the window is the model\'s own, compactAt is null, compaction is "off" (for any session)', async () => {
+    const get = await run({ last: [[SID.busy, 312000, 'claude-sonnet-5-5'], [SID.idle, 100000, 'claude-haiku-4-5']], compaction: { ...SETTING, enabled: false }, roles: ['agent', ''] });
+    assert.deepEqual(get(SID.busy).context, { tokens: 312000, window: 1000000, compactAt: null, pct: 31.2, compaction: 'off' });
+    assert.deepEqual(get(SID.idle).context, { tokens: 100000, window: 200000, compactAt: null, pct: 50, compaction: 'off' });
+  });
+
+  test('(+) not started by nika (no role tag, or no pane): the same window, compactAt null, compaction "none"', async () => {
+    const get = await run({ last: [[SID.busy, 312000, 'claude-sonnet-5-5'], [SID.idle, 312000, 'claude-sonnet-5-5']], roles: ['', 'bogus'] });
+    for (const id of [SID.busy, SID.idle]) assert.deepEqual(get(id).context, { tokens: 312000, window: 400000, compactAt: null, pct: 78, compaction: 'none' }, id);
+  });
+
+  test('(+) an ended session gets the same computation with compaction "none"', async () => {
+    const get = await run({ last: [[SID.dead, 312000, 'claude-sonnet-5-5']], roles: ['agent', 'agent'] });
+    assert.equal(get(SID.dead).live, false);
+    assert.deepEqual(get(SID.dead).context, { tokens: 312000, window: 400000, compactAt: null, pct: 78, compaction: 'none' });
+  });
+
+  test('(+) the setting\'s window is cut to the model\'s: "model" gives 1M on a 1M model and 200k on a 200k one; 1M on a 200k model gives 200k', async () => {
+    const get = await run({ last: [[SID.busy, 100000, 'claude-sonnet-5-5'], [SID.idle, 100000, 'claude-sonnet-4-6']], compaction: { ...SETTING, window: 'model' }, roles: ['agent', 'agent'] });
+    assert.deepEqual([get(SID.busy).context.window, get(SID.busy).context.compactAt], [1000000, 800000]);
+    assert.deepEqual([get(SID.idle).context.window, get(SID.idle).context.compactAt], [200000, 160000]);
+    const big = await run({ last: [[SID.idle, 100000, 'claude-sonnet-4-6']], compaction: { ...SETTING, window: 1000000 }, roles: ['agent', 'agent'] });
+    assert.equal(big(SID.idle).context.window, 200000);
+  });
+
+  test('(+) an unknown model id counts as 200k', async () => {
+    const get = await run({ last: [[SID.busy, 100000, 'claude-future-9']], roles: ['agent', ''] });
+    assert.deepEqual(get(SID.busy).context, { tokens: 100000, window: 200000, compactAt: 160000, pct: 50, compaction: 'on' });
+  });
+
+  test('(+) a dated model id (as transcripts record it) uses the catalog window of its undated id', async () => {
+    const get = await run({ last: [[SID.busy, 100000, 'claude-sonnet-5-5-20260101'], [SID.idle, 100000, 'claude-sonnet-4-6-20260101']], compaction: { ...SETTING, window: 'model' }, roles: ['agent', 'agent'] });
+    assert.deepEqual([get(SID.busy).context.window, get(SID.busy).context.compactAt, get(SID.busy).context.pct], [1000000, 800000, 10]);
+    assert.deepEqual([get(SID.idle).context.window, get(SID.idle).context.compactAt, get(SID.idle).context.pct], [200000, 160000, 50]);
+    const off = await run({ last: [[SID.busy, 100000, 'claude-sonnet-5-5-20260101']], compaction: { ...SETTING, enabled: false } });
+    assert.equal(off(SID.busy).context.window, 1000000);
+  });
+
+  test('(−) no model on the usage entry: the window, compactAt and pct are null (nowin), the tokens stay', async () => {
+    const get = await run({ last: [[SID.busy, 124000, 'not a model id']], roles: ['agent', ''] });
+    assert.deepEqual(get(SID.busy).context, { tokens: 124000, window: null, compactAt: null, pct: null, compaction: 'on' });
+    const off = await run({ last: [[SID.busy, 124000, 'not a model id']], compaction: { ...SETTING, enabled: false } });
+    assert.deepEqual(off(SID.busy).context, { tokens: 124000, window: null, compactAt: null, pct: null, compaction: 'off' });
+  });
+
+  test('(−) no usage in the transcript: context is null (the fixtures\' own assistant lines carry none)', async () => {
+    const get = await run();
+    for (const id of [SID.busy, SID.idle, SID.dead, SID.ended]) assert.equal(get(id).context, null, id);
+  });
+
+  test('(+) the setting is read from nika\'s config.json at every pass: a change shows at the next one', async () => {
+    const on = await run({ last: [[SID.busy, 100000, 'claude-sonnet-5-5']], compaction: { enabled: true, pct: 50, window: 1000000 }, roles: ['agent', ''] });
+    assert.deepEqual([on(SID.busy).context.window, on(SID.busy).context.compactAt], [1000000, 500000]);
+    const off = await run({ last: [[SID.busy, 100000, 'claude-sonnet-5-5']], compaction: { enabled: false, pct: 50, window: 1000000 }, roles: ['agent', ''] });
+    assert.equal(off(SID.busy).context.compaction, 'off');
+  });
+
+  test('(−) a missing or garbage config.json gives the defaults (on, 80 %, 400k); a bad value is dropped by loadConfig, not trusted', async () => {
+    const last = [[SID.busy, 100000, 'claude-sonnet-5-5']];
+    for (const compaction of [null, { enabled: 'yes', pct: 5, window: 123 }, 'text', []]) {
+      const get = await run({ last, compaction, roles: ['agent', ''] });
+      assert.deepEqual(get(SID.busy).context, { tokens: 100000, window: 400000, compactAt: 320000, pct: 25, compaction: 'on' }, JSON.stringify(compaction));
+    }
+  });
+
+  test('(−) a config without env (tests, 0.1 callers) reads no file and uses the defaults', async () => {
+    const fx2 = makeFixture();
+    try {
+      fs.appendFileSync(path.join(fx2.claudeDir, 'projects', slug(fx2.wt), `${SID.busy}.jsonl`), jsonl([{ type: 'assistant', message: { model: 'claude-sonnet-5-5', usage: usage(100000) } }]));
+      const s = await collect({ config: fx2.config, exec: fakeExec(), now: NOW, sinceMs: DAY });
+      const a = s.snapshot.groups.flatMap((g) => g.agents).find((x) => x.id === SID.busy);
+      assert.deepEqual(a.context, { tokens: 100000, window: 400000, compactAt: null, pct: 25, compaction: 'none' });
+    } finally {
+      cleanup(fx2);
+    }
+  });
+
+  test('(−) context holds numbers and the state word only: no model id, no text', async () => {
+    const get = await run({ last: [[SID.busy, 1000, 'claude-sonnet-5-5']], roles: ['agent', ''] });
+    assert.deepEqual(Object.keys(get(SID.busy).context).sort(), ['compactAt', 'compaction', 'pct', 'tokens', 'window']);
+    assert.equal(/claude-sonnet/.test(JSON.stringify(get(SID.busy).context)), false);
+  });
+
+  test('(+) findSession and findSessions carry context too (an ended session by id)', async () => {
+    const fx2 = makeFixture();
+    try {
+      fs.appendFileSync(path.join(fx2.claudeDir, 'projects', slug(fx2.repo), `${SID.old}.jsonl`), jsonl([{ type: 'assistant', message: { model: 'claude-opus-5-5', usage: usage(50000) } }]));
+      const config = { ...fx2.config, env: { NIKA_CONFIG_DIR: path.join(fx2.root, 'none') } };
+      const one = await findSession(SID.old, { config, exec: fakeExec(), now: NOW });
+      assert.deepEqual(one.agent.context, { tokens: 50000, window: 400000, compactAt: null, pct: 12.5, compaction: 'none' });
+      const many = await findSessions([SID.old], { config, now: NOW });
+      assert.deepEqual(many.get(SID.old).agent.context, one.agent.context);
+    } finally {
+      cleanup(fx2);
+    }
   });
 });
 

@@ -9,7 +9,7 @@ import path from 'node:path';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 import { El, installDom, withClass, focus } from './fake-dom.js';
-import { h, icon, roleTagEl } from '../public/dom.js';
+import { h, icon, roleTagEl, ctxEl } from '../public/dom.js';
 import { menuEl, sessionHref } from '../public/ui.js';
 import { orchState, roleTag, savedPick, otherRunning, parentOf, spawnLimits } from '../public/dash-model.js';
 import { parseModes, modesAfter } from '../public/modes.js';
@@ -142,7 +142,7 @@ function rowRig({ isApp = true, rowItems = undefined } = {}) {
   const seen = [];
   const hooks = rowItems === undefined ? {} : { rowItems: (...args) => { seen.push(args); return rowItems; } };
   const ctx = {
-    h, icon, roleTag, roleTagEl, menuEl, hooks, SHAPE, sessionHref, isApp, parentOf,
+    h, icon, roleTag, roleTagEl, ctxEl, menuEl, hooks, SHAPE, sessionHref, isApp, parentOf,
     state: { modes: { map: {} } }, document: { getSelection: () => ({ isCollapsed: true }) }, location: {},
     sOf: (a) => (a.live ? 'idle' : 'ended'), rowMode: () => null, canEndRow: () => true, endedText: () => 'Ended', reasonOf: () => '', endedScope: (s) => `${s}-e`,
     statusEl: () => new El('span'), modeEl: () => new El('span'), modelEl: () => new El('span'), timeEl: () => new El('span'),

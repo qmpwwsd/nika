@@ -4,7 +4,7 @@
 // URL: session.html?session=<UUID>&pane=<%n>&project=<key>   (pane is sent as %25n, i.e. encodeURIComponent('%n')).
 // Rules: every string from the server is rendered with textContent (h() from dom.js, applyMirror from mirror-render.js);
 // no innerHTML, no inline handlers, element.style only for numbers this file computes. Contracts: docs/contracts/api-app.md.
-import { h, icon, roleTagEl } from './dom.js';
+import { h, icon, roleTagEl, ctxEl } from './dom.js';
 import { isApp, appFetch, getJSON, applyTheme } from './api.js';
 import { roleTag, savedPick } from './dash-model.js';
 import { toRenderModel, applyMirror, planSend, planPaste, chunkText, keyForEvent, KEY_LABEL, arrowEcho } from './mirror-render.js';
@@ -181,6 +181,13 @@ function applyBackLabel(group) {
   setBack(String(group.label));
 }
 
+/** The header meter (design 0.4 section 6.4): hidden until the first poll, then drawn from the polled agent's `context` at every poll. */
+function renderContext(agent) {
+  const el = $('sess-ctx');
+  ctxEl(agent.context, { header: true, el });
+  el.hidden = false;
+}
+
 function applyAgent(agent, group) {
   const untitled = !agent.name || (sessionId && agent.name === sessionId.slice(0, 8));
   A.name = untitled ? 'untitled session' : String(agent.name);
@@ -195,6 +202,7 @@ function applyAgent(agent, group) {
   model.hidden = false;
   A.modelId = typeof agent.model === 'string' ? agent.model : '';
   renderModelName(agent.modelLabel || agent.model || '');
+  renderContext(agent);
   const pane = paneId ?? agent.pane?.id;
   $('meta-pane').hidden = !(typeof pane === 'string' && PANE_ID.test(pane));
   $('sess-pane').textContent = typeof pane === 'string' && PANE_ID.test(pane) ? pane : '';

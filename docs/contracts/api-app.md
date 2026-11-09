@@ -205,6 +205,27 @@ and the tags of a pane with no nika role are ignored):
 A self-parent or a loop of parents is cut: every member becomes a root at depth 1. A page that gets a missing field (an older
 server, a 0.3 pane) treats the agent as a root at depth 1.
 
+0.4 adds the context size, on both tiers (C6), so the rows and the session header can show how full a session's context is:
+- `"context": { "tokens": n, "window": n | null, "compactAt": n | null, "pct": n | null, "compaction": "on" | "off" | "none" } | null`.
+  Numbers and one state word; no transcript text and no model id. `null` when the transcript's last assistant entry carries no usable usage
+  (see below).
+- `tokens`: `input_tokens + cache_read_input_tokens + cache_creation_input_tokens` of the LAST assistant entry in the transcript's tail chunk
+  (the same bounded head and tail read as everything else; an entry beyond the tail window is not read, and a head that is far behind the end
+  is never used). A missing or `null` field counts as 0 (the API types allow `null` for the cache counts). A usage with a present, non-null field that is not a whole number from 0 to 10,000,000, or a sum above it, gives
+  `null`; so does a last assistant entry with no usage. A synthetic entry (model `<synthetic>`: an interrupt or an API error, usage all zeros)
+  is skipped, not read.
+- `window`: the compaction window in tokens. Auto-compact on: the window the launch uses (`src/compact.js`: the setting's window, cut to the
+  model's own, or the model's own for `"model"`; so a 400k setting on a 1M-window model is `400000`). Off: the model's own window. A model id
+  the catalog does not know counts as 200k. `null` (with `compactAt` and `pct`) when the entry names no model.
+- `pct`: `tokens / window x 100`, one decimal, not capped (over 100 is possible).
+- `compactAt`: the launch threshold in tokens (`compactLaunch(model, compaction).compactAt`), and only for a live session nika started
+  (its pane carries a nika `@nika-role`); `null` otherwise.
+- `compaction`: `"off"` when Settings has auto-compact off (every session); else `"on"` for a live session nika started, and `"none"` for any
+  other (a session nika did not start, or an ended one: nika's setting does not act on it, so its window is only a yardstick). An orchestrator
+  nika adopted (O1) carries the tag but was started by the user, so it reads `"on"` until nika resumes it.
+- The setting comes from nika's own `config.json` through the validated `loadConfig`, on both tiers; the browser tier (:3335) therefore
+  also shows these numbers. The page formats them and never computes a window, a per cent or a threshold.
+
 ### `GET /api/app/plugins`
 `200 { "plugins": [ "<PLUGIN_NAME>", … ] }` — installed plugin names read from Claude Code's config dir (names only,
 never settings, hooks or keys), ≤ 200, sorted.
@@ -253,8 +274,8 @@ with a given full name wins. Paths are never returned (T22).
 The static catalog in `src/models.js`, in catalog order; `group` ∈ `latest alias older`; IDs from `claude-tui.md` §6
 only. No network call. A custom ID is accepted wherever a model is, when it matches `MODEL_ID`. `window` (0.4) is the model's
 context window in tokens as Claude Code 2.1.319 believes it (spike S2): 1000000 for the 5.x ids and the aliases that resolve to
-them, 200000 for the 4.x ids. `modelWindow(id)` returns the catalog value, else 1000000 for an id ending in `[1m]`, else 200000 (an
-unknown or custom id is treated as 200k, the conservative side). The page ignores `window`; the server uses it for auto-compact.
+them, 200000 for the 4.x ids. `modelWindow(id)` drops one trailing `-YYYYMMDD` date suffix (transcripts record the dated id), then returns the catalog value, else 1000000 for
+an id ending in `[1m]`, else 200000 (an unknown or custom id is treated as 200k, the conservative side). The page ignores `window`; the server uses it for auto-compact.
 
 ### `GET /api/app/session/:id/history?before=<n>&limit=<n>`
 `id` must be a `UUID` present in nika's transcript index (never a path from the request). `limit` 1–200 (default 50),

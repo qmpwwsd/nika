@@ -232,6 +232,31 @@ dialog.dlg-kbd .dlg-foot .muted { color: var(--text-muted); font-size: var(--fs-
 .toast[data-kind="error"] { background: var(--danger); color: #fff; }
 @keyframes toast-in { from { opacity: 0; transform: translateY(6px); } }
 
+/* the context meter (design 0.4 section 6.3): number + quantised bar; rows stack them, the session header lays them out inline */
+.ctx { display: inline-grid; justify-items: end; gap: 3px; font-size: var(--fs-small); font-variant-numeric: tabular-nums; color: var(--text); white-space: nowrap; }
+.ctx-v { display: inline-flex; align-items: center; gap: 3px; font-weight: 600; }
+.ctx .ic { width: 12px; height: 12px; }
+.ctx-bar { display: block; width: 40px; height: 3px; border-radius: 2px; background: var(--surface-3); overflow: hidden; }
+.ctx-bar > i { display: block; height: 100%; width: 0; background: var(--line-strong); }
+.ctx-bar[data-q="1"] > i { width: 10%; }
+.ctx-bar[data-q="2"] > i { width: 20%; }
+.ctx-bar[data-q="3"] > i { width: 30%; }
+.ctx-bar[data-q="4"] > i { width: 40%; }
+.ctx-bar[data-q="5"] > i { width: 50%; }
+.ctx-bar[data-q="6"] > i { width: 60%; }
+.ctx-bar[data-q="7"] > i { width: 70%; }
+.ctx-bar[data-q="8"] > i { width: 80%; }
+.ctx-bar[data-q="9"] > i { width: 90%; }
+.ctx-bar[data-q="10"] > i { width: 100%; }
+.ctx[data-lvl="unknown"], .ctx[data-lvl="nowin"] { color: var(--text-muted); }
+.ctx[data-lvl="warn"] { color: var(--idle); }
+.ctx[data-lvl="warn"] .ctx-bar > i { background: var(--idle); }
+.ctx[data-lvl="full"] { color: var(--danger); }
+.ctx[data-lvl="full"] .ctx-v { font-weight: 700; }
+.ctx[data-lvl="full"] .ctx-bar > i { background: var(--danger); }
+.row[data-s="ended"] .ctx { color: var(--text-muted); }
+.row[data-s="ended"] .ctx-bar > i { background: var(--line-strong); }
+
 @media (prefers-reduced-motion: reduce) {
   :root { --dur-1: 0ms; --dur-2: 0ms; --dur-3: 0ms; }
   *, *::before, *::after {

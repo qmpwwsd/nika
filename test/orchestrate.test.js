@@ -788,7 +788,7 @@ describe('startOrchestrator: the compaction variables reach tmux (fresh start, r
     const exec = fakeTmux();
     await startOrchestrator(w.project.key, w.ctx(exec));
     assert.deepEqual(envPairs(exec.of('new-session')[0]), [`${W_ENV}=400000`, `${P_ENV}=100`]);
-    const v = await world({ models: { orchestrator: 'claude-sonnet-5-5-20260101' } });
+    const v = await world({ models: { orchestrator: 'claude-future-9-20260101' } });
     const exec2 = fakeTmux();
     await startOrchestrator(v.project.key, v.ctx(exec2));
     assert.deepEqual(envPairs(exec2.of('new-session')[0]), [`${W_ENV}=200000`, `${P_ENV}=88.8889`]);

@@ -1322,7 +1322,7 @@ describe('spawnAgent: .agent.json carries the compaction window and PCT (0.4)', 
   test('(+) a sub-orchestrator gets it too; a custom model id is a 200k model', async () => {
     const main = (w) => [{ id: '%1', session: 'My-App', window: 0, windowName: 'orchestrator', command: 'claude', role: 'orchestrator', agent: `${w.project.key}/orchestrator`, depth: '1' }];
     assert.deepEqual(await compactOf({ name: 'planner', role: 'orchestrator', parent: '%1' }, undefined, main), COMPACT_1M);
-    assert.deepEqual(await compactOf({ model: 'claude-opus-5-5-20260101' }), { window: 200000, pct: '88.8889' });
+    assert.deepEqual(await compactOf({ model: 'claude-future-9-20260101' }), { window: 200000, pct: '88.8889' });
   });
 
   test('(−) a refused spawn writes no .agent.json, so no compact either', async () => {

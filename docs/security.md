@@ -15,6 +15,9 @@ What nika defends against, how, and which test proves it. The binding rules are 
 - Two tiers, two trust levels:
   - **Browser tier**, `nika serve` on `127.0.0.1:3335`. Read-only. Its only side effect is tmux focus. Any local
     process can read it.
+    Since 0.4 it also shows, for each session, how many tokens the context holds and the size of the model's window
+    (numbers from the `usage` of the last assistant entry in the transcript tail, and nika's own compaction setting;
+    no transcript text; constraint 4).
   - **App tier**, `nika serve --app`, a child of the desktop app on a random port. Reachable only with a per-launch
     secret. The privileged routes (`/api/app/*`) are never mounted on :3335.
 - nika has no telemetry. The only outbound connection it ever causes is the `claude.ai` link you click, opened by your

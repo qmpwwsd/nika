@@ -27,10 +27,30 @@ describe('modelWindow', () => {
     for (const id of ['haiku[1m]', 'claude-opus-5-5[1m]', 'claude-haiku-4-5[1m]']) assert.equal(modelWindow(id), 1_000_000, id);
   });
 
+  test('(+) one trailing -YYYYMMDD date suffix is dropped before the lookup: a dated 5.x catalog id is 1M, a dated 4.x id 200k', () => {
+    for (const id of ['claude-sonnet-5-5-20260101', 'claude-fable-5-1-20260315', 'claude-opus-5-20260101', 'claude-haiku-5-5-20261231']) assert.equal(modelWindow(id), 1_000_000, id);
+    for (const id of ['claude-haiku-4-5-20251001', 'claude-sonnet-4-6-20260101', 'claude-opus-4-6-20260202', 'claude-sonnet-4-5-20250929']) assert.equal(modelWindow(id), 200_000, id);
+  });
+
+  test('(−) an unknown dated id is 200k, and only a trailing block of exactly 8 digits after a hyphen is dropped, once', () => {
+    for (const id of ['claude-foo-9-20260101', 'claude-sonnet-5-5-2026010', 'claude-sonnet-5-5-202601011', 'claude-sonnet-5-5-20260101-20260102',
+      'claude-20260101-sonnet-5-5', 'claude-sonnet-5-520260101', 'claude-sonnet-5-5-2026010a', '-20260101']) assert.equal(modelWindow(id), 200_000, id);
+  });
+
   test('(−) unknown, custom and malformed ids are 200k, the conservative side', () => {
-    for (const id of ['claude-foo-9', 'claude-sonnet-5-5-20260101', 'weird', '', 'opus[2m]', '[1m]x', '__proto__', 'constructor', 'toString', null, undefined, 5, {}, ['opus']]) {
+    for (const id of ['claude-foo-9', 'weird', '', 'opus[2m]', '[1m]x', '__proto__', 'constructor', 'toString', null, undefined, 5, {}, ['opus']]) {
       assert.equal(modelWindow(id), 200_000, String(id));
     }
+  });
+});
+
+describe('compactLaunch: a dated model id', () => {
+  test('(+) uses the same lookup: a dated 5.x id gets the 1M window, a dated 4.x id and an unknown dated id 200k', () => {
+    const model = { enabled: true, pct: 80, window: 'model' };
+    assert.deepEqual([compactLaunch('claude-sonnet-5-5-20260101', model).window, compactLaunch('claude-sonnet-5-5-20260101', model).compactAt], [1_000_000, 800_000]);
+    assert.equal(compactLaunch('claude-sonnet-5-5', model).window, 1_000_000);
+    assert.equal(compactLaunch('claude-sonnet-4-6-20260101', model).window, 200_000);
+    assert.equal(compactLaunch('claude-foo-9-20260101', model).window, 200_000);
   });
 });
 

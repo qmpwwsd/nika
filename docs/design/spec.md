@@ -538,7 +538,7 @@ Privileged actions when tmux or claude is missing: keep visible, `aria-disabled=
 
 ### 3.3 Agent row (A)
 
-Grid: status 104 · name ≥120 · model 64 · what (prompt + branch chip) · activity 56 · pane 44 · ⋯ 32. Height ≥ 40.
+Grid: status 104 · name ≥120 · model 64 · **(0.4) context 64 (§3.19)** · what (prompt + branch chip) · activity 56 · pane 44 · ⋯ 32. Height ≥ 40.
 
 | State | Look |
 |---|---|
@@ -552,7 +552,9 @@ Grid: status 104 · name ≥120 · model 64 · what (prompt + branch chip) · ac
 | error | whole list at 60 % opacity + banner "Disconnected… reconnecting every 3 s" (stale data stays readable) |
 | 0 | "No agents in this project. [Start orchestrator] [Spawn agent]" inside the group |
 
-Container widths: ≤ 860 px hides model and pane columns and shows status as glyph only; ≤ 600 px moves the prompt to a second line.
+Container widths: ≤ 860 px hides model and pane columns and shows status as glyph only (the context column stays at 44 px, number only, no bar); ≤ 600 px moves the prompt to a second line.
+
+**(0.4) Context** cell (`div.c-ctx`) right after the model, on both tiers: the meter of §3.19. Ended rows show their last value muted.
 
 **(0.4) Role badge** after the name (`roleTagEl(roleTag(a, pickId))`; markup and words in §3.16). At ≤ 860 px the long word is clipped like the mode label (still read by screen readers) and a short one shows.
 
@@ -944,6 +946,50 @@ number's own `min` and `max`, and a typed whole number from 20 to 95 works. The 
 Test hooks (`data-fk`): `compact-on`, `compact-pct`, `compact-dec`, `compact-inc`, `compact-win`; ids `set-compact-result`, `set-compact-cap`,
 `set-compact-help`, `set-compact-err`, `set-compact-st`.
 
+### 3.19 Context meter (0.4)
+
+How full a session's context is, on every row of both tiers and in the session header. The server sends `context` (contract C6: `tokens`,
+`window`, `compactAt`, `pct`, `compaction`); the page formats it (`ctxView`, `public/ctx.js`; `ctxEl`, `public/dom.js`) and never computes a
+window, a per cent or a threshold.
+
+**What the per cent means.** `tokens / window`, where `window` is the one auto-compact uses: Settings' window cut to the model's own when
+auto-compact is on, the model's full window when it is off. For a session nika started, the meter therefore shows how close it is to
+compacting. Sessions nika did not start (and ended ones) are measured against the same window, but nika's setting does not act on them.
+
+| `lvl` | When | Visible | Bar |
+|---|---|---|---|
+| `unknown` | no `context`, or no tokens | "–", `--text-muted` | none |
+| `nowin` | tokens, but no window or per cent (no model seen yet) | "124k", `--text-muted` | none |
+| `ok` | pct < 60 | "41 %" | `--line-strong` |
+| `warn` | 60 ≤ pct < 80 | "63 %" in `--idle` 600 | `--idle` |
+| `full` | pct ≥ 80 | `i-warn` + "86 %" in `--danger` 700 | `--danger` |
+
+The thresholds are fixed at 60 % and 80 % on both tiers (they do not follow the auto-compact per cent). Per cent: `Math.round(pct)`, a
+no-break space, "%"; over 100 shows as is and fills the bar. Tokens: "999", "8.5k", "124k", "1M", "1.2M" (`fmtTokens`, rounded down).
+Bar: `span.ctx-bar[data-q="0".."10"][aria-hidden] > i`, `q = min(10, round(pct / 10))`: ten CSS classes, no inline style, no CSSOM write.
+
+**Title** (a mouse aid: the cells take no focus) and **screen-reader text** (an `.sr-only` span; the visible parts are `aria-hidden`):
+
+| `compaction` | Title | Screen-reader text |
+|---|---|---|
+| `on` | "Context: 312k of 400k tokens (compacts at 320k)" | "Context 78 % used, 312k of 400k tokens, compacts at 320k" |
+| `off` | "Context: 312k of 1M tokens (the model's window; auto-compact is off)" | "Context 31 % used, 312k of 1M tokens, auto-compact off" |
+| `none` (nika did not start it, or it ended) | "Context: 312k of 400k tokens" | "Context 78 % used, 312k of 400k tokens" |
+| `unknown` | "Context: no usage yet" | "Context unknown" |
+| `nowin` | "Context: 124k tokens; the window is not known yet" | "Context 124k tokens, window unknown" |
+
+`full` adds ", nearly full" to the screen-reader text. A bad `compactAt` on `on` reads as `none`.
+
+**Rows.** Grids per container width (§9.9): the 64 px column sits after the model; at ≤ 860 px it is 44 px with the bar hidden; at ≤ 600 px it stays on
+line 1 beside the age. `.c-ctx { display: flex; justify-content: flex-end; }`; `.ctx` stacks the number over the bar. Ended rows: `--text-muted`
+number, `--line-strong` bar fill at every level. A stale list (error banner) is at 60 % opacity as a whole.
+
+**Session header.** `span.ctx#sess-ctx` in `.sess-meta` after the model, `hidden` until the first agent poll; each poll fills it again. It lays out
+inline: "Context" (muted), "312k / 400k ·" (`.hide-narrow`: gone at ≤ 1000 px), the number, the bar. The title is the row's.
+
+Colour is never alone: the number is always there, `full` also has the warning icon, and the sentence for screen readers carries the level.
+Ids and classes: `sess-ctx`, `.c-ctx`, `.ctx`, `.ctx-l`, `.ctx-t`, `.ctx-v`, `.ctx-bar`; tokens in `public/tokens.css`.
+
 ## 4. Keyboard model
 
 Mod = ⌘ on macOS, Ctrl on Linux. No single-character shortcuts (WCAG 2.1.4), with one exception the owner asked for
@@ -1231,7 +1277,7 @@ ANSI 0 on the dark surface is deliberately close to the background: programs use
 
 ### 5.5 Screen-reader text for status
 
-Row: "reviewer-2, Needs you: Asking to run a command, model opus, demo-api, 4 minutes ago, pane %14". Session header: "builder-1, Working, demo-api, sonnet, pane %12" (an orchestrator: "planner, orchestrator, Working, demo-api, …"; the badge's long word is always read, the short one is `aria-hidden`). Tray: "demo-api — 1 needs you, 1 waiting, 2 working".
+Row: "reviewer-2, Needs you: Asking to run a command, model opus, demo-api, 4 minutes ago, pane %14". Session header: "builder-1, Working, demo-api, sonnet, pane %12" (an orchestrator: "planner, orchestrator, Working, demo-api, …"; the badge's long word is always read, the short one is `aria-hidden`). **(0.4)** The context meter adds one sentence after the model, in both: "…, Fable 5.1, Context 78 % used, 312k of 400k tokens, compacts at 320k, pane %3" (§3.19 has the other forms). Tray: "demo-api — 1 needs you, 1 waiting, 2 working".
 
 ### 5.6 Target size (2.5.8)
 
@@ -1302,6 +1348,11 @@ B: centred column max 760 px; drawer pushes ≥ 1180 px and overlays below. C: l
 | **(0.4)** Saved orchestrator outside the time window | the header still says Resume (the project list checks the transcript index, not the window); its row is just not listed |
 | **(0.4)** Two main orchestrators live (a 0.3 leftover) | Open orchestrator uses the saved one if it runs, else the most recent; Set and Resume are off (R1) |
 | **(0.4)** Older server (no `orchestrator` field) | the snapshot decides: Open or Start, never Resume or the saved badge |
+| **(0.4)** No usage yet in the transcript tail (a new session, or the last assistant entry is beyond the tail window) | the context meter reads "–" (`unknown`) |
+| **(0.4)** A model nika does not know | the server counts it as 200k, so the meter shows a per cent against 200k; `nowin` means only that no model id was seen |
+| **(0.4)** Context over 100 % (a window smaller than the context) | the number is shown as is and the bar is full |
+| **(0.4)** Auto-compact off, or a session nika did not start | the same meter against the model's window (off) or the setting's window (`none`); the title says which, and says nothing about compacting for `none` |
+| **(0.4)** Older server (no `context` field) | every row shows "–" |
 
 ---
 
@@ -1376,7 +1427,7 @@ The edge and the focus ring are two shadows in one declaration, so focus adds th
 
 ### 9.2 Header
 
-Order: back crumb · `h1` name · **role badge** (`#sess-role`, §3.16; hidden when there is none) · status pill · **mode tag** (`#sess-mode`) · model · pane · branch · spacer · Open in
+Order: back crumb · `h1` name · **role badge** (`#sess-role`, §3.16; hidden when there is none) · status pill · **mode tag** (`#sess-mode`) · model · **context meter** (`#sess-ctx`, §3.19; hidden until the first poll) · pane · branch · spacer · Open in
 claude.ai · Keyboard shortcuts. **(built amendment 2026-11-09 (0.3.3))** The mode switcher moved under the message
 box (§9.3); the `.bar-end` wrapper is gone and `.bar-tools` holds the two buttons.
 
@@ -1611,14 +1662,18 @@ Confirm dialog, 440 px (§3.6), opened from the quick-actions row, the dashboard
 - App tier only: a mode column after status, 128 px. The browser tier keeps the 0.2 grids. App-tier grids, per container width (`public/app.css` container queries):
 
 ```css
-.row { grid-template-columns: 104px 128px minmax(120px, 1.1fr) 88px minmax(0, 2.4fr) 56px 44px 32px; }
-@container (max-width: 860px) {   /* status glyph, mode icon, name, what, age, ⋯ */
-  .row { grid-template-columns: 22px 24px minmax(110px, 1fr) minmax(0, 2fr) 52px 32px; } }
+.row { grid-template-columns: 104px 128px minmax(120px, 1.1fr) 88px 64px minmax(0, 2.4fr) 56px 44px 32px; }
+@container (max-width: 860px) {   /* status glyph, mode icon, name, context, what, age, ⋯ */
+  .row { grid-template-columns: 22px 24px minmax(110px, 1fr) 44px minmax(0, 2fr) 52px 32px; } }
 @container (max-width: 600px) {   /* what drops to line 2 under name */
-  .row { grid-template-columns: 22px 24px minmax(0, 1fr) 44px 32px; }
+  .row { grid-template-columns: 22px 24px minmax(0, 1fr) 44px 44px 32px; }
   .row .c-what { grid-column: 3 / -1; grid-row: 2; }
-  .row .c-act { grid-row: 1; grid-column: 4; } }
+  .row .c-act { grid-row: 1; grid-column: 5; } }
 ```
+
+**(0.4)** The 64 px column after the model is the context meter (§3.19), on both tiers. The browser tier has the same grids without the mode column
+(`104px minmax(120px, 1.1fr) 88px 64px minmax(0, 2.4fr) 56px 44px 32px`; ≤ 860 px `22px minmax(110px, 1fr) 44px minmax(0, 2fr) 52px 32px`; ≤ 600 px
+`22px minmax(0, 1fr) 44px 44px 32px`, age in column 4). At ≤ 860 px the bar is hidden and the number stays.
 
 - The compact tag (§2.8.5). Rows without an eligible pane (ended, not in tmux) leave the cell empty. Attention rows keep their tint and left bar; the tag keeps its own fill on top.
 - A "Needs you" row shows the held mode (the prompt covers the footer): hollow, dashed, its mode colour, "unconfirmed" in `.sr-only` and `title`. Never "Mode ?" unless nika has no reading at all (§2.8.6).

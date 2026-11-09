@@ -10,8 +10,9 @@ import { resolveProject } from './collect/projects.js';
 import { mapLimit } from './util.js';
 import { clean } from './text.js';
 import { UUID } from './ids.js';
-import { MODEL_CATALOG } from './models.js';
-import { keyFor } from './store.js';
+import { MODEL_CATALOG, modelWindow } from './models.js';
+import { compactLaunch } from './compact.js';
+import { keyFor, loadConfig, defaults } from './store.js';
 
 const PROMPT_MAX = 200;
 const IO_LIMIT = 16;
@@ -132,6 +133,31 @@ function linkTree(entries) {
 }
 
 /**
+ * Contract C6 `context` from the last assistant entry's `usage` (collect/transcripts.js: `{ tokens, model }` or null), nika's
+ * compaction setting and whether nika started the session: `{ tokens, window, compactAt, pct, compaction }`, or null without usage.
+ * - `window`: with auto-compact on, the window the launch uses (the setting's, cut to the model's; the model's for 'model'), else the
+ *   model's own; an unknown model id counts as 200k (modelWindow). Null, with `pct` and `compactAt`, when no model was seen.
+ * - `pct`: tokens / window x 100, one decimal, not capped. `compactAt`: the launch threshold in tokens, only for a session nika started.
+ * - `compaction`: 'off' (the setting is off), 'on' (on, and nika started the session: it compacts there), 'none' (on, but nika did
+ *   not start it, or it ended: nika's setting does not act on it, so the window is a yardstick). An adopted orchestrator carries
+ *   nika's tag but was started by the user, so it reads 'on' until nika resumes it (accepted).
+ */
+export function contextOf(usage, compaction, started) {
+  if (!usage) return null;
+  const { tokens, model } = usage;
+  const mode = !compaction.enabled ? 'off' : started ? 'on' : 'none';
+  if (!model) return { tokens, window: null, compactAt: null, pct: null, compaction: mode };
+  const launch = compactLaunch(model, compaction); // null when auto-compact is off
+  const window = launch?.window ?? modelWindow(model);
+  return { tokens, window, compactAt: mode === 'on' ? launch.compactAt : null, pct: Math.round((tokens / window) * 1000) / 10, compaction: mode };
+}
+
+/** nika's compaction setting, through the validated loadConfig, for both tiers. A config without `env` (tests, 0.1 callers) reads no file. */
+async function compactionOf(config) {
+  return config.env ? (await loadConfig(config.env)).config.compaction : defaults().compaction;
+}
+
+/**
  * `include`: session ids listed whatever their age, when nika has a transcript for them (the app tier looks up a saved orchestrator).
  * `indexOnly`: read the transcript index and nothing else (findSessions).
  * @returns {{ snapshot: object, reportPaths: Map<string,string> }}
@@ -150,6 +176,7 @@ export async function collect({ config, exec, now = Date.now(), sinceMs, since =
       allReportDirs(config),
     ]);
   const reports = await indexReports(reportDirs);
+  const compaction = await compactionOf(config);
   const sources = {
     registry: registry.error ?? 'ok',
     processes: table ? 'ok' : 'ps unavailable: liveness by signal 0',
@@ -227,6 +254,7 @@ export async function collect({ config, exec, now = Date.now(), sinceMs, since =
         title,
         model: clean(t?.model, 80),
         modelLabel: modelLabel(t?.model),
+        context: contextOf(t?.usage, compaction, isLive && paneInfo?.role != null), // numbers only (C6)
         cwd,
         worktree: clean(project.worktree, 120),
         gitBranch: clean(t?.gitBranch, 200),

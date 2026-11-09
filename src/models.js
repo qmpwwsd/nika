@@ -31,10 +31,13 @@ export const MODEL_CATALOG = Object.freeze([
 const WINDOWS = new Map(MODEL_CATALOG.map((x) => [x.id, x.window]));
 
 /**
- * The context window of a model id in tokens: the catalog's value, else 1M for any id ending in `[1m]`, else 200k. An unknown or
- * custom id (and anything that is not a string) is 200k, the conservative side, as Claude Code itself treats an id it does not know.
+ * The context window of a model id in tokens: the catalog's value, else 1M for any id ending in `[1m]`, else 200k. One trailing
+ * `-YYYYMMDD` date suffix is dropped first, since transcripts record the dated id ("claude-sonnet-5-5-20260101" is "claude-sonnet-5-5").
+ * An unknown or custom id (and anything that is not a string) is 200k, the conservative side, as Claude Code itself treats an id it
+ * does not know.
  */
 export function modelWindow(id) {
   if (typeof id !== 'string') return K200;
-  return WINDOWS.get(id) ?? (id.endsWith('[1m]') ? M1 : K200);
+  const key = id.replace(/-\d{8}$/, '');
+  return WINDOWS.get(key) ?? (key.endsWith('[1m]') ? M1 : K200);
 }

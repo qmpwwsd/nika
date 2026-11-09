@@ -26,7 +26,7 @@ starts by hand are not touched. Spike S2 (Claude Code 2.1.319, tmux 3.8) measure
   integer 20–95, `window` 200000, 400000, 1000000 or `"model"`, default on, 80, 400000.
 - **The mechanism is the environment pair**, never the `--autocompact` flag. `compactLaunch(model, compaction)` in
   `src/compact.js` (pure) returns `null` when off, else `{ env, window, compactAt }`:
-  `W` is the model's window (`modelWindow`, from the catalog's new `window` field, else 1M for `[1m]`, else 200k) when the
+  `W` is the model's window (`modelWindow`, from the catalog's new `window` field after dropping one trailing `-YYYYMMDD` date suffix, else 1M for `[1m]`, else 200k) when the
   setting says `"model"`, else `min(setting, model window)`; `target = floor(W x pct / 100)`; `limit = W - 33000`;
   `CLAUDE_CODE_AUTO_COMPACT_WINDOW = W`; `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE = ceil4(100 x target / (W - 20000))` when
   `target <= limit`, else `100` (Claude computes `min((W - 20000) x 100 / 100, W - 33000)`, which is the cap). The PCT is therefore always

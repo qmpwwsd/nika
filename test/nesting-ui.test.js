@@ -9,7 +9,7 @@ import path from 'node:path';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 import { El, installDom, withClass, focus } from './fake-dom.js';
-import { h, icon, roleTagEl } from '../public/dom.js';
+import { h, icon, roleTagEl, ctxEl } from '../public/dom.js';
 import { menuEl, sessionHref, RX } from '../public/ui.js';
 import {
   orchState, roleTag, savedPick, otherRunning, parentOf, spawnLimits, statusOf, treeRows, capRoots, hasTree, endedPlan, STATUS_ORDER,
@@ -84,7 +84,7 @@ function treeRig({ isApp = true, open = [], expanded = [], rowItems = null } = {
   const seen = [];
   const ctx = {
     isApp, state, hooks: rowItems ? { rowItems: (...args) => { seen.push(args); return rowItems; } } : {}, ORDER: STATUS_ORDER, ROW_CAP: 12,
-    endedPlan, statusOf, treeRows, capRoots, hasTree, parentOf, roleTag, roleTagEl, h, icon, menuEl, sessionHref, SHAPE,
+    endedPlan, statusOf, treeRows, capRoots, hasTree, parentOf, roleTag, roleTagEl, ctxEl, h, icon, menuEl, sessionHref, SHAPE,
     rowMode: () => null, canEndRow: () => false, reasonOf: () => 'Needs you', endedText: () => 'Ended',
     statusEl: () => new El('span'), modeEl: () => new El('span'), modelEl: () => new El('span'), timeEl: () => new El('span'), subagentsEl: () => new El('details'),
     copyText: () => {}, showReport: () => {}, focusPane: () => {}, endSession: () => {},
