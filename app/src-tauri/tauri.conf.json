@@ -32,6 +32,7 @@
     },
     "linux": {
       "deb": {
+        "depends": ["tmux"],
         "desktopTemplate": "linux/nika.desktop",
         "files": {
           "/usr/share/applications/io.github.qmpwwsd.nika.desktop": "linux/io.github.qmpwwsd.nika.desktop"

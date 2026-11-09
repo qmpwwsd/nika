@@ -105,7 +105,7 @@ mirror, spawning agents in tmux, starting the orchestrator, adding projects and 
 session control to that window: permission modes, permission prompts, quick actions, slash commands and End (see
 [Session window (0.3)](#session-window-03)). The browser dashboard above stays read-only.
 
-You need Node 22 or newer, tmux and Claude Code on the machine. The app does not bundle Node.
+**Requirements:** Node.js 22 or newer, tmux (the app's agent control: starting agents, the pane mirror, typing into sessions) and Claude Code (`claude`). The app does not bundle Node.js. Homebrew installs Node.js and tmux with nika, and the `.deb` installs tmux. The AppImage cannot declare dependencies, so install tmux and Node.js 22+ before you run it.
 
 ### Install
 
@@ -131,6 +131,12 @@ After an upgrade, restart the browser dashboard with `brew services restart nika
 sha256sum -c SHA256SUMS --ignore-missing
 sudo apt install ./nika_*_amd64.deb       # Debian and Ubuntu; or run the AppImage directly
 ```
+
+The `.deb` pulls in tmux but not Node.js: the `nodejs` package of most Debian and Ubuntu releases is older than 22. Get
+Node.js 22 from [NodeSource](https://github.com/nodesource/distributions) or with a version manager. The app finds
+Node.js in these places, in this order: Homebrew, `/usr/local/bin`, Linuxbrew's `/home/linuxbrew/.linuxbrew`,
+`~/.local/bin`, Volta, then mise, fnm, nvm and asdf (their default folders) and `/usr/bin`. It uses the first one that is
+22 or newer. For anything else, set `NIKA_NODE` to the absolute path of the `node` binary. If it finds only an older Node.js, the app says so and shows the version it found.
 
 Or build the app yourself from a checkout, as below.
 

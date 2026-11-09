@@ -360,7 +360,9 @@ function bannerList() {
     out.push({ id: 'offline', kind: 'danger', title: 'Lost connection to the nika server', text: `Showing the list from ${at}. Retrying every ${REFRESH_MS / 1000} seconds.`, action: { label: 'Retry now', run: () => refresh() } });
   }
   if (isApp && state.me && state.me.tmux === false) {
-    out.push({ id: 'tmux', kind: 'danger', title: 'tmux not found', text: 'nika needs tmux to start agents, mirror their panes and type into them. Install it, then check again. The list still updates.', cmd: 'brew install tmux', action: { label: 'Check again', run: () => hooks.checkEnv?.() } });
+    const { platform } = state.me; // the install command is only named for a platform we know
+    const cmd = platform === 'darwin' ? 'brew install tmux' : platform === 'linux' ? 'sudo apt install tmux' : undefined;
+    out.push({ id: 'tmux', kind: 'danger', title: 'tmux not found', text: 'nika needs tmux to start agents, mirror their panes and type into them. Install it, then check again. The list still updates.', cmd, action: { label: 'Check again', run: () => hooks.checkEnv?.() } });
   }
   if (isApp && state.me && state.me.claude === false) {
     out.push({ id: 'claude', kind: 'warn', title: 'Claude Code not found', text: 'Starting an orchestrator and spawning agents are off until claude is on your PATH. Running agents still show up here.', action: { label: 'Check again', run: () => hooks.checkEnv?.() } });

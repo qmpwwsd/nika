@@ -76,6 +76,7 @@ jobs:
           for pkg in libwebkit2gtk-4.1-0 libayatana-appindicator3-1; do
             grep -qF -- "$pkg" <<<"$depends" || { echo "missing runtime dependency: $pkg" >&2; exit 1; }
           done
+          grep -qw -- tmux <<<"$depends" || { echo "missing runtime dependency: tmux" >&2; exit 1; }
           paths="$(dpkg-deb -c "$deb" | awk '{print $NF}' | sed 's|^\./||')"
           for path in usr/share/applications/io.github.qmpwwsd.nika.desktop usr/lib/nika/nika/bin/nika; do
             grep -qxF -- "$path" <<<"$paths" || { echo "missing from the package: $path" >&2; exit 1; }

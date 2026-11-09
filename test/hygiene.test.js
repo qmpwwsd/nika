@@ -18,9 +18,14 @@ function isSyntheticUuid(u) {
   return new Set(hex.slice(0, 12) + hex.slice(13, 16) + hex.slice(17)).size <= 2;
 }
 
+// The one path under the home roots that is not a person's folder: Linuxbrew's install prefix `<home root>/linuxbrew/.linuxbrew`
+// (a candidate path for node), followed only by ordinary segments. A `..` segment anywhere after it, or a longer name
+// (`.linuxbrew-x`, `linuxbrew-x`), is not the prefix: the path may lead anywhere, so it is reported.
+const LINUXBREW_PREFIX = String.raw`linuxbrew\/\.linuxbrew(?:\/(?!\.\.(?![A-Za-z0-9_.-]))[A-Za-z0-9_.-]+)*(?![\/A-Za-z0-9_.-])`;
+
 // [label, pattern, allow(match) → true to ignore]
 const PATTERNS = [
-  ['home path', /\/(?:Users|home)\/[A-Za-z0-9_.-]+/g],
+  ['home path', new RegExp(String.raw`\/(?:Users|home)\/(?!${LINUXBREW_PREFIX})[A-Za-z0-9_.-]+`, 'g')],
   ['claude scratchpad', /\/private\/tmp\/claude-\d+/g],
   ['email', /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g],
   ['session id', /\b(?:session|cse)_[A-Za-z0-9]{11,}/g],
@@ -80,7 +85,7 @@ describe('repository hygiene', () => {
     fs.writeFileSync(path.join(tmp, 'ok', 'fixture.js'), [
       '11111111-1111-4111-8111-111111111111', 'cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd', 'f0f0f0f0-f0f0-4f0f-8f0f-f0f0f0f0f0f0',
       'session_01AbCdEf cse_01Zz', '/private/tmp/claude-<uid>', '~/.config/nika', '.claude/settings.local.json', 'MacBook.local',
-      'plugin@marketplace', 'https://claude.ai/code/session_[A-Za-z0-9]{1,64}',
+      'plugin@marketplace', 'https://claude.ai/code/session_[A-Za-z0-9]{1,64}', '/home/linuxbrew/.linuxbrew/bin/node',
     ].join('\n'));
     fs.writeFileSync(path.join(tmp, 'ok', 'node_modules', 'leak.js'), LEAKS[0]);
     fs.writeFileSync(path.join(tmp, 'ok', 'icon.png'), LEAKS[0]);
@@ -99,6 +104,52 @@ describe('repository hygiene', () => {
     ]);
     assert.equal(found[0].file, path.join('src', 'leak.md'));
     assert.equal(found[0].match, `${HOME}someone`);
+  });
+});
+
+describe('repository hygiene: the Linuxbrew prefix', () => {
+  test('(−) only that exact prefix is allowed; any other folder under the home root is still reported', () => {
+    const dir = path.join(tmp, 'brew');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'a.md'), [`${'/home/'}linuxbrew-evil/x`, `${'/home/'}linuxbre/x`, `${'/home/'}someone/.linuxbrew/bin/node`].join('\n'));
+    assert.deepEqual(scan(dir).map((f) => f.match), [`${'/home/'}linuxbrew-evil`, `${'/home/'}linuxbre`, `${'/home/'}someone`]);
+  });
+
+  test('(−) a `..` segment after the prefix is reported, wherever it is; a longer name is not the prefix', () => {
+    const dir = path.join(tmp, 'brew-dotdot');
+    fs.mkdirSync(dir, { recursive: true });
+    const H = '/home/';
+    fs.writeFileSync(path.join(dir, 'a.md'), [
+      `${H}linuxbrew/../someone/x`, // straight out of the prefix folder
+      `${H}linuxbrew/.linuxbrew/../../someone/x`, // out of the prefix after it
+      `${H}linuxbrew/.linuxbrew/bin/../../../someone/x`, // deeper
+      `see ${H}linuxbrew/.linuxbrew/..`, // ends in ..
+      `${H}linuxbrew/.linuxbrewx/bin/node`, // longer name
+      `${H}linuxbrew/${H}someone/x`, // not the prefix, and a second home root inside the path is found on its own
+    ].join('\n'));
+    assert.deepEqual(scan(dir).map((f) => [f.line, f.match]), [
+      [1, `${H}linuxbrew`],
+      [2, `${H}linuxbrew`],
+      [3, `${H}linuxbrew`],
+      [4, `${H}linuxbrew`],
+      [5, `${H}linuxbrew`],
+      [6, `${H}linuxbrew`],
+      [6, `${H}someone`],
+    ]);
+  });
+
+  test('(+) the prefix with ordinary segments is allowed, also quoted or followed by punctuation; `..` inside a name is not a segment', () => {
+    const dir = path.join(tmp, 'brew-ok');
+    fs.mkdirSync(dir, { recursive: true });
+    const H = '/home/';
+    fs.writeFileSync(path.join(dir, 'a.md'), [
+      `${H}linuxbrew/.linuxbrew`,
+      `"${H}linuxbrew/.linuxbrew/bin/node",`,
+      `(${H}linuxbrew/.linuxbrew/Cellar/node/22.1.0/bin/node)`,
+      `\`${H}linuxbrew/.linuxbrew/bin/node\` first`,
+      `${H}linuxbrew/.linuxbrew/a..b/node`,
+    ].join('\n'));
+    assert.deepEqual(scan(dir), []);
   });
 });
 

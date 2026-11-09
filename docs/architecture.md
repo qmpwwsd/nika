@@ -28,8 +28,15 @@ Related: [contracts](contracts/api-app.md) (routes, stdio protocol, schemas), [A
 ## Boot sequence (desktop app)
 
 1. The single-instance guard runs first. A second launch focuses the existing window and exits.
-2. The shell finds Node: `NIKA_NODE` (an absolute path), else the first `node` in `/opt/homebrew/bin`,
-   `/opt/homebrew/opt/node/bin`, `/usr/local/bin`, `~/.local/bin`, `/usr/bin`.
+2. The shell finds Node on a worker thread (the window and tray stay alive; the answer is dropped if a newer start, an
+   error page or Quit came first): a valid `NIKA_NODE` (absolute, executable) is the only candidate; else
+   `/opt/homebrew/bin`, `/opt/homebrew/opt/node/bin`, `/usr/local/bin`, on Linux the Linuxbrew prefix, `~/.local/bin`,
+   `~/.volta/bin`, the newest install of mise, fnm (also under `~/Library/Application Support` on macOS), nvm and asdf
+   (folder listing only), then `/usr/bin`. Each existing candidate runs `node --version` (fixed argv, an environment of
+   `HOME` alone, no shell, its own process group, 2 s limit, 6 s in total); the first that is 22 or newer wins. If some
+   ran but none is new enough, the error
+   page says `node-old` with the newest version seen; if none exists or answers, `node-missing`
+   (`child.rs` `find_node`, [packaging](packaging.md#runtime-requirements-both-systems)).
 3. The shell starts `node bin/nika serve --app` with piped stdio. The server files come from the app bundle
    (`Contents/Resources/nika/{bin,src,public,templates,package.json}` on macOS). The child env is cleared, then set to
    `PATH`, `HOME`, `NIKA_APP=1`, plus `CLAUDE_CONFIG_DIR`, `NIKA_CONFIG_DIR`, `XDG_CONFIG_HOME`, `XDG_STATE_HOME`,
@@ -44,7 +51,7 @@ Related: [contracts](contracts/api-app.md) (routes, stdio protocol, schemas), [A
    privileged request.
 8. While running, the server sends a `status` line every 3 s (counts for the tray) and relays the folder picker with
    `pick-folder` / `folder`.
-9. If Node is missing, does not send `ready` within 10 s, or exits, the webview shows the local error page
+9. If Node is missing or too old, does not send `ready` within 10 s, or exits, the webview shows the local error page
    (`app/src-tauri/ui/error.html`, served as `tauri://localhost/error.html?reason=…`). Its Retry link
    (`tauri://localhost/retry`) is intercepted by the shell, which starts a new child with a new secret and a new port.
 10. Quit: the shell closes the child's stdin, sends SIGTERM after 2 s and SIGKILL after 4 s. tmux sessions are never

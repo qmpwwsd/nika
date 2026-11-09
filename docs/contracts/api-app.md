@@ -507,8 +507,10 @@ built from scratch (`env_clear`) and holds only: `PATH` (the node binary's direc
 `/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin`), `HOME`, `NIKA_APP=1` and, when set
 in the app's own environment, `CLAUDE_CONFIG_DIR`, `NIKA_CONFIG_DIR`, `XDG_CONFIG_HOME`, `XDG_STATE_HOME`,
 `TMUX_TMPDIR`, `LANG`, `LC_ALL`, `LC_CTYPE`. `NIKA_NODE` (an absolute path to an executable node) only chooses the
-interpreter and is not passed on; without it the shell takes the first executable `node` in `/opt/homebrew/bin`,
-`/opt/homebrew/opt/node/bin`, `/usr/local/bin`, `$HOME/.local/bin`, `/usr/bin`. `ready` must arrive within 10 s with
+interpreter and is not passed on; without it the shell takes the first candidate (Homebrew, `/usr/local/bin`, on Linux
+Linuxbrew, `$HOME/.local/bin`, Volta, the newest mise, fnm, nvm and asdf install, `/usr/bin`; the list is in
+`docs/packaging.md`) whose `node --version` (fixed argv, an environment of `HOME` alone, no shell, 2 s limit, 6 s in
+total) is 22 or newer; it looks on a worker thread, never on the main one. `ready` must arrive within 10 s with
 `proto` 1 and a port in 1-65535, otherwise the shell kills the child and shows its local error page.
 
 Tray navigation (shell to page). The tray rows and "Add project…" point the window at the server's origin with a

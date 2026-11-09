@@ -602,7 +602,8 @@ async function doctor(cx) {
   const major = Number(process.versions.node.split('.')[0]);
   row('node', `${process.version}${major >= 22 ? '' : '  (nika needs >= 22)'}`);
   const tmuxV = await firstLine(cx.config.tmuxBin, '-V');
-  row('tmux', tmuxV ? `${tilde(cx.config.tmuxBin)}  ${tmuxV}` : 'not found (add it to PATH or set NIKA_TMUX)');
+  const tmuxInstall = cx.platform === 'darwin' ? 'brew install tmux' : cx.platform === 'linux' ? 'sudo apt install tmux' : null; // no command elsewhere
+  row('tmux', tmuxV ? `${tilde(cx.config.tmuxBin)}  ${tmuxV}` : `not found (${tmuxInstall ? `install: ${tmuxInstall}; or set NIKA_TMUX` : 'add it to PATH or set NIKA_TMUX'})`);
   const claudeBin = findClaude(cx.env);
   const claudeV = claudeBin ? await firstLine(claudeBin, '--version') : null;
   row('claude', !claudeBin ? 'not found (add it to PATH or set NIKA_CLAUDE)' : `${tilde(claudeBin)}  ${claudeV ?? '--version failed'}`);

@@ -735,7 +735,7 @@ describe('Add to Applications notice (spec 3.14)', () => {
       refresh() {},
     };
     const list = vm.runInNewContext(`${fn(read('app.js'), 'function bannerList(')}\nbannerList`, ctx);
-    return { ids: () => list().map((b) => b.id), get: () => list().find((b) => b.id === 'app-copy'), calls, ctx };
+    return { ids: () => list().map((b) => b.id), get: () => list().find((b) => b.id === 'app-copy'), byId: (id) => list().find((b) => b.id === id), calls, ctx };
   }
 
   test('(+) the dashboard banner list gets the app-copy banner (info kind, i-apps icon) for missing and for stale+managed, wired to the hooks', () => {
@@ -763,6 +763,29 @@ describe('Add to Applications notice (spec 3.14)', () => {
     assert.equal(bannerRig({ route: 'settings' }).get(), undefined);
     assert.equal(bannerRig({ me: { appCopy: { ...MISSING, dismissed: true } } }).get(), undefined);
     assert.equal(bannerRig({ me: null }).get(), undefined);
+  });
+
+  test('(+) the tmux banner names the install command of the platform: brew on macOS, apt on Linux', () => {
+    const NO_COPY = { state: 'unsupported', available: null };
+    const tmux = (platform) => bannerRig({ me: { tmux: false, claude: true, platform, appCopy: NO_COPY } }).byId('tmux');
+    assert.equal(tmux('darwin').cmd, 'brew install tmux');
+    assert.equal(tmux('linux').cmd, 'sudo apt install tmux');
+    for (const p of ['darwin', 'linux']) {
+      assert.equal(tmux(p).title, 'tmux not found');
+      assert.equal(tmux(p).kind, 'danger');
+      assert.equal(tmux(p).action.label, 'Check again');
+    }
+  });
+
+  test('(−) any other or unknown platform gets the tmux banner without a command; tmux present means no banner', () => {
+    const NO_COPY = { state: 'unsupported', available: null };
+    for (const platform of ['win32', 'freebsd', 'sunos', '', undefined, null, 'Darwin', 'LINUX', 'constructor', '__proto__', 'toString']) {
+      const b = bannerRig({ me: { tmux: false, claude: true, platform, appCopy: NO_COPY } }).byId('tmux');
+      assert.equal(b.title, 'tmux not found', String(platform));
+      assert.equal(b.cmd, undefined, `no command for ${String(platform)}`);
+    }
+    assert.equal(bannerRig({ me: { tmux: true, claude: true, platform: 'linux', appCopy: NO_COPY } }).byId('tmux'), undefined);
+    assert.equal(bannerRig({ isApp: false, me: { tmux: false, platform: 'linux' } }).byId('tmux'), undefined, 'browser tier never shows it');
   });
 
   test('(+) the banner renderer draws the primary and the ghost button, a busy state with aria-busy and aria-disabled, and an alert line', () => {
