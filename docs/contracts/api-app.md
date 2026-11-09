@@ -430,10 +430,12 @@ warning in `loadConfig().warnings`; a tampered or unreadable file never throws):
   "plugins": { "perProject": { "<PROJECT_KEY>": [ "<PLUGIN_NAME>" ] } },
   "projects": [ { "key": "<PROJECT_KEY>", "dir": "<abs realpath>", "name": "<basename>", "addedAt": "<ISO>" } ],
   "rules": { "localTemplate": null },
-  "ui": { "theme": "system" }
+  "ui": { "theme": "system", "singleKeyShortcuts": true }
 }
 ```
-`ui.theme` ∈ `system light dark` (default `system` = follow `prefers-color-scheme`).
+`ui.theme` ∈ `system light dark` (default `system` = follow `prefers-color-scheme`). `ui.singleKeyShortcuts` boolean
+(default `true`; a missing or non-boolean value reads as the default): whether `?` opens Keyboard shortcuts (design spec
+§4.6). Mod+/ always does.
 Field rules: `models.*` `MODEL_ID`; `remoteControl.prefix` `""` (= project name) or `RC_PREFIX`; `permissionMode` ∈
 `PERMISSION_MODES`; `panePlacement` ∈ `PANE_PLACEMENTS`; `limits.maxAgents` 1–8 (there is no turn limit: Claude Code
 has no `--max-turns` for interactive sessions); `plugins.perProject` ≤ 200 names per project, keys must be registered

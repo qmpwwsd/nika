@@ -650,9 +650,31 @@ Monospace textarea with a "›" prompt, grows 1 → 8 lines (20 px each), then s
 
 ---
 
+### 3.13 Back button (owner request 2026-11-09)
+
+One look on every screen with a back link (project view, Settings, session window): a **ghost button**, not a text link.
+`<a class="back" href="…">` with the `i-back` icon and the label (the session window keeps its project name or
+"Dashboard" in `#proj`). Rules live in `public/tokens.css` (both pages load it), and both pages drop their `.crumb` rules.
+
+```css
+.back { display: inline-flex; align-items: center; gap: 4px; height: 28px; max-width: 28ch; padding: 0 8px 0 4px;
+  border-radius: var(--r-sm); color: var(--text-muted); font-weight: 600; text-decoration: none; }
+.back span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.back:hover { background: var(--surface-3); color: var(--text); }
+.back:active { background: var(--surface-3); }
+.back:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+```
+
+`title` "Back to <label> (⌘[)" on macOS, "Back to <label> (Alt+←)" on Linux; `aria-keyshortcuts` "Meta+BracketLeft" /
+"Alt+ArrowLeft". The session window gains the same shortcut (it had none): ⌘[ / Alt+← follows the button's `href`,
+except while passthrough is on (Linux Alt+← then goes to the pane rules: not on the allow-list, not sent; macOS ⌘[ stays
+an app shortcut, §4.2).
+
 ## 4. Keyboard model
 
-Mod = ⌘ on macOS, Ctrl on Linux. No single-character shortcuts (WCAG 2.1.4); 0.1's "/" to filter is replaced by Mod+F.
+Mod = ⌘ on macOS, Ctrl on Linux. No single-character shortcuts (WCAG 2.1.4), with one exception the owner asked for
+(2026-11-09): `?` opens Keyboard shortcuts (§4.6), only outside text entry and with a Settings switch to turn it off.
+0.1's "/" to filter is replaced by Mod+F.
 
 ### 4.1 Global
 
@@ -665,6 +687,7 @@ Mod = ⌘ on macOS, Ctrl on Linux. No single-character shortcuts (WCAG 2.1.4); 0
 | Mod+K | Command palette | C only; Phase 5 for A |
 | ⌘[ (macOS), Alt+← (Linux) | Back | session → project/dashboard |
 | Mod+Enter | Submit the open form (Spawn agent, Save settings) | |
+| ? · Mod+/ | Keyboard shortcuts (§4.6) | `?` only outside text entry and while "Single-key shortcuts" is on |
 | Mod+Shift+H | Toggle transcript drawer | B only |
 | Tab / Shift+Tab | Normal order: skip link → sidebar → main → … | |
 
@@ -710,6 +733,78 @@ Native `<dialog>.showModal()`: background is inert, Tab cycles inside, Esc fires
 - First tab stop: "Skip to content" → `#main` (`tabindex="-1"`).
 - Session: a second skip link "Skip to message input" → composer.
 - Landmarks: `nav` (sidebar, labelled "Main"), `main`, `aside` (project cards), `header` (screen bar), `footer` only in C (status line).
+
+### 4.6 Keyboard shortcuts window (owner request 2026-11-09)
+
+**Open.** `?` (Shift+/ on most layouts: match `e.key === '?'`, no Ctrl, ⌘ or Alt) or Mod+/ (`e.key === '/'` with Mod), or
+the **Keyboard shortcuts** button. `?` is ignored when the focus is in an `input`, `textarea`, `select` or
+contenteditable element, in the terminal mirror, while passthrough is on, while any dialog is open, or when the setting
+"Single-key shortcuts" is off. Mod+/ works everywhere except in passthrough on Linux (Ctrl+] is the only key nika keeps
+there; macOS ⌘/ stays an app shortcut, §4.2) and while another dialog is open. Pressing either key again with the window
+open does nothing; Esc or Close closes it and focus returns to the opener (§4.4).
+
+**Button.** Ghost icon button, icon `i-kbd` (a keyboard outline, 16 px, same stroke as the set), `aria-label="Keyboard
+shortcuts"`, `title` "Keyboard shortcuts (?)" (just "(⌘/)" / "(Ctrl+/)" when the setting is off), `aria-keyshortcuts`
+"Shift+Slash Meta+Slash" (Linux "Shift+Slash Control+Slash"). Dashboard: in the sidebar footer, both tiers. Session window:
+in the header bar, at the far right.
+
+**Dialog.** Native `<dialog id="kbd-dlg">`, 560 wide (min(560, vw−32)), max height min(720, vh−32), body scrolls. Header:
+`h2` "Keyboard shortcuts" (initial focus, `tabindex="-1"`) and a muted line naming the window ("Dashboard" / "Session
+window"). Body: one section per group, `h3` + `<table>` with a visually hidden `caption` (the group name),
+`<th scope="col">` Name · Shortcut · Description; Shortcut cells use `<kbd>` per key joined by "+", alternatives joined by
+" or "; mono 12 for keys. Footer: on the app tier a muted line "Single-key shortcuts: On" (or "Off") + link button
+"Change in Settings" (dashboard: goes to `#settings` and closes; session window: opens the dashboard's Settings in the same
+window), then **Close** (secondary). The browser tier footer has only Close. Content is static copy from one module
+(`public/shortcuts.js`), filtered by window, tier and platform; nothing in it comes from the server.
+
+Key labels: macOS ⌘ ⌥ ⇧ ⌃ and the arrows; Linux Ctrl, Alt, Shift and the arrows. Mod = ⌘ / Ctrl. "⌘[ / Alt+←" in the
+tables means ⌘[ on macOS and Alt+← on Linux: each platform shows only its own.
+
+**Content.** Exact copy; list only what the window and tier support.
+
+Dashboard (app tier):
+
+| Group | Name | Shortcut | Description |
+|---|---|---|---|
+| Navigation | Dashboard | Mod+1 | Show all projects and agents |
+| | Settings | Mod+, | Open Settings |
+| | Add project | Mod+O | Choose a folder to add as a project |
+| | Filter agents | Mod+F | Move to the agent filter (dashboard) |
+| | Back | ⌘[ / Alt+← | Go back to the dashboard (project view, Settings) |
+| | Keyboard shortcuts | ? or Mod+/ | Show this list |
+| Dialogs and menus | Run the main action | Mod+Enter | Spawn, save or apply in the open dialog or in Settings |
+| | Close | Esc | Close the open menu or dialog |
+
+Dashboard (browser tier): Keyboard shortcuts — Mod+/ — Show this list; Close — Esc — Close the open menu. (`?` is app-tier
+only: the browser tier cannot store the setting that turns it off.)
+
+Session window:
+
+| Group | Name | Shortcut | Description |
+|---|---|---|---|
+| Window | Back | ⌘[ / Alt+← | Back to the dashboard |
+| | Keyboard shortcuts | ? or Mod+/ | Show this list |
+| Message box | Send | Enter | Send the text, then Enter, to Claude (empty box: Enter only) |
+| | New line | Shift+Enter | Start a new line in the message box |
+| | Press Esc in Claude | Esc | Stop Claude's turn or close Claude's menu (when nothing in nika is open) |
+| | Interrupt | Ctrl+C | Send Ctrl-C to Claude (when no text is selected) |
+| | Commands | / | Open the command list (at the start of an empty box) |
+| | Type into the pane | Ctrl+] | Send every key straight to Claude's terminal |
+| Typing into the pane | Stop typing into the pane | Ctrl+] | Keys go to the message box again |
+| Mode switcher | Move between modes | ← → Home End | Moves focus; does not switch |
+| | Switch | Enter or Space | Switch to the focused mode |
+| Command list | Move | ↑ ↓ | Move through the commands |
+| | Insert | Enter or Tab | Put the command in the message box |
+| | Close | Esc | Close the list and keep the text |
+
+`/` and the command-list rows appear once the palette ships (Task 11); "Interrupt" keeps the composer's selection rule.
+
+**Settings.** Settings → Appearance gets a checkbox **Single-key shortcuts** (on by default), help text "Press ? to show
+keyboard shortcuts. Turn this off if you use speech input or single-key commands." Stored as `ui.singleKeyShortcuts`
+(boolean) through the existing settings route. The session window reads it from `GET /api/app/settings` once at load.
+
+**A11y.** Every row is reachable as table text (no hover-only content); the dialog follows §4.4; the button's `title`
+and `aria-keyshortcuts` name both keys; WCAG 2.1.4 is met by the Settings switch and by ignoring `?` in text entry.
 
 ---
 
