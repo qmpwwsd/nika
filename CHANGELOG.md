@@ -12,7 +12,7 @@ Session control (desktop app; the browser dashboard on :3335 stays read-only):
   (cancel, same as No). An option that mentions bypass has no button; answer it in the terminal.
 - Quick actions: Stop (while Claude works), Compact, Clear (asks first), Model, Rewind and End session. Compact, Clear,
   Model and End type into Claude's input only when it is empty and press Enter only when it reads exactly that
-  command; otherwise they refuse with "Claude's input has text; clear it first." and leave your draft alone.
+  command; otherwise they refuse ("Claude's input has text; clear it first." when it holds a draft) and leave your draft alone.
 - End session: asks first, presses Esc when Claude is busy or asking (which answers No), then types `/exit`. It never
   kills the pane. Also in the dashboard row menu.
 - Shell mode: a toggle in the message box that sends your line through Claude's `!` mode, then turns itself off.
@@ -34,6 +34,9 @@ Session control (desktop app; the browser dashboard on :3335 stays read-only):
   the `[1m]` suffix.
 - Docs: ADR 0010 (session control through the TUI) and 0011 (app copy), `docs/contracts/claude-tui.md` (the Claude Code
   screen text nika parses, checked against 2.1.319), threats T22, T23, T26 and T33 in `docs/security.md`.
+
+Other:
+
 - Release notes: `scripts/release-check.mjs` joins the CHANGELOG's hard-wrapped lines, so a draft release no longer
   shows a line break in the middle of each sentence (GitHub renders every newline of a release body as one). Code
   blocks, tables, quotes and list markers are kept; `test/release.test.js` covers both directions.

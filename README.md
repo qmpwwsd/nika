@@ -184,12 +184,14 @@ More: [docs/packaging.md](docs/packaging.md) (build details, signing, Linux pack
   list of current models and aliases, or a custom ID), Remote Control, default permission mode and pane placement, the
   per-project agent limit, plugins per project and the rules template. One Save button; invalid fields are marked in place.
 - **Keyboard.** `Mod+1` dashboard, `Mod+,` settings, `Mod+O` add project, `Mod+F` filter, `Mod+[` (macOS) or `Alt+Left`
-  (Linux) back to the dashboard (from the project view, Settings and the session window), `Mod+Enter` confirm the open
+  (Linux) back (the project view and Settings go to the dashboard; the session window goes to its project, or the
+  dashboard when it has none), `Mod+Enter` confirm the open
   dialog or save settings, `?` or `Mod+/` the Keyboard shortcuts window. `Mod` is Command on macOS and Control on Linux.
 - **Keyboard shortcuts window.** `?` or `Mod+/`, or the Keyboard shortcuts button (sidebar footer, session header), lists
   the shortcuts of the screen you are on. `?` is ignored while you type in a field or in the pane mirror, while "Type into
   the pane" is on and while a dialog is open; turn it off in Settings, Appearance, **Single-key shortcuts** (useful with
-  speech input). `Mod+/` always works. The browser dashboard has the same window with `Mod+/` only, from a button in
+  speech input). `Mod+/` also works in fields and with the setting off (not while a dialog is open, nor
+  in passthrough on Linux). The browser dashboard has the same window with `Mod+/` only, from a button in
   its top bar.
 
 The browser dashboard at `http://127.0.0.1:3335` shows the same list without any of these controls; its only action is
