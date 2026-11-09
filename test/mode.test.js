@@ -2,7 +2,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import * as mode from '../src/mode.js';
 import {
-  MODES, MODE_TARGETS, PROMPT_ROWS, FOOTER, OPTION, rowText, lastNonBlank, modeFromRows, promptFromRows, mentionsBypass,
+  MODES, MODE_TARGETS, PROMPT_ROWS, FOOTER, OPTION, rowText, lastNonBlank, modeFromRows, promptFromRows, mentionsBypass, bypassWindow,
 } from '../src/mode.js';
 import { parseCapture } from '../src/mirror.js';
 
@@ -408,5 +408,21 @@ describe('mentionsBypass', () => {
     for (const t of ['', 'Yes', 'Do you want to proceed?', 'allow edits for this session', 'by pas']) {
       assert.equal(mentionsBypass(t), false, JSON.stringify(t));
     }
+  });
+});
+
+describe('bypassWindow', () => {
+  const filler = Array.from({ length: PROMPT_ROWS }, (_, i) => `output row ${i}`);
+
+  test('(+) a bypass word in any of the last PROMPT_ROWS non-blank rows, blank rows skipped, any spelling', () => {
+    assert.equal(bypassWindow(rowsOf('Switch to bypass permissions mode?', ...filler.slice(1))), true, 'the oldest row of the window');
+    assert.equal(bypassWindow(rowsOf('old', '', 'Yes, and BY-PASS permissions', '', '')), true);
+    assert.equal(bypassWindow(rowsOf('b y p a s s')), true);
+  });
+
+  test('(−) older than the window, absent, or not rows at all: false, never throws', () => {
+    assert.equal(bypassWindow(rowsOf('the word bypass', ...filler)), false, 'one row too old');
+    assert.equal(bypassWindow(rowsOf('Do you want to proceed?', '1. Yes', '2. No')), false);
+    for (const bad of [null, undefined, 'bypass', 5, [], {}]) assert.equal(bypassWindow(bad), false, String(bad));
   });
 });

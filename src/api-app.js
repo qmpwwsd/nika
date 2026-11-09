@@ -12,7 +12,7 @@ import { configDir, stateDir } from './paths.js';
 import { clean } from './text.js';
 import { UUID, PANE_ID, PROJECT_KEY, CLAUDE_COMMAND, COMMAND_NAME } from './ids.js';
 import { mapLimit } from './util.js';
-import { MODE_TARGETS, PROMPT_ROWS, lastNonBlank, mentionsBypass, modeFromRows, promptFromRows } from './mode.js';
+import { MODE_TARGETS, bypassWindow, modeFromRows, promptFromRows } from './mode.js';
 import { MODEL_CATALOG } from './models.js';
 import { createSessionControl, promptSig, insertShown } from './session-control.js';
 
@@ -171,7 +171,11 @@ export function createAppApi({ secret, ctx, deps }) {
       const pane = panes.get(id);
       return pane ? String(pane.command ?? '').trim() : null;
     },
-    stateOf: async (id) => (await loadEligibility()).live.get(id) ?? null,
+    // `{ fresh: true }`: the caller is about to act on the answer (a second Escape), so the 1 s snapshot is dropped first
+    stateOf: async (id, o) => {
+      if (o?.fresh === true) eligibility = null;
+      return (await loadEligibility()).live.get(id) ?? null;
+    },
     vimOf: (id) => vim.get(id) === true,
     now: () => ctx.now(),
   });
@@ -318,13 +322,14 @@ export function createAppApi({ secret, ctx, deps }) {
     const { id, failure } = await eligiblePane(params[0]);
     if (failure) return failure;
     // Enter, a digit or a paste could answer a permission prompt, and the answer route's bypass refusal does not reach this
-    // route: so they look at a fresh screen first, and none is sent while an open prompt mentions bypass (T26). Typing
-    // letters, arrows, Escape and BTab stay as fast as in 0.2. Passthrough (the terminal itself) is the raw way to answer it.
+    // route: so they look at a fresh screen first, and none is sent while a prompt (or a dialog nika cannot read: its footer
+    // is unreadable) mentions bypass (T26). Typing letters, arrows, Escape and BTab stay as fast as in 0.2. The page's
+    // passthrough posts to this route too, so it is guarded as well: only the terminal itself can answer such a prompt.
     if (answersPrompt(body)) {
       const cap = await deps.mirror.capture(id, undefined, { fresh: true });
       if (cap.status !== 200) return { status: cap.status, body: cap.body };
       const rows = cap.body.rows;
-      if (promptFromRows(rows) !== null && mentionsBypass(lastNonBlank(rows, PROMPT_ROWS).join(' '))) return err(409, 'bypass-prompt', 'Answer this prompt in the terminal');
+      if (bypassWindow(rows) && (promptFromRows(rows) !== null || modeFromRows(rows) === 'unknown')) return err(409, 'bypass-prompt', 'Answer this prompt in the terminal');
     }
     return deps.keys.send(id, { text: body.text, paste: body.paste, keys: body.keys });
   });

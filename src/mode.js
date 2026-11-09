@@ -43,6 +43,9 @@ export function lastNonBlank(rows, n) {
   return rows.map(rowText).filter((t) => t.trim()).slice(-n);
 }
 
+/** True when any of the last PROMPT_ROWS non-blank rows (the window a permission prompt sits in, and its `sig` covers) mentions bypass. Shared by the keys guard and the answer route. */
+export const bypassWindow = (rows) => mentionsBypass(lastNonBlank(rows, PROMPT_ROWS).join(' '));
+
 /** Mode shown by the mode line, the last non-blank row only; a phrase anywhere else never counts. */
 export function modeFromRows(rows) {
   const row = lastNonBlank(rows, 1)[0];

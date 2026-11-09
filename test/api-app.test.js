@@ -1171,6 +1171,37 @@ describe('session control: wiring', () => {
     assert.equal(await control.opts.stateOf('%6'), null); // ambiguous: never idle
   });
 
+  test('(+) stateOf with { fresh: true } drops the cached snapshot and reads the registry again; without it the cache (1 s) still answers', async () => {
+    const control = fakeControl();
+    const live = (state) => ({ live: true, state, pane: { id: '%6' } });
+    let agents = [live('busy')];
+    let reads = 0;
+    const a = await boot({ deps: makeDeps({ collect: async () => { reads += 1; return { groups: [{ agents }] }; }, createSessionControl: control.factory }) });
+    await a.call('POST', '/api/app/pane/%256/mode', { json: { target: 'plan' } });
+    assert.equal(await control.opts.stateOf('%6'), 'busy');
+    const before = reads;
+    agents = [live('idle')];
+    assert.equal(await control.opts.stateOf('%6'), 'busy', 'the cached snapshot, as before');
+    assert.equal(await control.opts.stateOf('%6', {}), 'busy', 'an options object without fresh changes nothing');
+    assert.equal(reads, before);
+    assert.equal(await control.opts.stateOf('%6', { fresh: true }), 'idle');
+    assert.equal(reads, before + 1);
+    assert.equal(await control.opts.stateOf('%6'), 'idle', 'the new snapshot is cached again');
+    assert.equal(reads, before + 1);
+  });
+
+  test('(−) fresh with a failing registry read is no state at all (never idle), and the next plain read is not poisoned', async () => {
+    const control = fakeControl();
+    let fail = false;
+    const a = await boot({ deps: makeDeps({ collect: async () => { if (fail) throw new Error('ps'); return { groups: [{ agents: [{ live: true, state: 'busy', pane: { id: '%6' } }] }] }; }, createSessionControl: control.factory }) });
+    await a.call('POST', '/api/app/pane/%256/mode', { json: { target: 'plan' } });
+    fail = true;
+    assert.equal(await control.opts.stateOf('%6', { fresh: true }), null, 'the snapshot is gone and none could be read: no live session');
+    fail = false;
+    a.clock.t += 2000; // the failed snapshot is cached like any other, until it expires
+    assert.equal(await control.opts.stateOf('%6'), 'busy');
+  });
+
   test('(−) paneCommand throws when tmux cannot be listed, so End never reports a pane gone on a failed lookup', async () => {
     const control = fakeControl();
     const a = await boot({ deps: makeDeps({ createSessionControl: control.factory }) });
@@ -1496,6 +1527,30 @@ describe('POST /api/app/pane/:id/keys: the bypass prompt guard (A2, H2)', () => 
     assert.equal((await keysTo(a, { keys: ['Enter'] })).status, 200, 'older than the 15-row prompt window: it does not count');
     screens['%6'] = rowsOf(['the notes talk about bypass permissions', ...PROMPT]);
     assert.equal((await keysTo(a, { keys: ['Enter'] })).status, 409, 'inside the window (fail closed): it does');
+  });
+
+  test('(−) a dialog nika does not parse (another hint row, unreadable footer) whose window mentions bypass: Enter, a digit and a paste are 409 bypass-prompt too', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = rowsOf(['Allow bypass permissions for this folder?', ' Enter to confirm · Esc to cancel']);
+    assert.equal((await pane(a, '%6', 'capture')).body.prompt, null, 'the page has no buttons for it either');
+    for (const json of [{ keys: ['Enter'] }, { text: '1' }, { paste: 'x' }]) {
+      const r = await keysTo(a, json);
+      assert.deepEqual([r.status, r.body.error, r.body.message], [BYPASS.status, BYPASS.error, BYPASS.message], JSON.stringify(json));
+    }
+    assert.deepEqual(sent(a), []);
+  });
+
+  test('(+) the same unreadable dialog without the word, or a readable footer that itself says bypass, or a bypass word in output with a readable footer: sent', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = rowsOf(['Trust the files in this folder?', ' Enter to confirm · Esc to cancel']);
+    assert.equal((await keysTo(a, { keys: ['Enter'] })).status, 200);
+    screens['%6'] = rowsOf(['working...', '  ⏵⏵ bypass permissions on (shift+tab to cycle)']);
+    assert.equal((await pane(a, '%6', 'capture')).body.mode, 'bypassPermissions');
+    assert.equal((await keysTo(a, { keys: ['Enter'] })).status, 200, 'a session in bypass can still be typed to; the footer is not a prompt');
+    assert.equal((await keysTo(a, { text: 'git log -3' })).status, 200);
+    screens['%6'] = rowsOf(['notes about bypass', FOOTER.plan]);
+    assert.equal((await keysTo(a, { keys: ['Enter'] })).status, 200);
+    assert.equal(sent(a).length, 4);
   });
 
   test('(−) the capture fails: its status and body, nothing sent', async () => {

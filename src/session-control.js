@@ -6,7 +6,7 @@
 // exactly what nika typed (claude-tui.md section 5), so a user's draft is never sent, extended or cleared.
 import { createHash } from 'node:crypto';
 import { CLAUDE_COMMAND } from './ids.js';
-import { MODE_TARGETS, OPTION, PROMPT_ROWS, lastNonBlank, mentionsBypass, modeFromRows, promptFromRows, rowText } from './mode.js';
+import { MODE_TARGETS, OPTION, PROMPT_ROWS, bypassWindow, lastNonBlank, modeFromRows, promptFromRows, rowText } from './mode.js';
 
 const EXIT_POLL_MS = 500;
 // A rule row of Claude's input box: made only of box-drawing dashes. The box is what lies between the last two.
@@ -133,6 +133,7 @@ export function createSessionControl({
   // Typing without knowing whether the input is in vim normal mode could send stray vim commands, so there is no default.
   if (typeof vimOf !== 'function') throw new TypeError('vimOf must be a function (pane) => boolean');
   const running = new Set(); // panes with a control action in progress
+  const interrupting = new Set(); // panes whose Escape sequence is running: Stop and End share it, apart from the control lock
   const answered = new Map(); // pane → { sig, at } of the last successful answer
 
   /** Runs `action(ctx)` as the only control action on the pane; `ctx.insert` turns true once any capture of the action shows INSERT. */
@@ -154,10 +155,10 @@ export function createSessionControl({
     return { rows: cap.body.rows };
   }
 
-  /** Registry state; a lookup that fails reads as no live session, which is never idle. */
-  async function stateNow(pane) {
+  /** Registry state; a lookup that fails reads as no live session, which is never idle. `opts` goes to stateOf (`{ fresh: true }`: skip its cache). */
+  async function stateNow(pane, opts) {
     try {
-      return await stateOf(pane);
+      return await stateOf(pane, opts);
     } catch {
       return null;
     }
@@ -305,7 +306,10 @@ export function createSessionControl({
     }
     if (rest !== '') {
       const sent = await keys.send(pane, { text: rest });
-      if (sent.status !== 200) return { failed: sent };
+      if (sent.status !== 200) {
+        if (rest !== text) await cleanUp(pane, '/', ctx); // the probe's slash is nika's own text
+        return { failed: sent };
+      }
     }
     const echoed = await settled(pane, (seen) => boxReads(inputBox(seen), text), ctx);
     if (!echoed.rows) {
@@ -322,21 +326,29 @@ export function createSessionControl({
    * one Escape, except in vim INSERT, where the first Escape only leaves INSERT (claude-tui.md section 5): then it waits for
    * `-- INSERT --` to go (still shown: 409 mode-unknown, no second key), reads the state again, and sends the second
    * Escape only if it is still busy. Otherwise (idle, no state, an ambiguous pane) no key at all.
+   * The state read before the second Escape skips the registry cache. One interrupt per pane at a time (Stop and End share
+   * the flag, apart from the control lock): a second one finds it taken and answers 409 `taken` without sending anything.
    * Returns { presses } (Escapes sent), { res } (a 409 or a failed capture) or { failed } (the send that failed).
    */
-  async function interrupt(pane, rows, state, ctx) {
-    const escape = async (n) => {
-      const sent = await keys.send(pane, { keys: ['Escape'] });
-      return sent.status === 200 ? { presses: n } : { failed: sent };
-    };
-    if (promptOpen(rows)) return escape(1);
-    if (!isBusy(state)) return { presses: 0 };
-    const first = await escape(1);
-    if (first.failed || !insertShown(rows)) return first;
-    const gone = await settled(pane, (seen) => !insertShown(seen), ctx);
-    if (gone.res) return { res: gone.res };
-    if (!gone.rows) return { res: conflict('mode-unknown') };
-    return isBusy(await stateNow(pane)) ? escape(2) : first;
+  async function interrupt(pane, rows, state, ctx, taken = 'not-idle') {
+    if (interrupting.has(pane)) return { res: conflict(taken) };
+    interrupting.add(pane);
+    try {
+      const escape = async (n) => {
+        const sent = await keys.send(pane, { keys: ['Escape'] });
+        return sent.status === 200 ? { presses: n } : { failed: sent };
+      };
+      if (promptOpen(rows)) return await escape(1);
+      if (!isBusy(state)) return { presses: 0 };
+      const first = await escape(1);
+      if (first.failed || !insertShown(rows)) return first;
+      const gone = await settled(pane, (seen) => !insertShown(seen), ctx);
+      if (gone.res) return { res: gone.res };
+      if (!gone.rows) return { res: conflict('mode-unknown') };
+      return isBusy(await stateNow(pane, { fresh: true })) ? await escape(2) : first;
+    } finally {
+      interrupting.delete(pane);
+    }
   }
 
   function switchMode(pane, target) {
@@ -368,7 +380,8 @@ export function createSessionControl({
         if (sent.status !== 200) return fail({ status: sent.status, body: sent.body }, true);
         presses += 1;
         const next = await settle(pane, mode);
-        last = next.mode;
+        // a footer that stays unreadable after the press that left bypass may still read bypass: keep the loud ending
+        last = next.mode === 'unknown' && mode === 'bypassPermissions' ? mode : next.mode;
         if (next.res) return fail(next.res);
         if (next.mode === target) return { status: 200, body: { mode: next.mode, presses } };
         if (next.mode === start || presses >= maxPresses) return fail(conflict('not-in-cycle'));
@@ -414,7 +427,7 @@ export function createSessionControl({
     if (promptOpen(seen.rows)) return conflict('prompt-open');
     const state = await stateNow(pane);
     if (!isBusy(state)) return conflict('not-busy');
-    const stopped = await interrupt(pane, seen.rows, state);
+    const stopped = await interrupt(pane, seen.rows, state, undefined, 'stopping');
     if (stopped.res) return stopped.res;
     if (stopped.failed) return { status: stopped.failed.status, body: stopped.failed.body };
     return { status: 200, body: { stopped: true, presses: stopped.presses } };
@@ -448,8 +461,9 @@ export function createSessionControl({
       const option = prompt.options.find((o) => o.n === n);
       const raw = option ? rawOption(seen.rows, n) : null;
       if (!option || raw === null) return invalid('n is not one of the prompt options');
-      // the whole prompt window is read, not only the options: a question such as "Switch to bypass ...?" has plain options
-      if (mentionsBypass(`${lastNonBlank(seen.rows, PROMPT_ROWS).join(' ')} ${option.label} ${raw}`)) return invalid('this option is answered in the terminal');
+      // the whole prompt window is read, not only the options (the label and its wrapped rows lie inside it): a question such
+      // as "Switch to bypass ...?" has plain options
+      if (bypassWindow(seen.rows)) return invalid('this option is answered in the terminal');
       const sent = await keys.send(pane, { text: String(n) }); // the digit alone answers; no Enter
       if (sent.status !== 200) return { status: sent.status, body: sent.body };
       const t = now();
