@@ -887,6 +887,63 @@ The 409 `limit` copy is chosen by the body's `scope` (`parent` or `project`) and
 
 Test hooks (`data-fk`): tree toggle `tree:<scope>:<id>`, header `spawn-sub:<key>`, row items `spawn-under:` and `spawn-sub:` (§3.16), sheet `sp-parent`, `sp-role-agent`, `sp-role-orch`; ids `sp-role`, `sp-role-why`, `sp-note`, `limit-note`.
 
+### 3.18 Auto-compact setting (0.4, ADR 0014)
+
+Settings gets a section `#s-compact` ("Auto-compact") after Models, and an index link "Auto-compact" after "Models". It sets when the
+sessions nika starts compact their conversation. Default: on, 80 %, 400k.
+
+```
+Auto-compact
+Compacts a session's conversation before it gets too long.
+
+[ (•)] Auto-compact at  [−][ 80 ][+] % of [400k            v]    [▣ On]
+Compacts at about 320k tokens (about 160k on 200k-window models).
+On a model with a 200k window, Claude can't compact later than about 83 %, so a higher % acts as about 83 % on those models.
+Applies only to sessions nika starts: the orchestrator, a resumed orchestrator and spawned agents, from their next start.
+Running sessions and sessions you start yourself keep Claude Code's own setting.
+```
+
+**Controls**, in order, in `div.inline.compact-row`: the switch `input#set-compact[role=switch]` (`data-fk=compact-on`, described by
+`set-compact-result` and `set-compact-help`); `label[for=set-compact]` "Auto-compact at"; `span.stepper` with `−` (`data-step=-5`,
+`data-step-for=set-compact-pct`, aria-label "5 percent less"), `input#set-compact-pct[type=number][min=20][max=95]` (`data-fk=compact-pct`,
+aria-label "Auto-compact at, percent of the window", described by `set-compact-result set-compact-cap set-compact-err`) and `+`
+("5 percent more"); `span[aria-hidden]` "% of"; `select#set-compact-win` (`data-fk=compact-win`, aria-label "Window the percent applies
+to"; 200k, 400k, 1M, "Model's full window"); and the chip `span.onoff-st#set-compact-st[aria-hidden]`.
+
+**Lines under the row.** `p.help#set-compact-result` is the result line (no live region; the inputs point at it);
+`p.help#set-compact-cap` and `p.help#set-compact-help` are static; `p.err#set-compact-err` reads "Choose a whole number from 20 to 95."
+and shows for a blank, a fraction or an out-of-range number, on blur and on Save (a shown error goes as soon as the number is valid
+or the row is switched off).
+
+**Result line** (`compactPreview({ enabled, pct, window })` in `public/ctx.js`; it previews the unsaved form and decides nothing the server
+launches with). A window larger than a model's own is cut to it, and a session never compacts above `window - 33000` tokens, so for a
+percent P and a window W the amount is `min(floor(W x P / 100), W - 33000)`, rounded down to 1k and written short ("320k", "1M"):
+
+| Window | Copy |
+|---|---|
+| 200k | "Compacts at about {X200} tokens." |
+| 400k | "Compacts at about {X400} tokens (about {X200} on 200k-window models)." |
+| 1M | "Compacts at about {X1M} tokens on 1M-window models (about {X200} on 200k-window models)." |
+| Model's full window | "Compacts at {P} % of each model's window: about {X1M} tokens on 1M-window models, about {X200} on 200k-window models." |
+| off | "Off. Sessions nika starts keep Claude Code's own setting." |
+| invalid number | the line is hidden; the error shows |
+
+80 % of 400k reads "about 320k tokens (about 160k on 200k-window models)"; 90 % of 400k reads "about 360k tokens (about 167k on 200k-window
+models)", because the 200k window cannot go past 167k. (Correction to the first design, which capped the percent at 83 and so wrote 166k.
+The 200k row has no addendum: it is already the 200k number.)
+
+**On and off, by colour, icon and word.** On: accent track, chip `i-compact` + "On" (`--accent` on `--accent-soft`), number, stepper and window
+enabled. Off: `--line-strong` track, chip `i-compact-off` + "Off" (`--text-muted`, dashed `--line-strong` edge), number, stepper and window
+`disabled` with their values kept, and the result line reads the Off sentence. Switching off while the number is invalid puts the saved
+number back and clears the error.
+
+**Save.** `formValue()` gains `compaction: { enabled, pct: Number(value), window }` (`window` a number or `'model'`); the Save bar, Discard and
+the summary work as in §3.15. The stepper buttons are generic: `data-step-for` names the number (default `set-max`), the clamp is the
+number's own `min` and `max`, and a typed whole number from 20 to 95 works. The result line redraws on every `input` and `change`.
+
+Test hooks (`data-fk`): `compact-on`, `compact-pct`, `compact-dec`, `compact-inc`, `compact-win`; ids `set-compact-result`, `set-compact-cap`,
+`set-compact-help`, `set-compact-err`, `set-compact-st`.
+
 ## 4. Keyboard model
 
 Mod = ⌘ on macOS, Ctrl on Linux. No single-character shortcuts (WCAG 2.1.4), with one exception the owner asked for

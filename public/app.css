@@ -421,6 +421,12 @@ dialog.dlg-plugins[open] { display: flex; flex-direction: column; }
 .set-sec h2 { margin: 0; font-size: var(--fs-h2); }
 .set-sec > p { margin: -8px 0 0; color: var(--text-muted); }
 .err-sum { margin: 0 0 var(--sp-4); }
+.compact-row { flex-wrap: wrap; }
+.compact-row select { width: auto; min-height: var(--h-ctl-lg); }
+.onoff-st { display: inline-flex; align-items: center; gap: 4px; min-height: 22px; padding: 0 7px 0 5px; border-radius: var(--r-sm); font-size: var(--fs-small); font-weight: 700; border: 1px solid transparent; }
+.onoff-st[data-on="true"] { color: var(--accent); background: var(--accent-soft); border-color: var(--accent-line); }
+.onoff-st[data-on="false"] { color: var(--text-muted); border: 1px dashed var(--line-strong); }
+.onoff-st .ic { width: 14px; height: 14px; }
 .savebar { position: sticky; bottom: 0; display: flex; align-items: center; gap: 8px; padding: 10px var(--sp-4); background: var(--surface); border-top: 1px solid var(--line); box-shadow: 0 -8px 16px -12px rgb(0 0 0 / 30%); }
 
 /* ---------- window width (the app's minimum window is 720 x 480) ---------- */

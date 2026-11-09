@@ -750,7 +750,7 @@ describe('spawn', () => {
       { env: w.cliEnv, cwd: w.root, exec, stdin: input(brief) });
     assert.equal(r.code, 0, r.err);
     assert.deepEqual(JSON.parse(fs.readFileSync(path.join(reportsDir(w.project.key, w.env), 'planner.agent.json'), 'utf8')),
-      { model: 'opus', permissionMode: 'plan', rc: 'team-planner', role: 'agent', parent: null, depth: 1 });
+      { model: 'opus', permissionMode: 'plan', rc: 'team-planner', role: 'agent', parent: null, depth: 1, compact: { window: 400000, pct: '84.2106' } });
     assert.equal(exec.tmux.of('split-window')[0][3], '=My-App:');
   });
 
@@ -1083,7 +1083,7 @@ describe('spawn: nesting from $TMUX_PANE and --role (0.4)', () => {
     const exec = tmuxExec([main(w)]);
     const r = await cli(['spawn', 'planner', 'opus', '-', '--role', 'orchestrator'], at(w, '%1', { exec }));
     assert.equal(r.code, 0, r.err);
-    assert.deepEqual(stored(w, 'planner'), { model: 'opus', permissionMode: 'default', rc: '', role: 'sub-orchestrator', parent: '%1', depth: 2 });
+    assert.deepEqual(stored(w, 'planner'), { model: 'opus', permissionMode: 'default', rc: '', role: 'sub-orchestrator', parent: '%1', depth: 2, compact: { window: 400000, pct: '84.2106' } });
     const p = exec.tmux.panes.find((x) => x.id === '%20');
     assert.deepEqual([p.role, p.depth, p.parent], ['sub-orchestrator', '2', '%1']);
   });

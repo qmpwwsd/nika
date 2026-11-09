@@ -67,6 +67,20 @@ Sub-orchestrators and limits:
   `GET /api/agents` (both tiers) gain `parent`, `depth` and `children`; the role of a
   sub-orchestrator is `sub-orchestrator`. See `docs/contracts/api-app.md` and `docs/adr/0013-nested-orchestration.md`.
 
+Auto-compact (desktop app):
+
+- **Compact before the context fills.** Settings has a new **Auto-compact** section: "Auto-compact at [80] % of [400k]", on
+  by default. Every claude nika starts from now on compacts at that point: the orchestrator (new or resumed), spawned agents
+  and sub-orchestrators. Choose 200k, 400k, 1M or the model's full window, and a number from 20 to 95. The line under the
+  row shows the result ("Compacts at about 320k tokens (about 160k on 200k-window models)"); a session never compacts later
+  than 33k tokens before the end of its window, so 90 % of 400k reads as about 167k on a 200k-window model.
+- It applies only to sessions nika starts, from their next start. Running sessions and sessions you start yourself keep
+  Claude Code's own setting. With the switch off, nika sets nothing. Inside a session nika started, `/autocompact` is locked
+  to the setting; change it in Settings and restart the session.
+- API: `GET` and `PUT /api/app/settings` carry `compaction` (`enabled`, `pct`, `window`), and `GET /api/app/models` gives each
+  model a `window`. nika sets `CLAUDE_CODE_AUTO_COMPACT_WINDOW` and `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` for the new claude and
+  never the `--autocompact` flag. See `docs/contracts/api-app.md` and `docs/adr/0014-auto-compact-launch-env.md`.
+
 ## 0.3.4 — 2026-11-09
 
 Session window (desktop app):

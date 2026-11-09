@@ -698,6 +698,37 @@ describe('settings', () => {
     assert.equal((await put({ ui: { singleKeyShortcuts: true } })).status, 200);
   });
 
+  test('(+) compaction (C7): the default is on, 80 %, 400k; every window and a one-key patch are saved and read back', async () => {
+    assert.deepEqual((await a.call('GET', '/api/app/settings')).body.compaction, { enabled: true, pct: 80, window: 400000 });
+    for (const window of [200000, 1000000, 'model', 400000]) {
+      const r = await put({ compaction: { window } });
+      assert.equal(r.status, 200);
+      assert.deepEqual(r.body.compaction, { enabled: true, pct: 80, window });
+      assert.deepEqual((await a.call('GET', '/api/app/settings')).body.compaction, { enabled: true, pct: 80, window });
+    }
+    const off = await put({ compaction: { enabled: false, pct: 95, window: 200000 } });
+    assert.deepEqual(off.body.compaction, { enabled: false, pct: 95, window: 200000 });
+    assert.deepEqual((await loadConfig(w.env)).config.compaction, { enabled: false, pct: 95, window: 200000 });
+    assert.deepEqual((await put({ limits: { maxAgents: 2 } })).body.compaction, { enabled: false, pct: 95, window: 200000 }, 'an unrelated PUT keeps it');
+    assert.equal((await put({ compaction: { enabled: true, pct: 20, window: 400000 } })).status, 200);
+    assert.equal((await put({ compaction: { pct: 80 } })).status, 200);
+  });
+
+  test('(−) compaction: a fraction, 19, 96, an unknown window, a non-boolean and unknown keys are 400 naming the field; the saved value stays', async () => {
+    assert.equal((await put({ compaction: { enabled: true, pct: 70, window: 1000000 } })).status, 200);
+    const named = [[{ pct: 80.5 }, /compaction\.pct/], [{ pct: 19 }, /compaction\.pct/], [{ pct: 96 }, /compaction\.pct/], [{ pct: '80' }, /compaction\.pct/],
+      [{ window: 300000 }, /compaction\.window/], [{ window: '400000' }, /compaction\.window/], [{ window: 'auto' }, /compaction\.window/],
+      [{ enabled: 'false' }, /compaction\.enabled/], [{ enabled: 0 }, /compaction\.enabled/], [{ autocompact: 400000 }, /compaction\.autocompact/]];
+    for (const [patch, re] of named) {
+      const r = await put({ compaction: patch });
+      assert.equal(r.status, 400, JSON.stringify(patch));
+      assert.match(r.body.message, re, JSON.stringify(patch));
+    }
+    for (const patch of [{ compaction: 'on' }, { compaction: null }, { compaction: [] }, { compaction: 80 }]) assert.equal((await put(patch)).status, 400, JSON.stringify(patch));
+    assert.deepEqual((await loadConfig(w.env)).config.compaction, { enabled: true, pct: 70, window: 1000000 });
+    assert.equal((await put({ compaction: { enabled: true, pct: 80, window: 400000 } })).status, 200);
+  });
+
   test('(−) POST /settings is 405; a text/plain PUT is 415', async () => {
     assert.equal((await a.call('POST', '/api/app/settings', { json: {} })).status, 405);
     assert.equal((await a.call('PUT', '/api/app/settings', { body: '{}', headers: { 'content-type': 'text/plain' } })).status, 415);

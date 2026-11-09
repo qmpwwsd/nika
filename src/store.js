@@ -31,6 +31,7 @@ export function defaults() {
     projects: [],
     rules: { localTemplate: null },
     ui: { theme: 'system', singleKeyShortcuts: true },
+    compaction: { enabled: true, pct: 80, window: 400000 }, // auto-compact for the sessions nika starts (src/compact.js)
   };
 }
 
@@ -116,6 +117,7 @@ const SCHEMA = {
   projects,
   rules: { localTemplate: (v) => (v === null ? v : str(TEMPLATE_NAME)(v)) },
   ui: { theme: oneOf(THEMES), singleKeyShortcuts: bool },
+  compaction: { enabled: bool, pct: intIn(20, 95), window: oneOf([200000, 400000, 1000000, 'model']) },
 };
 
 /** Walks SCHEMA: unknown keys dropped, bad values replaced by defaults; every deviation is a warning. */

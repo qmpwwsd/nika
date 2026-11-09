@@ -3,7 +3,7 @@ import { test, describe, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { startOrchestrator, launchArgv, inProject, pickState, claudePane, sessionNameFor, reduceRc, tmuxLiteral } from '../src/orchestrate.js';
+import { startOrchestrator, launchArgv, compactArgs, inProject, pickState, claudePane, sessionNameFor, reduceRc, tmuxLiteral } from '../src/orchestrate.js';
 import { configDir } from '../src/paths.js';
 import { addProject, getOrchestrator, setOrchestrator, loadConfig, updateProjectConfig } from '../src/store.js';
 import { fakeTmux, makeWorld, TMUX, CLAUDE } from './tmux-fake.js';
@@ -67,7 +67,7 @@ describe('startOrchestrator: new session', () => {
     assert.deepEqual(exec.calls, [
       [TMUX, '-u', 'has-session', '-t', '=My-App'],
       [TMUX, '-u', 'new-session', '-d', '-s', 'My-App', '-n', 'orchestrator', '-c', w.project.dir, '-x', '200', '-y', '50',
-        '-P', '-F', '#{pane_id}', '--', CLAUDE,
+        '-P', '-F', '#{pane_id}', '-e', 'CLAUDE_CODE_AUTO_COMPACT_WINDOW=400000', '-e', 'CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=84.2106', '--', CLAUDE,
         '--session-id', r.body.sessionId, '--model', 'claude-fable-5-1', '-n', 'My-App'],
       [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-role', 'orchestrator'],
       [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-agent', `${w.project.key}/orchestrator`],
@@ -193,7 +193,8 @@ describe('startOrchestrator: existing session', () => {
     assert.deepEqual(r.body, { pane: '%20', session: 'My-App', sessionId: r.body.sessionId, created: true });
     assert.deepEqual(exec.calls.slice(1), [
       LIST_ORCH,
-      [TMUX, '-u', 'new-window', '-t', '=My-App:', '-n', 'orchestrator', '-c', w.project.dir, '-P', '-F', '#{pane_id}', '--', CLAUDE,
+      [TMUX, '-u', 'new-window', '-t', '=My-App:', '-n', 'orchestrator', '-c', w.project.dir, '-P', '-F', '#{pane_id}',
+        '-e', 'CLAUDE_CODE_AUTO_COMPACT_WINDOW=400000', '-e', 'CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=84.2106', '--', CLAUDE,
         '--session-id', r.body.sessionId, '--model', 'claude-fable-5-1', '-n', 'My-App'],
       [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-role', 'orchestrator'],
       [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-agent', `${w.project.key}/orchestrator`],
@@ -383,7 +384,8 @@ describe('startOrchestrator: the saved orchestrator (the project\'s pick)', () =
     assert.deepEqual(exec.calls, [
       [TMUX, '-u', 'has-session', '-t', '=My-App'],
       [TMUX, '-u', 'new-session', '-d', '-s', 'My-App', '-n', 'orchestrator', '-c', w.project.dir, '-x', '200', '-y', '50',
-        '-P', '-F', '#{pane_id}', '--', CLAUDE, '--resume', PICK, '--model', 'opus', '--permission-mode', 'plan', '-n', 'My-App'],
+        '-P', '-F', '#{pane_id}', '-e', 'CLAUDE_CODE_AUTO_COMPACT_WINDOW=400000', '-e', 'CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=84.2106', '--', CLAUDE,
+        '--resume', PICK, '--model', 'opus', '--permission-mode', 'plan', '-n', 'My-App'],
       [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-role', 'orchestrator'],
       [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-agent', `${w.project.key}/orchestrator`],
       [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-depth', '1'],
@@ -683,5 +685,142 @@ describe('pickState and claudePane (one reading of a saved orchestrator for the 
     assert.equal(claudePane({ live: true, pane: { id: '2;kill', command: 'claude' } }), null);
     assert.equal(claudePane({ live: false, pane }), null);
     assert.equal(claudePane(null), null);
+  });
+});
+
+// --- 0.4: auto-compact for the orchestrator (ADR 0014): one `-e NAME=value` per variable, before `--`, literal in tmux ---------------
+
+const W_ENV = 'CLAUDE_CODE_AUTO_COMPACT_WINDOW';
+const P_ENV = 'CLAUDE_AUTOCOMPACT_PCT_OVERRIDE';
+/** Every `-e` value of a tmux argv (the part before `--`), as [NAME=value, ...]; the argv must not carry one after `--`. */
+function envPairs(argv) {
+  const cut = argv.indexOf('--');
+  assert.ok(cut > 0, 'argv has --');
+  const pairs = [];
+  argv.slice(0, cut).forEach((a, i, all) => { if (a === '-e') pairs.push(all[i + 1]); });
+  assert.ok(!argv.slice(cut).includes('-e'), 'no -e after --');
+  return pairs;
+}
+
+describe('compactArgs: the tmux -e pairs of the orchestrator\'s compaction variables', () => {
+  const project = { key: '0123456789abcdef', name: 'My App' };
+  const cfg = (over = {}) => ({ models: { orchestrator: 'claude-fable-5-1' }, compaction: { enabled: true, pct: 80, window: 400000 }, ...over });
+
+  test('(+) on: window first, then PCT, each as its own -e NAME=value pair', () => {
+    assert.deepEqual(compactArgs(cfg(), project), ['-e', `${W_ENV}=400000`, '-e', `${P_ENV}=84.2106`]);
+  });
+
+  test('(+) above the cap (400k at 95 %) the PCT is still sent, as 100', () => {
+    assert.deepEqual(compactArgs(cfg({ compaction: { enabled: true, pct: 95, window: 400000 } }), project), ['-e', `${W_ENV}=400000`, '-e', `${P_ENV}=100`]);
+  });
+
+  test('(+) off gives no -e at all', () => {
+    assert.deepEqual(compactArgs(cfg({ compaction: { enabled: false, pct: 80, window: 400000 } }), project), []);
+  });
+
+  test('(+) the model is the project\'s own orchestrator model: a 200k override changes W; another project\'s or role\'s override does not', () => {
+    const over = cfg({ perProject: { [project.key]: { models: { orchestrator: 'claude-sonnet-4-6' } } } });
+    assert.deepEqual(compactArgs(over, project), ['-e', `${W_ENV}=200000`, '-e', `${P_ENV}=88.8889`]);
+    const others = cfg({ perProject: { [project.key]: { models: { builder: 'claude-sonnet-4-6' } }, fedcba9876543210: { models: { orchestrator: 'claude-sonnet-4-6' } } } });
+    assert.deepEqual(compactArgs(others, project), ['-e', `${W_ENV}=400000`, '-e', `${P_ENV}=84.2106`]);
+  });
+
+  test('(−) a setting outside its ranges throws before anything is started', () => {
+    for (const compaction of [{ enabled: true, pct: 19, window: 400000 }, { enabled: true, pct: 80, window: 300000 }, { enabled: true, pct: 80.5, window: 400000 }, null]) {
+      assert.throws(() => compactArgs(cfg({ compaction }), project), { code: 'EINVAL' }, JSON.stringify(compaction));
+    }
+  });
+});
+
+describe('startOrchestrator: the compaction variables reach tmux (fresh start, resume, new-window)', () => {
+  test('(+) a fresh start on a 1M model: both pairs sit before --, right after -F #{pane_id}, and claude\'s own argv is unchanged', async () => {
+    const w = await world();
+    const exec = fakeTmux();
+    const r = await startOrchestrator(w.project.key, w.ctx(exec));
+    const argv = exec.of('new-session')[0];
+    assert.deepEqual(argv.slice(argv.indexOf('-P'), argv.indexOf('--') + 2), ['-P', '-F', '#{pane_id}', '-e', `${W_ENV}=400000`, '-e', `${P_ENV}=84.2106`, '--', CLAUDE]);
+    assert.deepEqual(envPairs(argv), [`${W_ENV}=400000`, `${P_ENV}=84.2106`]);
+    assert.deepEqual(claudeFlags(argv), ['--session-id', r.body.sessionId, '--model', 'claude-fable-5-1', '-n', 'My-App']);
+  });
+
+  test('(+) a fresh start on a 200k model: W is the model\'s window, not 400k', async () => {
+    const w = await world({ models: { orchestrator: 'claude-sonnet-4-6' } });
+    const exec = fakeTmux();
+    await startOrchestrator(w.project.key, w.ctx(exec));
+    assert.deepEqual(envPairs(exec.of('new-session')[0]), [`${W_ENV}=200000`, `${P_ENV}=88.8889`]);
+  });
+
+  test('(+) a resumed orchestrator gets the same pairs, on new-session and on new-window', async () => {
+    for (const panes of [[], [{ id: '%1', session: 'My-App', window: 0, windowName: 'zsh', command: 'zsh' }]]) {
+      const w = await world({ models: { orchestrator: 'claude-opus-4-6' }, compaction: { pct: 60, window: 1000000 } });
+      await setOrchestrator(w.project.key, PICK, w.env);
+      const exec = fakeTmux({ panes });
+      const r = await startOrchestrator(w.project.key, w.ctx(exec, { findSession: sessionLookup({}, w.project.key) }));
+      assert.equal(r.body.sessionId, PICK);
+      const argv = exec.of(panes.length ? 'new-window' : 'new-session')[0];
+      assert.deepEqual(envPairs(argv), [`${W_ENV}=200000`, `${P_ENV}=66.6667`]); // 1M chosen, limited to the 200k model; 60 % of 200k = 120k
+      assert.deepEqual(argv.slice(argv.indexOf('--')), ['--', CLAUDE, '--resume', PICK, '--model', 'claude-opus-4-6', '-n', 'My-App']);
+    }
+  });
+
+  test('(+) a per-project orchestrator model changes W; the Settings model still decides for a project without an override', async () => {
+    const w = await world();
+    await updateProjectConfig(w.project.key, { models: { orchestrator: 'claude-sonnet-4-5', reasoner: null, builder: null, scout: null } }, w.env);
+    const exec = fakeTmux();
+    await startOrchestrator(w.project.key, w.ctx(exec));
+    assert.deepEqual(envPairs(exec.of('new-session')[0]), [`${W_ENV}=200000`, `${P_ENV}=88.8889`]);
+    const v = await world();
+    const other = await addProject(fs.mkdtempSync(path.join(v.root, 'other-')), v.env);
+    await updateProjectConfig(other.key, { models: { orchestrator: 'claude-sonnet-4-5', reasoner: null, builder: null, scout: null } }, v.env);
+    const exec2 = fakeTmux();
+    await startOrchestrator(v.project.key, v.ctx(exec2));
+    assert.deepEqual(envPairs(exec2.of('new-session')[0]), [`${W_ENV}=400000`, `${P_ENV}=84.2106`]);
+  });
+
+  test('(+) a pct above the cap sends PCT 100; a custom model id is a 200k model', async () => {
+    const w = await world({ compaction: { pct: 95 } });
+    const exec = fakeTmux();
+    await startOrchestrator(w.project.key, w.ctx(exec));
+    assert.deepEqual(envPairs(exec.of('new-session')[0]), [`${W_ENV}=400000`, `${P_ENV}=100`]);
+    const v = await world({ models: { orchestrator: 'claude-sonnet-5-5-20260101' } });
+    const exec2 = fakeTmux();
+    await startOrchestrator(v.project.key, v.ctx(exec2));
+    assert.deepEqual(envPairs(exec2.of('new-session')[0]), [`${W_ENV}=200000`, `${P_ENV}=88.8889`]);
+  });
+
+  test('(+) compaction off: no -e anywhere, fresh or resumed, new-session or new-window (the tmux server\'s own env then applies)', async () => {
+    const w = await world({ compaction: { enabled: false } });
+    const e1 = fakeTmux();
+    await startOrchestrator(w.project.key, w.ctx(e1));
+    const a1 = e1.of('new-session')[0];
+    assert.deepEqual(a1.slice(a1.indexOf('-x'), a1.indexOf('--') + 1), ['-x', '200', '-y', '50', '-P', '-F', '#{pane_id}', '--']);
+    assert.ok(!e1.calls.flat().includes('-e'));
+    const v = await world({ compaction: { enabled: false } });
+    await setOrchestrator(v.project.key, PICK, v.env);
+    const e2 = fakeTmux({ panes: [{ id: '%1', session: 'My-App', window: 0, windowName: 'zsh', command: 'zsh' }] });
+    await startOrchestrator(v.project.key, v.ctx(e2, { findSession: sessionLookup({}, v.project.key) }));
+    assert.ok(!e2.calls.flat().includes('-e'));
+    assert.deepEqual(e2.of('new-window')[0].slice(e2.of('new-window')[0].indexOf('-P')), ['-P', '-F', '#{pane_id}', '--', CLAUDE, '--resume', PICK, '--model', 'claude-fable-5-1', '-n', 'My-App']);
+  });
+
+  test('(−) tmux -e carries only the two names and values made of digits and one dot; nothing else of the project reaches an -e', async () => {
+    const w = await world({ compaction: { pct: 37, window: 'model' }, models: { orchestrator: 'opus[1m]' } });
+    const exec = fakeTmux();
+    await startOrchestrator(w.project.key, w.ctx(exec));
+    for (const call of exec.calls) {
+      call.forEach((a, i) => {
+        if (a !== '-e') return;
+        assert.match(call[i + 1], /^(CLAUDE_CODE_AUTO_COMPACT_WINDOW=\d{6,7}|CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=\d{1,3}(\.\d{1,4})?)$/);
+      });
+    }
+    assert.deepEqual(envPairs(exec.of('new-session')[0]), [`${W_ENV}=1000000`, `${P_ENV}=37.7552`]); // ceil4(100 x 370000 / 980000)
+  });
+
+  test('(−) a live pick starts nothing, so no -e is sent', async () => {
+    const w = await world();
+    await setOrchestrator(w.project.key, PICK, w.env);
+    const exec = fakeTmux();
+    await startOrchestrator(w.project.key, w.ctx(exec, { findSession: sessionLookup({ live: true, pane: PICK_PANE }, w.project.key) }));
+    assert.deepEqual(exec.calls, []);
   });
 });

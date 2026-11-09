@@ -3,6 +3,7 @@
 // ctx.exec (execFile, fixed argv arrays, never a shell). src/spawn.js reuses the helpers exported here.
 import crypto from 'node:crypto';
 import { loadConfig, setOrchestrator, effectiveModels } from './store.js';
+import { compactLaunch } from './compact.js';
 import { clean } from './text.js';
 import { PROJECT_KEY, UUID, PANE_ID, TMUX_SESSION, RC_PREFIX, RC_NAME, CLAUDE_COMMAND } from './ids.js';
 
@@ -108,6 +109,17 @@ export function launchArgv(config, project, { sessionId, resume = false }) {
   ];
 }
 
+/**
+ * The orchestrator's compaction variables as tmux `-e NAME=value` pairs (ADR 0014): [] when auto-compact is off, else the window and,
+ * unless the target is above Claude's own cap, the PCT. W follows the orchestrator model the launch uses (`effectiveModels`, so a
+ * project's own model counts). tmux takes `-e` values literally (no format expansion, spike S2 section 3) and compactLaunch has
+ * validated them to digits and one dot. Throws EINVAL for a setting outside its ranges.
+ */
+export function compactArgs(config, project) {
+  const launch = compactLaunch(effectiveModels(config, project.key).orchestrator, config.compaction);
+  return Object.entries(launch?.env ?? {}).flatMap(([name, value]) => ['-e', `${name}=${value}`]);
+}
+
 // every pane of the project's tmux session, with its window: the pane's own record of who started it (`@nika-role`, `@nika-agent`)
 const PANE_LIST = '#{pane_id}\t#{pane_current_command}\t#{@nika-role}\t#{@nika-agent}\t#{window_name}';
 
@@ -179,7 +191,7 @@ export async function startOrchestrator(projectKey, ctx) {
   const session = sessionNameFor(project);
   const resume = state === 'ended';
   const sessionId = resume ? pick : crypto.randomUUID();
-  const run = ['-P', '-F', '#{pane_id}', '--', ctx.claudeBin, ...launchArgv(config, project, { sessionId, resume })];
+  const run = ['-P', '-F', '#{pane_id}', ...compactArgs(config, project), '--', ctx.claudeBin, ...launchArgv(config, project, { sessionId, resume })];
 
   try {
     let exists = true;

@@ -150,6 +150,8 @@ same menu. Removed and hidden commands are left out.
 | /usage | /cost | Cost, plan limits and activity | | |
 | /voice | | Toggle voice dictation | `[hold\|tap\|off]` | |
 
+`/autocompact` (0.4): in a session nika started with Settings > Auto-compact on, the launch environment variables `CLAUDE_CODE_AUTO_COMPACT_WINDOW` and `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` take precedence over this command, so it has no effect there (spike S2; ADR 0014). nika does not use the `--autocompact` flag.
+
 ## 5. Ending a session
 
 - `/exit` (alias `/quit`) exits Claude Code. Observed: Claude quit and its tmux pane closed; the tmux session ended

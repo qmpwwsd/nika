@@ -149,6 +149,13 @@ nothing else, so it can never overwrite a project's saved choices.
 `Settings` = the `config.json` schema (§6) without `projects`. It does include `perProject` (read only here), so a page can
 show a project's saved plugins and models without a second request.
 
+**`compaction` (0.4, C7)** — `{ "enabled": boolean, "pct": integer 20–95, "window": 200000 | 400000 | 1000000 | "model" }`,
+default `{ true, 80, 400000 }`. It is a group like the others: a one-key patch (`{ "compaction": { "pct": 85 } }`) keeps the other two.
+A fraction, 19, 96, a string, an unknown window (`300000`, `"400000"`, `"auto"`) or a non-boolean `enabled` is `400 invalid` naming the field
+(`compaction.pct`, `compaction.window`, `compaction.enabled`); an unknown inner key is `400` too. It decides the launch environment of
+every claude nika starts from then on: the orchestrator (fresh or resumed) and spawned agents and sub-orchestrators (§8). Running
+sessions and sessions the user starts are untouched.
+
 ### `GET|PUT /api/app/projects/:key/config` (PUT body ≤ 16 KB, `CAP.settings`)
 One project's own settings, saved on its page (0.3.4; models 0.4). `:key` must match `^[a-z0-9]{16}$`, else `400 invalid`; a key
 that is not a registered project is `404 not_found`.
@@ -240,11 +247,14 @@ with a given full name wins. Paths are never returned (T22).
 
 ### `GET /api/app/models`
 ```json
-{ "models": [ { "id": "claude-opus-5-5", "label": "Opus 5.5", "group": "latest" },
-              { "id": "opusplan", "label": "Opus plan, Sonnet build", "group": "alias", "note": "Opus in plan mode, Sonnet otherwise" } ] }
+{ "models": [ { "id": "claude-opus-5-5", "label": "Opus 5.5", "group": "latest", "window": 1000000 },
+              { "id": "opusplan", "label": "Opus plan, Sonnet build", "group": "alias", "window": 1000000, "note": "Opus in plan mode, Sonnet otherwise" } ] }
 ```
 The static catalog in `src/models.js`, in catalog order; `group` ∈ `latest alias older`; IDs from `claude-tui.md` §6
-only. No network call. A custom ID is accepted wherever a model is, when it matches `MODEL_ID`.
+only. No network call. A custom ID is accepted wherever a model is, when it matches `MODEL_ID`. `window` (0.4) is the model's
+context window in tokens as Claude Code 2.1.319 believes it (spike S2): 1000000 for the 5.x ids and the aliases that resolve to
+them, 200000 for the 4.x ids. `modelWindow(id)` returns the catalog value, else 1000000 for an id ending in `[1m]`, else 200000 (an
+unknown or custom id is treated as 200k, the conservative side). The page ignores `window`; the server uses it for auto-compact.
 
 ### `GET /api/app/session/:id/history?before=<n>&limit=<n>`
 `id` must be a `UUID` present in nika's transcript index (never a path from the request). `limit` 1–200 (default 50),
@@ -670,7 +680,7 @@ the folder-picker flow once (`hooks.addProject()` in `public/app.js`), then the 
 | `…/nika/config.json` | 0600 | schema below |
 | `…/nika/templates/<name>.md` | 0600 | locally imported rule templates (copies; never a path into a repo) |
 | `${XDG_STATE_HOME \|\| ~/.local/state}/nika/` | 0700 | state dir |
-| `…/nika/projects/<key>/reports/` | 0700 | per agent: `<name>.brief.md` and `<name>.agent.json` (`{model, permissionMode, rc}`, re-validated on read) written by `spawn`; `<name>.session` (UUID), `<name>.remote` (RC name or empty), `<name>.pane` (`$TMUX_PANE`, display only: never counted) written by `_run-agent` before claude starts and `<name>.rc` (claude's exit code, as in 0.1) after it exits; `<name>.md` written by the agent; `.last-pane` |
+| `…/nika/projects/<key>/reports/` | 0700 | per agent: `<name>.brief.md` and `<name>.agent.json` (`{model, permissionMode, rc, role, parent, depth, compact}`, re-validated on read) written by `spawn`; `<name>.session` (UUID), `<name>.remote` (RC name or empty), `<name>.pane` (`$TMUX_PANE`, display only: never counted) written by `_run-agent` before claude starts and `<name>.rc` (claude's exit code, as in 0.1) after it exits; `<name>.md` written by the agent; `.last-pane` |
 | `…/nika/backups/<key>/<ISO>/<relPath>` | 0700 / 0600 | byte-for-byte copies taken by `rules apply` before each overwrite (`<ISO>` = `YYYYMMDDTHHMMSSZ`, plus `-<n>` for a second apply in the same second); the newest 10 folders per project are kept: after a successful apply `pruneBackups` removes the older ones, touching only stamp-named real directories owned by the user |
 
 `config.json` schema and defaults (unknown keys are dropped, wrong types fall back to the default; both produce a
@@ -685,12 +695,14 @@ warning in `loadConfig().warnings`; a tampered or unreadable file never throws):
   "perProject": { "<PROJECT_KEY>": { "plugins": [ "<PLUGIN_NAME>" ], "orchestratorSessionId": "<UUID>", "models": { "<role>": "<MODEL_ID>" } } },
   "projects": [ { "key": "<PROJECT_KEY>", "dir": "<abs realpath>", "name": "<basename>", "addedAt": "<ISO>" } ],
   "rules": { "localTemplate": null },
-  "ui": { "theme": "system", "singleKeyShortcuts": true }
+  "ui": { "theme": "system", "singleKeyShortcuts": true },
+  "compaction": { "enabled": true, "pct": 80, "window": 400000 }
 }
 ```
 `ui.theme` ∈ `system light dark` (default `system` = follow `prefers-color-scheme`). `ui.singleKeyShortcuts` boolean
 (default `true`; a missing or non-boolean value reads as the default): whether `?` opens Keyboard shortcuts (design spec
-§4.6). Mod+/ always does.
+§4.6). Mod+/ always does. `compaction` (0.4): `enabled` boolean, `pct` an integer 20–95, `window` one of `200000`,
+`400000`, `1000000`, `"model"`; a bad leaf falls back to its default with a warning (`compaction.pct invalid, default used`).
 Field rules: `models.*` `MODEL_ID`; `remoteControl.prefix` `""` (= project name) or `RC_PREFIX`; `permissionMode` ∈
 `PERMISSION_MODES`; `panePlacement` ∈ `PANE_PLACEMENTS`; `limits.maxAgents` 1–8 (there is no turn limit: Claude Code
 has no `--max-turns` for interactive sessions); `perProject` keys are `PROJECT_KEY`s and each entry holds `plugins` (≤ 200 names, deduplicated), `orchestratorSessionId` (a
@@ -790,11 +802,11 @@ multi-argument shell-commands (tmux execs them directly, no `sh -c`, T6).
 |---|---|
 | list panes | `tmux -u list-panes -a -F #{pane_id}\t#{session_name}\t#{window_index}\t#{pane_title}\t#{pane_current_command}\t#{@nika-role}\t#{@nika-agent}\t#{@nika-depth}\t#{@nika-parent}` (0.1; the tags 0.2 and 0.4; each tag is read strictly, a value that does not parse is absent, and the tags of a pane with no nika role are ignored) |
 | session exists | `tmux -u has-session -t =<session>` |
-| create session + orchestrator | `tmux -u new-session -d -s <session> -n orchestrator -c <projectDir> -x 200 -y 50 -P -F #{pane_id} -- <claudeBin> <orchestrator flags>` |
-| orchestrator in existing session | `tmux -u new-window -t =<session>: -n orchestrator -c <projectDir> -P -F #{pane_id} -- <claudeBin> <orchestrator flags>` |
+| create session + orchestrator | `tmux -u new-session -d -s <session> -n orchestrator -c <projectDir> -x 200 -y 50 -P -F #{pane_id} [-e CLAUDE_CODE_AUTO_COMPACT_WINDOW=<W> [-e CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=<PCT>]] -- <claudeBin> <orchestrator flags>` |
+| orchestrator in existing session | `tmux -u new-window -t =<session>: -n orchestrator -c <projectDir> -P -F #{pane_id} [-e … as above] -- <claudeBin> <orchestrator flags>` |
 | tag a pane nika created | `tmux -u set-option -p -t %n @nika-role orchestrator` (after new-session / new-window), `… @nika-role agent` or (0.4) `… @nika-role sub-orchestrator` (after split-window), then `@nika-agent <PROJECT_KEY>/<AGENT_NAME>` (0.4: `<PROJECT_KEY>/orchestrator` for an orchestrator), `@nika-depth <1\|2\|3>` (an orchestrator 1) and, for a nested spawn, `@nika-parent <PANE_ID>`; every value is a constant, a validated name or a pane id (no `#`); best effort |
 | adopt a live session as orchestrator (0.4) | `tmux -u set-option -p -t %n @nika-role orchestrator`, then `@nika-agent <PROJECT_KEY>/orchestrator`, then `@nika-depth 1` (`PUT …/orchestrator`; the depth is a constant 1, 2 or 3, never request data) |
-| resume the orchestrator (0.4) | the orchestrator argv above with `--resume <UUID>` instead of `--session-id <UUID>`; the UUID is the stored pick |
+| resume the orchestrator (0.4) | the orchestrator argv above (the same `-e` pairs) with `--resume <UUID>` instead of `--session-id <UUID>`; the UUID is the stored pick |
 | tags of a spawn | `tmux -u list-panes -a -F #{pane_id}\t#{@nika-role}\t#{@nika-agent}\t#{@nika-depth}\t#{@nika-parent}\t#{session_name}\t#{window_name}` (one fresh listing per spawn; the names are last because they are free text) → (1) the requested parent's role and depth (`POST /spawn`, "Nesting"), and (2) the live set: the panes with `@nika-role` = `agent` or `sub-orchestrator` whose `@nika-agent` is `<key>/<name>` for the project's key, for the duplicate-name check and the two caps. A tag is parsed strictly (exactly one `/`, `PROJECT_KEY` before it, `AGENT_NAME` after it; a depth is exactly `1`, `2` or `3`; a parent is a `PANE_ID`); anything else is agent-writable noise and is ignored, never trusted |
 | find orchestrator pane | `tmux -u list-panes -s -t =<session> -F #{pane_id}\t#{pane_current_command}\t#{@nika-role}\t#{@nika-agent}\t#{window_name}` (`-s` = every window of the session; 0.4) → the pane with `@nika-role` = `orchestrator` whose command is claude (`claude`, `node` or a version string) and which is the project's main one: tagged `<key>/orchestrator`, or a 0.3 pane with no `@nika-agent` tag in the window named exactly `orchestrator`. One in the window named `orchestrator` wins, else an adopted tagged pane in another window; agent and sub-orchestrator panes, and a tag of another project, never match |
 | spawn beside | `tmux -u split-window -h -t =<session>: -c <projectDir> -P -F #{pane_id} -- <nikaBin…> _run-agent <key> <name>` |
@@ -816,13 +828,32 @@ the window name is the constant `orchestrator`, and the title is `[%n] <AGENT_NA
 lets another string reach `-s`, `-n` or `-T` must escape it with `tmuxLiteral()` first. `test/spawn.test.js` ("tmux format
 expansion (T6)") asserts it.
 
+tmux `new-session -e NAME=value` and `new-window -e NAME=value` (0.4, auto-compact) set one variable in the new pane's environment.
+Unlike `-c`, `-s`, `-n` and `-T` the value is **literal**: `#{pane_id}` is not expanded, spaces and `#` are kept (spike S2, tmux 3.8;
+`-e` exists from tmux 3.0 on new-window and 3.2 on new-session). nika passes exactly two names, each as its own `-e` pair before `--`, and a
+value only after `compactLaunch` has made it digits and at most one dot. `test/orchestrate.test.js` asserts the shape.
+
 Session targets always carry the trailing colon (`=<session>:`) where tmux expects a window or pane: `split-window -t
 =name` fails with "can't find pane", `=name:` works.
 
 **Claude argv** (every value a separate element; verified against Claude Code 2.1.319):
 - orchestrator flags: `--session-id <UUID>` `--model <models.orchestrator>` `[--permission-mode <m>]` (omitted for
   `default`) `-n <session>` `[--remote-control=<rc name>]`. RC name = `remoteControl.prefix` or the session name,
-  reduced to `RC_PREFIX`.
+  reduced to `RC_PREFIX`. The model is the project's own orchestrator model, else Settings'.
+- **Auto-compact environment (0.4, ADR 0014; `src/compact.js`).** When `compaction.enabled`, every claude nika starts gets two environment
+  variables; when it is off, none (the environment inherited from the tmux server or the CLI is passed through unchanged, and
+  Claude's own settings apply). Never the `--autocompact` flag. For the model the session runs and the setting `{ pct: P, window }`:
+  `W` = the model's window (`modelWindow`) when `window` is `"model"`, else `min(window, modelWindow)`; `limit` = `W - 33000`; `target` =
+  `floor(W x P / 100)`; the session compacts at `min(target, limit)`.
+  - `CLAUDE_CODE_AUTO_COMPACT_WINDOW=<W>` (an integer, 100000–1000000), always;
+  - `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=<PCT>`, always (a string of digits and at most one dot, 4 decimals, above 0 and at most 100):
+    `PCT = ceil4(100 x target / (W - 20000))` when `target <= limit`, else `100`, which Claude Code caps at `W - 33000`, the same number
+    (so a value inherited from the environment can never stay in force).
+  Claude Code's rule is `min(floor((W - 20000) x PCT / 100), W - 33000)` (20000 reserved output, 13000 summary buffer); the window must be set
+  explicitly or proactive compaction is off. Examples (`W`, `P` → PCT, compacts at): 200k, 80 → 88.8889, 160k; 200k, 95 → 100, 167k;
+  1M, 80 → 81.6327, 800k; 400k on a 1M model, 80 → 84.2106, 320k; 400k, 95 → 100, 367k. The orchestrator gets them as the two tmux `-e`
+  pairs (§8); an agent or sub-orchestrator through the `env` option of the `spawn()` that starts claude (no shell). With the variables
+  set, `/autocompact` inside the session is locked to the environment (spike S2).
 - `_run-agent <key> <name>` reads `<reportsDir>/<name>.brief.md` (0600, written by `spawn` before `split-window`,
   read through `fsafe`; the brief never passes through tmux argv, but it is claude's own argv, see below), writes `<name>.session` (the UUID), `<name>.remote`
   (the RC name or empty) and `<name>.pane`, then runs `claude --session-id <UUID> --model <model> [--permission-mode <m>] -n <name>
@@ -837,8 +868,10 @@ Session targets always carry the trailing colon (`=<session>:`) where tmux expec
   `sh -c 'tmux …'`, `git -C . commit` or a script written with Write and run with Bash all pass, and Read/Edit denies do
   not cover subprocesses. They stop the common invocation and honest mistakes; the boundary is the single-user trust
   model plus the app secret (`docs/security.md`). No Claude Code sandbox in 0.2; planned as an optional Settings switch.
-- 0.4 `<name>.agent.json` is exactly `{ model, permissionMode, rc, role, parent, depth }` (keys asserted, every value checked again,
-  exit 3 on any mismatch): `role` is `agent` or `sub-orchestrator`, `parent` a pane id or `null`, `depth` 1 to 3, and they must
+- 0.4 `<name>.agent.json` is exactly `{ model, permissionMode, rc, role, parent, depth, compact }` (keys asserted, every value checked again,
+  exit 3 on any mismatch): `compact` is `null` (auto-compact off at spawn time) or exactly `{ window, pct }` with `window` an integer 100000–1000000 and `pct` a
+  string of digits and at most one dot (above 0, at most 100; never `null`, so `{ window, pct: null }` is exit 3); spawn computes it from this spawn's own model (`compactLaunch`), and `_run-agent` turns it into
+  the two variables above, added to a copy of its own environment (`ctx.env`, never written to); `role` is `agent` or `sub-orchestrator`, `parent` a pane id or `null`, `depth` 1 to 3, and they must
   agree (`parent` is `null` exactly at depth 1; a sub-orchestrator is depth 2). A **sub-orchestrator** (`role` = `sub-orchestrator`)
   is run with `templates/guard-orchestrator.txt` as its system prompt and `--disallowedTools Bash(tmux:*) Bash(claude:*)
   "Bash(git add:*)" "Bash(git commit:*)" "Bash(git push:*)" Bash(nika) "Bash(nika <command>:*)" …` in place of `Bash(nika:*)`: one

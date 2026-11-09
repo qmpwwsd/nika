@@ -39,6 +39,8 @@
   <symbol id="i-m-auto" viewBox="0 0 16 16"><path d="M9 1.8 3.6 9h4l-.8 5.2L12.4 7h-4z"/></symbol>
   <symbol id="i-m-bypass" viewBox="0 0 16 16"><path d="M8 1.8 13 3.6V8c0 3-2.1 5.1-5 6.4C5.1 13.1 3 11 3 8V3.6zM2.2 2.2l11.6 11.6"/></symbol>
   <symbol id="i-m-dontask" viewBox="0 0 16 16"><rect x="3.2" y="7" width="9.6" height="7" rx="1.5"/><path d="M5.3 7V5.2a2.7 2.7 0 0 1 5.4 0V7M8 9.8v1.4"/></symbol>
+  <symbol id="i-compact" viewBox="0 0 16 16"><path d="M6 2.5V6H2.5M10 2.5V6h3.5M6 13.5V10H2.5M10 13.5V10h3.5"/></symbol>
+  <symbol id="i-compact-off" viewBox="0 0 16 16"><path d="M6 2.5V6H2.5M10 2.5V6h3.5M6 13.5V10H2.5M10 13.5V10h3.5M2.2 2.2l11.6 11.6"/></symbol>
   <symbol id="i-m-unknown" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.2"/><path d="M6.2 6.3a1.9 1.9 0 1 1 2.7 1.7c-.6.3-.9.7-.9 1.3v.3M8 11.5v.2"/></symbol>
 </svg>
 
@@ -109,7 +111,7 @@
         <form id="set-form" novalidate>
           <div class="set-grid">
             <nav class="set-index" aria-label="Settings sections">
-              <a href="#settings" data-jump="s-appearance">Appearance</a><a href="#settings" data-jump="s-models">Models</a><a href="#settings" data-jump="s-rc">Remote Control</a><a href="#settings" data-jump="s-perm">Permission mode</a><a href="#settings" data-jump="s-panes">Panes and limits</a><a href="#settings" data-jump="s-tpl">Rules template</a>
+              <a href="#settings" data-jump="s-appearance">Appearance</a><a href="#settings" data-jump="s-models">Models</a><a href="#settings" data-jump="s-compact">Auto-compact</a><a href="#settings" data-jump="s-rc">Remote Control</a><a href="#settings" data-jump="s-perm">Permission mode</a><a href="#settings" data-jump="s-panes">Panes and limits</a><a href="#settings" data-jump="s-tpl">Rules template</a>
             </nav>
             <div>
               <div class="alert err-sum" data-kind="danger" role="alert" id="set-sum" hidden tabindex="-1"><svg class="ic" aria-hidden="true"><use href="#i-warn"/></svg><p id="set-sum-text"></p></div>
@@ -137,6 +139,23 @@
                   <div class="field"><label for="set-model-builder">Builder</label><select id="set-model-builder"><option value="__custom__">Custom ID…</option></select><input type="text" id="set-model-builder-custom" hidden spellcheck="false" autocomplete="off" placeholder="claude-sonnet-5-5 or sonnet[1m]" aria-label="Custom model ID for the builder" aria-describedby="set-model-builder-custom-err"><p class="err" id="set-model-builder-custom-err" hidden></p></div>
                   <div class="field"><label for="set-model-scout">Scout</label><select id="set-model-scout"><option value="__custom__">Custom ID…</option></select><input type="text" id="set-model-scout-custom" hidden spellcheck="false" autocomplete="off" placeholder="claude-sonnet-5-5 or sonnet[1m]" aria-label="Custom model ID for the scout" aria-describedby="set-model-scout-custom-err"><p class="err" id="set-model-scout-custom-err" hidden></p></div>
                 </div>
+              </section>
+
+              <section class="set-sec" id="s-compact" aria-labelledby="s-compact-h">
+                <h2 id="s-compact-h">Auto-compact</h2>
+                <p>Compacts a session's conversation before it gets too long.</p>
+                <div class="inline compact-row">
+                  <input type="checkbox" role="switch" class="switch" id="set-compact" data-fk="compact-on" aria-describedby="set-compact-result set-compact-help">
+                  <label for="set-compact">Auto-compact at</label>
+                  <span class="stepper"><button type="button" class="btn" data-fk="compact-dec" data-step="-5" data-step-for="set-compact-pct" aria-label="5 percent less">−</button><input type="number" id="set-compact-pct" data-fk="compact-pct" min="20" max="95" aria-label="Auto-compact at, percent of the window" aria-describedby="set-compact-result set-compact-cap set-compact-err"><button type="button" class="btn" data-fk="compact-inc" data-step="5" data-step-for="set-compact-pct" aria-label="5 percent more">+</button></span>
+                  <span aria-hidden="true">% of</span>
+                  <select id="set-compact-win" data-fk="compact-win" aria-label="Window the percent applies to" aria-describedby="set-compact-result"><option value="200000">200k</option><option value="400000">400k</option><option value="1000000">1M</option><option value="model">Model's full window</option></select>
+                  <span class="onoff-st" id="set-compact-st" aria-hidden="true"></span>
+                </div>
+                <p class="help" id="set-compact-result"></p>
+                <p class="help" id="set-compact-cap">On a model with a 200k window, Claude can't compact later than about 83 %, so a higher % acts as about 83 % on those models.</p>
+                <p class="help" id="set-compact-help">Applies only to sessions nika starts: the orchestrator, a resumed orchestrator and spawned agents, from their next start. Running sessions and sessions you start yourself keep Claude Code's own setting. Compact in the session window works at any time.</p>
+                <p class="err" id="set-compact-err" hidden></p>
               </section>
 
               <section class="set-sec" id="s-rc" aria-labelledby="s-rc-h">

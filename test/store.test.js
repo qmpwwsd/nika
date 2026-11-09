@@ -778,3 +778,71 @@ describe('per-project models (0.4: perProject[key].models)', () => {
     }
   });
 });
+
+describe('compaction (0.4, auto-compact for the sessions nika starts)', () => {
+  const fileOf = (env) => { fs.mkdirSync(configDir(env), { recursive: true, mode: 0o700 }); return path.join(configDir(env), 'config.json'); };
+  const DEFAULT = { enabled: true, pct: 80, window: 400000 };
+
+  test('(+) defaults to on, 80 %, 400k, also for a config.json written before 0.4, with no warning', async () => {
+    const env = fresh('cp1');
+    assert.deepEqual(defaults().compaction, DEFAULT);
+    assert.deepEqual((await loadConfig(env)).config.compaction, DEFAULT);
+    fs.writeFileSync(fileOf(env), JSON.stringify({ ui: { theme: 'dark' } }));
+    const r = await loadConfig(env);
+    assert.deepEqual(r.config.compaction, DEFAULT);
+    assert.deepEqual(r.warnings, []);
+  });
+
+  test('(+) every window and the pct edges round-trip, merge one level deep, and survive an unrelated patch', async () => {
+    const env = fresh('cp2');
+    for (const window of [200000, 400000, 1000000, 'model']) {
+      assert.deepEqual((await updateSettings({ compaction: { window } }, env)).compaction, { ...DEFAULT, window });
+      assert.equal((await loadConfig(env)).config.compaction.window, window);
+    }
+    for (const pct of [20, 95, 57]) assert.equal((await updateSettings({ compaction: { pct } }, env)).compaction.pct, pct);
+    assert.deepEqual((await updateSettings({ compaction: { enabled: false } }, env)).compaction, { enabled: false, pct: 57, window: 'model' }, 'a one-key patch keeps the other two');
+    assert.deepEqual((await updateSettings({ permissionMode: 'plan' }, env)).compaction, { enabled: false, pct: 57, window: 'model' });
+    assert.deepEqual(JSON.parse(fs.readFileSync(fileOf(env), 'utf8')).compaction, { enabled: false, pct: 57, window: 'model' });
+    assert.deepEqual((await updateSettings({ compaction: DEFAULT }, env)).compaction, DEFAULT);
+  });
+
+  test('(−) a bad value in config.json falls back to its default with a warning naming the field; the good fields stay', async () => {
+    const env = fresh('cp3');
+    const cases = [
+      ['pct', [19, 96, 0, 100, 80.5, '80', null, [80], NaN]],
+      ['window', [100000, 300000, 2000000, '400000', 'Model', 'auto', null, 400000.5, [400000]]],
+      ['enabled', ['true', 'false', 0, 1, null, [], {}]],
+    ];
+    for (const [field, values] of cases) {
+      for (const bad of values) {
+        fs.writeFileSync(fileOf(env), JSON.stringify({ compaction: { enabled: false, pct: 60, window: 200000, [field]: bad } }));
+        const r = await loadConfig(env);
+        const want = { enabled: false, pct: 60, window: 200000, [field]: DEFAULT[field] };
+        assert.deepEqual(r.config.compaction, want, `${field} ${JSON.stringify(bad)}`);
+        assert.ok(r.warnings.some((w) => w.includes(`compaction.${field}`)), `${field} ${JSON.stringify(bad)}`);
+      }
+    }
+    fs.writeFileSync(fileOf(env), JSON.stringify({ compaction: { pct: 70, flag: '--autocompact' } }));
+    const r = await loadConfig(env);
+    assert.deepEqual(r.config.compaction, { ...DEFAULT, pct: 70 });
+    assert.ok(r.warnings.some((w) => w.includes('unknown key compaction.flag')));
+    for (const raw of ['on', 5, null, [80]]) {
+      fs.writeFileSync(fileOf(env), JSON.stringify({ compaction: raw }));
+      const s = await loadConfig(env);
+      assert.deepEqual(s.config.compaction, DEFAULT, JSON.stringify(raw));
+      assert.ok(s.warnings.some((w) => w.includes('compaction invalid')), JSON.stringify(raw));
+    }
+  });
+
+  test('(−) updateSettings and saveConfig refuse a fraction, 19, 96, an unknown window and a non-boolean; the saved value stays', async () => {
+    const env = fresh('cp4');
+    await updateSettings({ compaction: { enabled: true, pct: 65, window: 1000000 } }, env);
+    for (const patch of [
+      { compaction: { pct: 80.5 } }, { compaction: { pct: 19 } }, { compaction: { pct: 96 } }, { compaction: { pct: '80' } }, { compaction: { pct: null } },
+      { compaction: { window: 300000 } }, { compaction: { window: '400000' } }, { compaction: { window: 'auto' } },
+      { compaction: { enabled: 'yes' } }, { compaction: { enabled: 1 } }, { compaction: { cmd: 'x' } }, { compaction: 'on' }, { compaction: null }, { compaction: [] },
+    ]) await assert.rejects(updateSettings(patch, env), { code: 'EINVAL' }, JSON.stringify(patch));
+    await assert.rejects(saveConfig({ ...defaults(), compaction: { enabled: true, pct: 99, window: 400000 } }, env), { code: 'EINVAL' });
+    assert.deepEqual((await loadConfig(env)).config.compaction, { enabled: true, pct: 65, window: 1000000 });
+  });
+});

@@ -8,6 +8,7 @@ import path from 'node:path';
 import { spawnAgent, runAgent, deniedTools } from '../src/spawn.js';
 import { startOrchestrator, sessionNameFor } from '../src/orchestrate.js';
 import { TMUX_SESSION, AGENT_NAME } from '../src/ids.js';
+import { WINDOW_ENV, PCT_ENV } from '../src/compact.js';
 import { reportsDir } from '../src/paths.js';
 import { addProject } from '../src/store.js';
 import { ensureDir, writeAtomic } from '../src/fwrite.js';
@@ -30,6 +31,7 @@ const LIST_AGENTS = [TMUX, '-u', 'list-panes', '-a', '-F', '#{pane_id}\t#{@nika-
 const OTHER_KEY = '0123456789abcdef'; // the key of some other project
 const DENY_SETTINGS = '{"permissions":{"deny":["Read(**/.env*)","Edit(**/.env*)","Read(**/*.key)","Edit(**/*.key)"]}}';
 const DENIED = ['Bash(nika:*)', 'Bash(tmux:*)', 'Bash(claude:*)', 'Bash(git add:*)', 'Bash(git commit:*)', 'Bash(git push:*)'];
+const COMPACT_1M = { window: 400000, pct: '84.2106' }; // the default setting on a 1M model such as `sonnet`: W = 400k, 80 %
 const BASE_PANES = () => [{ id: '%1', session: 'My-App', window: 0, windowName: 'orchestrator', command: 'claude' }];
 
 const rd = (w) => reportsDir(w.project.key, w.env);
@@ -65,7 +67,7 @@ describe('spawnAgent: placement and files', () => {
     assert.deepEqual(fs.readdirSync(rd(w)).sort(), ['.last-pane', 'builder-1.agent.json', 'builder-1.brief.md']);
     for (const f of fs.readdirSync(rd(w))) assert.equal(mode(path.join(rd(w), f)), 0o600, f);
     assert.equal(read(w, 'builder-1.brief.md'), 'Do the thing.');
-    assert.deepEqual(JSON.parse(read(w, 'builder-1.agent.json')), { model: 'sonnet', permissionMode: 'default', rc: '', role: 'agent', parent: null, depth: 1 });
+    assert.deepEqual(JSON.parse(read(w, 'builder-1.agent.json')), { model: 'sonnet', permissionMode: 'default', rc: '', role: 'agent', parent: null, depth: 1, compact: COMPACT_1M });
     assert.equal(read(w, '.last-pane'), '%20\n');
     assert.deepEqual(ctx.started.get('%20'), { key: w.project.key, name: 'builder-1', sessionId: null, role: 'agent', parent: null, depth: 1, mode: 'manual' });
     assert.equal(exec.panes.find((p) => p.id === '%20').title, '[%20] builder-1');
@@ -562,7 +564,7 @@ describe('spawnAgent: nesting and limits (0.4)', () => {
       [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-parent', '%1'],
       [TMUX, '-u', 'select-pane', '-t', '%20', '-T', '[%20] planner'],
     ]);
-    assert.deepEqual(JSON.parse(read(w, 'planner.agent.json')), { model: 'sonnet', permissionMode: 'default', rc: '', role: 'sub-orchestrator', parent: '%1', depth: 2 });
+    assert.deepEqual(JSON.parse(read(w, 'planner.agent.json')), { model: 'sonnet', permissionMode: 'default', rc: '', role: 'sub-orchestrator', parent: '%1', depth: 2, compact: COMPACT_1M });
     assert.deepEqual(ctx.started.get('%20'), { key: w.project.key, name: 'planner', sessionId: null, role: 'sub-orchestrator', parent: '%1', depth: 2, mode: 'manual' });
     assert.deepEqual(tags(exec, '%20'), ['sub-orchestrator', 'planner', '2', '%1']);
   });
@@ -575,7 +577,7 @@ describe('spawnAgent: nesting and limits (0.4)', () => {
     assert.equal((await spawnAgent(req(w, { name: 'under-sub', parent: '%2' }), ctx)).status, 200);
     assert.deepEqual(tags(exec, '%20'), ['agent', 'under-main', '2', '%1']);
     assert.deepEqual(tags(exec, '%21'), ['agent', 'under-sub', '3', '%2']);
-    assert.deepEqual(JSON.parse(read(w, 'under-sub.agent.json')), { model: 'sonnet', permissionMode: 'default', rc: '', role: 'agent', parent: '%2', depth: 3 });
+    assert.deepEqual(JSON.parse(read(w, 'under-sub.agent.json')), { model: 'sonnet', permissionMode: 'default', rc: '', role: 'agent', parent: '%2', depth: 3, compact: COMPACT_1M });
     assert.deepEqual(exec.of('set-option').filter((c) => c[3] === '%21'), [
       ['set-option', '-p', '-t', '%21', '@nika-role', 'agent'], ['set-option', '-p', '-t', '%21', '@nika-agent', `${w.project.key}/under-sub`],
       ['set-option', '-p', '-t', '%21', '@nika-depth', '3'], ['set-option', '-p', '-t', '%21', '@nika-parent', '%2'],
@@ -1003,7 +1005,7 @@ describe('runAgent', () => {
   });
 
   test('(−) tampered .agent.json is refused (exit 3): bypassPermissions, bad fields, extra keys, not an object', async () => {
-    const good = { model: 'sonnet', permissionMode: 'default', rc: '', role: 'agent', parent: null, depth: 1 };
+    const good = { model: 'sonnet', permissionMode: 'default', rc: '', role: 'agent', parent: null, depth: 1, compact: null };
     const variants = [
       { ...good, permissionMode: 'bypassPermissions' }, { ...good, permissionMode: 'yolo' }, { ...good, permissionMode: 1 },
       { ...good, model: 'gpt-5' }, { ...good, model: '--x' }, { ...good, model: 5 },
@@ -1027,7 +1029,7 @@ describe('runAgent', () => {
       assert.equal(spawn.calls.length, 0);
       assert.equal(exists(w, 'builder-1.session'), false);
     }
-    for (const raw of ['{not json', '', `{"__proto__":{"x":1},"model":"sonnet","permissionMode":"default","rc":"","role":"agent","parent":null,"depth":1}`, ' '.repeat(5000)]) {
+    for (const raw of ['{not json', '', `{"__proto__":{"x":1},"model":"sonnet","permissionMode":"default","rc":"","role":"agent","parent":null,"depth":1,"compact":null}`, ' '.repeat(5000)]) {
       const { w, run } = await prepared();
       fs.writeFileSync(path.join(rd(w), 'builder-1.agent.json'), raw);
       assert.equal((await run()).code, 3, raw.slice(0, 30));
@@ -1130,10 +1132,10 @@ describe('runAgent', () => {
 
   test('(−) a refused run writes no .rc; a 64-character RC name is accepted, 65 is refused', async () => {
     const { w, run } = await prepared();
-    fs.writeFileSync(path.join(rd(w), 'builder-1.agent.json'), JSON.stringify({ model: 'sonnet', permissionMode: 'bypassPermissions', rc: '', role: 'agent', parent: null, depth: 1 }));
+    fs.writeFileSync(path.join(rd(w), 'builder-1.agent.json'), JSON.stringify({ model: 'sonnet', permissionMode: 'bypassPermissions', rc: '', role: 'agent', parent: null, depth: 1, compact: null }));
     assert.equal((await run()).code, 3);
     assert.equal(exists(w, 'builder-1.rc'), false);
-    const agentJson = (rc) => fs.writeFileSync(path.join(rd(w), 'builder-1.agent.json'), JSON.stringify({ model: 'sonnet', permissionMode: 'default', rc, role: 'agent', parent: null, depth: 1 }));
+    const agentJson = (rc) => fs.writeFileSync(path.join(rd(w), 'builder-1.agent.json'), JSON.stringify({ model: 'sonnet', permissionMode: 'default', rc, role: 'agent', parent: null, depth: 1, compact: null }));
     agentJson('r'.repeat(64));
     const ok = await run();
     assert.equal(ok.code, 0);
@@ -1216,7 +1218,7 @@ describe('runAgent: a sub-orchestrator (0.4)', () => {
 
   test('(−) a stored file that says sub-orchestrator for an agent spawn changes the run only if it agrees with itself: role, parent and depth must fit', async () => {
     const { w, run } = await prepared();
-    const put2 = (v) => fs.writeFileSync(path.join(rd(w), 'builder-1.agent.json'), JSON.stringify({ model: 'sonnet', permissionMode: 'default', rc: '', ...v }));
+    const put2 = (v) => fs.writeFileSync(path.join(rd(w), 'builder-1.agent.json'), JSON.stringify({ model: 'sonnet', permissionMode: 'default', rc: '', compact: null, ...v }));
     put2({ role: 'sub-orchestrator', parent: null, depth: 1 });
     assert.equal((await run({ commands: COMMANDS })).code, 3);
     put2({ role: 'sub-orchestrator', parent: '%1', depth: 3 });
@@ -1284,5 +1286,151 @@ describe('collect() with nika report dirs', () => {
     } finally {
       cleanup(fx);
     }
+  });
+});
+
+// --- 0.4: auto-compact for spawned agents and sub-orchestrators (ADR 0014) -----------------------------------------------------------
+// spawnAgent computes compactLaunch(model, setting) once and stores { window, pct } in <name>.agent.json; _run-agent re-checks both and
+// adds exactly the two variables to the env of the claude it starts (spawn(), no shell). Off: nothing is added.
+
+describe('spawnAgent: .agent.json carries the compaction window and PCT (0.4)', () => {
+  const compactOf = async (over = {}, settings, panes) => {
+    const w = await world(settings);
+    const r = await spawnAgent(req(w, over), w.ctx(fakeTmux({ panes: panes?.(w) ?? BASE_PANES() })));
+    assert.equal(r.status, 200);
+    return JSON.parse(read(w, `${over.name ?? 'builder-1'}.agent.json`)).compact;
+  };
+
+  test('(+) a 1M model with the default setting: window 400k, PCT 84.2106 (a string, as the env will carry it)', async () => {
+    assert.deepEqual(await compactOf({ model: 'claude-opus-5-5' }), { window: 400000, pct: '84.2106' });
+    assert.deepEqual(await compactOf({ model: 'opus[1m]' }), { window: 400000, pct: '84.2106' });
+  });
+
+  test('(+) a 200k model: W is the model\'s window; the spawn\'s own model decides, not the Settings orchestrator or builder model', async () => {
+    assert.deepEqual(await compactOf({ model: 'claude-sonnet-4-6' }, { models: { builder: 'claude-opus-5-5' } }), { window: 200000, pct: '88.8889' });
+    assert.deepEqual(await compactOf({ model: 'claude-opus-5-5' }, { models: { builder: 'claude-sonnet-4-5', orchestrator: 'claude-haiku-4-5' } }), { window: 400000, pct: '84.2106' });
+  });
+
+  test('(+) the setting decides: window 1M or "model", a pct above the cap sends PCT 100, off is null', async () => {
+    assert.deepEqual(await compactOf({}, { compaction: { pct: 60, window: 1000000 } }), { window: 1000000, pct: '61.2245' });
+    assert.deepEqual(await compactOf({}, { compaction: { window: 'model' } }), { window: 1000000, pct: '81.6327' });
+    assert.deepEqual(await compactOf({ model: 'claude-haiku-4-5' }, { compaction: { window: 'model', pct: 20 } }), { window: 200000, pct: '22.2223' });
+    assert.deepEqual(await compactOf({}, { compaction: { pct: 95 } }), { window: 400000, pct: '100' });
+    assert.equal(await compactOf({}, { compaction: { enabled: false } }), null);
+  });
+
+  test('(+) a sub-orchestrator gets it too; a custom model id is a 200k model', async () => {
+    const main = (w) => [{ id: '%1', session: 'My-App', window: 0, windowName: 'orchestrator', command: 'claude', role: 'orchestrator', agent: `${w.project.key}/orchestrator`, depth: '1' }];
+    assert.deepEqual(await compactOf({ name: 'planner', role: 'orchestrator', parent: '%1' }, undefined, main), COMPACT_1M);
+    assert.deepEqual(await compactOf({ model: 'claude-opus-5-5-20260101' }), { window: 200000, pct: '88.8889' });
+  });
+
+  test('(−) a refused spawn writes no .agent.json, so no compact either', async () => {
+    const w = await world();
+    const r = await spawnAgent(req(w, { model: 'gpt-5' }), w.ctx(fakeTmux({ panes: BASE_PANES() })));
+    assert.equal(r.status, 400);
+    assert.equal(fs.existsSync(rd(w)), false);
+  });
+});
+
+describe('runAgent: the compaction variables in the env of the claude it starts (0.4)', () => {
+  const COMMANDS = ['status', 'spawn', 'projects', 'rules', 'doctor'];
+  const main = (w) => [{ id: '%1', session: 'My-App', window: 0, windowName: 'orchestrator', command: 'claude', role: 'orchestrator', agent: `${w.project.key}/orchestrator`, depth: '1' }];
+  const INHERITED = { PATH: '/usr/bin', HOME: '/nonexistent', TMUX_PANE: '%20', LANG: 'C' };
+  const withEnv = (w, extra = {}) => ({ ...w.env, ...INHERITED, ...extra });
+
+  test('(+) an agent: the inherited env plus the window and PCT, nothing else added, and the run\'s own env object is not changed', async () => {
+    const { w, run } = await prepared();
+    const env = withEnv(w);
+    const before = { ...env };
+    const spawn = fakeSpawn();
+    const { code } = await run({ spawn, env }); // `extra.env` replaces the default env of run()
+    assert.equal(code, 0);
+    assert.deepEqual(spawn.calls[0].opts.env, { ...before, [WINDOW_ENV]: '400000', [PCT_ENV]: '84.2106' });
+    assert.deepEqual(env, before, 'the context env is copied, never written to');
+    assert.equal(spawn.calls[0].opts.shell, false);
+    assert.equal(spawn.calls[0].opts.stdio, 'inherit');
+  });
+
+  test('(+) a sub-orchestrator gets the same pair', async () => {
+    const { w, run } = await prepared({ name: 'planner', role: 'orchestrator', parent: '%1' }, undefined, main);
+    const env = withEnv(w);
+    const spawn = fakeSpawn();
+    await run({ spawn, env, commands: COMMANDS });
+    assert.deepEqual(spawn.calls[0].opts.env, { ...env, [WINDOW_ENV]: '400000', [PCT_ENV]: '84.2106' });
+  });
+
+  test('(+) a 200k model and a pct above the cap: PCT 100 on the last; the argv is unchanged by either', async () => {
+    const small = await prepared({ model: 'claude-sonnet-4-6' });
+    const s1 = fakeSpawn();
+    await small.run({ spawn: s1, env: withEnv(small.w) });
+    assert.deepEqual([s1.calls[0].opts.env[WINDOW_ENV], s1.calls[0].opts.env[PCT_ENV]], ['200000', '88.8889']);
+    const cap = await prepared({}, { compaction: { pct: 95 } });
+    const s2 = fakeSpawn();
+    await cap.run({ spawn: s2, env: withEnv(cap.w) });
+    assert.equal(s2.calls[0].opts.env[WINDOW_ENV], '400000');
+    assert.equal(s2.calls[0].opts.env[PCT_ENV], '100', 'always set: an inherited PCT never stays in force');
+    const sid = read(small.w, 'builder-1.session').trim();
+    assert.deepEqual(s1.calls[0].args.slice(0, 6), ['--session-id', sid, '--model', 'claude-sonnet-4-6', '-n', 'builder-1']);
+    assert.ok(![...s1.calls[0].args, ...s2.calls[0].args].some((a) => /autocompact/i.test(a)), 'the --autocompact flag is never used');
+  });
+
+  test('(+) off: nothing is added, the inherited env goes through unchanged (a variable the tmux server set stays)', async () => {
+    const { w, run } = await prepared({}, { compaction: { enabled: false } });
+    const env = withEnv(w, { [WINDOW_ENV]: '150000', [PCT_ENV]: '50' });
+    const spawn = fakeSpawn();
+    await run({ spawn, env });
+    assert.deepEqual(spawn.calls[0].opts.env, env);
+    assert.equal(spawn.calls[0].opts.env[WINDOW_ENV], '150000');
+    assert.equal(JSON.parse(read(w, 'builder-1.agent.json')).compact, null);
+  });
+
+  test('(+) on: nika\'s value replaces a variable inherited from the tmux server', async () => {
+    const { w, run } = await prepared();
+    const spawn = fakeSpawn();
+    await run({ spawn, env: withEnv(w, { [WINDOW_ENV]: '150000', [PCT_ENV]: '50' }) });
+    assert.equal(spawn.calls[0].opts.env[WINDOW_ENV], '400000');
+    assert.equal(spawn.calls[0].opts.env[PCT_ENV], '84.2106');
+  });
+
+  test('(−) a tampered compact is refused (exit 3) and claude never runs: window out of range or not an integer, PCT not digits and a dot, extra or missing keys, wrong shapes', async () => {
+    const good = { window: 400000, pct: '84.2106' };
+    const variants = [
+      { ...good, window: 99999 }, { ...good, window: 1000001 }, { ...good, window: 0 }, { ...good, window: -400000 }, { ...good, window: 400000.5 }, { ...good, window: '400000' },
+      { ...good, window: null }, { ...good, window: [400000] }, { ...good, window: 'model' }, { pct: good.pct }, // window missing
+      { ...good, pct: '0' }, { ...good, pct: '0.0000' }, { ...good, pct: '100.0001' }, { ...good, pct: '101' }, { ...good, pct: 84.2106 }, { ...good, pct: 80 }, { ...good, pct: '' },
+      { ...good, pct: '84.21061' }, { ...good, pct: '8e1' }, { ...good, pct: ' 80' }, { ...good, pct: '80\n' }, { ...good, pct: '80;rm -rf' }, { ...good, pct: '$HOME' }, { ...good, pct: '-5' },
+      { ...good, pct: undefined }, { ...good, pct: null }, // pct is always a string when compact is on (null is for the whole compact only)
+      { ...good, extra: 1 }, { ...good, flag: '--autocompact' }, { window: 400000 }, {}, [], [400000, '84.2106'], 'on', 5, true, '{}',
+    ];
+    for (const compact of variants) {
+      const { w, run } = await prepared();
+      const raw = { model: 'sonnet', permissionMode: 'default', rc: '', role: 'agent', parent: null, depth: 1, compact };
+      fs.writeFileSync(path.join(rd(w), 'builder-1.agent.json'), JSON.stringify(raw));
+      const { code, spawn, stderr } = await run();
+      assert.equal(code, 3, JSON.stringify(compact));
+      assert.equal(spawn.calls.length, 0, JSON.stringify(compact));
+      assert.match(stderr.lines.join(''), /compact/, JSON.stringify(compact));
+      assert.equal(exists(w, 'builder-1.session'), false);
+    }
+  });
+
+  test('(−) agent.json without the compact key is refused (exit 3); with compact: null it runs and adds nothing', async () => {
+    const { w, run } = await prepared();
+    const base = { model: 'sonnet', permissionMode: 'default', rc: '', role: 'agent', parent: null, depth: 1 };
+    fs.writeFileSync(path.join(rd(w), 'builder-1.agent.json'), JSON.stringify(base));
+    assert.equal((await run()).code, 3);
+    fs.writeFileSync(path.join(rd(w), 'builder-1.agent.json'), JSON.stringify({ ...base, compact: null }));
+    const ok = await run({ spawn: fakeSpawn(), env: withEnv(w) });
+    assert.equal(ok.code, 0);
+    assert.deepEqual(ok.spawn.calls[0].opts.env, withEnv(w));
+  });
+
+  test('(+) a compact with PCT "100" (the target is above the cap) runs with both variables', async () => {
+    const { w, run } = await prepared();
+    fs.writeFileSync(path.join(rd(w), 'builder-1.agent.json'), JSON.stringify({ model: 'sonnet', permissionMode: 'default', rc: '', role: 'agent', parent: null, depth: 1, compact: { window: 400000, pct: '100' } }));
+    const spawn = fakeSpawn();
+    assert.equal((await run({ spawn, env: withEnv(w) })).code, 0);
+    assert.deepEqual(spawn.calls[0].opts.env, { ...withEnv(w), [WINDOW_ENV]: '400000', [PCT_ENV]: '100' });
   });
 });

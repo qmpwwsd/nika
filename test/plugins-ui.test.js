@@ -12,6 +12,7 @@ import { h, icon } from '../public/dom.js';
 import { spawnLimits } from '../public/dash-model.js';
 import { pluginView, pluginSave, sortIds, countText, filterNote } from '../public/plugin-view.js';
 import { fillModelSelect, CUSTOM, MODEL_ID, MODEL_HINT, ROLES, ROLE_LABEL, modelLabel, fillRoleOverride, effectiveRoleModels } from '../public/models-ui.js';
+import { compactPreview } from '../public/ctx.js';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const read = (f) => fs.readFileSync(path.join(PUBLIC, f), 'utf8');
@@ -773,7 +774,7 @@ function settingsRig({ settings, put = { status: 200 }, templates = ['mine.md'],
   const base = {
     ui: { theme: 'system', singleKeyShortcuts: true }, models: { orchestrator: 'opus', reasoner: 'opus', builder: 'claude-sonnet-5-5', scout: 'haiku' },
     remoteControl: { enabled: false, prefix: '' }, permissionMode: 'default', panePlacement: 'beside', limits: { maxAgents: 3 },
-    rules: { localTemplate: null }, perProject: {},
+    rules: { localTemplate: null }, perProject: {}, compaction: { enabled: true, pct: 80, window: 400000 },
   };
   const radios = {
     theme: ['system', 'light', 'dark'].map((v) => Object.assign(new El('input'), { value: v })),
@@ -802,7 +803,7 @@ function settingsRig({ settings, put = { status: 200 }, templates = ['mine.md'],
     return m ? radios[m[1]] : [];
   };
   const ctx = {
-    h, $, $$, state, hooks, CUSTOM, MODEL_ID, MODEL_HINT, fillModelSelect, JSON, Number, Promise, Object, Array, Set,
+    h, icon, $, $$, state, hooks, CUSTOM, MODEL_ID, MODEL_HINT, fillModelSelect, compactPreview, JSON, Number, Promise, Object, Array, Set,
     RX: { agent: [/^[a-z0-9][a-z0-9-]{0,39}$/, 'x'], prefix: [/^(?:[a-z0-9][a-z0-9-]{0,19})?$/, 'Lowercase letters, digits and dashes, up to 20, starting with a letter or digit. Leave empty to use the project name.'] },
     toast: (msg) => toasts.push(msg), announce: (m) => announced.push(m), errText: (r) => r?.body?.message ?? 'x',
     fieldError: () => {}, syncRadioCards: () => {}, applyTheme: () => {}, render: (f) => renders.push(f),
@@ -819,7 +820,7 @@ function settingsRig({ settings, put = { status: 200 }, templates = ['mine.md'],
       throw new Error(`unexpected request ${method} ${url}`);
     },
   };
-  node('#set-form'); node('#set-bar').hidden = true; node('#set-sum').hidden = true;
+  node('#set-form'); node('#set-bar').hidden = true; node('#set-sum').hidden = true; node('#set-compact-err').hidden = true;
   const api = runModule('settings.js', ctx, '({ hooks })');
   return {
     api, ctx, node, radios, calls, announced, toasts, renders, release, state,
@@ -841,7 +842,7 @@ describe('Settings holds defaults only', () => {
     s.submit();
     await settle();
     const put = s.calls.find((c) => c.method === 'PUT');
-    assert.deepEqual(Object.keys(put.json).sort(), ['limits', 'models', 'panePlacement', 'permissionMode', 'remoteControl', 'rules', 'ui']);
+    assert.deepEqual(Object.keys(put.json).sort(), ['compaction', 'limits', 'models', 'panePlacement', 'permissionMode', 'remoteControl', 'rules', 'ui']);
     assert.equal('plugins' in put.json, false);
     assert.equal('perProject' in put.json, false);
     assert.equal(put.json.limits.maxAgents, 5);

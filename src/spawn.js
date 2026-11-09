@@ -14,6 +14,7 @@ import { ensureDir, writeAtomic } from './fwrite.js';
 import { openRegular, readAt, readHead } from './fsafe.js';
 import { listPanes } from './collect/tmux.js';
 import { clean } from './text.js';
+import { compactLaunch, compactEnv, PCT_ENV } from './compact.js';
 import { PROJECT_KEY, AGENT_NAME, parseAgentTag, MODEL_ID, TMUX_SESSION, PANE_ID, RC_PREFIX, RC_NAME, PERMISSION_MODES } from './ids.js';
 import { fail, binsMissing, tmux, tmuxFail, tagPane, sessionNameFor, reduceRc, permissionFlags, launchMode, tmuxLiteral } from './orchestrate.js';
 
@@ -214,7 +215,10 @@ async function doSpawn(v, project, config, ctx) {
   await writeAtomic(dir, `${v.name}.brief.md`, v.brief);
   const permissionMode = v.permissionMode ?? config.permissionMode;
   const role = v.role === 'orchestrator' ? SUB_ROLE : 'agent';
-  await writeAtomic(dir, `${v.name}.agent.json`, `${JSON.stringify({ model: v.model, permissionMode, rc, role, parent: who.parent, depth: who.depth })}\n`);
+  // auto-compact (ADR 0014): decided now from this spawn's own model; _run-agent re-checks it and turns it into the env of claude
+  const launch = compactLaunch(v.model, config.compaction);
+  const compact = launch ? { window: launch.window, pct: launch.env[PCT_ENV] } : null;
+  await writeAtomic(dir, `${v.name}.agent.json`, `${JSON.stringify({ model: v.model, permissionMode, rc, role, parent: who.parent, depth: who.depth, compact })}\n`);
 
   let pane;
   try {
@@ -279,8 +283,9 @@ async function readBrief(file) {
 }
 
 /**
- * `<name>.agent.json` → { model, permissionMode, rc, role, parent, depth }; every field is checked again, extra keys are refused. The
- * values must agree: depth 1 is a root (no parent), anything deeper has a parent pane, and a sub-orchestrator is depth 2.
+ * `<name>.agent.json` → { model, permissionMode, rc, role, parent, depth, compact }; every field is checked again, extra keys are
+ * refused. The values must agree: depth 1 is a root (no parent), anything deeper has a parent pane, and a sub-orchestrator is depth 2.
+ * `compact` is null (auto-compact off) or exactly { window, pct } with the checks of src/compact.js; it comes back as the env to add.
  */
 async function readAgentJson(file) {
   const { handle, st } = await openRegular(file);
@@ -297,7 +302,7 @@ async function readAgentJson(file) {
   } catch {
     throw refusal('agent.json is not valid JSON');
   }
-  if (!isPlainObject(j) || Object.keys(j).sort().join() !== 'depth,model,parent,permissionMode,rc,role') throw refusal('agent.json has unexpected fields');
+  if (!isPlainObject(j) || Object.keys(j).sort().join() !== 'compact,depth,model,parent,permissionMode,rc,role') throw refusal('agent.json has unexpected fields');
   if (typeof j.model !== 'string' || !MODEL_ID.test(j.model)) throw refusal('agent.json: invalid model');
   if (j.permissionMode === 'bypassPermissions') throw refusal('bypassPermissions is never allowed');
   if (!PERMISSION_MODES.includes(j.permissionMode)) throw refusal('agent.json: invalid permissionMode');
@@ -306,7 +311,18 @@ async function readAgentJson(file) {
   if (!Number.isInteger(j.depth) || j.depth < 1 || j.depth > MAX_DEPTH) throw refusal('agent.json: invalid depth');
   if (j.parent !== null && (typeof j.parent !== 'string' || !PANE_ID.test(j.parent))) throw refusal('agent.json: invalid parent');
   if ((j.parent === null) !== (j.depth === 1) || (j.role === SUB_ROLE && j.depth !== 2)) throw refusal('agent.json: role, parent and depth do not agree');
-  return { model: j.model, permissionMode: j.permissionMode, rc: j.rc, role: j.role, parent: j.parent, depth: j.depth };
+  return { model: j.model, permissionMode: j.permissionMode, rc: j.rc, role: j.role, parent: j.parent, depth: j.depth, compact: compactOf(j.compact) };
+}
+
+/** The `compact` field of agent.json → the env to add (`null` when off); refuses anything but null or exactly { window, pct } that compactEnv accepts. */
+function compactOf(c) {
+  if (c === null) return null;
+  if (!isPlainObject(c) || Object.keys(c).sort().join() !== 'pct,window') throw refusal('agent.json: invalid compact');
+  try {
+    return compactEnv(c.window, c.pct);
+  } catch {
+    throw refusal('agent.json: invalid compact');
+  }
 }
 
 const render = (template, vars) => template.replace(/\{\{(\w+)\}\}/g, (m, k) => (Object.hasOwn(vars, k) ? vars[k] : m));
@@ -375,7 +391,9 @@ export async function runAgent(key, name, ctx) {
     ...(meta.rc ? [`--remote-control=${meta.rc}`] : []), '--add-dir', dir, '--append-system-prompt', guard,
     '--settings', DENY_SETTINGS, '--disallowedTools', ...deniedTools(meta.role, ctx.commands), '--', brief,
   ];
-  const code = await runChild(ctx.spawn ?? nodeSpawn, ctx.claudeBin, argv, ctx.env ?? process.env, say);
+  // the inherited env, plus the two compaction variables when auto-compact is on (a new object: ctx.env itself is never written to)
+  const env = ctx.env ?? process.env;
+  const code = await runChild(ctx.spawn ?? nodeSpawn, ctx.claudeBin, argv, meta.compact ? { ...env, ...meta.compact } : env, say);
   // `<name>.rc` is claude's exit code, as in 0.1 (the dashboard shows it); a failed write must not hide the code itself
   await writeAtomic(dir, `${name}.rc`, `${code}\n`).catch((err) => say(`cannot record the exit code: ${err.code ?? err.message}`));
   return code;

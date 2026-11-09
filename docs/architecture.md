@@ -114,6 +114,7 @@ latency. `--optimize-for-size` saved about 10 MB more but made history requests 
 | `appio.js` | The app-tier process: stdio handshake, private server, status feed, folder picker relay. |
 | `cli.js` | The `nika` command: `serve`, `open`, `app` (`app install`), `status`, `projects`, `rules`, `spawn`, `orchestrate`, `doctor`, `_run-agent`. |
 | `commands-builtin.js` | The curated built-in slash commands for the palette, from `claude-tui.md` section 4. Nothing is read from disk. |
+| `compact.js` | Auto-compact (ADR 0014): `compactLaunch(model, setting)` turns the Settings choice into the two launch variables for one model, and `compactEnv` validates them. Pure. |
 | `config.js` | Defaults from the environment, port and `--since` parsing, `findTmux`, `findClaude`. |
 | `diff.js` | Unified diff for the rules preview. |
 | `exec.js` | `makeExec()`: `execFile` with a timeout and optional stdin input. |
@@ -124,7 +125,7 @@ latency. `--optimize-for-size` saved about 10 MB more but made history requests 
 | `mirror.js` | `capture-pane` output turned into rows of whitelisted styled spans; a `fresh` capture skips the 250 ms cache for the control actions. |
 | `mode.js` | Pure parsers over mirror rows: the permission mode from the footer and the permission prompt. They fail closed. |
 | `model.js` | `collect()`: merges every source into agent records and groups them by project; `findSession(id)` finds one session of any age in the transcript index (the saved orchestrator's lookup); `findSessions(ids)` does the same for several ids in one index walk, with no ps, tmux or registry (the project list's lookup). |
-| `models.js` | The static model catalog behind the model dropdowns (`GET /api/app/models`). |
+| `models.js` | The static model catalog behind the model dropdowns (`GET /api/app/models`), with each model's context window and `modelWindow(id)`. |
 | `orchestrate.js` | Starts or resumes a project's orchestrator in a tmux session (`launchArgv` builds its claude flags in one place) and finds an adopted orchestrator pane. |
 | `paths.js` | nika's own config and state dirs (XDG). |
 | `rules.js` | Renders, previews, hashes and applies the orchestration rules to a project. |
@@ -164,6 +165,7 @@ latency. `--optimize-for-size` saved about 10 MB more but made history requests 
 | `dom.js` | `h()`: builds DOM with `textContent`, never parses markup; `roleTagEl()` draws the orchestrator badge. |
 | `end-dialog.js` | The End-session dialog, shared by the session window and the dashboard row menu. |
 | `modes.js` | Permission modes in the UI: labels, icons, the switcher's state and the dashboard's mode map and tag. |
+| `ctx.js` | Pure text helpers for token counts and the Auto-compact result line (`fmtTokens`, `compactPreview`). No DOM. |
 | `models-ui.js` | The model dropdown shared by the session window, Settings and the spawn sheet: groups from the catalog, the Custom ID field and its `MODEL_ID` check. |
 | `palette.js` | The slash-command palette's rules and copy (ranking, views, insertion). No DOM, no requests. |
 | `plugin-view.js` | The "Choose plugins" dialog's model: the rows and their fixed order, the filter, the counts and what Save sends. Pure; the dialog itself lives in `project.js`. |

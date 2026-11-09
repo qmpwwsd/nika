@@ -32,6 +32,7 @@ const STATIC = new Map([
   ['/app-copy.js', ['app-copy.js', 'text/javascript; charset=utf-8']],
   ['/dash-model.js', ['dash-model.js', 'text/javascript; charset=utf-8']],
   ['/plugin-view.js', ['plugin-view.js', 'text/javascript; charset=utf-8']],
+  ['/ctx.js', ['ctx.js', 'text/javascript; charset=utf-8']],
   ['/favicon.svg', ['favicon.svg', 'image/svg+xml']],
 ]);
 const CSP = [
