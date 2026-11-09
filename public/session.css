@@ -40,6 +40,12 @@ kbd { font-size: var(--fs-cap); padding: 0 4px; border: 1px solid var(--line-str
 .btn[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
 .btn kbd { margin-left: 2px; }
 
+/* mode frame (spec 9.1): 3 px along the top of the window while the pane has a mode; decoration only (aria-hidden) */
+.mode-frame { flex: none; height: 0; }
+body[data-mode] .mode-frame { height: 3px; background: var(--mc-line); }
+body[data-confirmed="false"] .mode-frame, body.m-unknown .mode-frame { background: repeating-linear-gradient(90deg, var(--mc-line) 0 10px, transparent 10px 16px); }
+body.m-bypass .mode-frame { background: repeating-linear-gradient(135deg, var(--m-bypass-line) 0 6px, var(--m-bypass-stripe) 6px 10px); }   /* after the dashed rule: Bypass is never dashed */
+
 /* header */
 .bar {
   flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; min-height: 48px; padding: 6px 16px;
@@ -51,6 +57,7 @@ kbd { font-size: var(--fs-cap); padding: 0 4px; border: 1px solid var(--line-str
 .crumb span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sess-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; color: var(--text-muted); font-size: var(--fs-small); }
 .sess-meta .mono { color: var(--text); }
+.msw-why .key { margin-left: 2px; }
 .model { padding: 1px 8px; border-radius: var(--r-sm); background: var(--surface-2); color: var(--text); font-weight: 600; }
 .notice { flex: none; padding: 8px 16px; background: var(--accent-soft); color: var(--text); border-bottom: 1px solid var(--line); font-size: var(--fs-small); }
 
@@ -159,8 +166,9 @@ kbd { font-size: var(--fs-cap); padding: 0 4px; border: 1px solid var(--line-str
 .attn-note { display: flex; gap: 8px; align-items: flex-start; padding: 8px 10px; border-radius: var(--r-md); background: var(--attn-soft); font-size: var(--fs-small); }
 .attn-note .st { margin-top: 2px; }
 .attn-note p { margin: 0; overflow-wrap: anywhere; }
-.inbox { display: flex; align-items: flex-end; gap: 8px; padding: 6px 6px 6px 10px; border: 1px solid var(--line-strong); border-radius: var(--r-md); background: var(--surface); }
-.inbox:focus-within { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.inbox { display: flex; align-items: flex-end; gap: 8px; padding: 6px 6px 6px 10px; border: 1px solid var(--line-strong); border-radius: var(--r-md); background: var(--surface);
+  box-shadow: inset 3px 0 0 var(--mc-line, transparent); }   /* the mode edge (spec 9.1); no mode class on body = no edge */
+.inbox:focus-within { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--mc-line, transparent), 0 0 0 1px var(--accent); }   /* edge and ring in one declaration */
 .inbox.off { background: var(--surface-2); }
 .inbox .prompt { font: 700 var(--fs-term)/20px var(--mono); color: var(--text-muted); padding: 4px 0; }
 .inbox textarea { flex: 1; min-width: 0; border: 0; padding: 4px 0; min-height: 28px; height: 28px; max-height: 168px; resize: none; background: transparent; font: var(--fs-term)/20px var(--mono); outline: none; }
@@ -173,6 +181,7 @@ kbd { font-size: var(--fs-cap); padding: 0 4px; border: 1px solid var(--line-str
 .key:hover { background: var(--surface-2); }
 .key:active { border-bottom-width: 1px; transform: translateY(1px); }
 .key:disabled { opacity: 0.45; }
+.key[aria-disabled="true"] { opacity: 0.45; cursor: not-allowed; }
 .hintline { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: var(--fs-small); color: var(--text-muted); }
 .hintline .echo { margin-left: auto; color: var(--text); font-weight: 600; overflow-wrap: anywhere; }
 .problem { color: var(--idle); font-weight: 600; overflow-wrap: anywhere; }
@@ -195,7 +204,7 @@ kbd { font-size: var(--fs-cap); padding: 0 4px; border: 1px solid var(--line-str
 }
 @media (max-width: 760px) {
   .hintline .tip { display: none; }
-  .bar .btn .lbl, .term-head .btn .lbl, .term-head .btn kbd { display: none; }
+  .bar .btn .lbl, .bar .msw .lbl, .term-head .btn .lbl, .term-head .btn kbd { display: none; }   /* segments keep their name in aria-label and title */
   .bar { padding: 6px 12px; }
 }
 @media (prefers-reduced-motion: reduce) {

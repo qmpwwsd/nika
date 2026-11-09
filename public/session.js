@@ -2,9 +2,10 @@
 // URL: session.html?session=<UUID>&pane=<%n>&project=<key>   (pane is sent as %25n, i.e. encodeURIComponent('%n')).
 // Rules: every string from the server is rendered with textContent (h() from dom.js, applyMirror from mirror-render.js);
 // no innerHTML, no inline handlers, element.style only for numbers this file computes. Contracts: docs/contracts/api-app.md.
-import { h } from './dom.js';
+import { h, icon } from './dom.js';
 import { isApp, appFetch, getJSON, applyTheme } from './api.js';
 import { toRenderModel, applyMirror, planSend, planPaste, chunkText, keyForEvent, KEY_LABEL } from './mirror-render.js';
+import { MODE_META, MODE_TARGETS, modeKey, modeEl, switcherState, modeNote, switchFailure } from './modes.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const PANE_ID = /^%\d{1,6}$/;
@@ -66,13 +67,18 @@ const serverMessage = (r, fallback) => {
 
 // ---- small UI helpers --------------------------------------------------------------------------------------------
 
-let announceTimer = 0;
-function announce(msg) {
-  const el = $('announcer');
-  el.textContent = '';
-  clearTimeout(announceTimer);
-  announceTimer = setTimeout(() => { el.textContent = msg; }, 30);
+/** A polite live region: cleared first, then filled a moment later, so a repeated message is read again. */
+function liveRegion(get) {
+  let timer = 0;
+  return (msg) => {
+    const el = get();
+    el.textContent = '';
+    clearTimeout(timer);
+    timer = setTimeout(() => { el.textContent = msg; }, 30);
+  };
 }
+const announce = liveRegion(() => $('announcer'));
+const announceMode = liveRegion(() => $('mode-live')); // permission-mode messages only, so a status message cannot swallow them
 
 function say(msg) {
   $('echo').textContent = msg;
@@ -150,6 +156,7 @@ function applyAgent(agent, group) {
     if (A.kind !== null && kind !== 'busy') announce(`${A.name} ${kind === 'attn' ? `needs you: ${agent.attention}` : kind === 'idle' ? 'is waiting for your prompt' : 'ended'}`);
     A.kind = kind;
     setStatus(kind);
+    renderMode();
   }
   const note = $('attn-note');
   note.hidden = kind !== 'attn';
@@ -191,6 +198,200 @@ function startAgentPoll() {
     setTimeout(loop, 3000);
   };
   loop();
+}
+
+// ---- permission mode: tag, frame, switcher (docs/design/spec.md 2.8 and 9.1-9.3) --------------------------------------
+
+// W is what the last capture said. pane: 'connecting' until one answers, 'ok' while they do, 'tmux' when they fail, 'gone'
+// on 404. last: the last real mode announced as current. msg: the result of the last switch ({ text, mode }). struck: targets
+// the Shift-Tab cycle does not hold, struck at strikeAt. SW: the switch in flight (its target) and the four segments.
+const W = { pane: 'connecting', got: false, mode: 'unknown', confirmed: true, prompt: null, last: null, msg: null, struck: new Set(), strikeAt: null, tagSig: '', whySig: '' };
+const SW = { busy: null, pressed: null, parts: [], tabTitle: null };
+
+function renderTag() {
+  const key = W.pane === 'ok' ? modeKey(W.mode) : '';
+  const sig = key ? `${key}:${W.confirmed}` : '';
+  if (sig === W.tagSig) return;
+  W.tagSig = sig;
+  const body = document.body;
+  for (const m of Object.values(MODE_META)) body.classList.remove(m.cls);
+  if (key) {
+    body.classList.add(MODE_META[key].cls);
+    body.dataset.mode = key;
+    body.dataset.confirmed = String(W.confirmed);
+  } else { // no pane, pane gone, no capture yet: no frame, no edge, no tag
+    delete body.dataset.mode;
+    delete body.dataset.confirmed;
+  }
+  const slot = $('sess-mode');
+  slot.hidden = !key;
+  slot.replaceChildren(...(key ? [modeEl(key, { confirmed: W.confirmed })] : []));
+}
+
+/** One Tab stop for the toolbar: the segment that has focus, else the pressed one, else the first. */
+function tabStops() {
+  const at = SW.parts.findIndex((p) => p.b === document.activeElement);
+  const stop = at >= 0 ? at : Math.max(0, MODE_TARGETS.indexOf(SW.pressed));
+  SW.parts.forEach((p, i) => { p.b.tabIndex = i === stop ? 0 : -1; });
+}
+
+function renderSegments(st) {
+  SW.pressed = st.pressed;
+  MODE_TARGETS.forEach((t, i) => {
+    const { b, ico, spin } = SW.parts[i];
+    const label = MODE_META[t].label;
+    const busy = st.busy === t;
+    const struck = W.struck.has(t);
+    b.setAttribute('aria-pressed', String(st.pressed === t));
+    b.setAttribute('aria-disabled', String((st.disabled && !busy) || struck));
+    if (busy) b.setAttribute('aria-busy', 'true');
+    else b.removeAttribute('aria-busy');
+    b.classList.toggle('held', st.held === t);
+    b.classList.toggle('out', struck);
+    ico.toggleAttribute('hidden', busy);
+    spin.toggleAttribute('hidden', !busy);
+    b.title = struck ? `${label} isn't in this session's Shift-Tab cycle` : st.held === t ? `${label}, not confirmed` : busy ? `Switching to ${label}` : `Switch to ${label}`;
+  });
+  tabStops();
+}
+
+/** The reason line: why the switcher cannot act, or the result of the last switch. Not a live region. */
+function renderWhy(st) {
+  const err = !st.reason && W.msg !== null;
+  const text = st.reason || W.msg?.text || '';
+  const sig = `${text}|${err}|${st.chip}`;
+  if (sig === W.whySig) return;
+  W.whySig = sig;
+  const why = $('msw-why');
+  why.hidden = !text;
+  why.className = err ? 'msw-why err' : 'msw-why';
+  const chip = st.chip ? h('button', { type: 'button', class: 'key', title: 'Send Shift-Tab to the pane', onclick: async () => { await sendKey(st.chip); composer().focus(); } }, 'Shift-Tab') : null;
+  why.replaceChildren(...[text && icon(err ? 'warn' : 'info'), text && h('span', { text }), chip].filter(Boolean));
+}
+
+/** The 0.2 Shift-Tab key chip: aria-disabled while a prompt needs an answer (it could pick "allow for this session"). */
+function renderShiftTab() {
+  const chip = document.querySelector('.keys [data-key="BTab"]');
+  SW.tabTitle ??= chip.title;
+  const held = A.kind === 'attn' || W.prompt !== null;
+  chip.setAttribute('aria-disabled', String(held));
+  chip.title = held ? 'Answer the prompt first' : SW.tabTitle;
+}
+
+function renderMode() {
+  if (!paneId || !SW.parts.length) return;
+  const st = switcherState({ pane: W.pane, status: A.kind, prompt: W.prompt, mode: W.mode, modeConfirmed: W.confirmed, switching: SW.busy });
+  // a reason, or the pane reaching another mode, ends the last result
+  if (st.reason || (W.msg && W.confirmed && W.mode !== 'unknown' && W.mode !== W.msg.mode)) W.msg = null;
+  renderTag();
+  renderSegments(st);
+  renderWhy(st);
+  renderShiftTab();
+}
+
+/** What a capture says about the mode and the prompt. The tag follows every capture; only a change is announced. */
+function noteScreen(body) {
+  W.got = true;
+  W.pane = 'ok';
+  W.mode = modeKey(body.mode);
+  W.confirmed = body.modeConfirmed === true;
+  W.prompt = body.prompt && typeof body.prompt === 'object' ? body.prompt : null;
+  if (W.struck.size && W.confirmed && W.mode !== 'unknown' && W.mode !== W.strikeAt) W.struck.clear();
+  if (!SW.busy) { // a switch announces its end result once, when the route answers
+    const n = modeNote(A.name, W.last, { mode: W.mode, confirmed: W.confirmed });
+    W.last = n.last;
+    if (n.msg) announceMode(n.msg);
+  }
+  renderMode();
+}
+
+function setPaneState(state) {
+  W.pane = state;
+  renderMode();
+}
+
+/** Resolves when a capture that started after this call has been handled (or after `ms`). */
+function nextCapture(ms = 2500) {
+  return new Promise((resolve) => {
+    const w = { after: M.sent, done: () => { clearTimeout(timer); resolve(); } };
+    const timer = setTimeout(() => { M.waiters = M.waiters.filter((x) => x !== w); resolve(); }, ms);
+    M.waiters.push(w);
+    kickMirror(0);
+  });
+}
+
+function captureHandled(n) {
+  const waiting = M.waiters;
+  M.waiters = waiting.filter((w) => w.after >= n);
+  for (const w of waiting) if (w.after < n) w.done();
+}
+
+/** A failed switch, once the next capture shows where the cycle stopped. */
+function failSwitch(r, start, target) {
+  const f = switchFailure({ status: r.status, code: r.body?.error, start, target, mode: W.mode, confirmed: W.confirmed });
+  if (f.strike) {
+    W.struck.add(f.strike);
+    W.strikeAt = W.mode;
+  }
+  W.msg = { text: f.text, mode: W.mode };
+  if (W.confirmed && W.mode !== 'unknown') W.last = W.mode; // the captures on the way were silent
+  announceMode(`${A.name}: ${f.text}`);
+}
+
+async function switchTo(target) {
+  if (SW.busy || M.gone || !paneId || W.struck.has(target)) return;
+  const st = switcherState({ pane: W.pane, status: A.kind, prompt: W.prompt, mode: W.mode, modeConfirmed: W.confirmed, switching: null });
+  if (st.disabled || st.pressed === target) return; // the pressed segment and a disabled one do nothing
+  const start = W.mode;
+  SW.busy = target;
+  W.msg = null;
+  renderMode();
+  try {
+    const r = await call(`/api/app/pane/${encodeURIComponent(paneId)}/mode`, { method: 'POST', json: { target } });
+    const presses = r.body?.presses; // the echo only, never a live count
+    if (Number.isInteger(presses) && presses > 0 && presses <= 6) say(`Sent ${presses} ${TIMES} Shift-Tab to ${paneId}`);
+    if (r.status === 200) {
+      const final = modeKey(r.body?.mode); // the route read a fresh footer
+      if (final !== 'unknown') {
+        W.mode = final;
+        W.confirmed = true;
+        if (final !== start) announceMode(modeNote(A.name, start, { mode: final, confirmed: true }).msg);
+        W.last = final;
+      }
+    } else {
+      if (r.status === 404) setGone();
+      else await nextCapture();
+      failSwitch(r, start, target);
+    }
+  } finally {
+    SW.busy = null;
+    renderMode();
+  }
+}
+
+function wireSwitcher() {
+  const bar = $('mode-switch');
+  SW.parts = MODE_TARGETS.map((t) => {
+    const meta = MODE_META[t];
+    const ico = icon(meta.icon);
+    const spin = h('span', { class: 'spin', 'aria-hidden': 'true', hidden: true });
+    const b = h('button', { type: 'button', class: meta.cls, 'aria-pressed': 'false', 'aria-label': meta.label, title: `Switch to ${meta.label}`, onclick: () => switchTo(t) },
+      ico, spin, h('span', { class: 'lbl', text: meta.label }));
+    return { b, ico, spin };
+  });
+  bar.append(...SW.parts.map((p) => p.b));
+  bar.addEventListener('focusin', tabStops);
+  bar.addEventListener('keydown', (e) => { // moving never switches; Enter and Space on a button do
+    const i = SW.parts.findIndex((p) => p.b === document.activeElement);
+    if (i < 0 || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+    const n = SW.parts.length;
+    const to = e.key === 'ArrowRight' ? (i + 1) % n : e.key === 'ArrowLeft' ? (i + n - 1) % n : e.key === 'Home' ? 0 : e.key === 'End' ? n - 1 : -1;
+    if (to < 0) return;
+    e.preventDefault();
+    SW.parts[to].b.focus();
+  });
+  bar.hidden = false;
+  renderMode();
 }
 
 // ---- history -----------------------------------------------------------------------------------------------------
@@ -421,7 +622,7 @@ function startHistoryPoll() {
 
 // ---- terminal mirror ---------------------------------------------------------------------------------------------
 
-const M = { etag: null, timer: 0, busy: false, gone: false, frozen: false, errors: 0, cols: 0, rows: 0, fatal: false, inputOff: false };
+const M = { etag: null, timer: 0, busy: false, gone: false, frozen: false, errors: 0, cols: 0, rows: 0, fatal: false, inputOff: false, sent: 0, waiters: [] };
 
 function setLive(state, text) {
   $('term-head').dataset.s = state;
@@ -457,6 +658,7 @@ function setGone() {
   M.gone = true;
   clearTimeout(M.timer);
   setLive('off', 'Not live');
+  setPaneState('gone');
   setInputEnabled(false, 'Pane is gone');
   showOverlay(`Pane ${paneId} is gone`, 'The agent ended or the pane was closed. The transcript is still readable.', { retry: 'Check again' });
   announce(`Pane ${paneId} is gone`);
@@ -477,6 +679,8 @@ function setFrozen(on) {
 function recovered() {
   M.errors = 0;
   hideOverlay();
+  const pane = W.got ? 'ok' : 'connecting';
+  if (W.pane !== pane) setPaneState(pane);
   if (M.inputOff) {
     M.inputOff = false;
     setInputEnabled(true);
@@ -490,6 +694,7 @@ function handleCapture(r) {
   }
   if (r.status === 200 && Array.isArray(r.body?.rows) && Number.isInteger(r.body.cols)) {
     recovered();
+    noteScreen(r.body);
     const cols = Math.min(Math.max(r.body.cols, 1), 1000);
     const term = $('term');
     M.cols = cols;
@@ -497,8 +702,8 @@ function handleCapture(r) {
     M.etag = typeof r.body.etag === 'string' && ETAG.test(r.body.etag) ? r.body.etag : null;
     $('term-rows').style.minWidth = `${cols}ch`;
     applyMirror($('term-rows'), toRenderModel(r.body), r.body.cursor);
-    setLive('live', `Live${MID}${cols} ${TIMES} ${M.rows}`);
-    term.scrollTop = term.scrollHeight;
+    setLive(M.frozen ? 'paused' : 'live', `${M.frozen ? 'Paused' : 'Live'}${MID}${cols} ${TIMES} ${M.rows}`);
+    if (!M.frozen) term.scrollTop = term.scrollHeight; // a paused mirror still applies captures but keeps the reader's place
     return;
   }
   if (r.status === 404) {
@@ -509,11 +714,13 @@ function handleCapture(r) {
     M.fatal = true;
     clearTimeout(M.timer);
     setLive('off', 'Not live');
+    setPaneState('tmux');
     showOverlay('nika lost its connection to the app', 'The app refused this request. Close this window and open it again from the nika app.', { alert: true });
     return;
   }
   M.errors += 1;
   setLive('off', 'Not live');
+  setPaneState('tmux');
   M.inputOff = true; // typing waits until tmux answers again
   setInputEnabled(false, 'tmux is not answering');
   const why = r.status === 0 ? 'nika did not answer' : serverMessage(r, `request failed (${r.status})`);
@@ -529,8 +736,10 @@ function kickMirror(ms) {
 // One request in flight; ~4 Hz while the tab is visible and the view is live. Paused states re-kick themselves.
 async function tickMirror() {
   M.timer = 0;
-  if (M.gone || M.fatal || M.busy || document.hidden || M.frozen) return;
+  if (M.gone || M.fatal || M.busy || document.hidden) return; // a paused mirror keeps polling: the mode and the prompt must stay true
   M.busy = true;
+  M.sent += 1;
+  const sent = M.sent;
   const t0 = Date.now();
   try {
     const r = await call(`/api/app/pane/${encodeURIComponent(paneId)}/capture`, { headers: M.etag ? { 'If-None-Match': `"${M.etag}"` } : {} });
@@ -539,9 +748,11 @@ async function tickMirror() {
     } catch {
       M.errors += 1;
       M.inputOff = true;
+      setPaneState('tmux');
       setInputEnabled(false, 'tmux is not answering');
       showOverlay('The terminal could not be drawn', 'nika retries every 2 seconds.', { retry: 'Retry now', alert: true });
     }
+    captureHandled(sent);
   } finally {
     M.busy = false;
   }
@@ -744,6 +955,10 @@ function wireComposer() {
   $('send').addEventListener('click', () => { sendComposer(); ta.focus(); });
   for (const b of document.querySelectorAll('.key')) {
     b.addEventListener('click', async () => {
+      if (b.getAttribute('aria-disabled') === 'true') { // Shift-Tab while a prompt needs an answer
+        ta.focus();
+        return;
+      }
       await sendKey(b.dataset.key);
       ta.focus();
     });
@@ -759,6 +974,8 @@ function wireTerminal() {
     M.fatal = false;
     M.inputOff = false;
     M.etag = null;
+    W.got = false;
+    setPaneState('connecting');
     setInputEnabled(true);
     showOverlay(`Connecting to pane ${paneId}${DOTS}`, '');
     kickMirror(0);
@@ -869,6 +1086,7 @@ function boot() {
     showNotice('No transcript for this agent yet: nika has no session id for it. The live terminal still works.');
   }
   if (paneId) {
+    wireSwitcher();
     $('pb-pane').textContent = paneId;
     $('term').setAttribute('aria-label', `Live terminal of ${A.name}, pane ${paneId}`);
     showOverlay(`Connecting to pane ${paneId}${DOTS}`, '');

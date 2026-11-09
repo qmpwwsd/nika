@@ -11,8 +11,9 @@ import { KEY_NAME } from '../src/ids.js';
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const read = (f) => fs.readFileSync(path.join(PUBLIC, f), 'utf8');
 const HTML = read('session.html');
-const JS = { 'session.js': read('session.js'), 'mirror-render.js': read('mirror-render.js') };
+const JS = { 'session.js': read('session.js'), 'mirror-render.js': read('mirror-render.js'), 'modes.js': read('modes.js') };
 const CSS = read('session.css');
+const strip = (css) => css.replace(/\/\*[\s\S]*?\*\//g, '');
 
 /** Source with // and block comments removed (a `//` right after `:` is a URL, not a comment). */
 const code = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|\s)\/\/.*$/gm, '$1');
@@ -61,7 +62,7 @@ describe('forbidden sinks', () => {
     assert.match(JS['session.js'], /textContent/);
   });
 
-  test('(−) session.js and mirror-render.js never touch the secret, storage of data, cookies or other origins', () => {
+  test('(−) session.js, mirror-render.js and modes.js never touch the secret, storage of data, cookies or other origins', () => {
     for (const [file, src] of Object.entries(JS)) {
       const c = code(src);
       assert.doesNotMatch(c, /__NIKA_APP__|X-Nika-App|document\.cookie/, file);
@@ -130,7 +131,7 @@ describe('session.html under the strict CSP', () => {
 describe('contracts with the other UI modules', () => {
   test('(+) session.js imports only names the shared modules export, from sibling files', () => {
     const imports = [...JS['session.js'].matchAll(/import \{([^}]+)\} from '([^']+)'/g)];
-    assert.deepEqual(imports.map((m) => m[2]), ['./dom.js', './api.js', './mirror-render.js']);
+    assert.deepEqual(imports.map((m) => m[2]), ['./dom.js', './api.js', './mirror-render.js', './modes.js']);
     for (const [, names, from] of imports) {
       const exported = read(from.slice(2));
       for (const n of names.split(',').map((x) => x.trim())) assert.match(exported, new RegExp(`export (async )?(function|const|let) ${n}\\b`), `${from} exports ${n}`);
@@ -174,5 +175,90 @@ describe('css and source hygiene', () => {
       assert.equal(src.toLowerCase().includes(banned), false, name);
     }
     assert.equal(fs.readFileSync(fileURLToPath(import.meta.url), 'utf8').toLowerCase().includes(banned), false);
+  });
+});
+
+describe('permission mode: tag, frame, edge and switcher (spec 2.8, 9.1-9.3)', () => {
+  const at = (needle) => {
+    const i = HTML.indexOf(needle);
+    assert.ok(i >= 0, `${needle} is in session.html`);
+    return i;
+  };
+  const tagOf = (id) => new RegExp(`<[a-z]+\\b[^>]*\\bid="${id}"[^>]*>`).exec(HTML)?.[0] ?? '';
+
+  test('(+) header order: status pill, mode tag, meta, spacer, switcher, reason line, claude link', () => {
+    const order = ['id="sess-st"', 'id="sess-mode"', 'class="sess-meta"', 'class="sp"', 'id="mode-switch"', 'id="msw-why"', 'id="claude-link"'].map(at);
+    assert.deepEqual(order, [...order].sort((a, b) => a - b));
+    assert.ok(at('id="sess-mode"') < at('</header>'));
+    assert.ok(at('id="claude-link"') < at('</header>'));
+  });
+
+  test('(+) #mode-switch is a labelled toolbar described by #msw-why; neither is a live region; the pane-less window shows none of it', () => {
+    const sw = tagOf('mode-switch');
+    assert.match(sw, /\bclass="msw"/);
+    assert.match(sw, /\brole="toolbar"/);
+    assert.match(sw, /\baria-label="Permission mode"/);
+    assert.match(sw, /\baria-describedby="msw-why"/);
+    assert.match(sw, /\bhidden\b/, 'script reveals it only when the window has a pane');
+    const why = tagOf('msw-why');
+    assert.match(why, /\bclass="msw-why"/);
+    assert.doesNotMatch(why, /aria-live|role="(status|alert|log)"/);
+    assert.doesNotMatch(sw, /aria-live|role="(status|alert|log)"/);
+    assert.doesNotMatch(tagOf('sess-mode'), /aria-live|role=/, 'the tag is not a control and not a live region');
+  });
+
+  test('(+) #mode-live is one polite region, separate from the global announcer', () => {
+    assert.match(tagOf('mode-live'), /aria-live="polite"/);
+    assert.match(tagOf('announcer'), /aria-live="polite"/);
+    assert.notEqual(at('id="mode-live"'), at('id="announcer"'));
+  });
+
+  test('(+) the 3 px frame is decoration: aria-hidden, the first child of body', () => {
+    const body = HTML.slice(at('<body'));
+    assert.match(body, /^<body[^>]*>\s*<div class="mode-frame" aria-hidden="true"><\/div>/);
+  });
+
+  test('(+) the sprite holds every mode icon plus info and warn, and every icon name the code draws', () => {
+    const symbols = new Set([...HTML.matchAll(/<symbol id="i-([a-z-]+)"/g)].map((m) => m[1]));
+    for (const n of ['m-manual', 'm-edits', 'm-plan', 'm-auto', 'm-bypass', 'm-dontask', 'm-unknown', 'info', 'warn']) assert.ok(symbols.has(n), n);
+    const drawn = new Set();
+    for (const f of ['session.js', 'modes.js']) {
+      for (const call of code(JS[f]).matchAll(/\bicon\(([^()]*)\)/g)) for (const q of call[1].matchAll(/'([a-z-]+)'/g)) drawn.add(q[1]);
+    }
+    for (const m of code(JS['modes.js']).matchAll(/\bicon: '([a-z-]+)'/g)) drawn.add(m[1]);
+    assert.ok(drawn.size >= 9);
+    assert.deepEqual([...drawn].filter((n) => !symbols.has(n)), []);
+  });
+
+  test('(+) the Shift-Tab key chip stays in the key row (aria-disabled by script while a prompt needs an answer)', () => {
+    assert.match(HTML, /<button type="button" class="key" data-key="BTab" title="Shift-Tab cycles Claude&rsquo;s permission mode">Shift-Tab<\/button>/);
+    const src = code(JS['session.js']);
+    assert.match(src, /Answer the prompt first/);
+    assert.match(src, /aria-disabled/);
+  });
+
+  test('(+) the message-box edge survives focus: edge and ring are one declaration, and the old ring-only rule is gone', () => {
+    const css = strip(CSS);
+    assert.match(css, /\.inbox\s*\{[^}]*box-shadow:\s*inset 3px 0 0 var\(--mc-line, transparent\)/);
+    assert.match(css, /\.inbox:focus-within\s*\{[^}]*box-shadow:\s*inset 3px 0 0 var\(--mc-line, transparent\),\s*0 0 0 1px var\(--accent\)/);
+    assert.doesNotMatch(css, /\.inbox:focus-within\s*\{\s*border-color:\s*var\(--accent\);\s*box-shadow:\s*0 0 0 1px var\(--accent\);\s*\}/);
+  });
+
+  test('(+) the frame is 0 px without a mode, 3 px with one; dashed when unconfirmed or unknown; striped (never dashed) for Bypass', () => {
+    const css = strip(CSS);
+    assert.match(css, /\.mode-frame\s*\{[^}]*height:\s*0/);
+    assert.match(css, /body\[data-mode\] \.mode-frame\s*\{[^}]*height:\s*3px/);
+    assert.match(css, /body\[data-confirmed="false"\] \.mode-frame, body\.m-unknown \.mode-frame\s*\{[^}]*repeating-linear-gradient\(90deg/);
+    const bypass = css.search(/body\.m-bypass \.mode-frame/);
+    assert.ok(bypass > css.search(/body\[data-confirmed="false"\] \.mode-frame/), 'the Bypass rule comes after the dashed rule so it wins');
+    assert.match(css, /body\.m-bypass \.mode-frame\s*\{[^}]*repeating-linear-gradient\(135deg/);
+  });
+
+  test('(−) mode results never use the alert region or the problem line; they go to #mode-live', () => {
+    const src = code(JS['session.js']);
+    const block = /async function switchTo[\s\S]*?\n}\n/.exec(src)?.[0] ?? '';
+    assert.ok(block.length > 200, 'switchTo found');
+    assert.doesNotMatch(block, /showProblem/);
+    assert.match(src, /\$\('mode-live'\)/);
   });
 });

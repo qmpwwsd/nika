@@ -1,0 +1,400 @@
+// public/modes.js (permission-mode tag, switcher state, announcements, switch failures) and the mode tokens in
+// public/tokens.css. The pure functions run in Node; modeEl runs on a tiny fake DOM, so the test also proves that
+// server text only ever lands in text nodes and attributes. Design: docs/design/spec.md section 2.8 and 9.3.
+import { test, describe, before, after } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { MODE_META, MODE_TARGETS, modeKey, modeEl, switcherState, modeNote, switchFailure } from '../public/modes.js';
+
+const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
+const read = (...p) => fs.readFileSync(path.join(ROOT, ...p), 'utf8');
+const TOKENS = read('public', 'tokens.css');
+
+// ---- fake DOM (just what dom.js h() and icon() touch) ---------------------------------------------------------------
+
+class FNode {
+  constructor(tag, text = '') {
+    this.tag = tag; this.text = text; this.kids = []; this.attrs = {}; this.className = '';
+  }
+
+  setAttribute(k, v) { this.attrs[k] = String(v); }
+
+  getAttribute(k) { return this.attrs[k] ?? null; }
+
+  append(...nodes) { this.kids.push(...nodes); }
+
+  addEventListener() {}
+
+  set textContent(v) { this.kids = []; this.text = String(v); }
+
+  get textContent() { return this.text + this.kids.map((k) => k.textContent).join(''); }
+
+  find(pred) {
+    const out = [];
+    const walk = (n) => { if (pred(n)) out.push(n); n.kids.forEach(walk); };
+    walk(this);
+    return out;
+  }
+}
+
+let saved;
+before(() => {
+  saved = { document: globalThis.document, Node: globalThis.Node };
+  globalThis.Node = FNode;
+  globalThis.document = {
+    createElement: (tag) => new FNode(tag),
+    createElementNS: (ns, tag) => new FNode(tag),
+    createTextNode: (t) => new FNode('#text', t),
+  };
+});
+after(() => {
+  globalThis.document = saved.document;
+  globalThis.Node = saved.Node;
+});
+
+const MODES = ['manual', 'acceptEdits', 'plan', 'auto', 'bypassPermissions', 'dontAsk', 'unknown'];
+const LABELS = { manual: 'Manual', acceptEdits: 'Accept edits', plan: 'Plan', auto: 'Auto', bypassPermissions: 'Bypass', dontAsk: "Don't ask", unknown: 'Mode ?' };
+
+describe('MODE_META and MODE_TARGETS', () => {
+  test('(+) every API mode has the spec label, its own class and its own icon', () => {
+    assert.deepEqual(Object.keys(MODE_META), MODES);
+    for (const m of MODES) assert.equal(MODE_META[m].label, LABELS[m], m);
+    assert.equal(new Set(MODES.map((m) => MODE_META[m].cls)).size, MODES.length, 'one class per mode');
+    assert.equal(new Set(MODES.map((m) => MODE_META[m].icon)).size, MODES.length, 'one icon per mode');
+    assert.deepEqual(MODES.map((m) => MODE_META[m].cls), ['m-manual', 'm-edits', 'm-plan', 'm-auto', 'm-bypass', 'm-dontask', 'm-unknown']);
+  });
+
+  test('(−) the switcher targets are Manual, Accept edits, Plan, Auto: never Bypass or Don\'t ask', () => {
+    assert.deepEqual(MODE_TARGETS, ['manual', 'acceptEdits', 'plan', 'auto']);
+  });
+
+  test('(−) modeKey passes only known modes; anything else, including prototype names, is unknown', () => {
+    for (const m of MODES) assert.equal(modeKey(m), m);
+    for (const bad of ['__proto__', 'toString', 'constructor', 'default', 'Plan', '', null, undefined, 42, {}, ['plan']]) assert.equal(modeKey(bad), 'unknown', String(bad));
+  });
+});
+
+describe('modeEl', () => {
+  const textOf = (el) => el.textContent;
+  const icons = (el) => el.find((n) => n.tag === 'svg');
+
+  test('(+) renders the label text and an icon for every mode', () => {
+    for (const m of MODES) {
+      const el = modeEl(m, { confirmed: true });
+      assert.equal(el.tag, 'span');
+      assert.equal(el.className, `mode ${MODE_META[m].cls}`);
+      assert.match(textOf(el), new RegExp(`Permission mode: ${LABELS[m].replace('?', '\\?')}`), m);
+      const [svg] = icons(el);
+      assert.ok(svg, `${m} has an icon`);
+      assert.equal(svg.getAttribute('aria-hidden'), 'true');
+      assert.equal(svg.kids[0].getAttribute('href'), `#i-${MODE_META[m].icon}`);
+      assert.equal(el.getAttribute('data-confirmed'), 'true');
+      assert.equal(el.getAttribute('title'), `Permission mode: ${LABELS[m]}`);
+      assert.equal(el.find((n) => n.className === 'ml')[0].textContent, LABELS[m]);
+      assert.equal(el.find((n) => n.className === 'mnote').length, 0, 'a confirmed tag has no note');
+    }
+  });
+
+  test('(+) the screen-reader prefix is sr-only and the label is its own span', () => {
+    const el = modeEl('plan');
+    assert.equal(el.find((n) => n.className === 'sr-only')[0].textContent, 'Permission mode: ');
+  });
+
+  test('(+) unconfirmed sets data-confirmed="false", shows the word and explains it in the title', () => {
+    const el = modeEl('plan', { confirmed: false });
+    assert.equal(el.getAttribute('data-confirmed'), 'false');
+    assert.equal(el.find((n) => n.className === 'mnote')[0].textContent, 'unconfirmed');
+    assert.equal(el.getAttribute('title'), "Permission mode: Plan (not confirmed: Claude's footer is covered or not shown yet)");
+  });
+
+  test('(+) compact: an unconfirmed tag keeps the word for screen readers and the title, not on screen', () => {
+    const el = modeEl('auto', { confirmed: false, compact: true });
+    assert.equal(el.find((n) => n.className === 'mnote').length, 0);
+    assert.ok(el.find((n) => n.className === 'sr-only' && n.textContent === 'unconfirmed').length === 1);
+    assert.match(el.getAttribute('title'), /not confirmed/);
+    assert.equal(el.getAttribute('data-confirmed'), 'false');
+  });
+
+  test('(+) iconOnly: the label moves to sr-only and the tag gets the icon-only class', () => {
+    const el = modeEl('manual', { iconOnly: true });
+    assert.equal(el.className, 'mode m-manual icon-only');
+    assert.equal(el.find((n) => n.className === 'ml').length, 0);
+    assert.match(textOf(el), /Manual/);
+    assert.equal(el.find((n) => n.tag === 'span' && n.className === 'sr-only' && n.textContent === 'Manual').length, 1);
+  });
+
+  test('(−) an unknown or hostile mode falls back to "Mode ?"; text never becomes markup', () => {
+    const hostile = '<img src=x onerror=alert(1)>';
+    for (const bad of [hostile, '__proto__', null, undefined, 7]) {
+      const el = modeEl(bad);
+      assert.equal(el.className, 'mode m-unknown');
+      assert.doesNotMatch(textOf(el), /img|onerror|alert/);
+      assert.equal(el.getAttribute('title'), 'Permission mode: Mode ?');
+    }
+  });
+});
+
+// ---- tokens.css ---------------------------------------------------------------------------------------------------
+
+describe('tokens.css mode tokens', () => {
+  const blockAt = (css, opener) => {
+    const at = css.indexOf(opener);
+    assert.ok(at >= 0, `${opener} exists`);
+    const open = css.indexOf('{', at);
+    return css.slice(open + 1, css.indexOf('}', open));
+  };
+  const BLOCKS = {
+    light: blockAt(TOKENS, ':root {'),
+    dark: blockAt(TOKENS, ':root:not([data-theme="light"]) {'),
+    darkPinned: blockAt(TOKENS, ':root[data-theme="dark"] {'),
+  };
+  const vars = (block) => Object.fromEntries([...block.matchAll(/(--[a-z0-9-]+)\s*:\s*([^;]+);/g)].map((m) => [m[1], m[2].trim()]));
+  const TOKEN_NAMES = [...MODES.flatMap((m) => {
+    const base = `--m-${MODE_META[m].cls.slice(2)}`;
+    return [base, `${base}-soft`, `${base}-line`];
+  }), '--m-bypass-on', '--m-bypass-stripe'];
+
+  test('(+) every MODE_META cls has a rule in tokens.css that reads that mode\'s three tokens', () => {
+    for (const m of MODES) {
+      const { cls } = MODE_META[m];
+      const rule = new RegExp(`\\.${cls}\\s*\\{([^}]*)\\}`).exec(TOKENS);
+      assert.ok(rule, `.${cls} rule`);
+      const t = cls.slice(2);
+      assert.match(rule[1], new RegExp(`--mc:\\s*var\\(--m-${t}\\)`));
+      assert.match(rule[1], new RegExp(`--mc-soft:\\s*var\\(--m-${t}-soft\\)`));
+      assert.match(rule[1], new RegExp(`--mc-line:\\s*var\\(--m-${t}-line\\)`));
+    }
+  });
+
+  test('(+) every --m-* token is defined in the light block and in both dark blocks', () => {
+    assert.equal(TOKEN_NAMES.length, 23);
+    for (const [name, block] of Object.entries(BLOCKS)) {
+      const defined = vars(block);
+      for (const t of TOKEN_NAMES) assert.match(defined[t] ?? '', /^#[0-9a-f]{6}$/i, `${t} in ${name}`);
+    }
+  });
+
+  test('(+) both dark blocks hold identical mode tokens', () => {
+    const [a, b] = [vars(BLOCKS.dark), vars(BLOCKS.darkPinned)];
+    for (const t of TOKEN_NAMES) assert.equal(a[t], b[t], t);
+  });
+
+  test('(+) the .mode, .msw and held rules exist; the tag is hollow and dashed when unconfirmed', () => {
+    assert.match(TOKENS, /\.mode\s*\{/);
+    assert.match(TOKENS, /\.mode\[data-confirmed="false"\]/);
+    assert.match(TOKENS, /\.mode\.m-bypass\[data-confirmed="false"\]\s*\{\s*border-style:\s*solid/);
+    assert.match(TOKENS, /\.msw\s*\{/);
+    assert.match(TOKENS, /\.msw button\.held\s*\{[^}]*dashed/);
+    assert.match(TOKENS, /\.msw-why\.err\s*\{/);
+  });
+
+  // WCAG 2.x relative luminance, so a typo in a hex digit fails here instead of in a user's eyes (spec 2.8.2: 0 failures)
+  const lum = (hex) => {
+    const c = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255).map((v) => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4));
+    return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+  };
+  const ratio = (a, b) => {
+    const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x);
+    return (hi + 0.05) / (lo + 0.05);
+  };
+
+  for (const [name, block] of Object.entries(BLOCKS)) {
+    test(`(+) contrast (${name}): text 4.5:1 on soft, surface and attention rows; edges 3:1 on bg, surface and surface-2`, () => {
+      const v = { ...vars(BLOCKS.light), ...vars(block) };
+      for (const m of MODES) {
+        const t = `--m-${MODE_META[m].cls.slice(2)}`;
+        const text = m === 'bypassPermissions' ? v['--m-bypass'] : v[t];
+        for (const ground of [v[`${t}-soft`], v['--surface'], v['--attn-row']]) assert.ok(ratio(text, ground) >= 4.5, `${m} text on ${ground}: ${ratio(text, ground).toFixed(2)}`);
+        for (const ground of [v['--bg'], v['--surface'], v['--surface-2']]) assert.ok(ratio(v[`${t}-line`], ground) >= 3, `${m} edge on ${ground}: ${ratio(v[`${t}-line`], ground).toFixed(2)}`);
+      }
+      assert.ok(ratio(v['--m-bypass-on'], v['--m-bypass']) >= 4.5, 'bypass fill text');
+      for (const ground of [v['--bg'], v['--surface']]) {
+        assert.ok(ratio(v['--m-bypass'], ground) >= 3, 'bypass fill edge');
+        assert.ok(ratio(v['--m-bypass-stripe'], ground) >= 3, 'bypass stripe');
+      }
+    });
+  }
+
+  test('(−) tokens.css stays free of color-mix(), :has() and non-ASCII', () => {
+    const css = TOKENS.replace(/\/\*[\s\S]*?\*\//g, '');
+    assert.doesNotMatch(css, /color-mix\(|:has\(/);
+    assert.equal([...TOKENS].every((ch) => ch.codePointAt(0) < 128), true);
+  });
+});
+
+// ---- switcherState ------------------------------------------------------------------------------------------------
+
+describe('switcherState', () => {
+  const base = { pane: 'ok', status: 'idle', prompt: null, mode: 'plan', modeConfirmed: true, switching: null };
+  const S = (over) => switcherState({ ...base, ...over });
+  const PROMPT = { question: 'Do you want to proceed?', options: [{ n: 1, label: 'Yes' }, { n: 2, label: 'No' }], sig: '0123456789abcdef' };
+  const WHY = {
+    prompt: 'Answer the prompt first.',
+    working: 'Switch when Claude is waiting for you.',
+    unconfirmed: 'Waiting for Claude to confirm the mode.',
+    unknown: "nika can't read the mode.",
+    dontAsk: "Don't ask is on. Change it in the terminal.",
+    switching: `Switching${String.fromCharCode(0x2026)} up to 6 Shift-Tab presses.`,
+  };
+
+  test('(+) ready: Claude idle, no prompt, confirmed mode: live, the current segment pressed, no reason', () => {
+    for (const mode of MODE_TARGETS) assert.deepEqual(S({ mode }), { disabled: false, pressed: mode, held: null, reason: '', chip: null, busy: null });
+  });
+
+  test('(+) a prompt (or status Needs you): reason, no chip, the held segment, all disabled; it wins over working, unconfirmed and unknown', () => {
+    const want = (held) => ({ disabled: true, pressed: null, held, reason: WHY.prompt, chip: null, busy: null });
+    assert.deepEqual(S({ prompt: PROMPT, modeConfirmed: false }), want('plan'));
+    assert.deepEqual(S({ status: 'attn' }), want('plan'), 'status Needs you alone is enough');
+    assert.deepEqual(S({ prompt: PROMPT, status: 'busy' }), want('plan'), 'over working');
+    assert.deepEqual(S({ prompt: PROMPT, mode: 'unknown' }), want(null), 'over unknown: no chip even then');
+    assert.deepEqual(S({ prompt: PROMPT, status: 'attn', mode: 'auto', modeConfirmed: false, switching: 'plan' }), want('auto'), 'over switching');
+    assert.deepEqual(S({ prompt: PROMPT, mode: 'dontAsk', modeConfirmed: false }), want(null), 'a held Don\'t ask has no segment');
+    assert.deepEqual(S({ prompt: PROMPT, mode: 'bypassPermissions', modeConfirmed: false }), want(null), 'a held Bypass has no segment');
+  });
+
+  test('(+) Claude working: all disabled, the pressed segment stays pressed', () => {
+    assert.deepEqual(S({ status: 'busy' }), { disabled: true, pressed: 'plan', held: null, reason: WHY.working, chip: null, busy: null });
+    assert.equal(S({ status: 'busy', modeConfirmed: false }).reason, WHY.working, 'working wins over unconfirmed');
+    assert.equal(S({ status: 'busy', modeConfirmed: false }).held, 'plan');
+    assert.equal(S({ status: 'busy', mode: 'unknown' }).chip, null, 'working wins over unknown: no chip');
+  });
+
+  test('(+) unconfirmed: the held segment, nothing pressed, all disabled', () => {
+    assert.deepEqual(S({ modeConfirmed: false }), { disabled: true, pressed: null, held: 'plan', reason: WHY.unconfirmed, chip: null, busy: null });
+    assert.equal(S({ modeConfirmed: false, mode: 'unknown' }).chip, null, 'unconfirmed wins over unknown');
+    assert.equal(S({ modeConfirmed: false, mode: 'dontAsk' }).held, null);
+  });
+
+  test('(+) unknown mode: nothing pressed, all disabled, the Shift-Tab chip', () => {
+    assert.deepEqual(S({ mode: 'unknown' }), { disabled: true, pressed: null, held: null, reason: WHY.unknown, chip: 'BTab', busy: null });
+  });
+
+  test('(−) hostile mode strings read as unknown (chip, nothing pressed)', () => {
+    for (const mode of ['__proto__', 'toString', 'Plan', 7, null, undefined]) {
+      const st = S({ mode });
+      assert.equal(st.reason, WHY.unknown, String(mode));
+      assert.equal(st.pressed, null);
+      assert.equal(st.chip, 'BTab');
+    }
+  });
+
+  test('(−) Don\'t ask current: all disabled, none pressed, no chip', () => {
+    assert.deepEqual(S({ mode: 'dontAsk' }), { disabled: true, pressed: null, held: null, reason: WHY.dontAsk, chip: null, busy: null });
+  });
+
+  test('(−) a Bypass footer: no Bypass segment, the four segments usable, none pressed, no reason', () => {
+    const st = S({ mode: 'bypassPermissions' });
+    assert.deepEqual(st, { disabled: false, pressed: null, held: null, reason: '', chip: null, busy: null });
+    assert.ok(!MODE_TARGETS.includes('bypassPermissions'));
+    assert.equal(S({ mode: 'bypassPermissions', status: 'busy' }).disabled, true, 'but not while Claude is working');
+  });
+
+  test('(+) switching: the target is busy, the rest disabled, the pressed segment follows the footer', () => {
+    assert.deepEqual(S({ switching: 'auto' }), { disabled: true, pressed: 'plan', held: null, reason: WHY.switching, chip: null, busy: 'auto' });
+    assert.equal(S({ switching: 'auto', mode: 'acceptEdits' }).pressed, 'acceptEdits');
+    assert.equal(S({ switching: 'auto', mode: 'unknown' }).pressed, null, 'a mid-cycle unreadable footer presses nothing');
+    assert.equal(S({ switching: 'auto', mode: 'unknown' }).chip, null);
+  });
+
+  test('(+) the pane rows come first: gone, tmux error, no capture yet; no segment pressed, no chip', () => {
+    const dead = (reason) => ({ disabled: true, pressed: null, held: null, reason, chip: null, busy: null });
+    for (const over of [{}, { prompt: PROMPT }, { status: 'attn' }, { status: 'busy' }, { mode: 'unknown' }, { switching: 'auto' }]) {
+      assert.deepEqual(S({ pane: 'gone', ...over }), dead('The pane is gone.'));
+      assert.deepEqual(S({ pane: 'tmux', ...over }), dead("nika couldn't reach tmux."));
+      assert.deepEqual(S({ pane: 'connecting', ...over }), dead(`Connecting to the pane${String.fromCharCode(0x2026)}`));
+    }
+  });
+
+  test('(+) a status that is not known yet leaves the server to decide (it answers 409 not-idle)', () => {
+    assert.equal(S({ status: null }).disabled, false);
+    assert.equal(S({ status: undefined }).disabled, false);
+    assert.equal(S({ status: 'ended' }).reason, WHY.working);
+  });
+});
+
+// ---- modeNote: what #mode-live says --------------------------------------------------------------------------------
+
+describe('modeNote', () => {
+  const N = (last, mode, confirmed = true) => modeNote('builder-1', last, { mode, confirmed });
+
+  test('(+) a confirmed mode at open is silent; an unconfirmed one says so', () => {
+    assert.deepEqual(N(null, 'plan'), { last: 'plan', msg: '' });
+    assert.deepEqual(N(null, 'plan', false), { last: 'plan', msg: 'builder-1 started in Plan mode, not confirmed yet.' });
+  });
+
+  test('(+) a change says the new mode; Bypass adds the loud sentence, also at open', () => {
+    assert.deepEqual(N('plan', 'auto'), { last: 'auto', msg: 'builder-1: permission mode is now Auto.' });
+    assert.equal(N('plan', 'bypassPermissions').msg, 'builder-1: permission mode is now Bypass. Claude runs every tool without asking.');
+    assert.equal(N(null, 'bypassPermissions').msg, 'builder-1: permission mode is now Bypass. Claude runs every tool without asking.');
+    assert.equal(N(null, 'bypassPermissions', false).msg, 'builder-1: permission mode is now Bypass. Claude runs every tool without asking.');
+  });
+
+  test('(−) the same mode confirmed or not, and unknown on the way, are silent', () => {
+    assert.equal(N('plan', 'plan', false).msg, '');
+    assert.equal(N('plan', 'plan', true).msg, '');
+    assert.deepEqual(N('plan', 'unknown'), { last: 'plan', msg: '' }, 'becomes unknown');
+    assert.deepEqual(N('plan', 'plan'), { last: 'plan', msg: '' }, 'unknown back to the same mode');
+    assert.equal(N('plan', 'auto').msg, 'builder-1: permission mode is now Auto.', 'unknown back to a different mode is a change');
+    assert.deepEqual(N(null, 'unknown'), { last: null, msg: '' }, 'nothing read yet');
+  });
+});
+
+// ---- switchFailure: what a failed switch says once the next capture is in -----------------------------------------------
+
+describe('switchFailure', () => {
+  const F = (over) => switchFailure({ status: 409, code: 'not-in-cycle', start: 'manual', target: 'auto', mode: 'manual', confirmed: true, ...over });
+
+  test('(+) Stopped at <mode>: any failure whose next capture reads a confirmed mode other than the start mode', () => {
+    assert.deepEqual(F({ mode: 'acceptEdits' }), { text: 'Stopped at Accept edits.', strike: null });
+    assert.deepEqual(F({ code: 'not-idle', mode: 'plan' }), { text: 'Stopped at Plan.', strike: null });
+    assert.deepEqual(F({ status: 429, code: undefined, mode: 'plan' }), { text: 'Stopped at Plan.', strike: null });
+    assert.deepEqual(F({ status: 500, code: undefined, mode: 'bypassPermissions' }), { text: 'Stopped at Bypass.', strike: null });
+  });
+
+  test('(+) not-in-cycle with the next capture back at the start mode: the message and the strike', () => {
+    assert.deepEqual(F({}), { text: "Auto isn't in this session's Shift-Tab cycle.", strike: 'auto' });
+    assert.deepEqual(F({ start: 'plan', mode: 'plan', target: 'manual' }), { text: "Manual isn't in this session's Shift-Tab cycle.", strike: 'manual' });
+  });
+
+  test('(−) no strike and no "Stopped at" from a capture that is unconfirmed or unknown', () => {
+    assert.deepEqual(F({ confirmed: false, mode: 'plan' }), { text: "Auto isn't in this session's Shift-Tab cycle.", strike: null });
+    assert.deepEqual(F({ mode: 'unknown' }), { text: "Auto isn't in this session's Shift-Tab cycle.", strike: null });
+    assert.equal(F({ code: 'not-idle', mode: 'unknown' }).text, 'Switch when Claude is waiting for you.');
+  });
+
+  test('(+) the other responses, exact copy (mode still at the start)', () => {
+    const T = (over) => F({ mode: 'manual', ...over }).text;
+    assert.equal(T({ code: 'not-idle' }), 'Switch when Claude is waiting for you.');
+    assert.equal(T({ code: 'mode-unknown' }), "nika can't read the mode.");
+    assert.equal(T({ code: 'busy-switching' }), 'Another action is running on this session.');
+    assert.equal(T({ status: 404, code: 'not_found' }), 'The session is gone.');
+    assert.equal(T({ status: 429, code: undefined }), 'Too many keys at once; try again.');
+    assert.equal(T({ status: 500, code: undefined }), "nika couldn't reach tmux.");
+    assert.equal(T({ status: 502, code: undefined }), "nika couldn't reach tmux.");
+    assert.equal(T({ status: 0, code: undefined }), "nika couldn't reach tmux.");
+  });
+
+  test('(−) 404 says the session is gone whatever the capture shows; unlisted answers get a plain fallback; none strikes', () => {
+    assert.equal(F({ status: 404, code: 'not_found', mode: 'plan' }).text, 'The session is gone.');
+    for (const over of [{ status: 400, code: 'invalid' }, { status: 409, code: 'something-new' }, { status: 403, code: undefined }]) {
+      const r = F({ mode: 'manual', ...over });
+      assert.equal(r.text, "nika couldn't switch the mode.", JSON.stringify(over));
+      assert.equal(r.strike, null);
+    }
+    for (const code of ['not-idle', 'mode-unknown', 'busy-switching']) assert.equal(F({ code, mode: 'manual' }).strike, null, code);
+  });
+});
+
+describe('serving', () => {
+  test('(+) the server serves /modes.js as JavaScript, next to the other public modules', () => {
+    assert.match(read('src', 'server.js'), /\['\/modes\.js', \['modes\.js', 'text\/javascript; charset=utf-8'\]\]/);
+  });
+
+  test('(−) modes.js imports only dom.js, and does no network, storage or timer work', () => {
+    const src = read('public', 'modes.js').replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|\s)\/\/.*$/gm, '$1');
+    assert.deepEqual([...src.matchAll(/from '([^']+)'/g)].map((m) => m[1]), ['./dom.js']);
+    assert.doesNotMatch(src, /\bfetch\s*\(|XMLHttpRequest|localStorage|sessionStorage|setTimeout|setInterval|document\.cookie/);
+  });
+});

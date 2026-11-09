@@ -43,6 +43,15 @@
   --busy-line: rgb(23 117 58 / 45%); --idle-line: rgb(138 83 0 / 45%);
   --danger-line: rgb(180 35 24 / 45%); --accent-line: rgb(29 85 208 / 35%);
   --veil: rgb(255 255 255 / 86%);
+  /* permission modes (docs/design/spec.md 2.8): text and icon, soft fill, edge and frame; plain hex, no alpha */
+  --m-manual: #56575c;  --m-manual-soft: #ececef;  --m-manual-line: #86878d;
+  --m-edits: #5137c4;   --m-edits-soft: #eeebfd;   --m-edits-line: #7a64e0;
+  --m-plan: #0b6868;    --m-plan-soft: #ddf2f1;    --m-plan-line: #2a8e8e;
+  --m-auto: #625a00;    --m-auto-soft: #f6f2c0;    --m-auto-line: #968a00;
+  --m-bypass: #b3261e;  --m-bypass-soft: #fde7e5;  --m-bypass-line: #c0261c; --m-bypass-on: #ffffff; --m-bypass-stripe: #16181d;
+  --m-dontask: #8a2597; --m-dontask-soft: #f7e4f8; --m-dontask-line: #a843b3;
+  --m-unknown: #545b66; --m-unknown-soft: #ffffff; --m-unknown-line: #7c8490;
+  --shell: var(--text); --on-shell: var(--surface);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -64,6 +73,13 @@
     --busy-line: rgb(95 208 138 / 45%); --idle-line: rgb(240 180 90 / 45%);
     --danger-line: rgb(255 138 128 / 45%); --accent-line: rgb(127 168 255 / 35%);
     --veil: rgb(32 35 40 / 86%);
+    --m-manual: #c4c5ca;  --m-manual-soft: #2d2e33;  --m-manual-line: #8c8d93;
+    --m-edits: #b9aeff;   --m-edits-soft: #29244d;   --m-edits-line: #8e7ff0;
+    --m-plan: #72cfcf;    --m-plan-soft: #13302f;    --m-plan-line: #3aa2a2;
+    --m-auto: #e9d84c;    --m-auto-soft: #33310f;    --m-auto-line: #bcae22;
+    --m-bypass: #ff6b61;  --m-bypass-soft: #46191a;  --m-bypass-line: #ff5a4f; --m-bypass-on: #2a0605; --m-bypass-stripe: #ffd8d4;
+    --m-dontask: #eaa0ea; --m-dontask-soft: #3a1d3d; --m-dontask-line: #c46fc8;
+    --m-unknown: #a4abb6; --m-unknown-soft: #202328; --m-unknown-line: #6f7783;
   }
 }
 
@@ -88,7 +104,54 @@
   --busy-line: rgb(95 208 138 / 45%); --idle-line: rgb(240 180 90 / 45%);
   --danger-line: rgb(255 138 128 / 45%); --accent-line: rgb(127 168 255 / 35%);
   --veil: rgb(32 35 40 / 86%);
+  --m-manual: #c4c5ca;  --m-manual-soft: #2d2e33;  --m-manual-line: #8c8d93;
+  --m-edits: #b9aeff;   --m-edits-soft: #29244d;   --m-edits-line: #8e7ff0;
+  --m-plan: #72cfcf;    --m-plan-soft: #13302f;    --m-plan-line: #3aa2a2;
+  --m-auto: #e9d84c;    --m-auto-soft: #33310f;    --m-auto-line: #bcae22;
+  --m-bypass: #ff6b61;  --m-bypass-soft: #46191a;  --m-bypass-line: #ff5a4f; --m-bypass-on: #2a0605; --m-bypass-stripe: #ffd8d4;
+  --m-dontask: #eaa0ea; --m-dontask-soft: #3a1d3d; --m-dontask-line: #c46fc8;
+  --m-unknown: #a4abb6; --m-unknown-soft: #202328; --m-unknown-line: #6f7783;
 }
+
+/* permission modes (docs/design/spec.md 2.8.1, 2.8.5, 9.3): one class per mode sets the local trio the tag, the frame, the
+   message-box edge and the switcher segments read. Page-only rules (frame, edge) are in session.css. */
+.m-manual  { --mc: var(--m-manual);  --mc-soft: var(--m-manual-soft);  --mc-line: var(--m-manual-line); }
+.m-edits   { --mc: var(--m-edits);   --mc-soft: var(--m-edits-soft);   --mc-line: var(--m-edits-line); }
+.m-plan    { --mc: var(--m-plan);    --mc-soft: var(--m-plan-soft);    --mc-line: var(--m-plan-line); }
+.m-auto    { --mc: var(--m-auto);    --mc-soft: var(--m-auto-soft);    --mc-line: var(--m-auto-line); }
+.m-bypass  { --mc: var(--m-bypass);  --mc-soft: var(--m-bypass-soft);  --mc-line: var(--m-bypass-line); }
+.m-dontask { --mc: var(--m-dontask); --mc-soft: var(--m-dontask-soft); --mc-line: var(--m-dontask-line); }
+.m-unknown { --mc: var(--m-unknown); --mc-soft: var(--m-unknown-soft); --mc-line: var(--m-unknown-line); }
+
+.mode { display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 8px 0 6px;
+  border: 1px solid var(--mc-line); border-radius: var(--r-sm); background: var(--mc-soft); color: var(--mc);
+  font-size: var(--fs-small); font-weight: 600; white-space: nowrap; }
+.mode .ic { width: 14px; height: 14px; }
+.mode[data-confirmed="false"], .mode.m-unknown { border-style: dashed; background: transparent; }
+.mode .mnote { font-weight: 400; padding-left: 5px; border-left: 1px dashed var(--mc-line); }
+.mode.m-bypass { background: var(--m-bypass); border-color: var(--m-bypass); color: var(--m-bypass-on); }
+.mode.m-bypass[data-confirmed="false"] { border-style: solid; }
+.mode.m-bypass .mnote { border-left-color: var(--m-bypass-on); }
+.mode.icon-only { padding: 0 4px; gap: 0; }
+
+.msw { display: inline-flex; flex-wrap: wrap; gap: 2px; padding: 2px; border: 1px solid var(--line-strong); border-radius: var(--r-md); background: var(--surface); }
+.msw button { display: inline-flex; align-items: center; gap: 5px; min-height: 24px; padding: 0 8px; border: 1px solid transparent;
+  border-radius: var(--r-sm); background: transparent; color: var(--text); font-size: var(--fs-small); font-weight: 500; }
+.msw button .ic { color: var(--text-muted); }
+.msw button:hover { background: var(--surface-2); }
+.msw button[aria-pressed="true"] { background: var(--mc-soft); border-color: var(--mc-line); color: var(--mc); font-weight: 600; }
+.msw button[aria-pressed="true"] .ic { color: inherit; }
+.msw button[aria-disabled="true"] { opacity: 0.45; cursor: not-allowed; }
+.msw button[aria-disabled="true"]:hover { background: transparent; }
+.msw button[aria-pressed="true"][aria-disabled="true"] { opacity: 1; }
+.msw button.out { text-decoration: line-through; text-decoration-thickness: 1px; }
+.msw button[aria-busy="true"] { border: 1px dashed var(--mc-line); color: var(--mc); font-weight: 600; }
+.msw button.held { border: 1px dashed var(--mc-line); color: var(--mc); opacity: 1; }
+.msw button.held .ic { color: inherit; }
+.msw .spin { flex: none; width: 12px; height: 12px; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; animation: msw-spin 0.8s linear infinite; }
+@keyframes msw-spin { to { transform: rotate(360deg); } }
+.msw-why { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-small); color: var(--text-muted); }
+.msw-why.err { color: var(--idle); font-weight: 600; }
 
 @media (prefers-reduced-motion: reduce) {
   :root { --dur-1: 0ms; --dur-2: 0ms; --dur-3: 0ms; }
@@ -98,4 +161,5 @@
     transition-duration: 0.001ms !important;
     scroll-behavior: auto !important;
   }
+  .msw .spin { animation: none; border-right-color: currentColor; border-style: dotted; }
 }

@@ -11,6 +11,7 @@
 <script type="module" src="session.js"></script>
 </head>
 <body class="sess">
+<div class="mode-frame" aria-hidden="true"></div>
 <a class="skip" href="#sess-main">Skip to content</a>
 <a class="skip skip-2" href="#composer">Skip to message input</a>
 <svg class="sprite" width="0" height="0" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg">
@@ -19,18 +20,30 @@
   <symbol id="i-kbd" viewBox="0 0 16 16"><rect x="1.5" y="4" width="13" height="8.5" rx="1.5"/><path d="M4 7h1M7 7h1M10 7h1M4.5 10h7"/></symbol>
   <symbol id="i-send" viewBox="0 0 16 16"><path d="M2.5 8h10M8.5 3.5 13 8l-4.5 4.5"/></symbol>
   <symbol id="i-down" viewBox="0 0 16 16"><path d="M8 3v10M3.5 8.5 8 13l4.5-4.5"/></symbol>
+  <symbol id="i-info" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.2"/><path d="M8 7.3v3.9M8 4.9v.1"/></symbol>
+  <symbol id="i-warn" viewBox="0 0 16 16"><path d="M8 2 1.5 13.5h13z"/><path d="M8 6.5v3.5M8 11.8v.2"/></symbol>
+  <symbol id="i-m-manual" viewBox="0 0 16 16"><path d="M4.5 9V5.5M7 8V3M9.5 8V3.5M12 9V5.5M4.5 9v1.5a4 4 0 0 0 4 4h.5a3 3 0 0 0 3-3V9M4.5 11 2.9 9.4"/></symbol>
+  <symbol id="i-m-edits" viewBox="0 0 16 16"><path d="M10.5 2.8l2.7 2.7L6 12.7l-3.3.6.6-3.3zM9 4.3l2.7 2.7"/></symbol>
+  <symbol id="i-m-plan" viewBox="0 0 16 16"><path d="M1.8 4.2 5.6 2.6l4.8 1.6 3.8-1.6v9.2l-3.8 1.6-4.8-1.6-3.8 1.6zM5.6 2.6v9.2M10.4 4.2v9.2"/></symbol>
+  <symbol id="i-m-auto" viewBox="0 0 16 16"><path d="M9 1.8 3.6 9h4l-.8 5.2L12.4 7h-4z"/></symbol>
+  <symbol id="i-m-bypass" viewBox="0 0 16 16"><path d="M8 1.8 13 3.6V8c0 3-2.1 5.1-5 6.4C5.1 13.1 3 11 3 8V3.6zM2.2 2.2l11.6 11.6"/></symbol>
+  <symbol id="i-m-dontask" viewBox="0 0 16 16"><rect x="3.2" y="7" width="9.6" height="7" rx="1.5"/><path d="M5.3 7V5.2a2.7 2.7 0 0 1 5.4 0V7M8 9.8v1.4"/></symbol>
+  <symbol id="i-m-unknown" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.2"/><path d="M6.2 6.3a1.9 1.9 0 1 1 2.7 1.7c-.6.3-.9.7-.9 1.3v.3M8 11.5v.2"/></symbol>
 </svg>
 
 <header class="bar" id="bar">
   <a class="crumb" id="back" href="/#dashboard"><svg class="ic" aria-hidden="true"><use href="#i-back"/></svg><span id="proj">Dashboard</span></a>
   <h1 id="sess-h">Session</h1>
   <span id="sess-st" class="st-slot"></span>
+  <span id="sess-mode" hidden></span>
   <span class="sess-meta">
     <span class="model" id="sess-model" hidden></span>
     <span class="hide-narrow" id="meta-pane" hidden>pane <span class="mono" id="sess-pane"></span></span>
     <span class="hide-narrow mono" id="sess-branch" hidden></span>
   </span>
   <span class="sp"></span>
+  <div class="msw" id="mode-switch" role="toolbar" aria-label="Permission mode" aria-describedby="msw-why" hidden></div>
+  <span class="msw-why" id="msw-why" hidden></span>
   <a class="btn" id="claude-link" href="https://claude.ai/code/" target="_blank" rel="noopener noreferrer" title="Opens claude.ai in your browser" hidden><svg class="ic" aria-hidden="true"><use href="#i-ext"/></svg><span class="lbl">Open in claude.ai</span><span class="sr-only">(opens your browser)</span></a>
 </header>
 
@@ -111,5 +124,6 @@
 </main>
 
 <div class="sr-only" id="announcer" aria-live="polite"></div>
+<div class="sr-only" id="mode-live" aria-live="polite"></div>
 </body>
 </html>
