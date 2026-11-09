@@ -269,7 +269,8 @@ describe('tier separation in the page code', () => {
   });
 
   test('(−) /api/app appears only in the app-tier modules (best-effort: strings in comments are ignored)', () => {
-    for (const f of JS.filter((x) => !['api.js', 'project.js', 'settings.js', 'session.js'].includes(x))) {
+    // end-dialog.js serves the app tier only (the session window, and the dashboard's End item behind isApp)
+    for (const f of JS.filter((x) => !['api.js', 'project.js', 'settings.js', 'session.js', 'end-dialog.js'].includes(x))) {
       assert.doesNotMatch(code(read(f)), /\/api\/app/, `${f} is loaded on the browser tier and must not name an app route`);
     }
   });

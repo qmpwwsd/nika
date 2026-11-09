@@ -24,6 +24,9 @@ const STATIC = new Map([
   ['/session.css', ['session.css', 'text/css; charset=utf-8']],
   ['/mirror-render.js', ['mirror-render.js', 'text/javascript; charset=utf-8']],
   ['/modes.js', ['modes.js', 'text/javascript; charset=utf-8']],
+  ['/quick-actions.js', ['quick-actions.js', 'text/javascript; charset=utf-8']],
+  ['/models-ui.js', ['models-ui.js', 'text/javascript; charset=utf-8']],
+  ['/end-dialog.js', ['end-dialog.js', 'text/javascript; charset=utf-8']],
   ['/favicon.svg', ['favicon.svg', 'image/svg+xml']],
 ]);
 const CSP = [

@@ -153,6 +153,10 @@
 .msw-why { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-small); color: var(--text-muted); }
 .msw-why.err { color: var(--idle); font-weight: 600; }
 
+/* on/off rule (docs/design/spec.md 9.6): every on/off control says its state in words as well as colour. The chip sits inside the
+   button next to aria-pressed and is aria-hidden; it takes the button's text colour. */
+.onoff { font-size: var(--fs-cap); font-weight: 700; padding: 0 5px; border-radius: var(--r-sm); border: 1px solid currentColor; line-height: 14px; }
+
 @media (prefers-reduced-motion: reduce) {
   :root { --dur-1: 0ms; --dur-2: 0ms; --dur-3: 0ms; }
   *, *::before, *::after {

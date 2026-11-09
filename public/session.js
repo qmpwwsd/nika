@@ -1,4 +1,5 @@
-// nika session window (app tier): transcript history + live terminal mirror + input composer for one agent.
+// nika session window (app tier): transcript history + live terminal mirror + input composer for one agent, with the permission
+// mode switcher, the quick actions (Stop, Compact, Clear, Model, Rewind, End), the permission-prompt buttons and Shell mode.
 // URL: session.html?session=<UUID>&pane=<%n>&project=<key>   (pane is sent as %25n, i.e. encodeURIComponent('%n')).
 // Rules: every string from the server is rendered with textContent (h() from dom.js, applyMirror from mirror-render.js);
 // no innerHTML, no inline handlers, element.style only for numbers this file computes. Contracts: docs/contracts/api-app.md.
@@ -6,6 +7,9 @@ import { h, icon } from './dom.js';
 import { isApp, appFetch, getJSON, applyTheme } from './api.js';
 import { toRenderModel, applyMirror, planSend, planPaste, chunkText, keyForEvent, KEY_LABEL } from './mirror-render.js';
 import { MODE_META, MODE_TARGETS, modeKey, modeEl, switcherState, modeNote, switchFailure } from './modes.js';
+import { quickState, cleanPrompt, answerOutcome, promptNote, commandFailure, problemKind, planShell } from './quick-actions.js';
+import { MODEL_ID, MODEL_HINT, CUSTOM, fillModelSelect } from './models-ui.js';
+import { openEndDialog } from './end-dialog.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const PANE_ID = /^%\d{1,6}$/;
@@ -123,7 +127,8 @@ function claudeUrl(raw) {
 
 // ---- header and agent poll ---------------------------------------------------------------------------------------
 
-const A = { name: 'the agent', kind: null, projectLooked: false };
+// A is what the agent poll said: name, status kind, the attention reason (why a 'Needs you' agent waits), the model id and label.
+const A = { name: 'the agent', kind: null, attention: '', modelId: '', projectLooked: false };
 
 function applyAgent(agent, group) {
   const untitled = !agent.name || (sessionId && agent.name === sessionId.slice(0, 8));
@@ -140,6 +145,8 @@ function applyAgent(agent, group) {
   const model = $('sess-model');
   model.textContent = agent.modelLabel || agent.model || '-';
   model.hidden = false;
+  A.modelId = typeof agent.model === 'string' ? agent.model : '';
+  renderModelName(agent.modelLabel || agent.model || '');
   const pane = paneId ?? agent.pane?.id;
   $('meta-pane').hidden = !(typeof pane === 'string' && PANE_ID.test(pane));
   $('sess-pane').textContent = typeof pane === 'string' && PANE_ID.test(pane) ? pane : '';
@@ -151,6 +158,7 @@ function applyAgent(agent, group) {
   link.hidden = !url;
   if (url) link.href = url;
 
+  A.attention = agent.attention ? String(agent.attention) : '';
   const kind = statusOf(agent);
   if (kind !== A.kind) {
     if (A.kind !== null && kind !== 'busy') announce(`${A.name} ${kind === 'attn' ? `needs you: ${agent.attention}` : kind === 'idle' ? 'is waiting for your prompt' : 'ended'}`);
@@ -158,11 +166,10 @@ function applyAgent(agent, group) {
     setStatus(kind);
     renderMode();
   }
-  const note = $('attn-note');
-  note.hidden = kind !== 'attn';
-  if (kind === 'attn') $('attn-text').textContent = `${A.name} needs you: ${agent.attention}. Use the arrow keys and Enter to choose, or Esc to refuse.`;
+  renderAttn();
+  renderPrompt();
   $('composer-label').textContent = `Message to ${A.name}. Enter sends, Shift+Enter adds a line, Escape goes to the pane.`;
-  if (!$('composer').disabled) $('composer').placeholder = `Message ${A.name}${DOTS}`;
+  if (!$('composer').disabled) $('composer').placeholder = idlePlaceholder();
   $('pb-pane').textContent = paneId ?? '';
 }
 
@@ -287,6 +294,9 @@ function renderMode() {
   renderSegments(st);
   renderWhy(st);
   renderShiftTab();
+  renderQuick();
+  renderAttn();
+  renderPrompt();
 }
 
 /** What a capture says about the mode and the prompt. The tag follows every capture; only a change is announced. */
@@ -295,7 +305,7 @@ function noteScreen(body) {
   W.pane = 'ok';
   W.mode = modeKey(body.mode);
   W.confirmed = body.modeConfirmed === true;
-  W.prompt = body.prompt && typeof body.prompt === 'object' ? body.prompt : null;
+  W.prompt = cleanPrompt(body.prompt); // null for anything but the contract shape: no panel, no buttons
   if (W.struck.size && W.confirmed && W.mode !== 'unknown' && W.mode !== W.strikeAt) W.struck.clear();
   if (!SW.busy) { // a switch announces its end result once, when the route answers
     const n = modeNote(A.name, W.last, { mode: W.mode, confirmed: W.confirmed });
@@ -381,17 +391,312 @@ function wireSwitcher() {
   });
   bar.append(...SW.parts.map((p) => p.b));
   bar.addEventListener('focusin', tabStops);
-  bar.addEventListener('keydown', (e) => { // moving never switches; Enter and Space on a button do
-    const i = SW.parts.findIndex((p) => p.b === document.activeElement);
+  roveKeys(bar, () => SW.parts.map((p) => p.b)); // moving never switches; Enter and Space on a button do
+  bar.hidden = false;
+  renderMode();
+}
+
+/** Left / Right / Home / End move focus along a toolbar and wrap; moving never activates (spec 9.3, 9.4). */
+function roveKeys(bar, buttons) {
+  bar.addEventListener('keydown', (e) => {
+    const list = buttons();
+    const i = list.indexOf(document.activeElement);
     if (i < 0 || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
-    const n = SW.parts.length;
+    const n = list.length;
     const to = e.key === 'ArrowRight' ? (i + 1) % n : e.key === 'ArrowLeft' ? (i + n - 1) % n : e.key === 'Home' ? 0 : e.key === 'End' ? n - 1 : -1;
     if (to < 0) return;
     e.preventDefault();
-    SW.parts[to].b.focus();
+    list[to].focus();
   });
-  bar.hidden = false;
+}
+
+// ---- quick actions, prompt buttons, Shell (docs/design/spec.md 9.4-9.6; rules and copy: quick-actions.js) ----------------
+
+// Q: the six toolbar buttons, the action in flight (busy: 'compact' | 'clear' | 'model'), the model popover (pop: open?, catalog:
+// null until GET /api/app/models answered), the reason line shown (whySig). PA: the prompt panel's question (sig), a request in
+// flight (pending) and the question that was answered (lock: its sig; the buttons stay off until a capture shows another one).
+const Q = { ready: false, b: {}, busy: null, pop: false, catalog: null, loading: false, whySig: null, nameSig: null };
+const PA = { sig: null, pending: false, lock: null, esc: null, btns: [] };
+const S = { on: false }; // Shell mode
+
+const aria = (b) => b.getAttribute('aria-disabled') === 'true';
+
+/** The "Model: <name>" label of the Model button. */
+function renderModelName(name) {
+  if (name === Q.nameSig) return;
+  Q.nameSig = name;
+  $('qa-model-lbl').textContent = name ? 'Model:' : 'Model';
+  $('qa-model-name').textContent = name;
+}
+
+function renderQuick() {
+  if (!Q.ready) return;
+  const st = quickState({ pane: W.pane, status: A.kind, prompt: W.prompt, composerEmpty: composer().value === '', switching: SW.busy !== null || Q.busy !== null });
+  for (const id of Object.keys(Q.b)) {
+    const b = Q.b[id];
+    b.setAttribute('aria-disabled', String(st[id].off));
+    b.title = st[id].title;
+    if (Q.busy === id) b.setAttribute('aria-busy', 'true');
+    else b.removeAttribute('aria-busy');
+  }
+  Q.b.stop.classList.toggle('on', !st.stop.off);
+  if (st.reason !== Q.whySig) { // not rebuilt at every capture
+    Q.whySig = st.reason;
+    const why = $('qa-why');
+    why.hidden = !st.reason;
+    why.replaceChildren(...(st.reason ? [icon('info'), h('span', { text: st.reason })] : []));
+  }
+  if (Q.pop && st.model.off) closeModelPop(false); // the popover has nothing to send once Claude is busy
+}
+
+/** Sends one slash command through the command route, which types it only into an empty input and presses Enter when it reads exactly that. */
+async function sendCommand(text) {
+  if (Q.busy || M.gone || !paneId) return;
+  Q.busy = text.slice(1).split(' ')[0]; // compact | clear | model: the button that shows it is busy
+  renderQuick();
+  const r = await call(`/api/app/pane/${encodeURIComponent(paneId)}/command`, { method: 'POST', json: { text } });
+  Q.busy = null;
+  renderQuick();
+  if (r.status === 200 && r.body?.sent === true) {
+    clearProblem();
+    say(`Sent ${text} + Enter to ${paneId}`);
+    return;
+  }
+  if (r.status === 404) setGone();
+  showProblem(commandFailure({ status: r.status, code: r.body?.error }), problemKind(r.status));
+}
+
+async function rewind() {
+  if (composer().value !== '') return; // Esc Esc opens the rewind menu only from an empty prompt
+  const r = await enqueue({ keys: ['Escape', 'Escape'] });
+  if (r.ok) say(`Sent Esc Esc to ${paneId}`);
+}
+
+function openEnd() {
+  openEndDialog({
+    pane: paneId,
+    name: A.name,
+    working: A.kind === 'busy',
+    promptOpen: W.prompt !== null || A.kind === 'attn',
+    onEnded: () => {
+      toast('Session ended');
+      setGone(); // the pane no longer runs Claude: the mirror shows its pane-gone state now instead of at the next capture
+    },
+  });
+}
+
+/** Short-lived status message at the bottom of the window (polite, never takes focus). */
+function toast(msg) {
+  const box = $('toasts');
+  while (box.children.length >= 3) box.firstElementChild.remove();
+  const t = h('div', { class: 'toast', role: 'status' }, h('p', { text: msg }));
+  box.append(t);
+  setTimeout(() => t.remove(), 4200);
+}
+
+// -- Clear: a confirm dialog first (spec 9.4)
+function wireClear() {
+  const dlg = $('clear-dlg');
+  let opener = null;
+  Q.openClear = () => {
+    opener = document.activeElement;
+    $('clear-h').textContent = `Clear ${A.name}'s conversation?`;
+    dlg.showModal();
+    $('clear-cancel').focus(); // initial focus is Cancel
+  };
+  $('clear-cancel').addEventListener('click', () => dlg.close());
+  $('clear-go').addEventListener('click', () => {
+    dlg.close();
+    sendCommand('/clear');
+  });
+  dlg.addEventListener('close', () => { if (opener?.isConnected) opener.focus(); });
+}
+
+// -- Model: a disclosure with the model select; only Switch model sends (a change event never does)
+function chosenModel() {
+  const v = $('model-sel').value;
+  return v === CUSTOM ? $('model-custom').value.trim() : v;
+}
+
+function setCustomError(msg) {
+  const err = $('model-custom-err');
+  err.hidden = !msg;
+  err.replaceChildren(...(msg ? [icon('warn'), h('span', { text: msg })] : []));
+  $('model-custom').setAttribute('aria-invalid', String(Boolean(msg)));
+}
+
+/** The select decides whether the custom field shows; the muted line always names the exact command. */
+function syncModelPop() {
+  $('model-custom-wrap').hidden = $('model-sel').value !== CUSTOM;
+  setCustomError('');
+  $('model-cmd').textContent = `/model ${chosenModel() || '<id>'}`;
+}
+
+function closeModelPop(refocus) {
+  if (!Q.pop) return;
+  Q.pop = false;
+  $('model-pop').hidden = true;
+  Q.b.model.setAttribute('aria-expanded', 'false');
+  if (refocus) Q.b.model.focus();
+}
+
+async function openModelPop() {
+  if (Q.loading) return;
+  if (!Q.catalog) {
+    Q.loading = true;
+    const r = await call('/api/app/models');
+    Q.loading = false;
+    if (r.status === 200 && Array.isArray(r.body?.models)) Q.catalog = r.body.models;
+    if (aria(Q.b.model)) return; // Claude became busy while the list loaded
+  }
+  const custom = fillModelSelect($('model-sel'), Q.catalog, A.modelId); // a model outside the catalog selects Custom ID with its text in the field
+  $('model-custom').value = custom ? A.modelId : '';
+  $('model-label').textContent = `Model for ${A.name}`;
+  $('model-note').hidden = Q.catalog !== null;
+  syncModelPop();
+  Q.pop = true;
+  $('model-pop').hidden = false;
+  Q.b.model.setAttribute('aria-expanded', 'true');
+  $('model-sel').focus();
+}
+
+function switchModel() {
+  const id = chosenModel();
+  if (!MODEL_ID.test(id)) {
+    setCustomError(MODEL_HINT);
+    $('model-custom').focus();
+    return;
+  }
+  closeModelPop(true);
+  sendCommand(`/model ${id}`);
+}
+
+function wireModelPop() {
+  const pop = $('model-pop');
+  $('model-sel').addEventListener('change', syncModelPop); // never sends: arrow keys on a closed select would send several /model
+  $('model-custom').addEventListener('input', syncModelPop);
+  $('model-custom').addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' || e.isComposing) return;
+    e.preventDefault();
+    switchModel();
+  });
+  $('model-cancel').addEventListener('click', () => closeModelPop(true));
+  $('model-go').addEventListener('click', switchModel);
+  pop.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    e.preventDefault();
+    e.stopPropagation();
+    closeModelPop(true);
+  });
+  pop.addEventListener('focusout', (e) => { // Tab out of the popover closes it
+    const to = e.relatedTarget;
+    if (to instanceof Node && !pop.contains(to) && to !== Q.b.model) closeModelPop(false);
+  });
+}
+
+function wireQuick() {
+  Q.b = { stop: $('qa-stop'), compact: $('qa-compact'), clear: $('qa-clear'), model: $('qa-model'), rewind: $('qa-rewind'), end: $('qa-end') };
+  const bar = $('qa');
+  const on = (id, run) => Q.b[id].addEventListener('click', () => {
+    Q.b[id].focus(); // a click does not focus a button in every webview; dialogs and the popover return focus here
+    if (!aria(Q.b[id])) run();
+  });
+  on('stop', () => sendKey('Escape'));
+  on('compact', () => sendCommand('/compact'));
+  on('clear', () => Q.openClear());
+  on('model', () => (Q.pop ? closeModelPop(true) : openModelPop()));
+  on('rewind', rewind);
+  on('end', openEnd);
+  const stops = () => Object.values(Q.b);
+  bar.addEventListener('focusin', () => { for (const b of stops()) b.tabIndex = b === document.activeElement ? 0 : -1; });
+  roveKeys(bar, stops);
+  wireClear();
+  wireModelPop();
+  Q.ready = true;
   renderMode();
+}
+
+// -- the prompt panel: one button per option, "Esc = No", and a bypass option as text only (spec 9.5)
+
+/** The attention note (0.2) for a 'Needs you' agent whose layout has no prompt panel; the panel replaces it. */
+function renderAttn() {
+  const note = $('attn-note');
+  const panel = W.pane === 'ok' && W.prompt !== null;
+  note.hidden = A.kind !== 'attn' || panel;
+  if (!note.hidden) $('attn-text').textContent = `${A.name} needs you: ${A.attention}. Use the arrow keys and Enter to choose, or Esc to refuse.`;
+}
+
+function optionRow(o) {
+  if (o.bypass) { // no button, not focusable: nika never answers a bypass option
+    return h('div', { class: 'pbtn-off' }, h('kbd', { text: String(o.n) }), h('span', {}, o.label, h('span', { class: 'pnote', text: 'Answer this one in the terminal' })));
+  }
+  return h('button', { type: 'button', class: 'pbtn', 'data-n': o.n, onclick: () => answer(o.n) }, h('kbd', { text: String(o.n) }), h('span', { text: o.label }));
+}
+
+function buildPrompt(p) {
+  PA.sig = p.sig;
+  PA.btns = [];
+  const rows = p.options.map((o) => {
+    const row = optionRow(o);
+    if (!o.bypass) PA.btns.push(row);
+    return row;
+  });
+  PA.esc = h('button', { type: 'button', class: 'pbtn esc', onclick: escNo }, h('kbd', { text: 'Esc' }), h('span', { text: 'Cancel, same as No' }));
+  $('ask-q').textContent = p.question;
+  $('ask-opts').replaceChildren(...rows, PA.esc);
+  $('prompt-btns').hidden = false;
+  announce(promptNote(A.name, p));
+}
+
+function renderPrompt() {
+  if (!Q.ready) return;
+  const p = W.pane === 'ok' ? W.prompt : null;
+  const panel = $('prompt-btns');
+  if (!p) {
+    PA.lock = null; // no prompt on screen: whatever was answered is over
+    if (panel.hidden) return;
+    const focused = panel.contains(document.activeElement);
+    panel.hidden = true;
+    PA.sig = null;
+    PA.btns = [];
+    if (focused) composer().focus({ preventScroll: true }); // the button that had focus is gone
+    return;
+  }
+  if (p.sig !== PA.sig) buildPrompt(p); // rebuilt only for a new question, so focus and hover survive the captures
+  const reason = $('ask-reason');
+  if (reason.textContent !== A.attention) reason.textContent = A.attention;
+  const off = PA.pending || PA.lock === p.sig;
+  for (const b of [...PA.btns, PA.esc]) b.setAttribute('aria-disabled', String(off));
+  $('ask-lock').hidden = PA.lock !== p.sig;
+}
+
+async function answer(n) {
+  const p = W.prompt;
+  if (!p || PA.pending || PA.lock === p.sig || M.gone) return;
+  PA.pending = true;
+  renderPrompt();
+  const r = await call(`/api/app/pane/${encodeURIComponent(paneId)}/answer`, { method: 'POST', json: { n, sig: p.sig } });
+  PA.pending = false;
+  const out = answerOutcome({ status: r.status, code: r.body?.error });
+  if (out.lock) PA.lock = p.sig; // the question that was answered; a new one is another sig
+  if (r.status === 200) {
+    clearProblem();
+    say(`Sent ${n} to ${paneId}`);
+  } else if (out.message) {
+    showProblem(out.message, problemKind(r.status));
+  }
+  if (r.status === 404) setGone();
+  renderPrompt();
+}
+
+/** "Esc = No": the keys route with Escape, like the Esc chip. */
+async function escNo() {
+  if (PA.pending || (W.prompt && PA.lock === W.prompt.sig)) return;
+  PA.pending = true;
+  renderPrompt();
+  await sendKey('Escape');
+  PA.pending = false;
+  renderPrompt();
 }
 
 // ---- history -----------------------------------------------------------------------------------------------------
@@ -644,10 +949,10 @@ const hideOverlay = () => { $('term-over').hidden = true; };
 
 const refocus = { composer: false };
 function setInputEnabled(on, why) {
-  const controls = [$('composer'), $('send'), $('pass-toggle'), ...document.querySelectorAll('.key')];
+  const controls = [$('composer'), $('send'), $('pass-toggle'), $('shell-toggle'), ...document.querySelectorAll('.key')];
   if (!on) refocus.composer = refocus.composer || document.activeElement === $('composer');
   for (const el of controls) el.disabled = !on;
-  $('composer').placeholder = on ? `Message ${A.name}${DOTS}` : why;
+  $('composer').placeholder = on ? idlePlaceholder() : why;
   document.querySelector('.inbox').classList.toggle('off', !on);
   if (!on) setPass(false, true);
   else if (refocus.composer) $('composer').focus({ preventScroll: true });
@@ -794,11 +1099,19 @@ async function deliver(payload) {
   return { ok: false, message };
 }
 
-function enqueue(payload) {
-  const job = chain.then(() => deliver(payload));
+/** Sends the bodies in order as one job; the first failure stops the rest (an Enter must not follow a text that never arrived). */
+function enqueueSeq(payloads) {
+  const job = chain.then(async () => {
+    for (const payload of payloads) {
+      const r = await deliver(payload);
+      if (!r.ok) return r;
+    }
+    return { ok: true };
+  });
   chain = job.catch(() => {});
   return job;
 }
+const enqueue = (payload) => enqueueSeq([payload]);
 
 async function sendKey(name) {
   const r = await enqueue({ keys: [name] });
@@ -812,7 +1125,9 @@ function grow() {
   ta.style.height = `${Math.min(ta.scrollHeight, 168)}px`; // 8 lines, then it scrolls
 }
 
+/** Everything that depends on what is in the message box: the paste chip and Rewind (live only for an empty box). */
 function updateChip() {
+  renderQuick();
   const v = composer().value;
   const lines = v.split('\n').length;
   const multi = lines > 1 || v.length > 1024;
@@ -825,23 +1140,43 @@ async function sendComposer() {
   const ta = composer();
   if (sending || ta.disabled) return;
   const value = ta.value;
-  const plan = planSend(value);
+  const plan = S.on ? planShell(value) : planSend(value);
+  if (plan.empty) return; // Shell on and nothing to run: no lone "!"
   if (!plan.ok) {
     showProblem(plan.message, 'error');
     return;
   }
   sending = true;
   $('send').setAttribute('aria-busy', 'true');
-  const r = await enqueue(plan.payload);
+  const r = await enqueueSeq(plan.payloads ?? [plan.payload]);
   sending = false;
   $('send').removeAttribute('aria-busy');
-  if (!r.ok) return; // the text stays in the box
+  if (!r.ok) return; // the text stays in the box, and Shell stays on so a retry still goes as a command
   say(`Sent ${plan.summary} to ${paneId}`);
+  if (S.on) setShell(false); // like Claude's own ! mode: the next message is a message
   if (ta.value === value) {
     ta.value = '';
     grow();
     updateChip();
   }
+}
+
+// ---- Shell mode (spec 9.6): Enter sends Ctrl-U, "!" + the text, Enter; it turns itself off after a successful send -------------
+
+const RSAQUO = String.fromCharCode(0x203a);
+const idlePlaceholder = () => (S.on ? `Shell command for Claude's ! mode${DOTS}` : `Message ${A.name}${DOTS}`);
+
+function setShell(on) {
+  if (on === S.on) return;
+  S.on = on;
+  const toggle = $('shell-toggle');
+  toggle.setAttribute('aria-pressed', String(on));
+  toggle.querySelector('.onoff').textContent = on ? 'on' : 'off';
+  document.querySelector('.inbox').classList.toggle('shell-on', on);
+  document.querySelector('.inbox .prompt').textContent = on ? '!' : RSAQUO;
+  if (!composer().disabled) composer().placeholder = idlePlaceholder();
+  $('shell-hint').hidden = !on;
+  announce(on ? 'Shell mode on' : 'Shell mode off');
 }
 
 // ---- passthrough: keys go straight to the pane ----------------------------------------------------------------------
@@ -871,6 +1206,7 @@ function setPass(on, keepFocus = false) {
     ? `Terminal passthrough for ${A.name}. Every key goes to pane ${paneId}. Press Control and ] to leave.`
     : `Live terminal of ${A.name}, pane ${paneId}`);
   $('pass-toggle').setAttribute('aria-pressed', String(on));
+  $('pass-onoff').textContent = on ? 'on' : 'off';
   if (on) {
     term.focus();
     announce(`Passthrough on: every key goes to pane ${paneId}. Press Control and ] to leave.`);
@@ -937,7 +1273,8 @@ function wireComposer() {
       sendComposer();
     } else if (e.key === 'Escape') {
       e.preventDefault();
-      sendKey('Escape');
+      if (Q.pop) closeModelPop(true); // the Esc ladder (spec 9.10): the model popover first, then the pane
+      else sendKey('Escape');
     } else if (e.ctrlKey && plain && e.key === ']') {
       e.preventDefault();
       setPass(true);
@@ -953,6 +1290,7 @@ function wireComposer() {
     ta.focus();
   });
   $('send').addEventListener('click', () => { sendComposer(); ta.focus(); });
+  $('shell-toggle').addEventListener('click', () => setShell(!S.on)); // focus stays on the toggle; the text stays in the box
   for (const b of document.querySelectorAll('.key')) {
     b.addEventListener('click', async () => {
       if (b.getAttribute('aria-disabled') === 'true') { // Shift-Tab while a prompt needs an answer
@@ -1087,6 +1425,7 @@ function boot() {
   }
   if (paneId) {
     wireSwitcher();
+    wireQuick();
     $('pb-pane').textContent = paneId;
     $('term').setAttribute('aria-label', `Live terminal of ${A.name}, pane ${paneId}`);
     showOverlay(`Connecting to pane ${paneId}${DOTS}`, '');
