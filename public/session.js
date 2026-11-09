@@ -1,5 +1,6 @@
 // nika session window (app tier): transcript history + live terminal mirror + input composer for one agent, with the permission
-// mode switcher, the quick actions (Stop, Compact, Clear, Model, Rewind, End), the permission-prompt buttons and Shell mode.
+// mode switcher, the quick actions (Stop, Compact, Clear, Model, Rewind, End), the permission-prompt buttons, Shell mode and the
+// slash-command palette.
 // URL: session.html?session=<UUID>&pane=<%n>&project=<key>   (pane is sent as %25n, i.e. encodeURIComponent('%n')).
 // Rules: every string from the server is rendered with textContent (h() from dom.js, applyMirror from mirror-render.js);
 // no innerHTML, no inline handlers, element.style only for numbers this file computes. Contracts: docs/contracts/api-app.md.
@@ -10,6 +11,7 @@ import { MODE_META, MODE_TARGETS, modeKey, modeEl, switcherState, modeNote, swit
 import { quickState, cleanPrompt, answerOutcome, escOutcome, promptOff, promptNote, commandFailure, problemKind, planShell } from './quick-actions.js';
 import { MODEL_ID, MODEL_HINT, CUSTOM, fillModelSelect } from './models-ui.js';
 import { openEndDialog } from './end-dialog.js';
+import { paletteQuery, cleanCommands, paletteView, commandsButton, shouldFetch, sourceLabel, insertion, moveActive } from './palette.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const PANE_ID = /^%\d{1,6}$/;
@@ -421,6 +423,10 @@ function roveKeys(bar, buttons) {
 const Q = { ready: false, b: {}, busy: null, pop: false, catalog: null, loading: false, whySig: null, nameSig: null };
 const PA = { sig: null, pending: false, lock: null, esc: null, btns: [] };
 const S = { on: false }; // Shell mode
+// PL: the command palette (spec 9.7). open: is the list on screen; list: null until GET /api/app/commands answered; failed: the first load
+// did not; at: when the last good answer came; busy: a request is in flight; shown: the options on screen; active: the active option's
+// index (-1 = none); said: the last announcement; argFor / argHint: the text just inserted and its argument line.
+const PL = { open: false, list: null, failed: false, at: null, busy: false, shown: [], active: -1, said: null, sayTimer: 0, argFor: '', argHint: '' };
 
 const aria = (b) => b.getAttribute('aria-disabled') === 'true';
 
@@ -959,8 +965,9 @@ const hideOverlay = () => { $('term-over').hidden = true; };
 
 const refocus = { composer: false };
 function setInputEnabled(on, why) {
-  const controls = [$('composer'), $('send'), $('pass-toggle'), $('shell-toggle'), ...document.querySelectorAll('.key')];
+  const controls = [$('composer'), $('send'), $('cmd-btn'), $('pass-toggle'), $('shell-toggle'), ...document.querySelectorAll('.key')];
   if (!on) refocus.composer = refocus.composer || document.activeElement === $('composer');
+  if (!on) closePalette(); // a disabled box fires no blur in every webview
   for (const el of controls) el.disabled = !on;
   $('composer').placeholder = on ? idlePlaceholder() : why;
   document.querySelector('.inbox').classList.toggle('off', !on);
@@ -1139,6 +1146,9 @@ function grow() {
 /** Everything that depends on what is in the message box: the paste chip and Rewind (live only for an empty box). */
 function updateChip() {
   renderQuick();
+  renderCmdBtn();
+  renderArgHint();
+  syncPalette(); // the text may have become (or stopped being) a command query; also closes the list after a send, a clear or an insert
   const v = composer().value;
   const lines = v.split('\n').length;
   const multi = lines > 1 || v.length > 1024;
@@ -1187,7 +1197,153 @@ function setShell(on) {
   document.querySelector('.inbox .prompt').textContent = on ? '!' : RSAQUO;
   if (!composer().disabled) composer().placeholder = idlePlaceholder();
   $('shell-hint').hidden = !on;
+  if (on) closePalette(); // a "/" in Shell mode is shell text
+  renderCmdBtn();
   announce(on ? 'Shell mode on' : 'Shell mode off');
+}
+
+// ---- command palette (spec 9.7; rules and copy: palette.js) ------------------------------------------------------------------------
+// Opens above the message box while the text is "/" + a word, or from the Commands button. Focus never leaves the textarea: the arrow
+// keys move the active option (aria-activedescendant), Enter or Tab inserts it, Esc closes it and keeps the text. Never in Shell mode.
+
+/** The Commands button: aria-disabled (still focusable) while Shell is on or the box holds text. */
+function renderCmdBtn() {
+  const st = commandsButton({ shell: S.on, empty: composer().value === '' });
+  const btn = $('cmd-btn');
+  btn.setAttribute('aria-disabled', String(st.off));
+  btn.title = st.title;
+}
+
+/** "Arguments: [model]" in the hint line, only while the box still starts with the text the palette inserted. */
+function renderArgHint() {
+  const el = $('arg-hint');
+  const show = PL.argFor !== '' && composer().value.startsWith(PL.argFor);
+  el.textContent = show ? PL.argHint : '';
+  el.hidden = !show;
+}
+
+async function loadCommands() {
+  if (PL.busy) return;
+  PL.busy = true;
+  if (PL.list === null) PL.failed = false; // a retry after a failed first load shows "Loading" again
+  const r = await call(`/api/app/commands${projectKey ? `?project=${projectKey}` : ''}`);
+  PL.busy = false;
+  if (r.status === 200 && Array.isArray(r.body?.commands)) {
+    PL.list = cleanCommands(r.body.commands);
+    PL.failed = false;
+    PL.at = Date.now();
+  } else if (PL.list === null) {
+    PL.failed = true; // a failed refresh keeps the list already held
+  }
+  if (PL.open) renderPalette(PL.shown[PL.active]?.name ?? null);
+}
+
+/** Polite, debounced 400 ms, said again only when the text changes (the count) and not at all once the list is closed. */
+function sayPalette(msg) {
+  if (msg === PL.said) return;
+  PL.said = msg;
+  clearTimeout(PL.sayTimer);
+  PL.sayTimer = setTimeout(() => announce(msg), 400);
+}
+
+function optionEl(c, i) {
+  const tag = sourceLabel(c);
+  return h('li', { id: `pal-o-${i}`, class: 'pal-o', role: 'option', 'aria-selected': 'false', onclick: () => choose(i) },
+    h('span', { class: 'pal-n mono' }, h('b', { text: `/${c.name}` }), c.argHint ? h('span', { class: 'pal-a', text: ` ${c.argHint}` }) : null),
+    tag ? h('span', { class: 'pal-s', text: tag }) : null,
+    c.description ? h('span', { class: 'pal-d', text: c.description, title: c.description }) : null,
+    c.dialog ? h('span', { class: 'pal-dlg' }, icon('dialog'), 'Opens a dialog in the terminal') : null);
+}
+
+/** Marks option `i` active (-1 = none) for the eye (aria-selected) and for the screen reader (aria-activedescendant on the box). */
+function setActive(i) {
+  const items = $('palette').children;
+  PL.active = i >= 0 && i < items.length ? i : -1;
+  for (let k = 0; k < items.length; k += 1) items[k].setAttribute('aria-selected', String(k === PL.active));
+  if (PL.active >= 0) {
+    composer().setAttribute('aria-activedescendant', `pal-o-${i}`);
+    items[i].scrollIntoView({ block: 'nearest' });
+  } else {
+    composer().removeAttribute('aria-activedescendant');
+  }
+}
+
+/** Draws the list for the current text. The first option is active, unless `keep` (an option name) is still in the list. */
+function renderPalette(keep = null) {
+  const v = paletteView({ list: PL.list, failed: PL.failed, query: paletteQuery(composer().value) ?? '' });
+  PL.shown = v.items;
+  $('pal-count').textContent = v.head;
+  const note = $('pal-note');
+  note.textContent = v.note;
+  note.hidden = v.note === '';
+  const ul = $('palette');
+  ul.replaceChildren(...v.items.map(optionEl));
+  ul.hidden = v.items.length === 0;
+  setActive(v.items.length === 0 ? -1 : Math.max(0, v.items.findIndex((c) => c.name === keep)));
+  sayPalette(v.say);
+}
+
+function closePalette() {
+  if (!PL.open) return;
+  PL.open = false;
+  clearTimeout(PL.sayTimer);
+  PL.said = null;
+  PL.shown = [];
+  $('pal').hidden = true;
+  $('palette').replaceChildren();
+  setActive(-1);
+}
+
+/** Open, refresh or close the list for what the box holds now. Called at every change of the text (updateChip). */
+function syncPalette() {
+  const q = S.on || composer().disabled ? null : paletteQuery(composer().value);
+  if (q === null) {
+    closePalette();
+    return;
+  }
+  if (!PL.open) {
+    PL.open = true;
+    PL.said = null;
+    $('pal').hidden = false;
+    if (shouldFetch({ loadedAt: PL.at, now: Date.now(), busy: PL.busy })) loadCommands();
+  }
+  renderPalette();
+}
+
+/** Puts "/<name> " in the box; the space closes the list. Focus stays in the box. */
+function insertActive() {
+  const c = PL.shown[PL.active];
+  if (!c) return;
+  const ins = insertion(c);
+  const ta = composer();
+  PL.argFor = ins.hint ? ins.text : '';
+  PL.argHint = ins.hint;
+  ta.value = ins.text;
+  ta.focus();
+  grow();
+  updateChip();
+  announce(ins.hint ? `Inserted ${ins.text.trim()}. ${ins.hint}` : `Inserted ${ins.text.trim()}`);
+}
+
+function choose(i) {
+  setActive(i);
+  insertActive();
+}
+
+function wirePalette() {
+  const ta = composer();
+  const btn = $('cmd-btn');
+  btn.addEventListener('mousedown', (e) => e.preventDefault()); // the box keeps focus, so the list opens under the caret
+  btn.addEventListener('click', () => {
+    if (aria(btn)) return; // stays focusable and does nothing; its title says why
+    ta.value = '/';
+    grow();
+    updateChip(); // "/" is a query: this opens the list
+    ta.focus();
+  });
+  $('pal').addEventListener('mousedown', (e) => e.preventDefault()); // a click in the list does not blur the box
+  ta.addEventListener('blur', closePalette);
+  renderCmdBtn();
 }
 
 // ---- passthrough: keys go straight to the pane ----------------------------------------------------------------------
@@ -1279,12 +1435,22 @@ function wireComposer() {
   ta.addEventListener('keydown', (e) => {
     if (e.isComposing || e.keyCode === 229) return;
     const plain = !e.metaKey && !e.altKey;
-    if (e.key === 'Enter' && !e.shiftKey) {
+    const bare = plain && !e.ctrlKey && !e.shiftKey;
+    const choosing = PL.active >= 0; // the list is open and an option is active
+    if (choosing && bare && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
       e.preventDefault();
-      sendComposer();
+      setActive(moveActive(PL.active, e.key === 'ArrowDown' ? 1 : -1, PL.shown.length));
+    } else if (choosing && bare && e.key === 'Tab') {
+      e.preventDefault();
+      insertActive();
+    } else if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      if (choosing) insertActive(); // no active option (empty list, loading, error, closed): the text is sent as typed
+      else sendComposer();
     } else if (e.key === 'Escape') {
       e.preventDefault();
-      if (Q.pop) closeModelPop(true); // the Esc ladder (spec 9.10): the model popover first, then the pane
+      if (Q.pop) closeModelPop(true); // the Esc ladder (spec 9.10): the model popover, then the palette (text kept), then the pane
+      else if (PL.open) closePalette();
       else sendKey('Escape');
     } else if (e.ctrlKey && plain && e.key === ']') {
       e.preventDefault();
@@ -1312,6 +1478,7 @@ function wireComposer() {
       ta.focus();
     });
   }
+  wirePalette();
 }
 
 function wireTerminal() {

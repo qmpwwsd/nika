@@ -8,6 +8,7 @@ import path from 'node:path';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 import { KEY_NAME } from '../src/ids.js';
+import { moveActive as moveActiveReal } from '../public/palette.js';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const read = (f) => fs.readFileSync(path.join(PUBLIC, f), 'utf8');
@@ -15,6 +16,7 @@ const HTML = read('session.html');
 const JS = {
   'session.js': read('session.js'), 'mirror-render.js': read('mirror-render.js'), 'modes.js': read('modes.js'),
   'quick-actions.js': read('quick-actions.js'), 'models-ui.js': read('models-ui.js'), 'end-dialog.js': read('end-dialog.js'),
+  'palette.js': read('palette.js'),
 };
 const TOKENS = read('tokens.css');
 const CSS = read('session.css');
@@ -136,7 +138,7 @@ describe('session.html under the strict CSP', () => {
 describe('contracts with the other UI modules', () => {
   test('(+) session.js imports only names the shared modules export, from sibling files', () => {
     const imports = [...JS['session.js'].matchAll(/import \{([^}]+)\} from '([^']+)'/g)];
-    assert.deepEqual(imports.map((m) => m[2]), ['./dom.js', './api.js', './mirror-render.js', './modes.js', './quick-actions.js', './models-ui.js', './end-dialog.js']);
+    assert.deepEqual(imports.map((m) => m[2]), ['./dom.js', './api.js', './mirror-render.js', './modes.js', './quick-actions.js', './models-ui.js', './end-dialog.js', './palette.js']);
     for (const [, names, from] of imports) {
       const exported = read(from.slice(2));
       for (const n of names.split(',').map((x) => x.trim())) assert.match(exported, new RegExp(`export (async )?(function|const|let) ${n}\\b`), `${from} exports ${n}`);
@@ -147,7 +149,7 @@ describe('contracts with the other UI modules', () => {
     const src = code(JS['session.js']);
     const paths = [...src.matchAll(/['"`](\/api\/[^'"`]*)/g)].map((m) => m[1]);
     assert.ok(paths.length > 0);
-    for (const p of paths) assert.match(p, /^\/api\/(app\/(session|pane|settings|projects|models)|agents\?since=all)/, p);
+    for (const p of paths) assert.match(p, /^\/api\/(app\/(session|pane|settings|projects|models|commands)|agents\?since=all)/, p);
     assert.match(src, /getJSON\('\/api\/agents\?since=all'\)/);
   });
 
@@ -475,7 +477,7 @@ describe('quick actions, prompt buttons, End dialog and Shell (spec 9.4-9.8)', (
   });
 
   test('(−) the new modules never spell the refused mode (test/ui.test.js allows that only in modes.js)', () => {
-    for (const f of ['session.js', 'quick-actions.js', 'models-ui.js', 'end-dialog.js']) assert.doesNotMatch(JS[f], new RegExp(['bypass', 'Permissions'].join('')), f);
+    for (const f of ['session.js', 'quick-actions.js', 'models-ui.js', 'end-dialog.js', 'palette.js']) assert.doesNotMatch(JS[f], new RegExp(['bypass', 'Permissions'].join('')), f);
   });
 
   test('(+) the prompt panel, quick actions and dialogs have styles: qa row, reason line, prompt buttons, dialog, toast', () => {
@@ -569,5 +571,205 @@ describe('quick actions, prompt buttons, End dialog and Shell (spec 9.4-9.8)', (
     assert.equal(press('ArrowLeft', { shiftKey: true }), false, 'a modified arrow is not handled');
     assert.equal(log.length, before, 'no focus change for the keys it does not handle');
     assert.deepEqual(log.filter((l) => l.startsWith('click')), [], 'nothing was ever clicked');
+  });
+});
+
+describe('command palette wiring (spec 9.7, Task 11)', () => {
+  const tag = (id) => new RegExp(`<[a-z]+\\b[^>]*\\bid="${id}"[^>]*>`).exec(HTML)?.[0] ?? '';
+  const src = code(JS['session.js']);
+  const css = strip(CSS);
+  const fnOf = (head) => {
+    const at = src.indexOf(head);
+    assert.ok(at >= 0, head);
+    return src.slice(at, src.indexOf('\n}\n', at) + 2);
+  };
+
+  test('(+) the textarea controls #palette and has no active descendant until an option is active', () => {
+    const ta = tag('composer');
+    assert.match(ta, /\baria-controls="palette"/);
+    assert.doesNotMatch(ta, /aria-activedescendant/);
+  });
+
+  test('(+) #palette is a listbox labelled Commands inside the hidden #pal, with a count, a key-hint row and a note line', () => {
+    assert.match(tag('palette'), /^<ul\b[^>]*\brole="listbox"[^>]*\baria-label="Commands"/);
+    assert.match(tag('pal'), /\bclass="pal"[^>]*\bhidden\b|\bhidden\b[^>]*\bclass="pal"/);
+    assert.match(tag('pal-note'), /\bhidden\b/);
+    assert.match(tag('pal-count'), /\bclass="muted"/);
+    assert.ok(HTML.indexOf('id="pal"') < HTML.indexOf('id="palette"'));
+    assert.match(HTML, /<span class="pal-k">[\s\S]*Enter<\/kbd> insert[\s\S]*Esc<\/kbd> close/);
+  });
+
+  test('(+) the Commands button: ghost icon button with the i-cmd icon, named "Commands (/)", between the paste chip and Send', () => {
+    const b = /<button\b[^>]*\bid="cmd-btn"[^>]*>[\s\S]*?<\/button>/.exec(HTML)?.[0] ?? '';
+    assert.match(b, /^<button type="button" class="btn ghost icon"/);
+    assert.match(b, /\baria-label="Commands \(\/\)"/);
+    assert.match(b, /<use href="#i-cmd"\/>/);
+    assert.ok(HTML.indexOf('id="paste-chip"') < HTML.indexOf('id="cmd-btn"') && HTML.indexOf('id="cmd-btn"') < HTML.indexOf('id="send"'));
+  });
+
+  test('(+) the palette sits inside the message box (it opens upward from it); the sprite draws i-cmd and i-dialog', () => {
+    const box = HTML.slice(HTML.indexOf('<div class="inbox">'), HTML.indexOf('<div class="keys"'));
+    assert.ok(box.includes('id="pal"') && box.includes('id="palette"'));
+    for (const n of ['i-cmd', 'i-dialog']) assert.match(HTML, new RegExp(`<symbol id="${n}"`));
+  });
+
+  test('(+) the hint line gains the "/ commands" tip and a hidden slot for the argument hint', () => {
+    assert.match(HTML, /<span class="tip"><kbd>\/<\/kbd> commands<\/span>/);
+    assert.match(tag('arg-hint'), /\bhidden\b/);
+    assert.ok(HTML.indexOf('class="hintline"') < HTML.indexOf('id="arg-hint"'));
+  });
+
+  test('(+) the palette styles: anchored to the box, opens upward, 360 px list, active row = accent-soft + 3 px accent edge, no :has()/color-mix()', () => {
+    assert.match(css, /\.inbox\s*\{[^}]*position:\s*relative/);
+    assert.match(css, /\.pal\s*\{[^}]*position:\s*absolute[^}]*bottom:\s*calc\(100% \+ \d+px\)[^}]*box-shadow:\s*var\(--elev-2\)/);
+    assert.match(css, /\.pal\s*\{[^}]*border:\s*1px solid var\(--line-strong\)[^}]*border-radius:\s*var\(--r-md\)/);
+    assert.match(css, /\.pal-l\s*\{[^}]*max-height:\s*min\(360px, \d+vh\)[^}]*overflow:\s*auto/);
+    assert.match(css, /\.pal-o\[aria-selected="true"\]\s*\{[^}]*background:\s*var\(--accent-soft\)[^}]*border-left-color:\s*var\(--accent\)/);
+    assert.match(css, /\.pal-o\s*\{[^}]*border-left:\s*3px solid transparent/);
+    assert.match(css, /\.pal-dlg\s*\{[^}]*color:\s*var\(--idle\)[^}]*font-weight:\s*600/);
+    assert.match(css, /\.btn\.ghost\s*\{/);
+    for (const sel of ['\\.pal-h', '\\.pal-k', '\\.pal-n', '\\.pal-a', '\\.pal-s', '\\.pal-d', '\\.pal-note']) assert.match(css, new RegExp(`(^|[\\s,}])${sel}[\\s,{:\\[]`), sel);
+  });
+
+  // The keydown handler runs for real against stubs, so the key rules are proven, not just spelled.
+  const press = (state, event) => {
+    const calls = [];
+    const ta = { selectionStart: 0, selectionEnd: 0, addEventListener(type, f) { if (type === 'keydown') this.keydown = f; } };
+    const ctx = {
+      composer: () => ta, $: () => ({ addEventListener() {} }), document: { querySelectorAll: () => [] },
+      PL: state.PL, Q: { pop: state.pop === true }, S: { on: false }, moveActive: moveActiveReal,
+      grow() {}, updateChip() {}, wirePalette() {}, setPass() {},
+      sendComposer: () => calls.push('send'), sendKey: (k) => calls.push(`key ${k}`), closeModelPop: () => calls.push('model'),
+      closePalette: () => calls.push('palette'), insertActive: () => calls.push('insert'), setActive: (i) => calls.push(`active ${i}`),
+    };
+    vm.runInNewContext(`${fnOf('function wireComposer()')}; wireComposer`, ctx)();
+    const e = { key: '', shiftKey: false, ctrlKey: false, metaKey: false, altKey: false, isComposing: false, keyCode: 0, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; }, ...event };
+    ta.keydown(e);
+    return { calls, prevented: e.defaultPrevented };
+  };
+  const OPEN = (active, n = 3) => ({ PL: { open: true, active, shown: Array.from({ length: n }, () => ({})) } });
+  const CLOSED = { PL: { open: false, active: -1, shown: [] } };
+
+  test('(+) Enter or Tab with an active option inserts it and sends nothing; the arrows move it without wrapping', () => {
+    assert.deepEqual(press(OPEN(0), { key: 'Enter' }), { calls: ['insert'], prevented: true });
+    assert.deepEqual(press(OPEN(1), { key: 'Tab' }), { calls: ['insert'], prevented: true });
+    assert.deepEqual(press(OPEN(0), { key: 'ArrowDown' }), { calls: ['active 1'], prevented: true });
+    assert.deepEqual(press(OPEN(2), { key: 'ArrowDown' }), { calls: ['active 2'], prevented: true }, 'no wrap at the end');
+    assert.deepEqual(press(OPEN(0), { key: 'ArrowUp' }), { calls: ['active 0'], prevented: true }, 'no wrap at the start');
+  });
+
+  test('(−) Enter with no active option (closed, empty list, loading, error) sends the text as typed', () => {
+    assert.deepEqual(press(CLOSED, { key: 'Enter' }), { calls: ['send'], prevented: true });
+    assert.deepEqual(press({ PL: { open: true, active: -1, shown: [] } }, { key: 'Enter' }), { calls: ['send'], prevented: true });
+  });
+
+  test('(−) with no active option Tab and the arrows keep their normal job (focus move, caret)', () => {
+    for (const state of [CLOSED, { PL: { open: true, active: -1, shown: [] } }]) {
+      for (const key of ['Tab', 'ArrowDown', 'ArrowUp']) assert.deepEqual(press(state, { key }), { calls: [], prevented: false }, key);
+    }
+  });
+
+  test('(−) Shift+Enter and Shift+Tab are not the palette\'s: a new line and a backwards Tab', () => {
+    assert.deepEqual(press(OPEN(0), { key: 'Enter', shiftKey: true }), { calls: [], prevented: false });
+    assert.deepEqual(press(OPEN(0), { key: 'Tab', shiftKey: true }), { calls: [], prevented: false });
+  });
+
+  test('(−) keys during IME composition are left alone', () => {
+    assert.deepEqual(press(OPEN(0), { key: 'Enter', isComposing: true }), { calls: [], prevented: false });
+    assert.deepEqual(press(OPEN(0), { key: 'ArrowDown', keyCode: 229 }), { calls: [], prevented: false });
+  });
+
+  test('(+) the Esc ladder: model popover first, then the palette, then the pane', () => {
+    assert.deepEqual(press({ ...OPEN(0), pop: true }, { key: 'Escape' }).calls, ['model']);
+    assert.deepEqual(press(OPEN(0), { key: 'Escape' }).calls, ['palette']);
+    assert.deepEqual(press({ PL: { open: true, active: -1, shown: [] } }, { key: 'Escape' }).calls, ['palette'], 'an open list with no option closes too');
+    assert.deepEqual(press(CLOSED, { key: 'Escape' }).calls, ['key Escape']);
+    const rung = /if \(Q\.pop\) closeModelPop\(true\);\s*else if \(PL\.open\) closePalette\(\);\s*else sendKey\('Escape'\);/;
+    assert.match(fnOf('function wireComposer()'), rung);
+  });
+
+  test('(+) closing keeps the text: Esc and closePalette never write the box', () => {
+    assert.doesNotMatch(fnOf('function closePalette()'), /\.value\s*=[^=]/);
+    const esc = /else if \(e\.key === 'Escape'\) \{[\s\S]*?\n {4}\}/.exec(fnOf('function wireComposer()'))?.[0] ?? '';
+    assert.doesNotMatch(esc, /\.value\s*=[^=]/);
+  });
+
+  test('(+) Shell never opens it: syncPalette closes on Shell, turning Shell on closes it, the button follows Shell', () => {
+    assert.match(fnOf('function syncPalette()'), /S\.on \|\| composer\(\)\.disabled \? null : paletteQuery\(composer\(\)\.value\)/);
+    assert.match(fnOf('function setShell(on)'), /if \(on\) closePalette\(\)/);
+    assert.match(fnOf('function renderCmdBtn()'), /commandsButton\(\{ shell: S\.on, empty: composer\(\)\.value === '' \}\)/);
+    assert.match(fnOf('function setShell(on)'), /renderCmdBtn\(\)/);
+  });
+
+  test('(+) every change of the box text re-evaluates the palette (input, send, clear, insert), so a sent or cleared box closes it', () => {
+    const chip = fnOf('function updateChip()');
+    assert.match(chip, /syncPalette\(\)/);
+    assert.match(chip, /renderCmdBtn\(\)/);
+    assert.match(chip, /renderArgHint\(\)/);
+  });
+
+  test('(+) the Commands button: empty box inserts "/" and opens; aria-disabled does nothing; the mouse keeps focus in the box', () => {
+    const wired = fnOf('function wirePalette()');
+    assert.match(wired, /btn\.addEventListener\('mousedown', \(e\) => e\.preventDefault\(\)\)/);
+    assert.match(wired, /if \(aria\(btn\)\) return;/, 'aria-disabled: nothing happens');
+    assert.match(wired, /ta\.value = '\/';[\s\S]*updateChip\(\);[\s\S]*ta\.focus\(\)/);
+    assert.match(wired, /\$\('pal'\)\.addEventListener\('mousedown', \(e\) => e\.preventDefault\(\)\)/, 'a click in the list does not blur the box');
+    assert.match(wired, /ta\.addEventListener\('blur', closePalette\)/);
+  });
+
+  test('(+) the Commands button joins the controls disabled with the pane, and a disabled box closes the palette', () => {
+    const set = fnOf('function setInputEnabled(');
+    assert.match(set, /const controls = \[[^\]]*\$\('cmd-btn'\)/);
+    assert.match(set, /if \(!on\) closePalette\(\)/);
+  });
+
+  test('(+) fetch: GET /api/app/commands (project key only when there is one), at open, one at a time, refresh after 10 s', () => {
+    assert.match(src, /call\(`\/api\/app\/commands\$\{projectKey \? `\?project=\$\{projectKey\}` : ''\}`\)/);
+    const load = fnOf('async function loadCommands()');
+    assert.match(load, /if \(PL\.busy\) return;\s*PL\.busy = true;/);
+    assert.match(load, /Array\.isArray\(r\.body\?\.commands\)/);
+    assert.match(load, /cleanCommands\(r\.body\.commands\)/);
+    const sync = fnOf('function syncPalette()');
+    assert.match(sync, /if \(!PL\.open\) \{[\s\S]*shouldFetch\(\{ loadedAt: PL\.at, now: Date\.now\(\), busy: PL\.busy \}\)\) loadCommands\(\)/);
+    assert.equal((src.match(/loadCommands\(\)/g) ?? []).length, 2, 'declared once, called once (from the open path)');
+  });
+
+  test('(+) options: role=option with aria-selected, id for aria-activedescendant, a click inserts, all text through textContent', () => {
+    const opt = fnOf('function optionEl(');
+    assert.match(opt, /role: 'option'/);
+    assert.match(opt, /'aria-selected': 'false'/);
+    assert.match(opt, /onclick: /);
+    assert.match(opt, /icon\('dialog'\)/);
+    assert.match(opt, /Opens a dialog in the terminal/);
+    assert.match(opt, /sourceLabel\(c\)/);
+    assert.match(opt, /title: c\.description/, 'the full description is in the title');
+    assert.doesNotMatch(opt, /\bhtml\b/i);
+  });
+
+  test('(+) aria-activedescendant exists only while an option is active', () => {
+    const set = fnOf('function setActive(');
+    assert.match(set, /setAttribute\('aria-activedescendant', `pal-o-\$\{i\}`\)/);
+    assert.match(set, /removeAttribute\('aria-activedescendant'\)/);
+    assert.match(fnOf('function closePalette()'), /setActive\(-1\)/);
+  });
+
+  test('(+) the announcement is polite and debounced 400 ms, repeated only when the text changes, and dropped on close', () => {
+    const say = fnOf('function sayPalette(');
+    assert.match(say, /if \(msg === PL\.said\) return;/);
+    assert.match(say, /setTimeout\(\(\) => announce\(msg\), 400\)/);
+    assert.match(fnOf('function closePalette()'), /clearTimeout\(PL\.sayTimer\)/);
+  });
+
+  test('(+) choosing writes "/<name> " into the box, closes the list, keeps focus, and shows the argument hint', () => {
+    const ins = fnOf('function insertActive()');
+    assert.match(ins, /insertion\(c\)/);
+    assert.match(ins, /ta\.value = ins\.text/);
+    assert.match(ins, /ta\.focus\(\)/);
+    assert.match(fnOf('function renderArgHint()'), /PL\.argFor/);
+  });
+
+  test('(−) palette.js is imported by name, and session.js never builds the command text by hand', () => {
+    assert.match(JS['session.js'], /import \{[^}]*\bpaletteQuery\b[^}]*\} from '\.\/palette\.js';/);
+    assert.doesNotMatch(src, /`\/\$\{c\.name\} `|'\/' \+ c\.name/);
   });
 });

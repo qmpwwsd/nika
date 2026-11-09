@@ -27,6 +27,7 @@ const STATIC = new Map([
   ['/quick-actions.js', ['quick-actions.js', 'text/javascript; charset=utf-8']],
   ['/models-ui.js', ['models-ui.js', 'text/javascript; charset=utf-8']],
   ['/end-dialog.js', ['end-dialog.js', 'text/javascript; charset=utf-8']],
+  ['/palette.js', ['palette.js', 'text/javascript; charset=utf-8']],
   ['/favicon.svg', ['favicon.svg', 'image/svg+xml']],
 ]);
 const CSP = [

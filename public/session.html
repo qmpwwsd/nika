@@ -37,6 +37,8 @@
   <symbol id="i-rewind" viewBox="0 0 16 16"><path d="M2.5 8a5.5 5.5 0 1 0 1.6-3.9M2.5 2.5v2.6h2.6"/></symbol>
   <symbol id="i-end" viewBox="0 0 16 16"><path d="M8 1.8V8M4.6 4.2a5 5 0 1 0 6.8 0"/></symbol>
   <symbol id="i-chev" viewBox="0 0 16 16"><path d="m4.5 6.5 3.5 3.5 3.5-3.5"/></symbol>
+  <symbol id="i-cmd" viewBox="0 0 16 16"><rect x="1.8" y="1.8" width="12.4" height="12.4" rx="2"/><path d="M9.8 4.5 6.2 11.5"/></symbol>
+  <symbol id="i-dialog" viewBox="0 0 16 16"><rect x="1.8" y="2.8" width="12.4" height="10.4" rx="1.5"/><path d="M1.8 5.8h12.4"/></symbol>
 </svg>
 
 <header class="bar" id="bar">
@@ -129,9 +131,15 @@
           <button type="button" class="shell" id="shell-toggle" aria-pressed="false" title="Shell mode: send the text as a ! command"><svg class="ic" aria-hidden="true"><use href="#i-shell"/></svg><span>Shell</span><span class="onoff" aria-hidden="true">off</span></button>
           <span class="prompt" aria-hidden="true">&rsaquo;</span>
           <label for="composer" class="sr-only" id="composer-label">Message to the agent. Enter sends, Shift+Enter adds a line, Escape goes to the pane.</label>
-          <textarea id="composer" rows="1" spellcheck="false" autocomplete="off" autocapitalize="off" placeholder="Message the agent&hellip;"></textarea>
+          <textarea id="composer" rows="1" spellcheck="false" autocomplete="off" autocapitalize="off" aria-controls="palette" placeholder="Message the agent&hellip;"></textarea>
           <span class="paste-chip" id="paste-chip" hidden><span id="paste-n"></span><button type="button" id="paste-clear">Clear</button></span>
+          <button type="button" class="btn ghost icon" id="cmd-btn" aria-label="Commands (/)" title="Commands (/)" aria-disabled="false"><svg class="ic" aria-hidden="true"><use href="#i-cmd"/></svg></button>
           <button type="button" class="btn primary icon" id="send" aria-label="Send (Enter)" title="Send (Enter)"><svg class="ic" aria-hidden="true"><use href="#i-send"/></svg></button>
+          <div class="pal" id="pal" hidden>
+            <div class="pal-h"><span><b>Commands</b> <span class="muted" id="pal-count"></span></span><span class="pal-k"><kbd>&uarr;</kbd><kbd>&darr;</kbd> choose <kbd>Enter</kbd> insert <kbd>Esc</kbd> close</span></div>
+            <p class="pal-note" id="pal-note" hidden></p>
+            <ul class="pal-l" id="palette" role="listbox" aria-label="Commands" hidden></ul>
+          </div>
         </div>
         <div class="keys" role="group" aria-label="Send a key to the pane">
           <span class="lbl" aria-hidden="true">Keys</span>
@@ -146,7 +154,8 @@
           <button type="button" class="key" data-key="Enter">Enter</button>
         </div>
         <div class="hintline">
-          <span class="tip"><kbd>Enter</kbd> send</span><span class="tip"><kbd>Shift</kbd>+<kbd>Enter</kbd> new line</span><span class="tip"><kbd>Esc</kbd> goes to the pane</span><span class="tip"><kbd>Ctrl</kbd>+<kbd>]</kbd> type into pane</span>
+          <span class="tip"><kbd>Enter</kbd> send</span><span class="tip"><kbd>/</kbd> commands</span><span class="tip"><kbd>Shift</kbd>+<kbd>Enter</kbd> new line</span><span class="tip"><kbd>Esc</kbd> goes to the pane</span><span class="tip"><kbd>Ctrl</kbd>+<kbd>]</kbd> type into pane</span>
+          <span class="arg-hint" id="arg-hint" hidden></span>
           <span class="shell-hint" id="shell-hint" hidden>Shell on: Enter runs this through Claude&rsquo;s ! mode, then shell turns off.</span>
           <span class="problem" id="problem" role="alert"></span>
           <span class="echo" id="echo" aria-live="polite"></span>
