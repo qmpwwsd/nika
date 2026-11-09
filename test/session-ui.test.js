@@ -8,7 +8,7 @@ import path from 'node:path';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 import { KEY_NAME } from '../src/ids.js';
-import { moveActive as moveActiveReal } from '../public/palette.js';
+import { moveActive as moveActiveReal, cleanCommands as cleanCommandsReal, paletteQuery as paletteQueryReal, shouldFetch as shouldFetchReal } from '../public/palette.js';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const read = (f) => fs.readFileSync(path.join(PUBLIC, f), 'utf8');
@@ -724,7 +724,7 @@ describe('command palette wiring (spec 9.7, Task 11)', () => {
   });
 
   test('(+) fetch: GET /api/app/commands (project key only when there is one), at open, one at a time, refresh after 10 s', () => {
-    assert.match(src, /call\(`\/api\/app\/commands\$\{projectKey \? `\?project=\$\{projectKey\}` : ''\}`\)/);
+    assert.match(src, /\/api\/app\/commands\$\{on \? `\?project=\$\{projectKey\}` : ''\}/, 'the project key only when asked for');
     const load = fnOf('async function loadCommands()');
     assert.match(load, /if \(PL\.busy\) return;\s*PL\.busy = true;/);
     assert.match(load, /Array\.isArray\(r\.body\?\.commands\)/);
@@ -732,6 +732,107 @@ describe('command palette wiring (spec 9.7, Task 11)', () => {
     const sync = fnOf('function syncPalette()');
     assert.match(sync, /if \(!PL\.open\) \{[\s\S]*shouldFetch\(\{ loadedAt: PL\.at, now: Date\.now\(\), busy: PL\.busy \}\)\) loadCommands\(\)/);
     assert.equal((src.match(/loadCommands\(\)/g) ?? []).length, 2, 'declared once, called once (from the open path)');
+  });
+
+  // -- fix round 1 (review of Task 11)
+  test('(+) a repeated Enter (the key held down) does nothing, on the insert path and on the send path', () => {
+    assert.deepEqual(press(OPEN(0), { key: 'Enter', repeat: true }), { calls: [], prevented: true }, 'a held Enter never inserts a second time');
+    assert.deepEqual(press(CLOSED, { key: 'Enter', repeat: true }), { calls: [], prevented: true }, 'and never sends what the first one inserted');
+    assert.deepEqual(press({ PL: { open: true, active: -1, shown: [] } }, { key: 'Enter', repeat: true }), { calls: [], prevented: true });
+    assert.deepEqual(press(CLOSED, { key: 'Enter', ctrlKey: true, repeat: true }), { calls: [], prevented: true }, 'a held Ctrl+Enter too');
+  });
+
+  test('(−) the first Enter (repeat false) still inserts the active option, and still sends when there is none', () => {
+    assert.deepEqual(press(OPEN(0), { key: 'Enter', repeat: false }), { calls: ['insert'], prevented: true });
+    assert.deepEqual(press(CLOSED, { key: 'Enter', repeat: false }), { calls: ['send'], prevented: true });
+  });
+
+  test('(+) only a bare Enter inserts: Ctrl, Cmd or Alt+Enter keep the send path they had before the palette', () => {
+    for (const mods of [{ ctrlKey: true }, { metaKey: true }, { altKey: true }]) {
+      assert.deepEqual(press(OPEN(0), { key: 'Enter', ...mods }), { calls: ['send'], prevented: true }, JSON.stringify(mods));
+    }
+    assert.deepEqual(press(OPEN(0), { key: 'Enter' }), { calls: ['insert'], prevented: true }, 'bare Enter inserts');
+  });
+
+  // loadCommands and the focus rule run for real against stubs
+  const load = async ({ projectKey, answers, pl = {} }) => {
+    const paths = [];
+    const PL = { open: false, list: null, failed: false, at: null, busy: false, shown: [], active: -1, noProject: false, ...pl };
+    const ctx = { PL, projectKey, call: async (path) => { paths.push(path); return answers.shift() ?? { status: 500, body: null }; }, cleanCommands: cleanCommandsReal, renderPalette() {}, Date };
+    await vm.runInNewContext(`${fnOf('async function loadCommands()')}; loadCommands`, ctx)();
+    return { paths, PL };
+  };
+  const KEY = 'projectkey000000';
+  const ONE = { status: 200, body: { commands: [{ name: 'compact', description: 'x', argHint: '', source: 'builtin' }] } };
+
+  test('(+) a 404 for the project key retries once without it and uses that list; later loads skip the project query', async () => {
+    const r = await load({ projectKey: KEY, answers: [{ status: 404, body: { error: 'not_found' } }, ONE] });
+    assert.deepEqual(r.paths, [`/api/app/commands?project=${KEY}`, '/api/app/commands']);
+    assert.equal(r.PL.list.length, 1);
+    assert.equal(r.PL.failed, false);
+    assert.equal(r.PL.noProject, true);
+    const again = await load({ projectKey: KEY, answers: [ONE], pl: { noProject: true } });
+    assert.deepEqual(again.paths, ['/api/app/commands'], 'the fallback is remembered for the window');
+  });
+
+  test('(+) a normal answer asks with the project key, once', async () => {
+    const r = await load({ projectKey: KEY, answers: [ONE] });
+    assert.deepEqual(r.paths, [`/api/app/commands?project=${KEY}`]);
+    assert.equal(r.PL.noProject, false);
+  });
+
+  test('(−) any other failure makes no second call and keeps the error copy path (failed first load)', async () => {
+    for (const status of [500, 403, 0, 400]) {
+      const r = await load({ projectKey: KEY, answers: [{ status, body: null }, ONE] });
+      assert.equal(r.paths.length, 1, String(status));
+      assert.equal(r.PL.failed, true, String(status));
+      assert.equal(r.PL.list, null);
+      assert.equal(r.PL.noProject, false);
+    }
+  });
+
+  test('(−) no project key: a 404 is not retried; a 404 on the retry is the error state and does not loop', async () => {
+    const none = await load({ projectKey: null, answers: [{ status: 404, body: null }, ONE] });
+    assert.deepEqual(none.paths, ['/api/app/commands']);
+    assert.equal(none.PL.failed, true);
+    const twice = await load({ projectKey: KEY, answers: [{ status: 404, body: null }, { status: 404, body: null }, ONE] });
+    assert.equal(twice.paths.length, 2);
+    assert.equal(twice.PL.failed, true);
+  });
+
+  const focusRig = ({ shell = false, value = '/co' } = {}) => {
+    const calls = [];
+    const listeners = {};
+    const PL = { open: false, said: null, busy: false, at: null };
+    const ta = { value, disabled: false, addEventListener(type, f) { listeners[type] = f; } };
+    const el = () => ({ addEventListener() {}, hidden: true });
+    const ctx = {
+      PL, S: { on: shell }, composer: () => ta, $: el, aria: () => false, paletteQuery: paletteQueryReal, shouldFetch: shouldFetchReal, Date, renderCmdBtn() {},
+      loadCommands: () => calls.push('load'), renderPalette: () => calls.push('render'), closePalette: () => calls.push('close'),
+    };
+    vm.runInNewContext(`${fnOf('function syncPalette()')}\n${fnOf('function wirePalette()')}; wirePalette`, ctx)();
+    return { calls, listeners, PL };
+  };
+
+  test('(+) the box regaining focus with a command query reopens the palette', () => {
+    assert.match(fnOf('function wirePalette()'), /ta\.addEventListener\('focus', syncPalette\)/);
+    const r = focusRig({ value: '/co' });
+    r.listeners.focus();
+    assert.equal(r.PL.open, true);
+    assert.deepEqual(r.calls, ['load', 'render']);
+  });
+
+  test('(−) it does not reopen with Shell on, nor for text that is not a command query', () => {
+    const shell = focusRig({ shell: true });
+    shell.listeners.focus();
+    assert.equal(shell.PL.open, false);
+    assert.deepEqual(shell.calls, ['close']);
+    for (const value of ['hello', '', '/compact x']) {
+      const r = focusRig({ value });
+      r.listeners.focus();
+      assert.equal(r.PL.open, false, value);
+      assert.deepEqual(r.calls, ['close'], value);
+    }
   });
 
   test('(+) options: role=option with aria-selected, id for aria-activedescendant, a click inserts, all text through textContent', () => {

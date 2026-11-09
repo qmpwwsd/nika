@@ -425,8 +425,9 @@ const PA = { sig: null, pending: false, lock: null, esc: null, btns: [] };
 const S = { on: false }; // Shell mode
 // PL: the command palette (spec 9.7). open: is the list on screen; list: null until GET /api/app/commands answered; failed: the first load
 // did not; at: when the last good answer came; busy: a request is in flight; shown: the options on screen; active: the active option's
-// index (-1 = none); said: the last announcement; argFor / argHint: the text just inserted and its argument line.
-const PL = { open: false, list: null, failed: false, at: null, busy: false, shown: [], active: -1, said: null, sayTimer: 0, argFor: '', argHint: '' };
+// index (-1 = none); said: the last announcement; argFor / argHint: the text just inserted and its argument line; noProject: the project
+// key got a 404, so this window asks without it from now on.
+const PL = { open: false, list: null, failed: false, at: null, busy: false, shown: [], active: -1, said: null, sayTimer: 0, argFor: '', argHint: '', noProject: false };
 
 const aria = (b) => b.getAttribute('aria-disabled') === 'true';
 
@@ -1226,7 +1227,12 @@ async function loadCommands() {
   if (PL.busy) return;
   PL.busy = true;
   if (PL.list === null) PL.failed = false; // a retry after a failed first load shows "Loading" again
-  const r = await call(`/api/app/commands${projectKey ? `?project=${projectKey}` : ''}`);
+  const path = (on) => `/api/app/commands${on ? `?project=${projectKey}` : ''}`;
+  let r = await call(path(projectKey && !PL.noProject));
+  if (r.status === 404 && projectKey && !PL.noProject) { // a key the app does not know: the built-in, user and plugin commands still work
+    PL.noProject = true;
+    r = await call(path(false));
+  }
   PL.busy = false;
   if (r.status === 200 && Array.isArray(r.body?.commands)) {
     PL.list = cleanCommands(r.body.commands);
@@ -1343,6 +1349,7 @@ function wirePalette() {
   });
   $('pal').addEventListener('mousedown', (e) => e.preventDefault()); // a click in the list does not blur the box
   ta.addEventListener('blur', closePalette);
+  ta.addEventListener('focus', syncPalette); // back in the box with "/co" still in it: the list returns (never in Shell mode)
   renderCmdBtn();
 }
 
@@ -1445,7 +1452,8 @@ function wireComposer() {
       insertActive();
     } else if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      if (choosing) insertActive(); // no active option (empty list, loading, error, closed): the text is sent as typed
+      if (e.repeat) return; // a held Enter would insert a command and then send it
+      if (choosing && bare) insertActive(); // no active option (empty list, loading, error, closed) or a modifier: the normal send path
       else sendComposer();
     } else if (e.key === 'Escape') {
       e.preventDefault();
