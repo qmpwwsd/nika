@@ -1,4 +1,4 @@
-// The End-session dialog (docs/design/spec.md section 9.8), shared by the session window and, later, the dashboard row menu.
+// The End-session dialog (docs/design/spec.md section 9.8), shared by the session window and the dashboard row menu.
 // The page holds the markup (<dialog id="end-dlg"> with #end-h, #end-alert, #end-d, #end-note, #end-wait, #end-cancel, #end-go:
 // see session.html); this file fills it, runs POST /api/app/pane/:id/end and moves focus. Every line the dialog shows comes from
 // quick-actions.js (fixed copy): the response's text is never displayed, only its status, `error` code and `ended` flag are read.

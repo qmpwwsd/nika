@@ -298,7 +298,7 @@ describe('quick actions, prompt buttons, End dialog and Shell (spec 9.4-9.8)', (
     assert.ok(order.every((i) => i > 0), 'all six are inside #qa');
     assert.deepEqual(order, [...order].sort((a, b) => a - b), 'Stop, Compact, Clear, Model, Rewind, End');
     assert.ok(bar.indexOf('class="sp"') > order[4] && bar.indexOf('class="sp"') < order[5], 'a spacer pushes End to the right');
-    assert.match(whole('qa-end'), /class="btn danger"/);
+    assert.match(whole('qa-end'), /class="btn danger"/, 'plain danger, not filled (spec)');
   });
 
   test('(+) #qa is a labelled toolbar described by #qa-why, which is not a live region; only Stop is a Tab stop at first', () => {
@@ -366,7 +366,7 @@ describe('quick actions, prompt buttons, End dialog and Shell (spec 9.4-9.8)', (
     assert.equal(textOf(whole('end-cancel')), 'Cancel');
     assert.match(whole('end-cancel'), /\bautofocus\b/);
     assert.equal(textOf(whole('end-go')), 'End session');
-    assert.match(whole('end-go'), /class="btn danger"/);
+    assert.match(whole('end-go'), /class="btn danger fill"/, 'spec 9.8: End session is danger, filled');
     assert.match(tag('end-alert'), /role="alert"/);
     assert.match(tag('end-alert'), /\bhidden\b/);
     assert.match(tag('end-alert'), /data-kind="danger"/);
@@ -381,7 +381,7 @@ describe('quick actions, prompt buttons, End dialog and Shell (spec 9.4-9.8)', (
     assert.equal(textOf(whole('clear-cancel')), 'Cancel');
     assert.match(whole('clear-cancel'), /\bautofocus\b/);
     assert.equal(textOf(whole('clear-go')), 'Clear conversation');
-    assert.match(whole('clear-go'), /class="btn danger"/);
+    assert.match(whole('clear-go'), /class="btn danger"/, 'plain danger, not filled (spec)');
   });
 
   test('(+) #prompt-btns is a hidden group labelled by the question, in the composer above the message box', () => {

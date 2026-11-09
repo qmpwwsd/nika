@@ -129,22 +129,35 @@ function endedText(a) {
   return a.lastPrompt || 'Ended';
 }
 
+/** The Ended disclosure draws its rows under this scope, so a row's menu button has a different data-fk once its agent is ended. */
+const endedScope = (scope) => `${scope}-e`;
+
 /**
  * "End session..." (app tier): loads the End dialog on first use, puts focus on the row's menu button so Cancel returns there, and
- * opens it. `working` and `promptOpen` only choose the dialog's muted line.
+ * opens it. `working` and `promptOpen` only choose the dialog's muted line. A chunk that fails to load or a dialog that throws shows
+ * one fixed toast: the error's own text never reaches the page.
  */
-async function endSession(a, menuFk) {
+async function endSession(a, menuFk, endedFk) {
   if (!isApp) return;
-  const { openEndDialog } = await import('./end-dialog.js');
-  $(`[data-fk="${CSS.escape(menuFk)}"]`)?.focus();
-  openEndDialog({ pane: a.pane.id, name: a.name, working: a.state === 'busy', promptOpen: Boolean(a.attention), onEnded: () => afterEnd(menuFk) });
+  try {
+    const { openEndDialog } = await import('./end-dialog.js');
+    $(`[data-fk="${CSS.escape(menuFk)}"]`)?.focus();
+    openEndDialog({ pane: a.pane.id, name: a.name, working: a.state === 'busy', promptOpen: Boolean(a.attention), onEnded: () => afterEnd(a, endedFk) });
+  } catch {
+    toast("Couldn't open the End dialog.", { kind: 'error' });
+  }
 }
 
-/** Claude exited: toast, read the list again, then focus the row's menu button, or the heading when the row moved to Ended or is gone. */
-async function afterEnd(menuFk) {
+/**
+ * Claude exited: toast, read the list again, then focus the row's menu button. /api/agents is cached for 1.5 s, so the list can
+ * still show the agent live (its row is about to move into Ended and would drop focus): focus the button only when the agent now
+ * shows as ended and its row, in the Ended group, is on screen. Otherwise (still live, gone, or the group is collapsed) the heading.
+ */
+async function afterEnd(a, endedFk) {
   toast('Session ended');
   await refresh();
-  const btn = $(`[data-fk="${CSS.escape(menuFk)}"]`);
+  const now = (state.data?.groups ?? []).flatMap((g) => g.agents).find((x) => x.id === a.id);
+  const btn = now && sOf(now) === 'ended' ? $(`[data-fk="${CSS.escape(endedFk)}"]`) : null;
   if (btn && btn.offsetParent !== null) btn.focus();
   else $('.screen:not([hidden]) h1')?.focus();
 }
@@ -153,7 +166,7 @@ function rowEl(a, g, { scope, showProject = false }) {
   const s = sOf(a);
   const mode = isApp ? rowMode(a, state.modes.map) : null;
   const href = isApp ? sessionHref({ session: a.id, pane: a.pane?.id, project: g.project?.key }) : null;
-  const fk = (k) => `${k}:${scope}:${a.id}`;
+  const fk = (k, sc = scope) => `${k}:${sc}:${a.id}`;
   const what = s === 'attn' ? reasonOf(a) : s === 'ended' ? endedText(a) : a.lastPrompt || '(no prompt yet)';
 
   const items = [{ text: 'Copy resume command', run: () => copyText(a.resumeCmd, 'resume command') }];
@@ -161,7 +174,7 @@ function rowEl(a, g, { scope, showProject = false }) {
   if (a.bridgeUrl && SHAPE.claudeUrl.test(a.bridgeUrl)) items.push({ text: 'Open in claude.ai ↗', href: a.bridgeUrl });
   if (a.live && a.pane) items.push({ text: `Focus pane ${a.pane.id} in tmux`, run: () => focusPane(a.pane.id) });
   if (isApp && canEndRow(a, state.modes.map)) {
-    items.push({ text: 'End session…', run: () => endSession(a, fk('m')) });
+    items.push({ text: 'End session…', run: () => endSession(a, fk('m'), fk('m', endedScope(scope))) });
   }
 
   const li = h('li', { class: 'row', 'data-s': s },
@@ -216,7 +229,7 @@ export function agentNodes(g, q, scope, { endedOpen = false } = {}) {
     const open = state.open.has(id) || (def && !state.open.has(`!${id}`));
     const d = h('details', { class: 'ended', open },
       h('summary', { 'data-fk': `sum:${id}`, text: `Ended (${ended.length})` }),
-      rowsEl(ended, g, { scope: `${scope}-e` }, `${g.label} ended agents`));
+      rowsEl(ended, g, { scope: endedScope(scope) }, `${g.label} ended agents`));
     d.addEventListener('toggle', () => {
       if (d.open) { state.open.add(id); state.open.delete(`!${id}`); } else { state.open.delete(id); state.open.add(`!${id}`); }
     });

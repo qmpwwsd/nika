@@ -399,6 +399,11 @@ function briefProblem(text, bytes) {
   return bytes > BRIEF_MAX ? 'The brief is over 64 KB.' : '';
 }
 
+/** The model id the sheet would send: the select's value, or the Custom ID field's text (trimmed) when Custom ID is selected. */
+function spawnModel() {
+  return $('#sp-model').value === CUSTOM ? $('#sp-model-custom').value.trim() : $('#sp-model').value;
+}
+
 function validateSpawn() {
   const bad = [];
   const name = $('#sp-name');
@@ -435,7 +440,7 @@ async function submitSpawn(e) {
   $('#sp-alert').hidden = true;
   const name = $('#sp-name').value;
   const place = $('input[name="sp-place"]:checked')?.value ?? 'settings';
-  const model = $('#sp-model').value === CUSTOM ? $('#sp-model-custom').value.trim() : $('#sp-model').value;
+  const model = spawnModel();
   const req = { project: g.project.key, name, model, brief: $('#sp-brief').value };
   if ($('#sp-perm').value) req.permissionMode = $('#sp-perm').value;
   if (place === 'under' && sp.under) req.under = sp.under;

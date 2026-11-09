@@ -59,7 +59,7 @@ const BYPASS_NOTE = 'Claude runs every tool without asking.';
 
 /**
  * The mode tag: span.mode.<cls>[data-confirmed][title] > icon + sr-only "Permission mode: " + label (+ "unconfirmed").
- * Default: icon + label (+ the word). compact: the word moves to sr-only. iconOnly: the label moves to sr-only too.
+ * Default: icon + label (+ the word). compact: the word moves to sr-only, after a comma ("Accept edits, unconfirmed"). iconOnly: the label moves to sr-only too.
  */
 export function modeEl(mode, { confirmed = true, compact = false, iconOnly = false } = {}) {
   const meta = MODE_META[modeKey(mode)];
@@ -70,7 +70,7 @@ export function modeEl(mode, { confirmed = true, compact = false, iconOnly = fal
     icon(meta.icon),
     h('span', { class: 'sr-only', text: 'Permission mode: ' }),
     h('span', { class: iconOnly ? 'sr-only' : 'ml', text: meta.label }),
-    !sure && h('span', { class: quiet ? 'sr-only' : 'mnote', text: 'unconfirmed' }));
+    !sure && (quiet ? h('span', { class: 'sr-only', text: ', unconfirmed' }) : h('span', { class: 'mnote', text: 'unconfirmed' })));
 }
 
 // Exact copy of the reason line (spec 9.3). Results of a switch reuse the lines that say the same thing.

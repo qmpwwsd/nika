@@ -109,12 +109,25 @@ describe('modeEl', () => {
     assert.equal(el.getAttribute('title'), "Permission mode: Plan (not confirmed: Claude's footer is covered or not shown yet)");
   });
 
-  test('(+) compact: an unconfirmed tag keeps the word for screen readers and the title, not on screen', () => {
+  test('(+) compact: an unconfirmed tag keeps the word for screen readers and the title, not on screen, after a separator', () => {
     const el = modeEl('auto', { confirmed: false, compact: true });
     assert.equal(el.find((n) => n.className === 'mnote').length, 0);
-    assert.ok(el.find((n) => n.className === 'sr-only' && n.textContent === 'unconfirmed').length === 1);
+    assert.ok(el.find((n) => n.className === 'sr-only' && n.textContent === ', unconfirmed').length === 1);
+    assert.equal(textOf(el), 'Permission mode: Auto, unconfirmed', 'the text reads as one phrase, not "Autounconfirmed"');
     assert.match(el.getAttribute('title'), /not confirmed/);
     assert.equal(el.getAttribute('data-confirmed'), 'false');
+  });
+
+  test('(+) icon-only keeps the same phrase; the full tag shows the bare word on screen', () => {
+    assert.equal(textOf(modeEl('manual', { confirmed: false, iconOnly: true })), 'Permission mode: Manual, unconfirmed');
+    const full = modeEl('plan', { confirmed: false });
+    assert.equal(full.find((n) => n.className === 'mnote')[0].textContent, 'unconfirmed', 'the visible note has no separator');
+  });
+
+  test('(−) a confirmed tag never says unconfirmed, in any variant', () => {
+    for (const opts of [{}, { compact: true }, { iconOnly: true }, { confirmed: true, compact: true }]) {
+      assert.doesNotMatch(textOf(modeEl('plan', opts)), /unconfirmed/, JSON.stringify(opts));
+    }
   });
 
   test('(+) iconOnly: the label moves to sr-only and the tag gets the icon-only class', () => {

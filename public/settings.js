@@ -157,7 +157,7 @@ async function save(e) {
     r = await appFetch('/api/app/settings', {
       method: 'PUT',
       json: {
-        models: Object.fromEntries(ROLES.map((r) => [r, roleValue(r)])),
+        models: Object.fromEntries(ROLES.map((role) => [role, roleValue(role)])),
         remoteControl: { enabled: $('#set-rc').checked, prefix: $('#set-rc-prefix').value.trim() },
         permissionMode: radio('perm'),
         panePlacement: radio('place'),

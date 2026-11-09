@@ -253,7 +253,7 @@ describe('CSS', () => {
   const ruleSelectors = (css) => [...css.replace(/\/\*[\s\S]*?\*\//g, '').matchAll(/([^{}]+)\{[^{}]*\}/g)].flatMap((m) => m[1].split(',').map((x) => x.trim()));
   const keyframes = (css) => [...css.replace(/\/\*[\s\S]*?\*\//g, '').matchAll(/@keyframes\s+([\w-]+)/g)].map((m) => m[1]);
   const SHARED = ['dialog', 'dialog::backdrop', 'dialog[open]', 'dialog.dlg-confirm', '.dlg-head', '.dlg-head h2', '.dlg-body', '.dlg-foot', '.alert', '.alert p', '.alert .ic',
-    '.alert[data-kind="danger"]', '.alert[data-kind="danger"] .ic', '.toasts', '.toast', '.toast p', '.spin', '.btn.danger', '.btn.danger:hover'];
+    '.alert[data-kind="danger"]', '.alert[data-kind="danger"] .ic', '.toasts', '.toast', '.toast p', '.spin', '.btn.danger', '.btn.danger:hover', '.btn.danger.fill', '.btn.danger.fill:hover'];
 
   test('(+) dialog, alert and toast rules (and .spin, .btn.danger and their keyframes) are defined once, in tokens.css', () => {
     const tokens = ruleSelectors(read('tokens.css'));
@@ -283,6 +283,35 @@ describe('CSS', () => {
     assert.match(tokens, /\.dlg-confirm \.alert \{[^}]*font-weight: 600/);
     assert.match(tokens, /\.dlg-body \.muted \{[^}]*font-size: var\(--fs-small\)/);
     assert.match(tokens, /\.dlg-body p \{[^}]*margin: 0/);
+  });
+
+  test('(+) .btn.danger.fill is the filled danger button of spec 9.8: danger fill and border, surface text, and the fill survives hover', () => {
+    const tokens = read('tokens.css').replace(/\/\*[\s\S]*?\*\//g, '');
+    assert.match(tokens, /\.btn\.danger\.fill \{[^}]*background: var\(--danger\);[^}]*color: var\(--surface\);[^}]*border-color: var\(--danger\);/);
+    const hover = /\.btn\.danger\.fill:hover \{([^}]*)\}/.exec(tokens)?.[1] ?? '';
+    assert.match(hover, /background: var\(--danger\);/, 'hover keeps the fill');
+    assert.match(hover, /border-color: var\(--danger\);/);
+    assert.match(hover, /color: var\(--surface\);/);
+    assert.doesNotMatch(hover, /danger-soft/, 'the pale hover of the plain danger button would wash the label out');
+    assert.ok(tokens.indexOf('.btn.danger.fill {') > tokens.indexOf('.btn.danger:hover {'), 'declared after the plain danger rules, so the fill wins by order as well');
+  });
+
+  test('(+) End session in the dashboard dialog and in the session window is the filled danger button', () => {
+    for (const page of ['index.html', 'session.html']) {
+      const btn = new RegExp('<button\\b[^>]*\\bid="end-go"[^>]*>').exec(read(page))?.[0] ?? '';
+      assert.match(btn, /class="btn danger fill"/, page);
+    }
+  });
+
+  test('(−) fill is on those two buttons only: the quick-actions End, the Clear dialog and the dashboard confirm stay plain danger', () => {
+    const tagOf = (page, id) => new RegExp(`<button\\b[^>]*\\bid="${id}"[^>]*>`).exec(read(page))?.[0] ?? '';
+    for (const [page, id] of [['index.html', 'cf-ok'], ['session.html', 'qa-end'], ['session.html', 'clear-go']]) {
+      const btn = tagOf(page, id);
+      assert.match(btn, /class="btn danger\b/, `${page} #${id} is still danger`);
+      assert.doesNotMatch(btn, /\bfill\b/, `${page} #${id} is not filled`);
+    }
+    const uses = ['index.html', 'session.html'].flatMap((f) => [...read(f).matchAll(/class="[^"]*\bfill\b[^"]*"/g)]);
+    assert.equal(uses.length, 2, 'two buttons use .fill, nothing else');
   });
 
   test('(−) the owner-banned word never appears in the shipped UI', () => {

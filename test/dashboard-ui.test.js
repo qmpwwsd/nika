@@ -10,6 +10,7 @@ import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 import { MODE_META, parseModes, modesAfter, rowMode, canEndRow } from '../public/modes.js';
 import { CUSTOM, fillModelSelect } from '../public/models-ui.js';
+import { h } from '../public/dom.js';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const read = (f) => fs.readFileSync(path.join(PUBLIC, f), 'utf8');
@@ -273,7 +274,8 @@ describe('dashboard row', () => {
   });
 
   test('(+) the row menu gets "End session…" after the other items, for live agents with a pane in the latest /modes answer only', () => {
-    assert.match(APP, /if \(isApp && canEndRow\(a, state\.modes\.map\)\) \{\s*items\.push\(\{ text: 'End session…', run: \(\) => endSession\(a, fk\('m'\)\) \}\);\s*\}/);
+    assert.match(APP, /if \(isApp && canEndRow\(a, state\.modes\.map\)\) \{\s*items\.push\(\{ text: 'End session…', run: \(\) => endSession\(a, fk\('m'\), fk\('m', endedScope\(scope\)\)\) \}\);\s*\}/);
+    assert.match(fn(APP, 'export function agentNodes('), /scope: endedScope\(scope\)/, 'the Ended group draws its rows under the scope the End item computes');
     const row = fn(APP, 'function rowEl(');
     assert.ok(row.indexOf('Focus pane') < row.indexOf('End session'), 'the destructive item is last');
   });
@@ -284,15 +286,9 @@ describe('dashboard row', () => {
     assert.doesNotMatch(row, /s !== 'ended'[^\n]*End session|End session[^\n]*s !== 'ended'/);
   });
 
-  test('(+) End opens end-dialog.js with the agent\'s name, working = busy and promptOpen = attention; after ended it toasts and redraws', () => {
-    const f = fn(APP, 'async function endSession(');
-    assert.match(f, /openEndDialog\(\{ pane: a\.pane\.id, name: a\.name, working: a\.state === 'busy', promptOpen: Boolean\(a\.attention\), onEnded: \(\) => afterEnd\(menuFk\) \}\)/);
-    assert.match(f, /\?\.focus\(\);\s*openEndDialog/, 'focus is on the row\'s menu button when the dialog opens, so Cancel returns there');
-    const after = fn(APP, 'async function afterEnd(');
-    assert.match(after, /toast\('Session ended'\)/);
-    assert.match(after, /await refresh\(\)/);
-    assert.match(after, /offsetParent !== null/, 'a button inside a closed disclosure counts as gone');
-    assert.match(after, /h1'\)\?\.focus\(\)/, 'the heading when the row is gone');
+  test('(+) End loads end-dialog.js on first use (a dynamic import), so the dashboard does not pay for it up front', () => {
+    assert.match(fn(APP, 'async function endSession('), /await import\('\.\/end-dialog\.js'\)/);
+    assert.doesNotMatch(APP, /^import[^\n]*end-dialog\.js/m);
   });
 
   test('(+) a mode change redraws the lists: the dashboard signature includes the map', () => {
@@ -303,6 +299,133 @@ describe('dashboard row', () => {
   test('(+) the sprite of the dashboard draws every mode icon modes.js can ask for', () => {
     const symbols = new Set([...HTML.matchAll(/<symbol id="i-([a-z-]+)"/g)].map((m) => m[1]));
     for (const meta of Object.values(MODE_META)) assert.ok(symbols.has(meta.icon), meta.icon);
+  });
+});
+
+// ---- End from the row menu (app.js endSession and afterEnd, run in a vm against stubs) ---------------------------------------
+//
+// import() in a vm needs a Node flag, so the rig swaps the one dynamic import for a call to a stub loader; the code under test is
+// otherwise the page's own text.
+
+describe('End session from the row menu', () => {
+  const sOfSrc = fn(APP, 'export function sOf(').replace('export ', '');
+  const endSrc = fn(APP, 'async function endSession(').replace("import('./end-dialog.js')", 'loadEndDialog()');
+  const afterSrc = fn(APP, 'async function afterEnd(');
+  const SECRET = 'chunk 7f3a failed at /srv/secret-path';
+  const LIVE = { id: 'agent-a', name: 'builder-1', live: true, state: 'busy', attention: null, pane: { id: '%3' } };
+  const live = (over = {}) => ({ ...LIVE, ...over });
+  const ended = (over = {}) => ({ ...LIVE, live: false, state: 'ended', ...over });
+  const MENU = 'm:g1:agent-a';
+  const ENDED_MENU = 'm:g1-e:agent-a';
+  const btn = (events, name, visible = true) => ({ offsetParent: visible ? {} : null, focus: () => events.push(`focus:${name}`) });
+
+  /** buttons: { fk: { visible } }; after: the agents the list holds once refresh has run. */
+  const rig = ({ isApp = true, buttons = {}, after = [], dialog = {}, loader } = {}) => {
+    const events = [];
+    const toasts = [];
+    const opened = [];
+    const nodes = Object.fromEntries(Object.entries(buttons).map(([k, v]) => [k, btn(events, k, v.visible)]));
+    const h1 = { focus: () => events.push('focus:h1') };
+    const ctx = {
+      isApp,
+      state: { data: null },
+      CSS: { escape: (x) => x },
+      $: (sel) => {
+        if (sel === '.screen:not([hidden]) h1') return h1;
+        const fk = /^\[data-fk="(.*)"\]$/.exec(sel)?.[1];
+        return (fk && nodes[fk]) || null;
+      },
+      toast: (text, opts) => { toasts.push([text, opts]); events.push(`toast:${text}`); },
+      refresh: async () => { events.push('refresh'); ctx.state.data = { groups: [{ agents: after }] }; },
+      loadEndDialog: loader ?? (async () => ({ openEndDialog: (o) => { opened.push(o); if (dialog.throws) throw new Error(SECRET); } })),
+    };
+    const run = vm.runInNewContext(`${sOfSrc}\n${afterSrc}\n${endSrc}\n({ endSession, afterEnd })`, ctx);
+    return { ...run, events, toasts, opened, ctx };
+  };
+
+  test('(+) End puts focus on the row\'s menu button, then opens the dialog with the pane, the name, working = busy and promptOpen = attention', async () => {
+    const { endSession, events, opened } = rig({ buttons: { [MENU]: {} } });
+    await endSession(live(), MENU, ENDED_MENU);
+    assert.deepEqual(events, [`focus:${MENU}`], 'focus first, so Cancel returns there');
+    assert.equal(opened.length, 1);
+    assert.deepEqual({ ...opened[0], onEnded: typeof opened[0].onEnded }, { pane: '%3', name: 'builder-1', working: true, promptOpen: false, onEnded: 'function' });
+    const second = rig({ buttons: { [MENU]: {} } });
+    await second.endSession(live({ state: 'idle', attention: 'permission prompt' }), MENU, ENDED_MENU);
+    assert.deepEqual([second.opened[0].working, second.opened[0].promptOpen], [false, true]);
+  });
+
+  test('(−) off the app tier nothing loads and nothing opens', async () => {
+    let loads = 0;
+    const { endSession, opened, events } = rig({ isApp: false, loader: async () => { loads += 1; return { openEndDialog() {} }; } });
+    await endSession(live(), MENU, ENDED_MENU);
+    assert.equal(loads, 0);
+    assert.deepEqual([opened.length, events.length], [0, 0]);
+  });
+
+  test('(+) a chunk that cannot load shows the fixed error toast and never the error\'s own text; the click handler does not reject', async () => {
+    const { endSession, toasts, opened } = rig({ buttons: { [MENU]: {} }, loader: async () => { throw new Error(SECRET); } });
+    await assert.doesNotReject(endSession(live(), MENU, ENDED_MENU));
+    assert.deepEqual(JSON.parse(JSON.stringify(toasts)), [["Couldn't open the End dialog.", { kind: 'error' }]]); // JSON: the vm has its own Object
+    assert.equal(opened.length, 0);
+  });
+
+  test('(+) a dialog that throws while opening gets the same fixed toast', async () => {
+    const { endSession, toasts, opened } = rig({ buttons: { [MENU]: {} }, dialog: { throws: true } });
+    await assert.doesNotReject(endSession(live(), MENU, ENDED_MENU));
+    assert.equal(opened.length, 1);
+    assert.deepEqual(JSON.parse(JSON.stringify(toasts)), [["Couldn't open the End dialog.", { kind: 'error' }]]); // JSON: the vm has its own Object
+  });
+
+  test('(−) no error text reaches the page: the secret string is in no toast, whichever step fails', async () => {
+    for (const opts of [{ loader: async () => { throw new Error(SECRET); } }, { dialog: { throws: true } }]) {
+      const { endSession, toasts } = rig({ buttons: { [MENU]: {} }, ...opts });
+      await endSession(live(), MENU, ENDED_MENU);
+      assert.equal(JSON.stringify(toasts).includes(SECRET), false);
+      assert.equal(JSON.stringify(toasts).includes('secret'), false);
+    }
+  });
+
+  test('(+) when the dialog reports ended: toast first, read the list again, then focus the ended row\'s menu button if that row is visible', async () => {
+    const { endSession, events, opened } = rig({ buttons: { [ENDED_MENU]: {} }, after: [ended()] });
+    await endSession(live(), MENU, ENDED_MENU);
+    events.length = 0;
+    await opened[0].onEnded();
+    assert.deepEqual(events, ['toast:Session ended', 'refresh', `focus:${ENDED_MENU}`]);
+  });
+
+  test('(+) a stale list (/api/agents is cached 1.5 s) that still shows the agent live sends focus to the heading, not to a row that is about to move', async () => {
+    const { afterEnd, events } = rig({ buttons: { [MENU]: {} }, after: [live()] });
+    await afterEnd(live(), ENDED_MENU);
+    assert.deepEqual(events, ['toast:Session ended', 'refresh', 'focus:h1']);
+  });
+
+  test('(−) the status decides, not the DOM: a visible button under the ended scope is not focused while the list still says live', async () => {
+    const { afterEnd, events } = rig({ buttons: { [MENU]: {}, [ENDED_MENU]: {} }, after: [live()] });
+    await afterEnd(live(), ENDED_MENU);
+    assert.deepEqual(events.slice(-1), ['focus:h1']);
+  });
+
+  test('(−) an ended row inside the closed Ended disclosure is not visible: heading', async () => {
+    const { afterEnd, events } = rig({ buttons: { [ENDED_MENU]: { visible: false } }, after: [ended()] });
+    await afterEnd(live(), ENDED_MENU);
+    assert.deepEqual(events.slice(-1), ['focus:h1']);
+    assert.equal(events.includes(`focus:${ENDED_MENU}`), false);
+  });
+
+  test('(−) the agent is gone from the list, or only another agent\'s button exists: heading, never somebody else\'s button', async () => {
+    const gone = rig({ buttons: { 'm:g1-e:agent-b': {} }, after: [] });
+    await gone.afterEnd(live(), ENDED_MENU);
+    assert.deepEqual(gone.events.slice(-1), ['focus:h1']);
+    const other = rig({ buttons: { 'm:g1-e:agent-b': {} }, after: [ended({ id: 'agent-b' }), ended()] });
+    await other.afterEnd(live(), ENDED_MENU);
+    assert.deepEqual(other.events.slice(-1), ['focus:h1'], 'the ended agent has no button on screen');
+  });
+
+  test('(−) no data after the refresh (the list could not be read): heading', async () => {
+    const r = rig({ buttons: { [ENDED_MENU]: {} } });
+    r.ctx.refresh = async () => { r.events.push('refresh'); };
+    await r.afterEnd(live(), ENDED_MENU);
+    assert.deepEqual(r.events.slice(-1), ['focus:h1']);
   });
 });
 
@@ -373,7 +496,7 @@ describe('Settings and spawn sheet pickers', () => {
     const open = fn(PROJECT, 'function openSpawn(');
     assert.match(open, /fillModelSelect\(\$\('#sp-model'\), state\.models, pref\.model \?\? roles\[0\]\.value, roles\)/);
     assert.match(open, /\$\('#sp-model-custom'\)\.hidden = !custom;/);
-    assert.match(PROJECT, /const model = \$\('#sp-model'\)\.value === CUSTOM \? \$\('#sp-model-custom'\)\.value\.trim\(\) : \$\('#sp-model'\)\.value;/);
+    assert.match(fn(PROJECT, 'async function submitSpawn('), /const model = spawnModel\(\);/, 'one reading of the picker, the one the tests below run');
     assert.match(fn(PROJECT, 'function validateSpawn('), /MODEL_ID\.test\(/);
   });
 
@@ -381,5 +504,180 @@ describe('Settings and spawn sheet pickers', () => {
     assert.match(PROJECT, /export async function loadModels\(\) \{[^}]*appFetch\('\/api\/app\/models'\)/);
     assert.match(fn(PROJECT, 'export async function initApp('), /loadModels\(\)/);
     assert.match(SETTINGS, /await loadModels\(\)/, 'Settings retries the catalog when the first load failed');
+  });
+});
+
+// ---- the pickers, run against fake nodes ---------------------------------------------------------------------------------
+
+describe('Settings role pickers (settings.js fillRoles and roleValue)', () => {
+  const CATALOG = [
+    { id: 'claude-sonnet-5-5', label: 'Sonnet 5.5', group: 'latest' },
+    { id: 'opus', label: 'Opus', group: 'alias' },
+    { id: 'claude-old-1', label: 'Old 1', group: 'older' },
+  ];
+  const ROLE_NAMES = ['orchestrator', 'reasoner', 'builder', 'scout'];
+  const saved = (over = {}) => ({ orchestrator: 'opus', reasoner: 'claude-sonnet-5-5', builder: 'claude-old-1', scout: 'opus', ...over });
+
+  const rig = (catalog) => {
+    const nodes = new Map();
+    const node = (sel) => { if (!nodes.has(sel)) nodes.set(sel, new FNode(sel.endsWith('-custom') ? 'input' : 'select')); return nodes.get(sel); };
+    const head = [/^const ROLES = .*$/m, /^const roleSel = .*$/m, /^const roleCustom = .*$/m].map((re) => re.exec(SETTINGS)?.[0]);
+    assert.ok(head.every(Boolean), 'ROLES, roleSel and roleCustom exist');
+    const ctx = { $: node, state: { models: catalog }, fillModelSelect, CUSTOM };
+    const api = vm.runInNewContext(`${head.join('\n')}\n${fn(SETTINGS, 'function fillRoles(')}\n${fn(SETTINGS, 'function roleValue(')}\n({ ROLES, fillRoles, roleValue, roleSel, roleCustom })`, ctx);
+    return { ...api, ctx };
+  };
+
+  test('(+) a catalog id or alias comes back unchanged, with the custom field empty and hidden', () => {
+    const { ROLES, fillRoles, roleValue, roleSel, roleCustom } = rig(CATALOG);
+    assert.deepEqual([...ROLES], ROLE_NAMES);
+    const models = saved();
+    fillRoles(models);
+    for (const r of ROLE_NAMES) {
+      assert.equal(roleValue(r), models[r], r);
+      assert.equal(roleSel(r).value, models[r], `${r} selects the catalog entry`);
+      assert.deepEqual([roleCustom(r).value, roleCustom(r).hidden], ['', true], r);
+    }
+  });
+
+  test('(+) a custom id that is not in the catalog opens as Custom ID with the field filled and comes back unchanged', () => {
+    const { fillRoles, roleValue, roleSel, roleCustom } = rig(CATALOG);
+    fillRoles(saved({ builder: 'claude-private-9' }));
+    assert.equal(roleSel('builder').value, CUSTOM);
+    assert.deepEqual([roleCustom('builder').value, roleCustom('builder').hidden], ['claude-private-9', false]);
+    assert.equal(roleValue('builder'), 'claude-private-9');
+    assert.equal(roleValue('scout'), 'opus', 'the other roles are untouched');
+  });
+
+  test('(−) when /models failed (no catalog) every saved id survives as Custom ID: Save would send exactly what was loaded', () => {
+    const { fillRoles, roleValue, roleSel, roleCustom } = rig(null);
+    const models = saved();
+    fillRoles(models);
+    for (const r of ROLE_NAMES) {
+      assert.equal(roleSel(r).value, CUSTOM, r);
+      assert.equal(roleCustom(r).hidden, false, r);
+      assert.equal(roleValue(r), models[r], r);
+    }
+  });
+
+  test('(−) a failed loadModels leaves state.models as it was, so the same round-trip holds afterwards', async () => {
+    const calls = [];
+    const state = { models: null };
+    const answers = [new Error('down'), { status: 500, body: {} }, { status: 200, body: { models: 'x' } }, { status: 200, body: {} }];
+    const ctx = { state, appFetch: (url) => { calls.push(url); const a = answers.shift(); return a instanceof Error ? Promise.reject(a) : Promise.resolve(a); }, Array };
+    const loadModels = vm.runInNewContext(`${fn(PROJECT, 'export async function loadModels(').replace('export ', '')}\nloadModels`, ctx);
+    await assert.rejects(loadModels(), /down/, 'a network error reaches the caller, which catches it');
+    for (let i = 0; i < 3; i += 1) await loadModels();
+    assert.equal(state.models, null);
+    assert.deepEqual(calls, Array(4).fill('/api/app/models'));
+    const { fillRoles, roleValue } = rig(state.models);
+    fillRoles(saved({ builder: 'claude-sonnet-5-5' }));
+    assert.equal(roleValue('builder'), 'claude-sonnet-5-5');
+    state.models = CATALOG; // an earlier catalog survives a later failure
+    answers.push({ status: 500, body: {} });
+    await loadModels();
+    assert.equal(state.models, CATALOG);
+  });
+
+  test('(+) loadModels keeps a catalog that is an array', async () => {
+    const state = { models: null };
+    const loadModels = vm.runInNewContext(`${fn(PROJECT, 'export async function loadModels(').replace('export ', '')}\nloadModels`, { state, Array, appFetch: async () => ({ status: 200, body: { models: CATALOG } }) });
+    await loadModels();
+    assert.deepEqual(state.models, CATALOG);
+  });
+
+  test('(−) the hidden custom field is ignored once another entry is chosen: its leftover text is never saved', () => {
+    const { fillRoles, roleValue, roleSel, roleCustom } = rig(CATALOG);
+    fillRoles(saved({ scout: 'claude-private-9' }));
+    roleSel('scout').value = 'opus';
+    roleCustom('scout').hidden = true;
+    assert.equal(roleValue('scout'), 'opus');
+    roleSel('scout').value = CUSTOM;
+    roleCustom('scout').value = '  claude-private-10  ';
+    assert.equal(roleValue('scout'), 'claude-private-10', 'trimmed');
+  });
+});
+
+describe('spawn sheet model picker (project.js openSpawn and spawnModel)', () => {
+  const CATALOG = [
+    { id: 'claude-sonnet-5-5', label: 'Sonnet 5.5', group: 'latest' },
+    { id: 'opus', label: 'Opus', group: 'alias' },
+    { id: 'claude-old-1', label: 'Old 1', group: 'older' },
+  ];
+  const SETTINGS_MODELS = { builder: 'claude-sonnet-5-5', reasoner: 'claude-opus-5-5', scout: 'haiku', orchestrator: 'claude-fable-1' };
+  const group = { project: { key: 'k1' }, label: 'demo', agents: [] };
+
+  const rig = ({ catalog = CATALOG, settings = { models: SETTINGS_MODELS, permissionMode: 'default', panePlacement: 'beside' }, pref } = {}) => {
+    const nodes = new Map();
+    const node = (sel) => { if (!nodes.has(sel)) nodes.set(sel, new FNode(sel === '#sp-model' ? 'select' : 'input')); return nodes.get(sel); };
+    const spawnPrefs = new Map(pref ? [['k1', pref]] : []);
+    const ctx = {
+      $: node, h, state: { models: catalog, settings }, fillModelSelect, CUSTOM, spawnPrefs, sp: {},
+      limitInfo: () => ({ reached: false, running: 1, max: 5 }), toast() {}, spawnName: () => 'builder-1',
+      PERM_LABEL: { default: 'Ask first', plan: 'Plan' }, PLACE_LABEL: { beside: 'Beside' },
+      fieldError() {}, briefCount() {}, openDialog() {},
+    };
+    const api = vm.runInNewContext(`${fn(PROJECT, 'function openSpawn(')}\n${fn(PROJECT, 'function spawnModel(')}\n({ openSpawn, spawnModel })`, ctx);
+    return { ...api, node, ctx };
+  };
+  const optionsOf = (sel) => sel.kids.flatMap((k) => (k.tag === 'optgroup' ? k.kids.map((o) => [k.attrs.label, o.attrs.value, o.textContent]) : [[null, k.attrs.value, k.textContent]]));
+
+  test('(+) the Roles optgroup lists the four configured models first; the first role is chosen and is what a spawn would send', () => {
+    const { openSpawn, spawnModel, node } = rig();
+    openSpawn(group);
+    const rows = optionsOf(node('#sp-model'));
+    assert.deepEqual(rows.filter((r) => r[0] === 'Roles'), [
+      ['Roles', 'claude-sonnet-5-5', 'Builder · claude-sonnet-5-5'],
+      ['Roles', 'claude-opus-5-5', 'Reasoner · claude-opus-5-5'],
+      ['Roles', 'haiku', 'Scout · haiku'],
+      ['Roles', 'claude-fable-1', 'Orchestrator · claude-fable-1'],
+    ]);
+    assert.equal(rows[0][0], 'Roles', 'Roles come first');
+    assert.equal(rows.at(-1)[1], CUSTOM, 'Custom ID comes last');
+    assert.equal(node('#sp-model').value, 'claude-sonnet-5-5');
+    assert.equal(node('#sp-model-custom').hidden, true);
+    assert.equal(spawnModel(), 'claude-sonnet-5-5');
+  });
+
+  test('(+) choosing another role sends that role\'s model, not the first one', () => {
+    const { openSpawn, spawnModel, node } = rig();
+    openSpawn(group);
+    node('#sp-model').value = 'haiku';
+    assert.equal(spawnModel(), 'haiku');
+    node('#sp-model').value = 'claude-old-1';
+    assert.equal(spawnModel(), 'claude-old-1', 'a catalog entry works too');
+  });
+
+  test('(+) a remembered model that is in the catalog is selected again; one that is not opens as Custom ID with the field filled', () => {
+    const known = rig({ pref: { model: 'claude-old-1' } });
+    known.openSpawn(group);
+    assert.deepEqual([known.node('#sp-model').value, known.node('#sp-model-custom').hidden, known.spawnModel()], ['claude-old-1', true, 'claude-old-1']);
+    const odd = rig({ pref: { model: 'claude-private-9' } });
+    odd.openSpawn(group);
+    assert.equal(odd.node('#sp-model').value, CUSTOM);
+    assert.deepEqual([odd.node('#sp-model-custom').value, odd.node('#sp-model-custom').hidden], ['claude-private-9', false]);
+    assert.equal(odd.spawnModel(), 'claude-private-9');
+    odd.node('#sp-model-custom').value = '  claude-private-10 ';
+    assert.equal(odd.spawnModel(), 'claude-private-10', 'trimmed');
+  });
+
+  test('(−) Custom ID never sends its marker value, and an empty field sends an empty id for the validator to refuse', () => {
+    const { openSpawn, spawnModel, node } = rig();
+    openSpawn(group);
+    node('#sp-model').value = CUSTOM;
+    node('#sp-model-custom').value = '';
+    assert.equal(spawnModel(), '');
+    assert.notEqual(spawnModel(), CUSTOM);
+  });
+
+  test('(−) without a catalog (the /models call failed) the roles are still offered and the first is chosen; without settings the four aliases stand in', () => {
+    const noCatalog = rig({ catalog: null });
+    noCatalog.openSpawn(group);
+    assert.deepEqual(optionsOf(noCatalog.node('#sp-model')).map((r) => r[0] ?? '-'), ['Roles', 'Roles', 'Roles', 'Roles', '-'], 'four roles, then Custom ID');
+    assert.equal(noCatalog.spawnModel(), 'claude-sonnet-5-5');
+    const noSettings = rig({ settings: null });
+    noSettings.openSpawn(group);
+    assert.deepEqual(optionsOf(noSettings.node('#sp-model')).filter((r) => r[0] === 'Roles').map((r) => r[1]), ['opus', 'sonnet', 'haiku', 'fable']);
+    assert.equal(noSettings.spawnModel(), 'opus');
   });
 });

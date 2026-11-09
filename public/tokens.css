@@ -161,6 +161,8 @@
    dialogs, alerts and toasts live here once. Page-only dialogs (side sheet, rules, report) stay in app.css. ASCII only. */
 .btn.danger { color: var(--danger); border-color: var(--danger); }
 .btn.danger:hover { background: var(--danger-soft); }
+.btn.danger.fill { background: var(--danger); color: var(--surface); border-color: var(--danger); font-weight: 600; }
+.btn.danger.fill:hover { background: var(--danger); color: var(--surface); border-color: var(--danger); filter: brightness(0.92); }
 .spin { display: inline-block; width: 12px; height: 12px; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; animation: st-spin 0.8s linear infinite; vertical-align: -2px; }
 @keyframes st-spin { to { transform: rotate(360deg); } }
 
