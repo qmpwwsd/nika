@@ -245,7 +245,7 @@ The real app follows the OS theme (there is no theme key in `config.json`); the 
 Usage rules:
 - Colour carries status only. Chrome stays neutral; `--accent` marks interaction (primary button, links, focus, selected nav).
 - `--text-muted` is the lightest text allowed. Never put muted text on `--surface-3`.
-- `--line` separates; `--line-strong` outlines interactive controls (inputs, secondary buttons, key chips) because it clears 3:1.
+- `--line` separates; `--line-strong` outlines interactive controls (inputs, secondary buttons, `kbd` keycaps) because it clears 3:1. **(built amendment 2026-11-09 (0.3.3))**
 - Soft backgrounds (`--*-soft`) always carry their own foreground (`--busy` on `--busy-soft`, never `--text-muted`).
 
 ### 2.2 Status: colour + shape + words
@@ -279,7 +279,7 @@ Numbers use `font-variant-numeric: tabular-nums` (`.num`). Mono is used for pane
 - Spacing: 4 px grid. Row padding 4/8/4/12; card padding 14; screen gutter 16; section gap 20–24; dialog body padding 16.
 - Radii: 4 (chips, keys, kbd), 6 (buttons, inputs, menus), 10 (cards, dialogs, row lists), 999 (status pills, rules badge).
 - Elevation: 1 = resting cards (light only), 2 = menus, toasts, jump-to-live, 3 = dialogs. Dark mode uses lines instead of `--elev-1`.
-- Control heights: 28 (buttons, search), 32 (inputs, large buttons, stepper), 26 (key chips), 24 minimum for any target.
+- Control heights: 28 (buttons, search), 32 (inputs, large buttons, stepper), 26 (the Shell toggle), 24 minimum for any target.
 
 ### 2.5 Motion
 
@@ -627,6 +627,10 @@ Grid per line: old no (3.5em) · new no (3.5em) · marker (1.5em) · text. Mono 
 ### 3.10 Input composer
 
 Monospace textarea with a "›" prompt, grows 1 → 8 lines (20 px each), then scrolls. Placeholder "Message builder-1…".
+Its keys are in §4.2; there is no row of key buttons (§3.11). **(built amendment 2026-11-09 (0.3.3))**
+
+Order inside the composer, top to bottom: quick actions and their reason line (§9.4) · model popover (while open) ·
+attention note or prompt panel (§9.5) · message box · mode row ("Mode" + switcher + reason line, §9.3) · hint line.
 
 | State | Look |
 |---|---|
@@ -635,12 +639,27 @@ Monospace textarea with a "›" prompt, grows 1 → 8 lines (20 px each), then s
 | multi-line paste | chip "Pasted 14 lines · sends as one paste [Clear]" |
 | X | pane gone / tmux error: disabled, placeholder "Pane is gone" |
 | rate-limited | line under the box in `--idle`: "Too fast: max 20 keys per second. Your text is kept." (`role="alert"`) |
-| echo | right side of the hint line: "Sent 23 characters + Enter to %12" (polite live region) |
+| echo | right side of the hint line, polite live region: "Sent 23 characters + Enter to %12", "Sent Esc to %12", "Sent Shift-Tab to %12", one line per arrow run ("Sent 3 × Down to %12", "Sent 5 arrow keys to %12") |
 | permission prompt | attention note above: "reviewer-2 asks to run a command. Use ↑ ↓ and Enter to choose, or Esc to refuse." |
 
-### 3.11 Key chips
+Hint line, left side, then the argument hint, the shell hint, the problem line and the echo (right); the row wraps.
+Tips (keycaps as the Keyboard shortcuts window writes them; macOS glyphs run together in one `kbd`):
 
-26 px high, min 32 wide, mono 12/600, 2 px bottom border (keycap). Set: Esc · Ctrl-C · Tab · Shift-Tab · ↑ ↓ ← → · Enter. Arrow chips have `aria-label="Up arrow"` etc. Pressed: bottom border 1 px + 1 px translate. Disabled with the composer. While the status is Needs you, the Shift-Tab chip is aria-disabled with `title` "Answer the prompt first" (in a permission prompt Shift-Tab can pick an "allow for this session" option; contract §3: no Shift-Tab shortcut while a prompt is open). Passthrough keeps sending what the user types. Clicking a chip sends the key and returns focus to the composer.
+| macOS | Linux | Shown |
+|---|---|---|
+| `Esc` `⌃C` `⇧Tab` go to Claude | `Esc` `Ctrl+C` `Shift+Tab` go to Claude | always |
+| `↑` `↓` `Enter` too, in an empty box | same | composer wider than 940 px |
+| `⌃⇧Tab` moves focus back | `Ctrl+Shift+Tab` moves focus back | always |
+| `⌘/` all shortcuts | `Ctrl+/` all shortcuts | composer wider than 940 px |
+
+Below 560 px window height every tip hides; the hints, the problem line and the echo stay. The 940 px limit is the width of the composer's content: the four Linux tips need about 800 px, a short echo ("Sent Shift-Tab to %12", 130 px) the rest; at 840 px the echo already wrapped to a second line in the 0.3.3 build check.
+
+### 3.11 Key chips (removed in 0.3.3)
+
+**(built amendment 2026-11-09 (0.3.3))** The row of key buttons under the message box is gone (owner decision
+2026-11-09). Its keys work from the message box itself (§4.2): Esc, Ctrl+C (as Stop, while Claude works), Shift+Tab,
+and ↑ ↓ ← → and Enter when the box is empty. Tab is no longer sent from the box; Type into pane still sends Tab and
+every other allow-listed key. The prompt gates the Shift-Tab and Enter chips had stay on those keys (§9.5).
 
 ### 3.12 Menus, tabs, skeletons
 
@@ -723,22 +742,32 @@ Shortcuts are listed in the UI next to their targets (`<kbd>` in nav, `title`), 
 
 ### 4.2 Session focus model
 
-Three zones, in tab order: header actions → transcript → terminal mirror → composer → key chips. Opening a session focuses the **composer**.
+Three zones, in tab order: header actions → transcript → terminal mirror → composer (quick actions, prompt panel,
+message box, mode switcher). Opening a session focuses the **composer**. **(built amendment 2026-11-09 (0.3.3))**
+With the message box focused, Esc, Ctrl+C and Shift+Tab go to Claude, and so do the arrows and Enter when the box is
+empty (owner decision 2026-11-09). One pure function holds the rules: `composerKey` in `public/quick-actions.js`.
 
-| Key | In the composer (default) | In passthrough (mirror focused, "Type into pane" on) |
+| Key | In the message box (default) | In passthrough (mirror focused, "Type into pane" on) |
 |---|---|---|
-| printable text | edits the composer | sent to the pane, batched every 120 ms |
-| Enter | send text + Enter (empty composer: send Enter) | Enter |
+| printable text | edits the box | sent to the pane, batched every 120 ms |
+| Enter | send text + Enter (empty box: Enter alone); a held Enter sends once; not while a prompt is open (§9.5) | Enter |
 | Shift+Enter | new line | Enter (no distinction in a terminal) |
-| Esc | sends Escape to the pane (no nika overlay open) | Escape |
-| Ctrl+C | with a selection: copy; without: sends C-c | C-c |
-| Tab / Shift+Tab | moves focus (browser default) | Tab / BTab to the pane |
-| ↑ ↓ ← → Home End PgUp PgDn ⌫ Del | edit the composer | sent as KEY_NAME |
-| Ctrl+U/K/A/E/L/R/W | composer editing | sent as C-u … C-w |
+| Esc | closes the model popover, then the palette; else sends Escape (a held Esc sends once) | Escape |
+| Ctrl+C | with a selection: the browser's (copy on Linux); while Claude works: Stop (`/stop` route, §9.4); otherwise nothing is sent and the problem line says why for 3 s | C-c |
+| Shift+Tab | sends BTab: Claude's next permission mode (a held key sends once); nothing is sent before the window has read the pane once, or while it is gone or tmux fails (the pane's reason shows for 3 s, such as "Connecting to the pane…"), while a prompt is open (§9.5), or while a mode switch runs ("Wait for the mode switch to finish.") | BTab |
+| Tab | moves focus forward (palette option active: inserts it) | Tab |
+| Ctrl+Shift+Tab | moves focus back, to the Shell toggle | not sent (not on the allow-list) |
+| ↑ ↓ ← → | empty box: sent to the pane in batches (a batch holds ≤ 8 keys and goes out at the 8th key or 120 ms after the first, whichever is first; held repeats dropped while 2 batches wait); text in the box: caret; palette: ↑ ↓ choose | sent as KEY_NAME |
+| Home End PgUp PgDn ⌫ Del | edit the box | sent as KEY_NAME |
+| Ctrl+U/K/A/E/L/R/W | box editing | sent as C-u … C-w |
 | Ctrl+] | enter passthrough | **leave** passthrough (the only key nika keeps) |
 | ⌘ shortcuts (macOS) | app shortcuts | still app shortcuts (not sent) |
 | paste (Mod+V) | inserted; multi-line → paste chip | sent as one bracketed paste (≤ 16 KB) |
 | other keys | — | not sent; echo "Not sent: Alt-x is not on the allow-list" |
+
+The box is never a keyboard trap: Tab leaves forward, Ctrl+Shift+Tab backward. Its accessible name says so: "Message
+to builder-1. Enter sends, Shift+Enter adds a line. Escape, Control+C and Shift+Tab go to Claude, and so do the arrow
+keys and Enter when the box is empty. Control+Shift+Tab moves focus back."
 
 Leaving passthrough: Ctrl+], the banner's "Stop" button, clicking outside the mirror, or focus leaving the mirror for any reason. Each change is announced ("Passthrough on: every key goes to pane %12. Press Control and ] to leave." / "Passthrough off"). This is a documented, escapable keyboard mode (WCAG 2.1.2).
 
@@ -749,7 +778,7 @@ Esc closes the **nearest nika layer**; only when nothing is open does it reach t
 1. Open row menu → close it, focus its button.
 2. Open dialog (rules, spawn, palette, confirm) → cancel it, focus the opener. Not while a write is in flight.
 3. B drawer with focus inside → close drawer, focus its toggle.
-4. Session screen, composer or passthrough → send Escape to the pane (shown in the echo).
+4. Session screen, composer or passthrough → send Escape to the pane (shown in the echo). In the message box a held Esc sends one Escape. **(built amendment 2026-11-09 (0.3.3))**
 5. Anywhere else → nothing. Esc never closes the session window or navigates back.
 
 ### 4.4 Dialogs
@@ -816,7 +845,10 @@ Session window:
 | Message box | Send | Enter | Send the text, then Enter, to Claude (empty box: Enter only) |
 | | New line | Shift+Enter | Start a new line in the message box |
 | | Press Esc in Claude | Esc | Stop Claude's turn or close Claude's menu (when nothing in nika is open) |
-| | Interrupt | Ctrl+C | Send Ctrl-C to Claude (when no text is selected) |
+| | Interrupt | Ctrl+C | Stop Claude's turn, as Stop does (while Claude works and no text is selected) |
+| | Next permission mode | Shift+Tab | Press Shift-Tab in Claude (not before the pane is read, nor while Claude asks you something) |
+| | Arrow keys in Claude | ↑ ↓ ← → | In an empty box: move through Claude's menus and earlier prompts |
+| | Move focus back | Ctrl+Shift+Tab | Leave the message box backward (Shift+Tab goes to Claude) |
 | | Commands | / | Open the command list (at the start of an empty box) |
 | | Type into the pane | Ctrl+] | Send every key straight to Claude's terminal |
 | Typing into the pane | Stop typing into the pane | Ctrl+] | Keys go to the message box again |
@@ -826,7 +858,7 @@ Session window:
 | | Insert | Enter or Tab | Put the command in the message box |
 | | Close | Esc | Close the list and keep the text |
 
-`/` and the command-list rows appear once the palette ships (Task 11); "Interrupt" keeps the composer's selection rule.
+**(built amendment 2026-11-09 (0.3.3))** Next permission mode, Arrow keys in Claude and Move focus back are new; Interrupt now stops the turn through the Stop route and keeps the selection rule.
 
 **Settings.** Settings → Appearance gets a checkbox **Single-key shortcuts** (on by default), help text "Press ? to show
 keyboard shortcuts. Turn this off if you use speech input or single-key commands." Stored as `ui.singleKeyShortcuts`
@@ -941,7 +973,7 @@ Row: "reviewer-2, Needs you: Asking to run a command, model opus, demo-api, 4 mi
 
 ### 5.6 Target size (2.5.8)
 
-All targets ≥ 24×24 px: buttons 28, icon buttons 28×28 (xs 24×24), key chips 26×32, links `min-height: 24px`, checkboxes 16 px but inside a label row of ≥ 24 px, row menu 28. The only smaller visual elements (status glyphs, branch chips) are not interactive.
+All targets ≥ 24×24 px: buttons 28, icon buttons 28×28 (xs 24×24), the Shell toggle 26 high, links `min-height: 24px`, checkboxes 16 px but inside a label row of ≥ 24 px, row menu 28. The only smaller visual elements (status glyphs, branch chips) are not interactive. **(built amendment 2026-11-09 (0.3.3))**
 
 ### 5.7 Other 2.2 criteria
 
@@ -963,12 +995,12 @@ Window minimum: **720 × 480** (set `minWidth`/`minHeight` in the Tauri window c
 | 1000–1279 | sidebar 232 | rows container ≤ 860: model + pane hidden, status glyph only | as above | split, transcript min 300 |
 | 900–999 | sidebar 232 | as above | one column, cards below agents | **tabs**: Terminal (default) / Transcript |
 | 760–899 | 60 px icon rail, attention counts as corner badges, names in `title` + SR text | group action labels hidden (icon buttons) | one column | tabs; header labels hidden |
-| 720–759 | rail | rows ≤ 600: prompt on a 2nd line; path hidden | one column | tabs; hint line tips hidden |
+| 720–759 | rail | rows ≤ 600: prompt on a 2nd line; path hidden | one column | tabs; hint line: the two short tips (§3.10) |
 
 Session details:
-- The composer and key chips are always visible; the mirror takes the remaining height (min 120 px).
+- The composer (quick actions, message box, mode row, hint line) is always visible; the mirror takes the remaining height (min 120 px). **(built amendment 2026-11-09 (0.3.3))**
 - Mirror never wraps or scales: a 92-column pane at 12 px mono is ~670 px; wider panes scroll horizontally inside the mirror. Font never below 11 px.
-- Height < 560 px (spec only, not mocked): key chips collapse into a single "Keys ▾" disclosure next to Send; the transcript tab keeps "Load older" sticky at the top.
+- Height < 560 px: the hint line tips hide (the mode row stays); the transcript tab keeps "Load older" sticky at the top. **(built amendment 2026-11-09 (0.3.3))**
 
 Rules dialog ≤ 900 px: the file list becomes a horizontal strip above the diff. Settings ≤ 900 px: the in-page index hides and field pairs stack.
 
@@ -992,14 +1024,14 @@ B: centred column max 760 px; drawer pushes ≥ 1180 px and overlays below. C: l
 | Missing branch / model / prompt | branch omitted; model "–"; prompt "(no prompt yet)" muted |
 | Unregistered repo with live agents | group/lane shows "not a nika project" + [Add project] |
 | Untitled session (no agent name) | shown as "untitled session" in `--text-muted`; still clickable |
-| Permission prompt | row and tray become "Needs you"; session shows the attention note and the prompt in the mirror; keys ↑ ↓ Enter Esc go to the pane; nika never answers on its own |
+| Permission prompt | row and tray become "Needs you"; session shows the prompt panel (§9.5) and the prompt in the mirror; Esc and, from an empty box, ↑ ↓ go to the pane; Enter, Shift+Tab, digits and pastes wait (§9.5); nika never answers on its own. **(built amendment 2026-11-09 (0.3.3))** |
 | Spawn at limit | spawn button `aria-disabled` with "3/3 running"; a 409 limit from the server shows the same text inside the sheet |
 | Rules conflict (409 hash) | "These files changed after the preview. Nothing was written. [Reload preview]" |
 | Rules refused (409, e.g. symlink) | "nika refused to write: rules/ is a symbolic link. Nothing was changed." |
 | Foreign rules file | Apply stays disabled until "Replace rules/orchestration.md (not written by nika). A backup is kept." is checked |
 | `.gitignore` | optional file; the checkbox "Add .claude/settings.local.json to .gitignore" is **unchecked by default**; when unchecked the file is listed as "optional, not written" |
 | Disconnected server | banner + stale list at 60 % opacity; actions disabled with reason; retry every 3 s |
-| Rate limited (429) | composer keeps text; message for 3 s; key chips stay enabled |
+| Rate limited (429) | composer keeps text; message for 3 s; the message box stays enabled; forwarded arrows are batched (§4.2) |
 | Folder picker busy | toast "A folder picker is already open. Finish or cancel it first." |
 | Folder picker cancelled | toast "No folder chosen. Nothing was added." |
 | Times | "now" (< 1 min), "N min", "N h", "N d"; absolute time in `title` |
@@ -1077,15 +1109,20 @@ The edge and the focus ring are two shadows in one declaration, so focus adds th
 
 ### 9.2 Header
 
-Order: back crumb · `h1` name · status pill · **mode tag** (`#sess-mode`) · model · pane · branch · spacer · **mode switcher** (`#mode-switch`) · Open in claude.ai.
+Order: back crumb · `h1` name · status pill · **mode tag** (`#sess-mode`) · model · pane · branch · spacer · Open in
+claude.ai · Keyboard shortcuts. **(built amendment 2026-11-09 (0.3.3))** The mode switcher moved under the message
+box (§9.3); the `.bar-end` wrapper is gone and `.bar-tools` holds the two buttons.
 
-- The tag sits right after the status pill so the two read together ("Waiting", "Plan").
-- The header wraps (it already has `flex-wrap`); the switcher moves to a second line before anything is hidden.
+- The tag sits right after the status pill so the two read together ("Waiting", "Plan"). It is the mode's word at
+  every width, and the only mode shown in the narrow Transcript tab.
+- The header wraps (it already has `flex-wrap`).
 - The tag is never focusable and never a button; the switcher is the control.
 
 ### 9.3 Mode switcher
 
 Segmented toolbar: Manual, Accept edits, Plan, Auto (`MODE_TARGETS`). Don't ask is never a segment. **Bypass is never a segment in 0.3** (product spec §6.3: only for panes nika launched with bypass allowed, which arrives in 0.4; the mode route refuses it as a target). A bypass footer in 0.3 shows only as the current-mode tag, with the switcher in its "Bypass current (0.3)" state below. The two Bypass segment rows below are the 0.4 look.
+
+**(built amendment 2026-11-09 (0.3.3))** Placement: under the message box, in `div.mode-row#mode-row` (§3.10 order): a muted "Mode" word (`aria-hidden`; the toolbar has its own label), the toolbar, then `#msw-why`. The row is hidden until the switcher is wired (no pane: no row).
 
 Anatomy: `div.msw[role="toolbar"][aria-label="Permission mode"][aria-describedby="msw-why"]` > `button.<mode cls>[aria-pressed]` (icon + label) ×4 (×5 in 0.4 with Bypass), then `span#msw-why.msw-why` (info icon + reason text) when the switcher can't act. `#msw-why` is not a live region (it flips with every working/waiting change); a result message (below) is announced once through the window's announcer. The switcher is disabled while a `prompt` is open, `mode` is `unknown` or `modeConfirmed` is `false` (`docs/contracts/api-app.md`: the route would answer 409).
 
@@ -1113,14 +1150,16 @@ Anatomy: `div.msw[role="toolbar"][aria-label="Permission mode"][aria-describedby
 | — | pane gone | all aria-disabled, none pressed | "The pane is gone." |
 | — | tmux error (captures fail, §3.9) | same | "nika couldn't reach tmux." |
 | — | no capture yet | same | "Connecting to the pane…" |
-| 1 | permission prompt or dialog open (`prompt` ≠ null, or status Needs you) | none pressed; the held mode's segment `.held`; all aria-disabled. **No Shift-Tab chip**, even when the mode is unknown | "Answer the prompt first." |
+| 1 | permission prompt or dialog open (`prompt` ≠ null, or status Needs you) | none pressed; the held mode's segment `.held`; all aria-disabled. nika offers no Shift-Tab here, and Shift+Tab in the message box waits too (§9.5) | "Answer the prompt first." |
 | 2 | Claude working | all aria-disabled (pressed stays full) | "Switch when Claude is waiting for you." |
 | 3 | mode unconfirmed (`modeConfirmed: false`, no prompt) | none pressed; the held or launch mode's segment `.held`; all aria-disabled | "Waiting for Claude to confirm the mode." |
-| 4 | mode unknown | none pressed, all aria-disabled | "nika can't read the mode." + key chip **Shift-Tab** (sends `BTab`, the 0.2 key route) |
-| 5 | Don't ask current | none pressed, all aria-disabled | "Don't ask is on. Change it in the terminal." |
+| 4 | mode unknown | none pressed, all aria-disabled | "nika can't read the mode. Use the terminal." (no chip; as built in 0.3.0) |
+| 5 | Don't ask current | none pressed, all aria-disabled | Don't ask tag + "Don't ask is on. Change it in the terminal." |
 | — | ready (Claude idle, no prompt, mode confirmed) | all live, current pressed | none |
 | — | switching | target busy, others aria-disabled; the pressed segment follows the footer | "Switching… up to 6 Shift-Tab presses." (no live count) |
-| — | Bypass current (0.3) | Manual, Accept edits, Plan, Auto live, none pressed (switching away is allowed; only bypass as a target is refused) | none: the red tag next to it names the mode |
+| — | Bypass current (0.3) | Manual, Accept edits, Plan, Auto live, none pressed (switching away is allowed; only bypass as a target is refused) | the Bypass tag + "Claude runs every tool without asking." in the normal look (not the error look); the switcher no longer sits next to the header tag, so its row names the mode itself |
+
+In every state where the mode is Bypass or Don't ask (modes without a segment), the reason line leads with that mode's tag (`modeEl`; dashed "unconfirmed" while held) instead of the info icon. Colour never travels alone.
 
 Paused and passthrough (§3.9) change nothing: a paused mirror still applies captures, and clicking a segment moves focus out of the mirror, which already leaves passthrough.
 
@@ -1141,9 +1180,9 @@ Paused and passthrough (§3.9) change nothing: a paused mirror still applies cap
 
 Behaviour: the header tag follows the footer during the switch (each capture), so the user sees the cycle pass through modes; only the final mode is announced. The response's `presses` is used only for the echo ("Sent 2 × Shift-Tab to %12"), never as a live count. There is no cancel: at most 6 presses, each followed by up to 1.8 s of polling (about 11 s worst case).
 
-Keyboard: one Tab stop (roving `tabindex`: the pressed segment, else the first). ← → move focus and wrap; Home / End jump. **Moving never switches**; Enter or Space switches. Activating the pressed segment or an aria-disabled one does nothing (aria-disabled segments stay focusable so their `title` and `#msw-why` can be read).
+Keyboard: one Tab stop (roving `tabindex`: the pressed segment, else the first). ← → move focus and wrap; Home / End jump. **Moving never switches**; Enter or Space switches. Activating the pressed segment or an aria-disabled one does nothing (aria-disabled segments stay focusable so their `title` and `#msw-why` can be read). Focus stays on the segment after a switch. A pointer press on the switcher while the message box has focus leaves focus in the box (`mousedown` default prevented), so typing goes on. **(built amendment 2026-11-09 (0.3.3))**
 
-≤ 760 px: segments show icons only; the label moves to `aria-label` and `title` (the existing rule that hides header button labels). The tag keeps its word.
+Segments keep icon + word at every width (the switcher has the composer's width). The row wraps: the reason line first, then the segments. Below 560 px window height the row stays. **(built amendment 2026-11-09 (0.3.3))**
 
 ### 9.4 Quick actions
 
@@ -1158,7 +1197,7 @@ One toolbar (`#qa`, `role="toolbar"`, `aria-label="Session actions"`) at the top
 | Rewind | `i-rewind` | `/rewind` (command route, contract §3) | Claude is waiting | "Available when Claude is waiting for you" |
 | End session… | `i-end` | opens the End dialog (§9.8) | pane eligible and the agent is not `ended` | "No live session on this pane" (an `ended` agent: no request goes out, the route could only answer 409 `not-idle`) |
 
-- **Stop is always in the first slot**, live only while Claude works and aria-disabled while Claude waits, so the row never shifts under the pointer (owner decision 2026-11-09). Live look: `--text` edge, 600, filled square. `title`: "Stops this turn (Esc in the pane; twice in vim insert mode). Keeps the work, also stops running subagents". **(Built amendment 2026-11-09, task 14b: Stop posts to its own route instead of the keys route; results below.)**
+- **Stop is always in the first slot**, live only while Claude works and aria-disabled while Claude waits, so the row never shifts under the pointer (owner decision 2026-11-09). Live look: `--text` edge, 600, filled square. Ctrl+C in the message box runs the same Stop while Claude works (§4.2). `title`: "Stops this turn (Esc in the pane; twice in vim insert mode). Keeps the work, also stops running subagents". **(Built amendment 2026-11-09, task 14b: Stop posts to its own route instead of the keys route; results below.)**
 - Compact, Clear, Model and Rewind are aria-disabled while Claude works (owner decision 2026-11-09), the same idle rule as the mode switch.
 - Compact, Clear, Model and Rewind go through the command route (contract §3 `/command`): nika types the command only into Claude's empty input and presses Enter only when the input reads exactly that command, so a draft typed in the terminal is never sent or cleared. Compact `title`: "Types /compact and Enter: summarises the conversation to free context". Clear `title`: "Types /clear and Enter after you confirm". Rewind `title`: "Types /rewind and Enter: opens Claude's rewind menu in the pane". **(Built amendment 2026-11-09, task 14b: Rewind types `/rewind` through the command route instead of Esc Esc. It no longer reads nika's message box, so the old "Empty the message box first" state is gone; the route's own rule (Claude's input must be empty) applies, with the shared failure copy below.)**
 - End session uses the Danger button (§3.1) and ends with "…" because it opens a dialog; so does Clear.
@@ -1176,7 +1215,7 @@ One toolbar (`#qa`, `role="toolbar"`, `aria-label="Session actions"`) at the top
 | tmux error (§3.9) | aria-disabled | aria-disabled | aria-disabled | "nika couldn't reach tmux." |
 | no capture yet | aria-disabled | aria-disabled | aria-disabled | "Connecting to the pane…" |
 | Needs you, prompt panel shown (§9.5) | aria-disabled, `title` "Esc = No is in the prompt panel" | aria-disabled | live (the dialog has its prompt-open line, §9.8) | "Answer the prompt first. Esc = No is in the prompt panel." |
-| Needs you, unknown layout (`prompt: null`) | aria-disabled (Esc is in the key chips and the 0.2 note) | aria-disabled | live | "Answer the prompt first." |
+| Needs you, unknown layout (`prompt: null`) | aria-disabled, `title` "Answer the prompt first; Esc in the message box cancels it" **(built amendment 2026-11-09 (0.3.3))** | aria-disabled | live | "Answer the prompt first." |
 | Claude working | **live** | aria-disabled | live (Esc first, §9.8) | "Compact, Clear, Model and Rewind are ready when Claude waits for you." |
 | Claude waiting | aria-disabled | live | live | none (Stop being off needs no line) |
 
@@ -1216,11 +1255,11 @@ When the capture has `prompt`, the attention note above the message box becomes 
 | 5xx, network error | "nika couldn't reach tmux." | re-enabled |
 
 Rule: the buttons re-enable after any non-200 except `prompt-changed`, `already-answered` and 400.
-- **Send, Shell and the lone Enter wait while a question is open** (built amendment 2026-11-09, task 14b). While a prompt is on screen, or the agent is "Needs you", the message box sends nothing: not a line, a paste, a Shell line or the Enter of an empty box (Enter would confirm the highlighted option). The text stays in the box and the problem line (`role="alert"`) says "Answer the prompt with the buttons above or in the terminal." while the panel shows an answer button, and "Answer the prompt in the terminal, or turn on Type into pane." when it shows none (a layout nika cannot parse), and "Answer this prompt in the terminal." for a prompt the capture marks `bypass` (Type into pane uses the keys route, which refuses Enter, digits and paste there). The Enter and Shift-Tab key chips go aria-disabled with the title "Answer the prompt first"; the Esc chip does not. A keys-route 409 `bypass-prompt` shows "Answer this prompt in the terminal."; a 409 `screen-unclear` (an unreadable footer whose window mentions bypass, such as a slash menu for a command named like that) shows "nika can't tell what Claude is showing; use the terminal." Passthrough is the raw terminal path and is unchanged (it too posts to the keys route, so Enter, Shift-Tab, digits and paste there meet the same guard).
+- **Send, Shell and the lone Enter wait while a question is open** (built amendment 2026-11-09, task 14b). While a prompt is on screen, or the agent is "Needs you", the message box sends nothing: not a line, a paste, a Shell line or the Enter of an empty box (Enter would confirm the highlighted option). The text stays in the box and the problem line (`role="alert"`) says "Answer the prompt with the buttons above or in the terminal." while the panel shows an answer button, and "Answer the prompt in the terminal, or turn on Type into pane." when it shows none (a layout nika cannot parse), and "Answer this prompt in the terminal." for a prompt the capture marks `bypass` (Type into pane uses the keys route, which refuses Enter, digits and paste there). **(built amendment 2026-11-09 (0.3.3))** Enter and Shift+Tab in the message box send nothing either once nika has seen the prompt, and show the same line (Shift-Tab can pick "allow for this session"). The page knows a prompt only from its last capture (about half a second old: the page reads the pane every 250 ms and the server keeps a capture for 250 ms; older while the window is hidden), so a key pressed in that window can reach a prompt whose window does not mention bypass (security T26); Shift+Tab alone is also held back before the first capture and while the pane is gone or tmux fails, with the pane's reason ("Connecting to the pane…") for 3 s. Esc still goes (the No path), and ↑ ↓ from an empty box move Claude's highlighted option. A keys-route 409 `bypass-prompt` shows "Answer this prompt in the terminal."; a 409 `screen-unclear` (an unreadable footer whose window mentions bypass, such as a slash menu for a command named like that) shows "nika can't tell what Claude is showing; use the terminal." Passthrough is the raw terminal path and is unchanged (it too posts to the keys route, so Enter, Shift-Tab, digits and paste there meet the same guard).
 - Unknown layout (`prompt: null` while the status is "Needs you"): no buttons; the 0.2 note changes in 0.3 (built amendment, task 14b), because nika now blocks Enter there: "<name> needs you: <reason>. Answer it in the terminal, or turn on Type into pane (⌃] on a Mac, Ctrl+] elsewhere)." The gate now holds for every dialog nika cannot parse, not only bypass ones.
 - Option labels can contain folder paths: shown in the app only, never logged.
 
-Keyboard and focus: each button is a Tab stop (they are the main action while Claude asks). The panel appearing never moves focus; the live region says "builder-1 asks: Do you want to proceed? 4 choices above the message box." Shift+Tab from the message box reaches the shell toggle, then the last option.
+Keyboard and focus: each button is a Tab stop (they are the main action while Claude asks). The panel appearing never moves focus; the live region says "builder-1 asks: Do you want to proceed? 4 choices above the message box." Ctrl+Shift+Tab from the message box reaches the Shell toggle (Shift+Tab in the box goes to Claude, §4.2); Shift+Tab from the toggle reaches the panel's Esc button, then the options. **(built amendment 2026-11-09 (0.3.3))**
 
 ### 9.6 Shell toggle (and the on/off rule)
 
@@ -1276,7 +1315,7 @@ Anatomy: header row "**Commands**" + muted "6 match /co" on the left, key hints 
 - Order: `rankCommands` (exact name match first, then name prefix, then name substring, then description), ≤ 50.
 - **The first option is active on open and after every keystroke that filters**, so Enter always has a target while the list has one.
 - Empty: "No command matches /xyz. Enter sends the text as typed." Loading: "Loading commands…". Error: "Couldn't load the command list. Enter sends the text as typed."
-- The hint line gains a tip "`/` commands". After insert, it shows the argument hint: "Arguments: [model]" (a textarea placeholder can't show it once there is text).
+- **(built amendment 2026-11-09 (0.3.3))** The hint line has no "/ commands" tip any more (the Commands button and the Keyboard shortcuts window name it). After insert, it shows the argument hint: "Arguments: [model]" (a textarea placeholder can't show it once there is text).
 
 Keyboard (focus never leaves the textarea): ↑ ↓ move the active option (no wrap); Enter or Tab inserts `/<name> ` and closes; Esc closes and keeps the text (an Esc ladder step before "send Escape to the pane"); typing filters and makes the first option active again; a space closes it. Enter on an exact match inserts it like any other option (`/compact` + Enter gives `/compact `; a second Enter sends). With no match (empty list, loading or error), Enter sends the text as typed. Click inserts.
 
@@ -1322,7 +1361,7 @@ Confirm dialog, 440 px (§3.6), opened from the quick-actions row, the dashboard
 
 ### 9.10 Focus order and Esc ladder
 
-Session window Tab order: skip links → back crumb → mode switcher (1 stop) → Open in claude.ai → [Terminal / Transcript tabs when narrow] → transcript → Dark/Light → Type into pane → mirror → quick actions (1 stop) → [model popover while open] → prompt option buttons → shell toggle → message box → Commands → Send → key chips. Opening the session still focuses the message box (§4.2).
+Session window Tab order: skip links → back crumb → Open in claude.ai → Keyboard shortcuts → [Terminal / Transcript tabs when narrow] → transcript → Dark/Light → Type into pane → [Leave, in passthrough] → mirror → [Jump to live, Retry now, when shown] → quick actions (1 stop) → [model popover while open] → prompt option buttons → prompt Esc → shell toggle → message box → [paste Clear] → Commands → Send → mode switcher (1 stop). Opening the session still focuses the message box (§4.2). In the message box Shift+Tab goes to Claude; Ctrl+Shift+Tab moves focus back to the shell toggle. **(built amendment 2026-11-09 (0.3.3))**
 
 Esc ladder (§4.3) gains two rungs, in this order: model popover or row menu → **palette** → dialog → B drawer → pane.
 
@@ -1330,9 +1369,11 @@ Esc ladder (§4.3) gains two rungs, in this order: model popover or row menu →
 
 | Width | Header | Switcher | Quick actions | Palette |
 |---|---|---|---|---|
-| ≥ 1000 | one line when it fits | labels | labels, reason line under the row | full width of the message box |
-| 760–999 | wraps; switcher on line 2 | labels | labels, may wrap; End stays right | same |
-| < 760 | as 0.2 (labels of header buttons hidden) | icons only, names in `aria-label` + `title` | Compact, Clear, Rewind icon only | same, source tags stay |
+| ≥ 1000 | one line when it fits | under the message box, icon + word | labels, reason line under the row | full width of the message box |
+| 760–999 | wraps | under the message box, icon + word | labels, may wrap; End stays right | same |
+| < 760 | as 0.2 (labels of header buttons hidden) | under the message box, icon + word; the row wraps | Compact, Clear, Rewind icon only | same, source tags stay |
+
+**(built amendment 2026-11-09 (0.3.3))**
 
 ### 8.8 WebView support
 

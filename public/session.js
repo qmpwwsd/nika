@@ -6,16 +6,16 @@
 // no innerHTML, no inline handlers, element.style only for numbers this file computes. Contracts: docs/contracts/api-app.md.
 import { h, icon } from './dom.js';
 import { isApp, appFetch, getJSON, applyTheme } from './api.js';
-import { toRenderModel, applyMirror, planSend, planPaste, chunkText, keyForEvent, KEY_LABEL } from './mirror-render.js';
+import { toRenderModel, applyMirror, planSend, planPaste, chunkText, keyForEvent, KEY_LABEL, arrowEcho } from './mirror-render.js';
 import { MODE_META, MODE_TARGETS, modeKey, modeEl, bypassTag, switcherState, modeNote, switchFailure } from './modes.js';
 import {
   quickState, cleanPrompt, answerOutcome, escOutcome, promptOff, promptNote, commandFailure, commandSaid, problemKind, planShell, sendGate, keysRefusal, stopOutcome, followSession,
-  hasAnswerButtons, attnNote, SESSION_ID, PANE_ID,
+  hasAnswerButtons, attnNote, composerKey, SESSION_ID, PANE_ID,
 } from './quick-actions.js';
 import { MODEL_ID, MODEL_HINT, CUSTOM, fillModelSelect } from './models-ui.js';
 import { openEndDialog } from './end-dialog.js';
 import { paletteQuery, cleanCommands, paletteView, commandsButton, shouldFetch, sourceLabel, insertion, moveActive } from './palette.js';
-import { isMac, isTextEntry, wantsHelp, wantsBack, backHint, helpHint, passKeyLabel, openShortcuts } from './shortcuts.js';
+import { isMac, isTextEntry, wantsHelp, wantsBack, backHint, helpHint, passKeyLabel, hintTips, openShortcuts } from './shortcuts.js';
 
 const PROJECT_KEY = /^[a-z0-9]{16}$/;
 const CLAUDE_SESSION = /^session_[A-Za-z0-9]{1,64}$/;
@@ -176,7 +176,7 @@ function applyAgent(agent, group) {
   }
   renderAttn();
   renderPrompt();
-  $('composer-label').textContent = `Message to ${A.name}. Enter sends, Shift+Enter adds a line, Escape goes to the pane.`;
+  $('composer-label').textContent = `Message to ${A.name}. Enter sends, Shift+Enter adds a line. Escape, Control+C and Shift+Tab go to Claude, and so do the arrow keys and Enter when the box is empty. Control+Shift+Tab moves focus back.`;
   if (!$('composer').disabled) $('composer').placeholder = idlePlaceholder();
   $('pb-pane').textContent = paneId ?? '';
 }
@@ -235,9 +235,9 @@ function startAgentPoll() {
 // on 404. last: the last real mode announced as current. msg: the result of the last switch ({ text, mode }). struck: targets
 // the Shift-Tab cycle does not hold, struck at strikeAt. SW: the switch in flight (its target) and the four segments.
 // prompt: the capture's prompt as cleanPrompt allows it, for drawing the buttons only. promptOpen: the capture has a prompt at all
-// (even an off-contract one), for every gate: the switcher, the quick actions, the Shift-Tab chip and the End note.
+// (even an off-contract one), for every gate: the switcher, the quick actions, the message box keys (composerKey) and the End note.
 const W = { pane: 'connecting', got: false, mode: 'unknown', confirmed: true, prompt: null, promptOpen: false, last: null, msg: null, struck: new Set(), strikeAt: null, tagSig: '', whySig: '' };
-const SW = { busy: null, pressed: null, parts: [], keyTitle: {} }; // keyTitle: the markup's title of each gated key chip
+const SW = { busy: null, pressed: null, parts: [] };
 
 function renderTag() {
   const key = W.pane === 'ok' ? modeKey(W.mode) : '';
@@ -286,32 +286,23 @@ function renderSegments(st) {
   tabStops();
 }
 
-/** The reason line: why the switcher cannot act, or the result of the last switch. Not a live region (a loud result also goes to the alert line). */
+/**
+ * The reason line: why the switcher cannot act, or the result of the last switch. Not a live region (a loud result also goes to the alert
+ * line). A mode with no segment (Bypass, Don't ask: `st.tag`) or a switch that left Claude in Bypass leads with its tag, not the info icon.
+ */
 function renderWhy(st) {
   const err = !st.reason && W.msg !== null;
-  const text = st.reason || W.msg?.text || '';
-  const bypass = err && W.msg.bypass === true; // Claude was left in Bypass: its tag (colour, icon, word) leads the line
-  const sig = `${text}|${err}|${bypass}`;
+  const text = st.reason || W.msg?.text || st.note || '';
+  const bypassed = err && W.msg.bypass === true; // Claude was left in Bypass: its tag (colour, icon, word) leads the line
+  const tag = err ? null : st.tag ?? null;
+  const sig = `${text}|${err}|${bypassed}|${tag}|${W.confirmed}`;
   if (sig === W.whySig) return;
   W.whySig = sig;
   const why = $('msw-why');
   why.hidden = !text;
   why.className = err ? 'msw-why err' : 'msw-why';
-  why.replaceChildren(...[bypass ? bypassTag() : text && icon(err ? 'warn' : 'info'), text && h('span', { text })].filter(Boolean));
-}
-
-/**
- * The Shift-Tab and Enter key chips: aria-disabled while a prompt needs an answer (Shift-Tab could pick "allow for this session", Enter
- * confirms the highlighted option). Same rule as Send (sendGate). Esc and the rest of the row stay live: Esc is the "No" path.
- */
-function renderGatedKeys() {
-  const held = !sendGate({ promptOpen: W.promptOpen, status: A.kind }).ok;
-  for (const name of ['BTab', 'Enter']) {
-    const chip = document.querySelector(`.keys [data-key="${name}"]`);
-    SW.keyTitle[name] ??= chip.title;
-    chip.setAttribute('aria-disabled', String(held));
-    chip.title = held ? 'Answer the prompt first' : SW.keyTitle[name];
-  }
+  const lead = bypassed ? bypassTag() : tag ? modeEl(tag, { confirmed: W.confirmed }) : text && icon(err ? 'warn' : 'info');
+  why.replaceChildren(...[lead, text && h('span', { text })].filter(Boolean));
 }
 
 function renderMode() {
@@ -322,7 +313,6 @@ function renderMode() {
   renderTag();
   renderSegments(st);
   renderWhy(st);
-  renderGatedKeys();
   renderQuick();
   renderAttn();
   renderPrompt();
@@ -423,6 +413,8 @@ function wireSwitcher() {
   bar.append(...SW.parts.map((p) => p.b));
   bar.addEventListener('focusin', tabStops);
   roveKeys(bar, () => SW.parts.map((p) => p.b)); // moving never switches; Enter and Space on a button do
+  bar.addEventListener('mousedown', (e) => { if (document.activeElement === composer()) e.preventDefault(); }); // a click leaves focus in the message box, so typing goes on
+  $('mode-row').hidden = false;
   bar.hidden = false;
   renderMode();
 }
@@ -504,7 +496,7 @@ async function sendCommand(text) {
   showProblem(commandFailure({ status: r.status, code: r.body?.error }), problemKind(r.status));
 }
 
-/** Stop: its own route, which handles Claude's vim insert mode (two Escapes) and never answers a prompt. Not queued behind typed keys or the control lock, so only a Stop in flight blocks a second click. */
+/** Stop: its own route, which handles Claude's vim insert mode (two Escapes) and never answers a prompt. Not queued behind typed keys or the control lock, so only a Stop in flight blocks a second click (Ctrl+C right after arrows waits for them, wireComposer). */
 async function stop() {
   if (Q.stopping || M.gone || !paneId) return;
   Q.stopping = true;
@@ -743,7 +735,7 @@ async function answer(n) {
   renderPrompt();
 }
 
-/** "Esc = No": the keys route with Escape, like the Esc chip. A 200 locks the question like an answered option (no second Escape). */
+/** "Esc = No": the keys route with Escape, like Esc in the message box. A 200 locks the question like an answered option (no second Escape). */
 async function escNo() {
   const p = W.prompt;
   if (!p || promptOff({ pending: PA.pending, lock: PA.lock, sig: p.sig }) || M.gone) return;
@@ -1005,9 +997,10 @@ const hideOverlay = () => { $('term-over').hidden = true; };
 
 const refocus = { composer: false };
 function setInputEnabled(on, why) {
-  const controls = [$('composer'), $('send'), $('cmd-btn'), $('pass-toggle'), $('shell-toggle'), ...document.querySelectorAll('.key')];
+  const controls = [$('composer'), $('send'), $('cmd-btn'), $('pass-toggle'), $('shell-toggle')];
   if (!on) refocus.composer = refocus.composer || document.activeElement === $('composer');
   if (!on) closePalette(); // a disabled box fires no blur in every webview
+  if (!on) { AR.buf = []; clearTimeout(AR.timer); } // arrows not yet sent are dropped with the box
   for (const el of controls) el.disabled = !on;
   $('composer').placeholder = on ? idlePlaceholder() : why;
   document.querySelector('.inbox').classList.toggle('off', !on);
@@ -1175,6 +1168,35 @@ async function sendKey(name) {
   const r = await enqueue({ keys: [name] });
   if (r.ok) say(`Sent ${KEY_LABEL[name] ?? name} to ${paneId}`);
   return r.ok;
+}
+
+// Arrow keys from an empty message box (spec 4.2, 0.3.3): batched so a held key stays under the route's 20 requests a second.
+const AR = { buf: [], timer: 0, waiting: 0, sent: [], quiet: 0 };
+function queueArrow(key, repeat) {
+  if (repeat && AR.waiting >= 2) return; // the pane is behind: drop the repeat, never build a backlog
+  AR.buf.push(key);
+  if (AR.buf.length >= 8) flushArrows();
+  else if (AR.buf.length === 1) AR.timer = setTimeout(flushArrows, 120);
+}
+function flushArrows() {
+  clearTimeout(AR.timer);
+  if (!AR.buf.length) return;
+  const keys = AR.buf;
+  AR.buf = [];
+  AR.waiting += 1;
+  enqueue({ keys }).then((r) => { AR.waiting -= 1; if (r.ok) AR.sent.push(...keys); });
+  clearTimeout(AR.quiet);
+  AR.quiet = setTimeout(echoArrows, 400);
+}
+function echoArrows() {
+  chain.then(() => { if (AR.sent.length) say(arrowEcho(AR.sent, paneId)); AR.sent = []; });
+}
+function endArrows() { // before any other action from the box: the arrows go first, then their echo; true when a run was pending
+  if (!AR.buf.length && !AR.waiting && !AR.sent.length) return false;
+  flushArrows();
+  clearTimeout(AR.quiet);
+  echoArrows();
+  return true;
 }
 
 const composer = () => $('composer');
@@ -1414,6 +1436,7 @@ function flushPass() {
 function setPass(on, keepFocus = false) {
   if (on === P.on) return;
   if (on && (!paneId || M.gone || composer().disabled)) return;
+  if (on) endArrows(); // the Type into pane button too: arrows typed just before go first
   P.on = on;
   if (!on) flushPass();
   const term = $('term');
@@ -1484,33 +1507,29 @@ function wireComposer() {
   const ta = composer();
   ta.addEventListener('input', () => { grow(); updateChip(); });
   ta.addEventListener('keydown', (e) => {
-    if (e.isComposing || e.keyCode === 229) return;
-    const plain = !e.metaKey && !e.altKey;
-    const bare = plain && !e.ctrlKey && !e.shiftKey;
-    const choosing = PL.active >= 0; // the list is open and an option is active
-    if (choosing && bare && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
-      e.preventDefault();
-      setActive(moveActive(PL.active, e.key === 'ArrowDown' ? 1 : -1, PL.shown.length));
-    } else if (choosing && bare && e.key === 'Tab') {
-      e.preventDefault();
-      insertActive();
-    } else if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      if (e.repeat) return; // a held Enter would insert a command and then send it
-      if (choosing && bare) insertActive(); // no active option (empty list, loading, error, closed) or a modifier: the normal send path
-      else sendComposer();
-    } else if (e.key === 'Escape') {
-      e.preventDefault();
-      if (Q.pop) closeModelPop(true); // the Esc ladder (spec 9.10): the model popover, then the palette (text kept), then the pane
-      else if (PL.open) closePalette();
-      else sendKey('Escape');
-    } else if (e.ctrlKey && plain && e.key === ']') {
-      e.preventDefault();
-      setPass(true);
-    } else if (e.ctrlKey && plain && e.key.toLowerCase() === 'c' && ta.selectionStart === ta.selectionEnd) {
-      e.preventDefault(); // with a selection Ctrl+C stays a copy
-      sendKey('C-c');
+    const a = composerKey(e, {
+      empty: ta.value === '', selection: ta.selectionStart !== ta.selectionEnd, choosing: PL.active >= 0, paletteOpen: PL.open,
+      pop: Q.pop, pane: W.pane, status: A.kind, promptOpen: W.promptOpen,
+      buttons: W.pane === 'ok' && hasAnswerButtons(W.prompt), bypass: W.prompt?.bypass === true, switching: SW.busy !== null,
+    });
+    if (a.act === 'none') return;
+    e.preventDefault();
+    if (a.act === 'arrow') {
+      queueArrow(a.key, e.repeat);
+      return;
     }
+    const arrows = endArrows(); // the arrows already typed go first
+    if (a.act === 'passthrough') setPass(true);
+    else if (a.act === 'close-pop') closeModelPop(true); // the Esc ladder (spec 9.10): the model popover, then the palette (text kept), then the pane
+    else if (a.act === 'close-palette') closePalette();
+    else if (a.act === 'palette-move') setActive(moveActive(PL.active, a.dir, PL.shown.length));
+    else if (a.act === 'palette-insert') insertActive();
+    else if (a.act === 'send') sendComposer();
+    else if (a.act === 'key') sendKey(a.key);
+    else if (a.act === 'stop') arrows ? chain.then(stop) : stop(); // Stop is not queued, but it never overtakes arrows typed just before
+    else if (a.act === 'refuse') showProblem(a.message, a.kind, a.ms);
+    else if (a.act === 'focus-back') $('shell-toggle').focus();
+    // 'swallow': a held key acts once
   });
   $('paste-clear').addEventListener('click', () => {
     ta.value = '';
@@ -1518,18 +1537,8 @@ function wireComposer() {
     updateChip();
     ta.focus();
   });
-  $('send').addEventListener('click', () => { sendComposer(); ta.focus(); });
+  $('send').addEventListener('click', () => { endArrows(); sendComposer(); ta.focus(); });
   $('shell-toggle').addEventListener('click', () => setShell(!S.on)); // focus stays on the toggle; the text stays in the box
-  for (const b of document.querySelectorAll('.key')) {
-    b.addEventListener('click', async () => {
-      if (b.getAttribute('aria-disabled') === 'true') { // Shift-Tab while a prompt needs an answer
-        ta.focus();
-        return;
-      }
-      await sendKey(b.dataset.key);
-      ta.focus();
-    });
-  }
   wirePalette();
 }
 
@@ -1619,6 +1628,12 @@ function syncKbdHint() {
   $('kbd-open').setAttribute('aria-keyshortcuts', hint.keys);
 }
 
+/** The hint line's tips (spec 3.10), before the hints, the problem line and the echo; written once, with the platform's key names. */
+function renderTips() {
+  $('hintline').prepend(...hintTips(MAC).map((t) => h('span', { class: t.more ? 'tip more' : 'tip' },
+    t.keys.map((k, i) => [i ? ' ' : null, h('kbd', { text: k })]), ` ${t.text}`)));
+}
+
 /** The passthrough key is written with the control glyph on a Mac, as in the Keyboard shortcuts window. aria-keyshortcuts stays Control+]. */
 function syncPassKeys() {
   const label = passKeyLabel(MAC);
@@ -1663,6 +1678,7 @@ function boot() {
   setBack('Dashboard');
   syncKbdHint();
   syncPassKeys();
+  renderTips();
   if (!appMode) {
     $('kbd-open').hidden = true;
     showEmpty('The session window is part of the nika app. This page was opened in a browser, which only shows the read-only dashboard.');

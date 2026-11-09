@@ -1,7 +1,7 @@
 // Static checks on the session window files (public/session.{html,js,css}, public/mirror-render.js): strict-CSP rules,
-// forbidden DOM sinks, ids used by the script exist in the page, key chips are on the server's allow-list.
+// forbidden DOM sinks, ids used by the script exist in the page, the keys the page asks for are on the server's allow-list.
 // The browser itself is exercised by hand (Playwright); these checks keep the rules from regressing.
-import { test, describe } from 'node:test';
+import { test, describe, afterEach, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -9,10 +9,10 @@ import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 import { KEY_NAME } from '../src/ids.js';
 import { moveActive as moveActiveReal, cleanCommands as cleanCommandsReal, paletteQuery as paletteQueryReal, shouldFetch as shouldFetchReal } from '../public/palette.js';
-import { wantsHelp, wantsBack, isTextEntry, backHint, helpHint, passKeyLabel } from '../public/shortcuts.js';
-import { quickState as quickStateReal, sendGate as sendGateReal, keysRefusal as keysRefusalReal, stopOutcome as stopOutcomeReal, commandSaid as commandSaidReal, commandFailure as commandFailureReal, problemKind as problemKindReal, followSession as followSessionReal, planShell as planShellReal, cleanPrompt as cleanPromptReal, hasAnswerButtons as hasAnswerButtonsReal, attnNote as attnNoteReal, answerOutcome as answerOutcomeReal, promptOff as promptOffReal } from '../public/quick-actions.js';
-import { planSend as planSendReal } from '../public/mirror-render.js';
-import { switchFailure as switchFailureReal } from '../public/modes.js';
+import { wantsHelp, wantsBack, isTextEntry, backHint, helpHint, passKeyLabel, hintTips as hintTipsReal } from '../public/shortcuts.js';
+import { quickState as quickStateReal, sendGate as sendGateReal, keysRefusal as keysRefusalReal, stopOutcome as stopOutcomeReal, commandSaid as commandSaidReal, commandFailure as commandFailureReal, problemKind as problemKindReal, followSession as followSessionReal, planShell as planShellReal, cleanPrompt as cleanPromptReal, hasAnswerButtons as hasAnswerButtonsReal, attnNote as attnNoteReal, answerOutcome as answerOutcomeReal, promptOff as promptOffReal, composerKey as composerKeyReal } from '../public/quick-actions.js';
+import { planSend as planSendReal, arrowEcho as arrowEchoReal } from '../public/mirror-render.js';
+import { switchFailure as switchFailureReal, MODE_TARGETS, MODE_META } from '../public/modes.js';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const read = (f) => fs.readFileSync(path.join(PUBLIC, f), 'utf8');
@@ -132,10 +132,9 @@ describe('session.html under the strict CSP', () => {
     assert.ok(used.size > 30, 'the lookup scan found the ids');
   });
 
-  test('(+) every key chip is on the server allow-list and the set matches the spec', () => {
-    const keys = [...HTML.matchAll(/data-key="([^"]+)"/g)].map((m) => m[1]);
-    assert.deepEqual(keys, ['Escape', 'C-c', 'Tab', 'BTab', 'Up', 'Down', 'Left', 'Right', 'Enter']);
-    for (const k of keys) assert.ok(KEY_NAME.has(k), k);
+  test('(−) 0.3.3: the page has no key row: no class="keys", no data-key, no .key rule in session.css (the keys work from the message box)', () => {
+    assert.doesNotMatch(HTML, /class="keys"|data-key=|class="key"/);
+    assert.doesNotMatch(strip(CSS), /(^|[\s,}])\.keys?\b/);
   });
 });
 
@@ -197,11 +196,30 @@ describe('permission mode: tag, frame, edge and switcher (spec 2.8, 9.1-9.3)', (
   };
   const tagOf = (id) => new RegExp(`<[a-z]+\\b[^>]*\\bid="${id}"[^>]*>`).exec(HTML)?.[0] ?? '';
 
-  test('(+) header order: status pill, mode tag, meta, spacer, switcher, reason line, claude link', () => {
-    const order = ['id="sess-st"', 'id="sess-mode"', 'class="sess-meta"', 'class="sp"', 'id="mode-switch"', 'id="msw-why"', 'id="claude-link"'].map(at);
+  test('(+) header order: status pill, mode tag, meta, spacer, tools (claude.ai link, shortcuts); the switcher and its reason line are not in the header', () => {
+    const order = ['id="sess-st"', 'id="sess-mode"', 'class="sess-meta"', 'class="sp"', 'class="bar-tools"', 'id="claude-link"', 'id="kbd-open"'].map(at);
     assert.deepEqual(order, [...order].sort((a, b) => a - b));
     assert.ok(at('id="sess-mode"') < at('</header>'));
-    assert.ok(at('id="claude-link"') < at('</header>'));
+    assert.ok(at('id="kbd-open"') < at('</header>'));
+    const header = HTML.slice(at('<header'), at('</header>'));
+    assert.ok(!header.includes('id="mode-switch"') && !header.includes('id="msw-why"') && !header.includes('bar-end'));
+  });
+
+  test('(+) 0.3.3: the mode row sits in the composer after the message box and before the hint line; it is hidden until the script wires the switcher', () => {
+    const box = HTML.slice(at('id="composer-box"'));
+    const order = ['class="inbox"', 'id="mode-row"', 'id="mode-switch"', 'id="msw-why"', 'class="hintline"'].map((n) => box.indexOf(n));
+    assert.ok(order.every((i) => i > 0), 'all five are in #composer-box');
+    assert.deepEqual(order, [...order].sort((a, b) => a - b));
+    assert.match(tagOf('mode-row'), /\bclass="mode-row"/);
+    assert.match(tagOf('mode-row'), /\bhidden\b/);
+    const row = new RegExp('<div class="mode-row" id="mode-row"[^>]*>([\\s\\S]*?)</div>\\s*<div class="hintline"').exec(HTML)?.[1] ?? '';
+    assert.ok(row.includes('id="mode-switch"') && row.includes('id="msw-why"'), 'both inside #mode-row');
+    assert.match(row, /<span class="mode-lbl" aria-hidden="true">Mode<\/span>/);
+  });
+
+  test('(−) 0.3.3: the "Mode" word is decoration (aria-hidden): the toolbar has its own label; the row is not a live region', () => {
+    assert.doesNotMatch(tagOf('mode-row'), /aria-live|role=/);
+    assert.match(tagOf('mode-switch'), /aria-label="Permission mode"/);
   });
 
   test('(+) #mode-switch is a labelled toolbar described by #msw-why; neither is a live region; the pane-less window shows none of it', () => {
@@ -239,14 +257,6 @@ describe('permission mode: tag, frame, edge and switcher (spec 2.8, 9.1-9.3)', (
     for (const m of code(JS['modes.js']).matchAll(/\bicon: '([a-z-]+)'/g)) drawn.add(m[1]);
     assert.ok(drawn.size >= 9);
     assert.deepEqual([...drawn].filter((n) => !symbols.has(n)), []);
-  });
-
-  test('(+) the Shift-Tab and Enter key chips stay in the key row (aria-disabled by script while a prompt needs an answer)', () => {
-    assert.match(HTML, /<button type="button" class="key" data-key="BTab" title="Shift-Tab cycles Claude&rsquo;s permission mode">Shift-Tab<\/button>/);
-    assert.match(HTML, /<button type="button" class="key" data-key="Enter">Enter<\/button>/);
-    const src = code(JS['session.js']);
-    assert.match(src, /Answer the prompt first/);
-    assert.match(src, /aria-disabled/);
   });
 
   test('(+) the message-box edge survives focus: edge and ring are one declaration, and the old ring-only rule is gone', () => {
@@ -333,8 +343,8 @@ describe('quick actions, prompt buttons, End dialog and Shell (spec 9.4-9.8)', (
     assert.match(strip(CSS), /@media \(max-width: 760px\)[\s\S]*\.q-narrow \.lbl\s*\{[^}]*display:\s*none/);
   });
 
-  test('(+) every data-key used, in the page and in the script, is on the server allow-list', () => {
-    const used = new Set([...HTML.matchAll(/data-key="([^"]+)"/g)].map((m) => m[1]));
+  test('(+) every key name sent, in the script and in the rules module, is on the server allow-list', () => {
+    const used = new Set();
     for (const f of ['session.js', 'quick-actions.js']) {
       const src = code(JS[f]);
       for (const m of src.matchAll(/sendKey\('([^']+)'\)/g)) used.add(m[1]);
@@ -555,7 +565,12 @@ describe('quick actions, prompt buttons, End dialog and Shell (spec 9.4-9.8)', (
     assert.equal((src.match(/switcherState\(\{[^}]*prompt: W\.promptOpen/g) ?? []).length, 2, 'renderMode and switchTo');
     assert.match(src, /quickState\(\{[^}]*prompt: W\.promptOpen/);
     assert.match(fn(src, 'function openEnd()'), /promptOpen: W\.promptOpen \|\| A\.kind === 'attn'/);
-    assert.match(fn(src, 'function renderGatedKeys()'), /sendGate\(\{ promptOpen: W\.promptOpen, status: A\.kind \}\)/);
+    const wire = fn(src, 'function wireComposer()');
+    assert.match(wire, /composerKey\(e, \{/);
+    assert.match(wire, /status: A\.kind, promptOpen: W\.promptOpen,/, 'the message box keys read the same gate inputs as Send');
+    assert.match(wire, /buttons: W\.pane === 'ok' && hasAnswerButtons\(W\.prompt\), bypass: W\.prompt\?\.bypass === true/);
+    assert.doesNotMatch(wire, /sendGate/, 'wireComposer holds no gate of its own: composerKey does');
+    assert.doesNotMatch(src, /renderGatedKeys/);
     assert.match(fn(src, 'async function sendComposer()'), /sendGate\(\{ promptOpen: W\.promptOpen, status: A\.kind, buttons: W\.pane === 'ok' && hasAnswerButtons\(W\.prompt\), bypass: W\.prompt\?\.bypass === true \}\)/, 'the wording reads the panel and the capture\'s bypass mark; whether it is held does not');
     assert.doesNotMatch(src, /(switcherState|quickState)\(\{[^}]*prompt: W\.prompt\b/, 'no gate reads the cleaned prompt');
     assert.match(fn(src, 'function renderPrompt()'), /W\.prompt/, 'the panel does');
@@ -627,15 +642,18 @@ describe('command palette wiring (spec 9.7, Task 11)', () => {
   });
 
   test('(+) the palette sits inside the message box (it opens upward from it); the sprite draws i-cmd and i-dialog', () => {
-    const box = HTML.slice(HTML.indexOf('<div class="inbox">'), HTML.indexOf('<div class="keys"'));
+    const box = HTML.slice(HTML.indexOf('<div class="inbox">'), HTML.indexOf('<div class="mode-row"'));
     assert.ok(box.includes('id="pal"') && box.includes('id="palette"'));
     for (const n of ['i-cmd', 'i-dialog']) assert.match(HTML, new RegExp(`<symbol id="${n}"`));
   });
 
-  test('(+) the hint line gains the "/ commands" tip and a hidden slot for the argument hint', () => {
-    assert.match(HTML, /<span class="tip"><kbd>\/<\/kbd> commands<\/span>/);
+  test('(−) 0.3.3: the markup has no static tip; the hint line has an id for renderTips and a hidden slot for the argument hint', () => {
+    assert.doesNotMatch(HTML, /class="tip"|class="tip more"/);
+    assert.match(HTML, /<div class="hintline" id="hintline">/);
     assert.match(tag('arg-hint'), /\bhidden\b/);
-    assert.ok(HTML.indexOf('class="hintline"') < HTML.indexOf('id="arg-hint"'));
+    assert.ok(HTML.indexOf('id="hintline"') < HTML.indexOf('id="arg-hint"'));
+    const order = ['id="arg-hint"', 'id="shell-hint"', 'id="problem"', 'id="echo"'].map((n) => HTML.indexOf(n));
+    assert.deepEqual(order, [...order].sort((a, b) => a - b), 'the hints, the problem line, then the echo');
   });
 
   test('(+) the palette styles: anchored to the box, opens upward, 360 px list, active row = accent-soft + 3 px accent edge, no :has()/color-mix()', () => {
@@ -650,20 +668,28 @@ describe('command palette wiring (spec 9.7, Task 11)', () => {
     for (const sel of ['\\.pal-h', '\\.pal-k', '\\.pal-n', '\\.pal-a', '\\.pal-s', '\\.pal-d', '\\.pal-note']) assert.match(css, new RegExp(`(^|[\\s,}])${sel}[\\s,{:\\[]`), sel);
   });
 
-  // The keydown handler runs for real against stubs, so the key rules are proven, not just spelled.
+  // The keydown handler runs for real against stubs, and with the real composerKey, so the key rules are proven, not just spelled.
+  // `state`: PL (the palette), pop (the model popover), value (the box text), status (A.kind), promptOpen, pane, switching, selection.
+  // press.ends: how many times the arrow run was ended before the action (endArrows), for the last press.
   const press = (state, event) => {
     const calls = [];
-    const ta = { selectionStart: 0, selectionEnd: 0, addEventListener(type, f) { if (type === 'keydown') this.keydown = f; } };
+    let ends = 0;
+    const ta = { value: state.value ?? '', selectionStart: 0, selectionEnd: state.selection ? 3 : 0, addEventListener(type, f) { if (type === 'keydown') this.keydown = f; } };
     const ctx = {
-      composer: () => ta, $: () => ({ addEventListener() {} }), document: { querySelectorAll: () => [] },
-      PL: state.PL, Q: { pop: state.pop === true }, S: { on: false }, moveActive: moveActiveReal,
-      grow() {}, updateChip() {}, wirePalette() {}, setPass() {},
-      sendComposer: () => calls.push('send'), sendKey: (k) => calls.push(`key ${k}`), closeModelPop: () => calls.push('model'),
+      composer: () => ta, $: (id) => ({ addEventListener() {}, focus() { calls.push(`focus ${id}`); } }), document: { querySelectorAll: () => [] },
+      PL: state.PL ?? { open: false, active: -1, shown: [] }, Q: { pop: state.pop === true }, S: { on: false }, SW: { busy: state.switching ? 'plan' : null },
+      W: { pane: state.pane ?? 'ok', promptOpen: state.promptOpen === true, prompt: null }, A: { kind: state.status ?? 'idle' },
+      composerKey: composerKeyReal, hasAnswerButtons: hasAnswerButtonsReal, moveActive: moveActiveReal,
+      grow() {}, updateChip() {}, wirePalette() {}, setPass: () => calls.push('pass'),
+      sendComposer: () => calls.push('send'), sendKey: (k) => calls.push(`key ${k}`), closeModelPop: (r) => calls.push(`model ${r}`),
       closePalette: () => calls.push('palette'), insertActive: () => calls.push('insert'), setActive: (i) => calls.push(`active ${i}`),
+      queueArrow: (k, repeat) => calls.push(`arrow ${k}${repeat ? ' repeat' : ''}`), endArrows: () => { ends += 1; return state.arrows === true; }, chain: state.chain ?? Promise.resolve(), stop: () => calls.push('stop'),
+      showProblem: (m, kind, ms) => calls.push(`problem ${m} | ${kind} | ${ms}`),
     };
     vm.runInNewContext(`${fnOf('function wireComposer()')}; wireComposer`, ctx)();
-    const e = { key: '', shiftKey: false, ctrlKey: false, metaKey: false, altKey: false, isComposing: false, keyCode: 0, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; }, ...event };
+    const e = { key: '', shiftKey: false, ctrlKey: false, metaKey: false, altKey: false, isComposing: false, keyCode: 0, repeat: false, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; }, ...event };
     ta.keydown(e);
+    press.ends = ends;
     return { calls, prevented: e.defaultPrevented };
   };
   const OPEN = (active, n = 3) => ({ PL: { open: true, active, shown: Array.from({ length: n }, () => ({})) } });
@@ -682,15 +708,17 @@ describe('command palette wiring (spec 9.7, Task 11)', () => {
     assert.deepEqual(press({ PL: { open: true, active: -1, shown: [] } }, { key: 'Enter' }), { calls: ['send'], prevented: true });
   });
 
-  test('(−) with no active option Tab and the arrows keep their normal job (focus move, caret)', () => {
+  test('(−) with no active option Tab moves focus and the arrows move the caret (text in the box); an empty box sends the arrows to the pane (0.3.3)', () => {
     for (const state of [CLOSED, { PL: { open: true, active: -1, shown: [] } }]) {
-      for (const key of ['Tab', 'ArrowDown', 'ArrowUp']) assert.deepEqual(press(state, { key }), { calls: [], prevented: false }, key);
+      assert.deepEqual(press(state, { key: 'Tab' }), { calls: [], prevented: false }, 'Tab');
+      for (const key of ['ArrowDown', 'ArrowUp']) assert.deepEqual(press({ ...state, value: 'abc' }, { key }), { calls: [], prevented: false }, key);
+      assert.deepEqual(press(state, { key: 'ArrowDown' }), { calls: ['arrow Down'], prevented: true }, 'empty box');
     }
   });
 
-  test('(−) Shift+Enter and Shift+Tab are not the palette\'s: a new line and a backwards Tab', () => {
+  test('(−) Shift+Enter is a new line, not the palette\'s; Shift+Tab with the list open goes to Claude as BTab (0.3.3), not into the list', () => {
     assert.deepEqual(press(OPEN(0), { key: 'Enter', shiftKey: true }), { calls: [], prevented: false });
-    assert.deepEqual(press(OPEN(0), { key: 'Tab', shiftKey: true }), { calls: [], prevented: false });
+    assert.deepEqual(press(OPEN(0), { key: 'Tab', shiftKey: true }), { calls: ['key BTab'], prevented: true });
   });
 
   test('(−) keys during IME composition are left alone', () => {
@@ -699,18 +727,39 @@ describe('command palette wiring (spec 9.7, Task 11)', () => {
   });
 
   test('(+) the Esc ladder: model popover first, then the palette, then the pane', () => {
-    assert.deepEqual(press({ ...OPEN(0), pop: true }, { key: 'Escape' }).calls, ['model']);
+    assert.deepEqual(press({ ...OPEN(0), pop: true }, { key: 'Escape' }).calls, ['model true']);
     assert.deepEqual(press(OPEN(0), { key: 'Escape' }).calls, ['palette']);
     assert.deepEqual(press({ PL: { open: true, active: -1, shown: [] } }, { key: 'Escape' }).calls, ['palette'], 'an open list with no option closes too');
     assert.deepEqual(press(CLOSED, { key: 'Escape' }).calls, ['key Escape']);
-    const rung = /if \(Q\.pop\) closeModelPop\(true\);\s*else if \(PL\.open\) closePalette\(\);\s*else sendKey\('Escape'\);/;
-    assert.match(fnOf('function wireComposer()'), rung);
+    const wire = fnOf('function wireComposer()');
+    assert.match(wire, /a\.act === 'close-pop'\) closeModelPop\(true\)/);
+    assert.match(wire, /a\.act === 'close-palette'\) closePalette\(\)/);
+    assert.match(wire, /a\.act === 'key'\) sendKey\(a\.key\)/);
+  });
+
+  test('(+) Ctrl+C right after arrows waits for them: Stop runs only once the queue ahead of it is done', async () => {
+    let release;
+    const chain = new Promise((resolve) => { release = resolve; });
+    const r = press({ status: 'busy', arrows: true, chain }, { key: 'c', ctrlKey: true });
+    assert.equal(press.ends, 1, 'the run was ended first');
+    await Promise.resolve();
+    assert.deepEqual(r.calls, [], 'the arrow request is still in flight: no Stop yet');
+    release();
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.deepEqual(r.calls, ['stop']);
+  });
+
+  test('(−) Ctrl+C with no arrows pending stops at once: Stop is not on the queue', () => {
+    assert.deepEqual(press({ status: 'busy', chain: new Promise(() => {}) }, { key: 'c', ctrlKey: true }).calls, ['stop'], 'not even a stuck queue holds it');
   });
 
   test('(+) closing keeps the text: Esc and closePalette never write the box', () => {
     assert.doesNotMatch(fnOf('function closePalette()'), /\.value\s*=[^=]/);
-    const esc = /else if \(e\.key === 'Escape'\) \{[\s\S]*?\n {4}\}/.exec(fnOf('function wireComposer()'))?.[0] ?? '';
-    assert.doesNotMatch(esc, /\.value\s*=[^=]/);
+    const wire = fnOf('function wireComposer()');
+    const keydown = wire.slice(wire.indexOf("addEventListener('keydown'"), wire.indexOf("$('paste-clear')"));
+    assert.ok(keydown.length > 200, 'the keydown handler was found');
+    assert.doesNotMatch(keydown, /\.value\s*=[^=]/, 'no key in the box writes the text');
   });
 
   test('(+) Shell never opens it: syncPalette closes on Shell, turning Shell on closes it, the button follows Shell', () => {
@@ -771,6 +820,60 @@ describe('command palette wiring (spec 9.7, Task 11)', () => {
       assert.deepEqual(press(OPEN(0), { key: 'Enter', ...mods }), { calls: ['send'], prevented: true }, JSON.stringify(mods));
     }
     assert.deepEqual(press(OPEN(0), { key: 'Enter' }), { calls: ['insert'], prevented: true }, 'bare Enter inserts');
+  });
+
+  // -- 0.3.3: Esc, Ctrl+C, Shift+Tab, the arrows and Enter from the message box (the rules: composerKey, tested in quick-actions.test.js)
+  test('(+) 0.3.3: Esc, Shift+Tab and Enter go to Claude from the box; the arrow run ends first, once, before each of them', () => {
+    assert.deepEqual(press(CLOSED, { key: 'Escape' }), { calls: ['key Escape'], prevented: true });
+    assert.equal(press.ends, 1);
+    assert.deepEqual(press(CLOSED, { key: 'Tab', shiftKey: true }), { calls: ['key BTab'], prevented: true });
+    assert.equal(press.ends, 1);
+    assert.deepEqual(press(CLOSED, { key: 'Enter' }), { calls: ['send'], prevented: true });
+    assert.equal(press.ends, 1);
+  });
+
+  test('(+) 0.3.3: arrows from an empty box are queued (a repeat is marked as one) and do not end the run', () => {
+    assert.deepEqual(press(CLOSED, { key: 'ArrowDown' }), { calls: ['arrow Down'], prevented: true });
+    assert.equal(press.ends, 0);
+    assert.deepEqual(press(CLOSED, { key: 'ArrowLeft', repeat: true }), { calls: ['arrow Left repeat'], prevented: true });
+  });
+
+  test('(−) 0.3.3: keys that stay the browser\'s are not prevented and do not end the run: letters, Tab, arrows over text, a copy', () => {
+    for (const [state, event] of [[CLOSED, { key: 'a' }], [CLOSED, { key: 'Tab' }], [{ ...CLOSED, value: 'hi' }, { key: 'ArrowUp' }], [{ ...CLOSED, status: 'busy', selection: true }, { key: 'c', ctrlKey: true }], [CLOSED, { key: 'Enter', shiftKey: true }]]) {
+      assert.deepEqual(press(state, event), { calls: [], prevented: false }, JSON.stringify(event));
+      assert.equal(press.ends, 0);
+    }
+  });
+
+  test('(+) 0.3.3: Ctrl+C while Claude works runs Stop (the stop route, not a key); it is not queued as C-c', () => {
+    assert.deepEqual(press({ ...CLOSED, status: 'busy' }, { key: 'c', ctrlKey: true }), { calls: ['stop'], prevented: true });
+    assert.equal(press.ends, 1);
+  });
+
+  test('(−) 0.3.3: Ctrl+C while Claude waits, asks or connects sends nothing and says why for 3 s', () => {
+    const line = (m) => ({ calls: [`problem ${m} | warn | 3000`], prevented: true });
+    assert.deepEqual(press({ ...CLOSED, status: 'idle' }, { key: 'c', ctrlKey: true }), line('Nothing to stop: Claude is waiting.'));
+    assert.deepEqual(press({ ...CLOSED, status: 'attn' }, { key: 'c', ctrlKey: true }), line('Answer the prompt first.'));
+    assert.deepEqual(press({ ...CLOSED, status: 'busy', promptOpen: true }, { key: 'c', ctrlKey: true }), line('Answer the prompt first. Esc = No is in the prompt panel.'));
+    assert.deepEqual(press({ ...CLOSED, status: 'busy', pane: 'connecting' }, { key: 'c', ctrlKey: true }), line('Connecting to the pane\u2026'));
+  });
+
+  test('(−) 0.3.3: Shift+Tab is refused with the Send gate lines while a prompt is held, and while this window switches the mode', () => {
+    assert.deepEqual(press({ ...CLOSED, promptOpen: true }, { key: 'Tab', shiftKey: true }), { calls: ['problem Answer the prompt in the terminal, or turn on Type into pane. | error | 0'], prevented: true });
+    assert.deepEqual(press({ ...CLOSED, switching: true }, { key: 'Tab', shiftKey: true }), { calls: ['problem Wait for the mode switch to finish. | warn | 3000'], prevented: true });
+  });
+
+  test('(−) 0.3.3: Esc still goes through while a prompt is held (the No path); a held Esc, Ctrl+C or Shift+Tab sends once', () => {
+    assert.deepEqual(press({ ...CLOSED, promptOpen: true, status: 'attn' }, { key: 'Escape' }), { calls: ['key Escape'], prevented: true });
+    for (const event of [{ key: 'Escape' }, { key: 'Tab', shiftKey: true }, { key: 'c', ctrlKey: true }]) {
+      assert.deepEqual(press({ ...CLOSED, status: 'busy' }, { ...event, repeat: true }), { calls: [], prevented: true }, JSON.stringify(event));
+      assert.equal(press.ends, 1, 'the run still ends');
+    }
+  });
+
+  test('(+) 0.3.3: Ctrl+Shift+Tab moves focus to the Shell toggle, Ctrl+] enters passthrough', () => {
+    assert.deepEqual(press(CLOSED, { key: 'Tab', ctrlKey: true, shiftKey: true }), { calls: ['focus shell-toggle'], prevented: true });
+    assert.deepEqual(press(CLOSED, { key: ']', ctrlKey: true }), { calls: ['pass'], prevented: true });
   });
 
   // loadCommands and the focus rule run for real against stubs
@@ -1181,63 +1284,6 @@ describe('Task 14b: wiring of the page rules', () => {
     for (const head of ['function flushPass()', 'function wirePassthrough()', 'function setPass(']) assert.doesNotMatch(fnOf(head), /sendGate/, head);
   });
 
-  const chipRig = () => {
-    const chips = { BTab: el({ title: 'Shift-Tab cycles Claude\u2019s permission mode' }), Enter: el({ title: '' }), Escape: el({ title: 'Send Escape (interrupts Claude)' }) };
-    const asked = [];
-    const document = { querySelector: (sel) => { const name = /data-key="([A-Za-z]+)"/.exec(sel)[1]; asked.push(name); return chips[name]; } };
-    const W = { promptOpen: false };
-    const A = { kind: 'idle' };
-    const run = mk(['function renderGatedKeys()'], { document, SW: { keyTitle: {} }, W, A, sendGate: sendGateReal }).renderGatedKeys;
-    return { chips, asked, W, A, run };
-  };
-
-  test('(+) B1: the Enter chip is aria-disabled with "Answer the prompt first", exactly like Shift-Tab, while a prompt is open', () => {
-    const r = chipRig();
-    r.W.promptOpen = true;
-    r.run();
-    for (const name of ['BTab', 'Enter']) {
-      assert.equal(r.chips[name].attrs['aria-disabled'], 'true', name);
-      assert.equal(r.chips[name].title, 'Answer the prompt first', name);
-    }
-    assert.deepEqual(r.asked.sort(), ['BTab', 'Enter'], 'Esc (the No path) and the rest are never touched');
-    assert.equal(r.chips.Escape.attrs['aria-disabled'], undefined);
-  });
-
-  test('(+) B1: needing you alone gates both chips; when it ends they get their own titles back', () => {
-    const r = chipRig();
-    r.A.kind = 'attn';
-    r.run();
-    assert.equal(r.chips.Enter.attrs['aria-disabled'], 'true');
-    r.A.kind = 'idle';
-    r.run();
-    assert.equal(r.chips.BTab.attrs['aria-disabled'], 'false');
-    assert.equal(r.chips.Enter.attrs['aria-disabled'], 'false');
-    assert.equal(r.chips.BTab.title, 'Shift-Tab cycles Claude\u2019s permission mode');
-    assert.equal(r.chips.Enter.title, '', 'Enter had no title; it has none again');
-  });
-
-  test('(−) B1: with no prompt neither chip is disabled', () => {
-    const r = chipRig();
-    r.run();
-    assert.equal(r.chips.BTab.attrs['aria-disabled'], 'false');
-    assert.equal(r.chips.Enter.attrs['aria-disabled'], 'false');
-  });
-
-  test('(+) B1: a click on an aria-disabled chip sends nothing and hands the focus to the box', async () => {
-    const clicks = [];
-    const chip = (name, off) => ({ dataset: { key: name }, attrs: { 'aria-disabled': String(off) }, getAttribute(k) { return this.attrs[k] ?? null; }, addEventListener(type, f) { clicks.push([name, f]); } });
-    const ta = { focused: 0, selectionStart: 0, selectionEnd: 0, addEventListener() {}, focus() { this.focused += 1; } };
-    const sent = [];
-    const ctx = {
-      composer: () => ta, $: () => ({ addEventListener() {} }), document: { querySelectorAll: () => [chip('Enter', true), chip('Tab', false)] }, PL: {}, Q: {}, S: {},
-      grow() {}, updateChip() {}, wirePalette() {}, setShell() {}, sendComposer() {}, sendKey: async (n) => { sent.push(n); return true; },
-    };
-    mk(['function wireComposer()'], ctx).wireComposer();
-    for (const [, f] of clicks) await f();
-    assert.deepEqual(sent, ['Tab'], 'only the live chip sends');
-    assert.equal(ta.focused, 2, 'both clicks end with focus in the box');
-  });
-
   const deliverRig = (response) => {
     const log = { problems: [], gone: 0 };
     const ctx = {
@@ -1459,12 +1505,14 @@ describe('Task 14b: wiring of the page rules', () => {
     assert.equal(quiet.compact.attrs['aria-disabled'], 'false');
   });
 
-  test('(+) B2: the Stop button runs stop(); Esc = No and the Esc key chip stay on the keys route', () => {
+  test('(+) B2: the Stop button runs stop(); Esc = No and the message box\'s Esc stay on the keys route; Ctrl+C in the box is Stop, never a C-c key', () => {
     assert.match(SRC, /on\('stop', stop\);/);
     assert.doesNotMatch(SRC, /on\('stop', \(\) => sendKey/);
     assert.match(fnOf('async function escNo()'), /await sendKey\('Escape'\)/);
-    assert.match(HTML, /data-key="Escape"/);
-    assert.match(fnOf('function wireComposer()'), /else sendKey\('Escape'\)/, 'the Esc ladder\'s last rung is unchanged');
+    const wire = fnOf('function wireComposer()');
+    assert.match(wire, /else if \(a\.act === 'key'\) sendKey\(a\.key\)/, '`key` acts (Esc, Shift+Tab) go through sendKey, the keys route');
+    assert.match(wire, /else if \(a\.act === 'stop'\) arrows \? chain\.then\(stop\) : stop\(\)/, 'Ctrl+C is the Stop route, behind arrows typed just before it');
+    assert.doesNotMatch(wire, /C-c/);
   });
 
   // -- B3: loud failures
@@ -1509,11 +1557,11 @@ describe('Task 14b: wiring of the page rules', () => {
     assert.deepEqual([gone.log.alerts, gone.log.polite], [[], []]);
   });
 
-  const whyRig = (msg, reason = '') => {
+  const whyRig = (msg, reason = '', extra = {}) => {
     const why = { hidden: false, className: '', kids: [], replaceChildren(...n) { this.kids = n; } };
     const h = (tag, attrs) => ({ tag, text: attrs?.text });
-    const ctx = { W: { msg, whySig: '' }, $: () => why, h, icon: (n) => ({ icon: n }), bypassTag: () => ({ tag: 'bypass-tag' }) };
-    mk(['function renderWhy(st)'], ctx).renderWhy({ reason, chip: null });
+    const ctx = { W: { msg, whySig: '', confirmed: true }, $: () => why, h, icon: (n) => ({ icon: n }), bypassTag: () => ({ tag: 'bypass-tag' }), modeEl: (m, o) => ({ modeEl: m, confirmed: o.confirmed }) };
+    mk(['function renderWhy(st)'], ctx).renderWhy({ reason, chip: null, ...extra });
     return why;
   };
 
@@ -1527,6 +1575,30 @@ describe('Task 14b: wiring of the page rules', () => {
   test('(−) B4: the reason line has no Shift-Tab chip any more (nothing can ask for one)', () => {
     assert.doesNotMatch(fnOf('function renderWhy(st)'), /chip|Shift-Tab/);
     assert.equal(whyRig(null, "nika can't read the mode. Use the terminal.").kids.length, 2, 'icon and text, nothing else');
+  });
+
+  test('(+) 0.3.3: a mode with no segment leads the reason line with its tag (colour, icon, word) instead of the info icon', () => {
+    const w = whyRig(null, "Don't ask is on. Change it in the terminal.", { tag: 'dontAsk' });
+    assert.deepEqual(w.kids[0], { modeEl: 'dontAsk', confirmed: true });
+    assert.equal(w.kids[1].text, "Don't ask is on. Change it in the terminal.");
+    assert.equal(w.className, 'msw-why');
+  });
+
+  test('(+) 0.3.3: a live Bypass shows its note in the normal look (not the error look), led by the Bypass tag', () => {
+    const w = whyRig(null, '', { tag: 'bypassPermissions', note: 'Claude runs every tool without asking.' });
+    assert.equal(w.hidden, false);
+    assert.equal(w.className, 'msw-why');
+    assert.deepEqual(w.kids[0], { modeEl: 'bypassPermissions', confirmed: true });
+    assert.equal(w.kids[1].text, 'Claude runs every tool without asking.');
+  });
+
+  test('(−) 0.3.3: no reason, result or note hides the line; a switch result ignores a tag and keeps its own warn icon', () => {
+    const none = whyRig(null, '');
+    assert.equal(none.hidden, true);
+    assert.deepEqual(none.kids, []);
+    const res = whyRig({ text: 'Stopped at Plan.', bypass: false }, '', { tag: 'dontAsk' });
+    assert.deepEqual(res.kids[0], { icon: 'warn' });
+    assert.match(res.className, /\berr\b/);
   });
 
   // -- B5: Rewind is /rewind through the command route
@@ -1657,19 +1729,19 @@ describe('Task 14b: wiring of the page rules', () => {
   });
 
   // -- B9: Mac wording
-  test('(+) B9: the passthrough key reads ctrl-glyph + "]" on a Mac and "Ctrl+]" elsewhere, in the toggle, its title, the banner and the hint line', () => {
+  test('(+) B9: the passthrough key reads ctrl-glyph + "]" on a Mac and "Ctrl+]" elsewhere, in the toggle, its title and the banner', () => {
     const run = (mac) => {
-      const kbds = [{ textContent: 'Ctrl+]' }, { textContent: 'Ctrl+]' }, { textContent: 'Ctrl+]' }];
+      const kbds = [{ textContent: 'Ctrl+]' }, { textContent: 'Ctrl+]' }];
       const toggle = { title: '' };
       mk(['function syncPassKeys()'], { MAC: mac, passKeyLabel, document: { querySelectorAll: (sel) => (sel === 'kbd[data-passkey]' ? kbds : []) }, $: (id) => (id === 'pass-toggle' ? toggle : null) }).syncPassKeys();
       return { kbds: kbds.map((k) => k.textContent), title: toggle.title };
     };
-    assert.deepEqual(run(true), { kbds: ['\u2303]', '\u2303]', '\u2303]'], title: 'Type straight into the pane (\u2303])' });
-    assert.deepEqual(run(false), { kbds: ['Ctrl+]', 'Ctrl+]', 'Ctrl+]'], title: 'Type straight into the pane (Ctrl+])' });
+    assert.deepEqual(run(true), { kbds: ['\u2303]', '\u2303]'], title: 'Type straight into the pane (\u2303])' });
+    assert.deepEqual(run(false), { kbds: ['Ctrl+]', 'Ctrl+]'], title: 'Type straight into the pane (Ctrl+])' });
   });
 
-  test('(+) B9: the markup marks all three places with data-passkey and keeps aria-keyshortcuts as Control+]', () => {
-    assert.equal([...HTML.matchAll(/<kbd data-passkey>Ctrl\+\]<\/kbd>/g)].length, 3, 'toggle, banner, hint line');
+  test('(+) B9: the markup marks the two places with data-passkey (the toggle and the banner) and keeps aria-keyshortcuts as Control+]', () => {
+    assert.equal([...HTML.matchAll(/<kbd data-passkey>Ctrl\+\]<\/kbd>/g)].length, 2, 'toggle, banner (the hint line no longer has the key)');
     assert.match(HTML, /id="pass-toggle"[^>]*aria-keyshortcuts="Control\+\]"/);
     assert.match(fnOf('function boot()'), /syncPassKeys\(\)/);
   });
@@ -1686,27 +1758,35 @@ describe('Task 14b: the header and the 320 px table (markup and stylesheet)', ()
   const rule = (sel) => new RegExp(`(^|[\\s}])${sel.replace(/[.[\]]/g, '\\$&')}\\s*\\{([^}]*)\\}`).exec(css)?.[2] ?? null;
   const header = HTML.slice(HTML.indexOf('<header'), HTML.indexOf('</header>'));
 
-  test('(+) B7: the switcher side, the claude.ai link and the shortcuts button sit in one right-hand block; the last two in a group of their own', () => {
+  test('(+) B7: the claude.ai link and the shortcuts button sit in one group of their own, after the spacer; no switcher, reason line or .bar-end wrapper is in the header', () => {
     const at = (needle) => header.indexOf(needle);
-    const order = ['class="bar-end"', 'id="mode-switch"', 'id="msw-why"', 'class="bar-tools"', 'id="claude-link"', 'id="kbd-open"'].map(at);
-    assert.ok(order.every((i) => i > 0), 'all six are in the header');
+    const order = ['class="sp"', 'class="bar-tools"', 'id="claude-link"', 'id="kbd-open"'].map(at);
+    assert.ok(order.every((i) => i > 0), 'all four are in the header');
     assert.deepEqual(order, [...order].sort((a, b) => a - b));
     const tools = header.slice(at('class="bar-tools"'));
     assert.ok(tools.includes('id="claude-link"') && tools.includes('id="kbd-open"'));
-    assert.ok(!tools.includes('id="mode-switch"') && !tools.includes('id="msw-why"'), 'the group is just the link and the button');
+    assert.ok(!header.includes('id="mode-switch"') && !header.includes('id="msw-why"'), 'the switcher moved under the message box');
   });
 
-  test('(+) B7: the pair never wraps apart (nowrap); the right-hand block wraps as one flex item of the bar', () => {
+  test('(−) 0.3.3: no .bar-end in the page or the stylesheet', () => {
+    assert.doesNotMatch(HTML, /bar-end/);
+    assert.doesNotMatch(css, /bar-end/);
+  });
+
+  test('(+) B7: the pair never wraps apart (nowrap); the bar itself still wraps', () => {
     assert.match(rule('.bar-tools') ?? '', /display:\s*flex/);
     assert.match(rule('.bar-tools') ?? '', /flex-wrap:\s*nowrap/);
-    assert.match(rule('.bar-end') ?? '', /flex-wrap:\s*wrap/);
     assert.match(rule('.bar') ?? '', /flex-wrap:\s*wrap/, 'the bar itself still wraps, so a narrow window moves the block, not a lone button');
   });
 
-  test('(+) 320 px: .composer is a grid with one shrinkable column, so a wide child (key chips, tool row) cannot push the window sideways', () => {
+  test('(+) 320 px: .composer is a grid with one shrinkable column, so a wide child (the tool row, the mode row) cannot push the window sideways; it is the container the hint tips query', () => {
     const body = rule('.composer') ?? '';
     assert.match(body, /display:\s*grid/);
     assert.match(body, /grid-template-columns:\s*minmax\(0,\s*1fr\)/);
+    assert.match(body, /container:\s*composer \/ inline-size/);
+    const row = rule('.mode-row') ?? '';
+    assert.match(row, /flex-wrap:\s*wrap/);
+    assert.match(row, /min-width:\s*0/);
   });
 
   test('(−) 320 px: the one grid with a fixed pixel column (.split, 300 px) collapses to a single shrinkable column below 1000 px, so the composer fix is not undone one level up', () => {
@@ -1716,7 +1796,7 @@ describe('Task 14b: the header and the 320 px table (markup and stylesheet)', ()
   });
 
   test('(−) B7: the grouping adds no colour and no token', () => {
-    for (const sel of ['.bar-tools', '.bar-end']) {
+    for (const sel of ['.bar-tools', '.mode-row']) {
       const body = rule(sel) ?? '';
       assert.doesNotMatch(body, /color|background|border|box-shadow|#[0-9a-f]{3}|rgb|hsl|--[a-z]/i, sel);
     }
@@ -1740,5 +1820,262 @@ describe('Task 14b: the header and the 320 px table (markup and stylesheet)', ()
     }
     const scrollers = all.flatMap(([f, css]) => [...css.matchAll(/([^{}]+)\{[^{}]*overflow-x:\s*auto[^{}]*\}/g)].map((m) => `${f}: ${m[1].trim()}`));
     assert.deepEqual(scrollers.sort(), ['app.css: .files', 'tokens.css: .kbd-sec .tbl-wrap'], 'a new sideways scroller needs a test of its own');
+  });
+});
+
+// ---- 0.3.3: arrow batching, the hint line, the mode row, the message box name -------------------------------------------------------
+
+describe('0.3.3: arrow keys from an empty message box are batched (spec 4.2)', () => {
+  const SRC = code(JS['session.js']);
+  const fnOf = (head) => {
+    const at = SRC.indexOf(head);
+    assert.ok(at >= 0, head);
+    return SRC.slice(at, SRC.indexOf('\n}\n', at) + 2);
+  };
+  const mk = (names, ctx) => vm.runInNewContext(`${names.map(fnOf).join('\n')}; ({ ${names.map((n) => n.replace(/^(async )?function /, '').replace(/\(.*$/, '')).join(', ')} })`, ctx);
+  const flush = async () => { for (let i = 0; i < 6; i += 1) await Promise.resolve(); }; // the promise callbacks of the rig; the timers are the mock's
+
+  afterEach(() => mock.timers.reset());
+
+  const rig = ({ hold = false } = {}) => {
+    mock.timers.enable({ apis: ['setTimeout'] });
+    const log = { sent: [], said: [] };
+    const AR = { buf: [], timer: 0, waiting: 0, sent: [], quiet: 0 };
+    const enqueue = (payload) => {
+      log.sent.push(payload);
+      return hold ? new Promise(() => {}) : Promise.resolve({ ok: true });
+    };
+    const api = mk(['function queueArrow(key, repeat)', 'function flushArrows()', 'function echoArrows()', 'function endArrows()', 'function setInputEnabled(on, why)'], {
+      AR, enqueue, chain: Promise.resolve(), say: (m) => log.said.push(m), paneId: '%12', arrowEcho: arrowEchoReal, setTimeout: globalThis.setTimeout, clearTimeout: globalThis.clearTimeout,
+      $: () => ({ focus() {} }), refocus: { composer: false }, closePalette() {}, setPass() {}, idlePlaceholder: () => '',
+      document: { activeElement: null, querySelector: () => ({ classList: { toggle() {} } }) },
+    });
+    const norm = (v) => JSON.parse(JSON.stringify(v)); // arrays built inside the vm have another Array.prototype
+    const keys = () => norm(log.sent.map((p) => p.keys));
+    return { ...api, log, AR, keys, buf: () => norm(AR.buf) };
+  };
+
+  test('(+) three presses within 50 ms go out as one request at 120 ms; the echo follows 400 ms later', async () => {
+    const r = rig();
+    r.queueArrow('Down', false);
+    mock.timers.tick(20);
+    r.queueArrow('Down', false);
+    mock.timers.tick(20);
+    r.queueArrow('Down', false);
+    mock.timers.tick(79);
+    assert.deepEqual(r.keys(), [], 'nothing before 120 ms after the first key');
+    mock.timers.tick(1);
+    assert.deepEqual(r.keys(), [['Down', 'Down', 'Down']]);
+    await flush();
+    assert.deepEqual(r.log.said, [], 'the echo waits for a quiet moment');
+    mock.timers.tick(400);
+    await flush();
+    assert.deepEqual(r.log.said, ['Sent 3 \u00d7 Down to %12']);
+  });
+
+  test('(+) nine presses at once go out as 8 keys (the route\'s maximum) at once and 1 key at 120 ms', () => {
+    const r = rig();
+    for (let i = 0; i < 9; i += 1) r.queueArrow('Up', false);
+    assert.deepEqual(r.keys(), [Array(8).fill('Up')], 'the eighth key flushes at once');
+    mock.timers.tick(120);
+    assert.deepEqual(r.keys(), [Array(8).fill('Up'), ['Up']]);
+  });
+
+  test('(−) with two requests still waiting a repeat is dropped and builds no backlog; a fresh press is kept', () => {
+    const r = rig({ hold: true });
+    for (let i = 0; i < 16; i += 1) r.queueArrow('Down', false); // two full batches, both held open
+    assert.equal(r.AR.waiting, 2);
+    r.queueArrow('Down', true);
+    assert.deepEqual(r.buf(), [], 'the repeat was dropped');
+    r.queueArrow('Down', false);
+    assert.deepEqual(r.buf(), ['Down'], 'a fresh press is always kept');
+    mock.timers.tick(120);
+    assert.equal(r.keys().length, 3);
+  });
+
+  test('(−) a repeat is kept while fewer than two requests wait', () => {
+    const r = rig({ hold: true });
+    for (let i = 0; i < 8; i += 1) r.queueArrow('Left', false); // one batch waiting
+    r.queueArrow('Left', true);
+    assert.deepEqual(r.buf(), ['Left']);
+  });
+
+  test('(+) another action ends the run: the arrows are queued before it and their echo follows', async () => {
+    const r = rig();
+    r.queueArrow('Down', false);
+    r.endArrows();
+    r.log.sent.push({ keys: ['Enter'] }); // the Enter the box queues right after endArrows
+    assert.deepEqual(r.keys(), [['Down'], ['Enter']], 'the arrow request is recorded before the Enter');
+    await flush();
+    assert.deepEqual(r.log.said, ['Sent Down to %12']);
+    mock.timers.tick(1000);
+    await flush();
+    assert.deepEqual(r.log.said, ['Sent Down to %12'], 'said once');
+  });
+
+  test('(+) a Send click ends the run first: the arrows are queued before the Enter, and the click then focuses the box', () => {
+    const order = [];
+    const listeners = {};
+    const el = (id) => ({ addEventListener(type, f) { listeners[`${id}:${type}`] = f; }, focus() { order.push('focus'); } });
+    const ctx = { composer: () => el('composer'), $: el, endArrows: () => order.push('end'), sendComposer: () => order.push('send'), wirePalette() {} };
+    vm.runInNewContext(`${fnOf('function wireComposer()')}; wireComposer`, ctx)();
+    listeners['send:click']();
+    assert.deepEqual(order, ['end', 'send', 'focus']);
+  });
+
+  test('(+) the Type into pane button ends the run first; (−) leaving passthrough, a refused start and a second start do not', () => {
+    const run = (on, { disabled = false, was = false } = {}) => {
+      const log = [];
+      const el = () => ({ classList: { toggle() {} }, setAttribute() {}, focus() {}, textContent: '', hidden: false });
+      const ctx = { P: { on: was }, paneId: '%12', M: { gone: false }, composer: () => ({ disabled, focus() {} }), flushPass: () => log.push('flush'), $: el, announce() {}, A: { name: 'n' }, endArrows: () => log.push('end') };
+      vm.runInNewContext(`${fnOf('function setPass(on, keepFocus = false)')}; setPass`, ctx)(on);
+      return log;
+    };
+    assert.deepEqual(run(true), ['end']);
+    assert.deepEqual(run(false, { was: true }), ['flush']);
+    assert.deepEqual(run(true, { disabled: true }), [], 'a disabled box refuses to start it');
+    assert.deepEqual(run(true, { was: true }), [], 'already on');
+  });
+
+  test('(+) a disabled box (pane gone, tmux error) drops the arrows not yet sent: the timer is cleared and nothing goes out', () => {
+    const r = rig();
+    r.queueArrow('Down', false);
+    r.setInputEnabled(false, 'Pane is gone');
+    assert.deepEqual(r.buf(), []);
+    mock.timers.tick(1000);
+    assert.deepEqual(r.keys(), []);
+  });
+
+  test('(−) enabling the box leaves a pending run alone', () => {
+    const r = rig();
+    r.queueArrow('Down', false);
+    r.setInputEnabled(true);
+    mock.timers.tick(120);
+    assert.deepEqual(r.keys(), [['Down']]);
+  });
+
+  test('(−) disabling the box does not recall a request that already went out', () => {
+    const r = rig();
+    for (let i = 0; i < 8; i += 1) r.queueArrow('Up', false);
+    r.setInputEnabled(false, 'x');
+    assert.equal(r.keys().length, 1, 'the full batch had gone out already');
+  });
+
+  test('(−) ending a run that never began sends nothing and says nothing', async () => {
+    const r = rig();
+    r.endArrows();
+    mock.timers.tick(1000);
+    await flush();
+    assert.deepEqual([r.log.sent, r.log.said], [[], []]);
+  });
+
+  test('(−) a refused request is not echoed (only keys the route accepted count)', async () => {
+    mock.timers.enable({ apis: ['setTimeout'] });
+    const log = { said: [] };
+    const AR = { buf: [], timer: 0, waiting: 0, sent: [], quiet: 0 };
+    const api = mk(['function queueArrow(key, repeat)', 'function flushArrows()', 'function echoArrows()', 'function endArrows()'], {
+      AR, enqueue: () => Promise.resolve({ ok: false }), chain: Promise.resolve(), say: (m) => log.said.push(m), paneId: '%12', arrowEcho: arrowEchoReal, setTimeout: globalThis.setTimeout, clearTimeout: globalThis.clearTimeout,
+    });
+    api.queueArrow('Up', false);
+    mock.timers.tick(120);
+    await flush();
+    mock.timers.tick(400);
+    await flush();
+    assert.deepEqual(log.said, []);
+    assert.equal(AR.waiting, 0);
+  });
+});
+
+describe('0.3.3: the hint line, the mode row and the message box name (markup, stylesheet, script)', () => {
+  const SRC = code(JS['session.js']);
+  const css = strip(CSS);
+  const fnOf = (head) => {
+    const at = SRC.indexOf(head);
+    assert.ok(at >= 0, head);
+    return SRC.slice(at, SRC.indexOf('\n}\n', at) + 2);
+  };
+  const mk = (names, ctx) => vm.runInNewContext(`${names.map(fnOf).join('\n')}; ({ ${names.map((n) => n.replace(/^(async )?function /, '').replace(/\(.*$/, '')).join(', ')} })`, ctx);
+  const h = (tag, attrs, ...kids) => ({ tag, class: attrs?.class, text: attrs?.text, kids: kids.flat(Infinity).filter((k) => k !== null && k !== undefined && k !== false) });
+  const plain = (n) => (typeof n === 'string' ? n : n.text ?? n.kids.map(plain).join(''));
+
+  const tips = (mac) => {
+    const line = { kids: [], prepend(...n) { this.kids = n; } };
+    mk(['function renderTips()'], { $: (id) => { assert.equal(id, 'hintline'); return line; }, hintTips: hintTipsReal, MAC: mac, h }).renderTips();
+    return line.kids;
+  };
+
+  test('(+) renderTips puts the platform\'s four tips in front of the hints: Linux words, macOS glyphs; two of them are "more"', () => {
+    const linux = tips(false);
+    assert.deepEqual(linux.map(plain), ['Esc Ctrl+C Shift+Tab go to Claude', '\u2191 \u2193 Enter too, in an empty box', 'Ctrl+Shift+Tab moves focus back', 'Ctrl+/ all shortcuts']);
+    assert.deepEqual(linux.map((t) => t.class), ['tip', 'tip more', 'tip', 'tip more']);
+    assert.deepEqual(tips(true).map(plain), ['Esc \u2303C \u21e7Tab go to Claude', '\u2191 \u2193 Enter too, in an empty box', '\u2303\u21e7Tab moves focus back', '\u2318/ all shortcuts']);
+    assert.deepEqual(linux[0].kids.map((k) => k.tag ?? 'text'), ['kbd', 'text', 'kbd', 'text', 'kbd', 'text'], 'one keycap per key, a space between, then the words');
+  });
+
+  test('(−) renderTips builds text only (h, textContent) and runs once at boot, next to syncPassKeys', () => {
+    assert.doesNotMatch(fnOf('function renderTips()'), /innerHTML|insertAdjacent/);
+    assert.match(fnOf('function boot()'), /syncPassKeys\(\);\s*renderTips\(\);/);
+    assert.equal((SRC.match(/renderTips\(\)/g) ?? []).length, 2, 'declared once, called once');
+  });
+
+  test('(+) the tips hide by the composer\'s width (container query, 940 px) and by window height (560 px)', () => {
+    assert.match(css, /@container composer \(max-width: 940px\)\s*\{\s*\.hintline \.tip\.more\s*\{\s*display:\s*none;\s*\}\s*\}/);
+    assert.match(css, /@media \(max-height: 560px\)\s*\{\s*\.hintline \.tip\s*\{\s*display:\s*none;\s*\}\s*\}/);
+  });
+
+  test('(−) the 760 px block no longer hides the tips or the switcher\'s words', () => {
+    const block = /@media \(max-width: 760px\)\s*\{([\s\S]*?)\n\}/.exec(css)?.[1] ?? '';
+    assert.ok(block.length > 50, 'the block was found');
+    assert.doesNotMatch(block, /\.hintline/);
+    assert.doesNotMatch(block, /\.msw/);
+    assert.match(block, /\.bar \.btn \.lbl, \.term-head \.btn \.lbl/, 'the header buttons still drop their labels');
+  });
+
+  test('(+) the message box name says where the keys go, in the markup and for a named agent', () => {
+    const tail = ' Enter sends, Shift+Enter adds a line. Escape, Control+C and Shift+Tab go to Claude, and so do the arrow keys and Enter when the box is empty. Control+Shift+Tab moves focus back.';
+    assert.match(HTML, new RegExp(`<label for="composer" class="sr-only" id="composer-label">Message to the agent\\.${tail.replace(/[.+]/g, '\\$&')}</label>`));
+    assert.ok(fnOf('function applyAgent(').includes(`Message to \${A.name}.${tail}`));
+  });
+
+  test('(+) wireSwitcher shows the mode row, and a press on the switcher keeps the focus in the message box', () => {
+    const listeners = {};
+    const bar = { hidden: true, append() {}, addEventListener(type, f) { listeners[type] = f; } };
+    const row = { hidden: true };
+    const box = {};
+    const doc = { activeElement: box };
+    const ctx = {
+      $: (id) => (id === 'mode-row' ? row : bar), MODE_TARGETS, MODE_META, h: (tag, attrs) => ({ tag, attrs }), icon: () => ({}), switchTo() {}, tabStops() {}, roveKeys() {}, renderMode() {},
+      composer: () => box, document: doc, SW: { parts: [] },
+    };
+    mk(['function wireSwitcher()'], ctx).wireSwitcher();
+    assert.equal(row.hidden, false);
+    assert.equal(bar.hidden, false);
+    assert.equal(ctx.SW.parts.length, 4);
+    let prevented = 0;
+    listeners.mousedown({ preventDefault() { prevented += 1; } });
+    assert.equal(prevented, 1, 'focus was in the box: the press does not take it');
+  });
+
+  test('(−) without focus in the box a press on the switcher is left alone (it works as built)', () => {
+    const listeners = {};
+    const doc = { activeElement: {} };
+    const ctx = {
+      $: () => ({ hidden: true, append() {}, addEventListener(type, f) { listeners[type] = f; } }), MODE_TARGETS, MODE_META, h: (tag, attrs) => ({ tag, attrs }), icon: () => ({}), switchTo() {}, tabStops() {}, roveKeys() {}, renderMode() {},
+      composer: () => ({}), document: doc, SW: { parts: [] },
+    };
+    mk(['function wireSwitcher()'], ctx).wireSwitcher();
+    let prevented = 0;
+    listeners.mousedown({ preventDefault() { prevented += 1; } });
+    assert.equal(prevented, 0);
+  });
+
+  test('(−) the pane-less window shows no mode row: only wireSwitcher unhides it, and it is only called with a pane', () => {
+    assert.equal((SRC.match(/\$\('mode-row'\)\.hidden = false/g) ?? []).length, 1);
+    assert.match(fnOf('function boot()'), /if \(paneId\) \{\s*wireSwitcher\(\);/);
+  });
+
+  test('(−) the removed key row left nothing behind in the script: no renderGatedKeys, no keyTitle, no .key lookups', () => {
+    assert.doesNotMatch(SRC, /renderGatedKeys|keyTitle|querySelectorAll\('\.key'\)/);
+    assert.doesNotMatch(fnOf('function setInputEnabled('), /\.key\b/);
   });
 });

@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { SHORTCUTS, shortcutsFor, isMac, isTextEntry, wantsHelp, wantsBack, backHint, helpHint, passKeyLabel, openShortcuts } from '../public/shortcuts.js';
+import { SHORTCUTS, shortcutsFor, isMac, isTextEntry, wantsHelp, wantsBack, backHint, helpHint, passKeyLabel, hintTips, openShortcuts } from '../public/shortcuts.js';
 import { initDialogs, initMenus, openDialog } from '../public/ui.js';
 
 const SRC = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public', 'shortcuts.js'), 'utf8');
@@ -212,7 +212,10 @@ describe('shortcutsFor: the session window', () => {
       ['Send', 'Enter', 'Send the text, then Enter, to Claude (empty box: Enter only)'],
       ['New line', 'Shift+Enter', 'Start a new line in the message box'],
       ['Press Esc in Claude', 'Esc', "Stop Claude's turn or close Claude's menu (when nothing in nika is open)"],
-      ['Interrupt', 'Ctrl+C', 'Send Ctrl-C to Claude (when no text is selected)'],
+      ['Interrupt', 'Ctrl+C', "Stop Claude's turn, as Stop does (while Claude works and no text is selected)"],
+      ['Next permission mode', 'Shift+Tab', 'Press Shift-Tab in Claude (not before the pane is read, nor while Claude asks you something)'],
+      ['Arrow keys in Claude', `${UP} ${DOWN} ${LEFT} ${RIGHT}`, "In an empty box: move through Claude's menus and earlier prompts"],
+      ['Move focus back', 'Ctrl+Shift+Tab', 'Leave the message box backward (Shift+Tab goes to Claude)'],
       ['Commands', '/', 'Open the command list (at the start of an empty box)'],
       ['Type into the pane', 'Ctrl+]', "Send every key straight to Claude's terminal"],
     ]],
@@ -237,6 +240,9 @@ describe('shortcutsFor: the session window', () => {
     assert.equal(by.Back, `${CMD}+[`);
     assert.equal(by['New line'], `${SHIFT}+Enter`);
     assert.equal(by.Interrupt, `${CTRL}+C`);
+    assert.equal(by['Next permission mode'], `${SHIFT}+Tab`);
+    assert.equal(by['Move focus back'], `${CTRL}+${SHIFT}+Tab`);
+    assert.equal(by['Arrow keys in Claude'], `${UP} ${DOWN} ${LEFT} ${RIGHT}`);
     assert.equal(by['Type into the pane'], `${CTRL}+]`);
     assert.equal(by['Keyboard shortcuts'], `? or ${CMD}+/`);
   });
@@ -261,7 +267,7 @@ describe('shortcutsFor: filtering and shape', () => {
   });
 
   test('(+) every row is complete data: both platforms, at least one key, a description', () => {
-    assert.equal(SHORTCUTS.length, 24, '10 dashboard rows (8 app, 2 browser) and 14 session rows');
+    assert.equal(SHORTCUTS.length, 27, '10 dashboard rows (8 app, 2 browser) and 17 session rows');
     for (const r of SHORTCUTS) {
       assert.ok(['dashboard', 'session'].includes(r.window), r.name);
       assert.ok(['app', 'browser', 'both'].includes(r.tier), r.name);
@@ -685,6 +691,44 @@ describe('openShortcuts next to menus and dialogs (ui.js)', () => {
       const html = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public', f), 'utf8');
       assert.match(/<dialog\b[^>]*\bid="kbd-dlg"[^>]*>/.exec(html)?.[0] ?? '', /\bdata-own-focus\b/, f);
     }
+  });
+});
+
+describe('hintTips: the session window\'s hint line (0.3.3)', () => {
+  const LINUX = [
+    { keys: ['Esc', 'Ctrl+C', 'Shift+Tab'], text: 'go to Claude', more: false },
+    { keys: [UP, DOWN, 'Enter'], text: 'too, in an empty box', more: true },
+    { keys: ['Ctrl+Shift+Tab'], text: 'moves focus back', more: false },
+    { keys: ['Ctrl+/'], text: 'all shortcuts', more: true },
+  ];
+  const MACOS = [
+    { keys: ['Esc', `${CTRL}C`, `${SHIFT}Tab`], text: 'go to Claude', more: false },
+    { keys: [UP, DOWN, 'Enter'], text: 'too, in an empty box', more: true },
+    { keys: [`${CTRL}${SHIFT}Tab`], text: 'moves focus back', more: false },
+    { keys: [`${CMD}/`], text: 'all shortcuts', more: true },
+  ];
+
+  test('(+) Linux writes the words joined with "+"', () => {
+    assert.deepEqual(hintTips(false), LINUX);
+  });
+
+  test('(+) macOS runs the glyphs together in one keycap', () => {
+    assert.deepEqual(hintTips(true), MACOS);
+  });
+
+  test('(−) only the second and fourth tip hide when the composer is narrow; the first and third always show', () => {
+    for (const mac of [true, false]) assert.deepEqual(hintTips(mac).map((t) => t.more), [false, true, false, true]);
+  });
+
+  test('(−) the tips name nothing the buttons carry: no send, commands, new line or type into pane', () => {
+    for (const mac of [true, false]) {
+      for (const t of hintTips(mac)) assert.doesNotMatch(t.text, /send|commands|new line|type into pane/i);
+    }
+  });
+
+  test('(−) the Linux tips never use a glyph keycap and the macOS tips never spell a Ctrl or Shift word', () => {
+    for (const t of hintTips(false)) for (const k of t.keys) assert.doesNotMatch(k, /[\u2303\u21e7\u2318]/);
+    for (const t of hintTips(true)) for (const k of t.keys) assert.doesNotMatch(k, /Ctrl|Shift/);
   });
 });
 

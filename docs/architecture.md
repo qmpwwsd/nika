@@ -55,7 +55,9 @@ Related: [contracts](contracts/api-app.md) (routes, stdio protocol, schemas), [A
    (`app/src-tauri/ui/error.html`, served as `tauri://localhost/error.html?reason=…`). Its Retry link
    (`tauri://localhost/retry`) is intercepted by the shell, which starts a new child with a new secret and a new port.
 10. Quit: the shell closes the child's stdin, sends SIGTERM after 2 s and SIGKILL after 4 s. tmux sessions are never
-    touched. Closing the window only hides it.
+    touched. Closing the window only hides it (on macOS a full-screen window leaves full screen first). On macOS the
+    app is in the Dock and Cmd+Tab while its window is shown (activation policy Regular) and tray-only while it is
+    hidden (Accessory); `Info.plist` keeps `LSUIElement`, so a `--hidden` login launch never shows a Dock icon.
 
 The stdio protocol (`proto` 1, JSON lines, shapes, limits) is fixed in
 [`contracts/api-app.md` section 5](contracts/api-app.md) and [ADR 0003](adr/0003-stdio-protocol.md). The secret flow

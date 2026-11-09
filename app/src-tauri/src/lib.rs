@@ -14,6 +14,7 @@ mod tray;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
+use std::time::Duration;
 
 use tauri::menu::MenuEvent;
 use tauri::tray::{TrayIcon, TrayIconBuilder};
@@ -44,6 +45,12 @@ struct Inner {
     /// The open `pick-folder` request, one at a time.
     pick: Option<String>,
     zoom: f64,
+    /// macOS: the full-screen close whose timer will hide the window once it has left full screen
+    /// (`FULLSCREEN_EXIT_WAIT`), by its number in `fs_closes`. Cleared by `hide_window`, `show_window` and a
+    /// replaced window (`on_ready`), which cancels that timer.
+    hide_after_fullscreen: Option<u64>,
+    /// Full-screen closes so far; each timer carries its own number.
+    fs_closes: u64,
 }
 
 struct Shell(Mutex<Inner>);
@@ -107,13 +114,58 @@ fn toggle_autostart(app: &AppHandle) {
 
 /* ---------- windows ---------- */
 
+/// macOS: the activation policy that goes with a shown or a hidden window.
+#[cfg(target_os = "macos")]
+fn policy(shown: bool) -> tauri::ActivationPolicy {
+    if shown { tauri::ActivationPolicy::Regular } else { tauri::ActivationPolicy::Accessory }
+}
+
+/// macOS: in the Dock and Cmd+Tab while a window is shown, tray only while it is hidden (owner decision 2026-11-09).
+fn set_shown(app: &AppHandle, shown: bool) {
+    #[cfg(target_os = "macos")]
+    let _ = app.set_activation_policy(policy(shown));
+    #[cfg(not(target_os = "macos"))]
+    let _ = (app, shown);
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum CloseStep {
+    Hide,
+    LeaveFullscreen,
+}
+
+/// A full-screen window leaves full screen before it hides: hiding it in its own Space would leave an empty Space.
+fn close_step(fullscreen: bool) -> CloseStep {
+    if fullscreen { CloseStep::LeaveFullscreen } else { CloseStep::Hide }
+}
+
+/// macOS: how long a window gets to leave full screen (the AppKit animation) before it is hidden. A timer, not a
+/// `Resized` event: tao clears its full-screen flag in `set_fullscreen(false)` itself, so a resize that comes while
+/// the animation still runs would already read "not full screen".
+const FULLSCREEN_EXIT_WAIT: Duration = Duration::from_millis(1200);
+
+/// Whether the timer of full-screen close `token` still applies: that close is the pending one (not cancelled by a
+/// tray Open or a Retry, not replaced by a newer close).
+fn hide_due(pending: Option<u64>, token: u64) -> bool {
+    pending == Some(token)
+}
+
+/// Hides the window; on macOS the Dock icon and Cmd+Tab entry go with it.
+fn hide_window(app: &AppHandle, w: &WebviewWindow) {
+    shell(app).lock().hide_after_fullscreen = None;
+    let _ = w.hide();
+    set_shown(app, false);
+}
+
 fn show_window(app: &AppHandle) {
     let window = {
         let mut i = shell(app).lock();
         i.hidden_launch = false;
+        i.hide_after_fullscreen = None;
         i.window.clone()
     };
     if let Some(w) = window {
+        set_shown(app, true);
         let _ = w.show();
         let _ = w.unminimize();
         let _ = w.set_focus();
@@ -146,7 +198,8 @@ fn zoom(app: &AppHandle, step: impl FnOnce(f64) -> f64) {
     }
 }
 
-/// One window: the server's page (with the init script) or the local error page. Closing it only hides it.
+/// One window: the server's page (with the init script) or the local error page. Closing it only hides it (a
+/// full-screen one leaves full screen first, macOS).
 fn make_window(app: &AppHandle, url: WebviewUrl, port: Option<u16>, init: Option<String>, visible: bool) -> tauri::Result<WebviewWindow> {
     let label = {
         let mut i = shell(app).lock();
@@ -154,6 +207,7 @@ fn make_window(app: &AppHandle, url: WebviewUrl, port: Option<u16>, init: Option
         format!("main-{}", i.windows_made)
     };
     let for_nav = app.clone();
+    let app_h = app.clone();
     let mut builder = WebviewWindowBuilder::new(app, label, url)
         .title("nika")
         .inner_size(1100.0, 720.0)
@@ -182,11 +236,40 @@ fn make_window(app: &AppHandle, url: WebviewUrl, port: Option<u16>, init: Option
         builder = builder.initialization_script(script);
     }
     let window = builder.build()?;
+    if visible {
+        set_shown(app, true);
+    }
     let hide = window.clone();
     window.on_window_event(move |event| {
         if let WindowEvent::CloseRequested { api, .. } = event {
             api.prevent_close();
-            let _ = hide.hide();
+            if shell(&app_h).lock().hide_after_fullscreen.is_some() {
+                return; // already leaving full screen: the timer below hides it
+            }
+            let fs = cfg!(target_os = "macos") && hide.is_fullscreen().unwrap_or(false);
+            match close_step(fs) {
+                CloseStep::LeaveFullscreen => {
+                    let token = {
+                        let mut i = shell(&app_h).lock();
+                        i.fs_closes += 1;
+                        i.hide_after_fullscreen = Some(i.fs_closes);
+                        i.fs_closes
+                    };
+                    let _ = hide.set_fullscreen(false);
+                    let (app, win) = (app_h.clone(), hide.clone());
+                    thread::spawn(move || {
+                        thread::sleep(FULLSCREEN_EXIT_WAIT);
+                        on_main(&app, move |a| {
+                            // a tray Open, a Retry or a newer close meanwhile: this timer is stale
+                            let due = hide_due(shell(a).lock().hide_after_fullscreen, token);
+                            if due {
+                                hide_window(a, &win);
+                            }
+                        });
+                    });
+                }
+                CloseStep::Hide => hide_window(&app_h, &hide),
+            }
         }
     });
     Ok(window)
@@ -205,7 +288,11 @@ fn on_ready(app: &AppHandle, port: u16, secret: &Secret) {
     match make_window(app, WebviewUrl::External(url), Some(port), Some(nav::init_script(port, secret.expose())), visible) {
         Ok(w) => {
             let _ = w.set_zoom(z);
-            shell(app).lock().window = Some(w);
+            {
+                let mut i = shell(app).lock();
+                i.window = Some(w);
+                i.hide_after_fullscreen = None; // the window a pending full-screen close was for is replaced
+            }
             if let Some(o) = old {
                 let _ = o.destroy();
             }
@@ -418,9 +505,11 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
     }
 }
 
-/// macOS menu bar (shown while the window is active): Edit for the standard text shortcuts, View for zoom
-/// (spec decision 7; done natively because the zoom hotkey polyfill needs a Tauri capability for the page's
-/// origin, which rules/project-rules.md section 13 forbids), Window, and Cmd+Q through the same quit path.
+/// macOS menu bar (shown while nika is the active app: activation policy Regular, window shown): Edit for the
+/// standard text shortcuts, View for zoom (spec decision 7; done natively because the zoom hotkey polyfill needs a
+/// Tauri capability for the page's origin, which rules/project-rules.md section 13 forbids) and native full screen
+/// (muda's predefined item: `toggleFullScreen:`, Ctrl+Cmd+F; AppKit retitles it "Exit Full Screen"), Window, and
+/// Cmd+Q through the same quit path.
 #[cfg(target_os = "macos")]
 fn app_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
     use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
@@ -430,7 +519,13 @@ fn app_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
     let zoom_reset = MenuItemBuilder::with_id("zoom-reset", "Actual Size").accelerator("CmdOrCtrl+0").build(app)?;
     let app_sub = SubmenuBuilder::new(app, "nika").hide().hide_others().show_all().separator().item(&quit).build()?;
     let edit = SubmenuBuilder::new(app, "Edit").undo().redo().separator().cut().copy().paste().select_all().build()?;
-    let view = SubmenuBuilder::new(app, "View").item(&zoom_in).item(&zoom_out).item(&zoom_reset).build()?;
+    let view = SubmenuBuilder::new(app, "View")
+        .item(&zoom_in)
+        .item(&zoom_out)
+        .item(&zoom_reset)
+        .separator()
+        .fullscreen_with_text("Enter Full Screen")
+        .build()?;
     let window = SubmenuBuilder::new(app, "Window").minimize().close_window().build()?;
     MenuBuilder::new(app).items(&[&app_sub, &edit, &view, &window]).build()
 }
@@ -458,6 +553,8 @@ pub fn run() {
             view: View::starting(),
             pick: None,
             zoom: 1.0,
+            hide_after_fullscreen: None,
+            fs_closes: 0,
         })))
         .setup(|app| {
             #[cfg(target_os = "macos")]
@@ -488,14 +585,18 @@ pub fn run() {
                     api.prevent_exit();
                 }
             }
+            // Dock icon menu > Quit (and logout) is `terminate:`: tao turns it into `Exit` without an `ExitRequested`
             RunEvent::Exit => stop_server(app),
+            // Dock icon click, Finder or Spotlight launch of the running app
+            #[cfg(target_os = "macos")]
+            RunEvent::Reopen { .. } => show_window(app),
             _ => {}
         });
 }
 
 #[cfg(test)]
 mod tests {
-    use super::applies;
+    use super::{applies, close_step, hide_due, CloseStep};
 
     #[test]
     fn a_decision_applies_only_to_the_current_healthy_generation() {
@@ -509,5 +610,38 @@ mod tests {
         assert!(!applies(3, false, true, 3));
         // (-) an event from a generation that does not exist yet is not trusted either
         assert!(!applies(3, false, false, 4));
+    }
+
+    #[test]
+    fn a_full_screen_window_leaves_full_screen_before_it_hides() {
+        // (+) a window in its own Space: leave full screen first
+        assert_eq!(close_step(true), CloseStep::LeaveFullscreen);
+        // (-) a windowed one (and every Linux window) hides at once, never waits for a full-screen exit
+        assert_eq!(close_step(false), CloseStep::Hide);
+        // (-) the full-screen answer is never a plain hide
+        assert_ne!(close_step(true), CloseStep::Hide);
+    }
+
+    #[test]
+    fn a_hide_timer_acts_only_for_the_close_that_is_still_pending() {
+        // (+) its close is the pending one
+        assert!(hide_due(Some(2), 2));
+        // (-) a tray Open or a Retry cleared the pending close
+        assert!(!hide_due(None, 2));
+        // (-) a newer close replaced it (close, Open, full screen, close again): the older timer is stale
+        assert!(!hide_due(Some(3), 2));
+        // (-) a pending number from an older close does not match a newer timer either
+        assert!(!hide_due(Some(1), 2));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_shown_window_is_in_the_dock_and_a_hidden_one_is_not() {
+        use super::policy;
+        use tauri::ActivationPolicy;
+        // (+) shown: Dock icon and Cmd+Tab
+        assert!(matches!(policy(true), ActivationPolicy::Regular));
+        // (-) hidden: tray only
+        assert!(matches!(policy(false), ActivationPolicy::Accessory));
     }
 }
