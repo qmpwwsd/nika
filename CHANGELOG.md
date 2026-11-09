@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.3 — 2026-11-09
 
 Session window keys and the macOS window (desktop app):
 

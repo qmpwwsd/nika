@@ -1,6 +1,6 @@
 {
   "name": "nika",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Local dashboard of Claude Code agents (sessions and subagents), grouped by project",
   "license": "MIT",
   "author": "qmpwwsd",
