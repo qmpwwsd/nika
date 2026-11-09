@@ -1047,3 +1047,76 @@ describe('static files served by the server', () => {
     assert.equal(r.status, 405);
   });
 });
+
+describe('ui.js restoreFocus: a dialog opened from a menu item gives focus back to the menu button (Task 14b, B9)', () => {
+  const src = read('ui.js');
+  const head = src.indexOf('function restoreFocus(dlg)');
+  const body = src.slice(head, src.indexOf('\n}\n', head) + 2);
+  const node = (name, over = {}) => ({ name, isConnected: true, focused: 0, focus() { this.focused += 1; }, closest: () => null, ...over });
+  /** restoreFocus as shipped, run against a tiny page: `$` answers from `byQuery`, `openers` holds what openDialog would have stored. */
+  const rig = ({ opener, fk = null, menu = null, button = null, openDialogs = false, heading = node('h1') }) => {
+    const asked = [];
+    const byQuery = (sel) => {
+      asked.push(sel);
+      if (sel === 'dialog[open]') return openDialogs ? node('dialog') : null;
+      if (menu && sel === `[aria-controls="${menu.id}"]`) return button;
+      if (sel === '.screen:not([hidden]) h1') return heading;
+      return null;
+    };
+    const dlg = {};
+    const openers = new Map([[dlg, { el: opener, fk }]]);
+    const run = vm.runInNewContext(`${body}; restoreFocus`, { $: byQuery, openers, CSS: { escape: (s) => s } });
+    return { run: () => run(dlg), asked, heading, openers, dlg };
+  };
+  const menuItem = (menu, over = {}) => node('item', { closest: (s) => (s === '.menu' ? menu : null), ...over });
+
+  test('(+) the opener sat in a closed menu: the button that names the menu in aria-controls gets the focus, not the hidden item', () => {
+    const menu = { id: 'menu-7', hidden: true };
+    const button = node('menu button');
+    const item = menuItem(menu);
+    const r = rig({ opener: item, menu, button });
+    r.run();
+    assert.equal(button.focused, 1);
+    assert.equal(item.focused, 0, 'a hidden control cannot take focus');
+    assert.equal(r.heading.focused, 0);
+    assert.equal(r.openers.has(r.dlg), false, 'the stored opener is consumed as before');
+  });
+
+  test('(+) a closed menu whose button cannot be found falls back to the screen heading, as for a gone opener', () => {
+    const menu = { id: 'menu-8', hidden: true };
+    const item = menuItem(menu);
+    const r = rig({ opener: item, menu, button: null });
+    r.run();
+    assert.equal(item.focused, 0);
+    assert.equal(r.heading.focused, 1);
+  });
+
+  test('(−) an opener in an open menu, or outside any menu, keeps the focus as today', () => {
+    const open = { id: 'menu-9', hidden: false };
+    const inOpen = menuItem(open);
+    rig({ opener: inOpen, menu: open, button: node('b') }).run();
+    assert.equal(inOpen.focused, 1);
+    const plain = node('plain button');
+    const r = rig({ opener: plain });
+    r.run();
+    assert.equal(plain.focused, 1);
+    assert.equal(r.heading.focused, 0);
+  });
+
+  test('(−) a gone opener still falls back to its data-fk, then the heading; another open dialog still blocks the restore', () => {
+    const gone = node('gone', { isConnected: false });
+    const r = rig({ opener: gone });
+    r.run();
+    assert.equal(r.heading.focused, 1);
+    assert.equal(gone.focused, 0);
+    const blocked = rig({ opener: node('x'), openDialogs: true });
+    blocked.run();
+    assert.equal(blocked.heading.focused, 0);
+    assert.equal(blocked.openers.has(blocked.dlg), true, 'untouched: the other dialog will restore it');
+  });
+
+  test('(+) the source asks for the menu through aria-controls and the id, never through sibling order', () => {
+    assert.match(body, /\.closest\('\.menu'\)/);
+    assert.match(body, /aria-controls="\$\{CSS\.escape\(/);
+  });
+});

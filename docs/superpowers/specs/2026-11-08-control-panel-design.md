@@ -169,8 +169,8 @@ buttons. The capture response gains `prompt`. The composer area shows one button
 ### 6.7 Quick actions
 
 One row in the session window: Stop (while busy), Compact (`/compact` + Enter), Clear (`/clear`, confirm), Model ▾
-(the §6.9 dropdown → `/model <id>` + Enter), Rewind (Esc Esc on an empty prompt opens Claude's rewind menu in the
-mirror), End session. All but End and the mode switch use the keys route.
+(the §6.9 dropdown → `/model <id>` + Enter), Rewind (`/rewind` + Enter opens Claude's rewind menu in the
+mirror; built amendment, §6.12), End session. Stop uses its own route (§6.12).
 
 ### 6.8 Stop and End session
 
@@ -230,7 +230,10 @@ Where the build differs from §6.1–§6.9, `docs/contracts/api-app.md` §3 is t
   stays on the keys route.
 - **End and quick actions (§6.7, §6.8).** End types `/exit` only into an empty input and presses `Enter` only when the
   input reads exactly that, else it removes its own text and answers 409; it sends no `C-u` first. Compact, Clear and
-  Model use the new `POST /api/app/pane/:id/command` with the same typing rules; Stop and Rewind stay on the keys route.
+  Model use the new `POST /api/app/pane/:id/command` with the same typing rules. Built after the first review (task 14b):
+  Rewind sends `/rewind` through the same command route instead of Esc Esc, and Stop posts to `POST /api/app/pane/:id/stop`
+  (Esc, a second Esc in vim insert mode, refusals `prompt-open`, `not-busy`, `mode-unknown`). Only "Esc = No" and the Esc
+  key chip stay on the keys route.
 - **Bypass (§6.3).** Never a switch target in 0.3 and no Bypass segment (0.4). The cycle may still pass through it when
   Claude's cycle holds it, which is why a switch runs only while idle.
 - **Switch timing (§6.3).** Built: after each `BTab` the footer is read every 300 ms for up to 1.8 s (`pollMs` and
@@ -243,6 +246,10 @@ Where the build differs from §6.1–§6.9, `docs/contracts/api-app.md` §3 is t
   End steps 2–7.
 - **Start orchestrator (§6.9).** One click, no per-start model picker in 0.3 (controller ruling 2026-11-09). It uses the
   Settings "Orchestrator" model, which is chosen from the model dropdown there (catalog list or Custom ID).
+- **Message box and prompts (§6.5, §6.6, task 14b).** While a prompt is open, or the agent needs you, Send, Shell and the
+  lone Enter post nothing (the text stays; the Enter and Shift-Tab chips are aria-disabled). A prompt that mentions bypass
+  anywhere has no answer buttons. The window follows the pane to its new session after `/clear` when exactly one live
+  agent has the pane.
 - **Prompt button label (§6.6).** Built: the cancel button shows the keycap "Esc" followed by "Cancel, same as No", not
   "Esc = No" (`public/session.js`; spec 9.5 of `docs/design/spec.md`). It sends `Escape` through the keys route.
 

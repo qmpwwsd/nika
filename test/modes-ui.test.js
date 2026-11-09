@@ -247,7 +247,7 @@ describe('switcherState', () => {
     prompt: 'Answer the prompt first.',
     working: 'Switch when Claude is waiting for you.',
     unconfirmed: 'Waiting for Claude to confirm the mode.',
-    unknown: "nika can't read the mode.",
+    unknown: "nika can't read the mode. Use the terminal.",
     dontAsk: "Don't ask is on. Change it in the terminal.",
     switching: `Switching${String.fromCharCode(0x2026)} up to 6 Shift-Tab presses.`,
   };
@@ -280,16 +280,33 @@ describe('switcherState', () => {
     assert.equal(S({ modeConfirmed: false, mode: 'dontAsk' }).held, null);
   });
 
-  test('(+) unknown mode: nothing pressed, all disabled, the Shift-Tab chip', () => {
-    assert.deepEqual(S({ mode: 'unknown' }), { disabled: true, pressed: null, held: null, reason: WHY.unknown, chip: 'BTab', busy: null });
+  test('(+) m6: unknown mode with nothing held or launched: nothing pressed, all disabled, no chip, the terminal is the way', () => {
+    assert.deepEqual(S({ mode: 'unknown' }), { disabled: true, pressed: null, held: null, reason: WHY.unknown, chip: null, busy: null });
   });
 
-  test('(−) hostile mode strings read as unknown (chip, nothing pressed)', () => {
+  test('(−) m6: a held or launch mode (unconfirmed) is not "unknown": it keeps its own reason and its segment, and no chip either', () => {
+    const st = S({ mode: 'plan', modeConfirmed: false });
+    assert.equal(st.reason, WHY.unconfirmed);
+    assert.equal(st.held, 'plan');
+    assert.equal(st.chip, null);
+  });
+
+  test('(−) hostile mode strings read as unknown (no chip, nothing pressed)', () => {
     for (const mode of ['__proto__', 'toString', 'Plan', 7, null, undefined]) {
       const st = S({ mode });
       assert.equal(st.reason, WHY.unknown, String(mode));
       assert.equal(st.pressed, null);
-      assert.equal(st.chip, 'BTab');
+      assert.equal(st.chip, null);
+    }
+  });
+
+  test('(−) no state of the switcher ever offers the Shift-Tab chip', () => {
+    for (const mode of [...MODES, 'unknown', 'nonsense']) {
+      for (const status of [null, 'idle', 'busy', 'attn', 'ended']) {
+        for (const modeConfirmed of [true, false]) {
+          for (const prompt of [null, PROMPT]) assert.equal(S({ mode, status, modeConfirmed, prompt }).chip, null, `${mode} ${status} ${modeConfirmed} ${prompt ? 'prompt' : ''}`);
+        }
+      }
     }
   });
 
@@ -387,6 +404,43 @@ describe('switchFailure', () => {
     assert.equal(T({ status: 500, code: undefined }), "nika couldn't reach tmux.");
     assert.equal(T({ status: 502, code: undefined }), "nika couldn't reach tmux.");
     assert.equal(T({ status: 0, code: undefined }), "nika couldn't reach tmux.");
+  });
+
+  test('(+) H1: 409 stopped-in-bypass is loud, with the Bypass tag, and tells the user how to leave it', () => {
+    const want = { text: 'Stopped at Bypass permissions: Claude runs tools without asking. Press Shift-Tab in the terminal to leave it.', strike: null, loud: true, bypass: true };
+    assert.deepEqual(F({ code: 'stopped-in-bypass', mode: 'bypassPermissions' }), want, 'the next capture reads Bypass');
+    assert.deepEqual(F({ code: 'stopped-in-bypass', mode: 'unknown' }), want, 'the footer is unreadable: the route\'s last reading was Bypass');
+    assert.deepEqual(F({ code: 'stopped-in-bypass', mode: 'plan', confirmed: false }), want, 'an unconfirmed capture proves nothing');
+    assert.deepEqual(F({ code: 'stopped-in-bypass', start: 'bypassPermissions', mode: 'bypassPermissions' }), want, 'it started in Bypass too');
+    assert.deepEqual(F({ code: 'stopped-in-bypass', mode: 'bypassPermissions', presses: 3 }), want);
+  });
+
+  test('(+) stopped-in-bypass is loud even when the next capture already reads another confirmed mode: the route saw Bypass last, so the alarm is never dropped', () => {
+    assert.deepEqual(F({ code: 'stopped-in-bypass', mode: 'plan' }).loud, true);
+    assert.equal(F({ code: 'stopped-in-bypass', mode: 'plan' }).bypass, true);
+  });
+
+  test('(−) 404 beats stopped-in-bypass; other statuses with that code are not it; the Bypass tag is only for stopped-in-bypass', () => {
+    assert.equal(F({ status: 404, code: 'stopped-in-bypass', mode: 'bypassPermissions' }).text, 'The session is gone.');
+    assert.equal(F({ status: 400, code: 'stopped-in-bypass', mode: 'manual' }).text, "nika couldn't switch the mode.");
+    assert.equal(F({ status: 500, code: 'stopped-in-bypass', mode: 'manual' }).text, "nika couldn't reach tmux.");
+    for (const over of [{ code: 'mode-unknown', presses: 2, mode: 'manual' }, { code: 'not-idle', mode: 'manual' }, { status: 500, code: undefined, mode: 'manual' }]) assert.equal(F(over).bypass, undefined, JSON.stringify(over));
+  });
+
+  test('(+) H1: 409 mode-unknown after at least one press is loud and says Claude may be in any mode, Bypass included', () => {
+    const want = { text: "nika can't read the mode after pressing Shift-Tab. Check the terminal: the session may be in any mode, including Bypass permissions.", strike: null, loud: true };
+    for (const presses of [1, 2, 6]) assert.deepEqual(F({ code: 'mode-unknown', mode: 'manual', presses }), want, String(presses));
+    assert.deepEqual(F({ code: 'mode-unknown', mode: 'unknown', presses: 1 }), want);
+  });
+
+  test('(−) mode-unknown with no press (0, absent, not a count) keeps today\'s plain line and stays quiet', () => {
+    for (const presses of [0, undefined, null, -1, 1.5, '2', NaN]) {
+      assert.deepEqual(F({ code: 'mode-unknown', mode: 'manual', presses }), { text: "nika can't read the mode.", strike: null }, String(presses));
+    }
+  });
+
+  test('(−) mode-unknown after presses still gives way to a confirmed capture at another mode', () => {
+    assert.deepEqual(F({ code: 'mode-unknown', mode: 'acceptEdits', presses: 2 }), { text: 'Stopped at Accept edits.', strike: null });
   });
 
   test('(−) 404 says the session is gone whatever the capture shows; unlisted answers get a plain fallback; none strikes', () => {

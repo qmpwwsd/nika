@@ -57,6 +57,9 @@ export const canEndRow = (agent, map) => rowMode(agent, map) !== null;
 
 const BYPASS_NOTE = 'Claude runs every tool without asking.';
 
+/** The Bypass tag, for the loud line of a switch that left Claude in Bypass. The mode is named once, in MODE_META (found by its class). */
+export const bypassTag = () => modeEl(Object.keys(MODE_META).find((k) => MODE_META[k].cls === 'm-bypass'));
+
 /**
  * The mode tag: span.mode.<cls>[data-confirmed][title] > icon + sr-only "Permission mode: " + label (+ "unconfirmed").
  * Default: icon + label (+ the word). compact: the word moves to sr-only, after a comma ("Accept edits, unconfirmed"). iconOnly: the label moves to sr-only too.
@@ -82,8 +85,11 @@ const WHY = {
   working: 'Switch when Claude is waiting for you.',
   unconfirmed: 'Waiting for Claude to confirm the mode.',
   unknown: "nika can't read the mode.",
+  unknownUse: "nika can't read the mode. Use the terminal.",
   dontAsk: "Don't ask is on. Change it in the terminal.",
   switching: `Switching${DOTS} up to 6 Shift-Tab presses.`,
+  unreadAfterPress: "nika can't read the mode after pressing Shift-Tab. Check the terminal: the session may be in any mode, including Bypass permissions.",
+  stoppedInBypass: 'Stopped at Bypass permissions: Claude runs tools without asking. Press Shift-Tab in the terminal to leave it.',
 };
 
 /**
@@ -91,8 +97,8 @@ const WHY = {
  * 'connecting'), `status` (the agent's 'attn' | 'idle' | 'busy' | 'ended', null while unknown: the server then decides and
  * answers 409 not-idle), `prompt` (capture field or null), `mode` and `modeConfirmed` (capture fields), `switching` (the
  * target of a switch in flight, else null). Output: `disabled` (every segment aria-disabled), `pressed` and `held` (a
- * target or null; held = dashed, not pressed), `reason` ('' = no reason line), `chip` ('BTab' = offer the Shift-Tab
- * chip), `busy` (the segment with the spinner).
+ * target or null; held = dashed, not pressed), `reason` ('' = no reason line), `chip` (always null: nika does not offer
+ * Shift-Tab when it cannot read the mode, because that could move a session it knows nothing about), `busy` (the segment with the spinner).
  */
 export function switcherState({ pane = 'ok', status = null, prompt = null, mode = 'unknown', modeConfirmed = true, switching = null } = {}) {
   const off = (reason, over) => ({ disabled: true, pressed: null, held: null, reason, chip: null, busy: null, ...over });
@@ -107,7 +113,7 @@ export function switcherState({ pane = 'ok', status = null, prompt = null, mode 
   if (switching) return off(WHY.switching, { ...shown, busy: switching });
   if (status === 'busy' || status === 'ended') return off(WHY.working, shown);
   if (!sure) return off(WHY.unconfirmed, shown);
-  if (key === 'unknown') return off(WHY.unknown, { chip: 'BTab' });
+  if (key === 'unknown') return off(WHY.unknownUse); // no held or launch mode either: no chip, the terminal is the way
   if (key === 'dontAsk') return off(WHY.dontAsk);
   return { disabled: false, pressed: seg, held: null, reason: '', chip: null, busy: null };
 }
@@ -130,19 +136,24 @@ export function modeNote(name, last, { mode, confirmed }) {
 
 /**
  * What a failed switch says once the next capture is in (spec 9.3 results). `mode` / `confirmed` are that capture's,
- * `start` the mode when the switch began, `target` what was asked for. Returns { text, strike }: strike is the target
- * to strike through, only when the cycle came back to the start mode. A confirmed mode other than the start mode wins
- * over every answer but 404: some presses landed and the tag shows where they stopped.
+ * `start` the mode when the switch began, `target` what was asked for, `presses` the route's own count (409 bodies carry it after
+ * at least one press). Returns { text, strike, loud?, bypass? }: strike is the target to strike through, only when the cycle came
+ * back to the start mode; `loud` asks for the alert region (Claude may be somewhere nika cannot see), and `bypass` for the Bypass
+ * tag next to the text. A confirmed mode other than the start mode wins over every answer but 404 (some presses landed and the tag
+ * shows where they stopped), except the route's own `stopped-in-bypass`: its last reading was Bypass, so it is always reported loudly.
  */
-export function switchFailure({ status, code, start, target, mode, confirmed }) {
+export function switchFailure({ status, code, start, target, mode, confirmed, presses }) {
   if (status === 404) return { text: 'The session is gone.', strike: null };
   const key = modeKey(mode);
   const read = confirmed === true && key !== 'unknown';
+  if (status === 409 && code === 'stopped-in-bypass') return { text: WHY.stoppedInBypass, strike: null, loud: true, bypass: true };
   if (read && key !== start) return { text: `Stopped at ${MODE_META[key].label}.`, strike: null };
   if (status === 409) {
     if (code === 'not-in-cycle') return { text: `${MODE_META[modeKey(target)].label} isn't in this session's Shift-Tab cycle.`, strike: read ? target : null };
     if (code === 'not-idle') return { text: WHY.working, strike: null };
-    if (code === 'mode-unknown') return { text: WHY.unknown, strike: null };
+    if (code === 'mode-unknown') {
+      return Number.isInteger(presses) && presses >= 1 ? { text: WHY.unreadAfterPress, strike: null, loud: true } : { text: WHY.unknown, strike: null };
+    }
     if (code === 'busy-switching') return { text: 'Another action is running on this session.', strike: null };
   }
   if (status === 429) return { text: 'Too many keys at once; try again.', strike: null };

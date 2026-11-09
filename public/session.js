@@ -7,12 +7,14 @@
 import { h, icon } from './dom.js';
 import { isApp, appFetch, getJSON, applyTheme } from './api.js';
 import { toRenderModel, applyMirror, planSend, planPaste, chunkText, keyForEvent, KEY_LABEL } from './mirror-render.js';
-import { MODE_META, MODE_TARGETS, modeKey, modeEl, switcherState, modeNote, switchFailure } from './modes.js';
-import { quickState, cleanPrompt, answerOutcome, escOutcome, promptOff, promptNote, commandFailure, problemKind, planShell } from './quick-actions.js';
+import { MODE_META, MODE_TARGETS, modeKey, modeEl, bypassTag, switcherState, modeNote, switchFailure } from './modes.js';
+import {
+  quickState, cleanPrompt, answerOutcome, escOutcome, promptOff, promptNote, commandFailure, commandSaid, problemKind, planShell, sendGate, keysRefusal, stopOutcome, followSession,
+} from './quick-actions.js';
 import { MODEL_ID, MODEL_HINT, CUSTOM, fillModelSelect } from './models-ui.js';
 import { openEndDialog } from './end-dialog.js';
 import { paletteQuery, cleanCommands, paletteView, commandsButton, shouldFetch, sourceLabel, insertion, moveActive } from './palette.js';
-import { isMac, isTextEntry, wantsHelp, wantsBack, backHint, helpHint, openShortcuts } from './shortcuts.js';
+import { isMac, isTextEntry, wantsHelp, wantsBack, backHint, helpHint, passKeyLabel, openShortcuts } from './shortcuts.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const PANE_ID = /^%\d{1,6}$/;
@@ -53,7 +55,7 @@ function param(name, shape) {
   return raw !== undefined && shape.test(raw) ? raw : null;
 }
 
-const sessionId = param('session', UUID);
+let sessionId = param('session', UUID); // follows the pane to its new session after /clear (followSession)
 const paneId = param('pane', PANE_ID);
 const projectKey = param('project', PROJECT_KEY);
 
@@ -133,6 +135,13 @@ function claudeUrl(raw) {
 // A is what the agent poll said: name, status kind, the attention reason (why a 'Needs you' agent waits), the model id and label.
 const A = { name: 'the agent', kind: null, attention: '', modelId: '', projectLooked: false };
 
+/** The Back link names the project only when this window came from one (its href is then /#project/<key>); otherwise it stays "Dashboard". */
+function applyBackLabel(group) {
+  if (!projectKey || !group?.label) return;
+  $('proj').textContent = String(group.label);
+  setBack(String(group.label));
+}
+
 function applyAgent(agent, group) {
   const untitled = !agent.name || (sessionId && agent.name === sessionId.slice(0, 8));
   A.name = untitled ? 'untitled session' : String(agent.name);
@@ -141,10 +150,7 @@ function applyAgent(agent, group) {
   h1.classList.toggle('untitled', untitled);
   h1.title = A.name;
   document.title = `${A.name}${MID}nika`;
-  if (group?.label) {
-    $('proj').textContent = String(group.label);
-    setBack(String(group.label));
-  }
+  applyBackLabel(group);
   const model = $('sess-model');
   model.textContent = agent.modelLabel || agent.model || '-';
   model.hidden = false;
@@ -176,6 +182,17 @@ function applyAgent(agent, group) {
   $('pb-pane').textContent = paneId ?? '';
 }
 
+/** The window now shows `id`: the address (same shape, new session), an empty transcript that loads from its start at the next poll. */
+function followPane(id) {
+  sessionId = id;
+  const q = [`session=${id}`, `pane=${encodeURIComponent(paneId)}`, projectKey && `project=${projectKey}`].filter(Boolean);
+  history.replaceState(null, '', `?${q.join('&')}`);
+  resetHistory([], null);
+  H.loaded = false;
+  historyNote('');
+  refreshHistory();
+}
+
 async function refreshAgent() {
   let snapshot;
   try {
@@ -184,14 +201,17 @@ async function refreshAgent() {
     return; // the header keeps its last values; the next poll tries again
   }
   if (!Array.isArray(snapshot?.groups)) return;
-  let hit = null;
-  for (const g of snapshot.groups) {
-    for (const a of g.agents ?? []) {
-      if (sessionId ? a.id === sessionId : paneId && a.live && a.pane?.id === paneId) hit = { a, g };
-    }
+  const all = snapshot.groups.flatMap((g) => (g.agents ?? []).map((a) => ({ a, g })));
+  const find = (id) => all.findLast(({ a }) => (id ? a.id === id : paneId && a.live && a.pane?.id === paneId)) ?? null;
+  let hit = find(sessionId);
+  const next = followSession({ sessionId, paneId, agents: all.map(({ a }) => a) }); // the pane's Claude started a new conversation (/clear)
+  if (next) {
+    followPane(next);
+    hit = find(next);
   }
   if (hit) {
     applyAgent(hit.a, hit.g);
+    if (next) announce('Claude started a new conversation in this pane.'); // after applyAgent, whose status message would replace it
     return;
   }
   if (projectKey && !A.projectLooked) {
@@ -218,7 +238,7 @@ function startAgentPoll() {
 // prompt: the capture's prompt as cleanPrompt allows it, for drawing the buttons only. promptOpen: the capture has a prompt at all
 // (even an off-contract one), for every gate: the switcher, the quick actions, the Shift-Tab chip and the End note.
 const W = { pane: 'connecting', got: false, mode: 'unknown', confirmed: true, prompt: null, promptOpen: false, last: null, msg: null, struck: new Set(), strikeAt: null, tagSig: '', whySig: '' };
-const SW = { busy: null, pressed: null, parts: [], tabTitle: null };
+const SW = { busy: null, pressed: null, parts: [], keyTitle: {} }; // keyTitle: the markup's title of each gated key chip
 
 function renderTag() {
   const key = W.pane === 'ok' ? modeKey(W.mode) : '';
@@ -267,27 +287,32 @@ function renderSegments(st) {
   tabStops();
 }
 
-/** The reason line: why the switcher cannot act, or the result of the last switch. Not a live region. */
+/** The reason line: why the switcher cannot act, or the result of the last switch. Not a live region (a loud result also goes to the alert line). */
 function renderWhy(st) {
   const err = !st.reason && W.msg !== null;
   const text = st.reason || W.msg?.text || '';
-  const sig = `${text}|${err}|${st.chip}`;
+  const bypass = err && W.msg.bypass === true; // Claude was left in Bypass: its tag (colour, icon, word) leads the line
+  const sig = `${text}|${err}|${bypass}`;
   if (sig === W.whySig) return;
   W.whySig = sig;
   const why = $('msw-why');
   why.hidden = !text;
   why.className = err ? 'msw-why err' : 'msw-why';
-  const chip = st.chip ? h('button', { type: 'button', class: 'key', title: 'Send Shift-Tab to the pane', onclick: async () => { await sendKey(st.chip); composer().focus(); } }, 'Shift-Tab') : null;
-  why.replaceChildren(...[text && icon(err ? 'warn' : 'info'), text && h('span', { text }), chip].filter(Boolean));
+  why.replaceChildren(...[bypass ? bypassTag() : text && icon(err ? 'warn' : 'info'), text && h('span', { text })].filter(Boolean));
 }
 
-/** The 0.2 Shift-Tab key chip: aria-disabled while a prompt needs an answer (it could pick "allow for this session"). */
-function renderShiftTab() {
-  const chip = document.querySelector('.keys [data-key="BTab"]');
-  SW.tabTitle ??= chip.title;
-  const held = A.kind === 'attn' || W.promptOpen;
-  chip.setAttribute('aria-disabled', String(held));
-  chip.title = held ? 'Answer the prompt first' : SW.tabTitle;
+/**
+ * The Shift-Tab and Enter key chips: aria-disabled while a prompt needs an answer (Shift-Tab could pick "allow for this session", Enter
+ * confirms the highlighted option). Same rule as Send (sendGate). Esc and the rest of the row stay live: Esc is the "No" path.
+ */
+function renderGatedKeys() {
+  const held = !sendGate({ promptOpen: W.promptOpen, status: A.kind }).ok;
+  for (const name of ['BTab', 'Enter']) {
+    const chip = document.querySelector(`.keys [data-key="${name}"]`);
+    SW.keyTitle[name] ??= chip.title;
+    chip.setAttribute('aria-disabled', String(held));
+    chip.title = held ? 'Answer the prompt first' : SW.keyTitle[name];
+  }
 }
 
 function renderMode() {
@@ -298,7 +323,7 @@ function renderMode() {
   renderTag();
   renderSegments(st);
   renderWhy(st);
-  renderShiftTab();
+  renderGatedKeys();
   renderQuick();
   renderAttn();
   renderPrompt();
@@ -344,14 +369,15 @@ function captureHandled(n) {
 
 /** A failed switch, once the next capture shows where the cycle stopped. */
 function failSwitch(r, start, target) {
-  const f = switchFailure({ status: r.status, code: r.body?.error, start, target, mode: W.mode, confirmed: W.confirmed });
+  const f = switchFailure({ status: r.status, code: r.body?.error, start, target, mode: W.mode, confirmed: W.confirmed, presses: r.body?.presses });
   if (f.strike) {
     W.struck.add(f.strike);
     W.strikeAt = W.mode;
   }
-  W.msg = { text: f.text, mode: W.mode };
+  W.msg = { text: f.text, mode: W.mode, bypass: f.bypass === true };
   if (W.confirmed && W.mode !== 'unknown') W.last = W.mode; // the captures on the way were silent
-  if (r.status !== 404) announceMode(`${A.name}: ${f.text}`); // a gone pane is announced once, by the pane-gone state
+  if (f.loud) showProblem(f.text, 'error'); // Claude may be in Bypass or any other mode: the alert line says so at once, not the polite region
+  else if (r.status !== 404) announceMode(`${A.name}: ${f.text}`); // a gone pane is announced once, by the pane-gone state
 }
 
 async function switchTo(target) {
@@ -418,7 +444,7 @@ function roveKeys(bar, buttons) {
 
 // ---- quick actions, prompt buttons, Shell (docs/design/spec.md 9.4-9.6; rules and copy: quick-actions.js) ----------------
 
-// Q: the six toolbar buttons, the action in flight (busy: 'compact' | 'clear' | 'model'), the model popover (pop: open?, catalog:
+// Q: the six toolbar buttons, the action in flight (busy: 'stop' | 'compact' | 'clear' | 'model' | 'rewind'), the model popover (pop: open?, catalog:
 // null until GET /api/app/models answered), the reason line shown (whySig). PA: the prompt panel's question (sig), a request in
 // flight (pending) and the question that was answered (lock: its sig; the buttons stay off until a capture shows another one).
 const Q = { ready: false, b: {}, busy: null, pop: false, catalog: null, loading: false, whySig: null, nameSig: null };
@@ -442,7 +468,7 @@ function renderModelName(name) {
 
 function renderQuick() {
   if (!Q.ready) return;
-  const st = quickState({ pane: W.pane, status: A.kind, prompt: W.promptOpen, composerEmpty: composer().value === '', switching: SW.busy !== null || Q.busy !== null });
+  const st = quickState({ pane: W.pane, status: A.kind, prompt: W.promptOpen, switching: SW.busy !== null || Q.busy !== null });
   for (const id of Object.keys(Q.b)) {
     const b = Q.b[id];
     b.setAttribute('aria-disabled', String(st[id].off));
@@ -464,24 +490,36 @@ function renderQuick() {
 /** Sends one slash command through the command route, which types it only into an empty input and presses Enter when it reads exactly that. */
 async function sendCommand(text) {
   if (Q.busy || M.gone || !paneId) return;
-  Q.busy = text.slice(1).split(' ')[0]; // compact | clear | model: the button that shows it is busy
+  Q.busy = text.slice(1).split(' ')[0]; // compact | clear | model | rewind: the button that shows it is busy
   renderQuick();
   const r = await call(`/api/app/pane/${encodeURIComponent(paneId)}/command`, { method: 'POST', json: { text } });
   Q.busy = null;
   renderQuick();
   if (r.status === 200 && r.body?.sent === true) {
     clearProblem();
-    say(`Sent ${text} + Enter to ${paneId}`);
+    say(commandSaid(text, paneId));
     return;
   }
   if (r.status === 404) setGone();
   showProblem(commandFailure({ status: r.status, code: r.body?.error }), problemKind(r.status));
 }
 
-async function rewind() {
-  if (composer().value !== '') return; // Esc Esc opens the rewind menu only from an empty prompt
-  const r = await enqueue({ keys: ['Escape', 'Escape'] });
-  if (r.ok) say(`Sent Esc Esc to ${paneId}`);
+/** Stop: its own route, which handles Claude's vim insert mode (two Escapes) and never answers a prompt. Not queued behind typed keys or the control lock. */
+async function stop() {
+  if (Q.busy || M.gone || !paneId) return;
+  Q.busy = 'stop';
+  renderQuick();
+  const r = await call(`/api/app/pane/${encodeURIComponent(paneId)}/stop`, { method: 'POST', json: {} });
+  Q.busy = null;
+  renderQuick();
+  const out = stopOutcome({ status: r.status, code: r.body?.error, name: A.name });
+  if (out.ok) {
+    clearProblem();
+    say(out.say);
+    return;
+  }
+  if (r.status === 404) setGone();
+  showProblem(out.message, problemKind(r.status));
 }
 
 function openEnd() {
@@ -613,11 +651,11 @@ function wireQuick() {
     Q.b[id].focus(); // a click does not focus a button in every webview; dialogs and the popover return focus here
     if (!aria(Q.b[id])) run();
   });
-  on('stop', () => sendKey('Escape'));
+  on('stop', stop);
   on('compact', () => sendCommand('/compact'));
   on('clear', () => Q.openClear());
   on('model', () => (Q.pop ? closeModelPop(true) : openModelPop()));
-  on('rewind', rewind);
+  on('rewind', () => sendCommand('/rewind'));
   on('end', openEnd);
   const stops = () => Object.values(Q.b);
   bar.addEventListener('focusin', () => { for (const b of stops()) b.tabIndex = b === document.activeElement ? 0 : -1; });
@@ -1111,9 +1149,10 @@ async function deliver(payload) {
     return { ok: true };
   }
   if (r.status === 404) setGone();
-  const message = r.status === 429 ? `${RATE_MSG} Try again in a moment.`
-    : r.status === 0 ? 'nika did not answer. Your text is kept.'
-      : serverMessage(r, `The pane did not accept this (${r.status}).`);
+  const message = keysRefusal({ status: r.status, code: r.body?.error })
+    ?? (r.status === 429 ? `${RATE_MSG} Try again in a moment.`
+      : r.status === 0 ? 'nika did not answer. Your text is kept.'
+        : serverMessage(r, `The pane did not accept this (${r.status}).`));
   showProblem(message, r.status === 429 ? 'warn' : 'error', r.status === 429 ? 3000 : 0);
   return { ok: false, message };
 }
@@ -1145,9 +1184,8 @@ function grow() {
   ta.style.height = `${Math.min(ta.scrollHeight, 168)}px`; // 8 lines, then it scrolls
 }
 
-/** Everything that depends on what is in the message box: the paste chip and Rewind (live only for an empty box). */
+/** Everything that depends on what is in the message box: the Commands button, the argument hint, the palette and the paste chip. */
 function updateChip() {
-  renderQuick();
   renderCmdBtn();
   renderArgHint();
   syncPalette(); // the text may have become (or stopped being) a command query; also closes the list after a send, a clear or an insert
@@ -1162,6 +1200,11 @@ let sending = false;
 async function sendComposer() {
   const ta = composer();
   if (sending || ta.disabled) return;
+  const gate = sendGate({ promptOpen: W.promptOpen, status: A.kind }); // Enter would confirm the prompt's highlighted option: answer with the buttons
+  if (!gate.ok) {
+    showProblem(gate.message, 'error'); // nothing is sent and the text stays in the box
+    return;
+  }
   const value = ta.value;
   const plan = S.on ? planShell(value) : planSend(value);
   if (plan.empty) return; // Shell on and nothing to run: no lone "!"
@@ -1576,6 +1619,13 @@ function syncKbdHint() {
   $('kbd-open').setAttribute('aria-keyshortcuts', hint.keys);
 }
 
+/** The passthrough key is written with the control glyph on a Mac, as in the Keyboard shortcuts window. aria-keyshortcuts stays Control+]. */
+function syncPassKeys() {
+  const label = passKeyLabel(MAC);
+  for (const el of document.querySelectorAll('kbd[data-passkey]')) el.textContent = label;
+  $('pass-toggle').title = `Type straight into the pane (${label})`;
+}
+
 function openKbd(opener) {
   openShortcuts({ window: 'session', tier: 'app', mac: MAC, singleKey: UI.singleKey, opener });
 }
@@ -1612,6 +1662,7 @@ function boot() {
   $('back').href = projectKey ? `/#project/${projectKey}` : '/#dashboard';
   setBack('Dashboard');
   syncKbdHint();
+  syncPassKeys();
   if (!appMode) {
     $('kbd-open').hidden = true;
     showEmpty('The session window is part of the nika app. This page was opened in a browser, which only shows the read-only dashboard.');

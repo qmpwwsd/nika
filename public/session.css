@@ -56,7 +56,10 @@ body.m-bypass .mode-frame { background: repeating-linear-gradient(135deg, var(--
 .bar h1.untitled { color: var(--text-muted); font-weight: 400; }
 .sess-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; color: var(--text-muted); font-size: var(--fs-small); }
 .sess-meta .mono { color: var(--text); }
-.msw-why .key { margin-left: 2px; }
+/* the right of the bar: the switcher with its reason, then the claude.ai link and the shortcuts button. They wrap as one block (a wrap moves
+   them together, and inside it the last two never part), so the shortcuts button can not end up alone on a line */
+.bar-end { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
+.bar-tools { display: flex; flex-wrap: nowrap; align-items: center; gap: 12px; flex: none; }
 .model { padding: 1px 8px; border-radius: var(--r-sm); background: var(--surface-2); color: var(--text); font-weight: 600; }
 .notice { flex: none; padding: 8px 16px; background: var(--accent-soft); color: var(--text); border-bottom: 1px solid var(--line); font-size: var(--fs-small); }
 

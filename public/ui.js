@@ -214,6 +214,8 @@ function restoreFocus(dlg) {
   const o = openers.get(dlg);
   openers.delete(dlg);
   let el = o?.el?.isConnected ? o.el : null;
+  const menu = el?.closest('.menu');
+  if (menu?.hidden) el = (menu.id && $(`[aria-controls="${CSS.escape(menu.id)}"]`)) || null; // an item of a closed menu cannot take focus: its button can
   if (!el && o?.fk) el = $(`[data-fk="${CSS.escape(o.fk)}"]`);
   el ??= $('.screen:not([hidden]) h1');
   el?.focus();

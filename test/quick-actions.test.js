@@ -3,9 +3,11 @@
 // 9.8 (End dialog). Contract: docs/contracts/api-app.md section 3. No DOM here: session.js and end-dialog.js only draw what these return.
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { KEY_NAME } from '../src/ids.js';
 import {
-  quickState, cleanPrompt, isBypassLabel, answerOutcome, escOutcome, promptOff, promptNote, commandFailure, endOutcome, endNote, planShell, problemKind,
+  quickState, cleanPrompt, isBypassLabel, promptMentionsBypass, answerOutcome, escOutcome, promptOff, promptNote, commandFailure, commandSaid, endOutcome, endNote,
+  planShell, problemKind, sendGate, keysRefusal, stopOutcome, followSession,
 } from '../public/quick-actions.js';
 
 const DOTS = '…';
@@ -26,26 +28,42 @@ describe('quickState: the spec 9.4 states table, first matching row wins', () =>
   test('(+) Claude working: only Stop and End are live; the reason says when the others come back', () => {
     const st = quickState({ status: 'busy' });
     assert.equal(st.stop.off, false);
-    assert.equal(st.stop.title, 'Press Esc in the pane: ends this turn, keeps the work, also stops running subagents');
+    assert.equal(st.stop.title, 'Stops this turn (Esc in the pane; twice in vim insert mode). Keeps the work, also stops running subagents');
     assert.ok(offs(st, FOUR));
     assert.equal(st.end.off, false);
     assert.equal(st.reason, 'Compact, Clear, Model and Rewind are ready when Claude waits for you.');
     for (const n of FOUR) assert.equal(st[n].title, 'Available when Claude is waiting for you', n);
   });
 
-  test('(+) Claude waiting, text in the message box: Rewind alone is off, with its own title and reason', () => {
-    const st = quickState({ status: 'idle', composerEmpty: false });
-    assert.ok(lives(st, ['compact', 'clear', 'model', 'end']));
-    assert.equal(st.rewind.off, true);
-    assert.equal(st.rewind.title, 'Empty the message box first');
-    assert.equal(st.reason, 'Rewind needs an empty message box.');
+  test('(+) Rewind follows the same gate as Compact, Clear and Model: it does not read nika\'s own message box any more', () => {
+    for (const composerEmpty of [true, false]) {
+      const st = quickState({ status: 'idle', composerEmpty }); // an old caller may still pass it; it changes nothing
+      assert.ok(lives(st, [...FOUR, 'end']), String(composerEmpty));
+      assert.equal(st.reason, '');
+    }
+  });
+
+  test('(−) Rewind is off exactly where the other three are: working, a prompt, needs you, a switch in flight, a pane that is not ok', () => {
+    const cases = [{ status: 'busy' }, { status: 'attn' }, { status: 'idle', prompt: PROMPT }, { status: 'idle', switching: true }, { status: 'ended' }, { pane: 'gone' }, { pane: 'tmux' }, { pane: 'connecting' }];
+    for (const c of cases) {
+      const st = quickState(c);
+      assert.equal(st.rewind.off, st.compact.off, JSON.stringify(c));
+      assert.equal(st.rewind.off, st.clear.off, JSON.stringify(c));
+      assert.equal(st.rewind.off, st.model.off, JSON.stringify(c));
+      assert.equal(st.rewind.off, true, JSON.stringify(c));
+    }
+  });
+
+  test('(−) the retired Rewind copy is gone from the module (it needed an empty box of nika\'s own)', () => {
+    const src = fs.readFileSync(new URL('../public/quick-actions.js', import.meta.url), 'utf8');
+    assert.doesNotMatch(src, /Empty the message box first|Rewind needs an empty message box|composerEmpty|Esc Esc/);
   });
 
   test('(+) a live title for every live button (the hover text the spec lists)', () => {
     const st = quickState({ status: 'idle' });
     assert.equal(st.compact.title, 'Types /compact and Enter: summarises the conversation to free context');
     assert.equal(st.clear.title, 'Types /clear and Enter after you confirm');
-    assert.equal(st.rewind.title, "Esc Esc on an empty prompt: opens Claude's rewind menu in the terminal");
+    assert.equal(st.rewind.title, "Types /rewind and Enter: opens Claude's rewind menu in the pane");
     assert.equal(st.model.title, 'Switch the model');
     assert.equal(st.end.title, 'Claude exits and the pane closes');
   });
@@ -120,10 +138,15 @@ describe('quickState: the spec 9.4 states table, first matching row wins', () =>
 
 describe('cleanPrompt and isBypassLabel', () => {
   test('(+) a good prompt passes through with a bypass flag on each option', () => {
-    const p = cleanPrompt({ question: 'Do you want to proceed?', sig: 'abcdef0123456789', options: [{ n: 1, label: 'Yes' }, { n: 2, label: 'Yes, and bypass permissions for this session' }, { n: 3, label: 'No' }] });
+    const p = cleanPrompt({ question: 'Do you want to proceed?', sig: 'abcdef0123456789', options: [{ n: 1, label: 'Yes' }, { n: 2, label: 'No' }] });
     assert.equal(p.question, 'Do you want to proceed?');
     assert.equal(p.sig, 'abcdef0123456789');
-    assert.deepEqual(p.options.map((o) => [o.n, o.label, o.bypass]), [[1, 'Yes', false], [2, 'Yes, and bypass permissions for this session', true], [3, 'No', false]]);
+    assert.deepEqual(p.options.map((o) => [o.n, o.label, o.bypass]), [[1, 'Yes', false], [2, 'No', false]]);
+  });
+
+  test('(+) one option that mentions bypass flags every option of its prompt (14a A4: the answer route refuses the whole prompt)', () => {
+    const p = cleanPrompt({ question: 'Do you want to proceed?', sig: 'abcdef0123456789', options: [{ n: 1, label: 'Yes' }, { n: 2, label: 'Yes, and bypass permissions for this session' }, { n: 3, label: 'No' }] });
+    assert.deepEqual(p.options.map((o) => [o.n, o.label, o.bypass]), [[1, 'Yes', true], [2, 'Yes, and bypass permissions for this session', true], [3, 'No', true]]);
   });
 
   test('(+) "bypass" in any case marks an option; other words do not', () => {
@@ -145,6 +168,7 @@ describe('cleanPrompt and isBypassLabel', () => {
     const p = cleanPrompt({ question: 'q?', sig: '0123456789abcdef', options: [{ n: 1, label: 'Yes' }, { n: 'two', label: 'x' }, { n: 3, label: long }] });
     assert.deepEqual(p.options.map((o) => o.n), [1, 3]);
     assert.equal(p.options[1].bypass, true);
+    assert.equal(p.options[0].bypass, true, 'and the plain one is flagged with it');
     assert.ok(p.options[1].label.length <= 200);
   });
 
@@ -332,5 +356,186 @@ describe('planShell (spec 9.6 sends: C-u, then ! + text, then Enter)', () => {
   test('(−) CRLF counts as a line break, not as a trailing control character', () => {
     assert.equal(planShell('ls\r\n').ok, true);
     assert.equal(planShell('a\r\nb').ok, false);
+  });
+});
+
+describe('whole-prompt bypass: no button at all when the prompt mentions bypass anywhere (14a A4)', () => {
+  const P = (over = {}) => ({ question: 'Do you want to proceed?', sig: '0123456789abcdef', options: [{ n: 1, label: 'Yes' }, { n: 2, label: 'No' }], ...over });
+  const flags = (raw) => cleanPrompt(raw).options.map((o) => o.bypass);
+
+  test('(+) a plain prompt keeps its buttons: no option is flagged', () => {
+    assert.deepEqual(flags(P()), [false, false]);
+    assert.equal(promptMentionsBypass(P()), false);
+  });
+
+  test('(+) the question alone mentioning bypass flags every option, even plain "Yes" and "No"', () => {
+    const raw = P({ question: 'Switch to bypass permissions?' });
+    assert.equal(promptMentionsBypass(raw), true);
+    assert.deepEqual(flags(raw), [true, true]);
+  });
+
+  test('(+) one option label alone flags all of them (the route refuses the whole prompt)', () => {
+    const raw = P({ options: [{ n: 1, label: 'Yes' }, { n: 2, label: 'Yes, and bypass permissions for this session' }, { n: 3, label: 'No' }] });
+    assert.deepEqual(flags(raw), [true, true, true]);
+  });
+
+  test('(+) the hint counts when the prompt carries one, like the server\'s prompt window', () => {
+    assert.equal(promptMentionsBypass(P({ hint: 'Esc to cancel; bypass is on' })), true);
+    assert.deepEqual(flags(P({ hint: 'Esc to cancel; bypass is on' })), [true, true]);
+  });
+
+  test('(+) it reads like the server: letters only, any case, NFKC (By-pass, full-width letters, a word split over a wrap)', () => {
+    for (const q of ['By-pass the check?', 'BYPASS?', 'Run in ｂｙｐａｓｓ mode?', 'Use by pass now?']) {
+      assert.equal(promptMentionsBypass(P({ question: q })), true, q);
+      assert.deepEqual(flags(P({ question: q })), [true, true], q);
+    }
+    assert.equal(promptMentionsBypass({ question: 'a by', options: [{ n: 1, label: 'pass it' }] }), true, 'the fields are joined with a space, like the window rows');
+  });
+
+  test('(−) near misses do not flag: "pass", "bypa", "by the way", an unrelated word', () => {
+    for (const q of ['Do you want to pass?', 'Allow bypa?', 'Proceed, by the way?', 'Allow compass?']) {
+      assert.equal(promptMentionsBypass(P({ question: q })), false, q);
+      assert.deepEqual(flags(P({ question: q })), [false, false], q);
+    }
+  });
+
+  test('(−) the check sees the whole text, not the clipped one (a label of 250 characters that ends in bypass)', () => {
+    const raw = P({ options: [{ n: 1, label: `${'x'.repeat(250)} bypass` }, { n: 2, label: 'No' }] });
+    assert.deepEqual(flags(raw), [true, true]);
+    assert.ok(cleanPrompt(raw).options[0].label.length <= 200);
+  });
+
+  test('(−) garbage is not a mention: null, non-objects, non-string fields', () => {
+    for (const bad of [null, undefined, 'bypass', 7, [], {}, { question: 7, options: 'bypass' }, { question: null, options: [null, { label: 3 }] }]) assert.equal(promptMentionsBypass(bad), false, JSON.stringify(bad));
+  });
+});
+
+describe('sendGate: Send and Shell wait while a prompt is open (H2)', () => {
+  const NO = { ok: false, message: 'Answer the prompt with the buttons above or in the terminal.' };
+
+  test('(+) a prompt on screen, or the agent needing you, says no with the fixed line', () => {
+    assert.deepEqual(sendGate({ promptOpen: true, status: 'busy' }), NO);
+    assert.deepEqual(sendGate({ promptOpen: true }), NO);
+    assert.deepEqual(sendGate({ status: 'attn' }), NO);
+    assert.deepEqual(sendGate({ promptOpen: true, status: 'attn' }), NO);
+  });
+
+  test('(−) everything else goes out: idle, busy, ended, not known yet, no argument at all', () => {
+    for (const status of ['idle', 'busy', 'ended', null, undefined]) assert.deepEqual(sendGate({ promptOpen: false, status }), { ok: true }, String(status));
+    assert.deepEqual(sendGate(), { ok: true });
+    assert.deepEqual(sendGate({}), { ok: true });
+  });
+});
+
+describe('keysRefusal: the keys route\'s 409 bypass-prompt (fixed copy)', () => {
+  test('(+) only 409 with that code has a line', () => {
+    assert.equal(keysRefusal({ status: 409, code: 'bypass-prompt' }), 'Answer this prompt in the terminal.');
+  });
+
+  test('(−) any other answer, any other code, and server text give null (deliver keeps its own lines)', () => {
+    for (const r of [{ status: 409, code: 'busy-switching' }, { status: 409 }, { status: 200, code: 'bypass-prompt' }, { status: 400, code: 'bypass-prompt' }, { status: 429 }, {}, undefined]) assert.equal(keysRefusal(r), null, JSON.stringify(r));
+    assert.equal(keysRefusal({ status: 409, code: 'bypass-prompt', message: '<b>x</b>' }), 'Answer this prompt in the terminal.', 'the response text is never read');
+  });
+});
+
+describe('stopOutcome: the stop route\'s answers (contract section 3, fixed copy)', () => {
+  const s = (status, code, name) => stopOutcome({ status, code, name });
+
+  test('(+) 200 says what happened, with the agent\'s name, and has no problem line', () => {
+    assert.deepEqual(s(200, undefined, 'builder-1'), { ok: true, say: "Stopped builder-1's turn", message: '' });
+    assert.equal(s(200).say, "Stopped Claude's turn");
+  });
+
+  test('(+) the three 409 codes, exact copy', () => {
+    assert.equal(s(409, 'prompt-open').message, 'Answer the prompt first. Esc = No is in the prompt panel.');
+    assert.equal(s(409, 'not-busy').message, 'Nothing to stop: Claude is waiting.');
+    assert.equal(s(409, 'mode-unknown').message, "Claude's input stayed in vim insert mode; press Esc in the terminal.");
+    for (const code of ['prompt-open', 'not-busy', 'mode-unknown']) assert.equal(s(409, code).ok, false, code);
+  });
+
+  test('(+) 404 is the gone line (session.js also goes to the pane-gone state), 429, 5xx and network errors keep the shared lines', () => {
+    assert.equal(s(404, 'not_found').message, 'The session is gone.');
+    assert.equal(s(429).message, 'Too many keys at once; try again.');
+    for (const status of [500, 502, 0]) assert.equal(s(status).message, "nika couldn't reach tmux.", String(status));
+  });
+
+  test('(−) an unknown 409 code, a prototype name, 400 or 403 get the plain fallback, never the server\'s text', () => {
+    for (const r of [[409, 'something-new'], [409, '__proto__'], [409, 'toString'], [409, undefined], [400, 'invalid'], [403, undefined]]) {
+      assert.deepEqual(s(...r), { ok: false, say: '', message: "nika couldn't stop the turn." }, JSON.stringify(r));
+    }
+    assert.equal(stopOutcome({ status: 409, code: 'not-busy', message: 'evil' }).message, 'Nothing to stop: Claude is waiting.');
+  });
+
+  test('(−) an error status is never ok, even with a stray success-looking code', () => {
+    for (const status of [400, 404, 409, 429, 500, 0]) assert.equal(s(status, 'stopped').ok, false, String(status));
+    assert.equal(stopOutcome().ok, false);
+  });
+});
+
+describe('commandSaid: the echo line after the command route answered 200', () => {
+  test('(+) Rewind opens a menu in the pane, so it says that', () => {
+    assert.equal(commandSaid('/rewind', '%12'), 'Opened Rewind in %12: pick a point in the pane');
+  });
+
+  test('(−) every other command was typed and sent: "Sent <text> + Enter to <pane>"', () => {
+    assert.equal(commandSaid('/compact', '%12'), 'Sent /compact + Enter to %12');
+    assert.equal(commandSaid('/clear', '%3'), 'Sent /clear + Enter to %3');
+    assert.equal(commandSaid('/model opus', '%3'), 'Sent /model opus + Enter to %3');
+    assert.equal(commandSaid('/rewind now', '%3'), 'Sent /rewind now + Enter to %3', 'only the bare command opens the menu');
+  });
+});
+
+describe('followSession: a pane that started a new conversation (/clear) is followed, nothing else is', () => {
+  const OLD = '11111111-1111-4111-8111-111111111111';
+  const NEW = '22222222-2222-4222-8222-222222222222';
+  const OTHER = '33333333-3333-4333-8333-333333333333';
+  const ag = (id, pane, live = true) => ({ id, live, pane: pane ? { id: pane } : null });
+  const run = (agents, over = {}) => followSession({ sessionId: OLD, paneId: '%7', agents, ...over });
+
+  test('(+) the old session ended, exactly one live agent now has the pane: its id', () => {
+    assert.equal(run([ag(OLD, '%7', false), ag(NEW, '%7')]), NEW);
+  });
+
+  test('(+) the old session is not in the snapshot at all: still followed', () => {
+    assert.equal(run([ag(NEW, '%7'), ag(OTHER, '%8')]), NEW);
+  });
+
+  test('(+) other panes and ended agents on this pane do not count as claimants', () => {
+    assert.equal(run([ag(OLD, '%7', false), ag(OTHER, '%8'), ag('44444444-4444-4444-8444-444444444444', '%7', false), ag(NEW, '%7')]), NEW);
+  });
+
+  test('(−) the old session is still live: no follow, even if another live agent has the pane', () => {
+    assert.equal(run([ag(OLD, '%7'), ag(NEW, '%7')]), null);
+    assert.equal(run([ag(OLD, '%7')]), null);
+    assert.equal(run([ag(OLD, null), ag(NEW, '%7')]), null, 'live without a pane is still live');
+  });
+
+  test('(−) two or more live agents claim the pane: ambiguous, stay', () => {
+    assert.equal(run([ag(OLD, '%7', false), ag(NEW, '%7'), ag(OTHER, '%7')]), null);
+  });
+
+  test('(−) nobody live has the pane: stay', () => {
+    assert.equal(run([ag(OLD, '%7', false), ag(NEW, '%8')]), null);
+    assert.equal(run([]), null);
+  });
+
+  test('(−) no pane id, or one that is not a pane id: nothing to follow from', () => {
+    for (const paneId of [null, undefined, '', '7', '%', '%x', '%1234567', '%7 ']) assert.equal(run([ag(NEW, '%7')], { paneId }), null, String(paneId));
+  });
+
+  test('(−) no session id in this window (a pane-only link already follows the pane), or a malformed one', () => {
+    for (const sessionId of [null, undefined, '', 'abc', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'.toUpperCase()]) assert.equal(run([ag(NEW, '%7')], { sessionId }), null, String(sessionId));
+  });
+
+  test('(−) a claimant whose id is not a well-formed session id is never followed (it would go into a URL and a request path)', () => {
+    for (const id of ['../../x', 'not-a-uuid', '', null, undefined, 7, `${NEW}/x`]) assert.equal(run([ag(OLD, '%7', false), ag(id, '%7')]), null, String(id));
+  });
+
+  test('(−) garbage input does not throw: no agents list, holes in it, agents without a pane', () => {
+    assert.equal(run(null), null);
+    assert.equal(run('x'), null);
+    assert.equal(run([null, undefined, 7, {}, ag(NEW, '%7')]), NEW);
+    assert.equal(run([{ id: NEW, live: true }]), null);
+    assert.equal(followSession(), null);
   });
 });

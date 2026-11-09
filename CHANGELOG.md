@@ -30,6 +30,19 @@ Session control (desktop app; the browser dashboard on :3335 stays read-only):
   never replaces anything in `~/Applications/nika.app` that is not nika's own bundle.
 - Stop works in vim input mode: the first Esc only leaves insert mode, so Stop (and End, when Claude is busy) now sends
   a second Esc when the first one did not end the turn. Stop sends nothing when Claude is idle.
+- Send and Shell wait while Claude asks for permission: nothing goes to the pane, the text stays in the box and a line says
+  to answer with the buttons or in the terminal. The Enter and Shift-Tab chips are off too. A prompt that mentions bypass
+  has no answer buttons; the keys route's refusal shows a fixed line.
+- Stop has its own route, `POST /api/app/pane/:id/stop`: one Esc, a second when Claude's input is in vim insert mode, and
+  a clear reason when it refuses (a question is open, Claude is already waiting, or the input mode is unreadable).
+- Rewind types `/rewind` and Enter through the command route (same rules as Compact) instead of Esc Esc, so it no longer
+  depends on the message box being empty in nika.
+- The session window follows the pane to its new session after `/clear`, when exactly one live session has the pane.
+- Switching modes reports a stop in Bypass, or a footer nika could not read after a press, as an alert; with no readable
+  mode the Shift-Tab chip is gone (use the terminal).
+- Small fixes: the Back button names the project only when you came from one; the claude.ai link and the shortcuts button
+  stay together in the header; the shortcuts window's tables scroll inside their own box at 320 px; a dialog opened from a
+  menu item returns focus to the menu's button; the passthrough key reads `⌃]` on a Mac.
 - Bypass guard: nika's keys route refuses Enter, a digit or a paste while a permission prompt that mentions bypass is
   on screen (the question included); answer those in the terminal. The prompt buttons read the whole prompt, not only
   the option.

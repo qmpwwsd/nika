@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { SHORTCUTS, shortcutsFor, isMac, isTextEntry, wantsHelp, wantsBack, backHint, helpHint, openShortcuts } from '../public/shortcuts.js';
+import { SHORTCUTS, shortcutsFor, isMac, isTextEntry, wantsHelp, wantsBack, backHint, helpHint, passKeyLabel, openShortcuts } from '../public/shortcuts.js';
 import { initDialogs, initMenus, openDialog } from '../public/ui.js';
 
 const SRC = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public', 'shortcuts.js'), 'utf8');
@@ -43,6 +43,9 @@ class FNode {
   removeAttribute(k) { delete this.attrs[k]; }
 
   contains(n) { return this === n || this.kids.some((k) => k.contains(n)); }
+
+  /** Only what ui.js asks: the disclosure menu around this node (the fake keeps no parent pointers; page.menus lists the menus). */
+  closest(sel) { return sel === '.menu' ? (page.menus?.find((m) => m.contains(this)) ?? null) : null; }
 
   append(...nodes) { this.kids.push(...nodes); }
 
@@ -404,6 +407,21 @@ describe('button and link hints', () => {
 
 // ---- openShortcuts on the fake page --------------------------------------------------------------------------------------------
 
+describe('passKeyLabel (page copy for the passthrough key)', () => {
+  test('(+) a Mac shows the control glyph and "]"; the table row uses the same glyph', () => {
+    assert.equal(passKeyLabel(true), '\u2303]');
+    const row = shortcutsFor({ window: 'session', tier: 'app', mac: true, singleKey: true }).flatMap((g) => g.rows).find((r) => r.keys.some((c) => c.at(-1) === ']'));
+    assert.ok(row, 'the passthrough row exists');
+    assert.deepEqual(row.keys[0], ['\u2303', ']'], 'the same glyph, as separate key caps');
+  });
+
+  test('(−) everywhere else it reads "Ctrl+]" (never the glyph), and the label is plain ASCII there', () => {
+    assert.equal(passKeyLabel(false), 'Ctrl+]');
+    assert.equal(passKeyLabel(undefined), 'Ctrl+]');
+    assert.match(passKeyLabel(false), /^[\x20-\x7e]+$/);
+  });
+});
+
 describe('openShortcuts', () => {
   const open = (over = {}) => {
     const ids = freshPage();
@@ -426,6 +444,19 @@ describe('openShortcuts', () => {
       const heads = tagged(t, 'th');
       assert.deepEqual(heads.map((th) => th.textContent), ['Name', 'Shortcut', 'Description']);
       for (const th of heads) assert.equal(th.getAttribute('scope'), 'col');
+    }
+  });
+
+  test('(+) every table sits in its own scroll wrapper: a focusable region named after the group (a 320 px window scrolls the table, not the page)', () => {
+    const { ids } = open();
+    for (const s of tagged(ids['kbd-body'], 'section')) {
+      const group = tagged(s, 'h3')[0].textContent;
+      const wrap = tagged(s, 'div').find((d) => /\btbl-wrap\b/.test(d.className) || d.getAttribute('class') === 'tbl-wrap');
+      assert.ok(wrap, `${group}: wrapper exists`);
+      assert.equal(wrap.getAttribute('role'), 'region');
+      assert.equal(wrap.getAttribute('aria-label'), `${group}, shortcuts`);
+      assert.equal(wrap.getAttribute('tabindex'), '0', 'keyboard users can scroll it');
+      assert.equal(tagged(wrap, 'table').length, 1, 'the table is inside, and is the only one');
     }
   });
 

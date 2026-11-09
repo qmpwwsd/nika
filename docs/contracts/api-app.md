@@ -326,7 +326,7 @@ Answers a permission prompt with a fresh parse (T26); "Esc = No" stays the keys 
 { "text": "/compact" }
 ```
 Types one slash command into Claude's input and presses Enter, safely; the quick actions (Compact, Clear, Model, and
-Rewind, which sends `/rewind`; the page change is 0.3 task 14b) use it. `text` = `/` + a `COMMAND_NAME`, optionally one space and arguments, ≤ 200 chars, no C0/C1 controls, else
+Rewind, which sends `/rewind`) use it. `text` = `/` + a `COMMAND_NAME`, optionally one space and arguments, ≤ 200 chars, no C0/C1 controls, else
 `400 invalid`. The composer's own Send stays the keys route (the user's typing passes through as in 0.2).
 
 1. Ineligible pane → `404 not_found`. Another control action running on this pane → 409 `busy-switching`.

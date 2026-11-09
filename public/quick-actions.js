@@ -13,20 +13,18 @@ const WHY = {
   promptShown: 'Answer the prompt first. Esc = No is in the prompt panel.',
   prompt: 'Answer the prompt first.',
   working: 'Compact, Clear, Model and Rewind are ready when Claude waits for you.',
-  text: 'Rewind needs an empty message box.',
 };
 
 const TITLE = {
-  stop: 'Press Esc in the pane: ends this turn, keeps the work, also stops running subagents',
+  stop: 'Stops this turn (Esc in the pane; twice in vim insert mode). Keeps the work, also stops running subagents',
   stopIdle: 'Nothing to stop: Claude is waiting',
   stopPrompt: 'Esc = No is in the prompt panel',
   stopAttn: 'Answer the prompt first; Esc is in the key row below',
   compact: 'Types /compact and Enter: summarises the conversation to free context',
   clear: 'Types /clear and Enter after you confirm',
   model: 'Switch the model',
-  rewind: "Esc Esc on an empty prompt: opens Claude's rewind menu in the terminal",
+  rewind: "Types /rewind and Enter: opens Claude's rewind menu in the pane",
   idleOnly: 'Available when Claude is waiting for you',
-  emptyFirst: 'Empty the message box first',
   end: 'Claude exits and the pane closes',
   endGone: 'The pane is gone',
 };
@@ -34,10 +32,10 @@ const TITLE = {
 /**
  * Which quick actions are live and why the others are not (spec 9.4, the first matching row wins). Inputs: `pane` ('ok' | 'gone' |
  * 'tmux' | 'connecting'), `status` (the agent's 'attn' | 'idle' | 'busy' | 'ended', null while unknown: the route then decides and
- * answers 409 not-idle), `prompt` (the capture's prompt or null), `composerEmpty`, `switching` (a mode switch from this window is
+ * answers 409 not-idle), `prompt` (the capture's prompt or null), `switching` (a mode switch or a quick action from this window is
  * in flight). Output: for each button { off (aria-disabled), title }, and `reason` ('' = no reason line).
  */
-export function quickState({ pane = 'ok', status = null, prompt = null, composerEmpty = true, switching = false } = {}) {
+export function quickState({ pane = 'ok', status = null, prompt = null, switching = false } = {}) {
   const b = (off, title) => ({ off, title });
   const gated = (live, title) => b(!live, live ? title : TITLE.idleOnly); // live only while Claude waits
   if (pane !== 'ok') {
@@ -56,20 +54,31 @@ export function quickState({ pane = 'ok', status = null, prompt = null, composer
   if (status === 'busy') return { ...allOff(TITLE.stopIdle, WHY.working), stop: b(false, TITLE.stop) };
   if (status === 'ended') return allOff(TITLE.stopIdle, WHY.working);
   const live = !switching; // idle, or not known yet: the route checks
-  const rewindLive = live && composerEmpty;
   return {
     stop: b(true, TITLE.stopIdle),
     compact: gated(live, TITLE.compact),
     clear: gated(live, TITLE.clear),
     model: gated(live, TITLE.model),
-    rewind: live && !composerEmpty ? b(true, TITLE.emptyFirst) : gated(rewindLive, TITLE.rewind),
+    rewind: gated(live, TITLE.rewind), // types /rewind through the command route, which checks the empty box itself
     end,
-    reason: live && !composerEmpty ? WHY.text : '',
+    reason: '',
   };
 }
 
 /** An option whose label contains "bypass" (any case) gets no button: nika never answers it (rule 12). */
 export const isBypassLabel = (label) => typeof label === 'string' && /bypass/i.test(label);
+
+/**
+ * The server's `mentionsBypass` (src/mode.js: NFKC, letters only, any case) over the text the capture's prompt carries: the question,
+ * every option label and the hint when there is one, joined with a space like the server's window. The answer route refuses every option
+ * of such a prompt (400), so the page draws no button for any of them.
+ */
+export function promptMentionsBypass(raw) {
+  if (!raw || typeof raw !== 'object') return false;
+  const labels = Array.isArray(raw.options) ? raw.options.map((o) => o?.label) : [];
+  const text = [raw.question, ...labels, raw.hint].filter((s) => typeof s === 'string').join(' ');
+  return text.normalize('NFKC').replace(/[^\p{L}]/gu, '').toLowerCase().includes('bypass');
+}
 
 const SIG = /^[0-9a-f]{16}$/;
 const LABEL_MAX = 200;
@@ -77,17 +86,31 @@ const LABEL_MAX = 200;
 /**
  * The capture's `prompt` as the page may use it, or null: { question, options: [{ n, label, bypass }], sig }. Anything that is not
  * exactly the contract shape (a 16-hex sig, a string question, options numbered 1-9 with a string label) gives null, and one bad
- * option is dropped. Copies the data: the capture object is not kept.
+ * option is dropped. `bypass` is true for every option when the prompt as a whole mentions bypass, else for an option whose own label
+ * does. Copies the data: the capture object is not kept.
  */
 export function cleanPrompt(raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
   const { question, options, sig } = raw;
   if (typeof question !== 'string' || typeof sig !== 'string' || !SIG.test(sig) || !Array.isArray(options)) return null;
+  const whole = promptMentionsBypass(raw); // the check sees the whole text, not the clipped one
   const list = options
     .filter((o) => o && typeof o === 'object' && Number.isInteger(o.n) && o.n >= 1 && o.n <= 9 && typeof o.label === 'string')
-    .map((o) => ({ n: o.n, label: o.label.slice(0, LABEL_MAX), bypass: isBypassLabel(o.label) })); // the check sees the whole label
+    .map((o) => ({ n: o.n, label: o.label.slice(0, LABEL_MAX), bypass: whole || isBypassLabel(o.label) }));
   return list.length ? { question: question.slice(0, LABEL_MAX), options: list, sig } : null;
 }
+
+/**
+ * Does Send (text, paste, the lone Enter of an empty box) or Shell go out? Not while a permission prompt is open or the agent needs
+ * you: Enter would confirm the highlighted option and a digit would pick one. The terminal (passthrough) is the raw way and is not gated here.
+ */
+export function sendGate({ promptOpen = false, status = null } = {}) {
+  if (promptOpen || status === 'attn') return { ok: false, message: 'Answer the prompt with the buttons above or in the terminal.' };
+  return { ok: true };
+}
+
+/** The keys route's 409 `bypass-prompt` (contract section 3): fixed copy. null for every other answer, which keeps session.js's own lines. */
+export const keysRefusal = ({ status, code } = {}) => (status === 409 && code === 'bypass-prompt' ? 'Answer this prompt in the terminal.' : null);
 
 /** What the polite region says when a prompt appears (spec 9.5). */
 export function promptNote(name, prompt) {
@@ -141,6 +164,29 @@ export function commandFailure({ status, code } = {}) {
   return "nika couldn't send that command.";
 }
 
+/** What the echo line says after the command route answered 200: Rewind opens a menu in the pane, the others were typed and sent. */
+export const commandSaid = (text, pane) => (text === '/rewind' ? `Opened Rewind in ${pane}: pick a point in the pane` : `Sent ${text} + Enter to ${pane}`);
+
+const STOP_409 = {
+  'prompt-open': WHY.promptShown,
+  'not-busy': 'Nothing to stop: Claude is waiting.',
+  'mode-unknown': "Claude's input stayed in vim insert mode; press Esc in the terminal.",
+};
+
+/**
+ * The stop route's result (contract section 3): { ok: true, say } for the echo line, or { ok: false, message } for the problem line.
+ * Fixed copy: only the server's `error` code picks a line. 404 is the page's pane-gone state as well (session.js).
+ */
+export function stopOutcome({ status, code, name = 'Claude' } = {}) {
+  if (status === 200) return { ok: true, say: `Stopped ${name}'s turn`, message: '' };
+  const no = (message) => ({ ok: false, say: '', message });
+  if (status === 409 && Object.hasOwn(STOP_409, code)) return no(STOP_409[code]);
+  if (status === 429) return no(RATE);
+  if (status === 404) return no(GONE);
+  if (unreachable(status)) return no(TMUX);
+  return no("nika couldn't stop the turn.");
+}
+
 /** The End route's result (spec 9.8): { ended: true, text: '' } closes the dialog; otherwise `text` goes in the alert slot. */
 export function endOutcome({ status, code, ended } = {}) {
   if (status === 200) return ended === true ? { ended: true, text: '' } : { ended: false, text: "Claude didn't exit; use Stop or the terminal." };
@@ -180,4 +226,20 @@ export function planShell(value) {
   if (CONTROL.test(v)) return { ok: false, message: 'Shell mode cannot send control characters. Your text is kept.' };
   if (v.length + 1 > TEXT_MAX) return { ok: false, message: `A shell command can be at most ${TEXT_MAX - 1} characters. Shorten it. Your text is kept.` };
   return { ok: true, payloads: [{ keys: ['C-u'] }, { text: `!${v}` }, { keys: ['Enter'] }], summary: `a shell command (${v.length} characters) + Enter` };
+}
+
+const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/; // the shape session.js validates its URL with
+const PANE_ID = /^%\d{1,6}$/;
+
+/**
+ * After /clear the pane's Claude starts a new session id. Which id should a session window that shows `sessionId` in `paneId` follow?
+ * The new id, or null. Only when the old session is no longer live, the pane is known, and exactly one live agent claims the pane
+ * under another, well-formed id: two claimants are ambiguous, so the window stays where it is. `agents` is the snapshot's flat list.
+ */
+export function followSession({ sessionId, paneId, agents } = {}) {
+  if (!SESSION_ID.test(sessionId ?? '') || !PANE_ID.test(paneId ?? '') || !Array.isArray(agents)) return null;
+  if (agents.some((a) => a?.id === sessionId && a.live)) return null;
+  const claims = agents.filter((a) => a?.live && a.pane?.id === paneId);
+  const id = claims.length === 1 ? claims[0].id : null;
+  return typeof id === 'string' && id !== sessionId && SESSION_ID.test(id) ? id : null;
 }

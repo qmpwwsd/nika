@@ -9,7 +9,10 @@ import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 import { KEY_NAME } from '../src/ids.js';
 import { moveActive as moveActiveReal, cleanCommands as cleanCommandsReal, paletteQuery as paletteQueryReal, shouldFetch as shouldFetchReal } from '../public/palette.js';
-import { wantsHelp, wantsBack, isTextEntry, backHint, helpHint } from '../public/shortcuts.js';
+import { wantsHelp, wantsBack, isTextEntry, backHint, helpHint, passKeyLabel } from '../public/shortcuts.js';
+import { sendGate as sendGateReal, keysRefusal as keysRefusalReal, stopOutcome as stopOutcomeReal, commandSaid as commandSaidReal, commandFailure as commandFailureReal, problemKind as problemKindReal, followSession as followSessionReal, planShell as planShellReal, cleanPrompt as cleanPromptReal } from '../public/quick-actions.js';
+import { planSend as planSendReal } from '../public/mirror-render.js';
+import { switchFailure as switchFailureReal } from '../public/modes.js';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const read = (f) => fs.readFileSync(path.join(PUBLIC, f), 'utf8');
@@ -238,8 +241,9 @@ describe('permission mode: tag, frame, edge and switcher (spec 2.8, 9.1-9.3)', (
     assert.deepEqual([...drawn].filter((n) => !symbols.has(n)), []);
   });
 
-  test('(+) the Shift-Tab key chip stays in the key row (aria-disabled by script while a prompt needs an answer)', () => {
+  test('(+) the Shift-Tab and Enter key chips stay in the key row (aria-disabled by script while a prompt needs an answer)', () => {
     assert.match(HTML, /<button type="button" class="key" data-key="BTab" title="Shift-Tab cycles Claude&rsquo;s permission mode">Shift-Tab<\/button>/);
+    assert.match(HTML, /<button type="button" class="key" data-key="Enter">Enter<\/button>/);
     const src = code(JS['session.js']);
     assert.match(src, /Answer the prompt first/);
     assert.match(src, /aria-disabled/);
@@ -466,8 +470,9 @@ describe('quick actions, prompt buttons, End dialog and Shell (spec 9.4-9.8)', (
     assert.match(src, /sendCommand\('\/clear'\)/);
     assert.match(src, /sendCommand\(`\/model \$\{/);
     assert.match(src, /planShell\(/);
-    assert.match(src, /keys: \['Escape', 'Escape'\]/, 'Rewind is Esc Esc');
-    assert.doesNotMatch(src, /text: '\/(compact|clear|model)/, 'no command text goes through the keys route');
+    assert.match(src, /on\('rewind', \(\) => sendCommand\('\/rewind'\)\)/, 'Rewind is /rewind through the command route, like Compact');
+    assert.doesNotMatch(src, /keys: \['Escape', 'Escape'\]|function rewind\(/, 'no Esc Esc and no separate rewind function any more');
+    assert.doesNotMatch(src, /text: '\/(compact|clear|model|rewind)/, 'no command text goes through the keys route');
   });
 
   test('(+) a model is only sent from the Switch model button, never on a change event', () => {
@@ -543,7 +548,8 @@ describe('quick actions, prompt buttons, End dialog and Shell (spec 9.4-9.8)', (
     assert.equal((src.match(/switcherState\(\{[^}]*prompt: W\.promptOpen/g) ?? []).length, 2, 'renderMode and switchTo');
     assert.match(src, /quickState\(\{[^}]*prompt: W\.promptOpen/);
     assert.match(fn(src, 'function openEnd()'), /promptOpen: W\.promptOpen \|\| A\.kind === 'attn'/);
-    assert.match(fn(src, 'function renderShiftTab()'), /W\.promptOpen/);
+    assert.match(fn(src, 'function renderGatedKeys()'), /sendGate\(\{ promptOpen: W\.promptOpen, status: A\.kind \}\)/);
+    assert.match(fn(src, 'async function sendComposer()'), /sendGate\(\{ promptOpen: W\.promptOpen, status: A\.kind \}\)/);
     assert.doesNotMatch(src, /(switcherState|quickState)\(\{[^}]*prompt: W\.prompt\b/, 'no gate reads the cleaned prompt');
     assert.match(fn(src, 'function renderPrompt()'), /W\.prompt/, 'the panel does');
   });
@@ -940,7 +946,8 @@ describe('Back button and Keyboard shortcuts window in the session window (spec 
   });
 
   test('(+) the poll sets the Back label through setBack, not a bare title', () => {
-    assert.match(fn('function applyAgent('), /setBack\(String\(group\.label\)\)/);
+    assert.match(fn('function applyBackLabel('), /setBack\(String\(group\.label\)\)/);
+    assert.match(fn('function applyAgent('), /applyBackLabel\(group\)/);
     assert.doesNotMatch(src, /\$\('back'\)\.title = String/);
   });
 
@@ -1073,5 +1080,497 @@ describe('Back button and Keyboard shortcuts window in the session window (spec 
     const k = keys();
     for (const key of ['a', 'Enter', 'Escape', '/', '[']) k.press(key);
     assert.deepEqual([k.log.opened.length, k.log.clicks, k.log.prevented], [0, 0, 0]);
+  });
+});
+
+// ---- Task 14b: the page side of the release checks (prompt gate, Stop route, Rewind, bypass copy, header, live follow) ----------------
+// The functions of session.js run for real in a vm against stubs, so the wiring is proven, not only spelled.
+
+describe('Task 14b: wiring of the page rules', () => {
+  const SRC = code(JS['session.js']);
+  const fnOf = (head) => {
+    const at = SRC.indexOf(head);
+    assert.ok(at >= 0, head);
+    return SRC.slice(at, SRC.indexOf('\n}\n', at) + 2);
+  };
+  const mk = (names, ctx) => vm.runInNewContext(`${names.map(fnOf).join('\n')}; ({ ${names.map((n) => n.replace(/^(async )?function /, '').replace(/\(.*$/, '')).join(', ')} })`, ctx);
+  const norm = (v) => JSON.parse(JSON.stringify(v)); // objects built inside the vm have another Object.prototype
+  const el = (over = {}) => ({ attrs: {}, setAttribute(k, v) { this.attrs[k] = String(v); }, removeAttribute(k) { delete this.attrs[k]; }, ...over });
+
+  // -- B1: Send and Shell wait while a prompt is open
+  const composerRig = ({ value = 'hello', promptOpen = false, kind = 'idle', shell = false } = {}) => {
+    const log = { problems: [], sent: [], said: [], shellOff: 0 };
+    const ta = { value, disabled: false };
+    const ctx = {
+      sending: false, composer: () => ta, S: { on: shell }, W: { promptOpen }, A: { kind }, sendGate: sendGateReal, planShell: planShellReal, planSend: planSendReal,
+      showProblem: (m, k) => log.problems.push([m, k]), enqueueSeq: async (p) => { log.sent.push(p); return { ok: true }; }, $: () => el(), say: (m) => log.said.push(m),
+      paneId: '%12', setShell: () => { log.shellOff += 1; }, grow() {}, updateChip() {},
+    };
+    return { log, ta, send: mk(['async function sendComposer()'], ctx).sendComposer };
+  };
+  const GATE = 'Answer the prompt with the buttons above or in the terminal.';
+
+  test('(+) B1: with a prompt open Send posts nothing for a line, a paste and a lone Enter; the text stays; the fixed line shows as an error', async () => {
+    for (const value of ['hello', 'line one\nline two', '', '/compact', 'x'.repeat(2000)]) {
+      const r = composerRig({ value, promptOpen: true });
+      await r.send();
+      assert.deepEqual(r.log.sent, [], JSON.stringify(value.slice(0, 20)));
+      assert.equal(r.ta.value, value, 'the text stays in the box');
+      assert.deepEqual(r.log.problems, [[GATE, 'error']]);
+    }
+  });
+
+  test('(+) B1: Shell waits too, and stays on so a retry still goes as a command', async () => {
+    const r = composerRig({ value: 'ls -la', promptOpen: true, shell: true });
+    await r.send();
+    assert.deepEqual(r.log.sent, []);
+    assert.equal(r.log.shellOff, 0, 'Shell is not turned off by a send that never happened');
+    assert.deepEqual(r.log.problems, [[GATE, 'error']]);
+    assert.equal(r.ta.value, 'ls -la');
+  });
+
+  test('(+) B1: the agent needing you is enough, even before a capture shows the prompt', async () => {
+    const r = composerRig({ value: 'hello', promptOpen: false, kind: 'attn' });
+    await r.send();
+    assert.deepEqual(r.log.sent, []);
+    assert.deepEqual(r.log.problems, [[GATE, 'error']]);
+  });
+
+  test('(−) B1: with no prompt everything goes out as before: a line, an empty box (Enter), Shell (three bodies, then Shell off)', async () => {
+    const line = composerRig({ value: 'hello' });
+    await line.send();
+    assert.equal(line.log.sent.length, 1);
+    assert.equal(line.log.sent[0].length, 1, 'one body');
+    assert.equal(line.log.problems.length, 0);
+    assert.equal(line.ta.value, '', 'the box is emptied after a send');
+    const empty = composerRig({ value: '' });
+    await empty.send();
+    assert.equal(empty.log.sent.length, 1);
+    const shell = composerRig({ value: 'ls', shell: true });
+    await shell.send();
+    assert.deepEqual(norm(shell.log.sent[0]), [{ keys: ['C-u'] }, { text: '!ls' }, { keys: ['Enter'] }]);
+    assert.equal(shell.log.shellOff, 1);
+  });
+
+  test('(−) B1: passthrough is the raw terminal path and is not gated by this rule', () => {
+    for (const head of ['function flushPass()', 'function wirePassthrough()', 'function setPass(']) assert.doesNotMatch(fnOf(head), /sendGate/, head);
+  });
+
+  const chipRig = () => {
+    const chips = { BTab: el({ title: 'Shift-Tab cycles Claude\u2019s permission mode' }), Enter: el({ title: '' }), Escape: el({ title: 'Send Escape (interrupts Claude)' }) };
+    const asked = [];
+    const document = { querySelector: (sel) => { const name = /data-key="([A-Za-z]+)"/.exec(sel)[1]; asked.push(name); return chips[name]; } };
+    const W = { promptOpen: false };
+    const A = { kind: 'idle' };
+    const run = mk(['function renderGatedKeys()'], { document, SW: { keyTitle: {} }, W, A, sendGate: sendGateReal }).renderGatedKeys;
+    return { chips, asked, W, A, run };
+  };
+
+  test('(+) B1: the Enter chip is aria-disabled with "Answer the prompt first", exactly like Shift-Tab, while a prompt is open', () => {
+    const r = chipRig();
+    r.W.promptOpen = true;
+    r.run();
+    for (const name of ['BTab', 'Enter']) {
+      assert.equal(r.chips[name].attrs['aria-disabled'], 'true', name);
+      assert.equal(r.chips[name].title, 'Answer the prompt first', name);
+    }
+    assert.deepEqual(r.asked.sort(), ['BTab', 'Enter'], 'Esc (the No path) and the rest are never touched');
+    assert.equal(r.chips.Escape.attrs['aria-disabled'], undefined);
+  });
+
+  test('(+) B1: needing you alone gates both chips; when it ends they get their own titles back', () => {
+    const r = chipRig();
+    r.A.kind = 'attn';
+    r.run();
+    assert.equal(r.chips.Enter.attrs['aria-disabled'], 'true');
+    r.A.kind = 'idle';
+    r.run();
+    assert.equal(r.chips.BTab.attrs['aria-disabled'], 'false');
+    assert.equal(r.chips.Enter.attrs['aria-disabled'], 'false');
+    assert.equal(r.chips.BTab.title, 'Shift-Tab cycles Claude\u2019s permission mode');
+    assert.equal(r.chips.Enter.title, '', 'Enter had no title; it has none again');
+  });
+
+  test('(−) B1: with no prompt neither chip is disabled', () => {
+    const r = chipRig();
+    r.run();
+    assert.equal(r.chips.BTab.attrs['aria-disabled'], 'false');
+    assert.equal(r.chips.Enter.attrs['aria-disabled'], 'false');
+  });
+
+  test('(+) B1: a click on an aria-disabled chip sends nothing and hands the focus to the box', async () => {
+    const clicks = [];
+    const chip = (name, off) => ({ dataset: { key: name }, attrs: { 'aria-disabled': String(off) }, getAttribute(k) { return this.attrs[k] ?? null; }, addEventListener(type, f) { clicks.push([name, f]); } });
+    const ta = { focused: 0, selectionStart: 0, selectionEnd: 0, addEventListener() {}, focus() { this.focused += 1; } };
+    const sent = [];
+    const ctx = {
+      composer: () => ta, $: () => ({ addEventListener() {} }), document: { querySelectorAll: () => [chip('Enter', true), chip('Tab', false)] }, PL: {}, Q: {}, S: {},
+      grow() {}, updateChip() {}, wirePalette() {}, setShell() {}, sendComposer() {}, sendKey: async (n) => { sent.push(n); return true; },
+    };
+    mk(['function wireComposer()'], ctx).wireComposer();
+    for (const [, f] of clicks) await f();
+    assert.deepEqual(sent, ['Tab'], 'only the live chip sends');
+    assert.equal(ta.focused, 2, 'both clicks end with focus in the box');
+  });
+
+  const deliverRig = (response) => {
+    const log = { problems: [], gone: 0 };
+    const ctx = {
+      M: { gone: false }, paneId: '%12', call: async () => response, showProblem: (m, k, ms) => log.problems.push([m, k, ms]), clearProblem() {}, setGone: () => { log.gone += 1; },
+      sleep: async () => {}, RATE_MSG: 'Too fast.', keysRefusal: keysRefusalReal, serverMessage: (r, fb) => (typeof r.body?.message === 'string' ? r.body.message : fb),
+    };
+    return { log, deliver: mk(['async function deliver(payload)'], ctx).deliver };
+  };
+
+  test('(+) B1: the keys route\'s 409 bypass-prompt shows the fixed line, never the server\'s text', async () => {
+    const r = deliverRig({ status: 409, body: { error: 'bypass-prompt', message: 'Evil <b>server</b> text' } });
+    const out = await r.deliver({ keys: ['Enter'] });
+    assert.deepEqual(norm(out), { ok: false, message: 'Answer this prompt in the terminal.' });
+    assert.deepEqual(r.log.problems, [['Answer this prompt in the terminal.', 'error', 0]]);
+  });
+
+  test('(−) B1: other keys answers keep their lines (429 retried, network, 404 gone, a plain 409)', async () => {
+    const net = await deliverRig({ status: 0, body: null }).deliver({ text: 'x' });
+    assert.equal(net.message, 'nika did not answer. Your text is kept.');
+    const gone = deliverRig({ status: 404, body: { error: 'not_found', message: 'gone' } });
+    await gone.deliver({ text: 'x' });
+    assert.equal(gone.log.gone, 1);
+    const other = await deliverRig({ status: 409, body: { error: 'something-else', message: 'The pane is busy.' } }).deliver({ text: 'x' });
+    assert.equal(other.message, 'The pane is busy.', 'only bypass-prompt has fixed copy; the rest is unchanged');
+  });
+
+  test('(+) B1: a prompt that mentions bypass is drawn with no answer button at all, only the Esc button; a plain prompt keeps its buttons', () => {
+    const h = (tag, attrs, ...kids) => ({ tag, attrs: attrs ?? {}, kids: kids.flat(Infinity) });
+    const build = (raw) => {
+      const out = {};
+      const ctx = {
+        h, PA: { sig: null, btns: [], esc: null }, answer() {}, escNo() {}, announce() {}, promptNote: () => '', A: { name: 'builder-1' },
+        $: (id) => (out[id] ??= { textContent: '', hidden: true, replaceChildren(...n) { this.kids = n; } }),
+      };
+      const api = mk(['function optionRow(o)', 'function buildPrompt(p)'], ctx);
+      api.buildPrompt(cleanPromptReal(raw));
+      const buttons = out['ask-opts'].kids.filter((n) => n.tag === 'button' && /\bpbtn\b/.test(n.attrs.class) && !/\besc\b/.test(n.attrs.class));
+      return { buttons, texts: out['ask-opts'].kids.filter((n) => /pbtn-off/.test(n.attrs.class)), esc: out['ask-opts'].kids.at(-1), pa: ctx.PA };
+    };
+    const base = { sig: '0123456789abcdef', options: [{ n: 1, label: 'Yes' }, { n: 2, label: 'No' }] };
+    const plain = build({ ...base, question: 'Do you want to proceed?' });
+    assert.equal(plain.buttons.length, 2);
+    assert.equal(plain.texts.length, 0);
+    const bypass = build({ ...base, question: 'Switch to bypass permissions?' });
+    assert.equal(bypass.buttons.length, 0, 'no answer button');
+    assert.equal(bypass.texts.length, 2, 'every option is text with the terminal note');
+    assert.match(JSON.stringify(bypass.texts[0]), /Answer this one in the terminal/);
+    assert.equal(bypass.pa.btns.length, 0, 'nothing to disable or click');
+    assert.match(bypass.esc.attrs.class, /\besc\b/, 'Esc = No stays');
+  });
+
+  // -- B2: Stop uses its own route
+  const stopRig = ({ status = 200, body = { stopped: true, presses: 1 }, busy = null, gone = false } = {}) => {
+    const log = { calls: [], said: [], problems: [], gone: 0, cleared: 0, renders: 0 };
+    const Q = { busy };
+    const ctx = {
+      Q, M: { gone }, paneId: '%12', A: { name: 'builder-1' }, renderQuick: () => { log.renders += 1; }, stopOutcome: stopOutcomeReal, problemKind: problemKindReal,
+      call: async (path, opts) => { log.calls.push([path, opts]); return { status, body }; }, clearProblem: () => { log.cleared += 1; }, say: (m) => log.said.push(m),
+      setGone: () => { log.gone += 1; }, showProblem: (m, k) => log.problems.push([m, k]),
+    };
+    return { log, Q, stop: mk(['async function stop()'], ctx).stop };
+  };
+
+  test('(+) B2: Stop posts {} to /stop (not the keys route) and says what happened on a 200', async () => {
+    const r = stopRig();
+    await r.stop();
+    assert.deepEqual(norm(r.log.calls), [['/api/app/pane/%2512/stop', { method: 'POST', json: {} }]]);
+    assert.deepEqual(r.log.said, ["Stopped builder-1's turn"]);
+    assert.equal(r.log.cleared, 1);
+    assert.deepEqual(r.log.problems, []);
+    assert.equal(r.Q.busy, null, 'the busy mark is cleared');
+    assert.ok(r.log.renders >= 2, 'the button shows busy, then ready');
+  });
+
+  test('(+) B2: each refusal shows its fixed line; 404 also goes to the pane-gone state', async () => {
+    const rows = [
+      [409, 'prompt-open', 'Answer the prompt first. Esc = No is in the prompt panel.', 'warn'],
+      [409, 'not-busy', 'Nothing to stop: Claude is waiting.', 'warn'],
+      [409, 'mode-unknown', "Claude's input stayed in vim insert mode; press Esc in the terminal.", 'warn'],
+      [404, 'not_found', 'The session is gone.', 'error'],
+      [500, undefined, "nika couldn't reach tmux.", 'error'],
+      [400, 'invalid', "nika couldn't stop the turn.", 'warn'],
+    ];
+    for (const [status, error, text, kind] of rows) {
+      const r = stopRig({ status, body: { error, message: 'server text that must not show' } });
+      await r.stop();
+      assert.deepEqual(r.log.problems, [[text, kind]], `${status} ${error}`);
+      assert.equal(r.log.gone, status === 404 ? 1 : 0, `${status} gone`);
+      assert.deepEqual(r.log.said, []);
+    }
+  });
+
+  test('(−) B2: a second click while Stop is in flight, or on a gone pane, sends nothing', async () => {
+    const busy = stopRig({ busy: 'stop' });
+    await busy.stop();
+    assert.deepEqual(busy.log.calls, []);
+    const gone = stopRig({ gone: true });
+    await gone.stop();
+    assert.deepEqual(gone.log.calls, []);
+  });
+
+  test('(+) B2: the Stop button runs stop(); Esc = No and the Esc key chip stay on the keys route', () => {
+    assert.match(SRC, /on\('stop', stop\);/);
+    assert.doesNotMatch(SRC, /on\('stop', \(\) => sendKey/);
+    assert.match(fnOf('async function escNo()'), /await sendKey\('Escape'\)/);
+    assert.match(HTML, /data-key="Escape"/);
+    assert.match(fnOf('function wireComposer()'), /else sendKey\('Escape'\)/, 'the Esc ladder\'s last rung is unchanged');
+  });
+
+  // -- B3: loud failures
+  const failRig = ({ mode = 'unknown', confirmed = true } = {}) => {
+    const log = { polite: [], alerts: [] };
+    const W = { mode, confirmed, struck: new Set(), strikeAt: null, last: null, msg: null };
+    const ctx = {
+      W, A: { name: 'builder-1' }, switchFailure: switchFailureReal, announceMode: (m) => log.polite.push(m), showProblem: (m, k) => log.alerts.push([m, k]),
+    };
+    return { log, W, fail: mk(['function failSwitch(r, start, target)'], ctx).failSwitch };
+  };
+
+  test('(+) B3: stopped-in-bypass goes to the alert line (not the polite region) and the reason line leads with the Bypass tag', () => {
+    const r = failRig({ mode: 'bypassPermissions' });
+    r.fail({ status: 409, body: { error: 'stopped-in-bypass', presses: 2 } }, 'plan', 'auto');
+    const text = 'Stopped at Bypass permissions: Claude runs tools without asking. Press Shift-Tab in the terminal to leave it.';
+    assert.deepEqual(r.log.alerts, [[text, 'error']]);
+    assert.deepEqual(r.log.polite, [], 'one voice, the loud one');
+    assert.deepEqual(norm(r.W.msg), { text, mode: 'bypassPermissions', bypass: true });
+  });
+
+  test('(+) B3: mode-unknown after a press is loud, without the Bypass tag; with no press it stays on the polite region', () => {
+    const loud = failRig();
+    loud.fail({ status: 409, body: { error: 'mode-unknown', presses: 1 } }, 'plan', 'auto');
+    assert.equal(loud.log.alerts.length, 1);
+    assert.match(loud.log.alerts[0][0], /^nika can't read the mode after pressing Shift-Tab\. Check the terminal: the session may be in any mode, including Bypass permissions\.$/);
+    assert.equal(loud.W.msg.bypass, false);
+    assert.deepEqual(loud.log.polite, []);
+    const quiet = failRig();
+    quiet.fail({ status: 409, body: { error: 'mode-unknown' } }, 'plan', 'auto');
+    assert.deepEqual(quiet.log.alerts, []);
+    assert.deepEqual(quiet.log.polite, ["builder-1: nika can't read the mode."]);
+  });
+
+  test('(−) B3: ordinary failures never use the alert line; a gone pane stays silent here (the pane-gone state announces it)', () => {
+    const r = failRig();
+    r.fail({ status: 409, body: { error: 'not-idle' } }, 'plan', 'auto');
+    assert.deepEqual(r.log.alerts, []);
+    assert.equal(r.log.polite.length, 1);
+    const gone = failRig();
+    gone.fail({ status: 404, body: null }, 'plan', 'auto');
+    assert.deepEqual([gone.log.alerts, gone.log.polite], [[], []]);
+  });
+
+  const whyRig = (msg, reason = '') => {
+    const why = { hidden: false, className: '', kids: [], replaceChildren(...n) { this.kids = n; } };
+    const h = (tag, attrs) => ({ tag, text: attrs?.text });
+    const ctx = { W: { msg, whySig: '' }, $: () => why, h, icon: (n) => ({ icon: n }), bypassTag: () => ({ tag: 'bypass-tag' }) };
+    mk(['function renderWhy(st)'], ctx).renderWhy({ reason, chip: null });
+    return why;
+  };
+
+  test('(+) B3: the reason line leads with the Bypass tag only for a Bypass result; others keep the warn or info icon', () => {
+    assert.deepEqual(whyRig({ text: 'Stopped...', bypass: true }).kids[0], { tag: 'bypass-tag' });
+    assert.deepEqual(whyRig({ text: 'Stopped at Plan.', bypass: false }).kids[0], { icon: 'warn' });
+    assert.deepEqual(whyRig(null, 'Answer the prompt first.').kids[0], { icon: 'info' });
+    assert.match(whyRig({ text: 'x', bypass: true }).className, /\berr\b/);
+  });
+
+  test('(−) B4: the reason line has no Shift-Tab chip any more (nothing can ask for one)', () => {
+    assert.doesNotMatch(fnOf('function renderWhy(st)'), /chip|Shift-Tab/);
+    assert.equal(whyRig(null, "nika can't read the mode. Use the terminal.").kids.length, 2, 'icon and text, nothing else');
+  });
+
+  // -- B5: Rewind is /rewind through the command route
+  const cmdRig = ({ status = 200, body = { sent: true } } = {}) => {
+    const log = { calls: [], said: [], problems: [], gone: 0 };
+    const ctx = {
+      Q: { busy: null }, M: { gone: false }, paneId: '%12', renderQuick() {}, call: async (path, opts) => { log.calls.push([path, opts]); return { status, body }; }, clearProblem() {},
+      say: (m) => log.said.push(m), setGone: () => { log.gone += 1; }, showProblem: (m, k) => log.problems.push([m, k]), commandFailure: commandFailureReal, commandSaid: commandSaidReal, problemKind: problemKindReal,
+    };
+    return { log, sendCommand: mk(['async function sendCommand(text)'], ctx).sendCommand };
+  };
+
+  test('(+) B5: Rewind posts /rewind to the command route and says it opened the menu in the pane', async () => {
+    const r = cmdRig();
+    await r.sendCommand('/rewind');
+    assert.deepEqual(norm(r.log.calls), [['/api/app/pane/%2512/command', { method: 'POST', json: { text: '/rewind' } }]]);
+    assert.deepEqual(r.log.said, ['Opened Rewind in %12: pick a point in the pane']);
+  });
+
+  test('(−) B5: the other commands still say "Sent <text> + Enter"; a refusal shows the shared command line', async () => {
+    const compact = cmdRig();
+    await compact.sendCommand('/compact');
+    assert.deepEqual(compact.log.said, ['Sent /compact + Enter to %12']);
+    const refused = cmdRig({ status: 409, body: { error: 'input-not-empty', message: 'server text' } });
+    await refused.sendCommand('/rewind');
+    assert.deepEqual(refused.log.problems, [["Claude's input has text; clear it first.", 'warn']]);
+    assert.deepEqual(refused.log.said, []);
+  });
+
+  test('(+) B5: Rewind no longer depends on nika\'s message box: quickState gets no composer input, and typing re-renders nothing', () => {
+    assert.doesNotMatch(fnOf('function renderQuick()'), /composer/);
+    assert.doesNotMatch(fnOf('function updateChip()'), /renderQuick/);
+    assert.match(HTML, /id="qa-rewind"[^>]*title="Types \/rewind and Enter: opens Claude&rsquo;s rewind menu in the pane"/);
+  });
+
+  // -- B6: the Back label
+  const backRig = (projectKey, group) => {
+    const log = { proj: null, back: [] };
+    const proj = { set textContent(v) { log.proj = v; } };
+    mk(['function applyBackLabel(group)'], { projectKey, $: () => proj, setBack: (l) => log.back.push(l) }).applyBackLabel(group);
+    return log;
+  };
+
+  test('(+) B6: from a project the label and the Back hint name the project', () => {
+    assert.deepEqual(backRig('abcdefghij012345', { label: 'demo-api' }), { proj: 'demo-api', back: ['demo-api'] });
+  });
+
+  test('(−) B6: opened from the dashboard (no project key) the label stays "Dashboard", whatever group the agent is in', () => {
+    assert.deepEqual(backRig(null, { label: 'demo-api' }), { proj: null, back: [] });
+    assert.deepEqual(backRig('', { label: 'demo-api' }), { proj: null, back: [] });
+    assert.deepEqual(backRig('abcdefghij012345', { label: '' }), { proj: null, back: [] }, 'a group without a label changes nothing');
+    assert.deepEqual(backRig('abcdefghij012345', undefined), { proj: null, back: [] });
+  });
+
+  // -- B8: follow the pane to its new session after /clear
+  const OLD = '11111111-1111-4111-8111-111111111111';
+  const NEW = '22222222-2222-4222-8222-222222222222';
+  const OTHER = '33333333-3333-4333-8333-333333333333';
+  const KEY = 'abcdefghij012345';
+  const agent = (id, pane, live = true) => ({ id, live, name: id.slice(0, 4), pane: pane ? { id: pane } : null });
+  const followRig = ({ sessionId = OLD, paneId = '%7', projectKey = null, agents }) => {
+    const log = { replaced: [], resets: 0, announced: [], applied: [], notes: [], refreshed: 0 };
+    const ctx = {
+      sessionId, paneId, projectKey, H: { loaded: true }, A: { projectLooked: true }, followSession: followSessionReal,
+      getJSON: async () => ({ groups: [{ label: 'demo', agents }] }), call: async () => ({ status: 200, body: {} }), $: () => ({}),
+      history: { replaceState: (...a) => log.replaced.push(a) }, resetHistory: () => { log.resets += 1; }, historyNote: (m) => log.notes.push(m), refreshHistory: () => { log.refreshed += 1; },
+      applyAgent: (a) => log.applied.push(a.id), announce: (m) => log.announced.push(m),
+    };
+    const api = mk(['function followPane(id)', 'async function refreshAgent()'], ctx);
+    return { log, ctx, refresh: api.refreshAgent };
+  };
+
+  test('(+) B8: the old session ended and one live agent has the pane: the window follows it (URL, empty transcript, new agent, polite note)', async () => {
+    const r = followRig({ agents: [agent(OLD, '%7', false), agent(NEW, '%7')] });
+    await r.refresh();
+    assert.equal(r.ctx.sessionId, NEW);
+    assert.deepEqual(r.log.replaced, [[null, '', `?session=${NEW}&pane=%257`]], 'same shape, new id, pane percent-encoded');
+    assert.equal(r.log.resets, 1);
+    assert.equal(r.ctx.H.loaded, false, 'the transcript loads again from its start');
+    assert.equal(r.log.refreshed, 1);
+    assert.deepEqual(r.log.applied, [NEW]);
+    assert.deepEqual(r.log.announced, ['Claude started a new conversation in this pane.']);
+  });
+
+  test('(+) B8: the project key stays in the address', async () => {
+    const r = followRig({ projectKey: KEY, agents: [agent(OLD, '%7', false), agent(NEW, '%7')] });
+    await r.refresh();
+    assert.deepEqual(r.log.replaced, [[null, '', `?session=${NEW}&pane=%257&project=${KEY}`]]);
+  });
+
+  test('(−) B8: the old session is still live, or two live agents claim the pane, or the pane is unknown: the window stays', async () => {
+    for (const [name, over] of [
+      ['old still live', { agents: [agent(OLD, '%7'), agent(NEW, '%7')] }],
+      ['two claimants', { agents: [agent(OLD, '%7', false), agent(NEW, '%7'), agent(OTHER, '%7')] }],
+      ['no pane id', { paneId: null, agents: [agent(OLD, null, false), agent(NEW, '%7')] }],
+      ['other pane', { agents: [agent(OLD, '%7', false), agent(NEW, '%8')] }],
+    ]) {
+      const r = followRig(over);
+      await r.refresh();
+      assert.equal(r.ctx.sessionId, OLD, name);
+      assert.deepEqual([r.log.replaced, r.log.resets, r.log.announced], [[], 0, []], name);
+      assert.deepEqual(r.log.applied, [OLD], `${name}: the header keeps showing the session it was opened for`);
+    }
+  });
+
+  test('(−) B8: a pane-only window (no session id) never follows: it already shows whatever lives in the pane', async () => {
+    const r = followRig({ sessionId: null, agents: [agent(NEW, '%7')] });
+    await r.refresh();
+    assert.deepEqual([r.log.replaced, r.log.resets, r.log.announced], [[], 0, []]);
+    assert.deepEqual(r.log.applied, [NEW]);
+  });
+
+  test('(+) B8: sessionId is a let, and the follow only ever puts a validated id into the address', () => {
+    assert.match(SRC, /let sessionId = param\('session', UUID\)/);
+    assert.match(fnOf('function followPane(id)'), /history\.replaceState\(null, '', `\?\$\{q\.join\('&'\)\}`\)/);
+    assert.match(fnOf('async function refreshAgent()'), /followSession\(\{ sessionId, paneId, agents:/);
+  });
+
+  // -- B9: Mac wording
+  test('(+) B9: the passthrough key reads ctrl-glyph + "]" on a Mac and "Ctrl+]" elsewhere, in the toggle, its title, the banner and the hint line', () => {
+    const run = (mac) => {
+      const kbds = [{ textContent: 'Ctrl+]' }, { textContent: 'Ctrl+]' }, { textContent: 'Ctrl+]' }];
+      const toggle = { title: '' };
+      mk(['function syncPassKeys()'], { MAC: mac, passKeyLabel, document: { querySelectorAll: (sel) => (sel === 'kbd[data-passkey]' ? kbds : []) }, $: (id) => (id === 'pass-toggle' ? toggle : null) }).syncPassKeys();
+      return { kbds: kbds.map((k) => k.textContent), title: toggle.title };
+    };
+    assert.deepEqual(run(true), { kbds: ['\u2303]', '\u2303]', '\u2303]'], title: 'Type straight into the pane (\u2303])' });
+    assert.deepEqual(run(false), { kbds: ['Ctrl+]', 'Ctrl+]', 'Ctrl+]'], title: 'Type straight into the pane (Ctrl+])' });
+  });
+
+  test('(+) B9: the markup marks all three places with data-passkey and keeps aria-keyshortcuts as Control+]', () => {
+    assert.equal([...HTML.matchAll(/<kbd data-passkey>Ctrl\+\]<\/kbd>/g)].length, 3, 'toggle, banner, hint line');
+    assert.match(HTML, /id="pass-toggle"[^>]*aria-keyshortcuts="Control\+\]"/);
+    assert.match(fnOf('function boot()'), /syncPassKeys\(\)/);
+  });
+
+  test('(−) B9: no page copy spells the key as separate Ctrl and ] caps any more, and the shortcuts window uses the same glyph', () => {
+    assert.doesNotMatch(HTML, /<kbd>Ctrl<\/kbd>\+<kbd>\]<\/kbd>/);
+    assert.equal(passKeyLabel(true), '\u2303]');
+    assert.equal(passKeyLabel(false), 'Ctrl+]');
+  });
+});
+
+describe('Task 14b: the header and the 320 px table (markup and stylesheet)', () => {
+  const css = strip(CSS);
+  const rule = (sel) => new RegExp(`(^|[\\s}])${sel.replace(/[.[\]]/g, '\\$&')}\\s*\\{([^}]*)\\}`).exec(css)?.[2] ?? null;
+  const header = HTML.slice(HTML.indexOf('<header'), HTML.indexOf('</header>'));
+
+  test('(+) B7: the switcher side, the claude.ai link and the shortcuts button sit in one right-hand block; the last two in a group of their own', () => {
+    const at = (needle) => header.indexOf(needle);
+    const order = ['class="bar-end"', 'id="mode-switch"', 'id="msw-why"', 'class="bar-tools"', 'id="claude-link"', 'id="kbd-open"'].map(at);
+    assert.ok(order.every((i) => i > 0), 'all six are in the header');
+    assert.deepEqual(order, [...order].sort((a, b) => a - b));
+    const tools = header.slice(at('class="bar-tools"'));
+    assert.ok(tools.includes('id="claude-link"') && tools.includes('id="kbd-open"'));
+    assert.ok(!tools.includes('id="mode-switch"') && !tools.includes('id="msw-why"'), 'the group is just the link and the button');
+  });
+
+  test('(+) B7: the pair never wraps apart (nowrap); the right-hand block wraps as one flex item of the bar', () => {
+    assert.match(rule('.bar-tools') ?? '', /display:\s*flex/);
+    assert.match(rule('.bar-tools') ?? '', /flex-wrap:\s*nowrap/);
+    assert.match(rule('.bar-end') ?? '', /flex-wrap:\s*wrap/);
+    assert.match(rule('.bar') ?? '', /flex-wrap:\s*wrap/, 'the bar itself still wraps, so a narrow window moves the block, not a lone button');
+  });
+
+  test('(−) B7: the grouping adds no colour and no token', () => {
+    for (const sel of ['.bar-tools', '.bar-end']) {
+      const body = rule(sel) ?? '';
+      assert.doesNotMatch(body, /color|background|border|box-shadow|#[0-9a-f]{3}|rgb|hsl|--[a-z]/i, sel);
+    }
+    assert.ok(!/--bar/.test(TOKENS) && !/--bar/.test(CSS));
+  });
+
+  test('(+) B9: the shortcuts window\'s table sits in a wrapper that scrolls sideways, and the table keeps a width that needs it at 320 px', () => {
+    const t = strip(TOKENS);
+    assert.match(t, /\.kbd-sec \.tbl-wrap \{[^}]*overflow-x:\s*auto/);
+    assert.match(t, /\.kbd-sec \.tbl-wrap \{[^}]*position:\s*relative/, 'a scroll container is also a containing block (test/ui.test.js)');
+    assert.match(t, /\.kbd-sec \{[^}]*min-width:\s*0/, 'the grid item may shrink below its table');
+    const min = /\.kbd-sec table \{[^}]*min-width:\s*(\d+)px/.exec(t);
+    assert.ok(min && Number(min[1]) > 320 - 32 - 32, 'wider than a 320 px window\'s dialog body, so it scrolls in the wrapper');
+  });
+
+  test('(−) B9: nothing clips sideways overflow (a clipped table would hide columns); the only horizontal scrollers are the table wrapper and the narrow-screen file strip', () => {
+    const all = fs.readdirSync(PUBLIC).filter((f) => f.endsWith('.css')).map((f) => [f, strip(read(f))]);
+    for (const [f, css] of all) {
+      assert.doesNotMatch(css, /overflow-x:\s*hidden/, `${f} clips sideways instead of scrolling`);
+      assert.doesNotMatch(css, /(^|[}\s,])(html|body)\s*(,[^{]*)?\{[^}]*overflow/, `${f} hides the page's own overflow`);
+    }
+    const scrollers = all.flatMap(([f, css]) => [...css.matchAll(/([^{}]+)\{[^{}]*overflow-x:\s*auto[^{}]*\}/g)].map((m) => `${f}: ${m[1].trim()}`));
+    assert.deepEqual(scrollers.sort(), ['app.css: .files', 'tokens.css: .kbd-sec .tbl-wrap'], 'a new sideways scroller needs a test of its own');
   });
 });

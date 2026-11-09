@@ -52,10 +52,14 @@
     <span class="hide-narrow mono" id="sess-branch" hidden></span>
   </span>
   <span class="sp"></span>
-  <div class="msw" id="mode-switch" role="toolbar" aria-label="Permission mode" aria-describedby="msw-why" hidden></div>
-  <span class="msw-why" id="msw-why" hidden></span>
-  <a class="btn" id="claude-link" href="https://claude.ai/code/" target="_blank" rel="noopener noreferrer" title="Opens claude.ai in your browser" hidden><svg class="ic" aria-hidden="true"><use href="#i-ext"/></svg><span class="lbl">Open in claude.ai</span><span class="sr-only">(opens your browser)</span></a>
-  <button type="button" class="btn ghost icon" id="kbd-open" aria-label="Keyboard shortcuts" aria-keyshortcuts="Shift+Slash Control+Slash" title="Keyboard shortcuts (?)"><svg class="ic" aria-hidden="true"><use href="#i-kbd"/></svg></button>
+  <div class="bar-end">
+    <div class="msw" id="mode-switch" role="toolbar" aria-label="Permission mode" aria-describedby="msw-why" hidden></div>
+    <span class="msw-why" id="msw-why" hidden></span>
+    <span class="bar-tools">
+      <a class="btn" id="claude-link" href="https://claude.ai/code/" target="_blank" rel="noopener noreferrer" title="Opens claude.ai in your browser" hidden><svg class="ic" aria-hidden="true"><use href="#i-ext"/></svg><span class="lbl">Open in claude.ai</span><span class="sr-only">(opens your browser)</span></a>
+      <button type="button" class="btn ghost icon" id="kbd-open" aria-label="Keyboard shortcuts" aria-keyshortcuts="Shift+Slash Control+Slash" title="Keyboard shortcuts (?)"><svg class="ic" aria-hidden="true"><use href="#i-kbd"/></svg></button>
+    </span>
+  </div>
 </header>
 
 <div class="notice" id="notice" role="status" hidden></div>
@@ -86,10 +90,10 @@
           <button type="button" aria-pressed="true" data-surface="dark">Dark</button>
           <button type="button" aria-pressed="false" data-surface="light">Light</button>
         </span>
-        <button type="button" class="btn" id="pass-toggle" aria-pressed="false" aria-keyshortcuts="Control+]" title="Type straight into the pane (Ctrl+])"><svg class="ic" aria-hidden="true"><use href="#i-kbd"/></svg><span class="lbl">Type into pane</span><span class="onoff" id="pass-onoff" aria-hidden="true">off</span><kbd>Ctrl+]</kbd></button>
+        <button type="button" class="btn" id="pass-toggle" aria-pressed="false" aria-keyshortcuts="Control+]" title="Type straight into the pane (Ctrl+])"><svg class="ic" aria-hidden="true"><use href="#i-kbd"/></svg><span class="lbl">Type into pane</span><span class="onoff" id="pass-onoff" aria-hidden="true">off</span><kbd data-passkey>Ctrl+]</kbd></button>
       </div>
       <div class="pass-banner" id="pass-banner" hidden>
-        <span>Keys go straight to pane <span id="pb-pane" class="mono"></span>. Press <kbd>Ctrl</kbd>+<kbd>]</kbd> to leave.</span>
+        <span>Keys go straight to pane <span id="pb-pane" class="mono"></span>. Press <kbd data-passkey>Ctrl+]</kbd> to leave.</span>
         <button type="button" class="btn" id="pass-leave">Leave</button>
       </div>
       <div class="termbox">
@@ -104,7 +108,7 @@
           <button type="button" class="btn q-narrow" id="qa-compact" tabindex="-1" aria-disabled="true" aria-label="Compact" title="Types /compact and Enter: summarises the conversation to free context"><svg class="ic" aria-hidden="true"><use href="#i-compact"/></svg><span class="lbl">Compact</span></button>
           <button type="button" class="btn q-narrow" id="qa-clear" tabindex="-1" aria-disabled="true" aria-label="Clear" title="Types /clear and Enter after you confirm"><svg class="ic" aria-hidden="true"><use href="#i-clear"/></svg><span class="lbl">Clear&hellip;</span></button>
           <button type="button" class="btn" id="qa-model" tabindex="-1" aria-disabled="true" aria-expanded="false" aria-controls="model-pop" title="Switch the model"><svg class="ic" aria-hidden="true"><use href="#i-model"/></svg><span id="qa-model-lbl">Model</span><span class="mono" id="qa-model-name"></span><svg class="ic" aria-hidden="true"><use href="#i-chev"/></svg></button>
-          <button type="button" class="btn q-narrow" id="qa-rewind" tabindex="-1" aria-disabled="true" aria-label="Rewind" title="Esc Esc on an empty prompt: opens Claude&rsquo;s rewind menu in the terminal"><svg class="ic" aria-hidden="true"><use href="#i-rewind"/></svg><span class="lbl">Rewind</span></button>
+          <button type="button" class="btn q-narrow" id="qa-rewind" tabindex="-1" aria-disabled="true" aria-label="Rewind" title="Types /rewind and Enter: opens Claude&rsquo;s rewind menu in the pane"><svg class="ic" aria-hidden="true"><use href="#i-rewind"/></svg><span class="lbl">Rewind</span></button>
           <span class="sp"></span>
           <button type="button" class="btn danger" id="qa-end" tabindex="-1" aria-disabled="true" title="Claude exits and the pane closes"><svg class="ic" aria-hidden="true"><use href="#i-end"/></svg><span class="lbl">End session&hellip;</span></button>
         </div>
@@ -155,7 +159,7 @@
           <button type="button" class="key" data-key="Enter">Enter</button>
         </div>
         <div class="hintline">
-          <span class="tip"><kbd>Enter</kbd> send</span><span class="tip"><kbd>/</kbd> commands</span><span class="tip"><kbd>Shift</kbd>+<kbd>Enter</kbd> new line</span><span class="tip"><kbd>Esc</kbd> goes to the pane</span><span class="tip"><kbd>Ctrl</kbd>+<kbd>]</kbd> type into pane</span>
+          <span class="tip"><kbd>Enter</kbd> send</span><span class="tip"><kbd>/</kbd> commands</span><span class="tip"><kbd>Shift</kbd>+<kbd>Enter</kbd> new line</span><span class="tip"><kbd>Esc</kbd> goes to the pane</span><span class="tip"><kbd data-passkey>Ctrl+]</kbd> type into pane</span>
           <span class="arg-hint" id="arg-hint" hidden></span>
           <span class="shell-hint" id="shell-hint" hidden>Shell on: Enter runs this through Claude&rsquo;s ! mode, then shell turns off.</span>
           <span class="problem" id="problem" role="alert"></span>

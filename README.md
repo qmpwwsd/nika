@@ -210,18 +210,25 @@ screen, so a screen nika does not recognize shows "Mode ?" or leaves a control d
   footer, the tag shows the last known mode, marked unconfirmed (dashed).
 - **Questions.** When Claude asks for permission, one button per option answers it (nika types that option's number),
   plus an Esc button (cancel, same as No). An option that mentions bypass has no button: answer it in the terminal.
-- **Quick actions.** **Stop** (Esc; live only while Claude works; it also stops running subagents), **Compact**,
-  **Clear** (asks first), **Model** (the list, or a custom ID), **Rewind** (Esc twice, from an empty message box) and
-  **End session**. Compact, Clear, Model and Rewind are live while Claude waits for you; a line under the row says why
-  one is off.
+- **Quick actions.** **Stop** (live only while Claude works; it presses Esc, and Esc twice when Claude's input is in
+  vim insert mode, and it also stops running subagents), **Compact**, **Clear** (asks first), **Model** (the list, or a
+  custom ID), **Rewind** (types `/rewind` and Enter, which opens Claude's rewind menu in the pane for you to pick a
+  point) and **End session**. Compact, Clear, Model and Rewind are live while Claude waits for you; a line under the row
+  says why one is off.
 - **End session.** Asks first. If Claude is busy or asking, nika presses Esc once (which answers a question with No),
   then types `/exit` and Enter. It never kills the pane; if Claude does not exit it says so ("Claude didn't exit; use
   Stop or the terminal.").
-- **Claude's input must be empty.** Compact, Clear, Model and End type into Claude's own input and press Enter only when
+- **Claude's input must be empty.** Compact, Clear, Model, Rewind and End type into Claude's own input and press Enter only when
   it reads exactly that command. If there is text in it, they refuse with "Claude's input has text; clear it first." and
   leave your text alone.
 - **Shell.** The Shell toggle sends the line through Claude's `!` mode (Ctrl-U first, which clears the current line of Claude's
   input, then `!`, the line and Enter) and then turns itself off.
+- **Send and Shell wait for a question.** While Claude asks for permission, Send (a line, a paste, or Enter from an empty
+  box) and Shell send nothing and say "Answer the prompt with the buttons above or in the terminal."; your text stays in
+  the box. The Enter and Shift-Tab chips are off too. A question that mentions bypass gets no answer buttons at all, and
+  nika refuses Enter, digits and pastes to it: answer in the terminal.
+- **After `/clear`.** When Claude starts a new conversation in the pane, the window follows it to the new session (the
+  transcript starts over) instead of showing the ended one.
 - **Commands.** Type `/` at the start of an empty message box, or press Commands, to filter Claude's built-in commands
   and the commands and skills from your Claude config folder, the project and installed plugins, each with a source tag.
   Enter inserts `/name `; a second Enter sends it.

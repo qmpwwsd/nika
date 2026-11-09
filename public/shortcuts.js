@@ -111,6 +111,9 @@ export function helpHint({ mac, singleKey }) {
   return { title: `Keyboard shortcuts (${mac ? `${CMD}/` : 'Ctrl+/'})`, keys: modKey };
 }
 
+/** The passthrough key as page copy: the control glyph and "]" on macOS (as the table above), "Ctrl+]" elsewhere. aria-keyshortcuts stays Control+]. */
+export const passKeyLabel = (mac) => (mac ? `${CTRL}]` : 'Ctrl+]');
+
 // ---- the window --------------------------------------------------------------------------------------------------------------
 
 const $ = (id) => document.getElementById(id);
@@ -122,10 +125,11 @@ function keysCell(r) {
 function section(g) {
   return h('section', { class: 'kbd-sec' },
     h('h3', { text: g.group }),
-    h('table', null,
-      h('caption', { class: 'sr-only', text: g.group }),
-      h('thead', null, h('tr', null, ['Name', 'Shortcut', 'Description'].map((t) => h('th', { scope: 'col', text: t })))),
-      h('tbody', null, g.rows.map((r) => h('tr', null, h('td', { text: r.name }), keysCell(r), h('td', { text: r.description }))))));
+    h('div', { class: 'tbl-wrap', role: 'region', 'aria-label': `${g.group}, shortcuts`, tabindex: '0' }, // a table wider than the window scrolls here, not the page (tokens.css); focusable so the keys can scroll it
+      h('table', null,
+        h('caption', { class: 'sr-only', text: g.group }),
+        h('thead', null, h('tr', null, ['Name', 'Shortcut', 'Description'].map((t) => h('th', { scope: 'col', text: t })))),
+        h('tbody', null, g.rows.map((r) => h('tr', null, h('td', { text: r.name }), keysCell(r), h('td', { text: r.description })))))));
 }
 
 /**

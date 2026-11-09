@@ -196,7 +196,9 @@ dialog.dlg-kbd h2:focus { outline: none; }   /* the heading takes the first focu
 dialog.dlg-kbd .dlg-body { min-height: 0; gap: 20px; }
 dialog.dlg-kbd .dlg-foot .muted { color: var(--text-muted); font-size: var(--fs-small); }
 .kbd-sec h3 { margin: 0 0 6px; font-size: var(--fs-h3); }
-.kbd-sec table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+.kbd-sec { min-width: 0; }   /* a grid item may be narrower than its table, so the wrapper below scrolls instead of the dialog body */
+.kbd-sec .tbl-wrap { position: relative; overflow-x: auto; }   /* at 320 px the table keeps its width and scrolls here, not the page */
+.kbd-sec table { width: 100%; min-width: 440px; border-collapse: collapse; table-layout: fixed; }
 .kbd-sec th:nth-child(1) { width: 34%; }
 .kbd-sec th:nth-child(2) { width: 26%; }
 .kbd-sec th { padding: 4px 12px 4px 0; text-align: left; font-size: var(--fs-small); font-weight: 600; color: var(--text-muted); border-bottom: 1px solid var(--line-strong); }
