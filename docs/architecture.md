@@ -98,7 +98,7 @@ who has scrolled up loses none until they are back at the bottom. Poll timers ar
 cleared before it is set again.
 
 The server's live heap stays near 10 MB, but with V8's default young generation node kept about 200 MB resident on a
-synthetic 10-minute run (200 sessions, history paging, agent polling). The desktop shell therefore starts it with
+synthetic 5-minute run (200 sessions, history paging, agent polling). The desktop shell therefore starts it with
 `--max-semi-space-size=4` (`child.rs` `NODE_HEAP_FLAG`): on the same run it holds about 90 MB, with the same history
 latency. `--optimize-for-size` saved about 10 MB more but made history requests about 1 ms slower, so it is not used.
 
