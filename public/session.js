@@ -669,7 +669,7 @@ function renderPrompt() {
   if (p.sig !== PA.sig) { // rebuilt only for a new question, so focus and hover survive the captures
     const focused = panel.contains(document.activeElement);
     buildPrompt(p);
-    if (focused) (PA.btns[0] ?? composer()).focus({ preventScroll: true }); // the button that had focus was replaced
+    if (focused) $('ask-q').focus({ preventScroll: true }); // the button that had focus was replaced; the question text, so a held Enter answers nothing unseen
   }
   const reason = $('ask-reason');
   if (reason.textContent !== A.attention) reason.textContent = A.attention;

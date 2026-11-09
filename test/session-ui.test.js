@@ -518,9 +518,15 @@ describe('quick actions, prompt buttons, End dialog and Shell (spec 9.4-9.8)', (
     assert.match(fn(code(JS['session.js']), 'function closeModelPop('), /if \(refocus\) Q\.b\.model\.focus\(\)/);
   });
 
-  test('(+) rebuilding the prompt buttons for a new sig moves focus from the old panel to the first new button, else the composer', () => {
+  test('(+) rebuilding the prompt buttons for a new sig moves focus from the old panel to the question text, never an option', () => {
     const render = fn(code(JS['session.js']), 'function renderPrompt()');
-    assert.match(render, /if \(p\.sig !== PA\.sig\) \{[\s\S]*const focused = panel\.contains\(document\.activeElement\);[\s\S]*buildPrompt\(p\);[\s\S]*if \(focused\) \(PA\.btns\[0\] \?\? composer\(\)\)\.focus\(/);
+    assert.match(render, /if \(p\.sig !== PA\.sig\) \{[\s\S]*const focused = panel\.contains\(document\.activeElement\);[\s\S]*buildPrompt\(p\);[\s\S]*if \(focused\) \$\('ask-q'\)\.focus\(/);
+    assert.match(tag('ask-q'), /\btabindex="-1"/, 'focusable by script only, not in the Tab order');
+  });
+
+  test('(−) a rebuilt prompt never hands focus to an option button, so a held or double Enter cannot answer an unseen question', () => {
+    const render = fn(code(JS['session.js']), 'function renderPrompt()');
+    assert.doesNotMatch(render, /PA\.btns\[\d+\][^;]*\.focus\(/);
   });
 
   test('(+) the gates read promptOpen (any prompt in the capture); only the panel reads the cleaned prompt', () => {
