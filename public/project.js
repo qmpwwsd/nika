@@ -11,6 +11,7 @@ import { copyBanner, copyErrorText, copyToast } from './app-copy.js';
 import { CUSTOM, MODEL_ID, MODEL_HINT, fillModelSelect } from './models-ui.js';
 import { buildGroups, agentNodes, swap, interacting, render } from './app.js';
 import { sidebarModel } from './dash-model.js';
+import { pluginView, pluginSave, sortIds, countText, filterNote } from './plugin-view.js';
 
 const PERM_LABEL = {
   default: 'Claude Code default (no flag)',
@@ -43,6 +44,16 @@ export async function loadSettings() {
     applyTheme(r.body.ui?.theme);
   }
   return r;
+}
+
+/** The installed plugin names, so the Project setup card can flag a saved plugin that is gone. A failed load leaves state.plugins as it was. */
+async function loadInstalled() {
+  try {
+    const r = await appFetch('/api/app/plugins');
+    if (r.status === 200 && Array.isArray(r.body?.plugins)) state.plugins = r.body.plugins;
+  } catch {
+    // the card then flags nothing
+  }
 }
 
 /** The model catalog for the pickers. A failed load leaves state.models as it was (null): the pickers then offer only Custom ID. */
@@ -260,7 +271,7 @@ function renderProject(force) {
   const key = state.route.key;
   const p = state.projects?.find((x) => x.key === key) ?? null;
   const g = buildGroups().find((x) => x.project?.key === key) ?? null;
-  const sig = JSON.stringify([p, g?.agents, state.modes.map, state.settings, state.me?.tmux, state.me?.claude, state.error, state.showEnded, [...state.open], [...state.expanded], key]);
+  const sig = JSON.stringify([p, g?.agents, state.modes.map, state.settings, state.plugins, state.me?.tmux, state.me?.claude, state.error, state.showEnded, [...state.open], [...state.expanded], key]);
   if (!force && (sig === projSig || interacting())) return;
   projSig = sig;
   const body = $('#proj-body');
@@ -291,11 +302,17 @@ function renderProject(force) {
   swap($('#proj-setup'), setupCards(p, g));
 }
 
+const CHIPS_MAX = 8;
+
 function setupCards(p, g) {
   const rs = p.rules?.state ?? 'none';
-  const picked = state.settings?.plugins?.perProject?.[p.key] ?? [];
+  const picked = sortIds(state.settings?.perProject?.[p.key]?.plugins ?? []);
   const lim = limitInfo(g);
   const s = state.settings;
+  const chip = (id) => {
+    const gone = Array.isArray(state.plugins) && !state.plugins.includes(id);
+    return h('li', { class: `chip${gone ? ' missing' : ''}` }, gone ? [icon('warn'), id, ' (not installed)'] : id);
+  };
   return [
     h('div', { class: 'card' },
       h('h2', { text: 'Rules' }), rulesEl(rs), h('p', { text: RULE_TEXT[rs] ?? RULE_TEXT.none }),
@@ -306,10 +323,15 @@ function setupCards(p, g) {
         onclick: () => openRules(p), text: rs === 'nika' ? 'Preview rules' : rs === 'none' ? 'Set up rules…' : 'Update rules…',
       }))),
     h('div', { class: 'card' },
-      h('h2', { text: 'Plugins' }),
-      picked.length ? h('div', { class: 'chips' }, picked.map((x) => h('span', { class: 'chip', text: x }))) : h('p', { class: 'muted', text: 'No plugins chosen. Agents use only what the project already enables.' }),
+      h('h2', { text: 'Project setup' }),
+      h('p', { class: 'help' }, 'Applies to this project only. Defaults are in ', h('a', { href: '#settings', text: 'Settings' }), '.'),
+      h('h3', null, picked.length ? ['Plugins ', h('span', { class: 'help', text: `${picked.length} on` })] : 'Plugins'),
+      picked.length
+        ? h('ul', { class: 'chips', 'data-fk': 'setup-chips', 'aria-label': 'Plugins turned on' }, picked.slice(0, CHIPS_MAX).map(chip))
+        : h('p', { class: 'muted', text: 'No plugins chosen. Agents use only what the project already enables.' }),
+      picked.length > CHIPS_MAX ? h('p', { class: 'help', 'data-fk': 'setup-more', text: `+${picked.length - CHIPS_MAX} more` }) : null,
       h('p', { class: 'muted', text: 'Written into .claude/settings.local.json when you apply rules.' }),
-      h('div', null, h('a', { class: 'btn', href: '#settings', 'data-fk': 'choose-plugins', onclick: () => { state.pluginProject = p.key; }, text: 'Choose plugins…' }))),
+      h('div', null, h('button', { type: 'button', class: 'btn', 'aria-haspopup': 'dialog', 'data-fk': 'choose-plugins', onclick: () => openPlugins(p), text: 'Choose plugins…' }))),
     h('div', { class: 'card' },
       h('h2', { text: 'New agents' }),
       h('dl', { class: 'kv' },
@@ -318,6 +340,193 @@ function setupCards(p, g) {
         h('dt', { text: 'Running' }), h('dd', { class: 'num', text: `${lim.running} of ${lim.max}` })),
       lim.reached ? h('p', { class: 'limit', id: 'limit-note' }, icon('warn'), h('span', { text: `Limit reached: ${lim.running} of ${lim.max} agents are running. Spawning is off until one ends.` })) : null),
   ];
+}
+
+/* ---------- choose plugins (dialog; docs/design/spec.md 3.15) ---------- */
+const LOAD_ERROR = 'The plugin list could not be loaded. Check that nika is still running, then try again.';
+// phase: loading | ready | empty (nothing installed, nothing ticked) | error. Ticks live in `picked` (a set of ids), never in the
+// boxes, so a row the filter hides keeps its tick; `opened` fixes the row order for as long as the dialog is open.
+const pl = { project: null, phase: 'loading', installed: [], saved: [], opened: [], picked: new Set(), query: '', alert: '', saving: false, seq: 0, timer: null, swallow: false };
+
+const plugView = () => pluginView({ installed: pl.installed, picked: pl.picked, opened: pl.opened, query: pl.query });
+
+function plugAlert(text) {
+  pl.alert = text;
+  $('#pl-alert-text').textContent = text;
+  $('#pl-alert').hidden = !text;
+}
+
+function plugCount() {
+  $('#pl-count').textContent = pl.phase === 'ready' ? countText(plugView(), pl.query) : '';
+}
+
+/** A tick changes its row in place (no redraw, so focus stays) and the count. */
+function plugToggle(row, chip, id, on) {
+  if (on) pl.picked.add(id);
+  else pl.picked.delete(id);
+  row.dataset.on = String(on);
+  chip.hidden = !on;
+  plugCount();
+}
+
+function plugRow(r) {
+  const chip = h('span', { class: 'onoff', 'aria-hidden': 'true', hidden: !r.on, text: 'on' });
+  const box = h('input', { type: 'checkbox', 'data-fk': `pl-row:${r.id}`, checked: r.on, onchange: () => plugToggle(row, chip, r.id, box.checked) });
+  const row = h('label', { class: 'check plug-row', 'data-on': String(r.on) }, box,
+    h('span', { class: 'plug-n' }, r.name, h('span', { class: 'muted', text: ` @${r.market}` }),
+      r.installed ? null : h('span', { class: 'plug-miss' }, icon('warn'), ' (not installed)')),
+    chip);
+  return row;
+}
+
+/** Draws what depends on the phase, the filter and the ticks. Only here are rows rebuilt (the filter calls it). */
+function plugRender() {
+  const view = plugView();
+  const { phase } = pl;
+  const show = (b, on) => { // hidden and off together, so Mod+Enter (the first enabled primary button) never presses a button that is not shown
+    b.hidden = !on;
+    b.disabled = !on;
+  };
+  let body;
+  if (phase === 'loading') body = [h('span', { class: 'sr-only', text: 'Loading plugins…' }), [1, 2, 3, 4, 5, 6].map(() => h('div', { class: 'sk sk-line', 'aria-hidden': 'true' }))];
+  else if (phase === 'empty') body = [h('p', { text: 'No plugins are installed in Claude Code.' }), h('p', { class: 'help', text: 'Install plugins with Claude Code, then open this again.' })];
+  else if (phase === 'ready' && view.counts.shown === 0) body = [h('p', { text: `No plugin matches “${pl.query.trim()}”.` }), h('button', { type: 'button', class: 'btn link', 'data-fk': 'pl-clear', onclick: plugClear, text: 'Clear filter' })];
+  else body = view.rows.filter((r) => r.shown).map(plugRow);
+  $('#pl-list').replaceChildren(...body.flat());
+  $('#pl-list').setAttribute('aria-busy', String(phase === 'loading'));
+  $('#pl-search').hidden = phase === 'error' || phase === 'empty';
+  $('#pl-help').hidden = phase !== 'ready';
+  plugCount();
+  plugAlert(pl.alert);
+  show($('#pl-save'), phase === 'loading' || phase === 'ready');
+  $('#pl-save').disabled = phase !== 'ready';
+  show($('#pl-retry'), phase === 'error');
+  $('#pl-cancel').textContent = phase === 'empty' ? 'Close' : 'Cancel';
+}
+
+function plugFilter(value) {
+  pl.query = value;
+  plugRender();
+  clearTimeout(pl.timer);
+  if (pl.phase === 'ready') pl.timer = setTimeout(() => announce(filterNote(plugView())), 400);
+}
+
+function plugClear() {
+  $('#pl-filter').value = '';
+  plugFilter('');
+  $('#pl-filter').focus();
+}
+
+/** Esc in a filter that has text clears it; with no text it is left to the dialog, which closes. */
+function plugFilterKey(e) {
+  if (e.key !== 'Escape' || !e.target.value) return;
+  e.preventDefault();
+  e.stopPropagation();
+  pl.swallow = true; // a web view that still sends "cancel" for this Esc must not close the dialog either
+  setTimeout(() => { pl.swallow = false; }, 0);
+  e.target.value = '';
+  plugFilter('');
+}
+
+function openPlugins(p) {
+  Object.assign(pl, { project: p, phase: 'loading', installed: [], saved: [], opened: [], picked: new Set(), query: '', alert: '' });
+  $('#pl-filter').value = '';
+  $('#pl-h').textContent = `Choose plugins for ${trunc(p.name, 32)}`;
+  plugRender();
+  openDialog($('#dlg-plugins'), { focus: $('#pl-filter') });
+  plugLoad();
+}
+
+/** The installed plugins and this project's saved list, asked together; the ticks come from the saved list. */
+async function plugLoad() {
+  const my = ++pl.seq;
+  Object.assign(pl, { phase: 'loading', alert: '' });
+  plugRender();
+  let r = null;
+  try {
+    r = await Promise.all([appFetch('/api/app/plugins'), appFetch(`/api/app/projects/${encodeURIComponent(pl.project.key)}/config`)]);
+  } catch {
+    // shown as the load error
+  }
+  if (my !== pl.seq || !$('#dlg-plugins').open) return;
+  const [list, cfg] = r ?? [];
+  if (list?.status === 200 && cfg?.status === 200 && Array.isArray(list.body?.plugins) && Array.isArray(cfg.body?.plugins)) {
+    state.plugins = list.body.plugins;
+    Object.assign(pl, { installed: list.body.plugins, saved: cfg.body.plugins, opened: cfg.body.plugins, picked: new Set(cfg.body.plugins) });
+    pl.phase = plugView().rows.length ? 'ready' : 'empty';
+  } else {
+    Object.assign(pl, { phase: 'error', alert: LOAD_ERROR });
+  }
+  plugRender();
+  if (pl.phase === 'error') $('#pl-alert').focus();
+  else if (pl.phase === 'empty') $('#pl-cancel').focus();
+  else $('#pl-filter').focus();
+}
+
+/** Everything a save in flight turns off, and back. */
+function plugBusy(on) {
+  const dlg = $('#dlg-plugins');
+  pl.saving = on;
+  if (on) {
+    dlg.dataset.busy = '1';
+    plugAlert('');
+  } else delete dlg.dataset.busy;
+  $('#pl-box').disabled = on; // a disabled fieldset disables every box in it
+  for (const id of ['#pl-filter', '#pl-cancel', '#pl-x']) $(id).disabled = on;
+  setBusy($('#pl-save'), on, 'Saving…');
+}
+
+/** The settings copy of one project's saved list, so the card is right before the next load. [] drops the list (and the entry when it was the only key). */
+function rememberPlugins(key, plugins) {
+  const s = state.settings;
+  if (!s) return;
+  const map = { ...s.perProject };
+  const entry = { ...map[key], plugins };
+  if (!plugins.length) delete entry.plugins;
+  if (Object.keys(entry).length) map[key] = entry;
+  else delete map[key];
+  s.perProject = map;
+}
+
+async function plugSave() {
+  if (pl.phase !== 'ready' || pl.saving) return;
+  const dlg = $('#dlg-plugins');
+  const p = pl.project;
+  const next = pluginSave(pl.saved, pl.picked);
+  if (next === null) { // nothing changed: nothing to send. The card still learns the list the dialog loaded, in case it was changed elsewhere
+    dlg.close();
+    if (pluginSave(state.settings?.perProject?.[p.key]?.plugins, pl.saved) !== null) {
+      rememberPlugins(p.key, pl.saved);
+      render(true);
+    }
+    return;
+  }
+  plugBusy(true);
+  let r = null;
+  try {
+    r = await appFetch(`/api/app/projects/${encodeURIComponent(p.key)}/config`, { method: 'PUT', json: { plugins: next } });
+  } catch {
+    // handled below as "could not reach"
+  }
+  plugBusy(false);
+  if (r?.status === 200) {
+    rememberPlugins(p.key, Array.isArray(r.body?.plugins) ? r.body.plugins : next);
+    dlg.close();
+    render(true);
+    toast(`Plugins saved for ${trunc(p.name, 40)}. Apply rules to write them.`, { action: { label: 'Apply rules', run: () => openRules(p) } });
+    return;
+  }
+  plugAlert(r ? errText(r) : 'Could not reach the nika server.');
+  $('#pl-alert').focus();
+}
+
+function wirePlugins() {
+  const filter = $('#pl-filter');
+  filter.addEventListener('input', () => plugFilter(filter.value));
+  filter.addEventListener('keydown', plugFilterKey);
+  $('#dlg-plugins').addEventListener('cancel', (e) => { if (pl.swallow) e.preventDefault(); });
+  $('#pl-save').addEventListener('click', plugSave);
+  $('#pl-retry').addEventListener('click', plugLoad);
 }
 
 /* ---------- remove project ---------- */
@@ -749,6 +958,7 @@ export async function initApp() {
   hooks.appCopyDismiss = appCopyDismiss;
   hooks.renderSide = renderSide;
   hooks.renderProject = renderProject;
+  hooks.enterProject = () => { loadInstalled().then(() => render()); };
   hooks.groupActions = groupActions;
   hooks.addProject = addProject;
   hooks.checkEnv = async () => {
@@ -756,6 +966,7 @@ export async function initApp() {
     render(true);
   };
   $('#side-add').addEventListener('click', () => addProject());
+  wirePlugins();
   $('#spawn-form').addEventListener('submit', submitSpawn);
   $('#sp-brief').addEventListener('input', briefCount);
   $('#sp-model').addEventListener('change', () => { // Custom ID shows its field; any other choice hides it and drops its error

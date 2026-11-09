@@ -1,6 +1,6 @@
 [package]
 name = "nika-app"
-version = "0.3.3"
+version = "0.3.4"
 description = "nika desktop shell: tray icon, one window, supervises the private nika server"
 license = "MIT"
 edition = "2021"

@@ -15,7 +15,7 @@ import {
 import { MODEL_ID, MODEL_HINT, CUSTOM, fillModelSelect } from './models-ui.js';
 import { openEndDialog } from './end-dialog.js';
 import { paletteQuery, cleanCommands, paletteView, commandsButton, shouldFetch, sourceLabel, insertion, moveActive } from './palette.js';
-import { isMac, isTextEntry, wantsHelp, wantsBack, backHint, helpHint, passKeyLabel, hintTips, openShortcuts } from './shortcuts.js';
+import { isMac, isTextEntry, wantsHelp, wantsBack, wantsHistToggle, backHint, helpHint, histHint, passKeyLabel, hintTips, openShortcuts } from './shortcuts.js';
 
 const PROJECT_KEY = /^[a-z0-9]{16}$/;
 const CLAUDE_SESSION = /^session_[A-Za-z0-9]{1,64}$/;
@@ -749,7 +749,7 @@ async function escNo() {
 
 // ---- history -----------------------------------------------------------------------------------------------------
 
-const MAX_ENTRIES = 600; // DOM cap: older (or newer) entries are dropped from the page when more are loaded
+const MAX_ENTRIES = 500; // DOM cap: the oldest entries leave while the reader follows the live tail, the newest after Load older; a reader who scrolled up loses none
 const H = { items: [], ids: new Set(), older: null, liveEdge: true, loaded: false, busy: false };
 
 const keyOf = (id) => {
@@ -923,13 +923,13 @@ async function refreshHistory() {
     }
     const lastKey = H.items.length ? keyOf(H.items[H.items.length - 1].e.id) : -1;
     const fresh = entries.filter((e) => !H.ids.has(e.id) && keyOf(e.id) > lastKey);
-    if (!fresh.length) return;
     const sc = scroller();
     const stick = nearBottom(sc);
+    if (!fresh.length && !(stick && H.items.length > MAX_ENTRIES)) return; // a reader back at the bottom gets the cap even when nothing is new
     const top = sc.scrollTop;
     mount(fresh, 'end');
     const h0 = sc.scrollHeight;
-    trim('start');
+    if (stick) trim('start'); // only while following the tail: a reader who scrolled up keeps every entry, so the list never moves under them
     sc.scrollTop = stick ? sc.scrollHeight : top - (h0 - sc.scrollHeight);
     updateHistoryChrome();
   } finally {
@@ -1572,6 +1572,47 @@ function wireTerminal() {
   wirePassthrough();
 }
 
+// ---- the transcript toggle (docs/design/spec.md 4.1 and 6; the key rule: shortcuts.js) ---------------------------------------------
+
+/** The toggle does something only where the split exists: a transcript and a terminal, and a window wider than 1000 px (session.css; below that the tabs choose). */
+function histToggleable() {
+  const split = $('split');
+  return !split.classList.contains('no-hist') && !split.classList.contains('no-term') && !window.matchMedia('(max-width: 1000px)').matches;
+}
+
+const HIST = { at: null }; // where the reader was in the transcript when it was hidden: { top, bottom }; a hidden column loses its scroll offset
+
+/** Shows or hides the transcript column and draws the button to match. `user`: also remember the choice, say it, and keep focus out of the hidden column. */
+function setHist(on, user = false) {
+  const sc = $('hist-scroll');
+  const wasOff = $('split').classList.contains('hist-off');
+  const inHist = $('sess-hist').contains(document.activeElement); // before the flip: a browser drops focus from a column that stops rendering
+  if (!on && !wasOff) HIST.at = { top: sc.scrollTop, bottom: nearBottom(sc) };
+  $('split').classList.toggle('hist-off', !on);
+  if (on && wasOff && HIST.at) {
+    sc.scrollTop = HIST.at.bottom ? sc.scrollHeight : HIST.at.top;
+    HIST.at = null;
+  }
+  $('hist-toggle').setAttribute('aria-pressed', String(on));
+  $('hist-use').setAttribute('href', on ? '#i-hist-on' : '#i-hist-off');
+  $('hist-onoff').textContent = on ? 'on' : 'off';
+  if (!user) return;
+  storeSet('transcript', on ? 'shown' : 'hidden');
+  announce(on ? 'Transcript shown' : 'Transcript hidden');
+  if (!on && inHist) $('hist-toggle').focus();
+}
+
+/** The button and Mod+Shift+H. */
+function toggleHist() {
+  if (histToggleable()) setHist($('split').classList.contains('hist-off'), true);
+}
+
+/** At boot: the saved choice (anything but the exact word "hidden", or no storage, means shown) and the click. */
+function wireHist() {
+  $('hist-toggle').addEventListener('click', toggleHist);
+  setHist(storeGet('transcript') !== 'hidden');
+}
+
 function wireHistory() {
   $('load-older').addEventListener('click', loadOlder);
   $('jump-latest').addEventListener('click', async () => {
@@ -1622,6 +1663,12 @@ function setBack(label) {
   $('back').setAttribute('aria-keyshortcuts', hint.keys);
 }
 
+function syncHistHint() {
+  const hint = histHint({ mac: MAC });
+  $('hist-toggle').title = hint.title;
+  $('hist-toggle').setAttribute('aria-keyshortcuts', hint.keys);
+}
+
 function syncKbdHint() {
   const hint = helpHint({ mac: MAC, singleKey: UI.singleKey });
   $('kbd-open').title = hint.title;
@@ -1654,6 +1701,9 @@ function onPageKey(e) {
   } else if (wantsBack(e, { mac: MAC, passthrough: P.on, dialogOpen })) {
     e.preventDefault();
     $('back').click();
+  } else if (wantsHistToggle(e, { mac: MAC, passthrough: P.on, dialogOpen })) {
+    e.preventDefault();
+    if (!e.repeat) toggleHist(); // holding the keys must not flicker the column
   }
 }
 
@@ -1677,6 +1727,7 @@ function boot() {
   $('back').href = projectKey ? `/#project/${projectKey}` : '/#dashboard';
   setBack('Dashboard');
   syncKbdHint();
+  syncHistHint();
   syncPassKeys();
   renderTips();
   if (!appMode) {
@@ -1696,6 +1747,7 @@ function boot() {
 
   wireTabs();
   wireHistory();
+  wireHist();
   wireTerminal();
   wireComposer();
   document.addEventListener('keydown', onPageKey);
@@ -1714,6 +1766,7 @@ function boot() {
     startHistoryPoll();
   } else {
     split.classList.add('no-hist');
+    $('hist-toggle').hidden = true;
     $('pane-tabs').hidden = true;
     showNotice('No transcript for this agent yet: nika has no session id for it. The live terminal still works.');
   }

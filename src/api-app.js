@@ -6,7 +6,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { send, json, readBody } from './server.js';
-import { loadConfig, removeProject, updateSettings, TEMPLATE_NAME } from './store.js';
+import { loadConfig, removeProject, updateSettings, getProjectConfig, updateProjectConfig, TEMPLATE_NAME } from './store.js';
 import { openRegular, isRealDir } from './fsafe.js';
 import { configDir, stateDir } from './paths.js';
 import { clean } from './text.js';
@@ -264,22 +264,33 @@ export function createAppApi({ secret, ctx, deps }) {
 
   route('PUT', /^\/api\/app\/settings$/, CAP.settings, async ({ body }) => {
     if (body.permissionMode === 'bypassPermissions') return err(400, 'invalid', 'bypassPermissions is never allowed');
-    const perProject = body.plugins?.perProject;
-    if (perProject !== undefined) {
-      if (!isPlain(perProject)) return err(400, 'invalid', 'plugins.perProject must be an object');
-      const registered = new Set((await loadConfig(ctx.env)).config.projects.map((p) => p.key));
-      const installed = new Set(await deps.listPlugins(ctx.claudeDir));
-      for (const [key, names] of Object.entries(perProject)) {
-        if (!registered.has(key)) return err(400, 'invalid', `plugins.perProject.${clean(key, 40) ?? '?'} is not a registered project`);
-        if (!Array.isArray(names) || !names.every((n) => typeof n === 'string')) return err(400, 'invalid', `plugins.perProject.${key} must be a list of plugin names`);
-        const missing = names.find((n) => !installed.has(n));
-        if (missing !== undefined) return err(400, 'invalid', `plugins.perProject.${key}: ${clean(missing, 80) ?? '?'} is not installed`);
-      }
-    }
     try {
       return { status: 200, body: withoutProjects(await updateSettings(body, ctx.env)) };
     } catch (e) {
       if (e?.code === 'EINVAL') return err(400, 'invalid', clean(e.warnings?.[0] ?? e.message, 200) ?? 'invalid settings');
+      throw e;
+    }
+  });
+
+  // Per-project config (0.3.4): saved on the project page, one project at a time, so the Settings page cannot overwrite it.
+  route('GET', /^\/api\/app\/projects\/([^/]+)\/config$/, 0, async ({ params }) => {
+    const { project, failure } = await projectOf({ project: param(params[0], PROJECT_KEY) });
+    return failure ?? { status: 200, body: await getProjectConfig(project.key, ctx.env) };
+  });
+
+  route('PUT', /^\/api\/app\/projects\/([^/]+)\/config$/, CAP.settings, async ({ params, body }) => {
+    const { project, failure } = await projectOf({ project: param(params[0], PROJECT_KEY) });
+    if (failure) return failure;
+    if (Object.keys(body).length !== 1 || !Array.isArray(body.plugins) || !body.plugins.every((n) => typeof n === 'string')) return err(400, 'invalid', 'body must be { plugins: [plugin names] }');
+    // a name is allowed when it is installed now or already saved for this project (so a plugin removed since can still be unticked)
+    const known = new Set([...(await deps.listPlugins(ctx.claudeDir)), ...(await getProjectConfig(project.key, ctx.env)).plugins]);
+    const unknown = body.plugins.find((n) => !known.has(n));
+    if (unknown !== undefined) return err(400, 'invalid', `${clean(unknown, 80) ?? '?'} is not installed`);
+    try {
+      return { status: 200, body: await updateProjectConfig(project.key, { plugins: body.plugins }, ctx.env) };
+    } catch (e) {
+      if (e?.code === 'EINVAL') return err(400, 'invalid', clean(e.message, 200) ?? 'invalid plugins');
+      if (e?.code === 'ENOENT') return err(404, 'not_found', 'project is not registered'); // removed while this request was in flight
       throw e;
     }
   });

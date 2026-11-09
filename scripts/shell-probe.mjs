@@ -1,6 +1,6 @@
 // DEV / CI ONLY (not shipped: package.json "files" excludes scripts/). Stdlib only.
 // A fake `nika serve --app` for the desktop shell, used by scripts/gui-smoke.sh. The shell starts it as
-//   <NIKA_NODE> <root>/bin/nika serve --app      (cleared env, hello on stdin, ready on stdout)
+//   <NIKA_NODE> --max-semi-space-size=4 <root>/bin/nika serve --app      (cleared env, hello on stdin, ready on stdout)
 // so gui-smoke.sh generates an executable `node` wrapper whose shebang is the real node and which imports this file.
 // The probe serves a page plus a script (strict CSP, no inline script) on 127.0.0.1, the shell opens a real WebKit
 // window on it, and the page reports what the window may and may not do. One JSON result line goes to stderr (the
@@ -95,7 +95,10 @@ function finish(why) {
   const trapped = (needle) => seen.filter((r) => r.path.startsWith(needle));
   check('hello: proto 1 and a 43-char secret', secret !== null, secret === null ? why : '');
   const argv = process.argv.slice(2);
-  check('child argv is <root>/bin/nika serve --app', argv.length === 3 && argv[0].endsWith(path.join('bin', 'nika')) && argv[1] === 'serve' && argv[2] === '--app', argv.map((a) => path.basename(a)).join(' '));
+  // The wrapper is a script, so the node option the shell passes arrives here as the first argument.
+  check('child argv is --max-semi-space-size=4 <root>/bin/nika serve --app',
+    argv.length === 4 && argv[0] === '--max-semi-space-size=4' && argv[1].endsWith(path.join('bin', 'nika')) && argv[2] === 'serve' && argv[3] === '--app',
+    argv.map((a) => path.basename(a)).join(' '));
   const keys = Object.keys(process.env);
   check('child env: only the allowed keys, PATH starts with the node dir, NIKA_APP=1',
     keys.every((k) => ALLOWED_ENV.has(k)) && process.env.NIKA_APP === '1' && process.env.PATH.startsWith(path.dirname(process.argv[1]) + ':'), keys.sort().join(','));

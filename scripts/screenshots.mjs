@@ -17,7 +17,7 @@ import { parseArgs } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { serveApp } from '../src/appio.js';
 import { defaultConfig } from '../src/config.js';
-import { addProject, updateSettings } from '../src/store.js';
+import { addProject, updateProjectConfig, updateSettings } from '../src/store.js';
 import { preview, apply } from '../src/rules.js';
 import { NOW, PROC_START, jsonl } from '../test/helpers.js';
 
@@ -323,10 +323,8 @@ async function buildWorld(root) {
 
   const projects = {};
   for (const name of Object.keys(REGISTERED)) projects[name] = await addProject(path.join(root, name), env);
-  await updateSettings({
-    permissionMode: 'acceptEdits', limits: { maxAgents: 5 }, remoteControl: { enabled: true, prefix: 'acme' },
-    plugins: { perProject: Object.fromEntries(Object.entries(REGISTERED).map(([n, r]) => [projects[n].key, r.plugins])) },
-  }, env);
+  await updateSettings({ permissionMode: 'acceptEdits', limits: { maxAgents: 5 }, remoteControl: { enabled: true, prefix: 'acme' } }, env);
+  for (const [name, r] of Object.entries(REGISTERED)) await updateProjectConfig(projects[name].key, { plugins: r.plugins }, env);
 
   // acme-api already has current rules: written by nika's own apply, so the shot shows a real "Rules current"
   const ctx = { env, now: () => NOW };
@@ -435,7 +433,10 @@ async function launchChrome(world, port) {
     '--headless=new', '--remote-debugging-port=0', `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check',
     '--hide-scrollbars', '--force-device-scale-factor=1', `--window-size=${VIEW.width},${VIEW.height}`, '--disable-extensions',
     '--disable-background-networking', '--disable-component-update', '--disable-sync', '--no-pings', '--disable-default-apps',
-    '--disable-crash-reporter', '--disable-breakpad', '--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE 127.0.0.1', 'about:blank',
+    '--disable-crash-reporter', '--disable-breakpad', '--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE 127.0.0.1',
+    // HOME is the demo folder, so on macOS the network stack would wait for a keychain that is not there: every
+    // request to the server then hangs (seen with Chrome 155). A mock keychain keeps the run off the user's keychain.
+    '--use-mock-keychain', 'about:blank',
   ], { stdio: ['ignore', 'ignore', 'ignore'], env: { PATH: world.env.PATH, HOME: world.root, TMPDIR: world.root } });
   const exited = new Promise((r) => child.once('exit', r));
   let debugPort = null;

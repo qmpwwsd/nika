@@ -38,7 +38,8 @@ All mock data is synthetic (`demo-api`, `builder-1`, `~/projects/…`, repeated-
 | Project | name (repo dir basename), `PROJECT_KEY` internally, never a path in a URL | `GET /api/app/projects` |
 | Agent (Claude session) | agent name (or "untitled session"), status, model, pane `%n`, branch | `/api/agents` groups + registry |
 | Rules state | `none · nika · outdated · foreign` | `projects[].rules.state` |
-| Settings | config keys (models, remoteControl, permissionMode, panePlacement, limits, plugins, rules template) | `GET/PUT /api/app/settings` |
+| Settings | defaults for every project: config keys (models, remoteControl, permissionMode, panePlacement, limits, rules template). Read only here: `perProject` | `GET/PUT /api/app/settings` |
+| Project setup (0.3.4) | one project's own settings: its plugins (0.4 adds models) | `GET/PUT /api/app/projects/:key/config` |
 | Environment | tmux present, claude present, version | `/api/app/me` + `/api/agents` errors |
 
 ### 1.2 Screens and routes (app tier)
@@ -97,7 +98,7 @@ Rules for every direction:
 
 - Shell: left sidebar 232 px (brand, Dashboard, Settings, project list with attention counts, environment footer); collapses to a 60 px icon rail at window width ≤ 900 px. Built amendment 2026-11-09 (0.3.1): with no projects the list shows "No projects yet." and "Add a repo with + to start agents and apply rules here."; below it a "Detected" sub-heading lists up to 8 unregistered repositories with live agents (needs-you count, then live count, then name), each row linking to its group heading on the dashboard plus a small "Add project" button (`aria-label` "Add <name> as a project") that opens the same folder picker; the list is hidden when empty.
 - Dashboard: "Waiting on you" queue on top, then one group per project of dense 40 px rows (status · name · model · prompt + branch · last activity · pane · ⋯).
-- Project view: agents on the left, three cards on the right (Rules, Plugins, New agents: defaults and limit).
+- Project view: agents on the left, three cards on the right (Rules, Project setup, New agents: defaults and limit). **(built amendment 2026-11-09 (0.3.4))** The Plugins card became **Project setup**; its button opens the Choose plugins dialog (§3.15) instead of leaving for Settings.
 - Spawn: right side sheet (480 px). Rules: large modal with file list + diff + notes.
 - Session: split view, transcript (38 %, min 300 px) | live terminal, composer under the terminal.
 - Strengths: highest density, everything one click away, scales to 50+ agents, closest to 0.1's mental model (groups by repo), keyboard-friendly, least novel.
@@ -589,6 +590,7 @@ Messages (exact copy):
 | Modal (rules) | min(980, vw−32) × min(720, vh−32) | title + close (×) | Cancel · primary |
 | Side sheet (spawn) | 480 × full height, right edge | title + project + close | count note · Cancel · Spawn agent |
 | Confirm (remove project) | 440 wide | title | Cancel · danger action |
+| Modal (Choose plugins, 0.3.4) | min(560, vw−32) × min(640, vh−32) | title + close (×) | Cancel · Save plugins (§3.15) |
 
 States: D (open, scrim `--scrim`), L (primary shows spinner; Esc and Cancel are disabled while a write is in flight; the `cancel` event is prevented), E (inline alert at the top of the body, focus moves to it), success (body replaced by a result list + Done, which gets focus).
 
@@ -717,6 +719,43 @@ driven by `GET /api/app/me` `appCopy` (read at load and after each action). One 
 - Icon: `i-apps` (a 2×2 grid of rounded squares, 16 px, same stroke as the set). Every string is static copy plus the
   server's version number (rendered with `textContent`).
 
+### 3.15 Project setup card and Choose plugins dialog (0.3.4)
+
+Per-project settings live on the project page, not in Settings (ADR 0012). Settings keeps only the defaults for every project.
+
+**Project setup card** (`#proj-setup`, second card of the right column; the aside's `aria-label` is "Project details"):
+"Project setup", "Applies to this project only." and "Defaults are in Settings." ("Settings" links to `#settings`), then a
+**Plugins** block: `h3` with a count ("3 on"), up to 8 chips in A to Z order, "+N more" when there are more, and "Written into
+`.claude/settings.local.json` when you apply rules." A chip for a plugin that is no longer installed has a dashed edge, the
+warning icon in `--idle` and "(not installed)". With no plugin chosen: "No plugins chosen. Agents use only what the project
+already enables." Below the block, **Choose plugins…** (`button.btn`, `aria-haspopup="dialog"`, never a link).
+
+**Choose plugins dialog** (static `<dialog id="dlg-plugins">`, no `<form>`, so Enter in the filter never saves): header
+"Choose plugins for <project>" and ×; a sentence on where ticks are written; an alert slot; a full-width filter; the count
+line; one scrolling list (a `<fieldset>` with the screen-reader legend "Installed plugins"; nothing else in the dialog
+scrolls); a help line; footer Cancel · **Save plugins**.
+- Row (`label.check.plug-row`, min height 32): checkbox · `name` (mono 12, wraps anywhere) with " @market" muted · "on" (ticked
+  only, accent, hidden from screen readers). A ticked row has the `--accent-soft` fill. A row for a ticked plugin that is no
+  longer installed adds a second line, warning icon + "(not installed)"; its accessible name ends "(not installed)".
+- Order is fixed when the dialog opens: ticked plugins A to Z, then the rest. Ticking never moves a row; only the filter
+  redraws rows.
+- Filter: case-insensitive substring of `name@market`; a hidden row keeps its tick. Count line "<on> on · <n> installed", filtered
+  "Showing <k> of <n> · <on> on"; 400 ms after typing it announces "<k> plugins shown" or "No plugin matches".
+- Open: focus the filter; the ticks come from `GET /api/app/projects/:key/config`, the list from `GET /api/app/plugins`.
+- States: loading (6 skeleton lines, Save disabled, filter usable) · load error (alert, footer Cancel · Retry) · none installed
+  or ticked ("No plugins are installed in Claude Code."; filter hidden; footer Close only) · no match ("No plugin matches “<text>”."
+  and a Clear filter link-button that focuses the filter) · saving (Save "Saving…", Cancel, ×, filter and boxes disabled, the
+  dialog busy so Esc does nothing) · save error (alert, ticks kept, focus on the alert) · saved (toast "Plugins saved for
+  <name>. Apply rules to write them." with **Apply rules**).
+- Save sends `PUT /api/app/projects/:key/config` `{ "plugins": [ticked, sorted] }` only when the set changed; unchanged closes
+  with no request. `[]` means "leave `enabledPlugins` alone". Cancel, Esc and × discard silently.
+- Keys: Tab order × → alert → filter → boxes (Space) → Clear filter → Cancel → Save. Esc in a filter with text clears it, else
+  closes. Mod+Enter saves. Focus returns to **Choose plugins…**.
+
+**Settings save bar.** The bar (Save · Discard) is hidden until the form differs from what was loaded, and hidden again when
+the values are put back. Showing it announces "Unsaved changes. Save or discard them at the bottom." Discard repopulates the
+form, focuses the page heading and announces "Changes discarded." While the bar is hidden Enter and Mod+Enter send nothing.
+
 ## 4. Keyboard model
 
 Mod = ⌘ on macOS, Ctrl on Linux. No single-character shortcuts (WCAG 2.1.4), with one exception the owner asked for
@@ -735,7 +774,7 @@ Mod = ⌘ on macOS, Ctrl on Linux. No single-character shortcuts (WCAG 2.1.4), w
 | ⌘[ (macOS), Alt+← (Linux) | Back | session → project/dashboard |
 | Mod+Enter | Submit the open form (Spawn agent, Save settings) | |
 | ? · Mod+/ | Keyboard shortcuts (§4.6) | `?` only outside text entry and while "Single-key shortcuts" is on |
-| Mod+Shift+H | Toggle transcript drawer | B only |
+| Mod+Shift+H | Show or hide the transcript (session window) | Direction A, **(built amendment 2026-11-09 (0.3.4))**: the key of the **Transcript** toggle (§4.7); wide windows only; direction B's drawer is not built |
 | Tab / Shift+Tab | Normal order: skip link → sidebar → main → … | |
 
 Shortcuts are listed in the UI next to their targets (`<kbd>` in nav, `title`), and in `aria-keyshortcuts`.
@@ -841,6 +880,7 @@ Session window:
 | Group | Name | Shortcut | Description |
 |---|---|---|---|
 | Window | Back | ⌘[ / Alt+← | Back to the dashboard |
+| | Show or hide transcript | Mod+Shift+H | Give the terminal the full width (wide windows; narrow ones have tabs) |
 | | Keyboard shortcuts | ? or Mod+/ | Show this list |
 | Message box | Send | Enter | Send the text, then Enter, to Claude (empty box: Enter only) |
 | | New line | Shift+Enter | Start a new line in the message box |
@@ -858,7 +898,7 @@ Session window:
 | | Insert | Enter or Tab | Put the command in the message box |
 | | Close | Esc | Close the list and keep the text |
 
-**(built amendment 2026-11-09 (0.3.3))** Next permission mode, Arrow keys in Claude and Move focus back are new; Interrupt now stops the turn through the Stop route and keeps the selection rule.
+**(built amendment 2026-11-09 (0.3.3))** Next permission mode, Arrow keys in Claude and Move focus back are new; Interrupt now stops the turn through the Stop route and keeps the selection rule. **(built amendment 2026-11-09 (0.3.4))** Show or hide transcript is new (§4.7).
 
 **Settings.** Settings → Appearance gets a checkbox **Single-key shortcuts** (on by default), help text "Press ? to show
 keyboard shortcuts. Turn this off if you use speech input or single-key commands." Stored as `ui.singleKeyShortcuts`
@@ -866,6 +906,40 @@ keyboard shortcuts. Turn this off if you use speech input or single-key commands
 
 **A11y.** Every row is reachable as table text (no hover-only content); the dialog follows §4.4; the button's `title`
 and `aria-keyshortcuts` name both keys; WCAG 2.1.4 is met by the Settings switch and by ignoring `?` in text entry.
+
+### 4.7 Transcript toggle (session window, 0.3.4)
+
+**(built amendment 2026-11-09 (0.3.4))** The session window gets a show/hide control for the Transcript column, so the
+terminal can have the full width. It is the first control in the terminal column's head (`.term-head`), before the live dot:
+
+```
+[▥ Transcript on]  ● Live · 92×30     [Dark|Light] [Type into pane off ⌃]]
+```
+
+`button.btn#hist-toggle`, `aria-pressed`, `aria-controls="sess-hist"`: icon + the word "Transcript" + an `.onoff` chip
+(§9.6: colour, icon and word, never colour alone).
+
+| | On (default) | Off |
+|---|---|---|
+| look | pressed (accent-soft fill, accent edge), `i-hist-on` (frame, divider, three lines on the left), chip "on" | plain, `i-hist-off` (frame, divider), chip "off" |
+| layout | the 38 % / 62 % split | `.split.hist-off`: the terminal column takes the full width, the transcript column is not rendered |
+
+- **Wide windows only.** `.split.hist-off` applies at 1001 px and wider (a `min-width` media query) and never with
+  `.no-term` (a window with no terminal would show nothing). At 1000 px and below the Terminal / Transcript tabs
+  already choose which one shows, so the button is `display: none` there; the saved choice is kept and applies again
+  when the window is wider. No-op, button hidden: 1000 px and below, `no-hist` (no session id), `no-term` (no pane).
+- **Key.** Mod+Shift+H (⌘⇧H, Ctrl+Shift+H), pure rule `wantsHistToggle(e, { mac, passthrough, dialogOpen })` in
+  `public/shortcuts.js`: Mod (the platform's, alone) + Shift + the H key in either case, no Alt, not while a dialog is
+  open, not in passthrough on Linux (macOS's ⌘ stays the app's, as for Mod+/). It works in the message box and on any
+  control; holding the keys toggles once. `title` "Show or hide the transcript (⌘⇧H)" / "(Ctrl+Shift+H)",
+  `aria-keyshortcuts` "Meta+Shift+H" / "Control+Shift+H".
+- **Memory.** The choice is `nika.transcript` = `shown` | `hidden` in `localStorage` (a per-viewer convenience, like
+  Dark / Light), applied at load; anything else, or storage that throws, means shown. The app's port changes every
+  launch, so the choice lasts until nika quits (accepted, owner decision 2026-11-09).
+- **Announce and focus.** Polite live region: "Transcript hidden" / "Transcript shown" (not at load). Hiding while focus is
+  inside the transcript moves focus to the toggle, so it is never left in a column that is gone.
+- **Sheet.** The Keyboard shortcuts window lists it in the session window's **Window** group, after Back: "Show or hide
+  transcript" · Mod+Shift+H · "Give the terminal the full width (wide windows; narrow ones have tabs)".
 
 ---
 
@@ -1001,8 +1075,9 @@ Session details:
 - The composer (quick actions, message box, mode row, hint line) is always visible; the mirror takes the remaining height (min 120 px). **(built amendment 2026-11-09 (0.3.3))**
 - Mirror never wraps or scales: a 92-column pane at 12 px mono is ~670 px; wider panes scroll horizontally inside the mirror. Font never below 11 px.
 - Height < 560 px: the hint line tips hide (the mode row stays); the transcript tab keeps "Load older" sticky at the top. **(built amendment 2026-11-09 (0.3.3))**
+- Above 1000 px the **Transcript** toggle (§4.7) can hide the transcript column and give the terminal the full width; at 1000 px and below the toggle is not shown and the tabs stay. **(built amendment 2026-11-09 (0.3.4))**
 
-Rules dialog ≤ 900 px: the file list becomes a horizontal strip above the diff. Settings ≤ 900 px: the in-page index hides and field pairs stack.
+Rules dialog ≤ 900 px: the file list becomes a horizontal strip above the diff. Settings ≤ 900 px: the in-page index hides and field pairs stack. **(built amendment 2026-11-09 (0.3.4))** The Choose plugins dialog is min(560, vw−32) × min(640, vh−32) at every width (so it still fits 720 × 480); only its list scrolls, and a long plugin name wraps instead of widening the row.
 
 B: centred column max 760 px; drawer pushes ≥ 1180 px and overlays below. C: lanes stack vertically ≤ 860 px with tiles in an auto-fill grid (min 240 px); the Timeline rail becomes a tab ≤ 1000 px.
 
@@ -1205,7 +1280,7 @@ One toolbar (`#qa`, `role="toolbar"`, `aria-label="Session actions"`) at the top
 - Model popover: disclosure (`aria-expanded`, `aria-controls="model-pop"`), not a menu. Content: label "Model for builder-1", the §6.9 `<select>` (Latest / Aliases / Older optgroups, then "Custom ID…" which reveals a text field; Aliases: best, fable, opus, sonnet, haiku, opusplan, opus[1m], sonnet[1m]), a muted line "Types `/model <id>` and Enter.", footer Cancel · **Switch model** (primary). Opening focuses the select; Esc or Cancel closes and returns focus to the Model button; Tab out of the popover closes it. Custom field error: "Use a model id such as claude-sonnet-5-5, or an alias such as opus or sonnet[1m]." A change never fires on `<select>` change (arrow keys on a closed GTK select would send several `/model`s); only Switch model sends.
 - After any send, the existing echo says what went out ("Sent /compact + Enter to %12"). Rewind says "Opened Rewind in %12: pick a point in the pane" (the menu is in the pane, not in nika). Stop says "Stopped builder-1's turn".
 - Stop failures (**built amendment 2026-11-09, task 14b**), fixed copy in the problem line, never the server's text: 409 `prompt-open`: "Answer the prompt first. Esc = No is in the prompt panel." · 409 `not-busy`: "Nothing to stop: Claude is waiting." · 409 `stopping` (another window is already stopping this pane): "Already stopping the turn." · 409 `mode-unknown`: "Claude's input stayed in vim insert mode; press Esc in the terminal." · 429: "Too many keys at once; try again." · 404: "The session is gone." (and the pane-gone state, §3.9) · 5xx, network error: "nika couldn't reach tmux." · anything else: "nika couldn't stop the turn." A command in flight (Compact waiting on the control lock) does not block Stop; only a Stop already in flight ignores a second click.
-- Command route failures, in the composer's problem line (`role="alert"`), fixed copy (never the server's text), the button re-enabled: 409 `input-not-empty`: "Claude's input has text; clear it first." · 409 `not-at-prompt`: "Claude's input didn't take the command; nothing was submitted." · 409 `not-idle`: "Compact, Clear, Model and Rewind are ready when Claude waits for you." · 409 `mode-unknown`: "Claude's screen isn't at the prompt; use the terminal." · 409 `busy-switching`: "Another action is running on this session." · 429: "Too many keys at once; try again." · 404: "The session is gone." · 5xx, network error: "nika couldn't reach tmux."
+- Command route failures, in the composer's problem line (`role="alert"`), fixed copy (never the server's text), the button re-enabled: 409 `input-not-empty`: "Claude's input has a draft. Send or clear it in the terminal, then try again." · 409 `input-unreadable`: "nika can't find Claude's input box, so nothing was typed. Close any menu in the terminal (Esc), then try again." (both a warning, **built amendment 2026-11-09 (0.3.4)**: `input-not-empty` is a draft in a box nika found; `input-unreadable` is no box, or one that does not start with a `❯` row, and nothing is typed) · 409 `not-at-prompt`: "Claude's input didn't take the command; nothing was submitted." · 409 `not-idle`: "Compact, Clear, Model and Rewind are ready when Claude waits for you." · 409 `mode-unknown`: "Claude's screen isn't at the prompt; use the terminal." · 409 `busy-switching`: "Another action is running on this session." · 429: "Too many keys at once; try again." · 404: "The session is gone." · 5xx, network error: "nika couldn't reach tmux."
 
 **States.** A disabled row also says why in words: a reason line `p#qa-why.qa-why` (info icon + text, 12 px `--text-muted`, 6 px under the row, referenced by the toolbar's `aria-describedby`), not only the `title`s. One line, the first matching row wins.
 
@@ -1333,7 +1408,7 @@ Confirm dialog, 440 px (§3.6), opened from the quick-actions row, the dashboard
 | ending | End session shows a spinner + "Ending…", `aria-busy`; Cancel aria-disabled; Esc does nothing (the `cancel` event is prevented); polite line "Waiting for Claude to exit…" |
 | ended (`ended: true`) | dialog closes; toast "Session ended" (`role="status"`); the mirror shows the pane-gone overlay; focus goes to the screen `h1` (dashboard: the row's ⋯ button, or the `h1` if the row is gone) |
 | failed (`ended: false`) | alert at the top of the body (`role="alert"`, `--danger-soft`, warn icon, 600): **"Claude didn't exit; use Stop or the terminal."**; with `reason: "keys"` (a key send failed, a rate limit say): **"nika couldn't send the keys; try again."**; focus moves to the alert; the footer has only Close |
-| refused or error | same alert slot, fixed copy (never the server's text); footer Close. 409 `not-idle`: "Claude didn't stop after Esc; use the terminal." · 409 `mode-unknown`: "Claude's screen isn't at the prompt; use the terminal." · 409 `input-not-empty`: "Claude's input has text; clear it first." · 409 `not-at-prompt`: "Claude's input didn't take /exit; nothing was submitted." · 409 `busy-switching`: "Another action is running on this session." · 404: "The session is gone." · 5xx, network error: "nika couldn't reach tmux." |
+| refused or error | same alert slot, fixed copy (never the server's text); footer Close. 409 `not-idle`: "Claude didn't stop after Esc; use the terminal." · 409 `mode-unknown`: "Claude's screen isn't at the prompt; use the terminal." · 409 `input-not-empty`: "Claude's input has a draft, so nika didn't type /exit. Send or clear it in the terminal, then try again." · 409 `input-unreadable`: "nika can't find Claude's input box, so it didn't type /exit. Close any menu in the terminal (Esc), then try again." (both drawn as a warning alert, `data-kind="warn"`, **built amendment 2026-11-09 (0.3.4)**; the other refusals stay `danger`) · 409 `not-at-prompt`: "Claude's input didn't take /exit; nothing was submitted." · 409 `busy-switching`: "Another action is running on this session." · 404: "The session is gone." · 5xx, network error: "nika couldn't reach tmux." |
 
 "Copy resume command" lives in the dashboard row menu (§3.12). The session header has no menu in 0.3, so it is not added there; the body names the row-menu item as is.
 
@@ -1361,7 +1436,7 @@ Confirm dialog, 440 px (§3.6), opened from the quick-actions row, the dashboard
 
 ### 9.10 Focus order and Esc ladder
 
-Session window Tab order: skip links → back crumb → Open in claude.ai → Keyboard shortcuts → [Terminal / Transcript tabs when narrow] → transcript → Dark/Light → Type into pane → [Leave, in passthrough] → mirror → [Jump to live, Retry now, when shown] → quick actions (1 stop) → [model popover while open] → prompt option buttons → prompt Esc → shell toggle → message box → [paste Clear] → Commands → Send → mode switcher (1 stop). Opening the session still focuses the message box (§4.2). In the message box Shift+Tab goes to Claude; Ctrl+Shift+Tab moves focus back to the shell toggle. **(built amendment 2026-11-09 (0.3.3))**
+Session window Tab order: skip links → back crumb → Open in claude.ai → Keyboard shortcuts → [Terminal / Transcript tabs when narrow] → transcript → [Transcript toggle, wide windows] → Dark/Light → Type into pane → [Leave, in passthrough] → mirror → [Jump to live, Retry now, when shown] → quick actions (1 stop) → [model popover while open] → prompt option buttons → prompt Esc → shell toggle → message box → [paste Clear] → Commands → Send → mode switcher (1 stop). Opening the session still focuses the message box (§4.2). In the message box Shift+Tab goes to Claude; Ctrl+Shift+Tab moves focus back to the shell toggle. **(built amendment 2026-11-09 (0.3.3))** The **Transcript** toggle (§4.7) sits between the transcript and Dark/Light, and only on wide windows. **(built amendment 2026-11-09 (0.3.4))**
 
 Esc ladder (§4.3) gains two rungs, in this order: model popover or row menu → **palette** → dialog → B drawer → pane.
 

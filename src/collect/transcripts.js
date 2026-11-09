@@ -4,7 +4,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { openRegular, readAt } from '../fsafe.js';
-import { mapLimit } from '../util.js';
+import { mapLimit, lru } from '../util.js';
 import { UUID } from '../ids.js';
 
 export { UUID };
@@ -14,8 +14,11 @@ const TAIL_BYTES = 256 * 1024;
 const WIDE_TAIL_BYTES = 2 * 1024 * 1024;
 const IO_LIMIT = 16;
 
+/** Room for transcripts that appear between two collect() passes, above the count on disk. */
+export const CACHE_SLACK = 64;
+/** path → parsed head and tail. An lru: collect() sizes it to the transcripts on disk (+ CACHE_SLACK); until then it holds 4096. */
 export function createTranscriptCache() {
-  return new Map();
+  return lru(4096);
 }
 
 /** Index of every top-level transcript: Map sessionId → { path, dir, mtimeMs, size }. Symlinks are skipped. */

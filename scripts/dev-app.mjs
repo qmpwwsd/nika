@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 
 const bin = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'nika');
 const secret = crypto.randomBytes(32).toString('base64url');
-const child = spawn(process.execPath, [bin, 'serve', '--app'], { stdio: ['pipe', 'pipe', 'inherit'] });
+const child = spawn(process.execPath, ['--max-semi-space-size=4', bin, 'serve', '--app'], { stdio: ['pipe', 'pipe', 'inherit'] });
 
 let buf = '';
 child.stdout.on('data', (d) => {

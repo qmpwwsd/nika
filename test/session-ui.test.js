@@ -9,7 +9,7 @@ import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 import { KEY_NAME } from '../src/ids.js';
 import { moveActive as moveActiveReal, cleanCommands as cleanCommandsReal, paletteQuery as paletteQueryReal, shouldFetch as shouldFetchReal } from '../public/palette.js';
-import { wantsHelp, wantsBack, isTextEntry, backHint, helpHint, passKeyLabel, hintTips as hintTipsReal } from '../public/shortcuts.js';
+import { wantsHelp, wantsBack, wantsHistToggle, isTextEntry, backHint, helpHint, histHint, passKeyLabel, hintTips as hintTipsReal } from '../public/shortcuts.js';
 import { quickState as quickStateReal, sendGate as sendGateReal, keysRefusal as keysRefusalReal, stopOutcome as stopOutcomeReal, commandSaid as commandSaidReal, commandFailure as commandFailureReal, problemKind as problemKindReal, followSession as followSessionReal, planShell as planShellReal, cleanPrompt as cleanPromptReal, hasAnswerButtons as hasAnswerButtonsReal, attnNote as attnNoteReal, answerOutcome as answerOutcomeReal, promptOff as promptOffReal, composerKey as composerKeyReal } from '../public/quick-actions.js';
 import { planSend as planSendReal, arrowEcho as arrowEchoReal } from '../public/mirror-render.js';
 import { switchFailure as switchFailureReal, MODE_TARGETS, MODE_META } from '../public/modes.js';
@@ -471,6 +471,14 @@ describe('quick actions, prompt buttons, End dialog and Shell (spec 9.4-9.8)', (
     assert.match(src, /cancel/);
     assert.match(src, /preventDefault/, 'Esc does nothing while it is ending');
     assert.match(src, /aria-busy/);
+  });
+
+  test('(+) 0.3.4: the End dialog\'s alert takes its kind from endOutcome (warn for the input-box refusals) and is a danger otherwise', () => {
+    const src = code(JS['end-dialog.js']);
+    assert.match(src, /function draw\(\{ alert = '', kind = 'danger',/);
+    assert.match(src, /el\('end-alert'\)\.dataset\.kind = kind/);
+    assert.match(src, /draw\(\{ alert: out\.text, kind: out\.kind, closeOnly: true \}\)/);
+    assert.match(tag('end-alert'), /data-kind="danger"/, 'the markup default stays danger');
   });
 
   test('(+) the End dialog hands status, error code, ended and reason of the answer to endOutcome, and nothing else', () => {
@@ -1105,10 +1113,10 @@ describe('Back button and Keyboard shortcuts window in the session window (spec 
 
   // onPageKey, run for real with the real rules from shortcuts.js
   const keys = ({ mac = false, singleKey = true, passthrough = false, dialog = false } = {}) => {
-    const log = { opened: [], clicks: 0, prevented: 0 };
+    const log = { opened: [], clicks: 0, prevented: 0, toggled: 0 };
     const ctx = {
-      MAC: mac, UI: { singleKey }, P: { on: passthrough }, wantsHelp, wantsBack, isTextEntry,
-      openKbd: (opener) => log.opened.push(opener),
+      MAC: mac, UI: { singleKey }, P: { on: passthrough }, wantsHelp, wantsBack, wantsHistToggle, isTextEntry,
+      openKbd: (opener) => log.opened.push(opener), toggleHist: () => { log.toggled += 1; },
       $: (id) => (id === 'back' ? { click() { log.clicks += 1; } } : null),
       document: { activeElement: { id: 'active' }, querySelector: (sel) => (sel === 'dialog[open]' && dialog ? {} : null) },
     };
@@ -1189,7 +1197,46 @@ describe('Back button and Keyboard shortcuts window in the session window (spec 
   test('(−) other keys are left alone: not consumed, nothing opened', () => {
     const k = keys();
     for (const key of ['a', 'Enter', 'Escape', '/', '[']) k.press(key);
-    assert.deepEqual([k.log.opened.length, k.log.clicks, k.log.prevented], [0, 0, 0]);
+    assert.deepEqual([k.log.opened.length, k.log.clicks, k.log.prevented, k.log.toggled], [0, 0, 0, 0]);
+  });
+
+  test('(+) 0.3.4: Ctrl+Shift+H (Linux) and Command+Shift+H (macOS) toggle the transcript, from the message box too, and are consumed', () => {
+    const lin = keys();
+    lin.press('H', { ctrlKey: true, shiftKey: true });
+    lin.press('h', { ctrlKey: true, shiftKey: true }, { tagName: 'TEXTAREA' });
+    assert.deepEqual([lin.log.toggled, lin.log.prevented, lin.log.opened.length, lin.log.clicks], [2, 2, 0, 0]);
+    const mac = keys({ mac: true });
+    mac.press('H', { metaKey: true, shiftKey: true });
+    mac.press('H', { metaKey: true, shiftKey: true }, { tagName: 'TEXTAREA' });
+    assert.deepEqual([mac.log.toggled, mac.log.prevented], [2, 2]);
+    const macPass = keys({ mac: true, passthrough: true });
+    macPass.press('H', { metaKey: true, shiftKey: true });
+    assert.equal(macPass.log.toggled, 1, 'the Command key stays the app\'s in passthrough, as for Back-less Mod+/');
+  });
+
+  test('(−) 0.3.4: Alt held, no Shift, the other platform\'s Mod, passthrough on Linux and an open dialog do not toggle and are not consumed', () => {
+    const cases = [
+      [{}, { ctrlKey: true, shiftKey: true, altKey: true }],
+      [{}, { ctrlKey: true }],
+      [{}, { metaKey: true, shiftKey: true }],
+      [{ mac: true }, { ctrlKey: true, shiftKey: true }],
+      [{ passthrough: true }, { ctrlKey: true, shiftKey: true }],
+      [{ dialog: true }, { ctrlKey: true, shiftKey: true }],
+      [{ mac: true, dialog: true }, { metaKey: true, shiftKey: true }],
+    ];
+    for (const [opts, mods] of cases) {
+      const k = keys(opts);
+      k.press('H', mods);
+      assert.deepEqual([k.log.toggled, k.log.prevented], [0, 0], JSON.stringify([opts, mods]));
+    }
+  });
+
+  test('(−) 0.3.4: holding the keys toggles once: the repeats are consumed but do nothing', () => {
+    const k = keys();
+    k.press('H', { ctrlKey: true, shiftKey: true });
+    k.press('H', { ctrlKey: true, shiftKey: true, repeat: true });
+    k.press('H', { ctrlKey: true, shiftKey: true, repeat: true });
+    assert.deepEqual([k.log.toggled, k.log.prevented], [1, 3]);
   });
 });
 
@@ -1624,8 +1671,12 @@ describe('Task 14b: wiring of the page rules', () => {
     assert.deepEqual(compact.log.said, ['Sent /compact + Enter to %12']);
     const refused = cmdRig({ status: 409, body: { error: 'input-not-empty', message: 'server text' } });
     await refused.sendCommand('/rewind');
-    assert.deepEqual(refused.log.problems, [["Claude's input has text; clear it first.", 'warn']]);
+    assert.deepEqual(refused.log.problems, [["Claude's input has a draft. Send or clear it in the terminal, then try again.", 'warn']]);
     assert.deepEqual(refused.log.said, []);
+    const lost = cmdRig({ status: 409, body: { error: 'input-unreadable', message: 'server text' } });
+    await lost.sendCommand('/rewind');
+    assert.deepEqual(lost.log.problems, [["nika can't find Claude's input box, so nothing was typed. Close any menu in the terminal (Esc), then try again.", 'warn']]);
+    assert.deepEqual(lost.log.said, []);
   });
 
   test('(+) B5: Rewind no longer depends on nika\'s message box: quickState gets no composer input, and typing re-renders nothing', () => {
@@ -2077,5 +2128,255 @@ describe('0.3.3: the hint line, the mode row and the message box name (markup, s
   test('(−) the removed key row left nothing behind in the script: no renderGatedKeys, no keyTitle, no .key lookups', () => {
     assert.doesNotMatch(SRC, /renderGatedKeys|keyTitle|querySelectorAll\('\.key'\)/);
     assert.doesNotMatch(fnOf('function setInputEnabled('), /\.key\b/);
+  });
+});
+
+
+// ---- 0.3.4: the transcript toggle (docs/design/spec.md 4.1 and 6) ----------------------------------------------------------------
+
+describe('0.3.4: the transcript toggle', () => {
+  const SRC = code(JS['session.js']);
+  const css = strip(CSS);
+  const fnOf = (head) => {
+    const at = SRC.indexOf(head);
+    assert.ok(at >= 0, head);
+    return SRC.slice(at, SRC.indexOf('\n}\n', at) + 2);
+  };
+  const mk = (names, ctx) => vm.runInNewContext(`${names.map(fnOf).join('\n')}; ({ ${names.map((n) => n.replace(/^(async )?function /, '').replace(/\(.*$/, '')).join(', ')} })`, ctx);
+  const tagOf = (id) => new RegExp(`<[a-z]+\\b[^>]*\\bid="${id}"[^>]*>`).exec(HTML)?.[0] ?? '';
+  const head = /<div class="term-head"[^>]*>([\s\S]*?)<div class="pass-banner"/.exec(HTML)?.[1] ?? '';
+
+  test('(+) #hist-toggle is the first control of .term-head: a pressed .btn that controls the transcript, with icon, word and on/off chip', () => {
+    const btn = tagOf('hist-toggle');
+    assert.match(btn, /^<button type="button" class="btn"/);
+    assert.match(btn, /aria-pressed="true"/);
+    assert.match(btn, /aria-controls="sess-hist"/);
+    assert.match(btn, /aria-keyshortcuts="Control\+Shift\+H"/);
+    assert.match(btn, /title="Show or hide the transcript \(Ctrl\+Shift\+H\)"/);
+    assert.match(head.trim(), /^<button\b[^>]*\bid="hist-toggle"/, 'first in the head');
+    assert.match(head, /<button\b[^>]*\bid="hist-toggle"[^>]*><svg class="ic" aria-hidden="true"><use id="hist-use" href="#i-hist-on"\/><\/svg><span class="lbl">Transcript<\/span><span class="onoff" id="hist-onoff" aria-hidden="true">on<\/span><\/button>/);
+    assert.ok(HTML.indexOf('id="hist-toggle"') < HTML.indexOf('id="live-label"'), 'before the live dot');
+  });
+
+  test('(+) both icons are in the sprite: a frame and a divider, with three lines on the left for "on"', () => {
+    const on = /<symbol id="i-hist-on"[^>]*>([\s\S]*?)<\/symbol>/.exec(HTML)?.[1] ?? '';
+    const off = /<symbol id="i-hist-off"[^>]*>([\s\S]*?)<\/symbol>/.exec(HTML)?.[1] ?? '';
+    assert.match(on, /<rect\b/);
+    assert.match(off, /<rect\b/);
+    assert.notEqual(on, off, 'the two states look different');
+    assert.ok(on.length > off.length, 'on draws the lines the off icon leaves out');
+  });
+
+  test('(+) wide windows: .hist-off gives the terminal the full width; narrow windows keep their tabs and hide the button', () => {
+    assert.match(css, /@media \(min-width: 1001px\)\s*\{[^@]*\.split\.hist-off:not\(\.no-term\)\s*\{\s*grid-template-columns:\s*minmax\(0,\s*1fr\);\s*\}[^@]*\.split\.hist-off:not\(\.no-term\) \.hist\s*\{\s*display:\s*none;\s*\}/);
+    const narrow = /@media \(max-width: 1000px\)\s*\{([\s\S]*?)\n\}/.exec(css)?.[1] ?? '';
+    assert.match(narrow, /#hist-toggle\s*\{\s*display:\s*none;\s*\}/);
+    assert.doesNotMatch(css, /\.hist-off[^{]*\.pane-tabs|\.split\.hist-off[^{]*\.termcol/, 'the narrow tab and the terminal stay');
+  });
+
+  test('(+) the state is told in words, colour and icon: the shared pressed look and the on/off chip', () => {
+    assert.match(css, /\.btn\[aria-pressed="true"\]\s*\{[^}]*background: var\(--accent-soft\)/);
+    assert.match(fnOf('function setHist('), /'#i-hist-on' : '#i-hist-off'/);
+    assert.match(fnOf('function setHist('), /'on' : 'off'/);
+    assert.match(fnOf('function setHist('), /setAttribute\('aria-pressed', String\(on\)\)/);
+  });
+
+  // ---- behaviour, run for real in a vm against fakes ----
+
+  const classList = (initial = []) => {
+    const set = new Set(initial);
+    return { contains: (c) => set.has(c), toggle(c, force) { const on = force === undefined ? !set.has(c) : Boolean(force); if (on) set.add(c); else set.delete(c); return on; }, has: (c) => set.has(c) };
+  };
+  /** A page with the toggle: `store` is the shared localStorage (a Map), so a second rig on the same store is a reload. */
+  const rig = ({ store = new Map(), broken = false, narrow = false, flags = [], focusInHist = false } = {}) => {
+    const log = { said: [], writes: 0 };
+    const inside = { id: 'inside-the-transcript' };
+    const outside = { id: 'somewhere-else' };
+    const doc = { activeElement: focusInHist ? inside : outside };
+    const node = (id) => ({
+      id, attrs: {}, textContent: '', focused: 0, listeners: {},
+      setAttribute(k, v) { this.attrs[k] = String(v); },
+      getAttribute(k) { return this.attrs[k] ?? null; },
+      addEventListener(type, f) { this.listeners[type] = f; },
+      focus() { this.focused += 1; doc.activeElement = this; },
+    });
+    const els = Object.fromEntries(['split', 'sess-hist', 'hist-scroll', 'hist-toggle', 'hist-use', 'hist-onoff'].map((id) => [id, node(id)]));
+    els.split.classList = classList(flags);
+    // a browser drops focus from an element that becomes display:none: the fake does it the moment hist-off is set, so a read of
+    // document.activeElement after the class flip sees the body, not the element that held focus
+    const flip = els.split.classList.toggle;
+    els.split.classList.toggle = (c, force) => {
+      const on = flip(c, force);
+      if (c === 'hist-off' && on && doc.activeElement === inside) doc.activeElement = outside;
+      return on;
+    };
+    Object.assign(els['hist-scroll'], { scrollTop: 0, scrollHeight: 1000, clientHeight: 400 });
+    els['sess-hist'].contains = (n) => n === inside;
+    const localStorage = {
+      getItem(k) { if (broken) throw new Error('blocked'); return store.has(k) ? store.get(k) : null; },
+      setItem(k, v) { if (broken) throw new Error('blocked'); log.writes += 1; store.set(k, String(v)); },
+    };
+    const api = mk(['function storeGet(key)', 'function storeSet(key, value)', 'function histToggleable()', 'function setHist(on, user = false)', 'function toggleHist()', 'function wireHist()'], {
+      $: (id) => els[id], document: doc, localStorage, window: { matchMedia: () => ({ matches: narrow }) }, announce: (m) => log.said.push(m),
+      HIST: { at: null }, nearBottom: vm.runInNewContext(`${/const nearBottom = [^\n]*/.exec(SRC)[0]}; nearBottom`),
+    });
+    const state = () => ({ hidden: els.split.classList.has('hist-off'), pressed: els['hist-toggle'].attrs['aria-pressed'], icon: els['hist-use'].attrs.href, word: els['hist-onoff'].textContent });
+    return { ...api, els, log, store, state, inside, click: () => els['hist-toggle'].listeners.click() };
+  };
+  const SHOWN = { hidden: false, pressed: 'true', icon: '#i-hist-on', word: 'on' };
+  const HIDDEN = { hidden: true, pressed: 'false', icon: '#i-hist-off', word: 'off' };
+
+  test('(+) the toggle hides and shows the transcript, sets aria-pressed, swaps the icon and the word, says what happened and keeps the choice', () => {
+    const r = rig();
+    r.wireHist();
+    assert.deepEqual(r.state(), SHOWN, 'shown by default');
+    assert.deepEqual(r.log.said, [], 'nothing is announced at load');
+    r.click();
+    assert.deepEqual(r.state(), HIDDEN);
+    assert.deepEqual(r.log.said, ['Transcript hidden']);
+    assert.equal(r.store.get('nika.transcript'), 'hidden');
+    r.click();
+    assert.deepEqual(r.state(), SHOWN);
+    assert.deepEqual(r.log.said, ['Transcript hidden', 'Transcript shown']);
+    assert.equal(r.store.get('nika.transcript'), 'shown');
+  });
+
+  test('(+) the choice persists across a reload (the same storage, a fresh page)', () => {
+    const store = new Map();
+    const first = rig({ store });
+    first.wireHist();
+    first.click();
+    const second = rig({ store });
+    second.wireHist();
+    assert.deepEqual(second.state(), HIDDEN);
+    assert.deepEqual(second.log.said, [], 'applied at boot without a word');
+    assert.equal(second.log.writes, 0, 'and without a write');
+    second.click();
+    const third = rig({ store });
+    third.wireHist();
+    assert.deepEqual(third.state(), SHOWN);
+  });
+
+  test('(−) garbage in storage means shown; only the exact word "hidden" hides', () => {
+    for (const value of ['banana', '', 'HIDDEN', 'hidden ', ' hidden', 'true', '0', '{"transcript":"hidden"}', 'shown']) {
+      const r = rig({ store: new Map([['nika.transcript', value]]) });
+      r.wireHist();
+      assert.deepEqual(r.state(), SHOWN, JSON.stringify(value));
+    }
+  });
+
+  test('(−) storage that throws means shown, and the toggle still works', () => {
+    const r = rig({ broken: true });
+    r.wireHist();
+    assert.deepEqual(r.state(), SHOWN);
+    r.click();
+    assert.deepEqual(r.state(), HIDDEN);
+    assert.deepEqual(r.log.said, ['Transcript hidden']);
+    r.click();
+    assert.deepEqual(r.state(), SHOWN);
+  });
+
+  test('(+) hiding while focus is inside the transcript moves focus to the toggle (focus is read before the column goes, as a browser drops it with the column)', () => {
+    const r = rig({ focusInHist: true });
+    r.wireHist();
+    r.toggleHist();
+    assert.deepEqual(r.state(), HIDDEN);
+    assert.equal(r.els['hist-toggle'].focused, 1);
+  });
+
+  test('(−) focus elsewhere stays where it is, and showing never moves it', () => {
+    const r = rig();
+    r.wireHist();
+    r.toggleHist();
+    assert.equal(r.els['hist-toggle'].focused, 0, 'hiding with focus in the message box');
+    r.toggleHist();
+    assert.equal(r.els['hist-toggle'].focused, 0, 'showing');
+  });
+
+  test('(+) showing again puts the reader back where they were in the transcript (a hidden column loses its scroll offset)', () => {
+    const r = rig();
+    r.wireHist();
+    const sc = r.els['hist-scroll'];
+    sc.scrollTop = 300; // reading older entries: not near the bottom (1000 - 300 - 400 = 300)
+    r.toggleHist();
+    sc.scrollTop = 0; // what a display:none column ends up with
+    sc.scrollHeight = 0;
+    r.toggleHist();
+    sc.scrollHeight = 1000;
+    assert.equal(sc.scrollTop, 300);
+  });
+
+  test('(+) a reader who was at the bottom is at the bottom again, entries that arrived meanwhile included', () => {
+    const r = rig();
+    r.wireHist();
+    const sc = r.els['hist-scroll'];
+    sc.scrollTop = 600; // 1000 - 600 - 400 = 0: at the bottom
+    r.toggleHist();
+    sc.scrollTop = 0;
+    sc.scrollHeight = 1300; // laid out again, with new entries
+    r.toggleHist();
+    assert.equal(sc.scrollTop, 1300);
+  });
+
+  test('(−) the scroll place is only touched when the column comes back: not at load, not when hiding, not when it was never hidden', () => {
+    const r = rig();
+    const sc = r.els['hist-scroll'];
+    sc.scrollTop = 123;
+    r.wireHist();
+    assert.equal(sc.scrollTop, 123, 'shown at load: untouched');
+    r.toggleHist();
+    assert.equal(sc.scrollTop, 123, 'hiding does not write it');
+    const hiddenAtLoad = rig({ store: new Map([['nika.transcript', 'hidden']]) });
+    hiddenAtLoad.els['hist-scroll'].scrollTop = 77;
+    hiddenAtLoad.wireHist();
+    assert.equal(hiddenAtLoad.els['hist-scroll'].scrollTop, 77, 'hidden at load: untouched');
+  });
+
+  test('(−) no transcript, no terminal, or a narrow window (tabs): the toggle does nothing at all', () => {
+    for (const opts of [{ flags: ['no-hist'] }, { flags: ['no-term'] }, { narrow: true }]) {
+      const r = rig(opts);
+      r.wireHist();
+      r.toggleHist();
+      assert.deepEqual(r.state().hidden, false, JSON.stringify(opts));
+      assert.deepEqual([r.log.said, r.log.writes], [[], 0], JSON.stringify(opts));
+    }
+  });
+
+  test('(−) a saved "hidden" is still applied to the class when the window is narrow, has no transcript or has no terminal; the stylesheet decides what shows', () => {
+    for (const opts of [{ narrow: true }, { flags: ['no-hist'] }, { flags: ['no-term'] }]) {
+      const r = rig({ store: new Map([['nika.transcript', 'hidden']]), ...opts });
+      r.wireHist();
+      assert.deepEqual(r.state(), HIDDEN, JSON.stringify(opts));
+    }
+    // ... and it never hides the transcript of a window with no terminal (the column would leave an empty window), nor applies below 1001 px
+    const rules = /@media \(min-width: 1001px\)\s*\{([^@]*)\}\s*\n/.exec(css)?.[1] ?? '';
+    assert.match(rules, /\.hist-off:not\(\.no-term\) \.hist/);
+    assert.doesNotMatch(css.replace(/@media \(min-width: 1001px\)\s*\{[^@]*\}\s*\n/, ''), /hist-off/, 'the class has no effect outside that media query');
+  });
+
+  test('(+) syncHistHint puts the platform\'s key in the title and aria-keyshortcuts', () => {
+    const run = (mac) => {
+      const btn = { attrs: {}, setAttribute(k, v) { this.attrs[k] = v; } };
+      mk(['function syncHistHint()'], { MAC: mac, histHint, $: () => btn }).syncHistHint();
+      return [btn.title, btn.attrs['aria-keyshortcuts']];
+    };
+    assert.deepEqual(run(false), ['Show or hide the transcript (Ctrl+Shift+H)', 'Control+Shift+H']);
+    assert.deepEqual(run(true), ['Show or hide the transcript (\u2318\u21e7H)', 'Meta+Shift+H']);
+  });
+
+  test('(+) boot: the hint and the saved choice are applied, the click is wired, and the button hides when there is no transcript', () => {
+    const boot = fnOf('function boot()');
+    assert.match(boot, /syncHistHint\(\)/);
+    assert.match(boot, /wireHist\(\)/);
+    assert.equal((SRC.match(/wireHist\(\)/g) ?? []).length, 2, 'declared once, called once');
+    const noHist = boot.slice(boot.indexOf("split.classList.add('no-hist')"), boot.indexOf("showNotice('No transcript"));
+    assert.match(noHist, /\$\('hist-toggle'\)\.hidden = true/);
+    assert.match(fnOf('function onPageKey(e)'), /wantsHistToggle\(e, \{ mac: MAC, passthrough: P\.on, dialogOpen \}\)/);
+  });
+
+  test('(−) the choice is stored under nika.transcript with the values shown and hidden only, through the guarded storeSet', () => {
+    assert.match(fnOf('function setHist('), /storeSet\('transcript', on \? 'shown' : 'hidden'\)/);
+    assert.match(fnOf('function wireHist()'), /storeGet\('transcript'\) !== 'hidden'/);
+    assert.doesNotMatch(SRC.replace(/function storeGet[\s\S]*?\n\}\n[\s\S]*?function storeSet[\s\S]*?\n\}\n/, ''), /localStorage/, 'no other storage call');
   });
 });

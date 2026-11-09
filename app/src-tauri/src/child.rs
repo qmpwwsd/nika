@@ -377,9 +377,13 @@ pub fn child_env(get: &impl Fn(&str) -> Option<OsString>, node: &Path) -> Option
     Some(env)
 }
 
+/// V8's young generation capped at 4 MB per semi-space: the server's live heap is about 10 MB, and the default
+/// (up to 16 MB per semi-space on 64-bit) left it holding about 200 MB RSS, measured; with the cap it holds about 90 MB.
+pub const NODE_HEAP_FLAG: &str = "--max-semi-space-size=4";
+
 /// Arguments after the node binary: fixed, nothing from a request, the environment or the secret.
-pub fn child_args(root: &Path) -> [OsString; 3] {
-    [root.join("bin").join("nika").into_os_string(), "serve".into(), "--app".into()]
+pub fn child_args(root: &Path) -> [OsString; 4] {
+    [NODE_HEAP_FLAG.into(), root.join("bin").join("nika").into_os_string(), "serve".into(), "--app".into()]
 }
 
 pub enum Event {
@@ -987,9 +991,12 @@ mod tests {
 
     #[test]
     fn child_args_are_fixed() {
-        // (+) exactly script, serve, --app; (-) nothing else, whatever the secret is
+        // (+) exactly the heap flag, script, serve, --app; (-) nothing else, whatever the secret is
         let a = child_args(Path::new("/srv/nika"));
-        assert_eq!(a.to_vec(), vec![OsString::from("/srv/nika/bin/nika"), "serve".into(), "--app".into()]);
+        assert_eq!(
+            a.to_vec(),
+            vec![OsString::from("--max-semi-space-size=4"), "/srv/nika/bin/nika".into(), "serve".into(), "--app".into()]
+        );
         let secret = Secret::generate().unwrap();
         assert!(a.iter().all(|x| !x.to_string_lossy().contains(secret.expose())));
     }
@@ -1129,7 +1136,7 @@ cat > /dev/null"#,
         assert_eq!(hello["proto"], 1);
         assert_eq!(hello["secret"].as_str(), Some(secret.expose()));
         let argv = fs::read_to_string(dir.join("argv.txt")).unwrap();
-        assert_eq!(argv, format!("{}/bin/nika\nserve\n--app\n", dir.display()));
+        assert_eq!(argv, format!("--max-semi-space-size=4\n{}/bin/nika\nserve\n--app\n", dir.display()));
         assert!(!argv.contains(secret.expose()), "secret in argv");
         let env_dump = fs::read_to_string(dir.join("env.txt")).unwrap();
         assert!(!env_dump.contains(secret.expose()), "secret in env");

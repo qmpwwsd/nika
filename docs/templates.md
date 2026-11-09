@@ -72,7 +72,7 @@ ignore files and patterns not in that list are not understood.
 ## `.claude/settings.local.json`
 
 Only `enabledPlugins` is written, and only for projects that have a plugin selection in `config.json`
-(`plugins.perProject[<key>]`; an empty list counts as a selection). Without one the file is left as it is.
+(`perProject[<key>].plugins` in `config.json`, chosen on the project page). Without one the file is left as it is. An empty list is "none", not a selection: it is not kept, so unticking every plugin leaves the file's plugins as they are.
 
 - Every selected plugin is set to `true`.
 - Entries that are `true` in the file but not selected are removed.

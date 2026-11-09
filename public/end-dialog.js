@@ -24,11 +24,13 @@ function focusHeading() {
 }
 
 /**
- * What the dialog shows. `alert` ('' = none) appears above the body text, which stays (aria-describedby points at it); `note` is the muted extra line; `busy` is the ending state;
+ * What the dialog shows. `alert` ('' = none) appears above the body text, which stays (aria-describedby points at it), in the look of `kind`
+ * (danger, or warn for a refusal the user fixes in the terminal); `note` is the muted extra line; `busy` is the ending state;
  * `closeOnly` is the failed state, whose footer has only Close.
  */
-function draw({ alert = '', note = '', busy = false, closeOnly = false }) {
+function draw({ alert = '', kind = 'danger', note = '', busy = false, closeOnly = false }) {
   el('end-alert-text').textContent = alert;
+  el('end-alert').dataset.kind = kind;
   el('end-alert').hidden = !alert;
   el('end-note').textContent = alert ? '' : note;
   el('end-note').hidden = Boolean(alert) || !note;
@@ -66,7 +68,7 @@ async function run() {
     E.done?.();
     return;
   }
-  draw({ alert: out.text, closeOnly: true });
+  draw({ alert: out.text, kind: out.kind, closeOnly: true });
   el('end-alert').focus();
 }
 

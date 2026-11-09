@@ -45,7 +45,7 @@ Common error body: `{"error": "<code>", "message": "<short text>"}`; codes used 
 `claude_unavailable` 503, `tmux_failed` 502 (a tmux call failed unexpectedly), `limit` 409 (maxAgents reached), `foreign` 409 (rules file not written by nika, apply without
 `overwriteForeign`), `refused` 409 (a write-safety check failed; `"code"` carries the fwrite/OS code such as `ESYMLINK`),
 and for session control (0.3) `not-idle`, `mode-unknown`, `mode-unchanged`, `not-in-cycle`, `busy-switching`, `no-prompt`,
-`prompt-changed`, `already-answered`, `input-not-empty`, `not-at-prompt`, `bypass-prompt`, `screen-unclear`, all 409. The 0.3 codes are hyphenated, as the spec names them; the older codes keep their underscores.
+`prompt-changed`, `already-answered`, `input-not-empty`, `input-unreadable`, `not-at-prompt`, `bypass-prompt`, `screen-unclear`, all 409. The 0.3 codes are hyphenated, as the spec names them; the older codes keep their underscores.
 
 ## 3. Routes
 
@@ -97,11 +97,27 @@ the server re-checks (`realpath`, `isDirectory`) before `addProject`. Projects a
 ### Settings
 
 `GET /api/app/settings` → `200 Settings`. `PUT /api/app/settings` body ≤ 16 KB: a partial `Settings` (every key except
-`projects`; object groups merge one level deep; `plugins.perProject` replaces the whole map) → `200 Settings` (as
-re-read from disk) or `400 invalid` with `"message"` naming the first bad field. `permissionMode: "bypassPermissions"`
-is always `400`. Per-project plugin names must be ⊂ the installed names from `/api/app/plugins`, else `400`.
+`projects` and `perProject`; object groups merge one level deep) → `200 Settings` (as re-read from disk) or
+`400 invalid` with `"message"` naming the first bad field. `permissionMode: "bypassPermissions"` is always `400`. A body
+with `perProject` is `400` ("per-project settings are saved on the project page"), and so is the old `plugins` group
+(0.3.3 and older): it is an unknown key. Settings holds defaults for every project; the page's PUT carries the form and
+nothing else, so it can never overwrite a project's saved choices.
 
-`Settings` = the `config.json` schema (§6) without `projects`.
+`Settings` = the `config.json` schema (§6) without `projects`. It does include `perProject` (read only here), so a page can
+show a project's saved plugins without a second request.
+
+### `GET|PUT /api/app/projects/:key/config` (PUT body ≤ 16 KB, `CAP.settings`)
+One project's own settings, saved on its page (0.3.4). `:key` must match `^[a-z0-9]{16}$`, else `400 invalid`; a key that is
+not a registered project is `404 not_found`.
+- `GET` → `200 { "plugins": [ "<PLUGIN_NAME>", … ] }` (the names to turn on; `[]` when none).
+- `PUT` body `{ "plugins": [ "<PLUGIN_NAME>", … ] }` and no other key → `200 { "plugins": [ … ] }` (as saved, repeats removed).
+  `[]` removes the list (and the project's entry when nothing else is left): `enabledPlugins` is then left as it is
+  when rules are applied. Each name must be installed now (the names from `/api/app/plugins`) **or already saved for this
+  project** (so a plugin removed since can still be unticked); any other name is `400 invalid` naming it. A body that is
+  not that shape, more than 200 names, or a name that is not a `PLUGIN_NAME` is `400 invalid`; non-JSON is `415`, a body over
+  16 KB is `413`.
+The route reads and writes only this project's entry, in the store's one serial queue, so two pages saving different
+projects (or Settings and a project page) cannot overwrite each other.
 
 ### `GET /api/app/templates`
 `200 { "templates": [ "<name>.md", … ] }` — file names (`^[A-Za-z0-9_-]{1,64}\.md$`, regular user-owned files via
@@ -365,7 +381,8 @@ command text starts with `/`) and takes fresh captures (up to 4, 150 ms apart) u
   (`C-u` rounds) and the answer is 409 `not-at-prompt`; no Enter.
 
 A failed send of the rest (after the `/` went in) removes nika's `/` the same way before that send's status and body are
-returned. A draft in the box is never touched: the empty-box check of step 3 comes first (409 `input-not-empty`).
+returned. A draft in the box is never touched: the empty-box check of step 3 comes first (409 `input-not-empty`; a box
+nika cannot find or read is 409 `input-unreadable`, End's step 4).
 
 ### `POST /api/app/pane/:id/stop` (body ≤ 4 KB, `CAP.small`)
 Body `{}` (a JSON object, `Content-Type: application/json`). Interrupts Claude's turn; the session stays. Same guard and
@@ -396,11 +413,17 @@ Body `{}`. Steps, in this order:
    capture and read the registry state again.
 3. The state is still not `idle`, or a `prompt` is still on screen → 409 `not-idle`, nothing typed. Footer `unknown`
    (a dialog may be open) → 409 `mode-unknown`, nothing typed. So End can never answer a prompt or a dialog.
-4. Input box (`claude-tui.md` §5: the rows between the last two rule rows made only of `─`; the no-break space after
-   `❯` compares as a space): it must be exactly one row reading `❯` alone, or `❯` followed only by dim text (the
-   placeholder; a draft is never dim, whatever it says), where the first character may be reverse video (Claude's
-   cursor over the placeholder) and whitespace may be plain; anything else (a draft, several rows, no box found) → 409
-   `input-not-empty`, nothing typed ("Claude's input has text; clear it first").
+4. Input box (`claude-tui.md` §5: the rows between the last two rule rows, each a plain rule of `─` or one that carries
+   the session name, `─── <name> ─`; the no-break space after `❯` compares as a space). Two answers, both with nothing
+   typed (0.3.4):
+   - `input-unreadable`: no box found (fewer than two rule rows, or nothing between them), or its first row is not an
+     input row (no `❯` where the box should start: a menu or another screen is drawn there). nika cannot tell a draft
+     from nothing, so it types nothing; the page says it cannot find Claude's input box and to close any menu.
+   - `input-not-empty`: the box starts with an input row and holds anything but the empty or placeholder state. It must be
+     exactly one row reading `❯` alone, or `❯` followed only by dim text (the placeholder; a draft is never dim,
+     whatever it says), where the first character may be reverse video (Claude's cursor over the placeholder) and
+     whitespace may be plain; anything else (typed text, a `Try "..."` that is not dim, several rows) is a draft, and
+     the page says to send or clear it in the terminal.
 5. Vim: when this pane's mode line has shown `-- INSERT --` before (remembered per pane id by the capture route, like
    the held mode, or seen in any capture this action took) and the current mode line lacks it, Claude's input is in
    vim normal mode: send the text `i`, take a fresh capture, and require `-- INSERT --` now. If it does not show and
@@ -501,8 +524,9 @@ run `tmux send-keys` itself; `node` stays accepted because npm-installed Claude 
 appears in argv, env, logs, files or HTML; the shell injects it into the page with an `initialization_script` guarded
 by `location.origin`, and `public/api.js` copies it to a module constant and deletes the global (ADR 0002).
 
-Child process (desktop shell). Argv is fixed: `<node> <root>/bin/nika serve --app`, where `<root>` is the bundle's
-resource directory in release builds and the repository root in debug builds (never an env var). The environment is
+Child process (desktop shell). Argv is fixed: `<node> --max-semi-space-size=4 <root>/bin/nika serve --app` (the flag caps
+V8's young generation; architecture, Memory bounds), where `<root>` is the bundle's resource directory in release builds
+and the repository root in debug builds (never an env var). The environment is
 built from scratch (`env_clear`) and holds only: `PATH` (the node binary's directory, then
 `/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin`), `HOME`, `NIKA_APP=1` and, when set
 in the app's own environment, `CLAUDE_CONFIG_DIR`, `NIKA_CONFIG_DIR`, `XDG_CONFIG_HOME`, `XDG_STATE_HOME`,
@@ -538,7 +562,7 @@ warning in `loadConfig().warnings`; a tampered or unreadable file never throws):
   "permissionMode": "default",
   "panePlacement": "beside",
   "limits": { "maxAgents": 3 },
-  "plugins": { "perProject": { "<PROJECT_KEY>": [ "<PLUGIN_NAME>" ] } },
+  "perProject": { "<PROJECT_KEY>": { "plugins": [ "<PLUGIN_NAME>" ] } },
   "projects": [ { "key": "<PROJECT_KEY>", "dir": "<abs realpath>", "name": "<basename>", "addedAt": "<ISO>" } ],
   "rules": { "localTemplate": null },
   "ui": { "theme": "system", "singleKeyShortcuts": true }
@@ -549,10 +573,16 @@ warning in `loadConfig().warnings`; a tampered or unreadable file never throws):
 §4.6). Mod+/ always does.
 Field rules: `models.*` `MODEL_ID`; `remoteControl.prefix` `""` (= project name) or `RC_PREFIX`; `permissionMode` ∈
 `PERMISSION_MODES`; `panePlacement` ∈ `PANE_PLACEMENTS`; `limits.maxAgents` 1–8 (there is no turn limit: Claude Code
-has no `--max-turns` for interactive sessions); `plugins.perProject` ≤ 200 names per project, keys must be registered
-projects (checked by `PUT /api/app/settings`); `projects` ≤ 100 entries, `key` must equal `keyFor(dir)`;
+has no `--max-turns` for interactive sessions); `perProject` keys are `PROJECT_KEY`s and each entry holds only `plugins`
+(≤ 200 names, deduplicated; a bad key, entry or list drops that entry with a warning, and any other inner key is dropped with
+a warning: 0.4 adds more; an empty `plugins` list, and an entry left empty, are "none": dropped on load without a warning, so
+`[]` and "no entry" are the same thing), written only by `PUT /api/app/projects/:key/config`, which checks the project is registered;
+`projects` ≤ 100 entries, `key` must equal `keyFor(dir)`;
 `rules.localTemplate` `null` or a file name `^[A-Za-z0-9_-]{1,64}\.md$` under `templates/`. Store mutations in one
 process are serialised (one promise queue in `src/store.js`); across processes the last atomic rename wins.
+**Migration (0.3.4):** a `config.json` written by 0.3.3 or older holds the lists in `plugins.perProject: { key: [names] }`.
+`loadConfig` reads it as `perProject[key] = { plugins: names }` with no warning (when both shapes are present `perProject`
+wins and the old group is dropped silently); the old group is never written back, so the next save persists the new shape.
 
 Project folders (`rules/`, `.claude/`, the repo root) are written with `writeAtomic(…, { project: true })`: a
 world-writable folder is always refused; a group-writable one is accepted only on Linux and only when its group is
@@ -560,11 +590,14 @@ the user's primary group (`process.getgid()`, the per-user group of a 002 umask)
 stay strict (no group or world write). An existing in-project file keeps its mode minus group/other write (never
 widened); a new `.claude/settings.local.json` is 0600, other new in-project files 0644; nika's own files 0600.
 `enabledPlugins`: selected plugins → `true`; `true` entries not selected → removed; `false` entries of unselected
-plugins untouched; a project with no `plugins.perProject` entry leaves `enabledPlugins` untouched.
+plugins untouched; a project with no `perProject[key].plugins` list leaves `enabledPlugins` untouched.
 
 Store API: `loadConfig(env) → { config, warnings, file }`, `saveConfig(config, env)` (re-validates, throws `EINVAL`),
-`addProject(dir, env)`, `removeProject(key, env)`, `listProjects(env)`, `updateSettings(patch, env)` (throws `EINVAL`,
-never accepts `projects` or `bypassPermissions`), `keyFor(realDir)`.
+`addProject(dir, env)`, `removeProject(key, env)` (also drops the project's `perProject` entry), `listProjects(env)`,
+`updateSettings(patch, env)` (throws `EINVAL`, never accepts `projects`, `perProject` or `bypassPermissions`),
+`getProjectConfig(key, env) → { plugins }` (`EINVAL` on a bad key), `updateProjectConfig(key, { plugins }, env)` (`EINVAL` on a
+bad key or patch: the patch must be a plain object whose only own key is `plugins`; `ENOENT` for a project that is not
+registered; `[]` removes the list), `keyFor(realDir)`.
 
 Write API (`src/fwrite.js`): `ensureDir(dir, mode = 0o700)`, `writeAtomic(dir, name, content, { mode = 0o600, root })`,
 `checkComponents(root, relPath) → { dir, name, abs }`, `backupFile(srcAbs, backupRootAbs, relPath)`,

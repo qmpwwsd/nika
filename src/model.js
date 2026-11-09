@@ -2,7 +2,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { readRegistry, processTable, isAlive } from './collect/registry.js';
-import { indexTranscripts, readTranscript, createTranscriptCache } from './collect/transcripts.js';
+import { indexTranscripts, readTranscript, createTranscriptCache, CACHE_SLACK } from './collect/transcripts.js';
 import { readSubagents } from './collect/subagents.js';
 import { listPanes } from './collect/tmux.js';
 import { allReportDirs, indexReports } from './collect/reports.js';
@@ -192,6 +192,8 @@ export async function collect({ config, exec, now = Date.now(), sinceMs, since =
       },
     };
   });
+  // after the reads, so the entries just used are the newest and the ones of vanished or long-idle transcripts go first
+  if (!index.error) cache.transcripts.resize(index.files.size + CACHE_SLACK);
   const entries = results.filter(Boolean);
   foldScratchpad(entries, config.tmpRoot);
 

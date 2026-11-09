@@ -28,13 +28,13 @@ export const state = {
   projects: null, // app tier: /api/app/projects
   settings: null, // app tier: /api/app/settings
   models: null, // app tier: /api/app/models (the catalog array), null until loaded
+  plugins: null, // app tier: installed plugin names (/api/app/plugins), null until loaded; the project card flags saved ones that are gone
   modes: { map: {}, misses: 0 }, // app tier: latest /api/app/modes answer by pane id (public/modes.js modesAfter)
   appError: null, // app tier: the private server refused us (403)
   appCopyUi: { busy: false, error: null, hidden: false }, // app tier, macOS: the Add to Applications notice (spec 3.14); hidden = "Not now" this launch
   open: new Set(), // disclosure ids the user toggled ("!id" = closed on purpose)
   expanded: new Set(), // group ids whose "show more" was pressed
   route: { name: 'dashboard' },
-  pluginProject: null, // project key to preselect in Settings > Plugins (set by the project view)
 };
 
 /** Functions the app-tier modules register (project.js, settings.js); empty in the browser tier. */

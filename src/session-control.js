@@ -9,8 +9,10 @@ import { CLAUDE_COMMAND } from './ids.js';
 import { MODE_TARGETS, OPTION, PROMPT_ROWS, bypassWindow, lastNonBlank, modeFromRows, promptFromRows, rowText } from './mode.js';
 
 const EXIT_POLL_MS = 500;
-// A rule row of Claude's input box: made only of box-drawing dashes. The box is what lies between the last two.
-const RULE_ROW = /^─+$/;
+// A rule row of Claude's input box (trimmed): two or more box-drawing dashes, plain, or labelled with the session name
+// (`-n <name>` or /rename), which Claude draws into the upper rule as `─── <name> ─` (claude-tui.md section 5). The label is
+// 1 to 80 characters, has no dash, no control character and no space at either end. The box is what lies between the last two.
+const RULE_ROW = /^─{2,}(?: [^─\p{Cc}\s](?:[^─\p{Cc}]{0,78}[^─\p{Cc}\s])? ─+)?$/u;
 const PROMPT_CHAR = '❯';
 // Claude draws a no-break space after the prompt character (claude-tui.md section 5): for comparing, it is a space.
 const plain = (text) => text.replace(/\xa0/g, ' ');
@@ -271,7 +273,8 @@ export function createSessionControl({
   /**
    * Types `text` into Claude's input and presses Enter, for End and runCommand (claude-tui.md section 5). `rows` is the
    * fresh capture the caller has already checked (idle, footer readable); `ctx.insert` says whether any capture of this
-   * action showed `-- INSERT --`. Returns null when Enter went out, { res } for a 409, or { failed } with the status and
+   * action showed `-- INSERT --`. A box that is not found or does not start with a prompt row is 409 `input-unreadable`;
+   * a box that holds anything but nothing or the placeholder is 409 `input-not-empty`. Returns null when Enter went out, { res } for a 409, or { failed } with the status and
    * body of the send or capture that failed. After a 409 `not-at-prompt` or a failed capture nika's own text is removed
    * as far as cleanUp can tell it apart from a draft; it may remain when a send fails, a capture fails or the box holds
    * something else. A stray `i` (vim was off) is removed with one C-u before the 409 `mode-unknown`.
@@ -282,7 +285,10 @@ export function createSessionControl({
    * and nothing else is sent.
    */
   async function typeCommand(pane, rows, text, ctx) {
-    if (!boxIsEmpty(inputBox(rows))) return { res: conflict('input-not-empty') }; // a draft is never sent, extended or cleared
+    const box = inputBox(rows);
+    // no box, or one that does not start with a prompt row (a menu, another screen): nika cannot tell a draft from nothing, so it types nothing
+    if (inputRow(box?.[0]) === null) return { res: conflict('input-unreadable') };
+    if (!boxIsEmpty(box)) return { res: conflict('input-not-empty') }; // a draft is never sent, extended or cleared
     let rest = text; // what is still to be typed
     // vim normal mode: the keys would be vim commands. Evidence of vim: the pane's memory, or INSERT seen in this action.
     if ((await vimOf(pane)) || ctx.insert) {

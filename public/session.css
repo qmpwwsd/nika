@@ -263,8 +263,15 @@ body.m-bypass .mode-frame { background: repeating-linear-gradient(135deg, var(--
 .empty h2 { font-size: var(--fs-display); margin: 0 0 8px; }
 .empty p { color: var(--text-muted); margin: 0 0 12px; }
 
+/* the transcript toggle (spec 4.1): wide windows only (below that the tabs choose), and never without a terminal, or nothing would show */
+@media (min-width: 1001px) {
+  .split.hist-off:not(.no-term) { grid-template-columns: minmax(0, 1fr); }
+  .split.hist-off:not(.no-term) .hist { display: none; }
+}
+
 /* narrow windows: tabs instead of a split (spec section 6) */
 @media (max-width: 1000px) {
+  #hist-toggle { display: none; }
   .pane-tabs { display: flex; gap: 4px; padding: 6px 12px; border-bottom: 1px solid var(--line); background: var(--surface); }
   .pane-tabs button { min-height: 28px; padding: 0 12px; border: 0; border-radius: var(--r-md); background: none; font-weight: 600; color: var(--text-muted); }
   .pane-tabs button[aria-selected="true"] { background: var(--surface-3); color: var(--text); }

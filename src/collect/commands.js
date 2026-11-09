@@ -9,6 +9,7 @@ import { COMMAND_NAME } from '../ids.js';
 import { clean } from '../text.js';
 import { BUILTIN_COMMANDS } from '../commands-builtin.js';
 import { listPluginDirs } from './plugins.js';
+import { lru } from '../util.js';
 
 const HEAD_BYTES = 4096;
 const MAX_FILES = 200; // per folder
@@ -16,6 +17,7 @@ const MAX_ENTRIES = 1000; // in total, built-ins included
 const MAX_OPENS = 2000; // files opened per scan, whatever they turn out to hold; the entries found so far are returned
 const TEXT_MAX = 200;
 const CACHE_MS = 10_000;
+const CACHE_MAX = 16; // listings kept: a listing is reused for 10 s only, so this is more projects than ever ask within that time
 
 const KEY_LINE = /^([A-Za-z_][\w-]*):(?:[ \t]+(.*))?$/;
 const BLOCK_HEADER = /^[>|][+-]?\d?$/;
@@ -169,7 +171,7 @@ async function scanAll(claudeDir, projectDir) {
   return Object.freeze(entries);
 }
 
-const cache = new Map();
+const cache = lru(CACHE_MAX);
 const inflight = new Map();
 
 /**

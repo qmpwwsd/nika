@@ -95,18 +95,18 @@
       <div class="scroll" id="proj-body" aria-busy="true">
         <div class="proj-grid">
           <section aria-labelledby="proj-agents-h"><h2 id="proj-agents-h">Agents</h2><div id="proj-agents"></div></section>
-          <aside aria-label="Project setup" id="proj-setup"></aside>
+          <aside aria-label="Project details" id="proj-setup"></aside>
         </div>
       </div>
     </section>
 
     <section class="screen" data-screen="settings" aria-labelledby="set-h" hidden data-app-only>
-      <header class="bar"><h1 id="set-h" tabindex="-1">Settings</h1><p class="sub">Saved to <code>config.json</code> in nika's config folder</p></header>
+      <header class="bar"><h1 id="set-h" tabindex="-1">Settings</h1><p class="sub">Defaults for every project, saved to <code>config.json</code> in nika's config folder. Plugins are chosen on each project's page.</p></header>
       <div class="scroll">
         <form id="set-form" novalidate>
           <div class="set-grid">
             <nav class="set-index" aria-label="Settings sections">
-              <a href="#settings" data-jump="s-appearance">Appearance</a><a href="#settings" data-jump="s-models">Models</a><a href="#settings" data-jump="s-rc">Remote Control</a><a href="#settings" data-jump="s-perm">Permission mode</a><a href="#settings" data-jump="s-panes">Panes and limits</a><a href="#settings" data-jump="s-plugins">Plugins</a><a href="#settings" data-jump="s-tpl">Rules template</a>
+              <a href="#settings" data-jump="s-appearance">Appearance</a><a href="#settings" data-jump="s-models">Models</a><a href="#settings" data-jump="s-rc">Remote Control</a><a href="#settings" data-jump="s-perm">Permission mode</a><a href="#settings" data-jump="s-panes">Panes and limits</a><a href="#settings" data-jump="s-tpl">Rules template</a>
             </nav>
             <div>
               <div class="alert err-sum" data-kind="danger" role="alert" id="set-sum" hidden tabindex="-1"><svg class="ic" aria-hidden="true"><use href="#i-warn"/></svg><p id="set-sum-text"></p></div>
@@ -169,14 +169,6 @@
                   <p class="help" id="set-max-help">1 to 8. Counts only agents nika spawned that are still running.</p><p class="err" id="set-max-err" hidden></p></div>
               </section>
 
-              <section class="set-sec" id="s-plugins" aria-labelledby="s-plugins-h">
-                <h2 id="s-plugins-h">Plugins per project</h2>
-                <p>Installed plugins to turn on in a project. nika writes them into <code>.claude/settings.local.json</code> when you apply rules.</p>
-                <div class="field narrow"><label for="set-plug-proj">Project</label><select id="set-plug-proj"></select></div>
-                <fieldset><legend id="set-plug-legend">Plugins</legend><div class="plug-list" id="set-plugs"></div>
-                  <p class="help" id="set-plug-help">Ticked plugins are turned on and other plugins that are on in that file are removed when you apply rules. Leave all unticked to leave the file's plugins as they are.</p></fieldset>
-              </section>
-
               <section class="set-sec" id="s-tpl" aria-labelledby="s-tpl-h">
                 <h2 id="s-tpl-h">Rules template</h2>
                 <div class="field wide"><label for="set-tpl">Template for rules/orchestration.md</label><select id="set-tpl" aria-describedby="set-tpl-help"></select><p class="help" id="set-tpl-help">Local templates are Markdown files in the <code>templates</code> folder next to config.json. Projects whose rules came from another template show “Rules outdated”.</p></div>
@@ -211,6 +203,18 @@
   <div class="dlg-head"><div><h2 id="ru-h" tabindex="-1">Apply rules</h2><p id="ru-d">Review each change. nika writes only after you confirm and keeps a backup outside the repository. It never runs git.</p></div><button type="button" class="btn icon ghost" data-close id="ru-x" aria-label="Close"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button></div>
   <div class="dlg-main" id="ru-main"></div>
   <div class="dlg-foot" id="ru-foot"></div>
+</dialog>
+
+<dialog id="dlg-plugins" class="dlg-plugins" aria-labelledby="pl-h" aria-describedby="pl-d" data-app-only>
+  <div class="dlg-head"><div><h2 id="pl-h" tabindex="-1"></h2><p id="pl-d">Ticked plugins are turned on in <code>.claude/settings.local.json</code> the next time you apply rules.</p></div><button type="button" class="btn icon ghost" data-close id="pl-x" data-fk="pl-x" aria-label="Close"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button></div>
+  <div class="pl-main">
+    <div class="alert" data-kind="danger" role="alert" id="pl-alert" tabindex="-1" hidden><svg class="ic" aria-hidden="true"><use href="#i-warn"/></svg><p id="pl-alert-text"></p></div>
+    <label class="search" id="pl-search"><span class="sr-only">Filter plugins</span><svg class="ic" aria-hidden="true"><use href="#i-search"/></svg><input type="search" id="pl-filter" data-fk="pl-filter" placeholder="Filter plugins" autocomplete="off" spellcheck="false"></label>
+    <p class="help" id="pl-count"></p>
+    <fieldset class="plug-box" id="pl-box"><legend class="sr-only">Installed plugins</legend><div class="plug-list" id="pl-list"></div></fieldset>
+    <p class="help" id="pl-help">Ticked plugins are turned on and other plugins that are on in that file are removed when you apply rules. Leave all unticked to leave the file's plugins as they are.</p>
+  </div>
+  <div class="dlg-foot"><span class="sp"></span><button type="button" class="btn lg" data-close id="pl-cancel" data-fk="pl-cancel">Cancel</button><button type="button" class="btn primary lg" id="pl-retry" data-fk="pl-retry" hidden disabled>Retry</button><button type="button" class="btn primary lg" id="pl-save" data-fk="pl-save">Save plugins</button></div>
 </dialog>
 
 <dialog id="dlg-confirm" class="dlg-confirm" aria-labelledby="cf-h" aria-describedby="cf-d" data-app-only>

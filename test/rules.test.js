@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { render, rulesState, preview, apply, TEMPLATE_VERSION } from '../src/rules.js';
-import { addProject, loadConfig, saveConfig, updateSettings } from '../src/store.js';
+import { addProject, loadConfig, saveConfig, updateSettings, updateProjectConfig } from '../src/store.js';
 import { configDir, backupsDir } from '../src/paths.js';
 
 const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'nika-rules-')));
@@ -32,7 +32,7 @@ async function world({ git = false, plugins } = {}) {
 }
 async function setPlugins(w, list) {
   const { config } = await loadConfig(w.env);
-  config.plugins.perProject[w.project.key] = list;
+  config.perProject[w.project.key] = { plugins: list };
   await saveConfig(config, w.env);
 }
 const put = (w, rel, text) => {
@@ -317,19 +317,19 @@ describe('settings.local.json merge (T5)', () => {
     assert.equal(fs.readFileSync(path.join(backupsDir(w.project.key, w.env), STAMP, '.claude/settings.local.json'), 'utf8'), JSON.stringify(ORIGINAL), 'the original is backed up');
   });
 
-  test('(+) a file without enabledPlugins gets one at the end; an empty selection removes every true entry, keeps false ones', async () => {
+  test('(+) a file without enabledPlugins gets one at the end', async () => {
     const w = await world({ plugins: ['alpha@demo-market'] });
     put(w, '.claude/settings.local.json', '{"model":"opus","env":{"A":"1"}}');
     await go(w, await prev(w));
     assert.deepEqual(JSON.parse(get(w, '.claude/settings.local.json')), { model: 'opus', env: { A: '1' }, enabledPlugins: { 'alpha@demo-market': true } });
     assert.deepEqual(Object.keys(JSON.parse(get(w, '.claude/settings.local.json'))), ['model', 'env', 'enabledPlugins']);
-    await setPlugins(w, []);
+  });
+
+  test('(+) a selection of other plugins removes every true entry that is not selected, keeps false ones', async () => {
+    const w = await world({ plugins: ['alpha@demo-market'] });
+    put(w, '.claude/settings.local.json', '{"enabledPlugins":{"a@b-c":true,"d@b-c":false}}');
     await go(w, await prev(w));
-    assert.deepEqual(JSON.parse(get(w, '.claude/settings.local.json')), { model: 'opus', env: { A: '1' }, enabledPlugins: {} });
-    const v = await world({ plugins: [] });
-    put(v, '.claude/settings.local.json', '{"enabledPlugins":{"a@b-c":true,"d@b-c":false}}');
-    await go(v, await prev(v));
-    assert.deepEqual(JSON.parse(get(v, '.claude/settings.local.json')), { enabledPlugins: { 'd@b-c': false } });
+    assert.deepEqual(JSON.parse(get(w, '.claude/settings.local.json')), { enabledPlugins: { 'd@b-c': false, 'alpha@demo-market': true } });
   });
 
   test('(+) nothing to change keeps the file byte for byte (formatting included); no file and no plugins stays absent', async () => {
@@ -340,7 +340,7 @@ describe('settings.local.json merge (T5)', () => {
     assert.equal(entry(body, '.claude/settings.local.json').action, 'unchanged');
     await go(w, body);
     assert.equal(get(w, '.claude/settings.local.json'), odd);
-    const v = await world({ plugins: [] });
+    const v = await world();
     await go(v, await prev(v));
     assert.equal(has(v, '.claude'), false);
   });
@@ -354,6 +354,63 @@ describe('settings.local.json merge (T5)', () => {
     assert.equal(entry(body, '.claude/settings.local.json').action, 'unchanged');
     await go(w, body);
     assert.equal(get(w, '.claude/settings.local.json'), 'not json');
+  });
+
+  test('(+) the selected plugins come from perProject[key].plugins, as the project page saves them', async () => {
+    const w = await world();
+    await updateProjectConfig(w.project.key, { plugins: ['zed@demo-market', 'alpha@demo-market'] }, w.env);
+    put(w, '.claude/settings.local.json', '{"model":"x","enabledPlugins":{"old@demo-market":true,"off@demo-market":false}}');
+    const body = await prev(w);
+    await go(w, body);
+    assert.deepEqual(JSON.parse(get(w, '.claude/settings.local.json')), { model: 'x', enabledPlugins: { 'off@demo-market': false, 'zed@demo-market': true, 'alpha@demo-market': true } });
+    assert.match(get(w, 'rules/orchestration.md'), /`zed@demo-market`, `alpha@demo-market`/, 'the rules text lists them too');
+  });
+
+  test('(−) removing the list on the project page (or an entry without plugins) leaves enabledPlugins as it is', async () => {
+    const w = await world();
+    const file = '{"enabledPlugins":{"keep@demo-market":true}}';
+    await updateProjectConfig(w.project.key, { plugins: ['alpha@demo-market'] }, w.env);
+    await updateProjectConfig(w.project.key, { plugins: [] }, w.env);
+    put(w, '.claude/settings.local.json', file);
+    assert.equal(entry(await prev(w), '.claude/settings.local.json').action, 'unchanged');
+    const v = await world();
+    const { config } = await loadConfig(v.env);
+    config.perProject[v.project.key] = {};
+    await saveConfig(config, v.env);
+    put(v, '.claude/settings.local.json', file);
+    assert.equal(entry(await prev(v), '.claude/settings.local.json').action, 'unchanged');
+    assert.match(await (async () => { await go(v, await prev(v)); return get(v, 'rules/orchestration.md'); })(), /none/);
+  });
+
+  test('(+) an empty list ([] saved by hand or by 0.3.3) is "no entry": the preview leaves enabledPlugins alone', async () => {
+    const file = '{"enabledPlugins":{"keep@demo-market":true,"off@demo-market":false}}';
+    for (const shape of ['0.3.3', '0.3.4']) {
+      const w = await world();
+      const cfg = path.join(configDir(w.env), 'config.json');
+      const raw = JSON.parse(fs.readFileSync(cfg, 'utf8'));
+      delete raw.perProject;
+      if (shape === '0.3.3') raw.plugins = { perProject: { [w.project.key]: [] } };
+      else raw.perProject = { [w.project.key]: { plugins: [] } };
+      fs.writeFileSync(cfg, JSON.stringify(raw));
+      put(w, '.claude/settings.local.json', file);
+      const body = await prev(w);
+      assert.equal(entry(body, '.claude/settings.local.json').action, 'unchanged', shape);
+      await go(w, body);
+      assert.equal(get(w, '.claude/settings.local.json'), file, shape);
+      assert.match(get(w, 'rules/orchestration.md'), /none/, shape);
+    }
+  });
+
+  test('(+) an install upgraded from 0.3.3 (plugins.perProject, no perProject) keeps its plugin choices when rules are applied', async () => {
+    const w = await world();
+    const file = path.join(configDir(w.env), 'config.json');
+    const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+    delete raw.perProject;
+    raw.plugins = { perProject: { [w.project.key]: ['legacy@demo-market'] } };
+    fs.writeFileSync(file, JSON.stringify(raw));
+    put(w, '.claude/settings.local.json', '{}');
+    await go(w, await prev(w));
+    assert.deepEqual(JSON.parse(get(w, '.claude/settings.local.json')), { enabledPlugins: { 'legacy@demo-market': true } });
   });
 
   test('(−) invalid JSON, non-objects, empty file, bad enabledPlugins and __proto__ / constructor / prototype keys are 400 invalid, nothing written', async () => {

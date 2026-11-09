@@ -175,9 +175,9 @@ docker build -f Dockerfile.test -t nika-verify . && docker run --rm nika-verify
 ```
 
 **`scripts/gui-smoke.sh`** (the shell). It builds the debug shell (`cargo build --locked`) and runs it under Xvfb on a
-private session bus. `scripts/shell-probe.mjs` stands in for the Node server (the shell runs `<NIKA_NODE> <root>/bin/nika
-serve --app`, so the script writes an executable `node` wrapper at run time). The probe serves a page with a strict CSP;
-a real WebKitGTK window loads it and reports back. It checks that:
+private session bus. `scripts/shell-probe.mjs` stands in for the Node server (the shell runs
+`<NIKA_NODE> --max-semi-space-size=4 <root>/bin/nika serve --app`, so the script writes an executable `node` wrapper at
+run time). The probe serves a page with a strict CSP; a real WebKitGTK window loads it and reports back. It checks that:
 
 - the shell starts the child with the fixed argv and the minimal environment;
 - `window.__NIKA_APP__` exists on the server origin only as `{secret, port}` (frozen, non-enumerable, configurable, not

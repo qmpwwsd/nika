@@ -39,6 +39,8 @@
   <symbol id="i-chev" viewBox="0 0 16 16"><path d="m4.5 6.5 3.5 3.5 3.5-3.5"/></symbol>
   <symbol id="i-cmd" viewBox="0 0 16 16"><rect x="1.8" y="1.8" width="12.4" height="12.4" rx="2"/><path d="M9.8 4.5 6.2 11.5"/></symbol>
   <symbol id="i-dialog" viewBox="0 0 16 16"><rect x="1.8" y="2.8" width="12.4" height="10.4" rx="1.5"/><path d="M1.8 5.8h12.4"/></symbol>
+  <symbol id="i-hist-on" viewBox="0 0 16 16"><rect x="1.8" y="2.8" width="12.4" height="10.4" rx="1.5"/><path d="M6.4 2.8v10.4M3.4 5.8h1.6M3.4 8h1.6M3.4 10.2h1.6"/></symbol>
+  <symbol id="i-hist-off" viewBox="0 0 16 16"><rect x="1.8" y="2.8" width="12.4" height="10.4" rx="1.5"/><path d="M6.4 2.8v10.4"/></symbol>
 </svg>
 
 <header class="bar" id="bar">
@@ -79,6 +81,7 @@
 
     <section class="termcol" id="sess-term" aria-labelledby="term-h">
       <div class="term-head" id="term-head" data-s="wait">
+        <button type="button" class="btn" id="hist-toggle" aria-pressed="true" aria-controls="sess-hist" aria-keyshortcuts="Control+Shift+H" title="Show or hide the transcript (Ctrl+Shift+H)"><svg class="ic" aria-hidden="true"><use id="hist-use" href="#i-hist-on"/></svg><span class="lbl">Transcript</span><span class="onoff" id="hist-onoff" aria-hidden="true">on</span></button>
         <h2 id="term-h" class="sr-only">Live terminal</h2>
         <span class="live-dot" id="live-label">Connecting&hellip;</span>
         <span class="sp"></span>

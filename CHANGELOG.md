@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.3.4 — 2026-11-09
+
+Session window (desktop app):
+
+- A **Transcript** button at the left of the terminal's header (or Cmd+Shift+H, Ctrl+Shift+H on Linux) hides the
+  transcript so the terminal has the full width, and shows it again. It is on windows wider than 1000 px; narrower ones
+  keep their Terminal and Transcript tabs. The choice is remembered until nika quits.
+- Clearer messages when End, Compact, Clear, Model or Rewind cannot type into Claude's input. A draft in the box now says
+  "Claude's input has a draft. Send or clear it in the terminal, then try again."; when nika cannot find the input box
+  at all (a menu is open, say) it says so and asks you to close the menu, instead of claiming the input has text. In both
+  cases nothing is typed. (API: 409 `input-unreadable` is new next to `input-not-empty`.)
+
+Plugins per project, and Settings (desktop app):
+
+- Plugins are chosen on each project's page. The Plugins card there is now **Project setup**; **Choose plugins…** opens a
+  window with a filter, a count and one scrolling list (it no longer jumps to Settings, and long plugin names wrap instead of
+  overlapping). Ticked plugins are listed first; a plugin you ticked that is no longer installed is marked "(not
+  installed)" and can still be unticked. Plugins are written to `.claude/settings.local.json` only when you apply rules,
+  as before.
+- Settings now holds only the defaults for every project. The plugins section is gone from it, so saving Settings can no
+  longer overwrite a project's plugins.
+- The Save and Discard bar in Settings appears only after you change something, and goes away when you put the values
+  back. While it is hidden, Enter and Cmd/Ctrl+Enter save nothing.
+- Existing choices carry over: nika reads the plugin lists from their old place in `config.json` and writes the new shape the
+  next time it saves. Going back to 0.3.3 loses the lists only after 0.3.4 has saved. Unticking every plugin removes the
+  list, and applying rules then leaves the project's `enabledPlugins` as they are.
+- API: `GET` and `PUT /api/app/projects/:key/config`; `PUT /api/app/settings` refuses `perProject`
+  ([ADR 0012](docs/adr/0012-per-project-config.md)).
+
+Memory (desktop app):
+
+- The app's server uses about half the memory: the desktop app now starts it with a smaller young-generation heap
+  (`--max-semi-space-size=4`). On 200 synthetic sessions over 5 minutes it held about 195 MB before (macOS footprint
+  160 MB) and about 90 MB after (footprint 60 MB), with the same history speed.
+- The parsed-transcript and command-list caches are capped, and a session window keeps at most 500 transcript entries (it
+  was 600; the oldest leave only while you follow the live end, never under a reader who has scrolled up).
+
 ## 0.3.3 — 2026-11-09
 
 Session window keys and the macOS window (desktop app):

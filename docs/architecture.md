@@ -37,7 +37,7 @@ Related: [contracts](contracts/api-app.md) (routes, stdio protocol, schemas), [A
    ran but none is new enough, the error
    page says `node-old` with the newest version seen; if none exists or answers, `node-missing`
    (`child.rs` `find_node`, [packaging](packaging.md#runtime-requirements-both-systems)).
-3. The shell starts `node bin/nika serve --app` with piped stdio. The server files come from the app bundle
+3. The shell starts `node --max-semi-space-size=4 bin/nika serve --app` with piped stdio (see Memory bounds). The server files come from the app bundle
    (`Contents/Resources/nika/{bin,src,public,templates,package.json}` on macOS). The child env is cleared, then set to
    `PATH`, `HOME`, `NIKA_APP=1`, plus `CLAUDE_CONFIG_DIR`, `NIKA_CONFIG_DIR`, `XDG_CONFIG_HOME`, `XDG_STATE_HOME`,
    `TMUX_TMPDIR`, `LANG`, `LC_ALL` and `LC_CTYPE` when they are set.
@@ -84,6 +84,24 @@ pane; Claude Code has no other channel into a running interactive session ([ADR 
 Routes: [`contracts/api-app.md` section 3](contracts/api-app.md). Parsed screen text:
 [`contracts/claude-tui.md`](contracts/claude-tui.md). Threats: T22, T23 and T26 in [security](security.md).
 
+## Memory bounds (0.3.4)
+
+Every cache that is keyed by path or id has a cap, so a day-long run does not grow with the number of sessions it has seen.
+`util.js` `lru(max)` is a Map that drops its oldest entry past `max` (a read refreshes an entry). The parsed-transcript cache
+is an lru that `collect()` resizes to the transcripts on disk plus 64 after each pass, so entries of deleted transcripts leave
+and a transcript that is still on disk is never evicted; the command-list cache keeps 16 listings (each is reused for 10 s).
+The history route keeps one transcript index (replaced every 10 s), the mirror, rate limiter and answer guard sweep their
+per-pane entries by age, and `held`, `vim` and `ctx.started` drop a pane when the next pane list no longer has it. In the
+page, the transcript column keeps at most 500 entries: while the reader follows the tail the oldest leave from the top
+(Load older fetches them again), after Load older the newest leave from the bottom (Jump to latest returns), and a reader
+who has scrolled up loses none until they are back at the bottom. Poll timers are single chains, and the mirror timer is
+cleared before it is set again.
+
+The server's live heap stays near 10 MB, but with V8's default young generation node kept about 200 MB resident on a
+synthetic 5-minute run (200 sessions, history paging, agent polling). The desktop shell therefore starts it with
+`--max-semi-space-size=4` (`child.rs` `NODE_HEAP_FLAG`): on the same run it holds about 90 MB, with the same history
+latency. `--optimize-for-size` saved about 10 MB more but made history requests about 1 ms slower, so it is not used.
+
 ## Module map
 
 ### `src/` (Node, ES modules)
@@ -116,7 +134,7 @@ Routes: [`contracts/api-app.md` section 3](contracts/api-app.md). Parsed screen 
 | `store.js` | The validated `config.json` and the project registry. |
 | `text.js` | `clean()` and `cleanBlock()`: strip controls and bidi marks from agent-controlled text. |
 | `tmuxerr.js` | Maps a failed tmux call to a contract error body. |
-| `util.js` | `mapLimit`: bounded concurrency. |
+| `util.js` | `mapLimit`: bounded concurrency. `lru`: a Map capped in size (see Memory bounds). |
 
 ### `src/collect/` (read-only sources)
 
@@ -148,9 +166,10 @@ Routes: [`contracts/api-app.md` section 3](contracts/api-app.md). Parsed screen 
 | `modes.js` | Permission modes in the UI: labels, icons, the switcher's state and the dashboard's mode map and tag. |
 | `models-ui.js` | The model dropdown shared by the session window, Settings and the spawn sheet: groups from the catalog, the Custom ID field and its `MODEL_ID` check. |
 | `palette.js` | The slash-command palette's rules and copy (ranking, views, insertion). No DOM, no requests. |
-| `project.js` | App tier only: projects, add project, start orchestrator, project view, spawn sheet, apply-rules dialog, the poll of `/api/app/modes`, the Add to Applications install and dismiss requests. |
+| `plugin-view.js` | The "Choose plugins" dialog's model: the rows and their fixed order, the filter, the counts and what Save sends. Pure; the dialog itself lives in `project.js`. |
+| `project.js` | App tier only: projects, add project, start orchestrator, project view (the Project setup card and its Choose plugins dialog), spawn sheet, apply-rules dialog, the poll of `/api/app/modes`, the Add to Applications install and dismiss requests. |
 | `quick-actions.js` | The quick actions', prompt buttons', End dialog's and Shell mode's rules and fixed copy. No DOM, no requests. |
-| `settings.js` | App tier only: the settings screen. |
+| `settings.js` | App tier only: the settings screen (defaults for every project; the Save and Discard bar shows only after a real change). |
 | `session.js` | App tier only: the session window (history, live mirror, composer, mode switcher, quick actions, prompt buttons, Shell mode, command palette). |
 | `shortcuts.js` | The Keyboard shortcuts window and the key rules around it (`?`, Mod+/, Back). Static copy, both tiers. |
 | `mirror-render.js` | Pane-mirror helpers: render model, cursor, key handling. Re-validates every value. |
@@ -164,7 +183,7 @@ nika's own files follow XDG ([ADR 0008](adr/0008-xdg-config-state.md)). Folders 
 
 | Path | Holds |
 |---|---|
-| `${NIKA_CONFIG_DIR or XDG_CONFIG_HOME or ~/.config}/nika/config.json` | Settings and the project registry. Validated on load; garbage falls back to defaults with a warning. |
+| `${NIKA_CONFIG_DIR or XDG_CONFIG_HOME or ~/.config}/nika/config.json` | Settings, the project registry and each project's own settings (`perProject`, its plugins). Validated on load; garbage falls back to defaults with a warning. |
 | `…/nika/templates/<name>.md` | Rule templates you imported locally. |
 | `${XDG_STATE_HOME or ~/.local/state}/nika/projects/<key>/reports/` | Per spawned agent: brief, settings, session id, pane, exit code, report. |
 | `${XDG_STATE_HOME or ~/.local/state}/nika/backups/<key>/<ISO>/` | Byte-for-byte copies taken before "apply rules" overwrites a file; the last 10 folders per project are kept. Never inside a repo. |
