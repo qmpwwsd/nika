@@ -602,15 +602,20 @@ describe('installAppCopy', () => {
 
   test('(−) ~/Applications swapped for a symlink inside the rename window: the temp folder is kept, nothing behind the link is touched, the install still succeeds', async () => {
     let moved;
-    const { w, fsx } = swapRig((world) => {
+    let decoy; // a folder behind the link with the temp folder's exact name: an unguarded rm of <apps>/<tmp name> would remove it
+    const { w, fsx } = swapRig((world, tmp) => {
       moved = `${world.apps}-moved`;
       fs.renameSync(world.apps, moved);
-      fs.mkdirSync(path.join(world.root, 'elsewhere'));
-      fs.symlinkSync(path.join(world.root, 'elsewhere'), world.apps);
+      const elsewhere = path.join(world.root, 'elsewhere');
+      decoy = path.join(elsewhere, path.basename(tmp));
+      fs.mkdirSync(decoy, { recursive: true });
+      fs.writeFileSync(path.join(decoy, 'keep.txt'), 'keep');
+      fs.symlinkSync(elsewhere, world.apps);
     });
     const r = await installAppCopy(w.args, { fs: fsx, exec: fakeExec(), brewApps: [] });
     assert.equal(r.changed, 'added');
-    assert.deepEqual(fs.readdirSync(path.join(w.root, 'elsewhere')), [], 'nothing was written or removed behind the link');
+    assert.equal(fs.readFileSync(path.join(decoy, 'keep.txt'), 'utf8'), 'keep', 'the folder behind the link that has the temp name survives');
+    assert.deepEqual(fs.readdirSync(path.join(w.root, 'elsewhere')), [path.basename(decoy)], 'nothing else was written behind the link');
     assert.equal(leftovers(moved).length, 1, 'the temp folder is kept');
     assert.deepEqual(await readBundle(path.join(moved, 'nika.app')), { id: APP_ID, version: '0.3.0' }, 'the copy that was swapped in is in the moved folder');
   });

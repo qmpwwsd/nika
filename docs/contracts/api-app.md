@@ -57,8 +57,8 @@ Response `200`:
 ```
 `appCopy` (0.3, macOS; ADR 0011): the copy of the app in `~/Applications`. `state` ∈ `unsupported` (not macOS) ·
 `no-source` (no nika.app to copy from) · `missing` (no `~/Applications/nika.app`) · `current` (it is nika at the
-source's version) · `stale` (it is nika at another version) · `foreign` (that path is a symlink, not a folder you own, or
-not nika's bundle id). `version` = the copy's version, `available` = the source's version, `managed` = nika made the
+source's version) · `stale` (it is nika at another version) · `foreign` (`~/Applications` is not a plain folder you own, or
+that path is a symlink, not a folder you own, or not nika's bundle id). `version` = the copy's version, `available` = the source's version, `managed` = nika made the
 copy (state marker), `dismissed` = "Not now" was chosen on the Add prompt, `running` = this server runs from the copy.
 
 ### `POST /api/app/app-copy` (body ≤ 4 KB, `CAP.small`)

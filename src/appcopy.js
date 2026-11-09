@@ -142,7 +142,7 @@ export async function appCopyState({ root, home, platform, stateDir }, deps = {}
 }
 
 /** Records "Not now" in the marker (managed and version are kept). Never touches ~/Applications. `deps` is unused: the marker goes through fsafe and fwrite. */
-export async function dismissAppCopy({ stateDir }, deps = {}) { // eslint-disable-line no-unused-vars
+export async function dismissAppCopy({ stateDir }, deps = {}) {
   await writeMarker(stateDir, { ...(await readMarker(stateDir)), dismissed: true });
 }
 
