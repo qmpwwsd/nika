@@ -154,9 +154,12 @@ same menu. Removed and hidden commands are left out.
 
 - `/exit` (alias `/quit`) exits Claude Code. Observed: Claude quit and its tmux pane closed; the tmux session ended
   because it was its last pane.
-- The input box is drawn between two rule rows made only of `─`; the input row starts with `❯` followed by a no-break
-  space (U+00A0, not U+0020; `capture-pane` and the mirror keep it). Empty, it shows a placeholder such as
-  `❯ Try "edit <filepath> to..."`, drawn dim (SGR 2) after the `❯`; typed text is never dim, so a draft that starts
+- The input box is drawn between two rule rows made of `─`; the upper one may carry the session name given with `-n` (or
+  set with `/rename`), drawn as `─── <name> ─` (checked 2026-11-09, Claude Code 2.1.3xx), so every session nika starts has
+  it. nika accepts a plain rule (two or more `─`) or a labelled one (two or more `─`, a space, a label of 1 to 80
+  characters with no `─`, no control character and no space at either end, a space, one or more `─`). The input row
+  starts with `❯` followed by a no-break space (U+00A0, not U+0020; `capture-pane` and the mirror keep it). Empty, it
+  shows a placeholder such as `❯ Try "edit <filepath> to..."`, drawn dim (SGR 2) after the `❯`; typed text is never dim, so a draft that starts
   with `Try "` reads the same but is not dim (checked 2026-11-09). When Claude draws its own cursor (native cursor off
   and the terminal focused, which is the default in tmux), the first placeholder character is drawn in reverse video
   (SGR 7) and the rest dim; with no placeholder the cursor is a reverse-video space (read from the 2.1.319 source, not

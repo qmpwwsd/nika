@@ -9,6 +9,8 @@ const rowsOf = (...lines) => lines.map((l) => (Array.isArray(l) ? l : l === '' ?
 const NB = '\xa0'; // Claude draws a no-break space after the prompt character
 const sp = (t, d = false, extra = {}) => ({ t, s: { ...DEF, d, ...extra } });
 const RULE = '─'.repeat(40);
+// A named session (`-n <name>`, or /rename) has its name drawn into the upper rule: `─── <name> ─` (claude-tui.md section 5, checked 2026-11-09).
+const labelled = (name, dashes = 19) => `${'─'.repeat(dashes)} ${name} ─`;
 const PROMPT_CHAR = '❯';
 const PHRASE = {
   auto: '⏵⏵ auto mode on',
@@ -45,6 +47,8 @@ const toRow = (r) => {
  * `script` replaces the mode cycle after each BTab (the last entry repeats); `lag` makes the first n captures after a
  * press read `unknown`. In vim NORMAL mode the text `/` opens the history search (`history`: the input box is replaced by a
  * list, a filter row and the hint row); Escape closes it unless `historyStuck`. The clock only moves when the controller sleeps.
+ * `topRule` is the upper rule row (a named session draws its name into it, see `labelled`), `below` the rows between the
+ * lower rule and the mode line (a user status line), `footerTail` the text after the mode phrase.
  */
 function world(opts = {}) {
   const w = {
@@ -55,6 +59,7 @@ function world(opts = {}) {
     box: [PLACEHOLDER_BOX], vim: false, vimMode: 'insert', insertWorks: true, swallow: false, afterType: null,
     typeLag: 0, boxStale: null, insertLag: 0, insertLeft: 0, cuWorks: true, captureFailFrom: null,
     history: false, historyStuck: false, escLag: 0, escLeft: 0, hookSlash: false,
+    topRule: RULE, below: [], footerTail: '',
     ...opts,
   };
   w.rows = () => {
@@ -68,9 +73,9 @@ function world(opts = {}) {
     }
     const shown = w.lagLeft > 0 ? 'unknown' : w.mode;
     const inserting = w.vim && ((w.vimMode === 'insert' && w.insertLeft <= 0) || w.escLeft > 0);
-    const line = `${inserting ? '-- INSERT -- ' : ''}${PHRASE[shown]}`;
+    const line = `${inserting ? '-- INSERT -- ' : ''}${PHRASE[shown]}${w.footerTail}`;
     const shownBox = w.boxStale?.left > 0 ? w.boxStale.box : w.box;
-    const box = shownBox === null ? [] : ['', RULE, ...shownBox.map(toRow), RULE];
+    const box = shownBox === null ? [] : ['', w.topRule, ...shownBox.map(toRow), RULE, ...w.below];
     return rowsOf('earlier output', ...box, line);
   };
   w.mirror = {
@@ -941,6 +946,89 @@ describe('endSession (−)', () => {
     const w = world({ captureFail: { status: 404, body: { error: 'not_found', message: 'gone' } } });
     assert.deepEqual(await w.control().endSession('%2'), { status: 404, body: { error: 'not_found', message: 'gone' } });
     assert.deepEqual(w.sent, []);
+  });
+});
+
+describe('a named session: the upper rule carries the session name', () => {
+  // The live screen of an orchestrator started with `-n`: labelled upper rule, input row, plain lower rule, a two-row user status line, mode line.
+  const named = (name, opts = {}) => world({
+    mode: 'auto', vim: true, vimMode: 'insert', topRule: labelled(name), footerTail: ' (shift+tab to cycle)',
+    below: ['  Model-X  proj  branch  | effort: high', '  ░░░░░░░░░░ 9% | $1.64 | 12k tokens'], ...opts,
+  });
+  const text = (row) => row.map((x) => x.t).join('');
+
+  test('(+) End on the live shape: the box is found, /exit is typed and Enter pressed', async () => {
+    const w = named('sprint-planning');
+    const rows = w.rows().map(text);
+    assert.deepEqual(rows.slice(1, 4), ['', `${'─'.repeat(19)} sprint-planning ─`, `${PROMPT_CHAR}${NB}Try "fix lint errors"`], 'the fake draws what real Claude draws');
+    assert.equal(rows.at(-1), '-- INSERT -- ⏵⏵ auto mode on (shift+tab to cycle)');
+    assert.deepEqual(await w.control().endSession('%2'), { status: 200, body: { ended: true } });
+    assert.deepEqual(w.sent, [{ text: '/exit' }, { keys: ['Enter'] }]);
+  });
+
+  test('(+) a hyphenated agent name: Compact types its text and presses Enter', async () => {
+    const w = named('review-agent-2');
+    assert.deepEqual(await w.control().runCommand('%2', '/compact'), { status: 200, body: { sent: true } });
+    assert.deepEqual(w.sent, [{ text: '/compact' }, { keys: ['Enter'] }]);
+  });
+
+  test('(+) a renamed session with inner spaces, a one-character name and an 80-character name: the box is found', async () => {
+    for (const name of ['my session 2', 'x', 'é'.repeat(80), 'q'.repeat(80)]) {
+      const w = named(name);
+      assert.deepEqual(await w.control().endSession('%2'), { status: 200, body: { ended: true } }, name);
+      assert.deepEqual(w.sent, [{ text: '/exit' }, { keys: ['Enter'] }], name);
+    }
+  });
+
+  test('(+) a labelled rule with a long dash run on either side, and spaces after it: still a rule', async () => {
+    const w = named('x', { topRule: `${'─'.repeat(2)} x ${'─'.repeat(60)}  ` });
+    assert.deepEqual(await w.control().runCommand('%2', '/compact'), { status: 200, body: { sent: true } });
+  });
+
+  test('(−) a label that is not exactly one run of text between spaces is not a rule: only the lower rule counts, 409, nothing sent', async () => {
+    const bad = [
+      '── a─b ──', // the label contains a rule character
+      '──  x ──', '── x  ──', // a space inside the dashes before or after the label
+      '── ──', // no label
+      '──x──', '── x──', '──x ──', // the spaces are missing
+      '── x', // no closing dashes
+      '─ x ─', // one leading dash only
+      '─', // a lone dash is not a rule either
+      `── ${'q'.repeat(81)} ─`, // a label of 81 characters
+      '── a\x07b ─', '── a\x7fb ─', '── a\x9bb ─', '── a\tb ─', // C0, DEL, C1, tab inside the label
+      '──  x ─', '── x  ─', // a no-break space is whitespace too
+    ];
+    for (const topRule of bad) {
+      const end = named('x', { topRule });
+      assert.deepEqual(await end.control().endSession('%2'), code(409, 'input-not-empty'), JSON.stringify(topRule));
+      assert.deepEqual(end.sent, [], JSON.stringify(topRule));
+      const cmd = named('x', { topRule });
+      assert.deepEqual(await cmd.control().runCommand('%2', '/compact'), code(409, 'input-not-empty'), JSON.stringify(topRule));
+      assert.deepEqual(cmd.sent, [], JSON.stringify(topRule));
+    }
+  });
+
+  test('(−) only one rule row on screen, labelled or plain: no box, 409, nothing sent', async () => {
+    for (const only of [labelled('solo'), RULE]) {
+      for (const rows of [[only, ...[PLACEHOLDER_BOX], PHRASE.auto], [PLACEHOLDER_BOX, only, PHRASE.auto]]) {
+        const w = named('solo');
+        w.rows = () => rowsOf('earlier output', ...rows);
+        assert.deepEqual(await w.control().endSession('%2'), code(409, 'input-not-empty'));
+        assert.deepEqual(await w.control().runCommand('%2', '/compact'), code(409, 'input-not-empty'));
+        assert.deepEqual(w.sent, []);
+      }
+    }
+  });
+
+  test('(−) a draft under a labelled rule still refuses: typed text is not dim, 409 input-not-empty, nothing sent', async () => {
+    for (const box of [[[sp(`${PROMPT_CHAR}${NB}`), sp('half-written note')]], [[sp(`${PROMPT_CHAR}${NB}`), sp('Try "fix lint errors"')]], [`${PROMPT_CHAR} one`, '  two']]) {
+      const end = named('sprint-planning', { box });
+      assert.deepEqual(await end.control().endSession('%2'), code(409, 'input-not-empty'), JSON.stringify(box));
+      assert.deepEqual(end.sent, []);
+      const cmd = named('review-agent-2', { box });
+      assert.deepEqual(await cmd.control().runCommand('%2', '/compact'), code(409, 'input-not-empty'), JSON.stringify(box));
+      assert.deepEqual(cmd.sent, []);
+    }
   });
 });
 
