@@ -91,10 +91,11 @@ function foldScratchpad(entries, tmpRoot) {
 }
 
 /**
+ * `include`: session ids listed whatever their age, when nika has a transcript for them (the app tier looks up a saved orchestrator).
  * @returns {{ snapshot: object, reportPaths: Map<string,string> }}
  *   snapshot is the public JSON (no file paths of reports); reportPaths stays server-side.
  */
-export async function collect({ config, exec, now = Date.now(), sinceMs, since = null, cache = {} }) {
+export async function collect({ config, exec, now = Date.now(), sinceMs, since = null, cache = {}, include = [] }) {
   cache.transcripts ??= createTranscriptCache();
   const [registry, table, index, tmux, reportDirs] = await Promise.all([
     readRegistry(config.claudeDir),
@@ -121,6 +122,7 @@ export async function collect({ config, exec, now = Date.now(), sinceMs, since =
   const cutoff = sinceMs === Infinity ? -Infinity : now - sinceMs;
   const ids = new Set(live.keys());
   for (const [id, f] of index.files) if (f.mtimeMs >= cutoff) ids.add(id);
+  for (const id of include) if (index.files.has(id)) ids.add(id);
 
   const projectCache = new Map();
   const reportPaths = new Map();
@@ -218,4 +220,21 @@ export async function collect({ config, exec, now = Date.now(), sinceMs, since =
     snapshot: { generatedAt: now, since, sources, counts, groups: sorted },
     reportPaths,
   };
+}
+
+/**
+ * One session by id, whatever its age: `{ agent, group }` (the group is its project's, with the live sessions beside it), or null
+ * when nika has neither a live registry entry nor a transcript for it. The id is only a lookup key, never a path. Throws EINDEX
+ * when it is not found and the transcript index could not be read: "not found" would then be a guess.
+ * @param {object} o { config, exec, now?, cache? } as collect()
+ */
+export async function findSession(id, { config, exec, now = Date.now(), cache = {} }) {
+  // a zero window: the snapshot holds the live sessions and the one asked for, so the lookup reads one transcript
+  const { snapshot } = await collect({ config, exec, now, sinceMs: 0, cache, include: [id] });
+  for (const group of snapshot.groups) {
+    const agent = group.agents.find((a) => a.id === id);
+    if (agent) return { agent, group };
+  }
+  if (snapshot.sources.transcripts !== 'ok') throw Object.assign(new Error('transcript index unavailable'), { code: 'EINDEX' });
+  return null;
 }

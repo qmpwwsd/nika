@@ -2,11 +2,11 @@
 // project.js and settings.js; they are imported only when api.js says this is the app tier, so the browser tier
 // (read-only, 127.0.0.1:3335) never loads them. Every server string is rendered through h() (textContent).
 import { isApp, getJSON } from './api.js';
-import { h, icon } from './dom.js';
+import { h, icon, roleTagEl } from './dom.js';
 import { modeEl, rowMode, canEndRow } from './modes.js';
 import { wantsHelp, wantsBack, isTextEntry, openShortcuts, helpHint, backHint } from './shortcuts.js';
 import { copyBanner } from './app-copy.js';
-import { endedPlan, noMatchText, resetEndedState } from './dash-model.js';
+import { endedPlan, noMatchText, resetEndedState, roleTag } from './dash-model.js';
 import {
   $, $$, MAC, SHAPE, ORDER, state, hooks, load, save, timeEl, tickTimes, announce, toast, copyText,
   statusEl, modelEl, rulesEl, countsLine, sessionHref, menuEl, menuIsOpen, openDialog, initDialogs, initMenus,
@@ -181,8 +181,11 @@ function rowEl(a, g, { scope, showProject = false }) {
   if (a.report?.hasFile) items.push({ text: 'Show report', run: () => showReport(a) });
   if (a.bridgeUrl && SHAPE.claudeUrl.test(a.bridgeUrl)) items.push({ text: 'Open in claude.ai ↗', href: a.bridgeUrl });
   if (a.live && a.pane) items.push({ text: `Focus pane ${a.pane.id} in tmux`, run: () => focusPane(a.pane.id) });
+  // app tier, registered projects: the orchestrator items (project.js); they and End session… each start a group, a rule above
+  const orchItems = isApp ? hooks.rowItems?.(a, g, scope) ?? [] : [];
+  if (orchItems.length) items.push({ ...orchItems[0], group: true }, ...orchItems.slice(1));
   if (isApp && canEndRow(a, state.modes.map)) {
-    items.push({ text: 'End session…', run: () => endSession(a, fk('m'), fk('m', endedScope(scope))) });
+    items.push({ text: 'End session…', group: orchItems.length > 0, run: () => endSession(a, fk('m'), fk('m', endedScope(scope))) });
   }
 
   const li = h('li', { class: 'row', 'data-s': s },
@@ -190,7 +193,7 @@ function rowEl(a, g, { scope, showProject = false }) {
     isApp ? h('div', { class: 'c-mode' }, mode && modeEl(mode.mode, { confirmed: mode.confirmed, compact: true })) : null,
     h('div', { class: 'c-name' },
       href ? h('a', { class: 'name', href, 'data-fk': fk('n'), title: a.name, text: a.name }) : h('span', { class: 'name', title: a.name, text: a.name }),
-      a.role === 'orchestrator' ? h('span', { class: 'tag', text: 'orchestrator' }) : null),
+      roleTagEl(roleTag(a, isApp ? g.project?.orchestrator?.sessionId : null))),
     h('div', { class: 'c-model' }, modelEl(a)),
     h('div', { class: 'c-what' },
       showProject ? h('span', { class: 'proj-chip', title: g.label, text: g.label.length > 18 ? `${g.label.slice(0, 17)}…` : g.label }) : null,

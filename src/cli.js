@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { spawn as nodeSpawn } from 'node:child_process';
 import { defaultConfig, findClaude, parseSince, DEFAULT_SINCE } from './config.js';
 import { makeExec } from './exec.js';
-import { collect } from './model.js';
+import { collect, findSession } from './model.js';
 import { createServer } from './server.js';
 import { clean, cleanBlock } from './text.js';
 import { configDir, stateDir, backupsRoot } from './paths.js';
@@ -400,6 +400,7 @@ function toolCtx(cx) {
   return {
     env: cx.env, exec: cx.execT(5000), tmuxBin: cx.config.tmuxBin, claudeBin: findClaude(cx.env),
     nikaArgv: [process.execPath, NIKA_BIN], claudeDir: cx.config.claudeDir, now: Date.now, started: new Map(),
+    findSession: (id) => findSession(id, { config: cx.config, exec: cx.execT(5000) }), // the saved orchestrator, whatever its age
   };
 }
 

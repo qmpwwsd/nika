@@ -241,15 +241,22 @@ export function initDialogs() {
 /* ---------- disclosure menus: one open at a time, Esc closes and returns focus ---------- */
 let menuSeq = 0;
 
-/** items: [{ text, run }] or [{ text, href }] (external links open in the system browser through the shell). */
+/**
+ * items: [{ text, run }] or [{ text, href }] (external links open in the system browser through the shell). Optional per item:
+ * `fk` (data-fk, for focus keeping and tests), `group: true` (a rule above it) and `reason` (the item is aria-disabled with the
+ * reason as its title; a click shows the reason as an error toast and runs nothing, so a disabled item still says why).
+ */
 export function menuEl(label, items, fk) {
   const id = `menu-${++menuSeq}`;
   return h('div', { class: 'menu-wrap' },
     h('button', { type: 'button', class: 'btn icon ghost', 'data-menu-btn': true, 'data-fk': fk, 'aria-expanded': 'false', 'aria-controls': id, 'aria-label': label, title: label },
       h('span', { 'aria-hidden': 'true', text: '⋯' })),
-    h('ul', { class: 'menu', id, hidden: true }, items.map((it) => h('li', null, it.href
-      ? h('a', { href: it.href, target: '_blank', rel: 'noopener noreferrer', text: it.text })
-      : h('button', { type: 'button', text: it.text, onclick: it.run })))));
+    h('ul', { class: 'menu', id, hidden: true }, items.map((it) => h('li', { class: it.group ? 'grp' : null }, it.href
+      ? h('a', { href: it.href, target: '_blank', rel: 'noopener noreferrer', 'data-fk': it.fk, text: it.text })
+      : h('button', {
+        type: 'button', 'data-fk': it.fk, 'aria-disabled': it.reason ? 'true' : null, title: it.reason || null, text: it.text,
+        onclick: it.reason ? () => toast(it.reason, { kind: 'error' }) : it.run,
+      })))));
 }
 
 export const menuIsOpen = () => Boolean($('.menu:not([hidden])'));

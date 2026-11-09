@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
-import { DETECTED_MAX, endedPlan, noMatchText, resetEndedState, sidebarModel } from '../public/dash-model.js';
+import { DETECTED_MAX, endedPlan, noMatchText, resetEndedState, sidebarModel, orchState, roleTag, savedPick, otherRunning, ROLE_TAGS } from '../public/dash-model.js';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const read = (f) => fs.readFileSync(path.join(PUBLIC, f), 'utf8');
@@ -604,5 +604,146 @@ describe('showGroup (a Detected row goes to the dashboard and puts focus on that
     const b = rig('project');
     b.showGroup('gone');
     assert.doesNotThrow(() => b.fire());
+  });
+});
+
+// ---- orchState and roleTag (0.4, O1: pick or resume an orchestrator; design 0.4 sections 0, 1.1 and 1.3) ------------------------------
+
+describe('orchState (what the project\'s first button says)', () => {
+  const ID = '11111111-1111-4111-8111-111111111111';
+  const ID2 = '22222222-2222-4222-8222-222222222222';
+  const live = (id, over = {}) => ({ id, name: `s-${id.slice(0, 2)}`, live: true, role: 'orchestrator', lastActivity: 1, pane: { id: '%3' }, ...over });
+  const g = (...agents) => ({ agents });
+  const proj = (orchestrator) => ({ key: 'k', orchestrator });
+
+  test('(+) a saved orchestrator that runs, ended or is gone decides the button, with its id, name and pane', () => {
+    assert.deepEqual(orchState(proj({ sessionId: ID, state: 'live', name: 'planner', pane: '%3' }), g()), { kind: 'live', id: ID, name: 'planner', pane: '%3' });
+    assert.deepEqual(orchState(proj({ sessionId: ID, state: 'ended', name: 'planner', pane: null }), g()), { kind: 'ended', id: ID, name: 'planner', pane: null });
+    assert.deepEqual(orchState(proj({ sessionId: ID, state: 'gone', name: null, pane: null }), g()), { kind: 'gone', id: ID, name: null, pane: null });
+  });
+
+  test('(+) without a saved orchestrator (null, or an older server that sends no field) the snapshot decides: live with a main orchestrator, else none', () => {
+    const a = live(ID);
+    assert.deepEqual(orchState(proj(null), g(a)), { kind: 'live', id: ID, name: a.name, pane: '%3' });
+    assert.deepEqual(orchState(proj(undefined), g(a)), { kind: 'live', id: ID, name: a.name, pane: '%3' });
+    assert.deepEqual(orchState(proj(null), g()), { kind: 'none', id: null, name: null, pane: null });
+    assert.deepEqual(orchState(proj(undefined), g(live(ID, { role: 'agent' }))), { kind: 'none', id: null, name: null, pane: null }, 'an agent is not an orchestrator');
+  });
+
+  test('(+) a saved orchestrator that has ended still gives way to a main orchestrator that runs (the most recent one): Open, not Resume', () => {
+    const old = live(ID, { lastActivity: 1 });
+    const recent = live(ID2, { lastActivity: 9 });
+    assert.deepEqual(orchState(proj({ sessionId: 'x', state: 'ended', name: 'n', pane: null }), g(old, recent)), { kind: 'live', id: ID2, name: recent.name, pane: '%3' });
+  });
+
+  test('(+) a live saved orchestrator wins over another running one', () => {
+    const other = live(ID2, { lastActivity: 99 });
+    assert.equal(orchState(proj({ sessionId: ID, state: 'live', name: 'planner', pane: '%3' }), g(other)).id, ID);
+  });
+
+  test('(−) a sub-orchestrator (depth 2) and an ended agent are not the main orchestrator; a depth of 1 or none is', () => {
+    assert.equal(orchState(proj(null), g(live(ID, { depth: 2 }))).kind, 'none');
+    assert.equal(orchState(proj(null), g(live(ID, { depth: 1 }))).kind, 'live');
+    assert.equal(orchState(proj(null), g(live(ID, { depth: undefined }))).kind, 'live');
+    assert.equal(orchState(proj(null), g(live(ID, { live: false }))).kind, 'none');
+  });
+
+  test('(−) a field that is not exactly one of the three states, a bad id, or junk is ignored: the snapshot decides', () => {
+    for (const o of [{ sessionId: ID, state: 'running', name: 'n', pane: null }, { sessionId: 'not-an-id', state: 'ended', name: 'n', pane: null }, { state: 'ended' }, 'ended', 5, [], { sessionId: ID, state: '__proto__' }]) {
+      assert.equal(orchState(proj(o), g()).kind, 'none', JSON.stringify(o));
+    }
+    assert.equal(orchState(proj({ sessionId: ID, state: 'live', name: 7, pane: { id: '%3' } }), g()).name, null, 'a name that is not text is dropped');
+    assert.equal(orchState(proj({ sessionId: ID, state: 'live', name: 'n', pane: { id: '%3' } }), g()).pane, null, 'a pane that is not an id string is dropped');
+  });
+
+  test('(−) no project (an unregistered group) and no group are survivable', () => {
+    assert.equal(orchState(null, g()).kind, 'none');
+    assert.equal(orchState(undefined, undefined).kind, 'none');
+    assert.equal(orchState({ key: 'k', orchestrator: { sessionId: ID, state: 'gone', name: null, pane: null } }, undefined).kind, 'gone');
+  });
+});
+
+describe('roleTag (the badge next to a name)', () => {
+  const ID = '11111111-1111-4111-8111-111111111111';
+  test('(+) a live main orchestrator (depth 1 or none) is main, a live one at depth 2 or more is sub', () => {
+    assert.equal(roleTag({ id: 'a', live: true, role: 'orchestrator' }, null), 'main');
+    assert.equal(roleTag({ id: 'a', live: true, role: 'orchestrator', depth: 1 }, null), 'main');
+    assert.equal(roleTag({ id: 'a', live: true, role: 'orchestrator', depth: 2 }, null), 'sub');
+    assert.equal(roleTag({ id: 'a', live: true, role: 'orchestrator', depth: 9 }, null), 'sub', 'a forged depth clamps to the deepest tag');
+  });
+
+  test('(+) a session that is not running and is the saved orchestrator is saved; running and saved is main', () => {
+    assert.equal(roleTag({ id: ID, live: false, role: null }, ID), 'saved');
+    assert.equal(roleTag({ id: ID, live: true, role: 'orchestrator' }, ID), 'main');
+  });
+
+  test('(−) an agent, an untagged session, a live pick without a tag and an ended session that is not the pick have no badge', () => {
+    assert.equal(roleTag({ id: 'a', live: true, role: 'agent' }, null), null);
+    assert.equal(roleTag({ id: 'a', live: true, role: null }, null), null);
+    assert.equal(roleTag({ id: ID, live: true, role: null }, ID), null);
+    assert.equal(roleTag({ id: 'b', live: false, role: null }, ID), null);
+    assert.equal(roleTag({ id: 'b', live: false, role: 'orchestrator' }, null), null, 'an ended session has no pane, so no tag');
+  });
+
+  test('(−) no pick and a depth that is not a whole number: never "saved", and the depth falls back to main', () => {
+    assert.equal(roleTag({ id: ID, live: false }, undefined), null);
+    assert.equal(roleTag({ id: ID, live: false }, null), null);
+    for (const depth of ['2', null, 1.5, NaN, {}]) assert.equal(roleTag({ id: 'a', live: true, role: 'orchestrator', depth }, null), 'main', String(depth));
+  });
+});
+
+describe('savedPick (the project\'s saved orchestrator, whatever it is doing)', () => {
+  const ID = '11111111-1111-4111-8111-111111111111';
+  test('(+) the contract\'s shape comes back as id, state, name and pane', () => {
+    assert.deepEqual(savedPick({ orchestrator: { sessionId: ID, state: 'ended', name: 'planner', pane: null } }), { id: ID, state: 'ended', name: 'planner', pane: null });
+    assert.deepEqual(savedPick({ orchestrator: { sessionId: ID, state: 'live', name: 'planner', pane: '%3' } }), { id: ID, state: 'live', name: 'planner', pane: '%3' });
+    assert.deepEqual(savedPick({ orchestrator: { sessionId: ID, state: 'gone', name: null, pane: null } }), { id: ID, state: 'gone', name: null, pane: null });
+  });
+
+  test('(−) no project, no field, null, a bad id, a bad state, a name or pane that is not text: null, or the odd part dropped', () => {
+    for (const p of [null, undefined, {}, { orchestrator: null }, { orchestrator: 'x' }, { orchestrator: { sessionId: 'nope', state: 'ended' } }, { orchestrator: { sessionId: ID, state: 'running' } }, { orchestrator: { sessionId: ID, state: '__proto__' } }]) {
+      assert.equal(savedPick(p), null, JSON.stringify(p));
+    }
+    assert.deepEqual(savedPick({ orchestrator: { sessionId: ID, state: 'live', name: 7, pane: { id: '%3' } } }), { id: ID, state: 'live', name: null, pane: null });
+  });
+});
+
+describe('ROLE_TAGS (the words of each badge)', () => {
+  test('(+) main, sub and saved each have their own class, a long word, a short word and a title', () => {
+    assert.deepEqual(Object.keys(ROLE_TAGS), ['main', 'sub', 'saved']);
+    assert.equal(ROLE_TAGS.main.long, 'orchestrator');
+    assert.equal(ROLE_TAGS.sub.long, 'sub-orchestrator');
+    assert.equal(ROLE_TAGS.sub.short, 'sub-orch');
+    assert.match(ROLE_TAGS.saved.title, /^Saved orchestrator\. Resume it from the header or this row's menu\.$/);
+    assert.equal(new Set(Object.values(ROLE_TAGS).map((t) => t.cls)).size, 3, 'never the same look twice');
+  });
+});
+
+describe('otherRunning (who else runs as the orchestrator, so Set and Resume are off)', () => {
+  const ID = '11111111-1111-4111-8111-111111111111';
+  const ID2 = '22222222-2222-4222-8222-222222222222';
+  const ID3 = '33333333-3333-4333-8333-333333333333';
+  const live = (id, over = {}) => ({ id, name: `s-${id.slice(0, 2)}`, live: true, role: null, lastActivity: 1, ...over });
+
+  test('(+) another live session tagged orchestrator is the answer, with its id and name', () => {
+    assert.deepEqual(otherRunning({ agents: [live(ID2, { role: 'orchestrator' })] }, null, ID), { id: ID2, name: 's-22' });
+  });
+
+  test('(+) a live saved orchestrator counts even without a tag, and the most recent of several wins', () => {
+    assert.deepEqual(otherRunning({ agents: [live(ID2)] }, ID2, ID), { id: ID2, name: 's-22' });
+    const many = { agents: [live(ID2, { role: 'orchestrator', lastActivity: 1 }), live(ID3, { role: 'orchestrator', lastActivity: 9 })] };
+    assert.equal(otherRunning(many, null, ID).id, ID3);
+  });
+
+  test('(−) the session itself, an ended one, an agent or an untagged live session is not another orchestrator', () => {
+    assert.equal(otherRunning({ agents: [live(ID, { role: 'orchestrator' })] }, ID, ID), null, 'itself');
+    assert.equal(otherRunning({ agents: [live(ID2, { role: 'orchestrator', live: false })] }, ID2, ID), null, 'ended');
+    assert.equal(otherRunning({ agents: [live(ID2, { role: 'agent' }), live(ID3)] }, null, ID), null, 'agent and plain');
+  });
+
+  test('(−) no group, no agents and no name are survivable; a name that is not text is null', () => {
+    assert.equal(otherRunning(undefined, null, ID), null);
+    assert.equal(otherRunning({}, null, ID), null);
+    assert.deepEqual(otherRunning({ agents: [live(ID2, { role: 'orchestrator', name: 7 })] }, null, ID), { id: ID2, name: null });
   });
 });

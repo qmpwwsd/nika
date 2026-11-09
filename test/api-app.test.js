@@ -11,12 +11,14 @@ import { createHash } from 'node:crypto';
 import { createServer } from '../src/server.js';
 import { createAppApi } from '../src/api-app.js';
 import { readHistory } from '../src/collect/history.js';
-import { loadConfig, addProject } from '../src/store.js';
+import { loadConfig, addProject, removeProject, getOrchestrator, setOrchestrator } from '../src/store.js';
+import { findSession } from '../src/model.js';
+import { startOrchestrator } from '../src/orchestrate.js';
 import { configDir, stateDir } from '../src/paths.js';
 import { lastNonBlank, modeFromRows, PROMPT_ROWS } from '../src/mode.js';
 import { MODEL_CATALOG } from '../src/models.js';
-import { makeWorld } from './tmux-fake.js';
-import { makeFixture, cleanup, SID } from './helpers.js';
+import { makeWorld, fakeTmux, TMUX, CLAUDE } from './tmux-fake.js';
+import { makeFixture, cleanup, fakeExec, SID, NOW } from './helpers.js';
 
 const SECRET = 'Zm9vYmFyZm9vYmFyZm9vYmFyZm9vYmFyZm9vYmFyZm9v'.slice(0, 43);
 const REQ_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -69,9 +71,9 @@ function makeDeps(over = {}) {
 
 const servers = [];
 /** Real server with the app handler; returns helpers bound to its port. */
-async function boot({ deps = makeDeps(), ctxOver = {} } = {}) {
+async function boot({ deps = makeDeps(), ctxOver = {}, world = w } = {}) {
   const clock = { t: 1_000_000 };
-  const ctx = w.ctx(async () => ({ stdout: '', stderr: '' }), { claudeDir: fx.claudeDir, now: () => clock.t, ...ctxOver });
+  const ctx = world.ctx(async () => ({ stdout: '', stderr: '' }), { claudeDir: fx.claudeDir, now: () => clock.t, ...ctxOver });
   const app = createAppApi({ secret: SECRET, ctx, deps });
   const server = createServer({ config: fx.config, exec: async () => ({ stdout: '', stderr: '' }), token: 'tok', version: '0.0.0', app });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
@@ -354,7 +356,8 @@ describe('projects', () => {
     const r = await a.call('GET', '/api/app/projects');
     assert.equal(r.status, 200);
     assert.equal(r.body.projects.length, 1);
-    assert.deepEqual(Object.keys(r.body.projects[0]), ['key', 'dir', 'name', 'addedAt', 'rules']);
+    assert.deepEqual(Object.keys(r.body.projects[0]), ['key', 'dir', 'name', 'addedAt', 'rules', 'orchestrator']);
+    assert.equal(r.body.projects[0].orchestrator, null, 'no saved orchestrator');
     assert.equal(r.body.projects[0].key, w.project.key);
     assert.equal(r.body.projects[0].name, 'My App');
     assert.deepEqual(r.body.projects[0].rules, { state: 'none', settingsIgnored: false, git: true });
@@ -961,6 +964,332 @@ describe('spawn and orchestrator', () => {
     const r = await down.call('POST', '/api/app/orchestrator/start', { json: { project: w.project.key } });
     assert.equal(r.status, 503);
     assert.equal(r.body.error, 'tmux_unavailable');
+  });
+});
+
+describe('orchestrator pick: PUT|DELETE /api/app/projects/:key/orchestrator and the orchestrator field of GET /projects (O1: C1, C2)', () => {
+  const ID = {
+    live: '11111111-1111-4111-8111-111111111111',
+    ended: '22222222-2222-4222-8222-222222222222',
+    agent: '33333333-3333-4333-8333-333333333333',
+    other: '44444444-4444-4444-8444-444444444444',
+    running: '55555555-5555-4555-8555-555555555555',
+    nopane: '66666666-6666-4666-8666-666666666666',
+    nowhere: '77777777-7777-4777-8777-777777777777',
+    unknown: '99999999-9999-4999-8999-999999999999',
+    offpane: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+  };
+  const worlds = [];
+  after(() => worlds.forEach((x) => x.cleanup()));
+
+  /** A project with one tmux server and a table of sessions: findSession answers from it like src/model.js (agent + the project's group). */
+  async function rig({ extra = [], tmuxPanes, depsOver = {}, ctxOver = {} } = {}) {
+    const world = await makeWorld();
+    worlds.push(world);
+    const pane = (id, o = {}) => ({ id, session: 'work', window: 0, windowName: 'main', command: 'claude', ...o });
+    const exec = fakeTmux({ panes: tmuxPanes ?? [pane('%6'), pane('%7', { role: 'agent' }), pane('%5', { role: 'orchestrator' }), pane('%9', { command: 'zsh' })] });
+    const agent = (id, o = {}) => ({ id, name: id.slice(0, 8), live: false, role: null, pane: null, ...o });
+    const mine = [
+      agent(ID.live, { name: 'planner', live: true, pane: { id: '%6', session: 'work', command: 'claude' } }),
+      agent(ID.ended, { name: 'old-planner' }),
+      agent(ID.agent, { live: true, role: 'agent', pane: { id: '%7', session: 'work', command: 'claude' } }),
+      agent(ID.nopane, { live: true }),
+      agent(ID.offpane, { live: true, pane: { id: '%9', session: 'work', command: 'zsh' } }),
+      ...extra,
+    ];
+    const group = { key: world.project.key, root: world.project.dir, agents: mine };
+    const table = new Map(mine.map((x) => [x.id, { agent: x, group }]));
+    table.set(ID.other, { agent: agent(ID.other, { live: true, pane: { id: '%6', session: 'work', command: 'claude' } }), group: { key: 'fedcba9876543210', root: '/work/other-project', agents: [] } });
+    table.set(ID.nowhere, { agent: agent(ID.nowhere), group: { key: '(unknown)', root: null, agents: [] } });
+    const lookups = [];
+    const findSessionFake = async (id) => { lookups.push(id); return table.get(id) ?? null; };
+    const a = await boot({ world, deps: makeDeps(depsOver), ctxOver: { exec, tmuxBin: TMUX, findSession: findSessionFake, ...ctxOver } });
+    const url = `/api/app/projects/${world.project.key}/orchestrator`;
+    return { world, exec, a, url, lookups, table, group, put: (json) => a.call('PUT', url, { json }), pick: () => getOrchestrator(world.project.key, world.env) };
+  }
+  /** A refusal answers with its code and sends no tmux command and writes nothing. */
+  async function refused(r, status, error, res) {
+    assert.deepEqual([res.status, res.body.error], [status, error], JSON.stringify(res.body));
+    assert.equal(typeof res.body.message, 'string');
+    assert.deepEqual(r.exec.calls, [], 'no tmux command');
+    assert.equal(await r.pick(), null, 'nothing stored');
+    assert.equal(r.a.ctx.started.size, 0, 'nothing recorded');
+  }
+
+  test('(+) PUT for an ended session stores the id and answers it; no tmux command is sent', async () => {
+    const r = await rig();
+    const res = await r.put({ sessionId: ID.ended });
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.body, { orchestrator: { sessionId: ID.ended, state: 'ended', name: 'old-planner', pane: null } });
+    assert.equal(await r.pick(), ID.ended);
+    assert.deepEqual(r.exec.calls, []);
+    assert.equal(r.a.ctx.started.size, 0);
+    assert.match(res.headers['cache-control'] ?? '', /no-store/);
+  });
+
+  test('(+) PUT for a live session with a pane tags the pane (exact argv, constant values), records it in started, stores the id and makes the pane eligible', async () => {
+    const r = await rig();
+    const res = await r.put({ sessionId: ID.live });
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.body, { orchestrator: { sessionId: ID.live, state: 'live', name: 'planner', pane: '%6' } });
+    assert.deepEqual(r.exec.calls, [
+      [TMUX, '-u', 'set-option', '-p', '-t', '%6', '@nika-role', 'orchestrator'],
+      [TMUX, '-u', 'set-option', '-p', '-t', '%6', '@nika-depth', '1'],
+    ]);
+    assert.deepEqual(r.a.ctx.started.get('%6'), { key: r.world.project.key, name: 'orchestrator', sessionId: ID.live, role: 'orchestrator' });
+    assert.equal(await r.pick(), ID.live);
+    assert.deepEqual(r.exec.panes.find((x) => x.id === '%6').role, 'orchestrator');
+  });
+
+  test('(+) PUT replaces an earlier pick; the same session again is fine even while it is the running orchestrator', async () => {
+    const r = await rig({ extra: [{ id: ID.running, name: 'main-orch', live: true, role: 'orchestrator', pane: { id: '%5', session: 'work', command: 'claude' } }] });
+    await setOrchestrator(r.world.project.key, ID.ended, r.world.env);
+    assert.equal((await r.put({ sessionId: ID.running })).status, 200, 'the only running orchestrator is this one');
+    assert.equal(await r.pick(), ID.running);
+    assert.equal((await r.put({ sessionId: ID.running })).status, 200, 'again: the same session is not "another" orchestrator');
+    assert.equal((await r.put({ sessionId: ID.ended })).status, 409, 'now another one is running');
+  });
+
+  test('(+) DELETE forgets the id and retags nothing; a second DELETE is still 200', async () => {
+    const r = await rig();
+    await r.put({ sessionId: ID.live });
+    r.exec.calls.length = 0;
+    const del = await r.a.call('DELETE', r.url);
+    assert.equal(del.status, 200);
+    assert.deepEqual(del.body, { orchestrator: null });
+    assert.equal(await r.pick(), null);
+    assert.deepEqual(r.exec.calls, [], 'a live pane keeps its tags until it ends');
+    assert.equal((await r.a.call('DELETE', r.url)).status, 200);
+  });
+
+  test('(−) 404 not_found for a session nika does not know', async () => {
+    const r = await rig();
+    await refused(r, 404, 'not_found', await r.put({ sessionId: ID.unknown }));
+  });
+
+  test('(−) 409 other_project for a session of another project, or of none', async () => {
+    const r = await rig();
+    await refused(r, 409, 'other_project', await r.put({ sessionId: ID.other }));
+    await refused(r, 409, 'other_project', await r.put({ sessionId: ID.nowhere }));
+  });
+
+  test('(−) 409 agent_session for a live nika agent: nothing is tagged, stored or recorded', async () => {
+    const r = await rig();
+    const res = await r.put({ sessionId: ID.agent });
+    await refused(r, 409, 'agent_session', res);
+    assert.equal(res.body.message, "That session is an agent nika started, so it can't be the orchestrator. Nothing changed.");
+  });
+
+  test('(−) 409 orchestrator_running while another main orchestrator is live, for a live and for an ended session', async () => {
+    const r = await rig({ extra: [{ id: ID.running, name: 'main-orch', live: true, role: 'orchestrator', pane: { id: '%5', session: 'work', command: 'claude' } }] });
+    await refused(r, 409, 'orchestrator_running', await r.put({ sessionId: ID.live }));
+    await refused(r, 409, 'orchestrator_running', await r.put({ sessionId: ID.ended }));
+  });
+
+  test('(−) 409 orchestrator_running also when the stored pick is the live one (even if its pane carries no tag)', async () => {
+    const r = await rig();
+    await setOrchestrator(r.world.project.key, ID.live, r.world.env);
+    const res = await r.put({ sessionId: ID.ended });
+    assert.deepEqual([res.status, res.body.error], [409, 'orchestrator_running']);
+    assert.deepEqual(r.exec.calls, []);
+    assert.equal(await r.pick(), ID.live);
+  });
+
+  test('(−) 409 no_pane for a live session outside tmux, and for one whose pane does not run claude', async () => {
+    const r = await rig();
+    await refused(r, 409, 'no_pane', await r.put({ sessionId: ID.nopane }));
+    await refused(r, 409, 'no_pane', await r.put({ sessionId: ID.offpane }));
+  });
+
+  test('(−) a body that is not exactly { sessionId: a UUID } is 400; non-JSON is 415; too large is 413', async () => {
+    const r = await rig();
+    for (const json of [{}, { sessionId: 'x' }, { sessionId: '../../etc/passwd' }, { sessionId: ID.live.toUpperCase().replace(/1/g, 'A') }, { sessionId: 5 }, { sessionId: null }, { sessionId: [ID.live] }, { sessionId: ID.live, extra: 1 }, { session: ID.live }]) {
+      const res = await r.put(json);
+      assert.deepEqual([res.status, res.body.error], [400, 'invalid'], JSON.stringify(json));
+    }
+    assert.equal((await r.a.call('PUT', r.url, { body: `sessionId=${ID.live}`, headers: { 'content-type': 'text/plain' } })).status, 415);
+    assert.equal((await r.a.call('PUT', r.url, { json: { sessionId: ID.live, pad: 'x'.repeat(5000) } })).status, 413);
+    assert.deepEqual(r.lookups, [], 'a bad request never reaches the lookup');
+    await refused(r, 400, 'invalid', await r.put({}));
+  });
+
+  test('(−) a malformed key is 400, an unregistered one 404; GET and POST are 405 with Allow: PUT, DELETE', async () => {
+    const r = await rig();
+    for (const key of ['..%2Fx', 'ABCDEF0123456789', 'short']) assert.equal((await r.a.call('PUT', `/api/app/projects/${key}/orchestrator`, { json: { sessionId: ID.ended } })).status, 400, key);
+    assert.equal((await r.a.call('PUT', '/api/app/projects/0123456789abcdef/orchestrator', { json: { sessionId: ID.ended } })).status, 404);
+    assert.equal((await r.a.call('DELETE', '/api/app/projects/0123456789abcdef/orchestrator')).status, 404);
+    const get = await r.a.call('GET', r.url);
+    assert.equal(get.status, 405);
+    assert.match(get.headers.allow, /PUT/);
+    assert.match(get.headers.allow, /DELETE/);
+    assert.equal((await r.a.call('POST', r.url, { json: {} })).status, 405);
+    assert.deepEqual(r.lookups, []);
+  });
+
+  test('(−) the secret still guards the routes: without it PUT and DELETE are 403 and nothing happens', async () => {
+    const r = await rig();
+    assert.equal((await r.a.call('PUT', r.url, { json: { sessionId: ID.ended }, headers: { 'x-nika-app': null } })).status, 403);
+    assert.equal((await r.a.call('DELETE', r.url, { headers: { 'x-nika-app': null } })).status, 403);
+    assert.deepEqual(r.lookups, []);
+  });
+
+  test('(−) a lookup that cannot read the transcript index is 503 index_unavailable: not "not found", and nothing is written', async () => {
+    const r = await rig({ ctxOver: { findSession: async () => { throw Object.assign(new Error('x'), { code: 'EINDEX' }); } } });
+    await refused(r, 503, 'index_unavailable', await r.put({ sessionId: ID.ended }));
+  });
+
+  test('(−) the project is removed while the request runs: 404 and no tmux command', async () => {
+    const r = await rig();
+    r.a.ctx.findSession = async (id) => { await removeProject(r.world.project.key, r.world.env); return r.table.get(id); };
+    await refused(r, 404, 'not_found', await r.put({ sessionId: ID.live }));
+  });
+
+  // --- GET /api/app/projects: the orchestrator field (C1) ---
+
+  test('(+) GET /projects: no saved orchestrator is null and nothing is looked up', async () => {
+    const r = await rig();
+    const res = await r.a.call('GET', '/api/app/projects');
+    assert.equal(res.body.projects[0].orchestrator, null);
+    assert.deepEqual(r.lookups, []);
+  });
+
+  test('(+) GET /projects: a live pick, an ended pick (from the 24 h snapshot, no extra lookup) and a pick outside the snapshot (from the index)', async () => {
+    const snap = { groups: [{ key: 'k', agents: [
+      { id: ID.live, name: 'planner', live: true, state: 'idle', pane: { id: '%6' } },
+      { id: ID.ended, name: 'old-planner', live: false, state: 'ended', pane: { id: '%6' } },
+    ] }] };
+    const r = await rig({ depsOver: { collect: async () => snap } });
+    const get = async () => (await r.a.call('GET', '/api/app/projects')).body.projects[0].orchestrator;
+    await setOrchestrator(r.world.project.key, ID.live, r.world.env);
+    assert.deepEqual(await get(), { sessionId: ID.live, state: 'live', name: 'planner', pane: '%6' });
+    await setOrchestrator(r.world.project.key, ID.ended, r.world.env);
+    assert.deepEqual(await get(), { sessionId: ID.ended, state: 'ended', name: 'old-planner', pane: null }, 'an ended session shows no pane');
+    assert.deepEqual(r.lookups, [], 'both came from the snapshot');
+    r.table.set(ID.unknown, { agent: { id: ID.unknown, name: 'ancient', live: false, pane: null }, group: r.group });
+    await setOrchestrator(r.world.project.key, ID.unknown, r.world.env);
+    assert.deepEqual(await get(), { sessionId: ID.unknown, state: 'ended', name: 'ancient', pane: null });
+    assert.deepEqual(r.lookups, [ID.unknown], 'outside the window: the index is asked, whatever the age');
+  });
+
+  test('(+) GET /projects: a pick nika has no transcript for is gone', async () => {
+    const r = await rig();
+    await setOrchestrator(r.world.project.key, ID.unknown, r.world.env);
+    const o = (await r.a.call('GET', '/api/app/projects')).body.projects[0].orchestrator;
+    assert.deepEqual(o, { sessionId: ID.unknown, state: 'gone', name: null, pane: null });
+  });
+
+  test('(−) GET /projects: a lookup that fails is neither gone nor ended: the field is null', async () => {
+    const r = await rig({ ctxOver: { findSession: async () => { throw new Error('index unreadable'); } } });
+    await setOrchestrator(r.world.project.key, ID.unknown, r.world.env);
+    const res = await r.a.call('GET', '/api/app/projects');
+    assert.equal(res.status, 200);
+    assert.equal(res.body.projects[0].orchestrator, null);
+  });
+
+  test('(+) POST orchestrator/start relays the module\'s answer, `cleared: gone` included, and the module gets the shared ctx (with findSession)', async () => {
+    const r = await rig({ depsOver: { startOrchestrator: async () => ({ status: 200, body: { pane: '%3', session: 's', sessionId: ID.live, created: true, cleared: 'gone' } }) } });
+    const res = await r.a.call('POST', '/api/app/orchestrator/start', { json: { project: r.world.project.key } });
+    assert.deepEqual(res.body, { pane: '%3', session: 's', sessionId: ID.live, created: true, cleared: 'gone' });
+    assert.equal(typeof r.a.ctx.findSession, 'function');
+  });
+
+  test('(−) the browser tier (no app handler) has no orchestrator route and carries no orchestrator field', async () => {
+    const server = createServer({ config: fx.config, exec: fakeExec(), token: 'tok', now: () => NOW, version: '0.0.0' });
+    await new Promise((res) => server.listen(0, '127.0.0.1', res));
+    servers.push(server);
+    const port = server.address().port;
+    const get = (method, p) => new Promise((resolve, reject) => {
+      const q = http.request({ host: '127.0.0.1', port, method, path: p, headers: { host: `127.0.0.1:${port}`, 'x-nika-app': SECRET, ...(method === 'GET' ? {} : { 'content-type': 'application/json', 'content-length': '2' }) } }, (res) => {
+        let data = '';
+        res.on('data', (c) => { data += c; });
+        res.on('end', () => resolve({ status: res.statusCode, data }));
+      });
+      q.on('error', reject);
+      q.end(method === 'GET' ? undefined : '{}');
+    });
+    for (const [method, p] of [['PUT', `/api/app/projects/${w.project.key}/orchestrator`], ['DELETE', `/api/app/projects/${w.project.key}/orchestrator`], ['GET', '/api/app/projects']]) {
+      assert.equal((await get(method, p)).status, 404, `${method} ${p}`);
+    }
+    const agents = await get('GET', '/api/agents?since=all');
+    assert.equal(agents.status, 200);
+    assert.doesNotMatch(agents.data, /"orchestrator"\s*:/, 'no orchestrator field in any group or agent');
+    assert.doesNotMatch(agents.data, /orchestratorSessionId/);
+  });
+});
+
+describe('orchestrator pick end to end: the real store, model and orchestrate modules over the synthetic machine', () => {
+  const worlds = [];
+  // a second synthetic machine whose folders are real paths: on macOS the temp dir is a symlink, a session's cwd is a real path
+  // (the shell resolves it) and a registered project is stored as its realpath, so the two only match this way
+  const real = (() => {
+    const saved = process.env.TMPDIR;
+    process.env.TMPDIR = fs.realpathSync(os.tmpdir());
+    try {
+      return makeFixture();
+    } finally {
+      if (saved === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = saved;
+    }
+  })();
+  after(() => {
+    worlds.forEach((x) => x.cleanup());
+    cleanup(real);
+  });
+
+  async function machine() {
+    const world = await makeWorld();
+    worlds.push(world);
+    const project = await addProject(real.repo, world.env); // the fixture repo: its sessions are SID.idle (live, pane %6), SID.busy (live, a worktree), SID.ended, SID.dead and SID.old (20 days old)
+    const tmuxExec = fakeTmux({ panes: [{ id: '%6', session: 'work', window: 2, windowName: 'main', command: 'claude' }] });
+    const collectExec = fakeExec();
+    const ctxOver = { exec: tmuxExec, findSession: (id) => findSession(id, { config: real.config, exec: collectExec, now: NOW }) };
+    const a = await boot({ world, ctxOver, deps: makeDeps({ startOrchestrator, collect: async () => ({ groups: [] }) }) });
+    return { world, project, tmuxExec, a, url: `/api/app/projects/${project.key}/orchestrator`, pick: () => getOrchestrator(project.key, world.env) };
+  }
+
+  test('(+) an ended session from before the time window is picked from the transcript index, shown as ended, and Start resumes it with claude --resume', async () => {
+    const m = await machine();
+    const put = await m.a.call('PUT', m.url, { json: { sessionId: SID.old } });
+    assert.deepEqual([put.status, put.body.orchestrator.state, put.body.orchestrator.name], [200, 'ended', 'Ancient']);
+    assert.equal(await m.pick(), SID.old);
+    const list = (await m.a.call('GET', '/api/app/projects')).body.projects.find((p) => p.key === m.project.key);
+    assert.deepEqual(list.orchestrator, { sessionId: SID.old, state: 'ended', name: 'Ancient', pane: null });
+    const start = await m.a.call('POST', '/api/app/orchestrator/start', { json: { project: m.project.key } });
+    assert.deepEqual([start.status, start.body.created, start.body.sessionId], [200, true, SID.old]);
+    const run = m.tmuxExec.of('new-session')[0];
+    assert.deepEqual(run.slice(run.indexOf('--')), ['--', CLAUDE, '--resume', SID.old, '--model', 'claude-fable-5-1', '-n', run[run.indexOf('-s') + 1]]);
+    assert.equal(await m.pick(), SID.old, 'the pick is the same session');
+  });
+
+  test('(+) a live session of the project is picked, its pane tagged, and Start then answers that pane instead of starting a second orchestrator', async () => {
+    const m = await machine();
+    const put = await m.a.call('PUT', m.url, { json: { sessionId: SID.idle } });
+    assert.deepEqual([put.status, put.body.orchestrator.state, put.body.orchestrator.pane], [200, 'live', '%6']);
+    assert.deepEqual(m.tmuxExec.panes.find((p) => p.id === '%6').role, 'orchestrator');
+    assert.equal(m.tmuxExec.panes.find((p) => p.id === '%6').depth, '1');
+    const before = m.tmuxExec.calls.length;
+    const start = await m.a.call('POST', '/api/app/orchestrator/start', { json: { project: m.project.key } });
+    assert.deepEqual(start.body, { pane: '%6', session: 'work', sessionId: SID.idle, created: false });
+    assert.equal(m.tmuxExec.calls.length, before, 'no tmux command');
+  });
+
+  test('(−) a session of a project that is not registered, a worktree-free plain folder, is other_project; an unknown id is 404', async () => {
+    const m = await machine();
+    assert.equal((await m.a.call('PUT', m.url, { json: { sessionId: SID.other } })).body.error, 'other_project');
+    assert.equal((await m.a.call('PUT', m.url, { json: { sessionId: '99999999-9999-4999-8999-999999999999' } })).status, 404);
+    assert.equal(await m.pick(), null);
+    assert.deepEqual(m.tmuxExec.calls, []);
+  });
+
+  test('(−) a pick whose transcript is deleted is gone in the list, and Start forgets it, starts fresh and says cleared: gone', async () => {
+    const m = await machine();
+    await setOrchestrator(m.project.key, '88888888-8888-4888-8888-888888888888', m.world.env);
+    const list = (await m.a.call('GET', '/api/app/projects')).body.projects.find((p) => p.key === m.project.key);
+    assert.deepEqual(list.orchestrator, { sessionId: '88888888-8888-4888-8888-888888888888', state: 'gone', name: null, pane: null });
+    const start = await m.a.call('POST', '/api/app/orchestrator/start', { json: { project: m.project.key } });
+    assert.deepEqual([start.status, start.body.cleared, start.body.created], [200, 'gone', true]);
+    assert.notEqual(await m.pick(), '88888888-8888-4888-8888-888888888888');
+    assert.equal(await m.pick(), start.body.sessionId, 'the fresh session is the new pick');
   });
 });
 

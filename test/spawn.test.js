@@ -531,7 +531,7 @@ describe('tmux format expansion (T6)', () => {
     const fresh = fakeTmux({ panes: [] });
     const present = fakeTmux({ panes: [{ id: '%1', session, window: 0, windowName: 'zsh', command: 'zsh' }] });
     assert.equal((await startOrchestrator(project.key, w.ctx(fresh))).body.created, true); // new-session
-    assert.equal((await startOrchestrator(project.key, w.ctx(present))).body.created, true); // new-window
+    assert.equal((await startOrchestrator(project.key, w.ctx(present, { findSession: async () => null }))).body.created, true); // new-window (the first start saved a pick; this lookup finds no transcript for it)
     assert.equal((await spawnAgent({ project: project.key, name: 'builder-1', model: 'sonnet', brief: 'Do the thing.' }, w.ctx(fresh))).status, 200); // split-window, select-pane
     const values = (flag) => [fresh, present].flatMap((e) => e.calls.flatMap((c) => c.map((a, i) => (c[i - 1] === flag ? a : null)).filter((a) => a !== null)));
     for (const flag of ['-s', '-n', '-T']) {

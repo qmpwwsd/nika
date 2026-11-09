@@ -7,7 +7,7 @@ import { configDir } from './paths.js';
 import { ensureDir, writeAtomic } from './fwrite.js';
 import { readHead } from './fsafe.js';
 import { clean } from './text.js';
-import { PROJECT_KEY, MODEL_ID, RC_PREFIX, PLUGIN_NAME, PERMISSION_MODES, PANE_PLACEMENTS } from './ids.js';
+import { PROJECT_KEY, UUID, MODEL_ID, RC_PREFIX, PLUGIN_NAME, PERMISSION_MODES, PANE_PLACEMENTS } from './ids.js';
 
 const CONFIG_MAX = 256 * 1024;
 const PLUGINS_MAX = 200;
@@ -45,7 +45,11 @@ function pluginList(v) {
   return ok ? [...new Set(v)] : undefined;
 }
 
-/** perProject: { <PROJECT_KEY>: { plugins?: string[] } }. A bad key, entry or list drops that entry; other inner keys are dropped (0.4 adds more). An empty list or an empty entry is "none" and is not kept. */
+/**
+ * perProject: { <PROJECT_KEY>: { plugins?: string[], orchestratorSessionId?: UUID } }. A bad key, entry or plugin list drops that
+ * entry; a bad id drops just the id (with a warning); other inner keys are dropped (0.4 adds more). An entry that holds neither
+ * a non-empty plugin list nor an id is "none" and is not kept.
+ */
 function perProject(v, warn) {
   if (!isPlainObject(v)) return undefined;
   const out = {};
@@ -57,8 +61,11 @@ function perProject(v, warn) {
       warn(`${at} dropped`);
       continue;
     }
-    for (const k of Object.keys(entry)) if (k !== 'plugins') warn(`unknown key ${at}.${clean(k, 40) ?? '?'} dropped`);
-    if (plugins?.length) out[key] = { plugins }; // an empty list is a valid "none": no entry (the entry holds only `plugins` until 0.4)
+    for (const k of Object.keys(entry)) if (k !== 'plugins' && k !== 'orchestratorSessionId') warn(`unknown key ${at}.${clean(k, 40) ?? '?'} dropped`);
+    const id = hasOwn(entry, 'orchestratorSessionId') ? entry.orchestratorSessionId : undefined;
+    const idOk = typeof id === 'string' && UUID.test(id);
+    if (hasOwn(entry, 'orchestratorSessionId') && !idOk) warn(`${at}.orchestratorSessionId invalid, dropped`);
+    if (plugins?.length || idOk) out[key] = { ...(plugins?.length ? { plugins } : {}), ...(idOk ? { orchestratorSessionId: id } : {}) };
   }
   return out;
 }
@@ -255,5 +262,32 @@ export function updateProjectConfig(key, patch, env = process.env) {
     else delete config.perProject[key];
     await writeConfig(config, env);
     return { plugins };
+  });
+}
+
+/** The project's saved orchestrator session id (a UUID), or null. Throws EINVAL on a bad key. */
+export async function getOrchestrator(key, env = process.env) {
+  if (!isProjectKey(key)) throw bad('invalid project key');
+  return (await loadConfig(env)).config.perProject[key]?.orchestratorSessionId ?? null;
+}
+
+/**
+ * Saves (a UUID) or forgets (null) the project's orchestrator session id; the plugin list beside it is untouched. Runs in the
+ * serial queue. Throws EINVAL (bad key, or an id that is neither null nor a lowercase UUID) or ENOENT (not a registered project);
+ * returns the new id or null.
+ */
+export function setOrchestrator(key, id, env = process.env) {
+  return serial(async () => {
+    if (!isProjectKey(key)) throw bad('invalid project key');
+    if (id !== null && !(typeof id === 'string' && UUID.test(id))) throw bad('orchestrator must be a session id (a UUID) or null');
+    const { config } = await loadConfig(env);
+    if (!config.projects.some((p) => p.key === key)) throw Object.assign(new Error('project is not registered'), { code: 'ENOENT' });
+    const entry = { ...config.perProject[key] };
+    if (id) entry.orchestratorSessionId = id;
+    else delete entry.orchestratorSessionId;
+    if (Object.keys(entry).length) config.perProject[key] = entry;
+    else delete config.perProject[key];
+    await writeConfig(config, env);
+    return id;
   });
 }

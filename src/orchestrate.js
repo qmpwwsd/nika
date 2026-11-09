@@ -2,9 +2,9 @@
 // Leaf module: the router and the CLI call startOrchestrator() with injected deps; every subprocess goes through
 // ctx.exec (execFile, fixed argv arrays, never a shell). src/spawn.js reuses the helpers exported here.
 import crypto from 'node:crypto';
-import { loadConfig } from './store.js';
+import { loadConfig, setOrchestrator } from './store.js';
 import { clean } from './text.js';
-import { PROJECT_KEY, PANE_ID, TMUX_SESSION, RC_PREFIX, RC_NAME, CLAUDE_COMMAND } from './ids.js';
+import { PROJECT_KEY, UUID, PANE_ID, TMUX_SESSION, RC_PREFIX, RC_NAME, CLAUDE_COMMAND } from './ids.js';
 
 /** `{ status, body }` with the common error body of contract §2. */
 export const fail = (status, error, message) => ({ status, body: { error, message } });
@@ -22,12 +22,13 @@ export const tmux = (ctx, ...args) => ctx.exec(ctx.tmuxBin, ['-u', ...args]);
 /**
  * Marks a pane nika created: `@nika-role` = orchestrator | agent so the orchestrator is never confused with the agents
  * split into its window; for an agent also `@nika-agent` = `<project key>/<name>`, so maxAgents and the duplicate-name
- * check count tmux's own record instead of agent-writable files (F5). Best effort: the pane already runs, an untagged one
- * is just not counted and never reused.
+ * check count tmux's own record instead of agent-writable files (F5); `depth` (1, 2 or 3, a constant) sets `@nika-depth`: nika puts it
+ * on a session it adopted as the orchestrator. Best effort: the pane already runs, an untagged one is just not counted and never reused.
  */
-export async function tagPane(ctx, pane, role, agentTag) {
+export async function tagPane(ctx, pane, role, agentTag, depth) {
   await tmux(ctx, 'set-option', '-p', '-t', pane, '@nika-role', role).catch(() => {});
   if (agentTag) await tmux(ctx, 'set-option', '-p', '-t', pane, '@nika-agent', agentTag).catch(() => {});
+  if ([1, 2, 3].includes(depth)) await tmux(ctx, 'set-option', '-p', '-t', pane, '@nika-depth', String(depth)).catch(() => {});
 }
 
 /** Maps a failed tmux call to an error response. */
@@ -63,27 +64,64 @@ export const launchMode = (mode) => (mode === 'default' ? 'manual' : mode);
  */
 export const tmuxLiteral = (s) => String(s).replaceAll('#', '##');
 
-/** Pane tagged `orchestrator` in the session's `orchestrator` window that runs claude, or null (agent panes never match). */
+/**
+ * Whether a session's group (src/model.js `findSession`) is this project's: the registered key, else the project's folder. The
+ * same match the page makes (buildGroups) and the PUT route checks, so a saved id of another project's session is refused here too.
+ */
+export const inProject = (group, project) => Boolean(group) && (group.key === project.key || (group.root != null && group.root === project.dir));
+
+/**
+ * claude's own arguments for a project's orchestrator (everything after the binary): the one place that builds them. With
+ * `resume` the saved session `sessionId` continues (`--resume`); otherwise `sessionId` names the new session (`--session-id`).
+ * Throws EINVAL for an id that is not a UUID (it becomes one argv element and must never read as a flag) and for
+ * bypassPermissions (rules constraint 12).
+ */
+export function launchArgv(config, project, { sessionId, resume = false }) {
+  const invalid = (message) => Object.assign(new Error(message), { code: 'EINVAL' });
+  if (typeof sessionId !== 'string' || !UUID.test(sessionId)) throw invalid('session id must be a UUID');
+  if (config.permissionMode === 'bypassPermissions') throw invalid('bypassPermissions is never allowed');
+  const session = sessionNameFor(project);
+  const rc = config.remoteControl.enabled ? reduceRc(config.remoteControl.prefix || session, project.key, true) : null;
+  return [
+    resume ? '--resume' : '--session-id', sessionId, '--model', config.models.orchestrator, ...permissionFlags(config.permissionMode),
+    '-n', session, ...(rc ? [`--remote-control=${rc}`] : []),
+  ];
+}
+
+// every pane of the project's tmux session, with its window: the pane's own record of who started it (`@nika-role`)
+const PANE_LIST = '#{pane_id}\t#{pane_current_command}\t#{@nika-role}\t#{window_name}';
+
+/**
+ * Pane tagged `orchestrator` in the tmux session that runs claude, or null: the one in the `orchestrator` window first, else
+ * any other window (a session the owner's own orchestrator was adopted into). Untagged panes and agent panes never match.
+ */
 async function findOrchestratorPane(ctx, session) {
   let stdout;
   try {
-    // `:=orchestrator` is an exact window match; `:orchestrator` would also match a window named `orchestrator-x`
-    ({ stdout } = await tmux(ctx, 'list-panes', '-t', `=${session}:=orchestrator`, '-F', '#{pane_id}\t#{pane_current_command}\t#{@nika-role}'));
+    // `=<session>` is an exact session match; `-s` lists every window of it
+    ({ stdout } = await tmux(ctx, 'list-panes', '-s', '-t', `=${session}`, '-F', PANE_LIST));
   } catch (err) {
     if (err?.code === 'ENOENT') throw err;
     return null;
   }
+  let adopted = null;
   for (const line of String(stdout).split('\n')) {
-    const [id, command = '', role = ''] = line.split('\t');
-    if (PANE_ID.test(id ?? '') && role.trim() === 'orchestrator' && CLAUDE_COMMAND.test(command.trim())) return id;
+    const [id, command = '', role = '', window = ''] = line.split('\t');
+    if (!PANE_ID.test(id ?? '') || role.trim() !== 'orchestrator' || !CLAUDE_COMMAND.test(command.trim())) continue;
+    if (window.trim() === 'orchestrator') return id;
+    adopted ??= id;
   }
-  return null;
+  return adopted;
 }
 
 /**
+ * Starts the project's orchestrator, or answers the one that already runs. The project's saved orchestrator (its pick, a
+ * session id) decides which: live → its pane; ended → `claude --resume <id>`; gone (no transcript) → forgotten, a fresh start
+ * and `cleared: 'gone'` in the answer. A fresh start saves its own session id as the pick.
  * @param {string} projectKey registered PROJECT_KEY
- * @param {object} ctx { env, exec, tmuxBin, claudeBin, started: Map<paneId, { key, name, sessionId, role, mode }> }
- * @returns {Promise<{ status: number, body: object }>} 200 { pane, session, sessionId, created }
+ * @param {object} ctx { env, exec, tmuxBin, claudeBin, started: Map<paneId, { key, name, sessionId, role, mode }>,
+ *                       findSession(id) → { agent, group } | null (src/model.js; needed only while a pick is saved) }
+ * @returns {Promise<{ status: number, body: object }>} 200 { pane, session, sessionId, created, cleared? }
  */
 export async function startOrchestrator(projectKey, ctx) {
   if (typeof projectKey !== 'string' || !PROJECT_KEY.test(projectKey)) return fail(400, 'invalid', 'invalid project key');
@@ -94,14 +132,33 @@ export async function startOrchestrator(projectKey, ctx) {
   if (!project) return fail(404, 'not_found', 'project is not registered');
   if (config.permissionMode === 'bypassPermissions') return fail(400, 'invalid', 'bypassPermissions is never allowed');
 
+  // the saved orchestrator: a lookup that fails proves nothing (never "gone"), so it ends the request without forgetting anything
+  const pick = config.perProject[projectKey]?.orchestratorSessionId ?? null;
+  let saved = null;
+  if (pick) {
+    if (typeof ctx.findSession !== 'function') return fail(500, 'internal', 'session lookup unavailable');
+    try {
+      saved = await ctx.findSession(pick);
+    } catch {
+      return fail(503, 'index_unavailable', "nika couldn't check the saved orchestrator, so nothing was started");
+    }
+  }
+  // a session of another project can only be here through a hand-edited config.json: never resumed or opened, treated like a gone one
+  if (saved && !inProject(saved.group, project)) saved = null;
+  if (saved?.agent.live) {
+    const pane = saved.agent.pane;
+    if (!PANE_ID.test(pane?.id ?? '') || !CLAUDE_COMMAND.test(String(pane.command ?? '').trim())) {
+      return fail(409, 'no_pane', 'The saved orchestrator is running outside tmux, so nika cannot open it.');
+    }
+    return { status: 200, body: { pane: pane.id, session: pane.session, sessionId: pick, created: false } };
+  }
+  const cleared = pick && !saved ? { cleared: 'gone' } : {};
+  if (cleared.cleared) await setOrchestrator(projectKey, null, ctx.env).catch(() => {}); // best effort: its transcript is gone either way
+
   const session = sessionNameFor(project);
-  const sessionId = crypto.randomUUID();
-  const rc = config.remoteControl.enabled ? reduceRc(config.remoteControl.prefix || session, projectKey, true) : null;
-  const flags = [
-    '--session-id', sessionId, '--model', config.models.orchestrator, ...permissionFlags(config.permissionMode),
-    '-n', session, ...(rc ? [`--remote-control=${rc}`] : []),
-  ];
-  const run = ['-P', '-F', '#{pane_id}', '--', ctx.claudeBin, ...flags];
+  const resume = Boolean(saved);
+  const sessionId = resume ? pick : crypto.randomUUID();
+  const run = ['-P', '-F', '#{pane_id}', '--', ctx.claudeBin, ...launchArgv(config, project, { sessionId, resume })];
 
   try {
     let exists = true;
@@ -113,7 +170,7 @@ export async function startOrchestrator(projectKey, ctx) {
     }
     if (exists) {
       const pane = await findOrchestratorPane(ctx, session);
-      if (pane) return { status: 200, body: { pane, session, sessionId: ctx.started?.get(pane)?.sessionId ?? null, created: false } };
+      if (pane) return { status: 200, body: { pane, session, sessionId: ctx.started?.get(pane)?.sessionId ?? null, created: false, ...cleared } };
     }
     const { stdout } = await tmux(ctx, ...(exists
       ? ['new-window', '-t', `=${session}:`, '-n', 'orchestrator', '-c', tmuxLiteral(project.dir), ...run]
@@ -122,7 +179,9 @@ export async function startOrchestrator(projectKey, ctx) {
     if (!PANE_ID.test(pane)) return fail(502, 'tmux_failed', 'tmux did not return a pane id');
     ctx.started?.set(pane, { key: projectKey, name: 'orchestrator', sessionId, role: 'orchestrator', mode: launchMode(config.permissionMode) });
     await tagPane(ctx, pane, 'orchestrator');
-    return { status: 200, body: { pane, session, sessionId, created: true } };
+    // the pane already runs: failing to remember it (the project was removed meanwhile) must not fail the start
+    if (!resume) await setOrchestrator(projectKey, sessionId, ctx.env).catch(() => {});
+    return { status: 200, body: { pane, session, sessionId, created: true, ...cleared } };
   } catch (err) {
     return tmuxFail(err);
   }

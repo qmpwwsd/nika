@@ -123,15 +123,15 @@ latency. `--optimize-for-size` saved about 10 MB more but made history requests 
 | `keys.js` | Keystrokes and bracketed paste into a tmux pane. |
 | `mirror.js` | `capture-pane` output turned into rows of whitelisted styled spans; a `fresh` capture skips the 250 ms cache for the control actions. |
 | `mode.js` | Pure parsers over mirror rows: the permission mode from the footer and the permission prompt. They fail closed. |
-| `model.js` | `collect()`: merges every source into agent records and groups them by project. |
+| `model.js` | `collect()`: merges every source into agent records and groups them by project; `findSession(id)` finds one session of any age in the transcript index (the saved orchestrator's lookup). |
 | `models.js` | The static model catalog behind the model dropdowns (`GET /api/app/models`). |
-| `orchestrate.js` | Starts a project's orchestrator in a tmux session. |
+| `orchestrate.js` | Starts or resumes a project's orchestrator in a tmux session (`launchArgv` builds its claude flags in one place) and finds an adopted orchestrator pane. |
 | `paths.js` | nika's own config and state dirs (XDG). |
 | `rules.js` | Renders, previews, hashes and applies the orchestration rules to a project. |
 | `server.js` | The HTTP server both tiers share: Host check, static files with the CSP, the 0.1 routes, a mount hook for the app tier. |
 | `session-control.js` | The four controls on a live pane: switch the mode, End, run a slash command, answer a prompt. One lock per pane, keys only through `keys.js`, fail closed, never kills. |
 | `spawn.js` | `spawnAgent()` splits a pane; `runAgent()` is the `_run-agent` wrapper that runs `claude` with the safety flags. |
-| `store.js` | The validated `config.json` and the project registry. |
+| `store.js` | The validated `config.json`, the project registry and each project's saved orchestrator id. |
 | `text.js` | `clean()` and `cleanBlock()`: strip controls and bidi marks from agent-controlled text. |
 | `tmuxerr.js` | Maps a failed tmux call to a contract error body. |
 | `util.js` | `mapLimit`: bounded concurrency. `lru`: a Map capped in size (see Memory bounds). |
@@ -158,10 +158,10 @@ latency. `--optimize-for-size` saved about 10 MB more but made history requests 
 | `tokens.css`, `app.css`, `session.css` | Design tokens and styles (light, dark, system). |
 | `api.js` | The only client of the app tier: takes the secret once and sends `X-Nika-App`. In the browser tier it refuses to run. |
 | `app-copy.js` | The Add to Applications banner: which banner `appCopy` shows and its fixed copy. Pure; the two POSTs live in `project.js`. |
-| `dash-model.js` | The dashboard's Show ended rule (`endedPlan`, `resetEndedState`) and the sidebar's Projects and Detected lists (`sidebarModel`). Pure, both tiers. |
+| `dash-model.js` | The dashboard's Show ended rule (`endedPlan`, `resetEndedState`), the sidebar's Projects and Detected lists (`sidebarModel`) and the orchestrator's state and badge (`orchState`, `savedPick`, `otherRunning`, `roleTag`, `ROLE_TAGS`). Pure, both tiers. |
 | `app.js` | Main page: shell, dashboard (in the app tier: mode tags, the row menu's End and the Add to Applications banner), router, the poll loop and the Keyboard shortcuts keys. Runs in both tiers. |
 | `ui.js` | Shared state and widgets for the main page. |
-| `dom.js` | `h()`: builds DOM with `textContent`, never parses markup. |
+| `dom.js` | `h()`: builds DOM with `textContent`, never parses markup; `roleTagEl()` draws the orchestrator badge. |
 | `end-dialog.js` | The End-session dialog, shared by the session window and the dashboard row menu. |
 | `modes.js` | Permission modes in the UI: labels, icons, the switcher's state and the dashboard's mode map and tag. |
 | `models-ui.js` | The model dropdown shared by the session window, Settings and the spawn sheet: groups from the catalog, the Custom ID field and its `MODEL_ID` check. |

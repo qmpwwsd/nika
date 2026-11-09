@@ -48,3 +48,65 @@ export function noMatchText({ q, showEnded, endedMatch }) {
     ? `Nothing live matches “${q}”. Tick Show ended to include ended agents, or clear the filter.`
     : `Nothing matches “${q}”. Clear the filter to see every agent.`;
 }
+
+/* ---------- the orchestrator (0.4, O1) ---------- */
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const PANE = /^%\d{1,6}$/;
+const ORCH_STATES = ['live', 'ended', 'gone'];
+const NO_ORCH = { kind: 'none', id: null, name: null, pane: null };
+const paneOf = (v) => (typeof v === 'string' && PANE.test(v) ? v : null);
+const nameOf = (v) => (typeof v === 'string' ? v : null);
+/** A depth from the page's own snapshot: a whole number of 2 or more is a sub-orchestrator; a missing or odd one is a 0.3 pane, main. */
+const subDepth = (a) => Number.isInteger(a.depth) && a.depth >= 2;
+const isMain = (a) => a.live === true && a.role === 'orchestrator' && !subDepth(a);
+
+/**
+ * The project's saved orchestrator, whatever it is doing: `{ id, state: 'live' | 'ended' | 'gone', name, pane }`, or null (no
+ * project, no field, an older server). Only the contract's shape (C1) counts: a bad id or state gives null, and a name or a pane
+ * that is not the right kind of text is dropped.
+ */
+export function savedPick(project) {
+  const o = project?.orchestrator;
+  if (!o || typeof o !== 'object' || !ORCH_STATES.includes(o.state) || typeof o.sessionId !== 'string' || !UUID.test(o.sessionId)) return null;
+  return { id: o.sessionId, state: o.state, name: nameOf(o.name), pane: paneOf(o.pane) };
+}
+
+/**
+ * What the project's first button says: `{ kind: 'live' | 'ended' | 'gone' | 'none', id, name, pane }`. The server's
+ * `project.orchestrator` (contract C1, app tier) decides when it holds a saved orchestrator, except that a main orchestrator that
+ * runs wins over a saved one that does not (the most recent one: Open, never a second Resume). Without the field (an older server,
+ * a failed load, no saved orchestrator) the snapshot `g` decides: `live` with a main orchestrator, else `none`. Anything the field
+ * holds that is not exactly the contract's shape is ignored.
+ */
+export function orchState(project, g) {
+  const pick = savedPick(project);
+  const saved = pick && { kind: pick.state, id: pick.id, name: pick.name, pane: pick.pane };
+  if (saved?.kind === 'live') return saved;
+  const running = (g?.agents ?? []).filter(isMain).sort((a, b) => (b.lastActivity ?? 0) - (a.lastActivity ?? 0))[0];
+  if (running) return { kind: 'live', id: running.id, name: nameOf(running.name), pane: paneOf(running.pane?.id) };
+  return saved ?? NO_ORCH;
+}
+
+/**
+ * Another session of the group `g` that runs as the project's orchestrator (a live session tagged orchestrator, main or sub, or the
+ * live saved one `pickId`) other than `id`; the most recent one: `{ id, name }` or null. The server refuses Set and Resume while
+ * one runs (409 orchestrator_running), so the row menu is off with the same reason.
+ */
+export function otherRunning(g, pickId, id) {
+  const hit = (g?.agents ?? []).filter((a) => a.live === true && a.id !== id && (a.role === 'orchestrator' || (Boolean(pickId) && a.id === pickId)))
+    .sort((a, b) => (b.lastActivity ?? 0) - (a.lastActivity ?? 0))[0];
+  return hit ? { id: hit.id, name: nameOf(hit.name) } : null;
+}
+
+/** The badge next to a session's name: `'main'` (runs, tagged orchestrator), `'sub'` (depth 2 or more), `'saved'` (not running, the saved orchestrator) or null. */
+export function roleTag(a, pickId) {
+  if (a.live === true && a.role === 'orchestrator') return subDepth(a) ? 'sub' : 'main';
+  return a.live !== true && Boolean(pickId) && a.id === pickId ? 'saved' : null;
+}
+
+/** Words of each badge: `long` and `short` (the narrow rows show the short one), the class and the title. dom.js roleTagEl() draws it. */
+export const ROLE_TAGS = {
+  main: { cls: 'tag', long: 'orchestrator', short: 'orch', title: 'orchestrator' },
+  sub: { cls: 'tag sub', long: 'sub-orchestrator', short: 'sub-orch', title: 'sub-orchestrator' },
+  saved: { cls: 'tag muted', long: 'orchestrator', short: 'orch', title: "Saved orchestrator. Resume it from the header or this row's menu." },
+};

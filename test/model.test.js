@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { makeFixture, cleanup, fakeExec, SID, NOW, jsonl } from './helpers.js';
-import { collect, modelLabel, shellQuote, bridgeUrl } from '../src/model.js';
+import { collect, findSession, modelLabel, shellQuote, bridgeUrl } from '../src/model.js';
 import { parseSince } from '../src/config.js';
 import { keyFor } from '../src/store.js';
 
@@ -315,5 +315,51 @@ describe('helpers', () => {
 
   test('(−) parseSince rejects junk, zero and absurd windows', () => {
     for (const bad of ['abc', '0d', '7x', '99999d', '', '-1d', '7d;rm']) assert.equal(parseSince(bad), null, bad);
+  });
+});
+
+describe('collect with include, and findSession (one session by id, whatever its age)', () => {
+  const NOBODY = '99999999-9999-4999-8999-999999999999';
+  const ofSession = (id, over = {}) => findSession(id, { config: fx.config, exec: fakeExec(), now: NOW, ...over });
+
+  test('(+) include adds a session outside the time window; without it the session is not listed', async () => {
+    assert.equal(byId(await snap(DAY), SID.old), undefined, '20 days old, window of one day');
+    const s = await collect({ config: fx.config, exec: fakeExec(), now: NOW, sinceMs: DAY, include: [SID.old] });
+    const a = byId(s, SID.old);
+    assert.equal(a.live, false);
+    assert.equal(a.state, 'ended');
+    assert.equal(a.name, 'Ancient');
+  });
+
+  test('(+) findSession returns the agent and the group of its project, for an ended session older than any window', async () => {
+    const hit = await ofSession(SID.old);
+    assert.equal(hit.agent.id, SID.old);
+    assert.equal(hit.agent.live, false);
+    assert.equal(hit.group.key, keyFor(fx.repo));
+    assert.equal(hit.group.root, fx.repo);
+    assert.ok(hit.group.agents.includes(hit.agent));
+  });
+
+  test('(+) findSession finds a live session with its pane, and the group lists the other live sessions of the project but no old ones', async () => {
+    const hit = await ofSession(SID.idle);
+    assert.deepEqual([hit.agent.live, hit.agent.state, hit.agent.pane.id], [true, 'idle', '%6']);
+    assert.deepEqual(hit.group.agents.map((a) => a.id).sort(), [SID.busy, SID.idle].sort(), 'the live sessions of the project (a worktree folds in) and nothing older: the window is zero');
+    const other = await ofSession(SID.old);
+    assert.ok(other.group.agents.some((a) => a.id === SID.idle), 'a live session of the project is in its group');
+    assert.ok(!other.group.agents.some((a) => a.id === SID.ended), 'an old ended one is not');
+  });
+
+  test('(−) an id nika has no transcript or live registry entry for is null', async () => {
+    assert.equal(await ofSession(NOBODY), null);
+    assert.equal(await ofSession('../../etc/passwd'), null, 'the id is only ever a lookup key, never a path');
+  });
+
+  test('(−) a dead registry entry without a transcript is not a session either', async () => {
+    assert.equal(await ofSession(SID.reused), null);
+  });
+
+  test('(−) when nika cannot read its transcript index, "not found" is a guess: findSession throws instead of answering null', async () => {
+    const config = { ...fx.config, claudeDir: path.join(fx.root, 'no-such-claude-dir') };
+    await assert.rejects(ofSession(SID.old, { config }), { code: 'EINDEX' });
   });
 });

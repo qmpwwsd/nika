@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { configDir, stateDir, reportsDir, backupsDir } from '../src/paths.js';
-import { defaults, loadConfig, saveConfig, addProject, removeProject, listProjects, updateSettings, getProjectConfig, updateProjectConfig, keyFor } from '../src/store.js';
+import { defaults, loadConfig, saveConfig, addProject, removeProject, listProjects, updateSettings, getProjectConfig, updateProjectConfig, getOrchestrator, setOrchestrator, keyFor } from '../src/store.js';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nika-store-'));
 after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -481,5 +481,111 @@ describe('per-project config (0.3.4: perProject[key].plugins)', () => {
     assert.deepEqual(r.config.perProject, { [KEY]: { plugins: ['ok@demo-market'] } }, 'an empty list is "none": no entry');
     assert.equal(r.warnings.length, 6, r.warnings.join('\n'));
     assert.ok(r.warnings.some((w) => /unknown key perProject\.0123456789abcdef\.models/.test(w)), r.warnings.join('\n'));
+  });
+});
+
+describe('per-project orchestrator pick (0.4: perProject[key].orchestratorSessionId)', () => {
+  const KEY = '0123456789abcdef';
+  const ID = '11111111-1111-4111-8111-111111111111';
+  const ID2 = '22222222-2222-4222-8222-222222222222';
+  const LOWER = 'abababab-abab-4bab-8bab-abababababab'; // has letters, so its upper-case form differs
+  const cfgFile = (env) => { fs.mkdirSync(configDir(env), { recursive: true, mode: 0o700 }); return path.join(configDir(env), 'config.json'); };
+  const project = async (env, name = 'repo') => {
+    const dir = path.join(root, env.NIKA_CONFIG_DIR.split(path.sep).at(-2), name);
+    fs.mkdirSync(dir, { recursive: true });
+    return addProject(dir, env);
+  };
+
+  test('(+) set, get and clear through null: the id is saved at 0600 and the entry goes with it', async () => {
+    const env = fresh('op1');
+    const p = await project(env);
+    assert.equal(await getOrchestrator(p.key, env), null);
+    assert.equal(await setOrchestrator(p.key, ID, env), ID);
+    assert.equal(await getOrchestrator(p.key, env), ID);
+    assert.deepEqual(JSON.parse(fs.readFileSync(cfgFile(env), 'utf8')).perProject, { [p.key]: { orchestratorSessionId: ID } });
+    assert.equal(fs.statSync(cfgFile(env)).mode & 0o777, 0o600);
+    assert.equal(await setOrchestrator(p.key, ID2, env), ID2, 'replacing a pick is allowed');
+    assert.equal(await setOrchestrator(p.key, null, env), null);
+    assert.equal(await getOrchestrator(p.key, env), null);
+    assert.deepEqual((await loadConfig(env)).config.perProject, {});
+  });
+
+  test('(+) an entry that holds only an orchestrator id survives load and save; so does one beside a plugins list', async () => {
+    const env = fresh('op2');
+    fs.writeFileSync(cfgFile(env), JSON.stringify({ perProject: { [KEY]: { orchestratorSessionId: ID }, fedcba9876543210: { plugins: ['a@demo-market'], orchestratorSessionId: ID2 } } }));
+    const r = await loadConfig(env);
+    assert.deepEqual(r.warnings, []);
+    assert.deepEqual(r.config.perProject, { [KEY]: { orchestratorSessionId: ID }, fedcba9876543210: { plugins: ['a@demo-market'], orchestratorSessionId: ID2 } });
+    await updateSettings({ limits: { maxAgents: 2 } }, env);
+    assert.deepEqual(JSON.parse(fs.readFileSync(cfgFile(env), 'utf8')).perProject, r.config.perProject, 'written back unchanged');
+  });
+
+  test('(+) the pick and the plugin list do not overwrite each other, and an empty plugin list keeps the entry while a pick is set', async () => {
+    const env = fresh('op3');
+    const p = await project(env);
+    await updateProjectConfig(p.key, { plugins: ['a@demo-market'] }, env);
+    await setOrchestrator(p.key, ID, env);
+    assert.deepEqual((await loadConfig(env)).config.perProject[p.key], { plugins: ['a@demo-market'], orchestratorSessionId: ID });
+    await updateProjectConfig(p.key, { plugins: [] }, env);
+    assert.deepEqual((await loadConfig(env)).config.perProject, { [p.key]: { orchestratorSessionId: ID } });
+    await updateProjectConfig(p.key, { plugins: ['b@demo-market'] }, env);
+    await setOrchestrator(p.key, null, env);
+    assert.deepEqual((await loadConfig(env)).config.perProject, { [p.key]: { plugins: ['b@demo-market'] } });
+  });
+
+  test('(+) removeProject deletes the pick with the entry; concurrent picks for two projects both survive', async () => {
+    const env = fresh('op4');
+    const a = await project(env, 'one');
+    const b = await project(env, 'two');
+    await Promise.all([setOrchestrator(a.key, ID, env), setOrchestrator(b.key, ID2, env), updateSettings({ limits: { maxAgents: 4 } }, env)]);
+    const { config } = await loadConfig(env);
+    assert.deepEqual(config.perProject, { [a.key]: { orchestratorSessionId: ID }, [b.key]: { orchestratorSessionId: ID2 } });
+    assert.equal(config.limits.maxAgents, 4);
+    assert.equal(await removeProject(a.key, env), true);
+    assert.deepEqual((await loadConfig(env)).config.perProject, { [b.key]: { orchestratorSessionId: ID2 } });
+  });
+
+  test('(−) an id that is not a lowercase UUID is EINVAL (undefined is not a clear), and nothing is written', async () => {
+    const env = fresh('op5');
+    const p = await project(env);
+    await setOrchestrator(p.key, ID, env);
+    for (const bad of ['', 'x', LOWER.toUpperCase(), ID.slice(1), `${ID}0`, '../../etc/passwd', `${ID}\n`, 5, true, [], {}, undefined]) {
+      await assert.rejects(setOrchestrator(p.key, bad, env), { code: 'EINVAL' }, JSON.stringify(bad));
+    }
+    assert.equal(await getOrchestrator(p.key, env), ID, 'the saved pick is untouched by refused updates');
+  });
+
+  test('(−) a bad project key is EINVAL for get and set; a key that is not registered is ENOENT and nothing is written', async () => {
+    const env = fresh('op6');
+    for (const key of ['', 'short', '0123456789ABCDEF', '../../etc/x', '__proto__', 5, null, undefined]) {
+      await assert.rejects(getOrchestrator(key, env), { code: 'EINVAL' }, String(key));
+      await assert.rejects(setOrchestrator(key, ID, env), { code: 'EINVAL' }, String(key));
+    }
+    await assert.rejects(setOrchestrator(KEY, ID, env), { code: 'ENOENT' });
+    await assert.rejects(setOrchestrator(KEY, null, env), { code: 'ENOENT' }, 'clearing an unregistered project is refused too');
+    assert.equal(fs.existsSync(cfgFile(env)), false, 'no config.json was created for a refused update');
+  });
+
+  test('(−) a hand-edited file: a bad id is dropped with a warning and the rest of the entry stays; an entry left empty goes', async () => {
+    const env = fresh('op7');
+    fs.writeFileSync(cfgFile(env), JSON.stringify({
+      perProject: {
+        [KEY]: { plugins: ['ok@demo-market'], orchestratorSessionId: '../../x' },
+        fedcba9876543210: { orchestratorSessionId: LOWER.toUpperCase() },
+        '0000000000000000': { orchestratorSessionId: 5 },
+      },
+    }));
+    const r = await loadConfig(env);
+    assert.deepEqual(r.config.perProject, { [KEY]: { plugins: ['ok@demo-market'] } });
+    assert.equal(r.warnings.length, 3, r.warnings.join('\n'));
+    assert.ok(r.warnings.every((w) => /orchestratorSessionId/.test(w)), r.warnings.join('\n'));
+  });
+
+  test('(−) updateProjectConfig still refuses the pick as a patch key: it is set only through setOrchestrator', async () => {
+    const env = fresh('op8');
+    const p = await project(env);
+    await assert.rejects(updateProjectConfig(p.key, { orchestratorSessionId: ID }, env), { code: 'EINVAL' });
+    await assert.rejects(updateSettings({ perProject: { [p.key]: { orchestratorSessionId: ID } } }, env), { code: 'EINVAL' });
+    assert.equal(await getOrchestrator(p.key, env), null);
   });
 });

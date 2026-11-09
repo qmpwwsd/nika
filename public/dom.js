@@ -1,5 +1,7 @@
 // Tiny DOM helper shared by every page. Strings become text nodes or textContent, never parsed as markup.
 // `on*` keys register event listeners; every other key is a plain attribute (never a style or a URL built from data).
+import { ROLE_TAGS } from './dash-model.js';
+
 export function h(tag, attrs, ...children) {
   const e = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs ?? {})) {
@@ -27,4 +29,16 @@ export function icon(name, cls = 'ic') {
   u.setAttribute('href', `#i-${name}`);
   s.append(u);
   return s;
+}
+
+/**
+ * The badge next to a session's name: `kind` is dash-model.js roleTag()'s answer ('main', 'sub', 'saved'); anything else gives null.
+ * The long word is clipped on narrow rows (still read by screen readers) and the short one, hidden from them, shows instead.
+ */
+export function roleTagEl(kind) {
+  if (typeof kind !== 'string' || !Object.hasOwn(ROLE_TAGS, kind)) return null;
+  const t = ROLE_TAGS[kind];
+  return h('span', { class: t.cls, title: t.title },
+    h('span', { class: 'tag-l', text: t.long }),
+    h('span', { class: 'tag-s', 'aria-hidden': 'true', text: t.short }));
 }

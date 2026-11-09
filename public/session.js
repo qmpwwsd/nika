@@ -4,8 +4,9 @@
 // URL: session.html?session=<UUID>&pane=<%n>&project=<key>   (pane is sent as %25n, i.e. encodeURIComponent('%n')).
 // Rules: every string from the server is rendered with textContent (h() from dom.js, applyMirror from mirror-render.js);
 // no innerHTML, no inline handlers, element.style only for numbers this file computes. Contracts: docs/contracts/api-app.md.
-import { h, icon } from './dom.js';
+import { h, icon, roleTagEl } from './dom.js';
 import { isApp, appFetch, getJSON, applyTheme } from './api.js';
+import { roleTag, savedPick } from './dash-model.js';
 import { toRenderModel, applyMirror, planSend, planPaste, chunkText, keyForEvent, KEY_LABEL, arrowEcho } from './mirror-render.js';
 import { MODE_META, MODE_TARGETS, modeKey, modeEl, bypassTag, switcherState, modeNote, switchFailure } from './modes.js';
 import {
@@ -132,7 +133,25 @@ function claudeUrl(raw) {
 // ---- header and agent poll ---------------------------------------------------------------------------------------
 
 // A is what the agent poll said: name, status kind, the attention reason (why a 'Needs you' agent waits), the model id and label.
-const A = { name: 'the agent', kind: null, attention: '', modelId: '', projectLooked: false };
+const A = { name: 'the agent', kind: null, attention: '', modelId: '', projectLooked: false, pickId: null, pickAsked: false };
+
+/** The role badge next to the title (design 0.4 section 1.1, the same markup as the rows): orchestrator, sub-orchestrator or, for a session that ended, saved. */
+function renderRole(agent) {
+  const tag = roleTagEl(roleTag(agent, A.pickId));
+  const el = $('sess-role');
+  el.replaceChildren(...(tag ? [tag] : []));
+  el.hidden = !tag;
+}
+
+/** App tier, once per window and only for a session that ended: is it the project's saved orchestrator? (A running one shows its tmux tags.) True when it has just learned the answer. */
+async function loadPick(agent) {
+  if (!isApp || !projectKey || A.pickAsked || agent.live) return;
+  A.pickAsked = true;
+  const r = await call('/api/app/projects');
+  if (r.status !== 200 || !Array.isArray(r.body?.projects)) return false;
+  A.pickId = savedPick(r.body.projects.find((p) => p?.key === projectKey))?.id ?? null;
+  return true;
+}
 
 /** The Back link names the project only when this window came from one (its href is then /#project/<key>); otherwise it stays "Dashboard". */
 function applyBackLabel(group) {
@@ -160,6 +179,8 @@ function applyAgent(agent, group) {
   $('sess-pane').textContent = typeof pane === 'string' && PANE_ID.test(pane) ? pane : '';
   $('sess-branch').hidden = !agent.gitBranch;
   $('sess-branch').textContent = agent.gitBranch ? String(agent.gitBranch) : '';
+  renderRole(agent);
+  loadPick(agent).then((learned) => { if (learned) renderRole(agent); }, () => {});
 
   const link = $('claude-link');
   const url = claudeUrl(agent.bridgeUrl);

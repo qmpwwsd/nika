@@ -6,7 +6,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { send, json, readBody } from './server.js';
-import { loadConfig, removeProject, updateSettings, getProjectConfig, updateProjectConfig, TEMPLATE_NAME } from './store.js';
+import { loadConfig, removeProject, updateSettings, getProjectConfig, updateProjectConfig, getOrchestrator, setOrchestrator, TEMPLATE_NAME } from './store.js';
 import { openRegular, isRealDir } from './fsafe.js';
 import { configDir, stateDir } from './paths.js';
 import { clean } from './text.js';
@@ -16,6 +16,7 @@ import { MODE_TARGETS, bypassWindow, modeFromRows, promptFromRows } from './mode
 import { MODEL_CATALOG } from './models.js';
 import { matches as etagMatches } from './mirror.js';
 import { createSessionControl, promptSig, insertShown } from './session-control.js';
+import { tagPane, inProject } from './orchestrate.js';
 
 const ELIGIBILITY_TTL_MS = 1000; // pane list + live-agent snapshot, so a 4 Hz capture does not run collect() 4 times a second
 const TEMPLATES_MAX = 50;
@@ -84,7 +85,8 @@ async function listTemplates(dir) {
 /**
  * @param {object} o
  * @param {string} o.secret  the 43-char secret received on stdin
- * @param {object} o.ctx     { env, exec, tmuxBin, claudeBin, nikaArgv, claudeDir, now, started }; handed to the modules as is
+ * @param {object} o.ctx     { env, exec, tmuxBin, claudeBin, nikaArgv, claudeDir, now, started, findSession(id) → { agent, group } | null
+ *                           (src/model.js: one session by id whatever its age; throws EINDEX when the index is unreadable) }; handed to the modules as is
  * @param {object} o.deps    { version, collect() → snapshot, listPanes() → { panes, error }, readHistory, listPlugins, rulesState,
  *                           preview, apply, spawnAgent, startOrchestrator, mirror, keys, picker, listCommands;
  *                           appCopy { state(), install(), dismiss() } (src/appcopy.js bound to this install);
@@ -119,7 +121,7 @@ export function createAppApi({ secret, ctx, deps }) {
       // pane id → registry state of its live agent; two live agents claiming one pane is ambiguous, so never idle (null)
       const live = new Map();
       for (const g of snapshot?.groups ?? []) for (const a of g.agents) if (a.live && a.pane?.id) live.set(a.pane.id, live.has(a.pane.id) ? null : (a.state ?? null));
-      const e = { panes, error, live };
+      const e = { panes, error, live, snapshot };
       // a reused pane id starts fresh; a failed tmux list or registry read proves nothing, so one blip keeps the memory
       // (losing vim memory would let End type into a vim normal-mode input without `i` first)
       if (!error && snapshot) for (const id of [...held.keys(), ...vim.keys()]) if (!isEligible(e, id)) { held.delete(id); vim.delete(id); }
@@ -185,8 +187,34 @@ export function createAppApi({ secret, ctx, deps }) {
 
   // --- projects ---
 
-  async function toProject(p) {
-    return { key: p.key, dir: p.dir, name: p.name, addedAt: p.addedAt ?? null, rules: await deps.rulesState(p) };
+  /** The project's saved orchestrator for GET /projects (contract C1), checked against the transcript index, not the time window. */
+  async function orchestratorOf(id) {
+    if (!id) return null;
+    let hit = null;
+    // the cached 24 h snapshot first (shared with /modes): a pick that was used lately is in it and costs nothing extra
+    const snapshot = (await loadEligibility().catch(() => null))?.snapshot;
+    for (const g of snapshot?.groups ?? []) {
+      const agent = g.agents.find((a) => a.id === id);
+      if (agent) {
+        hit = { agent };
+        break;
+      }
+    }
+    if (!hit) {
+      try {
+        hit = await ctx.findSession(id);
+      } catch {
+        return null; // the index could not be read: neither gone nor ended, so the page falls back to the snapshot
+      }
+    }
+    if (!hit) return { sessionId: id, state: 'gone', name: null, pane: null };
+    const { agent } = hit;
+    return { sessionId: id, state: agent.live ? 'live' : 'ended', name: agent.name ?? null, pane: agent.live ? agent.pane?.id ?? null : null };
+  }
+
+  async function toProject(p, config) {
+    const cfg = config ?? (await loadConfig(ctx.env)).config;
+    return { key: p.key, dir: p.dir, name: p.name, addedAt: p.addedAt ?? null, rules: await deps.rulesState(p), orchestrator: await orchestratorOf(cfg.perProject[p.key]?.orchestratorSessionId) };
   }
 
   async function projectOf(body) {
@@ -233,10 +261,10 @@ export function createAppApi({ secret, ctx, deps }) {
     }
   });
 
-  route('GET', /^\/api\/app\/projects$/, 0, async () => ({
-    status: 200,
-    body: { projects: await Promise.all((await loadConfig(ctx.env)).config.projects.map(toProject)) },
-  }));
+  route('GET', /^\/api\/app\/projects$/, 0, async () => {
+    const { config } = await loadConfig(ctx.env);
+    return { status: 200, body: { projects: await Promise.all(config.projects.map((p) => toProject(p, config))) } };
+  });
 
   route('POST', /^\/api\/app\/projects\/pick$/, CAP.small, async () => {
     const reqId = deps.picker.start();
@@ -254,6 +282,62 @@ export function createAppApi({ secret, ctx, deps }) {
     const key = param(params[0], PROJECT_KEY);
     if (!key || !(await removeProject(key, ctx.env))) return err(404, 'not_found', 'project is not registered');
     return { status: 200, body: { removed: true } };
+  });
+
+  // --- the project's orchestrator (0.4): which session is it, saved by id; never a path, only a session nika itself indexed ---
+
+  const summary = (id, agent) => ({ sessionId: id, state: agent.live ? 'live' : 'ended', name: agent.name ?? null, pane: agent.live ? agent.pane?.id ?? null : null });
+
+  route('PUT', /^\/api\/app\/projects\/([^/]+)\/orchestrator$/, CAP.small, async ({ params, body }) => {
+    const { project, failure } = await projectOf({ project: param(params[0], PROJECT_KEY) });
+    if (failure) return failure;
+    if (Object.keys(body).length !== 1 || typeof body.sessionId !== 'string' || !UUID.test(body.sessionId)) return err(400, 'invalid', 'body must be { sessionId: a session id }');
+    const id = body.sessionId;
+    let found;
+    try {
+      found = await ctx.findSession(id);
+    } catch {
+      return err(503, 'index_unavailable', "nika can't read its list of sessions right now. Nothing changed.");
+    }
+    if (!found) return err(404, 'not_found', "nika can't find that session any more. Its transcript may have been deleted. Nothing changed.");
+    const { agent, group } = found;
+    if (!inProject(group, project)) return err(409, 'other_project', "That session belongs to another project, so it can't be this project's orchestrator. Nothing changed.");
+    if (agent.live && agent.role === 'agent') return err(409, 'agent_session', "That session is an agent nika started, so it can't be the orchestrator. Nothing changed.");
+    // another main orchestrator that runs: a pane tagged orchestrator, or the saved pick while it runs
+    const pick = await getOrchestrator(project.key, ctx.env);
+    if (group.agents.some((a) => a.live && a.id !== id && (a.role === 'orchestrator' || a.id === pick))) {
+      return err(409, 'orchestrator_running', "Another session is running as this project's orchestrator. End it first, then choose another. Nothing changed.");
+    }
+    // a live session needs a tmux pane that really runs claude: the tags go on that pane
+    const pane = agent.live ? agent.pane : null;
+    if (agent.live && !(PANE_ID.test(pane?.id ?? '') && CLAUDE_COMMAND.test(String(pane.command ?? '').trim()))) {
+      return err(409, 'no_pane', "This session isn't running in tmux, so nika can't make it the orchestrator. End it, then use Resume as orchestrator.");
+    }
+    try {
+      await setOrchestrator(project.key, id, ctx.env);
+    } catch (e) {
+      if (e?.code === 'ENOENT') return err(404, 'not_found', 'project is not registered'); // removed while this request was in flight
+      throw e;
+    }
+    if (pane) {
+      await tagPane(ctx, pane.id, 'orchestrator', undefined, 1);
+      ctx.started.set(pane.id, { key: project.key, name: 'orchestrator', sessionId: id, role: 'orchestrator' });
+      eligibility = null; // the pane is eligible at once
+    }
+    return { status: 200, body: { orchestrator: summary(id, agent) } };
+  });
+
+  // forgets the id only: a live pane keeps its tags until it ends
+  route('DELETE', /^\/api\/app\/projects\/([^/]+)\/orchestrator$/, CAP.small, async ({ params }) => {
+    const { project, failure } = await projectOf({ project: param(params[0], PROJECT_KEY) });
+    if (failure) return failure;
+    try {
+      await setOrchestrator(project.key, null, ctx.env);
+    } catch (e) {
+      if (e?.code === 'ENOENT') return err(404, 'not_found', 'project is not registered');
+      throw e;
+    }
+    return { status: 200, body: { orchestrator: null } };
   });
 
   // --- settings and plugins ---

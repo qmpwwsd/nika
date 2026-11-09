@@ -12,7 +12,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { main } from '../src/cli.js';
 import { reportsDir } from '../src/paths.js';
-import { listProjects } from '../src/store.js';
+import { listProjects, getOrchestrator, setOrchestrator } from '../src/store.js';
 import { fakeTmux, makeWorld, TMUX } from './tmux-fake.js';
 
 const APP_ID = 'io.github.qmpwwsd.nika';
@@ -905,7 +905,8 @@ describe('orchestrate', () => {
     assert.deepEqual(spawn.calls[0].args, ['-u', 'attach-session', '-t', '=My-App']);
     assert.equal(spawn.calls[0].opts.stdio, 'inherit');
     assert.equal(spawn.calls[0].opts.shell, false);
-    assert.equal((await cli(['orchestrate'], at(w, { exec: tmuxExec([]), spawn: spawnLog(1), tty: true }))).code, 1, 'a failed attach is exit 1');
+    const w2 = await world(); // a start saves its session as the pick: the second run needs a project of its own
+    assert.equal((await cli(['orchestrate'], at(w2, { exec: tmuxExec([]), spawn: spawnLog(1), tty: true }))).code, 1, 'a failed attach is exit 1');
   });
 
   test('(+) a running orchestrator is reused', async () => {
@@ -916,6 +917,60 @@ describe('orchestrate', () => {
     assert.match(r.out, /^pane: %1$/m);
     assert.match(r.out, /already running/);
     assert.equal(exec.tmux.of('new-session').length + exec.tmux.of('new-window').length, 0);
+  });
+
+  describe('the saved orchestrator (0.4)', () => {
+    const PICK = '11111111-1111-4111-8111-111111111111';
+    /** A transcript of `id` under the world's Claude dir, so nika's index knows the session (it is not running: no registry entry). */
+    const transcript = (w, id) => {
+      const dir = path.join(w.root, 'claude', 'projects', '-synthetic-project');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, `${id}.jsonl`), `${JSON.stringify({ type: 'user', cwd: w.project.dir, sessionId: id, timestamp: '2026-11-01T10:00:00.000Z', message: { role: 'user', content: 'synthetic' } })}\n`);
+    };
+
+    test('(+) a fresh start saves the session it passes to claude as the project\'s pick', async () => {
+      const w = await world();
+      const exec = tmuxExec([]);
+      assert.equal((await cli(['orchestrate', '--detached'], at(w, { exec }))).code, 0);
+      const argv = exec.tmux.of('new-session')[0];
+      const id = argv[argv.indexOf('--session-id') + 1];
+      assert.equal(await getOrchestrator(w.project.key, w.env), id);
+    });
+
+    test('(+) an ended pick is resumed with claude --resume <id>', async () => {
+      const w = await world();
+      await setOrchestrator(w.project.key, PICK, w.env);
+      transcript(w, PICK);
+      const exec = tmuxExec([]);
+      const r = await cli(['orchestrate', '--detached'], at(w, { exec }));
+      assert.equal(r.code, 0, r.err);
+      const argv = exec.tmux.of('new-session')[0];
+      assert.deepEqual(argv.slice(argv.indexOf('--') + 2, argv.indexOf('--') + 4), ['--resume', PICK]);
+      assert.equal(await getOrchestrator(w.project.key, w.env), PICK);
+    });
+
+    test('(−) a pick nika cannot check (the transcript index is unreadable) is exit 1: nothing starts and the pick stays', async () => {
+      const w = await world();
+      await setOrchestrator(w.project.key, PICK, w.env);
+      const exec = tmuxExec([]);
+      const r = await cli(['orchestrate', '--detached'], at(w, { exec }));
+      assert.equal(r.code, 1);
+      assert.match(r.err, /saved orchestrator/);
+      assert.deepEqual(exec.tmux.calls.map((c) => c[2]), ['list-panes'], 'only the read-only listing of the lookup: nothing is created or tagged');
+      assert.equal(await getOrchestrator(w.project.key, w.env), PICK);
+    });
+
+    test('(−) a pick whose transcript is gone (the index is readable) is forgotten and a new orchestrator starts', async () => {
+      const w = await world();
+      await setOrchestrator(w.project.key, PICK, w.env);
+      transcript(w, '22222222-2222-4222-8222-222222222222');
+      const exec = tmuxExec([]);
+      const r = await cli(['orchestrate', '--detached'], at(w, { exec }));
+      assert.equal(r.code, 0, r.err);
+      const argv = exec.tmux.of('new-session')[0];
+      assert.equal(argv.includes('--session-id'), true);
+      assert.notEqual(await getOrchestrator(w.project.key, w.env), PICK);
+    });
   });
 
   test('(−) an unregistered cwd is refused (3), two directories are a usage error (2), missing tmux or claude is exit 1', async () => {

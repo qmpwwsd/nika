@@ -554,6 +554,8 @@ Grid: status 104 · name ≥120 · model 64 · what (prompt + branch chip) · ac
 
 Container widths: ≤ 860 px hides model and pane columns and shows status as glyph only; ≤ 600 px moves the prompt to a second line.
 
+**(0.4) Role badge** after the name (`roleTagEl(roleTag(a, pickId))`; markup and words in §3.16). At ≤ 860 px the long word is clipped like the mode label (still read by screen readers) and a short one shows.
+
 ### 3.4 Project group / card
 
 | State | Look |
@@ -562,6 +564,7 @@ Container widths: ≤ 860 px hides model and pane columns and shows status as gl
 | H/F | name link underline / ring |
 | unregistered repo | "not a nika project" muted + [Add project] instead of the actions |
 | limit reached | Spawn shows `aria-disabled` + "3/3 running" note |
+| **(0.4)** orchestrator | the first button follows `orchState`: **Open orchestrator** (live), **Resume orchestrator** (ended), **Start orchestrator** (none, or gone with its own title). §3.16 |
 | 0 | see agent row 0 |
 
 ### 3.5 Form fields
@@ -666,6 +669,7 @@ every other allow-listed key. The prompt gates the Shift-Tab and Enter chips had
 ### 3.12 Menus, tabs, skeletons
 
 - Row menu ("⋯"): disclosure button (`aria-expanded`, `aria-controls`) + list of buttons; Esc closes and returns focus; one open at a time; items: Copy resume command, Show report, Open in claude.ai ↗, Focus pane %n in tmux.
+- **(0.4)** `menuEl` items may carry `fk` (`data-fk`), `group: true` (`li.grp`: a rule above the item) and `reason` (the item is `aria-disabled="true"` with the reason as its `title`; it stays focusable, a click shows the reason as an error toast and runs nothing). The app tier adds the orchestrator items of §3.16 between "Focus pane" and "End session…", each group set off by a rule.
 - Tabs (session narrow layout): `role="tablist"` / `tab` / `aria-selected`; Left/Right move, Home/End jump (spec; mock uses click).
 - Skeleton: `--surface-2` → `--surface-3` sweep 1.4 s; flat with reduced motion; `aria-busy="true"` on the container, plus "Loading agents…" `sr-only`.
 
@@ -755,6 +759,47 @@ scrolls); a help line; footer Cancel · **Save plugins**.
 **Settings save bar.** The bar (Save · Discard) is hidden until the form differs from what was loaded, and hidden again when
 the values are put back. Showing it announces "Unsaved changes. Save or discard them at the bottom." Discard repopulates the
 form, focuses the page heading and announces "Changes discarded." While the bar is hidden Enter and Mod+Enter send nothing.
+
+### 3.16 Pick or resume an orchestrator (0.4)
+
+A project remembers one orchestrator by session id (`perProject.<key>.orchestratorSessionId`, app tier only). Start orchestrator saves the session it starts, so the header can **Resume** it after it ends. Any other session of the project can be made the orchestrator (**Set**), and **Stop using** forgets the id (it never ends a session or removes a tag).
+
+**Badge** (`span.tag[title] > span.tag-l + span.tag-s[aria-hidden]`, the same markup in rows and the session header). Never colour alone: each state has its own word.
+
+| Kind | When | Class | Words |
+|---|---|---|---|
+| main | live, tagged orchestrator, depth 1 or none | `.tag` | "orchestrator" (short "orch") |
+| sub | live, tagged orchestrator, depth 2 or more | `.tag.sub` (outlined) | "sub-orchestrator" (short "sub-orch") |
+| saved | not live, it is the project's saved orchestrator | `.tag.muted` | "orchestrator"; title "Saved orchestrator. Resume it from the header or this row's menu." |
+
+The browser tier shows main and sub only (they come from tmux tags); it never shows saved, which needs the project's pick.
+
+**Row menu** (app tier, registered projects only): Copy resume command · Show report · Open in claude.ai ↗ · Focus pane · *rule* · Set as orchestrator · Resume as orchestrator · Stop using as orchestrator · *rule* · End session…
+
+| Row | Set | Resume | Stop using |
+|---|---|---|---|
+| live main orchestrator, is the pick | – | – | shown |
+| live main orchestrator, not the pick (a 0.3 pane) | shown | – | – |
+| live sub-orchestrator, live nika agent | – | – | – |
+| live session, no nika role, in tmux | shown | – | – |
+| live session, no nika role, no pane | shown, off | – | – |
+| ended, is the pick | – | shown | shown |
+| ended, not the pick | shown | shown | – |
+
+Items are `aria-disabled` with their reason (a click shows it): offline or no tmux / claude (`blockedReason`; Set on an ended session and Stop using need only the server); R1 "<other> is running as this project's orchestrator. End it first, then choose another." (Set and Resume while another orchestrator runs); R2 "This session isn't running in tmux, so nika can't make it the orchestrator. End it, then use Resume as orchestrator." (Set on a live session without a pane).
+
+**Header button** (project header and dashboard group header): **Open orchestrator** (live; link to the session window, title "Open <name>"), **Resume orchestrator** (ended; `i-resume`; title "Resume <name> in tmux"), **Start orchestrator** (none; gone: title "The saved orchestrator is gone. Starts a new one."). The project header's ⋯ menu gains "Stop using <name> as orchestrator" (gone: "Stop using the saved orchestrator") after "Copy folder path" whenever a pick is saved.
+
+**Gone alert** (project page, top of the agents area): `div.alert[data-kind="warn"]` with the warning icon, "The saved orchestrator is gone: its transcript was deleted, so it can't be resumed. Start orchestrator starts a new one." and **Stop using it** (`btn.link`). It is state, not an event, so it has no `role="alert"`. Stop using it moves focus to the page heading.
+
+**Toasts** (names cut at 40 characters; a session with no name is "the saved session"; `Saving…` spinner while a request runs, one request at a time):
+- Set, live: "<name> is now the orchestrator for <project>." + **Open**. Set, ended: "<name> is the orchestrator for <project>. Resume it from the header when you need it." + **Resume now**. Replacing a pick adds " (was <old>)" after the project.
+- Resume: "Resuming <name> as the orchestrator for <project>…", then the session window opens; when the save worked but the start failed: "<name> is saved as the orchestrator, but it didn't start: <reason> Try Resume orchestrator in the header."
+- Stop using: live "<name> is no longer the saved orchestrator. It keeps running until you end it."; ended or gone "<project> has no saved orchestrator now. Start orchestrator starts a new one."
+- Start with a gone pick: the server forgets it and starts fresh; "Started a new orchestrator. The saved one was gone."
+- Refusals: not_found "nika can't find that session any more. Its transcript may have been deleted. Nothing changed."; other_project "That session belongs to another project, so it can't be this project's orchestrator. Nothing changed."; no_pane and orchestrator_running as R2 and R1; agent_session and the rest show the server's message; unreachable "Could not reach the nika server."
+
+Test hooks (`data-fk`): header `resume:<key>`, `start:<key>`, `orch:<key>`; header menu `orch-stop-proj`; alert `orch-gone`, `orch-forget`; row items `orch-set:<scope>:<id>`, `orch-resume:<scope>:<id>`, `orch-stop:<scope>:<id>`.
 
 ## 4. Keyboard model
 
@@ -1043,7 +1088,7 @@ ANSI 0 on the dark surface is deliberately close to the background: programs use
 
 ### 5.5 Screen-reader text for status
 
-Row: "reviewer-2, Needs you: Asking to run a command, model opus, demo-api, 4 minutes ago, pane %14". Session header: "builder-1, Working, demo-api, sonnet, pane %12". Tray: "demo-api — 1 needs you, 1 waiting, 2 working".
+Row: "reviewer-2, Needs you: Asking to run a command, model opus, demo-api, 4 minutes ago, pane %14". Session header: "builder-1, Working, demo-api, sonnet, pane %12" (an orchestrator: "planner, orchestrator, Working, demo-api, …"; the badge's long word is always read, the short one is `aria-hidden`). Tray: "demo-api — 1 needs you, 1 waiting, 2 working".
 
 ### 5.6 Target size (2.5.8)
 
@@ -1110,6 +1155,10 @@ B: centred column max 760 px; drawer pushes ≥ 1180 px and overlays below. C: l
 | Folder picker busy | toast "A folder picker is already open. Finish or cancel it first." |
 | Folder picker cancelled | toast "No folder chosen. Nothing was added." |
 | Times | "now" (< 1 min), "N min", "N h", "N d"; absolute time in `title` |
+| **(0.4)** Saved orchestrator is gone (transcript deleted) | header Start orchestrator + the project-page alert (§3.16); Start forgets the id and starts fresh |
+| **(0.4)** Saved orchestrator outside the time window | the header still says Resume (the project list checks the transcript index, not the window); its row is just not listed |
+| **(0.4)** Two main orchestrators live (a 0.3 leftover) | Open orchestrator uses the saved one if it runs, else the most recent; Set and Resume are off (R1) |
+| **(0.4)** Older server (no `orchestrator` field) | the snapshot decides: Open or Start, never Resume or the saved badge |
 
 ---
 
@@ -1184,7 +1233,7 @@ The edge and the focus ring are two shadows in one declaration, so focus adds th
 
 ### 9.2 Header
 
-Order: back crumb · `h1` name · status pill · **mode tag** (`#sess-mode`) · model · pane · branch · spacer · Open in
+Order: back crumb · `h1` name · **role badge** (`#sess-role`, §3.16; hidden when there is none) · status pill · **mode tag** (`#sess-mode`) · model · pane · branch · spacer · Open in
 claude.ai · Keyboard shortcuts. **(built amendment 2026-11-09 (0.3.3))** The mode switcher moved under the message
 box (§9.3); the `.bar-end` wrapper is gone and `.bar-tools` holds the two buttons.
 

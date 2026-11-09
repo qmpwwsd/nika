@@ -80,15 +80,46 @@ just replaced (the page says to quit and reopen nika). `dismiss` → `200 { "dis
 | `POST /api/app/projects/pick` | empty object | `202 { "reqId": "<UUID>" }`; **429 busy** while a picker is open |
 | `GET /api/app/projects/pick/:reqId` | reqId `UUID`, must be the open request | `200 { "state": "pending" }` · `200 { "state": "done", "project": Project }` · `200 { "state": "cancelled" }` · 404 unknown |
 | `DELETE /api/app/projects/:key` | key `PROJECT_KEY` | `200 { "removed": true }` · 404 |
+| `PUT /api/app/projects/:key/orchestrator` (0.4) | `{ "sessionId": "<UUID>" }`, JSON only, `CAP.small` | `200 { "orchestrator": Orchestrator }` · errors below |
+| `DELETE /api/app/projects/:key/orchestrator` (0.4) | – | `200 { "orchestrator": null }` · 404 `not_found` (project not registered) |
 
 `Project`:
 ```json
 { "key": "0123456789abcdef", "dir": "<abs realpath>", "name": "<basename, clean()>", "addedAt": "<ISO>",
   "rules": { "state": "none" | "nika" | "foreign" | "outdated", "settingsIgnored": true, "git": true } }
 ```
+`orchestrator` (0.4, C1; app tier only, never on :3335): `null` (no saved orchestrator, or the transcript index could not be read) or
+```json
+{ "sessionId": "<UUID>", "state": "live" | "ended" | "gone", "name": "<clean(name)>" | null, "pane": "%3" | null }
+```
+It is checked against the transcript index, not the 24 h window: `live` = the session runs (its `pane` is set when tmux shows it),
+`ended` = its transcript exists and it does not run (it can be resumed), `gone` = the id is saved but nika's index has no transcript
+for it. The picker's `project` carries the same field.
+
 `rules.state`: `none` no `rules/orchestration.md`; `nika` written by nika and current; `outdated` written by nika from an
 older template; `foreign` a file nika did not write (apply needs the explicit `overwriteForeign` flag).
 `settingsIgnored`: `.claude/settings.local.json` is covered by the project's `.gitignore`.
+
+**Saved orchestrator (0.4).** `PUT …/orchestrator` saves one session of the project as its orchestrator
+(`perProject.<key>.orchestratorSessionId`, a lowercase UUID). The id is never a path: it must be a session nika itself indexed
+(`findSession`: the transcript index, not the window). Order of checks, each answered before anything is written or any tmux
+command runs:
+
+| Status | `error` | When |
+|---|---|---|
+| 415 / 413 | `unsupported_media` / `too_large` | not `application/json`, or a body over `CAP.small` |
+| 400 | `invalid` | the project key is malformed, or the body is not exactly `{ sessionId }` with a lowercase UUID |
+| 404 | `not_found` | no such project, or the session is not in nika's index (transcript deleted) |
+| 503 | `index_unavailable` | the index could not be read (never treated as "not found") |
+| 409 | `other_project` | the session belongs to another project, or to none |
+| 409 | `agent_session` | a live session whose pane is tagged `@nika-role agent` ("That session is an agent nika started, so it can't be the orchestrator. Nothing changed.") |
+| 409 | `orchestrator_running` | another session of the project runs as orchestrator (a live pane tagged `orchestrator`, or the live saved one) |
+| 409 | `no_pane` | the session is live but has no tmux pane that runs claude |
+
+Live with a pane: the pane gets `@nika-role orchestrator` and `@nika-depth 1` (`tagPane`, fixed argv, constant values), is recorded
+as a nika pane (keys and mode control work) and the id is stored. Ended: only the id is stored. `Orchestrator` =
+`{ sessionId, state: "live"|"ended", name, pane }`. `DELETE` forgets the id only: a live pane keeps its tags until it ends, and
+nothing is retagged or killed. A project that is removed while a `PUT` runs answers 404.
 
 The picker runs in the shell (`pick-folder` / `folder` messages, §5). The folder must be an absolute existing directory;
 the server re-checks (`realpath`, `isDirectory`) before `addProject`. Projects are only added through the picker or
@@ -465,11 +496,25 @@ they are agent-writable and display only. Response:
 ```
 
 ### `POST /api/app/orchestrator/start`
-`{ "project": "<PROJECT_KEY>" }` → `200 { "pane": "%3", "session": "<name>", "sessionId": "<UUID>|null", "created": true }`.
-The tmux session name is the project `name` reduced to `TMUX_SESSION` (fallback: the key). No session → `new-session`
-whose first window (`orchestrator`) runs claude. Existing session (`has-session -t =<name>`) → its window named
-`orchestrator` is returned when its pane runs claude (`created: false`, `sessionId: null` unless nika started it in
-this process); otherwise a `new-window -n orchestrator` is added. The UI opens the session window with `sessionId`.
+`{ "project": "<PROJECT_KEY>" }` → `200 { "pane": "%3", "session": "<name>", "sessionId": "<UUID>|null", "created": true, "cleared"?: "gone" }`.
+The tmux session name is the project `name` reduced to `TMUX_SESSION` (fallback: the key). The orchestrator's claude argv is built in
+one place (`launchArgv`): `--session-id <UUID>` for a new session or `--resume <UUID>` for the saved one, then `--model`, the
+permission flags and `-n <name>` (bypass is refused here too). The id is a UUID nika generated or validated at the store and
+the API, and must be a session of that project in nika's own index (T47).
+
+With a saved orchestrator (0.4) the server looks it up in the transcript index first:
+- **live** → `200` with its pane (`created: false`, no new session); `409 no_pane` when it runs outside tmux;
+- **ended** → `claude --resume <id>` in the same way as a new start, tagged `orchestrator`, `created: true`; the pick stays;
+- **gone** (no transcript) → the pick is forgotten, a new orchestrator starts, and the answer carries `"cleared": "gone"`;
+- the lookup failing (index unreadable) → `503 index_unavailable`, nothing started, the pick kept.
+
+A new start saves its own `--session-id` as the project's pick, so Resume is offered after it ends.
+
+Without a saved orchestrator: no session → `new-session` whose first window (`orchestrator`) runs claude. Existing session
+(`has-session -t =<name>`) → its orchestrator is returned when one exists (`created: false`, `sessionId: null` unless nika started
+or adopted it in this process): the pane tagged `orchestrator` in the window named `orchestrator`, else (0.4) a pane tagged
+`orchestrator` anywhere in the session that runs claude (an adopted one); otherwise a `new-window -n orchestrator` is added. The UI
+opens the session window with `sessionId`.
 
 ### Rules
 
@@ -668,8 +713,10 @@ multi-argument shell-commands (tmux execs them directly, no `sh -c`, T6).
 | create session + orchestrator | `tmux -u new-session -d -s <session> -n orchestrator -c <projectDir> -x 200 -y 50 -P -F #{pane_id} -- <claudeBin> <orchestrator flags>` |
 | orchestrator in existing session | `tmux -u new-window -t =<session>: -n orchestrator -c <projectDir> -P -F #{pane_id} -- <claudeBin> <orchestrator flags>` |
 | tag a pane nika created | `tmux -u set-option -p -t %n @nika-role orchestrator` (after new-session / new-window) or `… @nika-role agent` (after split-window); for an agent also `tmux -u set-option -p -t %n @nika-agent <PROJECT_KEY>/<AGENT_NAME>`; best effort |
+| adopt a live session as orchestrator (0.4) | `tmux -u set-option -p -t %n @nika-role orchestrator` then `tmux -u set-option -p -t %n @nika-depth 1` (`PUT …/orchestrator`; the value is a constant 1, 2 or 3, never request data) |
+| resume the orchestrator (0.4) | the orchestrator argv above with `--resume <UUID>` instead of `--session-id <UUID>`; the UUID is the stored pick |
 | agent panes of a spawn | `tmux -u list-panes -a -F #{pane_id}\t#{@nika-role}\t#{@nika-agent}` → the panes with `@nika-role` = `agent` whose `@nika-agent` is `<key>/<name>` for the project's key: the live agents for `limits.maxAgents` and the duplicate-name check. The tag is parsed strictly (exactly one `/`, `PROJECT_KEY` before it, `AGENT_NAME` after it); anything else is agent-writable noise and is ignored, never trusted |
-| find orchestrator pane | `tmux -u list-panes -t =<session>:=orchestrator -F #{pane_id}\t#{pane_current_command}\t#{@nika-role}` → the pane with `@nika-role` = `orchestrator` whose command is claude (`claude`, `node` or a version string); agent panes split into that window never match (`:=` = exact window name; `:orchestrator` also matches `orchestrator-x`) |
+| find orchestrator pane | `tmux -u list-panes -s -t =<session> -F #{pane_id}\t#{pane_current_command}\t#{@nika-role}\t#{window_name}` (`-s` = every window of the session; 0.4) → the pane with `@nika-role` = `orchestrator` whose command is claude (`claude`, `node` or a version string); one in the window named exactly `orchestrator` wins, else an adopted tagged pane in another window; agent panes never match |
 | spawn beside | `tmux -u split-window -h -t =<session>: -c <projectDir> -P -F #{pane_id} -- <nikaBin…> _run-agent <key> <name>` |
 | spawn under last | `tmux -u split-window -v -t <lastPane> -c <projectDir> -P -F #{pane_id} -- <nikaBin…> _run-agent <key> <name>` |
 | pane title | `tmux -u select-pane -t %n -T [%n] <name>` |
@@ -731,7 +778,8 @@ checked by the router before `mirror` / `keys` are called; those modules still v
 | `src/rules.js` | `async rulesState(project) → { state, settingsIgnored, git }`; `preview(project, ctx) → { status, body }`; `apply(project, { hash, overwriteForeign, gitignore }, ctx) → { status, body }` |
 | `src/diff.js` | `unifiedDiff(oldText, newText, path) → string` |
 | `src/spawn.js` | `spawnAgent(req, ctx) → { status, body }`; `runAgent(key, name, ctx) → exit code` |
-| `src/orchestrate.js` (helpers) | `tagPane(ctx, pane, role, agentTag?)` sets `@nika-role` and, for an agent, `@nika-agent` = `<key>/<name>` |
-| `src/orchestrate.js` | `startOrchestrator(project, ctx) → { status, body }` |
+| `src/orchestrate.js` (helpers) | `tagPane(ctx, pane, role, agentTag?, depth?)` sets `@nika-role`, for an agent `@nika-agent` = `<key>/<name>`, and (0.4) `@nika-depth` for a depth of 1 to 3; `launchArgv(config, project, { sessionId, resume })` → claude's flags after the binary (the one place the orchestrator argv is built) |
+| `src/orchestrate.js` | `startOrchestrator(projectKey, ctx) → { status, body }` (`ctx.findSession(id)` looks a saved orchestrator up in the transcript index) |
+| `src/model.js` | `findSession(id, { config, exec, now, cache }) → { agent, group } \| null` (a session of any age; throws `EINDEX` when it is not found and the index could not be read) |
 | `src/appio.js` | `serveApp({ config, env, stdin, stdout, stderr }) → Promise<number>` (handshake, listen, status loop, picker; resolves with the exit code 0/1/2) |
 | `src/api-app.js` | `createAppApi({ secret, ctx, deps }) → (req, res, url, port) → Promise<boolean>` (true when it handled the request) |

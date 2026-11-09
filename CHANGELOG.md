@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+Orchestrator (desktop app):
+
+- **Resume your orchestrator.** nika now remembers each project's orchestrator by its session id. Start orchestrator saves the
+  session it starts, so after it ends the project's first button says **Resume orchestrator** and continues that same
+  conversation in tmux. If its transcript has been deleted, the project page says so ("The saved orchestrator is gone"), and
+  Start orchestrator starts a new one (it also forgets the old one by itself).
+- **Use an orchestrator you already run.** A session's row menu has **Set as orchestrator** (for a session that is running in
+  tmux, or one that has ended), **Resume as orchestrator** (for an ended one) and **Stop using as orchestrator**. nika refuses
+  while another orchestrator of the project is running, and for agents nika started. Stop using only forgets the choice: a
+  running session keeps running.
+- The orchestrator now has a badge next to its name on the dashboard, the project page and the session window:
+  "orchestrator", or a muted "orchestrator" for a saved one that has ended. Narrow rows show "orch".
+- Row menus can show an item that is off, with the reason as its tooltip; clicking it says why.
+- API: `PUT` and `DELETE /api/app/projects/:key/orchestrator` are new; each project in `GET /api/app/projects` gains
+  `orchestrator`; `POST /api/app/orchestrator/start` can answer `cleared: "gone"`. See `docs/contracts/api-app.md`.
+
 ## 0.3.4 — 2026-11-09
 
 Session window (desktop app):

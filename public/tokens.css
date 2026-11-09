@@ -209,6 +209,11 @@ dialog.dlg-kbd .dlg-foot .muted { color: var(--text-muted); font-size: var(--fs-
 .btn.link { border-color: transparent; background: transparent; color: var(--accent); text-decoration: underline; }
 .btn.link:hover { background: var(--surface-3); }
 
+.tag { display: inline-flex; align-items: center; min-height: 20px; font-size: var(--fs-cap); font-weight: 600; padding: 0 6px; border-radius: var(--r-sm); color: var(--accent); background: var(--accent-soft); white-space: nowrap; }
+.tag.muted { color: var(--text-muted); background: var(--surface-2); border: 1px solid var(--line); }
+.tag.sub { background: transparent; border: 1px solid var(--accent-line); }   /* sub-orchestrator: outlined, and its own word */
+.tag .tag-s { display: none; }   /* the short word shows on narrow rows only (app.css) */
+
 .alert { display: flex; gap: 10px; padding: 10px 12px; border-radius: var(--r-md); border: 1px solid; }
 .alert p { margin: 0; }
 .alert .ic { flex: none; margin-top: 1px; }

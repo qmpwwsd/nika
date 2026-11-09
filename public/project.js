@@ -10,7 +10,7 @@ import { parseModes, modesAfter } from './modes.js';
 import { copyBanner, copyErrorText, copyToast } from './app-copy.js';
 import { CUSTOM, MODEL_ID, MODEL_HINT, fillModelSelect } from './models-ui.js';
 import { buildGroups, agentNodes, swap, interacting, render } from './app.js';
-import { sidebarModel } from './dash-model.js';
+import { sidebarModel, orchState, savedPick, otherRunning, roleTag } from './dash-model.js';
 import { pluginView, pluginSave, sortIds, countText, filterNote } from './plugin-view.js';
 
 const PERM_LABEL = {
@@ -97,9 +97,12 @@ async function pollApp() {
   }
 }
 
+/** Reason an action that needs only the server is off right now, or null. */
+const offlineReason = () => (state.error ? 'Offline. nika is reconnecting.' : null);
+
 /** Reason the privileged actions are off right now, or null. */
 function blockedReason() {
-  if (state.error) return 'Offline. nika is reconnecting.';
+  if (offlineReason()) return offlineReason();
   if (state.me?.tmux === false) return 'Needs tmux. Install it, then check again.';
   if (state.me?.claude === false) return 'Needs Claude Code (claude) on your PATH.';
   return null;
@@ -207,21 +210,63 @@ async function addProject() {
   }
 }
 
-/* ---------- start orchestrator ---------- */
-let starting = false;
-async function startOrchestrator(project) {
-  if (starting) return;
+/* ---------- the orchestrator: start, resume, pick (docs/design/spec.md 3.16) ---------- */
+let starting = false; // Start / Resume runs
+let orchBusy = false; // Set / Stop using runs
+const savedName = (name) => (name ? trunc(name, 40) : 'the saved session');
+const NO_TMUX_ORCH = "This session isn't running in tmux, so nika can't make it the orchestrator. End it, then use Resume as orchestrator.";
+const runningText = (other) => `${other?.name ? trunc(other.name, 40) : 'Another session'} is running as this project's orchestrator. End it first, then choose another.`;
+const PICK_ERRORS = {
+  not_found: "nika can't find that session any more. Its transcript may have been deleted. Nothing changed.",
+  other_project: "That session belongs to another project, so it can't be this project's orchestrator. Nothing changed.",
+  no_pane: NO_TMUX_ORCH,
+};
+
+/** Fixed copy by error code (design 1.5); anything else is the server's own message. `other` = who runs, for orchestrator_running. */
+function pickError(r, other) {
+  const code = r?.body?.error;
+  if (r?.status === 409 && code === 'orchestrator_running') return runningText(other);
+  if (typeof code === 'string' && Object.hasOwn(PICK_ERRORS, code)) return PICK_ERRORS[code];
+  return errText(r);
+}
+
+/**
+ * Start a new orchestrator, or (`resume`) resume the saved one: the server decides from the saved id (POST orchestrator/start).
+ * `resume` = { name } only words the toasts. `save` = { id, other } saves that session as the orchestrator first (a row's
+ * "Resume as orchestrator" on a session that is not the saved one yet); when the start then fails the pick stays, and the toast says so.
+ */
+async function startOrchestrator(project, { resume = null, save = null } = {}) {
+  if (starting || orchBusy) return;
   starting = true;
-  const wait = toast(`Starting the orchestrator for ${project.name}…`, { ms: 0, spin: true });
+  const who = savedName(resume?.name);
+  const wait = toast(resume ? `Resuming ${who} as the orchestrator for ${project.name}…` : `Starting the orchestrator for ${project.name}…`, { ms: 0, spin: true });
   try {
+    if (save) {
+      const put = await appFetch(`/api/app/projects/${encodeURIComponent(project.key)}/orchestrator`, { method: 'PUT', json: { sessionId: save.id } });
+      if (put.status !== 200) {
+        toast(pickError(put, save.other), { kind: 'error' });
+        return;
+      }
+    }
     const r = await appFetch('/api/app/orchestrator/start', { method: 'POST', json: { project: project.key } });
     if (r.status !== 200) {
-      toast(errText(r), { kind: 'error' });
+      toast(save ? `${who} is saved as the orchestrator, but it didn't start: ${errText(r)} Try Resume orchestrator in the header.` : errText(r), { kind: 'error' });
+      if (save) {
+        await pollApp();
+        render(true);
+      }
       return;
     }
+    const gone = r.body.cleared === 'gone';
+    if (gone) toast('Started a new orchestrator. The saved one was gone.');
     const href = sessionHref({ session: r.body.sessionId, pane: r.body.pane, project: project.key });
-    if (href) location.href = href;
-    else toast(`Started the orchestrator for ${project.name}.`);
+    if (href) {
+      location.href = href;
+      return;
+    }
+    if (!gone) toast(resume ? `Resumed ${who} as the orchestrator for ${project.name}.` : `Started the orchestrator for ${project.name}.`);
+    await pollApp();
+    render(true);
   } catch {
     toast('Could not reach the nika server.', { kind: 'error' });
   } finally {
@@ -230,11 +275,100 @@ async function startOrchestrator(project) {
   }
 }
 
+/** Set a session as the project's orchestrator (PUT). A live one is tagged by the server; an ended one is only remembered. */
+async function setPick(a, g) {
+  if (orchBusy || starting) return;
+  orchBusy = true;
+  const project = g.project;
+  const before = savedPick(project);
+  const wait = toast('Saving…', { ms: 0, spin: true });
+  try {
+    const r = await appFetch(`/api/app/projects/${encodeURIComponent(project.key)}/orchestrator`, { method: 'PUT', json: { sessionId: a.id } });
+    if (r.status !== 200) {
+      toast(pickError(r, otherRunning(g, before?.id, a.id)), { kind: 'error' });
+      return;
+    }
+    const name = savedName(a.name);
+    const was = before && before.id !== a.id ? ` (was ${savedName(before.name)})` : '';
+    const reply = r.body?.orchestrator?.state;
+    const live = reply === 'live' || reply === 'ended' ? reply === 'live' : a.live === true;
+    if (live) {
+      const href = sessionHref({ session: a.id, pane: r.body?.orchestrator?.pane ?? a.pane?.id, project: project.key });
+      toast(`${name} is now the orchestrator for ${project.name}${was}.`, href ? { action: { label: 'Open', run: () => { location.href = href; } } } : {});
+    } else {
+      toast(`${name} is the orchestrator for ${project.name}${was}. Resume it from the header when you need it.`, { action: { label: 'Resume now', run: () => startOrchestrator(project, { resume: { name: a.name } }) } });
+    }
+    await pollApp();
+    render(true);
+  } catch {
+    toast('Could not reach the nika server.', { kind: 'error' });
+  } finally {
+    wait.remove();
+    orchBusy = false;
+  }
+}
+
+/** Forget the saved orchestrator's id (DELETE). A pane that still runs keeps its tags until it ends. */
+async function forgetPick(project, pick, { fromAlert = false } = {}) {
+  if (orchBusy || starting) return;
+  orchBusy = true;
+  const wait = toast('Saving…', { ms: 0, spin: true });
+  try {
+    const r = await appFetch(`/api/app/projects/${encodeURIComponent(project.key)}/orchestrator`, { method: 'DELETE' });
+    if (r.status !== 200) {
+      toast(errText(r), { kind: 'error' });
+      return;
+    }
+    toast(pick?.state === 'live'
+      ? `${savedName(pick.name)} is no longer the saved orchestrator. It keeps running until you end it.`
+      : `${project.name} has no saved orchestrator now. Start orchestrator starts a new one.`);
+    await pollApp();
+    render(true);
+    if (fromAlert) $('#proj-h')?.focus(); // the alert that held focus is gone
+  } catch {
+    toast('Could not reach the nika server.', { kind: 'error' });
+  } finally {
+    wait.remove();
+    orchBusy = false;
+  }
+}
+
+/**
+ * The orchestrator items of a session's row menu (app tier; hooks.rowItems, called by app.js rowEl), design 1.2:
+ * Set as orchestrator, Resume as orchestrator, Stop using as orchestrator. A live nika agent or sub-orchestrator gets none.
+ */
+function rowItems(a, g, scope) {
+  if (!g.project) return [];
+  const project = g.project;
+  const pick = savedPick(project);
+  const isPick = pick?.id === a.id;
+  const tag = roleTag(a, null); // 'main' | 'sub' | null, for a live session
+  if (a.live && a.role != null && (a.role !== 'orchestrator' || tag === 'sub')) return [];
+  const other = otherRunning(g, pick?.id, a.id); // R1
+  const r1 = other ? runningText(other) : null;
+  const fk = (k) => `${k}:${scope}:${a.id}`;
+  const items = [];
+  if (!isPick) {
+    items.push({
+      text: 'Set as orchestrator', fk: fk('orch-set'), run: () => setPick(a, g),
+      reason: (a.live ? blockedReason() : offlineReason()) ?? r1 ?? (a.live && !a.pane ? NO_TMUX_ORCH : null),
+    });
+  }
+  if (!a.live) {
+    items.push({
+      text: 'Resume as orchestrator', fk: fk('orch-resume'), reason: blockedReason() ?? r1,
+      run: () => startOrchestrator(project, { resume: { name: a.name }, save: isPick ? null : { id: a.id, other } }),
+    });
+  }
+  if (isPick) items.push({ text: 'Stop using as orchestrator', fk: fk('orch-stop'), reason: offlineReason(), run: () => forgetPick(project, pick) });
+  return items;
+}
+
 /* ---------- group actions (dashboard group header, empty box, project header) ---------- */
-function act(label, iconName, run, { primary = false, fk, reason = null } = {}) {
+function act(label, iconName, run, { primary = false, fk, reason = null, title = null } = {}) {
   const why = blockedReason() ?? reason;
   return h('button', {
-    type: 'button', class: `btn${primary ? ' primary' : ''}`, 'data-fk': fk, 'aria-disabled': why ? 'true' : null, title: why ?? label,
+    type: 'button', class: `btn${primary ? ' primary' : ''}`, 'data-fk': fk, 'aria-disabled': why ? 'true' : null, title: why ?? title ?? label,
     onclick: (e) => (why ? toast(why, { kind: 'error' }) : run(e.currentTarget)),
   }, icon(iconName), h('span', { class: 'lbl', text: label }));
 }
@@ -244,13 +378,18 @@ function groupActions(g, { primary = false } = {}) {
   if (!g.project) {
     return [h('button', { type: 'button', class: 'btn', 'data-fk': `add:${g.key}`, onclick: () => addProject() }, icon('plus'), h('span', { class: 'lbl', text: 'Add project' }))];
   }
-  const orch = g.agents.find((a) => a.live && a.role === 'orchestrator');
-  const href = orch ? sessionHref({ session: orch.id, pane: orch.pane?.id, project: g.project.key }) : null;
+  const st = orchState(g.project, g);
+  const key = g.project.key;
+  const href = st.kind === 'live' ? sessionHref({ session: st.id, pane: st.pane, project: key }) : null;
   const lim = limitInfo(g);
   return [
     href
-      ? h('a', { class: 'btn', href, 'data-fk': `orch:${g.key}` }, icon('term'), h('span', { class: 'lbl', text: 'Open orchestrator' }))
-      : act('Start orchestrator', 'play', () => startOrchestrator(g.project), { primary: primary === true, fk: `start:${g.key}` }),
+      ? h('a', { class: 'btn', href, 'data-fk': `orch:${g.key}`, title: st.name ? `Open ${trunc(st.name, 40)}` : 'Open orchestrator' }, icon('term'), h('span', { class: 'lbl', text: 'Open orchestrator' }))
+      : st.kind === 'ended'
+        ? act('Resume orchestrator', 'resume', () => startOrchestrator(g.project, { resume: { name: st.name } }), { primary: primary === true, fk: `resume:${g.key}`, title: `Resume ${savedName(st.name)} in tmux` })
+        : act('Start orchestrator', 'play', () => startOrchestrator(g.project), {
+          primary: primary === true, fk: `start:${g.key}`, title: st.kind === 'gone' ? 'The saved orchestrator is gone. Starts a new one.' : null,
+        }),
     act('Spawn agent', 'spawn', () => openSpawn(g), {
       primary: primary === 'spawn', fk: `spawn:${g.key}`,
       reason: lim.reached ? `${lim.running} of ${lim.max} agents are already running in ${g.label}. Wait for one to finish, or raise “Agents per project” in Settings.` : null,
@@ -291,15 +430,28 @@ function renderProject(force) {
   $('#proj-h').title = p.name;
   document.title = `${p.name} · nika`;
   swap($('#proj-rules'), [rulesEl(p.rules?.state)]);
+  const pick = savedPick(p);
   swap($('#proj-actions'), [
     ...groupActions(g, { primary: 'spawn' }),
     menuEl(`More actions for ${p.name}`, [
       { text: 'Copy folder path', run: () => copyText(p.dir, 'folder path') },
+      ...(pick ? [{
+        text: pick.state === 'gone' ? 'Stop using the saved orchestrator' : `Stop using ${savedName(pick.name)} as orchestrator`,
+        fk: 'orch-stop-proj', reason: offlineReason(), run: () => forgetPick(p, pick),
+      }] : []),
       { text: 'Remove from nika…', run: () => confirmRemove(p) },
     ], 'proj-menu'),
   ]);
-  swap($('#proj-agents'), agentNodes(g, '', `pv:${key}`, { endedOpen: true }));
+  swap($('#proj-agents'), [...(orchState(p, g).kind === 'gone' ? [goneAlert(p, pick)] : []), ...agentNodes(g, '', `pv:${key}`, { endedOpen: true })]);
   swap($('#proj-setup'), setupCards(p, g));
+}
+
+/** The project page's alert for a saved orchestrator whose transcript is gone (design 1.4): state, not an event, so no role="alert". */
+function goneAlert(p, pick) {
+  return h('div', { class: 'alert', 'data-kind': 'warn', 'data-fk': 'orch-gone' },
+    icon('warn'),
+    h('p', { text: "The saved orchestrator is gone: its transcript was deleted, so it can't be resumed. Start orchestrator starts a new one." }),
+    h('button', { type: 'button', class: 'btn link', 'data-fk': 'orch-forget', text: 'Stop using it', onclick: () => forgetPick(p, pick, { fromAlert: true }) }));
 }
 
 const CHIPS_MAX = 8;
@@ -960,6 +1112,7 @@ export async function initApp() {
   hooks.renderProject = renderProject;
   hooks.enterProject = () => { loadInstalled().then(() => render()); };
   hooks.groupActions = groupActions;
+  hooks.rowItems = rowItems;
   hooks.addProject = addProject;
   hooks.checkEnv = async () => {
     await loadMe().catch(() => {});

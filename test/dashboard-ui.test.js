@@ -274,10 +274,11 @@ describe('dashboard row', () => {
   });
 
   test('(+) the row menu gets "End session…" after the other items, for live agents with a pane in the latest /modes answer only', () => {
-    assert.match(APP, /if \(isApp && canEndRow\(a, state\.modes\.map\)\) \{\s*items\.push\(\{ text: 'End session…', run: \(\) => endSession\(a, fk\('m'\), fk\('m', endedScope\(scope\)\)\) \}\);\s*\}/);
+    assert.match(APP, /if \(isApp && canEndRow\(a, state\.modes\.map\)\) \{\s*items\.push\(\{ text: 'End session…', group: orchItems\.length > 0, run: \(\) => endSession\(a, fk\('m'\), fk\('m', endedScope\(scope\)\)\) \}\);\s*\}/);
     assert.match(fn(APP, 'export function agentNodes('), /scope: endedScope\(scope\)/, 'the Ended group draws its rows under the scope the End item computes');
     const row = fn(APP, 'function rowEl(');
-    assert.ok(row.indexOf('Focus pane') < row.indexOf('End session'), 'the destructive item is last');
+    assert.ok(row.indexOf('Focus pane') < row.indexOf('hooks.rowItems') && row.indexOf('hooks.rowItems') < row.indexOf('End session'), 'the orchestrator items sit between the pane item and the destructive one, which is last');
+    assert.match(row, /const orchItems = isApp \? hooks\.rowItems\?\.\(a, g, scope\) \?\? \[\] : \[\];/, 'asked on the app tier only');
   });
 
   test('(−) the End item is not built for ended agents or off the app tier: the guard is the pure rule, not the status text', () => {
