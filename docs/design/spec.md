@@ -670,6 +670,30 @@ One look on every screen with a back link (project view, Settings, session windo
 except while passthrough is on (Linux Alt+← then goes to the pane rules: not on the allow-list, not sent; macOS ⌘[ stays
 an app shortcut, §4.2).
 
+### 3.14 Add to Applications notice (owner request 2026-11-09, ADR 0011)
+
+App tier, macOS, dashboard screen only: a page-level **info banner** (§3.8) at the top of the dashboard's main area,
+driven by `GET /api/app/me` `appCopy` (read at load and after each action). One banner at a time:
+
+| `appCopy` | Banner text | Buttons |
+|---|---|---|
+| `state: missing`, a source, not `dismissed` | **Add nika to Applications** so Spotlight and Launchpad can find it. | **Add to Applications** (primary, small) · Not now (ghost) |
+| `state: stale`, `managed` | **nika <available> is installed.** Update the app in Applications to match. | **Update app** (primary, small) · Not now (ghost) |
+| anything else | no banner | — |
+
+- "Not now" on Add posts `{ "action": "dismiss" }` (never asked again; `nika app install` still works). "Not now" on Update
+  only hides the banner until the next launch (nothing is posted).
+- Pressing the primary button: spinner + "Adding…" / "Updating…", `aria-busy`, both buttons aria-disabled.
+- 200: the banner leaves; toast (`role="status"`) "nika is in Applications. Open it from Spotlight or Launchpad." (Add) or
+  "Updated the app in Applications to <version>." (Update); with `restart: true`: "Updated to <version>. Quit and reopen
+  nika to use it."
+- Errors stay in the banner as one alert line (`role="alert"`), fixed copy, the buttons re-enabled:
+  `foreign-target` "~/Applications/nika.app is not nika. Move it away, then try again." · `no-source` "nika can't find
+  its own app to copy. Reinstall it with Homebrew." · `copy-busy` "nika is already copying the app." · `copy-failed`, 5xx,
+  network "nika couldn't copy the app to Applications."
+- Icon: `i-apps` (a 2×2 grid of rounded squares, 16 px, same stroke as the set). Every string is static copy plus the
+  server's version number (rendered with `textContent`).
+
 ## 4. Keyboard model
 
 Mod = ⌘ on macOS, Ctrl on Linux. No single-character shortcuts (WCAG 2.1.4), with one exception the owner asked for

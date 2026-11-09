@@ -52,8 +52,22 @@ and for session control (0.3) `not-idle`, `mode-unknown`, `not-in-cycle`, `busy-
 ### `GET /api/app/me`
 Response `200`:
 ```json
-{ "tier": "app", "version": "0.2.0", "platform": "darwin", "tmux": true, "claude": true, "configDir": "<abs>", "stateDir": "<abs>" }
+{ "tier": "app", "version": "0.2.0", "platform": "darwin", "tmux": true, "claude": true, "configDir": "<abs>", "stateDir": "<abs>",
+  "appCopy": { "state": "missing", "managed": false, "dismissed": false, "version": null, "available": "0.3.0", "running": false } }
 ```
+`appCopy` (0.3, macOS; ADR 0011): the copy of the app in `~/Applications`. `state` ∈ `unsupported` (not macOS) ·
+`no-source` (no nika.app to copy from) · `missing` (no `~/Applications/nika.app`) · `current` (it is nika at the
+source's version) · `stale` (it is nika at another version) · `foreign` (that path is a symlink, not a folder you own, or
+not nika's bundle id). `version` = the copy's version, `available` = the source's version, `managed` = nika made the
+copy (state marker), `dismissed` = "Not now" was chosen on the Add prompt, `running` = this server runs from the copy.
+
+### `POST /api/app/app-copy` (body ≤ 4 KB, `CAP.small`)
+`{ "action": "install" }` copies or updates the app in `~/Applications`; `{ "action": "dismiss" }` records "Not now"
+(the Add prompt is not shown again; the command still works). Any other body → `400 invalid`. One copy at a time → 409
+`copy-busy`. Not macOS → 409 `unsupported`; no source → 409 `no-source`; the target is not nika → 409 `foreign-target`
+(nothing written); the copy failed → `500 copy-failed` (temp copy removed, the old copy left in place). Success →
+`200 { "state": "current", "version": "0.3.0", "restart": false }`; `restart: true` when this server runs from the copy it
+just replaced (the page says to quit and reopen nika). Steps and checks: §6 "App copy".
 
 ### Projects
 
@@ -462,6 +476,30 @@ Write API (`src/fwrite.js`): `ensureDir(dir, mode = 0o700)`, `writeAtomic(dir, n
 `realpath(target)` must be inside `root`, else the target is unlinked and the write refused (`ESYMLINK`). Error codes:
 `ESYMLINK` `ENOTDIR` `ENOTREG` `EOWNER` `ENLINK` `EMODE` `EPATH` `EFBIG` (plus the OS codes `ENOENT`, `ELOOP`).
 
+### App copy (`src/appcopy.js`, macOS only, ADR 0011)
+- Target: exactly `<home>/Applications/nika.app` (`os.homedir()`); never `/Applications`, never sudo, never a path from a
+  request or a file. `~/Applications` is created 0700 when absent; when present it must be a real folder you own.
+- Source (never from a request or the state marker), first match: the app bundle this process runs from (its root is
+  `<x>.app/Contents/Resources/nika`) unless that is the target; the Homebrew keg app next to this install
+  (`<root>/../nika.app` when `<root>` is `libexec`); the fixed Homebrew paths `/opt/homebrew/opt/nika/nika.app`,
+  `/usr/local/opt/nika/nika.app`. A source counts only when it is a real folder whose `Contents/Info.plist` (read through
+  `fsafe`, ≤ 64 KB, XML) names `CFBundleIdentifier` `io.github.qmpwwsd.nika`; its `CFBundleShortVersionString` is the
+  `available` version.
+- The target counts as nika only when it is a real folder (not a symlink) you own whose Info.plist names the same bundle id;
+  anything else is `foreign` and is never touched.
+- Copy: a fresh temp folder `~/Applications/.nika-copy-XXXXXX` (`mkdtemp`, 0700); `/usr/bin/ditto <source>
+  <tmp>/nika.app` (`execFile`, fixed argv; keeps the ad hoc signature, adds no quarantine); the copy's Info.plist must
+  name the bundle id and the source's version; then rename the old target (if any) into the temp folder, rename the new
+  copy to the target, and remove the temp folder (it holds only what nika made). A failed step removes the temp folder
+  and moves the old copy back. Then `lsregister -f <target>` (`execFile`, fixed path; failure ignored) so LaunchServices
+  and Spotlight see it at once.
+- Marker: `<state>/app-copy.json` `{ "managed": true, "version": "0.3.0", "dismissed": false }` (0600, `fwrite`), written
+  after a successful copy or a dismiss. It never holds a path.
+- Refresh: `nika`, `nika open` and `nika app` refresh a **managed** copy whose version differs from this CLI's version
+  when the source has this CLI's version (that is, after `brew upgrade`), then launch the copy with `open <target>`;
+  an unmanaged or foreign copy is never touched. They print "updated the nika app in ~/Applications to X.Y.Z (if nika
+  was open, quit and reopen it)".
+
 ## 7. CLI
 
 | Command | Does |
@@ -469,6 +507,7 @@ Write API (`src/fwrite.js`): `ensureDir(dir, mode = 0o700)`, `writeAtomic(dir, n
 | `nika` | opens the app when installed (macOS `open -b io.github.qmpwwsd.nika`, Linux `nika-app` then `gtk-launch io.github.qmpwwsd.nika`), else the browser dashboard |
 | `nika open [--app\|--browser]` | force one of the two |
 | `nika app` | launch the desktop app (same lookup as `open --app`, does not block); exit 1 with an install hint when it is missing |
+| `nika app install` | macOS: copy or update the app in `~/Applications` (§6 "App copy"); prints "added nika X.Y.Z to ~/Applications (find it with Spotlight)", "updated …" or "already current"; exit 1 with the reason for `no-source` / `foreign-target` / `copy-failed`; Linux: exit 1, "the .deb or AppImage installs the desktop entry" |
 | `nika serve [--app]` | browser tier on `NIKA_PORT` (3335) · app tier on port 0 with the stdio protocol (§5); `--app` refuses a TTY stdin |
 | `nika status [--json] [--since w] [--full]` | unchanged from 0.1 |
 | `nika spawn <name> <model> <brief> [--project dir] [--permission-mode m] [--rc prefix\|off] [--under %pane] [--session name]` | spawn an agent in tmux (needs `$TMUX` or `--session`); `brief` is a file path or `-` for stdin |
