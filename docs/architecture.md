@@ -123,7 +123,7 @@ latency. `--optimize-for-size` saved about 10 MB more but made history requests 
 | `keys.js` | Keystrokes and bracketed paste into a tmux pane. |
 | `mirror.js` | `capture-pane` output turned into rows of whitelisted styled spans; a `fresh` capture skips the 250 ms cache for the control actions. |
 | `mode.js` | Pure parsers over mirror rows: the permission mode from the footer and the permission prompt. They fail closed. |
-| `model.js` | `collect()`: merges every source into agent records and groups them by project; `findSession(id)` finds one session of any age in the transcript index (the saved orchestrator's lookup). |
+| `model.js` | `collect()`: merges every source into agent records and groups them by project; `findSession(id)` finds one session of any age in the transcript index (the saved orchestrator's lookup); `findSessions(ids)` does the same for several ids in one index walk, with no ps, tmux or registry (the project list's lookup). |
 | `models.js` | The static model catalog behind the model dropdowns (`GET /api/app/models`). |
 | `orchestrate.js` | Starts or resumes a project's orchestrator in a tmux session (`launchArgv` builds its claude flags in one place) and finds an adopted orchestrator pane. |
 | `paths.js` | nika's own config and state dirs (XDG). |

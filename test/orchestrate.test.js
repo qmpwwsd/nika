@@ -3,7 +3,7 @@ import { test, describe, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { startOrchestrator, launchArgv, inProject, sessionNameFor, reduceRc, tmuxLiteral } from '../src/orchestrate.js';
+import { startOrchestrator, launchArgv, inProject, pickState, claudePane, sessionNameFor, reduceRc, tmuxLiteral } from '../src/orchestrate.js';
 import { configDir } from '../src/paths.js';
 import { addProject, getOrchestrator, setOrchestrator, loadConfig } from '../src/store.js';
 import { fakeTmux, makeWorld, TMUX, CLAUDE } from './tmux-fake.js';
@@ -567,5 +567,46 @@ describe('inProject (a session\'s group is the project\'s)', () => {
     assert.equal(inProject(undefined, project), false);
     assert.equal(inProject({ key: 'ffffffffffffffff' }, project), false);
     assert.equal(inProject({ key: 'ffffffffffffffff', root: null }, { key: 'aaaaaaaaaaaaaaaa', dir: null }), false);
+  });
+});
+
+describe('pickState and claudePane (one reading of a saved orchestrator for the page and for Start)', () => {
+  const project = { key: '0123456789abcdef', dir: '/work/demo-api' };
+  const mine = { key: project.key, root: project.dir };
+  const other = { key: 'ffffffffffffffff', root: '/work/other-project' };
+  const pane = { id: '%6', session: 'work', command: 'claude' };
+  const live = { id: PICK, name: 'planner', live: true, pane };
+  const ended = { id: PICK, name: 'old-planner', live: false, pane: null };
+
+  test('(+) a live session of the project is live with its name and pane id; an ended one is ended with no pane', () => {
+    assert.deepEqual(pickState(project, PICK, { agent: live, group: mine }), { sessionId: PICK, state: 'live', name: 'planner', pane: '%6' });
+    assert.deepEqual(pickState(project, PICK, { agent: ended, group: mine }), { sessionId: PICK, state: 'ended', name: 'old-planner', pane: null });
+    assert.deepEqual(pickState(project, PICK, { agent: { ...ended, name: undefined }, group: mine }), { sessionId: PICK, state: 'ended', name: null, pane: null });
+  });
+
+  test('(+) a lookup with no hit is gone, with no name and no pane', () => {
+    assert.deepEqual(pickState(project, PICK, null), { sessionId: PICK, state: 'gone', name: null, pane: null });
+    assert.deepEqual(pickState(project, PICK, undefined), { sessionId: PICK, state: 'gone', name: null, pane: null });
+  });
+
+  test('(−) a session of another project, live or ended, reads as gone: no name and no pane of someone else\'s session (T47)', () => {
+    for (const agent of [live, ended]) {
+      assert.deepEqual(pickState(project, PICK, { agent, group: other }), { sessionId: PICK, state: 'gone', name: null, pane: null });
+    }
+    assert.equal(pickState(project, PICK, { agent: live, group: undefined }).state, 'gone', 'a hit with no group proves nothing');
+  });
+
+  test('(+) claudePane gives the pane of a live session that exists and runs claude (claude, node or a version string)', () => {
+    assert.equal(claudePane(live), pane);
+    assert.equal(claudePane({ live: true, pane: { id: '%2', command: ' node ' } }).id, '%2');
+    assert.equal(claudePane({ live: true, pane: { id: '%2', command: '2.1.319' } }).id, '%2');
+  });
+
+  test('(−) no pane, a pane that is not claude, a bad pane id, or an ended session give null', () => {
+    assert.equal(claudePane({ live: true, pane: null }), null);
+    assert.equal(claudePane({ live: true, pane: { id: '%2', command: 'zsh' } }), null);
+    assert.equal(claudePane({ live: true, pane: { id: '2;kill', command: 'claude' } }), null);
+    assert.equal(claudePane({ live: false, pane }), null);
+    assert.equal(claudePane(null), null);
   });
 });

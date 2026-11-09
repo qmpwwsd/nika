@@ -70,6 +70,23 @@ export const tmuxLiteral = (s) => String(s).replaceAll('#', '##');
  */
 export const inProject = (group, project) => Boolean(group) && (group.key === project.key || (group.root != null && group.root === project.dir));
 
+/** A live session's tmux pane when it exists and runs claude (what tagging, opening and keys need), else null. */
+export function claudePane(agent) {
+  const pane = agent?.live ? agent.pane : null;
+  return PANE_ID.test(pane?.id ?? '') && CLAUDE_COMMAND.test(String(pane.command ?? '').trim()) ? pane : null;
+}
+
+/**
+ * The saved orchestrator `id` of `project` from a lookup hit `{ agent, group }` (null: nika has no transcript for it):
+ * `{ sessionId, state: 'live' | 'ended' | 'gone', name, pane }`, the shape of contract C1 and of the PUT answer. The one reading the
+ * page and Start share: a session of another project (a hand-edited config.json) reads as gone, so neither shows nor opens it (T47).
+ */
+export function pickState(project, id, hit) {
+  if (!hit || !inProject(hit.group, project)) return { sessionId: id, state: 'gone', name: null, pane: null };
+  const { agent } = hit;
+  return { sessionId: id, state: agent.live ? 'live' : 'ended', name: agent.name ?? null, pane: agent.live ? agent.pane?.id ?? null : null };
+}
+
 /**
  * claude's own arguments for a project's orchestrator (everything after the binary): the one place that builds them. With
  * `resume` the saved session `sessionId` continues (`--resume`); otherwise `sessionId` names the new session (`--session-id`).
@@ -143,20 +160,17 @@ export async function startOrchestrator(projectKey, ctx) {
       return fail(503, 'index_unavailable', "nika couldn't check the saved orchestrator, so nothing was started");
     }
   }
-  // a session of another project can only be here through a hand-edited config.json: never resumed or opened, treated like a gone one
-  if (saved && !inProject(saved.group, project)) saved = null;
-  if (saved?.agent.live) {
-    const pane = saved.agent.pane;
-    if (!PANE_ID.test(pane?.id ?? '') || !CLAUDE_COMMAND.test(String(pane.command ?? '').trim())) {
-      return fail(409, 'no_pane', 'The saved orchestrator is running outside tmux, so nika cannot open it.');
-    }
+  const state = pick ? pickState(project, pick, saved).state : null; // another project's session reads as gone (T47)
+  if (state === 'live') {
+    const pane = claudePane(saved.agent);
+    if (!pane) return fail(409, 'no_pane', 'The saved orchestrator is running outside tmux, so nika cannot open it.');
     return { status: 200, body: { pane: pane.id, session: pane.session, sessionId: pick, created: false } };
   }
-  const cleared = pick && !saved ? { cleared: 'gone' } : {};
+  const cleared = state === 'gone' ? { cleared: 'gone' } : {};
   if (cleared.cleared) await setOrchestrator(projectKey, null, ctx.env).catch(() => {}); // best effort: its transcript is gone either way
 
   const session = sessionNameFor(project);
-  const resume = Boolean(saved);
+  const resume = state === 'ended';
   const sessionId = resume ? pick : crypto.randomUUID();
   const run = ['-P', '-F', '#{pane_id}', '--', ctx.claudeBin, ...launchArgv(config, project, { sessionId, resume })];
 

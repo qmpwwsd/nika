@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { makeFixture, cleanup, fakeExec, SID, NOW, jsonl } from './helpers.js';
-import { collect, findSession, modelLabel, shellQuote, bridgeUrl } from '../src/model.js';
+import { collect, findSession, findSessions, modelLabel, shellQuote, bridgeUrl } from '../src/model.js';
 import { parseSince } from '../src/config.js';
 import { keyFor } from '../src/store.js';
 
@@ -361,5 +361,44 @@ describe('collect with include, and findSession (one session by id, whatever its
   test('(−) when nika cannot read its transcript index, "not found" is a guess: findSession throws instead of answering null', async () => {
     const config = { ...fx.config, claudeDir: path.join(fx.root, 'no-such-claude-dir') };
     await assert.rejects(ofSession(SID.old, { config }), { code: 'EINDEX' });
+  });
+});
+
+describe('findSessions (several ended sessions by id, one index walk, no ps and no tmux)', () => {
+  const NOBODY = '99999999-9999-4999-8999-999999999999';
+  const calls = [];
+  const spy = (...args) => { calls.push(args); return fakeExec()(...args); };
+  const ofIds = (ids, over = {}) => { calls.length = 0; return findSessions(ids, { config: fx.config, now: NOW, ...over }); };
+
+  test('(+) every id nika has a transcript for comes back with its agent and its project\'s group, whatever its age; an id it has none for is left out', async () => {
+    const hits = await ofIds([SID.old, SID.ended, NOBODY]);
+    assert.deepEqual([...hits.keys()].sort(), [SID.old, SID.ended].sort());
+    const old = hits.get(SID.old);
+    assert.deepEqual([old.agent.live, old.agent.state, old.agent.name, old.agent.pane], [false, 'ended', 'Ancient', null]);
+    assert.equal(old.group.key, keyFor(fx.repo));
+    assert.equal(old.group.root, fx.repo);
+    assert.equal(hits.get(SID.ended).group.key, keyFor(fx.repo));
+  });
+
+  test('(+) it reads the transcript index only: no registry, no ps, no tmux (it never answers "live": its callers ask for ids the live snapshot lacks)', async () => {
+    const hits = await ofIds([SID.idle], { exec: spy });
+    assert.deepEqual(calls, [], 'no subprocess');
+    assert.equal(hits.get(SID.idle).agent.live, false);
+    assert.equal(hits.get(SID.idle).agent.pane, null);
+  });
+
+  test('(+) no ids means nothing is read', async () => {
+    const config = { ...fx.config, claudeDir: path.join(fx.root, 'no-such-claude-dir') };
+    assert.equal((await ofIds([], { config })).size, 0, 'an unreadable index does not matter when nothing is asked');
+  });
+
+  test('(−) an id that is not a session id is only a lookup key: it is left out, never opened as a path', async () => {
+    const hits = await ofIds(['../../etc/passwd', '', SID.old]);
+    assert.deepEqual([...hits.keys()], [SID.old]);
+  });
+
+  test('(−) when nika cannot read its transcript index, "left out" would be a guess: it throws EINDEX', async () => {
+    const config = { ...fx.config, claudeDir: path.join(fx.root, 'no-such-claude-dir') };
+    await assert.rejects(ofIds([SID.old, NOBODY], { config }), { code: 'EINDEX' });
   });
 });

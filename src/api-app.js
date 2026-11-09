@@ -16,7 +16,7 @@ import { MODE_TARGETS, bypassWindow, modeFromRows, promptFromRows } from './mode
 import { MODEL_CATALOG } from './models.js';
 import { matches as etagMatches } from './mirror.js';
 import { createSessionControl, promptSig, insertShown } from './session-control.js';
-import { tagPane, inProject } from './orchestrate.js';
+import { tagPane, pickState, claudePane } from './orchestrate.js';
 
 const ELIGIBILITY_TTL_MS = 1000; // pane list + live-agent snapshot, so a 4 Hz capture does not run collect() 4 times a second
 const TEMPLATES_MAX = 50;
@@ -86,7 +86,9 @@ async function listTemplates(dir) {
  * @param {object} o
  * @param {string} o.secret  the 43-char secret received on stdin
  * @param {object} o.ctx     { env, exec, tmuxBin, claudeBin, nikaArgv, claudeDir, now, started, findSession(id) → { agent, group } | null
- *                           (src/model.js: one session by id whatever its age; throws EINDEX when the index is unreadable) }; handed to the modules as is
+ *                           (src/model.js: one session by id whatever its age, live state included; throws EINDEX when the index is unreadable),
+ *                           findSessions(ids) → Map id → { agent, group } (src/model.js: ended sessions by id, ONE transcript-index walk for
+ *                           all of them, no ps and no tmux; throws EINDEX) }; handed to the modules as is
  * @param {object} o.deps    { version, collect() → snapshot, listPanes() → { panes, error }, readHistory, listPlugins, rulesState,
  *                           preview, apply, spawnAgent, startOrchestrator, mirror, keys, picker, listCommands;
  *                           appCopy { state(), install(), dismiss() } (src/appcopy.js bound to this install);
@@ -187,34 +189,43 @@ export function createAppApi({ secret, ctx, deps }) {
 
   // --- projects ---
 
-  /** The project's saved orchestrator for GET /projects (contract C1), checked against the transcript index, not the time window. */
-  async function orchestratorOf(id) {
-    if (!id) return null;
-    let hit = null;
-    // the cached 24 h snapshot first (shared with /modes): a pick that was used lately is in it and costs nothing extra
+  /**
+   * The saved orchestrator of each of `projects` for GET /projects (contract C1): Map project key → { sessionId, state, name, pane } | null.
+   * One snapshot and at most ONE transcript-index lookup for the whole request, whatever the number of projects (the page polls this every
+   * 3 s): a pick the cached 24 h snapshot (shared with /modes) holds costs nothing, and a live session is always in it; the ones it
+   * misses are ended or gone, and findSessions settles all of them in one walk. Each is read with pickState, the reading Start uses
+   * (a session of another project reads gone, T47). null = unknown (no snapshot, or the index could not be read): the page keeps what it had.
+   */
+  async function orchestrators(config, projects) {
+    const picks = projects.map((p) => [p, config.perProject[p.key]?.orchestratorSessionId]).filter(([, id]) => id);
+    const out = new Map();
+    if (!picks.length) return out;
     const snapshot = (await loadEligibility().catch(() => null))?.snapshot;
-    for (const g of snapshot?.groups ?? []) {
-      const agent = g.agents.find((a) => a.id === id);
-      if (agent) {
-        hit = { agent };
-        break;
-      }
+    if (!snapshot) {
+      for (const [p] of picks) out.set(p.key, null); // without it a live session could not be told from an ended one
+      return out;
     }
-    if (!hit) {
+    const known = new Map();
+    for (const group of snapshot.groups ?? []) for (const agent of group.agents) known.set(agent.id, { agent, group });
+    const missing = [...new Set(picks.map(([, id]) => id).filter((id) => !known.has(id)))];
+    let indexed = new Map();
+    let unreadable = false;
+    if (missing.length) {
       try {
-        hit = await ctx.findSession(id);
+        indexed = await ctx.findSessions(missing);
       } catch {
-        return null; // the index could not be read: neither gone nor ended, so the page falls back to the snapshot
+        unreadable = true;
       }
     }
-    if (!hit) return { sessionId: id, state: 'gone', name: null, pane: null };
-    const { agent } = hit;
-    return { sessionId: id, state: agent.live ? 'live' : 'ended', name: agent.name ?? null, pane: agent.live ? agent.pane?.id ?? null : null };
+    for (const [p, id] of picks) {
+      const hit = known.get(id) ?? indexed.get(id) ?? null;
+      out.set(p.key, !hit && unreadable ? null : pickState(p, id, hit));
+    }
+    return out;
   }
 
-  async function toProject(p, config) {
-    const cfg = config ?? (await loadConfig(ctx.env)).config;
-    return { key: p.key, dir: p.dir, name: p.name, addedAt: p.addedAt ?? null, rules: await deps.rulesState(p), orchestrator: await orchestratorOf(cfg.perProject[p.key]?.orchestratorSessionId) };
+  async function toProject(p, orchestrator = null) {
+    return { key: p.key, dir: p.dir, name: p.name, addedAt: p.addedAt ?? null, rules: await deps.rulesState(p), orchestrator };
   }
 
   async function projectOf(body) {
@@ -263,7 +274,8 @@ export function createAppApi({ secret, ctx, deps }) {
 
   route('GET', /^\/api\/app\/projects$/, 0, async () => {
     const { config } = await loadConfig(ctx.env);
-    return { status: 200, body: { projects: await Promise.all(config.projects.map((p) => toProject(p, config))) } };
+    const picks = await orchestrators(config, config.projects);
+    return { status: 200, body: { projects: await Promise.all(config.projects.map((p) => toProject(p, picks.get(p.key) ?? null))) } };
   });
 
   route('POST', /^\/api\/app\/projects\/pick$/, CAP.small, async () => {
@@ -275,7 +287,9 @@ export function createAppApi({ secret, ctx, deps }) {
     const reqId = param(params[0], UUID);
     const st = reqId && deps.picker.status(reqId);
     if (!st) return err(404, 'not_found', 'no such picker request');
-    return { status: 200, body: st.state === 'done' ? { state: 'done', project: await toProject(st.project) } : { state: st.state } };
+    if (st.state !== 'done') return { status: 200, body: { state: st.state } };
+    const picks = await orchestrators((await loadConfig(ctx.env)).config, [st.project]); // a folder added again may already have a pick
+    return { status: 200, body: { state: 'done', project: await toProject(st.project, picks.get(st.project.key) ?? null) } };
   });
 
   route('DELETE', /^\/api\/app\/projects\/([^/]+)$/, CAP.small, async ({ params }) => {
@@ -286,13 +300,24 @@ export function createAppApi({ secret, ctx, deps }) {
 
   // --- the project's orchestrator (0.4): which session is it, saved by id; never a path, only a session nika itself indexed ---
 
-  const summary = (id, agent) => ({ sessionId: id, state: agent.live ? 'live' : 'ended', name: agent.name ?? null, pane: agent.live ? agent.pane?.id ?? null : null });
+  const adopting = new Set(); // project keys with a PUT in flight: one adoption at a time per project (M3)
 
   route('PUT', /^\/api\/app\/projects\/([^/]+)\/orchestrator$/, CAP.small, async ({ params, body }) => {
     const { project, failure } = await projectOf({ project: param(params[0], PROJECT_KEY) });
     if (failure) return failure;
     if (Object.keys(body).length !== 1 || typeof body.sessionId !== 'string' || !UUID.test(body.sessionId)) return err(400, 'invalid', 'body must be { sessionId: a session id }');
-    const id = body.sessionId;
+    // The checks below and the tagging read one state and act on it: two overlapping PUTs (two windows, a double click) could
+    // each pass "no other orchestrator runs" and tag two panes. The second waits for nobody; it is told to try again.
+    if (adopting.has(project.key)) return err(409, 'busy', "Another change to this project's orchestrator is still running. Try again.");
+    adopting.add(project.key);
+    try {
+      return await adopt(project, body.sessionId);
+    } finally {
+      adopting.delete(project.key);
+    }
+  });
+
+  async function adopt(project, id) {
     let found;
     try {
       found = await ctx.findSession(id);
@@ -301,7 +326,8 @@ export function createAppApi({ secret, ctx, deps }) {
     }
     if (!found) return err(404, 'not_found', "nika can't find that session any more. Its transcript may have been deleted. Nothing changed.");
     const { agent, group } = found;
-    if (!inProject(group, project)) return err(409, 'other_project', "That session belongs to another project, so it can't be this project's orchestrator. Nothing changed.");
+    // the same reading as the list and Start (pickState): another project's session is gone there, refused here
+    if (pickState(project, id, found).state === 'gone') return err(409, 'other_project', "That session belongs to another project, so it can't be this project's orchestrator. Nothing changed.");
     if (agent.live && agent.role === 'agent') return err(409, 'agent_session', "That session is an agent nika started, so it can't be the orchestrator. Nothing changed.");
     // another main orchestrator that runs: a pane tagged orchestrator, or the saved pick while it runs
     const pick = await getOrchestrator(project.key, ctx.env);
@@ -309,10 +335,8 @@ export function createAppApi({ secret, ctx, deps }) {
       return err(409, 'orchestrator_running', "Another session is running as this project's orchestrator. End it first, then choose another. Nothing changed.");
     }
     // a live session needs a tmux pane that really runs claude: the tags go on that pane
-    const pane = agent.live ? agent.pane : null;
-    if (agent.live && !(PANE_ID.test(pane?.id ?? '') && CLAUDE_COMMAND.test(String(pane.command ?? '').trim()))) {
-      return err(409, 'no_pane', "This session isn't running in tmux, so nika can't make it the orchestrator. End it, then use Resume as orchestrator.");
-    }
+    const pane = claudePane(agent);
+    if (agent.live && !pane) return err(409, 'no_pane', "This session isn't running in tmux, so nika can't make it the orchestrator. End it, then use Resume as orchestrator.");
     try {
       await setOrchestrator(project.key, id, ctx.env);
     } catch (e) {
@@ -324,8 +348,8 @@ export function createAppApi({ secret, ctx, deps }) {
       ctx.started.set(pane.id, { key: project.key, name: 'orchestrator', sessionId: id, role: 'orchestrator' });
       eligibility = null; // the pane is eligible at once
     }
-    return { status: 200, body: { orchestrator: summary(id, agent) } };
-  });
+    return { status: 200, body: { orchestrator: pickState(project, id, found) } };
+  }
 
   // forgets the id only: a live pane keeps its tags until it ends
   route('DELETE', /^\/api\/app\/projects\/([^/]+)\/orchestrator$/, CAP.small, async ({ params }) => {

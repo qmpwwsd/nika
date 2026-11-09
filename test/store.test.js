@@ -581,6 +581,35 @@ describe('per-project orchestrator pick (0.4: perProject[key].orchestratorSessio
     assert.ok(r.warnings.every((w) => /orchestratorSessionId/.test(w)), r.warnings.join('\n'));
   });
 
+  test('(+) a bad plugin list drops only the plugin list: a valid pick beside it is kept, with a warning that names the plugins', async () => {
+    const env = fresh('op9');
+    fs.writeFileSync(cfgFile(env), JSON.stringify({
+      perProject: {
+        [KEY]: { plugins: ['ok@demo-market', 'bad plugin'], orchestratorSessionId: ID },
+        fedcba9876543210: { plugins: 'not-a-list', orchestratorSessionId: ID2 },
+      },
+    }));
+    const r = await loadConfig(env);
+    assert.deepEqual(r.config.perProject, { [KEY]: { orchestratorSessionId: ID }, fedcba9876543210: { orchestratorSessionId: ID2 } });
+    assert.equal(r.warnings.length, 2, r.warnings.join('\n'));
+    assert.ok(r.warnings.every((w) => /^perProject\.[0-9a-f]{16}\.plugins invalid, dropped$/.test(w)), r.warnings.join('\n'));
+  });
+
+  test('(−) a bad key or an entry that is not an object still drops the whole entry, pick included; a bad plugin list with no pick leaves nothing', async () => {
+    const env = fresh('op10');
+    fs.writeFileSync(cfgFile(env), JSON.stringify({
+      perProject: {
+        zzzz: { plugins: ['a@b'], orchestratorSessionId: ID },
+        [KEY]: 'junk',
+        fedcba9876543210: { plugins: ['bad plugin'] },
+      },
+    }));
+    const r = await loadConfig(env);
+    assert.deepEqual(r.config.perProject, {});
+    assert.ok(r.warnings.some((w) => /^perProject\.zzzz dropped$/.test(w)));
+    assert.ok(r.warnings.some((w) => new RegExp(`^perProject\\.${KEY} dropped$`).test(w)));
+  });
+
   test('(−) updateProjectConfig still refuses the pick as a patch key: it is set only through setOrchestrator', async () => {
     const env = fresh('op8');
     const p = await project(env);

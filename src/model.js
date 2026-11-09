@@ -92,18 +92,22 @@ function foldScratchpad(entries, tmpRoot) {
 
 /**
  * `include`: session ids listed whatever their age, when nika has a transcript for them (the app tier looks up a saved orchestrator).
+ * `indexOnly`: read the transcript index and nothing else (findSessions).
  * @returns {{ snapshot: object, reportPaths: Map<string,string> }}
  *   snapshot is the public JSON (no file paths of reports); reportPaths stays server-side.
  */
-export async function collect({ config, exec, now = Date.now(), sinceMs, since = null, cache = {}, include = [] }) {
+export async function collect({ config, exec, now = Date.now(), sinceMs, since = null, cache = {}, include = [], indexOnly = false }) {
   cache.transcripts ??= createTranscriptCache();
-  const [registry, table, index, tmux, reportDirs] = await Promise.all([
-    readRegistry(config.claudeDir),
-    processTable(exec),
-    indexTranscripts(config.claudeDir),
-    listPanes(exec, config.tmuxBin ?? 'tmux'),
-    allReportDirs(config),
-  ]);
+  // indexOnly: just the transcript index (findSessions); no registry, ps, tmux or reports, so nothing is live
+  const [registry, table, index, tmux, reportDirs] = indexOnly
+    ? [{ entries: [], error: null }, null, await indexTranscripts(config.claudeDir), { panes: new Map(), error: null }, []]
+    : await Promise.all([
+      readRegistry(config.claudeDir),
+      processTable(exec),
+      indexTranscripts(config.claudeDir),
+      listPanes(exec, config.tmuxBin ?? 'tmux'),
+      allReportDirs(config),
+    ]);
   const reports = await indexReports(reportDirs);
   const sources = {
     registry: registry.error ?? 'ok',
@@ -237,4 +241,22 @@ export async function findSession(id, { config, exec, now = Date.now(), cache = 
   }
   if (snapshot.sources.transcripts !== 'ok') throw Object.assign(new Error('transcript index unavailable'), { code: 'EINDEX' });
   return null;
+}
+
+/**
+ * Several sessions by id with ONE walk of the transcript index and no ps, tmux, registry or report read: `Map(id → { agent, group })`
+ * for the ids nika has a transcript for (an id it has none for is left out). It never answers "live" (there is no registry here), so
+ * callers ask only for ids the live snapshot did not hold. Throws EINDEX when an id is missing and the index could not be read.
+ * shortcut: a session whose folder is a deleted scratchpad worktree is not folded into its project here (that needs every session
+ * of the run), so its group is its own folder; upgrade by passing the registered projects to foldScratchpad.
+ * @param {object} o { config, now?, cache? } as collect()
+ */
+export async function findSessions(ids, { config, now = Date.now(), cache = {} }) {
+  const found = new Map();
+  if (!ids.length) return found;
+  const { snapshot } = await collect({ config, exec: null, now, sinceMs: 0, cache, include: ids, indexOnly: true });
+  const wanted = new Set(ids);
+  for (const group of snapshot.groups) for (const agent of group.agents) if (wanted.has(agent.id)) found.set(agent.id, { agent, group });
+  if (found.size < wanted.size && snapshot.sources.transcripts !== 'ok') throw Object.assign(new Error('transcript index unavailable'), { code: 'EINDEX' });
+  return found;
 }

@@ -258,8 +258,11 @@ async function startOrchestrator(project, { resume = null, save = null } = {}) {
       return;
     }
     const gone = r.body.cleared === 'gone';
-    if (gone) toast('Started a new orchestrator. The saved one was gone.');
-    const href = sessionHref({ session: r.body.sessionId, pane: r.body.pane, project: project.key });
+    const created = r.body.created !== false; // false: an orchestrator was already running and was opened
+    const link = sessionHref({ session: r.body.sessionId, pane: r.body.pane, project: project.key });
+    // This page is about to go, so a toast here would die with it: the session window shows the notice, asked for with a fixed token (never text).
+    const href = link && gone ? `${link}&notice=${created ? 'pick-gone' : 'pick-gone-open'}` : link;
+    if (gone && !href) toast(created ? 'Started a new orchestrator. The saved one was gone.' : 'The saved orchestrator was gone. Opened the one that is running.');
     if (href) {
       location.href = href;
       return;

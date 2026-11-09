@@ -55,6 +55,27 @@ function param(name, shape) {
   return raw !== undefined && shape.test(raw) ? raw : null;
 }
 
+// A page that opens this window can ask for one notice, by a fixed token in the address (`&notice=pick-gone`). The texts are ours;
+// nothing from the address is ever shown, and any other value, or more than one `notice`, shows nothing.
+const URL_NOTICES = new Map([
+  ['notice=pick-gone', 'Started a new orchestrator. The saved one was gone.'],
+  ['notice=pick-gone-open', 'The saved orchestrator was gone. Opened the one that is running.'],
+]);
+
+/** Shows the requested notice once and takes every `notice` parameter out of the address (the other parameters stay as they were). */
+function showUrlNotice() {
+  const parts = location.search.replace(/^\?/, '').split('&').filter(Boolean);
+  const asked = parts.filter((x) => x === 'notice' || x.startsWith('notice='));
+  if (!asked.length) return;
+  const rest = parts.filter((x) => !asked.includes(x));
+  try {
+    history.replaceState(history.state, '', `${location.pathname}${rest.length ? `?${rest.join('&')}` : ''}${location.hash}`);
+  } catch {
+    // the address stays as it is
+  }
+  if (asked.length === 1 && URL_NOTICES.has(asked[0])) toast(URL_NOTICES.get(asked[0]));
+}
+
 let sessionId = param('session', SESSION_ID); // follows the pane to its new session after /clear (followSession)
 const paneId = param('pane', PANE_ID);
 const projectKey = param('project', PROJECT_KEY);
@@ -1765,6 +1786,7 @@ function boot() {
   if (q.has('session') && !sessionId) bad.push('session id');
   if (q.has('pane') && !paneId) bad.push('pane id');
   if (bad.length) showNotice(`The link had an invalid ${bad.join(' and ')}; it was ignored.`);
+  showUrlNotice();
 
   wireTabs();
   wireHistory();

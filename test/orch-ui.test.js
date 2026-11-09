@@ -386,12 +386,38 @@ describe('start and resume from the header', () => {
     await settle();
   });
 
-  test('(+) a start that answers cleared: "gone" says so in a toast and still opens the session window', async () => {
+  test('(+) a start that answers cleared: "gone" with created: true opens the session window with notice=pick-gone and shows no toast of its own', async () => {
     const r = flowRig({ answers: { [START]: { status: 200, body: { ...ok.body, cleared: 'gone' } } } });
     await r.api.startOrchestrator(r.proj);
-    assert.ok(r.texts().includes('Started a new orchestrator. The saved one was gone.'));
-    assert.equal(r.toastLog.find((t) => t.msg.startsWith('Started a new')).kind, 'info');
-    assert.equal(r.navs.length, 1);
+    assert.deepEqual(r.navs, [`session.html?session=${ID}&pane=%253&project=${KEY}&notice=pick-gone`]);
+    assert.ok(!r.texts().some((t) => /gone/.test(t)), 'this page is about to go; the window shows the notice');
+  });
+
+  test('(+) cleared: "gone" with created: false (an orchestrator already runs) opens it with notice=pick-gone-open and shows no toast of its own', async () => {
+    const r = flowRig({ answers: { [START]: { status: 200, body: { ...ok.body, created: false, cleared: 'gone' } } } });
+    await r.api.startOrchestrator(r.proj);
+    assert.deepEqual(r.navs, [`session.html?session=${ID}&pane=%253&project=${KEY}&notice=pick-gone-open`]);
+    assert.ok(!r.texts().some((t) => /gone/.test(t)), 'no toast before the navigation');
+  });
+
+  test('(+) without a usable link the page stays, so its toast is the only message, worded from created, and the list is refreshed', async () => {
+    const made = flowRig({ answers: { [START]: { status: 200, body: { sessionId: null, pane: null, created: true, cleared: 'gone' } } } });
+    await made.api.startOrchestrator(made.proj);
+    assert.deepEqual(made.texts().filter((t) => /gone/.test(t)), ['Started a new orchestrator. The saved one was gone.']);
+    assert.equal(made.navs.length, 0);
+    assert.ok(made.renders.includes(true), 'the list is drawn again');
+    const open = flowRig({ answers: { [START]: { status: 200, body: { sessionId: null, pane: null, created: false, cleared: 'gone' } } } });
+    await open.api.startOrchestrator(open.proj);
+    assert.deepEqual(open.texts().filter((t) => /gone/.test(t)), ['The saved orchestrator was gone. Opened the one that is running.']);
+  });
+
+  test('(−) no cleared field, or any value other than "gone", adds no notice token and no gone toast', async () => {
+    for (const cleared of [undefined, null, 'forgotten', 'GONE', true]) {
+      const r = flowRig({ answers: { [START]: { status: 200, body: { ...ok.body, ...(cleared === undefined ? {} : { cleared }) } } } });
+      await r.api.startOrchestrator(r.proj);
+      assert.deepEqual(r.navs, [`session.html?session=${ID}&pane=%253&project=${KEY}`], String(cleared));
+      assert.ok(!r.texts().some((t) => /gone/.test(t)), String(cleared));
+    }
   });
 
   test('(+) with no usable link the toast says what happened', async () => {
@@ -589,6 +615,9 @@ describe('Set as orchestrator (PUT) and its toasts (design 1.5)', () => {
     const a = flowRig({ agents: [liveRow], answers: { [PUT]: { status: 409, body: { error: 'agent_session', message: "That session is an agent nika started, so it can't be the orchestrator. Nothing changed." } } } });
     await a.api.setPick(liveRow, a.g);
     assert.equal(a.last().msg, "That session is an agent nika started, so it can't be the orchestrator. Nothing changed.");
+    const busy = flowRig({ agents: [liveRow], answers: { [PUT]: { status: 409, body: { error: 'busy', message: "Another change to this project's orchestrator is still running. Try again." } } } });
+    await busy.api.setPick(liveRow, busy.g);
+    assert.deepEqual([busy.last().kind, busy.last().msg], ['error', "Another change to this project's orchestrator is still running. Try again."]);
     const odd = flowRig({ agents: [liveRow], answers: { [PUT]: { status: 409, body: { error: '__proto__', message: 'plain words' } } } });
     await odd.api.setPick(liveRow, odd.g);
     assert.equal(odd.last().msg, 'plain words');
@@ -838,6 +867,118 @@ describe('session header: the role badge', () => {
       await r.api.loadPick(ended);
       assert.equal(r.A.pickId, null, JSON.stringify(over));
     }
+  });
+});
+
+// ---- the session window: the one-time notice a page asks for with a fixed token (I3) ----------------------------------------------------
+
+describe('session window: the pick-gone notice from the address (I3)', () => {
+  const SESSION = code(read('session.js'));
+  const CONSTS = /^const URL_NOTICES = [\s\S]*?\n\]\);$/m.exec(SESSION)?.[0] ?? '';
+
+  /** showUrlNotice as shipped, against a location, a history that rewrites it, and recorded toasts. */
+  function noticeRig(search, { replaceThrows = false } = {}) {
+    const shown = [];
+    const replaced = [];
+    const location = { search, pathname: '/session.html', hash: '#t' };
+    const history = {
+      state: null,
+      replaceState: (st, title, url) => {
+        if (replaceThrows) throw new Error('denied');
+        replaced.push(url);
+        location.search = url.includes('?') ? `?${url.split('?')[1].split('#')[0]}` : '';
+      },
+    };
+    const api = vm.runInNewContext(`${CONSTS}\n${fn(SESSION, 'function showUrlNotice(')}\n({ showUrlNotice })`, { location, history, toast: (m) => shown.push(m) });
+    return { api, shown, replaced, location };
+  }
+  const TEXT = 'Started a new orchestrator. The saved one was gone.';
+  const TEXT_OPEN = 'The saved orchestrator was gone. Opened the one that is running.';
+  const BASE = `session=${ID}&pane=%253&project=${KEY}`;
+
+  test('(+) the exact token shows the design 1.5 toast once and is removed with history.replaceState; the other parameters stay byte for byte', () => {
+    const r = noticeRig(`?${BASE}&notice=pick-gone`);
+    r.api.showUrlNotice();
+    assert.deepEqual(r.shown, [TEXT]);
+    assert.deepEqual(r.replaced, [`/session.html?${BASE}#t`]);
+    r.api.showUrlNotice();
+    assert.deepEqual(r.shown, [TEXT], 'a reload (the parameter is gone) shows nothing more');
+    assert.equal(r.replaced.length, 1);
+  });
+
+  test('(+) notice=pick-gone-open shows its own text once and is removed the same way', () => {
+    const r = noticeRig(`?${BASE}&notice=pick-gone-open`);
+    r.api.showUrlNotice();
+    assert.deepEqual(r.shown, [TEXT_OPEN]);
+    assert.deepEqual(r.replaced, [`/session.html?${BASE}#t`]);
+    r.api.showUrlNotice();
+    assert.deepEqual(r.shown, [TEXT_OPEN], 'a reload shows nothing more');
+  });
+
+  test('(+) the token may stand anywhere in the query; with nothing else left the address has no "?"', () => {
+    const first = noticeRig(`?notice=pick-gone&${BASE}`);
+    first.api.showUrlNotice();
+    assert.deepEqual([first.shown, first.replaced], [[TEXT], [`/session.html?${BASE}#t`]]);
+    const alone = noticeRig('?notice=pick-gone');
+    alone.api.showUrlNotice();
+    assert.deepEqual([alone.shown, alone.replaced], [[TEXT], ['/session.html#t']]);
+  });
+
+  test('(−) an unknown, empty, mis-cased, encoded or markup value shows nothing, but the parameter is still removed', () => {
+    for (const value of ['', 'pick-gone-x', 'pick-gone-', 'pick-gone-open-x', 'pick-gone-opened', 'PICK-GONE-OPEN', 'pick%2Dgone-open', 'PICK-GONE', 'pick%2Dgone', 'x', '<b>hi</b>', 'Started%20a%20new%20orchestrator.', '__proto__', 'constructor']) {
+      const r = noticeRig(`?${BASE}&notice=${value}`);
+      r.api.showUrlNotice();
+      assert.deepEqual(r.shown, [], value);
+      assert.deepEqual(r.replaced, [`/session.html?${BASE}#t`], value);
+    }
+    const bare = noticeRig(`?${BASE}&notice`);
+    bare.api.showUrlNotice();
+    assert.deepEqual([bare.shown, bare.replaced], [[], [`/session.html?${BASE}#t`]]);
+  });
+
+  test('(−) a repeated token shows nothing, and every copy is removed', () => {
+    const r = noticeRig(`?${BASE}&notice=pick-gone&notice=pick-gone`);
+    r.api.showUrlNotice();
+    assert.deepEqual(r.shown, []);
+    assert.deepEqual(r.replaced, [`/session.html?${BASE}#t`]);
+    const mixed = noticeRig(`?notice=pick-gone&${BASE}&notice=other`);
+    mixed.api.showUrlNotice();
+    assert.deepEqual([mixed.shown, mixed.replaced], [[], [`/session.html?${BASE}#t`]]);
+    for (const both of [`?${BASE}&notice=pick-gone&notice=pick-gone-open`, `?${BASE}&notice=pick-gone-open&notice=pick-gone-open`]) {
+      const two = noticeRig(both);
+      two.api.showUrlNotice();
+      assert.deepEqual([two.shown, two.replaced], [[], [`/session.html?${BASE}#t`]], both);
+    }
+  });
+
+  test('(−) no notice parameter: nothing is shown and the address is not touched; a look-alike name is not the parameter', () => {
+    const none = noticeRig(`?${BASE}`);
+    none.api.showUrlNotice();
+    assert.deepEqual([none.shown, none.replaced], [[], []]);
+    const alike = noticeRig(`?${BASE}&notices=pick-gone&xnotice=pick-gone-open&text=${encodeURIComponent(TEXT)}`);
+    alike.api.showUrlNotice();
+    assert.deepEqual([alike.shown, alike.replaced], [[], []]);
+    const empty = noticeRig('');
+    empty.api.showUrlNotice();
+    assert.deepEqual([empty.shown, empty.replaced], [[], []]);
+  });
+
+  test('(−) the text is a constant of the page, never read from the address; a failing replaceState does not stop the window', () => {
+    const r = noticeRig(`?${BASE}&notice=pick-gone&text=hijack&message=hijack`);
+    r.api.showUrlNotice();
+    assert.deepEqual(r.shown, [TEXT]);
+    assert.doesNotMatch(fn(SESSION, 'function showUrlNotice('), /searchParams|URLSearchParams|decodeURI|textContent|innerHTML/);
+    const hijack = noticeRig(`?${BASE}&notice=pick-gone-open&text=hijack`);
+    hijack.api.showUrlNotice();
+    assert.deepEqual(hijack.shown, [TEXT_OPEN]);
+    const denied = noticeRig(`?${BASE}&notice=pick-gone`, { replaceThrows: true });
+    assert.doesNotThrow(() => denied.api.showUrlNotice());
+  });
+
+  test('(+) boot shows it after the link checks and before the window is wired', () => {
+    const body = fn(SESSION, 'function boot(');
+    const at = (x) => body.indexOf(x);
+    assert.ok(at('bad.length') > 0 && at('bad.length') < at('showUrlNotice();') && at('showUrlNotice();') < at('wireTabs();'));
   });
 });
 

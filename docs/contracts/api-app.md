@@ -94,7 +94,14 @@ just replaced (the page says to quit and reopen nika). `dismiss` → `200 { "dis
 ```
 It is checked against the transcript index, not the 24 h window: `live` = the session runs (its `pane` is set when tmux shows it),
 `ended` = its transcript exists and it does not run (it can be resumed), `gone` = the id is saved but nika's index has no transcript
-for it. The picker's `project` carries the same field.
+for it, **or the session belongs to another project** (the same membership check as Start and the PUT: a hand-edited config cannot make
+the page show or open another project's session; `name` and `pane` are `null`). The picker's `project` carries the same field.
+
+Cost: the page polls this route every 3 s, so the whole list is built from ONE snapshot (the cached 24 h one, shared with `/modes`;
+a live session is always in it) and at most ONE transcript-index walk per request, whatever the number of projects: the picks
+the snapshot does not hold are ended or gone, and `findSessions` settles all of them together (ids de-duplicated). It never runs a
+full collect per project. With no snapshot, or an index that cannot be read, the field is `null` for the picks that could not be
+settled (never a guess).
 
 `rules.state`: `none` no `rules/orchestration.md`; `nika` written by nika and current; `outdated` written by nika from an
 older template; `foreign` a file nika did not write (apply needs the explicit `overwriteForeign` flag).
@@ -115,10 +122,15 @@ command runs:
 | 409 | `agent_session` | a live session whose pane is tagged `@nika-role agent` ("That session is an agent nika started, so it can't be the orchestrator. Nothing changed.") |
 | 409 | `orchestrator_running` | another session of the project runs as orchestrator (a live pane tagged `orchestrator`, or the live saved one) |
 | 409 | `no_pane` | the session is live but has no tmux pane that runs claude |
+| 409 | `busy` | another `PUT` for the same project is still running ("Another change to this project's orchestrator is still running. Try again."); answered right after the body check, before any lookup, tmux command or write |
+
+One adoption at a time per project: the checks and the tagging run under an in-flight guard, so two overlapping `PUT`s (two
+windows, a double click) cannot both pass "no other orchestrator runs" and tag two panes. The guard is released when the request
+ends, whatever its answer. Other projects are not blocked.
 
 Live with a pane: the pane gets `@nika-role orchestrator` and `@nika-depth 1` (`tagPane`, fixed argv, constant values), is recorded
 as a nika pane (keys and mode control work) and the id is stored. Ended: only the id is stored. `Orchestrator` =
-`{ sessionId, state: "live"|"ended", name, pane }`. `DELETE` forgets the id only: a live pane keeps its tags until it ends, and
+`{ sessionId, state: "live"|"ended", name, pane }` (the same reading as `GET /projects`, `orchestrate.js` `pickState`). `DELETE` forgets the id only: a live pane keeps its tags until it ends, and
 nothing is retagged or killed. A project that is removed while a `PUT` runs answers 404.
 
 The picker runs in the shell (`pick-folder` / `folder` messages, §5). The folder must be an absolute existing directory;
@@ -505,10 +517,18 @@ the API, and must be a session of that project in nika's own index (T47).
 With a saved orchestrator (0.4) the server looks it up in the transcript index first:
 - **live** → `200` with its pane (`created: false`, no new session); `409 no_pane` when it runs outside tmux;
 - **ended** → `claude --resume <id>` in the same way as a new start, tagged `orchestrator`, `created: true`; the pick stays;
-- **gone** (no transcript) → the pick is forgotten, a new orchestrator starts, and the answer carries `"cleared": "gone"`;
+- **gone** (no transcript, or a session of another project) → the pick is forgotten, a new orchestrator starts, and the answer carries `"cleared": "gone"`;
 - the lookup failing (index unreadable) → `503 index_unavailable`, nothing started, the pick kept.
 
 A new start saves its own `--session-id` as the project's pick, so Resume is offered after it ends.
+
+The page words its toast from `created`: `cleared: "gone"` with `created: true` → "Started a new orchestrator. The saved one was
+gone."; with `created: false` (an orchestrator was already running and is opened) → "The saved orchestrator was gone. Opened the
+one that is running." A toast on the project page would die with the page, so when the page opens the session window it shows none
+and adds a fixed token to the address instead: `notice=pick-gone` (`created: true`) or `notice=pick-gone-open` (`created: false`).
+The window shows the matching text once, only for exactly one `notice` that equals one of the two tokens, ignores any other value,
+and removes the parameter (`history.replaceState`). The texts are constants of the window, never taken from the address. When there
+is no usable link the page stays, and its own toast carries the text.
 
 Without a saved orchestrator: no session → `new-session` whose first window (`orchestrator`) runs claude. Existing session
 (`has-session -t =<name>`) → its orchestrator is returned when one exists (`created: false`, `sessionId: null` unless nika started
@@ -779,7 +799,7 @@ checked by the router before `mirror` / `keys` are called; those modules still v
 | `src/diff.js` | `unifiedDiff(oldText, newText, path) → string` |
 | `src/spawn.js` | `spawnAgent(req, ctx) → { status, body }`; `runAgent(key, name, ctx) → exit code` |
 | `src/orchestrate.js` (helpers) | `tagPane(ctx, pane, role, agentTag?, depth?)` sets `@nika-role`, for an agent `@nika-agent` = `<key>/<name>`, and (0.4) `@nika-depth` for a depth of 1 to 3; `launchArgv(config, project, { sessionId, resume })` → claude's flags after the binary (the one place the orchestrator argv is built) |
-| `src/orchestrate.js` | `startOrchestrator(projectKey, ctx) → { status, body }` (`ctx.findSession(id)` looks a saved orchestrator up in the transcript index) |
-| `src/model.js` | `findSession(id, { config, exec, now, cache }) → { agent, group } \| null` (a session of any age; throws `EINDEX` when it is not found and the index could not be read) |
+| `src/orchestrate.js` | `startOrchestrator(projectKey, ctx) → { status, body }` (`ctx.findSession(id)` looks a saved orchestrator up in the transcript index); `pickState(project, id, hit)` (the one reading of a saved id, shared by the list, the PUT and Start; another project's session is `gone`), `claudePane(agent)`, `inProject(group, project)` |
+| `src/model.js` | `findSession(id, { config, exec, now, cache }) → { agent, group } \| null` (a session of any age; throws `EINDEX` when it is not found and the index could not be read); `findSessions(ids, { config, now, cache }) → Map id → { agent, group }` (index only: one walk for all ids, no registry, ps or tmux, so every hit reads as not running; throws `EINDEX` when an id is missing and the index could not be read) |
 | `src/appio.js` | `serveApp({ config, env, stdin, stdout, stderr }) → Promise<number>` (handshake, listen, status loop, picker; resolves with the exit code 0/1/2) |
 | `src/api-app.js` | `createAppApi({ secret, ctx, deps }) → (req, res, url, port) → Promise<boolean>` (true when it handled the request) |

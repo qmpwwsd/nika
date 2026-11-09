@@ -46,9 +46,9 @@ function pluginList(v) {
 }
 
 /**
- * perProject: { <PROJECT_KEY>: { plugins?: string[], orchestratorSessionId?: UUID } }. A bad key, entry or plugin list drops that
- * entry; a bad id drops just the id (with a warning); other inner keys are dropped (0.4 adds more). An entry that holds neither
- * a non-empty plugin list nor an id is "none" and is not kept.
+ * perProject: { <PROJECT_KEY>: { plugins?: string[], orchestratorSessionId?: UUID } }. A bad key or an entry that is not an object
+ * drops that entry; a bad plugin list drops just the list and a bad id just the id (each with a warning); other inner keys are
+ * dropped (0.4 adds more). An entry that holds neither a non-empty plugin list nor an id is "none" and is not kept.
  */
 function perProject(v, warn) {
   if (!isPlainObject(v)) return undefined;
@@ -57,10 +57,11 @@ function perProject(v, warn) {
     const at = `perProject.${clean(key, 40) ?? '?'}`;
     const entry = v[key];
     const plugins = isPlainObject(entry) && hasOwn(entry, 'plugins') ? pluginList(entry.plugins) : undefined;
-    if (!isProjectKey(key) || !isPlainObject(entry) || (hasOwn(entry, 'plugins') && plugins === undefined)) {
+    if (!isProjectKey(key) || !isPlainObject(entry)) {
       warn(`${at} dropped`);
       continue;
     }
+    if (hasOwn(entry, 'plugins') && plugins === undefined) warn(`${at}.plugins invalid, dropped`);
     for (const k of Object.keys(entry)) if (k !== 'plugins' && k !== 'orchestratorSessionId') warn(`unknown key ${at}.${clean(k, 40) ?? '?'} dropped`);
     const id = hasOwn(entry, 'orchestratorSessionId') ? entry.orchestratorSessionId : undefined;
     const idOk = typeof id === 'string' && UUID.test(id);
