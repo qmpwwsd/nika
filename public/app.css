@@ -163,6 +163,8 @@ body[data-tier="browser"] .app { grid-template-columns: minmax(0, 1fr); }
 .cnt[data-s="attn"] { color: var(--attn); font-weight: 700; }
 .cnt[data-s="attn"]::before { content: ""; width: 7px; height: 7px; transform: rotate(45deg); background: currentColor; }
 .side-foot { margin-top: auto; padding: 10px 16px 12px; border-top: 1px solid var(--line); font-size: var(--fs-small); color: var(--text-muted); display: grid; gap: 2px; }
+.side-foot .env { display: grid; gap: 2px; }
+.side-foot > .btn { justify-self: start; margin: 6px 0 0 -6px; }
 .env-ok::before, .env-bad::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; background: var(--busy); vertical-align: 1px; }
 .env-bad { color: var(--danger); font-weight: 600; }
 .env-bad::before { background: var(--danger); border-radius: 1px; transform: rotate(45deg); }
@@ -172,8 +174,6 @@ body[data-tier="browser"] .app { grid-template-columns: minmax(0, 1fr); }
 .bar h1 { margin: 0; font-size: var(--fs-h1); letter-spacing: -0.01em; min-width: 0; overflow-wrap: anywhere; }
 .bar .sub { margin: 0; color: var(--text-muted); }
 .bar-actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
-.crumb { display: inline-flex; align-items: center; gap: 2px; color: var(--text-muted); text-decoration: none; }
-.crumb:hover { color: var(--text); }
 /* Every scroll container is also a containing block (position: relative), so absolutely positioned descendants
    such as .sr-only labels stay inside it. Otherwise they anchor to the page, the page grows as tall as the list and
    WebKit scrolls the whole window (blank band at the bottom). Guarded by test/ui.test.js. */
@@ -371,6 +371,7 @@ dialog.dlg-rules[open] { display: flex; flex-direction: column; }
   .side-projects .cnt:not([data-s="attn"]) { display: none; }
   .brand { justify-content: center; padding: 14px 0; }
   .side-foot { padding: 10px 0; text-align: center; }
+  .side-foot > .btn { justify-self: center; margin-left: 0; }
   .grp-actions .btn .lbl { display: none; }
   .grp-actions .btn { width: var(--h-ctl); padding: 0; }
   .search { width: 160px; }

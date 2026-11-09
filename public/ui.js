@@ -1,11 +1,12 @@
 // Shared state and widgets for the main page (dashboard, project view, settings). Every data string reaches the
 // page through h() / textContent. Nothing here talks to the server; api.js does.
 import { h } from './dom.js';
+import { isMac } from './shortcuts.js';
 
 export const $ = (s, r = document) => r.querySelector(s);
 export const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 
-export const MAC = /Mac|iPhone|iPad/i.test(navigator.userAgentData?.platform ?? navigator.platform ?? '');
+export const MAC = isMac(navigator);
 
 /** Shapes from src/ids.js; the page validates before it builds a link or a request from data. */
 export const SHAPE = {

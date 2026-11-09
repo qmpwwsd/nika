@@ -42,7 +42,7 @@
 </svg>
 
 <header class="bar" id="bar">
-  <a class="crumb" id="back" href="/#dashboard"><svg class="ic" aria-hidden="true"><use href="#i-back"/></svg><span id="proj">Dashboard</span></a>
+  <a class="back" id="back" href="/#dashboard"><svg class="ic" aria-hidden="true"><use href="#i-back"/></svg><span id="proj">Dashboard</span></a>
   <h1 id="sess-h">Session</h1>
   <span id="sess-st" class="st-slot"></span>
   <span id="sess-mode" hidden></span>
@@ -55,6 +55,7 @@
   <div class="msw" id="mode-switch" role="toolbar" aria-label="Permission mode" aria-describedby="msw-why" hidden></div>
   <span class="msw-why" id="msw-why" hidden></span>
   <a class="btn" id="claude-link" href="https://claude.ai/code/" target="_blank" rel="noopener noreferrer" title="Opens claude.ai in your browser" hidden><svg class="ic" aria-hidden="true"><use href="#i-ext"/></svg><span class="lbl">Open in claude.ai</span><span class="sr-only">(opens your browser)</span></a>
+  <button type="button" class="btn ghost icon" id="kbd-open" aria-label="Keyboard shortcuts" aria-keyshortcuts="Shift+Slash Control+Slash" title="Keyboard shortcuts (?)"><svg class="ic" aria-hidden="true"><use href="#i-kbd"/></svg></button>
 </header>
 
 <div class="notice" id="notice" role="status" hidden></div>
@@ -185,6 +186,12 @@
   <div class="dlg-head"><h2 id="clear-h" tabindex="-1">Clear conversation?</h2></div>
   <div class="dlg-body"><p id="clear-d">Claude starts a new conversation with empty context.</p></div>
   <div class="dlg-foot"><span class="sp"></span><button type="button" class="btn" id="clear-cancel" autofocus>Cancel</button><button type="button" class="btn danger" id="clear-go">Clear conversation</button></div>
+</dialog>
+
+<dialog id="kbd-dlg" class="dlg-kbd" aria-labelledby="kbd-h" aria-describedby="kbd-sub">
+  <div class="dlg-head"><div><h2 id="kbd-h" tabindex="-1">Keyboard shortcuts</h2><p id="kbd-sub"></p></div></div>
+  <div class="dlg-body" id="kbd-body"></div>
+  <div class="dlg-foot" id="kbd-foot"></div>
 </dialog>
 
 <div class="toasts" id="toasts"></div>

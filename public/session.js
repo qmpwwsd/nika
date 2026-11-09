@@ -12,6 +12,7 @@ import { quickState, cleanPrompt, answerOutcome, escOutcome, promptOff, promptNo
 import { MODEL_ID, MODEL_HINT, CUSTOM, fillModelSelect } from './models-ui.js';
 import { openEndDialog } from './end-dialog.js';
 import { paletteQuery, cleanCommands, paletteView, commandsButton, shouldFetch, sourceLabel, insertion, moveActive } from './palette.js';
+import { isMac, isTextEntry, wantsHelp, wantsBack, backHint, helpHint, openShortcuts } from './shortcuts.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const PANE_ID = /^%\d{1,6}$/;
@@ -142,7 +143,7 @@ function applyAgent(agent, group) {
   document.title = `${A.name}${MID}nika`;
   if (group?.label) {
     $('proj').textContent = String(group.label);
-    $('back').title = String(group.label);
+    setBack(String(group.label));
   }
   const model = $('sess-model');
   model.textContent = agent.modelLabel || agent.model || '-';
@@ -1558,10 +1559,45 @@ function wireTabs() {
   roles();
 }
 
-async function loadTheme() {
+// ---- Back key and the Keyboard shortcuts window (docs/design/spec.md 3.13 and 4.6; the rules and the copy: shortcuts.js) ------------
+
+const MAC = isMac(navigator);
+const UI = { singleKey: true }; // ui.singleKeyShortcuts, read once at load; a failed read leaves the default (on)
+
+function setBack(label) {
+  const hint = backHint({ label, mac: MAC });
+  $('back').title = hint.title;
+  $('back').setAttribute('aria-keyshortcuts', hint.keys);
+}
+
+function syncKbdHint() {
+  const hint = helpHint({ mac: MAC, singleKey: UI.singleKey });
+  $('kbd-open').title = hint.title;
+  $('kbd-open').setAttribute('aria-keyshortcuts', hint.keys);
+}
+
+function openKbd(opener) {
+  openShortcuts({ window: 'session', tier: 'app', mac: MAC, singleKey: UI.singleKey, opener });
+}
+
+/** Document-level, so it also runs for the message box and the buttons; the mirror in passthrough stops its own keys first. */
+function onPageKey(e) {
+  const dialogOpen = Boolean(document.querySelector('dialog[open]'));
+  if (wantsHelp(e, { mac: MAC, singleKey: UI.singleKey, textEntry: isTextEntry(e.target), passthrough: P.on, dialogOpen })) {
+    e.preventDefault();
+    openKbd(document.activeElement);
+  } else if (wantsBack(e, { mac: MAC, passthrough: P.on, dialogOpen })) {
+    e.preventDefault();
+    $('back').click();
+  }
+}
+
+async function loadSettings() {
   const r = await call('/api/app/settings');
-  const theme = r.body?.ui?.theme;
-  if (theme === 'system' || theme === 'light' || theme === 'dark') applyTheme(theme);
+  const ui = r.body?.ui;
+  if (ui?.theme === 'system' || ui?.theme === 'light' || ui?.theme === 'dark') applyTheme(ui.theme);
+  UI.singleKey = ui?.singleKeyShortcuts !== false;
+  syncKbdHint();
 }
 
 function showEmpty(text) {
@@ -1574,7 +1610,10 @@ function showEmpty(text) {
 function boot() {
   const appMode = typeof isApp === 'function' ? isApp() : Boolean(isApp);
   $('back').href = projectKey ? `/#project/${projectKey}` : '/#dashboard';
+  setBack('Dashboard');
+  syncKbdHint();
   if (!appMode) {
+    $('kbd-open').hidden = true;
     showEmpty('The session window is part of the nika app. This page was opened in a browser, which only shows the read-only dashboard.');
     return;
   }
@@ -1592,7 +1631,9 @@ function boot() {
   wireHistory();
   wireTerminal();
   wireComposer();
-  loadTheme();
+  document.addEventListener('keydown', onPageKey);
+  $('kbd-open').addEventListener('click', () => openKbd($('kbd-open')));
+  loadSettings();
   startAgentPoll();
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) return;

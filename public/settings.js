@@ -90,6 +90,7 @@ function populate() {
   const s = state.settings;
   if (!s) return;
   setRadio('theme', s.ui?.theme ?? 'system');
+  $('#set-singlekey').checked = s.ui?.singleKeyShortcuts !== false;
   fillRoles(s.models);
   $('#set-rc').checked = Boolean(s.remoteControl?.enabled);
   $('#set-rc-prefix').value = s.remoteControl?.prefix ?? '';
@@ -164,7 +165,7 @@ async function save(e) {
         limits: { maxAgents: Number($('#set-max').value) },
         plugins: { perProject: work.perProject },
         rules: { localTemplate: $('#set-tpl').value || null },
-        ui: { theme: radio('theme') },
+        ui: { theme: radio('theme'), singleKeyShortcuts: $('#set-singlekey').checked },
       },
     });
   } catch {

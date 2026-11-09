@@ -181,6 +181,32 @@ dialog.dlg-confirm { width: min(440px, calc(100vw - 32px)); }
 .dlg-body .muted { color: var(--text-muted); font-size: var(--fs-small); }
 .dlg-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--line); background: var(--surface); }
 
+/* Back button (docs/design/spec.md 3.13): a ghost button on every screen with a back link. */
+.back { display: inline-flex; align-items: center; gap: 4px; height: 28px; max-width: 28ch; padding: 0 8px 0 4px;
+  border-radius: var(--r-sm); color: var(--text-muted); font-weight: 600; text-decoration: none; }
+.back span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.back:hover { background: var(--surface-3); color: var(--text); }
+.back:active { background: var(--surface-3); }
+.back:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+/* Keyboard shortcuts window (spec 4.6): one table per group, keys in mono 12. The link button is a quiet action in a footer. */
+dialog.dlg-kbd { width: min(560px, calc(100vw - 32px)); max-height: min(720px, calc(100vh - 32px)); }
+dialog.dlg-kbd[open] { display: flex; flex-direction: column; }
+dialog.dlg-kbd h2:focus { outline: none; }   /* the heading takes the first focus (spec 4.4); it is not a control */
+dialog.dlg-kbd .dlg-body { min-height: 0; gap: 20px; }
+dialog.dlg-kbd .dlg-foot .muted { color: var(--text-muted); font-size: var(--fs-small); }
+.kbd-sec h3 { margin: 0 0 6px; font-size: var(--fs-h3); }
+.kbd-sec table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+.kbd-sec th:nth-child(1) { width: 34%; }
+.kbd-sec th:nth-child(2) { width: 26%; }
+.kbd-sec th { padding: 4px 12px 4px 0; text-align: left; font-size: var(--fs-small); font-weight: 600; color: var(--text-muted); border-bottom: 1px solid var(--line-strong); }
+.kbd-sec td { padding: 6px 12px 6px 0; vertical-align: top; border-bottom: 1px solid var(--line); }
+.kbd-sec td:first-child { font-weight: 600; }
+.kbd-sec td:nth-child(2) { white-space: nowrap; }
+.kbd-sec kbd { font-size: var(--fs-small); }
+.btn.link { border-color: transparent; background: transparent; color: var(--accent); text-decoration: underline; }
+.btn.link:hover { background: var(--surface-3); }
+
 .alert { display: flex; gap: 10px; padding: 10px 12px; border-radius: var(--r-md); border: 1px solid; }
 .alert p { margin: 0; }
 .alert .ic { flex: none; margin-top: 1px; }

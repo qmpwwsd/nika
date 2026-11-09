@@ -4,6 +4,7 @@
 import { isApp, getJSON } from './api.js';
 import { h, icon } from './dom.js';
 import { modeEl, rowMode, canEndRow } from './modes.js';
+import { wantsHelp, wantsBack, isTextEntry, openShortcuts, helpHint, backHint } from './shortcuts.js';
 import {
   $, $$, MAC, SHAPE, ORDER, state, hooks, load, save, timeEl, tickTimes, announce, toast, copyText,
   statusEl, modelEl, rulesEl, countsLine, sessionHref, menuEl, menuIsOpen, openDialog, initDialogs, initMenus,
@@ -410,6 +411,7 @@ function renderChrome() {
 }
 
 export function render(force = false) {
+  syncHints();
   if (!state.data) return;
   renderChrome();
   hooks.renderSide?.();
@@ -483,6 +485,29 @@ function route(initial = false) {
   if (!initial) $(`[data-screen="${name}"] h1`)?.focus();
 }
 
+/* ---------- keyboard shortcuts window (docs/design/spec.md 4.6; the rules and the copy are in shortcuts.js) ---------- */
+/** "?" needs the Settings switch, which only the app tier can store: the browser tier never answers to it (Mod+/ still does). */
+function singleKey() {
+  return isApp && state.settings?.ui?.singleKeyShortcuts !== false;
+}
+
+function openKbd(opener) {
+  openShortcuts({ window: 'dashboard', tier: isApp ? 'app' : 'browser', mac: MAC, singleKey: singleKey(), opener });
+}
+
+let hintSig = null;
+/** The buttons' title and aria-keyshortcuts name "?" only while the switch is on; a Settings save redraws through render(). */
+function syncHints() {
+  const on = singleKey();
+  if (on === hintSig) return;
+  hintSig = on;
+  const hint = helpHint({ mac: MAC, singleKey: on });
+  for (const b of $$('[data-kbd-open]')) {
+    b.title = hint.title;
+    b.setAttribute('aria-keyshortcuts', hint.keys);
+  }
+}
+
 /* ---------- controls and keyboard ---------- */
 function initControls() {
   const since = $('#dash-since');
@@ -514,6 +539,12 @@ function initControls() {
     if (!document.hidden) refresh();
   });
   window.addEventListener('hashchange', () => route());
+  for (const b of $$('[data-kbd-open]')) b.addEventListener('click', () => openKbd(b));
+  for (const a of $$('a.back')) {
+    const hint = backHint({ label: $('span', a).textContent, mac: MAC });
+    a.title = hint.title;
+    a.setAttribute('aria-keyshortcuts', hint.keys);
+  }
   // key hints in the sidebar follow the platform (Cmd on macOS, Ctrl elsewhere)
   for (const k of $$('kbd[data-mod]')) k.textContent = `${MAC ? '⌘' : 'Ctrl+'}${k.dataset.mod}`;
   for (const a of $$('[data-nav]')) a.setAttribute('aria-keyshortcuts', `${MAC ? 'Meta' : 'Control'}+${a.dataset.nav === 'settings' ? ',' : '1'}`);
@@ -532,6 +563,11 @@ function initKeys() {
       }
       return;
     }
+    if (wantsHelp(e, { mac: MAC, singleKey: singleKey(), textEntry: isTextEntry(e.target), passthrough: false, dialogOpen: Boolean(modal) })) {
+      e.preventDefault();
+      openKbd(document.activeElement);
+      return;
+    }
     if (!isApp || modal) return;
     if (mod && !e.altKey && !e.shiftKey && e.key === '1') {
       e.preventDefault();
@@ -545,7 +581,7 @@ function initKeys() {
     } else if (mod && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'f' && state.route.name === 'dashboard') {
       e.preventDefault();
       $('#dash-filter').focus();
-    } else if ((MAC ? e.metaKey && e.key === '[' : e.altKey && e.key === 'ArrowLeft') && state.route.name !== 'dashboard') {
+    } else if (wantsBack(e, { mac: MAC }) && state.route.name !== 'dashboard') {
       e.preventDefault();
       location.hash = '#dashboard';
     }

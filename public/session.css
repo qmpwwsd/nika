@@ -54,8 +54,6 @@ body.m-bypass .mode-frame { background: repeating-linear-gradient(135deg, var(--
 }
 .bar h1 { margin: 0; font-size: var(--fs-h1); font-weight: 600; min-width: 0; max-width: 40ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bar h1.untitled { color: var(--text-muted); font-weight: 400; }
-.crumb { display: inline-flex; align-items: center; gap: 4px; min-height: 24px; max-width: 28ch; color: var(--accent); }
-.crumb span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sess-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; color: var(--text-muted); font-size: var(--fs-small); }
 .sess-meta .mono { color: var(--text); }
 .msw-why .key { margin-left: 2px; }

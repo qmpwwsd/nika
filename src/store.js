@@ -27,7 +27,7 @@ export function defaults() {
     plugins: { perProject: {} },
     projects: [],
     rules: { localTemplate: null },
-    ui: { theme: 'system' },
+    ui: { theme: 'system', singleKeyShortcuts: true },
   };
 }
 
@@ -79,7 +79,7 @@ const SCHEMA = {
   plugins: { perProject },
   projects,
   rules: { localTemplate: (v) => (v === null ? v : str(TEMPLATE_NAME)(v)) },
-  ui: { theme: oneOf(THEMES) },
+  ui: { theme: oneOf(THEMES), singleKeyShortcuts: bool },
 };
 
 /** Walks SCHEMA: unknown keys dropped, bad values replaced by defaults; every deviation is a warning. */

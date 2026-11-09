@@ -11,6 +11,7 @@ import { pathToFileURL, fileURLToPath } from 'node:url';
 import { makeFixture, cleanup, fakeExec, NOW } from './helpers.js';
 import { createServer } from '../src/server.js';
 import { CUSTOM as CUSTOM_VALUE } from '../public/models-ui.js';
+import { wantsHelp, wantsBack, isTextEntry, helpHint, backHint } from '../public/shortcuts.js';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const read = (f) => fs.readFileSync(path.join(PUBLIC, f), 'utf8');
@@ -144,7 +145,7 @@ describe('HTML pages under the strict CSP', () => {
     assert.match(src, /<nav\b/);
     assert.match(src, /id="announce"[^>]*aria-live="polite"/);
     assert.equal((src.match(/<h1\b/g) ?? []).length, 3, 'dashboard, project and settings');
-    assert.equal((src.match(/<dialog\b/g) ?? []).length, 5, 'spawn, rules, confirm, report, end');
+    assert.equal((src.match(/<dialog\b/g) ?? []).length, 6, 'spawn, rules, confirm, report, end, keyboard shortcuts');
   });
 
   test('(+) index.html: app-only controls are marked so the browser tier removes them', () => {
@@ -356,6 +357,208 @@ describe('model pickers in the markup', () => {
 
   test('(−) the model rule lives once: ui.js has no second copy of MODEL_ID in RX', () => {
     assert.doesNotMatch(code(read('ui.js')), /model:\s*\[\s*\//);
+  });
+});
+
+describe('Back button and the Keyboard shortcuts window on the dashboard (spec 3.13, 4.6)', () => {
+  const html = read('index.html');
+  const tokens = read('tokens.css').replace(/\/\*[\s\S]*?\*\//g, '');
+  const selectors = (css) => [...css.replace(/\/\*[\s\S]*?\*\//g, '').matchAll(/([^{}]+)\{[^{}]*\}/g)].flatMap((m) => m[1].split(',').map((x) => x.trim()));
+  const tag = (src, re) => re.exec(src)?.[0] ?? '';
+  /** Source of a top-level `function name(...) { ... }` (it ends at the first line that is just a closing brace). */
+  const topFn = (src, name) => {
+    const m = new RegExp(`\nfunction ${name}\\([^)]*\\) \\{[^]*?\n\\}\n`).exec(src);
+    assert.ok(m, `app.js defines ${name}()`);
+    return m[0];
+  };
+
+  test('(+) the project view back link is a .back button: icon, then the label in a span, to #dashboard', () => {
+    assert.match(html, /<a class="back" href="#dashboard"><svg class="ic" aria-hidden="true"><use href="#i-back"\/><\/svg><span>Dashboard<\/span><\/a>/);
+  });
+
+  test('(−) no .crumb is left: not in a page, not in a stylesheet', () => {
+    for (const f of HTML) assert.doesNotMatch(read(f), /class="[^"]*\bcrumb\b/, f);
+    for (const f of CSS) assert.equal(selectors(read(f)).some((x) => /\.crumb\b/.test(x)), false, f);
+  });
+
+  test('(+) .back is defined once, in tokens.css, with the values of spec 3.13 (and not again in a page sheet)', () => {
+    for (const sel of ['.back', '.back span', '.back:hover', '.back:active', '.back:focus-visible']) {
+      assert.equal(selectors(read('tokens.css')).filter((x) => x === sel).length, 1, `${sel} once in tokens.css`);
+      for (const f of ['app.css', 'session.css']) assert.equal(selectors(read(f)).includes(sel), false, `${sel} is not repeated in ${f}`);
+    }
+    const body = /\.back \{([^}]*)\}/.exec(tokens)[1];
+    for (const decl of ['display: inline-flex', 'align-items: center', 'gap: 4px', 'height: 28px', 'max-width: 28ch', 'padding: 0 8px 0 4px', 'border-radius: var(--r-sm)', 'color: var(--text-muted)', 'font-weight: 600', 'text-decoration: none']) {
+      assert.ok(body.includes(decl), decl);
+    }
+    assert.match(tokens, /\.back span \{[^}]*overflow: hidden;[^}]*text-overflow: ellipsis;[^}]*white-space: nowrap/);
+    assert.match(tokens, /\.back:hover \{[^}]*background: var\(--surface-3\);[^}]*color: var\(--text\)/);
+    assert.match(tokens, /\.back:active \{[^}]*background: var\(--surface-3\)/);
+    assert.match(tokens, /\.back:focus-visible \{[^}]*outline: 2px solid var\(--focus\);[^}]*outline-offset: 2px/);
+  });
+
+  test('(+) #kbd-dlg is a native dialog for both tiers: labelled, with the heading, the window line, the body and the footer', () => {
+    const dlg = /<dialog\b[^>]*\bid="kbd-dlg"[^>]*>[\s\S]*?<\/dialog>/.exec(html)?.[0] ?? '';
+    assert.ok(dlg, 'index.html has #kbd-dlg');
+    assert.match(dlg, /<dialog\b[^>]*\bclass="dlg-kbd"/);
+    assert.match(dlg, /\baria-labelledby="kbd-h"/);
+    assert.doesNotMatch(dlg, /data-app-only/, 'the browser tier has the window too (Mod+/)');
+    assert.match(dlg, /<h2 id="kbd-h" tabindex="-1">Keyboard shortcuts<\/h2>/);
+    for (const id of ['kbd-sub', 'kbd-body', 'kbd-foot']) assert.match(dlg, new RegExp(`\\bid="${id}"`), id);
+    assert.match(dlg, /class="dlg-head"/);
+    assert.match(dlg, /class="dlg-body"/);
+    assert.match(dlg, /class="dlg-foot"/);
+    assert.match(tokens, /dialog\.dlg-kbd \{[^}]*width: min\(560px, calc\(100vw - 32px\)\)/);
+    assert.match(tokens, /dialog\.dlg-kbd \{[^}]*max-height: min\(720px, calc\(100vh - 32px\)\)/);
+  });
+
+  test('(+) the sidebar footer (app tier) has the Keyboard shortcuts button; the browser tier gets its own in the dashboard bar', () => {
+    const nav = /<nav class="side"[\s\S]*?<\/nav>/.exec(html)[0];
+    const btn = tag(nav, /<button\b[^>]*\bdata-kbd-open\b[^>]*>[\s\S]*?<\/button>/);
+    assert.ok(btn, 'a button in the app-only sidebar');
+    assert.match(btn, /class="btn icon ghost"/);
+    assert.match(btn, /aria-label="Keyboard shortcuts"/);
+    assert.match(btn, /aria-keyshortcuts="[^"]+"/);
+    assert.match(btn, /title="Keyboard shortcuts \(\?\)"/);
+    assert.match(btn, /<use href="#i-kbd"\/>/);
+    assert.ok(nav.indexOf('data-kbd-open') > nav.indexOf('class="side-foot"'), 'in the footer');
+    const bar = /<header class="bar">[\s\S]*?<\/header>/.exec(html)[0];
+    const alt = tag(bar, /<button\b[^>]*\bdata-kbd-open\b[^>]*>[\s\S]*?<\/button>/);
+    assert.ok(alt, 'the dashboard bar has one too');
+    assert.match(alt, /\bdata-browser-only\b/, 'removed on the app tier so there is one button per tier');
+    assert.match(alt, /aria-label="Keyboard shortcuts"/);
+    assert.match(alt, /aria-keyshortcuts="[^"]+"/);
+    assert.equal((html.match(/data-kbd-open/g) ?? []).length, 2);
+  });
+
+  test('(+) the i-kbd icon is in the sprite, byte for byte as in the session window', () => {
+    const sym = (src) => /<symbol id="i-kbd"[^>]*>[\s\S]*?<\/symbol>/.exec(src)?.[0];
+    assert.ok(sym(html));
+    assert.equal(sym(html), sym(read('session.html')));
+  });
+
+  test('(+) Settings > Appearance has the Single-key shortcuts checkbox with its help text', () => {
+    const sec = /<section class="set-sec" id="s-appearance"[\s\S]*?<\/section>/.exec(html)[0];
+    const input = tag(sec, /<input\b[^>]*\bid="set-singlekey"[^>]*>/);
+    assert.match(input, /type="checkbox"/);
+    assert.match(input, /aria-describedby="set-singlekey-help"/);
+    assert.doesNotMatch(input, /\bchecked\b/, 'the page sets it from the saved value');
+    assert.match(sec, /<span>Single-key shortcuts<\/span>/);
+    assert.match(sec, /<p class="help" id="set-singlekey-help">Press \? to show keyboard shortcuts\. Turn this off if you use speech input or single-key commands\.<\/p>/);
+  });
+
+  test('(+) settings.js reads the checkbox from the saved value (default on) and saves it next to the theme', () => {
+    const src = code(read('settings.js'));
+    assert.match(src, /\$\('#set-singlekey'\)\.checked = s\.ui\?\.singleKeyShortcuts !== false/);
+    assert.match(src, /ui: \{ theme: radio\('theme'\), singleKeyShortcuts: \$\('#set-singlekey'\)\.checked \}/);
+  });
+
+  test('(+) app.js imports the shortcut rules from shortcuts.js, and ui.js takes MAC from isMac (one platform test)', () => {
+    assert.match(read('app.js'), /import \{[^}]*\bwantsHelp\b[^}]*\} from '\.\/shortcuts\.js';/);
+    assert.match(code(read('ui.js')), /export const MAC = isMac\(navigator\);/);
+    assert.doesNotMatch(code(read('ui.js')), /\/Mac\|iPhone\|iPad\//);
+  });
+
+  // The keydown handler of app.js, run for real: the shortcut rules (shortcuts.js) are the real ones, the page is a stub.
+  const keyRig = ({ isApp = true, settings = { ui: { singleKeyShortcuts: true } }, route = 'dashboard', dialog = false, mac = false } = {}) => {
+    const app = read('app.js');
+    const log = { kbd: [], hash: [], prevented: 0 };
+    let handler;
+    const state = { settings, route: { name: route } };
+    const ctx = {
+      isApp, state, MAC: mac, hooks: {}, wantsHelp, wantsBack, isTextEntry,
+      openKbd: (opener) => log.kbd.push(opener),
+      location: { set hash(v) { log.hash.push(v); } },
+      $: (sel) => (sel === 'dialog[open]' && dialog ? { id: 'open-dialog' } : null),
+      document: { activeElement: { id: 'active' }, addEventListener: (type, fn) => { if (type === 'keydown') handler = fn; } },
+    };
+    vm.runInNewContext(`${topFn(app, 'singleKey')}\n${topFn(app, 'initKeys')}\ninitKeys()`, ctx);
+    return {
+      log,
+      press: (key, more = {}, target = { tagName: 'BUTTON' }) => {
+        const e = { key, ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, target, preventDefault() { log.prevented += 1; }, ...more };
+        handler(e);
+        return log.prevented;
+      },
+    };
+  };
+
+  test('(+) app tier: "?" outside text entry and Mod+/ open the window for the focused control', () => {
+    const r = keyRig();
+    r.press('?', { shiftKey: true });
+    assert.deepEqual(r.log.kbd, [{ id: 'active' }]);
+    r.press('/', { ctrlKey: true });
+    assert.equal(r.log.kbd.length, 2);
+    assert.equal(r.log.prevented, 2, 'both are consumed');
+    const mac = keyRig({ mac: true });
+    mac.press('/', { metaKey: true });
+    assert.equal(mac.log.kbd.length, 1);
+  });
+
+  test('(−) app tier: "?" does nothing in an input, a textarea, a select, with a dialog open or with the setting off', () => {
+    for (const target of [{ tagName: 'INPUT' }, { tagName: 'TEXTAREA' }, { tagName: 'SELECT' }, { tagName: 'DIV', isContentEditable: true }]) {
+      const r = keyRig();
+      r.press('?', {}, target);
+      assert.equal(r.log.kbd.length, 0, target.tagName);
+    }
+    const dlg = keyRig({ dialog: true });
+    dlg.press('?');
+    dlg.press('/', { ctrlKey: true });
+    assert.equal(dlg.log.kbd.length, 0, 'also not the shortcuts window itself');
+    const off = keyRig({ settings: { ui: { singleKeyShortcuts: false } } });
+    off.press('?');
+    assert.equal(off.log.kbd.length, 0);
+    off.press('/', { ctrlKey: true });
+    assert.equal(off.log.kbd.length, 1, 'Mod+/ always works');
+  });
+
+  test('(+) a settings answer without the field (or no answer yet) counts as on', () => {
+    for (const settings of [null, {}, { ui: {} }, { ui: { singleKeyShortcuts: 'no' } }]) {
+      const r = keyRig({ settings });
+      r.press('?');
+      assert.equal(r.log.kbd.length, 1, JSON.stringify(settings));
+    }
+  });
+
+  test('(−) browser tier: "?" never opens it (the setting cannot be stored there); Mod+/ does', () => {
+    const r = keyRig({ isApp: false, settings: null });
+    r.press('?');
+    assert.equal(r.log.kbd.length, 0);
+    r.press('/', { ctrlKey: true });
+    assert.equal(r.log.kbd.length, 1);
+  });
+
+  test('(+) Back: Alt+Left on Linux and Command+[ on macOS go to the dashboard from another screen', () => {
+    const lin = keyRig({ route: 'project' });
+    lin.press('ArrowLeft', { altKey: true });
+    assert.deepEqual(lin.log.hash, ['#dashboard']);
+    const mac = keyRig({ route: 'settings', mac: true });
+    mac.press('[', { metaKey: true });
+    assert.deepEqual(mac.log.hash, ['#dashboard']);
+  });
+
+  test('(−) Back does nothing on the dashboard, in a dialog, on the browser tier, or with the wrong platform key', () => {
+    const cases = [keyRig({ route: 'dashboard' }), keyRig({ route: 'project', dialog: true }), keyRig({ route: 'project', isApp: false }), keyRig({ route: 'project', mac: true })];
+    for (const r of cases) r.press('ArrowLeft', { altKey: true });
+    for (const r of cases) assert.deepEqual(r.log.hash, []);
+  });
+
+  test('(+) the buttons\' title and aria-keyshortcuts follow the Settings switch and the platform', () => {
+    const app = read('app.js');
+    const buttons = [{ attrs: {} }, { attrs: {} }].map((b) => ({ ...b, setAttribute(k, v) { this.attrs[k] = v; } }));
+    const state = { settings: { ui: { singleKeyShortcuts: true } } };
+    const ctx = { isApp: true, state, MAC: false, helpHint, $$: () => buttons };
+    const sync = vm.runInNewContext(`let hintSig = null;\n${topFn(app, 'singleKey')}\n${topFn(app, 'syncHints')}\nsyncHints`, ctx);
+    sync();
+    assert.deepEqual(buttons.map((b) => [b.title, b.attrs['aria-keyshortcuts']]), Array(2).fill(['Keyboard shortcuts (?)', 'Shift+Slash Control+Slash']));
+    state.settings = { ui: { singleKeyShortcuts: false } };
+    sync();
+    assert.deepEqual(buttons.map((b) => [b.title, b.attrs['aria-keyshortcuts']]), Array(2).fill(['Keyboard shortcuts (Ctrl+/)', 'Control+Slash']));
+  });
+
+  test('(+) every back link gets its title and aria-keyshortcuts from backHint with its own label', () => {
+    const src = code(read('app.js'));
+    assert.match(src, /for \(const a of \$\$\('a\.back'\)\) \{[^}]*backHint\(\{ label: \$\('span', a\)\.textContent, mac: MAC \}\)/);
+    assert.deepEqual(backHint({ label: 'Dashboard', mac: false }).keys, 'Alt+ArrowLeft');
   });
 });
 
@@ -581,6 +784,13 @@ describe('static files served by the server', () => {
       assert.equal(r.headers['x-frame-options'], 'DENY', url);
       if (f !== 'index.html') assert.equal(r.body.toString('utf8'), fs.readFileSync(path.join(PUBLIC, f), 'utf8'), `${url} is served byte for byte`);
     }
+  });
+
+  test('(+) /shortcuts.js is served (both tiers load it) byte for byte, as JavaScript', async () => {
+    const r = await get('/shortcuts.js');
+    assert.equal(r.status, 200);
+    assert.equal(r.headers['content-type'], 'text/javascript; charset=utf-8');
+    assert.equal(r.body.toString('utf8'), fs.readFileSync(path.join(PUBLIC, 'shortcuts.js'), 'utf8'));
   });
 
   test('(+) the page gets this process\'s token in its meta tag and no placeholder is left', async () => {

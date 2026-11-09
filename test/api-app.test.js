@@ -387,13 +387,13 @@ describe('settings', () => {
   });
 
   test('(+) ui.theme: default system; light, dark and system are saved and read back', async () => {
-    assert.deepEqual((await a.call('GET', '/api/app/settings')).body.ui, { theme: 'system' });
+    assert.deepEqual((await a.call('GET', '/api/app/settings')).body.ui, { theme: 'system', singleKeyShortcuts: true });
     for (const theme of ['dark', 'light', 'system']) {
       const r = await put({ ui: { theme } });
       assert.equal(r.status, 200);
-      assert.deepEqual(r.body.ui, { theme });
+      assert.deepEqual(r.body.ui, { theme, singleKeyShortcuts: true });
       assert.equal((await loadConfig(w.env)).config.ui.theme, theme);
-      assert.deepEqual((await a.call('GET', '/api/app/settings')).body.ui, { theme });
+      assert.deepEqual((await a.call('GET', '/api/app/settings')).body.ui, { theme, singleKeyShortcuts: true });
     }
   });
 
@@ -407,6 +407,27 @@ describe('settings', () => {
     }
     assert.equal((await loadConfig(w.env)).config.ui.theme, 'dark');
     assert.equal((await put({ ui: { theme: 'system' } })).status, 200);
+  });
+
+  test('(+) ui.singleKeyShortcuts: false is saved next to the theme and read back; true restores it', async () => {
+    const off = await put({ ui: { singleKeyShortcuts: false } });
+    assert.equal(off.status, 200);
+    assert.equal(off.body.ui.singleKeyShortcuts, false);
+    assert.equal((await put({ ui: { theme: 'dark' } })).body.ui.singleKeyShortcuts, false, 'a theme-only PUT keeps the switch');
+    assert.equal((await a.call('GET', '/api/app/settings')).body.ui.singleKeyShortcuts, false);
+    assert.equal((await loadConfig(w.env)).config.ui.singleKeyShortcuts, false);
+    assert.equal((await put({ ui: { theme: 'system', singleKeyShortcuts: true } })).body.ui.singleKeyShortcuts, true);
+  });
+
+  test('(−) ui.singleKeyShortcuts: a non-boolean is 400 naming the field; the saved value stays', async () => {
+    assert.equal((await put({ ui: { singleKeyShortcuts: false } })).status, 200);
+    for (const bad of ['false', 0, null, []]) {
+      const r = await put({ ui: { singleKeyShortcuts: bad } });
+      assert.equal(r.status, 400, JSON.stringify(bad));
+      assert.match(r.body.message, /ui\.singleKeyShortcuts/);
+    }
+    assert.equal((await loadConfig(w.env)).config.ui.singleKeyShortcuts, false);
+    assert.equal((await put({ ui: { singleKeyShortcuts: true } })).status, 200);
   });
 
   test('(−) POST /settings is 405; a text/plain PUT is 415', async () => {

@@ -22,6 +22,7 @@
   <symbol id="i-spawn" viewBox="0 0 16 16"><circle cx="6" cy="5.5" r="2.5"/><path d="M1.5 13.5c.6-2.6 2.4-4 4.5-4s3.9 1.4 4.5 4M12.5 5v5M10 7.5h5"/></symbol>
   <symbol id="i-term" viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><path d="M4.5 6l2 2-2 2M8.5 10.5h3"/></symbol>
   <symbol id="i-back" viewBox="0 0 16 16"><path d="M10 3 5 8l5 5"/></symbol>
+  <symbol id="i-kbd" viewBox="0 0 16 16"><rect x="1.5" y="4" width="13" height="8.5" rx="1.5"/><path d="M4 7h1M7 7h1M10 7h1M4.5 10h7"/></symbol>
   <symbol id="i-search" viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3.5 3.5"/></symbol>
   <symbol id="i-copy" viewBox="0 0 16 16"><rect x="5" y="5" width="8.5" height="8.5" rx="1.5"/><path d="M3 10.5V3.5A1 1 0 0 1 4 2.5h6.5"/></symbol>
   <symbol id="i-folder" viewBox="0 0 16 16"><path d="M1.5 4a1 1 0 0 1 1-1h3.5l1.5 1.5h6a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1z"/></symbol>
@@ -46,7 +47,10 @@
     </div>
     <div class="side-h"><h2 id="side-p">Projects</h2><button type="button" class="btn icon ghost" id="side-add" aria-label="Add project" title="Add project"><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg></button></div>
     <ul class="side-projects" id="side-projects" aria-labelledby="side-p"></ul>
-    <div class="side-foot" id="env" aria-label="Environment"></div>
+    <div class="side-foot">
+      <div class="env" id="env" aria-label="Environment"></div>
+      <button type="button" class="btn icon ghost" data-kbd-open aria-label="Keyboard shortcuts" aria-keyshortcuts="Shift+Slash Control+Slash" title="Keyboard shortcuts (?)"><svg class="ic" aria-hidden="true"><use href="#i-kbd"/></svg></button>
+    </div>
   </nav>
 
   <main class="main" id="main" tabindex="-1">
@@ -63,6 +67,7 @@
           <select id="dash-since"><option value="24h">24 hours</option><option value="7d">7 days</option><option value="30d">30 days</option><option value="all">All</option></select>
         </label>
         <label class="check center"><input type="checkbox" id="dash-ended"> Show ended</label>
+        <button type="button" class="btn icon ghost" data-kbd-open data-browser-only aria-label="Keyboard shortcuts" aria-keyshortcuts="Control+Slash" title="Keyboard shortcuts (Ctrl+/)"><svg class="ic" aria-hidden="true"><use href="#i-kbd"/></svg></button>
       </header>
       <div class="scroll" id="dash-body" aria-busy="true">
         <div class="grp" aria-hidden="true">
@@ -75,7 +80,7 @@
 
     <section class="screen" data-screen="project" aria-labelledby="proj-h" hidden data-app-only>
       <header class="bar">
-        <a class="crumb" href="#dashboard"><svg class="ic" aria-hidden="true"><use href="#i-back"/></svg>Dashboard</a>
+        <a class="back" href="#dashboard"><svg class="ic" aria-hidden="true"><use href="#i-back"/></svg><span>Dashboard</span></a>
         <h1 id="proj-h" tabindex="-1"></h1>
         <span id="proj-rules"></span>
         <span class="sp"></span>
@@ -110,6 +115,8 @@
                     <label class="radio-card"><input type="radio" name="theme" value="dark"><span><b>Dark</b><span>Always dark.</span></span></label>
                   </div>
                 </fieldset>
+                <div class="field"><label class="check center"><input type="checkbox" id="set-singlekey" aria-describedby="set-singlekey-help"> <span>Single-key shortcuts</span></label>
+                  <p class="help" id="set-singlekey-help">Press ? to show keyboard shortcuts. Turn this off if you use speech input or single-key commands.</p></div>
               </section>
 
               <section class="set-sec" id="s-models" aria-labelledby="s-models-h">
@@ -214,6 +221,12 @@
     <p class="muted" id="end-wait" aria-live="polite"></p>
   </div>
   <div class="dlg-foot"><span class="sp"></span><button type="button" class="btn" id="end-cancel" autofocus>Cancel</button><button type="button" class="btn danger fill" id="end-go">End session</button></div>
+</dialog>
+
+<dialog id="kbd-dlg" class="dlg-kbd" aria-labelledby="kbd-h" aria-describedby="kbd-sub">
+  <div class="dlg-head"><div><h2 id="kbd-h" tabindex="-1">Keyboard shortcuts</h2><p id="kbd-sub"></p></div></div>
+  <div class="dlg-body" id="kbd-body"></div>
+  <div class="dlg-foot" id="kbd-foot"></div>
 </dialog>
 
 <dialog id="dlg-report" class="dlg-report" aria-labelledby="report-title">

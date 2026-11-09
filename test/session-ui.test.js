@@ -9,6 +9,7 @@ import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 import { KEY_NAME } from '../src/ids.js';
 import { moveActive as moveActiveReal, cleanCommands as cleanCommandsReal, paletteQuery as paletteQueryReal, shouldFetch as shouldFetchReal } from '../public/palette.js';
+import { wantsHelp, wantsBack, isTextEntry, backHint, helpHint } from '../public/shortcuts.js';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const read = (f) => fs.readFileSync(path.join(PUBLIC, f), 'utf8');
@@ -16,7 +17,7 @@ const HTML = read('session.html');
 const JS = {
   'session.js': read('session.js'), 'mirror-render.js': read('mirror-render.js'), 'modes.js': read('modes.js'),
   'quick-actions.js': read('quick-actions.js'), 'models-ui.js': read('models-ui.js'), 'end-dialog.js': read('end-dialog.js'),
-  'palette.js': read('palette.js'),
+  'palette.js': read('palette.js'), 'shortcuts.js': read('shortcuts.js'),
 };
 const TOKENS = read('tokens.css');
 const CSS = read('session.css');
@@ -138,7 +139,7 @@ describe('session.html under the strict CSP', () => {
 describe('contracts with the other UI modules', () => {
   test('(+) session.js imports only names the shared modules export, from sibling files', () => {
     const imports = [...JS['session.js'].matchAll(/import \{([^}]+)\} from '([^']+)'/g)];
-    assert.deepEqual(imports.map((m) => m[2]), ['./dom.js', './api.js', './mirror-render.js', './modes.js', './quick-actions.js', './models-ui.js', './end-dialog.js', './palette.js']);
+    assert.deepEqual(imports.map((m) => m[2]), ['./dom.js', './api.js', './mirror-render.js', './modes.js', './quick-actions.js', './models-ui.js', './end-dialog.js', './palette.js', './shortcuts.js']);
     for (const [, names, from] of imports) {
       const exported = read(from.slice(2));
       for (const n of names.split(',').map((x) => x.trim())) assert.match(exported, new RegExp(`export (async )?(function|const|let) ${n}\\b`), `${from} exports ${n}`);
@@ -877,5 +878,200 @@ describe('command palette wiring (spec 9.7, Task 11)', () => {
   test('(−) palette.js is imported by name, and session.js never builds the command text by hand', () => {
     assert.match(JS['session.js'], /import \{[^}]*\bpaletteQuery\b[^}]*\} from '\.\/palette\.js';/);
     assert.doesNotMatch(src, /`\/\$\{c\.name\} `|'\/' \+ c\.name/);
+  });
+});
+
+describe('Back button and Keyboard shortcuts window in the session window (spec 3.13, 4.6, Task 12b)', () => {
+  const tag = (id) => new RegExp(`<[a-z]+\\b[^>]*\\bid="${id}"[^>]*>`).exec(HTML)?.[0] ?? '';
+  const src = JS['session.js'];
+  const css = strip(CSS);
+  const fn = (head) => {
+    const at = src.indexOf(head);
+    assert.ok(at >= 0, head);
+    return src.slice(at, src.indexOf('\n}\n', at) + 2);
+  };
+
+  test('(+) the back link is a .back button: icon, then the project name (or Dashboard) in #proj', () => {
+    assert.match(HTML, /<a class="back" id="back" href="\/#dashboard"><svg class="ic" aria-hidden="true"><use href="#i-back"\/><\/svg><span id="proj">Dashboard<\/span><\/a>/);
+  });
+
+  test('(−) no .crumb is left in the page or the stylesheet', () => {
+    assert.doesNotMatch(HTML, /class="[^"]*\bcrumb\b/);
+    assert.doesNotMatch(css, /\.crumb\b/);
+    assert.doesNotMatch(css, /\.back\b/, '.back lives in tokens.css only');
+    assert.match(strip(TOKENS), /\.back \{/);
+  });
+
+  test('(+) the Keyboard shortcuts button is the last control in the header: ghost icon button, i-kbd, label, title and aria-keyshortcuts', () => {
+    const btn = tag('kbd-open');
+    assert.match(btn, /^<button type="button" class="btn ghost icon"/);
+    assert.match(btn, /aria-label="Keyboard shortcuts"/);
+    assert.match(btn, /aria-keyshortcuts="[^"]+"/);
+    assert.match(btn, /title="Keyboard shortcuts \(\?\)"/);
+    assert.match(HTML, /<button\b[^>]*\bid="kbd-open"[^>]*><svg class="ic" aria-hidden="true"><use href="#i-kbd"\/><\/svg><\/button>/);
+    const at = (needle) => HTML.indexOf(needle);
+    assert.ok(at('id="claude-link"') < at('id="kbd-open"') && at('id="kbd-open"') < at('</header>'), 'after the claude.ai link, inside the header');
+  });
+
+  test('(+) #kbd-dlg is a native dialog with the heading, the window line, the body and the footer', () => {
+    const dlg = /<dialog\b[^>]*\bid="kbd-dlg"[^>]*>[\s\S]*?<\/dialog>/.exec(HTML)?.[0] ?? '';
+    assert.ok(dlg);
+    assert.match(dlg, /<dialog\b[^>]*\bclass="dlg-kbd"/);
+    assert.match(dlg, /\baria-labelledby="kbd-h"/);
+    assert.match(dlg, /<h2 id="kbd-h" tabindex="-1">Keyboard shortcuts<\/h2>/);
+    for (const id of ['kbd-sub', 'kbd-body', 'kbd-foot']) assert.match(dlg, new RegExp(`\\bid="${id}"`), id);
+  });
+
+  test('(+) the table styles for the window live once in tokens.css, where both pages see them', () => {
+    const t = strip(TOKENS);
+    for (const sel of ['dialog.dlg-kbd', 'dialog.dlg-kbd h2:focus', '.kbd-sec table', '.kbd-sec th', '.kbd-sec td', '.kbd-sec kbd', '.btn.link']) assert.ok(t.includes(sel), sel);
+    assert.doesNotMatch(css, /dlg-kbd|kbd-sec/);
+    assert.match(t, /\.kbd-sec kbd \{[^}]*font-size: var\(--fs-small\)/, 'mono 12 for keys');
+  });
+
+  test('(+) boot sets the Back hint, listens on the document and wires the button; the non-app page hides the button', () => {
+    const boot = fn('function boot()');
+    assert.match(boot, /setBack\('Dashboard'\)/);
+    assert.match(boot, /document\.addEventListener\('keydown', onPageKey\)/);
+    assert.match(boot, /\$\('kbd-open'\)\.addEventListener\('click', \(\) => openKbd\(\$\('kbd-open'\)\)\)/);
+    const notApp = boot.slice(0, boot.indexOf('if (!sessionId && !paneId)'));
+    assert.match(notApp, /\$\('kbd-open'\)\.hidden = true/);
+    assert.ok(notApp.indexOf("$('kbd-open').hidden = true") < notApp.indexOf('return;'), 'before the early return');
+  });
+
+  test('(+) the poll sets the Back label through setBack, not a bare title', () => {
+    assert.match(fn('function applyAgent('), /setBack\(String\(group\.label\)\)/);
+    assert.doesNotMatch(src, /\$\('back'\)\.title = String/);
+  });
+
+  test('(+) setBack puts the platform key in the title and aria-keyshortcuts', () => {
+    const run = (mac) => {
+      const el = { attrs: {}, setAttribute(k, v) { this.attrs[k] = v; } };
+      vm.runInNewContext(`${fn('function setBack(label)')}; setBack('demo-api')`, { MAC: mac, backHint, $: () => el });
+      return [el.title, el.attrs['aria-keyshortcuts']];
+    };
+    assert.deepEqual(run(false), ['Back to demo-api (Alt+←)', 'Alt+ArrowLeft']);
+    assert.deepEqual(run(true), ['Back to demo-api (⌘[)', 'Meta+BracketLeft']);
+  });
+
+  test('(+) syncKbdHint names "?" while the setting is on and only Mod+/ when it is off', () => {
+    const run = (singleKey) => {
+      const el = { attrs: {}, setAttribute(k, v) { this.attrs[k] = v; } };
+      vm.runInNewContext(`${fn('function syncKbdHint()')}; syncKbdHint()`, { MAC: false, UI: { singleKey }, helpHint, $: () => el });
+      return [el.title, el.attrs['aria-keyshortcuts']];
+    };
+    assert.deepEqual(run(true), ['Keyboard shortcuts (?)', 'Shift+Slash Control+Slash']);
+    assert.deepEqual(run(false), ['Keyboard shortcuts (Ctrl+/)', 'Control+Slash']);
+  });
+
+  // loadSettings reads GET /api/app/settings once: theme and ui.singleKeyShortcuts
+  const loadRig = async (response) => {
+    const themes = [];
+    const ctx = { UI: { singleKey: true }, hints: 0, call: async () => response, applyTheme: (t) => themes.push(t), syncKbdHint() { ctx.hints += 1; } };
+    await vm.runInNewContext(`${fn('async function loadSettings()')}; loadSettings`, ctx)();
+    return { singleKey: ctx.UI.singleKey, themes, hints: ctx.hints };
+  };
+
+  test('(+) loadSettings reads ui.singleKeyShortcuts (false switches it off) and still applies the theme', async () => {
+    assert.deepEqual(await loadRig({ status: 200, body: { ui: { theme: 'dark', singleKeyShortcuts: false } } }), { singleKey: false, themes: ['dark'], hints: 1 });
+    assert.deepEqual(await loadRig({ status: 200, body: { ui: { theme: 'system', singleKeyShortcuts: true } } }), { singleKey: true, themes: ['system'], hints: 1 });
+  });
+
+  test('(−) a failed read, a missing field and a non-boolean leave the default: on', async () => {
+    for (const response of [{ status: 0, body: null }, { status: 500, body: null }, { status: 200, body: { ui: { theme: 'dark' } } }, { status: 200, body: { ui: { singleKeyShortcuts: 'no' } } }, { status: 200, body: {} }]) {
+      const r = await loadRig(response);
+      assert.equal(r.singleKey, true, JSON.stringify(response));
+      assert.equal(r.hints, 1, 'the hint is drawn either way');
+    }
+    assert.deepEqual((await loadRig({ status: 0, body: null })).themes, [], 'no theme change without an answer');
+  });
+
+  // onPageKey, run for real with the real rules from shortcuts.js
+  const keys = ({ mac = false, singleKey = true, passthrough = false, dialog = false } = {}) => {
+    const log = { opened: [], clicks: 0, prevented: 0 };
+    const ctx = {
+      MAC: mac, UI: { singleKey }, P: { on: passthrough }, wantsHelp, wantsBack, isTextEntry,
+      openKbd: (opener) => log.opened.push(opener),
+      $: (id) => (id === 'back' ? { click() { log.clicks += 1; } } : null),
+      document: { activeElement: { id: 'active' }, querySelector: (sel) => (sel === 'dialog[open]' && dialog ? {} : null) },
+    };
+    const onKey = vm.runInNewContext(`${fn('function onPageKey(e)')}; onPageKey`, ctx);
+    return {
+      log,
+      press: (key, more = {}, target = { tagName: 'BUTTON' }) => {
+        onKey({ key, ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, target, preventDefault() { log.prevented += 1; }, ...more });
+        return log;
+      },
+    };
+  };
+
+  test('(+) "?" and Mod+/ open the window for the focused control and are consumed', () => {
+    const k = keys();
+    k.press('?', { shiftKey: true });
+    k.press('/', { ctrlKey: true });
+    assert.deepEqual(k.log.opened, [{ id: 'active' }, { id: 'active' }]);
+    assert.equal(k.log.prevented, 2);
+    const mac = keys({ mac: true });
+    mac.press('/', { metaKey: true });
+    assert.equal(mac.log.opened.length, 1);
+  });
+
+  test('(−) "?" is ignored in the message box, an input, a select and the terminal mirror (the key types or goes on)', () => {
+    for (const target of [{ tagName: 'TEXTAREA' }, { tagName: 'INPUT' }, { tagName: 'SELECT' }, { tagName: 'DIV', closest: (s) => (s === '#term' ? {} : null) }]) {
+      const k = keys();
+      k.press('?', {}, target);
+      assert.equal(k.log.opened.length, 0, target.tagName);
+      assert.equal(k.log.prevented, 0, `${target.tagName}: the character is not swallowed`);
+    }
+  });
+
+  test('(−) in passthrough "?" and Ctrl+/ (Linux) are ignored; Command+/ (macOS) still opens it', () => {
+    const lin = keys({ passthrough: true });
+    lin.press('?');
+    lin.press('/', { ctrlKey: true });
+    assert.equal(lin.log.opened.length, 0);
+    const mac = keys({ passthrough: true, mac: true });
+    mac.press('/', { metaKey: true });
+    assert.equal(mac.log.opened.length, 1);
+  });
+
+  test('(−) with the setting off "?" is ignored and Mod+/ opens it; with a dialog open neither does', () => {
+    const off = keys({ singleKey: false });
+    off.press('?');
+    assert.equal(off.log.opened.length, 0);
+    off.press('/', { ctrlKey: true });
+    assert.equal(off.log.opened.length, 1);
+    const dlg = keys({ dialog: true });
+    dlg.press('?');
+    dlg.press('/', { ctrlKey: true });
+    dlg.press('ArrowLeft', { altKey: true });
+    assert.deepEqual([dlg.log.opened.length, dlg.log.clicks, dlg.log.prevented], [0, 0, 0]);
+  });
+
+  test('(+) Back: Alt+Left on Linux and Command+[ on macOS follow the Back link, from the message box too', () => {
+    const lin = keys();
+    lin.press('ArrowLeft', { altKey: true }, { tagName: 'TEXTAREA' });
+    assert.deepEqual([lin.log.clicks, lin.log.prevented], [1, 1]);
+    const mac = keys({ mac: true });
+    mac.press('[', { metaKey: true });
+    assert.deepEqual([mac.log.clicks, mac.log.prevented], [1, 1]);
+  });
+
+  test('(−) Back is ignored in passthrough (the pane rules apply) and for the other platform\'s key', () => {
+    const pass = keys({ passthrough: true });
+    pass.press('ArrowLeft', { altKey: true });
+    assert.deepEqual([pass.log.clicks, pass.log.prevented], [0, 0]);
+    const passMac = keys({ passthrough: true, mac: true });
+    passMac.press('[', { metaKey: true });
+    assert.equal(passMac.log.clicks, 0);
+    const wrong = keys({ mac: true });
+    wrong.press('ArrowLeft', { altKey: true });
+    assert.equal(wrong.log.clicks, 0);
+  });
+
+  test('(−) other keys are left alone: not consumed, nothing opened', () => {
+    const k = keys();
+    for (const key of ['a', 'Enter', 'Escape', '/', '[']) k.press(key);
+    assert.deepEqual([k.log.opened.length, k.log.clicks, k.log.prevented], [0, 0, 0]);
   });
 });
