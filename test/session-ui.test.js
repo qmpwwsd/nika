@@ -2202,6 +2202,14 @@ describe('0.3.4: the transcript toggle', () => {
     });
     const els = Object.fromEntries(['split', 'sess-hist', 'hist-scroll', 'hist-toggle', 'hist-use', 'hist-onoff'].map((id) => [id, node(id)]));
     els.split.classList = classList(flags);
+    // a browser drops focus from an element that becomes display:none: the fake does it the moment hist-off is set, so a read of
+    // document.activeElement after the class flip sees the body, not the element that held focus
+    const flip = els.split.classList.toggle;
+    els.split.classList.toggle = (c, force) => {
+      const on = flip(c, force);
+      if (c === 'hist-off' && on && doc.activeElement === inside) doc.activeElement = outside;
+      return on;
+    };
     Object.assign(els['hist-scroll'], { scrollTop: 0, scrollHeight: 1000, clientHeight: 400 });
     els['sess-hist'].contains = (n) => n === inside;
     const localStorage = {
@@ -2268,7 +2276,7 @@ describe('0.3.4: the transcript toggle', () => {
     assert.deepEqual(r.state(), SHOWN);
   });
 
-  test('(+) hiding while focus is inside the transcript moves focus to the toggle', () => {
+  test('(+) hiding while focus is inside the transcript moves focus to the toggle (focus is read before the column goes, as a browser drops it with the column)', () => {
     const r = rig({ focusInHist: true });
     r.wireHist();
     r.toggleHist();

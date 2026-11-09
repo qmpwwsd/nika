@@ -1586,6 +1586,7 @@ const HIST = { at: null }; // where the reader was in the transcript when it was
 function setHist(on, user = false) {
   const sc = $('hist-scroll');
   const wasOff = $('split').classList.contains('hist-off');
+  const inHist = $('sess-hist').contains(document.activeElement); // before the flip: a browser drops focus from a column that stops rendering
   if (!on && !wasOff) HIST.at = { top: sc.scrollTop, bottom: nearBottom(sc) };
   $('split').classList.toggle('hist-off', !on);
   if (on && wasOff && HIST.at) {
@@ -1598,7 +1599,7 @@ function setHist(on, user = false) {
   if (!user) return;
   storeSet('transcript', on ? 'shown' : 'hidden');
   announce(on ? 'Transcript shown' : 'Transcript hidden');
-  if (!on && $('sess-hist').contains(document.activeElement)) $('hist-toggle').focus();
+  if (!on && inHist) $('hist-toggle').focus();
 }
 
 /** The button and Mod+Shift+H. */
