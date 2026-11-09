@@ -22,9 +22,11 @@ export function resetEndedState(open) {
 /**
  * The sidebar: `rows` = the registered projects (with their counts), `empty` = there are none (the page shows its hint),
  * `detected` = repositories that run live agents but are not registered, most urgent first, at most DETECTED_MAX.
- * `groups` are the dashboard's groups (`project`, `key`, `root`, `label`, `counts`).
+ * `groups` are the dashboard's groups (`project`, `key`, `root`, `label`, `counts`). `projects` = null means the list has not
+ * loaded: no hint and no Detected (without it nika cannot tell which repositories are registered), so nothing is drawn yet.
  */
 export function sidebarModel({ projects, groups }) {
+  if (!projects) return { empty: false, rows: [], detected: [] };
   const byProject = new Map(groups.filter((g) => g.project).map((g) => [g.project.key, g]));
   const rows = projects.map((p) => ({ key: p.key, name: p.name, attn: byProject.get(p.key)?.counts.attn ?? 0, live: byProject.get(p.key)?.counts.live ?? 0 }));
   const keys = new Set(projects.map((p) => p.key));
@@ -35,4 +37,14 @@ export function sidebarModel({ projects, groups }) {
     .sort((a, b) => b.attn - a.attn || b.live - a.live || a.name.localeCompare(b.name))
     .slice(0, DETECTED_MAX);
   return { empty: rows.length === 0, rows, detected };
+}
+
+/**
+ * The empty box's line when the dashboard filter matches no group. `q` = the filter as typed (trimmed), `endedMatch` = some ended
+ * agent matches it. With "Show ended" off such a match is hidden, so the line says so; otherwise it is the plain no-match line.
+ */
+export function noMatchText({ q, showEnded, endedMatch }) {
+  return !showEnded && endedMatch
+    ? `Nothing live matches “${q}”. Tick Show ended to include ended agents, or clear the filter.`
+    : `Nothing matches “${q}”. Clear the filter to see every agent.`;
 }

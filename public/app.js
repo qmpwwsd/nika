@@ -6,7 +6,7 @@ import { h, icon } from './dom.js';
 import { modeEl, rowMode, canEndRow } from './modes.js';
 import { wantsHelp, wantsBack, isTextEntry, openShortcuts, helpHint, backHint } from './shortcuts.js';
 import { copyBanner } from './app-copy.js';
-import { endedPlan, resetEndedState } from './dash-model.js';
+import { endedPlan, noMatchText, resetEndedState } from './dash-model.js';
 import {
   $, $$, MAC, SHAPE, ORDER, state, hooks, load, save, timeEl, tickTimes, announce, toast, copyText,
   statusEl, modelEl, rulesEl, countsLine, sessionHref, menuEl, menuIsOpen, openDialog, initDialogs, initMenus,
@@ -277,7 +277,7 @@ function groupEl(g, q) {
   const c = g.counts;
   return h('section', { class: 'grp', 'aria-labelledby': `g-${g.key}` },
     h('header', { class: 'grp-head' },
-      h('h2', { id: `g-${g.key}`, tabindex: '-1' }, isApp && g.project
+      h('h2', { id: `g-${g.key}`, tabindex: '-1', 'data-fk': `gh:${g.key}` }, isApp && g.project
         ? h('a', { href: `#project/${g.project.key}`, 'data-fk': `g:${g.key}`, title: g.label, text: g.label })
         : h('span', { title: g.label, text: g.label })),
       g.root ? h('span', { class: 'path mono', title: g.root, text: g.root }) : null,
@@ -310,7 +310,10 @@ function dashboardNodes() {
     any = true;
     nodes.push(groupEl(g, q));
   }
-  if (q && !any) nodes.push(emptyEl('No agent matches', `Nothing matches “${state.filter.trim()}”. Clear the filter to see every agent.`));
+  if (q && !any) {
+    const endedMatch = !state.showEnded && groups.some((g) => g.agents.some((a) => sOf(a) === 'ended' && matches(a, g, q)));
+    nodes.push(emptyEl('No agent matches', noMatchText({ q: state.filter.trim(), showEnded: state.showEnded, endedMatch })));
+  }
   return nodes;
 }
 

@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
-import { DETECTED_MAX, endedPlan, resetEndedState, sidebarModel } from '../public/dash-model.js';
+import { DETECTED_MAX, endedPlan, noMatchText, resetEndedState, sidebarModel } from '../public/dash-model.js';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const read = (f) => fs.readFileSync(path.join(PUBLIC, f), 'utf8');
@@ -23,6 +23,17 @@ const APP = code(read('app.js'));
 const PROJECT = code(read('project.js'));
 const HTML = read('index.html');
 const CSS = read('app.css').replace(/\/\*[\s\S]*?\*\//g, '');
+
+// ---- a tiny node tree for the page code that runs in a vm -----------------------------------------------------------------------
+
+const makeNode = (tag, attrs, kids) => ({
+  tag, attrs: attrs ?? {}, kids: kids.flat(Infinity).filter((k) => k !== null && k !== undefined && k !== false), listeners: {},
+  addEventListener(type, f) { this.listeners[type] = f; },
+  append(...more) { this.kids.push(...more); },
+});
+const textOf = (n) => (typeof n === 'string' ? n : (n.attrs?.text ?? '') + (n.kids ?? []).map(textOf).join(''));
+/** Every element under (and including) `n`, depth first. */
+const walk = (n) => (typeof n === 'string' ? [] : [n, ...(n.kids ?? []).flatMap(walk)]);
 
 // ---- endedPlan ------------------------------------------------------------------------------------------------------------
 
@@ -173,17 +184,24 @@ describe('sidebarModel (the sidebar\'s Projects list and its Detected repositori
     sidebarModel({ projects: [], groups });
     assert.equal(JSON.stringify(groups), before);
   });
+
+  test('(+) the project list has not loaded (null): no hint, no rows and no Detected, even with live unregistered groups', () => {
+    const groups = [grp('d1', 'gamma', counts(0, 2)), grp('d2', 'delta', counts(1, 1))];
+    assert.deepEqual(sidebarModel({ projects: null, groups }), { empty: false, rows: [], detected: [] });
+    assert.deepEqual(sidebarModel({ projects: null, groups: [] }), { empty: false, rows: [], detected: [] });
+  });
+
+  test('(−) a loaded empty list (not null) still shows the hint and fills Detected as before', () => {
+    const groups = [grp('d1', 'gamma', counts(0, 2)), grp('d2', 'delta', counts(1, 1))];
+    assert.deepEqual(sidebarModel({ projects: [], groups }), {
+      empty: true, rows: [], detected: [{ key: 'd2', name: 'delta', attn: 1, live: 1 }, { key: 'd1', name: 'gamma', attn: 0, live: 2 }],
+    });
+  });
 });
 
 // ---- agentNodes and groupMatches (app.js, run against stubs) ----------------------------------------------------------------------
 
 describe('agentNodes with "Show ended"', () => {
-  const makeNode = (tag, attrs, kids) => ({
-    tag, attrs: attrs ?? {}, kids: kids.flat(Infinity).filter((k) => k !== null && k !== undefined && k !== false), listeners: {},
-    addEventListener(type, f) { this.listeners[type] = f; },
-    append(...more) { this.kids.push(...more); },
-  });
-  const textOf = (n) => (typeof n === 'string' ? n : (n.attrs?.text ?? '') + (n.kids ?? []).map(textOf).join(''));
   const sigOf = (n) => `${n.tag}${n.attrs.class ? `.${n.attrs.class.split(' ').join('.')}` : ''}`;
   const sigs = (nodes) => Array.from(nodes, sigOf); // Array.from: the vm's arrays have another prototype than deepEqual expects
 
@@ -328,7 +346,141 @@ describe('dashboard wiring', () => {
   });
 
   test('(+) a group heading can take focus from the sidebar (tabindex -1, like the screen headings)', () => {
-    assert.match(fn(APP, 'function groupEl('), /h\('h2', \{ id: `g-\$\{g\.key\}`, tabindex: '-1' \}/);
+    assert.match(fn(APP, 'function groupEl('), /h\('h2', \{ id: `g-\$\{g\.key\}`, tabindex: '-1', 'data-fk'/);
+  });
+});
+
+// ---- groupEl, dashboardNodes and swap (app.js, run against stubs) ---------------------------------------------------------------
+
+describe('groupEl: the heading keeps focus across a redraw', () => {
+  const rig = ({ isApp = true } = {}) => {
+    const ctx = {
+      isApp,
+      hooks: {},
+      h: (tag, attrs, ...kids) => makeNode(tag, attrs, kids),
+      rulesEl: () => null,
+      countsLine: () => [],
+      agentNodes: () => [],
+    };
+    return { ctx, ...vm.runInNewContext(`${fn(APP, 'function groupEl(')}\n({ groupEl })`, ctx) };
+  };
+  const grp = (project) => ({ key: 'k1', label: 'repo', root: '/r/repo', project, agents: [], counts: { attn: 0, idle: 0, busy: 0, ended: 0, live: 0 } });
+  const heading = (section) => walk(section).find((n) => n.tag === 'h2');
+
+  test('(+) the group h2 carries data-fk gh:<key>, for a registered project and for a repository that is not one', () => {
+    const { groupEl } = rig();
+    assert.equal(heading(groupEl(grp({ key: 'k1', name: 'repo' }), '')).attrs['data-fk'], 'gh:k1');
+    assert.equal(heading(groupEl(grp(null), '')).attrs['data-fk'], 'gh:k1');
+    assert.equal(heading(rig({ isApp: false }).groupEl(grp(null), '')).attrs['data-fk'], 'gh:k1', 'the browser tier too');
+  });
+
+  test('(−) the project link inside the h2 keeps its own g:<key>; no data-fk appears twice in the group', () => {
+    const section = rig().groupEl(grp({ key: 'k1', name: 'repo' }), '');
+    const link = walk(heading(section)).find((n) => n.tag === 'a');
+    assert.equal(link.attrs['data-fk'], 'g:k1');
+    const fks = walk(section).map((n) => n.attrs?.['data-fk']).filter(Boolean);
+    assert.deepEqual(fks.slice().sort(), ['g:k1', 'gh:k1']);
+    assert.equal(new Set(fks).size, fks.length);
+  });
+
+  test('(+) swap puts focus back on the heading after a redraw, matched by that data-fk', () => {
+    const { groupEl } = rig();
+    const fresh = groupEl(grp(null), '');
+    const events = [];
+    const target = heading(fresh);
+    target.focus = (o) => events.push(['focus', o.preventScroll]);
+    const host = { contains: () => true, replaceChildren: (...n) => events.push(['replace', n.length]), hasAttribute: () => false };
+    const ctx = {
+      document: { activeElement: { dataset: { fk: 'gh:k1' } } },
+      CSS: { escape: (x) => x },
+      $: (sel) => walk(fresh).find((n) => `[data-fk="${n.attrs['data-fk']}"]` === sel) ?? null,
+    };
+    const { swap } = vm.runInNewContext(`${fn(APP, 'export function swap(').replace('export ', '')}\n({ swap })`, ctx);
+    swap(host, [fresh]);
+    assert.deepEqual(events, [['replace', 1], ['focus', true]]);
+  });
+
+  test('(+) wiring: the h2 has tabindex -1 and data-fk gh:<key>; the project link keeps g:<key>', () => {
+    const src = fn(APP, 'function groupEl(');
+    assert.match(src, /h\('h2', \{ id: `g-\$\{g\.key\}`, tabindex: '-1', 'data-fk': `gh:\$\{g\.key\}` \}/);
+    assert.match(src, /'data-fk': `g:\$\{g\.key\}`/);
+  });
+});
+
+describe('noMatchText (the filter\'s "No agent matches" line)', () => {
+  test('(+) Show ended off and an ended agent matches: says that live agents are the ones missing, and how to include the ended ones', () => {
+    assert.equal(noMatchText({ q: 'scout', showEnded: false, endedMatch: true }),
+      'Nothing live matches “scout”. Tick Show ended to include ended agents, or clear the filter.');
+  });
+
+  test('(−) Show ended off and no ended agent matches: today\'s line, byte for byte', () => {
+    assert.equal(noMatchText({ q: 'scout', showEnded: false, endedMatch: false }),
+      'Nothing matches “scout”. Clear the filter to see every agent.');
+  });
+
+  test('(−) Show ended on: today\'s line, whatever endedMatch says (ended agents are already included)', () => {
+    for (const endedMatch of [false, true]) {
+      assert.equal(noMatchText({ q: 'scout', showEnded: true, endedMatch }), 'Nothing matches “scout”. Clear the filter to see every agent.');
+    }
+  });
+
+  test('(−) the filter text is put in as it is, quotes and markup characters included (it is drawn as text)', () => {
+    assert.equal(noMatchText({ q: '<b>"x"</b>', showEnded: false, endedMatch: false }), 'Nothing matches “<b>"x"</b>”. Clear the filter to see every agent.');
+  });
+});
+
+describe('dashboardNodes: the no-match line', () => {
+  const LIVE = (name) => ({ id: name, name, live: true, state: 'busy' });
+  const DONE = (name) => ({ id: name, name, live: false, state: 'ended' });
+  const rig = ({ filter, showEnded = false, groups }) => {
+    const ctx = {
+      isApp: true,
+      state: { filter, showEnded },
+      hooks: {},
+      noMatchText,
+      buildGroups: () => groups.map((agents, i) => ({ key: `k${i}`, label: 'repo', agents })),
+      groupEl: (g) => makeNode('section', { class: 'grp' }, []),
+      queueEl: () => null,
+      plainSummary: () => 'summary',
+      countsOf: () => ({}),
+      h: (tag, attrs, ...kids) => makeNode(tag, attrs, kids),
+      icon: () => null,
+    };
+    const src = [fn(APP, 'export function sOf(').replace('export ', ''), fn(APP, 'function matches('), fn(APP, 'function groupMatches('),
+      fn(APP, 'function emptyEl('), fn(APP, 'function dashboardNodes(')].join('\n');
+    const { dashboardNodes } = vm.runInNewContext(`${src}\n({ dashboardNodes })`, ctx);
+    return Array.from(dashboardNodes());
+  };
+  const emptyText = (nodes) => textOf(nodes.find((n) => n.attrs.class === 'empty'));
+
+  test('(+) unchecked, the filter matches only an ended agent: the empty box says "Nothing live matches" and how to include ended agents', () => {
+    const text = emptyText(rig({ filter: ' scout ', groups: [[LIVE('builder-1'), DONE('scout-9')]] }));
+    assert.equal(text, 'No agent matchesNothing live matches “scout”. Tick Show ended to include ended agents, or clear the filter.');
+  });
+
+  test('(−) unchecked, nothing matches at all: today\'s line', () => {
+    const text = emptyText(rig({ filter: 'nope', groups: [[LIVE('builder-1'), DONE('scout-9')]] }));
+    assert.equal(text, 'No agent matchesNothing matches “nope”. Clear the filter to see every agent.');
+  });
+
+  test('(−) checked, the filter matches an ended agent: its group is drawn and there is no empty box; checked with no match: today\'s line', () => {
+    const hit = rig({ filter: 'scout', showEnded: true, groups: [[LIVE('builder-1'), DONE('scout-9')]] });
+    assert.equal(hit.some((n) => n.attrs.class === 'empty'), false);
+    assert.equal(hit.some((n) => n.attrs.class === 'grp'), true);
+    const miss = rig({ filter: 'nope', showEnded: true, groups: [[LIVE('builder-1'), DONE('scout-9')]] });
+    assert.equal(emptyText(miss), 'No agent matchesNothing matches “nope”. Clear the filter to see every agent.');
+  });
+
+  test('(+) a live match anywhere keeps the groups and shows no empty box; the ended match is found in any group', () => {
+    assert.equal(rig({ filter: 'builder', groups: [[LIVE('builder-1')], [DONE('scout-9')]] }).some((n) => n.attrs.class === 'empty'), false);
+    assert.match(emptyText(rig({ filter: 'scout', groups: [[LIVE('builder-1')], [DONE('scout-9')]] })), /Nothing live matches “scout”/);
+  });
+
+  test('(+) wiring: the text comes from noMatchText, drawn through emptyEl, from the shared matches() and sOf()', () => {
+    assert.match(APP, /import \{[^}]*\bnoMatchText\b[^}]*\} from '\.\/dash-model\.js'/);
+    const src = fn(APP, 'function dashboardNodes(');
+    assert.match(src, /emptyEl\('No agent matches', noMatchText\(\{ q: state\.filter\.trim\(\), showEnded: state\.showEnded, endedMatch/);
+    assert.match(src, /sOf\(a\) === 'ended' && matches\(a, g, q\)/);
   });
 });
 
@@ -353,7 +505,8 @@ describe('sidebar wiring', () => {
   test('(+) renderSide draws from sidebarModel; the hint shows when there are no projects and Detected only when it has rows', () => {
     assert.match(PROJECT, /import \{[^}]*\bsidebarModel\b[^}]*\} from '\.\/dash-model\.js'/);
     const side = fn(PROJECT, 'function renderSide(');
-    assert.match(side, /sidebarModel\(\{ projects: state\.projects \?\? \[\], groups: buildGroups\(\) \}\)/);
+    assert.match(side, /sidebarModel\(\{ projects: state\.projects, groups: buildGroups\(\) \}\)/);
+    assert.doesNotMatch(side, /state\.projects \?\?/, 'a project list that has not loaded (null) is not turned into an empty one');
     assert.match(side, /\$\('#side-projects'\)\.hidden = empty;/);
     assert.match(side, /\$\('#side-hint'\)\.hidden = !empty;/);
     assert.match(side, /\$\('#side-det'\)\.hidden = !detected\.length;/);

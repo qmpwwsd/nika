@@ -8,6 +8,7 @@
 - Fix: the sidebar's Projects list is no longer blank without projects: it says "No projects yet." and how to add one, and a
   new Detected list shows repositories that run live agents but are not projects, each with an "Add project" button (the same
   folder picker as before) and a link to its group on the dashboard.
+- Fix: the filter's no-match line says when Show ended hides the only matches.
 
 ## 0.3.0 — 2026-11-09
 

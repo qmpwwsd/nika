@@ -123,7 +123,7 @@ function showGroup(key) {
 
 let sideSig = '';
 function renderSide() {
-  const { empty, rows, detected } = sidebarModel({ projects: state.projects ?? [], groups: buildGroups() });
+  const { empty, rows, detected } = sidebarModel({ projects: state.projects, groups: buildGroups() });
   const cur = state.route.name === 'project' ? state.route.key : '';
   const env = [state.me?.tmux, state.me?.claude, state.me?.version];
   const sig = JSON.stringify([rows, detected, cur, env]);
