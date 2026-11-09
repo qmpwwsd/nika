@@ -36,7 +36,7 @@ error (`400 invalid`, message starts with `template:`), so a literal `{{` cannot
 |---|---|
 | `{{models.orchestrator}}` `{{models.reasoner}}` `{{models.builder}}` `{{models.scout}}` | the project's own model for the role (Choose models… on the project page), else `models.*` from Settings |
 | `{{panePlacement}}` | `beside` or `under-last` |
-| `{{limits.maxAgents}}` | `limits.maxAgents` |
+| `{{limits.maxAgents}}` | `limits.maxAgents` (agents per orchestrator; a project as a whole runs at most three times that, never more than 24) |
 | `{{permissionMode}}` | `permissionMode` (`default` means no `--permission-mode` flag) |
 | `{{remoteControl}}` | `off`, `on (name prefix: <prefix>)` or `on (name prefix: the project name)` |
 | `{{plugins}}` | the project's selected plugins as `` `name@marketplace` `` separated by commas, or `none` |

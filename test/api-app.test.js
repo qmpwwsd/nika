@@ -14,6 +14,7 @@ import { readHistory } from '../src/collect/history.js';
 import { loadConfig, addProject, removeProject, getOrchestrator, setOrchestrator } from '../src/store.js';
 import { findSession, findSessions } from '../src/model.js';
 import { startOrchestrator } from '../src/orchestrate.js';
+import { spawnAgent } from '../src/spawn.js';
 import { configDir, stateDir } from '../src/paths.js';
 import { lastNonBlank, modeFromRows, PROMPT_ROWS } from '../src/mode.js';
 import { MODEL_CATALOG } from '../src/models.js';
@@ -978,6 +979,64 @@ describe('spawn and orchestrator', () => {
     assert.equal(call[2], a.ctx);
   });
 
+  describe('nesting through the route (the real spawnAgent, an in-memory tmux)', () => {
+    const MAIN = (world) => ({ id: '%1', session: 'My-App', window: 0, windowName: 'orchestrator', command: 'claude', role: 'orchestrator', agent: `${world.project.key}/orchestrator`, depth: '1' });
+    const rigSpawn = async (settings, extraPanes = () => []) => {
+      const world = await makeWorld(settings);
+      const exec = fakeTmux({ panes: [MAIN(world), ...extraPanes(world)] });
+      const a = await boot({ world, deps: makeDeps({ spawnAgent }), ctxOver: { exec, tmuxBin: TMUX, claudeBin: CLAUDE } });
+      return { world, exec, a, post: (json) => a.call('POST', '/api/app/spawn', { json: { project: world.project.key, model: 'sonnet', brief: 'Do the thing.', ...json } }) };
+    };
+    const agents = (world, names, parent) => names.map((n, i) => ({ id: `%${40 + i}`, session: 'My-App', window: 0, windowName: 'zsh', command: 'node', role: 'agent', agent: `${world.project.key}/${n}`, depth: parent ? '2' : '1', parent: parent ?? '' }));
+
+    test('(+) a spawn with parent and role: the main orchestrator\'s pane parents a sub-orchestrator at depth 2, and that one parents an agent at depth 3', async () => {
+      const r = await rigSpawn();
+      const res = await r.post({ name: 'planner', role: 'orchestrator', parent: '%1' });
+      assert.equal(res.status, 200, res.raw);
+      assert.equal(res.body.pane, '%20');
+      const p = r.exec.panes.find((x) => x.id === '%20');
+      assert.deepEqual([p.role, p.agent, p.depth, p.parent], ['sub-orchestrator', `${r.world.project.key}/planner`, '2', '%1']);
+      const under = await r.post({ name: 'worker', parent: '%20' });
+      assert.equal(under.status, 200, under.raw);
+      assert.deepEqual(r.exec.panes.find((x) => x.id === '%21').depth, '3');
+    });
+
+    test('(−) the 409 depth and 404 parent-gone answers reach the page with their codes and nothing is started', async () => {
+      const r = await rigSpawn();
+      assert.equal((await r.post({ name: 'planner', role: 'orchestrator', parent: '%1' })).status, 200);
+      const deeper = await r.post({ name: 'deeper', role: 'orchestrator', parent: '%20' });
+      assert.deepEqual([deeper.status, deeper.body.error], [409, 'depth']);
+      assert.match(deeper.body.message, /Only the main orchestrator can/);
+      const gone = await r.post({ name: 'x1', parent: '%99' });
+      assert.deepEqual([gone.status, gone.body.error], [404, 'not_found']);
+      const none = await r.post({ name: 'x2', role: 'orchestrator' });
+      assert.deepEqual([none.status, none.body.error], [409, 'depth']);
+      assert.equal(r.exec.of('split-window').length, 1, 'only the first sub-orchestrator was started');
+    });
+
+    test('(−) a 409 limit body carries { scope, running, max }: parent, then project', async () => {
+      const r = await rigSpawn({ limits: { maxAgents: 2 } }, (world) => agents(world, ['a', 'b'], '%1'));
+      const parent = await r.post({ name: 'c', parent: '%1' });
+      assert.deepEqual([parent.status, parent.body.error, parent.body.scope, parent.body.running, parent.body.max], [409, 'limit', 'parent', 2, 2]);
+      assert.equal(typeof parent.body.message, 'string');
+      const full = await rigSpawn({ limits: { maxAgents: 2 } }, (world) => [
+        ...agents(world, ['a', 'b'], '%1'), ...agents(world, ['c', 'd'], '%61').map((p, i) => ({ ...p, id: `%${50 + i}` })), ...agents(world, ['e', 'f'], '%62').map((p, i) => ({ ...p, id: `%${55 + i}` })),
+      ]);
+      const project = await full.post({ name: 'g' });
+      assert.deepEqual([project.status, project.body.error, project.body.scope, project.body.running, project.body.max], [409, 'limit', 'project', 6, 6]);
+      assert.deepEqual(Object.keys(project.body).sort(), ['error', 'max', 'message', 'running', 'scope']);
+    });
+
+    test('(−) role and parent that are not valid are 400 invalid from the route, with nothing started', async () => {
+      const r = await rigSpawn();
+      for (const extra of [{ role: 'sub-orchestrator' }, { role: 'admin' }, { parent: 'x' }, { parent: '%1;' }, { parent: 7 }]) {
+        const res = await r.post({ name: 'bad', ...extra });
+        assert.deepEqual([res.status, res.body.error], [400, 'invalid'], JSON.stringify(extra));
+      }
+      assert.equal(r.exec.of('split-window').length, 0);
+    });
+  });
+
   test('(−) spawn: bypassPermissions is 400 and never reaches the module; module 409 is relayed; arrays are 400', async () => {
     const a = await boot();
     const r = await a.call('POST', '/api/app/spawn', { json: { project: w.project.key, name: 'x', model: 'sonnet', brief: 'b', permissionMode: 'bypassPermissions' } });
@@ -1034,6 +1093,7 @@ describe('orchestrator pick: PUT|DELETE /api/app/projects/:key/orchestrator and 
     nowhere: '77777777-7777-4777-8777-777777777777',
     unknown: '99999999-9999-4999-8999-999999999999',
     offpane: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    sub: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
   };
   const worlds = [];
   after(() => worlds.forEach((x) => x.cleanup()));
@@ -1043,12 +1103,13 @@ describe('orchestrator pick: PUT|DELETE /api/app/projects/:key/orchestrator and 
     const world = await makeWorld();
     worlds.push(world);
     const pane = (id, o = {}) => ({ id, session: 'work', window: 0, windowName: 'main', command: 'claude', ...o });
-    const exec = fakeTmux({ panes: tmuxPanes ?? [pane('%6'), pane('%7', { role: 'agent' }), pane('%5', { role: 'orchestrator' }), pane('%9', { command: 'zsh' })] });
+    const exec = fakeTmux({ panes: tmuxPanes ?? [pane('%6'), pane('%7', { role: 'agent' }), pane('%5', { role: 'orchestrator' }), pane('%9', { command: 'zsh' }), pane('%4', { role: 'sub-orchestrator' })] });
     const agent = (id, o = {}) => ({ id, name: id.slice(0, 8), live: false, role: null, pane: null, ...o });
     const mine = [
       agent(ID.live, { name: 'planner', live: true, pane: { id: '%6', session: 'work', command: 'claude' } }),
       agent(ID.ended, { name: 'old-planner' }),
       agent(ID.agent, { live: true, role: 'agent', pane: { id: '%7', session: 'work', command: 'claude' } }),
+      agent(ID.sub, { live: true, role: 'sub-orchestrator', pane: { id: '%4', session: 'work', command: 'claude' } }),
       agent(ID.nopane, { live: true }),
       agent(ID.offpane, { live: true, pane: { id: '%9', session: 'work', command: 'zsh' } }),
       ...extra,
@@ -1092,11 +1153,13 @@ describe('orchestrator pick: PUT|DELETE /api/app/projects/:key/orchestrator and 
     assert.deepEqual(res.body, { orchestrator: { sessionId: ID.live, state: 'live', name: 'planner', pane: '%6' } });
     assert.deepEqual(r.exec.calls, [
       [TMUX, '-u', 'set-option', '-p', '-t', '%6', '@nika-role', 'orchestrator'],
+      [TMUX, '-u', 'set-option', '-p', '-t', '%6', '@nika-agent', `${r.world.project.key}/orchestrator`],
       [TMUX, '-u', 'set-option', '-p', '-t', '%6', '@nika-depth', '1'],
     ]);
     assert.deepEqual(r.a.ctx.started.get('%6'), { key: r.world.project.key, name: 'orchestrator', sessionId: ID.live, role: 'orchestrator' });
     assert.equal(await r.pick(), ID.live);
     assert.deepEqual(r.exec.panes.find((x) => x.id === '%6').role, 'orchestrator');
+    assert.deepEqual(r.exec.panes.find((x) => x.id === '%6').agent, `${r.world.project.key}/orchestrator`);
   });
 
   test('(+) PUT replaces an earlier pick; the same session again is fine even while it is the running orchestrator', async () => {
@@ -1136,6 +1199,20 @@ describe('orchestrator pick: PUT|DELETE /api/app/projects/:key/orchestrator and 
     const res = await r.put({ sessionId: ID.agent });
     await refused(r, 409, 'agent_session', res);
     assert.equal(res.body.message, "That session is an agent nika started, so it can't be the orchestrator. Nothing changed.");
+  });
+
+  test('(−) 409 agent_session for a live sub-orchestrator too: nothing is tagged, stored or recorded', async () => {
+    const r = await rig();
+    const res = await r.put({ sessionId: ID.sub });
+    await refused(r, 409, 'agent_session', res);
+    assert.match(res.body.message, /sub-orchestrator nika started/);
+    assert.match(res.body.message, /Nothing changed/);
+  });
+
+  test('(−) a running sub-orchestrator is not "another main orchestrator": Set on another session is not blocked by it', async () => {
+    const r = await rig();
+    assert.equal(r.exec.panes.find((x) => x.id === '%4').role, 'sub-orchestrator');
+    assert.equal((await r.put({ sessionId: ID.live })).status, 200); // only a pane tagged `orchestrator` (or the stored pick) blocks
   });
 
   test('(−) 409 orchestrator_running while another main orchestrator is live, for a live and for an ended session', async () => {

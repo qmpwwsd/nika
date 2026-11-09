@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawnAgent, runAgent } from '../src/spawn.js';
+import { spawnAgent, runAgent, deniedTools } from '../src/spawn.js';
 import { startOrchestrator, sessionNameFor } from '../src/orchestrate.js';
 import { TMUX_SESSION, AGENT_NAME } from '../src/ids.js';
 import { reportsDir } from '../src/paths.js';
@@ -25,8 +25,8 @@ const world = async (settings) => {
 after(() => worlds.forEach((w) => w.cleanup()));
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-const LIST_ALL = [TMUX, '-u', 'list-panes', '-a', '-F', '#{pane_id}\t#{session_name}\t#{window_index}\t#{pane_title}\t#{pane_current_command}\t#{@nika-role}'];
-const LIST_AGENTS = [TMUX, '-u', 'list-panes', '-a', '-F', '#{pane_id}\t#{@nika-role}\t#{@nika-agent}'];
+const LIST_ALL = [TMUX, '-u', 'list-panes', '-a', '-F', '#{pane_id}\t#{session_name}\t#{window_index}\t#{pane_title}\t#{pane_current_command}\t#{@nika-role}\t#{@nika-agent}\t#{@nika-depth}\t#{@nika-parent}'];
+const LIST_AGENTS = [TMUX, '-u', 'list-panes', '-a', '-F', '#{pane_id}\t#{@nika-role}\t#{@nika-agent}\t#{@nika-depth}\t#{@nika-parent}\t#{session_name}\t#{window_name}'];
 const OTHER_KEY = '0123456789abcdef'; // the key of some other project
 const DENY_SETTINGS = '{"permissions":{"deny":["Read(**/.env*)","Edit(**/.env*)","Read(**/*.key)","Edit(**/*.key)"]}}';
 const DENIED = ['Bash(nika:*)', 'Bash(tmux:*)', 'Bash(claude:*)', 'Bash(git add:*)', 'Bash(git commit:*)', 'Bash(git push:*)'];
@@ -58,15 +58,16 @@ describe('spawnAgent: placement and files', () => {
       [TMUX, '-u', 'split-window', '-h', '-t', '=My-App:', '-c', w.project.dir, '-P', '-F', '#{pane_id}', '--', ...NIKA_ARGV, '_run-agent', w.project.key, 'builder-1'],
       [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-role', 'agent'],
       [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-agent', `${w.project.key}/builder-1`],
+      [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-depth', '1'],
       [TMUX, '-u', 'select-pane', '-t', '%20', '-T', '[%20] builder-1'],
     ]);
     assert.equal(mode(rd(w)), 0o700);
     assert.deepEqual(fs.readdirSync(rd(w)).sort(), ['.last-pane', 'builder-1.agent.json', 'builder-1.brief.md']);
     for (const f of fs.readdirSync(rd(w))) assert.equal(mode(path.join(rd(w), f)), 0o600, f);
     assert.equal(read(w, 'builder-1.brief.md'), 'Do the thing.');
-    assert.deepEqual(JSON.parse(read(w, 'builder-1.agent.json')), { model: 'sonnet', permissionMode: 'default', rc: '' });
+    assert.deepEqual(JSON.parse(read(w, 'builder-1.agent.json')), { model: 'sonnet', permissionMode: 'default', rc: '', role: 'agent', parent: null, depth: 1 });
     assert.equal(read(w, '.last-pane'), '%20\n');
-    assert.deepEqual(ctx.started.get('%20'), { key: w.project.key, name: 'builder-1', sessionId: null, role: 'agent', mode: 'manual' });
+    assert.deepEqual(ctx.started.get('%20'), { key: w.project.key, name: 'builder-1', sessionId: null, role: 'agent', parent: null, depth: 1, mode: 'manual' });
     assert.equal(exec.panes.find((p) => p.id === '%20').title, '[%20] builder-1');
     assert.equal(exec.panes.find((p) => p.id === '%20').role, 'agent');
     assert.equal(exec.panes.find((p) => p.id === '%20').agent, `${w.project.key}/builder-1`);
@@ -229,6 +230,8 @@ describe('spawnAgent: refusals', () => {
       { brief: '' }, { brief: '  \n' }, { brief: 5 }, { brief: 'a\0b' }, { brief: big }, { brief: 'é'.repeat(32 * 1024 + 1) },
       { permissionMode: 'yolo' }, { permissionMode: 5 },
       { under: '%x' }, { under: 'x' }, { under: 7 },
+      { parent: '%x' }, { parent: 'x' }, { parent: 7 }, { parent: '' }, { parent: '%1;%2' }, { parent: '%1234567' }, { parent: '#{pane_id}' }, { parent: null },
+      { role: 'admin' }, { role: 'sub-orchestrator' }, { role: 'Agent' }, { role: '' }, { role: 5 }, { role: null },
       { session: '-t' }, { session: 'a:b' }, { session: 'a.b' }, { session: '' },
       { rc: 'UPPER' }, { rc: '-x' }, { rc: 5 }, { rc: 'x'.repeat(21) },
     ];
@@ -491,12 +494,289 @@ describe('spawnAgent: limits and conflicts', () => {
     const base = fakeTmux({ panes: BASE_PANES() });
     const exec = async (cmd, args) => {
       calls.push(args[1]);
-      if (args[1] === 'list-panes' && args.some((a) => String(a).includes('@nika-agent'))) throw Object.assign(new Error('boom'), { stderr: 'boom\n' });
+      if (args[1] === 'list-panes' && args.some((a) => String(a).endsWith('#{session_name}\t#{window_name}'))) throw Object.assign(new Error('boom'), { stderr: 'boom\n' });
       return base(cmd, args);
     };
     const r = await spawnAgent(req(w), w.ctx(exec));
     assert.deepEqual([r.status, r.body.error], [502, 'tmux_failed']);
     assert.equal(calls.includes('split-window'), false);
+    assert.equal(fs.existsSync(rd(w)), false);
+  });
+});
+
+// --- nesting (0.4): who the parent is, how deep the child sits, and the caps ----------------------------------------------
+
+describe('spawnAgent: nesting and limits (0.4)', () => {
+  const KEY_OF = (w) => w.project.key;
+  // tmux's record of the main orchestrator (0.4 tag), a sub-orchestrator under it, and an agent
+  const MAIN = (w, over = {}) => ({ id: '%1', session: 'My-App', window: 0, windowName: 'orchestrator', command: 'claude', role: 'orchestrator', agent: `${KEY_OF(w)}/orchestrator`, depth: '1', ...over });
+  const SUB = (w, over = {}) => ({ id: '%2', session: 'My-App', window: 0, windowName: 'orchestrator', command: 'node', role: 'sub-orchestrator', agent: `${KEY_OF(w)}/planner`, depth: '2', parent: '%1', ...over });
+  const AGENT = (w, over = {}) => ({ id: '%3', session: 'My-App', window: 0, windowName: 'orchestrator', command: 'node', role: 'agent', agent: `${KEY_OF(w)}/helper`, depth: '2', parent: '%1', ...over });
+  const live = (w, names, { from = 31, parent = '', role = 'agent', session = 'My-App' } = {}) => names.map((n, i) => ({
+    id: `%${from + i}`, session, window: 0, windowName: 'zsh', command: 'node', role, agent: `${KEY_OF(w)}/${n}`, depth: parent ? '2' : '1', parent,
+  }));
+  const tags = (exec, id) => { const p = exec.panes.find((x) => x.id === id); return [p.role, p.agent.slice(17), p.depth, p.parent]; };
+  /** A refusal splits nothing, writes nothing and sets no tag. */
+  async function refuse(w, panes, over, status, error, ctxOver = {}) {
+    const exec = fakeTmux({ panes });
+    const before = exec.panes.map((p) => ({ ...p }));
+    const files = () => (fs.existsSync(rd(w)) ? fs.readdirSync(rd(w)).sort() : null);
+    const filesBefore = files();
+    const r = await spawnAgent(req(w, over), w.ctx(exec, ctxOver));
+    assert.deepEqual([r.status, r.body.error], [status, error], JSON.stringify(r.body));
+    assert.equal(typeof r.body.message, 'string');
+    assert.equal(exec.of('split-window').length, 0);
+    assert.equal(exec.of('set-option').length, 0);
+    assert.deepEqual(files(), filesBefore, 'no report dir, brief or agent.json');
+    assert.deepEqual(exec.panes, before, 'no pane changed');
+    return r;
+  }
+
+  test('(+) a sub-orchestrator under the main orchestrator: depth 2, the exact tag argv, .agent.json, started record', async () => {
+    const w = await world();
+    const exec = fakeTmux({ panes: [MAIN(w)] });
+    const ctx = w.ctx(exec);
+    const r = await spawnAgent(req(w, { name: 'planner', role: 'orchestrator', parent: '%1' }), ctx);
+    assert.equal(r.status, 200);
+    assert.deepEqual(exec.calls, [
+      LIST_ALL,
+      LIST_AGENTS,
+      [TMUX, '-u', 'split-window', '-h', '-t', '=My-App:', '-c', w.project.dir, '-P', '-F', '#{pane_id}', '--', ...NIKA_ARGV, '_run-agent', w.project.key, 'planner'],
+      [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-role', 'sub-orchestrator'],
+      [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-agent', `${w.project.key}/planner`],
+      [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-depth', '2'],
+      [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-parent', '%1'],
+      [TMUX, '-u', 'select-pane', '-t', '%20', '-T', '[%20] planner'],
+    ]);
+    assert.deepEqual(JSON.parse(read(w, 'planner.agent.json')), { model: 'sonnet', permissionMode: 'default', rc: '', role: 'sub-orchestrator', parent: '%1', depth: 2 });
+    assert.deepEqual(ctx.started.get('%20'), { key: w.project.key, name: 'planner', sessionId: null, role: 'sub-orchestrator', parent: '%1', depth: 2, mode: 'manual' });
+    assert.deepEqual(tags(exec, '%20'), ['sub-orchestrator', 'planner', '2', '%1']);
+  });
+
+  test('(+) an agent under the main orchestrator is depth 2; under a sub-orchestrator it is depth 3', async () => {
+    const w = await world();
+    const exec = fakeTmux({ panes: [MAIN(w), SUB(w)] });
+    const ctx = w.ctx(exec);
+    assert.equal((await spawnAgent(req(w, { name: 'under-main', parent: '%1' }), ctx)).status, 200);
+    assert.equal((await spawnAgent(req(w, { name: 'under-sub', parent: '%2' }), ctx)).status, 200);
+    assert.deepEqual(tags(exec, '%20'), ['agent', 'under-main', '2', '%1']);
+    assert.deepEqual(tags(exec, '%21'), ['agent', 'under-sub', '3', '%2']);
+    assert.deepEqual(JSON.parse(read(w, 'under-sub.agent.json')), { model: 'sonnet', permissionMode: 'default', rc: '', role: 'agent', parent: '%2', depth: 3 });
+    assert.deepEqual(exec.of('set-option').filter((c) => c[3] === '%21'), [
+      ['set-option', '-p', '-t', '%21', '@nika-role', 'agent'], ['set-option', '-p', '-t', '%21', '@nika-agent', `${w.project.key}/under-sub`],
+      ['set-option', '-p', '-t', '%21', '@nika-depth', '3'], ['set-option', '-p', '-t', '%21', '@nika-parent', '%2'],
+    ]);
+  });
+
+  test('(+) no parent (the page header, a shell) is depth 1, role agent, and no @nika-parent is set', async () => {
+    const w = await world();
+    const exec = fakeTmux({ panes: [MAIN(w)] });
+    assert.equal((await spawnAgent(req(w), w.ctx(exec))).status, 200);
+    assert.deepEqual(tags(exec, '%20'), ['agent', 'builder-1', '1', '']);
+    assert.equal(exec.of('set-option').some((c) => c[4] === '@nika-parent'), false);
+    // a pane that carries no nika role is "you" as well, and so is a plain claude session
+    for (const plain of [{ role: '' }, { role: '', depth: '2', parent: '%9', agent: `${w.project.key}/x` }]) {
+      const e2 = fakeTmux({ panes: [MAIN(w, { id: '%1', ...plain })] });
+      assert.equal((await spawnAgent(req(w, { parent: '%1' }), w.ctx(e2))).status, 200);
+      assert.deepEqual(tags(e2, '%20'), ['agent', 'builder-1', '1', ''], JSON.stringify(plain));
+    }
+  });
+
+  test('(+) a 0.3 orchestrator pane (no tags, in the project session, window `orchestrator`) is the main orchestrator for a parent', async () => {
+    const w = await world();
+    const exec = fakeTmux({ panes: [{ id: '%1', session: 'My-App', window: 0, windowName: 'orchestrator', command: 'claude', role: 'orchestrator' }] });
+    assert.equal((await spawnAgent(req(w, { name: 'planner', role: 'orchestrator', parent: '%1' }), w.ctx(exec))).status, 200);
+    assert.deepEqual(tags(exec, '%20'), ['sub-orchestrator', 'planner', '2', '%1']);
+    // the pane itself is never retagged
+    assert.equal(exec.of('set-option').some((c) => c[3] === '%1'), false);
+    assert.deepEqual([exec.panes[0].agent, exec.panes[0].depth], ['', '']);
+  });
+
+  test('(−) role orchestrator under a sub-orchestrator → 409 depth', async () => {
+    const w = await world();
+    const r = await refuse(w, [MAIN(w), SUB(w)], { name: 'deeper', role: 'orchestrator', parent: '%2' }, 409, 'depth');
+    assert.match(r.body.message, /Only the main orchestrator can/);
+    assert.match(r.body.message, /three levels/);
+    assert.match(r.body.message, /Nothing was started/);
+  });
+
+  test('(−) role orchestrator with no parent (header, shell, a plain pane, a gone pane for the CLI) → 409 depth', async () => {
+    const w = await world();
+    await refuse(w, [MAIN(w)], { name: 'planner', role: 'orchestrator' }, 409, 'depth');
+    await refuse(w, [MAIN(w, { role: '' })], { name: 'planner', role: 'orchestrator', parent: '%1' }, 409, 'depth');
+    await refuse(w, [MAIN(w)], { name: 'planner', role: 'orchestrator', parent: '%99' }, 409, 'depth', { lenientParent: true });
+  });
+
+  test('(−) a role-agent parent → 409 depth, for an agent and for an orchestrator request; its @nika-depth is never read', async () => {
+    const w = await world();
+    for (const depth of ['1', '2', '3', '', 'x']) {
+      for (const role of ['agent', 'orchestrator']) {
+        const r = await refuse(w, [MAIN(w), AGENT(w, { depth })], { name: 'child', role, parent: '%3' }, 409, 'depth');
+        assert.match(r.body.message, /three levels/);
+      }
+    }
+  });
+
+  test('(−) a forged @nika-depth 1 (or an @nika-agent <key>/orchestrator) on an agent never makes it an orchestrator', async () => {
+    const w = await world();
+    const forged = [{ depth: '1' }, { depth: '1', agent: `${w.project.key}/orchestrator` }, { depth: '2', agent: `${w.project.key}/orchestrator`, parent: '' }];
+    for (const over of forged) {
+      await refuse(w, [MAIN(w), AGENT(w, over)], { name: 'planner', role: 'orchestrator', parent: '%3' }, 409, 'depth');
+      await refuse(w, [MAIN(w), AGENT(w, over)], { name: 'child', parent: '%3' }, 409, 'depth');
+    }
+  });
+
+  test('(−) a parent whose tag names another project or does not parse is "you": depth 1, and never an orchestrator', async () => {
+    const w = await world();
+    const bad = ['ffffffffffffffff/orchestrator', 'ffffffffffffffff/planner', 'x', `${w.project.key}/Bad Name`, `${w.project.key}`, '', `${w.project.key}/a/b`];
+    for (const role of ['orchestrator', 'sub-orchestrator', 'agent']) {
+      for (const agent of bad) {
+        const depth = role === 'sub-orchestrator' ? '2' : role === 'orchestrator' ? '1' : '2';
+        const panes = [{ id: '%1', session: 'My-App', window: 0, windowName: 'orchestrator', command: 'claude', role, agent, depth, parent: '' }];
+        // a 0.3-looking pane (role orchestrator, no tag) in the `orchestrator` window is the legacy main orchestrator: not part of this case
+        if (role === 'orchestrator' && agent === '') continue;
+        await refuse(w, panes, { name: 'planner', role: 'orchestrator', parent: '%1' }, 409, 'depth');
+        const exec = fakeTmux({ panes });
+        assert.equal((await spawnAgent(req(w, { parent: '%1' }), w.ctx(exec))).status, 200, `${role} ${JSON.stringify(agent)}`);
+        assert.deepEqual(tags(exec, '%20'), ['agent', 'builder-1', '1', ''], `${role} ${JSON.stringify(agent)}`);
+      }
+    }
+  });
+
+  test('(−) a contradictory tag (a depth that does not fit the role) or a legacy pane out of place is "you", not an orchestrator', async () => {
+    const w = await world();
+    const cases = [
+      MAIN(w, { depth: '2' }), MAIN(w, { depth: '3' }), MAIN(w, { depth: 'x' }), // the main orchestrator is depth 1
+      MAIN(w, { agent: '', windowName: 'main' }), // a 0.3 pane is the main orchestrator only in the `orchestrator` window...
+      MAIN(w, { agent: '', session: 'elsewhere' }), // ...of the project's own tmux session
+      MAIN(w, { agent: `${w.project.key}/planner` }), // the main orchestrator is always named `orchestrator`
+      SUB(w, { id: '%1', depth: '' }), SUB(w, { id: '%1', depth: '1' }), SUB(w, { id: '%1', depth: '3' }), SUB(w, { id: '%1', depth: '22' }), // a sub-orchestrator is depth 2
+    ];
+    for (const pane of cases) {
+      const panes = [pane, { id: '%9', session: 'My-App', window: 1, windowName: 'zsh', command: 'zsh' }]; // the project's session exists in every case
+      await refuse(w, panes, { name: 'planner', role: 'orchestrator', parent: '%1' }, 409, 'depth');
+      const exec = fakeTmux({ panes });
+      assert.equal((await spawnAgent(req(w, { parent: '%1' }), w.ctx(exec))).status, 200, JSON.stringify(pane));
+      assert.equal(tags(exec, '%20')[2], '1', JSON.stringify(pane));
+    }
+  });
+
+  test('(−) a parent pane that is gone → 404 not_found for a page request; for the CLI (lenientParent) it is "you"', async () => {
+    const w = await world();
+    const r = await refuse(w, [MAIN(w)], { parent: '%99' }, 404, 'not_found');
+    assert.match(r.body.message, /parent/i);
+    const exec = fakeTmux({ panes: [MAIN(w)] });
+    assert.equal((await spawnAgent(req(w, { parent: '%99' }), w.ctx(exec, { lenientParent: true }))).status, 200);
+    assert.deepEqual(tags(exec, '%20'), ['agent', 'builder-1', '1', '']);
+  });
+
+  test('(−) a request cannot choose depth or role by other fields: depth, tags and files in the body are ignored', async () => {
+    const w = await world();
+    const exec = fakeTmux({ panes: [MAIN(w)] });
+    const r = await spawnAgent({ ...req(w), depth: 1, role: 'agent', nikaDepth: 3, tag: `${w.project.key}/orchestrator`, parentDepth: 1, 'agent.json': { role: 'sub-orchestrator' } }, w.ctx(exec));
+    assert.equal(r.status, 200);
+    assert.deepEqual(tags(exec, '%20'), ['agent', 'builder-1', '1', '']);
+  });
+
+  // --- limits ---
+
+  test('(−) per parent: a parent with maxAgents live children answers 409 limit { scope: parent, running, max }; another parent and "you" are separate buckets', async () => {
+    const w = await world({ limits: { maxAgents: 2 } });
+    const panes = [MAIN(w), SUB(w), ...live(w, ['a'], { from: 31, parent: '%1' }), ...live(w, ['c'], { from: 35, parent: '%2' })]; // %1 runs a and the sub-orchestrator
+    const r = await refuse(w, panes, { name: 'd', parent: '%1' }, 409, 'limit');
+    assert.deepEqual([r.body.scope, r.body.running, r.body.max], ['parent', 2, 2]);
+    assert.match(r.body.message, /already runs 2 of 2 agents of its own/);
+    assert.match(r.body.message, /Agents per orchestrator/);
+    const other = fakeTmux({ panes });
+    assert.equal((await spawnAgent(req(w, { name: 'd', parent: '%2' }), w.ctx(other))).status, 200); // %2 runs 1 of 2
+    assert.equal((await spawnAgent(req(w, { name: 'e' }), w.ctx(other))).status, 200); // "you" run none
+  });
+
+  test('(−) per parent, "you": the live entries with no valid @nika-parent count together; a malformed parent tag counts as none', async () => {
+    const w = await world({ limits: { maxAgents: 2 } });
+    const panes = [MAIN(w), ...live(w, ['a'], { from: 31 }), ...live(w, ['b'], { from: 33, parent: 'junk' })];
+    const r = await refuse(w, panes, { name: 'c' }, 409, 'limit');
+    assert.deepEqual([r.body.scope, r.body.running, r.body.max], ['parent', 2, 2]);
+    assert.match(r.body.message, /You already run 2 of 2 agents spawned from nika/);
+    const under = fakeTmux({ panes }); // the main orchestrator has none of its own
+    assert.equal((await spawnAgent(req(w, { name: 'c', parent: '%1' }), w.ctx(under))).status, 200);
+  });
+
+  test('(−) a sub-orchestrator counts as one of its parent\'s agents, and the project cap counts it too', async () => {
+    const w = await world({ limits: { maxAgents: 2 } });
+    const panes = [MAIN(w), ...live(w, ['a'], { from: 31, parent: '%1' }), ...live(w, ['planner'], { from: 33, parent: '%1', role: 'sub-orchestrator' })];
+    const r = await refuse(w, panes, { name: 'c', parent: '%1' }, 409, 'limit');
+    assert.deepEqual([r.body.scope, r.body.running, r.body.max], ['parent', 2, 2]);
+    const sub = await refuse(w, panes, { name: 'another', role: 'orchestrator', parent: '%1' }, 409, 'limit');
+    assert.equal(sub.body.scope, 'parent');
+  });
+
+  test('(−) the project cap is min(3 x maxAgents, 24): 6 for 2, 9 for 3, 24 for 8; the project check runs before the parent check', async () => {
+    for (const [n, cap] of [[2, 6], [3, 9], [8, 24]]) {
+      const w = await world({ limits: { maxAgents: n } });
+      // `cap` live agents spread over parents so that no parent is full: n per parent
+      const full = [];
+      for (let i = 0; i < cap; i += 1) full.push(...live(w, [`a${i}`], { from: 100 + i, parent: `%${900 + Math.floor(i / n)}` }));
+      const r = await refuse(w, [MAIN(w), ...full], { name: 'one-more' }, 409, 'limit');
+      assert.deepEqual([r.body.scope, r.body.running, r.body.max], ['project', cap, cap], `N=${n}`);
+      assert.match(r.body.message, /already runs \d+ of \d+ agents, the most one project can run/);
+      const one = fakeTmux({ panes: [MAIN(w), ...full.slice(0, cap - 1)] }); // one below the cap is fine
+      assert.equal((await spawnAgent(req(w, { name: 'one-more' }), w.ctx(one))).status, 200, `N=${n}`);
+    }
+    // both caps are full: the answer is the project's
+    const w = await world({ limits: { maxAgents: 2 } });
+    const panes = [MAIN(w), ...live(w, ['a', 'b'], { from: 31 }), ...live(w, ['c', 'd'], { from: 41, parent: '%1' }), ...live(w, ['e', 'f'], { from: 51, parent: '%2' })];
+    assert.equal((await refuse(w, panes, { name: 'g' }, 409, 'limit')).body.scope, 'project');
+  });
+
+  test('(−) other projects\' agents and non-agent roles (the orchestrator, a plain pane) are not in the live set, for the caps or for the name check', async () => {
+    const w = await world({ limits: { maxAgents: 2 } });
+    const foreign = live({ project: { key: OTHER_KEY } }, ['builder-1', 'b', 'c', 'd', 'e', 'f', 'g'], { from: 31, parent: '' });
+    const exec = fakeTmux({ panes: [MAIN(w), ...foreign, { id: '%80', session: 'My-App', window: 0, windowName: 'zsh', command: 'zsh', role: '', agent: `${w.project.key}/builder-1` }] });
+    assert.equal((await spawnAgent(req(w), w.ctx(exec))).status, 200);
+  });
+
+  test('(−) a name taken by a live sub-orchestrator is taken for an agent, and the other way round → 409 conflict', async () => {
+    const w = await world();
+    const subLive = [MAIN(w), ...live(w, ['planner'], { from: 31, parent: '%1', role: 'sub-orchestrator' })];
+    assert.equal((await refuse(w, subLive, { name: 'planner' }, 409, 'conflict')).status, 409);
+    await refuse(w, subLive, { name: 'planner', role: 'orchestrator', parent: '%1' }, 409, 'conflict');
+    const agentLive = [MAIN(w), ...live(w, ['helper'], { from: 31, parent: '%1' })];
+    await refuse(w, agentLive, { name: 'helper', role: 'orchestrator', parent: '%1' }, 409, 'conflict');
+  });
+
+  test('(−) panes this process started count in their own parent\'s bucket even when their tags could not be set', async () => {
+    const w = await world({ limits: { maxAgents: 2 } });
+    const panes = [MAIN(w), ...live(w, ['a', 'b'], { from: 31 }).map((p) => ({ ...p, role: '', agent: '', depth: '', parent: '' }))];
+    const started = new Map([
+      ['%31', { key: w.project.key, name: 'a', sessionId: null, role: 'agent', parent: '%1', depth: 2 }],
+      ['%32', { key: w.project.key, name: 'b', sessionId: null, role: 'sub-orchestrator', parent: '%1', depth: 2 }],
+    ]);
+    const exec = fakeTmux({ panes });
+    const r = await spawnAgent(req(w, { name: 'c', parent: '%1' }), w.ctx(exec, { started }));
+    assert.deepEqual([r.status, r.body.scope, r.body.running], [409, 'parent', 2]);
+    assert.equal((await spawnAgent(req(w, { name: 'c' }), w.ctx(exec, { started }))).status, 200); // "you" run none of them
+  });
+
+  test('(−) two sub-orchestrators spawned at once under one parent with maxAgents 1: one wins, one is 409 limit (still one at a time per project)', async () => {
+    const w = await world({ limits: { maxAgents: 1 } });
+    const exec = fakeTmux({ panes: [MAIN(w)] });
+    const ctx = w.ctx(exec);
+    const rs = await Promise.all([spawnAgent(req(w, { name: 'p1', role: 'orchestrator', parent: '%1' }), ctx), spawnAgent(req(w, { name: 'p2', role: 'orchestrator', parent: '%1' }), ctx)]);
+    assert.deepEqual(rs.map((r) => r.status).sort(), [200, 409]);
+    assert.equal(exec.of('split-window').length, 1);
+  });
+
+  test('(−) a tmux failure while listing the tags is 502 and nothing is split, tagged or written (nesting included)', async () => {
+    const w = await world();
+    const base = fakeTmux({ panes: [MAIN(w)] });
+    const exec = async (cmd, args) => {
+      if (args[1] === 'list-panes' && args.some((a) => String(a).includes('@nika-depth') && !String(a).includes('window_index'))) throw Object.assign(new Error('boom'), { stderr: 'boom\n' });
+      return base(cmd, args);
+    };
+    const r = await spawnAgent(req(w, { name: 'planner', role: 'orchestrator', parent: '%1' }), w.ctx(exec));
+    assert.deepEqual([r.status, r.body.error], [502, 'tmux_failed']);
+    assert.equal(base.of('split-window').length, 0);
     assert.equal(fs.existsSync(rd(w)), false);
   });
 });
@@ -565,9 +845,9 @@ const sink = () => {
 };
 
 /** A spawned agent's stored files, written by the real spawnAgent. */
-async function prepared(over = {}, settings) {
+async function prepared(over = {}, settings, panes) {
   const w = await world(settings);
-  const r = await spawnAgent(req(w, over), w.ctx(fakeTmux({ panes: BASE_PANES() })));
+  const r = await spawnAgent(req(w, over), w.ctx(fakeTmux({ panes: panes?.(w) ?? BASE_PANES() })));
   assert.equal(r.status, 200);
   const run = async (extra = {}, env = {}) => {
     const spawn = extra.spawn ?? fakeSpawn();
@@ -680,13 +960,21 @@ describe('runAgent', () => {
   });
 
   test('(−) tampered .agent.json is refused (exit 3): bypassPermissions, bad fields, extra keys, not an object', async () => {
-    const good = { model: 'sonnet', permissionMode: 'default', rc: '' };
+    const good = { model: 'sonnet', permissionMode: 'default', rc: '', role: 'agent', parent: null, depth: 1 };
     const variants = [
       { ...good, permissionMode: 'bypassPermissions' }, { ...good, permissionMode: 'yolo' }, { ...good, permissionMode: 1 },
       { ...good, model: 'gpt-5' }, { ...good, model: '--x' }, { ...good, model: 5 },
       { ...good, rc: 'UPPER' }, { ...good, rc: '-x' }, { ...good, rc: 'x'.repeat(65) }, { ...good, rc: 5 }, { ...good, rc: null },
       { ...good, extra: 1 }, { model: 'sonnet', permissionMode: 'default' }, { permissionMode: 'default', rc: '' },
       [], 'str', 5, null,
+      // 0.4: role, parent and depth are required keys with exact values
+      ...['role', 'parent', 'depth'].map((k) => Object.fromEntries(Object.entries(good).filter(([key]) => key !== k))),
+      { ...good, role: 'orchestrator' }, { ...good, role: 'Agent' }, { ...good, role: '' }, { ...good, role: null }, { ...good, role: 5 },
+      { ...good, depth: 0 }, { ...good, depth: 4 }, { ...good, depth: '1' }, { ...good, depth: 1.5 }, { ...good, depth: null }, { ...good, depth: -1 }, { ...good, depth: [1] },
+      { ...good, parent: 'x' }, { ...good, parent: '%' }, { ...good, parent: 5 }, { ...good, parent: '%1234567' }, { ...good, parent: '%1\n' }, { ...good, parent: '#{pane_id}' },
+      { ...good, parent: '%1' }, // depth 1 has no parent
+      { ...good, depth: 2 }, // a parent is needed from depth 2
+      { ...good, role: 'sub-orchestrator', parent: '%1', depth: 3 }, { ...good, role: 'sub-orchestrator' }, // a sub-orchestrator is depth 2 under a parent
     ];
     for (const v of variants) {
       const { w, run } = await prepared();
@@ -696,7 +984,7 @@ describe('runAgent', () => {
       assert.equal(spawn.calls.length, 0);
       assert.equal(exists(w, 'builder-1.session'), false);
     }
-    for (const raw of ['{not json', '', `{"__proto__":{"x":1},"model":"sonnet","permissionMode":"default","rc":""}`, ' '.repeat(5000)]) {
+    for (const raw of ['{not json', '', `{"__proto__":{"x":1},"model":"sonnet","permissionMode":"default","rc":"","role":"agent","parent":null,"depth":1}`, ' '.repeat(5000)]) {
       const { w, run } = await prepared();
       fs.writeFileSync(path.join(rd(w), 'builder-1.agent.json'), raw);
       assert.equal((await run()).code, 3, raw.slice(0, 30));
@@ -799,10 +1087,10 @@ describe('runAgent', () => {
 
   test('(−) a refused run writes no .rc; a 64-character RC name is accepted, 65 is refused', async () => {
     const { w, run } = await prepared();
-    fs.writeFileSync(path.join(rd(w), 'builder-1.agent.json'), JSON.stringify({ model: 'sonnet', permissionMode: 'bypassPermissions', rc: '' }));
+    fs.writeFileSync(path.join(rd(w), 'builder-1.agent.json'), JSON.stringify({ model: 'sonnet', permissionMode: 'bypassPermissions', rc: '', role: 'agent', parent: null, depth: 1 }));
     assert.equal((await run()).code, 3);
     assert.equal(exists(w, 'builder-1.rc'), false);
-    const agentJson = (rc) => fs.writeFileSync(path.join(rd(w), 'builder-1.agent.json'), JSON.stringify({ model: 'sonnet', permissionMode: 'default', rc }));
+    const agentJson = (rc) => fs.writeFileSync(path.join(rd(w), 'builder-1.agent.json'), JSON.stringify({ model: 'sonnet', permissionMode: 'default', rc, role: 'agent', parent: null, depth: 1 }));
     agentJson('r'.repeat(64));
     const ok = await run();
     assert.equal(ok.code, 0);
@@ -823,6 +1111,84 @@ describe('runAgent', () => {
     assert.equal(process.listenerCount('SIGINT'), listeners);
   });
 });
+
+describe('runAgent: a sub-orchestrator (0.4)', () => {
+  // the CLI's command table as src/cli.js passes it (a small stand-in here; test/cli-commands.test.js pins the real one)
+  const COMMANDS = ['status', 'spawn', 'projects', 'rules', 'doctor'];
+  const SUB_DENIED = ['Bash(tmux:*)', 'Bash(claude:*)', 'Bash(git add:*)', 'Bash(git commit:*)', 'Bash(git push:*)', 'Bash(nika)', 'Bash(nika projects:*)', 'Bash(nika rules:*)', 'Bash(nika doctor:*)'];
+  const mainPane = (w) => [{ id: '%1', session: 'My-App', window: 0, windowName: 'orchestrator', command: 'claude', role: 'orchestrator', agent: `${w.project.key}/orchestrator`, depth: '1' }];
+  const sub = () => prepared({ name: 'planner', role: 'orchestrator', parent: '%1' }, undefined, mainPane);
+
+  test('(+) the launch argv is pinned: the orchestrator guard, and a deny list that keeps only nika spawn and nika status of nika', async () => {
+    const { w, run } = await sub();
+    const { code, spawn, stderr } = await run({ commands: COMMANDS });
+    assert.equal(code, 0);
+    assert.deepEqual(stderr.lines, []);
+    const sid = read(w, 'planner.session').trim();
+    const args = spawn.calls[0].args;
+    const guard = args[args.indexOf('--append-system-prompt') + 1];
+    assert.deepEqual(args, [
+      '--session-id', sid, '--model', 'sonnet', '-n', 'planner', '--add-dir', rd(w), '--append-system-prompt', guard,
+      '--settings', DENY_SETTINGS, '--disallowedTools', ...SUB_DENIED, '--', 'Do the thing.',
+    ]);
+    assert.ok(!SUB_DENIED.includes('Bash(nika:*)') && !SUB_DENIED.includes('Bash(nika spawn:*)') && !SUB_DENIED.includes('Bash(nika status:*)'));
+  });
+
+  test('(+) the guard file is templates/guard-orchestrator.txt, filled in: the name, the report path, the spawn/status allowance, the three levels', async () => {
+    const { w, run } = await sub();
+    const { spawn } = await run({ commands: COMMANDS });
+    const args = spawn.calls[0].args;
+    const guard = args[args.indexOf('--append-system-prompt') + 1];
+    assert.equal(guard, fs.readFileSync(new URL('../templates/guard-orchestrator.txt', import.meta.url), 'utf8').replace('{{name}}', 'planner').replace('{{reportPath}}', path.join(rd(w), 'planner.md')));
+    assert.ok(guard.includes('"planner"') && guard.includes(path.join(rd(w), 'planner.md')) && !guard.includes('{{'));
+    assert.match(guard, /nika spawn/);
+    assert.match(guard, /nika status/);
+    assert.match(guard, /three levels/);
+    assert.match(guard, /git add, git commit and git push/);
+    assert.doesNotMatch(guard, /never run nika, tmux or claude/i); // an agent's guard says that; this one allows spawn and status
+  });
+
+  test('(+) an agent keeps today\'s guard and the whole deny list, whatever table it is given; a sub-orchestrator\'s deny list is built from the table', async () => {
+    const { run } = await prepared();
+    const { spawn } = await run({ commands: COMMANDS });
+    const args = spawn.calls[0].args;
+    assert.deepEqual(args.slice(args.indexOf('--disallowedTools') + 1, -2), DENIED);
+    assert.match(args[args.indexOf('--append-system-prompt') + 1], /never run nika, tmux or claude/i);
+    assert.deepEqual(deniedTools('agent', COMMANDS), DENIED);
+    assert.deepEqual(deniedTools('sub-orchestrator', COMMANDS), SUB_DENIED);
+    // a command added to the table is denied by default; spawn and status never are
+    assert.deepEqual(deniedTools('sub-orchestrator', ['status', 'spawn', 'new-thing']).slice(-2), ['Bash(nika)', 'Bash(nika new-thing:*)']);
+    assert.deepEqual(deniedTools('sub-orchestrator', ['spawn', 'status']).slice(-1), ['Bash(nika)']);
+  });
+
+  test('(−) without a usable command table a sub-orchestrator is denied all of nika (it fails closed, never open)', async () => {
+    for (const commands of [undefined, null, [], 'spawn', ['ok', 5], ['bad name'], ['a;b'], ['$(id)'], [''], {}]) {
+      assert.deepEqual(deniedTools('sub-orchestrator', commands), DENIED, JSON.stringify(commands));
+    }
+    const { run } = await sub();
+    const { spawn } = await run({}); // no `commands` in the context
+    const args = spawn.calls[0].args;
+    assert.deepEqual(args.slice(args.indexOf('--disallowedTools') + 1, -2), DENIED);
+  });
+
+  test('(−) a stored file that says sub-orchestrator for an agent spawn changes the run only if it agrees with itself: role, parent and depth must fit', async () => {
+    const { w, run } = await prepared();
+    const put2 = (v) => fs.writeFileSync(path.join(rd(w), 'builder-1.agent.json'), JSON.stringify({ model: 'sonnet', permissionMode: 'default', rc: '', ...v }));
+    put2({ role: 'sub-orchestrator', parent: null, depth: 1 });
+    assert.equal((await run({ commands: COMMANDS })).code, 3);
+    put2({ role: 'sub-orchestrator', parent: '%1', depth: 3 });
+    assert.equal((await run({ commands: COMMANDS })).code, 3);
+    put2({ role: 'sub-orchestrator', parent: '%1', depth: 2 });
+    const ok = await run({ commands: COMMANDS });
+    assert.equal(ok.code, 0);
+    assert.ok(ok.spawn.calls[0].args.includes('Bash(nika projects:*)'));
+    put2({ role: 'agent', parent: '%2', depth: 3 });
+    assert.equal((await run({ commands: COMMANDS })).code, 0);
+    put2({ role: 'agent', parent: '%2', depth: 2 });
+    assert.equal((await run({ commands: COMMANDS })).code, 0);
+  });
+});
+
 
 // --- reports of nika's own agents show up in the dashboard --------------------------------------------------------
 

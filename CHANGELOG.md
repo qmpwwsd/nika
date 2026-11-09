@@ -30,6 +30,25 @@ Models per project (desktop app):
 - API: `PUT /api/app/projects/:key/config` takes exactly one of `{ plugins }` or `{ models }`, and `GET` returns both. See
   `docs/contracts/api-app.md`.
 
+Sub-orchestrators and limits (CLI and API; the screens follow):
+
+- **Three levels.** The main orchestrator can start sub-orchestrators, and a sub-orchestrator can start agents of its own.
+  `nika spawn <name> <model> <brief> --role orchestrator` starts a sub-orchestrator; run from an orchestrator's pane, the
+  new session becomes its child. An agent cannot start other agents, and a sub-orchestrator cannot start another
+  sub-orchestrator: nika answers "can't start a sub-orchestrator" (409 `depth`) and starts nothing.
+- A sub-orchestrator can run only `nika spawn` and `nika status`; the other nika commands are on its deny list (advisory, like
+  the agents' list). It gets its own guard prompt, written for orchestrating.
+- **Limits per parent and per project.** **Agents per orchestrator** (Settings, 1 to 8) now bounds the agents and
+  sub-orchestrators under each parent, and a project as a whole runs at most three times that number, never more than 24.
+  A refusal says which limit it hit (409 `limit`, with `scope`, `running` and `max`).
+- `rules/orchestration.md` has a new **Sub-orchestrators** section (template version 2): apply rules to a project to get it.
+- Every orchestrator nika starts, resumes or adopts is now tagged for its project (`@nika-agent <key>/orchestrator`,
+  `@nika-depth 1`). An orchestrator started by 0.3 still counts, as long as it is in the project's own tmux session and window.
+- Setting a session as the orchestrator is refused for a sub-orchestrator nika started, like for agents.
+- API: `POST /api/app/spawn` takes `role` (`agent` or `orchestrator`) and `parent` (a pane id); agents in
+  `GET /api/agents` (both tiers) gain `parent`, `depth` and `children`; the role of a
+  sub-orchestrator is `sub-orchestrator`. See `docs/contracts/api-app.md` and `docs/adr/0013-nested-orchestration.md`.
+
 ## 0.3.4 — 2026-11-09
 
 Session window (desktop app):

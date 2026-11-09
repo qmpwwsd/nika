@@ -91,6 +91,35 @@ function foldScratchpad(entries, tmpRoot) {
 }
 
 /**
+ * The tree fields of contract C6, from the panes' own nika tags (set by nika, read strictly by collect/tmux.js): `parent` is the
+ * parent's session id when its pane maps to a live session here, else the pane id; `depth` 1 to 3; `children` the ids of the live
+ * agents whose parent it is. Only agents and sub-orchestrators have a parent. A self-parent or a loop is cut: every member of it
+ * becomes a root at depth 1. Ended agents keep the null, null and [] they were built with.
+ */
+function linkTree(entries) {
+  const live = entries.filter((e) => e.agent.live);
+  const byPane = new Map(live.filter((e) => e.tags).map((e) => [e.tags.id, e]));
+  const parentPane = (e) => (e.agent.role === 'agent' || e.agent.role === 'sub-orchestrator' ? e.tags.parent : null);
+  const inLoop = (e) => {
+    let n = byPane.get(parentPane(e));
+    for (let hops = 0; n && hops <= live.length; hops += 1) {
+      if (n === e) return true;
+      n = byPane.get(parentPane(n));
+    }
+    return false;
+  };
+  const loops = new Set(live.filter(inLoop)); // decided before any link is made
+  for (const e of live) {
+    const { agent } = e;
+    const pane = loops.has(e) ? null : parentPane(e);
+    const parent = byPane.get(pane);
+    agent.parent = parent ? parent.agent.id : pane;
+    agent.depth = loops.has(e) || agent.role === 'orchestrator' ? 1 : agent.role === 'sub-orchestrator' ? 2 : e.tags?.depth ?? (pane ? 2 : 1);
+    parent?.agent.children.push(agent.id);
+  }
+}
+
+/**
  * `include`: session ids listed whatever their age, when nika has a transcript for them (the app tier looks up a saved orchestrator).
  * `indexOnly`: read the transcript index and nothing else (findSessions).
  * @returns {{ snapshot: object, reportPaths: Map<string,string> }}
@@ -177,6 +206,9 @@ export async function collect({ config, exec, now = Date.now(), sinceMs, since =
         live: isLive,
         state,
         role: paneInfo?.role ?? null,
+        parent: null, // linkTree() fills these three for a live agent
+        depth: null,
+        children: [],
         // what a live agent that is neither busy nor idle is doing (e.g. waiting on a permission prompt)
         attention: isLive && state !== 'busy' && state !== 'idle' ? clean(reg.status, 80) : null,
         name,
@@ -196,12 +228,14 @@ export async function collect({ config, exec, now = Date.now(), sinceMs, since =
         subagents,
         resumeCmd: `${cwd ? `cd ${shellQuote(cwd)} && ` : ''}claude --resume ${UUID.test(id) ? id : shellQuote(id)}`,
       },
+      tags: paneInfo, // the pane's raw nika tags for linkTree(); never part of the snapshot
     };
   });
   // after the reads, so the entries just used are the newest and the ones of vanished or long-idle transcripts go first
   if (!index.error) cache.transcripts.resize(index.files.size + CACHE_SLACK);
   const entries = results.filter(Boolean);
   foldScratchpad(entries, config.tmpRoot);
+  linkTree(entries);
 
   const groups = new Map();
   const counts = emptyCounts();

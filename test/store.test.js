@@ -691,6 +691,17 @@ describe('per-project models (0.4: perProject[key].models)', () => {
     assert.deepEqual((await loadConfig(env2)).config.perProject, {});
   });
 
+  test('(−) a config whose perProject.<key>.models is {} drops the empty map: no entry is kept for it alone, nothing warns, nothing crashes; beside other keys only the map goes', async () => {
+    const env = fresh('pm5c');
+    fs.writeFileSync(cfgFile(env), JSON.stringify({ perProject: { [KEY]: { models: {} }, aaaaaaaaaaaaaaaa: { plugins: ['a@demo-market'], models: {} }, bbbbbbbbbbbbbbbb: { orchestratorSessionId: ID, models: {} } } }));
+    const r = await loadConfig(env);
+    assert.deepEqual(r.warnings, []);
+    assert.deepEqual(r.config.perProject, { aaaaaaaaaaaaaaaa: { plugins: ['a@demo-market'] }, bbbbbbbbbbbbbbbb: { orchestratorSessionId: ID } });
+    assert.deepEqual(effectiveModels(r.config, KEY), r.config.models, 'a project with no entry uses the defaults');
+    await updateSettings({ limits: { maxAgents: 2 } }, env); // a save writes the cleaned shape back
+    assert.deepEqual(onDisk(env), r.config.perProject);
+  });
+
   test('(+) effectiveModels: the project\'s id wins per role, the Settings default fills the rest; the config is not changed', async () => {
     const env = fresh('pm6');
     const p = await project(env);

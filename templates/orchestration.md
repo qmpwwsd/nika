@@ -63,10 +63,29 @@ nika spawn <name> <model> <brief>
 delegation brief, or `-` to read it from stdin.
 
 - Pane placement: `{{panePlacement}}` (`beside` splits next to the orchestrator, `under-last` stacks under the newest agent pane).
-- At most {{limits.maxAgents}} spawned agents are live at a time; wait for one to finish before starting another.
+- At most {{limits.maxAgents}} spawned agents are live at a time under each orchestrator (a sub-orchestrator counts as one), and a
+  project as a whole runs at most three times that number, never more than 24; wait for one to finish before starting another.
 - Permission mode for spawned agents: `{{permissionMode}}`.
 - Remote Control: {{remoteControl}}.
 - A spawned agent writes its report to the path named in its prompt. Read the report before relying on the work.
+
+## Sub-orchestrators
+
+Use a sub-orchestrator when one part of the job is big enough to need its own planning and several agents of its own, and you
+can hand it over in a single brief. For anything smaller, spawn an agent.
+
+```
+nika spawn <name> <model> <brief> --role orchestrator
+```
+
+- Only the main orchestrator can start one. nika allows three levels: the orchestrator, its sub-orchestrators, and their
+  agents. A sub-orchestrator cannot start another sub-orchestrator, and an agent cannot start anything.
+- A sub-orchestrator may run only `nika spawn` and `nika status` of nika's commands, and its agents are blocked from nika
+  commands altogether.
+- Each orchestrator runs at most {{limits.maxAgents}} agents of its own at a time, and a sub-orchestrator counts as one of the
+  main orchestrator's. When nika refuses a spawn because of a limit, wait for one to finish.
+- Brief it like any agent (see Delegating) and read its report before relying on the work: it reports to you, and you stay
+  responsible for the integrated result.
 
 ## Plugins
 

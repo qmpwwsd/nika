@@ -15,7 +15,7 @@ import { clean } from './text.js';
 import { unifiedDiff } from './diff.js';
 
 /** Bump when the built-in template or its placeholder set changes: files written with an older value become `outdated`. */
-export const TEMPLATE_VERSION = 1;
+export const TEMPLATE_VERSION = 2;
 
 const RULES = 'rules/orchestration.md';
 const CLAUDE = 'CLAUDE.md';

@@ -4,6 +4,11 @@ export const PANE_ID = /^%\d{1,6}$/;
 /** First 16 hex chars of sha256(realpath of the project dir). */
 export const PROJECT_KEY = /^[a-z0-9]{16}$/;
 export const AGENT_NAME = /^[a-z0-9][a-z0-9-]{0,39}$/;
+/** nika's pane tag `@nika-agent` = `<project key>/<name>` → [key, name], or null for anything else: the tag is agent-writable and never trusted unparsed. */
+export function parseAgentTag(tag) {
+  const parts = String(tag).split('/');
+  return parts.length === 2 && PROJECT_KEY.test(parts[0]) && AGENT_NAME.test(parts[1]) ? parts : null;
+}
 /** Full model id, a Claude Code alias, or either with the 1M-context suffix. The brackets are safe: the id is only ever one argv element, never a shell word. */
 export const MODEL_ID = /^(?:claude-[a-z0-9-]{3,60}|opus|sonnet|haiku|fable|best|opusplan)(?:\[1m\])?$/;
 /** tmux session name; never starts with `-` so it cannot be read as an option. */

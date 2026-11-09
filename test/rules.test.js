@@ -100,6 +100,33 @@ describe('built-in template', () => {
     assert.match(text, /At most 3 spawned agents/);
   });
 
+  test('(+) template version 2 adds a Sub-orchestrators section: when to use one, the spawn command, the three levels, the limit from the settings', async () => {
+    assert.equal(TEMPLATE_VERSION, 2);
+    const w = await world();
+    await updateSettings({ limits: { maxAgents: 4 } }, w.env);
+    await go(w, await prev(w));
+    const text = get(w, 'rules/orchestration.md');
+    assert.ok(text.startsWith('<!-- nika:orchestration v2 sha256:'));
+    const section = /^## Sub-orchestrators\n([\s\S]*?)(?=^## )/m.exec(text)?.[1] ?? '';
+    assert.match(section, /nika spawn <name> <model> <brief> --role orchestrator/);
+    assert.match(section, /three levels/);
+    assert.match(section, /Only the main orchestrator/);
+    assert.match(section, /at most 4 agents of its own/i);
+    assert.match(section, /`nika spawn` and `nika status`/);
+    assert.match(text, /At most 4 spawned agents are live at a time under each orchestrator/);
+  });
+
+  test('(−) a file written by template version 1 reads as outdated, not current: applying it offers the new section', async () => {
+    const w = await world();
+    put(w, 'rules/orchestration.md', rulesMarker('# old rules\n', 1));
+    const body = await prev(w);
+    const rules = entry(body, 'rules/orchestration.md');
+    assert.equal(rules.action, 'update');
+    assert.notEqual(rules.foreign, true);
+    await go(w, body);
+    assert.match(get(w, 'rules/orchestration.md'), /^## Sub-orchestrators$/m);
+  });
+
   test('(+) settings flow into the rendered file: models, limit, placement, permission mode, Remote Control, plugins', async () => {
     const w = await world({ plugins: ['alpha@demo-market', 'beta_x@demo-market'] });
     await updateSettings({ models: { builder: 'sonnet' }, limits: { maxAgents: 5 }, panePlacement: 'under-last', permissionMode: 'plan', remoteControl: { enabled: true, prefix: 'demo' } }, w.env);
@@ -219,7 +246,7 @@ describe('preview', () => {
     assert.deepEqual(body.files.map((f) => [f.path, f.action]), [['rules/orchestration.md', 'create'], ['CLAUDE.md', 'create'], ['.claude/settings.local.json', 'unchanged']]);
     const rules = entry(body, 'rules/orchestration.md');
     assert.equal(rules.foreign, false);
-    assert.match(rules.diff, /^--- a\/rules\/orchestration\.md\n\+\+\+ b\/rules\/orchestration\.md\n@@ -0,0 \+1,\d+ @@\n\+<!-- nika:orchestration v1 sha256:[0-9a-f]{64} -->\n/);
+    assert.match(rules.diff, /^--- a\/rules\/orchestration\.md\n\+\+\+ b\/rules\/orchestration\.md\n@@ -0,0 \+1,\d+ @@\n\+<!-- nika:orchestration v2 sha256:[0-9a-f]{64} -->\n/);
     assert.equal(entry(body, 'CLAUDE.md').diff, `--- a/CLAUDE.md\n+++ b/CLAUDE.md\n@@ -0,0 +1 @@\n+${IMPORT}\n`);
     assert.equal(entry(body, '.claude/settings.local.json').diff, '');
     assert.ok(body.warnings.some((x) => /not a git repository/.test(x)));

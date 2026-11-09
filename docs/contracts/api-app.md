@@ -119,8 +119,8 @@ command runs:
 | 404 | `not_found` | no such project, or the session is not in nika's index (transcript deleted) |
 | 503 | `index_unavailable` | the index could not be read (never treated as "not found") |
 | 409 | `other_project` | the session belongs to another project, or to none |
-| 409 | `agent_session` | a live session whose pane is tagged `@nika-role agent` ("That session is an agent nika started, so it can't be the orchestrator. Nothing changed.") |
-| 409 | `orchestrator_running` | another session of the project runs as orchestrator (a live pane tagged `orchestrator`, or the live saved one) |
+| 409 | `agent_session` | a live session whose pane is tagged `@nika-role agent` ("That session is an agent nika started, so it can't be the orchestrator. Nothing changed.") or `sub-orchestrator` (0.4: "That session is a sub-orchestrator nika started, so it can't be the orchestrator. Nothing changed.") |
+| 409 | `orchestrator_running` | another session of the project runs as orchestrator (a live pane tagged `orchestrator`, or the live saved one; a sub-orchestrator is tagged `sub-orchestrator` and never counts) |
 | 409 | `no_pane` | the session is live but has no tmux pane that runs claude |
 | 409 | `busy` | another `PUT` for the same project is still running ("Another change to this project's orchestrator is still running. Try again."); answered right after the body check, before any lookup, tmux command or write |
 
@@ -128,7 +128,7 @@ One adoption at a time per project: the checks and the tagging run under an in-f
 windows, a double click) cannot both pass "no other orchestrator runs" and tag two panes. The guard is released when the request
 ends, whatever its answer. Other projects are not blocked.
 
-Live with a pane: the pane gets `@nika-role orchestrator` and `@nika-depth 1` (`tagPane`, fixed argv, constant values), is recorded
+Live with a pane: the pane gets `@nika-role orchestrator`, `@nika-agent <key>/orchestrator` and `@nika-depth 1` (`tagPane`, fixed argv, constant values; a start or a resume sets the same three), is recorded
 as a nika pane (keys and mode control work) and the id is stored. Ended: only the id is stored. `Orchestrator` =
 `{ sessionId, state: "live"|"ended", name, pane }` (the same reading as `GET /projects`, `orchestrate.js` `pickState`). `DELETE` forgets the id only: a live pane keeps its tags until it ends, and
 nothing is retagged or killed. A project that is removed while a `PUT` runs answers 404.
@@ -181,10 +181,21 @@ paths. Users add templates by copying a file into that folder (`nika doctor` pri
 
 ### Dashboard snapshot additions (`GET /api/agents`, both tiers)
 Each group gains `"key": "<keyFor(repo root)>"` (16 hex, matches a registered project's key when the repo is
-registered). Each agent gains `"role": "orchestrator" | "agent" | null` (from the pane's `@nika-role`, read with
-`list-panes -a -F …\t#{@nika-role}`) and `"attention": "<clean(registry status, 80)>" | null` — set only when a live
+registered). Each agent gains `"role": "orchestrator" | "sub-orchestrator" | "agent" | null` (from the pane's `@nika-role`, read with
+`list-panes -a -F …\t#{@nika-role}\t#{@nika-agent}\t#{@nika-depth}\t#{@nika-parent}`) and `"attention": "<clean(registry status, 80)>" | null` — set only when a live
 agent's state is neither busy nor idle (e.g. waiting on a permission prompt), else null. No paths or transcript text
 are added.
+
+0.4 adds the tree, on both tiers (the values are tmux tags nika itself set, read strictly: a value that does not parse is absent,
+and the tags of a pane with no nika role are ignored):
+- `"parent": "<session id>" | "<pane id>" | null`: the parent's session id when its pane maps to a live session in the snapshot, else
+  the pane id (`%n`); `null` for a root, an ended agent, and for the main orchestrator and sessions nika did not start. Only agents and
+  sub-orchestrators have a parent.
+- `"depth": 1 | 2 | 3 | null`: the main orchestrator is 1, a sub-orchestrator 2, an agent its `@nika-depth` tag (1 when it has none and no
+  parent, 2 with a parent and no tag); other live sessions 1; `null` for an ended agent. Never above 3.
+- `"children": ["<session id>", …]`: the live agents whose parent it is (`[]` for an ended agent or a leaf).
+A self-parent or a loop of parents is cut: every member becomes a root at depth 1. A page that gets a missing field (an older
+server, a 0.3 pane) treats the agent as a root at depth 1.
 
 ### `GET /api/app/plugins`
 `200 { "plugins": [ "<PLUGIN_NAME>", … ] }` — installed plugin names read from Claude Code's config dir (names only,
@@ -502,22 +513,49 @@ otherwise. Never `kill-pane`, never a signal. The eligibility cache is reset aft
 ### `POST /api/app/spawn` (body ≤ 80 KB)
 ```json
 { "project": "<PROJECT_KEY>", "name": "<AGENT_NAME>", "model": "<MODEL_ID>", "brief": "<≤ 64 KB, more than one word>",
-  "permissionMode": "<PERMISSION_MODES>?", "under": "<PANE_ID>?", "session": "<TMUX_SESSION>?", "rc": "off|<RC_PREFIX>?" }
+  "permissionMode": "<PERMISSION_MODES>?", "under": "<PANE_ID>?", "session": "<TMUX_SESSION>?", "rc": "off|<RC_PREFIX>?",
+  "role": "agent|orchestrator?", "parent": "<PANE_ID>?" }
 ```
 A one-word `brief` (no whitespace once trimmed) → 400 `brief must be more than one word`: the brief is claude's positional
 prompt after `--`, and a lone `update` or `doctor` could be read as a subcommand; `_run-agent` refuses a stored one-word
 brief too (exit 3). `permissionMode` defaults to settings; `bypassPermissions` → 400. `rc` overrides the Remote Control setting for this
 agent. `under`: split `-v` below that pane (unknown pane → 404, pane in another session than `session` → 400; the
-response `session` is the pane's session). Refused with `409 limit` when the project already has
-`limits.maxAgents` live nika-spawned agents, and with `409 conflict` when one already has the same `name`. Both read the
-same list, the same on the API and the CLI path: the panes, in any tmux session, that tmux reports with `@nika-role`
-`agent` and an `@nika-agent` tag `<project key>/<name>` for this project (§8), plus panes this process started. The name
-check compares the exact `<key>/<name>`: the same name in another project is free. `<name>.pane` files never count:
-they are agent-writable and display only. Response:
+response `session` is the pane's session). Response:
 ```json
 { "pane": "%12", "session": "<tmux session>", "sessionId": "<UUID>", "reports": { "dir": "<stateDir>/projects/<key>/reports",
   "session": "<name>.session", "report": "<name>.md", "rc": "<name>.rc", "remote": "<name>.remote" } }
 ```
+
+**Nesting (0.4, ADR 0013).** `role` defaults to `agent`; `orchestrator` starts a *sub-orchestrator* (its pane is tagged
+`sub-orchestrator`). Both values are checked: anything else is 400 `invalid`, as is a `parent` that is not a pane id. The parent is
+the pane the request names (`parent`; the CLI sends `$TMUX_PANE`, §7) and **only its tags in tmux decide what it is**; depth and
+role are never read from the request, argv, env or a file. From one fresh `tmux list-panes -a` (the format in §8):
+- no `parent`, a pane with no nika `@nika-role`, or a pane whose tags are another project's, malformed or do not agree → the
+  parent is "you": the child is depth 1 and its role can only be `agent`;
+- a parent that is this project's **main orchestrator** (role `orchestrator` with `@nika-agent <key>/orchestrator`, or a 0.3 pane
+  with no `@nika-agent` tag in the project's tmux session and the window named `orchestrator`; `@nika-depth` absent or `1`) →
+  depth 2, role `agent` or `orchestrator`;
+- a parent that is this project's **sub-orchestrator** (`@nika-agent <key>/<name>` for this project and `@nika-depth 2`) → depth 3,
+  role `agent` only;
+- a parent with role `agent` and a tag of this project → `409 depth`.
+`role: "orchestrator"` under anything but the main orchestrator → `409 depth`
+("That session can't start a sub-orchestrator. Only the main orchestrator can: nika allows three levels (orchestrator,
+sub-orchestrators, their agents). Nothing was started."; an agent parent: "An agent can't start other agents: …"). A `parent` pane
+that is no longer listed → `404 not_found` for a page request; the CLI treats its gone `$TMUX_PANE` as "you".
+
+**Limits.** `N` = `limits.maxAgents` (1 to 8). The live set is the panes, in any tmux session, with `@nika-role` `agent` or
+`sub-orchestrator` and an `@nika-agent` tag `<project key>/<name>` for this project (§8), plus the panes this process started (its
+own record of a pane wins over the tags on it); the main orchestrator is not in it. `<name>.pane` files never count: they are
+agent-writable and display only. The same name in another project is free. Checked in this order, each refusal starting nothing:
+1. `409 conflict` when a live entry has the same `name` (an agent and a sub-orchestrator share the names);
+2. `409 limit` `{ "scope": "project", "running": r, "max": min(3 × N, 24) }` when the live set already has that many;
+3. `409 limit` `{ "scope": "parent", "running": r, "max": N }` when the live entries whose `@nika-parent` is this parent pane
+   (for "you": the entries with no valid `@nika-parent`) already number `N`.
+The `409 limit` body is `{ "error": "limit", "message": …, "scope", "running", "max" }`. A sub-orchestrator counts as one of its
+parent's agents and toward the project cap. The checks and the split run in one queue per project; a CLI process and the app
+server have a queue each and can race by one pane (T36).
+
+The new pane is tagged (§8) with its role, `@nika-agent`, `@nika-depth` (1 to 3) and, with a parent, `@nika-parent`.
 
 ### `POST /api/app/orchestrator/start`
 `{ "project": "<PROJECT_KEY>" }` → `200 { "pane": "%3", "session": "<name>", "sessionId": "<UUID>|null", "created": true, "cleared"?: "gone" }`.
@@ -728,7 +766,7 @@ Write API (`src/fwrite.js`): `ensureDir(dir, mode = 0o700)`, `writeAtomic(dir, n
 | `nika app install` | macOS: copy or update the app in `~/Applications` (§6 "App copy"); prints "added nika X.Y.Z to ~/Applications (find it with Spotlight)", "updated …" or "already current"; exit 1 with the reason for `no-source` / `foreign-target` / `copy-failed`; Linux: exit 1, "the .deb or AppImage installs the desktop entry" |
 | `nika serve [--app]` | browser tier on `NIKA_PORT` (3335) · app tier on port 0 with the stdio protocol (§5); `--app` refuses a TTY stdin |
 | `nika status [--json] [--since w] [--full]` | unchanged from 0.1 |
-| `nika spawn <name> <model> <brief> [--project dir] [--permission-mode m] [--rc prefix\|off] [--under %pane] [--session name]` | spawn an agent in tmux (needs `$TMUX` or `--session`); `brief` is a file path or `-` for stdin |
+| `nika spawn <name> <model> <brief> [--project dir] [--permission-mode m] [--rc prefix\|off] [--role agent\|orchestrator] [--under %pane] [--session name]` | spawn an agent in tmux (needs `$TMUX` or `--session`); `brief` is a file path or `-` for stdin. 0.4: `--role orchestrator` starts a sub-orchestrator (only the main orchestrator's pane may; else exit 3, `depth`). The parent is the pane it runs in, `$TMUX_PANE`, when that is a pane id (else none); there is no `--parent` option, and a `$TMUX_PANE` that tmux no longer lists is "no parent". The server reads that pane's role and depth from tmux's tags |
 | `nika orchestrate [dir]` | create or reuse the project's tmux session and start the orchestrator pane |
 | `nika projects list\|add <dir>\|remove <key>` | project registry |
 | `nika rules preview\|apply [dir] [--yes] [--overwrite-foreign] [--gitignore]` | preview prints the diffs; apply asks for confirmation unless `--yes` |
@@ -745,15 +783,15 @@ multi-argument shell-commands (tmux execs them directly, no `sh -c`, T6).
 
 | Purpose | argv |
 |---|---|
-| list panes | `tmux -u list-panes -a -F #{pane_id}\t#{session_name}\t#{window_index}\t#{pane_title}\t#{pane_current_command}` (0.1) |
+| list panes | `tmux -u list-panes -a -F #{pane_id}\t#{session_name}\t#{window_index}\t#{pane_title}\t#{pane_current_command}\t#{@nika-role}\t#{@nika-agent}\t#{@nika-depth}\t#{@nika-parent}` (0.1; the tags 0.2 and 0.4; each tag is read strictly, a value that does not parse is absent, and the tags of a pane with no nika role are ignored) |
 | session exists | `tmux -u has-session -t =<session>` |
 | create session + orchestrator | `tmux -u new-session -d -s <session> -n orchestrator -c <projectDir> -x 200 -y 50 -P -F #{pane_id} -- <claudeBin> <orchestrator flags>` |
 | orchestrator in existing session | `tmux -u new-window -t =<session>: -n orchestrator -c <projectDir> -P -F #{pane_id} -- <claudeBin> <orchestrator flags>` |
-| tag a pane nika created | `tmux -u set-option -p -t %n @nika-role orchestrator` (after new-session / new-window) or `… @nika-role agent` (after split-window); for an agent also `tmux -u set-option -p -t %n @nika-agent <PROJECT_KEY>/<AGENT_NAME>`; best effort |
-| adopt a live session as orchestrator (0.4) | `tmux -u set-option -p -t %n @nika-role orchestrator` then `tmux -u set-option -p -t %n @nika-depth 1` (`PUT …/orchestrator`; the value is a constant 1, 2 or 3, never request data) |
+| tag a pane nika created | `tmux -u set-option -p -t %n @nika-role orchestrator` (after new-session / new-window), `… @nika-role agent` or (0.4) `… @nika-role sub-orchestrator` (after split-window), then `@nika-agent <PROJECT_KEY>/<AGENT_NAME>` (0.4: `<PROJECT_KEY>/orchestrator` for an orchestrator), `@nika-depth <1\|2\|3>` (an orchestrator 1) and, for a nested spawn, `@nika-parent <PANE_ID>`; every value is a constant, a validated name or a pane id (no `#`); best effort |
+| adopt a live session as orchestrator (0.4) | `tmux -u set-option -p -t %n @nika-role orchestrator`, then `@nika-agent <PROJECT_KEY>/orchestrator`, then `@nika-depth 1` (`PUT …/orchestrator`; the depth is a constant 1, 2 or 3, never request data) |
 | resume the orchestrator (0.4) | the orchestrator argv above with `--resume <UUID>` instead of `--session-id <UUID>`; the UUID is the stored pick |
-| agent panes of a spawn | `tmux -u list-panes -a -F #{pane_id}\t#{@nika-role}\t#{@nika-agent}` → the panes with `@nika-role` = `agent` whose `@nika-agent` is `<key>/<name>` for the project's key: the live agents for `limits.maxAgents` and the duplicate-name check. The tag is parsed strictly (exactly one `/`, `PROJECT_KEY` before it, `AGENT_NAME` after it); anything else is agent-writable noise and is ignored, never trusted |
-| find orchestrator pane | `tmux -u list-panes -s -t =<session> -F #{pane_id}\t#{pane_current_command}\t#{@nika-role}\t#{window_name}` (`-s` = every window of the session; 0.4) → the pane with `@nika-role` = `orchestrator` whose command is claude (`claude`, `node` or a version string); one in the window named exactly `orchestrator` wins, else an adopted tagged pane in another window; agent panes never match |
+| tags of a spawn | `tmux -u list-panes -a -F #{pane_id}\t#{@nika-role}\t#{@nika-agent}\t#{@nika-depth}\t#{@nika-parent}\t#{session_name}\t#{window_name}` (one fresh listing per spawn; the names are last because they are free text) → (1) the requested parent's role and depth (`POST /spawn`, "Nesting"), and (2) the live set: the panes with `@nika-role` = `agent` or `sub-orchestrator` whose `@nika-agent` is `<key>/<name>` for the project's key, for the duplicate-name check and the two caps. A tag is parsed strictly (exactly one `/`, `PROJECT_KEY` before it, `AGENT_NAME` after it; a depth is exactly `1`, `2` or `3`; a parent is a `PANE_ID`); anything else is agent-writable noise and is ignored, never trusted |
+| find orchestrator pane | `tmux -u list-panes -s -t =<session> -F #{pane_id}\t#{pane_current_command}\t#{@nika-role}\t#{@nika-agent}\t#{window_name}` (`-s` = every window of the session; 0.4) → the pane with `@nika-role` = `orchestrator` whose command is claude (`claude`, `node` or a version string) and which is the project's main one: tagged `<key>/orchestrator`, or a 0.3 pane with no `@nika-agent` tag in the window named exactly `orchestrator`. One in the window named `orchestrator` wins, else an adopted tagged pane in another window; agent and sub-orchestrator panes, and a tag of another project, never match |
 | spawn beside | `tmux -u split-window -h -t =<session>: -c <projectDir> -P -F #{pane_id} -- <nikaBin…> _run-agent <key> <name>` |
 | spawn under last | `tmux -u split-window -v -t <lastPane> -c <projectDir> -P -F #{pane_id} -- <nikaBin…> _run-agent <key> <name>` |
 | pane title | `tmux -u select-pane -t %n -T [%n] <name>` |
@@ -794,14 +832,24 @@ Session targets always carry the trailing colon (`=<session>:`) where tmux expec
   `sh -c 'tmux …'`, `git -C . commit` or a script written with Write and run with Bash all pass, and Read/Edit denies do
   not cover subprocesses. They stop the common invocation and honest mistakes; the boundary is the single-user trust
   model plus the app secret (`docs/security.md`). No Claude Code sandbox in 0.2; planned as an optional Settings switch.
+- 0.4 `<name>.agent.json` is exactly `{ model, permissionMode, rc, role, parent, depth }` (keys asserted, every value checked again,
+  exit 3 on any mismatch): `role` is `agent` or `sub-orchestrator`, `parent` a pane id or `null`, `depth` 1 to 3, and they must
+  agree (`parent` is `null` exactly at depth 1; a sub-orchestrator is depth 2). A **sub-orchestrator** (`role` = `sub-orchestrator`)
+  is run with `templates/guard-orchestrator.txt` as its system prompt and `--disallowedTools Bash(tmux:*) Bash(claude:*)
+  "Bash(git add:*)" "Bash(git commit:*)" "Bash(git push:*)" Bash(nika) "Bash(nika <command>:*)" …` in place of `Bash(nika:*)`: one
+  rule for bare `nika` and one for every name in the CLI's command table (`COMMAND_NAMES` in `src/cli.js`, handed to `runAgent` as
+  `ctx.commands`) except `spawn` and `status`, so a command added to the table is denied by default. Without a usable table the
+  list falls back to `Bash(nika:*)` (all of nika). An agent's guard and list are unchanged. The lists stay advisory.
 - `<nikaBin…>` = `process.execPath` + absolute path of `bin/nika` (no PATH lookup inside tmux).
 
 ## 9. Module interfaces (Phase 2)
 
 Handlers return `{ status, body }` like 0.1 `focusPane` / `readReport`; the router only sends. `ctx` =
 `{ env, exec, tmuxBin, claudeBin, nikaArgv, claudeDir, now, started }` where `started` is the in-process `Map<paneId,
-{ key, name, sessionId, role: "agent" | "orchestrator", mode }>` of panes nika created (`mode`, 0.3: the permission
-mode passed at launch, `manual` when none). Pane eligibility (in `list-panes`, running claude, and live Claude or `started`) is
+{ key, name, sessionId, role: "agent" | "sub-orchestrator" | "orchestrator", parent?, depth?, mode }>` of panes nika created (`mode`, 0.3: the permission
+mode passed at launch, `manual` when none; 0.4 `parent` / `depth`: the pane id and the depth a spawn resolved, `null` / 1 for "you"). `ctx.lenientParent`
+(the CLI sets it) turns a `parent` pane that is no longer listed into "no parent" instead of 404, and `runAgent`'s `ctx.commands` is
+the CLI's command table. Pane eligibility (in `list-panes`, running claude, and live Claude or `started`) is
 checked by the router before `mirror` / `keys` are called; those modules still validate `PANE_ID`.
 
 | Module | Exports |
@@ -814,8 +862,8 @@ checked by the router before `mirror` / `keys` are called; those modules still v
 | `src/keys.js` | `createKeys({ exec, tmuxBin, now }) → { send(pane, { text, paste, keys }) → { status, body } }` |
 | `src/rules.js` | `async rulesState(project) → { state, settingsIgnored, git }`; `preview(project, ctx) → { status, body }`; `apply(project, { hash, overwriteForeign, gitignore }, ctx) → { status, body }` |
 | `src/diff.js` | `unifiedDiff(oldText, newText, path) → string` |
-| `src/spawn.js` | `spawnAgent(req, ctx) → { status, body }`; `runAgent(key, name, ctx) → exit code` |
-| `src/orchestrate.js` (helpers) | `tagPane(ctx, pane, role, agentTag?, depth?)` sets `@nika-role`, for an agent `@nika-agent` = `<key>/<name>`, and (0.4) `@nika-depth` for a depth of 1 to 3; `launchArgv(config, project, { sessionId, resume })` → claude's flags after the binary (the one place the orchestrator argv is built) |
+| `src/spawn.js` | `spawnAgent(req, ctx) → { status, body }`; `runAgent(key, name, ctx) → exit code`; `deniedTools(role, commands) → string[]` (the `--disallowedTools` of a role) |
+| `src/orchestrate.js` (helpers) | `tagPane(ctx, pane, role, agentTag?, depth?, parent?)` sets `@nika-role`, `@nika-agent` = `<key>/<name>` (`<key>/orchestrator` for the orchestrator), and (0.4) `@nika-depth` for a depth of 1 to 3 and `@nika-parent` for a pane id; `launchArgv(config, project, { sessionId, resume })` → claude's flags after the binary (the one place the orchestrator argv is built) |
 | `src/orchestrate.js` | `startOrchestrator(projectKey, ctx) → { status, body }` (`ctx.findSession(id)` looks a saved orchestrator up in the transcript index); `pickState(project, id, hit)` (the one reading of a saved id, shared by the list, the PUT and Start; another project's session is `gone`), `claudePane(agent)`, `inProject(group, project)` |
 | `src/model.js` | `findSession(id, { config, exec, now, cache }) → { agent, group } \| null` (a session of any age; throws `EINDEX` when it is not found and the index could not be read); `findSessions(ids, { config, now, cache }) → Map id → { agent, group }` (index only: one walk for all ids, no registry, ps or tmux, so every hit reads as not running; throws `EINDEX` when an id is missing and the index could not be read) |
 | `src/appio.js` | `serveApp({ config, env, stdin, stdout, stderr }) → Promise<number>` (handshake, listen, status loop, picker; resolves with the exit code 0/1/2) |

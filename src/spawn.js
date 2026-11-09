@@ -1,7 +1,8 @@
 // Spawns agents in tmux panes (contract §3, §8; ADR 0007). spawnAgent() runs in the nika server or CLI: it validates the
 // request, stores the brief and settings in nika's state dir and splits a pane that runs `nika _run-agent <key> <name>`.
 // runAgent() is that wrapper: it re-validates what it reads, records the session, and runs claude with the safety flags.
-// The brief never passes through tmux argv. Leaf module: every dependency comes in through ctx.
+// The brief never passes through tmux argv. Nesting (0.4, ADR 0013): a spawn may name a parent pane; its role and depth come only from
+// tmux's own tags on that pane, never from the request, argv, env or a file. Leaf module: every dependency comes in through ctx.
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -13,15 +14,32 @@ import { ensureDir, writeAtomic } from './fwrite.js';
 import { openRegular, readAt, readHead } from './fsafe.js';
 import { listPanes } from './collect/tmux.js';
 import { clean } from './text.js';
-import { PROJECT_KEY, AGENT_NAME, MODEL_ID, TMUX_SESSION, PANE_ID, RC_PREFIX, RC_NAME, PERMISSION_MODES } from './ids.js';
+import { PROJECT_KEY, AGENT_NAME, parseAgentTag, MODEL_ID, TMUX_SESSION, PANE_ID, RC_PREFIX, RC_NAME, PERMISSION_MODES } from './ids.js';
 import { fail, binsMissing, tmux, tmuxFail, tagPane, sessionNameFor, reduceRc, permissionFlags, launchMode, tmuxLiteral } from './orchestrate.js';
 
 const BRIEF_MAX = 64 * 1024;
 const AGENT_JSON_MAX = 4096;
 const GUARD_TEMPLATE = new URL('../templates/guard-prompt.txt', import.meta.url);
-// tmux's record of nika's agent panes: pane id, `@nika-role`, `@nika-agent` = `<project key>/<name>` (set by tagPane at creation)
-const AGENT_LIST = '#{pane_id}\t#{@nika-role}\t#{@nika-agent}';
+const GUARD_ORCHESTRATOR = new URL('../templates/guard-orchestrator.txt', import.meta.url);
+// tmux's record of nika's panes: pane id and the tags tagPane sets (`@nika-role`, `@nika-agent` = `<project key>/<name>`, `@nika-depth`,
+// `@nika-parent`), then the session and window names (free text, so last)
+const AGENT_LIST = '#{pane_id}\t#{@nika-role}\t#{@nika-agent}\t#{@nika-depth}\t#{@nika-parent}\t#{session_name}\t#{window_name}';
 const DENIED_TOOLS = ['Bash(nika:*)', 'Bash(tmux:*)', 'Bash(claude:*)', 'Bash(git add:*)', 'Bash(git commit:*)', 'Bash(git push:*)'];
+// A sub-orchestrator may run `nika spawn` and `nika status` and nothing else of nika (advisory, like every list here: rules constraint 12)
+const SUB_ALLOWED = new Set(['spawn', 'status']);
+const SUB_ROLE = 'sub-orchestrator';
+const MAX_DEPTH = 3;
+
+/**
+ * The `--disallowedTools` of a role. An agent keeps the whole list. A sub-orchestrator keeps it except `Bash(nika:*)`, which becomes
+ * one rule for bare `nika` and one `Bash(nika <sub>:*)` per command of the CLI's table (`commands`, from src/cli.js) other than spawn and
+ * status, so a command added to the table is denied by default. Without a table it falls back to denying all of nika.
+ */
+export function deniedTools(role, commands) {
+  const table = Array.isArray(commands) && commands.length && commands.every((c) => typeof c === 'string' && /^[\w-]+$/.test(c));
+  if (role !== SUB_ROLE || !table) return DENIED_TOOLS;
+  return [...DENIED_TOOLS.slice(1), 'Bash(nika)', ...commands.filter((c) => !SUB_ALLOWED.has(c)).map((c) => `Bash(nika ${c}:*)`)];
+}
 const DENY_SETTINGS = JSON.stringify({ permissions: { deny: ['Read(**/.env*)', 'Edit(**/.env*)', 'Read(**/*.key)', 'Edit(**/*.key)'] } });
 const isPlainObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 // The brief is claude's positional prompt after `--`; a lone word such as `update` or `doctor` can be read as a subcommand.
@@ -34,7 +52,7 @@ const invalid = (message) => ({ failure: fail(400, 'invalid', message) });
 /** Request fields → { value } or { failure }. Nothing from the request reaches a path or a shell. */
 function parseRequest(req) {
   if (!isPlainObject(req)) return invalid('request must be an object');
-  const { project, name, model, brief, permissionMode, under, session, rc } = req;
+  const { project, name, model, brief, permissionMode, under, session, rc, role = 'agent', parent } = req;
   if (typeof project !== 'string' || !PROJECT_KEY.test(project)) return invalid('invalid project key');
   if (typeof name !== 'string' || !AGENT_NAME.test(name)) return invalid('invalid agent name');
   if (typeof model !== 'string' || !MODEL_ID.test(model)) return invalid('invalid model');
@@ -46,10 +64,13 @@ function parseRequest(req) {
   if (under !== undefined && (typeof under !== 'string' || !PANE_ID.test(under))) return invalid('invalid under pane');
   if (session !== undefined && (typeof session !== 'string' || !TMUX_SESSION.test(session))) return invalid('invalid session name');
   if (rc !== undefined && rc !== 'off' && (typeof rc !== 'string' || !RC_PREFIX.test(rc))) return invalid('invalid rc');
-  return { value: { project, name, model, brief, permissionMode, under, session, rc } };
+  if (role !== 'agent' && role !== 'orchestrator') return invalid('invalid role');
+  if (parent !== undefined && (typeof parent !== 'string' || !PANE_ID.test(parent))) return invalid('invalid parent pane');
+  return { value: { project, name, model, brief, permissionMode, under, session, rc, role, parent } };
 }
 
-// Spawns of one project run one at a time, so the maxAgents count sees the pane the previous spawn just created.
+// Spawns of one project run one at a time, so the caps count the pane the previous spawn just created (a CLI process and the app
+// server each have their own queue: they can still race by one pane, T36).
 const queues = new Map();
 function serial(key, fn) {
   const run = (queues.get(key) ?? Promise.resolve()).then(fn);
@@ -60,31 +81,76 @@ function serial(key, fn) {
   return run;
 }
 
-/** `<project key>/<name>` → [key, name], or null: anything else (agent-writable, never trusted) is ignored. */
-function parseTag(tag) {
-  const parts = String(tag).split('/');
-  return parts.length === 2 && PROJECT_KEY.test(parts[0]) && AGENT_NAME.test(parts[1]) ? parts : null;
+/** `tmux list-panes -a` in AGENT_LIST form → Map<paneId, tags>. Every tag is kept as tmux wrote it: only an exact match is trusted later. */
+async function readTags(ctx) {
+  const { stdout } = await tmux(ctx, 'list-panes', '-a', '-F', AGENT_LIST);
+  const tags = new Map();
+  for (const line of String(stdout).split('\n')) {
+    const [pane, role = '', agent = '', depth = '', parent = '', session = '', ...window] = line.split('\t');
+    if (PANE_ID.test(pane ?? '')) tags.set(pane, { role, agent, depth, parent, session, window: window.join('\t') });
+  }
+  return tags;
 }
 
 /**
- * Live agents of a project as Map<name, paneId>: the panes in any tmux session with `@nika-role` agent and an
- * `@nika-agent` tag `<key>/<name>` for this key (F5), plus the panes this process started. `<name>.pane` files are
- * agent-writable and display-only: they never count. Throws the tmux error when the listing fails.
+ * Live agents and sub-orchestrators of a project as [{ pane, name, role, parent, depth }]: the panes in any tmux session with
+ * `@nika-role` agent or sub-orchestrator and an `@nika-agent` tag `<key>/<name>` for this key (F5), plus the panes this process started
+ * (nika's own record of a pane wins over the tags on it). `<name>.pane` files are agent-writable and display-only: they never count.
+ * A `@nika-parent` that is not a pane id is no parent.
  */
-async function liveAgents(ctx, key, panes) {
+function liveAgents(ctx, key, tags, panes) {
   const live = new Map();
-  const { stdout } = await tmux(ctx, 'list-panes', '-a', '-F', AGENT_LIST);
-  for (const line of String(stdout).split('\n')) {
-    const [pane, role = '', tag = ''] = line.split('\t');
-    const parsed = role.trim() === 'agent' && PANE_ID.test(pane ?? '') ? parseTag(tag) : null;
-    if (parsed?.[0] === key) live.set(parsed[1], pane);
+  for (const [pane, t] of tags) {
+    const parsed = t.role === 'agent' || t.role === SUB_ROLE ? parseAgentTag(t.agent) : null;
+    if (parsed?.[0] === key) live.set(pane, { pane, name: parsed[1], role: t.role, parent: PANE_ID.test(t.parent) ? t.parent : null, depth: /^[123]$/.test(t.depth) ? Number(t.depth) : null });
   }
   for (const [pane, rec] of ctx.started ?? []) {
     if (!panes.has(pane)) ctx.started.delete(pane);
-    else if (rec.key === key && rec.role !== 'orchestrator') live.set(rec.name, pane);
+    else if (rec.key === key && (rec.role === 'agent' || rec.role === SUB_ROLE)) live.set(pane, { pane, name: rec.name, role: rec.role, parent: rec.parent ?? null, depth: rec.depth ?? null });
   }
-  return live;
+  return [...live.values()];
 }
+
+/**
+ * What a parent pane is to `project`, from its tags alone: 'main' (the project's main orchestrator), 'sub' (one of its
+ * sub-orchestrators), 'agent', or null for a pane that is not nika's, belongs to another project, or has tags that do not agree
+ * (a depth that does not fit the role): such a parent is treated as no parent. `@nika-depth` is only a consistency check here.
+ */
+function kindOf(t, project) {
+  switch (t.role) {
+    case 'orchestrator': {
+      // tagged `<key>/orchestrator` (0.4: start, resume, adopt), or a 0.3 pane with no tag at all in the project's session, window `orchestrator`
+      const main = t.agent === `${project.key}/orchestrator` || (t.agent === '' && t.session === sessionNameFor(project) && t.window === 'orchestrator');
+      return main && (t.depth === '' || t.depth === '1') ? 'main' : null;
+    }
+    case SUB_ROLE:
+      return parseAgentTag(t.agent)?.[0] === project.key && t.depth === '2' ? 'sub' : null;
+    case 'agent':
+      return parseAgentTag(t.agent)?.[0] === project.key ? 'agent' : null;
+    default:
+      return null;
+  }
+}
+
+const LEVELS = 'nika allows three levels (orchestrator, sub-orchestrators, their agents). Nothing was started.';
+
+/**
+ * Who the new pane's parent is and how deep it sits: { parent: paneId | null, depth: 1 | 2 | 3 } or { failure }. The depth follows the
+ * parent's role in tmux's record (main orchestrator → 2, sub-orchestrator → 3, no usable parent → 1, "you"); nothing about it is read
+ * from the request, argv, env or a file. A sub-orchestrator may only be started under the main orchestrator; an agent never parents.
+ * A page request naming a pane that is gone is 404; for the CLI (`ctx.lenientParent`, its parent is `$TMUX_PANE`) it is "you".
+ */
+function resolveParent(v, project, tags, ctx) {
+  const t = v.parent ? tags.get(v.parent) : undefined;
+  if (v.parent && !t && !ctx.lenientParent) return { failure: fail(404, 'not_found', 'The parent session is no longer running, so nothing was started.') };
+  const kind = t ? kindOf(t, project) : null;
+  if (kind === 'agent') return { failure: fail(409, 'depth', `An agent can't start other agents: ${LEVELS}`) };
+  const depth = kind === 'main' ? 2 : kind === 'sub' ? 3 : 1;
+  if (v.role === 'orchestrator' && depth !== 2) return { failure: fail(409, 'depth', `That session can't start a sub-orchestrator. Only the main orchestrator can: ${LEVELS}`) };
+  return { parent: kind ? v.parent : null, depth };
+}
+
+const limitFail = (scope, running, max, message) => ({ status: 409, body: { error: 'limit', message, scope, running, max } });
 
 /** `.last-pane` as a pane id, or null when missing, malformed or not a safe file. */
 async function lastPane(dir) {
@@ -106,14 +172,28 @@ async function doSpawn(v, project, config, ctx) {
   }
 
   const dir = reportsDir(project.key, ctx.env);
-  let live;
+  let tags;
   try {
-    live = await liveAgents(ctx, project.key, panes);
+    tags = await readTags(ctx);
   } catch (err) {
     return tmuxFail(err);
   }
-  if (live.has(v.name)) return fail(409, 'conflict', `agent ${v.name} is already running`);
-  if (live.size >= config.limits.maxAgents) return fail(409, 'limit', `${live.size} of ${config.limits.maxAgents} agents are already running`);
+  const who = resolveParent(v, project, tags, ctx);
+  if (who.failure) return who.failure;
+  const live = liveAgents(ctx, project.key, tags, panes);
+  if (live.some((e) => e.name === v.name)) return fail(409, 'conflict', `agent ${v.name} is already running`);
+  // the project's cap first, then the parent's own: sub-orchestrators and agents count the same
+  const max = config.limits.maxAgents;
+  const cap = Math.min(3 * max, 24);
+  const own = live.filter((e) => e.parent === who.parent).length;
+  const name = clean(project.name, 60) ?? 'This project';
+  const more = 'Wait for one to finish, or raise “Agents per orchestrator” in Settings.';
+  if (live.length >= cap) return limitFail('project', live.length, cap, `${name} already runs ${live.length} of ${cap} agents, the most one project can run. Wait for one to finish.`);
+  if (own >= max) {
+    return limitFail('parent', own, max, who.parent
+      ? `That session already runs ${own} of ${max} agents of its own. ${more}`
+      : `You already run ${own} of ${max} agents spawned from nika in ${name}. ${more}`);
+  }
 
   let target = ['-h', '-t', `=${session}:`];
   if (underPane) target = ['-v', '-t', v.under];
@@ -128,7 +208,8 @@ async function doSpawn(v, project, config, ctx) {
   await ensureDir(dir);
   await writeAtomic(dir, `${v.name}.brief.md`, v.brief);
   const permissionMode = v.permissionMode ?? config.permissionMode;
-  await writeAtomic(dir, `${v.name}.agent.json`, `${JSON.stringify({ model: v.model, permissionMode, rc })}\n`);
+  const role = v.role === 'orchestrator' ? SUB_ROLE : 'agent';
+  await writeAtomic(dir, `${v.name}.agent.json`, `${JSON.stringify({ model: v.model, permissionMode, rc, role, parent: who.parent, depth: who.depth })}\n`);
 
   let pane;
   try {
@@ -138,8 +219,8 @@ async function doSpawn(v, project, config, ctx) {
     return tmuxFail(err);
   }
   if (!PANE_ID.test(pane)) return fail(502, 'tmux_failed', 'tmux did not return a pane id');
-  ctx.started?.set(pane, { key: project.key, name: v.name, sessionId: null, role: 'agent', mode: launchMode(permissionMode) });
-  await tagPane(ctx, pane, 'agent', `${project.key}/${v.name}`);
+  ctx.started?.set(pane, { key: project.key, name: v.name, sessionId: null, role, parent: who.parent, depth: who.depth, mode: launchMode(permissionMode) });
+  await tagPane(ctx, pane, role, `${project.key}/${v.name}`, who.depth, who.parent);
   // The agent is already running: a failure below only costs the title or the under-last placement.
   await writeAtomic(dir, '.last-pane', `${pane}\n`).catch(() => {});
   await tmux(ctx, 'select-pane', '-t', pane, '-T', `[${pane}] ${v.name}`).catch(() => {});
@@ -192,7 +273,10 @@ async function readBrief(file) {
   }
 }
 
-/** `<name>.agent.json` → { model, permissionMode, rc }; every field is checked again, extra keys are refused. */
+/**
+ * `<name>.agent.json` → { model, permissionMode, rc, role, parent, depth }; every field is checked again, extra keys are refused. The
+ * values must agree: depth 1 is a root (no parent), anything deeper has a parent pane, and a sub-orchestrator is depth 2.
+ */
 async function readAgentJson(file) {
   const { handle, st } = await openRegular(file);
   let raw;
@@ -208,12 +292,16 @@ async function readAgentJson(file) {
   } catch {
     throw refusal('agent.json is not valid JSON');
   }
-  if (!isPlainObject(j) || Object.keys(j).sort().join() !== 'model,permissionMode,rc') throw refusal('agent.json has unexpected fields');
+  if (!isPlainObject(j) || Object.keys(j).sort().join() !== 'depth,model,parent,permissionMode,rc,role') throw refusal('agent.json has unexpected fields');
   if (typeof j.model !== 'string' || !MODEL_ID.test(j.model)) throw refusal('agent.json: invalid model');
   if (j.permissionMode === 'bypassPermissions') throw refusal('bypassPermissions is never allowed');
   if (!PERMISSION_MODES.includes(j.permissionMode)) throw refusal('agent.json: invalid permissionMode');
   if (typeof j.rc !== 'string' || (j.rc !== '' && !RC_NAME.test(j.rc))) throw refusal('agent.json: invalid rc');
-  return { model: j.model, permissionMode: j.permissionMode, rc: j.rc };
+  if (j.role !== 'agent' && j.role !== SUB_ROLE) throw refusal('agent.json: invalid role');
+  if (!Number.isInteger(j.depth) || j.depth < 1 || j.depth > MAX_DEPTH) throw refusal('agent.json: invalid depth');
+  if (j.parent !== null && (typeof j.parent !== 'string' || !PANE_ID.test(j.parent))) throw refusal('agent.json: invalid parent');
+  if ((j.parent === null) !== (j.depth === 1) || (j.role === SUB_ROLE && j.depth !== 2)) throw refusal('agent.json: role, parent and depth do not agree');
+  return { model: j.model, permissionMode: j.permissionMode, rc: j.rc, role: j.role, parent: j.parent, depth: j.depth };
 }
 
 const render = (template, vars) => template.replace(/\{\{(\w+)\}\}/g, (m, k) => (Object.hasOwn(vars, k) ? vars[k] : m));
@@ -245,7 +333,8 @@ function runChild(spawnFn, bin, argv, env, say) {
 
 /**
  * The hidden pane wrapper `nika _run-agent <key> <name>` (contract §8).
- * @param {object} ctx { env, claudeBin, stderr?, spawn? } (`spawn` is child_process.spawn, injectable for tests)
+ * @param {object} ctx { env, claudeBin, commands?, stderr?, spawn? } (`commands` = the CLI's command names, for a sub-orchestrator's
+ *                     deny list; `spawn` is child_process.spawn, injectable for tests)
  * @returns {Promise<number>} claude's exit code; 3 when the stored files are refused, 1 on any other failure
  */
 export async function runAgent(key, name, ctx) {
@@ -266,7 +355,7 @@ export async function runAgent(key, name, ctx) {
   try {
     brief = await readBrief(path.join(dir, `${name}.brief.md`));
     meta = await readAgentJson(path.join(dir, `${name}.agent.json`));
-    guard = render(await fs.readFile(GUARD_TEMPLATE, 'utf8'), { name, reportPath: path.join(dir, `${name}.md`) });
+    guard = render(await fs.readFile(meta.role === SUB_ROLE ? GUARD_ORCHESTRATOR : GUARD_TEMPLATE, 'utf8'), { name, reportPath: path.join(dir, `${name}.md`) });
     await writeAtomic(dir, `${name}.session`, `${sessionId}\n`);
     await writeAtomic(dir, `${name}.remote`, meta.rc ? `${meta.rc}\n` : '');
     await writeAtomic(dir, `${name}.rc`, ''); // clears the exit code of an earlier run until claude exits
@@ -279,7 +368,7 @@ export async function runAgent(key, name, ctx) {
   const argv = [
     '--session-id', sessionId, '--model', meta.model, ...permissionFlags(meta.permissionMode), '-n', name,
     ...(meta.rc ? [`--remote-control=${meta.rc}`] : []), '--add-dir', dir, '--append-system-prompt', guard,
-    '--settings', DENY_SETTINGS, '--disallowedTools', ...DENIED_TOOLS, '--', brief,
+    '--settings', DENY_SETTINGS, '--disallowedTools', ...deniedTools(meta.role, ctx.commands), '--', brief,
   ];
   const code = await runChild(ctx.spawn ?? nodeSpawn, ctx.claudeBin, argv, ctx.env ?? process.env, say);
   // `<name>.rc` is claude's exit code, as in 0.1 (the dashboard shows it); a failed write must not hide the code itself

@@ -176,8 +176,8 @@ describe('collect', () => {
 });
 
 describe('collect: key, role, attention (0.2 UI fields)', () => {
-  const AGENT_KEYS = ['attention', 'bridgeUrl', 'cwd', 'gitBranch', 'id', 'lastActivity', 'lastPrompt', 'live', 'model', 'modelLabel', 'name', 'pane',
-    'pid', 'report', 'resumeCmd', 'role', 'startedAt', 'state', 'subagents', 'title', 'version', 'worktree'];
+  const AGENT_KEYS = ['attention', 'bridgeUrl', 'children', 'cwd', 'depth', 'gitBranch', 'id', 'lastActivity', 'lastPrompt', 'live', 'model', 'modelLabel', 'name', 'pane',
+    'parent', 'pid', 'report', 'resumeCmd', 'role', 'startedAt', 'state', 'subagents', 'title', 'version', 'worktree'];
   const GROUP_KEYS = ['agents', 'counts', 'key', 'label', 'lastActivity', 'root'];
   const PANES = (role5, role6) => [`%5\twork\t1\t[%5] build-7-1\tzsh\t${role5}`, `%6\twork\t2\tMacBook.local\tclaude\t${role6}`];
 
@@ -278,6 +278,89 @@ describe('collect: key, role, attention (0.2 UI fields)', () => {
     } finally {
       cleanup(fx2);
     }
+  });
+});
+
+describe('collect: parent, depth and children (0.4, contract C6)', () => {
+  const K = '0123456789abcdef';
+  const ID = (c) => `${c.repeat(8)}-${c.repeat(4)}-4${c.repeat(3)}-8${c.repeat(3)}-${c.repeat(12)}`;
+  const tree = async (rows, extra = []) => {
+    // rows: [letter, pane, role, tag, depth, parent, extra registry fields]; one live session per row, in a plain folder
+    const fx2 = makeFixture();
+    try {
+      for (const [i, [c, pane]] of rows.entries()) {
+        fs.writeFileSync(path.join(fx2.claudeDir, 'sessions', `${120 + i}.json`), JSON.stringify({
+          pid: 120 + i, sessionId: ID(c), cwd: fx2.plain, status: 'idle', procStart: 'Sat Nov  7 18:57:14 2026', updatedAt: NOW, tmux: `work:@1.${pane}`,
+        }));
+      }
+      const tmuxLines = rows.map(([c, pane, role, tag, depth, parent]) => `${pane}\twork\t1\t[${pane}] n-${c}\tnode\t${role}\t${tag}\t${depth}\t${parent}`).concat(extra);
+      const ps = rows.map((_, i) => `  ${120 + i} Sat Nov  7 18:57:14 2026`);
+      const s = await collect({ config: fx2.config, exec: fakeExec({ psLines: ps, tmuxLines }), now: NOW, sinceMs: DAY });
+      return (c) => s.snapshot.groups.flatMap((g) => g.agents).find((x) => x.id === ID(c));
+    } finally {
+      cleanup(fx2);
+    }
+  };
+  const view = (a) => [a.parent, a.depth, [...a.children].sort()];
+
+  test('(+) parent (the parent session when it maps to one, else the pane), depth and children come from the pane tags', async () => {
+    const a = await tree([
+      ['a', '%1', 'orchestrator', `${K}/orchestrator`, '1', ''],
+      ['b', '%2', 'sub-orchestrator', `${K}/planner`, '2', '%1'],
+      ['c', '%3', 'agent', `${K}/build-1`, '3', '%2'],
+      ['d', '%4', 'agent', `${K}/build-2`, '2', '%1'],
+      ['e', '%5', 'agent', `${K}/build-3`, '1', ''],
+      ['f', '%6', 'agent', `${K}/build-4`, '2', '%99'], // its parent pane is not a session nika knows
+      ['9', '%7', '', '', '', ''], // a plain claude session
+    ]);
+    assert.deepEqual(view(a('a')), [null, 1, [ID('b'), ID('d')]]);
+    assert.deepEqual(view(a('b')), [ID('a'), 2, [ID('c')]]);
+    assert.deepEqual(view(a('c')), [ID('b'), 3, []]);
+    assert.deepEqual(view(a('d')), [ID('a'), 2, []]);
+    assert.deepEqual(view(a('e')), [null, 1, []]);
+    assert.deepEqual(view(a('f')), ['%99', 2, []]);
+    assert.deepEqual(view(a('9')), [null, 1, []]);
+    assert.equal(a('b').role, 'sub-orchestrator');
+  });
+
+  test('(−) bad tags are ignored: a bad depth is absent (depth 1 without a parent), a bad parent is no parent; only agents and sub-orchestrators have a parent', async () => {
+    const a = await tree([
+      ['a', '%1', 'orchestrator', `${K}/orchestrator`, '3', '%2'], // a main orchestrator is depth 1 and nobody's child
+      ['b', '%2', 'agent', `${K}/x`, '7', 'nope'],
+      ['c', '%3', 'agent', `${K}/y`, '2', '%1 '],
+      ['d', '%4', '', '', '2', '%1'], // no nika role: the tags beside it mean nothing
+      ['e', '%5', 'sub-orchestrator', `${K}/z`, '', ''], // a sub-orchestrator is depth 2 whatever its tag says
+      ['f', '%6', 'agent', `${K}/w`, '2', '%5'],
+    ]);
+    assert.deepEqual(view(a('a')), [null, 1, []]);
+    assert.deepEqual(view(a('b')), [null, 1, []]);
+    assert.deepEqual(view(a('c')), [null, 2, []]); // the depth tag parses, the parent does not
+    assert.deepEqual(view(a('d')), [null, 1, []]);
+    assert.deepEqual(view(a('e')), [null, 2, [ID('f')]]);
+    assert.deepEqual(view(a('f')), [ID('e'), 2, []]);
+  });
+
+  test('(−) a self-parent and a cycle are cut: every member becomes a root at depth 1 with no children from the loop', async () => {
+    const a = await tree([
+      ['a', '%1', 'agent', `${K}/a`, '2', '%1'],
+      ['b', '%2', 'sub-orchestrator', `${K}/b`, '2', '%3'],
+      ['c', '%3', 'sub-orchestrator', `${K}/c`, '2', '%2'],
+      ['d', '%4', 'agent', `${K}/d`, '3', '%2'], // hangs off the loop, not part of it
+    ]);
+    assert.deepEqual(view(a('a')), [null, 1, []]);
+    assert.deepEqual(view(a('b')), [null, 1, [ID('d')]]);
+    assert.deepEqual(view(a('c')), [null, 1, []]);
+    assert.deepEqual(view(a('d')), [ID('b'), 3, []]);
+  });
+
+  test('(−) ended agents carry no parent and no depth, and children []; so does a live agent when tmux is unavailable', async () => {
+    const s = await snap(Infinity);
+    for (const id of [SID.dead, SID.ended, SID.old, SID.other]) {
+      const a = byId(s, id);
+      assert.deepEqual([a.live, a.parent, a.depth, a.children], [false, null, null, []], id);
+    }
+    const none = await snap(7 * DAY, fakeExec({ tmuxError: 'ENOENT' }));
+    assert.deepEqual([byId(none, SID.busy).parent, byId(none, SID.busy).depth, byId(none, SID.busy).children], [null, 1, []]);
   });
 });
 

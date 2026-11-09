@@ -12,24 +12,24 @@ export const NIKA_ARGV = ['/usr/bin/node', '/opt/nika/bin/nika'];
 const tmuxError = (message, code = 1) => Object.assign(new Error(message), { code, stderr: `${message}\n` });
 
 /**
- * panes: [{ id, session, window, windowName, title, command, role, agent, depth }] (role = @nika-role, agent = @nika-agent = `<project key>/<name>`, depth = @nika-depth, '' = untagged). Options: enoent (every call fails like a missing
+ * panes: [{ id, session, window, windowName, title, command, role, agent, depth, parent }] (role = @nika-role, agent = @nika-agent = `<project key>/<name>`, depth = @nika-depth, parent = @nika-parent, '' = untagged). Options: enoent (every call fails like a missing
  * binary), failOn (sub-commands that exit 1), commandOf (pane_current_command of a pane created by new-session /
  * new-window / split-window, by default `claude` for the first two and `node` for split-window).
  */
 export function fakeTmux({ panes = [], enoent = false, failOn = [], nextId = 20 } = {}) {
-  const state = panes.map((p) => ({ window: 0, windowName: 'zsh', title: '', command: 'zsh', role: '', agent: '', depth: '', ...p }));
+  const state = panes.map((p) => ({ window: 0, windowName: 'zsh', title: '', command: 'zsh', role: '', agent: '', depth: '', parent: '', ...p }));
   const calls = [];
   let counter = nextId;
   const sessions = () => new Set(state.map((p) => p.session));
   const noServer = () => tmuxError('no server running on /tmp/tmux-1/default');
   const create = (session, windowName, command) => {
-    const pane = { id: `%${counter++}`, session, window: state.filter((p) => p.session === session).length, windowName, title: '', command, role: '', agent: '', depth: '' };
+    const pane = { id: `%${counter++}`, session, window: state.filter((p) => p.session === session).length, windowName, title: '', command, role: '', agent: '', depth: '', parent: '' };
     state.push(pane);
     return `${pane.id}\n`;
   };
   const after = (args, flag) => args[args.indexOf(flag) + 1];
   // the format variables nika uses; like tmux, an unset @option expands to an empty string
-  const fields = { pane_id: 'id', session_name: 'session', window_index: 'window', window_name: 'windowName', pane_title: 'title', pane_current_command: 'command', '@nika-role': 'role', '@nika-agent': 'agent', '@nika-depth': 'depth' };
+  const fields = { pane_id: 'id', session_name: 'session', window_index: 'window', window_name: 'windowName', pane_title: 'title', pane_current_command: 'command', '@nika-role': 'role', '@nika-agent': 'agent', '@nika-depth': 'depth', '@nika-parent': 'parent' };
   const expand = (format, p) => format.replace(/#\{([^}]+)\}/g, (m, k) => {
     if (!Object.hasOwn(fields, k)) throw new Error(`unexpected format variable ${k}`);
     return String(p[fields[k]] ?? '');
@@ -75,13 +75,14 @@ export function fakeTmux({ panes = [], enoent = false, failOn = [], nextId = 20 
         if (!host) throw tmuxError(`can't find pane: ${target}`);
         return { stdout: create(host.session, host.windowName, 'node'), stderr: '' };
       }
-      case 'set-option': { // only `-p -t %n @nika-role <orchestrator|agent>`, `-p -t %n @nika-agent <key>/<name>` and `-p -t %n @nika-depth <1|2|3>`, the pane options nika sets
+      case 'set-option': { // only `-p -t %n @nika-role <orchestrator|sub-orchestrator|agent>`, `@nika-agent <key>/<name>`, `@nika-depth <1|2|3>` and `@nika-parent <%n>`, the pane options nika sets
         const [flag, t, pane, key, value] = rest;
         const target = state.find((p) => p.id === pane);
-        const field = { '@nika-role': 'role', '@nika-agent': 'agent', '@nika-depth': 'depth' }[key];
-        const valid = key === '@nika-role' ? ['orchestrator', 'agent'].includes(value)
+        const field = { '@nika-role': 'role', '@nika-agent': 'agent', '@nika-depth': 'depth', '@nika-parent': 'parent' }[key];
+        const valid = key === '@nika-role' ? ['orchestrator', 'sub-orchestrator', 'agent'].includes(value)
           : key === '@nika-depth' ? ['1', '2', '3'].includes(value)
-            : key === '@nika-agent' && /^[a-z0-9]{16}\/[a-z0-9][a-z0-9-]{0,39}$/.test(value);
+            : key === '@nika-parent' ? /^%\d{1,6}$/.test(value)
+              : key === '@nika-agent' && /^[a-z0-9]{16}\/[a-z0-9][a-z0-9-]{0,39}$/.test(value);
         if (flag !== '-p' || t !== '-t' || !valid || rest.length !== 5) throw new Error(`unexpected set-option ${rest.join(' ')}`);
         if (!target) throw tmuxError("can't find pane");
         target[field] = value;

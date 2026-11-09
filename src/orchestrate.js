@@ -20,15 +20,18 @@ export function binsMissing(ctx) {
 export const tmux = (ctx, ...args) => ctx.exec(ctx.tmuxBin, ['-u', ...args]);
 
 /**
- * Marks a pane nika created: `@nika-role` = orchestrator | agent so the orchestrator is never confused with the agents
- * split into its window; for an agent also `@nika-agent` = `<project key>/<name>`, so maxAgents and the duplicate-name
- * check count tmux's own record instead of agent-writable files (F5); `depth` (1, 2 or 3, a constant) sets `@nika-depth`: nika puts it
- * on a session it adopted as the orchestrator. Best effort: the pane already runs, an untagged one is just not counted and never reused.
+ * Marks a pane nika created: `@nika-role` = orchestrator | sub-orchestrator | agent, so the main orchestrator is never confused
+ * with the agents split into its window; `@nika-agent` = `<project key>/<name>` (an orchestrator's name is the constant
+ * `orchestrator`), so maxAgents, the caps and the duplicate-name check count tmux's own record instead of agent-writable files (F5);
+ * `depth` (1, 2 or 3, a constant) sets `@nika-depth` and `parent` (a pane id) `@nika-parent`, the tree of a nested spawn. Every value
+ * is a constant, a validated name or a pane id: none has a `#` (set-option values are not format-expanded either way). Best effort:
+ * the pane already runs, an untagged one is just not counted and never reused.
  */
-export async function tagPane(ctx, pane, role, agentTag, depth) {
+export async function tagPane(ctx, pane, role, agentTag, depth, parent) {
   await tmux(ctx, 'set-option', '-p', '-t', pane, '@nika-role', role).catch(() => {});
   if (agentTag) await tmux(ctx, 'set-option', '-p', '-t', pane, '@nika-agent', agentTag).catch(() => {});
   if ([1, 2, 3].includes(depth)) await tmux(ctx, 'set-option', '-p', '-t', pane, '@nika-depth', String(depth)).catch(() => {});
+  if (typeof parent === 'string' && PANE_ID.test(parent)) await tmux(ctx, 'set-option', '-p', '-t', pane, '@nika-parent', parent).catch(() => {});
 }
 
 /** Maps a failed tmux call to an error response. */
@@ -105,14 +108,16 @@ export function launchArgv(config, project, { sessionId, resume = false }) {
   ];
 }
 
-// every pane of the project's tmux session, with its window: the pane's own record of who started it (`@nika-role`)
-const PANE_LIST = '#{pane_id}\t#{pane_current_command}\t#{@nika-role}\t#{window_name}';
+// every pane of the project's tmux session, with its window: the pane's own record of who started it (`@nika-role`, `@nika-agent`)
+const PANE_LIST = '#{pane_id}\t#{pane_current_command}\t#{@nika-role}\t#{@nika-agent}\t#{window_name}';
 
 /**
- * Pane tagged `orchestrator` in the tmux session that runs claude, or null: the one in the `orchestrator` window first, else
- * any other window (a session the owner's own orchestrator was adopted into). Untagged panes and agent panes never match.
+ * Pane of the project's main orchestrator in the tmux session that runs claude, or null. Only `@nika-role` orchestrator counts
+ * (a sub-orchestrator or an agent never does). It is either tagged `<key>/orchestrator` for this project (the 0.4 tag, set on start,
+ * resume and adopt; any window of the session), or it is a 0.3 pane with no `@nika-agent` tag in the window named `orchestrator`. The one
+ * in the `orchestrator` window wins over an adopted one. A tag of another project or another name never matches.
  */
-async function findOrchestratorPane(ctx, session) {
+async function findOrchestratorPane(ctx, session, key) {
   let stdout;
   try {
     // `=<session>` is an exact session match; `-s` lists every window of it
@@ -123,8 +128,10 @@ async function findOrchestratorPane(ctx, session) {
   }
   let adopted = null;
   for (const line of String(stdout).split('\n')) {
-    const [id, command = '', role = '', window = ''] = line.split('\t');
+    const [id, command = '', role = '', tag = '', window = ''] = line.split('\t');
     if (!PANE_ID.test(id ?? '') || role.trim() !== 'orchestrator' || !CLAUDE_COMMAND.test(command.trim())) continue;
+    const legacy = tag === '' && window.trim() === 'orchestrator';
+    if (!legacy && tag !== `${key}/orchestrator`) continue;
     if (window.trim() === 'orchestrator') return id;
     adopted ??= id;
   }
@@ -183,7 +190,7 @@ export async function startOrchestrator(projectKey, ctx) {
       exists = false; // exit 1: no such session, or no server running at all
     }
     if (exists) {
-      const pane = await findOrchestratorPane(ctx, session);
+      const pane = await findOrchestratorPane(ctx, session, project.key);
       if (pane) return { status: 200, body: { pane, session, sessionId: ctx.started?.get(pane)?.sessionId ?? null, created: false, ...cleared } };
     }
     const { stdout } = await tmux(ctx, ...(exists
@@ -192,7 +199,7 @@ export async function startOrchestrator(projectKey, ctx) {
     const pane = String(stdout).trim();
     if (!PANE_ID.test(pane)) return fail(502, 'tmux_failed', 'tmux did not return a pane id');
     ctx.started?.set(pane, { key: projectKey, name: 'orchestrator', sessionId, role: 'orchestrator', mode: launchMode(config.permissionMode) });
-    await tagPane(ctx, pane, 'orchestrator');
+    await tagPane(ctx, pane, 'orchestrator', `${projectKey}/orchestrator`, 1);
     // the pane already runs: failing to remember it (the project was removed meanwhile) must not fail the start
     if (!resume) await setOrchestrator(projectKey, sessionId, ctx.env).catch(() => {});
     return { status: 200, body: { pane, session, sessionId, created: true, ...cleared } };

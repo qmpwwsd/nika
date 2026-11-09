@@ -329,7 +329,8 @@ export function createAppApi({ secret, ctx, deps }) {
     // the same reading as the list and Start (pickState): another project's session is gone there, refused here
     if (pickState(project, id, found).state === 'gone') return err(409, 'other_project', "That session belongs to another project, so it can't be this project's orchestrator. Nothing changed.");
     if (agent.live && agent.role === 'agent') return err(409, 'agent_session', "That session is an agent nika started, so it can't be the orchestrator. Nothing changed.");
-    // another main orchestrator that runs: a pane tagged orchestrator, or the saved pick while it runs
+    if (agent.live && agent.role === 'sub-orchestrator') return err(409, 'agent_session', "That session is a sub-orchestrator nika started, so it can't be the orchestrator. Nothing changed.");
+    // another main orchestrator that runs: a pane tagged orchestrator (a sub-orchestrator is tagged differently and never counts), or the saved pick while it runs
     const pick = await getOrchestrator(project.key, ctx.env);
     if (group.agents.some((a) => a.live && a.id !== id && (a.role === 'orchestrator' || a.id === pick))) {
       return err(409, 'orchestrator_running', "Another session is running as this project's orchestrator. End it first, then choose another. Nothing changed.");
@@ -344,7 +345,7 @@ export function createAppApi({ secret, ctx, deps }) {
       throw e;
     }
     if (pane) {
-      await tagPane(ctx, pane.id, 'orchestrator', undefined, 1);
+      await tagPane(ctx, pane.id, 'orchestrator', `${project.key}/orchestrator`, 1);
       ctx.started.set(pane.id, { key: project.key, name: 'orchestrator', sessionId: id, role: 'orchestrator' });
       eligibility = null; // the pane is eligible at once
     }

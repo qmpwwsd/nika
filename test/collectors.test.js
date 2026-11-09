@@ -208,12 +208,39 @@ describe('tmux', () => {
     assert.equal(panes.get('%4').command, 'zsh');
   });
 
-  test('(+) listPanes asks tmux for #{@nika-role} as the last field', async () => {
+  test('(+) listPanes asks tmux for the nika tags after the title and command: role, agent, depth, parent', async () => {
     const exec = fakeExec();
     await listPanes(exec);
     const format = exec.calls[0].at(-1);
-    assert.ok(format.endsWith('\t#{@nika-role}'));
-    assert.equal(format.split('\t').length, 6);
+    assert.ok(format.endsWith('\t#{@nika-role}\t#{@nika-agent}\t#{@nika-depth}\t#{@nika-parent}'));
+    assert.equal(format.split('\t').length, 9);
+  });
+
+  const KEY = '0123456789abcdef';
+  const TAGS = (role, agent, depth, parent) => `%5\twork\t1\t[%5] x\tnode\t${role}\t${agent}\t${depth}\t${parent}\n`;
+
+  test('(+) @nika-role sub-orchestrator, @nika-agent, @nika-depth and @nika-parent are read when they parse', () => {
+    const p = parsePaneLines(TAGS('sub-orchestrator', `${KEY}/planner`, '2', '%3')).get('%5');
+    assert.deepEqual([p.role, p.agent, p.depth, p.parent], ['sub-orchestrator', `${KEY}/planner`, 2, '%3']);
+    const a = parsePaneLines(TAGS('agent', `${KEY}/build-1`, '3', '%5')).get('%5');
+    assert.deepEqual([a.role, a.agent, a.depth, a.parent], ['agent', `${KEY}/build-1`, 3, '%5']);
+    const o = parsePaneLines(TAGS('orchestrator', `${KEY}/orchestrator`, '1', '')).get('%5');
+    assert.deepEqual([o.role, o.agent, o.depth, o.parent], ['orchestrator', `${KEY}/orchestrator`, 1, null]);
+  });
+
+  test('(−) a bad agent tag, depth or parent becomes null (never cleaned up into something valid); a line without the fields has none', () => {
+    for (const depth of ['0', '4', '12', '1 ', ' 2', '2.0', 'x', '-1', '٣']) assert.equal(parsePaneLines(TAGS('agent', `${KEY}/a`, depth, '')).get('%5').depth, null, JSON.stringify(depth));
+    for (const parent of ['5', '%', '%x', '% 5', '%5 ', ' %5', '%1234567', '%5\u0000', '#{pane_id}', '%3;%4', '%03a']) assert.equal(parsePaneLines(TAGS('agent', `${KEY}/a`, '2', parent)).get('%5').parent, null, JSON.stringify(parent));
+    for (const agent of ['a', `${KEY}`, `${KEY}/`, `${KEY.toUpperCase()}/a`, `${KEY}/a/b`, ` ${KEY}/a`, `${KEY}/A b`]) assert.equal(parsePaneLines(TAGS('agent', agent, '2', '')).get('%5').agent, null, JSON.stringify(agent));
+    const old = parsePaneLines('%5\twork\t1\tt\tzsh\tagent\n').get('%5');
+    assert.deepEqual([old.role, old.agent, old.depth, old.parent], ['agent', null, null, null]);
+  });
+
+  test('(−) a pane with no nika role carries no agent tag, depth or parent, whatever its options say', () => {
+    const p = parsePaneLines(TAGS('', `${KEY}/a`, '2', '%3')).get('%5');
+    assert.deepEqual([p.role, p.agent, p.depth, p.parent], [null, null, null, null]);
+    const q = parsePaneLines(TAGS('admin', `${KEY}/a`, '2', '%3')).get('%5');
+    assert.deepEqual([q.role, q.agent, q.depth, q.parent], [null, null, null, null]);
   });
 
   test('(+) listPanes calls tmux -u list-panes -a with a fixed format', async () => {
