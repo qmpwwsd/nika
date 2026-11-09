@@ -31,11 +31,11 @@ Plugins per project, and Settings (desktop app):
 
 Memory (desktop app):
 
+- The app's server uses about half the memory: the desktop app now starts it with a smaller young-generation heap
+  (`--max-semi-space-size=4`). On 200 synthetic sessions over 5 minutes it held about 195 MB before (macOS footprint
+  160 MB) and about 90 MB after (footprint 60 MB), with the same history speed.
 - The parsed-transcript and command-list caches are capped, and a session window keeps at most 500 transcript entries (it
-  was 600; the oldest leave only while you follow the live end, never under a reader who has scrolled up). On 200 synthetic
-  sessions over 10 minutes the app's server measured 95 MB at start, 209 MB at peak and 200 MB at the end before this change,
-  and 95, 203 and 201 MB after: it plateaus either way (the live heap stays near 10 MB), and the caps keep it from growing
-  with the number of sessions over days.
+  was 600; the oldest leave only while you follow the live end, never under a reader who has scrolled up).
 
 ## 0.3.3 — 2026-11-09
 

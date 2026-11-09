@@ -37,7 +37,7 @@ Related: [contracts](contracts/api-app.md) (routes, stdio protocol, schemas), [A
    ran but none is new enough, the error
    page says `node-old` with the newest version seen; if none exists or answers, `node-missing`
    (`child.rs` `find_node`, [packaging](packaging.md#runtime-requirements-both-systems)).
-3. The shell starts `node bin/nika serve --app` with piped stdio. The server files come from the app bundle
+3. The shell starts `node --max-semi-space-size=4 bin/nika serve --app` with piped stdio (see Memory bounds). The server files come from the app bundle
    (`Contents/Resources/nika/{bin,src,public,templates,package.json}` on macOS). The child env is cleared, then set to
    `PATH`, `HOME`, `NIKA_APP=1`, plus `CLAUDE_CONFIG_DIR`, `NIKA_CONFIG_DIR`, `XDG_CONFIG_HOME`, `XDG_STATE_HOME`,
    `TMUX_TMPDIR`, `LANG`, `LC_ALL` and `LC_CTYPE` when they are set.
@@ -96,6 +96,11 @@ page, the transcript column keeps at most 500 entries: while the reader follows 
 (Load older fetches them again), after Load older the newest leave from the bottom (Jump to latest returns), and a reader
 who has scrolled up loses none until they are back at the bottom. Poll timers are single chains, and the mirror timer is
 cleared before it is set again.
+
+The server's live heap stays near 10 MB, but with V8's default young generation node kept about 200 MB resident on a
+synthetic 10-minute run (200 sessions, history paging, agent polling). The desktop shell therefore starts it with
+`--max-semi-space-size=4` (`child.rs` `NODE_HEAP_FLAG`): on the same run it holds about 90 MB, with the same history
+latency. `--optimize-for-size` saved about 10 MB more but made history requests about 1 ms slower, so it is not used.
 
 ## Module map
 

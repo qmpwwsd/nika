@@ -524,8 +524,9 @@ run `tmux send-keys` itself; `node` stays accepted because npm-installed Claude 
 appears in argv, env, logs, files or HTML; the shell injects it into the page with an `initialization_script` guarded
 by `location.origin`, and `public/api.js` copies it to a module constant and deletes the global (ADR 0002).
 
-Child process (desktop shell). Argv is fixed: `<node> <root>/bin/nika serve --app`, where `<root>` is the bundle's
-resource directory in release builds and the repository root in debug builds (never an env var). The environment is
+Child process (desktop shell). Argv is fixed: `<node> --max-semi-space-size=4 <root>/bin/nika serve --app` (the flag caps
+V8's young generation; architecture, Memory bounds), where `<root>` is the bundle's resource directory in release builds
+and the repository root in debug builds (never an env var). The environment is
 built from scratch (`env_clear`) and holds only: `PATH` (the node binary's directory, then
 `/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin`), `HOME`, `NIKA_APP=1` and, when set
 in the app's own environment, `CLAUDE_CONFIG_DIR`, `NIKA_CONFIG_DIR`, `XDG_CONFIG_HOME`, `XDG_STATE_HOME`,
