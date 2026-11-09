@@ -4,7 +4,8 @@ import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { MODEL_ID as SERVER_MODEL_ID } from '../src/ids.js';
 import { MODEL_CATALOG } from '../src/models.js';
-import { MODEL_ID, CUSTOM, MODEL_HINT, modelGroups, isCatalogId, fillModelSelect } from '../public/models-ui.js';
+import { defaults, effectiveModels } from '../src/store.js';
+import { MODEL_ID, CUSTOM, MODEL_HINT, ROLES, ROLE_LABEL, modelGroups, isCatalogId, modelLabel, fillModelSelect, fillRoleOverride, effectiveRoleModels } from '../public/models-ui.js';
 
 class FNode {
   constructor(tag, text = '') {
@@ -159,5 +160,121 @@ describe('fillModelSelect', () => {
     fillModelSelect(latest, [m('claude-a-1', '<b>x</b>', 'latest')], 'claude-a-1');
     assert.equal(groupsOf(latest)[0].kids[0].textContent, '<b>x</b> (claude-a-1)');
     assert.equal(groupsOf(latest)[0].kids[0].kids.every((k) => k.tag === '#text'), true);
+  });
+});
+
+describe('fillRoleOverride (the project\'s Models dialog)', () => {
+  const DEFAULT = 'claude-fable-5-1';
+  const first = (sel) => sel.kids[0];
+
+  test('(+) the first option is Use default (<catalog label>) with an empty value, and a null current selects it without Custom ID', () => {
+    const sel = new FNode('select');
+    assert.equal(fillRoleOverride(sel, MODEL_CATALOG, null, DEFAULT), false);
+    assert.equal(first(sel).tag, 'option');
+    assert.equal(first(sel).getAttribute('value'), '');
+    assert.equal(first(sel).textContent, 'Use default (Fable 5.1)');
+    assert.equal(sel.value, '');
+    assert.deepEqual(sel.kids.slice(1).map((k) => k.getAttribute('label') ?? `#${k.getAttribute('value')}`), ['Latest', 'Aliases', 'Older', `#${CUSTOM}`]);
+  });
+
+  test('(+) a catalog id is selected, an alias too; neither asks for the Custom ID field', () => {
+    const sel = new FNode('select');
+    assert.equal(fillRoleOverride(sel, MODEL_CATALOG, 'claude-opus-5-5', DEFAULT), false);
+    assert.equal(sel.value, 'claude-opus-5-5');
+    assert.equal(fillRoleOverride(sel, MODEL_CATALOG, 'sonnet[1m]', DEFAULT), false);
+    assert.equal(sel.value, 'sonnet[1m]');
+  });
+
+  test('(+) a default that is not in the catalog shows its id, an alias default its catalog label', () => {
+    const sel = new FNode('select');
+    fillRoleOverride(sel, MODEL_CATALOG, null, 'claude-private-9');
+    assert.equal(first(sel).textContent, 'Use default (claude-private-9)');
+    fillRoleOverride(sel, MODEL_CATALOG, null, 'opus');
+    assert.equal(first(sel).textContent, 'Use default (Opus (latest))');
+  });
+
+  test('(−) a current id that is not in the catalog selects Custom ID and says so (the caller fills the field)', () => {
+    const sel = new FNode('select');
+    assert.equal(fillRoleOverride(sel, MODEL_CATALOG, 'claude-private-9', DEFAULT), true);
+    assert.equal(sel.value, CUSTOM);
+  });
+
+  test('(−) without a catalog the select offers Use default and Custom ID only; null still selects Use default, and refilling replaces the options', () => {
+    const sel = new FNode('select');
+    for (const bad of [null, undefined, 'x', {}]) {
+      assert.equal(fillRoleOverride(sel, bad, null, DEFAULT), false, String(bad));
+      assert.deepEqual(sel.kids.map((k) => k.getAttribute('value')), ['', CUSTOM]);
+      assert.equal(sel.value, '');
+      assert.equal(first(sel).textContent, 'Use default (claude-fable-5-1)', 'no label to show: the id');
+    }
+    assert.equal(fillRoleOverride(sel, null, 'opus', DEFAULT), true, 'a saved id with no catalog opens as Custom ID');
+  });
+
+  test('(−) catalog text only ever lands in text nodes; an undefined or empty current is the default, not Custom ID', () => {
+    const sel = new FNode('select');
+    fillRoleOverride(sel, [m('claude-a-1', '<b>x</b>', 'latest')], null, 'claude-a-1');
+    assert.equal(first(sel).textContent, 'Use default (<b>x</b>)');
+    assert.equal(first(sel).kids.every((k) => k.tag === '#text'), true);
+    for (const empty of [undefined, '']) assert.equal(fillRoleOverride(sel, MODEL_CATALOG, empty, DEFAULT), false, JSON.stringify(empty));
+  });
+});
+
+describe('modelLabel', () => {
+  test('(+) the catalog label of an id, (−) null for an id that is not listed, a non-string or a missing catalog', () => {
+    assert.equal(modelLabel('claude-opus-5-5', MODEL_CATALOG), 'Opus 5.5');
+    assert.equal(modelLabel('opus[1m]', MODEL_CATALOG), 'Opus, 1M context');
+    for (const bad of ['claude-private-9', '', null, undefined, 5, '__proto__']) assert.equal(modelLabel(bad, MODEL_CATALOG), null, String(bad));
+    assert.equal(modelLabel('opus', null), null);
+  });
+});
+
+describe('ROLES', () => {
+  test('(+) the four roles in the order the page lists them, each with a label; (−) the same set as the server\'s defaults', () => {
+    assert.deepEqual(ROLES, ['orchestrator', 'reasoner', 'builder', 'scout']);
+    assert.deepEqual(ROLES.map((r) => ROLE_LABEL[r]), ['Orchestrator', 'Reasoner', 'Builder', 'Scout']);
+    assert.deepEqual(Object.keys(defaults().models), ROLES);
+  });
+});
+
+// One table, two implementations: the server's effectiveModels (src/store.js) and the page's effectiveRoleModels must agree on every case.
+const DEFAULTS = { orchestrator: 'claude-fable-5-1', reasoner: 'claude-opus-5-5', builder: 'claude-sonnet-5-5', scout: 'claude-haiku-5-5' };
+const KEY = '0123456789abcdef';
+const EFFECTIVE_CASES = [
+  ['no entry for the project: the defaults', {}, { ...DEFAULTS }],
+  ['one role overridden: it wins, the rest stay default', { models: { builder: 'claude-opus-5-5' } }, { ...DEFAULTS, builder: 'claude-opus-5-5' }],
+  ['all four overridden', { models: { orchestrator: 'opus', reasoner: 'sonnet[1m]', builder: 'haiku', scout: 'best' } }, { orchestrator: 'opus', reasoner: 'sonnet[1m]', builder: 'haiku', scout: 'best' }],
+  ['an entry with no models: the defaults', { plugins: ['a@demo-market'] }, { ...DEFAULTS }],
+  ['an override equal to the default changes nothing', { models: { scout: 'claude-haiku-5-5' } }, { ...DEFAULTS }],
+  ['a Custom ID outside the catalog is used as it is', { models: { scout: 'claude-private-9' } }, { ...DEFAULTS, scout: 'claude-private-9' }],
+];
+
+describe('effectiveRoleModels mirrors the server\'s effectiveModels', () => {
+  for (const [name, entry, want] of EFFECTIVE_CASES) {
+    test(`(+) ${name}`, () => {
+      const config = { models: { ...DEFAULTS }, perProject: Object.keys(entry).length ? { [KEY]: entry } : {} };
+      assert.deepEqual(effectiveModels(config, KEY), want, 'server');
+      assert.deepEqual(effectiveRoleModels(config, KEY), want, 'page');
+    });
+  }
+
+  test('(+) another project\'s override never reaches this one, and the settings object is not changed', () => {
+    const settings = { models: { ...DEFAULTS }, perProject: { fedcba9876543210: { models: { builder: 'opus' } } } };
+    const before = JSON.stringify(settings);
+    assert.deepEqual(effectiveRoleModels(settings, KEY), DEFAULTS);
+    assert.deepEqual(effectiveModels(settings, KEY), DEFAULTS);
+    assert.equal(JSON.stringify(settings), before);
+  });
+
+  test('(−) missing pieces never throw: no settings, no models, no perProject, an unknown or odd key', () => {
+    for (const bad of [null, undefined, {}, 'x', 5]) assert.deepEqual(effectiveRoleModels(bad, KEY), { orchestrator: null, reasoner: null, builder: null, scout: null }, String(bad));
+    assert.deepEqual(effectiveRoleModels({ models: DEFAULTS }, KEY), DEFAULTS, 'no perProject: the defaults');
+    assert.deepEqual(effectiveRoleModels({ perProject: { [KEY]: { models: { scout: 'haiku' } } } }, KEY), { orchestrator: null, reasoner: null, builder: null, scout: 'haiku' }, 'no defaults: only the override');
+    for (const key of ['__proto__', 'constructor', 'toString', '', undefined, null]) assert.deepEqual(effectiveRoleModels({ models: DEFAULTS, perProject: {} }, key), DEFAULTS, String(key));
+  });
+
+  test('(−) a role the project did not set is null, never undefined, and extra roles in the entry are not copied', () => {
+    const out = effectiveRoleModels({ models: { orchestrator: 'a-b-c' }, perProject: { [KEY]: { models: { helper: 'opus' } } } }, KEY);
+    assert.deepEqual(Object.keys(out), ROLES);
+    assert.equal(out.scout, null);
   });
 });

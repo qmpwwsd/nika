@@ -18,6 +18,18 @@ Orchestrator (desktop app):
 - API: `PUT` and `DELETE /api/app/projects/:key/orchestrator` are new; each project in `GET /api/app/projects` gains
   `orchestrator`; `POST /api/app/orchestrator/start` can answer `cleared: "gone"`. See `docs/contracts/api-app.md`.
 
+Models per project (desktop app):
+
+- Each project can use its own model for any of the four roles (Orchestrator, Reasoner, Builder, Scout). On the project page,
+  **Project setup** has a new **Models** block that lists the roles this project sets, and **Choose models…** opens a window
+  with one menu per role: **Use default** (the model from Settings) or a model from the list, or a Custom ID. Save is on
+  only while something changed.
+- nika uses these models when it starts or resumes the project's orchestrator, in the Roles table of `rules/orchestration.md`,
+  and in the spawn sheet's Roles list (marked "(this project)"). Sessions that are already running keep their model, and the
+  rules file changes only when you apply rules, so the toast after saving says so.
+- API: `PUT /api/app/projects/:key/config` takes exactly one of `{ plugins }` or `{ models }`, and `GET` returns both. See
+  `docs/contracts/api-app.md`.
+
 ## 0.3.4 — 2026-11-09
 
 Session window (desktop app):

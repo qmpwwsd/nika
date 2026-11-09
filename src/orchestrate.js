@@ -2,7 +2,7 @@
 // Leaf module: the router and the CLI call startOrchestrator() with injected deps; every subprocess goes through
 // ctx.exec (execFile, fixed argv arrays, never a shell). src/spawn.js reuses the helpers exported here.
 import crypto from 'node:crypto';
-import { loadConfig, setOrchestrator } from './store.js';
+import { loadConfig, setOrchestrator, effectiveModels } from './store.js';
 import { clean } from './text.js';
 import { PROJECT_KEY, UUID, PANE_ID, TMUX_SESSION, RC_PREFIX, RC_NAME, CLAUDE_COMMAND } from './ids.js';
 
@@ -90,8 +90,8 @@ export function pickState(project, id, hit) {
 /**
  * claude's own arguments for a project's orchestrator (everything after the binary): the one place that builds them. With
  * `resume` the saved session `sessionId` continues (`--resume`); otherwise `sessionId` names the new session (`--session-id`).
- * Throws EINVAL for an id that is not a UUID (it becomes one argv element and must never read as a flag) and for
- * bypassPermissions (rules constraint 12).
+ * `--model` is the project's own orchestrator model, else Settings' (`effectiveModels`). Throws EINVAL for an id that is not a
+ * UUID (it becomes one argv element and must never read as a flag) and for bypassPermissions (rules constraint 12).
  */
 export function launchArgv(config, project, { sessionId, resume = false }) {
   const invalid = (message) => Object.assign(new Error(message), { code: 'EINVAL' });
@@ -100,7 +100,7 @@ export function launchArgv(config, project, { sessionId, resume = false }) {
   const session = sessionNameFor(project);
   const rc = config.remoteControl.enabled ? reduceRc(config.remoteControl.prefix || session, project.key, true) : null;
   return [
-    resume ? '--resume' : '--session-id', sessionId, '--model', config.models.orchestrator, ...permissionFlags(config.permissionMode),
+    resume ? '--resume' : '--session-id', sessionId, '--model', effectiveModels(config, project.key).orchestrator, ...permissionFlags(config.permissionMode),
     '-n', session, ...(rc ? [`--remote-control=${rc}`] : []),
   ];
 }

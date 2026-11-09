@@ -594,6 +594,7 @@ Messages (exact copy):
 | Side sheet (spawn) | 480 × full height, right edge | title + project + close | count note · Cancel · Spawn agent |
 | Confirm (remove project) | 440 wide | title | Cancel · danger action |
 | Modal (Choose plugins, 0.3.4) | min(560, vw−32) × min(640, vh−32) | title + close (×) | Cancel · Save plugins (§3.15) |
+| Modal (Choose models, 0.4) | min(480, vw−32) | title + close (×) | Cancel · Save models (§3.15) |
 
 States: D (open, scrim `--scrim`), L (primary shows spinner; Esc and Cancel are disabled while a write is in flight; the `cancel` event is prevented), E (inline alert at the top of the body, focus moves to it), success (body replaced by a result list + Done, which gets focus).
 
@@ -723,7 +724,7 @@ driven by `GET /api/app/me` `appCopy` (read at load and after each action). One 
 - Icon: `i-apps` (a 2×2 grid of rounded squares, 16 px, same stroke as the set). Every string is static copy plus the
   server's version number (rendered with `textContent`).
 
-### 3.15 Project setup card and Choose plugins dialog (0.3.4)
+### 3.15 Project setup card, Choose plugins dialog (0.3.4) and Models (0.4)
 
 Per-project settings live on the project page, not in Settings (ADR 0012). Settings keeps only the defaults for every project.
 
@@ -755,6 +756,38 @@ scrolls); a help line; footer Cancel · **Save plugins**.
   with no request. `[]` means "leave `enabledPlugins` alone". Cancel, Esc and × discard silently.
 - Keys: Tab order × → alert → filter → boxes (Space) → Clear filter → Cancel → Save. Esc in a filter with text clears it, else
   closes. Mod+Enter saves. Focus returns to **Choose plugins…**.
+
+**(0.4) Models block and Choose models dialog.** Under the Plugins block the card has a **Models** block (same `h3` shape, with
+"<n> set here" when n > 0): a `dl.kv` (`data-fk="setup-models"`) listing only the roles this project sets, in the order
+Orchestrator, Reasoner, Builder, Scout; each `dd` shows the catalog label ("Opus 5.5") with the id in its `title`, and a Custom ID
+in mono, wrapping anywhere. With none set: "All roles use the defaults from Settings."; before Settings has loaded: "Not loaded
+yet." Then "Used when nika starts this project's orchestrator or spawns its agents." and **Choose models…**
+(`button.btn`, `aria-haspopup="dialog"`, `data-fk="choose-models"`).
+
+**Choose models dialog** (static `<dialog id="dlg-models" class="dlg-models">`, no `<form>`, width min(480, 100vw−32); only the
+body scrolls): header "Models for <project>" (name cut at 32) and ×; "Used when nika starts this project's orchestrator or
+spawns its agents. Running sessions keep their model."; an alert slot; four `.field`s (label, `select#md-model-<role>`, a
+Custom ID input and its error line); "Defaults are in Settings."; footer `span#md-dirty` · Cancel · (Retry) · **Save models**.
+- Each select is `fillRoleOverride`: **Use default (<Settings model's label>)** first, then the catalog groups, then Custom ID.
+  A saved id the catalog lacks opens as Custom ID with its field filled. The Custom ID field checks `MODEL_ID` on blur and on
+  Save, with the Settings copy (`MODEL_HINT`).
+- Open: focus the title while loading, then the Orchestrator select. `loadSettings()`, `loadModels()` and
+  `GET /api/app/projects/:key/config` run together.
+- Save is off until the draft differs from what was loaded, and off again when changed back; the footer says "No changes yet."
+  or "<n> role changed" / "<n> roles changed". Enter in a Custom ID field saves only while Save is on.
+- States: loading (4 skeleton lines, Save off) · load error (alert "The model settings could not be loaded. Check that nika is
+  still running, then try again."; footer Cancel · Retry) · no catalog (a help line "The model list did not load. Choose Use
+  default, or type a model ID."; each select offers Use default and Custom ID) · invalid custom (field error; on Save the alert
+  "<n> field(s) need a fix before saving." and focus on the first) · saving (Save "Saving…", Cancel, ×, selects and fields off, dialog
+  busy) · save error (alert, draft kept, focus on the alert).
+- Save sends `PUT /api/app/projects/:key/config` `{ "models": { "orchestrator", "reasoner", "builder", "scout" } }`, each an id or
+  `null` (= default), and the page copy (`state.settings.perProject[key].models`) follows. Toast "Models saved for <name>.
+  Sessions nika starts from now on use them."; when the project's rules state is `nika` or `outdated` it adds "Apply rules to
+  update the models in rules/orchestration.md." (the rendered file changes only on Apply).
+- The spawn sheet's Roles group lists the project's effective models; an overridden role reads "Builder · claude-opus-5-5 (this
+  project)". The page computes them with `effectiveRoleModels`, which mirrors the server's `effectiveModels`.
+- Keys: Tab order × → alert → each select / Custom ID field → Cancel → Retry → Save. Esc, Cancel and × discard silently. Focus
+  returns to **Choose models…**.
 
 **Settings save bar.** The bar (Save · Discard) is hidden until the form differs from what was loaded, and hidden again when
 the values are put back. Showing it announces "Unsaved changes. Save or discard them at the bottom." Discard repopulates the

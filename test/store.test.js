@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { configDir, stateDir, reportsDir, backupsDir } from '../src/paths.js';
-import { defaults, loadConfig, saveConfig, addProject, removeProject, listProjects, updateSettings, getProjectConfig, updateProjectConfig, getOrchestrator, setOrchestrator, keyFor } from '../src/store.js';
+import { defaults, loadConfig, saveConfig, addProject, removeProject, listProjects, updateSettings, getProjectConfig, updateProjectConfig, getOrchestrator, setOrchestrator, effectiveModels, keyFor } from '../src/store.js';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nika-store-'));
 after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -330,6 +330,7 @@ describe('mutation queue', () => {
 
 describe('per-project config (0.3.4: perProject[key].plugins)', () => {
   const KEY = '0123456789abcdef';
+  const NO_MODELS = { orchestrator: null, reasoner: null, builder: null, scout: null };
   const cfgFile = (env) => { fs.mkdirSync(configDir(env), { recursive: true, mode: 0o700 }); return path.join(configDir(env), 'config.json'); };
   const project = async (env, name = 'repo') => {
     const dir = path.join(root, env.NIKA_CONFIG_DIR.split(path.sep).at(-2), name);
@@ -377,15 +378,15 @@ describe('per-project config (0.3.4: perProject[key].plugins)', () => {
   test('(+) get, update (deduplicated, saved), replace and remove through [] (the entry goes when it becomes empty)', async () => {
     const env = fresh('pp4');
     const p = await project(env);
-    assert.deepEqual(await getProjectConfig(p.key, env), { plugins: [] });
-    assert.deepEqual(await updateProjectConfig(p.key, { plugins: ['b@demo-market', 'a@demo-market', 'b@demo-market'] }, env), { plugins: ['b@demo-market', 'a@demo-market'] });
-    assert.deepEqual(await getProjectConfig(p.key, env), { plugins: ['b@demo-market', 'a@demo-market'] });
+    assert.deepEqual(await getProjectConfig(p.key, env), { plugins: [], models: NO_MODELS });
+    assert.deepEqual(await updateProjectConfig(p.key, { plugins: ['b@demo-market', 'a@demo-market', 'b@demo-market'] }, env), { plugins: ['b@demo-market', 'a@demo-market'], models: NO_MODELS });
+    assert.deepEqual(await getProjectConfig(p.key, env), { plugins: ['b@demo-market', 'a@demo-market'], models: NO_MODELS });
     assert.deepEqual((await loadConfig(env)).config.perProject, { [p.key]: { plugins: ['b@demo-market', 'a@demo-market'] } });
     assert.equal(fs.statSync(cfgFile(env)).mode & 0o777, 0o600);
-    assert.deepEqual(await updateProjectConfig(p.key, { plugins: ['c@demo-market'] }, env), { plugins: ['c@demo-market'] });
-    assert.deepEqual(await updateProjectConfig(p.key, { plugins: [] }, env), { plugins: [] });
+    assert.deepEqual(await updateProjectConfig(p.key, { plugins: ['c@demo-market'] }, env), { plugins: ['c@demo-market'], models: NO_MODELS });
+    assert.deepEqual(await updateProjectConfig(p.key, { plugins: [] }, env), { plugins: [], models: NO_MODELS });
     assert.deepEqual((await loadConfig(env)).config.perProject, {});
-    assert.deepEqual(await getProjectConfig(p.key, env), { plugins: [] });
+    assert.deepEqual(await getProjectConfig(p.key, env), { plugins: [], models: NO_MODELS });
   });
 
   test('(+) a project keeps its own list; removeProject deletes it; updateSettings keeps perProject untouched', async () => {
@@ -437,10 +438,10 @@ describe('per-project config (0.3.4: perProject[key].plugins)', () => {
     assert.equal((await getProjectConfig(p.key, env)).plugins.length, 200, 'the saved list is untouched by refused updates');
   });
 
-  test('(−) a patch with another key, no key, extra keys, a non-object or an own __proto__ is EINVAL', async () => {
+  test('(−) a patch with another key (not plugins, not models), no key, extra keys, a non-object or an own __proto__ is EINVAL', async () => {
     const env = fresh('pp10');
     const p = await project(env);
-    for (const patch of [{ models: { scout: 'haiku' } }, {}, { plugins: [], models: {} }, [], 'plugins', null, 5, JSON.parse('{"__proto__":{"plugins":["a@demo-market"]}}'), JSON.parse('{"plugins":[],"__proto__":[]}'), Object.create({ plugins: [] })]) {
+    for (const patch of [{ limits: { maxAgents: 2 } }, {}, { plugins: [], models: {} }, [], 'plugins', null, 5, JSON.parse('{"__proto__":{"plugins":["a@demo-market"]}}'), JSON.parse('{"plugins":[],"__proto__":[]}'), Object.create({ plugins: [] })]) {
       await assert.rejects(updateProjectConfig(p.key, patch, env), { code: 'EINVAL' }, JSON.stringify(patch));
     }
     assert.equal(({}).plugins, undefined);
@@ -456,10 +457,10 @@ describe('per-project config (0.3.4: perProject[key].plugins)', () => {
 
   test('(+) an empty list is a valid "none": it loads as no entry and no warning, alone or beside other keys of the entry', async () => {
     const env = fresh('pp13');
-    fs.writeFileSync(cfgFile(env), JSON.stringify({ perProject: { [KEY]: { plugins: [] }, fedcba9876543210: { plugins: [], models: { scout: 'haiku' } }, '0000000000000000': {} } }));
+    fs.writeFileSync(cfgFile(env), JSON.stringify({ perProject: { [KEY]: { plugins: [] }, fedcba9876543210: { plugins: [], colour: 'red' }, '0000000000000000': {} } }));
     const r = await loadConfig(env);
     assert.deepEqual(r.config.perProject, {});
-    assert.deepEqual(r.warnings, ['unknown key perProject.fedcba9876543210.models dropped']);
+    assert.deepEqual(r.warnings, ['unknown key perProject.fedcba9876543210.colour dropped']);
     await updateSettings({ limits: { maxAgents: 2 } }, env);
     assert.deepEqual(JSON.parse(fs.readFileSync(cfgFile(env), 'utf8')).perProject, {}, 'nothing empty is written back');
   });
@@ -468,7 +469,7 @@ describe('per-project config (0.3.4: perProject[key].plugins)', () => {
     const env = fresh('pp12');
     fs.writeFileSync(cfgFile(env), JSON.stringify({
       perProject: {
-        [KEY]: { plugins: ['ok@demo-market'], models: { scout: 'haiku' } },
+        [KEY]: { plugins: ['ok@demo-market'], colour: 'red' },
         fedcba9876543210: { plugins: [['a@demo-market']] },
         '0000000000000000': { plugins: Array.from({ length: 201 }, (_, i) => `p${i}@demo-market`) },
         '1111111111111111': 'a@demo-market',
@@ -480,7 +481,7 @@ describe('per-project config (0.3.4: perProject[key].plugins)', () => {
     const r = await loadConfig(env);
     assert.deepEqual(r.config.perProject, { [KEY]: { plugins: ['ok@demo-market'] } }, 'an empty list is "none": no entry');
     assert.equal(r.warnings.length, 6, r.warnings.join('\n'));
-    assert.ok(r.warnings.some((w) => /unknown key perProject\.0123456789abcdef\.models/.test(w)), r.warnings.join('\n'));
+    assert.ok(r.warnings.some((w) => /unknown key perProject\.0123456789abcdef\.colour/.test(w)), r.warnings.join('\n'));
   });
 });
 
@@ -616,5 +617,153 @@ describe('per-project orchestrator pick (0.4: perProject[key].orchestratorSessio
     await assert.rejects(updateProjectConfig(p.key, { orchestratorSessionId: ID }, env), { code: 'EINVAL' });
     await assert.rejects(updateSettings({ perProject: { [p.key]: { orchestratorSessionId: ID } } }, env), { code: 'EINVAL' });
     assert.equal(await getOrchestrator(p.key, env), null);
+  });
+});
+
+describe('per-project models (0.4: perProject[key].models)', () => {
+  const KEY = '0123456789abcdef';
+  const ID = '11111111-1111-4111-8111-111111111111';
+  const NONE = { orchestrator: null, reasoner: null, builder: null, scout: null };
+  const cfgFile = (env) => { fs.mkdirSync(configDir(env), { recursive: true, mode: 0o700 }); return path.join(configDir(env), 'config.json'); };
+  const project = async (env, name = 'repo') => {
+    const dir = path.join(root, env.NIKA_CONFIG_DIR.split(path.sep).at(-2), name);
+    fs.mkdirSync(dir, { recursive: true });
+    return addProject(dir, env);
+  };
+  const onDisk = (env) => JSON.parse(fs.readFileSync(cfgFile(env), 'utf8')).perProject;
+
+  test('(+) get answers { plugins, models } with all four roles null for a project without an entry', async () => {
+    const env = fresh('pm1');
+    const p = await project(env);
+    assert.deepEqual(await getProjectConfig(p.key, env), { plugins: [], models: NONE });
+  });
+
+  test('(+) set, replace and clear roles: only non-null roles are stored (in role order, 0600); the answer has all four keys', async () => {
+    const env = fresh('pm2');
+    const p = await project(env);
+    const set = await updateProjectConfig(p.key, { models: { scout: 'haiku', builder: 'claude-opus-5-5', reasoner: null, orchestrator: null } }, env);
+    assert.deepEqual(set, { plugins: [], models: { orchestrator: null, reasoner: null, builder: 'claude-opus-5-5', scout: 'haiku' } });
+    assert.deepEqual(await getProjectConfig(p.key, env), set);
+    assert.deepEqual(onDisk(env), { [p.key]: { models: { builder: 'claude-opus-5-5', scout: 'haiku' } } });
+    assert.equal(fs.statSync(cfgFile(env)).mode & 0o777, 0o600);
+    const next = await updateProjectConfig(p.key, { models: { orchestrator: 'opus[1m]', reasoner: null, builder: null, scout: 'haiku' } }, env);
+    assert.deepEqual(next.models, { orchestrator: 'opus[1m]', reasoner: null, builder: null, scout: 'haiku' }, 'a Custom ID that matches MODEL_ID is stored, even outside the catalog');
+    assert.deepEqual(onDisk(env), { [p.key]: { models: { orchestrator: 'opus[1m]', scout: 'haiku' } } });
+  });
+
+  test('(+) all four null removes the models, and the entry when nothing else is left', async () => {
+    const env = fresh('pm3');
+    const p = await project(env);
+    await updateProjectConfig(p.key, { models: { ...NONE, scout: 'haiku' } }, env);
+    assert.deepEqual(await updateProjectConfig(p.key, { models: NONE }, env), { plugins: [], models: NONE });
+    assert.deepEqual(onDisk(env), {});
+    assert.deepEqual((await loadConfig(env)).config.perProject, {});
+  });
+
+  test('(+) models, plugins and the orchestrator pick do not overwrite each other', async () => {
+    const env = fresh('pm4');
+    const p = await project(env);
+    await updateProjectConfig(p.key, { plugins: ['a@demo-market'] }, env);
+    await setOrchestrator(p.key, ID, env);
+    await updateProjectConfig(p.key, { models: { ...NONE, builder: 'sonnet' } }, env);
+    assert.deepEqual(onDisk(env)[p.key], { plugins: ['a@demo-market'], orchestratorSessionId: ID, models: { builder: 'sonnet' } });
+    assert.deepEqual(await updateProjectConfig(p.key, { plugins: [] }, env), { plugins: [], models: { ...NONE, builder: 'sonnet' } }, 'a plugins save keeps the models');
+    assert.deepEqual(onDisk(env)[p.key], { orchestratorSessionId: ID, models: { builder: 'sonnet' } });
+    await updateProjectConfig(p.key, { models: NONE }, env);
+    assert.deepEqual(onDisk(env), { [p.key]: { orchestratorSessionId: ID } }, 'a models save keeps the pick');
+    await updateProjectConfig(p.key, { models: { ...NONE, scout: 'haiku' } }, env);
+    await setOrchestrator(p.key, null, env);
+    assert.deepEqual(onDisk(env), { [p.key]: { models: { scout: 'haiku' } } }, 'forgetting the pick keeps the models');
+  });
+
+  test('(+) an entry that holds only models survives load and save, with no warning; removeProject deletes it', async () => {
+    const env = fresh('pm5');
+    fs.writeFileSync(cfgFile(env), JSON.stringify({ perProject: { [KEY]: { models: { scout: 'haiku', orchestrator: 'claude-opus-5-5' } } } }));
+    const r = await loadConfig(env);
+    assert.deepEqual(r.warnings, []);
+    assert.deepEqual(r.config.perProject, { [KEY]: { models: { scout: 'haiku', orchestrator: 'claude-opus-5-5' } } });
+    await updateSettings({ limits: { maxAgents: 2 } }, env);
+    assert.deepEqual(onDisk(env), r.config.perProject, 'written back unchanged');
+    const p = await project(fresh('pm5b'));
+    const env2 = { NIKA_CONFIG_DIR: path.join(root, 'pm5b', 'cfg'), XDG_STATE_HOME: path.join(root, 'pm5b', 'state') };
+    await updateProjectConfig(p.key, { models: { ...NONE, scout: 'haiku' } }, env2);
+    assert.equal(await removeProject(p.key, env2), true);
+    assert.deepEqual((await loadConfig(env2)).config.perProject, {});
+  });
+
+  test('(+) effectiveModels: the project\'s id wins per role, the Settings default fills the rest; the config is not changed', async () => {
+    const env = fresh('pm6');
+    const p = await project(env);
+    const q = await project(env, 'other');
+    await updateProjectConfig(p.key, { models: { ...NONE, builder: 'claude-opus-5-5', scout: 'sonnet[1m]' } }, env);
+    const { config } = await loadConfig(env);
+    const before = JSON.stringify(config);
+    assert.deepEqual(effectiveModels(config, p.key), { orchestrator: 'claude-fable-5-1', reasoner: 'claude-opus-5-5', builder: 'claude-opus-5-5', scout: 'sonnet[1m]' });
+    assert.deepEqual(effectiveModels(config, q.key), config.models, 'a project without an entry uses the defaults');
+    assert.deepEqual(effectiveModels(config, KEY), config.models, 'so does a key that is not registered');
+    assert.equal(JSON.stringify(config), before);
+    assert.deepEqual(effectiveModels({ models: config.models }, p.key), config.models, 'a config without perProject is the defaults');
+  });
+
+  test('(−) a hand-edited file: an unknown role and a bad id drop only that role, a non-object drops only models; each with a warning', async () => {
+    const env = fresh('pm7');
+    fs.writeFileSync(cfgFile(env), JSON.stringify({
+      perProject: {
+        [KEY]: { plugins: ['ok@demo-market'], models: { builder: 'claude-opus-5-5', helper: 'haiku', scout: 'not a model', reasoner: null, orchestrator: 5 } },
+        fedcba9876543210: { models: ['haiku'] },
+        '0000000000000000': { models: 'haiku', orchestratorSessionId: ID },
+        '1111111111111111': { models: { scout: '--model' } },
+        '2222222222222222': JSON.parse('{"models":{"__proto__":"haiku","scout":"haiku"}}'),
+      },
+    }));
+    const r = await loadConfig(env);
+    assert.deepEqual(r.config.perProject, {
+      [KEY]: { plugins: ['ok@demo-market'], models: { builder: 'claude-opus-5-5' } },
+      '0000000000000000': { orchestratorSessionId: ID },
+      '2222222222222222': { models: { scout: 'haiku' } },
+    });
+    const w = r.warnings.join('\n');
+    assert.match(w, new RegExp(`unknown key perProject\\.${KEY}\\.models\\.helper dropped`));
+    for (const role of ['scout', 'reasoner', 'orchestrator']) assert.match(w, new RegExp(`perProject\\.${KEY}\\.models\\.${role} invalid, dropped`), role);
+    assert.match(w, /perProject\.fedcba9876543210\.models invalid, dropped/);
+    assert.match(w, /perProject\.0000000000000000\.models invalid, dropped/);
+    assert.match(w, /perProject\.1111111111111111\.models\.scout invalid, dropped/);
+    assert.match(w, /perProject\.2222222222222222\.models\.__proto__/);
+    assert.equal(({}).scout, undefined);
+  });
+
+  test('(−) a patch with both plugins and models, with neither, or with a stray key is EINVAL and nothing is written', async () => {
+    const env = fresh('pm8');
+    const p = await project(env);
+    const saved = fs.readFileSync(cfgFile(env), 'utf8');
+    for (const patch of [{ plugins: ['a@demo-market'], models: NONE }, {}, { models: NONE, limits: {} }, { model: NONE }, JSON.parse('{"__proto__":{"models":{}}}'), Object.create({ models: NONE })]) {
+      await assert.rejects(updateProjectConfig(p.key, patch, env), { code: 'EINVAL' }, JSON.stringify(patch));
+    }
+    assert.equal(fs.readFileSync(cfgFile(env), 'utf8'), saved, 'a refused update writes nothing');
+  });
+
+  test('(−) models must be a plain object with exactly the four role keys, each a MODEL_ID or null', async () => {
+    const env = fresh('pm9');
+    const p = await project(env);
+    await updateProjectConfig(p.key, { models: { ...NONE, scout: 'haiku' } }, env);
+    const saved = fs.readFileSync(cfgFile(env), 'utf8');
+    const bad = [
+      {}, { scout: 'haiku' }, { orchestrator: null, reasoner: null, builder: null }, // roles missing
+      { ...NONE, helper: 'haiku' }, JSON.parse('{"orchestrator":null,"reasoner":null,"builder":null,"scout":null,"__proto__":null}'), // a fifth key
+      { ...NONE, scout: undefined }, { ...NONE, scout: '' }, { ...NONE, scout: 5 }, { ...NONE, scout: true }, { ...NONE, scout: ['haiku'] }, // not an id and not null
+      { ...NONE, scout: 'Haiku' }, { ...NONE, scout: 'haiku ' }, { ...NONE, scout: 'haiku\n' }, { ...NONE, scout: '--model' }, { ...NONE, scout: 'claude-' }, { ...NONE, scout: `claude-${'a'.repeat(61)}` }, { ...NONE, scout: 'gpt-5' }, // MODEL_ID says no
+      null, 'haiku', 5, [], [null, null, null, null],
+    ];
+    for (const models of bad) await assert.rejects(updateProjectConfig(p.key, { models }, env), { code: 'EINVAL' }, JSON.stringify(models));
+    assert.equal(fs.readFileSync(cfgFile(env), 'utf8'), saved, 'the saved models are untouched by refused updates');
+  });
+
+  test('(−) a key that is not a registered project is ENOENT and nothing is written; a bad key is EINVAL', async () => {
+    const env = fresh('pm10');
+    await assert.rejects(updateProjectConfig(KEY, { models: { ...NONE, scout: 'haiku' } }, env), { code: 'ENOENT' });
+    assert.equal(fs.existsSync(cfgFile(env)), false);
+    for (const key of ['', 'short', '0123456789ABCDEF', '__proto__', 5, null, undefined]) {
+      await assert.rejects(updateProjectConfig(key, { models: NONE }, env), { code: 'EINVAL' }, String(key));
+    }
   });
 });

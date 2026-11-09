@@ -34,7 +34,7 @@ error (`400 invalid`, message starts with `template:`), so a literal `{{` cannot
 
 | Placeholder | Value |
 |---|---|
-| `{{models.orchestrator}}` `{{models.reasoner}}` `{{models.builder}}` `{{models.scout}}` | `models.*` |
+| `{{models.orchestrator}}` `{{models.reasoner}}` `{{models.builder}}` `{{models.scout}}` | the project's own model for the role (Choose models… on the project page), else `models.*` from Settings |
 | `{{panePlacement}}` | `beside` or `under-last` |
 | `{{limits.maxAgents}}` | `limits.maxAgents` |
 | `{{permissionMode}}` | `permissionMode` (`default` means no `--permission-mode` flag) |

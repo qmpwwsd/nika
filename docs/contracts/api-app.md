@@ -147,18 +147,30 @@ with `perProject` is `400` ("per-project settings are saved on the project page"
 nothing else, so it can never overwrite a project's saved choices.
 
 `Settings` = the `config.json` schema (§6) without `projects`. It does include `perProject` (read only here), so a page can
-show a project's saved plugins without a second request.
+show a project's saved plugins and models without a second request.
 
 ### `GET|PUT /api/app/projects/:key/config` (PUT body ≤ 16 KB, `CAP.settings`)
-One project's own settings, saved on its page (0.3.4). `:key` must match `^[a-z0-9]{16}$`, else `400 invalid`; a key that is
-not a registered project is `404 not_found`.
-- `GET` → `200 { "plugins": [ "<PLUGIN_NAME>", … ] }` (the names to turn on; `[]` when none).
-- `PUT` body `{ "plugins": [ "<PLUGIN_NAME>", … ] }` and no other key → `200 { "plugins": [ … ] }` (as saved, repeats removed).
-  `[]` removes the list (and the project's entry when nothing else is left): `enabledPlugins` is then left as it is
-  when rules are applied. Each name must be installed now (the names from `/api/app/plugins`) **or already saved for this
-  project** (so a plugin removed since can still be unticked); any other name is `400 invalid` naming it. A body that is
-  not that shape, more than 200 names, or a name that is not a `PLUGIN_NAME` is `400 invalid`; non-JSON is `415`, a body over
-  16 KB is `413`.
+One project's own settings, saved on its page (0.3.4; models 0.4). `:key` must match `^[a-z0-9]{16}$`, else `400 invalid`; a key
+that is not a registered project is `404 not_found`.
+- `GET` → `200 { "plugins": [ "<PLUGIN_NAME>", … ], "models": { "orchestrator": <id|null>, "reasoner": <id|null>, "builder": <id|null>, "scout": <id|null> } }`.
+  `plugins` are the names to turn on (`[]` when none). `models` always has the four role keys: the project's own `MODEL_ID`, or
+  `null` for "use the default from Settings" (C5).
+- `PUT` takes **exactly one** of `{ "plugins": [ … ] }` or `{ "models": { … } }`, so the plugins dialog and the models dialog
+  never overwrite each other. Two keys, an unknown key or neither is `400 invalid`. The answer is `200` with the project's new
+  `{ plugins, models }` (the `GET` shape), whichever key was sent; the other one is left as it was.
+  - `{ "plugins": [ "<PLUGIN_NAME>", … ] }`: `[]` removes the list (and the project's entry when nothing else is left):
+    `enabledPlugins` is then left as it is when rules are applied. Each name must be installed now (the names from
+    `/api/app/plugins`) **or already saved for this project** (so a plugin removed since can still be unticked); any other name
+    is `400 invalid` naming it. More than 200 names or a name that is not a `PLUGIN_NAME` is `400 invalid`.
+  - `{ "models": { "orchestrator", "reasoner", "builder", "scout" } }`: all four keys, each a `MODEL_ID` string or `null` (= use
+    the default). A missing or extra role, a non-object, or an id that does not match `MODEL_ID` is `400 invalid`. An id need not
+    be in the catalog (`GET /api/app/models`): a Custom ID is allowed. `null` removes that role; four nulls remove `models`
+    (and the entry when nothing else is left). Only non-null roles are stored.
+  - Non-JSON is `415`, a body over 16 KB is `413`.
+The effective model of a role is the project's id where set, else `models.<role>` from Settings (`effectiveModels` in
+`src/store.js`). It is what `nika` passes to `--model` when it starts the project's orchestrator (fresh start and resume) and
+what the rules file's Roles table lists. Sessions already running keep their model. `nika spawn` keeps its explicit `<model>`
+argument.
 The route reads and writes only this project's entry, in the store's one serial queue, so two pages saving different
 projects (or Settings and a project page) cannot overwrite each other.
 
@@ -627,7 +639,7 @@ warning in `loadConfig().warnings`; a tampered or unreadable file never throws):
   "permissionMode": "default",
   "panePlacement": "beside",
   "limits": { "maxAgents": 3 },
-  "perProject": { "<PROJECT_KEY>": { "plugins": [ "<PLUGIN_NAME>" ] } },
+  "perProject": { "<PROJECT_KEY>": { "plugins": [ "<PLUGIN_NAME>" ], "orchestratorSessionId": "<UUID>", "models": { "<role>": "<MODEL_ID>" } } },
   "projects": [ { "key": "<PROJECT_KEY>", "dir": "<abs realpath>", "name": "<basename>", "addedAt": "<ISO>" } ],
   "rules": { "localTemplate": null },
   "ui": { "theme": "system", "singleKeyShortcuts": true }
@@ -638,10 +650,13 @@ warning in `loadConfig().warnings`; a tampered or unreadable file never throws):
 §4.6). Mod+/ always does.
 Field rules: `models.*` `MODEL_ID`; `remoteControl.prefix` `""` (= project name) or `RC_PREFIX`; `permissionMode` ∈
 `PERMISSION_MODES`; `panePlacement` ∈ `PANE_PLACEMENTS`; `limits.maxAgents` 1–8 (there is no turn limit: Claude Code
-has no `--max-turns` for interactive sessions); `perProject` keys are `PROJECT_KEY`s and each entry holds only `plugins`
-(≤ 200 names, deduplicated; a bad key, entry or list drops that entry with a warning, and any other inner key is dropped with
-a warning: 0.4 adds more; an empty `plugins` list, and an entry left empty, are "none": dropped on load without a warning, so
-`[]` and "no entry" are the same thing), written only by `PUT /api/app/projects/:key/config`, which checks the project is registered;
+has no `--max-turns` for interactive sessions); `perProject` keys are `PROJECT_KEY`s and each entry holds `plugins` (≤ 200 names, deduplicated), `orchestratorSessionId` (a
+lowercase UUID) and `models` (a partial map of the roles `orchestrator`, `reasoner`, `builder`, `scout` to a `MODEL_ID`; a role
+that is not set uses `models.*`). A bad key or an entry that is not an object drops that entry with a warning; a bad plugin list, a
+bad id or a `models` that is not an object drops just that field; an unknown role or a bad model id drops just that role; any
+other inner key is dropped, each with a warning. An empty `plugins` list, an empty `models` map, and an entry left empty are
+"none": dropped on load without a warning, so `[]` and "no entry" are the same thing. Written only by `PUT
+/api/app/projects/:key/config` (and `…/orchestrator` for the id), which check the project is registered;
 `projects` ≤ 100 entries, `key` must equal `keyFor(dir)`;
 `rules.localTemplate` `null` or a file name `^[A-Za-z0-9_-]{1,64}\.md$` under `templates/`. Store mutations in one
 process are serialised (one promise queue in `src/store.js`); across processes the last atomic rename wins.
@@ -660,9 +675,11 @@ plugins untouched; a project with no `perProject[key].plugins` list leaves `enab
 Store API: `loadConfig(env) → { config, warnings, file }`, `saveConfig(config, env)` (re-validates, throws `EINVAL`),
 `addProject(dir, env)`, `removeProject(key, env)` (also drops the project's `perProject` entry), `listProjects(env)`,
 `updateSettings(patch, env)` (throws `EINVAL`, never accepts `projects`, `perProject` or `bypassPermissions`),
-`getProjectConfig(key, env) → { plugins }` (`EINVAL` on a bad key), `updateProjectConfig(key, { plugins }, env)` (`EINVAL` on a
-bad key or patch: the patch must be a plain object whose only own key is `plugins`; `ENOENT` for a project that is not
-registered; `[]` removes the list), `keyFor(realDir)`.
+`getProjectConfig(key, env) → { plugins, models }` (`EINVAL` on a bad key; `models` has the four roles, each an id or `null`),
+`updateProjectConfig(key, patch, env)` (the patch is a plain object whose only own key is `plugins` or `models`, else `EINVAL`;
+`models` must have exactly the four roles, each a `MODEL_ID` or `null`; `ENOENT` for a project that is not registered; `[]` and
+four nulls remove their field; returns the `getProjectConfig` shape), `effectiveModels(config, key)` (pure: the project's id per
+role, else `config.models`), `keyFor(realDir)`.
 
 Write API (`src/fwrite.js`): `ensureDir(dir, mode = 0o700)`, `writeAtomic(dir, name, content, { mode = 0o600, root })`,
 `checkComponents(root, relPath) → { dir, name, abs }`, `backupFile(srcAbs, backupRootAbs, relPath)`,

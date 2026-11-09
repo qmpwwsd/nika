@@ -8,7 +8,9 @@ import {
 } from './ui.js';
 import { parseModes, modesAfter } from './modes.js';
 import { copyBanner, copyErrorText, copyToast } from './app-copy.js';
-import { CUSTOM, MODEL_ID, MODEL_HINT, fillModelSelect } from './models-ui.js';
+import {
+  CUSTOM, MODEL_ID, MODEL_HINT, ROLES, ROLE_LABEL, modelLabel, fillModelSelect, fillRoleOverride, effectiveRoleModels,
+} from './models-ui.js';
 import { buildGroups, agentNodes, swap, interacting, render } from './app.js';
 import { sidebarModel, orchState, savedPick, otherRunning, roleTag } from './dash-model.js';
 import { pluginView, pluginSave, sortIds, countText, filterNote } from './plugin-view.js';
@@ -413,7 +415,7 @@ function renderProject(force) {
   const key = state.route.key;
   const p = state.projects?.find((x) => x.key === key) ?? null;
   const g = buildGroups().find((x) => x.project?.key === key) ?? null;
-  const sig = JSON.stringify([p, g?.agents, state.modes.map, state.settings, state.plugins, state.me?.tmux, state.me?.claude, state.error, state.showEnded, [...state.open], [...state.expanded], key]);
+  const sig = JSON.stringify([p, g?.agents, state.modes.map, state.settings, state.plugins, state.models, state.me?.tmux, state.me?.claude, state.error, state.showEnded, [...state.open], [...state.expanded], key]);
   if (!force && (sig === projSig || interacting())) return;
   projSig = sig;
   const body = $('#proj-body');
@@ -464,6 +466,12 @@ function setupCards(p, g) {
   const picked = sortIds(state.settings?.perProject?.[p.key]?.plugins ?? []);
   const lim = limitInfo(g);
   const s = state.settings;
+  const own = s?.perProject?.[p.key]?.models ?? {};
+  const set = ROLES.filter((r) => own[r]); // only the roles this project sets; the rest use Settings
+  const modelRow = (r, id) => {
+    const label = modelLabel(id, state.models);
+    return [h('dt', { text: ROLE_LABEL[r] }), h('dd', { class: label ? null : 'mono', title: id, text: label ?? id })];
+  };
   const chip = (id) => {
     const gone = Array.isArray(state.plugins) && !state.plugins.includes(id);
     return h('li', { class: `chip${gone ? ' missing' : ''}` }, gone ? [icon('warn'), id, ' (not installed)'] : id);
@@ -486,7 +494,13 @@ function setupCards(p, g) {
         : h('p', { class: 'muted', text: 'No plugins chosen. Agents use only what the project already enables.' }),
       picked.length > CHIPS_MAX ? h('p', { class: 'help', 'data-fk': 'setup-more', text: `+${picked.length - CHIPS_MAX} more` }) : null,
       h('p', { class: 'muted', text: 'Written into .claude/settings.local.json when you apply rules.' }),
-      h('div', null, h('button', { type: 'button', class: 'btn', 'aria-haspopup': 'dialog', 'data-fk': 'choose-plugins', onclick: () => openPlugins(p), text: 'Choose plugins…' }))),
+      h('div', null, h('button', { type: 'button', class: 'btn', 'aria-haspopup': 'dialog', 'data-fk': 'choose-plugins', onclick: () => openPlugins(p), text: 'Choose plugins…' })),
+      h('h3', null, set.length ? ['Models ', h('span', { class: 'help', text: `${set.length} set here` })] : 'Models'),
+      !s ? h('p', { class: 'muted', text: 'Not loaded yet.' })
+        : set.length ? h('dl', { class: 'kv', 'data-fk': 'setup-models' }, set.flatMap((r) => modelRow(r, own[r])))
+          : h('p', { class: 'muted', text: 'All roles use the defaults from Settings.' }),
+      h('p', { class: 'muted', text: "Used when nika starts this project's orchestrator or spawns its agents." }),
+      h('div', null, h('button', { type: 'button', class: 'btn', 'aria-haspopup': 'dialog', 'data-fk': 'choose-models', onclick: () => openModels(p), text: 'Choose models…' }))),
     h('div', { class: 'card' },
       h('h2', { text: 'New agents' }),
       h('dl', { class: 'kv' },
@@ -631,17 +645,19 @@ function plugBusy(on) {
   setBusy($('#pl-save'), on, 'Saving…');
 }
 
-/** The settings copy of one project's saved list, so the card is right before the next load. [] drops the list (and the entry when it was the only key). */
-function rememberPlugins(key, plugins) {
+/** The settings copy of one project's saved `field` (a plugin list or a models map), so the card is right before the next load. Empty drops it (and the entry when it was the only key). */
+function rememberField(key, field, value) {
   const s = state.settings;
   if (!s) return;
   const map = { ...s.perProject };
-  const entry = { ...map[key], plugins };
-  if (!plugins.length) delete entry.plugins;
+  const entry = { ...map[key], [field]: value };
+  if (!Object.keys(value).length) delete entry[field];
   if (Object.keys(entry).length) map[key] = entry;
   else delete map[key];
   s.perProject = map;
 }
+
+const rememberPlugins = (key, plugins) => rememberField(key, 'plugins', plugins);
 
 async function plugSave() {
   if (pl.phase !== 'ready' || pl.saving) return;
@@ -682,6 +698,166 @@ function wirePlugins() {
   $('#dlg-plugins').addEventListener('cancel', (e) => { if (pl.swallow) e.preventDefault(); });
   $('#pl-save').addEventListener('click', plugSave);
   $('#pl-retry').addEventListener('click', plugLoad);
+}
+
+/* ---------- choose models (dialog; docs/design/spec.md 3.15) ---------- */
+const MODELS_LOAD_ERROR = 'The model settings could not be loaded. Check that nika is still running, then try again.';
+// phase: loading | ready | error. The draft lives in the selects and Custom ID fields; `loaded` is what the server held when the
+// dialog opened ({ role: id | null }), and Save is on only while the draft differs from it.
+const md = { project: null, phase: 'loading', loaded: null, alert: '', saving: false, seq: 0 };
+const mdSel = (r) => $(`#md-model-${r}`);
+const mdCustom = (r) => $(`#md-model-${r}-custom`);
+
+/** Each role's draft: a model id (a Custom ID's text is trimmed and may still be invalid), or null for "use the default". */
+function mdDraft() {
+  return Object.fromEntries(ROLES.map((r) => [r, mdSel(r).value === '' ? null : mdSel(r).value === CUSTOM ? mdCustom(r).value.trim() : mdSel(r).value]));
+}
+
+const mdChanged = () => {
+  const draft = mdDraft();
+  return ROLES.filter((r) => draft[r] !== md.loaded[r]);
+};
+
+function mdAlert(text) {
+  md.alert = text;
+  $('#md-alert-text').textContent = text;
+  $('#md-alert').hidden = !text;
+}
+
+/** The footer count and Save: on only when the draft differs from what was loaded (changed back, off again). */
+function mdSync() {
+  const n = md.phase === 'ready' ? mdChanged().length : 0;
+  if (!md.saving) $('#md-save').disabled = n === 0;
+  $('#md-dirty').textContent = md.phase !== 'ready' ? '' : n ? `${n} role${n === 1 ? '' : 's'} changed` : 'No changes yet.';
+}
+
+function mdRender() {
+  const { phase } = md;
+  const show = (b, on) => { // hidden and off together, so Mod+Enter (the first enabled primary button) never presses a button that is not shown
+    b.hidden = !on;
+    b.disabled = !on;
+  };
+  $('#md-skel').replaceChildren(...(phase === 'loading'
+    ? [h('span', { class: 'sr-only', text: 'Loading models…' }), [1, 2, 3, 4].map(() => h('div', { class: 'sk sk-line', 'aria-hidden': 'true' }))].flat()
+    : []));
+  $('#md-skel').hidden = phase !== 'loading';
+  $('#md-fields').hidden = phase !== 'ready';
+  $('#md-note').hidden = phase !== 'ready' || Boolean(state.models);
+  show($('#md-retry'), phase === 'error');
+  show($('#md-save'), phase !== 'error');
+  mdAlert(md.alert);
+  mdSync();
+}
+
+/** Each select reads "Use default (<Settings model>)" or the project's model; a saved id the catalog lacks opens as Custom ID, filled. */
+function mdFill() {
+  for (const r of ROLES) {
+    const custom = fillRoleOverride(mdSel(r), state.models, md.loaded[r], state.settings.models?.[r]);
+    mdCustom(r).value = custom ? md.loaded[r] : '';
+    mdCustom(r).hidden = !custom;
+    fieldError(mdCustom(r), '');
+  }
+}
+
+function openModels(p) {
+  Object.assign(md, { project: p, phase: 'loading', loaded: null, alert: '' });
+  $('#md-h').textContent = `Models for ${trunc(p.name, 32)}`;
+  mdRender();
+  openDialog($('#dlg-models'));
+  mdLoad();
+}
+
+/** The settings (for the defaults), the catalog and this project's saved models, asked together. No catalog is not an error: Custom ID still works. */
+async function mdLoad() {
+  const my = ++md.seq;
+  Object.assign(md, { phase: 'loading', alert: '' });
+  mdRender();
+  let r = null;
+  try {
+    r = await Promise.all([loadSettings(), loadModels().catch(() => null), appFetch(`/api/app/projects/${encodeURIComponent(md.project.key)}/config`)]);
+  } catch {
+    // shown as the load error
+  }
+  if (my !== md.seq || !$('#dlg-models').open) return;
+  const [set, , cfg] = r ?? [];
+  if (set?.status === 200 && cfg?.status === 200 && cfg.body?.models && typeof cfg.body.models === 'object') {
+    md.loaded = Object.fromEntries(ROLES.map((role) => [role, typeof cfg.body.models[role] === 'string' ? cfg.body.models[role] : null]));
+    mdFill();
+    md.phase = 'ready';
+  } else Object.assign(md, { phase: 'error', alert: MODELS_LOAD_ERROR });
+  mdRender();
+  if (md.phase === 'error') $('#md-alert').focus();
+  else mdSel('orchestrator').focus();
+}
+
+/** Everything a save in flight turns off, and back. */
+function mdBusy(on) {
+  const dlg = $('#dlg-models');
+  md.saving = on;
+  if (on) {
+    dlg.dataset.busy = '1';
+    mdAlert('');
+  } else delete dlg.dataset.busy;
+  for (const r of ROLES) {
+    mdSel(r).disabled = on;
+    mdCustom(r).disabled = on;
+  }
+  for (const id of ['#md-cancel', '#md-x']) $(id).disabled = on;
+  setBusy($('#md-save'), on, 'Saving…');
+  mdSync();
+}
+
+async function mdSave() {
+  if (md.phase !== 'ready' || md.saving || !mdChanged().length) return;
+  const p = md.project;
+  const bad = ROLES.filter((r) => !mdCustom(r).hidden && !MODEL_ID.test(mdCustom(r).value.trim()));
+  for (const r of ROLES) fieldError(mdCustom(r), bad.includes(r) ? MODEL_HINT : '');
+  if (bad.length) {
+    mdAlert(`${bad.length} field${bad.length === 1 ? ' needs' : 's need'} a fix before saving.`);
+    mdCustom(bad[0]).focus();
+    return;
+  }
+  const models = mdDraft();
+  mdBusy(true);
+  let r = null;
+  try {
+    r = await appFetch(`/api/app/projects/${encodeURIComponent(p.key)}/config`, { method: 'PUT', json: { models } });
+  } catch {
+    // handled below as "could not reach"
+  }
+  mdBusy(false);
+  if (r?.status === 200) {
+    const saved = r.body?.models ?? models;
+    rememberField(p.key, 'models', Object.fromEntries(ROLES.filter((role) => saved[role]).map((role) => [role, saved[role]])));
+    $('#dlg-models').close();
+    render(true);
+    const rules = (state.projects?.find((x) => x.key === p.key) ?? p).rules?.state; // a rules file nika wrote lists the models, and only Apply updates it
+    toast(`Models saved for ${trunc(p.name, 40)}. Sessions nika starts from now on use them.${rules === 'nika' || rules === 'outdated' ? ' Apply rules to update the models in rules/orchestration.md.' : ''}`);
+    return;
+  }
+  mdAlert(r ? errText(r) : 'Could not reach the nika server.');
+  $('#md-alert').focus();
+}
+
+function wireModels() {
+  for (const r of ROLES) {
+    mdSel(r).addEventListener('change', () => { // Custom ID shows its field; any other choice hides it and drops its error
+      mdCustom(r).hidden = mdSel(r).value !== CUSTOM;
+      fieldError(mdCustom(r), '');
+      mdSync();
+    });
+    mdCustom(r).addEventListener('input', mdSync);
+    mdCustom(r).addEventListener('blur', () => {
+      if (!mdCustom(r).hidden) fieldError(mdCustom(r), MODEL_ID.test(mdCustom(r).value.trim()) ? '' : MODEL_HINT);
+    });
+    mdCustom(r).addEventListener('keydown', (e) => { // no <form>: Enter saves only when there is something to save
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      mdSave();
+    });
+  }
+  $('#md-save').addEventListener('click', mdSave);
+  $('#md-retry').addEventListener('click', mdLoad);
 }
 
 /* ---------- remove project ---------- */
@@ -739,9 +915,10 @@ function openSpawn(g) {
   $('#sp-d').textContent = `In ${g.label}. Opens a new tmux pane and starts Claude Code with your brief.`;
   $('#sp-name').value = spawnName(g);
   $('#sp-brief').value = '';
-  const m = s?.models;
-  const roles = (m
-    ? [['Builder', m.builder], ['Reasoner', m.reasoner], ['Scout', m.scout], ['Orchestrator', m.orchestrator]].map(([role, id]) => [`${role} · ${id}`, id])
+  const own = s?.perProject?.[g.project.key]?.models ?? {}; // the roles this project sets itself
+  const m = effectiveRoleModels(s, g.project.key);
+  const roles = (s?.models
+    ? ['builder', 'reasoner', 'scout', 'orchestrator'].map((r) => [`${ROLE_LABEL[r]} · ${m[r]}${own[r] ? ' (this project)' : ''}`, m[r]])
     : [['Opus', 'opus'], ['Sonnet', 'sonnet'], ['Haiku', 'haiku'], ['Fable', 'fable']]
   ).map(([text, value]) => ({ value, text }));
   const custom = fillModelSelect($('#sp-model'), state.models, pref.model ?? roles[0].value, roles);
@@ -1123,6 +1300,7 @@ export async function initApp() {
   };
   $('#side-add').addEventListener('click', () => addProject());
   wirePlugins();
+  wireModels();
   $('#spawn-form').addEventListener('submit', submitSpawn);
   $('#sp-brief').addEventListener('input', briefCount);
   $('#sp-model').addEventListener('change', () => { // Custom ID shows its field; any other choice hides it and drops its error

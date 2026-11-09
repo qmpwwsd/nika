@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { startOrchestrator, launchArgv, inProject, pickState, claudePane, sessionNameFor, reduceRc, tmuxLiteral } from '../src/orchestrate.js';
 import { configDir } from '../src/paths.js';
-import { addProject, getOrchestrator, setOrchestrator, loadConfig } from '../src/store.js';
+import { addProject, getOrchestrator, setOrchestrator, loadConfig, updateProjectConfig } from '../src/store.js';
 import { fakeTmux, makeWorld, TMUX, CLAUDE } from './tmux-fake.js';
 
 const worlds = [];
@@ -98,6 +98,20 @@ describe('startOrchestrator: new session', () => {
     assert.deepEqual(claudeFlags(exec.of('new-session')[0]), [
       '--session-id', r.body.sessionId, '--model', 'opus', '--permission-mode', 'plan', '-n', 'My-App', '--remote-control=my-app',
     ]);
+  });
+
+  test('(+) the project\'s own orchestrator model (Models dialog) is the one nika starts; another project\'s is not', async () => {
+    const w = await world();
+    await updateProjectConfig(w.project.key, { models: { orchestrator: 'claude-opus-5-5', reasoner: null, builder: null, scout: null } }, w.env);
+    const exec = fakeTmux();
+    const r = await startOrchestrator(w.project.key, w.ctx(exec));
+    assert.deepEqual(claudeFlags(exec.of('new-session')[0]), ['--session-id', r.body.sessionId, '--model', 'claude-opus-5-5', '-n', 'My-App']);
+    const v = await world();
+    const other = await addProject(fs.mkdtempSync(path.join(v.root, 'other-')), v.env);
+    await updateProjectConfig(other.key, { models: { orchestrator: 'opus', reasoner: null, builder: null, scout: null } }, v.env);
+    const exec2 = fakeTmux();
+    await startOrchestrator(v.project.key, v.ctx(exec2));
+    assert.equal(claudeFlags(exec2.of('new-session')[0])[3], 'claude-fable-5-1');
   });
 
   test('(+) a configured Remote Control prefix is the RC name', async () => {
@@ -283,6 +297,17 @@ describe('launchArgv: the one place that builds the orchestrator\'s claude argum
     const full = cfg({ models: { orchestrator: 'opus' }, permissionMode: 'plan', remoteControl: { enabled: true, prefix: '' } });
     assert.deepEqual(launchArgv(full, project, { sessionId: PICK, resume: true }), ['--resume', PICK, '--model', 'opus', '--permission-mode', 'plan', '-n', 'My-App', '--remote-control=my-app']);
     assert.deepEqual(launchArgv(full, project, { sessionId: PICK }).slice(2), launchArgv(full, project, { sessionId: PICK, resume: true }).slice(2));
+  });
+
+  test('(+) the project\'s orchestrator model replaces the default, fresh and resumed; the other roles do not reach the argv', () => {
+    const over = cfg({ perProject: { [project.key]: { models: { orchestrator: 'claude-opus-5-5', builder: 'haiku' } } } });
+    assert.deepEqual(launchArgv(over, project, { sessionId: PICK }), ['--session-id', PICK, '--model', 'claude-opus-5-5', '-n', 'My-App']);
+    assert.deepEqual(launchArgv(over, project, { sessionId: PICK, resume: true }), ['--resume', PICK, '--model', 'claude-opus-5-5', '-n', 'My-App']);
+  });
+
+  test('(+) without an override of its own the default is used, whatever other projects or other roles override', () => {
+    const others = cfg({ perProject: { [project.key]: { models: { builder: 'haiku' } }, fedcba9876543210: { models: { orchestrator: 'opus' } } } });
+    for (const resume of [false, true]) assert.equal(launchArgv(others, project, { sessionId: PICK, resume })[3], 'claude-fable-5-1');
   });
 
   test('(−) an id that is not a UUID is refused before it can become an argument (a flag-looking value, a path, an upper-case UUID, a non-string)', () => {

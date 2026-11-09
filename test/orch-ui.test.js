@@ -14,6 +14,7 @@ import { menuEl, sessionHref } from '../public/ui.js';
 import { orchState, roleTag, savedPick, otherRunning } from '../public/dash-model.js';
 import { parseModes, modesAfter } from '../public/modes.js';
 import { pluginView, pluginSave, sortIds, countText, filterNote } from '../public/plugin-view.js';
+import { ROLES, ROLE_LABEL, modelLabel, fillRoleOverride, effectiveRoleModels } from '../public/models-ui.js';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const read = (f) => fs.readFileSync(path.join(PUBLIC, f), 'utf8');
@@ -255,7 +256,7 @@ function flowRig({ project = {}, agents = [], answers = {}, me = { tmux: true, c
   };
   const ctx = {
     h, icon, $: node, state, hooks: {}, appFetch, menuEl, sessionHref, roleTag, orchState, savedPick, otherRunning, parseModes, modesAfter,
-    pluginView, pluginSave, sortIds, countText, filterNote,
+    pluginView, pluginSave, sortIds, countText, filterNote, ROLES, ROLE_LABEL, modelLabel, fillRoleOverride, effectiveRoleModels,
     location: { set href(v) { navs.push(v); }, get href() { return ''; }, hash: '' },
     document: { title: '' },
     toast: (msg, o) => {

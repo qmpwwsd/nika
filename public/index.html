@@ -218,6 +218,23 @@
   <div class="dlg-foot"><span class="sp"></span><button type="button" class="btn lg" data-close id="pl-cancel" data-fk="pl-cancel">Cancel</button><button type="button" class="btn primary lg" id="pl-retry" data-fk="pl-retry" hidden disabled>Retry</button><button type="button" class="btn primary lg" id="pl-save" data-fk="pl-save">Save plugins</button></div>
 </dialog>
 
+<dialog id="dlg-models" class="dlg-models" aria-labelledby="md-h" aria-describedby="md-d" data-app-only>
+  <div class="dlg-head"><div><h2 id="md-h" tabindex="-1"></h2><p id="md-d">Used when nika starts this project's orchestrator or spawns its agents. Running sessions keep their model.</p></div><button type="button" class="btn icon ghost" data-close id="md-x" data-fk="md-x" aria-label="Close"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button></div>
+  <div class="dlg-body">
+    <div class="alert" data-kind="danger" role="alert" id="md-alert" tabindex="-1" hidden><svg class="ic" aria-hidden="true"><use href="#i-warn"/></svg><p id="md-alert-text"></p></div>
+    <div id="md-skel" aria-busy="true" hidden></div>
+    <p class="help" id="md-note" hidden>The model list did not load. Choose Use default, or type a model ID.</p>
+    <div class="md-fields" id="md-fields" hidden>
+      <div class="field"><label for="md-model-orchestrator">Orchestrator</label><select id="md-model-orchestrator"></select><input type="text" id="md-model-orchestrator-custom" hidden spellcheck="false" autocomplete="off" placeholder="claude-sonnet-5-5 or sonnet[1m]" aria-label="Custom model ID for the orchestrator" aria-describedby="md-model-orchestrator-custom-err"><p class="err" id="md-model-orchestrator-custom-err" hidden></p></div>
+      <div class="field"><label for="md-model-reasoner">Reasoner</label><select id="md-model-reasoner"></select><input type="text" id="md-model-reasoner-custom" hidden spellcheck="false" autocomplete="off" placeholder="claude-sonnet-5-5 or sonnet[1m]" aria-label="Custom model ID for the reasoner" aria-describedby="md-model-reasoner-custom-err"><p class="err" id="md-model-reasoner-custom-err" hidden></p></div>
+      <div class="field"><label for="md-model-builder">Builder</label><select id="md-model-builder"></select><input type="text" id="md-model-builder-custom" hidden spellcheck="false" autocomplete="off" placeholder="claude-sonnet-5-5 or sonnet[1m]" aria-label="Custom model ID for the builder" aria-describedby="md-model-builder-custom-err"><p class="err" id="md-model-builder-custom-err" hidden></p></div>
+      <div class="field"><label for="md-model-scout">Scout</label><select id="md-model-scout"></select><input type="text" id="md-model-scout-custom" hidden spellcheck="false" autocomplete="off" placeholder="claude-sonnet-5-5 or sonnet[1m]" aria-label="Custom model ID for the scout" aria-describedby="md-model-scout-custom-err"><p class="err" id="md-model-scout-custom-err" hidden></p></div>
+      <p class="help">Defaults are in Settings.</p>
+    </div>
+  </div>
+  <div class="dlg-foot"><span class="help" id="md-dirty"></span><span class="sp"></span><button type="button" class="btn lg" data-close id="md-cancel" data-fk="md-cancel">Cancel</button><button type="button" class="btn primary lg" id="md-retry" data-fk="md-retry" hidden disabled>Retry</button><button type="button" class="btn primary lg" id="md-save" data-fk="md-save" disabled>Save models</button></div>
+</dialog>
+
 <dialog id="dlg-confirm" class="dlg-confirm" aria-labelledby="cf-h" aria-describedby="cf-d" data-app-only>
   <div class="dlg-head"><div><h2 id="cf-h" tabindex="-1"></h2><p id="cf-d"></p></div></div>
   <div class="dlg-foot"><span class="sp"></span><button type="button" class="btn lg" data-close id="cf-cancel">Cancel</button><button type="button" class="btn danger lg" id="cf-ok"></button></div>

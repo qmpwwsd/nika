@@ -115,6 +115,36 @@ describe('built-in template', () => {
     await go(w, await prev(w));
     assert.match(get(w, 'rules/orchestration.md'), /on \(name prefix: the project name\)/);
   });
+
+  test('(+) the project\'s models override the defaults in the Roles table; the roles left alone keep the Settings value', async () => {
+    const w = await world();
+    await updateSettings({ models: { builder: 'sonnet' } }, w.env);
+    await go(w, await prev(w));
+    await updateProjectConfig(w.project.key, { models: { orchestrator: null, reasoner: 'opus[1m]', builder: 'claude-opus-5-5', scout: null } }, w.env);
+    const body = await prev(w);
+    const rules = entry(body, 'rules/orchestration.md');
+    assert.equal(rules.action, 'update', 'saved models make the applied file out of date');
+    assert.match(rules.diff, /^-\| Builder \| `sonnet` \|/m);
+    assert.match(rules.diff, /^\+\| Builder \| `claude-opus-5-5` \|/m);
+    await go(w, body);
+    const text = get(w, 'rules/orchestration.md');
+    assert.match(text, /\| Orchestrator \| `claude-fable-5-1` \|/);
+    assert.match(text, /\| Reasoner \| `opus\[1m\]` \|/);
+    assert.match(text, /\| Builder \| `claude-opus-5-5` \|/);
+    assert.match(text, /\| Scout \| `claude-haiku-5-5` \|/);
+  });
+
+  test('(−) another project\'s override does not leak into this one, and a Settings change still shows through where nothing is overridden', async () => {
+    const w = await world();
+    const other = await addProject(fs.mkdtempSync(path.join(w.base, 'other-')), w.env);
+    await updateProjectConfig(other.key, { models: { orchestrator: 'opus', reasoner: 'opus', builder: 'opus', scout: 'opus' } }, w.env);
+    await go(w, await prev(w));
+    const text = get(w, 'rules/orchestration.md');
+    assert.doesNotMatch(text, /`opus`/);
+    assert.match(text, /\| Scout \| `claude-haiku-5-5` \|/);
+    await updateSettings({ models: { scout: 'haiku' } }, w.env);
+    assert.match(entry(await prev(w), 'rules/orchestration.md').diff, /^\+\| Scout \| `haiku` \|/m);
+  });
 });
 
 describe('rulesState', () => {

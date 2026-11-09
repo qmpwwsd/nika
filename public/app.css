@@ -308,6 +308,7 @@ details.ended > summary:hover { color: var(--text); }
 .kv { display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; margin: 0; font-size: var(--fs-small); }
 .kv dt { color: var(--text-muted); }
 .kv dd { margin: 0; font-weight: 600; }
+.kv dd.mono { overflow-wrap: anywhere; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
 ul.chips { margin: 0; padding: 0; list-style: none; }
 .chip { display: inline-flex; align-items: center; min-height: 24px; padding: 0 8px; border-radius: var(--r-sm); border: 1px solid var(--line); background: var(--surface-2); font-size: var(--fs-small); font-family: var(--mono); overflow-wrap: anywhere; }
@@ -367,6 +368,11 @@ dialog.dlg-rules[open] { display: flex; flex-direction: column; }
 .diff .d-del .dm { color: var(--danger); font-weight: 700; }
 .diff .d-hunk { color: var(--text-muted); background: var(--surface-2); }
 .diff.d-note, .diff .d-note { color: var(--text-muted); font-style: italic; padding: 6px 12px; white-space: normal; display: block; }
+
+/* ---------- choose models dialog (docs/design/spec.md 3.15) ---------- */
+dialog.dlg-models { width: min(480px, calc(100vw - 32px)); }
+dialog.dlg-models[open] { display: flex; flex-direction: column; }
+.md-fields { display: grid; gap: 16px; }
 
 /* ---------- choose plugins dialog (docs/design/spec.md 3.15): only the list scrolls ---------- */
 dialog.dlg-plugins { width: min(560px, calc(100vw - 32px)); height: min(640px, calc(100vh - 32px)); }

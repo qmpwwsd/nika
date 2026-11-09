@@ -65,6 +65,10 @@ export class El {
 
   focus() { focus.el = this; }
 
+  showModal() { this.open = true; }
+
+  close() { this.open = false; this.fire('close'); }
+
   /** Text as a screen reader builds a name from it: aria-hidden parts are left out. */
   get accName() {
     return this.attrs['aria-hidden'] === 'true' ? '' : this.own + this.kids.map((k) => k.accName).join('');

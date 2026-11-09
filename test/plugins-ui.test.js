@@ -10,7 +10,7 @@ import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 import { h, icon } from '../public/dom.js';
 import { pluginView, pluginSave, sortIds, countText, filterNote } from '../public/plugin-view.js';
-import { fillModelSelect, CUSTOM, MODEL_ID, MODEL_HINT } from '../public/models-ui.js';
+import { fillModelSelect, CUSTOM, MODEL_ID, MODEL_HINT, ROLES, ROLE_LABEL, modelLabel, fillRoleOverride, effectiveRoleModels } from '../public/models-ui.js';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const read = (f) => fs.readFileSync(path.join(PUBLIC, f), 'utf8');
@@ -169,6 +169,7 @@ function projectRig({ installed = [A, B, C, D], savedList = [], pluginsStatus = 
     setTimeout: (fn, ms) => { timers.push({ fn, ms, done: false }); return timers.length - 1; },
     clearTimeout: (id) => { if (timers[id]) timers[id].done = true; },
     pluginView, pluginSave, sortIds, countText, filterNote,
+    ROLES, ROLE_LABEL, modelLabel, fillRoleOverride, effectiveRoleModels,
     rulesEl: () => new El('span'),
   };
   const api = runModule('project.js', ctx, '({ openPlugins, plugSave, plugLoad, wirePlugins, setupCards, pl, rememberPlugins, loadInstalled })');
@@ -698,7 +699,7 @@ describe('installed plugins for the card (loadInstalled)', () => {
   test('(+) entering a project loads them and redraws; the card is redrawn when they change (they are part of its signature)', () => {
     const src = code(read('project.js'));
     assert.match(src, /hooks\.enterProject = \(\) => \{ loadInstalled\(\)\.then\(\(\) => render\(\)\); \};/);
-    assert.match(src, /state\.settings, state\.plugins, state\.me\?\.tmux/);
+    assert.match(src, /state\.settings, state\.plugins, state\.models, state\.me\?\.tmux/, 'the catalog too: the Models block shows its labels');
   });
 });
 

@@ -381,6 +381,7 @@ export function createAppApi({ secret, ctx, deps }) {
   });
 
   // Per-project config (0.3.4): saved on the project page, one project at a time, so the Settings page cannot overwrite it.
+  // The body is exactly one of { plugins } or { models } (0.4), so the two dialogs never overwrite each other.
   route('GET', /^\/api\/app\/projects\/([^/]+)\/config$/, 0, async ({ params }) => {
     const { project, failure } = await projectOf({ project: param(params[0], PROJECT_KEY) });
     return failure ?? { status: 200, body: await getProjectConfig(project.key, ctx.env) };
@@ -389,15 +390,19 @@ export function createAppApi({ secret, ctx, deps }) {
   route('PUT', /^\/api\/app\/projects\/([^/]+)\/config$/, CAP.settings, async ({ params, body }) => {
     const { project, failure } = await projectOf({ project: param(params[0], PROJECT_KEY) });
     if (failure) return failure;
-    if (Object.keys(body).length !== 1 || !Array.isArray(body.plugins) || !body.plugins.every((n) => typeof n === 'string')) return err(400, 'invalid', 'body must be { plugins: [plugin names] }');
-    // a name is allowed when it is installed now or already saved for this project (so a plugin removed since can still be unticked)
-    const known = new Set([...(await deps.listPlugins(ctx.claudeDir)), ...(await getProjectConfig(project.key, ctx.env)).plugins]);
-    const unknown = body.plugins.find((n) => !known.has(n));
-    if (unknown !== undefined) return err(400, 'invalid', `${clean(unknown, 80) ?? '?'} is not installed`);
+    let patch = { models: body.models }; // the store checks the four roles and every id
+    if (Object.keys(body).length !== 1 || !Object.hasOwn(body, 'models')) {
+      if (Object.keys(body).length !== 1 || !Array.isArray(body.plugins) || !body.plugins.every((n) => typeof n === 'string')) return err(400, 'invalid', 'body must be { plugins: [plugin names] } or { models: { orchestrator, reasoner, builder, scout } }');
+      // a name is allowed when it is installed now or already saved for this project (so a plugin removed since can still be unticked)
+      const known = new Set([...(await deps.listPlugins(ctx.claudeDir)), ...(await getProjectConfig(project.key, ctx.env)).plugins]);
+      const unknown = body.plugins.find((n) => !known.has(n));
+      if (unknown !== undefined) return err(400, 'invalid', `${clean(unknown, 80) ?? '?'} is not installed`);
+      patch = { plugins: body.plugins };
+    }
     try {
-      return { status: 200, body: await updateProjectConfig(project.key, { plugins: body.plugins }, ctx.env) };
+      return { status: 200, body: await updateProjectConfig(project.key, patch, ctx.env) };
     } catch (e) {
-      if (e?.code === 'EINVAL') return err(400, 'invalid', clean(e.message, 200) ?? 'invalid plugins');
+      if (e?.code === 'EINVAL') return err(400, 'invalid', clean(e.message, 200) ?? 'invalid config');
       if (e?.code === 'ENOENT') return err(404, 'not_found', 'project is not registered'); // removed while this request was in flight
       throw e;
     }

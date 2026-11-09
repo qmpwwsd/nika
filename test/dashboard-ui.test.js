@@ -9,7 +9,7 @@ import path from 'node:path';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 import { MODE_META, parseModes, modesAfter, rowMode, canEndRow } from '../public/modes.js';
-import { CUSTOM, fillModelSelect } from '../public/models-ui.js';
+import { CUSTOM, ROLE_LABEL, fillModelSelect, effectiveRoleModels } from '../public/models-ui.js';
 import { h } from '../public/dom.js';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
@@ -613,7 +613,7 @@ describe('spawn sheet model picker (project.js openSpawn and spawnModel)', () =>
     const node = (sel) => { if (!nodes.has(sel)) nodes.set(sel, new FNode(sel === '#sp-model' ? 'select' : 'input')); return nodes.get(sel); };
     const spawnPrefs = new Map(pref ? [['k1', pref]] : []);
     const ctx = {
-      $: node, h, state: { models: catalog, settings }, fillModelSelect, CUSTOM, spawnPrefs, sp: {},
+      $: node, h, state: { models: catalog, settings }, fillModelSelect, CUSTOM, ROLE_LABEL, effectiveRoleModels, spawnPrefs, sp: {},
       limitInfo: () => ({ reached: false, running: 1, max: 5 }), toast() {}, spawnName: () => 'builder-1',
       PERM_LABEL: { default: 'Ask first', plan: 'Plan' }, PLACE_LABEL: { beside: 'Beside' },
       fieldError() {}, briefCount() {}, openDialog() {},

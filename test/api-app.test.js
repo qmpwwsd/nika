@@ -430,19 +430,21 @@ describe('project config (GET|PUT /api/app/projects/:key/config)', () => {
   });
   after(() => fs.rmSync(extra, { recursive: true, force: true }));
   const put = (json, key) => a.call('PUT', url(key), { json });
+  const NONE = { orchestrator: null, reasoner: null, builder: null, scout: null };
+  const only = (plugins, models = NONE) => ({ plugins, models });
 
-  test('(+) GET answers { plugins: [] } for a project without a list', async () => {
+  test('(+) GET answers { plugins: [], models: all null } for a project without a list or models', async () => {
     const r = await a.call('GET', url());
     assert.equal(r.status, 200);
-    assert.deepEqual(r.body, { plugins: [] });
+    assert.deepEqual(r.body, only([]));
     assert.match(r.headers['cache-control'] ?? '', /no-store/);
   });
 
   test('(+) PUT saves installed plugins and answers 200 { plugins }; GET and the settings read them back', async () => {
     const r = await put({ plugins: ['beta@market', 'alpha@market'] });
     assert.equal(r.status, 200);
-    assert.deepEqual(r.body, { plugins: ['beta@market', 'alpha@market'] });
-    assert.deepEqual((await a.call('GET', url())).body, { plugins: ['beta@market', 'alpha@market'] });
+    assert.deepEqual(r.body, only(['beta@market', 'alpha@market']));
+    assert.deepEqual((await a.call('GET', url())).body, only(['beta@market', 'alpha@market']));
     assert.deepEqual((await loadConfig(w.env)).config.perProject[w.project.key], { plugins: ['beta@market', 'alpha@market'] });
     assert.deepEqual((await a.call('GET', '/api/app/settings')).body.perProject[w.project.key], { plugins: ['beta@market', 'alpha@market'] });
   });
@@ -452,9 +454,9 @@ describe('project config (GET|PUT /api/app/projects/:key/config)', () => {
     const gone = await boot({ deps: makeDeps({ listPlugins: async () => ['alpha@market'] }) }); // beta@market was uninstalled since
     const r = await gone.call('PUT', url(), { json: { plugins: ['alpha@market', 'beta@market'] } });
     assert.equal(r.status, 200, 'beta@market is saved for this project, so it stays allowed');
-    assert.deepEqual(r.body, { plugins: ['alpha@market', 'beta@market'] });
+    assert.deepEqual(r.body, only(['alpha@market', 'beta@market']));
     const cleared = await put({ plugins: [] });
-    assert.deepEqual([cleared.status, cleared.body], [200, { plugins: [] }]);
+    assert.deepEqual([cleared.status, cleared.body], [200, only([])]);
     assert.deepEqual((await loadConfig(w.env)).config.perProject, {});
   });
 
@@ -464,7 +466,7 @@ describe('project config (GET|PUT /api/app/projects/:key/config)', () => {
     assert.equal(r.status, 400);
     assert.equal(r.body.error, 'invalid');
     assert.match(r.body.message, /gamma@market is not installed/);
-    assert.deepEqual((await a.call('GET', url())).body, { plugins: ['alpha@market'] });
+    assert.deepEqual((await a.call('GET', url())).body, only(['alpha@market']));
     // "saved" is per project: a name saved for another project does not make it known here
     const other = await addProject(extra, w.env);
     const gone = await boot({ deps: makeDeps({ listPlugins: async () => [] }) });
@@ -498,7 +500,7 @@ describe('project config (GET|PUT /api/app/projects/:key/config)', () => {
     assert.ok(longName.body.message.length < 120, 'the plugin name in the message is cut');
     const proto = await a.call('PUT', url(), { body: '{"__proto__":{"plugins":["alpha@market"]}}', headers: { 'content-type': 'application/json' } });
     assert.equal(proto.status, 400);
-    assert.deepEqual((await a.call('GET', url())).body, { plugins: [] });
+    assert.deepEqual((await a.call('GET', url())).body, only([]));
   });
 
   test('(−) PUT needs application/json (415), stays within 16 KB (413) and needs the app secret (403)', async () => {
@@ -508,6 +510,60 @@ describe('project config (GET|PUT /api/app/projects/:key/config)', () => {
     assert.equal((await a.call('PUT', url(), { json: { plugins: [] }, headers: { 'x-nika-app': null } })).status, 403);
     assert.equal((await a.call('GET', url(), { headers: { 'x-nika-app': null } })).status, 403);
     assert.equal((await a.call('PUT', url(), { json: { plugins: [] }, headers: { origin: 'http://evil.example' } })).status, 403);
+  });
+
+  test('(+) PUT { models } saves the four roles (null = the default) and answers 200 { plugins, models }; GET and the settings read them back', async () => {
+    const models = { orchestrator: null, reasoner: 'claude-opus-5-5', builder: 'sonnet[1m]', scout: 'claude-not-in-the-catalog-1' };
+    const r = await put({ models });
+    assert.deepEqual([r.status, r.body], [200, only([], models)], 'a Custom ID is allowed when it matches MODEL_ID');
+    assert.deepEqual((await a.call('GET', url())).body, only([], models));
+    assert.deepEqual((await loadConfig(w.env)).config.perProject[w.project.key], { models: { reasoner: 'claude-opus-5-5', builder: 'sonnet[1m]', scout: 'claude-not-in-the-catalog-1' } });
+    assert.deepEqual((await a.call('GET', '/api/app/settings')).body.perProject[w.project.key], { models: { reasoner: 'claude-opus-5-5', builder: 'sonnet[1m]', scout: 'claude-not-in-the-catalog-1' } });
+    assert.deepEqual((await put({ models: NONE })).body, only([]), 'all null clears them');
+    assert.deepEqual((await loadConfig(w.env)).config.perProject, {});
+  });
+
+  test('(+) a plugins save leaves the models untouched, and a models save leaves the plugins untouched', async () => {
+    const models = { ...NONE, builder: 'claude-opus-5-5' };
+    assert.equal((await put({ models })).status, 200);
+    assert.deepEqual((await put({ plugins: ['alpha@market'] })).body, only(['alpha@market'], models));
+    assert.deepEqual((await put({ models: { ...NONE, scout: 'haiku' } })).body, only(['alpha@market'], { ...NONE, scout: 'haiku' }));
+    assert.deepEqual((await put({ plugins: [] })).body, only([], { ...NONE, scout: 'haiku' }));
+    assert.deepEqual((await put({ models: NONE })).body, only([]));
+    assert.deepEqual((await loadConfig(w.env)).config.perProject, {});
+  });
+
+  test('(−) a { models } body that is not the four roles with ids or null is 400 invalid, and nothing is written', async () => {
+    const keep = { ...NONE, scout: 'haiku' };
+    assert.equal((await put({ models: keep })).status, 200);
+    const saved = JSON.stringify((await loadConfig(w.env)).config.perProject);
+    const bad = [
+      { models: { scout: 'haiku' } }, { models: {} }, { models: { ...NONE, helper: 'haiku' } }, // a missing role, none, a stray role
+      { models: { ...NONE, scout: 'Haiku 5' } }, { models: { ...NONE, scout: '--model' } }, { models: { ...NONE, scout: '' } }, { models: { ...NONE, scout: 5 } }, { models: { ...NONE, scout: ['haiku'] } }, // a bad id
+      { models: null }, { models: 'haiku' }, { models: [] }, { models: [null, null, null, null] },
+      { models: NONE, plugins: [] }, { models: NONE, extra: 1 }, // two keys
+    ];
+    for (const body of bad) {
+      const r = await put(body);
+      assert.equal(r.status, 400, JSON.stringify(body));
+      assert.equal(r.body.error, 'invalid');
+      assert.ok(r.body.message.length < 160, 'the message is short');
+    }
+    const proto = await a.call('PUT', url(), { body: '{"models":{"orchestrator":null,"reasoner":null,"builder":null,"scout":null,"__proto__":null}}', headers: { 'content-type': 'application/json' } });
+    assert.equal(proto.status, 400);
+    assert.equal(JSON.stringify((await loadConfig(w.env)).config.perProject), saved, 'every refusal left the config as it was');
+    assert.deepEqual((await a.call('GET', url())).body, only([], keep));
+    assert.equal((await put({ models: NONE })).status, 200);
+  });
+
+  test('(−) a { models } PUT for an unknown project is 404, for a malformed key 400, as non-JSON 415, and without the secret 403', async () => {
+    const models = { ...NONE, scout: 'haiku' };
+    const missing = await put({ models }, '0123456789abcdef');
+    assert.deepEqual([missing.status, missing.body.error], [404, 'not_found']);
+    assert.equal((await put({ models }, 'short')).status, 400);
+    assert.equal((await a.call('PUT', url(), { body: JSON.stringify({ models }), headers: { 'content-type': 'text/plain' } })).status, 415);
+    assert.equal((await a.call('PUT', url(), { json: { models }, headers: { 'x-nika-app': null } })).status, 403);
+    assert.deepEqual((await loadConfig(w.env)).config.perProject, {});
   });
 
   test('(+) removing a project drops its list: a later GET is 404 and the config has no entry', async () => {
