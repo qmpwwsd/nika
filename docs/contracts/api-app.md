@@ -803,6 +803,7 @@ multi-argument shell-commands (tmux execs them directly, no `sh -c`, T6).
 | list panes | `tmux -u list-panes -a -F #{pane_id}\t#{session_name}\t#{window_index}\t#{pane_title}\t#{pane_current_command}\t#{@nika-role}\t#{@nika-agent}\t#{@nika-depth}\t#{@nika-parent}` (0.1; the tags 0.2 and 0.4; each tag is read strictly, a value that does not parse is absent, and the tags of a pane with no nika role are ignored) |
 | session exists | `tmux -u has-session -t =<session>` |
 | create session + orchestrator | `tmux -u new-session -d -s <session> -n orchestrator -c <projectDir> -x 200 -y 50 -P -F #{pane_id} [-e CLAUDE_CODE_AUTO_COMPACT_WINDOW=<W> [-e CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=<PCT>]] -- <claudeBin> <orchestrator flags>` |
+| remove the pair from the session environment (0.4) | `tmux -u set-environment -t =<session> -u CLAUDE_CODE_AUTO_COMPACT_WINDOW`, then the same for `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`: only after a `new-session` that carried `-e`, only for a name it sent; best effort (a failure is ignored) |
 | orchestrator in existing session | `tmux -u new-window -t =<session>: -n orchestrator -c <projectDir> -P -F #{pane_id} [-e … as above] -- <claudeBin> <orchestrator flags>` |
 | tag a pane nika created | `tmux -u set-option -p -t %n @nika-role orchestrator` (after new-session / new-window), `… @nika-role agent` or (0.4) `… @nika-role sub-orchestrator` (after split-window), then `@nika-agent <PROJECT_KEY>/<AGENT_NAME>` (0.4: `<PROJECT_KEY>/orchestrator` for an orchestrator), `@nika-depth <1\|2\|3>` (an orchestrator 1) and, for a nested spawn, `@nika-parent <PANE_ID>`; every value is a constant, a validated name or a pane id (no `#`); best effort |
 | adopt a live session as orchestrator (0.4) | `tmux -u set-option -p -t %n @nika-role orchestrator`, then `@nika-agent <PROJECT_KEY>/orchestrator`, then `@nika-depth 1` (`PUT …/orchestrator`; the depth is a constant 1, 2 or 3, never request data) |
@@ -828,10 +829,13 @@ the window name is the constant `orchestrator`, and the title is `[%n] <AGENT_NA
 lets another string reach `-s`, `-n` or `-T` must escape it with `tmuxLiteral()` first. `test/spawn.test.js` ("tmux format
 expansion (T6)") asserts it.
 
-tmux `new-session -e NAME=value` and `new-window -e NAME=value` (0.4, auto-compact) set one variable in the new pane's environment.
-Unlike `-c`, `-s`, `-n` and `-T` the value is **literal**: `#{pane_id}` is not expanded, spaces and `#` are kept (spike S2, tmux 3.8;
-`-e` exists from tmux 3.0 on new-window and 3.2 on new-session). nika passes exactly two names, each as its own `-e` pair before `--`, and a
-value only after `compactLaunch` has made it digits and at most one dot. `test/orchestrate.test.js` asserts the shape.
+tmux `new-session -e NAME=value` and `new-window -e NAME=value` (0.4, auto-compact) set one variable each. Unlike `-c`, `-s`, `-n` and `-T`
+the value is **literal**: `#{pane_id}` is not expanded, spaces and `#` are kept (spike S2, tmux 3.8). The scope differs: `new-window -e` is
+the new pane's environment only, but `new-session -e` sets the **session** environment, which every later pane of that session inherits
+(verified on tmux 3.8), so nika unsets the two names with `set-environment -t =<session> -u <NAME>` right after the `new-session` (table
+above; best effort; the first pane keeps its copy, since a process environment is fixed when it starts). `-e` exists from tmux 3.0 on
+new-window and 3.2 on new-session: **tmux 3.2 or newer is required**. nika passes exactly two names, each as its own `-e` pair before `--`,
+and a value only after `compactLaunch` has made it digits and at most one dot. `test/orchestrate.test.js` asserts the shape and the unset.
 
 Session targets always carry the trailing colon (`=<session>:`) where tmux expects a window or pane: `split-window -t
 =name` fails with "can't find pane", `=name:` works.

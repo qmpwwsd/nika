@@ -69,6 +69,9 @@ describe('startOrchestrator: new session', () => {
       [TMUX, '-u', 'new-session', '-d', '-s', 'My-App', '-n', 'orchestrator', '-c', w.project.dir, '-x', '200', '-y', '50',
         '-P', '-F', '#{pane_id}', '-e', 'CLAUDE_CODE_AUTO_COMPACT_WINDOW=400000', '-e', 'CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=84.2106', '--', CLAUDE,
         '--session-id', r.body.sessionId, '--model', 'claude-fable-5-1', '-n', 'My-App'],
+      // new-session -e is session-wide: the pair is removed from the session environment at once (review I1)
+      [TMUX, '-u', 'set-environment', '-t', '=My-App', '-u', 'CLAUDE_CODE_AUTO_COMPACT_WINDOW'],
+      [TMUX, '-u', 'set-environment', '-t', '=My-App', '-u', 'CLAUDE_AUTOCOMPACT_PCT_OVERRIDE'],
       [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-role', 'orchestrator'],
       [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-agent', `${w.project.key}/orchestrator`],
       [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-depth', '1'],
@@ -386,6 +389,9 @@ describe('startOrchestrator: the saved orchestrator (the project\'s pick)', () =
       [TMUX, '-u', 'new-session', '-d', '-s', 'My-App', '-n', 'orchestrator', '-c', w.project.dir, '-x', '200', '-y', '50',
         '-P', '-F', '#{pane_id}', '-e', 'CLAUDE_CODE_AUTO_COMPACT_WINDOW=400000', '-e', 'CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=84.2106', '--', CLAUDE,
         '--resume', PICK, '--model', 'opus', '--permission-mode', 'plan', '-n', 'My-App'],
+      // new-session -e is session-wide: the pair is removed from the session environment at once (review I1)
+      [TMUX, '-u', 'set-environment', '-t', '=My-App', '-u', 'CLAUDE_CODE_AUTO_COMPACT_WINDOW'],
+      [TMUX, '-u', 'set-environment', '-t', '=My-App', '-u', 'CLAUDE_AUTOCOMPACT_PCT_OVERRIDE'],
       [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-role', 'orchestrator'],
       [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-agent', `${w.project.key}/orchestrator`],
       [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-depth', '1'],
@@ -822,5 +828,95 @@ describe('startOrchestrator: the compaction variables reach tmux (fresh start, r
     const exec = fakeTmux();
     await startOrchestrator(w.project.key, w.ctx(exec, { findSession: sessionLookup({ live: true, pane: PICK_PANE }, w.project.key) }));
     assert.deepEqual(exec.calls, []);
+  });
+});
+
+// --- 0.4 (review I1): `new-session -e` is session-scoped, so nika unsets the pair from the session environment at once -------------
+
+describe('startOrchestrator: the compaction pair does not stay in the project session\'s environment', () => {
+  const unset = (name) => ['set-environment', '-t', '=My-App', '-u', name]; // as exec.of() returns it: the argv after `-u`
+  const ZSH = [{ id: '%1', session: 'My-App', window: 0, windowName: 'zsh', command: 'zsh' }];
+
+  test('(+) a fresh start unsets both names with fixed argv and an exact target, after new-session; the orchestrator\'s own pane keeps them', async () => {
+    const w = await world();
+    const exec = fakeTmux();
+    const r = await startOrchestrator(w.project.key, w.ctx(exec));
+    assert.equal(r.status, 200);
+    assert.deepEqual(exec.of('set-environment'), [unset(W_ENV), unset(P_ENV)]);
+    const subs = exec.calls.map((c) => c[2]);
+    assert.ok(subs.indexOf('set-environment') > subs.indexOf('new-session'), 'after new-session');
+    assert.deepEqual(exec.sessionEnv.get('My-App'), {}, 'the session environment is clean again');
+    assert.deepEqual(exec.panes.find((p) => p.id === r.body.pane).env, { [W_ENV]: '400000', [P_ENV]: '84.2106' }, 'the first pane was created with them');
+  });
+
+  test('(+) above the cap the PCT (100) is unset too; a resume on a new session unsets as well', async () => {
+    const w = await world({ compaction: { pct: 95 } });
+    const exec = fakeTmux();
+    await startOrchestrator(w.project.key, w.ctx(exec));
+    assert.deepEqual(exec.of('set-environment').map((a) => a[4]), [W_ENV, P_ENV]);
+    const v = await world();
+    await setOrchestrator(v.project.key, PICK, v.env);
+    const exec2 = fakeTmux();
+    await startOrchestrator(v.project.key, v.ctx(exec2, { findSession: sessionLookup({}, v.project.key) }));
+    assert.deepEqual(exec2.of('set-environment').map((a) => a[4]), [W_ENV, P_ENV]);
+    assert.ok(exec2.of('new-session')[0].includes('--resume'));
+  });
+
+  test('(+) new-window is pane-only: no unset, and the session environment is never touched', async () => {
+    const w = await world();
+    const exec = fakeTmux({ panes: ZSH });
+    const r = await startOrchestrator(w.project.key, w.ctx(exec));
+    assert.equal(exec.of('new-window').length, 1);
+    assert.deepEqual(exec.of('set-environment'), []);
+    assert.deepEqual(exec.panes.find((p) => p.id === r.body.pane).env, { [W_ENV]: '400000', [P_ENV]: '84.2106' });
+    assert.equal(exec.sessionEnv.has('My-App'), false);
+  });
+
+  test('(+) compaction off: no -e was sent, so nothing is unset', async () => {
+    const w = await world({ compaction: { enabled: false } });
+    const exec = fakeTmux();
+    await startOrchestrator(w.project.key, w.ctx(exec));
+    assert.deepEqual(exec.of('set-environment'), []);
+    assert.ok(!exec.calls.flat().includes('set-environment'));
+  });
+
+  test('(+) best effort: a failing unset does not fail the start; the pane is still tagged and remembered', async () => {
+    const w = await world();
+    const exec = fakeTmux({ failOn: ['set-environment'] });
+    const r = await startOrchestrator(w.project.key, w.ctx(exec));
+    assert.equal(r.status, 200);
+    assert.equal(r.body.created, true);
+    assert.equal(exec.of('set-environment').length, 2, 'both were tried');
+    assert.equal(exec.panes.find((p) => p.id === r.body.pane).role, 'orchestrator');
+  });
+
+  test('(−) the fake models the scope: a later new-window without -e sees nothing after nika\'s unset, and sees the pair without it', async () => {
+    const w = await world();
+    const exec = fakeTmux();
+    await startOrchestrator(w.project.key, w.ctx(exec));
+    const later = await exec(TMUX, ['-u', 'new-window', '-t', '=My-App:', '-n', 'shell', '-P', '-F', '#{pane_id}', '--', 'zsh']);
+    assert.deepEqual(exec.panes.find((p) => p.id === later.stdout.trim()).env, {});
+    // the same start with the unset failing leaves the pair in the session environment: a later pane inherits it (the bug the unset closes)
+    const v = await world();
+    const leaky = fakeTmux({ failOn: ['set-environment'] });
+    await startOrchestrator(v.project.key, v.ctx(leaky));
+    const leaked = await leaky(TMUX, ['-u', 'new-window', '-t', '=My-App:', '-n', 'shell', '-P', '-F', '#{pane_id}', '--', 'zsh']);
+    assert.deepEqual(leaky.panes.find((p) => p.id === leaked.stdout.trim()).env, { [W_ENV]: '400000', [P_ENV]: '84.2106' });
+  });
+
+  test('(−) the unset names only the two constants and the exact session; a live pick or a found orchestrator sends none', async () => {
+    const w = await world();
+    const exec = fakeTmux();
+    await startOrchestrator(w.project.key, w.ctx(exec));
+    for (const call of exec.of('set-environment')) {
+      assert.equal(call.length, 5);
+      assert.deepEqual(call.slice(0, 4), ['set-environment', '-t', '=My-App', '-u']);
+      assert.ok([W_ENV, P_ENV].includes(call[4]));
+    }
+    const v = await world();
+    await setOrchestrator(v.project.key, PICK, v.env);
+    const live = fakeTmux();
+    await startOrchestrator(v.project.key, v.ctx(live, { findSession: sessionLookup({ live: true, pane: PICK_PANE }, v.project.key) }));
+    assert.deepEqual(live.calls, []);
   });
 });

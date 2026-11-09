@@ -3,7 +3,7 @@
 // ctx.exec (execFile, fixed argv arrays, never a shell). src/spawn.js reuses the helpers exported here.
 import crypto from 'node:crypto';
 import { loadConfig, setOrchestrator, effectiveModels } from './store.js';
-import { compactLaunch } from './compact.js';
+import { compactLaunch, WINDOW_ENV, PCT_ENV } from './compact.js';
 import { clean } from './text.js';
 import { PROJECT_KEY, UUID, PANE_ID, TMUX_SESSION, RC_PREFIX, RC_NAME, CLAUDE_COMMAND } from './ids.js';
 
@@ -110,14 +110,28 @@ export function launchArgv(config, project, { sessionId, resume = false }) {
 }
 
 /**
- * The orchestrator's compaction variables as tmux `-e NAME=value` pairs (ADR 0014): [] when auto-compact is off, else the window and,
- * unless the target is above Claude's own cap, the PCT. W follows the orchestrator model the launch uses (`effectiveModels`, so a
+ * The orchestrator's compaction variables as tmux `-e NAME=value` pairs (ADR 0014): [] when auto-compact is off, else the window and
+ * the PCT, always both (`100` above Claude's own cap), so an inherited value never stays in force. W follows the orchestrator model the launch uses (`effectiveModels`, so a
  * project's own model counts). tmux takes `-e` values literally (no format expansion, spike S2 section 3) and compactLaunch has
  * validated them to digits and one dot. Throws EINVAL for a setting outside its ranges.
  */
 export function compactArgs(config, project) {
   const launch = compactLaunch(effectiveModels(config, project.key).orchestrator, config.compaction);
   return Object.entries(launch?.env ?? {}).flatMap(([name, value]) => ['-e', `${name}=${value}`]);
+}
+
+/**
+ * `new-session -e` puts the variable in the SESSION environment, which every later pane of the project's session inherits (a window you
+ * open, an agent spawned after the setting went off, a restarted orchestrator). The orchestrator's own pane already has its copy, so
+ * once the session exists the two names are removed from the session environment again (`set-environment -u`, fixed argv, exact
+ * target, only the two constant names nika put there). Best effort: the orchestrator runs either way.
+ */
+async function unsetCompactEnv(ctx, session, run) {
+  const sent = run.slice(0, run.indexOf('--')); // the tmux options; claude's own argv follows the --
+  for (const name of [WINDOW_ENV, PCT_ENV]) {
+    if (!sent.some((a) => a.startsWith(`${name}=`))) continue; // only a name this launch sent with -e
+    await tmux(ctx, 'set-environment', '-t', `=${session}`, '-u', name).catch(() => {});
+  }
 }
 
 // every pane of the project's tmux session, with its window: the pane's own record of who started it (`@nika-role`, `@nika-agent`)
@@ -208,6 +222,7 @@ export async function startOrchestrator(projectKey, ctx) {
     const { stdout } = await tmux(ctx, ...(exists
       ? ['new-window', '-t', `=${session}:`, '-n', 'orchestrator', '-c', tmuxLiteral(project.dir), ...run]
       : ['new-session', '-d', '-s', session, '-n', 'orchestrator', '-c', tmuxLiteral(project.dir), '-x', '200', '-y', '50', ...run]));
+    if (!exists) await unsetCompactEnv(ctx, session, run); // `new-session -e` is session-wide; new-window -e is this pane only
     const pane = String(stdout).trim();
     if (!PANE_ID.test(pane)) return fail(502, 'tmux_failed', 'tmux did not return a pane id');
     ctx.started?.set(pane, { key: projectKey, name: 'orchestrator', sessionId, role: 'orchestrator', mode: launchMode(config.permissionMode) });

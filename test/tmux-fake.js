@@ -15,6 +15,9 @@ const tmuxError = (message, code = 1) => Object.assign(new Error(message), { cod
  * panes: [{ id, session, window, windowName, title, command, role, agent, depth, parent }] (role = @nika-role, agent = @nika-agent = `<project key>/<name>`, depth = @nika-depth, parent = @nika-parent, '' = untagged). Options: enoent (every call fails like a missing
  * binary), failOn (sub-commands that exit 1), commandOf (pane_current_command of a pane created by new-session /
  * new-window / split-window, by default `claude` for the first two and `node` for split-window).
+ * Environment scope (tmux 3.2+, verified on 3.8): `new-session -e` sets the SESSION environment (exec.sessionEnv, which every later pane of the
+ * session inherits) and the first pane's; `new-window -e` sets only that pane's; `set-environment -t =<session> -u NAME` removes a name from
+ * the session environment, not from panes already running. A pane's own environment is `pane.env`.
  */
 export function fakeTmux({ panes = [], enoent = false, failOn = [], nextId = 20 } = {}) {
   const state = panes.map((p) => ({ window: 0, windowName: 'zsh', title: '', command: 'zsh', role: '', agent: '', depth: '', parent: '', ...p }));
@@ -22,8 +25,21 @@ export function fakeTmux({ panes = [], enoent = false, failOn = [], nextId = 20 
   let counter = nextId;
   const sessions = () => new Set(state.map((p) => p.session));
   const noServer = () => tmuxError('no server running on /tmp/tmux-1/default');
-  const create = (session, windowName, command) => {
-    const pane = { id: `%${counter++}`, session, window: state.filter((p) => p.session === session).length, windowName, title: '', command, role: '', agent: '', depth: '', parent: '' };
+  const sessionEnv = new Map(); // session name → { NAME: value }
+  // the `-e NAME=value` pairs before `--`, nothing else is accepted
+  const envPairs = (args) => {
+    const out = {};
+    const end = args.includes('--') ? args.indexOf('--') : args.length;
+    for (let i = 0; i < end; i++) {
+      if (args[i] !== '-e') continue;
+      const m = /^([A-Z][A-Z0-9_]*)=(.*)$/s.exec(args[i + 1] ?? '');
+      if (!m) throw new Error(`unexpected -e ${args[i + 1]}`);
+      out[m[1]] = m[2];
+    }
+    return out;
+  };
+  const create = (session, windowName, command, own = {}) => {
+    const pane = { id: `%${counter++}`, session, window: state.filter((p) => p.session === session).length, windowName, title: '', command, role: '', agent: '', depth: '', parent: '', env: { ...sessionEnv.get(session), ...own } };
     state.push(pane);
     return `${pane.id}\n`;
   };
@@ -62,12 +78,21 @@ export function fakeTmux({ panes = [], enoent = false, failOn = [], nextId = 20 
       case 'new-session': {
         const session = after(rest, '-s');
         if (sessions().has(session)) throw tmuxError(`duplicate session: ${session}`);
+        const pairs = envPairs(rest);
+        sessionEnv.set(session, pairs); // session-scoped: later panes of this session inherit it
         return { stdout: create(session, after(rest, '-n'), 'claude'), stderr: '' };
+      }
+      case 'set-environment': { // only `-t =<session> -u <NAME>` (nika's cleanup of the compaction pair)
+        const [t, target, flag, name] = rest;
+        if (t !== '-t' || flag !== '-u' || rest.length !== 4 || !/^[A-Z][A-Z0-9_]*$/.test(name)) throw new Error(`unexpected set-environment ${rest.join(' ')}`);
+        if (!target.startsWith('=') || !sessions().has(target.slice(1))) throw tmuxError(`can't find session: ${target}`);
+        delete sessionEnv.get(target.slice(1))?.[name];
+        return { stdout: '', stderr: '' };
       }
       case 'new-window': {
         const target = after(rest, '-t');
         if (!/^=[^:]+:$/.test(target) || !sessions().has(target.slice(1, -1))) throw tmuxError(`can't find session: ${target}`);
-        return { stdout: create(target.slice(1, -1), after(rest, '-n'), 'claude'), stderr: '' };
+        return { stdout: create(target.slice(1, -1), after(rest, '-n'), 'claude', envPairs(rest)), stderr: '' }; // -e here is pane-only
       }
       case 'split-window': {
         const target = after(rest, '-t');
@@ -100,6 +125,7 @@ export function fakeTmux({ panes = [], enoent = false, failOn = [], nextId = 20 
   };
   exec.calls = calls;
   exec.panes = state;
+  exec.sessionEnv = sessionEnv;
   /** Calls of one sub-command, as the argv after `-u`. */
   exec.of = (sub) => calls.filter((c) => c[2] === sub).map((c) => c.slice(2));
   return exec;

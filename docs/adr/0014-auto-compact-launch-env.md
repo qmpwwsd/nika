@@ -15,8 +15,10 @@ starts by hand are not touched. Spike S2 (Claude Code 2.1.319, tmux 3.8) measure
   PCT the session compacts at `window - 33000` (the 33k `/context` shows as the autocompact buffer). With the window unset
   ("auto" source) proactive compaction is off, so the window must always be set when a PCT is.
 - `/context` never shows the PCT, so the live threshold cannot be read back from the UI.
-- tmux `new-session -e` and `new-window -e` put a variable in the pane's environment, repeatable, and the value is literal
-  (no format expansion, `#` and spaces kept). The environment of a no-shell `spawn()` is the other place a value can go.
+- tmux `new-session -e` and `new-window -e` are repeatable and the value is literal (no format expansion, `#` and spaces kept). Their
+  scope differs (found in review, tmux 3.8): `new-window -e` sets the new pane's environment only; `new-session -e` sets the SESSION
+  environment, which every later pane of that tmux session inherits. `new-session -e` needs tmux 3.2 (`new-window -e`: 3.0). The
+  environment of a no-shell `spawn()` is the other place a value can go.
 - The user's own Claude settings may already carry a window (on the machine of the spike, 400k).
 
 ## Decision
@@ -33,7 +35,10 @@ starts by hand are not touched. Spike S2 (Claude Code 2.1.319, tmux 3.8) measure
   dot (above 0, at most 100; never `null`), and throws otherwise. A setting outside its ranges throws in `compactLaunch`. Whatever reaches a
   launch passed it: the orchestrator's `-e` values, and the agent's, which `_run-agent` checks again.
 - **Orchestrator.** The tmux call that creates its pane gets one `-e NAME=value` per variable, before `--`. The model is the
-  project's effective orchestrator model, so a per-project model changes `W`.
+  project's effective orchestrator model, so a per-project model changes `W`. After a `new-session` that carried `-e`, nika runs
+  `set-environment -t =<session> -u <NAME>` once per name it sent (fixed argv, exact target, only the two constant names; best
+  effort, the start answers as usual if it fails). The first pane already holds its copy, since a process environment is fixed when it
+  starts, and later panes inherit the global environment again. `new-window -e` is pane-only and needs no cleanup.
 - **Agents and sub-orchestrators.** `spawnAgent` computes `compactLaunch(v.model, config.compaction)` and stores
   `compact: { window, pct } | null` in `<name>.agent.json` (`pct` the PCT string; `null` is only for the whole `compact`, meaning off); `runAgent` asserts the exact key set,
   re-validates both values (exit 3 on any failure) and adds the two variables to a copy of its environment for the `spawn()` that
@@ -65,4 +70,10 @@ starts by hand are not touched. Spike S2 (Claude Code 2.1.319, tmux 3.8) measure
   The setting allows it (the owner's range is 20–95); the page's result line shows the number.
 - Both variables are set on every launch while the setting is on, so a window or PCT already in the tmux server's or the CLI's
   environment is overwritten, never inherited. Only with the setting off does the inherited environment apply.
+- The variables live only in the orchestrator's pane and in each agent's process. A window you open in the project's tmux session, or a
+  claude you start by hand there, does not get them, and neither does an agent spawned after the setting went off. If the cleanup
+  `set-environment -u` fails (best effort), the pair stays in the project session's environment until that tmux session ends, and a
+  pane started there with the setting off would inherit it; this is the one residual (T48).
+- tmux 3.2 or newer is required for `new-session -e`. On tmux 3.0 or 3.1 the default-on setting makes the orchestrator start fail with
+  tmux's own error; the remedy is a newer tmux or switching Auto-compact off in Settings. The README and `docs/packaging.md` state the floor.
 - Browser tier: the setting is read-only data nobody can change there; the tier has no launch path.

@@ -105,7 +105,7 @@ mirror, spawning agents in tmux, starting the orchestrator, adding projects and 
 session control to that window: permission modes, permission prompts, quick actions, slash commands and End (see
 [Session window (0.3)](#session-window-03)). The browser dashboard above stays read-only.
 
-**Requirements:** Node.js 22 or newer, tmux (the app's agent control: starting agents, the pane mirror, typing into sessions) and Claude Code (`claude`). The app does not bundle Node.js. Homebrew installs Node.js and tmux with nika, and the `.deb` installs tmux. The AppImage cannot declare dependencies, so install tmux and Node.js 22+ before you run it.
+**Requirements:** Node.js 22 or newer, tmux 3.2 or newer (the app's agent control: starting agents, the pane mirror, typing into sessions) and Claude Code (`claude`). The app does not bundle Node.js. Homebrew installs Node.js and tmux with nika, and the `.deb` installs tmux. The AppImage cannot declare dependencies, so install tmux and Node.js 22+ before you run it.
 
 ### Install
 

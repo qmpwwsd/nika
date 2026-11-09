@@ -75,8 +75,9 @@ Auto-compact (desktop app):
   row shows the result ("Compacts at about 320k tokens (about 160k on 200k-window models)"); a session never compacts later
   than 33k tokens before the end of its window, so 90 % of 400k reads as about 167k on a 200k-window model.
 - It applies only to sessions nika starts, from their next start. Running sessions and sessions you start yourself keep
-  Claude Code's own setting. With the switch off, nika sets nothing. Inside a session nika started, `/autocompact` is locked
-  to the setting; change it in Settings and restart the session.
+  Claude Code's own setting. With the switch off, nika sets nothing. The variables live only in the orchestrator's pane and in each
+  agent's process: windows you open in the project's tmux session do not get them. Needs tmux 3.2 or newer. Inside a session nika
+  started, `/autocompact` is locked to the setting; change it in Settings and restart the session.
 - API: `GET` and `PUT /api/app/settings` carry `compaction` (`enabled`, `pct`, `window`), and `GET /api/app/models` gives each
   model a `window`. nika sets `CLAUDE_CODE_AUTO_COMPACT_WINDOW` and `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` for the new claude and
   never the `--autocompact` flag. See `docs/contracts/api-app.md` and `docs/adr/0014-auto-compact-launch-env.md`.
