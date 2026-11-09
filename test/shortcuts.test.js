@@ -7,10 +7,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SHORTCUTS, shortcutsFor, isMac, isTextEntry, wantsHelp, wantsBack, backHint, helpHint, openShortcuts } from '../public/shortcuts.js';
+import { initDialogs, initMenus, openDialog } from '../public/ui.js';
 
 const SRC = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public', 'shortcuts.js'), 'utf8');
 
-// Glyphs are written as escapes so this file stays plain ASCII too.
+// Key glyphs are literal characters in this file; only public/shortcuts.js has to stay plain ASCII (it writes them as escapes).
 const CMD = '⌘';
 const SHIFT = '⇧';
 const CTRL = '⌃';
@@ -25,12 +26,12 @@ const table = (groups) => groups.map((g) => [g.group, g.rows.map((r) => [r.name,
 
 // ---- fake page (just what dom.js h() and openShortcuts touch) ----------------------------------------------------------
 
-const page = { active: null, ids: {}, h1: null, location: null };
+const page = { active: null, ids: {}, h1: null, location: null, dialogs: [], menus: [], docListeners: {}, focusLog: [] };
 
 class FNode {
   constructor(tag, text = '') {
     this.tag = tag; this.text = text; this.kids = []; this.attrs = {}; this.className = ''; this.listeners = {};
-    this.isConnected = true; this.open = false; this.shown = 0; this.id = '';
+    this.isConnected = true; this.open = false; this.shown = 0; this.id = ''; this.hidden = false; this.previousElementSibling = null;
   }
 
   setAttribute(k, v) { this.attrs[k] = String(v); }
@@ -38,6 +39,10 @@ class FNode {
   getAttribute(k) { return this.attrs[k] ?? null; }
 
   hasAttribute(k) { return k in this.attrs; }
+
+  removeAttribute(k) { delete this.attrs[k]; }
+
+  contains(n) { return this === n || this.kids.some((k) => k.contains(n)); }
 
   append(...nodes) { this.kids.push(...nodes); }
 
@@ -51,7 +56,7 @@ class FNode {
     for (const l of list) l.fn({ type });
   }
 
-  focus() { page.active = this; }
+  focus() { page.active = this; page.focusLog.push(this); }
 
   showModal() {
     if (this.open) throw new Error('already open');
@@ -88,7 +93,21 @@ before(() => {
     createElement: (tag) => new FNode(tag),
     createTextNode: (t) => new FNode('#text', t),
     getElementById: (id) => page.ids[id] ?? null,
-    querySelector: (sel) => (sel === 'h1' ? page.h1 : null),
+    get activeElement() { return page.active; },
+    addEventListener: (type, fn) => { (page.docListeners[type] ??= []).push(fn); },
+    // the selectors ui.js and shortcuts.js ask for; the screen heading answers both heading lookups
+    querySelector: (sel) => {
+      if (sel === 'h1' || sel === '.screen:not([hidden]) h1') return page.h1;
+      if (sel === 'dialog[open]') return page.dialogs.find((d) => d.open) ?? null;
+      if (sel === '.menu:not([hidden])') return page.menus.find((m) => !m.hidden) ?? null;
+      return null;
+    },
+    querySelectorAll: (sel) => {
+      if (sel === 'dialog') return [...page.dialogs];
+      if (sel === 'dialog[open]') return page.dialogs.filter((d) => d.open);
+      if (sel === '.menu:not([hidden])') return page.menus.filter((m) => !m.hidden);
+      return [];
+    },
   };
 });
 after(() => {
@@ -102,10 +121,15 @@ after(() => {
 function freshPage() {
   page.active = null;
   page.ids = {};
+  page.menus = [];
+  page.docListeners = {};
+  page.focusLog = [];
   for (const id of ['kbd-dlg', 'kbd-h', 'kbd-sub', 'kbd-body', 'kbd-foot']) {
     page.ids[id] = new FNode(id === 'kbd-dlg' ? 'dialog' : id === 'kbd-h' ? 'h2' : 'div');
     page.ids[id].id = id;
   }
+  page.ids['kbd-dlg'].setAttribute('data-own-focus', ''); // as in the markup: openShortcuts returns the focus itself
+  page.dialogs = [page.ids['kbd-dlg']];
   page.h1 = new FNode('h1');
   page.location = { hash: '', assigned: [], assign(u) { this.assigned.push(u); } };
   globalThis.location = page.location;
@@ -162,7 +186,7 @@ describe('shortcutsFor: the dashboard, browser tier', () => {
   test('(+) lists only Keyboard shortcuts (Mod+/) and Close', () => {
     assert.deepEqual(table(shortcutsFor({ window: 'dashboard', tier: 'browser', mac: false })), [
       ['Navigation', [['Keyboard shortcuts', 'Ctrl+/', 'Show this list']]],
-      ['Dialogs and menus', [['Close', 'Esc', 'Close the open menu.']]],
+      ['Dialogs and menus', [['Close', 'Esc', 'Close the open menu']]],
     ]);
     const mac = shortcutsFor({ window: 'dashboard', tier: 'browser', mac: true }).flatMap((g) => g.rows);
     assert.equal(cell(mac[0]), `${CMD}+/`);
@@ -504,6 +528,132 @@ describe('openShortcuts', () => {
     assert.equal(ids['kbd-sub'].textContent, 'Session window');
     assert.equal(tagged(ids['kbd-body'], 'section').length, 5);
     assert.equal(ids['kbd-foot'].textContent.includes('Single-key shortcuts: Off'), true);
+  });
+});
+
+// ---- next to the dashboard's menus and dialogs (the real initMenus / initDialogs of ui.js on the same fake page) ----------
+
+describe('openShortcuts next to menus and dialogs (ui.js)', () => {
+  /** A disclosure menu as menuEl() builds it: the button, then the list right after it; `item` is the control focus sits on. */
+  const addMenu = () => {
+    const btn = new FNode('button');
+    btn.setAttribute('aria-expanded', 'true');
+    const menu = new FNode('div');
+    menu.className = 'menu';
+    menu.setAttribute('data-up', '1');
+    const item = new FNode('button');
+    menu.append(item);
+    menu.previousElementSibling = btn;
+    page.menus.push(menu);
+    return { btn, menu, item };
+  };
+  /** One Esc as the browser treats it: the page's keydown handlers run, and unless one prevented the default, the open modal closes. */
+  const esc = () => {
+    let prevented = false;
+    for (const fn of page.docListeners.keydown ?? []) fn({ key: 'Escape', preventDefault() { prevented = true; } });
+    if (!prevented) page.dialogs.filter((d) => d.open).at(-1)?.close();
+    return prevented;
+  };
+  const show = (opener) => openShortcuts({ window: 'dashboard', tier: 'app', mac: false, singleKey: true, opener });
+
+  test('(+) a menu that was open is closed when the window opens, and one Esc then closes the window', () => {
+    const ids = freshPage();
+    initMenus();
+    initDialogs();
+    const { btn, menu, item } = addMenu();
+    show(item);
+    assert.equal(menu.hidden, true);
+    assert.equal(btn.getAttribute('aria-expanded'), 'false');
+    assert.equal(menu.hasAttribute('data-up'), false, 'the flip marker goes too, as closeMenu does');
+    assert.equal(esc(), false, 'the menu handler leaves this Esc to the dialog');
+    assert.equal(ids['kbd-dlg'].open, false, 'one press is enough');
+  });
+
+  test('(+) when focus was inside the closed menu, Close returns it to the menu button, not to the hidden item', () => {
+    const ids = freshPage();
+    const { btn, item } = addMenu();
+    show(item);
+    ids['kbd-dlg'].close();
+    assert.equal(page.active, btn);
+  });
+
+  test('(−) a menu that is already closed and an opener outside any menu are left alone', () => {
+    const ids = freshPage();
+    const { btn, menu } = addMenu();
+    menu.hidden = true;
+    btn.setAttribute('aria-expanded', 'false');
+    menu.setAttribute('data-up', '1');
+    const opener = new FNode('button');
+    show(opener);
+    assert.equal(menu.getAttribute('data-up'), '1');
+    ids['kbd-dlg'].close();
+    assert.equal(page.active, opener);
+  });
+
+  test('(+) ui.js: with a dialog open, Esc leaves an open menu to the dialog (nothing prevented, menu untouched)', () => {
+    const ids = freshPage();
+    initMenus();
+    const { menu } = addMenu();
+    ids['kbd-dlg'].showModal();
+    assert.equal(esc(), false);
+    assert.equal(menu.hidden, false);
+    assert.equal(ids['kbd-dlg'].open, false, 'the Esc went to the dialog');
+  });
+
+  test('(−) ui.js: with no dialog open, Esc still closes the open menu, prevents the default and focuses its button', () => {
+    freshPage();
+    initMenus();
+    const { btn, menu } = addMenu();
+    assert.equal(esc(), true);
+    assert.equal(menu.hidden, true);
+    assert.equal(btn.getAttribute('aria-expanded'), 'false');
+    assert.equal(page.active, btn);
+  });
+
+  test('(+) one focus-return path: Close and Esc put focus on the opener once, ui.js restoreFocus stays out of #kbd-dlg', () => {
+    for (const close of [(ids) => button(ids['kbd-foot'], 'Close').fire('click'), (ids) => ids['kbd-dlg'].close()]) {
+      const ids = freshPage();
+      initDialogs();
+      const opener = new FNode('button');
+      show(opener);
+      page.focusLog.length = 0;
+      close(ids);
+      assert.deepEqual(page.focusLog, [opener]);
+    }
+  });
+
+  test('(+) a gone opener: the screen heading gets the focus once, and is focusable', () => {
+    const ids = freshPage();
+    initDialogs();
+    const opener = new FNode('button');
+    show(opener);
+    opener.isConnected = false;
+    page.focusLog.length = 0;
+    ids['kbd-dlg'].close();
+    assert.deepEqual(page.focusLog, [page.h1]);
+    assert.equal(page.h1.getAttribute('tabindex'), '-1');
+  });
+
+  test('(−) every other dialog still gets its focus back from ui.js restoreFocus', () => {
+    freshPage();
+    initDialogs();
+    const other = new FNode('dialog');
+    page.dialogs.push(other);
+    other.listeners = {};
+    initDialogs();
+    const trigger = new FNode('button');
+    page.active = trigger;
+    openDialog(other, { focus: new FNode('h2') });
+    page.focusLog.length = 0;
+    other.close();
+    assert.equal(page.focusLog.at(-1), trigger);
+  });
+
+  test('(+) both pages mark #kbd-dlg data-own-focus, so initDialogs skips it', () => {
+    for (const f of ['index.html', 'session.html']) {
+      const html = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public', f), 'utf8');
+      assert.match(/<dialog\b[^>]*\bid="kbd-dlg"[^>]*>/.exec(html)?.[0] ?? '', /\bdata-own-focus\b/, f);
+    }
   });
 });
 

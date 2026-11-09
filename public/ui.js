@@ -218,11 +218,15 @@ function restoreFocus(dlg) {
   el?.focus();
 }
 
-/** `dlg.dataset.busy` set: a write is in flight, so Esc and the close buttons do nothing. */
+/**
+ * `dlg.dataset.busy` set: a write is in flight, so Esc and the close buttons do nothing.
+ * `data-own-focus` in the markup: the dialog's own code puts focus back (shortcuts.js openShortcuts), so restoreFocus skips it and
+ * focus has one owner instead of two that work only by listener order.
+ */
 export function initDialogs() {
   for (const dlg of $$('dialog')) {
     dlg.addEventListener('cancel', (e) => { if (dlg.dataset.busy) e.preventDefault(); });
-    dlg.addEventListener('close', () => restoreFocus(dlg));
+    if (!dlg.hasAttribute('data-own-focus')) dlg.addEventListener('close', () => restoreFocus(dlg));
   }
   document.addEventListener('click', (e) => {
     const c = e.target.closest('[data-close]');
@@ -271,7 +275,7 @@ export function initMenus() {
     $('button, a', m)?.focus();
   });
   document.addEventListener('keydown', (e) => {
-    if (e.key !== 'Escape') return;
+    if (e.key !== 'Escape' || $('dialog[open]')) return; // an open dialog takes this Esc itself; a menu under it must not use it up
     const m = $('.menu:not([hidden])');
     if (m) {
       e.preventDefault();

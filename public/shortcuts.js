@@ -38,7 +38,7 @@ export const SHORTCUTS = [
   row('dashboard', 'app', 'Dialogs and menus', 'Close', one('Esc'), 'Close the open menu or dialog'),
   // the browser tier cannot store the Settings switch, so "?" is app-tier only
   row('dashboard', 'browser', 'Navigation', 'Keyboard shortcuts', mod('/'), 'Show this list'),
-  row('dashboard', 'browser', 'Dialogs and menus', 'Close', one('Esc'), 'Close the open menu.'),
+  row('dashboard', 'browser', 'Dialogs and menus', 'Close', one('Esc'), 'Close the open menu'),
 
   row('session', 'app', 'Window', 'Back', BACK, 'Back to the dashboard'),
   row('session', 'app', 'Window', 'Keyboard shortcuts', HELP, 'Show this list'),
@@ -129,13 +129,33 @@ function section(g) {
 }
 
 /**
+ * Closes the disclosure menus that are open (the dashboard's; the session window has none) the way ui.js closeMenu does, without moving
+ * focus. ui.js cannot be imported here: the session page does not load it. Returns the control focus should come back to: `opener`, or
+ * the menu's button when `opener` sat inside a menu that is now hidden (a hidden control cannot take focus).
+ */
+function closeMenus(opener) {
+  let back = opener;
+  for (const m of document.querySelectorAll('.menu:not([hidden])')) {
+    m.hidden = true;
+    m.removeAttribute('data-up');
+    const btn = m.previousElementSibling;
+    btn?.setAttribute('aria-expanded', 'false');
+    if (opener && m.contains(opener)) back = btn;
+  }
+  return back;
+}
+
+/**
  * Opens #kbd-dlg (markup in index.html and session.html) for one window and tier, as a modal dialog: the heading gets focus, Esc or
- * Close closes it, and focus goes back to `opener` (or the screen heading when the opener is gone). The app tier's footer shows the
- * Single-key switch and a way to Settings; the browser tier's has only Close. Opening it twice does nothing.
+ * Close closes it, and focus goes back to `opener` (or the screen heading when the opener is gone). This function is the only owner
+ * of that focus: the markup carries data-own-focus, so ui.js initDialogs does not restore it a second time. An open menu is closed
+ * first, so one Esc closes the window. The app tier's footer shows the Single-key switch and a way to Settings; the browser tier's has
+ * only Close. Opening it twice does nothing.
  */
 export function openShortcuts({ window: win, tier, mac, singleKey, opener }) {
   const dlg = $('kbd-dlg');
   if (!dlg || dlg.open) return;
+  const back = closeMenus(opener);
   let leaving = false; // "Change in Settings" navigates; the new screen takes the focus
   const close = h('button', { type: 'button', class: 'btn', text: 'Close', onclick: () => dlg.close() });
   const toSettings = () => {
@@ -151,7 +171,7 @@ export function openShortcuts({ window: win, tier, mac, singleKey, opener }) {
     : [h('span', { class: 'sp' }), close]));
   dlg.addEventListener('close', () => {
     if (leaving) return;
-    let to = opener?.isConnected ? opener : null;
+    let to = back?.isConnected ? back : null;
     if (!to) {
       to = document.querySelector('.screen:not([hidden]) h1') ?? document.querySelector('h1');
       if (to && !to.hasAttribute('tabindex')) to.setAttribute('tabindex', '-1');
