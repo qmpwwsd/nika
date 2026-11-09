@@ -328,9 +328,9 @@ describe('status feed', () => {
     const group = (i) => ({ key: `/p/${i}`, root: `/p/${i}`, label: `proj\u001b[31m${i}`, counts: { busy: 1, idle: 2, other: 3, ended: 4, total: 10 } });
     const s = statusLine({ counts: { busy: 5, idle: 6, other: 7, ended: 8, total: 26 }, groups: Array.from({ length: 12 }, (_, i) => group(i)) });
     assert.equal(s.projects.length, 8);
-    assert.equal(s.projects[0].name, 'proj [31m0');
+    assert.equal(s.projects[0].name, 'proj0'); // the whole ESC[31m sequence is removed
     assert.equal(s.attention, 7);
-    assert.deepEqual(s.projects[0], { key: s.projects[0].key, name: 'proj [31m0', busy: 1, idle: 2, attention: 3 });
+    assert.deepEqual(s.projects[0], { key: s.projects[0].key, name: 'proj0', busy: 1, idle: 2, attention: 3 });
     assert.equal(JSON.stringify(s).includes('/p/'), false); // keys are hashes, no paths
     assert.equal(statusLine({ counts: { busy: 0, idle: 0, other: 0, ended: 0, total: 0 }, groups: [{ key: '(unknown)', root: null, label: '(unknown)', counts: { busy: 0, idle: 0, other: 0, ended: 0, total: 0 } }] }).projects[0].name, '(unknown)');
   });

@@ -28,8 +28,15 @@ Session control (desktop app; the browser dashboard on :3335 stays read-only):
   it, and the dashboard offers the same once. After `brew upgrade`, `nika`, `nika open` and `nika app` update a copy
   nika made (the app also offers Update app), and `nika doctor` reports it. nika never writes to `/Applications` and
   never replaces anything in `~/Applications/nika.app` that is not nika's own bundle.
+- Stop works in vim input mode: the first Esc only leaves insert mode, so Stop (and End, when Claude is busy) now sends
+  a second Esc when the first one did not end the turn. Stop sends nothing when Claude is idle.
+- Bypass guard: nika's keys route refuses Enter, a digit or a paste while a permission prompt that mentions bypass is
+  on screen (the question included); answer those in the terminal. The prompt buttons read the whole prompt, not only
+  the option.
+- Switching modes never stops quietly in Bypass: it keeps pressing while the footer reads Bypass even if Claude looks
+  busy, retries once when the key limit hits, and otherwise reports that Claude is still in Bypass.
 - App tier API (never mounted on :3335): `GET /api/app/modes`, `/commands` and `/models`; `POST /api/app/pane/:id/mode`,
-  `/answer`, `/command` and `/end`; `POST /api/app/app-copy`. The capture gains `mode`, `modeConfirmed` and `prompt`,
+  `/answer`, `/command`, `/stop` and `/end`; `POST /api/app/app-copy`. The capture gains `mode`, `modeConfirmed` and `prompt`,
   `/api/app/me` gains `appCopy`, and the config gains `ui.singleKeyShortcuts`. `MODEL_ID` accepts `best`, `opusplan` and
   the `[1m]` suffix.
 - Docs: ADR 0010 (session control through the TUI) and 0011 (app copy), `docs/contracts/claude-tui.md` (the Claude Code

@@ -172,7 +172,10 @@ only. No network call. A custom ID is accepted wherever a model is, when it matc
                  "text": "<cleanBlock()>", "tool": "<name>?", "truncated": false } ],
   "nextBefore": 123456 | null }
 ```
-Text is passed through `cleanBlock()` (keeps `\n` and `\t`, strips every other control and bidi code point) and the
+Text is passed through `cleanBlock()` (first removes whole terminal escape sequences: CSI `ESC [ … final`, OSC
+`ESC ] … BEL|ESC \` (an unterminated OSC drops the rest of the text) and two-character `ESC @`–`ESC _`, so `ESC[2mCompactedESC[22m`
+reads `Compacted` and a link's text stays while its target goes; a literal `[2m` without ESC is text and stays; then keeps
+`\n` and `\t` and strips every other control and bidi code point; `clean()` does the same for one line) and the
 page renders it with `textContent`.
 
 ### `GET /api/app/pane/:id/capture`
@@ -234,8 +237,22 @@ control → 400. `paste`: `\r\n` and `\r` become `\n`; every other C0 except `\n
 the bracketed-paste end marker cannot be forged), then sent with bracketed paste (§8); tmux turns `\n` into CR inside
 the paste (no `-r`), as a terminal paste would. Every validation failure, including size, is `400 invalid`. `keys` ≤ 8 entries, each ∈
 `KEY_NAME`, sent after the text or paste. Same pane rule as capture. 20 requests/s per pane → **429**. Response
-`200 { "sent": { "text": 12, "paste": 0, "keys": 1 } }` (counts of characters / keys sent). Stop in the session
-window is this route with `{ "keys": [ "Escape" ] }` (ends the turn; the session stays).
+`200 { "sent": { "text": 12, "paste": 0, "keys": 1 } }` (counts of characters / keys sent). Stop is no longer this route:
+it is `POST /api/app/pane/:id/stop` below (a bare `Escape` does not interrupt Claude while its input is in vim insert mode).
+
+Bypass-prompt guard (0.3, T26). `Enter` confirms the highlighted option of a permission prompt and a digit picks one, so a
+request whose `keys` contains `Enter`, whose `text` contains an ASCII digit `[0-9]`, or that has any `paste`, first takes a
+fresh capture (never the 250 ms cache) and looks at the screen:
+
+- the capture fails → that status and body, nothing sent;
+- a permission prompt is on screen (`prompt` non-null) and its prompt window, `lastNonBlank(rows, PROMPT_ROWS).join(' ')`
+  (the last 15 non-blank rows, the same window the `sig` covers), mentions bypass (`mentionsBypass` in `src/mode.js`: NFKC,
+  letters only, any case, so `By-pass` and full-width letters count) → `409 { "error": "bypass-prompt", "message":
+  "Answer this prompt in the terminal" }`, nothing sent;
+- else the request goes out as before.
+
+A request with none of those three (letters without digits, arrows, `Escape`, `BTab`, key chips) skips the capture and is as
+fast as in 0.2. The terminal itself is the way to answer such a prompt: nika never moves a session into bypass (rule 12).
 
 ### `POST /api/app/pane/:id/mode` (body ≤ 4 KB, `CAP.small`)
 ```json
@@ -263,7 +280,23 @@ order:
 
 The cycle may pass through `bypassPermissions` on the way when Claude's cycle holds it (a session the user launched
 with bypass allowed); nika never targets it (rule 12). A 409 or a failed send after some presses leaves Claude in the
-mode the last press reached; the page reads it from the next capture.
+mode the last press reached; the page reads it from the next capture. Bypass is never left behind silently (0.3, T23):
+
+- **`presses` in every failure.** Every non-200 answer after at least one press carries `"presses": <n>` in its body, the
+  409s of the footer wait and the idle re-check included (a failed send carries it also with 0).
+- **The held mode is forgotten.** When such an answer comes back, the route sets the pane's held mode to `unknown`
+  (it was the last footer reading, and the footer has changed since), so the next capture whose footer cannot be read
+  reports `mode: "unknown"` instead of a mode that is no longer true, and a started pane's launch mode no longer stands in.
+- **No registry wait inside bypass.** When the footer read after a press is `bypassPermissions`, the next press does not
+  need registry state `idle` (Claude in bypass runs its tools unasked, and a busy registry must not stop the switch from
+  leaving it): a fresh capture is taken, a permission prompt on screen or an unreadable footer ends the switch with
+  409 `{ "error": "stopped-in-bypass", "presses": n }`, otherwise the loop presses again within the same 6-press limit.
+- **One retry of the press that leaves bypass.** A key send answering 429 while the footer last read
+  `bypassPermissions` waits 1 s and is tried once more; a second failure is `stopped-in-bypass`.
+- **Every other ending in bypass is loud.** Not in the cycle, 6 presses used, a failed send, or an unreadable or
+  unchanged footer, while the last footer reading is `bypassPermissions` → 409 `stopped-in-bypass` with `presses` (the
+  page tells the user Claude is still in Bypass). A footer that stays unreadable after a press in any other mode is
+  409 `mode-unknown` with `presses`.
 
 ### `POST /api/app/pane/:id/answer` (body ≤ 4 KB, `CAP.small`)
 ```json
@@ -277,8 +310,9 @@ Answers a permission prompt with a fresh parse (T26); "Esc = No" stays the keys 
 3. Fresh capture. No `prompt` on screen → 409 `no-prompt`.
 4. The prompt's `sig` differs from the body's → 409 `prompt-changed`. The same `sig` was answered on this pane in the
    last 3 s (a double click, or a second window, before Claude redraws) → 409 `already-answered`, nothing sent.
-5. `n` is not among the prompt's options, or that option's label contains `bypass` (any case; rule 12: nika never
-   moves a session into bypass) → `400 invalid`.
+5. `n` is not among the prompt's options, or the prompt mentions bypass anywhere in its window: the last 15 non-blank
+   rows (question included, not only the option's label), the option's label or its full wrapped text (`mentionsBypass`,
+   any case; rule 12: nika never moves a session into bypass) → `400 invalid`, "this option is answered in the terminal".
 6. Send the digit as literal text through the keys path (`send-keys -l -- <n>`, counts toward its 20 requests/s per
    pane; no Enter, `claude-tui.md` §2) → `200 { "answered": 1 }`; a failed send → that send's status and body.
 
@@ -286,8 +320,8 @@ Answers a permission prompt with a fresh parse (T26); "Esc = No" stays the keys 
 ```json
 { "text": "/compact" }
 ```
-Types one slash command into Claude's input and presses Enter, safely; the quick actions (Compact, Clear, Model) use
-it. `text` = `/` + a `COMMAND_NAME`, optionally one space and arguments, ≤ 200 chars, no C0/C1 controls, else
+Types one slash command into Claude's input and presses Enter, safely; the quick actions (Compact, Clear, Model, and
+Rewind, which sends `/rewind`; the page change is 0.3 task 14b) use it. `text` = `/` + a `COMMAND_NAME`, optionally one space and arguments, ≤ 200 chars, no C0/C1 controls, else
 `400 invalid`. The composer's own Send stays the keys route (the user's typing passes through as in 0.2).
 
 1. Ineligible pane → `404 not_found`. Another control action running on this pane → 409 `busy-switching`.
@@ -297,13 +331,46 @@ it. `text` = `/` + a `COMMAND_NAME`, optionally one space and arguments, ≤ 200
    second row fails the exact one-row check → `C-u`, 409 `not-at-prompt`) → `200 { "sent": true }`; a failed send
    → that send's status and body.
 
+First-character probe (End's step 5 and this route, 0.3). Vim normal mode draws no marker, and a `/` typed there
+opens a history search instead of a slash (`claude-tui.md` §5). So when nothing says vim is on (no remembered
+`-- INSERT --` for the pane, none seen in this action) and `-- INSERT --` is not shown, nika types `/` alone (every
+command text starts with `/`) and takes fresh captures (up to 4, 150 ms apart) until one of three things shows:
+
+- the input box reads exactly `❯ /`: the plain input; nika types `text` without its first character and goes on to the
+  exact read-back of the whole text and Enter;
+- a row of the last 3 non-blank rows holds `Esc i / for slash commands` (the history search): nika sends `Escape`, waits
+  until the empty input box is back, then takes the vim road (`i`, require `-- INSERT --`, which records vim for the pane)
+  and types the whole `text`; the box not coming back is 409 `not-at-prompt`;
+- anything else, or nothing within the reads: nika's `/` is removed as far as cleanup can tell it from a draft
+  (`C-u` rounds) and the answer is 409 `not-at-prompt`; no Enter.
+
+A draft in the box is never touched: the empty-box check of step 3 comes first (409 `input-not-empty`).
+
+### `POST /api/app/pane/:id/stop` (body ≤ 4 KB, `CAP.small`)
+Body `{}` (a JSON object, `Content-Type: application/json`). Interrupts Claude's turn; the session stays. Same guard and
+pane rule as the other control routes. It does **not** take the per-pane lock (a mode switch, command or End that is
+waiting must not block Stop). Steps:
+
+1. Ineligible pane → `404 not_found`.
+2. Fresh capture and registry state. A permission prompt on screen → 409 `prompt-open` (Stop never answers a prompt; use
+   the prompt buttons or Esc). The state is not a non-empty string other than `idle` (idle, no live session, two sessions
+   on the pane) → 409 `not-busy`, nothing sent.
+3. Interrupt. Without `-- INSERT --` on screen: one `Escape`. With `-- INSERT --` (Claude's vim insert mode; the first
+   `Escape` only leaves it, `claude-tui.md` §5): send `Escape`, take fresh captures (up to 4, 150 ms apart) until
+   `-- INSERT --` is gone (still shown → 409 `mode-unknown`, no second key), read the registry state again, and send a second
+   `Escape` only if it is still busy.
+4. `200 { "stopped": true, "presses": 1 }` (or `2`). A failed capture or key send → its status and body.
+
 ### `POST /api/app/pane/:id/end` (body ≤ 4 KB, `CAP.small`)
 Body `{}`. Steps, in this order:
 
 1. Ineligible pane (same rule as capture) → `404 not_found`. Another control action running on this pane → 409
    `busy-switching`.
-2. Fresh capture and registry state. When the state is not `idle` or a `prompt` is on screen: send `Escape` (cancel,
-   the "No" path of a prompt), wait 1 s, then take a fresh capture and read the registry state again.
+2. Fresh capture and registry state. A `prompt` on screen: send `Escape` once (cancel, the "No" path). A registry state
+   that is a non-empty string other than `idle` (busy): interrupt as the stop route above does (in vim insert mode two
+   `Escape`s, the second only while the registry still says busy). No state at all (no live session on the pane, or two
+   claim it) with no prompt on screen → 409 `not-idle`, **no key sent**. After an `Escape`: wait 1 s, then take a fresh
+   capture and read the registry state again.
 3. The state is still not `idle`, or a `prompt` is still on screen → 409 `not-idle`, nothing typed. Footer `unknown`
    (a dialog may be open) → 409 `mode-unknown`, nothing typed. So End can never answer a prompt or a dialog.
 4. Input box (`claude-tui.md` §5: the rows between the last two rule rows made only of `─`; the no-break space after

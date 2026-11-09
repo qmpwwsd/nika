@@ -2,7 +2,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import * as mode from '../src/mode.js';
 import {
-  MODES, MODE_TARGETS, PROMPT_ROWS, FOOTER, OPTION, rowText, lastNonBlank, modeFromRows, promptFromRows,
+  MODES, MODE_TARGETS, PROMPT_ROWS, FOOTER, OPTION, rowText, lastNonBlank, modeFromRows, promptFromRows, mentionsBypass,
 } from '../src/mode.js';
 import { parseCapture } from '../src/mirror.js';
 
@@ -393,6 +393,20 @@ describe('promptFromRows', () => {
     assert.equal(promptFromRows(rowsOf('', '')), null);
     for (const bad of [null, undefined, 'Esc to cancel', 7, {}, [null], [[{}]]]) {
       assert.equal(promptFromRows(bad), null, String(bad));
+    }
+  });
+});
+
+describe('mentionsBypass', () => {
+  test('(+) the word in any case, width, spacing, punctuation or invisible characters is found', () => {
+    for (const t of ['bypass', 'Yes, and BYPASS permissions', 'b-y-p-a-s-s', 'b y p a s s', '\uff42\uff59\uff50\uff41\uff53\uff53 mode', 'by\u200bpass', 'by\u00adpass', 'BYPASS_permissions']) {
+      assert.equal(mentionsBypass(t), true, JSON.stringify(t));
+    }
+  });
+
+  test('(−) text without the word, and the empty string, are not bypass', () => {
+    for (const t of ['', 'Yes', 'Do you want to proceed?', 'allow edits for this session', 'by pas']) {
+      assert.equal(mentionsBypass(t), false, JSON.stringify(t));
     }
   });
 });

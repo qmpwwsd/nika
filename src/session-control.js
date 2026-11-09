@@ -6,7 +6,7 @@
 // exactly what nika typed (claude-tui.md section 5), so a user's draft is never sent, extended or cleared.
 import { createHash } from 'node:crypto';
 import { CLAUDE_COMMAND } from './ids.js';
-import { MODE_TARGETS, OPTION, PROMPT_ROWS, lastNonBlank, modeFromRows, promptFromRows, rowText } from './mode.js';
+import { MODE_TARGETS, OPTION, PROMPT_ROWS, lastNonBlank, mentionsBypass, modeFromRows, promptFromRows, rowText } from './mode.js';
 
 const EXIT_POLL_MS = 500;
 // A rule row of Claude's input box: made only of box-drawing dashes. The box is what lies between the last two.
@@ -16,6 +16,10 @@ const PROMPT_CHAR = '❯';
 const plain = (text) => text.replace(/\xa0/g, ' ');
 const INSERT_PREFIX = /^\s{0,2}-- INSERT --/;
 const CLEAN_ROUNDS = 6; // C-u clears one visual row, so a wrapped line takes one round per row
+const BYPASS_RETRY_MS = 1000; // wait before the one retry of a press out of bypass that was rate limited
+// The hint row of Claude's history search, which `/` opens in vim normal mode (claude-tui.md section 5, Claude Code 2.1.319).
+// It sits at the bottom of that screen, so only the last rows are read: older output cannot pose as it.
+const HISTORY_HINT = 'Esc i / for slash commands';
 
 const conflict = (error) => ({ status: 409, body: { error } });
 const invalid = (message) => ({ status: 400, body: { error: 'invalid', message } });
@@ -23,8 +27,9 @@ const ended = (value) => ({ status: 200, body: { ended: value } });
 const realSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 /** Number of waits of `stepMs` that cover `totalMs` (at least one): every wait loop is bounded by this count, never by a clock. */
 const steps = (totalMs, stepMs) => Math.max(1, Math.ceil(totalMs / stepMs));
-// Letters only, after NFKC, lower-cased: case, width, spacing, punctuation and invisible characters cannot hide the word.
-const mentionsBypass = (text) => text.normalize('NFKC').replace(/[^\p{L}]/gu, '').toLowerCase().includes('bypass');
+/** A registry state that means a turn is running or waiting: any non-empty string but `idle` (null and undefined are no state at all). */
+const isBusy = (state) => typeof state === 'string' && state !== '' && state !== 'idle';
+const historyShown = (rows) => lastNonBlank(rows, 3).some((t) => plain(t).includes(HISTORY_HINT));
 
 /** The prompt's identity: 16 hex chars of sha256 over the rows promptFromRows reads. Capture publishes it, answer checks it. */
 export function promptSig(rows) {
@@ -160,17 +165,24 @@ export function createSessionControl({
 
   const promptOpen = (rows) => promptFromRows(rows) !== null;
 
-  /** A fresh capture plus the registry state: { rows, idle } (idle = state idle and no permission prompt) or { res }. */
+  /** A fresh capture plus the registry state: { rows, state, idle } (idle = state idle and no permission prompt) or { res }. */
   async function readIdle(pane, ctx) {
     const seen = await look(pane, ctx);
     if (seen.res) return seen;
-    return { rows: seen.rows, idle: (await stateNow(pane)) === 'idle' && !promptOpen(seen.rows) };
+    const state = await stateNow(pane);
+    return { rows: seen.rows, state, idle: state === 'idle' && !promptOpen(seen.rows) };
   }
 
   /** Step 4 of the mode route: an idle pane's fresh capture, else { res: 409 not-idle }. */
   async function idleLook(pane) {
     const seen = await readIdle(pane);
     return seen.res || seen.idle ? seen : { res: conflict('not-idle') };
+  }
+
+  /** While the footer reads bypass the next press does not wait for the registry: a fresh look, and a prompt on screen is a { res }. */
+  async function bypassLook(pane) {
+    const seen = await look(pane);
+    return seen.res || (promptOpen(seen.rows) ? { res: conflict('prompt-open') } : seen);
   }
 
   /** True only when the pane is gone or no longer runs claude. A failing lookup proves nothing, so it is false. */
@@ -183,15 +195,19 @@ export function createSessionControl({
     }
   }
 
-  /** After a BTab: read the footer up to settleMs / pollMs times until it shows a mode other than `before`; unreadable or unchanged is mode-unknown. */
+  /**
+   * After a BTab: read the footer up to settleMs / pollMs times until it shows a mode other than `before`: { mode }. Unreadable
+   * or unchanged is { res: mode-unknown, mode } with what the last read showed (`before` when it never changed, else `unknown`).
+   */
   async function settle(pane, before) {
+    let mode = 'unknown';
     for (let i = 0; i < steps(settleMs, pollMs); i += 1) {
       await sleep(pollMs);
       const seen = await look(pane);
-      const mode = seen.rows ? modeFromRows(seen.rows) : 'unknown'; // a failed capture reads as unknown: keep polling
+      mode = seen.rows ? modeFromRows(seen.rows) : 'unknown'; // a failed capture reads as unknown: keep polling
       if (mode !== 'unknown' && mode !== before) return { mode };
     }
-    return { res: conflict('mode-unknown') };
+    return { res: conflict('mode-unknown'), mode };
   }
 
   /**
@@ -235,6 +251,18 @@ export function createSessionControl({
     }
   }
 
+  /** vim normal mode: types `i` and waits for `-- INSERT --`. Null when it shows, else { failed } or { res } (a stray `i` is removed first). */
+  async function enterInsert(pane, ctx) {
+    const sent = await keys.send(pane, { text: 'i' });
+    if (sent.status !== 200) return { failed: sent };
+    const shown = await settled(pane, insertShown, ctx);
+    if (shown.res) return { failed: shown.res };
+    if (shown.rows) return null;
+    // vim was off: the i landed as text, and it is the only thing nika typed
+    if (boxReads(inputBox(shown.last), 'i')) await keys.send(pane, { keys: ['C-u'] });
+    return { res: conflict('mode-unknown') };
+  }
+
   /**
    * Types `text` into Claude's input and presses Enter, for End and runCommand (claude-tui.md section 5). `rows` is the
    * fresh capture the caller has already checked (idle, footer readable); `ctx.insert` says whether any capture of this
@@ -242,23 +270,43 @@ export function createSessionControl({
    * body of the send or capture that failed. After a 409 `not-at-prompt` or a failed capture nika's own text is removed
    * as far as cleanUp can tell it apart from a draft; it may remain when a send fails, a capture fails or the box holds
    * something else. A stray `i` (vim was off) is removed with one C-u before the 409 `mode-unknown`.
+   *
+   * vim normal mode draws no marker, so when nothing says vim is on, a command (it starts with `/`) is probed: `/` alone
+   * first. A plain input shows it, and the rest follows. In vim normal mode `/` opens a history search instead, which is
+   * closed with one Escape before the usual vim road (`i`, INSERT, the whole text). Any other screen: nika's `/` is removed
+   * and nothing else is sent.
    */
   async function typeCommand(pane, rows, text, ctx) {
     if (!boxIsEmpty(inputBox(rows))) return { res: conflict('input-not-empty') }; // a draft is never sent, extended or cleared
+    let rest = text; // what is still to be typed
     // vim normal mode: the keys would be vim commands. Evidence of vim: the pane's memory, or INSERT seen in this action.
-    if (((await vimOf(pane)) || ctx.insert) && !insertShown(rows)) {
-      const sent = await keys.send(pane, { text: 'i' });
-      if (sent.status !== 200) return { failed: sent };
-      const shown = await settled(pane, insertShown, ctx);
-      if (shown.res) return { failed: shown.res };
-      if (!shown.rows) {
-        // vim was off: the i landed as text, and it is the only thing nika typed
-        if (boxReads(inputBox(shown.last), 'i')) await keys.send(pane, { keys: ['C-u'] });
-        return { res: conflict('mode-unknown') };
+    if ((await vimOf(pane)) || ctx.insert) {
+      const stopped = insertShown(rows) ? null : await enterInsert(pane, ctx);
+      if (stopped) return stopped;
+    } else if (text.startsWith('/')) {
+      const slash = await keys.send(pane, { text: '/' });
+      if (slash.status !== 200) return { failed: slash };
+      const probed = await settled(pane, (seen) => boxReads(inputBox(seen), '/') || historyShown(seen), ctx);
+      if (!probed.rows) {
+        await cleanUp(pane, '/', ctx);
+        return probed.res ? { failed: probed.res } : { res: conflict('not-at-prompt') };
+      }
+      if (boxReads(inputBox(probed.rows), '/')) {
+        rest = text.slice(1);
+      } else { // the history search: close it, then the usual vim road
+        const esc = await keys.send(pane, { keys: ['Escape'] });
+        if (esc.status !== 200) return { failed: esc };
+        const back = await settled(pane, (seen) => boxIsEmpty(inputBox(seen)), ctx);
+        if (back.res) return { failed: back.res };
+        if (!back.rows) return { res: conflict('not-at-prompt') };
+        const stopped = insertShown(back.rows) ? null : await enterInsert(pane, ctx);
+        if (stopped) return stopped;
       }
     }
-    const sent = await keys.send(pane, { text });
-    if (sent.status !== 200) return { failed: sent };
+    if (rest !== '') {
+      const sent = await keys.send(pane, { text: rest });
+      if (sent.status !== 200) return { failed: sent };
+    }
     const echoed = await settled(pane, (seen) => boxReads(inputBox(seen), text), ctx);
     if (!echoed.rows) {
       await cleanUp(pane, text, ctx);
@@ -268,27 +316,64 @@ export function createSessionControl({
     return enter.status === 200 ? null : { failed: enter };
   }
 
+  /**
+   * Interrupts Claude's turn or answers a prompt with No, with as few Escapes as possible; `rows` and `state` are a fresh
+   * capture and the registry state read with it. A prompt on screen: one Escape. A busy state (a non-empty string but `idle`):
+   * one Escape, except in vim INSERT, where the first Escape only leaves INSERT (claude-tui.md section 5): then it waits for
+   * `-- INSERT --` to go (still shown: 409 mode-unknown, no second key), reads the state again, and sends the second
+   * Escape only if it is still busy. Otherwise (idle, no state, an ambiguous pane) no key at all.
+   * Returns { presses } (Escapes sent), { res } (a 409 or a failed capture) or { failed } (the send that failed).
+   */
+  async function interrupt(pane, rows, state, ctx) {
+    const escape = async (n) => {
+      const sent = await keys.send(pane, { keys: ['Escape'] });
+      return sent.status === 200 ? { presses: n } : { failed: sent };
+    };
+    if (promptOpen(rows)) return escape(1);
+    if (!isBusy(state)) return { presses: 0 };
+    const first = await escape(1);
+    if (first.failed || !insertShown(rows)) return first;
+    const gone = await settled(pane, (seen) => !insertShown(seen), ctx);
+    if (gone.res) return { res: gone.res };
+    if (!gone.rows) return { res: conflict('mode-unknown') };
+    return isBusy(await stateNow(pane)) ? escape(2) : first;
+  }
+
   function switchMode(pane, target) {
     if (!MODE_TARGETS.includes(target)) return Promise.resolve(invalid(`target must be one of ${MODE_TARGETS.join(', ')}`));
     return exclusive(pane, async () => {
       let presses = 0;
       let start = null;
+      let last = null; // the mode the footer showed last, or null/unknown when it showed none since the last press
+      // Every failure after a press carries the press count (the route then forgets its held mode). While the footer last read
+      // bypassPermissions every ending is the loud one: stopping there would leave Claude running every tool without asking.
+      const fail = (res, always = false) => {
+        const out = last === 'bypassPermissions' ? conflict('stopped-in-bypass') : res;
+        return presses > 0 || always ? { status: out.status, body: { ...out.body, presses } } : out;
+      };
       let seen = await idleLook(pane);
       for (;;) { // each round: classify what is on screen now, press once, wait for the footer to change
-        if (seen.res) return seen.res;
+        if (seen.res) return fail(seen.res);
         const mode = modeFromRows(seen.rows);
-        if (mode === 'unknown') return conflict('mode-unknown'); // never press blind
+        if (mode === 'unknown') return fail(conflict('mode-unknown')); // never press blind
+        last = mode;
         if (mode === target) return { status: 200, body: { mode, presses } };
-        if (mode === 'dontAsk') return conflict('not-in-cycle'); // nika never switches to or from it
+        if (mode === 'dontAsk') return fail(conflict('not-in-cycle')); // nika never switches to or from it
         start ??= mode;
-        const sent = await keys.send(pane, { keys: ['BTab'] });
-        if (sent.status !== 200) return { status: sent.status, body: { ...sent.body, presses } };
+        let sent = await keys.send(pane, { keys: ['BTab'] });
+        if (sent.status === 429 && mode === 'bypassPermissions') { // the one press worth a second try: it leaves bypass
+          await sleep(BYPASS_RETRY_MS);
+          sent = await keys.send(pane, { keys: ['BTab'] });
+        }
+        if (sent.status !== 200) return fail({ status: sent.status, body: sent.body }, true);
         presses += 1;
         const next = await settle(pane, mode);
-        if (next.res) return next.res;
+        last = next.mode;
+        if (next.res) return fail(next.res);
         if (next.mode === target) return { status: 200, body: { mode: next.mode, presses } };
-        if (next.mode === start || presses >= maxPresses) return conflict('not-in-cycle');
-        seen = await idleLook(pane); // the registry state is read again before every press
+        if (next.mode === start || presses >= maxPresses) return fail(conflict('not-in-cycle'));
+        // the registry state is read again before every press, except in bypass: leaving it must not wait for a busy registry
+        seen = next.mode === 'bypassPermissions' ? await bypassLook(pane) : await idleLook(pane);
       }
     });
   }
@@ -298,8 +383,10 @@ export function createSessionControl({
       let seen = await readIdle(pane, ctx);
       if (seen.res) return seen.res;
       if (!seen.idle) {
-        const esc = await keys.send(pane, { keys: ['Escape'] }); // cancels a turn or answers a prompt with No
-        if (esc.status !== 200) return ended(await isGone(pane));
+        const stopped = await interrupt(pane, seen.rows, seen.state, ctx); // cancels a turn or answers a prompt with No
+        if (stopped.res) return stopped.res;
+        if (stopped.failed) return ended(await isGone(pane));
+        if (stopped.presses === 0) return conflict('not-idle'); // no live session, or two claim the pane: nothing is sent
         await sleep(escWaitMs);
         seen = await readIdle(pane, ctx);
         if (seen.res) return seen.res;
@@ -315,6 +402,22 @@ export function createSessionControl({
       }
       return ended(false);
     });
+  }
+
+  /**
+   * Stop (api-app.md section 3). It does not take the per-pane lock: it must work while a switch or a command waits, and it
+   * sends nothing but Escape. Only a busy pane with no prompt on screen is interrupted (a prompt is answered, never Stopped).
+   */
+  async function stop(pane) {
+    const seen = await look(pane);
+    if (seen.res) return seen.res;
+    if (promptOpen(seen.rows)) return conflict('prompt-open');
+    const state = await stateNow(pane);
+    if (!isBusy(state)) return conflict('not-busy');
+    const stopped = await interrupt(pane, seen.rows, state);
+    if (stopped.res) return stopped.res;
+    if (stopped.failed) return { status: stopped.failed.status, body: stopped.failed.body };
+    return { status: 200, body: { stopped: true, presses: stopped.presses } };
   }
 
   function runCommand(pane, text) {
@@ -345,7 +448,8 @@ export function createSessionControl({
       const option = prompt.options.find((o) => o.n === n);
       const raw = option ? rawOption(seen.rows, n) : null;
       if (!option || raw === null) return invalid('n is not one of the prompt options');
-      if (mentionsBypass(`${option.label} ${raw}`)) return invalid('this option is answered in the terminal');
+      // the whole prompt window is read, not only the options: a question such as "Switch to bypass ...?" has plain options
+      if (mentionsBypass(`${lastNonBlank(seen.rows, PROMPT_ROWS).join(' ')} ${option.label} ${raw}`)) return invalid('this option is answered in the terminal');
       const sent = await keys.send(pane, { text: String(n) }); // the digit alone answers; no Enter
       if (sent.status !== 200) return { status: sent.status, body: sent.body };
       const t = now();
@@ -355,5 +459,5 @@ export function createSessionControl({
     });
   }
 
-  return { switchMode, endSession, runCommand, answer };
+  return { switchMode, endSession, runCommand, answer, stop };
 }

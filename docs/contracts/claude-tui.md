@@ -171,6 +171,19 @@ same menu. Removed and hidden commands are left out.
 - Vim input mode: the mode line starts with `-- INSERT --` in insert mode; in normal mode it shows no prefix at all
   (checked 2026-11-09; §1's `-- NORMAL --` was not seen). `Escape` switches insert to normal. Keys typed in normal
   mode are vim commands: after `Escape`, typing `/exit` and Enter did not exit; Claude received a stray prompt.
+- Interrupting a turn in vim insert mode (Claude Code 2.1.319, checked 2026-11-09, vim mode on, while Claude worked):
+  the last row of the footer starts `-- INSERT --`, and the first `Escape` only leaves insert mode; Claude keeps working.
+  A second `Escape` (now normal mode) interrupts. Without vim, or in normal mode, one `Escape` interrupts. nika's Stop
+  and End send the first `Escape`, wait for `-- INSERT --` to go and send the second only if the registry still says busy.
+- After an interrupt the row right above the input box reads `⎿  Interrupted · What should Claude do instead?`. An
+  interrupt during thinking puts the user's prompt back into the input box. The registry went `idle` within 2 s. nika
+  does not parse the Interrupted row; it waits for the registry state and the empty-box check.
+- `/` typed in vim normal mode with an empty box does not type a slash: it opens a history search (checked 2026-11-09,
+  2.1.319). The input box is replaced by a list, a box row `⌕ Filter history…` and a hint row
+  `↑/↓ to navigate · Enter to use · Esc to cancel · ctrl+s to scope · Esc i / for slash commands`. One `Escape` closes it
+  and the empty input box returns. nika types a command's first character `/` alone when it has no evidence of vim, and
+  reads the screen: the box reads `/` (plain input), or a row holds `Esc i / for slash commands` (history search: one
+  `Escape`, then `i` and the usual insert road), else it removes its `/` and refuses (contract §3, command).
 - So nika types `/exit` only into an empty input box in insert mode and presses Enter only when the box reads exactly
   `❯ /exit` (contract §3, End).
 - A pane nika spawned runs `_run-agent` (node), which writes `.rc` after claude exits and then exits, so the pane

@@ -86,7 +86,7 @@ describe('readHistory: normalising entries', () => {
   test('(+) text keeps newlines and tabs; escapes, controls and bidi marks are cleaned (cleanBlock)', async () => {
     const fx = setup([say(`line1\r\n\tline2${ESC}[31m red${ESC}]52;c;AAAA\u0007 \u202eevil\u0000 end\u009b`, 1)]);
     const [e] = (await get(fx)).body.entries;
-    assert.equal(e.text, 'line1\n\tline2 [31m red ]52;c;AAAA   evil  end');
+    assert.equal(e.text, 'line1\n\tline2 red  evil  end'); // CSI and the OSC 52 clipboard sequence go whole, the other controls become spaces
     assert.doesNotMatch(e.text, /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u202e]/);
   });
 

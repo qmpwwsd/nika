@@ -114,6 +114,35 @@ describe('readBundle', () => {
     assert.equal(await readBundle(dir), null);
   });
 
+  test('(+) comments are dropped wherever they sit, so the keys around them still count (several comments, between key and value too)', async () => {
+    const w = world();
+    const raw = `<plist><dict><!-- a --><key>CFBundleIdentifier</key><!-- b -->\n<string>${APP_ID}</string><!--\nmulti\nline\n--><key>CFBundleShortVersionString</key><string>1.2.3</string><!-- c --></dict></plist>`;
+    assert.deepEqual(await readBundle(bundle(path.join(w.root, 'm.app'), { raw })), { id: APP_ID, version: '1.2.3' });
+  });
+
+  test('(−) an unterminated comment drops the rest of the file: what follows it never counts', async () => {
+    const w = world();
+    const after = bundle(path.join(w.root, 'u1.app'), { raw: `<plist><dict><key>CFBundleIdentifier</key><string>${APP_ID}</string><!-- never closed <key>CFBundleShortVersionString</key><string>1.2.3</string></dict></plist>` });
+    assert.deepEqual(await readBundle(after), { id: APP_ID, version: null }, 'the id before it is read, the version inside it is not');
+    const before = bundle(path.join(w.root, 'u2.app'), { raw: `<plist><dict><!-- never closed <key>CFBundleIdentifier</key><string>${APP_ID}</string></dict></plist>` });
+    assert.equal(await readBundle(before), null, 'an id after an unterminated comment is not one');
+    const hidden = bundle(path.join(w.root, 'u3.app'), { raw: `<plist><dict><key>CFBundleIdentifier</key><string>${APP_ID}</string><!--></dict></plist>` });
+    assert.deepEqual(await readBundle(hidden), { id: APP_ID, version: null }, '<!--> opens a comment that never closes');
+  });
+
+  test('(−) 64 KB of repeated comment openers is answered with the right result (linear work, no timing assumed)', async () => {
+    const w = world();
+    const head = `<plist><dict><key>CFBundleIdentifier</key><string>${APP_ID}</string>`;
+    const opens = (n) => '<!--'.repeat(Math.floor(n / 4));
+    const withId = bundle(path.join(w.root, 'r1.app'), { raw: head + opens(64 * 1024 - head.length) });
+    assert.equal(fs.statSync(path.join(withId, 'Contents', 'Info.plist')).size <= 64 * 1024, true);
+    assert.deepEqual(await readBundle(withId), { id: APP_ID, version: null });
+    const noId = bundle(path.join(w.root, 'r2.app'), { raw: `<plist><dict>${opens(64 * 1024 - 20)}` });
+    assert.equal(await readBundle(noId), null);
+    const closedLast = bundle(path.join(w.root, 'r3.app'), { raw: `${opens(32 * 1024)}--><plist><dict><key>CFBundleIdentifier</key><string>${APP_ID}</string></dict></plist>` });
+    assert.deepEqual(await readBundle(closedLast), { id: APP_ID, version: null }, 'one close ends the first comment; everything before it is gone');
+  });
+
   test('(+) a version that is not a plain x.y.z is null, the id is still read', async () => {
     const w = world();
     const dir = bundle(path.join(w.root, 'v.app'), { version: '1.2' });
@@ -649,6 +678,53 @@ describe('installAppCopy', () => {
     assert.equal(r.changed, 'added');
     assert.equal(leftovers(w.apps).length, 1);
     fs.chmodSync(w.apps, 0o755);
+  });
+
+  test('(−) the old copy (aside) replaced by a non-nika folder inside the window: the temp folder is kept with what is in it, nothing is deleted, the install still succeeds', async () => {
+    const { w, fsx } = swapRig((world, tmp) => {
+      const aside = path.join(tmp, 'previous.app');
+      fs.renameSync(aside, path.join(world.root, 'real-old-copy'));
+      fs.mkdirSync(path.join(aside, 'Contents'), { recursive: true });
+      fs.writeFileSync(path.join(aside, 'keep.txt'), 'keep');
+    });
+    bundle(w.target, { version: '0.2.0' });
+    const r = await installAppCopy(w.args, { fs: fsx, exec: fakeExec(), brewApps: [] });
+    assert.deepEqual(r, { state: 'current', version: '0.3.0', restart: false, changed: 'updated', recorded: true });
+    assert.deepEqual(await readBundle(w.target), { id: APP_ID, version: '0.3.0' });
+    const [kept] = leftovers(w.apps);
+    assert.equal(leftovers(w.apps).length, 1, 'the temp folder stays');
+    assert.equal(fs.readFileSync(path.join(w.apps, kept, 'previous.app', 'keep.txt'), 'utf8'), 'keep');
+  });
+
+  test('(−) the aside swapped for a symlink or for a bundle with another id: kept as well, and the link target is untouched', async () => {
+    const link = swapRig((world, tmp) => {
+      const aside = path.join(tmp, 'previous.app');
+      const decoy = path.join(world.root, 'decoy');
+      fs.mkdirSync(decoy);
+      fs.writeFileSync(path.join(decoy, 'keep.txt'), 'keep');
+      fs.rmSync(aside, { recursive: true });
+      fs.symlinkSync(decoy, aside);
+    });
+    bundle(link.w.target, { version: '0.2.0' });
+    assert.equal((await installAppCopy(link.w.args, { fs: link.fsx, exec: fakeExec(), brewApps: [] })).changed, 'updated');
+    assert.equal(fs.readFileSync(path.join(link.w.root, 'decoy', 'keep.txt'), 'utf8'), 'keep');
+    assert.equal(leftovers(link.w.apps).length, 1);
+
+    const other = swapRig((world, tmp) => {
+      fs.rmSync(path.join(tmp, 'previous.app'), { recursive: true });
+      bundle(path.join(tmp, 'previous.app'), { id: 'com.example.other' });
+    });
+    bundle(other.w.target, { version: '0.2.0' });
+    assert.equal((await installAppCopy(other.w.args, { fs: other.fsx, exec: fakeExec(), brewApps: [] })).changed, 'updated');
+    assert.equal(leftovers(other.w.apps).length, 1);
+    assert.deepEqual(await readBundle(path.join(other.w.apps, leftovers(other.w.apps)[0], 'previous.app')), { id: 'com.example.other', version: '0.3.0' });
+  });
+
+  test('(+) the aside still nika\'s own bundle: the temp folder is removed as before (an update leaves nothing behind)', async () => {
+    const { w, fsx } = swapRig(() => {});
+    bundle(w.target, { version: '0.2.0' });
+    assert.equal((await installAppCopy(w.args, { fs: fsx, exec: fakeExec(), brewApps: [] })).changed, 'updated');
+    assert.deepEqual(leftovers(w.apps), []);
   });
 
   test('(−) a second install while one runs is copy-busy; the flag is released afterwards, also after a failure', async () => {

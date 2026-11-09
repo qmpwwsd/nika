@@ -885,6 +885,7 @@ describe('rules', () => {
 const rowsOf = (lines) => lines.map((t) => [{ t, s: { b: false, fg: null, bg: null, u: false, i: false, d: false } }]);
 const FOOTER = { plan: '  ⏸ plan mode on (shift+tab to cycle)', accept: '  ⏵⏵ accept edits on (shift+tab to cycle)', insert: '-- INSERT --' };
 const PROMPT = ['Edit file notes.txt', ' Do you want to proceed?', ' ❯ 1. Yes', '   2. Yes, allow all edits during this session', '   3. No', ' Esc to cancel'];
+const BYPASS_QUESTION_PROMPT = ['Edit file notes.txt', ' Switch to bypass permissions mode?', ' ❯ 1. Yes', '   2. No', ' Esc to cancel'];
 const BYPASS_PROMPT = ['Edit file notes.txt', ' Do you want to proceed?', ' ❯ 1. Yes', '   2. Yes, and bypass permissions for this session', '   3. No', ' Esc to cancel'];
 const sigOf = (lines) => createHash('sha256').update(lastNonBlank(rowsOf(lines), PROMPT_ROWS).join('\n')).digest('hex').slice(0, 16);
 
@@ -892,9 +893,10 @@ const sigOf = (lines) => createHash('sha256').update(lastNonBlank(rowsOf(lines),
 function screenMirror(screens, { delay = 0 } = {}) {
   const seen = [];
   const m = {
-    seen, inflight: 0, peak: 0,
-    capture: async (pane) => {
+    seen, opts: [], inflight: 0, peak: 0,
+    capture: async (pane, inm, o) => {
       seen.push(pane);
+      m.opts.push(o);
       m.inflight += 1;
       m.peak = Math.max(m.peak, m.inflight);
       if (delay) await new Promise((r) => setTimeout(r, delay));
@@ -920,6 +922,7 @@ function fakeControl(answers = {}) {
       endSession: method('endSession', () => ({ status: 200, body: { ended: true } })),
       runCommand: method('runCommand', () => ({ status: 200, body: { sent: true } })),
       answer: method('answer', (pane, b) => ({ status: 200, body: { answered: b.n } })),
+      stop: method('stop', () => ({ status: 200, body: { stopped: true, presses: 1 } })),
     };
   };
   return f;
@@ -1294,14 +1297,19 @@ describe('POST /api/app/pane/:id/answer', () => {
     assert.deepEqual(keyCalls(a), []);
   });
 
-  test('(−) an option whose label contains bypass is 400, nothing sent; the other options still answer', async () => {
+  test('(−) a prompt whose window mentions bypass (an option or the question) is 400 for every option, nothing sent; a clean prompt still answers', async () => {
     const { a, screens } = await bootScreens({ fake: false });
-    screens['%6'] = rowsOf(BYPASS_PROMPT);
-    const sig = sigOf(BYPASS_PROMPT);
-    const r = await answer(a, { n: 2, sig });
-    assert.deepEqual([r.status, r.body.error], [400, 'invalid']);
+    for (const lines of [BYPASS_PROMPT, BYPASS_QUESTION_PROMPT]) {
+      screens['%6'] = rowsOf(lines);
+      const sig = sigOf(lines);
+      for (const n of [1, 2]) {
+        const r = await answer(a, { n, sig });
+        assert.deepEqual([r.status, r.body.error], [400, 'invalid'], `option ${n}`);
+      }
+    }
     assert.deepEqual(keyCalls(a), []);
-    assert.equal((await answer(a, { n: 3, sig })).status, 200);
+    screens['%6'] = rowsOf(PROMPT);
+    assert.equal((await answer(a, { n: 3, sig: sigOf(PROMPT) })).status, 200);
   });
 
   test('(−) n not an integer 1-9 or sig not 16 lowercase hex: 400 before any pane work; ineligible pane 404', async () => {
@@ -1422,6 +1430,223 @@ describe('POST /api/app/pane/:id/end', () => {
     assert.equal((await pane(a, '%6', 'end')).status, 405);
     assert.equal((await pane(a, '%6', 'end', { method: 'POST', body: '[]', headers: { 'content-type': 'application/json' } })).status, 400);
     assert.deepEqual(control.calls, []);
+  });
+});
+
+describe('POST /api/app/pane/:id/keys: the bypass prompt guard (A2, H2)', () => {
+  const keysTo = (a, json, id = '%6') => pane(a, id, 'keys', { method: 'POST', json });
+  const sent = (a) => a.deps.calls.filter((c) => c[0] === 'keys');
+  const BYPASS = { status: 409, error: 'bypass-prompt', message: 'Answer this prompt in the terminal' };
+
+  test('(+) Enter with no prompt on screen: one fresh capture first, then the keys are sent as before', async () => {
+    const { a, screens, mirror } = await bootScreens();
+    screens['%6'] = rowsOf(['hello', FOOTER.plan]);
+    const r = await keysTo(a, { keys: ['Enter'] });
+    assert.equal(r.status, 200);
+    assert.deepEqual(mirror.seen, ['%6']);
+    assert.deepEqual(mirror.opts, [{ fresh: true }], 'the capture is fresh, never the cached one');
+    assert.deepEqual(sent(a).map((c) => c.slice(1)), [['%6', { text: undefined, paste: undefined, keys: ['Enter'] }]]);
+  });
+
+  test('(+) Enter, a digit or a paste on a prompt that does not mention bypass: sent', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = rowsOf(PROMPT);
+    for (const json of [{ keys: ['Enter'] }, { text: '2' }, { text: 'git log -3' }, { paste: 'one\ntwo' }, { text: 'x', keys: ['Enter'] }]) {
+      assert.equal((await keysTo(a, json)).status, 200, JSON.stringify(json));
+    }
+    assert.equal(sent(a).length, 5);
+  });
+
+  test('(+) letters, arrows, Escape, BTab and the like skip the capture and go through even while a bypass prompt is open', async () => {
+    const { a, screens, mirror } = await bootScreens();
+    screens['%6'] = rowsOf(BYPASS_PROMPT);
+    for (const json of [{ text: 'hello world' }, { keys: ['Up', 'Down', 'Left', 'Right'] }, { keys: ['Escape'] }, { keys: ['BTab'] }, { keys: ['C-u', 'Tab'] }, { text: 'abc', keys: ['C-c'] }]) {
+      assert.equal((await keysTo(a, json)).status, 200, JSON.stringify(json));
+    }
+    assert.equal(sent(a).length, 6);
+    assert.deepEqual(mirror.seen, [], 'not one capture: typing stays as fast as in 0.2');
+  });
+
+  test('(−) Enter on a bypass prompt: 409 bypass-prompt and nothing is sent', async () => {
+    const { a, screens } = await bootScreens();
+    for (const lines of [BYPASS_PROMPT, BYPASS_QUESTION_PROMPT]) {
+      screens['%6'] = rowsOf(lines);
+      const r = await keysTo(a, { keys: ['Enter'] });
+      assert.deepEqual([r.status, r.body.error, r.body.message], [BYPASS.status, BYPASS.error, BYPASS.message]);
+    }
+    assert.deepEqual(sent(a), []);
+  });
+
+  test('(−) text with a digit (git log -3) or any other digit, and any paste, on a bypass prompt: 409 bypass-prompt, nothing sent', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = rowsOf(BYPASS_PROMPT);
+    for (const json of [{ text: 'git log -3' }, { text: '1' }, { text: 'abc9' }, { paste: 'one line' }, { paste: '' }, { text: 'ok', keys: ['Enter'] }, { text: 'hello', paste: 'x' }]) {
+      const r = await keysTo(a, json);
+      assert.deepEqual([r.status, r.body.error], [409, 'bypass-prompt'], JSON.stringify(json));
+    }
+    assert.deepEqual(sent(a), []);
+  });
+
+  test('(−) a bypass word in plain output (no prompt on screen) does not block Enter; only a prompt does', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = rowsOf(['the notes talk about bypass permissions', FOOTER.plan]);
+    assert.equal((await keysTo(a, { keys: ['Enter'] })).status, 200);
+    const filler = Array.from({ length: 16 }, (_, i) => `output row ${i}`);
+    screens['%6'] = rowsOf(['the notes talk about bypass permissions', ...filler, ...PROMPT]);
+    assert.equal((await keysTo(a, { keys: ['Enter'] })).status, 200, 'older than the 15-row prompt window: it does not count');
+    screens['%6'] = rowsOf(['the notes talk about bypass permissions', ...PROMPT]);
+    assert.equal((await keysTo(a, { keys: ['Enter'] })).status, 409, 'inside the window (fail closed): it does');
+  });
+
+  test('(−) the capture fails: its status and body, nothing sent', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = null;
+    const r = await keysTo(a, { keys: ['Enter'] });
+    assert.deepEqual([r.status, r.body], [503, { error: 'tmux_unavailable', message: 'x' }]);
+    assert.deepEqual(sent(a), []);
+    screens['%6'] = rowsOf(['text']);
+    assert.equal((await keysTo(a, { text: 'letters only' })).status, 200, 'and a request without Enter / digit / paste does not care');
+  });
+
+  test('(−) an ineligible pane is still 404 before any capture; module 400 and 429 are still relayed after a clean capture', async () => {
+    const { a, screens, mirror } = await bootScreens();
+    screens['%6'] = rowsOf(['text']);
+    assert.equal((await keysTo(a, { keys: ['Enter'] }, '%5')).status, 404);
+    assert.deepEqual(mirror.seen, []);
+    assert.equal((await keysTo(a, { text: 'busy', keys: ['Enter'] })).status, 429);
+    assert.equal((await keysTo(a, { text: 'bad', keys: ['Enter'] })).status, 400);
+  });
+});
+
+describe('POST /api/app/pane/:id/mode: a switch that fails after a press forgets the held mode (A1, H1)', () => {
+  const modeTo = (a, id = '%6', target = 'manual') => pane(a, id, 'mode', { method: 'POST', json: { target } });
+  const lost = { status: 409, body: { error: 'mode-unknown', presses: 1 } };
+
+  test('(+) 409 with presses 1: the next capture with an unreadable footer reports mode unknown, not the mode held before', async () => {
+    const { a, screens } = await bootScreens({ ctlAnswers: { switchMode: lost } });
+    screens['%6'] = rowsOf(['text', FOOTER.plan]);
+    assert.equal((await pane(a, '%6', 'capture')).body.mode, 'plan');
+    const r = await modeTo(a);
+    assert.deepEqual([r.status, r.body], [409, { error: 'mode-unknown', presses: 1 }], 'the body is relayed as it is');
+    screens['%6'] = rowsOf(['text', 'a footer nobody recognises']);
+    const c = await pane(a, '%6', 'capture');
+    assert.equal(c.body.mode, 'unknown');
+    assert.equal(c.body.modeConfirmed, true);
+    screens['%6'] = rowsOf(['text', FOOTER.accept]);
+    assert.equal((await pane(a, '%6', 'capture')).body.mode, 'acceptEdits', 'a readable footer is trusted again at once');
+  });
+
+  test('(+) the same for a pane nika started: its launch mode is not shown in place of the footer either', async () => {
+    const { a, screens } = await bootScreens({ ctlAnswers: { switchMode: lost } });
+    a.ctx.started.set('%8', { key: w.project.key, name: 'x', sessionId: null, role: 'agent', mode: 'manual' });
+    screens['%8'] = rowsOf(['text', FOOTER.plan]);
+    assert.equal((await pane(a, '%8', 'capture')).body.mode, 'plan');
+    assert.equal((await modeTo(a, '%8')).status, 409);
+    screens['%8'] = rowsOf(['text', 'a footer nobody recognises']);
+    assert.equal((await pane(a, '%8', 'capture')).body.mode, 'unknown');
+    const other = await bootScreens({ ctlAnswers: { switchMode: lost } });
+    other.a.ctx.started.set('%8', { key: w.project.key, name: 'x', sessionId: null, role: 'agent', mode: 'manual' });
+    other.screens['%8'] = rowsOf(['❯ ']);
+    assert.equal((await modeTo(other.a, '%8')).status, 409);
+    assert.equal((await pane(other.a, '%8', 'capture')).body.mode, 'unknown', 'never read before: the launch mode is stale after a press');
+  });
+
+  test('(−) every non-200 with presses above 0 does it (stopped-in-bypass, not-idle, a 429), a 200 and a 409 without presses do not', async () => {
+    for (const answer of [{ status: 409, body: { error: 'stopped-in-bypass', presses: 2 } }, { status: 409, body: { error: 'not-idle', presses: 1 } }, { status: 429, body: { error: 'busy', message: 'x', presses: 3 } }]) {
+      const { a, screens } = await bootScreens({ ctlAnswers: { switchMode: answer } });
+      screens['%6'] = rowsOf(['text', FOOTER.plan]);
+      await pane(a, '%6', 'capture');
+      await modeTo(a);
+      screens['%6'] = rowsOf(['text', 'a footer nobody recognises']);
+      assert.equal((await pane(a, '%6', 'capture')).body.mode, 'unknown', answer.body.error);
+    }
+    for (const answer of [{ status: 200, body: { mode: 'manual', presses: 2 } }, { status: 409, body: { error: 'not-idle' } }, { status: 429, body: { error: 'busy', message: 'x', presses: 0 } }]) {
+      const { a, screens } = await bootScreens({ ctlAnswers: { switchMode: answer } });
+      screens['%6'] = rowsOf(['text', FOOTER.plan]);
+      await pane(a, '%6', 'capture');
+      await modeTo(a);
+      screens['%6'] = rowsOf(['text', 'a footer nobody recognises']);
+      const c = await pane(a, '%6', 'capture');
+      assert.deepEqual([c.body.mode, c.body.modeConfirmed], ['plan', false], JSON.stringify(answer));
+    }
+  });
+});
+
+describe('POST /api/app/pane/:id/stop (A3, F1)', () => {
+  const stop = (a, json = {}, id = '%6') => pane(a, id, 'stop', { method: 'POST', json });
+  const busySnapshot = { groups: [{ agents: [{ live: true, state: 'busy', pane: { id: '%6' } }] }] };
+
+  test('(+) passes the pane to sessionControl.stop and relays its answer', async () => {
+    const { a, control } = await bootScreens();
+    const r = await stop(a, { extra: 'dropped' });
+    assert.deepEqual([r.status, r.body], [200, { stopped: true, presses: 1 }]);
+    assert.deepEqual(control.calls, [['stop', '%6']]);
+  });
+
+  test('(+) a pane nika started is eligible; the controller\'s 409 is relayed as it is', async () => {
+    const { a, control } = await bootScreens({ ctlAnswers: { stop: { status: 409, body: { error: 'not-busy' } } } });
+    a.ctx.started.set('%8', { key: w.project.key, name: 'x', sessionId: null, role: 'agent', mode: 'plan' });
+    const r = await stop(a, {}, '%8');
+    assert.deepEqual([r.status, r.body], [409, { error: 'not-busy' }]);
+    assert.deepEqual(control.calls, [['stop', '%8']]);
+  });
+
+  test('(−) an ineligible pane (zsh, not live, unknown id, bad id) is 404 and stop is not called', async () => {
+    const { a, control } = await bootScreens();
+    for (const id of ['%5', '%7', '%99', 'abc', '..']) {
+      assert.equal((await a.call('POST', `/api/app/pane/${id.replace('%', '%25')}/stop`, { json: {} })).status, 404, id);
+    }
+    assert.deepEqual(control.calls, []);
+  });
+
+  test('(−) the guard: no secret 403; text/plain 415; GET 405; a body that is not a JSON object 400; over 4 KB 413 -- stop is not called', async () => {
+    const { a, control } = await bootScreens();
+    assert.equal((await pane(a, '%6', 'stop', { method: 'POST', json: {}, headers: { 'x-nika-app': null } })).status, 403);
+    assert.equal((await pane(a, '%6', 'stop', { method: 'POST', body: '{}', headers: { 'content-type': 'text/plain' } })).status, 415);
+    assert.equal((await pane(a, '%6', 'stop')).status, 405);
+    for (const body of ['[]', 'null', '5', '"x"', '{"__proto__":{}}']) {
+      assert.equal((await pane(a, '%6', 'stop', { method: 'POST', body, headers: { 'content-type': 'application/json' } })).status, 400, body);
+    }
+    assert.equal((await pane(a, '%6', 'stop', { method: 'POST', json: { pad: 'x'.repeat(5000) } })).status, 413);
+    assert.deepEqual(control.calls, []);
+  });
+
+  test('(+) with the real controller: a busy pane gets one Escape (fresh capture first); (−) an idle pane is 409 not-busy and gets none', async () => {
+    const busy = await bootScreens({ fake: false, over: { collect: async () => busySnapshot } });
+    busy.screens['%6'] = rowsOf(['working...', FOOTER.plan]);
+    const r = await stop(busy.a);
+    assert.deepEqual([r.status, r.body], [200, { stopped: true, presses: 1 }]);
+    assert.deepEqual(busy.a.deps.calls.filter((c) => c[0] === 'keys'), [['keys', '%6', { keys: ['Escape'] }]]);
+    assert.deepEqual(busy.mirror.opts, [{ fresh: true }]);
+    const idle = await bootScreens({ fake: false });
+    idle.screens['%6'] = rowsOf(['done', FOOTER.plan]);
+    const n = await stop(idle.a);
+    assert.deepEqual([n.status, n.body.error], [409, 'not-busy']);
+    assert.deepEqual(idle.a.deps.calls.filter((c) => c[0] === 'keys'), []);
+  });
+
+  test('(−) with the real controller: a prompt on screen is 409 prompt-open, no key; Stop works while another control action holds the lock', async () => {
+    const { a, screens } = await bootScreens({ fake: false, over: { collect: async () => busySnapshot } });
+    screens['%6'] = rowsOf(PROMPT);
+    const p = await stop(a);
+    assert.deepEqual([p.status, p.body.error], [409, 'prompt-open']);
+    assert.deepEqual(a.deps.calls.filter((c) => c[0] === 'keys'), []);
+
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    let entered;
+    const started = new Promise((r) => { entered = r; });
+    let captures = 0;
+    const rows = rowsOf(['working...', FOOTER.plan]);
+    const mirror = { capture: async () => { captures += 1; if (captures === 1) { entered(); await gate; } return { status: 200, body: { cols: 80, rows, cursor: { x: 0, y: 0, visible: true }, etag: 'e' }, etag: 'e' }; } };
+    const b = await boot({ deps: makeDeps({ mirror, collect: async () => busySnapshot }) });
+    const holding = pane(b, '%6', 'command', { method: 'POST', json: { text: '/compact' } }); // takes the lock, waits in its first capture
+    await started;
+    assert.equal((await pane(b, '%6', 'end', { method: 'POST', json: {} })).body.error, 'busy-switching', 'the lock is held');
+    const s = await stop(b);
+    assert.deepEqual([s.status, s.body], [200, { stopped: true, presses: 1 }], 'Stop does not wait for it');
+    release();
+    await holding;
   });
 });
 

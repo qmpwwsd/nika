@@ -11,7 +11,7 @@ prompts and commands exist only as screen text and keys.
 ## Decision
 Drive the TUI through the 0.2 pane path. Read: the mirror's `capture-pane` rows go through pure parsers
 (`src/mode.js`) that turn the last non-blank row into a mode and the bottom rows into a permission prompt. Act through
-`src/keys.js`: allow-listed named keys (`Escape` = Stop; `BTab` = next mode; `Enter`, `C-u`) and, to answer a prompt, one digit sent as literal text (`send-keys -l --`), not as a named
+`src/keys.js`: allow-listed named keys (`Escape` = interrupt, which the Stop route sends once, or twice while Claude's input is in vim insert mode; `BTab` = next mode; `Enter`, `C-u`) and, to answer a prompt, one digit sent as literal text (`send-keys -l --`), not as a named
 key. `src/session-control.js` sequences them: the mode switch runs only while idle, at most 6 presses, footer re-read
 after each. End takes a fresh capture, cancels a busy turn or an open prompt with `Escape`, and types `/exit` only when
 no prompt or dialog is left on screen, so it can never answer one; it never kills. End and the quick-action commands

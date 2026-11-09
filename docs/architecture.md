@@ -68,7 +68,7 @@ pane; Claude Code has no other channel into a running interactive session ([ADR 
    `GET /api/app/modes` for the dashboard's mode tags. While a prompt or dialog covers the footer, they show the last
    mode read from that pane (or the launch mode of a pane nika started) as unconfirmed; that value is display only.
 3. `session-control.js` runs the four actions (`/mode`, `/answer`, `/command`, `/end`): a fresh capture first, one
-   action per pane at a time, keys only through `keys.js`. Bad input is a 400; a screen that does not match is a 409; either way nothing is typed.
+   action per pane at a time, keys only through `keys.js`. `/stop` (an `Escape`, twice in vim insert mode) takes no lock. Bad input is a 400; a screen that does not match is a 409; either way nothing is typed.
 4. The page draws what the routes return (`session.js` with `modes.js`, `quick-actions.js`, `palette.js`,
    `end-dialog.js`); every string is fixed copy or set with `textContent`.
 

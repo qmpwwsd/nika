@@ -56,11 +56,16 @@ export function parseFrontmatter(text) {
   return Object.fromEntries(pairs); // fromEntries defines own properties, so a `__proto__` key cannot change the prototype
 }
 
-/** Frontmatter of a safe regular file; null when the file is missing, a symlink, otherwise unsafe, or its frontmatter never closes. */
-async function frontmatterOf(file, scan) {
+/**
+ * Frontmatter of a safe regular file; null when the file is missing, a symlink, otherwise unsafe, or its frontmatter never
+ * closes. Under a `boundary` the folder the file sits in is resolved again after the read: a folder swapped for a link
+ * since it was checked (T22) would have let the read leave the boundary, so such an entry is dropped.
+ */
+async function frontmatterOf(file, scan, boundary) {
   scan.opens += 1;
   try {
-    return parseFrontmatter(await readHead(file, HEAD_BYTES));
+    const fm = parseFrontmatter(await readHead(file, HEAD_BYTES));
+    return boundary && !(await realInside(path.dirname(file), boundary)) ? null : fm;
   } catch {
     return null;
   }
@@ -77,10 +82,10 @@ async function names(dir, keep) {
 
 const realOrNull = (p) => fs.realpath(p).catch(() => null);
 
-/** True when `p` resolves (symlinks followed) strictly inside the real directory `root`. */
-async function inside(p, root) {
+/** The real path of `p` when it resolves (symlinks followed) strictly inside the real directory `root`, else null. */
+async function realInside(p, root) {
   const real = await realOrNull(p);
-  return real !== null && real.startsWith(root + path.sep);
+  return real !== null && real.startsWith(root + path.sep) ? real : null;
 }
 
 function entryOf(fm, name) {
@@ -90,14 +95,15 @@ function entryOf(fm, name) {
 
 /**
  * `<src.base>/commands` or `<src.base>/skills`, or null when it may not be read. A source with a `boundary` (project and
- * plugin sources: their folders are agent-writable, T22) must resolve inside it; with `realDirs` the folder must also be
- * a real directory, not a link. Without a boundary (the user's own config dir) links are followed: dotfile managers use them.
+ * plugin sources: their folders are agent-writable, T22) must resolve inside it, and the answer is that resolved path, which
+ * is what everything below walks from; with `realDirs` the folder must also be a real directory, not a link. Without a
+ * boundary (the user's own config dir) links are followed: dotfile managers use them.
  */
 async function container(src, name) {
   const dir = path.join(src.base, name);
   if (!src.boundary) return dir;
   if (src.realDirs && !(await isRealDir(dir))) return null;
-  return (await inside(dir, src.boundary)) ? dir : null;
+  return realInside(dir, src.boundary);
 }
 
 /**
@@ -114,9 +120,9 @@ async function readSource(src, scan, limit) {
   if (skills) {
     for (const folder of await names(skills, (d) => d.isDirectory() || d.isSymbolicLink())) {
       if (spent()) break;
-      const dir = path.join(skills, folder);
-      if (src.boundary && !(await inside(dir, src.boundary))) continue;
-      const fm = await frontmatterOf(path.join(dir, 'SKILL.md'), scan);
+      const dir = src.boundary ? await realInside(path.join(skills, folder), src.boundary) : path.join(skills, folder);
+      if (!dir) continue;
+      const fm = await frontmatterOf(path.join(dir, 'SKILL.md'), scan, src.boundary);
       if (fm) add(entryOf(fm, fm.name || folder));
     }
   }
@@ -124,7 +130,7 @@ async function readSource(src, scan, limit) {
   if (commands) {
     for (const file of await names(commands, (d) => d.isFile() && d.name.endsWith('.md'))) {
       if (spent()) break;
-      const fm = await frontmatterOf(path.join(commands, file), scan);
+      const fm = await frontmatterOf(path.join(commands, file), scan, src.boundary);
       if (fm) add(entryOf(fm, file.slice(0, -'.md'.length)));
     }
   }

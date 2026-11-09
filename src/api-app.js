@@ -12,7 +12,7 @@ import { configDir, stateDir } from './paths.js';
 import { clean } from './text.js';
 import { UUID, PANE_ID, PROJECT_KEY, CLAUDE_COMMAND, COMMAND_NAME } from './ids.js';
 import { mapLimit } from './util.js';
-import { MODE_TARGETS, modeFromRows, promptFromRows } from './mode.js';
+import { MODE_TARGETS, PROMPT_ROWS, lastNonBlank, mentionsBypass, modeFromRows, promptFromRows } from './mode.js';
 import { MODEL_CATALOG } from './models.js';
 import { createSessionControl, promptSig, insertShown } from './session-control.js';
 
@@ -23,6 +23,8 @@ const COMMAND_MAX = 200; // characters of a slash command typed into Claude
 const CONTROL = /[\u0000-\u001f\u007f-\u009f]/; // C0, DEL, C1
 const SIG = /^[0-9a-f]{16}$/;
 const CAP = { small: 4 * 1024, settings: 16 * 1024, keys: 20 * 1024, spawn: 80 * 1024 };
+// What can answer a permission prompt: Enter confirms the highlighted option, a digit picks an option, a paste may hold either.
+const answersPrompt = (b) => (Array.isArray(b.keys) && b.keys.includes('Enter')) || (typeof b.text === 'string' && /[0-9]/.test(b.text)) || (b.paste !== undefined && b.paste !== null);
 const isPlain = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const err = (status, error, message) => ({ status, body: { error, message } });
 // App copy (ADR 0011): fixed codes and texts only, never a path or OS error text (the module's errors carry just a code)
@@ -315,6 +317,15 @@ export function createAppApi({ secret, ctx, deps }) {
   route('POST', /^\/api\/app\/pane\/([^/]+)\/keys$/, CAP.keys, async ({ params, body }) => {
     const { id, failure } = await eligiblePane(params[0]);
     if (failure) return failure;
+    // Enter, a digit or a paste could answer a permission prompt, and the answer route's bypass refusal does not reach this
+    // route: so they look at a fresh screen first, and none is sent while an open prompt mentions bypass (T26). Typing
+    // letters, arrows, Escape and BTab stay as fast as in 0.2. Passthrough (the terminal itself) is the raw way to answer it.
+    if (answersPrompt(body)) {
+      const cap = await deps.mirror.capture(id, undefined, { fresh: true });
+      if (cap.status !== 200) return { status: cap.status, body: cap.body };
+      const rows = cap.body.rows;
+      if (promptFromRows(rows) !== null && mentionsBypass(lastNonBlank(rows, PROMPT_ROWS).join(' '))) return err(409, 'bypass-prompt', 'Answer this prompt in the terminal');
+    }
     return deps.keys.send(id, { text: body.text, paste: body.paste, keys: body.keys });
   });
 
@@ -323,7 +334,12 @@ export function createAppApi({ secret, ctx, deps }) {
   route('POST', /^\/api\/app\/pane\/([^/]+)\/mode$/, CAP.small, async ({ params, body }) => {
     if (!MODE_TARGETS.includes(body.target)) return err(400, 'invalid', `target must be one of ${MODE_TARGETS.join(', ')}`);
     const { id, failure } = await eligiblePane(params[0]);
-    return failure ?? control.switchMode(id, body.target);
+    if (failure) return failure;
+    const r = await control.switchMode(id, body.target);
+    // Presses went out but the switch did not finish: the footer may now show a mode other than the one held, or none that
+    // nika can read (a bypass footer it does not know), so the held mode (and a started pane's launch mode) must not stand in for it
+    if (r.status !== 200 && r.body?.presses > 0) held.set(id, 'unknown');
+    return r;
   });
 
   route('POST', /^\/api\/app\/pane\/([^/]+)\/answer$/, CAP.small, async ({ params, body }) => {
@@ -347,6 +363,12 @@ export function createAppApi({ secret, ctx, deps }) {
     } finally {
       eligibility = null; // the pane may be gone
     }
+  });
+
+  // Stop does not take the controller's per-pane lock, so it works while a switch or a command waits
+  route('POST', /^\/api\/app\/pane\/([^/]+)\/stop$/, CAP.small, async ({ params }) => {
+    const { id, failure } = await eligiblePane(params[0]);
+    return failure ?? control.stop(id);
   });
 
   route('GET', /^\/api\/app\/commands$/, 0, async ({ query }) => {

@@ -24,11 +24,54 @@ describe('cleanBlock', () => {
       const out = cleanBlock(`a${String.fromCodePoint(cp)}b`);
       assert.equal(out, 'a b', `U+${cp.toString(16)}`);
     }
-    assert.equal(cleanBlock('\u001b[31mred\u001b[0m'), ' [31mred [0m'); // the escape byte is gone, the printable rest stays
+    assert.equal(cleanBlock('\u001b[31mred\u001b[0m'), 'red'); // the whole sequence goes, not just the escape byte
   });
 
   test('(−) non-strings and blank text give null', () => {
     for (const v of [undefined, null, 5, {}, [], '', '   ', '\n\t\n', '\u0000\u001b']) assert.equal(cleanBlock(v), null);
+  });
+});
+
+describe('escape sequences in transcript text (UI-4)', () => {
+  const ESC = String.fromCharCode(0x1b);
+  const BEL = String.fromCharCode(0x07);
+
+  test('(+) CSI sequences (colour, style, cursor) are removed whole by clean() and cleanBlock()', () => {
+    assert.equal(clean(`${ESC}[2mCompacted${ESC}[22m`), 'Compacted');
+    assert.equal(cleanBlock(`${ESC}[2mCompacted${ESC}[22m\n${ESC}[1;31;40mred${ESC}[0m`), 'Compacted\nred');
+    assert.equal(clean(`a${ESC}[?25lb${ESC}[2Kc${ESC}[38;5;12md`), 'abcd');
+  });
+
+  test('(+) OSC sequences (BEL or ST terminated) are removed; an OSC 8 link keeps its visible text', () => {
+    assert.equal(clean(`${ESC}]8;;https://example.invalid/x${BEL}link text${ESC}]8;;${BEL}`), 'link text');
+    assert.equal(clean(`${ESC}]0;window title${ESC}\\after`), 'after');
+    assert.equal(cleanBlock(`${ESC}]8;;https://example.invalid/x${ESC}\\two\nlines${ESC}]8;;${ESC}\\`), 'two\nlines');
+  });
+
+  test('(+) two-character escapes are removed', () => {
+    assert.equal(clean(`a${ESC}Mb${ESC}^c${ESC}\\d`), 'abcd');
+  });
+
+  test('(−) the same characters without an ESC byte are ordinary text and stay as written', () => {
+    assert.equal(clean('[2mCompacted[22m'), '[2mCompacted[22m');
+    assert.equal(cleanBlock('see ]8;;x and [31mred'), 'see ]8;;x and [31mred');
+  });
+
+  test('(−) a sequence cut off at the end, or a lone ESC, never leaves the escape byte behind', () => {
+    for (const t of [`text${ESC}[31`, `text${ESC}]0;title`, `text${ESC}`, `${ESC}${ESC}[0mtext`]) {
+      assert.doesNotMatch(clean(t) ?? '', /\u001b/, JSON.stringify(t));
+      assert.doesNotMatch(cleanBlock(t) ?? '', /\u001b/, JSON.stringify(t));
+    }
+    assert.equal(clean(`${ESC}]0;title`), null, 'an unterminated OSC takes its payload with it');
+  });
+
+  test('(−) 100 KB of unterminated prefixes ends in the printable rest (no timing is assumed)', () => {
+    const osc = `${ESC}]8;;`.repeat(20_000); // each one ends at the next ESC; the last at the BEL
+    assert.equal(clean(`${osc}${BEL} tail`), 'tail');
+    assert.equal(cleanBlock(`${osc}${BEL} tail`), ' tail');
+    const csi = `${ESC}[`.repeat(50_000);
+    assert.equal(clean(`${csi}\n tail`), 'tail');
+    assert.equal(cleanBlock(`${csi}\n tail`), '\n tail');
   });
 });
 

@@ -26,6 +26,12 @@ export const FOOTER = [
 // verified yet (claude-tui.md 7).
 const BYPASS = atLineStart(String.raw`bypass(?:permissions)?(?=\s|$)`);
 
+/**
+ * True when the text mentions bypass. Letters only, after NFKC, lower-cased: case, width, spacing, punctuation and
+ * invisible characters cannot hide the word. Shared by the answer route and the keys route guard.
+ */
+export const mentionsBypass = (text) => text.normalize('NFKC').replace(/[^\p{L}]/gu, '').toLowerCase().includes('bypass');
+
 /** The text of one mirror row: its spans concatenated. */
 export function rowText(row) {
   return Array.isArray(row) ? row.map((sp) => (typeof sp?.t === 'string' ? sp.t : '')).join('') : '';

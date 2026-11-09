@@ -32,6 +32,20 @@ export const targetPath = (home) => path.join(home, 'Applications', 'nika.app');
 /** A real directory (lstat: a symlink is not one) owned by `uid`; `strict` also refuses group/other write (the parent folder). */
 const ownDir = (st, uid, strict = false) => st.isDirectory() && (uid === null || st.uid === uid) && !(strict && st.mode & 0o022);
 
+/** `xml` without its comments; an unterminated `<!--` drops the rest. indexOf only, so a file of repeated `<!--` costs one pass (a lazy regex would not). */
+function stripComments(xml) {
+  let out = '';
+  let at = 0;
+  for (;;) {
+    const open = xml.indexOf('<!--', at);
+    if (open < 0) return out + xml.slice(at);
+    out += xml.slice(at, open);
+    const close = xml.indexOf('-->', open + 4);
+    if (close < 0) return out;
+    at = close + 3;
+  }
+}
+
 const plistString = (xml, key) => new RegExp(`<key>${key}</key>\\s*<string>([^<]{1,200})</string>`).exec(xml)?.[1] ?? null;
 
 /**
@@ -54,7 +68,7 @@ export async function readBundle(dir, deps = {}) {
   } catch {
     return null;
   }
-  xml = xml.replace(/<!--[\s\S]*?-->/g, '');
+  xml = stripComments(xml);
   const id = plistString(xml, 'CFBundleIdentifier');
   if (!id) return null;
   const version = plistString(xml, 'CFBundleShortVersionString');
@@ -223,7 +237,9 @@ async function doInstall({ root, home, stateDir }, deps) {
     if (aside === null) await dropTmp().catch(() => {});
     throw err;
   }
-  await dropTmp().catch(() => {}); // holds only what nika made (the previous copy of itself)
+  // The temp folder should hold only the previous copy of nika. If the aside no longer reads as nika's bundle, something else was
+  // moved or swapped in during the window: keep the folder (as on a rollback) and leave the cleanup to the user.
+  if (aside === null || (await readBundle(aside, deps))?.id === APP_ID) await dropTmp().catch(() => {});
   await exec(LSREGISTER, ['-f', target]).catch(() => {}); // so LaunchServices and Spotlight see it now; failure is harmless
   // shortcut: a marker that cannot be written is not worth failing a finished copy; it is reported (`recorded: false`) and the copy counts as not managed
   const recorded = await writeMarker(stateDir, { managed: true, version: src.version, dismissed: (await readMarker(stateDir)).dismissed }).then(() => true, () => false);

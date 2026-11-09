@@ -1,6 +1,7 @@
-import { test, describe, after } from 'node:test';
+import { test, describe, after, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { listCommands, parseFrontmatter } from '../src/collect/commands.js';
@@ -317,7 +318,7 @@ describe('listCommands', () => {
     const by = Object.fromEntries(nonBuiltin(await list(m)).map((e) => [e.name, e]));
     assert.equal(by.markup.description, markup);
     assert.equal(by.markup.argHint, '<b>[arg]</b>');
-    assert.equal(by.escapes.description, 'x [2J y z');
+    assert.equal(by.escapes.description, 'x y z'); // the whole ESC[2J sequence goes, then bidi and zero-width marks become spaces
     assert.equal(by.long.description.length, 200);
   });
 
@@ -474,6 +475,89 @@ describe('listCommands', () => {
     fs.symlinkSync(path.join(m.base, 'elsewhere'), path.join(skills, 'escaped'));
     fs.symlinkSync(path.join(m.projectDir, 'tools', 'inner'), path.join(skills, 'inner'));
     assert.deepEqual(nonBuiltin(await list(m, { project: true })).map((e) => [e.name, e.description]), [['inner', 'inside'], ['real', 'regular']]);
+  });
+
+  // check-then-use (T22): the folder is swapped for a link after its realpath was taken and before it is read
+  /** Wraps fs.promises.realpath so `swap()` runs once, right after the first realpath of `target` has answered; returns whether it ran. */
+  async function swapAfterRealpath(target, swap, run) {
+    const real = fsp.realpath;
+    let ran = false;
+    const spy = mock.method(fsp, 'realpath', async (p, ...rest) => {
+      const out = await real.call(fsp, p, ...rest);
+      if (!ran && p === target) {
+        ran = true;
+        swap();
+      }
+      return out;
+    });
+    try {
+      await run();
+    } finally {
+      spy.mock.restore();
+    }
+    return ran;
+  }
+
+  test('(−) a project commands folder swapped for a link to a folder outside between the check and the read: its entries are dropped', async () => {
+    const m = machine();
+    const dotClaude = path.join(m.projectDir, '.claude');
+    command(dotClaude, 'real');
+    command(path.join(m.base, 'outside'), 'sneak');
+    const commands = path.join(dotClaude, 'commands');
+    let got;
+    const ran = await swapAfterRealpath(commands, () => {
+      fs.renameSync(commands, `${commands}-away`);
+      fs.symlinkSync(path.join(m.base, 'outside', 'commands'), commands);
+    }, async () => { got = nonBuiltin(await list(m, { project: true })); });
+    assert.equal(ran, true, 'the swap really happened between the two steps');
+    assert.deepEqual(names(got), [], 'neither the outside file nor the moved real one is listed');
+  });
+
+  test('(−) a project skill folder swapped for a link outside between the check and the read: that entry is dropped, the others stay', async () => {
+    const m = machine();
+    const dotClaude = path.join(m.projectDir, '.claude');
+    skill(dotClaude, 'real', { description: 'regular' });
+    skill(dotClaude, 'other', { description: 'untouched' });
+    skill(path.join(m.base, 'outside'), 'evil', { description: 'outside' });
+    const folder = path.join(dotClaude, 'skills', 'real');
+    let got;
+    // the scan walks from the resolved path of skills/, so the folder is asked for by its real path
+    const ran = await swapAfterRealpath(fs.realpathSync(folder), () => {
+      fs.renameSync(folder, `${folder}-away`);
+      fs.symlinkSync(path.join(m.base, 'outside', 'skills', 'evil'), folder);
+    }, async () => { got = nonBuiltin(await list(m, { project: true })); });
+    assert.equal(ran, true);
+    assert.deepEqual(got.map((e) => [e.name, e.description]), [['other', 'untouched']]);
+  });
+
+  test('(−) a plugin skill folder swapped for a link outside the cache between the check and the read is dropped too', async () => {
+    const m = machine();
+    const install = cacheDir(m.claudeDir, 'market-one', 'demo', '1.0.0');
+    skill(install, 'real', { description: 'regular' });
+    skill(path.join(m.base, 'outside'), 'evil', { description: 'outside' });
+    registerPlugins(m.claudeDir, { 'demo@market-one': install });
+    const folder = path.join(install, 'skills', 'real');
+    let got;
+    const ran = await swapAfterRealpath(fs.realpathSync(folder), () => {
+      fs.renameSync(folder, `${folder}-away`);
+      fs.symlinkSync(path.join(m.base, 'outside', 'skills', 'evil'), folder);
+    }, async () => { got = nonBuiltin(await list(m)); });
+    assert.equal(ran, true);
+    assert.deepEqual(got, []);
+  });
+
+  test('(+) with no swap the same hooks change nothing: project and plugin entries are listed, also when the machine path itself runs through a link', async () => {
+    const m = machine();
+    command(path.join(m.projectDir, '.claude'), 'plain', { description: 'p' });
+    skill(path.join(m.projectDir, '.claude'), 'plain-skill', { description: 's' });
+    const install = cacheDir(m.claudeDir, 'market-one', 'demo', '1.0.0');
+    command(install, 'ok', { description: 'c' });
+    registerPlugins(m.claudeDir, { 'demo@market-one': install });
+    assert.deepEqual(names(nonBuiltin(await list(m, { project: true }))), ['plain-skill', 'plain', 'demo:ok']);
+    const viaLink = path.join(m.base, 'project-link');
+    fs.symlinkSync(m.projectDir, viaLink);
+    const linked = { ...m, projectDir: viaLink };
+    assert.deepEqual(names(nonBuiltin(await list(linked, { project: true }))), ['plain-skill', 'plain', 'demo:ok']);
   });
 
   test('(−) at most 2000 files are opened per scan; what was found before is returned', async () => {
