@@ -263,6 +263,29 @@ describe('app install and the managed copy', () => {
     assert.match(again.out, /^already current: nika 1\.2\.3 is in ~\/Applications$/m);
   });
 
+  test('(+) app install over a current copy nika did not make says "already current" and records it as managed', async () => {
+    const w = await copyWorld('1.2.3');
+    bundle(w.target, '1.2.3');
+    const exec = copyExec();
+    const r = await cli(['app', 'install'], { ...w.io(), exec });
+    assert.equal(r.code, 0, r.err);
+    assert.match(r.out, /^already current: nika 1\.2\.3 is in ~\/Applications$/m);
+    assert.equal(r.err, '');
+    assert.deepEqual(exec.calls, []);
+    assert.equal(JSON.parse(fs.readFileSync(w.marker, 'utf8')).managed, true);
+  });
+
+  test('(−) a copy that cannot be recorded as managed still succeeds (exit 0) with one stderr line saying nika will not refresh it', async () => {
+    const w = await copyWorld('1.2.3');
+    fs.mkdirSync(w.env.XDG_STATE_HOME, { recursive: true });
+    fs.writeFileSync(path.join(w.env.XDG_STATE_HOME, 'nika'), 'a file where the state dir should be');
+    const r = await cli(['app', 'install'], { ...w.io(), exec: copyExec() });
+    assert.equal(r.code, 0);
+    assert.equal(r.out, 'added nika 1.2.3 to ~/Applications (find it with Spotlight)\n');
+    assert.equal(r.err, "nika: could not record the copy as managed; nika won't refresh it\n");
+    assert.equal(versionOf(w.target), '1.2.3');
+  });
+
   test('(+) app install prints updated when an older nika is there', async () => {
     const w = await copyWorld('1.2.3');
     bundle(w.target, '1.0.0');
@@ -296,7 +319,7 @@ describe('app install and the managed copy', () => {
     const exec = copyExec();
     const b = await cli(['app', 'install'], { ...foreign.io(), exec });
     assert.equal(b.code, 1);
-    assert.match(b.err, /~\/Applications\/nika\.app is not nika/);
+    assert.match(b.err, /~\/Applications or ~\/Applications\/nika\.app isn't a folder nika can safely replace\. Move it away/);
     assert.deepEqual(exec.calls, []);
     assert.equal(fs.readFileSync(foreign.target, 'utf8'), 'not nika');
 
@@ -440,7 +463,7 @@ describe('app install and the managed copy', () => {
     assert.match(await doctor(), /^app\s+installed {2}\(~\/Applications copy is 1\.0\.0, 1\.2\.3 is available: run nika app install\)$/m);
     fs.rmSync(w.target, { recursive: true });
     fs.writeFileSync(w.target, 'x');
-    assert.match(await doctor(), /^app\s+installed {2}\(~\/Applications\/nika\.app is not nika\)$/m);
+    assert.match(await doctor(), /^app\s+installed {2}\(~\/Applications or ~\/Applications\/nika\.app isn't a folder nika can safely replace\)$/m);
     assert.match(await doctor({ platform: 'linux' }), /^app\s+not installed$/m);
     fs.rmSync(w.target);
     assert.match(await doctor({ root: path.join(w.root, 'elsewhere') }), /^app\s+installed$/m);

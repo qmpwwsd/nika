@@ -29,9 +29,10 @@ const err = (status, error, message) => ({ status, body: { error, message } });
 const COPY_ERRORS = {
   unsupported: [409, 'the app copy is for macOS'],
   'no-source': [409, 'nika cannot find its own app to copy'],
-  'foreign-target': [409, '~/Applications/nika.app is not nika'],
+  'foreign-target': [409, "~/Applications or ~/Applications/nika.app isn't a folder nika can safely replace"],
   'copy-busy': [409, 'nika is already copying the app'],
   'copy-failed': [500, 'nika could not copy the app to Applications'],
+  'dismiss-failed': [500, 'nika could not record your choice'],
 };
 const NO_COPY = { state: 'no-source', managed: false, dismissed: false, version: null, available: null, running: false };
 const sha256 = (s) => crypto.createHash('sha256').update(s).digest();
@@ -218,7 +219,7 @@ export function createAppApi({ secret, ctx, deps }) {
       const { state, version, restart } = await deps.appCopy.install(); // the contract's three fields; `changed` is for the CLI
       return { status: 200, body: { state, version, restart } };
     } catch (e) {
-      const code = Object.hasOwn(COPY_ERRORS, e?.code) && body.action === 'install' ? e.code : 'copy-failed';
+      const code = body.action === 'dismiss' ? 'dismiss-failed' : Object.hasOwn(COPY_ERRORS, e?.code) && e.code !== 'dismiss-failed' ? e.code : 'copy-failed';
       return err(COPY_ERRORS[code][0], code, COPY_ERRORS[code][1]);
     }
   });

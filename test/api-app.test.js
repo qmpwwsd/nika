@@ -298,6 +298,13 @@ describe('app copy (ADR 0011)', () => {
     assert.deepEqual(a.deps.calls.filter((c) => c[0].startsWith('appCopy')), []);
   });
 
+  test('(+) a copy whose marker could not be written is still 200 with the contract\'s three fields', async () => {
+    const a = await boot({ deps: makeDeps({ appCopy: { ...makeDeps().appCopy, install: async () => ({ state: 'current', version: '9.9.9', restart: false, changed: 'added', recorded: false }) } }) });
+    const r = await a.call('POST', '/api/app/app-copy', { json: { action: 'install' } });
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.body, { state: 'current', version: '9.9.9', restart: false });
+  });
+
   test('(−) the module\'s refusals are 409 with a fixed body: foreign-target, no-source, copy-busy, unsupported', async () => {
     for (const code of ['foreign-target', 'no-source', 'copy-busy', 'unsupported']) {
       const a = await boot({ deps: makeDeps({ appCopy: { ...makeDeps().appCopy, install: async () => { throw Object.assign(new Error(code), { code }); } } }) });
@@ -305,6 +312,7 @@ describe('app copy (ADR 0011)', () => {
       assert.equal(r.status, 409, code);
       assert.equal(r.body.error, code);
       assert.equal(typeof r.body.message, 'string');
+      if (code === 'foreign-target') assert.equal(r.body.message, "~/Applications or ~/Applications/nika.app isn't a folder nika can safely replace");
     }
   });
 
@@ -320,6 +328,8 @@ describe('app copy (ADR 0011)', () => {
     const d = await boot({ deps: makeDeps({ appCopy: { ...makeDeps().appCopy, dismiss: async () => { throw new Error('/some/private/path'); } } }) });
     const r = await d.call('POST', '/api/app/app-copy', { json: { action: 'dismiss' } });
     assert.equal(r.status, 500);
+    assert.equal(r.body.error, 'dismiss-failed', 'its own code, not the copy-failed text');
+    assert.equal(r.body.message.includes('copy'), false);
     assert.equal(r.raw.includes('private'), false);
   });
 

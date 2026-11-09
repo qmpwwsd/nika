@@ -35,7 +35,7 @@ install it, or use the browser dashboard: nika open --browser`;
 // Fixed texts for the app copy (ADR 0011): the module's errors carry only a code, so no path or OS text can reach a terminal.
 const COPY_FAILURES = {
   'no-source': "nika can't find its own app to copy. Reinstall it with Homebrew: brew reinstall nika",
-  'foreign-target': '~/Applications/nika.app is not nika (or ~/Applications is not a plain folder you own). Move it away, then run nika app install again.',
+  'foreign-target': "~/Applications or ~/Applications/nika.app isn't a folder nika can safely replace. Move it away, then run nika app install again.",
   'copy-busy': 'nika is already copying the app.',
   'copy-failed': "nika couldn't copy the app to ~/Applications. An existing copy was left as it was.",
 };
@@ -313,6 +313,7 @@ async function appInstallCmd(cx) {
   if (r.changed === 'added') cx.out.write(`added nika ${r.version} to ~/Applications (find it with Spotlight)\n`);
   else if (r.changed === 'updated') cx.out.write(`updated nika in ~/Applications to ${r.version} (if nika was open, quit and reopen it)\n`);
   else cx.out.write(`already current: nika ${r.version} is in ~/Applications\n`);
+  if (r.recorded === false) cx.err.write("nika: could not record the copy as managed; nika won't refresh it\n");
   return 0;
 }
 
@@ -576,7 +577,7 @@ async function copyNote(cx) {
     missing: 'not in ~/Applications: run nika app install',
     current: `~/Applications copy: ${c.version}, ${c.managed ? 'managed' : 'not managed'} by nika`,
     stale: `~/Applications copy is ${c.version ?? 'of another version'}, ${c.available} is available: run nika app install`,
-    foreign: '~/Applications/nika.app is not nika',
+    foreign: "~/Applications or ~/Applications/nika.app isn't a folder nika can safely replace",
   }[c.state];
   return note ? `  (${note})` : '';
 }

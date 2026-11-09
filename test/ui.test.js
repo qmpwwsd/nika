@@ -700,7 +700,7 @@ describe('Add to Applications notice (spec 3.14)', () => {
 
   test('(+) errors are fixed copy chosen by the server\'s code', () => {
     const e = (status, error) => ({ status, body: { error, message: 'ignored' } });
-    assert.equal(copyErrorText(e(409, 'foreign-target')), '~/Applications/nika.app is not nika. Move it away, then try again.');
+    assert.equal(copyErrorText(e(409, 'foreign-target')), "~/Applications or ~/Applications/nika.app isn't a folder nika can safely replace. Move it away, then try again.");
     assert.equal(copyErrorText(e(409, 'no-source')), "nika can't find its own app to copy. Reinstall it with Homebrew.");
     assert.equal(copyErrorText(e(409, 'copy-busy')), 'nika is already copying the app.');
     assert.equal(copyErrorText(e(500, 'copy-failed')), "nika couldn't copy the app to Applications.");
@@ -822,7 +822,7 @@ describe('Add to Applications notice (spec 3.14)', () => {
 
   test('(−) a refusal or a network failure stays in the banner as fixed copy, with the buttons free again and no toast', async () => {
     for (const [answer, text] of [
-      [{ status: 409, body: { error: 'foreign-target', message: 'x' } }, '~/Applications/nika.app is not nika. Move it away, then try again.'],
+      [{ status: 409, body: { error: 'foreign-target', message: 'x' } }, "~/Applications or ~/Applications/nika.app isn't a folder nika can safely replace. Move it away, then try again."],
       [{ status: 409, body: { error: 'copy-busy', message: 'x' } }, 'nika is already copying the app.'],
       [{ status: 500, body: { error: 'copy-failed', message: 'x' } }, "nika couldn't copy the app to Applications."],
       [new Error('network down'), "nika couldn't copy the app to Applications."],

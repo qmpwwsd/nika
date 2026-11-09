@@ -141,14 +141,17 @@ export async function appCopyState({ root, home, platform, stateDir }, deps = {}
   return { state, managed: marker.managed && t.kind === 'nika', dismissed: marker.dismissed, version, available, running: t.kind === 'nika' && runningFrom(root, home) };
 }
 
-/** Records "Not now" in the marker (managed and version are kept). Never touches ~/Applications. */
-export async function dismissAppCopy({ stateDir }) {
+/** Records "Not now" in the marker (managed and version are kept). Never touches ~/Applications. `deps` is unused: the marker goes through fsafe and fwrite. */
+export async function dismissAppCopy({ stateDir }, deps = {}) { // eslint-disable-line no-unused-vars
   await writeMarker(stateDir, { ...(await readMarker(stateDir)), dismissed: true });
 }
 
 /**
- * Copies or updates the app: { state: 'current', version, restart, changed: 'added' | 'updated' | 'none' }. Throws an Error
- * whose `code` (and message) is one of unsupported, no-source, foreign-target, copy-busy, copy-failed.
+ * Copies or updates the app: { state: 'current', version, restart, changed: 'added' | 'updated' | 'none', recorded }.
+ * `recorded` is false when the marker could not be written (the copy is in place but nika will not refresh it later).
+ * An explicit install over a current copy nika did not make copies nothing but records it as managed, so a later
+ * `brew upgrade` reaches it (the launch commands never do this: refreshManagedCopy acts on managed copies only).
+ * Throws an Error whose `code` (and message) is one of unsupported, no-source, foreign-target, copy-busy, copy-failed.
  */
 export async function installAppCopy(args, deps = {}) {
   if (args.platform !== 'darwin') throw fail('unsupported');
@@ -164,7 +167,7 @@ export async function installAppCopy(args, deps = {}) {
 }
 
 async function doInstall({ root, home, stateDir }, deps) {
-  const { fs = fsp, exec } = deps;
+  const { fs = fsp, exec, uid = UID } = deps;
   const source = await findSource({ root, home }, deps);
   const src = source && (await readBundle(source, deps));
   if (!src?.version) throw fail('no-source');
@@ -173,15 +176,26 @@ async function doInstall({ root, home, stateDir }, deps) {
 
   let t = await inspectTarget(home, deps);
   if (t.kind === 'foreign') throw fail('foreign-target');
-  if (t.kind === 'nika' && t.version === src.version) return { state: 'current', version: src.version, restart: false, changed: 'none' };
+  if (t.kind === 'nika' && t.version === src.version) {
+    const marker = await readMarker(stateDir);
+    // shortcut: a marker that cannot be written is reported (`recorded: false`), not fatal
+    const recorded = marker.managed || (await writeMarker(stateDir, { managed: true, version: src.version, dismissed: marker.dismissed }).then(() => true, () => false));
+    return { state: 'current', version: src.version, restart: false, changed: 'none', recorded };
+  }
   if (t.appsMissing) {
     await fs.mkdir(apps, { mode: 0o700 });
     if ((await inspectTarget(home, deps)).kind !== 'absent') throw fail('foreign-target');
   }
 
   const tmp = await fs.mkdtemp(path.join(apps, TMP_PREFIX)); // 0700, a fresh name nobody else knows
-  // the temp folder is removed only by this exact path (made above), and fs.rm never follows a symlink it meets
-  const dropTmp = () => fs.rm(tmp, { recursive: true, force: true });
+  const made = await fs.lstat(tmp);
+  // The temp folder is removed only by this exact path (made above), and fs.rm never follows a symlink it meets. Just before,
+  // ~/Applications must still be a plain folder you own and the temp folder the very directory mkdtemp made (same device and
+  // inode, not a symlink); if either changed, the folder is left where it is (the copy itself is already in place).
+  const dropTmp = async () => {
+    const still = await Promise.all([fs.lstat(apps), fs.lstat(tmp)]).then(([a, t2]) => ownDir(a, uid, true) && ownDir(t2, uid) && t2.dev === made.dev && t2.ino === made.ino, () => false);
+    if (still) await fs.rm(tmp, { recursive: true, force: true });
+  };
   let aside = null; // where the old copy sits while the new one is swapped in
   let changed;
   try {
@@ -211,9 +225,9 @@ async function doInstall({ root, home, stateDir }, deps) {
   }
   await dropTmp().catch(() => {}); // holds only what nika made (the previous copy of itself)
   await exec(LSREGISTER, ['-f', target]).catch(() => {}); // so LaunchServices and Spotlight see it now; failure is harmless
-  // shortcut: a marker that cannot be written is not worth failing a finished copy; the copy then counts as not managed
-  await writeMarker(stateDir, { managed: true, version: src.version, dismissed: (await readMarker(stateDir)).dismissed }).catch(() => {});
-  return { state: 'current', version: src.version, restart: changed === 'updated' && runningFrom(root, home), changed };
+  // shortcut: a marker that cannot be written is not worth failing a finished copy; it is reported (`recorded: false`) and the copy counts as not managed
+  const recorded = await writeMarker(stateDir, { managed: true, version: src.version, dismissed: (await readMarker(stateDir)).dismissed }).then(() => true, () => false);
+  return { state: 'current', version: src.version, restart: changed === 'updated' && runningFrom(root, home), changed, recorded };
 }
 
 /**

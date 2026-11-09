@@ -287,6 +287,16 @@ describe('appCopyState', () => {
     assert.equal((await appCopyState(w.args, { brewApps: [] })).state, 'foreign');
   });
 
+  test('(−) a group-writable ~/Applications (0o020 alone) is foreign too', async () => {
+    const w = world();
+    mkApps(w);
+    bundle(w.target);
+    fs.chmodSync(w.apps, 0o775);
+    assert.equal((await appCopyState(w.args, { brewApps: [] })).state, 'foreign');
+    fs.chmodSync(w.apps, 0o755);
+    assert.equal((await appCopyState(w.args, { brewApps: [] })).state, 'current');
+  });
+
   test('(−) a garbage or symlinked marker reads as "not managed, not dismissed"', async () => {
     const w = world();
     fs.mkdirSync(w.stateDir, { recursive: true });
@@ -318,7 +328,7 @@ describe('installAppCopy', () => {
     } });
     const fsx = spyFs();
     const r = await installAppCopy(w.args, { fs: fsx, exec, brewApps: [] });
-    assert.deepEqual(r, { state: 'current', version: '0.3.0', restart: false, changed: 'added' });
+    assert.deepEqual(r, { state: 'current', version: '0.3.0', restart: false, changed: 'added', recorded: true });
     assert.equal(exec.calls.length, 2);
     assert.deepEqual(exec.calls[0], [DITTO, w.kegApp, path.join(tmpAtDitto, 'nika.app')]);
     assert.deepEqual(exec.calls[1], [LSREGISTER, '-f', w.target]);
@@ -342,7 +352,7 @@ describe('installAppCopy', () => {
     const exec = fakeExec();
     const fsx = spyFs();
     const r = await installAppCopy(w.args, { fs: fsx, exec, brewApps: [] });
-    assert.deepEqual(r, { state: 'current', version: '0.3.0', restart: false, changed: 'updated' });
+    assert.deepEqual(r, { state: 'current', version: '0.3.0', restart: false, changed: 'updated', recorded: true });
     const tmp = fsx.ops[0][1];
     assert.deepEqual(fsx.ops.slice(1), [['rename', w.target, path.join(tmp, 'previous.app')], ['rename', path.join(tmp, 'nika.app'), w.target]]);
     assert.equal(versionOf(w.target), '0.3.0');
@@ -360,16 +370,48 @@ describe('installAppCopy', () => {
     assert.equal(r.restart, true);
   });
 
-  test('(+) a current copy is left alone: no temp folder, no ditto, no marker write', async () => {
+  test('(+) a current copy nika made is left alone: no temp folder, no ditto, no marker write', async () => {
+    const w = world();
+    bundle(w.target, { version: '0.3.0' });
+    fs.mkdirSync(w.stateDir, { recursive: true });
+    const before = JSON.stringify({ managed: true, version: '0.3.0', dismissed: true });
+    fs.writeFileSync(w.marker, before);
+    const exec = fakeExec();
+    const fsx = spyFs();
+    const r = await installAppCopy(w.args, { fs: fsx, exec, brewApps: [] });
+    assert.deepEqual(r, { state: 'current', version: '0.3.0', restart: false, changed: 'none', recorded: true });
+    assert.deepEqual(exec.calls, []);
+    assert.deepEqual(fsx.ops, []);
+    assert.equal(fs.readFileSync(w.marker, 'utf8'), before, 'the marker file is not rewritten');
+  });
+
+  test('(+) an explicit install over a current copy nika did not make takes it over: still no copy, but the marker says managed', async () => {
     const w = world();
     bundle(w.target, { version: '0.3.0' });
     const exec = fakeExec();
     const fsx = spyFs();
     const r = await installAppCopy(w.args, { fs: fsx, exec, brewApps: [] });
-    assert.deepEqual(r, { state: 'current', version: '0.3.0', restart: false, changed: 'none' });
-    assert.deepEqual(exec.calls, []);
-    assert.deepEqual(fsx.ops, []);
+    assert.deepEqual(r, { state: 'current', version: '0.3.0', restart: false, changed: 'none', recorded: true });
+    assert.deepEqual(exec.calls, [], 'nothing is copied');
+    assert.deepEqual(fsx.ops, [], 'nothing is moved');
+    assert.deepEqual(JSON.parse(fs.readFileSync(w.marker, 'utf8')), { managed: true, version: '0.3.0', dismissed: false });
+    assert.equal(fs.statSync(w.marker).mode & 0o777, 0o600);
+    assert.equal((await appCopyState(w.args, { brewApps: [] })).managed, true);
+    assert.equal(await refreshManagedCopy({ ...w.args, version: '0.3.0' }, { exec, brewApps: [] }), 'none', 'and a later upgrade can then refresh it');
+  });
+
+  test('(−) the take-over never happens for a foreign target or without a source, and a failed marker write is reported as not recorded', async () => {
+    const w = world();
+    bundle(w.target, { id: 'com.example.other', version: '0.3.0' });
+    await rejectsWith(installAppCopy(w.args, { exec: fakeExec(), brewApps: [] }), 'foreign-target');
     assert.equal(fs.existsSync(w.marker), false);
+    const v = world();
+    bundle(v.target, { version: '0.3.0' });
+    fs.mkdirSync(path.dirname(v.stateDir), { recursive: true });
+    fs.writeFileSync(v.stateDir, 'a file where the state dir should be');
+    const r = await installAppCopy(v.args, { exec: fakeExec(), brewApps: [] });
+    assert.equal(r.changed, 'none');
+    assert.equal(r.recorded, false);
   });
 
   test('(+) the exec is only ever ditto and lsregister, by absolute path with a fixed argv (no shell, nothing from outside)', async () => {
@@ -440,6 +482,19 @@ describe('installAppCopy', () => {
     await rejectsWith(installAppCopy(w.args, { fs: foreignOwner, exec, brewApps: [] }), 'foreign-target');
     assert.deepEqual(exec.calls, []);
     assert.equal(versionOf(w.target), '0.2.0');
+  });
+
+  test('(−) a group-writable ~/Applications is refused: nothing is copied, moved or recorded', async () => {
+    const w = world();
+    mkApps(w);
+    fs.chmodSync(w.apps, 0o775);
+    const exec = fakeExec();
+    const fsx = spyFs();
+    await rejectsWith(installAppCopy(w.args, { fs: fsx, exec, brewApps: [] }), 'foreign-target');
+    assert.deepEqual(exec.calls, []);
+    assert.deepEqual(fsx.ops, []);
+    assert.deepEqual(fs.readdirSync(w.apps), []);
+    assert.equal(fs.existsSync(w.marker), false);
   });
 
   test('(−) ~/Applications as a symlink or world-writable folder is refused: nothing is created behind the link', async () => {
@@ -523,6 +578,74 @@ describe('installAppCopy', () => {
     assert.equal(versionOf(path.join(w.apps, kept, 'previous.app')), '0.2.0');
   });
 
+  // After the swap the temp folder is removed only if ~/Applications and the temp folder are still what they were.
+  // `afterSwap(w, tmp)` runs right after the new copy was renamed into place (inside the rename window).
+  const swapRig = (afterSwap) => {
+    const base = spyFs();
+    const w = world();
+    const fsx = {
+      ...base,
+      rename: async (from, to) => {
+        await base.rename(from, to);
+        if (to === w.target && from.endsWith(`${path.sep}nika.app`)) afterSwap(w, path.dirname(from));
+      },
+    };
+    return { w, fsx };
+  };
+
+  test('(+) after a normal swap the temp folder is removed (the guard lets it go)', async () => {
+    const { w, fsx } = swapRig(() => {});
+    const r = await installAppCopy(w.args, { fs: fsx, exec: fakeExec(), brewApps: [] });
+    assert.equal(r.changed, 'added');
+    assert.deepEqual(leftovers(w.apps), []);
+  });
+
+  test('(−) ~/Applications swapped for a symlink inside the rename window: the temp folder is kept, nothing behind the link is touched, the install still succeeds', async () => {
+    let moved;
+    const { w, fsx } = swapRig((world) => {
+      moved = `${world.apps}-moved`;
+      fs.renameSync(world.apps, moved);
+      fs.mkdirSync(path.join(world.root, 'elsewhere'));
+      fs.symlinkSync(path.join(world.root, 'elsewhere'), world.apps);
+    });
+    const r = await installAppCopy(w.args, { fs: fsx, exec: fakeExec(), brewApps: [] });
+    assert.equal(r.changed, 'added');
+    assert.deepEqual(fs.readdirSync(path.join(w.root, 'elsewhere')), [], 'nothing was written or removed behind the link');
+    assert.equal(leftovers(moved).length, 1, 'the temp folder is kept');
+    assert.deepEqual(await readBundle(path.join(moved, 'nika.app')), { id: APP_ID, version: '0.3.0' }, 'the copy that was swapped in is in the moved folder');
+  });
+
+  test('(−) the temp folder swapped for a symlink or for another folder: it is kept and what the link points at is untouched', async () => {
+    const decoyFile = (dir) => {
+      fs.mkdirSync(dir);
+      fs.writeFileSync(path.join(dir, 'keep.txt'), 'keep');
+      return dir;
+    };
+    const asLink = swapRig((world, tmp) => {
+      fs.renameSync(tmp, `${tmp}-moved`);
+      fs.symlinkSync(decoyFile(path.join(world.root, 'decoy-link')), tmp);
+    });
+    await installAppCopy(asLink.w.args, { fs: asLink.fsx, exec: fakeExec(), brewApps: [] });
+    assert.equal(fs.readFileSync(path.join(asLink.w.root, 'decoy-link', 'keep.txt'), 'utf8'), 'keep');
+    assert.equal(leftovers(asLink.w.apps).length, 2, 'the symlink and the moved folder both stay');
+
+    const asDir = swapRig((world, tmp) => {
+      fs.renameSync(tmp, `${tmp}-moved`);
+      decoyFile(tmp);
+    });
+    await installAppCopy(asDir.w.args, { fs: asDir.fsx, exec: fakeExec(), brewApps: [] });
+    const [other] = leftovers(asDir.w.apps).filter((n) => !n.endsWith('-moved'));
+    assert.equal(fs.readFileSync(path.join(asDir.w.apps, other, 'keep.txt'), 'utf8'), 'keep', 'a different folder under the same name is not removed (inode changed)');
+  });
+
+  test('(−) ~/Applications made group-writable inside the rename window: the temp folder is kept', async () => {
+    const { w, fsx } = swapRig((world) => fs.chmodSync(world.apps, 0o775));
+    const r = await installAppCopy(w.args, { fs: fsx, exec: fakeExec(), brewApps: [] });
+    assert.equal(r.changed, 'added');
+    assert.equal(leftovers(w.apps).length, 1);
+    fs.chmodSync(w.apps, 0o755);
+  });
+
   test('(−) a second install while one runs is copy-busy; the flag is released afterwards, also after a failure', async () => {
     const w = world();
     let release;
@@ -576,6 +699,7 @@ describe('installAppCopy', () => {
     fs.writeFileSync(w.stateDir, 'a file where the state dir should be');
     const r = await installAppCopy(w.args, { exec, brewApps: [] });
     assert.equal(r.changed, 'added');
+    assert.equal(r.recorded, false, 'the caller can say the copy will not be refreshed');
     assert.equal(versionOf(w.target), '0.3.0');
   });
 });
@@ -583,7 +707,7 @@ describe('installAppCopy', () => {
 describe('dismissAppCopy', () => {
   test('(+) writes { managed, version, dismissed: true }, keeping what the marker said, mode 0600', async () => {
     const w = world();
-    await dismissAppCopy(w.args);
+    await dismissAppCopy(w.args, {});
     assert.deepEqual(JSON.parse(fs.readFileSync(w.marker, 'utf8')), { managed: false, version: null, dismissed: true });
     assert.equal(fs.statSync(w.marker).mode & 0o777, 0o600);
     fs.writeFileSync(w.marker, JSON.stringify({ managed: true, version: '0.2.0', dismissed: false }));
@@ -627,6 +751,7 @@ describe('refreshManagedCopy', () => {
     assert.equal(fs.existsSync(w.apps), false);
     bundle(w.target, { version: '0.2.0' });
     assert.equal(await run(), 'none', 'unmanaged');
+    assert.equal(fs.existsSync(w.marker), false, 'a launch-time refresh never writes the marker for a copy nika did not make');
     fs.mkdirSync(w.stateDir, { recursive: true });
     fs.writeFileSync(w.marker, JSON.stringify({ managed: true, version: '0.2.0', dismissed: false }));
     fs.rmSync(w.target, { recursive: true });
@@ -649,6 +774,11 @@ describe('refreshManagedCopy', () => {
     bundle(w.target, { version: '0.3.0' });
     assert.equal(await refreshManagedCopy({ ...w.args, version: '0.3.0' }, { exec, brewApps: [] }), 'none', 'current');
     assert.deepEqual(exec.calls, []);
+    // an unmanaged current copy: the launch path must not take it over (only an explicit install does)
+    const u = world();
+    bundle(u.target, { version: '0.3.0' });
+    assert.equal(await refreshManagedCopy({ ...u.args, version: '0.3.0' }, { exec, brewApps: [] }), 'none');
+    assert.equal(fs.existsSync(u.marker), false);
   });
 
   test('(−) a failing update throws the copy error code and leaves the old copy', async () => {

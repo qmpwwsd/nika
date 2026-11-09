@@ -110,8 +110,9 @@ brew autoremove                           # optional: removes Rust and the other
 
 The desktop app lives in the Homebrew folder, which Spotlight does not index; `nika app install` copies it into
 `~/Applications` (the app also offers an "Add to Applications" button once). After `brew upgrade`, running `nika` brings
-that copy up to date; nika never overwrites an `~/Applications/nika.app` it did not make, and never writes to
-`/Applications`. After an upgrade, restart the browser dashboard with `brew services restart nika`.
+that copy up to date; a launch (`nika`, `nika open`, `nika app`) never touches a copy nika did not make, and nika never
+replaces anything in `~/Applications/nika.app` that is not nika's own bundle. It never writes to `/Applications`.
+After an upgrade, restart the browser dashboard with `brew services restart nika`.
 
 **Linux (x86_64).** Download the `.deb` or the AppImage and `SHA256SUMS` from the
 [latest release](https://github.com/qmpwwsd/nika/releases/latest), then:

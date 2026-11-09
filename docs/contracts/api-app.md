@@ -64,8 +64,9 @@ copy (state marker), `dismissed` = "Not now" was chosen on the Add prompt, `runn
 ### `POST /api/app/app-copy` (body ≤ 4 KB, `CAP.small`)
 `{ "action": "install" }` copies or updates the app in `~/Applications`; `{ "action": "dismiss" }` records "Not now"
 (the Add prompt is not shown again; the command still works). Any other body → `400 invalid`. One copy at a time → 409
-`copy-busy`. Not macOS → 409 `unsupported`; no source → 409 `no-source`; the target is not nika → 409 `foreign-target`
-(nothing written); the copy failed → `500 copy-failed` (temp copy removed, the old copy left in place). Success →
+`copy-busy`. Not macOS → 409 `unsupported`; no source → 409 `no-source`; the target is not nika (or `~/Applications`
+is not a plain folder you own) → 409 `foreign-target` (nothing written); the copy failed → `500 copy-failed` (temp copy removed,
+the old copy left in place); `dismiss` could not record the choice → `500 dismiss-failed` ("nika could not record your choice"). Success →
 `200 { "state": "current", "version": "0.3.0", "restart": false }`; `restart: true` when this server runs from the copy it
 just replaced (the page says to quit and reopen nika). `dismiss` → `200 { "dismissed": true }`. The error body is the common
 `{ "error": "<code>", "message": "<fixed text>" }` with the code above (never a path or OS text), and the body must be exactly
@@ -495,8 +496,14 @@ Write API (`src/fwrite.js`): `ensureDir(dir, mode = 0o700)`, `writeAtomic(dir, n
   copy to the target, and remove the temp folder (it holds only what nika made). A failed step removes the temp folder
   and moves the old copy back. Then `lsregister -f <target>` (`execFile`, fixed path; failure ignored) so LaunchServices
   and Spotlight see it at once.
+- After the swap the temp folder is removed only if `~/Applications` is still a real folder you own, not group/world-writable,
+  and the temp folder is still the very directory `mkdtemp` made (not a symlink, same device and inode); otherwise it is
+  left where it is and the install still reports success (the copy is in place).
 - Marker: `<state>/app-copy.json` `{ "managed": true, "version": "0.3.0", "dismissed": false }` (0600, `fwrite`), written
-  after a successful copy or a dismiss. It never holds a path.
+  after a successful copy, a dismiss, or an explicit install over a current copy nika did not make (nothing is copied then;
+  the copy is only recorded as managed, `dismissed` kept). A launch command never writes it for an unmanaged copy. If the
+  marker write fails after a copy, the route still returns 200 and `nika app install` prints one stderr line ("could not
+  record the copy as managed; nika won't refresh it"). It never holds a path.
 - Refresh: `nika`, `nika open` and `nika app` refresh a **managed** copy whose version differs from this CLI's version
   when the source has this CLI's version (that is, after `brew upgrade`), then launch the copy with `open <target>`;
   an unmanaged or foreign copy is never touched. They print "updated the nika app in ~/Applications to X.Y.Z (if nika

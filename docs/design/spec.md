@@ -688,7 +688,7 @@ driven by `GET /api/app/me` `appCopy` (read at load and after each action). One 
   "Updated the app in Applications to <version>." (Update); with `restart: true`: "Updated to <version>. Quit and reopen
   nika to use it."
 - Errors stay in the banner as one alert line (`role="alert"`), fixed copy, the buttons re-enabled:
-  `foreign-target` "~/Applications/nika.app is not nika. Move it away, then try again." · `no-source` "nika can't find
+  `foreign-target` "~/Applications or ~/Applications/nika.app isn't a folder nika can safely replace. Move it away, then try again." · `no-source` "nika can't find
   its own app to copy. Reinstall it with Homebrew." · `copy-busy` "nika is already copying the app." · `copy-failed`, 5xx,
   network "nika couldn't copy the app to Applications."
 - Icon: `i-apps` (a 2×2 grid of rounded squares, 16 px, same stroke as the set). Every string is static copy plus the

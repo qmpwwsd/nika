@@ -16,7 +16,7 @@ const BANNERS = {
 
 const FAILED = "nika couldn't copy the app to Applications.";
 const ERRORS = {
-  'foreign-target': '~/Applications/nika.app is not nika. Move it away, then try again.',
+  'foreign-target': "~/Applications or ~/Applications/nika.app isn't a folder nika can safely replace. Move it away, then try again.",
   'no-source': "nika can't find its own app to copy. Reinstall it with Homebrew.",
   'copy-busy': 'nika is already copying the app.',
 };
