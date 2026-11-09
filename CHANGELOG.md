@@ -1,7 +1,27 @@
 # Changelog
 
-## Unreleased
+## 0.3.2 — 2026-11-09
 
+Missing and old dependencies (Node.js, tmux):
+
+- A Node.js older than 22 now gets a clear message instead of a crash: `nika` prints `nika: needs Node.js 22 or newer; this
+  is <version>.` with a hint and exits 1, and the desktop app shows "Node.js is too old" with the version it found. A
+  missing Node.js still shows "Node.js was not found".
+- The desktop app finds Node.js installed with Volta, mise, fnm, nvm and asdf (it uses the newest install of each), not only
+  in the Homebrew and system folders. It asks each candidate `node --version`, with only `HOME` in its environment, a 2 second
+  limit each and 6 seconds in total, and uses the first that is 22 or newer. `NIKA_NODE`, when set to an executable file, is the only candidate.
+  The search runs in the background, so a slow or hanging candidate cannot freeze the window or the tray, and a hanging one
+  is killed together with anything it started (so is one still running when you quit). On Linux it also looks in Linuxbrew's prefix; the macOS fnm folder is
+  looked at on macOS only.
+- `nika` can now print that message on the old Node.js versions it was checked on (10, 12, 18, 20.9 and 20.20): the launcher
+  is now CommonJS (`bin/package.json`), because some versions (for example 20.9) refuse an extensionless file inside a
+  `"type": "module"` package before any code runs.
+- The "tmux not found" banner and `nika doctor` name the install command for your system: `brew install tmux` on macOS,
+  `sudo apt install tmux` on Linux, and no command elsewhere.
+- Packages: the Linux `.deb` now depends on tmux (not on `nodejs`: apt would install an older one than 22), and the
+  Homebrew formula in `docs/packaging.md` gains `depends_on "tmux"` (the tap gets it at the next release). The AppImage
+  cannot declare dependencies. The Linux release build now fails if the built `.deb` does not depend on tmux. The README lists
+  the requirements and how to get Node.js 22 on Linux.
 - Docs: README screenshots of the desktop app (light and dark) and the app icon in the title.
 
 ## 0.3.1 — 2026-11-09

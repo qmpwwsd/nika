@@ -50,8 +50,9 @@ NIKA_CONFIG_DIR=/path/to/cfg XDG_STATE_HOME=/path/to/state CLAUDE_CONFIG_DIR=/pa
   TMUX_TMPDIR=/path/to/empty-dir ./target/debug/nika-app
 ```
 
-Environment the app reads: `NIKA_NODE` (absolute path to a node binary; otherwise the first executable `node` in
-`/opt/homebrew/bin`, `/opt/homebrew/opt/node/bin`, `/usr/local/bin`, `$HOME/.local/bin`, `/usr/bin`). Which JS runs is
+Environment the app reads: `NIKA_NODE` (absolute path to a node binary, the only candidate when set; otherwise the first
+`node` that answers `--version` with 22 or newer, looked up in the Homebrew, `/usr/local/bin`, Linuxbrew (Linux only),
+`$HOME/.local/bin`, Volta, mise, fnm, nvm, asdf and `/usr/bin` locations listed in `docs/packaging.md`). Which JS runs is
 never an env var: release builds load `<resources>/nika`, debug builds the repository root. `--hidden` (passed by
 "Start at login") keeps the window closed until it is opened from the tray.
 

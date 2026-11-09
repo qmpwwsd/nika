@@ -33,11 +33,12 @@ cleanup() {
 trap cleanup EXIT
 
 # The wrapper the shell runs as "node": a file whose shebang is the real node (absolute) and which loads the probe.
+# It answers `--version` itself: the shell asks every node candidate for its version before it starts the server.
 REAL_NODE="$(command -v node)"
 [[ $REAL_NODE == /* ]] || { echo "gui-smoke: node is not an absolute path: $REAL_NODE" >&2; exit 2; }
 PROBE_URL="$("$REAL_NODE" -e 'console.log(require("node:url").pathToFileURL(process.argv[1]).href)' "$REPO/scripts/shell-probe.mjs")"
 mkdir -m 700 "$WORK/bin" "$WORK/home" "$WORK/nika-config" "$WORK/state" "$WORK/claude"
-printf '#!%s\nimport("%s");\n' "$REAL_NODE" "$PROBE_URL" >"$WORK/bin/node"
+printf '#!%s\nif (process.argv[2] === "--version") console.log(process.version); else import("%s");\n' "$REAL_NODE" "$PROBE_URL" >"$WORK/bin/node"
 chmod 755 "$WORK/bin/node"
 
 # Throwaway HOME and dirs: the shell and its child never see the real ones.

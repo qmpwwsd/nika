@@ -3,10 +3,12 @@
 //! `https://claude.ai/code/session_<id>` opens in the system browser through fixed argv; everything else is blocked.
 //! The matchers are hand-written on parsed URLs: no regex, no globbing, no prefix tests on raw strings.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
 use tauri::Url;
+
+use crate::child::{NodeLookup, NodeVer};
 
 /// Origin of the embedded frontend (`frontendDist`) on macOS and Linux.
 pub const APP_ORIGIN: &str = "tauri://localhost";
@@ -19,6 +21,8 @@ const MAX_SESSION_ID: usize = 64;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reason {
     NodeMissing,
+    /// The newest Node.js found is older than 22. The version is shown when it has the form the page accepts.
+    NodeOld(Option<NodeVer>),
     StartFailed,
     Stopped,
 }
@@ -27,19 +31,43 @@ impl Reason {
     pub fn key(self) -> &'static str {
         match self {
             Self::NodeMissing => "node-missing",
+            Self::NodeOld(_) => "node-old",
             Self::StartFailed => "start-failed",
             Self::Stopped => "stopped",
         }
     }
 
+    /// The page's query: always `reason=<key>`; for `NodeOld` also `node=v<major>.<minor>.<patch>` (at most three
+    /// digits each, which is what ui/error.js accepts), left out when the version does not fit that form.
+    fn query(self) -> String {
+        match self {
+            Self::NodeOld(Some(v)) => match v.page_form() {
+                Some(form) => format!("reason={}&node={form}", self.key()),
+                None => format!("reason={}", self.key()),
+            },
+            _ => format!("reason={}", self.key()),
+        }
+    }
+
     /// Path and query for `WebviewUrl::App`.
     pub fn page(self) -> String {
-        format!("error.html?reason={}", self.key())
+        format!("error.html?{}", self.query())
     }
 
     /// Full URL for navigating an existing window to the error page.
     pub fn url(self) -> Url {
-        Url::parse(&format!("{APP_ORIGIN}{ERROR_PAGE}?reason={}", self.key())).expect("constant URL parses")
+        Url::parse(&format!("{APP_ORIGIN}{ERROR_PAGE}?{}", self.query())).expect("constant URL parses")
+    }
+}
+
+/// The node binary to run, or the reason the error page shows instead. `None` is a lookup that failed to deliver an
+/// answer at all (its worker thread panicked): the generic start failure, so the error page and Retry still work.
+pub fn node_or_reason(found: Option<NodeLookup>) -> Result<PathBuf, Reason> {
+    match found {
+        Some(NodeLookup::Found(p)) => Ok(p),
+        Some(NodeLookup::TooOld(v)) => Err(Reason::NodeOld(Some(v))),
+        Some(NodeLookup::Missing) => Err(Reason::NodeMissing),
+        None => Err(Reason::StartFailed),
     }
 }
 
@@ -267,16 +295,43 @@ mod tests {
     #[test]
     fn error_page_urls_are_allowed_and_carry_a_fixed_reason() {
         // (+) every reason maps to a page the navigation predicate lets through
-        for r in [Reason::NodeMissing, Reason::StartFailed, Reason::Stopped] {
+        for r in [Reason::NodeMissing, Reason::NodeOld(None), Reason::StartFailed, Reason::Stopped] {
             assert_eq!(classify(&r.url(), None), Nav::Allow);
             assert_eq!(r.page(), format!("error.html?reason={}", r.key()));
             assert_eq!(r.url().query(), Some(format!("reason={}", r.key()).as_str()));
         }
         // (-) the keys are exactly the ones ui/error.js knows
         let js = include_str!("../ui/error.js");
-        for r in [Reason::NodeMissing, Reason::StartFailed, Reason::Stopped] {
+        for r in [Reason::NodeMissing, Reason::NodeOld(None), Reason::StartFailed, Reason::Stopped] {
             assert!(js.contains(&format!("'{}'", r.key())) || js.contains(&format!("{}:", r.key())), "{}", r.key());
         }
+    }
+
+    #[test]
+    fn node_old_carries_the_version_only_in_the_form_the_page_accepts() {
+        let v = NodeVer { major: 20, minor: 11, patch: 1 };
+        // (+) reason first, then the version, on both the first-window path and the navigate path
+        assert_eq!(Reason::NodeOld(Some(v)).key(), "node-old");
+        assert_eq!(Reason::NodeOld(Some(v)).page(), "error.html?reason=node-old&node=v20.11.1");
+        assert_eq!(Reason::NodeOld(Some(v)).url().query(), Some("reason=node-old&node=v20.11.1"));
+        assert_eq!(classify(&Reason::NodeOld(Some(v)).url(), None), Nav::Allow);
+        // (-) no version, or one the page would reject (more than three digits): the reason alone
+        assert_eq!(Reason::NodeOld(None).page(), "error.html?reason=node-old");
+        assert_eq!(Reason::NodeOld(Some(NodeVer { major: 1000, minor: 0, patch: 0 })).page(), "error.html?reason=node-old");
+        assert_eq!(Reason::NodeOld(Some(NodeVer { major: 20, minor: 0, patch: 1000 })).url().query(), Some("reason=node-old"));
+    }
+
+    #[test]
+    fn a_node_lookup_becomes_a_path_or_the_matching_reason() {
+        let v = NodeVer { major: 18, minor: 0, patch: 0 };
+        // (+) found: the path
+        assert_eq!(node_or_reason(Some(NodeLookup::Found("/usr/bin/node".into()))), Ok(PathBuf::from("/usr/bin/node")));
+        // (-) too old is node-old with the version (not node-missing); nothing found is node-missing
+        assert_eq!(node_or_reason(Some(NodeLookup::TooOld(v))), Err(Reason::NodeOld(Some(v))));
+        assert_eq!(node_or_reason(Some(NodeLookup::Missing)), Err(Reason::NodeMissing));
+        // (-) no answer at all (the lookup's worker thread panicked): start-failed, a reason like any other, so the
+        // caller ends on the error page (which sets `failed`, the state Retry needs) instead of "starting" for good
+        assert_eq!(node_or_reason(None), Err(Reason::StartFailed));
     }
 
     #[test]

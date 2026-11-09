@@ -11,12 +11,26 @@ Decision record: [ADR 0009](adr/0009-packaging.md). Shell facts: [architecture](
 
 - Bundle id `io.github.qmpwwsd.nika`, display name `nika`, Rust binary `nika-app`.
 - The app bundle carries the Node server files (`bin`, `src`, `public`, `templates`, `package.json`) as resources. It
-  does **not** carry Node itself.
+  does **not** carry Node itself. `bin/package.json` (`{ "type": "commonjs" }`) keeps the extensionless launcher
+  `bin/nika` CommonJS, so its version guard can run (checked on Node.js 10, 12, 18, 20.9 and 20.20; some versions refuse an extensionless
+  file inside the root package's `"type": "module"` scope); the whole `bin/` folder ships in the npm package, the app
+  bundle and the Homebrew formula.
 
 ## Runtime requirements (both systems)
 
-- Node 22 or newer. The app looks for it in this order: `NIKA_NODE` (an absolute path), else the first `node` in
-  `/opt/homebrew/bin`, `/opt/homebrew/opt/node/bin`, `/usr/local/bin`, `~/.local/bin`, `/usr/bin`.
+- Node 22 or newer. The app looks for it like this: if `NIKA_NODE` is an absolute path to an executable file, that is the
+  only candidate (too old is an error, not a reason to look further). Otherwise the candidates are, in order,
+  `/opt/homebrew/bin/node`, `/opt/homebrew/opt/node/bin/node`, `/usr/local/bin/node`, on Linux
+  `/home/linuxbrew/.linuxbrew/bin/node` (Linuxbrew), `~/.local/bin/node`,
+  `~/.volta/bin/node`, then the newest install (by the version in the folder name, which must be exactly
+  `<major>.<minor>.<patch>`, with a leading `v` for nvm and fnm) of mise (`~/.local/share/mise/installs/node/<ver>/bin/node`),
+  fnm (`~/.local/share/fnm/node-versions/<v>/installation/bin/node`, on macOS only also under
+  `~/Library/Application Support/fnm`), nvm (`~/.nvm/versions/node/<v>/bin/node`) and asdf
+  (`~/.asdf/installs/nodejs/<ver>/bin/node`), and last `/usr/bin/node`. Each existing one is asked `node --version`
+  (fixed argv, an environment of `HOME` alone, no shell, its own process group, 2 s limit; about 6 s in total across all candidates, spawn and read included and the kill after a timeout on top, after which the search ends with what it has read); the first that answers 22 or newer is used. A run that hangs is killed together with whatever it forked, and so is the run still going when the app quits. The lookup runs on a worker thread, so a slow candidate never freezes the window, the tray or Quit. When some answered
+  but none is new enough, the error page says `Node.js is too old` and names the newest version seen; when none
+  exists or none answers, it says `Node.js was not found`. Only folder listings and `--version` are used: no shell, dotfile or
+  version-manager config is read. Anything else: set `NIKA_NODE`.
 - tmux and Claude Code, for the session window, spawn and orchestrator features.
 
 ## macOS: build from source
@@ -82,7 +96,11 @@ cargo tauri build --bundles deb,appimage
 - **AppIndicator** for the tray icon (`libayatana-appindicator3-1`). Some desktops, such as stock GNOME, need an
   AppIndicator extension to show the icon. Without a tray icon the window still works; starting the app again focuses
   the existing window.
-- Node 22+, tmux and Claude Code (see above).
+- **tmux** is a declared dependency of the `.deb` (`bundle.linux.deb.depends` is `["tmux"]`; the bundler adds the two
+  libraries above itself). Node.js is deliberately not declared: apt would install the distribution's `nodejs`, which
+  is older than 22 on current Debian and Ubuntu releases. The AppImage cannot declare dependencies, so tmux and Node 22+
+  must already be installed (the README says so).
+- Node 22+ (see above) and Claude Code.
 
 ### Desktop entry
 
@@ -228,6 +246,8 @@ is its shape: a release changes only `url` (the new tag) and `sha256` (of that t
 computed once the tag exists, so this copy cannot carry it). On macOS it builds `nika.app` from source (ad hoc signed by
 the bundler, no Gatekeeper quarantine because it is built locally) and installs it in the keg; on Linux it installs the
 CLI only (the desktop app comes from the `.deb` or AppImage). The browser-tier service is unchanged from 0.1.
+The `depends_on "tmux"` line is new in 0.3.2: the tap gets it at the next release, together with the new `url` and
+`sha256`. Until then the tap's formula installs Node.js only.
 
 ```ruby
 class Nika < Formula
@@ -238,6 +258,7 @@ class Nika < Formula
   license "MIT"
 
   depends_on "node"
+  depends_on "tmux"
   on_macos do
     depends_on "rust" => :build
   end

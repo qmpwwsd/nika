@@ -11,6 +11,7 @@ mod protocol;
 mod secret;
 mod tray;
 
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 
@@ -21,7 +22,7 @@ use tauri::{AppHandle, Manager, RunEvent, Url, WebviewUrl, WebviewWindow, Webvie
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tauri_plugin_dialog::DialogExt;
 
-use child::{Server, StopTimes, Sup};
+use child::{NodeLookup, Server, StopTimes, Sup};
 use nav::{Nav, Reason};
 use secret::Secret;
 use tray::View;
@@ -245,6 +246,9 @@ fn show_error(app: &AppHandle, reason: Reason) {
 
 /* ---------- server child ---------- */
 
+/// Starts a server child: a new generation, then the node lookup on a worker thread (it runs `node --version` and
+/// may wait on a slow candidate, which must never block the main thread: window, tray and Quit), then
+/// `continue_start` back on the main thread.
 fn start_server(app: &AppHandle) {
     let gen = {
         let mut i = shell(app).lock();
@@ -258,9 +262,34 @@ fn start_server(app: &AppHandle) {
         i.gen
     };
     refresh_tray(app, Some(View::starting()), false);
-    let get = |k: &str| std::env::var_os(k);
     let Some(root) = child::server_root(|| app.path().resource_dir().ok()) else { return show_error(app, Reason::StartFailed) };
-    let Some(node) = child::find_node_here(&get) else { return show_error(app, Reason::NodeMissing) };
+    let app = app.clone();
+    child::in_background(
+        || child::find_node_here(&|k: &str| std::env::var_os(k)),
+        move |found| on_main(&app, move |a| continue_start(a, gen, root, found)),
+    );
+}
+
+/// Whether a decision made for generation `gen` still applies: no newer start, no error page for it yet, not quitting.
+fn applies(current_gen: u64, failed: bool, quitting: bool, gen: u64) -> bool {
+    current_gen == gen && !failed && !quitting
+}
+
+/// The rest of `start_server`, on the main thread with the lookup's answer (`None`: the lookup's thread panicked,
+/// which ends on the start-failed page like any other failure, so Retry works). Dropped when a newer start, a
+/// failure or Quit came in while the lookup ran (the same check as `handle`).
+fn continue_start(app: &AppHandle, gen: u64, root: PathBuf, found: Option<NodeLookup>) {
+    {
+        let i = shell(app).lock();
+        if !applies(i.gen, i.failed, i.quitting, gen) {
+            return;
+        }
+    }
+    let get = |k: &str| std::env::var_os(k);
+    let node = match nav::node_or_reason(found) {
+        Ok(node) => node,
+        Err(reason) => return show_error(app, reason),
+    };
     let Some(env) = child::child_env(&get, &node) else { return show_error(app, Reason::StartFailed) };
     let Ok(secret) = Secret::generate() else { return show_error(app, Reason::StartFailed) };
     let secret = Arc::new(secret);
@@ -286,7 +315,7 @@ fn start_server(app: &AppHandle) {
 fn handle(app: &AppHandle, gen: u64, ev: Sup, secret: &Secret) {
     {
         let i = shell(app).lock();
-        if i.gen != gen || i.failed || i.quitting {
+        if !applies(i.gen, i.failed, i.quitting, gen) {
             return;
         }
     }
@@ -345,7 +374,9 @@ fn retry(app: &AppHandle) {
     });
 }
 
+/// Quit and exit only. Ends a node version probe that is still running (and stops any further one) before the server.
 fn stop_server(app: &AppHandle) {
+    child::kill_active_probe();
     let server = shell(app).lock().server.take();
     if let Some(s) = server {
         s.stop(StopTimes::default());
@@ -460,4 +491,23 @@ pub fn run() {
             RunEvent::Exit => stop_server(app),
             _ => {}
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::applies;
+
+    #[test]
+    fn a_decision_applies_only_to_the_current_healthy_generation() {
+        // (+) the generation that asked, no error page yet, not quitting
+        assert!(applies(3, false, false, 3));
+        // (-) a newer start (Retry) happened while the lookup ran
+        assert!(!applies(4, false, false, 3));
+        // (-) this generation already showed the error page
+        assert!(!applies(3, true, false, 3));
+        // (-) Quit was pressed meanwhile
+        assert!(!applies(3, false, true, 3));
+        // (-) an event from a generation that does not exist yet is not trusted either
+        assert!(!applies(3, false, false, 4));
+    }
 }

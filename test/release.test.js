@@ -169,6 +169,16 @@ describe('release check', () => {
     assert.match(jobs['draft-release'], /if: github\.event_name == 'push'/);
   });
 
+  test('(+) the "Check the .deb" step fails the release build when the built .deb does not depend on tmux', () => {
+    const text = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'release-linux.yml'), 'utf8');
+    const step = text.slice(text.indexOf('- name: Check the .deb'), text.indexOf('- name: Collect and checksum'));
+    assert.ok(step.length > 0);
+    assert.match(step, /depends="\$\(dpkg-deb -f "\$deb" Depends\)"/, 'it reads the built package\'s Depends field');
+    assert.match(step, /grep -qw -- tmux <<<"\$depends" \|\| \{ echo "missing runtime dependency: tmux" >&2; exit 1; \}/);
+    assert.ok(step.indexOf('grep -qw -- tmux') > step.indexOf('dpkg-deb -f'), 'the tmux check reads the field first');
+    assert.ok(text.indexOf('grep -qw -- tmux') < text.indexOf('- name: Collect and checksum'), 'and runs before the package is collected');
+  });
+
   test('(−) the workflow checker reports unpinned or third-party actions and write access outside draft-release', () => {
     const bad = [
       'permissions:', '  contents: read', 'jobs:',

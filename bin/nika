@@ -1,5 +1,14 @@
 #!/usr/bin/env node
-// Launcher: dynamic import works whether Node treats this extensionless file as CommonJS or ESM.
+// Version guard first, in syntax every Node.js version parses (var, string concatenation, no ?. or ??), so an old
+// Node.js prints this message instead of a syntax error. NaN (an unreadable version) counts as too old.
+var major = parseInt(String(process.version).replace(/^v/, ''), 10);
+if (!(major >= 22)) {
+  process.stderr.write('nika: needs Node.js 22 or newer; this is ' + process.version + '.\n'
+    + 'Install a newer Node.js (macOS: brew upgrade node; Linux: see the README), then run nika again.\n');
+  process.exit(1);
+}
+// Launcher: CommonJS via bin/package.json (an extensionless file inside the root "type": "module" scope is refused by
+// some Node.js versions, before this guard could run); dynamic import() loads the ES modules from CommonJS.
 import('../src/cli.js').then(({ run }) => run(), (err) => {
   process.stderr.write(`nika: ${err.message}\n`);
   process.exitCode = 1;

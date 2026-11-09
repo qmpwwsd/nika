@@ -49,3 +49,40 @@ describe('Linux desktop entries', () => {
     assert.deepEqual(desktopProblems('Type=Application\n'), ['first line is not [Desktop Entry]']);
   });
 });
+
+// 0.3.2: what the packages declare. tmux is a hard dependency of the .deb. Node.js is not: apt would pull in the
+// distribution's nodejs, which is older than 22 on current Debian and Ubuntu releases, and nika needs 22 or newer.
+describe('package dependencies', () => {
+  const conf = JSON.parse(fs.readFileSync(path.join(TAURI, 'tauri.conf.json'), 'utf8'));
+  const PACKAGING = fs.readFileSync(path.join(ROOT, 'docs', 'packaging.md'), 'utf8');
+  const formula = PACKAGING.slice(PACKAGING.indexOf('class Nika < Formula'), PACKAGING.indexOf('\nend\n', PACKAGING.indexOf('class Nika < Formula')) + 5);
+
+  test('(+) the .deb depends on tmux, and on nothing else', () => {
+    assert.deepEqual(conf.bundle.linux.deb.depends, ['tmux']);
+  });
+
+  test('(−) no nodejs or npm entry in any deb field, and the other relationship fields stay unused', () => {
+    const deb = conf.bundle.linux.deb;
+    assert.doesNotMatch(JSON.stringify(deb), /node|npm/i);
+    for (const k of ['recommends', 'provides', 'conflicts', 'replaces']) assert.equal(deb[k], undefined, k);
+    // the key is the one Tauri v2 reads: depends (camelCase config, list of package names)
+    assert.ok(Array.isArray(deb.depends) && deb.depends.every((d) => typeof d === 'string' && /^[a-z0-9][a-z0-9+.-]*$/.test(d)));
+  });
+
+  test('(+) the Homebrew formula copy depends on node and tmux', () => {
+    assert.match(formula, /^class Nika < Formula$/m);
+    assert.match(formula, /^ {2}depends_on "node"$/m);
+    assert.match(formula, /^ {2}depends_on "tmux"$/m);
+  });
+
+  test('(+) the formula copy installs the whole bin/ folder (it carries bin/package.json, which keeps the launcher CommonJS)', () => {
+    assert.match(formula, /libexec\.install "bin", /);
+    assert.equal(conf.bundle.resources['../../bin'], 'nika/bin', 'the app bundle copies the folder too');
+  });
+
+  test('(−) the docs say the tap gets the tmux line at the next release, and that the AppImage cannot declare dependencies', () => {
+    assert.match(PACKAGING, /next release/i);
+    assert.match(PACKAGING, /AppImage[^.]*cannot declare/i);
+    assert.doesNotMatch(formula, /depends_on "nodejs"|depends_on "node@/);
+  });
+});

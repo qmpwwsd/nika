@@ -989,6 +989,33 @@ describe('doctor', () => {
   });
 });
 
+describe('doctor: tmux install hint per platform', () => {
+  const tmuxRow = async (platform, exec) => {
+    const w = await world();
+    const r = await cli(['doctor'], { env: w.cliEnv, platform, exec: exec ?? execLog({ mdfind: () => OK }) });
+    assert.equal(r.code, 0, r.err);
+    return r.out.split('\n').find((l) => /^tmux\s/.test(l));
+  };
+
+  test('(+) macOS names brew, Linux names apt; both keep the NIKA_TMUX escape hatch', async () => {
+    assert.match(await tmuxRow('darwin'), /^tmux\s+not found \(install: brew install tmux; or set NIKA_TMUX\)$/);
+    assert.match(await tmuxRow('linux'), /^tmux\s+not found \(install: sudo apt install tmux; or set NIKA_TMUX\)$/);
+  });
+
+  test('(−) any other platform gets no install command; a tmux that is found gets no hint at all', async () => {
+    for (const platform of ['win32', 'freebsd', 'sunos']) {
+      const row = await tmuxRow(platform);
+      assert.match(row, /^tmux\s+not found \(add it to PATH or set NIKA_TMUX\)$/, platform);
+      assert.doesNotMatch(row, /brew|apt/, platform);
+    }
+    for (const platform of ['darwin', 'linux']) {
+      const row = await tmuxRow(platform, execLog({ [TMUX]: () => ({ stdout: 'tmux 3.4\n', stderr: '' }), mdfind: () => OK }));
+      assert.match(row, /^tmux\s+\S+\s+tmux 3\.4$/, platform);
+      assert.doesNotMatch(row, /install|not found/, platform);
+    }
+  });
+});
+
 describe('_run-agent', () => {
   test('(+) passes key and name to runAgent and returns claude\'s exit code', async () => {
     const w = await world();
