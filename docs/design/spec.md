@@ -556,6 +556,8 @@ Container widths: ≤ 860 px hides model and pane columns and shows status as gl
 
 **(0.4) Role badge** after the name (`roleTagEl(roleTag(a, pickId))`; markup and words in §3.16). At ≤ 860 px the long word is clipped like the mode label (still read by screen readers) and a short one shows.
 
+**(0.4) Nesting.** A group whose live agents hang under each other draws one flat `ul.rows` in tree order, each row indented by its place in the tree (§3.17). A group where nothing nests is drawn exactly as before.
+
 ### 3.4 Project group / card
 
 | State | Look |
@@ -563,8 +565,9 @@ Container widths: ≤ 860 px hides model and pane columns and shows status as gl
 | D | name (h2, ellipsis at 32ch, link), rules badge, path (muted, ellipsis at 40ch, hidden ≤ 760 px), counts, actions [Start orchestrator] [Spawn agent] |
 | H/F | name link underline / ring |
 | unregistered repo | "not a nika project" muted + [Add project] instead of the actions |
-| limit reached | Spawn shows `aria-disabled` + "3/3 running" note |
+| limit reached | Spawn shows `aria-disabled` and the limit as its title; a click toasts it (§3.17) |
 | **(0.4)** orchestrator | the first button follows `orchState`: **Open orchestrator** (live), **Resume orchestrator** (ended), **Start orchestrator** (none, or gone with its own title). §3.16 |
+| **(0.4)** sub-orchestrator | the project page's header adds **Spawn sub-orchestrator** (`i-sub-spawn`, secondary) after Spawn agent; the dashboard group header keeps its two buttons. §3.17 |
 | 0 | see agent row 0 |
 
 ### 3.5 Form fields
@@ -591,7 +594,7 @@ Messages (exact copy):
 | Kind | Size | Header | Footer |
 |---|---|---|---|
 | Modal (rules) | min(980, vw−32) × min(720, vh−32) | title + close (×) | Cancel · primary |
-| Side sheet (spawn) | 480 × full height, right edge | title + project + close | count note · Cancel · Spawn agent |
+| Side sheet (spawn) | 480 × full height, right edge | title + project + close | count note · Cancel · Spawn agent (or Spawn sub-orchestrator, §3.17) |
 | Confirm (remove project) | 440 wide | title | Cancel · danger action |
 | Modal (Choose plugins, 0.3.4) | min(560, vw−32) × min(640, vh−32) | title + close (×) | Cancel · Save plugins (§3.15) |
 | Modal (Choose models, 0.4) | min(480, vw−32) | title + close (×) | Cancel · Save models (§3.15) |
@@ -801,23 +804,26 @@ A project remembers one orchestrator by session id (`perProject.<key>.orchestrat
 
 | Kind | When | Class | Words |
 |---|---|---|---|
-| main | live, tagged orchestrator, depth 1 or none | `.tag` | "orchestrator" (short "orch") |
-| sub | live, tagged orchestrator, depth 2 or more | `.tag.sub` (outlined) | "sub-orchestrator" (short "sub-orch") |
+| main | live, role `orchestrator` | `.tag` | "orchestrator" (short "orch") |
+| sub | live, role `sub-orchestrator` (read from the role, never derived from depth; an orphan keeps it) | `.tag.sub` (outlined) | "sub-orchestrator" (short "sub-orch") |
 | saved | not live, it is the project's saved orchestrator | `.tag.muted` | "orchestrator"; title "Saved orchestrator. Resume it from the header or this row's menu." |
 
 The browser tier shows main and sub only (they come from tmux tags); it never shows saved, which needs the project's pick.
 
-**Row menu** (app tier, registered projects only): Copy resume command · Show report · Open in claude.ai ↗ · Focus pane · *rule* · Set as orchestrator · Resume as orchestrator · Stop using as orchestrator · *rule* · End session…
+**Row menu** (app tier, registered projects only): Copy resume command · Show report · Open in claude.ai ↗ · Focus pane · *rule* · Set as orchestrator · Resume as orchestrator · Stop using as orchestrator · *rule* · Spawn agent under <name>… · Spawn sub-orchestrator under <name>… · *rule* · End session…
 
-| Row | Set | Resume | Stop using |
-|---|---|---|---|
-| live main orchestrator, is the pick | – | – | shown |
-| live main orchestrator, not the pick (a 0.3 pane) | shown | – | – |
-| live sub-orchestrator, live nika agent | – | – | – |
-| live session, no nika role, in tmux | shown | – | – |
-| live session, no nika role, no pane | shown, off | – | – |
-| ended, is the pick | – | shown | shown |
-| ended, not the pick | shown | shown | – |
+| Row | Set | Resume | Stop using | Spawn agent under | Spawn sub-orchestrator under |
+|---|---|---|---|---|---|
+| live main orchestrator, is the pick | – | – | shown | shown | shown |
+| live main orchestrator, not the pick (a 0.3 pane) | shown | – | – | shown | shown |
+| live sub-orchestrator | – | – | – | shown | – |
+| live nika agent | – | – | – | – | – |
+| live session, no nika role, in tmux | shown | – | – | – | – |
+| live session, no nika role, no pane | shown, off | – | – | – | – |
+| ended, is the pick | – | shown | shown | – | – |
+| ended, not the pick | shown | shown | – | – | – |
+
+A spawn item needs a live row with a pane. Both spawn items of a row share one reason (R0 first, then the limits of §3.17).
 
 Items are `aria-disabled` with their reason (a click shows it): offline or no tmux / claude (`blockedReason`; Set on an ended session and Stop using need only the server); R1 "<other> is running as this project's orchestrator. End it first, then choose another." (Set and Resume while another orchestrator runs); R2 "This session isn't running in tmux, so nika can't make it the orchestrator. End it, then use Resume as orchestrator." (Set on a live session without a pane).
 
@@ -833,7 +839,53 @@ Items are `aria-disabled` with their reason (a click shows it): offline or no tm
 - A second Set while one runs: "Another change to this project's orchestrator is still running. Try again." (409 `busy`).
 - Refusals: not_found "nika can't find that session any more. Its transcript may have been deleted. Nothing changed."; other_project "That session belongs to another project, so it can't be this project's orchestrator. Nothing changed."; no_pane and orchestrator_running as R2 and R1; agent_session and the rest show the server's message; unreachable "Could not reach the nika server."
 
-Test hooks (`data-fk`): header `resume:<key>`, `start:<key>`, `orch:<key>`; header menu `orch-stop-proj`; alert `orch-gone`, `orch-forget`; row items `orch-set:<scope>:<id>`, `orch-resume:<scope>:<id>`, `orch-stop:<scope>:<id>`.
+Test hooks (`data-fk`): header `resume:<key>`, `start:<key>`, `orch:<key>`; header menu `orch-stop-proj`; alert `orch-gone`, `orch-forget`; row items `orch-set:<scope>:<id>`, `orch-resume:<scope>:<id>`, `orch-stop:<scope>:<id>`, `spawn-under:<scope>:<id>`, `spawn-sub:<scope>:<id>`.
+
+### 3.17 Nesting tree, spawn sheet and limits (0.4)
+
+An orchestrator can have sub-orchestrators, and each parent has agents of its own (three levels at most). The page gets `role`, `parent`, `depth` and `children` on every live agent (contract C3, C6) on both tiers; the tree shows on both, the spawn controls only in the app.
+
+**Tree rows** (project page and dashboard; `treeRows` in `dash-model.js`). One flat `ul.rows` in tree order, so the row grid and the tab order (name link, then ⋯ button, row after row) stay as they are. The page builds the tree itself from `parent` (a session id, or a pane id the server could not resolve): a root is level 1, each parent above adds one, never more than 3. The server's `depth` is not used for placement, so a forged value moves nothing. Siblings: the most urgent status in each subtree first (a subtree with a child that needs you rises), then the most recent activity in the subtree. A loop of parents is cut.
+
+| Part | Markup and look |
+|---|---|
+| row | `li.row[data-depth][aria-level]`, `id="row-<scope>-<agent id>"`, `hidden` while an ancestor is folded |
+| slot | a 24 × 24 box before the name: the collapse button `button.tree-tg` when the row has children, else `span.tree-sp[aria-hidden]` (names stay aligned) |
+| toggle | `aria-expanded`, `aria-controls` = the ids of every descendant row, in row order; label "Hide the 3 agents under planner" / "Show the 3 agents under planner, 1 needs you" (singular for 1); chevron `i-chev` turns −90° when folded; `data-fk="tree:<scope>:<id>"` |
+| elbow | `span.elbow[aria-hidden]` at level 2 and 3: the margins make the indent, 24 px a level (12 px at ≤ 860 px); a visually hidden ", under <parent>" follows the name |
+| folded | the row shows `span.tree-hid[aria-hidden]` "+N", with the number of hidden agents that need you beside it (the attention diamond and `--attn`) |
+| orphan | a parent that is not running: the row is a root, keeps its role tag, and shows `span.tree-orphan` "parent ended" (title "This agent's parent session is no longer running.") |
+
+Folding is local to the page (`state.open`, key `!tree:<scope>:<id>`, the "!" pattern of the Ended sections; rebuilt rows get focus back through `data-fk`). The 12-row cap counts root subtrees and never splits one: "Show N more live agents" counts every agent left out.
+
+Flat lists: Ended, the "Waiting on you" queue and any filter draw rows without tree markup. A row whose parent is listed gets a chip "under <parent>" (cut at 24 characters, full name in the title) after the project chip. A group where nothing nests (no row has children, none is an orphan) is drawn exactly as in 0.3.
+
+**Spawn entry points.**
+
+| Entry | Parent | Role preset | Shown when |
+|---|---|---|---|
+| header **Spawn agent** | none (you) | agent | always (registered project) |
+| header **Spawn sub-orchestrator** (project page only; `aria-label` always "Spawn sub-orchestrator", icon only at ≤ 760 px) | the main orchestrator | sub-orchestrator | always; off without a live main orchestrator ("Start the orchestrator first: sub-orchestrators run under it.") |
+| row "Spawn agent under <name>…" | that row's pane | agent | §3.16 matrix |
+| row "Spawn sub-orchestrator under <name>…" | that row's pane | sub-orchestrator | §3.16 matrix |
+
+**Disabled reasons and server refusals** (checked in this order, after offline and missing tmux / claude; one text for `aria-disabled` + toast and for the sheet's alert on a 409; the page counts from its snapshot, the server decides):
+
+| Case | Copy |
+|---|---|
+| parent at its limit (an orchestrator) | "<parent> already runs <r> of <max> agents of its own. Wait for one to finish, or raise “Agents per orchestrator” in Settings." |
+| parent at its limit (you) | "You already run <r> of <max> agents spawned from nika in <project>. Wait for one to finish, or raise “Agents per orchestrator” in Settings." |
+| project cap min(3 × N, 24) | "<project> already runs <r> of <cap> agents, the most one project can run. Wait for one to finish." |
+| 409 `depth` (a sub-orchestrator request) | "<parent> can't start a sub-orchestrator. Only the main orchestrator can: nika allows three levels (orchestrator, sub-orchestrators, their agents). Nothing was started." |
+| 404 `not_found` with a parent | "<parent> is no longer running, so nothing was started. Close this and spawn from a session that is running." |
+
+The 409 `limit` copy is chosen by the body's `scope` (`parent` or `project`) and uses its `running` and `max`; a body that does not parse, a 409 `depth` on a plain agent request, a 404 with no parent (or with an `under` pane, which may be the one that is gone) and every other refusal show the server's own message. Sub-orchestrators count toward their parent's limit and the project cap.
+
+**Spawn sheet.** The title and button read "Spawn agent" or "Spawn sub-orchestrator". A `dl.kv.sp-kv` row "Parent" shows "<name> · orchestrator|sub-orchestrator · pane %3", or "None. You start it from nika.". A **Role** fieldset has two radio cards, Agent ("Does one task and reports back.") and Sub-orchestrator ("Plans the work and spawns up to <N> agents of its own. It may run only nika spawn and nika status."). When the parent cannot have a sub-orchestrator (none, or a sub-orchestrator) the radio is `disabled`, its card gets `data-off="true"` (50 % opacity) and `p.help#sp-role-why` (full contrast, the radio's `aria-describedby`) says why: "Sub-orchestrators run under the orchestrator. Use Spawn sub-orchestrator in the header, or the orchestrator's row menu." / "Only the main orchestrator can start sub-orchestrators: nika allows three levels." Switching the role changes the title, the button, the brief help, the name (only while it still holds the last default, `builder-N` or `lead-N`) and the model (only while the select is untouched: Roles › Builder, or › Orchestrator). The remembered model, permission mode and placement are kept per project and role. The footer note counts at open time: "<parent>: 2 of 3 · <project>: 5 of 9 running" (or "Spawned from nika: …"; names cut at 24). The request carries `role` (`agent` or `orchestrator`) and, with a parent, `parent` (its pane); the header's Spawn agent sends no parent. Success toast: "Spawned builder-3 in pane %12", "Spawned builder-3 under planner in pane %12" or "Spawned sub-orchestrator lead-1 under planner in pane %9", with **Open session**. A refusal keeps every field and puts the copy in the sheet's alert, with focus on it.
+
+**Settings and the New agents card.** Settings › Panes and limits: the label "Agents per project at once" is now **Agents per orchestrator**; help: "1 to 8. How many agents each orchestrator can run at once; the agents you spawn from nika share one more such limit. One project runs at most 3 times this number, and never more than 24." The Models section line ends "A project can override them on its page." The project page's **New agents** card lists Permission mode, Pane, **Per orchestrator** "<N> at once", **Spawned from nika** "<r> of <N>" and **This project** "<r> of <cap> running"; the `.limit` note appears at the project cap ("Limit reached: <r> of <cap> agents are running in this project. Spawning is off until one ends.") or when your own bucket is full ("Limit reached: you run <r> of <N> agents spawned from nika. Spawn from an orchestrator's row, or wait for one to end."). Remove project: "nika stops listing this project and forgets its plugin and model choices and its saved orchestrator. No files change and running agents keep running."
+
+Test hooks (`data-fk`): tree toggle `tree:<scope>:<id>`, header `spawn-sub:<key>`, row items `spawn-under:` and `spawn-sub:` (§3.16), sheet `sp-parent`, `sp-role-agent`, `sp-role-orch`; ids `sp-role`, `sp-role-why`, `sp-note`, `limit-note`.
 
 ## 4. Keyboard model
 
@@ -1179,7 +1231,7 @@ B: centred column max 760 px; drawer pushes ≥ 1180 px and overlays below. C: l
 | Unregistered repo with live agents | group/lane shows "not a nika project" + [Add project] |
 | Untitled session (no agent name) | shown as "untitled session" in `--text-muted`; still clickable |
 | Permission prompt | row and tray become "Needs you"; session shows the prompt panel (§9.5) and the prompt in the mirror; Esc and, from an empty box, ↑ ↓ go to the pane; Enter, Shift+Tab, digits and pastes wait (§9.5); nika never answers on its own. **(built amendment 2026-11-09 (0.3.3))** |
-| Spawn at limit | spawn button `aria-disabled` with "3/3 running"; a 409 limit from the server shows the same text inside the sheet |
+| Spawn at limit | the spawn opener is `aria-disabled` with the limit copy of §3.17 as its title; a 409 limit from the server shows the same text inside the sheet |
 | Rules conflict (409 hash) | "These files changed after the preview. Nothing was written. [Reload preview]" |
 | Rules refused (409, e.g. symlink) | "nika refused to write: rules/ is a symbolic link. Nothing was changed." |
 | Foreign rules file | Apply stays disabled until "Replace rules/orchestration.md (not written by nika). A backup is kept." is checked |

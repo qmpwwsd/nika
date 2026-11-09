@@ -9,6 +9,7 @@ import path from 'node:path';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 import { h, icon } from '../public/dom.js';
+import { spawnLimits } from '../public/dash-model.js';
 import { pluginView, pluginSave, sortIds, countText, filterNote } from '../public/plugin-view.js';
 import { fillModelSelect, CUSTOM, MODEL_ID, MODEL_HINT, ROLES, ROLE_LABEL, modelLabel, fillRoleOverride, effectiveRoleModels } from '../public/models-ui.js';
 
@@ -168,7 +169,7 @@ function projectRig({ installed = [A, B, C, D], savedList = [], pluginsStatus = 
     render: (force) => renders.push(force),
     setTimeout: (fn, ms) => { timers.push({ fn, ms, done: false }); return timers.length - 1; },
     clearTimeout: (id) => { if (timers[id]) timers[id].done = true; },
-    pluginView, pluginSave, sortIds, countText, filterNote,
+    pluginView, pluginSave, sortIds, countText, filterNote, spawnLimits,
     ROLES, ROLE_LABEL, modelLabel, fillRoleOverride, effectiveRoleModels,
     rulesEl: () => new El('span'),
   };
@@ -668,10 +669,10 @@ describe('Project setup card', () => {
     assert.deepEqual(r.location.hashSets, []);
   });
 
-  test('(+) the card carries no row of the other cards: Rules and New agents are unchanged', () => {
+  test('(+) the card carries no row of the other cards: Rules is unchanged, New agents has the 0.4 limit rows', () => {
     const cards = cardOf(projectRig({}), [], null);
     assert.deepEqual(cards[0].all((n) => n.tag === 'h2').map((n) => n.textContent), ['Rules']);
-    assert.deepEqual(cards[2].all((n) => n.tag === 'dt').map((n) => n.textContent), ['Permission mode', 'Pane', 'Running']);
+    assert.deepEqual(cards[2].all((n) => n.tag === 'dt').map((n) => n.textContent), ['Permission mode', 'Pane', 'Per orchestrator', 'Spawned from nika', 'This project']);
   });
 });
 

@@ -11,7 +11,7 @@ import { El, installDom, focus } from './fake-dom.js';
 import { MODEL_CATALOG } from '../src/models.js';
 import { h, icon } from '../public/dom.js';
 import { menuEl, sessionHref } from '../public/ui.js';
-import { orchState, roleTag, savedPick, otherRunning } from '../public/dash-model.js';
+import { orchState, roleTag, savedPick, otherRunning, spawnLimits } from '../public/dash-model.js';
 import { parseModes, modesAfter } from '../public/modes.js';
 import { pluginView, pluginSave, sortIds, countText, filterNote } from '../public/plugin-view.js';
 import {
@@ -89,7 +89,7 @@ function rig({
     throw new Error(`unexpected request ${method} ${url}`);
   };
   const ctx = {
-    h, icon, $: node, state, hooks: {}, appFetch, applyTheme: () => {}, menuEl, sessionHref, roleTag, orchState, savedPick, otherRunning, parseModes, modesAfter,
+    h, icon, $: node, state, hooks: {}, appFetch, applyTheme: () => {}, menuEl, sessionHref, roleTag, orchState, savedPick, otherRunning, spawnLimits, syncRadioCards: () => {}, parseModes, modesAfter,
     pluginView, pluginSave, sortIds, countText, filterNote,
     CUSTOM, MODEL_ID, MODEL_HINT, ROLES, ROLE_LABEL, modelLabel, fillModelSelect, fillRoleOverride, effectiveRoleModels,
     location: { set href(v) {}, get href() { return ''; }, hash: '' },

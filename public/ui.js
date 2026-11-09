@@ -1,6 +1,7 @@
 // Shared state and widgets for the main page (dashboard, project view, settings). Every data string reaches the
 // page through h() / textContent. Nothing here talks to the server; api.js does.
 import { h } from './dom.js';
+import { STATUS_ORDER } from './dash-model.js';
 import { isMac } from './shortcuts.js';
 
 export const $ = (s, r = document) => r.querySelector(s);
@@ -121,7 +122,7 @@ export const STATUS = {
   busy: { label: 'Working', long: 'Working' },
   ended: { label: 'Ended', long: 'Ended' },
 };
-export const ORDER = { attn: 0, idle: 1, busy: 2, ended: 3 };
+export const ORDER = STATUS_ORDER;
 
 export function statusEl(s, { compact = false, pill = false } = {}) {
   return h('span', { class: `st${pill ? ' pill-st' : ''}`, 'data-s': s },

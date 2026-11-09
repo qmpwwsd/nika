@@ -30,7 +30,7 @@ Models per project (desktop app):
 - API: `PUT /api/app/projects/:key/config` takes exactly one of `{ plugins }` or `{ models }`, and `GET` returns both. See
   `docs/contracts/api-app.md`.
 
-Sub-orchestrators and limits (CLI and API; the screens follow):
+Sub-orchestrators and limits:
 
 - **Three levels.** The main orchestrator can start sub-orchestrators, and a sub-orchestrator can start agents of its own.
   `nika spawn <name> <model> <brief> --role orchestrator` starts a sub-orchestrator; run from an orchestrator's pane, the
@@ -43,6 +43,22 @@ Sub-orchestrators and limits (CLI and API; the screens follow):
 - **Limits per parent and per project.** **Agents per orchestrator** (Settings, 1 to 8) now bounds the agents and
   sub-orchestrators under each parent, and a project as a whole runs at most three times that number, never more than 24.
   A refusal says which limit it hit (409 `limit`, with `scope`, `running` and `max`).
+- **The tree.** On the dashboard and the project page (browser and app), agents now sit under the orchestrator or
+  sub-orchestrator that started them, indented a level at a time. A button before a parent's name folds its agents; a folded
+  row shows how many are hidden and how many of them need you. A sub-orchestrator whose parent has ended stays in the list
+  with a "parent ended" mark. Ended agents, the "Waiting on you" queue and any filter stay flat, and say "under <parent>".
+  Projects where no agent has a parent look the same as before. The sub-orchestrator badge now comes from the session's
+  role, not from its depth.
+- **Spawn a sub-orchestrator (desktop app).** The project page has a **Spawn sub-orchestrator** button next to Spawn agent,
+  and the orchestrator's row menu has **Spawn agent under…** and **Spawn sub-orchestrator under…**; a sub-orchestrator's
+  menu has **Spawn agent under…**. The spawn sheet shows the parent, lets you choose Agent or Sub-orchestrator (the second
+  only under the main orchestrator, with the reason beside it otherwise), and counts "planner: 2 of 3 · demo-api: 5 of 9
+  running" when it opens. A spawn that would pass a limit is off before you try, with the reason as its tooltip, and the
+  server's refusals (limit, "can't start a sub-orchestrator", "no longer running") show in the sheet in plain words.
+- Settings: **Agents per project at once** is now **Agents per orchestrator**, with help on how the limits add up. The
+  project page's **New agents** card lists the per-orchestrator limit, how many you have spawned from nika and how many
+  the project runs, and says so when a limit is reached.
+- Remove project now says it also forgets the project's saved orchestrator.
 - `rules/orchestration.md` has a new **Sub-orchestrators** section (template version 2): apply rules to a project to get it.
 - Every orchestrator nika starts, resumes or adopts is now tagged for its project (`@nika-agent <key>/orchestrator`,
   `@nika-depth 1`). An orchestrator started by 0.3 still counts, as long as it is in the project's own tmux session and window.

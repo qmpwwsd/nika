@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { El, installDom, withClass, focus } from './fake-dom.js';
 import { h, icon, roleTagEl } from '../public/dom.js';
 import { menuEl, sessionHref } from '../public/ui.js';
-import { orchState, roleTag, savedPick, otherRunning } from '../public/dash-model.js';
+import { orchState, roleTag, savedPick, otherRunning, parentOf, spawnLimits } from '../public/dash-model.js';
 import { parseModes, modesAfter } from '../public/modes.js';
 import { pluginView, pluginSave, sortIds, countText, filterNote } from '../public/plugin-view.js';
 import { ROLES, ROLE_LABEL, modelLabel, fillRoleOverride, effectiveRoleModels } from '../public/models-ui.js';
@@ -142,7 +142,7 @@ function rowRig({ isApp = true, rowItems = undefined } = {}) {
   const seen = [];
   const hooks = rowItems === undefined ? {} : { rowItems: (...args) => { seen.push(args); return rowItems; } };
   const ctx = {
-    h, roleTag, roleTagEl, menuEl, hooks, SHAPE, sessionHref, isApp,
+    h, icon, roleTag, roleTagEl, menuEl, hooks, SHAPE, sessionHref, isApp, parentOf,
     state: { modes: { map: {} } }, document: { getSelection: () => ({ isCollapsed: true }) }, location: {},
     sOf: (a) => (a.live ? 'idle' : 'ended'), rowMode: () => null, canEndRow: () => true, endedText: () => 'Ended', reasonOf: () => '', endedScope: (s) => `${s}-e`,
     statusEl: () => new El('span'), modeEl: () => new El('span'), modelEl: () => new El('span'), timeEl: () => new El('span'),
@@ -157,12 +157,12 @@ const menuTexts = (li) => li.all((n) => n.tag === 'li' && n.parent?.className ==
 const tagOf = (li) => li.all((n) => n.className.split(' ').includes('tag'))[0] ?? null;
 
 describe('rowEl: the role badge', () => {
-  test('(+) a live main orchestrator shows the orchestrator badge; a depth-2 one shows sub-orchestrator', () => {
+  test('(+) a live main orchestrator shows the orchestrator badge; a sub-orchestrator shows sub-orchestrator', () => {
     const { rowEl } = rowRig();
     const main = tagOf(rowEl(agent({ role: 'orchestrator' }), grp(), { scope: 'g:k' }));
     assert.equal(main.className, 'tag');
     assert.equal(main.kids[0].textContent, 'orchestrator');
-    const sub = tagOf(rowEl(agent({ role: 'orchestrator', depth: 2 }), grp(), { scope: 'g:k' }));
+    const sub = tagOf(rowEl(agent({ role: 'sub-orchestrator', depth: 2 }), grp(), { scope: 'g:k' }));
     assert.equal(sub.className, 'tag sub');
   });
 
@@ -187,7 +187,7 @@ describe('rowEl: the role badge', () => {
   test('(+) the browser tier still shows main and sub (they come from tmux tags)', () => {
     const { rowEl } = rowRig({ isApp: false });
     assert.equal(tagOf(rowEl(agent({ role: 'orchestrator' }), grp({ project: null }), { scope: 'g:k' })).className, 'tag');
-    assert.equal(tagOf(rowEl(agent({ role: 'orchestrator', depth: 2 }), grp({ project: null }), { scope: 'g:k' })).className, 'tag sub');
+    assert.equal(tagOf(rowEl(agent({ role: 'sub-orchestrator', depth: 2 }), grp({ project: null }), { scope: 'g:k' })).className, 'tag sub');
   });
 });
 
@@ -255,7 +255,7 @@ function flowRig({ project = {}, agents = [], answers = {}, me = { tmux: true, c
     return typeof a === 'function' ? a(opts) : a;
   };
   const ctx = {
-    h, icon, $: node, state, hooks: {}, appFetch, menuEl, sessionHref, roleTag, orchState, savedPick, otherRunning, parseModes, modesAfter,
+    h, icon, $: node, state, hooks: {}, appFetch, menuEl, sessionHref, roleTag, orchState, savedPick, otherRunning, spawnLimits, parseModes, modesAfter,
     pluginView, pluginSave, sortIds, countText, filterNote, ROLES, ROLE_LABEL, modelLabel, fillRoleOverride, effectiveRoleModels,
     location: { set href(v) { navs.push(v); }, get href() { return ''; }, hash: '' },
     document: { title: '' },
@@ -324,7 +324,7 @@ describe('groupActions: the first button follows the orchestrator state (design 
   });
 
   test('(−) a sub-orchestrator alone is not "the orchestrator": the button is Start; a nameless saved one titles "Resume the saved session in tmux"', () => {
-    const r = flowRig({ agents: [orchRow({ depth: 2 })] });
+    const r = flowRig({ agents: [orchRow({ role: 'sub-orchestrator', depth: 2 })] });
     assert.equal(labelOf(r.api.groupActions(r.g, {})[0]), 'Start orchestrator');
     const n = flowRig({ project: { orchestrator: pick('ended', { name: null }) } });
     assert.equal(n.api.groupActions(n.g, {})[0].attrs.title, 'Resume the saved session in tmux');
@@ -466,13 +466,15 @@ describe('rowItems: the row menu matrix (design 1.2)', () => {
   const RESUME = 'Resume as orchestrator';
   const STOP = 'Stop using as orchestrator';
 
-  test('(+) live main orchestrator that is the pick: Stop only', () => {
-    assert.deepEqual(texts(items(orchRow(), { project: { orchestrator: pick('live') } }).out), [STOP]);
+  const SPAWN = ['Spawn agent under planner…', 'Spawn sub-orchestrator under planner…'];
+
+  test('(+) live main orchestrator that is the pick: Stop using, then the two spawn items (0.4)', () => {
+    assert.deepEqual(texts(items(orchRow(), { project: { orchestrator: pick('live') } }).out), [STOP, ...SPAWN]);
   });
 
-  test('(+) live main orchestrator that is not the pick (a 0.3 pane): Set only', () => {
-    assert.deepEqual(texts(items(orchRow()).out), [SET]);
-    assert.deepEqual(texts(items(orchRow(), { project: { orchestrator: pick('ended', { sessionId: ID2 }) } }).out), [SET]);
+  test('(+) live main orchestrator that is not the pick (a 0.3 pane): Set, then the two spawn items', () => {
+    assert.deepEqual(texts(items(orchRow()).out), [SET, ...SPAWN]);
+    assert.deepEqual(texts(items(orchRow(), { project: { orchestrator: pick('ended', { sessionId: ID2 }) } }).out), [SET, ...SPAWN]);
   });
 
   test('(+) live session without a nika role, in tmux: Set; with no pane: Set, disabled with the tmux reason (R2)', () => {
@@ -498,8 +500,7 @@ describe('rowItems: the row menu matrix (design 1.2)', () => {
     assert.deepEqual(Array.from(items(ended).out, (i) => i.fk), [`orch-set:g:k:${ID}`, `orch-resume:g:k:${ID}`]);
   });
 
-  test('(−) a live sub-orchestrator, a live nika agent or a live row with an odd role: no items', () => {
-    assert.deepEqual(plain(items(orchRow({ depth: 2 })).out), []);
+  test('(−) a live nika agent or a live row with an odd role: no items (a sub-orchestrator gets only spawn items, below)', () => {
     assert.deepEqual(plain(items(orchRow({ role: 'agent' })).out), []);
     assert.deepEqual(plain(items(orchRow({ role: 'something-else' })).out), []);
   });
@@ -821,12 +822,12 @@ describe('session header: the role badge', () => {
     assert.match(body, /loadPick\(agent\)\.then\(\(learned\) => \{ if \(learned\) renderRole\(agent\); \}/);
   });
 
-  test('(+) a live orchestrator shows the orchestrator badge, a depth-2 one the sub badge; the element is shown', () => {
+  test('(+) a live orchestrator shows the orchestrator badge, a sub-orchestrator the sub badge; the element is shown', () => {
     const r = headerRig();
     r.api.renderRole({ id: ID, live: true, role: 'orchestrator' });
     assert.equal(r.role.hidden, false);
     assert.equal(r.role.kids[0].className, 'tag');
-    r.api.renderRole({ id: ID, live: true, role: 'orchestrator', depth: 2 });
+    r.api.renderRole({ id: ID, live: true, role: 'sub-orchestrator', depth: 2 });
     assert.equal(r.role.kids[0].className, 'tag sub');
     assert.equal(r.role.kids.length, 1, 'replaced, not appended');
   });

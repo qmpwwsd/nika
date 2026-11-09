@@ -6,7 +6,7 @@ import { h, icon, roleTagEl } from './dom.js';
 import { modeEl, rowMode, canEndRow } from './modes.js';
 import { wantsHelp, wantsBack, isTextEntry, openShortcuts, helpHint, backHint } from './shortcuts.js';
 import { copyBanner } from './app-copy.js';
-import { endedPlan, noMatchText, resetEndedState, roleTag } from './dash-model.js';
+import { endedPlan, noMatchText, resetEndedState, roleTag, statusOf, parentOf, treeRows, capRoots, hasTree } from './dash-model.js';
 import {
   $, $$, MAC, SHAPE, ORDER, state, hooks, load, save, timeEl, tickTimes, announce, toast, copyText,
   statusEl, modelEl, rulesEl, countsLine, sessionHref, menuEl, menuIsOpen, openDialog, initDialogs, initMenus,
@@ -19,11 +19,9 @@ const QUEUE_CAP = 6;
 let token = $('meta[name="nika-token"]')?.content ?? '';
 
 /* ---------- agent model: one status per agent ---------- */
-/** attn = a live agent whose state is neither busy nor idle (the server sets `attention` for exactly those). */
+/** One status per agent: attn, idle, busy or ended (dash-model.js statusOf). */
 export function sOf(a) {
-  if (!a.live) return 'ended';
-  if (a.attention) return 'attn';
-  return a.state === 'busy' || a.state === 'idle' ? a.state : 'attn';
+  return statusOf(a);
 }
 const reasonOf = (a) => a.attention ?? a.state;
 
@@ -170,7 +168,24 @@ async function afterEnd(a, endedFk) {
   else $('.screen:not([hidden]) h1')?.focus();
 }
 
-function rowEl(a, g, { scope, showProject = false }) {
+/** The 24 x 24 slot before a name in a nested group: the collapse button when the row has children, else an empty box that keeps the names aligned. */
+function treeSlot(a, scope, tree) {
+  if (!tree.kids) return h('span', { class: 'tree-sp', 'aria-hidden': 'true' });
+  const n = tree.desc.length;
+  const need = tree.collapsed && tree.hiddenAttn ? `, ${tree.hiddenAttn} need${tree.hiddenAttn === 1 ? 's' : ''} you` : '';
+  return h('button', {
+    type: 'button', class: 'tree-tg', 'data-fk': `tree:${scope}:${a.id}`, 'aria-expanded': String(!tree.collapsed),
+    'aria-controls': tree.desc.map((id) => `row-${scope}-${id}`).join(' '),
+    'aria-label': `${tree.collapsed ? 'Show' : 'Hide'} the ${n} agent${n === 1 ? '' : 's'} under ${a.name}${need}`,
+    onclick: () => {
+      const closed = `!tree:${scope}:${a.id}`; // same pattern as the Ended sections: "!" = folded on purpose
+      if (state.open.has(closed)) state.open.delete(closed); else state.open.add(closed);
+      render(true);
+    },
+  }, icon('chev'));
+}
+
+function rowEl(a, g, { scope, showProject = false, tree = null }) {
   const s = sOf(a);
   const mode = isApp ? rowMode(a, state.modes.map) : null;
   const href = isApp ? sessionHref({ session: a.id, pane: a.pane?.id, project: g.project?.key }) : null;
@@ -188,15 +203,25 @@ function rowEl(a, g, { scope, showProject = false }) {
     items.push({ text: 'End session…', group: orchItems.length > 0, run: () => endSession(a, fk('m'), fk('m', endedScope(scope))) });
   }
 
-  const li = h('li', { class: 'row', 'data-s': s },
+  // in a flat list (the queue, a filter, Ended) a row that hangs under another says so; a nested group shows it by its indent
+  const parent = tree ? null : parentOf(a, g.agents);
+  const li = h('li', {
+    class: 'row', 'data-s': s, id: tree ? `row-${scope}-${a.id}` : null, 'data-depth': tree?.depth, 'aria-level': tree?.depth, hidden: tree?.hidden,
+  },
     h('div', { class: 'c-st' }, statusEl(s)),
     isApp ? h('div', { class: 'c-mode' }, mode && modeEl(mode.mode, { confirmed: mode.confirmed, compact: true })) : null,
     h('div', { class: 'c-name' },
+      tree && tree.depth > 1 ? h('span', { class: 'elbow', 'aria-hidden': 'true' }) : null,
+      tree ? treeSlot(a, scope, tree) : null,
       href ? h('a', { class: 'name', href, 'data-fk': fk('n'), title: a.name, text: a.name }) : h('span', { class: 'name', title: a.name, text: a.name }),
-      roleTagEl(roleTag(a, isApp ? g.project?.orchestrator?.sessionId : null))),
+      tree && tree.depth > 1 && tree.parentName ? h('span', { class: 'sr-only', text: `, under ${tree.parentName}` }) : null,
+      roleTagEl(roleTag(a, isApp ? g.project?.orchestrator?.sessionId : null)),
+      tree?.collapsed ? h('span', { class: 'tree-hid', 'aria-hidden': 'true' }, `+${tree.hiddenCount}`, tree.hiddenAttn ? h('span', { class: 'attn', text: String(tree.hiddenAttn) }) : null) : null,
+      tree?.orphan ? h('span', { class: 'tree-orphan', title: "This agent's parent session is no longer running.", text: 'parent ended' }) : null),
     h('div', { class: 'c-model' }, modelEl(a)),
     h('div', { class: 'c-what' },
       showProject ? h('span', { class: 'proj-chip', title: g.label, text: g.label.length > 18 ? `${g.label.slice(0, 17)}…` : g.label }) : null,
+      parent ? h('span', { class: 'proj-chip', title: `Under ${parent.name}`, text: `under ${parent.name.length > 24 ? `${parent.name.slice(0, 23)}…` : parent.name}` }) : null,
       h('span', { class: 'what', title: a.lastPrompt ?? '', text: what }),
       !showProject && a.gitBranch ? h('code', { class: 'branch', title: a.gitBranch, text: a.gitBranch }) : null),
     h('div', { class: 'c-act num', title: s === 'ended' ? 'Ended' : 'Last activity' }, h('span', { class: 'sr-only', text: 'Last activity: ' }), timeEl(a.lastActivity)),
@@ -214,10 +239,13 @@ function rowEl(a, g, { scope, showProject = false }) {
 }
 
 const rowsEl = (list, g, opts, label) => h('ul', { class: 'rows', 'aria-label': label }, list.map((a) => rowEl(a, g, opts)));
+/** The live rows of a nested group (dash-model.js treeRows): one flat list, each row carrying its place in the tree. */
+const treeEl = (rows, g, scope, label) => h('ul', { class: 'rows', 'aria-label': label }, rows.map((tree) => rowEl(tree.a, g, { scope, tree })));
 
 /**
- * Live rows (first ROW_CAP, then "show more"), the empty box and the "Ended" disclosure of one group (dash-model.js endedPlan).
- * Used by the dashboard and by the project view (`endedOpen`: its Ended section is always there, open).
+ * Live rows (first ROW_CAP root subtrees, then "show more"), the empty box and the "Ended" disclosure of one group (dash-model.js
+ * endedPlan). The live rows nest under their parent (treeRows) unless a filter is on; a group where nothing nests is drawn as a flat
+ * list. Used by the dashboard and by the project view (`endedOpen`: its Ended section is always there, open).
  */
 export function agentNodes(g, q, scope, { endedOpen = false } = {}) {
   const list = g.agents.filter((a) => matches(a, g, q)).sort(byStatus);
@@ -227,10 +255,13 @@ export function agentNodes(g, q, scope, { endedOpen = false } = {}) {
   const plan = endedPlan({ live: live.length, ended: ended.length, showEnded: endedOpen || state.showEnded, collapsed: state.open.has(`!${id}`) });
   const nodes = [];
   const capId = `cap:${scope}`;
-  const all = state.expanded.has(capId) || live.length <= ROW_CAP;
-  const ul = live.length ? rowsEl(all ? live : live.slice(0, ROW_CAP), g, { scope }, `${g.label} agents`) : null;
-  if (ul && !all) {
-    ul.append(h('li', { class: 'more-row' }, h('button', { type: 'button', class: 'btn', 'data-fk': `more:${scope}`, text: `Show ${live.length - ROW_CAP} more live agents`, onclick: () => { state.expanded.add(capId); render(true); } })));
+  const folded = new Set(live.filter((a) => state.open.has(`!tree:${scope}:${a.id}`)).map((a) => a.id));
+  const rows = treeRows(live, { collapsed: folded, filtering: Boolean(q) });
+  const { rows: shown, more } = state.expanded.has(capId) ? { rows, more: 0 } : capRoots(rows, ROW_CAP);
+  const label = `${g.label} agents`;
+  const ul = !rows.length ? null : hasTree(rows) ? treeEl(shown, g, scope, label) : rowsEl(shown.map((r) => r.a), g, { scope }, label);
+  if (ul && more) {
+    ul.append(h('li', { class: 'more-row' }, h('button', { type: 'button', class: 'btn', 'data-fk': `more:${scope}`, text: `Show ${more} more live agents`, onclick: () => { state.expanded.add(capId); render(true); } })));
   }
   if (ul) nodes.push(ul);
   else if (!q && isApp && g.project && !ended.length) {

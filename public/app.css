@@ -106,6 +106,9 @@ legend { font-weight: 600; padding: 0; margin-bottom: 4px; }
 .radio-card b { display: block; font-weight: 600; }
 .radio-card span span { color: var(--text-muted); font-size: var(--fs-small); }
 .radio-card[data-on="true"] span span { color: var(--text); }
+.radio-card[data-off="true"] { opacity: 0.5; }   /* the sub-orchestrator card while it cannot be chosen; #sp-role-why beside it says why, at full contrast */
+.sp-kv { font-size: var(--fs-body); }
+.sp-kv dd { overflow-wrap: anywhere; }
 .seg-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
 .counter { justify-self: end; font-size: var(--fs-small); color: var(--text-muted); }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 16px; }
@@ -233,6 +236,19 @@ body[data-tier="app"] .row { grid-template-columns: 104px 128px minmax(120px, 1.
 .row[data-s="attn"] .what { color: var(--attn); font-weight: 600; }
 .row[data-s="ended"] .name { color: var(--text-muted); }
 .row > .subs { grid-column: 1 / -1; }
+/* the nesting tree (design 0.4 section 2.2): the elbow's margins make the indent, 24 px a level, and hang its stroke under the parent's chevron */
+.elbow { flex: none; width: 9px; height: 20px; margin: -20px 4px 0 0; border-left: 1.5px solid var(--line-strong); border-bottom: 1.5px solid var(--line-strong); border-bottom-left-radius: 4px; }
+.row[data-depth="2"] .elbow { margin-left: 11px; }
+.row[data-depth="3"] .elbow { margin-left: 35px; }
+.tree-sp, .tree-tg { flex: none; width: 24px; height: 24px; }
+.tree-tg { display: inline-grid; place-items: center; padding: 0; border: 0; border-radius: var(--r-sm); background: none; color: var(--text-muted); }
+.tree-tg:hover { background: var(--surface-3); color: var(--text); }
+.tree-tg .ic { width: 14px; height: 14px; transition: transform var(--dur-1) var(--ease); }
+.tree-tg[aria-expanded="false"] .ic { transform: rotate(-90deg); }
+.tree-hid { flex: none; display: inline-flex; align-items: center; gap: 4px; font-size: var(--fs-cap); font-weight: 600; color: var(--text-muted); }
+.tree-hid .attn { color: var(--attn); }
+.tree-hid .attn::before { content: ""; display: inline-block; width: 6px; height: 6px; margin-right: 3px; transform: rotate(45deg); background: currentColor; }
+.tree-orphan { flex: none; font-size: var(--fs-cap); color: var(--text-muted); }
 .c-name { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .name { font-weight: 600; color: var(--text); text-decoration: none; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 a.name:hover { text-decoration: underline; }
@@ -272,6 +288,9 @@ details.ended > summary:hover { color: var(--text); }
   .row .c-mode .ml { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   .row .tag .tag-l { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }   /* the full word stays for screen readers (design 0.4 section 1.1) */
   .row .tag .tag-s { display: inline; }
+  .elbow { width: 6px; margin-right: 2px; }
+  .row[data-depth="2"] .elbow { margin-left: 4px; }
+  .row[data-depth="3"] .elbow { margin-left: 16px; }
 }
 @container rows (max-width: 600px) {
   .row { grid-template-columns: 22px minmax(0, 1fr) 44px 32px; }

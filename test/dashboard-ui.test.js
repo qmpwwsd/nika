@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { MODE_META, parseModes, modesAfter, rowMode, canEndRow } from '../public/modes.js';
 import { CUSTOM, ROLE_LABEL, fillModelSelect, effectiveRoleModels } from '../public/models-ui.js';
 import { h } from '../public/dom.js';
+import { statusOf, spawnLimits } from '../public/dash-model.js';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const read = (f) => fs.readFileSync(path.join(PUBLIC, f), 'utf8');
@@ -122,12 +123,14 @@ describe('rowMode and canEndRow (the mode cell and the End item share one rule)'
 
 class FNode {
   constructor(tag, text = '') {
-    this.tag = tag; this.text = text; this.kids = []; this.attrs = {}; this.className = ''; this.value = '';
+    this.tag = tag; this.text = text; this.kids = []; this.attrs = {}; this.className = ''; this.value = ''; this.dataset = {};
   }
 
   setAttribute(k, v) { this.attrs[k] = String(v); }
 
   getAttribute(k) { return this.attrs[k] ?? null; }
+
+  removeAttribute(k) { delete this.attrs[k]; }
 
   append(...nodes) { this.kids.push(...nodes); }
 
@@ -329,6 +332,7 @@ describe('End session from the row menu', () => {
     const h1 = { focus: () => events.push('focus:h1') };
     const ctx = {
       isApp,
+      statusOf,
       state: { data: null },
       CSS: { escape: (x) => x },
       $: (sel) => {
@@ -494,9 +498,11 @@ describe('Settings and spawn sheet pickers', () => {
   });
 
   test('(+) the spawn sheet lists Roles first, then the catalog, then Custom ID; the chosen id is the select or the checked custom field', () => {
-    const open = fn(PROJECT, 'function openSpawn(');
-    assert.match(open, /fillModelSelect\(\$\('#sp-model'\), state\.models, pref\.model \?\? roles\[0\]\.value, roles\)/);
-    assert.match(open, /\$\('#sp-model-custom'\)\.hidden = !custom;/);
+    const fill = fn(PROJECT, 'function fillSpawnModel(');
+    assert.match(fn(PROJECT, 'function openSpawn('), /fillSpawnModel\(start, pref\.model\);/);
+    assert.match(fill, /fillModelSelect\(\$\('#sp-model'\), state\.models, value, roles\)/);
+    assert.match(fill, /roles\[role === 'orchestrator' \? 3 : 0\]\.value/, 'Builder for an agent, Orchestrator for a sub-orchestrator');
+    assert.match(fill, /\$\('#sp-model-custom'\)\.hidden = !custom;/);
     assert.match(fn(PROJECT, 'async function submitSpawn('), /const model = spawnModel\(\);/, 'one reading of the picker, the one the tests below run');
     assert.match(fn(PROJECT, 'function validateSpawn('), /MODEL_ID\.test\(/);
   });
@@ -608,17 +614,16 @@ describe('spawn sheet model picker (project.js openSpawn and spawnModel)', () =>
   const SETTINGS_MODELS = { builder: 'claude-sonnet-5-5', reasoner: 'claude-opus-5-5', scout: 'haiku', orchestrator: 'claude-fable-1' };
   const group = { project: { key: 'k1' }, label: 'demo', agents: [] };
 
+  const PROJECT_MOD = PROJECT.replace(/^import[\s\S]*?from '[^']+';$/gm, '').replace(/^export /gm, '');
   const rig = ({ catalog = CATALOG, settings = { models: SETTINGS_MODELS, permissionMode: 'default', panePlacement: 'beside' }, pref } = {}) => {
     const nodes = new Map();
     const node = (sel) => { if (!nodes.has(sel)) nodes.set(sel, new FNode(sel === '#sp-model' ? 'select' : 'input')); return nodes.get(sel); };
-    const spawnPrefs = new Map(pref ? [['k1', pref]] : []);
     const ctx = {
-      $: node, h, state: { models: catalog, settings }, fillModelSelect, CUSTOM, ROLE_LABEL, effectiveRoleModels, spawnPrefs, sp: {},
-      limitInfo: () => ({ reached: false, running: 1, max: 5 }), toast() {}, spawnName: () => 'builder-1',
-      PERM_LABEL: { default: 'Ask first', plan: 'Plan' }, PLACE_LABEL: { beside: 'Beside' },
-      fieldError() {}, briefCount() {}, openDialog() {},
+      $: node, h, state: { models: catalog, settings }, fillModelSelect, CUSTOM, ROLE_LABEL, effectiveRoleModels, spawnLimits,
+      toast() {}, fieldError() {}, openDialog() {}, syncRadioCards() {}, TextEncoder,
     };
-    const api = vm.runInNewContext(`${fn(PROJECT, 'function openSpawn(')}\n${fn(PROJECT, 'function spawnModel(')}\n({ openSpawn, spawnModel })`, ctx);
+    const api = vm.runInNewContext(`${PROJECT_MOD}\n({ openSpawn, spawnModel, spawnPrefs })`, ctx);
+    if (pref) api.spawnPrefs.set('k1:agent', pref);
     return { ...api, node, ctx };
   };
   const optionsOf = (sel) => sel.kids.flatMap((k) => (k.tag === 'optgroup' ? k.kids.map((o) => [k.attrs.label, o.attrs.value, o.textContent]) : [[null, k.attrs.value, k.textContent]]));

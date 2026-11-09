@@ -7,7 +7,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
-import { DETECTED_MAX, endedPlan, noMatchText, resetEndedState, sidebarModel, orchState, roleTag, savedPick, otherRunning, ROLE_TAGS } from '../public/dash-model.js';
+import {
+  DETECTED_MAX, endedPlan, noMatchText, resetEndedState, sidebarModel, orchState, roleTag, savedPick, otherRunning, ROLE_TAGS,
+  statusOf, STATUS_ORDER, parentOf, treeRows, capRoots, hasTree, spawnLimits,
+} from '../public/dash-model.js';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const read = (f) => fs.readFileSync(path.join(PUBLIC, f), 'utf8');
@@ -213,10 +216,15 @@ describe('agentNodes with "Show ended"', () => {
       ORDER: { attn: 0, idle: 1, busy: 2, ended: 3 },
       ROW_CAP: 12,
       endedPlan,
+      statusOf,
+      treeRows,
+      capRoots,
+      hasTree,
       endedScope: (s) => `${s}-e`,
       render: () => {},
       h: (tag, attrs, ...kids) => makeNode(tag, attrs, kids),
       rowsEl: (list, g, opts, label) => makeNode('ul', { class: 'rows', 'aria-label': label, 'data-scope': opts.scope }, list.map((a) => makeNode('li', { text: a.name }, []))),
+      treeEl: (rows, g, scope, label) => makeNode('ul', { class: 'rows', 'aria-label': label, 'data-scope': scope, 'data-tree': 'yes' }, rows.map((r) => makeNode('li', { text: r.a.name }, []))),
     };
     const src = [fn(APP, 'export function sOf(').replace('export ', ''), fn(APP, 'function matches('), /const byStatus = [^\n]+/.exec(APP)[0],
       fn(APP, 'function groupMatches('), fn(APP, 'export function agentNodes(').replace('export ', '')].join('\n');
@@ -445,6 +453,7 @@ describe('dashboardNodes: the no-match line', () => {
       countsOf: () => ({}),
       h: (tag, attrs, ...kids) => makeNode(tag, attrs, kids),
       icon: () => null,
+      statusOf,
     };
     const src = [fn(APP, 'export function sOf(').replace('export ', ''), fn(APP, 'function matches('), fn(APP, 'function groupMatches('),
       fn(APP, 'function emptyEl('), fn(APP, 'function dashboardNodes(')].join('\n');
@@ -641,9 +650,10 @@ describe('orchState (what the project\'s first button says)', () => {
     assert.equal(orchState(proj({ sessionId: ID, state: 'live', name: 'planner', pane: '%3' }), g(other)).id, ID);
   });
 
-  test('(−) a sub-orchestrator (depth 2) and an ended agent are not the main orchestrator; a depth of 1 or none is', () => {
-    assert.equal(orchState(proj(null), g(live(ID, { depth: 2 }))).kind, 'none');
-    assert.equal(orchState(proj(null), g(live(ID, { depth: 1 }))).kind, 'live');
+  test('(−) a sub-orchestrator and an ended agent are not the main orchestrator; the role decides, never the depth', () => {
+    assert.equal(orchState(proj(null), g(live(ID, { role: 'sub-orchestrator', depth: 1 }))).kind, 'none', 'a sub-orchestrator that is a root is still a sub-orchestrator');
+    assert.equal(orchState(proj(null), g(live(ID, { role: 'sub-orchestrator', depth: 2 }))).kind, 'none');
+    assert.equal(orchState(proj(null), g(live(ID, { depth: 2 }))).kind, 'live', 'the role is orchestrator: a depth field cannot demote it');
     assert.equal(orchState(proj(null), g(live(ID, { depth: undefined }))).kind, 'live');
     assert.equal(orchState(proj(null), g(live(ID, { live: false }))).kind, 'none');
   });
@@ -665,11 +675,15 @@ describe('orchState (what the project\'s first button says)', () => {
 
 describe('roleTag (the badge next to a name)', () => {
   const ID = '11111111-1111-4111-8111-111111111111';
-  test('(+) a live main orchestrator (depth 1 or none) is main, a live one at depth 2 or more is sub', () => {
+  test('(+) a live orchestrator is main, a live sub-orchestrator is sub: the role decides', () => {
     assert.equal(roleTag({ id: 'a', live: true, role: 'orchestrator' }, null), 'main');
     assert.equal(roleTag({ id: 'a', live: true, role: 'orchestrator', depth: 1 }, null), 'main');
-    assert.equal(roleTag({ id: 'a', live: true, role: 'orchestrator', depth: 2 }, null), 'sub');
-    assert.equal(roleTag({ id: 'a', live: true, role: 'orchestrator', depth: 9 }, null), 'sub', 'a forged depth clamps to the deepest tag');
+    assert.equal(roleTag({ id: 'a', live: true, role: 'sub-orchestrator', depth: 2 }, null), 'sub');
+  });
+
+  test('(+) a sub-orchestrator without a parent (an orphan, depth 1 by structure) keeps its tag, because the page never derives the role from the depth', () => {
+    assert.equal(roleTag({ id: 'a', live: true, role: 'sub-orchestrator', depth: 1, parent: null }, null), 'sub');
+    assert.equal(roleTag({ id: 'a', live: true, role: 'sub-orchestrator' }, null), 'sub');
   });
 
   test('(+) a session that is not running and is the saved orchestrator is saved; running and saved is main', () => {
@@ -685,10 +699,11 @@ describe('roleTag (the badge next to a name)', () => {
     assert.equal(roleTag({ id: 'b', live: false, role: 'orchestrator' }, null), null, 'an ended session has no pane, so no tag');
   });
 
-  test('(−) no pick and a depth that is not a whole number: never "saved", and the depth falls back to main', () => {
+  test('(−) no pick: never "saved"; a depth field of any kind never changes the tag of an orchestrator, and an ended sub-orchestrator has no badge', () => {
     assert.equal(roleTag({ id: ID, live: false }, undefined), null);
     assert.equal(roleTag({ id: ID, live: false }, null), null);
-    for (const depth of ['2', null, 1.5, NaN, {}]) assert.equal(roleTag({ id: 'a', live: true, role: 'orchestrator', depth }, null), 'main', String(depth));
+    for (const depth of [2, 9, '2', null, 1.5, NaN, {}]) assert.equal(roleTag({ id: 'a', live: true, role: 'orchestrator', depth }, null), 'main', String(depth));
+    assert.equal(roleTag({ id: 'a', live: false, role: 'sub-orchestrator' }, null), null);
   });
 });
 
@@ -741,9 +756,249 @@ describe('otherRunning (who else runs as the orchestrator, so Set and Resume are
     assert.equal(otherRunning({ agents: [live(ID2, { role: 'agent' }), live(ID3)] }, null, ID), null, 'agent and plain');
   });
 
+  test('(−) a sub-orchestrator is not another orchestrator: the server never counts it for the 409 orchestrator_running', () => {
+    assert.equal(otherRunning({ agents: [live(ID2, { role: 'sub-orchestrator', depth: 2 })] }, null, ID), null);
+  });
+
   test('(−) no group, no agents and no name are survivable; a name that is not text is null', () => {
     assert.equal(otherRunning(undefined, null, ID), null);
     assert.equal(otherRunning({}, null, ID), null);
     assert.deepEqual(otherRunning({ agents: [live(ID2, { role: 'orchestrator', name: 7 })] }, null, ID), { id: ID2, name: null });
+  });
+});
+
+// ---- the nesting tree and the spawn counts (0.4, O2; design 0.4 sections 2.1, 2.2 and 3) --------------------------------------------------
+
+describe('statusOf and STATUS_ORDER (one status per agent, most urgent first)', () => {
+  test('(+) ended, attention, busy and idle; the order puts attn first and ended last', () => {
+    assert.equal(statusOf({ live: false, state: 'busy' }), 'ended');
+    assert.equal(statusOf({ live: true, state: 'busy', attention: 'permission prompt' }), 'attn');
+    assert.equal(statusOf({ live: true, state: 'busy' }), 'busy');
+    assert.equal(statusOf({ live: true, state: 'idle' }), 'idle');
+    assert.deepEqual(STATUS_ORDER, { attn: 0, idle: 1, busy: 2, ended: 3 });
+  });
+
+  test('(−) a live agent in a state that is neither busy nor idle needs you', () => {
+    assert.equal(statusOf({ live: true, state: 'waiting' }), 'attn');
+    assert.equal(statusOf({ live: true }), 'attn');
+  });
+});
+
+describe('parentOf (the parent of an agent, among the agents we hold)', () => {
+  const ID = '11111111-1111-4111-8111-111111111111';
+  const ID2 = '22222222-2222-4222-8222-222222222222';
+  const planner = { id: ID, name: 'planner', live: true, pane: { id: '%3' } };
+
+  test('(+) a session id finds the agent with that id; a pane id finds the live agent in that pane', () => {
+    assert.equal(parentOf({ id: ID2, parent: ID }, [planner]), planner);
+    assert.equal(parentOf({ id: ID2, parent: '%3' }, [planner]), planner);
+  });
+
+  test('(−) no parent, an unknown one, an ended pane, its own id, and a value that is neither a session id nor a pane id: null', () => {
+    assert.equal(parentOf({ id: ID2 }, [planner]), null);
+    assert.equal(parentOf({ id: ID2, parent: null }, [planner]), null);
+    assert.equal(parentOf({ id: ID2, parent: '22222222-2222-4222-8222-aaaaaaaaaaaa' }, [planner]), null);
+    assert.equal(parentOf({ id: ID2, parent: '%3' }, [{ ...planner, live: false }]), null, 'an ended agent holds no pane');
+    assert.equal(parentOf({ id: ID, parent: ID }, [planner]), null, 'a self-parent is cut');
+    for (const parent of ['planner', '', '%x', '../etc', 7, {}, ['%3']]) assert.equal(parentOf({ id: ID2, parent }, [planner]), null, String(parent));
+  });
+});
+
+describe('treeRows (the live rows of one group, in tree order)', () => {
+  const uid = (n) => `${String(n).repeat(8)}-${String(n).repeat(4)}-4${String(n).repeat(3)}-8${String(n).repeat(3)}-${String(n).repeat(12)}`;
+  const A = (n, name, over = {}) => ({ id: uid(n), name, live: true, state: 'busy', lastActivity: 100 + n, pane: { id: `%${n}` }, parent: null, ...over });
+  const planner = A(1, 'planner', { role: 'orchestrator' });
+  const lead = A(2, 'api-lead', { role: 'sub-orchestrator', parent: uid(1) });
+  const builder = A(3, 'builder-1', { role: 'agent', parent: uid(2) });
+  const web = A(4, 'web-lead', { role: 'sub-orchestrator', parent: uid(1) });
+  const reviewer = A(5, 'reviewer', { role: 'agent', parent: uid(1) });
+  const solo = A(6, 'my-helper', { role: 'agent' });
+  const names = (rows) => rows.map((r) => r.a.name);
+  const shape = (rows) => rows.map((r) => [r.a.name, r.depth]);
+
+  test('(+) the main orchestrator first, then its children, then the grandchildren right under their parent (depth 1, 2, 3)', () => {
+    const rows = treeRows([builder, lead, planner], {});
+    assert.deepEqual(shape(rows), [['planner', 1], ['api-lead', 2], ['builder-1', 3]]);
+    assert.deepEqual(rows.map((r) => r.root), [true, false, false]);
+    assert.deepEqual(rows.map((r) => r.kids), [1, 1, 0]);
+    assert.deepEqual(rows.map((r) => r.parentName), [null, 'planner', 'api-lead']);
+  });
+
+  test('(+) siblings: the most urgent subtree first (a child that needs you lifts its whole subtree), then the most recent activity', () => {
+    const a = { ...lead, state: 'idle' };
+    const calm = { ...web, lastActivity: 999 };
+    // calm is more recent, but api-lead has a child that needs you: its subtree rises
+    const needy = { ...builder, attention: 'permission prompt' };
+    assert.deepEqual(names(treeRows([planner, calm, a, needy], {})), ['planner', 'api-lead', 'builder-1', 'web-lead']);
+    // without the urgent child: idle (api-lead) still outranks busy (web-lead)
+    assert.deepEqual(names(treeRows([planner, calm, a], {})), ['planner', 'api-lead', 'web-lead']);
+    // equal urgency: the most recent first
+    assert.deepEqual(names(treeRows([planner, { ...web, lastActivity: 1 }, { ...lead, lastActivity: 50 }], {})), ['planner', 'api-lead', 'web-lead']);
+    assert.deepEqual(names(treeRows([planner, { ...web, lastActivity: 90 }, { ...lead, lastActivity: 50 }], {})), ['planner', 'web-lead', 'api-lead']);
+  });
+
+  test('(+) roots are ordered the same way, and a child counts toward its root\'s activity', () => {
+    const quiet = { ...planner, lastActivity: 1 };
+    const busyKid = { ...reviewer, lastActivity: 500 };
+    assert.deepEqual(names(treeRows([{ ...solo, lastActivity: 200 }, quiet], {})), ['my-helper', 'planner']);
+    assert.deepEqual(names(treeRows([{ ...solo, lastActivity: 200 }, quiet, busyKid], {})), ['planner', 'reviewer', 'my-helper'], 'the root with the recent child comes first');
+  });
+
+  test('(+) collapsed: the descendants are hidden, the root says how many, and how many of them need you', () => {
+    const needy = { ...builder, attention: 'permission prompt' };
+    const rows = treeRows([planner, lead, needy, reviewer], { collapsed: new Set([planner.id]) });
+    const root = rows[0];
+    assert.equal(root.collapsed, true);
+    assert.equal(root.hiddenCount, 3);
+    assert.equal(root.hiddenAttn, 1);
+    assert.deepEqual(root.desc, rows.slice(1).map((r) => r.a.id), 'every descendant, in row order');
+    assert.deepEqual([...root.desc].sort(), [lead.id, needy.id, reviewer.id].sort());
+    assert.deepEqual(rows.slice(1).map((r) => r.hidden), [true, true, true]);
+    assert.equal(rows.filter((r) => !r.hidden).length, 1);
+  });
+
+  test('(+) expanded (the default): nothing hidden, no hidden counts, but the descendants are still listed for aria-controls', () => {
+    const rows = treeRows([planner, lead, builder], {});
+    assert.deepEqual(rows.map((r) => [r.collapsed, r.hiddenCount, r.hiddenAttn, r.hidden]), [[false, 0, 0, false], [false, 0, 0, false], [false, 0, 0, false]]);
+    assert.deepEqual(rows[0].desc, [lead.id, builder.id]);
+    assert.deepEqual(rows[1].desc, [builder.id]);
+    assert.deepEqual(rows[2].desc, []);
+  });
+
+  test('(+) a child that is collapsed inside an expanded parent hides only its own descendants', () => {
+    const rows = treeRows([planner, lead, builder, reviewer], { collapsed: new Set([lead.id]) });
+    const hidden = Object.fromEntries(rows.map((r) => [r.a.name, r.hidden]));
+    assert.deepEqual(hidden, { planner: false, 'api-lead': false, 'builder-1': true, reviewer: false });
+    assert.equal(rows.find((r) => r.a.name === 'api-lead').hiddenCount, 1);
+  });
+
+  test('(+) a group with no parent and no child is a plain list: depth 1, no kids, no orphan, in status-then-activity order', () => {
+    const rows = treeRows([A(7, 'x', { lastActivity: 1 }), A(8, 'y', { lastActivity: 9 }), A(9, 'z', { state: 'idle', lastActivity: 0 })], {});
+    assert.deepEqual(names(rows), ['z', 'y', 'x']);
+    assert.equal(hasTree(rows), false);
+    assert.ok(rows.every((r) => r.depth === 1 && r.kids === 0 && !r.orphan && !r.hidden && r.root));
+  });
+
+  test('(−) an orphan (a parent that is not listed) is a root that keeps its role and carries the flag; the group is a tree', () => {
+    const orphan = A(8, 'api-lead', { role: 'sub-orchestrator', parent: uid(9), depth: 2 });
+    const rows = treeRows([orphan, solo], {});
+    const o = rows.find((r) => r.a.name === 'api-lead');
+    assert.deepEqual([o.depth, o.orphan, o.root, o.parentName], [1, true, true, null]);
+    assert.equal(rows.find((r) => r.a.name === 'my-helper').orphan, false);
+    assert.equal(hasTree(rows), true);
+    assert.equal(treeRows([A(8, 'q', { parent: '%99' })], {})[0].orphan, true, 'a pane id that is not listed is an orphan too');
+  });
+
+  test('(−) an odd parent value is no parent at all: a root, not an orphan', () => {
+    for (const parent of ['planner', '', 7, {}]) {
+      const [r] = treeRows([A(8, 'q', { parent })], {});
+      assert.deepEqual([r.depth, r.orphan, r.root], [1, false, true], String(parent));
+    }
+  });
+
+  test('(−) a forged depth never moves a row: the depth is the place in the parent chain, capped at 3', () => {
+    const forged = [planner, { ...lead, depth: 99 }, { ...builder, depth: 1 }, { ...solo, depth: 3 }];
+    assert.deepEqual(shape(treeRows(forged, {})).sort(), [['api-lead', 2], ['builder-1', 3], ['my-helper', 1], ['planner', 1]]);
+    for (const depth of [0, -4, 1.5, NaN, '2', null]) assert.equal(treeRows([{ ...lead, parent: null, depth }], {})[0].depth, 1, String(depth));
+  });
+
+  test('(−) a chain deeper than three levels stays at depth 3', () => {
+    const d4 = A(7, 'deep-4', { parent: builder.id });
+    const d5 = A(8, 'deep-5', { parent: d4.id });
+    const rows = treeRows([planner, lead, builder, d4, d5], {});
+    assert.deepEqual(rows.map((r) => r.depth), [1, 2, 3, 3, 3]);
+  });
+
+  test('(−) a loop of parents and a self-parent end: every agent is drawn once', () => {
+    const x = A(7, 'x', { parent: uid(8) });
+    const y = A(8, 'y', { parent: uid(7) });
+    const self = A(9, 'self', { parent: uid(9) });
+    const rows = treeRows([x, y, self], {});
+    assert.deepEqual(names(rows).sort(), ['self', 'x', 'y']);
+    assert.equal(new Set(rows.map((r) => r.a.id)).size, 3);
+    assert.ok(rows.some((r) => r.root));
+  });
+
+  test('(−) filtering: a flat list, status then activity, nothing hidden or indented, collapsed or not, each row still names its parent', () => {
+    const rows = treeRows([planner, lead, builder, reviewer, solo], { filtering: true, collapsed: new Set([planner.id]) });
+    assert.ok(rows.every((r) => r.depth === 1 && r.kids === 0 && !r.hidden && !r.collapsed && !r.orphan && r.root && r.hiddenCount === 0));
+    assert.equal(hasTree(rows), false);
+    assert.equal(rows.find((r) => r.a.name === 'builder-1').parentName, 'api-lead');
+    assert.deepEqual(names(rows), ['my-helper', 'reviewer', 'builder-1', 'api-lead', 'planner']);
+  });
+
+  test('(−) nothing, one agent, and no options at all are survivable', () => {
+    assert.deepEqual(treeRows([], {}), []);
+    assert.deepEqual(treeRows([], undefined), []);
+    assert.equal(treeRows([solo]).length, 1);
+  });
+});
+
+describe('capRoots and hasTree', () => {
+  const row = (name, root) => ({ a: { name }, root, kids: 0, orphan: false });
+  test('(+) the cap counts root subtrees and never splits one', () => {
+    const rows = [row('a', true), row('a1', false), row('a2', false), row('b', true), row('c', true), row('c1', false)];
+    assert.deepEqual(capRoots(rows, 2), { rows: rows.slice(0, 4), more: 2 });
+    assert.deepEqual(capRoots(rows, 1), { rows: rows.slice(0, 3), more: 3 });
+  });
+
+  test('(+) at or under the cap everything is shown', () => {
+    const rows = [row('a', true), row('a1', false), row('b', true)];
+    assert.deepEqual(capRoots(rows, 2), { rows, more: 0 });
+    assert.deepEqual(capRoots(rows, 12), { rows, more: 0 });
+  });
+
+  test('(−) nothing, and a cap of zero', () => {
+    assert.deepEqual(capRoots([], 12), { rows: [], more: 0 });
+    assert.deepEqual(capRoots([row('a', true)], 0), { rows: [], more: 1 });
+  });
+
+  test('(+) hasTree: a row with kids or an orphan makes the group a tree; (−) plain roots do not', () => {
+    assert.equal(hasTree([{ kids: 1, orphan: false }, { kids: 0, orphan: false }]), true);
+    assert.equal(hasTree([{ kids: 0, orphan: true }]), true);
+    assert.equal(hasTree([{ kids: 0, orphan: false }]), false);
+    assert.equal(hasTree([]), false);
+  });
+});
+
+describe('spawnLimits (the counts the spawn sheet and its openers show)', () => {
+  const uid = (n) => `${String(n).repeat(8)}-${String(n).repeat(4)}-4${String(n).repeat(3)}-8${String(n).repeat(3)}-${String(n).repeat(12)}`;
+  const A = (n, role, over = {}) => ({ id: uid(n), name: `n${n}`, live: true, role, pane: { id: `%${n}` }, parent: null, ...over });
+  const main = A(1, 'orchestrator');
+  const lead = A(2, 'sub-orchestrator', { parent: uid(1) });
+  const b1 = A(3, 'agent', { parent: uid(2) });
+  const b2 = A(4, 'agent', { parent: '%2' });
+  const mine = A(5, 'agent');
+  const g = { agents: [main, lead, b1, b2, mine] };
+
+  test('(+) the parent bucket counts the live children of that pane (by session id or pane id); the project counts every agent and sub-orchestrator, not the main orchestrator', () => {
+    assert.deepEqual(spawnLimits(g, '%2', 3), { parent: { running: 2, max: 3 }, project: { running: 4, cap: 9 } });
+    assert.deepEqual(spawnLimits(g, '%1', 3).parent, { running: 1, max: 3 }, 'the sub-orchestrator is one of the orchestrator\'s agents');
+  });
+
+  test('(+) "you" (no parent pane) counts the agents with no parent', () => {
+    assert.deepEqual(spawnLimits(g, null, 3).parent, { running: 1, max: 3 });
+  });
+
+  test('(+) the project cap is min(3N, 24)', () => {
+    assert.equal(spawnLimits(g, null, 1).project.cap, 3);
+    assert.equal(spawnLimits(g, null, 3).project.cap, 9);
+    assert.equal(spawnLimits(g, null, 8).project.cap, 24);
+    assert.equal(spawnLimits(g, null, 8).parent.max, 8);
+  });
+
+  test('(−) ended agents, an orphan\'s children of another pane, and a main orchestrator never count', () => {
+    const done = { ...b1, live: false };
+    assert.equal(spawnLimits({ agents: [main, lead, done] }, '%2', 3).parent.running, 0);
+    assert.equal(spawnLimits({ agents: [main, lead, done] }, '%2', 3).project.running, 1);
+    assert.equal(spawnLimits({ agents: [main] }, null, 3).project.running, 0);
+    const orphan = A(6, 'agent', { parent: uid(9) });
+    assert.equal(spawnLimits({ agents: [orphan] }, null, 3).parent.running, 0, 'an agent whose parent is gone is not "you"');
+  });
+
+  test('(−) no group, no agents and a max that is not a whole number from 1 up fall back to 3', () => {
+    assert.deepEqual(spawnLimits(undefined, null, 3), { parent: { running: 0, max: 3 }, project: { running: 0, cap: 9 } });
+    assert.deepEqual(spawnLimits({}, '%1', 3), { parent: { running: 0, max: 3 }, project: { running: 0, cap: 9 } });
+    for (const max of [undefined, null, 0, -1, 2.5, NaN, '3']) assert.equal(spawnLimits(g, null, max).parent.max, 3, String(max));
   });
 });
