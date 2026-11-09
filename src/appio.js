@@ -4,6 +4,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { findTmux, findClaude, parseSince, DEFAULT_SINCE } from './config.js';
@@ -22,6 +23,8 @@ import { rulesState, preview, apply } from './rules.js';
 import { spawnAgent } from './spawn.js';
 import { startOrchestrator } from './orchestrate.js';
 import { clean } from './text.js';
+import { stateDir } from './paths.js';
+import { INSTALL_ROOT, appCopyState, installAppCopy, dismissAppCopy } from './appcopy.js';
 
 const VERSION = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 const NIKA_BIN = fileURLToPath(new URL('../bin/nika', import.meta.url));
@@ -31,6 +34,7 @@ const STATUS_MS = 3000;
 const PROJECTS_SHOWN = 8;
 const SECRET = /^[A-Za-z0-9_-]{43}$/; // 32 random bytes, base64url
 const PICK_PATH_MAX = 4096;
+const COPY_MS = 120_000; // ditto of the whole app bundle
 
 /**
  * Splits a stream into lines. A line over LINE_MAX bytes is reported as `null` (and dropped); the rest of an unfinished
@@ -119,7 +123,7 @@ export function statusLine(snapshot) {
 /**
  * Runs the app tier until stdin closes. Resolves with the exit code: 0 after stdin closed, 2 when refused (stdin is a TTY,
  * no valid first `hello` within 5 s), 1 when the server cannot listen. The caller exits with it.
- * `exec`, `now`, `intervalMs` and `helloMs` are test seams.
+ * `exec`, `now`, `intervalMs`, `helloMs` and `appCopy` ({ home, root, platform, exec, brewApps }, for src/appcopy.js) are test seams.
  * @param {object} o
  * @param {object} o.config  defaultConfig() shape
  * @param {object} o.env
@@ -128,7 +132,7 @@ export function statusLine(snapshot) {
  * @param {import('node:stream').Writable} o.stderr
  * @returns {Promise<number>}
  */
-export function serveApp({ config, env = process.env, stdin, stdout, stderr, exec = makeExec(), now = Date.now, intervalMs = STATUS_MS, helloMs = HELLO_MS }) {
+export function serveApp({ config, env = process.env, stdin, stdout, stderr, exec = makeExec(), now = Date.now, intervalMs = STATUS_MS, helloMs = HELLO_MS, appCopy = {} }) {
   const say = (obj) => stdout.write(`${JSON.stringify(obj)}\n`);
   stdout.on('error', () => {}); // the shell went away: stdin closes next and ends us
   if (stdin.isTTY) {
@@ -173,6 +177,9 @@ export function serveApp({ config, env = process.env, stdin, stdout, stderr, exe
       const collectorCache = {};
       const snapshot = () => collect({ config: cfg, exec, now: now(), sinceMs: parseSince(DEFAULT_SINCE), since: DEFAULT_SINCE, cache: collectorCache }).then((r) => r.snapshot);
       const picker = createPicker({ send: say, env });
+      // the copy of the app in ~/Applications (ADR 0011): where it comes from and goes to is fixed by this install, never by a request
+      const copyArgs = { root: appCopy.root ?? INSTALL_ROOT, home: appCopy.home ?? os.homedir(), platform: appCopy.platform ?? process.platform, stateDir: stateDir(env) };
+      const copyDeps = { exec: appCopy.exec ?? makeExec({ timeout: COPY_MS }), ...(appCopy.brewApps ? { brewApps: appCopy.brewApps } : {}) };
       const deps = {
         version: VERSION,
         collect: snapshot,
@@ -181,6 +188,7 @@ export function serveApp({ config, env = process.env, stdin, stdout, stderr, exe
         mirror: createMirror({ exec, tmuxBin, now }),
         keys: createKeys({ exec, tmuxBin, now }),
         picker,
+        appCopy: { state: () => appCopyState(copyArgs, copyDeps), install: () => installAppCopy(copyArgs, copyDeps), dismiss: () => dismissAppCopy(copyArgs) },
       };
       server = createServer({ config: cfg, exec, token: crypto.randomBytes(24).toString('base64url'), now, version: VERSION, app: createAppApi({ secret, ctx, deps }) });
       try {

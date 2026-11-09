@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { Readable, Writable } from 'node:stream';
 import fs from 'node:fs';
+import os from 'node:os';
 import http from 'node:http';
 import net from 'node:net';
 import path from 'node:path';
@@ -15,12 +16,19 @@ import { listProjects } from '../src/store.js';
 import { fakeTmux, makeWorld, TMUX } from './tmux-fake.js';
 
 const APP_ID = 'io.github.qmpwwsd.nika';
+const LSREGISTER = '/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister';
 const NIKA_BIN = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'nika');
 const PANE_1 = { id: '%1', session: 'My-App', window: 0, windowName: 'orchestrator', command: 'claude', role: 'orchestrator' };
 const OK = { stdout: '', stderr: '' };
 
 const worlds = [];
-after(() => worlds.forEach((w) => w.cleanup()));
+// The macOS app copy (ADR 0011) must never look at the real ~/Applications or the real Homebrew folders: every call gets an
+// empty temp HOME and no fixed Homebrew paths unless a test passes its own.
+const COPY_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'nika-cli-home-'));
+after(() => {
+  worlds.forEach((w) => w.cleanup());
+  fs.rmSync(COPY_HOME, { recursive: true, force: true });
+});
 
 /** A temp world (config dir, state dir, project "My App") plus a fake claude executable and a ready-made env. */
 async function world(settings, extraEnv = {}) {
@@ -53,7 +61,7 @@ const input = (text = '', isTTY = false) => Object.assign(Readable.from(text ? [
 async function cli(argv, { env, cwd, stdin, tty = false, ...io } = {}) {
   const out = new Sink(tty);
   const err = new Sink();
-  const code = await main(argv, env, { out, err, in: stdin ?? input(), cwd, ...io });
+  const code = await main(argv, env, { out, err, in: stdin ?? input(), cwd, home: COPY_HOME, brewApps: [], ...io });
   return { code, out: out.text, err: err.text };
 }
 
@@ -200,6 +208,242 @@ describe('open and app', () => {
     const r = await cli(['app'], { env: { PATH: '' }, platform: 'linux', exec: no });
     assert.equal(r.code, 1);
     assert.match(r.err, /not installed/);
+  });
+});
+
+// ---- the copy of the app in ~/Applications (ADR 0011) -------------------------------------------------------------------
+describe('app install and the managed copy', () => {
+  const VERSION = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
+  const DITTO = '/usr/bin/ditto';
+  const plist = (version, id = APP_ID) => `<plist><dict><key>CFBundleIdentifier</key><string>${id}</string><key>CFBundleShortVersionString</key><string>${version}</string></dict></plist>`;
+  const bundle = (dir, version, id) => {
+    fs.mkdirSync(path.join(dir, 'Contents'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'Contents', 'Info.plist'), plist(version, id));
+  };
+  const versionOf = (dir) => /<string>(\d[^<]*)<\/string>/.exec(fs.readFileSync(path.join(dir, 'Contents', 'Info.plist'), 'utf8').split('CFBundleShortVersionString')[1])?.[1];
+
+  /** A temp HOME, a keg with libexec and nika.app (at `kegVersion`), and exec doubles for ditto, lsregister and open. */
+  async function copyWorld(kegVersion = VERSION) {
+    const w = await world();
+    w.home = path.join(w.root, 'home');
+    fs.mkdirSync(w.home);
+    w.keg = path.join(w.root, 'keg');
+    fs.mkdirSync(path.join(w.keg, 'libexec'), { recursive: true });
+    if (kegVersion) bundle(path.join(w.keg, 'nika.app'), kegVersion);
+    w.target = path.join(w.home, 'Applications', 'nika.app');
+    w.marker = path.join(w.env.XDG_STATE_HOME, 'nika', 'app-copy.json');
+    w.io = (over = {}) => ({ env: w.cliEnv, platform: 'darwin', home: w.home, root: path.join(w.keg, 'libexec'), brewApps: [], ...over });
+    return w;
+  }
+  const copyExec = ({ failDitto = false, open } = {}) => execLog({
+    [DITTO]: (args) => {
+      if (failDitto) return Promise.reject(Object.assign(new Error('ditto failed at /some/private/path'), { code: 1 }));
+      fs.cpSync(args[0], args[1], { recursive: true });
+      return OK;
+    },
+    open: open ?? (() => OK),
+    [LSREGISTER]: () => OK,
+  });
+  const managedMarker = (w, version) => {
+    fs.mkdirSync(path.dirname(w.marker), { recursive: true });
+    fs.writeFileSync(w.marker, JSON.stringify({ managed: true, version, dismissed: false }));
+  };
+
+  test('(+) app install prints added, then "already current"; the copy is in the temp HOME, the exec is ditto and lsregister only', async () => {
+    const w = await copyWorld('1.2.3');
+    const exec = copyExec();
+    const r = await cli(['app', 'install'], { ...w.io(), exec });
+    assert.equal(r.code, 0, r.err);
+    assert.equal(r.out, 'added nika 1.2.3 to ~/Applications (find it with Spotlight)\n');
+    assert.equal(versionOf(w.target), '1.2.3');
+    assert.deepEqual(exec.calls.map((c) => c[0]), [DITTO, LSREGISTER]);
+    assert.deepEqual(exec.calls[1], [LSREGISTER, '-f', w.target]);
+    const again = await cli(['app', 'install'], { ...w.io(), exec: copyExec() });
+    assert.equal(again.code, 0);
+    assert.match(again.out, /^already current: nika 1\.2\.3 is in ~\/Applications$/m);
+  });
+
+  test('(+) app install prints updated when an older nika is there', async () => {
+    const w = await copyWorld('1.2.3');
+    bundle(w.target, '1.0.0');
+    const r = await cli(['app', 'install'], { ...w.io(), exec: copyExec() });
+    assert.equal(r.code, 0, r.err);
+    assert.equal(r.out, 'updated nika in ~/Applications to 1.2.3 (if nika was open, quit and reopen it)\n');
+    assert.equal(versionOf(w.target), '1.2.3');
+  });
+
+  test('(−) Linux: exit 1 with the desktop-entry hint, nothing run or written', async () => {
+    const w = await copyWorld();
+    const exec = copyExec();
+    const r = await cli(['app', 'install'], { ...w.io({ platform: 'linux' }), exec });
+    assert.equal(r.code, 1);
+    assert.match(r.err, /\.deb or AppImage installs the desktop entry/);
+    assert.deepEqual(exec.calls, []);
+    assert.deepEqual(fs.readdirSync(w.home), []);
+  });
+
+  test('(−) no source, a foreign target and a failed copy exit 1 with a fixed reason; no path or OS text is printed', async () => {
+    const none = await copyWorld(null);
+    const a = await cli(['app', 'install'], { ...none.io(), exec: copyExec() });
+    assert.equal(a.code, 1);
+    assert.match(a.err, /can't find its own app/);
+    assert.match(a.err, /brew reinstall nika/);
+
+    const foreign = await copyWorld();
+    fs.mkdirSync(path.dirname(foreign.target));
+    fs.chmodSync(path.dirname(foreign.target), 0o755);
+    fs.writeFileSync(foreign.target, 'not nika');
+    const exec = copyExec();
+    const b = await cli(['app', 'install'], { ...foreign.io(), exec });
+    assert.equal(b.code, 1);
+    assert.match(b.err, /~\/Applications\/nika\.app is not nika/);
+    assert.deepEqual(exec.calls, []);
+    assert.equal(fs.readFileSync(foreign.target, 'utf8'), 'not nika');
+
+    const broken = await copyWorld();
+    const c = await cli(['app', 'install'], { ...broken.io(), exec: copyExec({ failDitto: true }) });
+    assert.equal(c.code, 1);
+    assert.match(c.err, /couldn't copy the app to ~\/Applications/);
+    for (const text of [a.err, b.err, c.err]) {
+      assert.equal(text.includes(os.tmpdir()), false);
+      assert.equal(text.includes('private'), false);
+    }
+    assert.equal(fs.existsSync(broken.target), false);
+  });
+
+  test('(−) usage: app install takes no arguments; unknown subcommands are exit 2', async () => {
+    assert.equal((await cli(['app', 'install', 'extra'], { env: {} })).code, 2);
+    assert.equal((await cli(['app', 'bogus'], { env: {} })).code, 2);
+    assert.equal((await cli(['app', 'install', '--bogus'], { env: {} })).code, 2);
+  });
+
+  test('(+) help documents app install', async () => {
+    const r = await cli(['help'], { env: {} });
+    assert.match(r.out, /app install\s+copy the app into ~\/Applications/);
+  });
+
+  test('(+) a managed copy is launched by path: nika, nika open and nika app run open <target>', async () => {
+    const w = await copyWorld();
+    bundle(w.target, VERSION);
+    managedMarker(w, VERSION);
+    for (const argv of [[], ['open'], ['app']]) {
+      const exec = copyExec();
+      const r = await cli(argv, { ...w.io(), exec });
+      assert.equal(r.code, 0, r.err);
+      assert.deepEqual(exec.calls, [['open', w.target]], argv.join(' '));
+      assert.match(r.out, /opened the nika app/);
+    }
+  });
+
+  test('(−) an unmanaged copy (no marker) is launched by bundle id, never by path; open --browser launches nothing', async () => {
+    const w = await copyWorld();
+    bundle(w.target, VERSION);
+    const exec = copyExec();
+    assert.equal((await cli([], { ...w.io(), exec })).code, 0);
+    assert.deepEqual(exec.calls, [['open', '-b', APP_ID]]);
+  });
+
+  test('(−) a managed marker with a foreign target falls back to the bundle id and never runs open on it', async () => {
+    const w = await copyWorld();
+    managedMarker(w, VERSION);
+    fs.mkdirSync(path.dirname(w.target));
+    fs.chmodSync(path.dirname(w.target), 0o755);
+    fs.writeFileSync(w.target, 'x');
+    const exec = copyExec();
+    await cli([], { ...w.io(), exec });
+    assert.deepEqual(exec.calls, [['open', '-b', APP_ID]]);
+  });
+
+  test('(−) a managed copy that open cannot start falls back to the bundle id', async () => {
+    const w = await copyWorld();
+    bundle(w.target, VERSION);
+    managedMarker(w, VERSION);
+    const exec = copyExec({ open: (args) => (args[0] === '-b' ? OK : Promise.reject(new Error('exit 1'))) });
+    const r = await cli([], { ...w.io(), exec });
+    assert.equal(r.code, 0, r.err);
+    assert.deepEqual(exec.calls, [['open', w.target], ['open', '-b', APP_ID]]);
+  });
+
+  test('(+) after brew upgrade a launch command refreshes a managed stale copy, says so, and opens the copy', async () => {
+    const w = await copyWorld(VERSION);
+    bundle(w.target, '0.0.1');
+    managedMarker(w, '0.0.1');
+    const exec = copyExec();
+    const r = await cli(['app'], { ...w.io(), exec });
+    assert.equal(r.code, 0, r.err);
+    assert.equal(versionOf(w.target), VERSION);
+    assert.deepEqual(exec.calls.map((c) => c[0]), [DITTO, LSREGISTER, 'open']);
+    assert.deepEqual(exec.calls[2], ['open', w.target]);
+    assert.match(r.out, new RegExp(`^updated the nika app in ~/Applications to ${VERSION.replace(/\./g, '\\.')} \\(if nika was open, quit and reopen it\\)$`, 'm'));
+    assert.equal(r.err, '');
+    assert.equal(JSON.parse(fs.readFileSync(w.marker, 'utf8')).version, VERSION);
+  });
+
+  test('(−) no refresh for an unmanaged copy, for a source that is not this version, or with --browser', async () => {
+    const unmanaged = await copyWorld(VERSION);
+    bundle(unmanaged.target, '0.0.1');
+    const e1 = copyExec();
+    await cli([], { ...unmanaged.io(), exec: e1 });
+    assert.equal(versionOf(unmanaged.target), '0.0.1');
+    assert.deepEqual(e1.calls, [['open', '-b', APP_ID]]);
+
+    const other = await copyWorld('9.9.9');
+    bundle(other.target, '0.0.1');
+    managedMarker(other, '0.0.1');
+    const e2 = copyExec();
+    const r2 = await cli([], { ...other.io(), exec: e2 });
+    assert.equal(versionOf(other.target), '0.0.1');
+    assert.deepEqual(e2.calls, [['open', other.target]]);
+    assert.equal(r2.out.includes('updated the nika app'), false);
+
+    const browser = await copyWorld(VERSION);
+    bundle(browser.target, '0.0.1');
+    managedMarker(browser, '0.0.1');
+    const srv = await healthServer();
+    try {
+      const e3 = copyExec();
+      await cli(['open', '--browser'], { ...browser.io(), env: { ...browser.cliEnv, NIKA_PORT: String(srv.port) }, exec: e3 });
+      assert.equal(versionOf(browser.target), '0.0.1');
+      assert.deepEqual(e3.calls, [['open', `http://127.0.0.1:${srv.port}/`]]);
+    } finally {
+      await srv.close();
+    }
+  });
+
+  test('(−) a refresh that fails prints one line on stderr and the launch continues; Linux never refreshes', async () => {
+    const w = await copyWorld(VERSION);
+    bundle(w.target, '0.0.1');
+    managedMarker(w, '0.0.1');
+    const exec = copyExec({ failDitto: true });
+    const r = await cli(['app'], { ...w.io(), exec });
+    assert.equal(r.code, 0, r.err);
+    assert.equal(r.err.trim().split('\n').length, 1);
+    assert.match(r.err, /^nika: could not update the app in ~\/Applications \(copy-failed\)$/m);
+    assert.equal(r.err.includes('private'), false);
+    assert.equal(versionOf(w.target), '0.0.1');
+    assert.deepEqual(exec.calls.at(-1), ['open', w.target], 'the old copy is still opened');
+
+    const linux = execLog({ 'gtk-launch': () => OK });
+    await cli(['app'], { ...w.io({ platform: 'linux', env: { ...w.cliEnv, PATH: '' } }), exec: linux });
+    assert.deepEqual(linux.calls, [['gtk-launch', APP_ID]]);
+  });
+
+  test('(+) doctor shows the copy state on the app row (macOS); (−) nothing extra on Linux or without a source', async () => {
+    const w = await copyWorld('1.2.3');
+    const doctor = async (over = {}) => (await cli(['doctor'], { ...w.io(over), exec: execLog({ mdfind: () => ({ stdout: 'x\n', stderr: '' }) }) })).out;
+    assert.match(await doctor(), /^app\s+installed {2}\(not in ~\/Applications: run nika app install\)$/m);
+    bundle(w.target, '1.2.3');
+    assert.match(await doctor(), /^app\s+installed {2}\(~\/Applications copy: 1\.2\.3, not managed by nika\)$/m);
+    managedMarker(w, '1.2.3');
+    assert.match(await doctor(), /^app\s+installed {2}\(~\/Applications copy: 1\.2\.3, managed by nika\)$/m);
+    bundle(w.target, '1.0.0');
+    assert.match(await doctor(), /^app\s+installed {2}\(~\/Applications copy is 1\.0\.0, 1\.2\.3 is available: run nika app install\)$/m);
+    fs.rmSync(w.target, { recursive: true });
+    fs.writeFileSync(w.target, 'x');
+    assert.match(await doctor(), /^app\s+installed {2}\(~\/Applications\/nika\.app is not nika\)$/m);
+    assert.match(await doctor({ platform: 'linux' }), /^app\s+not installed$/m);
+    fs.rmSync(w.target);
+    assert.match(await doctor({ root: path.join(w.root, 'elsewhere') }), /^app\s+installed$/m);
   });
 });
 

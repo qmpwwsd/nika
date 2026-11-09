@@ -7,6 +7,7 @@ import {
   $, state, hooks, RX, toast, announce, errText, copyText, setBusy, fieldError, openDialog, rulesEl, sessionHref, menuEl,
 } from './ui.js';
 import { parseModes, modesAfter } from './modes.js';
+import { copyBanner, copyErrorText, copyToast } from './app-copy.js';
 import { CUSTOM, MODEL_ID, MODEL_HINT, fillModelSelect } from './models-ui.js';
 import { buildGroups, agentNodes, swap, interacting, render } from './app.js';
 
@@ -672,9 +673,63 @@ function rulesRender() {
   main.classList.toggle('is-success', ru.phase === 'success');
 }
 
+/* ---------- Add to Applications (spec 3.14, ADR 0011): the two POSTs behind the dashboard notice ---------- */
+/** The copy the notice is offering (what was on screen when the button was pressed), or null. */
+function offered() {
+  return copyBanner(state.me?.appCopy, state.appCopyUi)?.mode ?? null;
+}
+
+/** Focus must not fall to <body> when the banner that held it leaves. */
+function keepFocus(hadFocus) {
+  if (hadFocus && !$('#banners').contains(document.activeElement)) $('#main')?.focus({ preventScroll: true });
+}
+
+async function appCopyInstall() {
+  const ui = state.appCopyUi;
+  const mode = offered();
+  if (!mode || ui.busy) return;
+  const hadFocus = $('#banners').contains(document.activeElement);
+  ui.busy = true;
+  ui.error = null;
+  render(true);
+  let res = null;
+  try {
+    res = await appFetch('/api/app/app-copy', { method: 'POST', json: { action: 'install' } });
+  } catch {
+    // a network failure reads as the generic line below
+  }
+  ui.busy = false;
+  if (res?.status === 200 && res.body?.state === 'current') {
+    toast(copyToast(mode, res.body));
+    await loadMe().catch(() => {}); // the banner follows the server's answer
+  } else {
+    ui.error = copyErrorText(res);
+  }
+  render(true);
+  keepFocus(hadFocus);
+}
+
+async function appCopyDismiss() {
+  const ui = state.appCopyUi;
+  const mode = offered();
+  if (!mode || ui.busy) return;
+  const hadFocus = $('#banners').contains(document.activeElement);
+  ui.hidden = true; // gone for this launch whatever the server says; Update posts nothing
+  render(true);
+  keepFocus(hadFocus);
+  if (mode !== 'add') return;
+  try {
+    if ((await appFetch('/api/app/app-copy', { method: 'POST', json: { action: 'dismiss' } })).status === 200) await loadMe();
+  } catch {
+    // not asked again this launch either way
+  }
+}
+
 /* ---------- start ---------- */
 export async function initApp() {
   hooks.pollApp = pollApp;
+  hooks.appCopyInstall = appCopyInstall;
+  hooks.appCopyDismiss = appCopyDismiss;
   hooks.renderSide = renderSide;
   hooks.renderProject = renderProject;
   hooks.groupActions = groupActions;

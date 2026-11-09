@@ -5,6 +5,7 @@ import { isApp, getJSON } from './api.js';
 import { h, icon } from './dom.js';
 import { modeEl, rowMode, canEndRow } from './modes.js';
 import { wantsHelp, wantsBack, isTextEntry, openShortcuts, helpHint, backHint } from './shortcuts.js';
+import { copyBanner } from './app-copy.js';
 import {
   $, $$, MAC, SHAPE, ORDER, state, hooks, load, save, timeEl, tickTimes, announce, toast, copyText,
   statusEl, modelEl, rulesEl, countsLine, sessionHref, menuEl, menuIsOpen, openDialog, initDialogs, initMenus,
@@ -354,6 +355,17 @@ function bannerList() {
   if (isApp && state.me && state.me.claude === false) {
     out.push({ id: 'claude', kind: 'warn', title: 'Claude Code not found', text: 'Starting an orchestrator and spawning agents are off until claude is on your PATH. Running agents still show up here.', action: { label: 'Check again', run: () => hooks.checkEnv?.() } });
   }
+  // Add to Applications (spec 3.14): macOS app tier, dashboard screen only; the server decides, the page only draws
+  const copy = isApp && state.route.name === 'dashboard' ? copyBanner(state.me?.appCopy, state.appCopyUi) : null;
+  if (copy) {
+    out.push({
+      id: 'app-copy', kind: 'info', icon: 'apps', title: copy.title, text: copy.text, busy: state.appCopyUi.busy, error: state.appCopyUi.error,
+      actions: [
+        { fk: 'primary', label: copy.primary.label, busyLabel: copy.primary.busy, primary: true, run: () => hooks.appCopyInstall?.() },
+        { fk: 'ghost', label: copy.ghost.label, run: () => hooks.appCopyDismiss?.() },
+      ],
+    });
+  }
   const problems = Object.entries(state.data?.sources ?? {}).filter(([k, v]) => v !== 'ok' && !(k === 'tmux' && isApp && state.me?.tmux === false));
   if (problems.length) {
     out.push({ id: 'sources', kind: 'warn', title: 'Some sources are unavailable', text: `The list may be incomplete. ${problems.map(([k, v]) => `${k}: ${v}`).join(' · ')}` });
@@ -361,15 +373,26 @@ function bannerList() {
   return out;
 }
 
+function bannerEl(b) {
+  const busy = b.busy === true;
+  const buttons = (b.actions ?? []).map((a) => h('button', {
+    type: 'button', class: `btn ${a.primary ? 'primary' : 'ghost'}`, 'data-fk': `banner:${b.id}:${a.fk}`,
+    'aria-disabled': busy ? 'true' : null, 'aria-busy': busy && a.primary ? 'true' : null, onclick: () => { if (!busy) a.run(); },
+  }, busy && a.primary ? [h('span', { class: 'spin', 'aria-hidden': 'true' }), ' ', a.busyLabel] : a.label));
+  return h('div', { class: 'banner', 'data-kind': b.kind, 'data-id': b.id, role: b.kind === 'info' ? 'note' : shownBanners.has(b.id) ? null : 'alert' },
+    icon(b.icon ?? (b.kind === 'info' ? 'term' : 'warn')),
+    h('p', null, h('strong', { text: b.title }), ' ', b.text, b.cmd ? [' ', h('code', { text: b.cmd })] : null,
+      b.error ? h('span', { class: 'banner-err', role: 'alert' }, icon('warn'), h('span', { text: b.error })) : null),
+    buttons.length ? h('div', { class: 'acts' }, buttons) : null,
+    b.action ? h('button', { type: 'button', class: 'btn', text: b.action.label, onclick: b.action.run }) : null);
+}
+
 function renderBanners() {
   const list = bannerList();
-  const sig = JSON.stringify(list.map(({ id, kind, title, text, cmd }) => [id, kind, title, text, cmd]));
+  const sig = JSON.stringify(list.map(({ id, kind, title, text, cmd, busy, error }) => [id, kind, title, text, cmd, busy, error]));
   if (sig === bannerSig) return;
   bannerSig = sig;
-  $('#banners').replaceChildren(...list.map((b) => h('div', { class: 'banner', 'data-kind': b.kind, role: b.kind === 'info' ? 'note' : shownBanners.has(b.id) ? null : 'alert' },
-    icon(b.kind === 'info' ? 'term' : 'warn'),
-    h('p', null, h('strong', { text: b.title }), b.text, b.cmd ? [' ', h('code', { text: b.cmd })] : null),
-    b.action ? h('button', { type: 'button', class: 'btn', text: b.action.label, onclick: b.action.run }) : null)));
+  swap($('#banners'), list.map(bannerEl));
   shownBanners.clear();
   for (const b of list) shownBanners.add(b.id);
 }

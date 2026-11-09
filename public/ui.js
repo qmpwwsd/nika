@@ -30,6 +30,7 @@ export const state = {
   models: null, // app tier: /api/app/models (the catalog array), null until loaded
   modes: { map: {}, misses: 0 }, // app tier: latest /api/app/modes answer by pane id (public/modes.js modesAfter)
   appError: null, // app tier: the private server refused us (403)
+  appCopyUi: { busy: false, error: null, hidden: false }, // app tier, macOS: the Add to Applications notice (spec 3.14); hidden = "Not now" this launch
   open: new Set(), // disclosure ids the user toggled ("!id" = closed on purpose)
   expanded: new Set(), // group ids whose "show more" was pressed
   route: { name: 'dashboard' },

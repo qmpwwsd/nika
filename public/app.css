@@ -129,6 +129,13 @@ legend { font-weight: 600; padding: 0; margin-bottom: 4px; }
 .banner[data-kind="info"] { background: var(--accent-soft); border-color: var(--accent-line); }
 .banner[data-kind="info"] .ic { color: var(--accent); }
 
+/* Add to Applications notice (spec 3.14): the bold sentence runs into the text, two buttons, an alert line for a failed copy */
+.banner[data-id="app-copy"] { flex-wrap: wrap; align-items: center; }
+.banner[data-id="app-copy"] strong { display: inline; }
+.banner .acts { display: flex; gap: 6px; flex: none; margin-left: auto; }
+.banner .banner-err { display: flex; gap: 6px; align-items: flex-start; margin-top: 4px; font-weight: 600; }
+.banner .banner-err .ic { color: var(--danger); }
+
 /* ---------- skeleton ---------- */
 .sk { border-radius: var(--r-sm); background: linear-gradient(90deg, var(--surface-2) 25%, var(--surface-3) 50%, var(--surface-2) 75%); background-size: 200% 100%; animation: sk 1.4s linear infinite; }
 @keyframes sk { to { background-position: -200% 0; } }

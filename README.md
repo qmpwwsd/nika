@@ -29,11 +29,12 @@ the [desktop app](#desktop-app-02) are never available on `http://127.0.0.1:3335
 
 ## CLI (0.2)
 
-`nika` and `nika open` start the desktop app when it is installed and fall back to the browser dashboard (the 0.1 behaviour: `nika serve` must be running). `nika open --app` fails with an install hint when the app is missing; `nika open --browser` skips the app. macOS looks the app up by bundle id (`open -b io.github.qmpwwsd.nika`); Linux runs `nika-app` from `PATH`, then `gtk-launch io.github.qmpwwsd.nika`.
+`nika` and `nika open` start the desktop app when it is installed and fall back to the browser dashboard (the 0.1 behaviour: `nika serve` must be running). `nika open --app` fails with an install hint when the app is missing; `nika open --browser` skips the app. macOS opens the copy `nika app install` made in `~/Applications` by path, else looks the app up by bundle id (`open -b io.github.qmpwwsd.nika`); Linux runs `nika-app` from `PATH`, then `gtk-launch io.github.qmpwwsd.nika`.
 
 | Command | Does |
 |---|---|
 | `nika app` | open the desktop app; fails with an install hint when it is missing |
+| `nika app install` | macOS: copy or update the app in `~/Applications` (Spotlight, Launchpad); Linux: the `.deb` or AppImage installs the desktop entry |
 | `nika serve --app` | the app tier's private server on a random port; the app starts it and talks to it over stdin/stdout, so it refuses a terminal on stdin (exit 2) |
 | `nika projects list` | registered projects: key, name, rules state, folder |
 | `nika projects add <dir>` / `remove <key>` | register a folder (stored as its real path) or unregister it; project files are never touched |
@@ -103,11 +104,14 @@ takes a few minutes and needs a few GB of free disk space):
 
 ```sh
 brew install qmpwwsd/tap/nika             # or, from 0.1: brew update && brew upgrade nika
-open "$(brew --prefix nika)/nika.app"     # once, so macOS registers the app; after that `nika` opens it
+nika app install                          # once: copies the app to ~/Applications so Spotlight and Launchpad find it
 brew autoremove                           # optional: removes Rust and the other build-only dependencies
 ```
 
-After an upgrade, restart the browser dashboard with `brew services restart nika`.
+The desktop app lives in the Homebrew folder, which Spotlight does not index; `nika app install` copies it into
+`~/Applications` (the app also offers an "Add to Applications" button once). After `brew upgrade`, running `nika` brings
+that copy up to date; nika never overwrites an `~/Applications/nika.app` it did not make, and never writes to
+`/Applications`. After an upgrade, restart the browser dashboard with `brew services restart nika`.
 
 **Linux (x86_64).** Download the `.deb` or the AppImage and `SHA256SUMS` from the
 [latest release](https://github.com/qmpwwsd/nika/releases/latest), then:

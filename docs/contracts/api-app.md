@@ -67,7 +67,9 @@ copy (state marker), `dismissed` = "Not now" was chosen on the Add prompt, `runn
 `copy-busy`. Not macOS → 409 `unsupported`; no source → 409 `no-source`; the target is not nika → 409 `foreign-target`
 (nothing written); the copy failed → `500 copy-failed` (temp copy removed, the old copy left in place). Success →
 `200 { "state": "current", "version": "0.3.0", "restart": false }`; `restart: true` when this server runs from the copy it
-just replaced (the page says to quit and reopen nika). Steps and checks: §6 "App copy".
+just replaced (the page says to quit and reopen nika). `dismiss` → `200 { "dismissed": true }`. The error body is the common
+`{ "error": "<code>", "message": "<fixed text>" }` with the code above (never a path or OS text), and the body must be exactly
+`{ "action": … }` (extra keys → `400 invalid`). Steps and checks: §6 "App copy".
 
 ### Projects
 

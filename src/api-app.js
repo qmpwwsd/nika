@@ -25,6 +25,15 @@ const SIG = /^[0-9a-f]{16}$/;
 const CAP = { small: 4 * 1024, settings: 16 * 1024, keys: 20 * 1024, spawn: 80 * 1024 };
 const isPlain = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const err = (status, error, message) => ({ status, body: { error, message } });
+// App copy (ADR 0011): fixed codes and texts only, never a path or OS error text (the module's errors carry just a code)
+const COPY_ERRORS = {
+  unsupported: [409, 'the app copy is for macOS'],
+  'no-source': [409, 'nika cannot find its own app to copy'],
+  'foreign-target': [409, '~/Applications/nika.app is not nika'],
+  'copy-busy': [409, 'nika is already copying the app'],
+  'copy-failed': [500, 'nika could not copy the app to Applications'],
+};
+const NO_COPY = { state: 'no-source', managed: false, dismissed: false, version: null, available: null, running: false };
 const sha256 = (s) => crypto.createHash('sha256').update(s).digest();
 
 /** A path segment as a value of the given shape (the raw and the percent-decoded form are tried: `%5` or `%255`), else null. */
@@ -73,6 +82,7 @@ async function listTemplates(dir) {
  * @param {object} o.ctx     { env, exec, tmuxBin, claudeBin, nikaArgv, claudeDir, now, started }; handed to the modules as is
  * @param {object} o.deps    { version, collect() → snapshot, listPanes() → { panes, error }, readHistory, listPlugins, rulesState,
  *                           preview, apply, spawnAgent, startOrchestrator, mirror, keys, picker, listCommands;
+ *                           appCopy { state(), install(), dismiss() } (src/appcopy.js bound to this install);
  *                           createSessionControl, a test seam for the factory in session-control.js }
  * @returns {(req, res, url, port) => Promise<boolean>} true when it handled the request (every /api/app/* request)
  */
@@ -191,8 +201,27 @@ export function createAppApi({ secret, ctx, deps }) {
       claude: Boolean(ctx.claudeBin),
       configDir: configDir(ctx.env),
       stateDir: stateDir(ctx.env),
+      appCopy: await deps.appCopy.state().catch(() => NO_COPY), // display only: a failing check must not take the whole page down
     },
   }));
+
+  // --- the copy of the app in ~/Applications (ADR 0011): the request names an action and nothing else, never a path ---
+
+  route('POST', /^\/api\/app\/app-copy$/, CAP.small, async ({ body }) => {
+    const keys = Object.keys(body);
+    if (keys.length !== 1 || keys[0] !== 'action' || !['install', 'dismiss'].includes(body.action)) return err(400, 'invalid', 'action must be install or dismiss');
+    try {
+      if (body.action === 'dismiss') {
+        await deps.appCopy.dismiss();
+        return { status: 200, body: { dismissed: true } };
+      }
+      const { state, version, restart } = await deps.appCopy.install(); // the contract's three fields; `changed` is for the CLI
+      return { status: 200, body: { state, version, restart } };
+    } catch (e) {
+      const code = Object.hasOwn(COPY_ERRORS, e?.code) && body.action === 'install' ? e.code : 'copy-failed';
+      return err(COPY_ERRORS[code][0], code, COPY_ERRORS[code][1]);
+    }
+  });
 
   route('GET', /^\/api\/app\/projects$/, 0, async () => ({
     status: 200,

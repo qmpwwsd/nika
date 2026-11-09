@@ -12,6 +12,7 @@ import { makeFixture, cleanup, fakeExec, NOW } from './helpers.js';
 import { createServer } from '../src/server.js';
 import { CUSTOM as CUSTOM_VALUE } from '../public/models-ui.js';
 import { wantsHelp, wantsBack, isTextEntry, helpHint, backHint } from '../public/shortcuts.js';
+import { copyBanner, copyErrorText, copyToast } from '../public/app-copy.js';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const read = (f) => fs.readFileSync(path.join(PUBLIC, f), 'utf8');
@@ -641,6 +642,234 @@ describe('tier separation in the page code', () => {
       const own = calls.filter((c) => !c.startsWith('path') && !c.startsWith('p,'));
       for (const arg of own) assert.match(arg, /^[`'"]\/api\/app\//, `${f}: appFetch(${arg}`);
     }
+  });
+});
+
+// ---- the Add to Applications notice (docs/design/spec.md 3.14, ADR 0011) ----------------------------------------------
+describe('Add to Applications notice (spec 3.14)', () => {
+  const MISSING = { state: 'missing', managed: false, dismissed: false, version: null, available: '0.3.0', running: false };
+  const STALE = { state: 'stale', managed: true, dismissed: false, version: '0.2.0', available: '0.3.0', running: false };
+  const UI = { busy: false, error: null, hidden: false };
+  const fn = (src, head) => {
+    const at = src.indexOf(head);
+    assert.ok(at >= 0, `${head} exists`);
+    return src.slice(at, src.indexOf('\n}\n', at) + 2);
+  };
+
+  test('(+) missing and not dismissed: the Add banner with its exact copy and buttons', () => {
+    assert.deepEqual(copyBanner(MISSING, UI), {
+      mode: 'add', title: 'Add nika to Applications', text: 'so Spotlight and Launchpad can find it.',
+      primary: { label: 'Add to Applications', busy: 'Adding…' }, ghost: { label: 'Not now' },
+    });
+  });
+
+  test('(+) stale and managed: the Update banner names the installed version', () => {
+    assert.deepEqual(copyBanner(STALE, UI), {
+      mode: 'update', title: 'nika 0.3.0 is installed.', text: 'Update the app in Applications to match.',
+      primary: { label: 'Update app', busy: 'Updating…' }, ghost: { label: 'Not now' },
+    });
+  });
+
+  test('(−) no banner for current, foreign, no-source, unsupported (Linux), a dismissed Add, an unmanaged stale copy, or a copy with no source version', () => {
+    const none = [
+      { ...MISSING, state: 'current', version: '0.3.0' },
+      { ...MISSING, state: 'foreign' },
+      { ...MISSING, state: 'no-source', available: null },
+      { ...MISSING, state: 'unsupported', available: null },
+      { ...MISSING, dismissed: true },
+      { ...MISSING, available: null },
+      { ...STALE, managed: false },
+      { ...STALE, available: null },
+      { ...MISSING, state: 'bogus' },
+      null, undefined, 'missing', 42, [], {},
+    ];
+    for (const c of none) assert.equal(copyBanner(c, UI), null, JSON.stringify(c));
+  });
+
+  test('(−) "Not now" hides either banner until the next launch (the page keeps that in memory only)', () => {
+    assert.equal(copyBanner(MISSING, { ...UI, hidden: true }), null);
+    assert.equal(copyBanner(STALE, { ...UI, hidden: true }), null);
+    assert.notEqual(copyBanner(STALE, { ...UI, busy: true }), null, 'busy keeps it on screen');
+  });
+
+  test('(+) the toasts: Added, Updated, and Updated with a restart', () => {
+    assert.equal(copyToast('add', { version: '0.3.0', restart: false }), 'nika is in Applications. Open it from Spotlight or Launchpad.');
+    assert.equal(copyToast('update', { version: '0.3.0', restart: false }), 'Updated the app in Applications to 0.3.0.');
+    assert.equal(copyToast('update', { version: '0.3.0', restart: true }), 'Updated to 0.3.0. Quit and reopen nika to use it.');
+  });
+
+  test('(+) errors are fixed copy chosen by the server\'s code', () => {
+    const e = (status, error) => ({ status, body: { error, message: 'ignored' } });
+    assert.equal(copyErrorText(e(409, 'foreign-target')), '~/Applications/nika.app is not nika. Move it away, then try again.');
+    assert.equal(copyErrorText(e(409, 'no-source')), "nika can't find its own app to copy. Reinstall it with Homebrew.");
+    assert.equal(copyErrorText(e(409, 'copy-busy')), 'nika is already copying the app.');
+    assert.equal(copyErrorText(e(500, 'copy-failed')), "nika couldn't copy the app to Applications.");
+  });
+
+  test('(−) any other failure (5xx, 403, network, a hostile message or code) is the generic line, never the server\'s text', () => {
+    const generic = "nika couldn't copy the app to Applications.";
+    for (const res of [null, undefined, { status: 500, body: { error: 'internal', message: '<img src=x onerror=alert(1)>' } }, { status: 403, body: { error: 'forbidden' } },
+      { status: 409, body: { error: 'unsupported', message: '/some/path' } }, { status: 409, body: { error: '__proto__' } }, { status: 409, body: { error: 'constructor' } }, { status: 409, body: null }, { status: 200, body: {} }]) {
+      assert.equal(copyErrorText(res), generic, JSON.stringify(res));
+    }
+  });
+
+  test('(−) the module is pure: it names no app route, does no network, storage or timer work and imports nothing', () => {
+    const src = code(read('app-copy.js'));
+    assert.doesNotMatch(src, /\/api\/app|\bfetch\s*\(|XMLHttpRequest|localStorage|sessionStorage|setTimeout|setInterval|document\.cookie/);
+    assert.deepEqual([...src.matchAll(/from '([^']+)'/g)].map((m) => m[1]), []);
+  });
+
+  test('(+) the server serves /app-copy.js as JavaScript; the page sprite has the i-apps symbol', () => {
+    assert.match(read('../src/server.js'), /\['\/app-copy\.js', \['app-copy\.js', 'text\/javascript; charset=utf-8'\]\]/);
+    assert.match(read('index.html'), /<symbol id="i-apps" viewBox="0 0 16 16">(?:<rect [^>]*\/>){4}<\/symbol>/);
+  });
+
+  // app.js cannot be imported (it starts the page); its bannerList is run in a vm against stubs
+  function bannerRig({ isApp = true, route = 'dashboard', me = { appCopy: MISSING, tmux: true, claude: true }, ui = { ...UI } } = {}) {
+    const calls = [];
+    const ctx = {
+      isApp, copyBanner, REFRESH_MS: 3000, Object, Date,
+      state: { route: { name: route }, me, appCopyUi: ui, data: { sources: {} }, error: null },
+      hooks: { appCopyInstall: () => calls.push('install'), appCopyDismiss: () => calls.push('dismiss'), checkEnv: () => {} },
+      refresh() {},
+    };
+    const list = vm.runInNewContext(`${fn(read('app.js'), 'function bannerList(')}\nbannerList`, ctx);
+    return { ids: () => list().map((b) => b.id), get: () => list().find((b) => b.id === 'app-copy'), calls, ctx };
+  }
+
+  test('(+) the dashboard banner list gets the app-copy banner (info kind, i-apps icon) for missing and for stale+managed, wired to the hooks', () => {
+    const add = bannerRig().get();
+    assert.equal(add.kind, 'info');
+    assert.equal(add.icon, 'apps');
+    assert.equal(add.title, 'Add nika to Applications');
+    assert.equal(JSON.stringify(add.actions.map((a) => [a.label, Boolean(a.primary)])), JSON.stringify([['Add to Applications', true], ['Not now', false]]));
+    const rig = bannerRig({ me: { appCopy: STALE } });
+    const up = rig.get();
+    assert.equal(up.title, 'nika 0.3.0 is installed.');
+    up.actions[0].run();
+    up.actions[1].run();
+    assert.deepEqual(rig.calls, ['install', 'dismiss']);
+    assert.equal(up.busy, false);
+    assert.equal(bannerRig({ ui: { ...UI, busy: true, error: 'x' } }).get().busy, true);
+    assert.equal(bannerRig({ ui: { ...UI, error: 'oops' } }).get().error, 'oops');
+  });
+
+  test('(−) no app-copy banner on the browser tier, on Linux, off the dashboard screen, or for any other state', () => {
+    assert.equal(JSON.stringify(bannerRig({ isApp: false, me: null }).ids()), '["ro"]', 'browser tier: only the read-only note');
+    assert.equal(bannerRig({ isApp: false, me: { appCopy: MISSING } }).get(), undefined, 'even with an appCopy in hand');
+    assert.equal(bannerRig({ me: { appCopy: { ...MISSING, state: 'unsupported', available: null }, tmux: true, claude: true } }).get(), undefined, 'Linux');
+    assert.equal(bannerRig({ route: 'project' }).get(), undefined);
+    assert.equal(bannerRig({ route: 'settings' }).get(), undefined);
+    assert.equal(bannerRig({ me: { appCopy: { ...MISSING, dismissed: true } } }).get(), undefined);
+    assert.equal(bannerRig({ me: null }).get(), undefined);
+  });
+
+  test('(+) the banner renderer draws the primary and the ghost button, a busy state with aria-busy and aria-disabled, and an alert line', () => {
+    const el = code(fn(read('app.js'), 'function bannerEl('));
+    assert.match(el, /'aria-busy': busy && a\.primary \? 'true' : null/);
+    assert.match(el, /'aria-disabled': busy \? 'true' : null/);
+    assert.match(el, /onclick: \(\) => \{ if \(!busy\) a\.run\(\); \}/, 'a press while busy does nothing');
+    assert.match(el, /class: 'banner-err', role: 'alert'/);
+    assert.match(el, /\{ text: b\.title \}/, 'texts go through textContent');
+    const r = code(fn(read('app.js'), 'function renderBanners('));
+    assert.match(r, /swap\(\$\('#banners'\)/, 'focus stays on the same control across redraws');
+    assert.match(r, /busy, error \}\) => \[id, kind, title, text, cmd, busy, error\]/, 'a busy or failed state redraws');
+  });
+
+  // project.js holds the app-tier part: the two POSTs; run in a vm against stubs
+  function actionRig({ answers = [], me = { appCopy: MISSING }, ui = { ...UI } } = {}) {
+    const calls = [];
+    const toasts = [];
+    const queue = [...answers];
+    const ctx = {
+      state: { me, appCopyUi: ui }, copyBanner, copyErrorText, copyToast, Promise,
+      appFetch: async (p, o) => {
+        calls.push([p, o.method, o.json]);
+        const a = queue.shift();
+        if (a instanceof Error) throw a;
+        return a;
+      },
+      loadMe: async () => { ctx.state.me = { appCopy: { ...MISSING, state: 'current', version: '0.3.0' } }; },
+      render: () => calls.push('render'),
+      toast: (m, o) => toasts.push([m, o?.kind ?? 'info']),
+      $: () => ({ contains: () => false, focus() {} }),
+      Boolean,
+      document: { activeElement: null },
+    };
+    const P = read('project.js');
+    const src = `${fn(P, 'function offered(')}\n${fn(P, 'function keepFocus(')}\n${fn(P, 'async function appCopyInstall(')}\n${fn(P, 'async function appCopyDismiss(')}\n({ appCopyInstall, appCopyDismiss })`;
+    return { calls, toasts, ctx, api: vm.runInNewContext(src, ctx) };
+  }
+
+  test('(+) pressing Add posts exactly { action: "install" }, shows busy, toasts on 200, and re-reads me', async () => {
+    const rig = actionRig({ answers: [{ status: 200, body: { state: 'current', version: '0.3.0', restart: false } }] });
+    const p = rig.api.appCopyInstall();
+    assert.equal(rig.ctx.state.appCopyUi.busy, true, 'busy while the request runs');
+    await p;
+    assert.equal(JSON.stringify(rig.calls.filter((c) => Array.isArray(c))), JSON.stringify([['/api/app/app-copy', 'POST', { action: 'install' }]]));
+    assert.deepEqual(rig.toasts, [['nika is in Applications. Open it from Spotlight or Launchpad.', 'info']]);
+    assert.equal(rig.ctx.state.appCopyUi.busy, false);
+    assert.equal(rig.ctx.state.appCopyUi.error, null);
+    assert.equal(rig.ctx.state.me.appCopy.state, 'current');
+  });
+
+  test('(+) Update with restart true says to quit and reopen', async () => {
+    const rig = actionRig({ me: { appCopy: STALE }, answers: [{ status: 200, body: { state: 'current', version: '0.3.0', restart: true } }] });
+    await rig.api.appCopyInstall();
+    assert.deepEqual(rig.toasts, [['Updated to 0.3.0. Quit and reopen nika to use it.', 'info']]);
+  });
+
+  test('(−) a refusal or a network failure stays in the banner as fixed copy, with the buttons free again and no toast', async () => {
+    for (const [answer, text] of [
+      [{ status: 409, body: { error: 'foreign-target', message: 'x' } }, '~/Applications/nika.app is not nika. Move it away, then try again.'],
+      [{ status: 409, body: { error: 'copy-busy', message: 'x' } }, 'nika is already copying the app.'],
+      [{ status: 500, body: { error: 'copy-failed', message: 'x' } }, "nika couldn't copy the app to Applications."],
+      [new Error('network down'), "nika couldn't copy the app to Applications."],
+    ]) {
+      const rig = actionRig({ answers: [answer] });
+      await rig.api.appCopyInstall();
+      assert.equal(rig.ctx.state.appCopyUi.error, text);
+      assert.equal(rig.ctx.state.appCopyUi.busy, false);
+      assert.deepEqual(rig.toasts, []);
+    }
+  });
+
+  test('(−) a second press while busy sends nothing; with no banner on offer nothing is sent either', async () => {
+    const rig = actionRig({ answers: [{ status: 200, body: { state: 'current', version: '0.3.0', restart: false } }] });
+    const first = rig.api.appCopyInstall();
+    await rig.api.appCopyInstall();
+    await first;
+    assert.equal(rig.calls.filter((c) => Array.isArray(c)).length, 1);
+    const none = actionRig({ me: { appCopy: { ...MISSING, state: 'current' } } });
+    await none.api.appCopyInstall();
+    await none.api.appCopyDismiss();
+    assert.deepEqual(none.calls, []);
+  });
+
+  test('(+) Not now on Add posts { action: "dismiss" } and hides the banner; on Update it only hides it (nothing is posted)', async () => {
+    const add = actionRig({ answers: [{ status: 200, body: { dismissed: true } }] });
+    await add.api.appCopyDismiss();
+    assert.equal(JSON.stringify(add.calls.filter((c) => Array.isArray(c))), JSON.stringify([['/api/app/app-copy', 'POST', { action: 'dismiss' }]]));
+    assert.equal(add.ctx.state.appCopyUi.hidden, true);
+    const up = actionRig({ me: { appCopy: STALE } });
+    await up.api.appCopyDismiss();
+    assert.deepEqual(up.calls.filter((c) => Array.isArray(c)), []);
+    assert.equal(up.ctx.state.appCopyUi.hidden, true);
+  });
+
+  test('(−) a failed dismiss still hides the banner for this session and shows no error', async () => {
+    const rig = actionRig({ answers: [new Error('down')] });
+    await rig.api.appCopyDismiss();
+    assert.equal(rig.ctx.state.appCopyUi.hidden, true);
+    assert.equal(rig.ctx.state.appCopyUi.error, null);
+  });
+
+  test('(+) initApp registers the two hooks; app.js reaches the route only through them', () => {
+    const init = fn(read('project.js'), 'export async function initApp(');
+    assert.match(init, /hooks\.appCopyInstall = appCopyInstall;/);
+    assert.match(init, /hooks\.appCopyDismiss = appCopyDismiss;/);
+    assert.doesNotMatch(code(read('app.js')), /\/api\/app/);
   });
 });
 

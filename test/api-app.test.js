@@ -21,6 +21,7 @@ import { makeFixture, cleanup, SID } from './helpers.js';
 const SECRET = 'Zm9vYmFyZm9vYmFyZm9vYmFyZm9vYmFyZm9vYmFyZm9v'.slice(0, 43);
 const REQ_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const WRONG_SAME_LENGTH = 'x'.repeat(SECRET.length);
+const APP_COPY = { state: 'missing', managed: false, dismissed: false, version: null, available: '9.9.9', running: false };
 const SNAPSHOT = { groups: [{ agents: [{ live: true, state: 'idle', pane: { id: '%6' } }, { live: false, state: 'ended', pane: { id: '%7' } }, { live: true, state: 'idle', pane: null }] }] };
 
 const w = await makeWorld();
@@ -54,6 +55,11 @@ function makeDeps(over = {}) {
     mirror: { capture: rec('capture', async (pane, inm) => (inm === '"abc"' ? { status: 304, body: null, etag: 'abc' } : { status: 200, body: { cols: 80, rows: [], cursor: { x: 0, y: 0, visible: true }, etag: 'abc' }, etag: 'abc' })) },
     keys: { send: rec('keys', async (pane, body) => (body.text === 'busy' ? { status: 429, body: { error: 'busy', message: 'x' } } : body.text === 'bad' ? { status: 400, body: { error: 'invalid', message: 'x' } } : { status: 200, body: { sent: { text: 1, paste: 0, keys: 0 } } })) },
     picker: { start: () => null, status: () => null },
+    appCopy: {
+      state: rec('appCopyState', async () => APP_COPY),
+      install: rec('appCopyInstall', async () => ({ state: 'current', version: '9.9.9', restart: false, changed: 'added' })),
+      dismiss: rec('appCopyDismiss', async () => {}),
+    },
     ...over,
   };
   deps.calls = calls;
@@ -231,7 +237,7 @@ describe('me and plugins', () => {
   test('(+) me reports tier, version, platform, tools and the nika dirs', async () => {
     const r = await a.call('GET', '/api/app/me');
     assert.deepEqual(r.body, {
-      tier: 'app', version: '9.9.9', platform: process.platform, tmux: true, claude: true, configDir: configDir(w.env), stateDir: stateDir(w.env),
+      tier: 'app', version: '9.9.9', platform: process.platform, tmux: true, claude: true, configDir: configDir(w.env), stateDir: stateDir(w.env), appCopy: APP_COPY,
     });
   });
 
@@ -248,6 +254,85 @@ describe('me and plugins', () => {
     assert.deepEqual(r.body, { plugins: ['alpha@market', 'beta@market'] });
     assert.equal(a.deps.calls.find((c) => c[0] === 'listPlugins')[1], a.ctx.claudeDir);
     assert.equal((await a.call('POST', '/api/app/plugins', { json: {} })).status, 405);
+  });
+});
+
+describe('app copy (ADR 0011)', () => {
+  const bodyOf = (r) => r.body;
+
+  test('(+) me carries appCopy from the module; (−) a module that throws leaves me working with a "no-source" copy', async () => {
+    const a = await boot();
+    assert.deepEqual((await a.call('GET', '/api/app/me')).body.appCopy, APP_COPY);
+    const b = await boot({ deps: makeDeps({ appCopy: { ...makeDeps().appCopy, state: async () => { throw new Error('/some/private/path exploded'); } } }) });
+    const r = await b.call('GET', '/api/app/me');
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.body.appCopy, { state: 'no-source', managed: false, dismissed: false, version: null, available: null, running: false });
+    assert.equal(r.raw.includes('exploded'), false);
+  });
+
+  test('(+) install answers 200 with the module result (restart false or true); the request carries no path to the module', async () => {
+    const a = await boot();
+    const r = await a.call('POST', '/api/app/app-copy', { json: { action: 'install' } });
+    assert.equal(r.status, 200);
+    assert.deepEqual(bodyOf(r), { state: 'current', version: '9.9.9', restart: false });
+    assert.deepEqual(a.deps.calls.filter((c) => c[0] === 'appCopyInstall'), [['appCopyInstall']], 'called with no argument at all');
+    const b = await boot({ deps: makeDeps({ appCopy: { ...makeDeps().appCopy, install: async () => ({ state: 'current', version: '9.9.9', restart: true, changed: 'updated' }) } }) });
+    assert.equal((await b.call('POST', '/api/app/app-copy', { json: { action: 'install' } })).body.restart, true);
+  });
+
+  test('(+) dismiss records "Not now" and does not copy', async () => {
+    const a = await boot();
+    const r = await a.call('POST', '/api/app/app-copy', { json: { action: 'dismiss' } });
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.body, { dismissed: true });
+    assert.deepEqual(a.deps.calls.filter((c) => c[0].startsWith('appCopy')).map((c) => c[0]), ['appCopyDismiss']);
+  });
+
+  test('(−) any other body is 400 invalid and reaches no module: unknown action, missing, non-string, extra keys, a path', async () => {
+    const a = await boot();
+    for (const json of [{}, { action: 'remove' }, { action: 'Install' }, { action: ['install'] }, { action: 1 }, { action: null }, { action: 'install', source: '/x' }, { action: 'install', path: '/x' }, { source: '/x' }]) {
+      const r = await a.call('POST', '/api/app/app-copy', { json });
+      assert.equal(r.status, 400, JSON.stringify(json));
+      assert.equal(r.body.error, 'invalid');
+    }
+    assert.deepEqual(a.deps.calls.filter((c) => c[0].startsWith('appCopy')), []);
+  });
+
+  test('(−) the module\'s refusals are 409 with a fixed body: foreign-target, no-source, copy-busy, unsupported', async () => {
+    for (const code of ['foreign-target', 'no-source', 'copy-busy', 'unsupported']) {
+      const a = await boot({ deps: makeDeps({ appCopy: { ...makeDeps().appCopy, install: async () => { throw Object.assign(new Error(code), { code }); } } }) });
+      const r = await a.call('POST', '/api/app/app-copy', { json: { action: 'install' } });
+      assert.equal(r.status, 409, code);
+      assert.equal(r.body.error, code);
+      assert.equal(typeof r.body.message, 'string');
+    }
+  });
+
+  test('(−) copy-failed and any unexpected error are 500 copy-failed with fixed text: no path, no OS error text', async () => {
+    for (const thrown of [Object.assign(new Error('copy-failed'), { code: 'copy-failed' }), Object.assign(new Error('EACCES: /some/private/path/nika.app'), { code: 'EACCES' }), new Error('boom')]) {
+      const a = await boot({ deps: makeDeps({ appCopy: { ...makeDeps().appCopy, install: async () => { throw thrown; } } }) });
+      const r = await a.call('POST', '/api/app/app-copy', { json: { action: 'install' } });
+      assert.equal(r.status, 500);
+      assert.equal(r.body.error, 'copy-failed');
+      assert.equal(r.raw.includes('private'), false);
+      assert.equal(r.raw.includes('EACCES'), false);
+    }
+    const d = await boot({ deps: makeDeps({ appCopy: { ...makeDeps().appCopy, dismiss: async () => { throw new Error('/some/private/path'); } } }) });
+    const r = await d.call('POST', '/api/app/app-copy', { json: { action: 'dismiss' } });
+    assert.equal(r.status, 500);
+    assert.equal(r.raw.includes('private'), false);
+  });
+
+  test('(−) the guard applies: no secret 403, text/plain 415, a body over 4 KB 413, GET 405', async () => {
+    const a = await boot();
+    assert.equal((await a.call('POST', '/api/app/app-copy', { json: { action: 'install' }, headers: { 'x-nika-app': null } })).status, 403);
+    assert.equal((await a.call('POST', '/api/app/app-copy', { json: { action: 'install' }, headers: { origin: 'http://evil.example' } })).status, 403);
+    assert.equal((await a.call('POST', '/api/app/app-copy', { body: '{"action":"install"}', headers: { 'content-type': 'text/plain' } })).status, 415);
+    assert.equal((await a.call('POST', '/api/app/app-copy', { json: { action: 'install', pad: 'x'.repeat(4200) } })).status, 413);
+    const get = await a.call('GET', '/api/app/app-copy');
+    assert.equal(get.status, 405);
+    assert.equal(get.headers.allow, 'POST');
+    assert.deepEqual(a.deps.calls.filter((c) => c[0] === 'appCopyInstall'), []);
   });
 });
 

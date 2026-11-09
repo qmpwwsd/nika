@@ -30,7 +30,7 @@ const hello = (secret = SECRET, extra = {}) => `${JSON.stringify({ type: 'hello'
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** serveApp on PassThrough streams with its own temp config/state dirs. */
-function harness({ tty = false, helloMs = 2000, intervalMs = 60_000, secret = SECRET } = {}) {
+function harness({ tty = false, helloMs = 2000, intervalMs = 60_000, secret = SECRET, appCopy } = {}) {
   counter += 1;
   const base = path.join(ROOT, `h${counter}`);
   fs.mkdirSync(path.join(base, 'cfg'), { recursive: true });
@@ -50,7 +50,9 @@ function harness({ tty = false, helloMs = 2000, intervalMs = 60_000, secret = SE
     for (const w of [...waiters]) w();
   });
   stderr.on('data', (c) => { errText += c; });
-  const done = serveApp({ config: fx.config, env, stdin, stdout, stderr, exec: fakeExec(), now: () => NOW, intervalMs, helloMs });
+  // the app copy never looks at the real ~/Applications or the real Homebrew folders here
+  const copy = { home: path.join(base, 'home'), brewApps: [], ...appCopy };
+  const done = serveApp({ config: fx.config, env, stdin, stdout, stderr, exec: fakeExec(), now: () => NOW, intervalMs, helloMs, appCopy: copy });
   const h = {
     env, stdin, secret, base, done,
     lines,
@@ -220,6 +222,74 @@ describe('handshake: a valid hello', () => {
     h.stdin.write(`${line.slice(30)}\r\n`);
     assert.equal((await h.waitFor((l) => l.type === 'ready')).proto, 1);
     await h.close();
+  });
+});
+
+describe('app copy wiring (ADR 0011)', () => {
+  const APP_ID = 'io.github.qmpwwsd.nika';
+  const bundle = (dir, version) => {
+    fs.mkdirSync(path.join(dir, 'Contents'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'Contents', 'Info.plist'), `<plist><dict><key>CFBundleIdentifier</key><string>${APP_ID}</string><key>CFBundleShortVersionString</key><string>${version}</string></dict></plist>`);
+  };
+  const dittoOnly = () => {
+    const calls = [];
+    const exec = async (cmd, args) => {
+      calls.push([cmd, ...args]);
+      if (cmd === '/usr/bin/ditto') fs.cpSync(args[0], args[1], { recursive: true });
+      return { stdout: '', stderr: '' };
+    };
+    exec.calls = calls;
+    return exec;
+  };
+
+  test('(+) me carries the copy state of this install; install copies from the keg into the (temp) home; dismiss writes the marker', async () => {
+    counter += 1;
+    const keg = path.join(ROOT, `keg${counter}`);
+    fs.mkdirSync(path.join(keg, 'libexec'), { recursive: true });
+    bundle(path.join(keg, 'nika.app'), '1.2.3');
+    const exec = dittoOnly();
+    const home = path.join(ROOT, `home-w${counter}`);
+    fs.mkdirSync(home);
+    const h = harness({ appCopy: { home, root: path.join(keg, 'libexec'), platform: 'darwin', exec } });
+    try {
+    await h.up();
+    const me = await h.call('GET', '/api/app/me');
+    assert.deepEqual(me.body.appCopy, { state: 'missing', managed: false, dismissed: false, version: null, available: '1.2.3', running: false });
+    const r = await h.call('POST', '/api/app/app-copy', { json: { action: 'install' } });
+    assert.deepEqual(r.body, { state: 'current', version: '1.2.3', restart: false });
+    assert.equal(fs.existsSync(path.join(home, 'Applications', 'nika.app', 'Contents', 'Info.plist')), true);
+    assert.deepEqual(exec.calls.map((c) => c[0]), ['/usr/bin/ditto', exec.calls[1][0]]);
+    assert.equal((await h.call('GET', '/api/app/me')).body.appCopy.state, 'current');
+    const d = await h.call('POST', '/api/app/app-copy', { json: { action: 'dismiss' } });
+    assert.deepEqual(d.body, { dismissed: true });
+    const marker = JSON.parse(fs.readFileSync(path.join(h.env.XDG_STATE_HOME, 'nika', 'app-copy.json'), 'utf8'));
+    assert.deepEqual(marker, { managed: true, version: '1.2.3', dismissed: true });
+    h.noSecret();
+    } finally {
+      await h.close();
+    }
+  });
+
+  test('(−) no source: me says no-source and install is 409; Linux: unsupported and nothing is written to the home', async () => {
+    counter += 1;
+    const home = path.join(ROOT, `home-n${counter}`);
+    fs.mkdirSync(home);
+    const h = harness({ appCopy: { home, root: path.join(ROOT, 'elsewhere'), platform: 'darwin', exec: dittoOnly() } });
+    const l = harness({ appCopy: { home, platform: 'linux', exec: dittoOnly() } });
+    try {
+      await h.up();
+      assert.equal((await h.call('GET', '/api/app/me')).body.appCopy.state, 'no-source');
+      const r = await h.call('POST', '/api/app/app-copy', { json: { action: 'install' } });
+      assert.equal(r.status, 409);
+      assert.equal(r.body.error, 'no-source');
+      await l.up();
+      assert.equal((await l.call('GET', '/api/app/me')).body.appCopy.state, 'unsupported');
+      assert.equal((await l.call('POST', '/api/app/app-copy', { json: { action: 'install' } })).body.error, 'unsupported');
+      assert.deepEqual(fs.readdirSync(home), []);
+    } finally {
+      await h.close();
+      await l.close();
+    }
   });
 });
 
