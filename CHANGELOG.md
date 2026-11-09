@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+Session window keys and the macOS window (desktop app):
+
+- Keys in the message box: Esc, Ctrl+C and Shift+Tab go to Claude, and so do the arrow keys and Enter when the box is
+  empty. Ctrl+C stops Claude's turn the way Stop does, only while Claude works; with text selected it stops nothing (it
+  copies on Linux; on macOS Cmd+C copies). Shift+Tab presses Shift-Tab (the next permission mode), never before the
+  window has read the pane and never while Claude asks you something. Tab still moves focus; Ctrl+Shift+Tab moves focus
+  back.
+- The row of key buttons under the message box is gone; one short hint line names the keys, and the Keyboard
+  shortcuts window lists them all.
+- The permission-mode switcher moves from the header to just under the message box, with its labels at every width.
+  The header keeps the mode tag.
+- macOS: nika is in the Dock and in Cmd+Tab while its window is open, and only in the menu bar once you close the
+  window. Full screen: the green button, View > Enter Full Screen or Ctrl+Cmd+F. Closing a full-screen window leaves
+  full screen, then hides it.
+
 ## 0.3.2 — 2026-11-09
 
 Missing and old dependencies (Node.js, tmux):

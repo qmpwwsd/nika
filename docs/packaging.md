@@ -246,8 +246,8 @@ is its shape: a release changes only `url` (the new tag) and `sha256` (of that t
 computed once the tag exists, so this copy cannot carry it). On macOS it builds `nika.app` from source (ad hoc signed by
 the bundler, no Gatekeeper quarantine because it is built locally) and installs it in the keg; on Linux it installs the
 CLI only (the desktop app comes from the `.deb` or AppImage). The browser-tier service is unchanged from 0.1.
-The `depends_on "tmux"` line is new in 0.3.2: the tap gets it at the next release, together with the new `url` and
-`sha256`. Until then the tap's formula installs Node.js only.
+The `depends_on "tmux"` line came with 0.3.2 and is in the tap since that release, so `brew install nika` installs
+tmux too.
 
 ```ruby
 class Nika < Formula

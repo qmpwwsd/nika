@@ -80,8 +80,9 @@ describe('package dependencies', () => {
     assert.equal(conf.bundle.resources['../../bin'], 'nika/bin', 'the app bundle copies the folder too');
   });
 
-  test('(−) the docs say the tap gets the tmux line at the next release, and that the AppImage cannot declare dependencies', () => {
-    assert.match(PACKAGING, /next release/i);
+  test('(−) the docs say the tap has the tmux line since 0.3.2 (no stale "next release" note), and that the AppImage cannot declare dependencies', () => {
+    assert.match(PACKAGING, /`depends_on "tmux"` line came with 0\.3\.2 and is in the tap since that release/);
+    assert.doesNotMatch(PACKAGING, /tap gets it at the next release|Until then the tap's formula installs Node\.js only/);
     assert.match(PACKAGING, /AppImage[^.]*cannot declare/i);
     assert.doesNotMatch(formula, /depends_on "nodejs"|depends_on "node@/);
   });

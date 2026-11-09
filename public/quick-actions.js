@@ -19,7 +19,7 @@ const TITLE = {
   stop: 'Stops this turn (Esc in the pane; twice in vim insert mode). Keeps the work, also stops running subagents',
   stopIdle: 'Nothing to stop: Claude is waiting',
   stopPrompt: 'Esc = No is in the prompt panel',
-  stopAttn: 'Answer the prompt first; Esc is in the key row below',
+  stopAttn: 'Answer the prompt first; Esc in the message box cancels it',
   compact: 'Types /compact and Enter: summarises the conversation to free context',
   clear: 'Types /clear and Enter after you confirm',
   model: 'Switch the model',
@@ -204,6 +204,64 @@ export function stopOutcome({ status, code, name = 'Claude' } = {}) {
   if (status === 404) return no(GONE);
   if (unreachable(status)) return no(TMUX);
   return no("nika couldn't stop the turn.");
+}
+
+const SWITCH_WAIT = 'Wait for the mode switch to finish.';
+const ARROW = { ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right' };
+
+/**
+ * What a key in the message box does (docs/design/spec.md 4.2; 0.3.3). Pure: session.js performs the action.
+ * e: the keydown's { key, shiftKey, ctrlKey, altKey, metaKey, repeat, isComposing, keyCode }.
+ * s: { empty, selection, choosing, paletteOpen, pop, pane, status, promptOpen, buttons, bypass, switching }.
+ * Returns { act } plus, by act: key ('key': 'Escape' | 'BTab'; 'arrow': 'Up' | 'Down' | 'Left' | 'Right'),
+ * dir ('palette-move': -1 | 1), message + kind + ms ('refuse'). `act` is one of none (the browser's default), swallow,
+ * passthrough, close-pop, close-palette, palette-move, palette-insert, send, key, arrow, stop, refuse, focus-back.
+ * It never returns Tab or C-c as a key: Tab moves focus, and Ctrl+C is the Stop route.
+ */
+export function composerKey(e, s) {
+  const none = { act: 'none' };
+  const swallow = { act: 'swallow' };
+  if (e.isComposing || e.keyCode === 229) return none; // the IME owns the key
+  const { key } = e;
+  const bare = !e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey;
+  if (key === ']' && e.ctrlKey && !e.metaKey && !e.altKey) return { act: 'passthrough' };
+  if (key === 'Escape') {
+    if (e.repeat) return swallow;
+    if (s.pop) return { act: 'close-pop' };
+    if (s.paletteOpen) return { act: 'close-palette' };
+    return { act: 'key', key: 'Escape' }; // the No path of a prompt too: no gate
+  }
+  if (key === 'Enter' && !e.shiftKey) {
+    if (e.repeat) return swallow;
+    return s.choosing && bare ? { act: 'palette-insert' } : { act: 'send' };
+  }
+  if (key === 'Tab') {
+    if (e.ctrlKey && e.shiftKey && !e.metaKey && !e.altKey) return { act: 'focus-back' };
+    if (e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      if (e.repeat) return swallow;
+      // no capture yet: nika cannot know that a prompt is open, and Shift-Tab can pick "allow for this session" in one (spec 9.5)
+      if (s.pane !== 'ok') return { act: 'refuse', message: quickState({ pane: s.pane }).reason, kind: 'warn', ms: 3000 };
+      const gate = sendGate({ promptOpen: s.promptOpen, status: s.status, buttons: s.buttons, bypass: s.bypass });
+      if (!gate.ok) return { act: 'refuse', message: gate.message, kind: 'error', ms: 0 };
+      if (s.switching) return { act: 'refuse', message: SWITCH_WAIT, kind: 'warn', ms: 3000 };
+      return { act: 'key', key: 'BTab' };
+    }
+    return s.choosing && bare ? { act: 'palette-insert' } : none;
+  }
+  if (Object.hasOwn(ARROW, key)) {
+    if (!bare) return none;
+    if (s.choosing && (key === 'ArrowUp' || key === 'ArrowDown')) return { act: 'palette-move', dir: key === 'ArrowDown' ? 1 : -1 };
+    return s.empty ? { act: 'arrow', key: ARROW[key] } : none;
+  }
+  if ((key === 'c' || key === 'C') && e.ctrlKey && !e.metaKey && !e.altKey) {
+    if (s.selection) return none; // a copy
+    if (e.repeat) return swallow;
+    const q = quickState({ pane: s.pane, status: s.status, prompt: s.promptOpen });
+    if (q.stop.off === false) return { act: 'stop' };
+    const message = s.pane !== 'ok' ? q.reason : s.promptOpen ? STOP_409['prompt-open'] : s.status === 'attn' ? WHY.prompt : STOP_409['not-busy'];
+    return { act: 'refuse', message, kind: 'warn', ms: 3000 };
+  }
+  return none;
 }
 
 /**

@@ -237,6 +237,17 @@ export const KEY_LABEL = {
 };
 
 /**
+ * The echo line for a run of arrow keys the keys route accepted (message box, 0.3.3): one key, one key name n times, or a mix; '' for none.
+ * "Sent Down to %12", "Sent 3 x Down to %12" (x is U+00D7), "Sent 5 arrow keys to %12".
+ */
+export function arrowEcho(keys, pane) {
+  if (!keys.length) return '';
+  const label = (k) => KEY_LABEL[k] ?? k;
+  if (keys.some((k) => k !== keys[0])) return `Sent ${keys.length} arrow keys to ${pane}`;
+  return keys.length === 1 ? `Sent ${label(keys[0])} to ${pane}` : `Sent ${keys.length} \u00d7 ${label(keys[0])} to ${pane}`;
+}
+
+/**
  * Passthrough: a keyboard event -> what to do. { kind: 'leave' } for Ctrl+], 'ignore' for meta shortcuts and IME
  * composition (the app and the OS keep them), 'key' with an allow-list name, 'text' with one printable character, or
  * 'skip' with the reason for keys that are not on the allow-list.

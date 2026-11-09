@@ -56,9 +56,7 @@ body.m-bypass .mode-frame { background: repeating-linear-gradient(135deg, var(--
 .bar h1.untitled { color: var(--text-muted); font-weight: 400; }
 .sess-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; color: var(--text-muted); font-size: var(--fs-small); }
 .sess-meta .mono { color: var(--text); }
-/* the right of the bar: the switcher with its reason, then the claude.ai link and the shortcuts button. They wrap as one block (a wrap moves
-   them together, and inside it the last two never part), so the shortcuts button can not end up alone on a line */
-.bar-end { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
+/* the right of the bar: the claude.ai link and the shortcuts button never part (nowrap), so the button can not end up alone on a line */
 .bar-tools { display: flex; flex-wrap: nowrap; align-items: center; gap: 12px; flex: none; }
 .model { padding: 1px 8px; border-radius: var(--r-sm); background: var(--surface-2); color: var(--text); font-weight: 600; }
 .notice { flex: none; padding: 8px 16px; background: var(--accent-soft); color: var(--text); border-bottom: 1px solid var(--line); font-size: var(--fs-small); }
@@ -163,7 +161,7 @@ body.m-bypass .mode-frame { background: repeating-linear-gradient(135deg, var(--
 .term-over p:empty { display: none; }
 
 /* composer */
-.composer { flex: none; border-top: 1px solid var(--line); background: var(--surface); padding: 8px 12px 10px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; } /* an auto column grows to its widest child (380 px at 320) */
+.composer { flex: none; border-top: 1px solid var(--line); background: var(--surface); padding: 8px 12px 10px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; container: composer / inline-size; } /* an auto column grows to its widest child (380 px at 320); the container hides the extra hint tips (spec 3.10) */
 .attn-note { display: flex; gap: 8px; align-items: flex-start; padding: 8px 10px; border-radius: var(--r-md); background: var(--attn-soft); font-size: var(--fs-small); }
 .attn-note .st { margin-top: 2px; }
 .attn-note p { margin: 0; overflow-wrap: anywhere; }
@@ -186,19 +184,17 @@ body.m-bypass .mode-frame { background: repeating-linear-gradient(135deg, var(--
 .inbox textarea:disabled { color: var(--text-muted); }
 .paste-chip { flex: none; display: inline-flex; gap: 6px; align-items: center; font-size: var(--fs-small); padding: 2px 4px 2px 8px; border-radius: var(--r-sm); background: var(--accent-soft); color: var(--accent); font-weight: 600; align-self: center; }
 .paste-chip button { min-height: 20px; border: 0; background: none; color: inherit; text-decoration: underline; }
-.keys { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
-.keys .lbl { font-size: var(--fs-small); color: var(--text-muted); margin-right: 4px; }
-.key { min-height: 26px; min-width: 32px; padding: 0 8px; border: 1px solid var(--line-strong); border-bottom-width: 2px; border-radius: var(--r-sm); background: var(--surface); font: 600 var(--fs-small)/1 var(--mono); color: var(--text); }
-.key:hover { background: var(--surface-2); }
-.key:active { border-bottom-width: 1px; transform: translateY(1px); }
-.key:disabled { opacity: 0.45; }
-.key[aria-disabled="true"] { opacity: 0.45; cursor: not-allowed; }
+.mode-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; min-width: 0; }   /* the mode switcher under the message box (spec 9.3) */
+.mode-row .mode-lbl { font-size: var(--fs-small); color: var(--text-muted); }
+.mode-row .msw-why { flex: 1 1 14em; min-width: 0; }
 .hintline { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: var(--fs-small); color: var(--text-muted); }
 .hintline .echo { margin-left: auto; color: var(--text); font-weight: 600; overflow-wrap: anywhere; }
 .problem { color: var(--idle); font-weight: 600; overflow-wrap: anywhere; }
 .problem.error { color: var(--danger); }
 .problem:empty { display: none; }
 .shell-hint, .arg-hint { color: var(--text); font-weight: 600; }
+@container composer (max-width: 940px) { .hintline .tip.more { display: none; } }   /* the composer, not the window, decides (spec 3.10); 940 = the four Linux tips (799 px with gaps) + a short echo (about 130 px) on one line */
+@media (max-height: 560px) { .hintline .tip { display: none; } }
 
 /* command palette (spec 9.7): opens upward from the message box, anchored to its left and right edges; focus never leaves the textarea */
 .btn.ghost { border-color: transparent; background: transparent; }
@@ -278,8 +274,7 @@ body.m-bypass .mode-frame { background: repeating-linear-gradient(135deg, var(--
   .sess-meta .hide-narrow { display: none; }
 }
 @media (max-width: 760px) {
-  .hintline .tip { display: none; }
-  .bar .btn .lbl, .bar .msw .lbl, .term-head .btn .lbl, .term-head .btn kbd { display: none; }   /* segments keep their name in aria-label and title */
+  .bar .btn .lbl, .term-head .btn .lbl, .term-head .btn kbd { display: none; }   /* the segments keep their words at every width (spec 9.3) */
   .bar { padding: 6px 12px; }
   .q-narrow .lbl { display: none; }   /* Compact, Clear and Rewind keep their name in aria-label and title */
   .q-narrow { min-width: var(--h-ctl); padding: 0 8px; }

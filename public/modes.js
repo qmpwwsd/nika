@@ -99,7 +99,9 @@ const WHY = {
  * answers 409 not-idle), `prompt` (capture field or null), `mode` and `modeConfirmed` (capture fields), `switching` (the
  * target of a switch in flight, else null). Output: `disabled` (every segment aria-disabled), `pressed` and `held` (a
  * target or null; held = dashed, not pressed), `reason` ('' = no reason line), `chip` (always null: nika does not offer
- * Shift-Tab when it cannot read the mode, because that could move a session it knows nothing about), `busy` (the segment with the spinner).
+ * Shift-Tab when it cannot read the mode, because that could move a session it knows nothing about; the message box's Shift+Tab is
+ * the user's own key, gated like Send), `busy` (the segment with the spinner). Two keys exist only where they apply (0.3.3): `tag`,
+ * the mode whose tag leads the reason line because no segment shows it (Bypass, Don't ask), and `note`, the loud line of a live Bypass.
  */
 export function switcherState({ pane = 'ok', status = null, prompt = null, mode = 'unknown', modeConfirmed = true, switching = null } = {}) {
   const off = (reason, over) => ({ disabled: true, pressed: null, held: null, reason, chip: null, busy: null, ...over });
@@ -110,12 +112,15 @@ export function switcherState({ pane = 'ok', status = null, prompt = null, mode 
   const seg = MODE_TARGETS.includes(key) ? key : null; // Bypass, Don't ask and unknown have no segment
   const sure = modeConfirmed === true;
   const shown = sure ? { pressed: seg } : { held: seg };
-  if (prompt || status === 'attn') return off(WHY.prompt, { held: seg });
-  if (switching) return off(WHY.switching, { ...shown, busy: switching });
-  if (status === 'busy' || status === 'ended') return off(WHY.working, shown);
-  if (!sure) return off(WHY.unconfirmed, shown);
+  const named = !seg && key !== 'unknown' ? { tag: key } : {}; // Bypass and Don't ask have no segment: the reason line leads with their tag
+  if (prompt || status === 'attn') return off(WHY.prompt, { held: seg, ...named });
+  if (switching) return off(WHY.switching, { ...shown, busy: switching, ...named });
+  if (status === 'busy' || status === 'ended') return off(WHY.working, { ...shown, ...named });
+  if (!sure) return off(WHY.unconfirmed, { ...shown, ...named });
   if (key === 'unknown') return off(WHY.unknownUse); // no held or launch mode either: no chip, the terminal is the way
-  if (key === 'dontAsk') return off(WHY.dontAsk);
+  if (key === 'dontAsk') return off(WHY.dontAsk, named);
+  // a live Bypass is the only mode left without a segment: the four stay usable and the line says what is on
+  if (!seg) return { disabled: false, pressed: null, held: null, reason: '', chip: null, busy: null, ...named, note: BYPASS_NOTE };
   return { disabled: false, pressed: seg, held: null, reason: '', chip: null, busy: null };
 }
 

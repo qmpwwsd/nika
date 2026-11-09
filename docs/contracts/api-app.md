@@ -263,7 +263,7 @@ the screen:
   with Shift-Tab), and the word in plain output does not block;
 - else the request goes out as before.
 
-A request with none of those (letters without digits, arrows, `Escape`, key chips other than `BTab`) skips the capture and
+A request with none of those (letters without digits, arrows, `Escape` and the other named keys except `Enter` and `BTab`) skips the capture and
 is as fast as in 0.2. The mode route's own presses go through `keys.send` directly, not this route, so mode switching is
 unaffected. The page's passthrough posts to this route as well (Shift+Tab maps to `{ "keys": ["BTab"] }`), so it is
 guarded like Send: nothing in nika can answer such a prompt, only the terminal itself (outside nika) can. nika never moves a session into bypass (rule 12). The guard's
@@ -370,7 +370,7 @@ returned. A draft in the box is never touched: the empty-box check of step 3 com
 ### `POST /api/app/pane/:id/stop` (body ≤ 4 KB, `CAP.small`)
 Body `{}` (a JSON object, `Content-Type: application/json`). Interrupts Claude's turn; the session stays. Same guard and
 pane rule as the other control routes. It does **not** take the per-pane lock (a mode switch, command or End that is
-waiting must not block Stop), but there is one interrupt per pane at a time (End's interrupt shares it). Steps:
+waiting must not block Stop), but there is one interrupt per pane at a time (End's interrupt shares it). The session window's Stop button and Ctrl+C in its message box (0.3.3) post here. Steps:
 
 1. Ineligible pane → `404 not_found`.
 2. Fresh capture and registry state. A permission prompt on screen → 409 `prompt-open` (Stop never answers a prompt; use

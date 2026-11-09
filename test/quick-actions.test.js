@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import { KEY_NAME } from '../src/ids.js';
 import {
   quickState, cleanPrompt, isBypassLabel, promptMentionsBypass, answerOutcome, escOutcome, promptOff, promptNote, commandFailure, commandSaid, endOutcome, endNote,
-  planShell, problemKind, sendGate, keysRefusal, stopOutcome, followSession, hasAnswerButtons, attnNote, SESSION_ID, PANE_ID,
+  planShell, problemKind, sendGate, keysRefusal, stopOutcome, followSession, hasAnswerButtons, attnNote, composerKey, SESSION_ID, PANE_ID,
 } from '../public/quick-actions.js';
 
 const DOTS = '…';
@@ -81,6 +81,16 @@ describe('quickState: the spec 9.4 states table, first matching row wins', () =>
     assert.ok(offs(st, ['stop', ...FOUR]));
     assert.equal(st.end.off, false);
     assert.equal(st.reason, 'Answer the prompt first.');
+  });
+
+  test('(+) 0.3.3: Stop\'s title for a Needs-you agent with no panel points to Esc in the message box', () => {
+    assert.equal(quickState({ status: 'attn' }).stop.title, 'Answer the prompt first; Esc in the message box cancels it');
+  });
+
+  test('(−) 0.3.3: no title or reason mentions the removed key row or key chips', () => {
+    for (const st of [quickState({ status: 'idle' }), quickState({ status: 'busy' }), quickState({ status: 'attn' }), quickState({ status: 'attn', prompt: PROMPT }), quickState({ pane: 'gone' })]) {
+      for (const text of [st.reason, ...Object.values(st).filter((v) => v && typeof v === 'object').map((v) => v.title)]) assert.doesNotMatch(String(text), /key row|chip/i);
+    }
   });
 
   test('(+) a prompt on screen wins over a stale status', () => {
@@ -658,5 +668,183 @@ describe('followSession: a pane that started a new conversation (/clear) is foll
     assert.equal(run([null, undefined, 7, {}, ag(NEW, '%7')]), NEW);
     assert.equal(run([{ id: NEW, live: true }]), null);
     assert.equal(followSession(), null);
+  });
+});
+
+describe('composerKey (0.3.3): what a key in the message box does', () => {
+  const S0 = { empty: true, selection: false, choosing: false, paletteOpen: false, pop: false, pane: 'ok', status: 'idle', promptOpen: false, buttons: false, bypass: false, switching: false };
+  const K = (key, ev = {}, st = {}) => composerKey({ key, shiftKey: false, ctrlKey: false, altKey: false, metaKey: false, repeat: false, isComposing: false, keyCode: 0, ...ev }, { ...S0, ...st });
+  const act = (r) => r.act;
+  const WAITING = 'Nothing to stop: Claude is waiting.';
+  const SHIFT_TAB_GATES = {
+    buttons: 'Answer the prompt with the buttons above or in the terminal.',
+    plain: 'Answer the prompt in the terminal, or turn on Type into pane.',
+    bypass: 'Answer this prompt in the terminal.',
+  };
+
+  test('(+) IME composition: Enter is the IME\'s', () => {
+    assert.deepEqual(K('Enter', { isComposing: true }), { act: 'none' });
+  });
+  test('(−) IME composition: Escape with keyCode 229 is not sent as Escape', () => {
+    assert.deepEqual(K('Escape', { keyCode: 229 }), { act: 'none' });
+    assert.deepEqual(K('Tab', { shiftKey: true, isComposing: true }), { act: 'none' });
+  });
+
+  test('(+) Ctrl+] enters passthrough', () => {
+    assert.deepEqual(K(']', { ctrlKey: true }), { act: 'passthrough' });
+    assert.deepEqual(K(']', { ctrlKey: true, shiftKey: true }), { act: 'passthrough' }, 'Shift is allowed, as in 0.3');
+  });
+  test('(−) Ctrl+Meta+] and a bare ] are not passthrough', () => {
+    assert.deepEqual(K(']', { ctrlKey: true, metaKey: true }), { act: 'none' });
+    assert.deepEqual(K(']', { ctrlKey: true, altKey: true }), { act: 'none' });
+    assert.deepEqual(K(']'), { act: 'none' });
+  });
+
+  test('(+) a held Esc acts once: the repeat is swallowed', () => {
+    assert.deepEqual(K('Escape', { repeat: true }), { act: 'swallow' });
+  });
+  test('(−) the first Esc (no repeat) is sent as Escape', () => {
+    assert.deepEqual(K('Escape'), { act: 'key', key: 'Escape' });
+  });
+
+  test('(+) the Esc ladder: model popover, then the palette, then the pane', () => {
+    assert.equal(act(K('Escape', {}, { pop: true, paletteOpen: true })), 'close-pop');
+    assert.equal(act(K('Escape', {}, { paletteOpen: true })), 'close-palette');
+    assert.deepEqual(K('Escape'), { act: 'key', key: 'Escape' });
+  });
+  test('(−) Esc is never refused: a prompt, Needs you, bypass, a switch in flight, text or Shell state all still send it', () => {
+    for (const st of [{ promptOpen: true }, { status: 'attn' }, { bypass: true, promptOpen: true }, { switching: true }, { empty: false }, { selection: true }, { status: 'busy' }]) {
+      assert.deepEqual(K('Escape', {}, st), { act: 'key', key: 'Escape' }, JSON.stringify(st));
+    }
+  });
+
+  test('(+) Enter: a held Enter is swallowed; a bare Enter on an active option inserts it; otherwise it sends (empty box or text)', () => {
+    assert.equal(act(K('Enter', { repeat: true })), 'swallow');
+    assert.equal(act(K('Enter', {}, { choosing: true })), 'palette-insert');
+    assert.equal(act(K('Enter')), 'send');
+    assert.equal(act(K('Enter', {}, { empty: false })), 'send');
+  });
+  test('(−) Shift+Enter is a new line (browser default); with Ctrl, Cmd or Alt an active option is not inserted', () => {
+    assert.deepEqual(K('Enter', { shiftKey: true }), { act: 'none' });
+    for (const m of [{ ctrlKey: true }, { metaKey: true }, { altKey: true }]) assert.equal(act(K('Enter', m, { choosing: true })), 'send', JSON.stringify(m));
+  });
+
+  test('(+) Shift+Tab sends BTab: idle, working, with text, with the palette open', () => {
+    for (const st of [{}, { status: 'busy' }, { empty: false }, { paletteOpen: true }, { status: null }, { choosing: true }, { selection: true }]) {
+      assert.deepEqual(K('Tab', { shiftKey: true }, st), { act: 'key', key: 'BTab' }, JSON.stringify(st));
+    }
+  });
+  test('(−) a held Shift+Tab is swallowed', () => {
+    assert.deepEqual(K('Tab', { shiftKey: true, repeat: true }), { act: 'swallow' });
+  });
+  test('(−) Shift+Tab is gated like Send while a prompt is held, with the same three lines', () => {
+    assert.deepEqual(K('Tab', { shiftKey: true }, { promptOpen: true, buttons: true }), { act: 'refuse', message: SHIFT_TAB_GATES.buttons, kind: 'error', ms: 0 });
+    assert.deepEqual(K('Tab', { shiftKey: true }, { promptOpen: true }), { act: 'refuse', message: SHIFT_TAB_GATES.plain, kind: 'error', ms: 0 });
+    assert.deepEqual(K('Tab', { shiftKey: true }, { promptOpen: true, bypass: true, buttons: true }), { act: 'refuse', message: SHIFT_TAB_GATES.bypass, kind: 'error', ms: 0 });
+    assert.equal(act(K('Tab', { shiftKey: true }, { status: 'attn' })), 'refuse');
+  });
+  test('(−) Shift+Tab sends nothing before the first capture, or while the pane is gone or tmux fails: nika cannot know a prompt is open', () => {
+    const warn = (message) => ({ act: 'refuse', message, kind: 'warn', ms: 3000 });
+    assert.deepEqual(K('Tab', { shiftKey: true }, { pane: 'connecting', status: null }), warn('Connecting to the pane\u2026'));
+    assert.deepEqual(K('Tab', { shiftKey: true }, { pane: 'gone' }), warn('The pane is gone.'));
+    assert.deepEqual(K('Tab', { shiftKey: true }, { pane: 'tmux' }), warn("nika couldn't reach tmux."));
+    assert.deepEqual(K('Tab', { shiftKey: true }, { pane: 'connecting', switching: true }), warn('Connecting to the pane\u2026'), 'the missing capture is named first');
+    assert.deepEqual(K('Tab', { shiftKey: true, repeat: true }, { pane: 'connecting' }), { act: 'swallow' }, 'a held key still acts once');
+  });
+  test('(+) once the pane has a capture ("ok") Shift+Tab sends BTab again, whatever the registry knows', () => {
+    for (const status of [null, 'idle', 'busy']) assert.deepEqual(K('Tab', { shiftKey: true }, { pane: 'ok', status }), { act: 'key', key: 'BTab' }, String(status));
+  });
+  test('(−) Shift+Tab waits while this window\'s own mode switch runs', () => {
+    assert.deepEqual(K('Tab', { shiftKey: true }, { switching: true }), { act: 'refuse', message: 'Wait for the mode switch to finish.', kind: 'warn', ms: 3000 });
+  });
+
+  test('(+) Ctrl+Shift+Tab moves focus back, also with text and a prompt held', () => {
+    assert.equal(act(K('Tab', { ctrlKey: true, shiftKey: true })), 'focus-back');
+    assert.equal(act(K('Tab', { ctrlKey: true, shiftKey: true }, { empty: false, promptOpen: true, status: 'attn' })), 'focus-back');
+  });
+  test('(−) Ctrl+Shift+Alt+Tab and Meta+Shift+Tab are not the focus key (and not BTab)', () => {
+    assert.deepEqual(K('Tab', { ctrlKey: true, shiftKey: true, altKey: true }), { act: 'none' });
+    assert.deepEqual(K('Tab', { metaKey: true, shiftKey: true }), { act: 'none' });
+  });
+
+  test('(+) Tab on an active option inserts it', () => {
+    assert.equal(act(K('Tab', {}, { choosing: true })), 'palette-insert');
+  });
+  test('(−) Tab with no active option moves focus (browser default, never sent); Ctrl+Tab too', () => {
+    assert.deepEqual(K('Tab'), { act: 'none' });
+    assert.deepEqual(K('Tab', {}, { paletteOpen: true }), { act: 'none' });
+    assert.deepEqual(K('Tab', { ctrlKey: true }), { act: 'none' });
+    assert.deepEqual(K('Tab', { ctrlKey: true }, { choosing: true }), { act: 'none' });
+  });
+
+  test('(+) arrows from an empty box go to the pane, one name each, also while a prompt is held', () => {
+    for (const [key, name] of [['ArrowUp', 'Up'], ['ArrowDown', 'Down'], ['ArrowLeft', 'Left'], ['ArrowRight', 'Right']]) {
+      assert.deepEqual(K(key), { act: 'arrow', key: name }, key);
+      assert.deepEqual(K(key, {}, { promptOpen: true }), { act: 'arrow', key: name }, `${key} with a prompt`);
+    }
+  });
+  test('(+) with an active option, Up and Down move it (-1 / +1)', () => {
+    assert.deepEqual(K('ArrowUp', {}, { choosing: true, empty: false }), { act: 'palette-move', dir: -1 });
+    assert.deepEqual(K('ArrowDown', {}, { choosing: true, empty: false }), { act: 'palette-move', dir: 1 });
+  });
+  test('(−) arrows with text in the box are the caret\'s; Left and Right stay the caret\'s while the palette is active', () => {
+    for (const key of ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']) assert.deepEqual(K(key, {}, { empty: false }), { act: 'none' }, key);
+    assert.deepEqual(K('ArrowLeft', {}, { choosing: true, empty: false }), { act: 'none' });
+    assert.deepEqual(K('ArrowRight', {}, { choosing: true, empty: false }), { act: 'none' });
+  });
+  test('(−) a modified arrow (Shift, Alt, Cmd, Ctrl) on an empty box is the browser\'s', () => {
+    for (const m of [{ shiftKey: true }, { altKey: true }, { metaKey: true }, { ctrlKey: true }]) assert.deepEqual(K('ArrowDown', m), { act: 'none' }, JSON.stringify(m));
+  });
+
+  test('(+) Ctrl+C while Claude works stops the turn (also with Shift, as in 0.3)', () => {
+    assert.deepEqual(K('c', { ctrlKey: true }, { status: 'busy' }), { act: 'stop' });
+    assert.deepEqual(K('C', { ctrlKey: true, shiftKey: true }, { status: 'busy' }), { act: 'stop' });
+  });
+  test('(−) Ctrl+C with a selection is a copy; a held Ctrl+C acts once', () => {
+    assert.deepEqual(K('c', { ctrlKey: true }, { status: 'busy', selection: true }), { act: 'none' });
+    assert.deepEqual(K('c', { ctrlKey: true, repeat: true }, { status: 'busy' }), { act: 'swallow' });
+  });
+  test('(−) Ctrl+C sends nothing unless Claude works: it says why for 3 s', () => {
+    const warn = (message) => ({ act: 'refuse', message, kind: 'warn', ms: 3000 });
+    for (const status of ['idle', null, 'ended']) assert.deepEqual(K('c', { ctrlKey: true }, { status }), warn(WAITING), String(status));
+    assert.deepEqual(K('c', { ctrlKey: true }, { status: 'busy', promptOpen: true }), warn('Answer the prompt first. Esc = No is in the prompt panel.'));
+    assert.deepEqual(K('c', { ctrlKey: true }, { status: 'attn' }), warn('Answer the prompt first.'));
+    assert.deepEqual(K('c', { ctrlKey: true }, { status: 'busy', pane: 'connecting' }), warn('Connecting to the pane\u2026'));
+    assert.deepEqual(K('c', { ctrlKey: true }, { status: 'busy', pane: 'gone' }), warn('The pane is gone.'));
+  });
+  test('(−) Cmd+C, Alt+Ctrl+C and Meta+Ctrl+C are not Ctrl+C: the browser\'s', () => {
+    assert.deepEqual(K('c', { metaKey: true }, { status: 'busy' }), { act: 'none' });
+    assert.deepEqual(K('c', { ctrlKey: true, altKey: true }, { status: 'busy' }), { act: 'none' });
+    assert.deepEqual(K('c', { ctrlKey: true, metaKey: true }, { status: 'busy' }), { act: 'none' });
+    assert.deepEqual(K('c', {}, { status: 'busy' }), { act: 'none' });
+  });
+
+  test('(+) letters, Backspace and Home on an empty box are the box\'s own', () => {
+    for (const key of ['a', 'Backspace', 'Home', 'End', 'Delete', 'PageUp']) assert.deepEqual(K(key), { act: 'none' }, key);
+  });
+  test('(−) Ctrl+U and the other box-editing Ctrl keys are never sent from the box', () => {
+    for (const key of ['u', 'k', 'a', 'e', 'l', 'r', 'w']) assert.deepEqual(K(key, { ctrlKey: true }), { act: 'none' }, key);
+  });
+
+  test('(+) every key it asks for is on the server allow-list', () => {
+    const keys = ['Escape', 'Enter', 'Tab', 'c', 'C', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', ']', 'a', 'u'];
+    const mods = [{}, { shiftKey: true }, { ctrlKey: true }, { altKey: true }, { metaKey: true }, { ctrlKey: true, shiftKey: true }, { repeat: true }];
+    const states = [{}, { status: 'busy' }, { empty: false }, { promptOpen: true }, { status: 'attn' }, { choosing: true, empty: false }, { pop: true }, { paletteOpen: true }, { switching: true }, { selection: true }];
+    let seen = 0;
+    for (const key of keys) for (const m of mods) for (const st of states) {
+      const r = K(key, m, st);
+      if (r.act === 'key' || r.act === 'arrow') {
+        seen += 1;
+        assert.ok(KEY_NAME.has(r.key), `${key} ${JSON.stringify(m)} ${JSON.stringify(st)} -> ${r.key}`);
+      }
+    }
+    assert.ok(seen > 20, 'the loop reached the key and arrow results');
+  });
+  test('(−) it never asks for Tab or C-c: Tab moves focus, Ctrl+C is the Stop route', () => {
+    const keys = ['Escape', 'Enter', 'Tab', 'c', 'C', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', ']'];
+    for (const key of keys) for (const m of [{}, { shiftKey: true }, { ctrlKey: true }, { ctrlKey: true, shiftKey: true }]) for (const st of [{}, { status: 'busy' }, { choosing: true }]) {
+      const r = K(key, m, st);
+      assert.ok(!['Tab', 'C-c'].includes(r.key), `${key} ${JSON.stringify(m)}`);
+    }
   });
 });

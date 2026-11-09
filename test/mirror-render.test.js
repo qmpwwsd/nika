@@ -2,7 +2,7 @@
 // applyMirror, so the test also proves that hostile text only ever lands in textContent and that styles go through element.style.
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { toRenderModel, withCursor, applyMirror, cellWidth, planSend, planPaste, chunkText, keyForEvent, LIMITS } from '../public/mirror-render.js';
+import { toRenderModel, withCursor, applyMirror, cellWidth, planSend, planPaste, chunkText, keyForEvent, arrowEcho, LIMITS } from '../public/mirror-render.js';
 
 const S = (over = {}) => ({ b: false, fg: null, bg: null, u: false, i: false, d: false, ...over });
 const cap = (rows, cursor) => ({ cols: 80, rows, cursor: cursor ?? { x: 0, y: 0, visible: false } });
@@ -346,5 +346,18 @@ describe('keyForEvent (passthrough)', () => {
     assert.deepEqual(keyForEvent(ev('v', { metaKey: true })), { kind: 'ignore' });
     assert.deepEqual(keyForEvent(ev('a', { isComposing: true })), { kind: 'ignore' });
     assert.deepEqual(keyForEvent(ev('Process')), { kind: 'ignore' });
+  });
+});
+
+describe('arrowEcho: the echo line for the arrow keys the message box forwarded (0.3.3)', () => {
+  test('(+) one key names it; the same key n times counts it; a mix counts the keys', () => {
+    assert.equal(arrowEcho(['Down'], '%12'), 'Sent Down to %12');
+    assert.equal(arrowEcho(['Up', 'Up', 'Up'], '%12'), 'Sent 3 \u00d7 Up to %12');
+    assert.equal(arrowEcho(['Up', 'Left'], '%12'), 'Sent 2 arrow keys to %12');
+    assert.equal(arrowEcho(['Left', 'Left', 'Right', 'Left', 'Up'], '%7'), 'Sent 5 arrow keys to %7');
+  });
+
+  test('(−) no accepted key says nothing', () => {
+    assert.equal(arrowEcho([], '%12'), '');
   });
 });

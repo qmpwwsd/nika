@@ -52,14 +52,10 @@
     <span class="hide-narrow mono" id="sess-branch" hidden></span>
   </span>
   <span class="sp"></span>
-  <div class="bar-end">
-    <div class="msw" id="mode-switch" role="toolbar" aria-label="Permission mode" aria-describedby="msw-why" hidden></div>
-    <span class="msw-why" id="msw-why" hidden></span>
-    <span class="bar-tools">
-      <a class="btn" id="claude-link" href="https://claude.ai/code/" target="_blank" rel="noopener noreferrer" title="Opens claude.ai in your browser" hidden><svg class="ic" aria-hidden="true"><use href="#i-ext"/></svg><span class="lbl">Open in claude.ai</span><span class="sr-only">(opens your browser)</span></a>
-      <button type="button" class="btn ghost icon" id="kbd-open" aria-label="Keyboard shortcuts" aria-keyshortcuts="Shift+Slash Control+Slash" title="Keyboard shortcuts (?)"><svg class="ic" aria-hidden="true"><use href="#i-kbd"/></svg></button>
-    </span>
-  </div>
+  <span class="bar-tools">
+    <a class="btn" id="claude-link" href="https://claude.ai/code/" target="_blank" rel="noopener noreferrer" title="Opens claude.ai in your browser" hidden><svg class="ic" aria-hidden="true"><use href="#i-ext"/></svg><span class="lbl">Open in claude.ai</span><span class="sr-only">(opens your browser)</span></a>
+    <button type="button" class="btn ghost icon" id="kbd-open" aria-label="Keyboard shortcuts" aria-keyshortcuts="Shift+Slash Control+Slash" title="Keyboard shortcuts (?)"><svg class="ic" aria-hidden="true"><use href="#i-kbd"/></svg></button>
+  </span>
 </header>
 
 <div class="notice" id="notice" role="status" hidden></div>
@@ -135,7 +131,7 @@
         <div class="inbox">
           <button type="button" class="shell" id="shell-toggle" aria-pressed="false" title="Shell mode: send the text as a ! command"><svg class="ic" aria-hidden="true"><use href="#i-shell"/></svg><span>Shell</span><span class="onoff" aria-hidden="true">off</span></button>
           <span class="prompt" aria-hidden="true">&rsaquo;</span>
-          <label for="composer" class="sr-only" id="composer-label">Message to the agent. Enter sends, Shift+Enter adds a line, Escape goes to the pane.</label>
+          <label for="composer" class="sr-only" id="composer-label">Message to the agent. Enter sends, Shift+Enter adds a line. Escape, Control+C and Shift+Tab go to Claude, and so do the arrow keys and Enter when the box is empty. Control+Shift+Tab moves focus back.</label>
           <textarea id="composer" rows="1" spellcheck="false" autocomplete="off" autocapitalize="off" aria-controls="palette" placeholder="Message the agent&hellip;"></textarea>
           <span class="paste-chip" id="paste-chip" hidden><span id="paste-n"></span><button type="button" id="paste-clear">Clear</button></span>
           <button type="button" class="btn ghost icon" id="cmd-btn" aria-label="Commands (/)" title="Commands (/)" aria-disabled="false"><svg class="ic" aria-hidden="true"><use href="#i-cmd"/></svg></button>
@@ -146,20 +142,12 @@
             <ul class="pal-l" id="palette" role="listbox" aria-label="Commands" hidden></ul>
           </div>
         </div>
-        <div class="keys" role="group" aria-label="Send a key to the pane">
-          <span class="lbl" aria-hidden="true">Keys</span>
-          <button type="button" class="key" data-key="Escape" title="Send Escape (interrupts Claude)">Esc</button>
-          <button type="button" class="key" data-key="C-c" title="Send Ctrl-C">Ctrl-C</button>
-          <button type="button" class="key" data-key="Tab">Tab</button>
-          <button type="button" class="key" data-key="BTab" title="Shift-Tab cycles Claude&rsquo;s permission mode">Shift-Tab</button>
-          <button type="button" class="key" data-key="Up" aria-label="Up arrow">&uarr;</button>
-          <button type="button" class="key" data-key="Down" aria-label="Down arrow">&darr;</button>
-          <button type="button" class="key" data-key="Left" aria-label="Left arrow">&larr;</button>
-          <button type="button" class="key" data-key="Right" aria-label="Right arrow">&rarr;</button>
-          <button type="button" class="key" data-key="Enter">Enter</button>
+        <div class="mode-row" id="mode-row" hidden>
+          <span class="mode-lbl" aria-hidden="true">Mode</span>
+          <div class="msw" id="mode-switch" role="toolbar" aria-label="Permission mode" aria-describedby="msw-why" hidden></div>
+          <span class="msw-why" id="msw-why" hidden></span>
         </div>
-        <div class="hintline">
-          <span class="tip"><kbd>Enter</kbd> send</span><span class="tip"><kbd>/</kbd> commands</span><span class="tip"><kbd>Shift</kbd>+<kbd>Enter</kbd> new line</span><span class="tip"><kbd>Esc</kbd> goes to the pane</span><span class="tip"><kbd data-passkey>Ctrl+]</kbd> type into pane</span>
+        <div class="hintline" id="hintline">
           <span class="arg-hint" id="arg-hint" hidden></span>
           <span class="shell-hint" id="shell-hint" hidden>Shell on: Enter runs this through Claude&rsquo;s ! mode, then shell turns off.</span>
           <span class="problem" id="problem" role="alert"></span>

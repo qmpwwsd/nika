@@ -271,14 +271,14 @@ describe('switcherState', () => {
   });
 
   test('(+) a prompt (or status Needs you): reason, no chip, the held segment, all disabled; it wins over working, unconfirmed and unknown', () => {
-    const want = (held) => ({ disabled: true, pressed: null, held, reason: WHY.prompt, chip: null, busy: null });
+    const want = (held, tag) => ({ disabled: true, pressed: null, held, reason: WHY.prompt, chip: null, busy: null, ...(tag ? { tag } : {}) });
     assert.deepEqual(S({ prompt: PROMPT, modeConfirmed: false }), want('plan'));
     assert.deepEqual(S({ status: 'attn' }), want('plan'), 'status Needs you alone is enough');
     assert.deepEqual(S({ prompt: PROMPT, status: 'busy' }), want('plan'), 'over working');
     assert.deepEqual(S({ prompt: PROMPT, mode: 'unknown' }), want(null), 'over unknown: no chip even then');
     assert.deepEqual(S({ prompt: PROMPT, status: 'attn', mode: 'auto', modeConfirmed: false, switching: 'plan' }), want('auto'), 'over switching');
-    assert.deepEqual(S({ prompt: PROMPT, mode: 'dontAsk', modeConfirmed: false }), want(null), 'a held Don\'t ask has no segment');
-    assert.deepEqual(S({ prompt: PROMPT, mode: 'bypassPermissions', modeConfirmed: false }), want(null), 'a held Bypass has no segment');
+    assert.deepEqual(S({ prompt: PROMPT, mode: 'dontAsk', modeConfirmed: false }), want(null, 'dontAsk'), 'a held Don\'t ask has no segment, its tag leads the reason line');
+    assert.deepEqual(S({ prompt: PROMPT, mode: 'bypassPermissions', modeConfirmed: false }), want(null, 'bypassPermissions'), 'a held Bypass has no segment, its tag leads the reason line');
   });
 
   test('(+) Claude working: all disabled, the pressed segment stays pressed', () => {
@@ -324,13 +324,13 @@ describe('switcherState', () => {
     }
   });
 
-  test('(−) Don\'t ask current: all disabled, none pressed, no chip', () => {
-    assert.deepEqual(S({ mode: 'dontAsk' }), { disabled: true, pressed: null, held: null, reason: WHY.dontAsk, chip: null, busy: null });
+  test('(−) Don\'t ask current: all disabled, none pressed, no chip, its tag leads the reason line', () => {
+    assert.deepEqual(S({ mode: 'dontAsk' }), { disabled: true, pressed: null, held: null, reason: WHY.dontAsk, chip: null, busy: null, tag: 'dontAsk' });
   });
 
   test('(−) a Bypass footer: no Bypass segment, the four segments usable, none pressed, no reason', () => {
     const st = S({ mode: 'bypassPermissions' });
-    assert.deepEqual(st, { disabled: false, pressed: null, held: null, reason: '', chip: null, busy: null });
+    assert.deepEqual(st, { disabled: false, pressed: null, held: null, reason: '', chip: null, busy: null, tag: 'bypassPermissions', note: 'Claude runs every tool without asking.' });
     assert.ok(!MODE_TARGETS.includes('bypassPermissions'));
     assert.equal(S({ mode: 'bypassPermissions', status: 'busy' }).disabled, true, 'but not while Claude is working');
   });
@@ -340,6 +340,33 @@ describe('switcherState', () => {
     assert.equal(S({ switching: 'auto', mode: 'acceptEdits' }).pressed, 'acceptEdits');
     assert.equal(S({ switching: 'auto', mode: 'unknown' }).pressed, null, 'a mid-cycle unreadable footer presses nothing');
     assert.equal(S({ switching: 'auto', mode: 'unknown' }).chip, null);
+  });
+
+  test('(+) 0.3.3: a mode with no segment (Bypass, Don\'t ask) carries its tag in every state where the pane is ok: prompt, working, switching, unconfirmed, ready', () => {
+    for (const mode of ['bypassPermissions', 'dontAsk']) {
+      for (const over of [{ prompt: PROMPT }, { status: 'attn' }, { status: 'busy' }, { status: 'ended' }, { switching: 'auto' }, { modeConfirmed: false }, {}]) {
+        assert.equal(S({ mode, ...over }).tag, mode, `${mode} ${JSON.stringify(over)}`);
+      }
+    }
+  });
+
+  test('(−) 0.3.3: no tag for Manual, Accept edits, Plan, Auto or an unknown mode, and none when the pane is off', () => {
+    for (const mode of [...MODE_TARGETS, 'unknown', 'nonsense', '__proto__']) {
+      for (const over of [{ prompt: PROMPT }, { status: 'busy' }, { switching: 'auto' }, { modeConfirmed: false }, {}]) {
+        assert.equal(Object.hasOwn(S({ mode, ...over }), 'tag'), false, `${mode} ${JSON.stringify(over)}`);
+      }
+    }
+    for (const pane of ['gone', 'tmux', 'connecting']) {
+      for (const mode of ['bypassPermissions', 'dontAsk']) assert.equal(Object.hasOwn(S({ pane, mode }), 'tag'), false, `${pane} ${mode}`);
+    }
+  });
+
+  test('(−) 0.3.3: the live-Bypass note exists only for a live Bypass: not while working, held, switching, a prompt, Don\'t ask or any segment mode', () => {
+    assert.equal(S({ mode: 'bypassPermissions' }).note, 'Claude runs every tool without asking.');
+    for (const over of [{ mode: 'bypassPermissions', status: 'busy' }, { mode: 'bypassPermissions', prompt: PROMPT }, { mode: 'bypassPermissions', switching: 'auto' }, { mode: 'bypassPermissions', modeConfirmed: false },
+      { mode: 'dontAsk' }, { mode: 'unknown' }, { mode: 'plan' }, { pane: 'gone', mode: 'bypassPermissions' }]) {
+      assert.equal(Object.hasOwn(S(over), 'note'), false, JSON.stringify(over));
+    }
   });
 
   test('(+) the pane rows come first: gone, tmux error, no capture yet; no segment pressed, no chip', () => {

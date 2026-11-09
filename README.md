@@ -171,9 +171,10 @@ At runtime the app needs WebKitGTK 4.1 and AppIndicator (`libayatana-appindicato
 nika app      # or just: nika
 ```
 
-`nika` opens the app when it is installed and falls back to the browser dashboard. A tray icon appears (no Dock icon on
-macOS). Closing the window only hides it. **Quit nika** in the tray menu stops the app and its private server; your tmux
-sessions and agents keep running. "Start at login" is off by default.
+`nika` opens the app when it is installed and falls back to the browser dashboard. A tray icon appears. On macOS nika is
+also in the Dock and in Cmd+Tab while its window is open; closing the window hides it and leaves only the tray icon. The
+green button, View > Enter Full Screen or Ctrl+Cmd+F makes the window full screen. **Quit nika** in the tray menu stops
+the app and its private server; your tmux sessions and agents keep running. "Start at login" is off by default.
 
 More: [docs/packaging.md](docs/packaging.md) (build details, signing, Linux packages),
 [docs/security.md](docs/security.md) (threat model, residual risks, how to report a vulnerability),
@@ -220,10 +221,10 @@ The browser dashboard at `http://127.0.0.1:3335` shows the same list without any
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/session-dark.png">
-  <img src="docs/screenshots/session-light.png" alt="The session window of an agent: its transcript on the left, a live mirror of its tmux pane on the right, and the message box, permission-mode switcher and quick actions around them.">
+  <img src="docs/screenshots/session-light.png" alt="The session window of an agent: its transcript on the left, a live mirror of its tmux pane on the right, the quick actions above the message box and the permission-mode switcher under it.">
 </picture>
 
-**Session window.** The transcript, a live mirror of the agent's tmux pane, the message box, the permission-mode switcher and the quick actions (Stop, Compact, Clear, Model, Rewind, End session).
+**Session window.** The transcript, a live mirror of the agent's tmux pane, the quick actions (Stop, Compact, Clear, Model, Rewind, End session), the message box and, under it, the permission-mode switcher.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/project-dark.png">
@@ -260,10 +261,16 @@ work on a pane that is a live Claude session (or one nika started) and runs `cla
 screen, so a screen nika does not recognize shows "Mode ?" or leaves a control disabled, with the reason under it.
 
 - **Modes.** A tag in the header, a frame along the top and the message-box edge show Claude's permission mode: Manual,
-  Accept edits, Plan, Auto, Bypass, Don't ask, or "Mode ?". The switcher moves between Manual, Accept edits, Plan and
-  Auto by pressing Shift-Tab for you, only while Claude is waiting for you with no question open; it reads the screen
-  again after every press (at most 6). Bypass and Don't ask are shown, never chosen. While a question covers Claude's
-  footer, the tag shows the last known mode, marked unconfirmed (dashed).
+  Accept edits, Plan, Auto, Bypass, Don't ask, or "Mode ?". The switcher under the message box moves between Manual,
+  Accept edits, Plan and Auto by pressing Shift-Tab for you, only while Claude is waiting for you with no question open;
+  it reads the screen again after every press (at most 6). Bypass and Don't ask are shown, never chosen. While a
+  question covers Claude's footer, the tag shows the last known mode, marked unconfirmed (dashed).
+- **Keys.** With the message box focused, Esc, Ctrl+C and Shift+Tab go to Claude: Esc presses Esc, Ctrl+C stops Claude's
+  turn as Stop does (only while Claude works, and not while text is selected), and Shift+Tab presses Shift-Tab (the next
+  permission mode; it waits until the window has read the pane, and while Claude asks you something). With the box
+  empty, the arrow keys and Enter go to Claude too (its menus and earlier prompts); arrow presses go out in batches of
+  up to 8 keys, each sent at its 8th press or 120 ms after its first. Tab moves focus; Ctrl+Shift+Tab moves it back.
+  Cmd+/ (Ctrl+/ on Linux) lists every shortcut.
 - **Questions.** When Claude asks for permission, one button per option answers it (nika types that option's number),
   plus an Esc button (cancel, same as No). An option that mentions bypass has no button: answer it in the terminal.
 - **Quick actions.** **Stop** (live only while Claude works; it presses Esc, and Esc twice when Claude's input is in
@@ -279,20 +286,24 @@ screen, so a screen nika does not recognize shows "Mode ?" or leaves a control d
   leave your text alone.
 - **Shell.** The Shell toggle sends the line through Claude's `!` mode (Ctrl-U first, which clears the current line of Claude's
   input, then `!`, the line and Enter) and then turns itself off.
-- **Send and Shell wait for a question.** While Claude asks for permission, Send (a line, a paste, or Enter from an empty
-  box) and Shell send nothing and say "Answer the prompt with the buttons above or in the terminal."; your text stays in
-  the box. The Enter and Shift-Tab chips are off too. A question nika cannot parse has no buttons: the line and the note
-  then say to answer in the terminal or turn on Type into pane. A question that mentions bypass anywhere on its screen
-  gets no answer buttons at all, and nika refuses Enter, Shift-Tab, digits and pastes to it: answer in the terminal.
+- **Send and Shell wait for a question.** While Claude asks for permission, Send (a line, a paste, or Enter from an
+  empty box) and Shell send nothing and say "Answer the prompt with the buttons above or in the terminal."; your text
+  stays in the box. Enter and Shift+Tab in the message box send nothing either, once nika has seen the prompt: the
+  window learns of a question from its last read of the pane (up to about a quarter of a second old), so a key pressed
+  in that instant can still reach it, and Shift-Tab there can pick "allow for this session". A question nika cannot
+  parse has no buttons: the line and the note then say to answer in the terminal or turn on Type into pane. A question
+  that mentions bypass anywhere on its screen gets no answer buttons at all, and nika refuses Enter, Shift-Tab, digits
+  and pastes to it: answer in the terminal.
 - **After `/clear`.** When Claude starts a new conversation in the pane, the window follows it to the new session (the
   transcript starts over) instead of showing the ended one.
 - **Commands.** Type `/` at the start of an empty message box, or press Commands, to filter Claude's built-in commands
   and the commands and skills from your Claude config folder, the project and installed plugins, each with a source tag.
   Enter inserts `/name `; a second Enter sends it.
 
-If a screen nika cannot read blocks a control, use the key chips under the message box or your terminal. The routes behind these
-controls and their limits are in [docs/contracts/api-app.md](docs/contracts/api-app.md) (section 3); the threats, in
-[docs/security.md](docs/security.md) (T22, T23, T26).
+If a screen nika cannot read blocks a control, use the keys in the message box (Esc, Shift+Tab, the arrows in an empty
+box), Type into pane, or your terminal. The routes behind these controls and their limits are in
+[docs/contracts/api-app.md](docs/contracts/api-app.md) (section 3); the threats, in [docs/security.md](docs/security.md)
+(T22, T23, T26).
 
 ## Development
 

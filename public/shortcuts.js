@@ -45,7 +45,10 @@ export const SHORTCUTS = [
   row('session', 'app', 'Message box', 'Send', one('Enter'), 'Send the text, then Enter, to Claude (empty box: Enter only)'),
   row('session', 'app', 'Message box', 'New line', { mac: [[SHIFT, 'Enter']], other: [['Shift', 'Enter']] }, 'Start a new line in the message box'),
   row('session', 'app', 'Message box', 'Press Esc in Claude', one('Esc'), "Stop Claude's turn or close Claude's menu (when nothing in nika is open)"),
-  row('session', 'app', 'Message box', 'Interrupt', { mac: [[CTRL, 'C']], other: [['Ctrl', 'C']] }, 'Send Ctrl-C to Claude (when no text is selected)'),
+  row('session', 'app', 'Message box', 'Interrupt', { mac: [[CTRL, 'C']], other: [['Ctrl', 'C']] }, "Stop Claude's turn, as Stop does (while Claude works and no text is selected)"),
+  row('session', 'app', 'Message box', 'Next permission mode', { mac: [[SHIFT, 'Tab']], other: [['Shift', 'Tab']] }, 'Press Shift-Tab in Claude (not before the pane is read, nor while Claude asks you something)'),
+  row('session', 'app', 'Message box', 'Arrow keys in Claude', alts(UP, DOWN, LEFT, RIGHT), "In an empty box: move through Claude's menus and earlier prompts", ' '),
+  row('session', 'app', 'Message box', 'Move focus back', { mac: [[CTRL, SHIFT, 'Tab']], other: [['Ctrl', 'Shift', 'Tab']] }, 'Leave the message box backward (Shift+Tab goes to Claude)'),
   row('session', 'app', 'Message box', 'Commands', one('/'), 'Open the command list (at the start of an empty box)'),
   row('session', 'app', 'Message box', 'Type into the pane', { mac: [[CTRL, ']']], other: [['Ctrl', ']']] }, "Send every key straight to Claude's terminal"),
   row('session', 'app', 'Typing into the pane', 'Stop typing into the pane', { mac: [[CTRL, ']']], other: [['Ctrl', ']']] }, 'Keys go to the message box again'),
@@ -113,6 +116,20 @@ export function helpHint({ mac, singleKey }) {
 
 /** The passthrough key as page copy: the control glyph and "]" on macOS (as the table above), "Ctrl+]" elsewhere. aria-keyshortcuts stays Control+]. */
 export const passKeyLabel = (mac) => (mac ? `${CTRL}]` : 'Ctrl+]');
+
+/**
+ * The tips of the session window's hint line (spec 3.10), in order: [{ keys: caps, text, more }]. `more` tips hide when the composer
+ * is narrow (a container query in session.css). Same glyph rule as passKeyLabel: macOS runs the glyphs together in one cap, Linux joins words with "+".
+ */
+export function hintTips(mac) {
+  const k = (glyphs, words) => (mac ? glyphs : words);
+  return [
+    { keys: ['Esc', k(`${CTRL}C`, 'Ctrl+C'), k(`${SHIFT}Tab`, 'Shift+Tab')], text: 'go to Claude', more: false },
+    { keys: [UP, DOWN, 'Enter'], text: 'too, in an empty box', more: true },
+    { keys: [k(`${CTRL}${SHIFT}Tab`, 'Ctrl+Shift+Tab')], text: 'moves focus back', more: false },
+    { keys: [k(`${CMD}/`, 'Ctrl+/')], text: 'all shortcuts', more: true },
+  ];
+}
 
 // ---- the window --------------------------------------------------------------------------------------------------------------
 
