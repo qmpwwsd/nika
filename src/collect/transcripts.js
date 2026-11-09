@@ -14,8 +14,9 @@ const TAIL_BYTES = 256 * 1024;
 const WIDE_TAIL_BYTES = 2 * 1024 * 1024;
 const IO_LIMIT = 16;
 
-/** path → parsed head and tail. An lru: collect() sizes it to the transcripts on disk (+ CACHE_SLACK); until then it holds 4096. */
+/** Room for transcripts that appear between two collect() passes, above the count on disk. */
 export const CACHE_SLACK = 64;
+/** path → parsed head and tail. An lru: collect() sizes it to the transcripts on disk (+ CACHE_SLACK); until then it holds 4096. */
 export function createTranscriptCache() {
   return lru(4096);
 }

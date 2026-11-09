@@ -17,7 +17,7 @@ import { parseArgs } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { serveApp } from '../src/appio.js';
 import { defaultConfig } from '../src/config.js';
-import { addProject, updateSettings } from '../src/store.js';
+import { addProject, updateProjectConfig, updateSettings } from '../src/store.js';
 import { preview, apply } from '../src/rules.js';
 import { NOW, PROC_START, jsonl } from '../test/helpers.js';
 
@@ -323,10 +323,8 @@ async function buildWorld(root) {
 
   const projects = {};
   for (const name of Object.keys(REGISTERED)) projects[name] = await addProject(path.join(root, name), env);
-  await updateSettings({
-    permissionMode: 'acceptEdits', limits: { maxAgents: 5 }, remoteControl: { enabled: true, prefix: 'acme' },
-    plugins: { perProject: Object.fromEntries(Object.entries(REGISTERED).map(([n, r]) => [projects[n].key, r.plugins])) },
-  }, env);
+  await updateSettings({ permissionMode: 'acceptEdits', limits: { maxAgents: 5 }, remoteControl: { enabled: true, prefix: 'acme' } }, env);
+  for (const [name, r] of Object.entries(REGISTERED)) await updateProjectConfig(projects[name].key, { plugins: r.plugins }, env);
 
   // acme-api already has current rules: written by nika's own apply, so the shot shows a real "Rules current"
   const ctx = { env, now: () => NOW };
