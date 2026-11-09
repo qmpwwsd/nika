@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+Session control (desktop app; the browser dashboard on :3335 stays read-only):
+
+- Permission modes: the session window shows Claude's mode in a tag, a frame along the top and the message-box edge
+  (Manual, Accept edits, Plan, Auto, Bypass, Don't ask, or "Mode ?" when nika cannot read it) and switches between
+  Manual, Accept edits, Plan and Auto. It switches only while Claude waits for you, never to Bypass or Don't ask, and
+  announces each change. While a question covers Claude's footer, the tag shows the last known mode as unconfirmed.
+- Prompt buttons: when Claude asks for permission, the session window shows one button per option and an Esc button
+  (cancel, same as No). An option that mentions bypass has no button; answer it in the terminal.
+- Quick actions: Stop (while Claude works), Compact, Clear (asks first), Model, Rewind and End session. Compact, Clear,
+  Model and End type into Claude's input only when it is empty and press Enter only when it reads exactly that
+  command; otherwise they refuse with "Claude's input has text; clear it first." and leave your draft alone.
+- End session: asks first, presses Esc when Claude is busy or asking (which answers No), then types `/exit`. It never
+  kills the pane. Also in the dashboard row menu.
+- Shell mode: a toggle in the message box that sends your line through Claude's `!` mode, then turns itself off.
+- Command palette: `/` or the Commands button lists Claude's built-in commands and the commands and skills from
+  `~/.claude`, the project and installed plugins, each with a source tag. nika reads only the first 4 KB of each file.
+- Dashboard: rows with a live pane carry the same mode tag, and the row menu has End session.
+- Model dropdowns in Settings, the spawn sheet and the session's Model action list the current models, aliases (`best`,
+  `opusplan`, `opus[1m]`, `sonnet[1m]` and more) and older models, with a Custom ID field.
+- Back is a button with a shortcut (`Cmd+[` on macOS, `Alt+Left` on Linux) in the project view and the session window.
+- Keyboard shortcuts window: `?` or `Cmd+/` (`Ctrl+/` on Linux; the browser dashboard has only that), or the Keyboard
+  shortcuts button. Settings, Appearance has a Single-key shortcuts switch that turns `?` off.
+- Add to Applications (macOS): `nika app install` copies the app into `~/Applications` so Spotlight and Launchpad find
+  it, and the dashboard offers the same once. After `brew upgrade`, `nika`, `nika open` and `nika app` update a copy
+  nika made (the app also offers Update app), and `nika doctor` reports it. nika never writes to `/Applications` and
+  never replaces anything in `~/Applications/nika.app` that is not nika's own bundle.
+- App tier API (never mounted on :3335): `GET /api/app/modes`, `/commands` and `/models`; `POST /api/app/pane/:id/mode`,
+  `/answer`, `/command` and `/end`; `POST /api/app/app-copy`. The capture gains `mode`, `modeConfirmed` and `prompt`,
+  `/api/app/me` gains `appCopy`, and the config gains `ui.singleKeyShortcuts`. `MODEL_ID` accepts `best`, `opusplan` and
+  the `[1m]` suffix.
+- Docs: ADR 0010 (session control through the TUI) and 0011 (app copy), `docs/contracts/claude-tui.md` (the Claude Code
+  screen text nika parses, checked against 2.1.319), threats T22, T23, T26 and T33 in `docs/security.md`.
 - Release notes: `scripts/release-check.mjs` joins the CHANGELOG's hard-wrapped lines, so a draft release no longer
   shows a line break in the middle of each sentence (GitHub renders every newline of a release body as one). Code
   blocks, tables, quotes and list markers are kept; `test/release.test.js` covers both directions.

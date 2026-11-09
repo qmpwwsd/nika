@@ -652,7 +652,7 @@ Monospace textarea with a "›" prompt, grows 1 → 8 lines (20 px each), then s
 
 ### 3.13 Back button (owner request 2026-11-09)
 
-One look on every screen with a back link (project view, Settings, session window): a **ghost button**, not a text link.
+One look on every screen with a back link (project view, session window): a **ghost button**, not a text link.
 `<a class="back" href="…">` with the `i-back` icon and the label (the session window keeps its project name or
 "Dashboard" in `#proj`). Rules live in `public/tokens.css` (both pages load it), and both pages drop their `.crumb` rules.
 
@@ -669,6 +669,10 @@ One look on every screen with a back link (project view, Settings, session windo
 "Alt+ArrowLeft". The session window gains the same shortcut (it had none): ⌘[ / Alt+← follows the button's `href`,
 except while passthrough is on (Linux Alt+← then goes to the pane rules: not on the allow-list, not sent; macOS ⌘[ stays
 an app shortcut, §4.2).
+
+**(0.3 build, 2026-11-09)** Settings has no back link: the screen never had one, and its header holds only the `h1` and
+a one-line note. ⌘[ / Alt+← still goes back to the dashboard from Settings (§4.6 table). So the screens
+with a back link are the project view and the session window.
 
 ### 3.14 Add to Applications notice (owner request 2026-11-09, ADR 0011)
 
@@ -769,8 +773,9 @@ open does nothing; Esc or Close closes it and focus returns to the opener (§4.4
 
 **Button.** Ghost icon button, icon `i-kbd` (a keyboard outline, 16 px, same stroke as the set), `aria-label="Keyboard
 shortcuts"`, `title` "Keyboard shortcuts (?)" (just "(⌘/)" / "(Ctrl+/)" when the setting is off), `aria-keyshortcuts`
-"Shift+Slash Meta+Slash" (Linux "Shift+Slash Control+Slash"). Dashboard: in the sidebar footer, both tiers. Session window:
-in the header bar, at the far right.
+"Shift+Slash Meta+Slash" (Linux "Shift+Slash Control+Slash"). Dashboard: in the sidebar footer on the app tier; the browser tier has no
+sidebar, so there it sits in the dashboard bar (0.3 build, 2026-11-09; its `title` names only Mod+/, because `?` is
+app-tier only). Session window: in the header bar, at the far right.
 
 **Dialog.** Native `<dialog id="kbd-dlg">`, 560 wide (min(560, vw−32)), max height min(720, vh−32), body scrolls. Header:
 `h2` "Keyboard shortcuts" (initial focus, `tabindex="-1"`) and a muted line naming the window ("Dashboard" / "Session
@@ -1288,6 +1293,8 @@ Confirm dialog, 440 px (§3.6), opened from the quick-actions row, the dashboard
 | refused or error | same alert slot, fixed copy (never the server's text); footer Close. 409 `not-idle`: "Claude didn't stop after Esc; use the terminal." · 409 `mode-unknown`: "Claude's screen isn't at the prompt; use the terminal." · 409 `input-not-empty`: "Claude's input has text; clear it first." · 409 `not-at-prompt`: "Claude's input didn't take /exit; nothing was submitted." · 409 `busy-switching`: "Another action is running on this session." · 404: "The session is gone." · 5xx, network error: "nika couldn't reach tmux." |
 
 "Copy resume command" lives in the dashboard row menu (§3.12). The session header has no menu in 0.3, so it is not added there; the body names the row-menu item as is.
+
+**(0.3 build, 2026-11-09)** The dialog's **End session** button is `.btn.danger.fill` (danger, filled: `--danger` fill, `--surface` text, §2.8.2), defined once in `public/tokens.css` for both pages. The quick-actions **End session…** button and the Clear dialog's **Clear conversation** stay plain Danger (§3.1).
 
 ### 9.9 Dashboard row mode tag
 

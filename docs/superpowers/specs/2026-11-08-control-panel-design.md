@@ -217,6 +217,35 @@ end route (+, − ineligible pane, − claude keeps running); commands collector
 − bad name, − markup in description stays text, − `installPath` outside the cache); `MODEL_ID` (+ aliases and `[1m]`,
 − `claude-;rm`, `#`, leading `-`); UI (no HTML sinks, `<select>` present, one CSS class per mode).
 
+### 6.12 0.3 build amendments (2026-11-09)
+
+Where the build differs from §6.1–§6.9, `docs/contracts/api-app.md` §3 is the source of truth:
+
+- **Mode reads (§6.1, §6.10).** The dashboard polls `GET /api/app/modes` (one `{ mode, confirmed }` per eligible pane);
+  `/api/agents` is unchanged. While a prompt or dialog covers the footer, capture and `/modes` show the last mode read
+  from that pane (or, for a pane nika started, its launch mode) with `confirmed: false`. A held value is display
+  only: the mode route reads the footer itself.
+- **Prompt buttons (§6.6).** A button posts `{ n, sig }` to `POST /api/app/pane/:id/answer`, not to the keys route. The
+  route takes a fresh capture, refuses a changed or already answered prompt, and types the digit alone. "Esc = No"
+  stays on the keys route.
+- **End and quick actions (§6.7, §6.8).** End types `/exit` only into an empty input and presses `Enter` only when the
+  input reads exactly that, else it removes its own text and answers 409; it sends no `C-u` first. Compact, Clear and
+  Model use the new `POST /api/app/pane/:id/command` with the same typing rules; Stop and Rewind stay on the keys route.
+- **Bypass (§6.3).** Never a switch target in 0.3 and no Bypass segment (0.4). The cycle may still pass through it when
+  Claude's cycle holds it, which is why a switch runs only while idle.
+- **Switch timing (§6.3).** Built: after each `BTab` the footer is read every 300 ms for up to 1.8 s (`pollMs` and
+  `settleMs` in `src/session-control.js`), not 150 ms for 1.5 s; at most 6 presses. Authoritative: contract §3, mode route.
+- **Command names and bounds (§6.4).** Built: a bare name must match `COMMAND_NAME` (`^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$`,
+  `src/ids.js`), not `^[a-z0-9][a-z0-9:_-]{0,63}$`. Per scan: at most 200 files per folder, 2000 files opened, 1000 entries
+  (built-ins included), cached 10 s per project (`src/collect/commands.js`). Authoritative: contract §3, commands route.
+- **End timing (§6.8).** Built: after `Escape` End waits 1 s once, then takes one fresh capture (no 2 s wait for idle).
+  `C-u` is never sent first: it is sent only to remove nika's own text (after a failed echo or a stray `i`). Authoritative: contract §3,
+  End steps 2–7.
+- **Start orchestrator (§6.9).** One click, no per-start model picker in 0.3 (controller ruling 2026-11-09). It uses the
+  Settings "Orchestrator" model, which is chosen from the model dropdown there (catalog list or Custom ID).
+- **Prompt button label (§6.6).** Built: the cancel button shows the keycap "Esc" followed by "Cancel, same as No", not
+  "Esc = No" (`public/session.js`; spec 9.5 of `docs/design/spec.md`). It sends `Escape` through the keys route.
+
 ## 7. Release 0.4: agent graph and bypass (#4, #2)
 
 ### 7.1 Graph data
