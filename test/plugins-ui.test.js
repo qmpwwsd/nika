@@ -9,8 +9,9 @@ import path from 'node:path';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 import { h, icon } from '../public/dom.js';
-import { spawnLimits } from '../public/dash-model.js';
-import { settingModeEl } from '../public/modes.js';
+import { menuEl } from '../public/ui.js';
+import { spawnLimits, effectiveAgents } from '../public/dash-model.js';
+import { settingModeEl, MODE_META } from '../public/modes.js';
 import { pluginView, pluginSave, sortIds, countText, filterNote } from '../public/plugin-view.js';
 import { fillModelSelect, CUSTOM, MODEL_ID, MODEL_HINT, ROLES, ROLE_LABEL, modelLabel, fillRoleOverride, effectiveRoleModels } from '../public/models-ui.js';
 import { compactPreview } from '../public/ctx.js';
@@ -171,7 +172,7 @@ function projectRig({ installed = [A, B, C, D], savedList = [], pluginsStatus = 
     render: (force) => renders.push(force),
     setTimeout: (fn, ms) => { timers.push({ fn, ms, done: false }); return timers.length - 1; },
     clearTimeout: (id) => { if (timers[id]) timers[id].done = true; },
-    pluginView, pluginSave, sortIds, countText, filterNote, spawnLimits, settingModeEl,
+    menuEl, pluginView, pluginSave, sortIds, countText, filterNote, spawnLimits, effectiveAgents, settingModeEl, MODE_META,
     ROLES, ROLE_LABEL, modelLabel, fillRoleOverride, effectiveRoleModels,
     rulesEl: () => new El('span'),
   };

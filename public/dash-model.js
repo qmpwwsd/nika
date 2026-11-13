@@ -221,6 +221,19 @@ export function treeRows(list, { collapsed = new Set(), filtering = false } = {}
 export const hasTree = (rows) => rows.some((r) => r.kids > 0 || r.orphan);
 
 /**
+ * The permission mode, pane placement and agent limit nika uses for one project: its own value in `settings.perProject[key]`, else
+ * Settings' (the page's copy of src/store.js effectiveAgents). Before Settings has loaded: the defaults.
+ */
+export function effectiveAgents(settings, key) {
+  const own = settings?.perProject?.[key] ?? {};
+  return {
+    permissionMode: own.permissionMode ?? settings?.permissionMode ?? 'default',
+    panePlacement: own.panePlacement ?? settings?.panePlacement ?? 'beside',
+    maxAgents: own.maxAgents ?? settings?.limits?.maxAgents ?? 3,
+  };
+}
+
+/**
  * The counts behind the spawn sheet and its openers: `{ parent: { running, max }, project: { running, cap } }`. The live set is the
  * agents and sub-orchestrators of `g` (the main orchestrator is not in it). The parent bucket holds the live ones under the pane
  * `parentPane` (by pane id or by the session id that pane runs); with no pane it is "you": those with no parent at all.

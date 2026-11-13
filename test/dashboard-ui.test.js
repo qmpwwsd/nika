@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { MODE_META, parseModes, modesAfter, rowMode, canEndRow } from '../public/modes.js';
 import { CUSTOM, ROLE_LABEL, fillModelSelect, effectiveRoleModels } from '../public/models-ui.js';
 import { h } from '../public/dom.js';
-import { statusOf, spawnLimits } from '../public/dash-model.js';
+import { statusOf, spawnLimits, effectiveAgents } from '../public/dash-model.js';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const read = (f) => fs.readFileSync(path.join(PUBLIC, f), 'utf8');
@@ -639,7 +639,7 @@ describe('spawn sheet model picker (project.js openSpawn and spawnModel)', () =>
     const nodes = new Map();
     const node = (sel) => { if (!nodes.has(sel)) nodes.set(sel, new FNode(sel === '#sp-model' ? 'select' : 'input')); return nodes.get(sel); };
     const ctx = {
-      $: node, h, state: { models: catalog, settings }, fillModelSelect, CUSTOM, ROLE_LABEL, effectiveRoleModels, spawnLimits,
+      $: node, h, state: { models: catalog, settings }, fillModelSelect, CUSTOM, ROLE_LABEL, effectiveRoleModels, spawnLimits, effectiveAgents,
       toast() {}, fieldError() {}, openDialog() {}, syncRadioCards() {}, TextEncoder,
     };
     const api = vm.runInNewContext(`${PROJECT_MOD}\n({ openSpawn, spawnModel, spawnPrefs })`, ctx);

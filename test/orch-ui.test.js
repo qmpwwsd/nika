@@ -11,8 +11,8 @@ import { fileURLToPath } from 'node:url';
 import { El, installDom, withClass, focus } from './fake-dom.js';
 import { h, icon, roleTagEl, ctxEl } from '../public/dom.js';
 import { menuEl, sessionHref } from '../public/ui.js';
-import { orchState, roleTag, savedPick, otherRunning, parentOf, spawnLimits } from '../public/dash-model.js';
-import { parseModes, modesAfter, settingModeEl } from '../public/modes.js';
+import { orchState, roleTag, savedPick, otherRunning, parentOf, spawnLimits, effectiveAgents } from '../public/dash-model.js';
+import { parseModes, modesAfter, settingModeEl, MODE_META } from '../public/modes.js';
 import { pluginView, pluginSave, sortIds, countText, filterNote } from '../public/plugin-view.js';
 import { ROLES, ROLE_LABEL, modelLabel, fillRoleOverride, effectiveRoleModels } from '../public/models-ui.js';
 
@@ -255,7 +255,7 @@ function flowRig({ project = {}, agents = [], answers = {}, me = { tmux: true, c
     return typeof a === 'function' ? a(opts) : a;
   };
   const ctx = {
-    h, icon, $: node, state, hooks: {}, appFetch, menuEl, sessionHref, roleTag, orchState, savedPick, otherRunning, spawnLimits, parseModes, modesAfter, settingModeEl,
+    h, icon, $: node, state, hooks: {}, appFetch, menuEl, sessionHref, roleTag, orchState, savedPick, otherRunning, spawnLimits, effectiveAgents, parseModes, modesAfter, settingModeEl, MODE_META,
     pluginView, pluginSave, sortIds, countText, filterNote, ROLES, ROLE_LABEL, modelLabel, fillRoleOverride, effectiveRoleModels,
     location: { set href(v) { navs.push(v); }, get href() { return ''; }, hash: '' },
     document: { title: '' },

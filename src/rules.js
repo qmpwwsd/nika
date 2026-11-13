@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { openRegular, isRealDir } from './fsafe.js';
 import { ensureDir, writeAtomic, checkComponents, backupFile, pruneBackups } from './fwrite.js';
 import { configDir, backupsDir } from './paths.js';
-import { loadConfig, keyFor, effectiveModels } from './store.js';
+import { loadConfig, keyFor, effectiveModels, effectiveAgents } from './store.js';
 import { PROJECT_KEY } from './ids.js';
 import { clean } from './text.js';
 import { unifiedDiff } from './diff.js';
@@ -117,11 +117,12 @@ export function render(template, values) {
 
 function valuesFor(config, project) {
   const rc = config.remoteControl;
+  const agents = effectiveAgents(config, project.key); // the project's own values, else Settings'
   return {
     models: effectiveModels(config, project.key),
-    panePlacement: config.panePlacement,
-    limits: { maxAgents: config.limits.maxAgents },
-    permissionMode: config.permissionMode,
+    panePlacement: agents.panePlacement,
+    limits: { maxAgents: agents.maxAgents },
+    permissionMode: agents.permissionMode,
     remoteControl: !rc.enabled ? 'off' : `on (name prefix: ${rc.prefix || 'the project name'})`,
     plugins: (config.perProject[project.key]?.plugins ?? []).map((p) => `\`${p}\``).join(', ') || 'none',
   };

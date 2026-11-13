@@ -8,7 +8,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn as nodeSpawn } from 'node:child_process';
-import { loadConfig } from './store.js';
+import { loadConfig, effectiveAgents } from './store.js';
 import { reportsDir } from './paths.js';
 import { ensureDir, writeAtomic } from './fwrite.js';
 import { openRegular, readAt, readHead } from './fsafe.js';
@@ -214,11 +214,13 @@ async function doSpawn(v, project, config, ctx) {
   const live = liveAgents(ctx, project.key, tags, panes);
   if (live.some((e) => e.name === v.name)) return fail(409, 'conflict', `agent ${v.name} is already running`);
   // the project's cap first, then the parent's own: sub-orchestrators and agents count the same
-  const max = config.limits.maxAgents;
+  const { maxAgents: max, panePlacement, permissionMode: defaultMode } = effectiveAgents(config, project.key);
   const cap = Math.min(3 * max, 24);
   const own = live.filter((e) => e.parent === who.parent).length;
   const name = clean(project.name, 60) ?? 'This project';
-  const more = 'Wait for one to finish, or raise “Agents per orchestrator” in Settings.';
+  const more = config.perProject[project.key]?.maxAgents === undefined
+    ? 'Wait for one to finish, or raise “Agents per orchestrator” in Settings.'
+    : 'Wait for one to finish, or raise “Per orchestrator” on this project’s New agents card.'; // the project's own limit beats Settings'
   if (live.length >= cap) return limitFail('project', live.length, cap, `${name} already runs ${live.length} of ${cap} agents, the most one project can run. Wait for one to finish.`);
   if (own >= max) {
     return limitFail('parent', own, max, who.parent
@@ -229,7 +231,7 @@ async function doSpawn(v, project, config, ctx) {
   // Placement (beside, under the last agent) applies only when the session exists; otherwise the pane is the session's first.
   let target = ['-h', '-t', `=${session}:`];
   if (underPane) target = ['-v', '-t', v.under];
-  else if (exists && config.panePlacement === 'under-last') {
+  else if (exists && panePlacement === 'under-last') {
     const last = await lastPane(dir);
     if (last && panes.get(last)?.session === session) target = ['-v', '-t', last];
   }
@@ -239,7 +241,7 @@ async function doSpawn(v, project, config, ctx) {
   const rc = prefix ? reduceRc(`${reduceRc(prefix, project.key)}-${v.name}`, '', true) : '';
   await ensureDir(dir);
   await writeAtomic(dir, `${v.name}.brief.md`, v.brief);
-  const permissionMode = v.permissionMode ?? config.permissionMode;
+  const permissionMode = v.permissionMode ?? defaultMode;
   const role = v.role === 'orchestrator' ? SUB_ROLE : 'agent';
   // auto-compact (ADR 0014): decided now from this spawn's own model; _run-agent re-checks it and turns it into the env of claude
   const launch = compactLaunch(v.model, config.compaction);
@@ -289,7 +291,7 @@ export async function spawnAgent(req, ctx) {
   const { config } = await loadConfig(ctx.env);
   const project = config.projects.find((p) => p.key === parsed.value.project);
   if (!project) return fail(404, 'not_found', 'project is not registered');
-  if (config.permissionMode === 'bypassPermissions') return fail(400, 'invalid', 'bypassPermissions is never allowed');
+  if (effectiveAgents(config, project.key).permissionMode === 'bypassPermissions') return fail(400, 'invalid', 'bypassPermissions is never allowed');
   try {
     return await serial(project.key, () => doSpawn(parsed.value, project, config, ctx));
   } catch (err) {

@@ -172,6 +172,52 @@ describe('built-in template', () => {
     await updateSettings({ models: { scout: 'haiku' } }, w.env);
     assert.match(entry(await prev(w), 'rules/orchestration.md').diff, /^\+\| Scout \| `haiku` \|/m);
   });
+
+  test('(+) the project\'s permission mode, pane placement and agent limit are rendered in place of Settings\'; the rules go out of date with a change and back with a clear', async () => {
+    const w = await world();
+    await updateSettings({ limits: { maxAgents: 5 }, panePlacement: 'under-last', permissionMode: 'plan' }, w.env);
+    await go(w, await prev(w));
+    assert.equal((await rulesState(w.project)).state, 'nika');
+    await updateProjectConfig(w.project.key, { permissionMode: 'acceptEdits' }, w.env);
+    await updateProjectConfig(w.project.key, { panePlacement: 'beside' }, w.env);
+    await updateProjectConfig(w.project.key, { maxAgents: 2 }, w.env);
+    const body = await prev(w);
+    const rules = entry(body, 'rules/orchestration.md');
+    assert.equal(rules.action, 'update', 'saved values make the applied file out of date');
+    assert.match(rules.diff, /^-- Permission mode for spawned agents: `plan`\./m);
+    assert.match(rules.diff, /^\+- Permission mode for spawned agents: `acceptEdits`\./m);
+    await go(w, body);
+    const text = get(w, 'rules/orchestration.md');
+    assert.match(text, /Pane placement: `beside`/);
+    assert.match(text, /At most 2 spawned agents/);
+    assert.match(text, /Permission mode for spawned agents: `acceptEdits`\./);
+    assert.doesNotMatch(text, /Pane placement: `under-last`|At most 5 spawned|mode for spawned agents: `plan`/, 'no Settings value is left in the file');
+    assert.equal((await rulesState(w.project)).state, 'nika');
+    await updateProjectConfig(w.project.key, { maxAgents: null }, w.env);
+    await updateProjectConfig(w.project.key, { permissionMode: null }, w.env);
+    const back = entry(await prev(w), 'rules/orchestration.md');
+    assert.equal(back.action, 'update', 'clearing is a change too');
+    assert.match(back.diff, /^\+- At most 5 spawned agents/m);
+    assert.match(back.diff, /^\+- Permission mode for spawned agents: `plan`\./m);
+  });
+
+  test('(−) another project\'s values do not leak into this one; a Settings change still shows where nothing is overridden', async () => {
+    const w = await world();
+    const other = await addProject(fs.mkdtempSync(path.join(w.base, 'other-')), w.env);
+    await updateProjectConfig(other.key, { permissionMode: 'dontAsk' }, w.env);
+    await updateProjectConfig(other.key, { panePlacement: 'under-last' }, w.env);
+    await updateProjectConfig(other.key, { maxAgents: 7 }, w.env);
+    await go(w, await prev(w));
+    const text = get(w, 'rules/orchestration.md');
+    assert.match(text, /Pane placement: `beside`/);
+    assert.match(text, /At most 3 spawned agents/);
+    assert.match(text, /Permission mode for spawned agents: `default`\./);
+    await updateProjectConfig(w.project.key, { maxAgents: 4 }, w.env);
+    await updateSettings({ permissionMode: 'plan', limits: { maxAgents: 6 } }, w.env);
+    const diff = entry(await prev(w), 'rules/orchestration.md').diff;
+    assert.match(diff, /^\+- Permission mode for spawned agents: `plan`\./m, 'Settings shows through');
+    assert.match(diff, /^\+- At most 4 spawned agents/m, 'the project\'s own limit still wins over a changed Settings one');
+  });
 });
 
 describe('rulesState', () => {

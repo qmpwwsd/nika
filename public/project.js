@@ -6,13 +6,13 @@ import { h, icon } from './dom.js';
 import {
   $, state, hooks, RX, save, toast, announce, errText, copyText, setBusy, fieldError, openDialog, rulesEl, sessionHref, menuEl, syncRadioCards,
 } from './ui.js';
-import { parseModes, modesAfter, settingModeEl } from './modes.js';
+import { parseModes, modesAfter, settingModeEl, MODE_META } from './modes.js';
 import { copyBanner, copyErrorText, copyToast } from './app-copy.js';
 import {
   CUSTOM, MODEL_ID, MODEL_HINT, ROLES, ROLE_LABEL, modelLabel, fillModelSelect, fillRoleOverride, effectiveRoleModels,
 } from './models-ui.js';
 import { buildGroups, agentNodes, swap, interacting, render } from './app.js';
-import { DETECTED_MAX, sidebarModel, orchState, savedPick, otherRunning, roleTag, spawnLimits, resetEndedState } from './dash-model.js';
+import { DETECTED_MAX, sidebarModel, orchState, savedPick, otherRunning, roleTag, spawnLimits, effectiveAgents, resetEndedState } from './dash-model.js';
 import { pluginView, pluginSave, sortIds, countText, filterNote } from './plugin-view.js';
 
 const PERM_LABEL = {
@@ -112,26 +112,31 @@ function blockedReason() {
 
 /* ---------- limits (design 0.4 section 2.4): the page counts from its snapshot, the server's count is the one that decides ---------- */
 const LIMIT_TAIL = 'Wait for one to finish, or raise “Agents per orchestrator” in Settings.';
+const LIMIT_TAIL_OWN = 'Wait for one to finish, or raise “Per orchestrator” on this project’s New agents card.'; // the project sets its own limit: Settings would not help
 
-/** The counts for a spawn under the pane `parentPane` (null = you): `{ max, parent: { running, max }, project: { running, cap } }`. */
+/** The counts for a spawn under the pane `parentPane` (null = you): `{ max, parent: { running, max }, project: { running, cap } }`; `max` is the project's own limit, else Settings'. */
 function limitsOf(g, parentPane) {
-  const max = state.settings?.limits?.maxAgents ?? 3;
+  const max = effectiveAgents(state.settings, g.project?.key).maxAgents;
   return { max, ...spawnLimits(g, parentPane, max) };
 }
 
-/** The fixed copy of a limit, by scope; used for a disabled opener and for the server's 409 `limit`. `parent` = the parent's name, or null for "you". */
-function limitCopy({ scope, parent, project, running, max }) {
+/** True when the project of group `g` sets its own agent limit (so the limit copy points at its card, not at Settings). */
+const ownLimit = (g) => state.settings?.perProject?.[g.project?.key]?.maxAgents !== undefined;
+
+/** The fixed copy of a limit, by scope; used for a disabled opener and for the server's 409 `limit`. `parent` = the parent's name, or null for "you". `own`: the project sets its own limit. */
+function limitCopy({ scope, parent, project, running, max, own = false }) {
   if (scope === 'project') return `${project} already runs ${running} of ${max} agents, the most one project can run. Wait for one to finish.`;
+  const tail = own ? LIMIT_TAIL_OWN : LIMIT_TAIL;
   return parent
-    ? `${parent} already runs ${running} of ${max} agents of its own. ${LIMIT_TAIL}`
-    : `You already run ${running} of ${max} agents spawned from nika in ${project}. ${LIMIT_TAIL}`;
+    ? `${parent} already runs ${running} of ${max} agents of its own. ${tail}`
+    : `You already run ${running} of ${max} agents spawned from nika in ${project}. ${tail}`;
 }
 
 /** Why no spawn can start under `parent` (an agent row, or null for you) right now, or null: the parent's limit, then the project's. */
 function limitReason(g, parent) {
   const l = limitsOf(g, parent?.pane?.id ?? null);
   const project = trunc(g.label, 40);
-  if (l.parent.running >= l.parent.max) return limitCopy({ scope: 'parent', parent: parent && trunc(parent.name, 40), project, running: l.parent.running, max: l.parent.max });
+  if (l.parent.running >= l.parent.max) return limitCopy({ scope: 'parent', parent: parent && trunc(parent.name, 40), project, running: l.parent.running, max: l.parent.max, own: ownLimit(g) });
   if (l.project.running >= l.project.cap) return limitCopy({ scope: 'project', project, running: l.project.running, max: l.project.cap });
   return null;
 }
@@ -548,12 +553,69 @@ function limitNote(lim) {
   return text ? h('p', { class: 'limit', id: 'limit-note' }, icon('warn'), h('span', { text })) : null;
 }
 
+/* ---------- New agents: this project's permission mode, pane and agent limit, or "Use Settings" (0.4.0) ---------- */
+const modeWord = (m) => (Object.hasOwn(MODE_META, m) ? MODE_META[m].label : MODE_META.unknown.label);
+// PERM_LABEL has every mode Settings can hold and never the bypass mode, so no menu can offer it
+const AGENT_ITEMS = {
+  permissionMode: { label: 'Permission mode', choices: Object.keys(PERM_LABEL), word: (m) => (m === 'default' ? 'Default' : modeWord(m)) },
+  panePlacement: { label: 'Pane', choices: Object.keys(PLACE_LABEL), word: (v) => PLACE_LABEL[v] ?? v },
+  maxAgents: { label: 'Per orchestrator', choices: [1, 2, 3, 4, 5, 6, 7, 8], word: (n) => `${n} at once` },
+};
+const settingsValue = (s, field) => (field === 'maxAgents' ? s.limits?.maxAgents ?? 3 : s[field]);
+const agentSaving = new Set(); // "<project key>:<field>" of the saves on the way: a second pick of the same item is ignored until the first answers
+
+/** One New agents value: a menu button with the current value, and "from Settings" after it while the project has no value of its own. */
+function agentItemEl(p, field, s, mine) {
+  const it = AGENT_ITEMS[field];
+  const inherited = mine[field] === undefined;
+  const fallback = settingsValue(s, field);
+  const now = inherited ? fallback : mine[field];
+  const label = `${it.label} for ${trunc(p.name, 40)}: ${it.word(now)}, ${inherited ? 'from Settings' : 'set for this project'}`;
+  // a mode is always shown as its own chip (colour, icon, word), in the menu as on the button; the words read the same either way
+  const chip = field === 'permissionMode' ? (v) => settingModeEl(v) : null;
+  const items = [
+    { text: chip ? `Use Settings: ${it.word(fallback)}` : `Use Settings (${it.word(fallback)})`, content: chip ? ['Use Settings', h('span', { class: 'sr-only', text: ': ' }), chip(fallback)] : undefined, current: inherited, fk: `agent-${field}:settings`, run: () => saveAgentItem(p, field, null) },
+    ...it.choices.map((c, i) => ({ text: it.word(c), content: chip ? chip(c) : undefined, current: !inherited && mine[field] === c, group: i === 0, fk: `agent-${field}:${c}`, run: () => saveAgentItem(p, field, c) })),
+  ];
+  return [
+    menuEl(label, items, `agent-${field}`, [field === 'permissionMode' ? settingModeEl(now) : it.word(now), icon('chev')]),
+    inherited ? h('span', { class: 'muted from-set', text: 'from Settings' }) : null,
+  ];
+}
+
+/** Saves one field (a value, or null for "Use Settings"); a refusal or a lost connection is an error toast and the old value stays. */
+async function saveAgentItem(p, field, value) {
+  const id = `${p.key}:${field}`;
+  if (agentSaving.has(id)) return;
+  agentSaving.add(id);
+  let r = null;
+  try {
+    r = await appFetch(`/api/app/projects/${encodeURIComponent(p.key)}/config`, { method: 'PUT', json: { [field]: value } });
+  } catch {
+    // handled below as "could not reach"
+  }
+  agentSaving.delete(id);
+  if (r?.status !== 200) {
+    toast(r ? errText(r) : 'Could not reach the nika server.', { kind: 'error' });
+    return;
+  }
+  const saved = r.body?.[field] ?? value;
+  rememberField(p.key, field, saved);
+  render(true);
+  const it = AGENT_ITEMS[field];
+  const name = trunc(p.name, 40);
+  const rules = (state.projects?.find((x) => x.key === p.key) ?? p).rules?.state; // a rules file nika wrote lists these values, and only Apply updates it
+  const tail = ` Sessions nika starts from now on use it.${rules === 'nika' || rules === 'outdated' ? ' Apply rules to update rules/orchestration.md.' : ''}`;
+  toast(saved === null ? `${it.label} for ${name} now follows Settings: ${it.word(settingsValue(state.settings ?? {}, field))}.${tail}` : `${it.label} saved for ${name}: ${it.word(saved)}.${tail}`);
+}
+
 function setupCards(p, g) {
   const rs = p.rules?.state ?? 'none';
   const picked = sortIds(state.settings?.perProject?.[p.key]?.plugins ?? []);
   const lim = limitsOf(g, null);
   const s = state.settings;
-  const own = s?.perProject?.[p.key]?.models ?? {};
+  const mine = s?.perProject?.[p.key] ?? {}; // everything this project sets itself
+  const own = mine.models ?? {};
   const set = ROLES.filter((r) => own[r]); // only the roles this project sets; the rest use Settings
   const modelRow = (r, id) => {
     const label = modelLabel(id, state.models);
@@ -591,9 +653,9 @@ function setupCards(p, g) {
     h('div', { class: 'card' },
       h('h2', { text: 'New agents' }),
       h('dl', { class: 'kv' },
-        h('dt', { text: 'Permission mode' }), h('dd', null, s ? settingModeEl(s.permissionMode) : '–'),
-        h('dt', { text: 'Pane' }), h('dd', { text: s ? PLACE_LABEL[s.panePlacement] ?? s.panePlacement : '–' }),
-        h('dt', { text: 'Per orchestrator' }), h('dd', { class: 'num', text: `${lim.max} at once` }),
+        h('dt', { text: 'Permission mode' }), h('dd', null, s ? agentItemEl(p, 'permissionMode', s, mine) : '–'),
+        h('dt', { text: 'Pane' }), h('dd', null, s ? agentItemEl(p, 'panePlacement', s, mine) : '–'),
+        h('dt', { text: 'Per orchestrator' }), h('dd', { class: 'num' }, s ? agentItemEl(p, 'maxAgents', s, mine) : `${lim.max} at once`),
         h('dt', { text: 'Spawned from nika' }), h('dd', { class: 'num', text: `${lim.parent.running} of ${lim.max}` }),
         h('dt', { text: 'This project' }), h('dd', { class: 'num', text: `${lim.project.running} of ${lim.project.cap} running` })),
       limitNote(lim)),
@@ -734,13 +796,13 @@ function plugBusy(on) {
   setBusy($('#pl-save'), on, 'Saving…');
 }
 
-/** The settings copy of one project's saved `field` (a plugin list or a models map), so the card is right before the next load. Empty drops it (and the entry when it was the only key). */
+/** The settings copy of one project's saved `field` (a plugin list, a models map, or a mode, placement or limit), so the card is right before the next load. Empty or null drops it (and the entry when it was the only key). */
 function rememberField(key, field, value) {
   const s = state.settings;
   if (!s) return;
   const map = { ...s.perProject };
   const entry = { ...map[key], [field]: value };
-  if (!Object.keys(value).length) delete entry[field];
+  if (value === null || (typeof value === 'object' && !Object.keys(value).length)) delete entry[field];
   if (Object.keys(entry).length) map[key] = entry;
   else delete map[key];
   s.perProject = map;
@@ -1061,6 +1123,7 @@ function openSpawn(g, { parent = null, role = 'agent' } = {}) {
   Object.assign(sp, { group: g, parent, role: start, touched: false });
   const pref = spawnPrefs.get(`${g.project.key}:${start}`) ?? {};
   const s = state.settings;
+  const eff = effectiveAgents(s, g.project.key); // this project's own values, else Settings'
   const l = limitsOf(g, parent?.pane?.id ?? null);
   $('#sp-d').textContent = `In ${g.label}. Opens a new tmux pane and starts Claude Code with your brief.`;
   $('#sp-parent').textContent = parent ? `${parent.name} · ${parent.role === 'sub-orchestrator' ? 'sub-orchestrator' : 'orchestrator'} · pane ${parent.pane.id}` : 'None. You start it from nika.';
@@ -1083,14 +1146,15 @@ function openSpawn(g, { parent = null, role = 'agent' } = {}) {
   fillSpawnModel(start, pref.model);
   paintRole(start);
   $('#sp-perm').replaceChildren(
-    h('option', { value: '', text: `Use my setting: ${s ? PERM_LABEL[s.permissionMode] ?? s.permissionMode : 'default'}` }),
+    h('option', { value: '', text: `Use this project's setting: ${s ? PERM_LABEL[eff.permissionMode] ?? eff.permissionMode : 'default'}` }),
     ...Object.entries(PERM_LABEL).map(([v, t]) => h('option', { value: v, text: t })));
   $('#sp-perm').value = pref.perm ?? '';
   const under = g.agents.filter((a) => a.live && a.role === 'agent' && a.pane).sort((a, b) => (b.lastActivity ?? 0) - (a.lastActivity ?? 0))[0];
   sp.under = under?.pane.id ?? null;
-  const mode = s?.panePlacement ?? 'beside';
+  const mode = eff.panePlacement;
+  const ownPlace = s?.perProject?.[g.project.key]?.panePlacement !== undefined;
   $('#sp-place').replaceChildren(...[
-    h('label', { class: 'check' }, h('input', { type: 'radio', name: 'sp-place', value: 'settings' }), `${PLACE_LABEL[mode] ?? 'Beside'} (from Settings)`),
+    h('label', { class: 'check' }, h('input', { type: 'radio', name: 'sp-place', value: 'settings' }), `${PLACE_LABEL[mode] ?? 'Beside'} (${ownPlace ? 'set for this project' : 'from Settings'})`),
     under ? h('label', { class: 'check' }, h('input', { type: 'radio', name: 'sp-place', value: 'under' }), `Under ${under.name} (${under.pane.id})`) : null,
   ].filter(Boolean)); // replaceChildren would turn null into the text "null"
   const want = pref.place === 'under' && under ? 'under' : 'settings';
@@ -1202,7 +1266,7 @@ function spawnFailure(r, req, g, parent) {
   const b = r.body ?? {};
   const who = parent ? trunc(parent.name, 40) : null;
   if (r.status === 409 && b.error === 'limit' && (b.scope === 'parent' || b.scope === 'project') && Number.isInteger(b.running) && Number.isInteger(b.max)) {
-    return limitCopy({ scope: b.scope, parent: who, project: trunc(g.label, 40), running: b.running, max: b.max });
+    return limitCopy({ scope: b.scope, parent: who, project: trunc(g.label, 40), running: b.running, max: b.max, own: ownLimit(g) });
   }
   if (r.status === 409 && b.error === 'depth' && req.role === 'orchestrator') {
     return `${who ?? 'That session'} can't start a sub-orchestrator. Only the main orchestrator can: nika allows three levels (orchestrator, sub-orchestrators, their agents). Nothing was started.`;

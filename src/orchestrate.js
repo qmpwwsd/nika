@@ -2,7 +2,7 @@
 // Leaf module: the router and the CLI call startOrchestrator() with injected deps; every subprocess goes through
 // ctx.exec (execFile, fixed argv arrays, never a shell). src/spawn.js reuses the helpers exported here.
 import crypto from 'node:crypto';
-import { loadConfig, setOrchestrator, effectiveModels } from './store.js';
+import { loadConfig, setOrchestrator, effectiveModels, effectiveAgents } from './store.js';
 import { compactLaunch, WINDOW_ENV, PCT_ENV } from './compact.js';
 import { clean } from './text.js';
 import { PROJECT_KEY, UUID, PANE_ID, TMUX_SESSION, RC_PREFIX, RC_NAME, CLAUDE_COMMAND } from './ids.js';
@@ -121,17 +121,19 @@ export function pickState(project, id, hit) {
 /**
  * claude's own arguments for a project's orchestrator (everything after the binary): the one place that builds them. With
  * `resume` the saved session `sessionId` continues (`--resume`); otherwise `sessionId` names the new session (`--session-id`).
- * `--model` is the project's own orchestrator model, else Settings' (`effectiveModels`). Throws EINVAL for an id that is not a
- * UUID (it becomes one argv element and must never read as a flag) and for bypassPermissions (rules constraint 12).
+ * `--model` is the project's own orchestrator model, else Settings' (`effectiveModels`); the permission mode likewise
+ * (`effectiveAgents`). Throws EINVAL for an id that is not a UUID (it becomes one argv element and must never read as a flag) and
+ * for bypassPermissions (rules constraint 12).
  */
 export function launchArgv(config, project, { sessionId, resume = false }) {
   const invalid = (message) => Object.assign(new Error(message), { code: 'EINVAL' });
   if (typeof sessionId !== 'string' || !UUID.test(sessionId)) throw invalid('session id must be a UUID');
-  if (config.permissionMode === 'bypassPermissions') throw invalid('bypassPermissions is never allowed');
+  const { permissionMode } = effectiveAgents(config, project.key);
+  if (permissionMode === 'bypassPermissions') throw invalid('bypassPermissions is never allowed');
   const session = sessionNameFor(project);
   const rc = config.remoteControl.enabled ? reduceRc(config.remoteControl.prefix || session, project.key, true) : null;
   return [
-    resume ? '--resume' : '--session-id', sessionId, '--model', effectiveModels(config, project.key).orchestrator, ...permissionFlags(config.permissionMode),
+    resume ? '--resume' : '--session-id', sessionId, '--model', effectiveModels(config, project.key).orchestrator, ...permissionFlags(permissionMode),
     '-n', session, ...(rc ? [`--remote-control=${rc}`] : []),
   ];
 }
@@ -208,7 +210,8 @@ export async function startOrchestrator(projectKey, ctx) {
   const { config } = await loadConfig(ctx.env);
   const project = config.projects.find((p) => p.key === projectKey);
   if (!project) return fail(404, 'not_found', 'project is not registered');
-  if (config.permissionMode === 'bypassPermissions') return fail(400, 'invalid', 'bypassPermissions is never allowed');
+  const { permissionMode } = effectiveAgents(config, project.key);
+  if (permissionMode === 'bypassPermissions') return fail(400, 'invalid', 'bypassPermissions is never allowed');
 
   // the saved orchestrator: a lookup that fails proves nothing (never "gone"), so it ends the request without forgetting anything
   const pick = config.perProject[projectKey]?.orchestratorSessionId ?? null;
@@ -252,7 +255,7 @@ export async function startOrchestrator(projectKey, ctx) {
     if (!exists) await unsetCompactEnv(ctx, session, run); // `new-session -e` is session-wide; new-window -e is this pane only
     const pane = String(stdout).trim();
     if (!PANE_ID.test(pane)) return fail(502, 'tmux_failed', 'tmux did not return a pane id');
-    ctx.started?.set(pane, { key: projectKey, name: 'orchestrator', sessionId, role: 'orchestrator', mode: launchMode(config.permissionMode) });
+    ctx.started?.set(pane, { key: projectKey, name: 'orchestrator', sessionId, role: 'orchestrator', mode: launchMode(permissionMode) });
     // tagged before the wait, so a second Start during it finds this orchestrator instead of opening another window
     await tagPane(ctx, pane, 'orchestrator', `${projectKey}/orchestrator`, 1);
     const exited = await earlyExit(ctx, pane, resume ? sessionId : null);

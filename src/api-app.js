@@ -393,18 +393,22 @@ export function createAppApi({ secret, ctx, deps }) {
   });
 
   // Per-project config (0.3.4): saved on the project page, one project at a time, so the Settings page cannot overwrite it.
-  // The body is exactly one of { plugins } or { models } (0.4), so the two dialogs never overwrite each other.
+  // The body is exactly one field, so the dialogs and menus never overwrite each other: { plugins }, { models } (0.4),
+  // { permissionMode }, { panePlacement } or { maxAgents } (0.4.0; a value, or null for "use Settings").
   route('GET', /^\/api\/app\/projects\/([^/]+)\/config$/, 0, async ({ params }) => {
     const { project, failure } = await projectOf({ project: param(params[0], PROJECT_KEY) });
     return failure ?? { status: 200, body: await getProjectConfig(project.key, ctx.env) };
   });
 
+  const ONE_FIELD = new Set(['models', 'permissionMode', 'panePlacement', 'maxAgents']);
   route('PUT', /^\/api\/app\/projects\/([^/]+)\/config$/, CAP.settings, async ({ params, body }) => {
     const { project, failure } = await projectOf({ project: param(params[0], PROJECT_KEY) });
     if (failure) return failure;
-    let patch = { models: body.models }; // the store checks the four roles and every id
-    if (Object.keys(body).length !== 1 || !Object.hasOwn(body, 'models')) {
-      if (Object.keys(body).length !== 1 || !Array.isArray(body.plugins) || !body.plugins.every((n) => typeof n === 'string')) return err(400, 'invalid', 'body must be { plugins: [plugin names] } or { models: { orchestrator, reasoner, builder, scout } }');
+    if (body.permissionMode === 'bypassPermissions') return err(400, 'invalid', 'bypassPermissions is never allowed'); // constraint 12: API and store both refuse
+    const only = Object.keys(body).length === 1 ? Object.keys(body)[0] : null;
+    let patch = body; // for the four below: exactly that one key, its value checked by the store
+    if (!ONE_FIELD.has(only)) {
+      if (only !== 'plugins' || !Array.isArray(body.plugins) || !body.plugins.every((n) => typeof n === 'string')) return err(400, 'invalid', 'body must be one of { plugins: [plugin names] }, { models: {...} }, { permissionMode }, { panePlacement } or { maxAgents }');
       // a name is allowed when it is installed now or already saved for this project (so a plugin removed since can still be unticked)
       const known = new Set([...(await deps.listPlugins(ctx.claudeDir)), ...(await getProjectConfig(project.key, ctx.env)).plugins]);
       const unknown = body.plugins.find((n) => !known.has(n));

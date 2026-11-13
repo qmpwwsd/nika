@@ -121,6 +121,49 @@ describe('startOrchestrator: new session', () => {
     assert.equal(claudeFlags(exec2.of('new-session')[0])[3], 'claude-fable-5-1');
   });
 
+  test('(+) the project\'s own permission mode (New agents card) is the one nika starts and records; another project\'s is not', async () => {
+    const w = await world({ permissionMode: 'plan' });
+    await updateProjectConfig(w.project.key, { permissionMode: 'acceptEdits' }, w.env);
+    const exec = fakeTmux();
+    const ctx = w.ctx(exec);
+    const r = await startOrchestrator(w.project.key, ctx);
+    assert.deepEqual(claudeFlags(exec.of('new-session')[0]), ['--session-id', r.body.sessionId, '--model', 'claude-fable-5-1', '--permission-mode', 'acceptEdits', '-n', 'My-App']);
+    assert.equal(ctx.started.get(r.body.pane).mode, 'acceptEdits');
+    const v = await world({ permissionMode: 'plan' });
+    const other = await addProject(fs.mkdtempSync(path.join(v.root, 'other-')), v.env);
+    await updateProjectConfig(other.key, { permissionMode: 'auto' }, v.env);
+    const exec2 = fakeTmux();
+    const ctx2 = v.ctx(exec2);
+    const r2 = await startOrchestrator(v.project.key, ctx2);
+    assert.deepEqual(claudeFlags(exec2.of('new-session')[0]).slice(4, 6), ['--permission-mode', 'plan'], 'a project without its own mode uses the Settings one');
+    assert.equal(ctx2.started.get(r2.body.pane).mode, 'plan');
+  });
+
+  test('(+) a project mode of default beats a Settings mode: no --permission-mode flag, recorded as manual', async () => {
+    const w = await world({ permissionMode: 'plan' });
+    await updateProjectConfig(w.project.key, { permissionMode: 'default' }, w.env);
+    const exec = fakeTmux();
+    const ctx = w.ctx(exec);
+    const r = await startOrchestrator(w.project.key, ctx);
+    assert.ok(!claudeFlags(exec.of('new-session')[0]).includes('--permission-mode'));
+    assert.equal(ctx.started.get(r.body.pane).mode, 'manual');
+  });
+
+  test('(−) bypassPermissions in a project entry of a tampered config.json is dropped on load: the Settings mode starts, nothing reaches claude', async () => {
+    const w = await world({ permissionMode: 'plan' });
+    const file = path.join(configDir(w.env), 'config.json');
+    const cfg = JSON.parse(fs.readFileSync(file, 'utf8'));
+    cfg.perProject = { [w.project.key]: { permissionMode: 'bypassPermissions' } };
+    fs.writeFileSync(file, JSON.stringify(cfg));
+    const exec = fakeTmux();
+    const ctx = w.ctx(exec);
+    const r = await startOrchestrator(w.project.key, ctx);
+    assert.equal(r.status, 200);
+    assert.ok(!JSON.stringify(exec.calls).includes('bypass'));
+    assert.deepEqual(claudeFlags(exec.of('new-session')[0]).slice(4, 6), ['--permission-mode', 'plan']);
+    assert.equal(ctx.started.get(r.body.pane).mode, 'plan');
+  });
+
   test('(+) a configured Remote Control prefix is the RC name', async () => {
     const w = await world({ remoteControl: { enabled: true, prefix: 'team1' } });
     const exec = fakeTmux();
@@ -435,7 +478,7 @@ describe('startOrchestrator: an orchestrator adopted in another tmux session (th
 
 describe('launchArgv: the one place that builds the orchestrator\'s claude arguments', () => {
   const project = { key: '0123456789abcdef', name: 'My App' };
-  const cfg = (over = {}) => ({ models: { orchestrator: 'claude-fable-5-1' }, permissionMode: 'default', remoteControl: { enabled: false, prefix: '' }, ...over });
+  const cfg = (over = {}) => ({ models: { orchestrator: 'claude-fable-5-1' }, permissionMode: 'default', panePlacement: 'beside', limits: { maxAgents: 3 }, remoteControl: { enabled: false, prefix: '' }, ...over });
 
   test('(+) a fresh session passes --session-id; model and name follow', () => {
     assert.deepEqual(launchArgv(cfg(), project, { sessionId: PICK }), ['--session-id', PICK, '--model', 'claude-fable-5-1', '-n', 'My-App']);
@@ -459,14 +502,27 @@ describe('launchArgv: the one place that builds the orchestrator\'s claude argum
     for (const resume of [false, true]) assert.equal(launchArgv(others, project, { sessionId: PICK, resume })[3], 'claude-fable-5-1');
   });
 
+  test('(+) the project\'s permission mode replaces the Settings one, fresh and resumed; default drops the flag; another project\'s mode does not leak', () => {
+    const over = cfg({ permissionMode: 'plan', perProject: { [project.key]: { permissionMode: 'acceptEdits' }, fedcba9876543210: { permissionMode: 'auto' } } });
+    assert.deepEqual(launchArgv(over, project, { sessionId: PICK }), ['--session-id', PICK, '--model', 'claude-fable-5-1', '--permission-mode', 'acceptEdits', '-n', 'My-App']);
+    assert.deepEqual(launchArgv(over, project, { sessionId: PICK, resume: true }), ['--resume', PICK, '--model', 'claude-fable-5-1', '--permission-mode', 'acceptEdits', '-n', 'My-App']);
+    const dflt = cfg({ permissionMode: 'plan', perProject: { [project.key]: { permissionMode: 'default' } } });
+    assert.ok(!launchArgv(dflt, project, { sessionId: PICK }).includes('--permission-mode'));
+    const others = cfg({ permissionMode: 'plan', perProject: { fedcba9876543210: { permissionMode: 'auto' } } });
+    for (const resume of [false, true]) assert.deepEqual(launchArgv(others, project, { sessionId: PICK, resume }).slice(4, 6), ['--permission-mode', 'plan']);
+  });
+
   test('(−) an id that is not a UUID is refused before it can become an argument (a flag-looking value, a path, an upper-case UUID, a non-string)', () => {
     for (const sessionId of ['--model', '-p', '../x', 'x', '', PICK.toUpperCase().replace(/1/g, 'A'), `${PICK} `, undefined, null, 5]) {
       for (const resume of [false, true]) assert.throws(() => launchArgv(cfg(), project, { sessionId, resume }), { code: 'EINVAL' }, `${JSON.stringify(sessionId)} ${resume}`);
     }
   });
 
-  test('(−) bypassPermissions never reaches the arguments, fresh or resumed', () => {
-    for (const resume of [false, true]) assert.throws(() => launchArgv(cfg({ permissionMode: 'bypassPermissions' }), project, { sessionId: PICK, resume }), { code: 'EINVAL' });
+  test('(−) bypassPermissions never reaches the arguments, fresh or resumed, whether Settings or the project holds it', () => {
+    for (const resume of [false, true]) {
+      assert.throws(() => launchArgv(cfg({ permissionMode: 'bypassPermissions' }), project, { sessionId: PICK, resume }), { code: 'EINVAL' });
+      assert.throws(() => launchArgv(cfg({ perProject: { [project.key]: { permissionMode: 'bypassPermissions' } } }), project, { sessionId: PICK, resume }), { code: 'EINVAL' });
+    }
   });
 });
 
@@ -507,6 +563,18 @@ describe('startOrchestrator: the saved orchestrator (the project\'s pick)', () =
     ]);
     assert.deepEqual(ctx.started.get('%20'), { key: w.project.key, name: 'orchestrator', sessionId: PICK, role: 'orchestrator', mode: 'plan' });
     assert.equal(await pickNow(w), PICK, 'the pick is the same session after the resume');
+  });
+
+  test('(+) resuming a stored pick uses the project\'s own permission mode in the argv and the record (not the Settings one)', async () => {
+    const w = await world({ permissionMode: 'plan' });
+    await setOrchestrator(w.project.key, PICK, w.env);
+    await updateProjectConfig(w.project.key, { permissionMode: 'dontAsk' }, w.env);
+    const exec = fakeTmux();
+    const ctx = w.ctx(exec, { findSession: sessionLookup({}, w.project.key) });
+    const r = await startOrchestrator(w.project.key, ctx);
+    assert.equal(r.body.sessionId, PICK);
+    assert.deepEqual(claudeFlags(exec.of('new-session')[0]), ['--resume', PICK, '--model', 'claude-fable-5-1', '--permission-mode', 'dontAsk', '-n', 'My-App']);
+    assert.equal(ctx.started.get(r.body.pane).mode, 'dontAsk');
   });
 
   test('(+) resuming a stored pick uses the project\'s own orchestrator model in the argv (not the Settings one); another role\'s override does not reach it', async () => {

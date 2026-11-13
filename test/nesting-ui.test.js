@@ -12,9 +12,9 @@ import { El, installDom, withClass, focus } from './fake-dom.js';
 import { h, icon, roleTagEl, ctxEl } from '../public/dom.js';
 import { menuEl, sessionHref, RX } from '../public/ui.js';
 import {
-  orchState, roleTag, savedPick, otherRunning, parentOf, spawnLimits, statusOf, treeRows, hasTree, endedPlan, STATUS_ORDER,
+  orchState, roleTag, savedPick, otherRunning, parentOf, spawnLimits, effectiveAgents, statusOf, treeRows, hasTree, endedPlan, STATUS_ORDER,
 } from '../public/dash-model.js';
-import { parseModes, modesAfter, modeEl, settingModeEl } from '../public/modes.js';
+import { parseModes, modesAfter, modeEl, settingModeEl, MODE_META } from '../public/modes.js';
 import { pluginView, pluginSave, sortIds, countText, filterNote } from '../public/plugin-view.js';
 import { ROLES, ROLE_LABEL, CUSTOM, MODEL_ID, MODEL_HINT, modelLabel, fillModelSelect, fillRoleOverride, effectiveRoleModels } from '../public/models-ui.js';
 
@@ -501,7 +501,7 @@ function projRig({ agents = family(), project = {}, settings = SETTINGS, me = { 
     return typeof a === 'function' ? a(opts) : a;
   };
   const ctx = {
-    h, icon, $: node, state, hooks: {}, appFetch, menuEl, sessionHref, roleTag, orchState, savedPick, otherRunning, spawnLimits, parseModes, modesAfter, settingModeEl, RX,
+    h, icon, $: node, state, hooks: {}, appFetch, menuEl, sessionHref, roleTag, orchState, savedPick, otherRunning, spawnLimits, effectiveAgents, parseModes, modesAfter, settingModeEl, MODE_META, RX,
     pluginView, pluginSave, sortIds, countText, filterNote, ROLES, ROLE_LABEL, CUSTOM, MODEL_ID, MODEL_HINT, modelLabel, fillModelSelect, fillRoleOverride, effectiveRoleModels,
     location: { set href(v) { navs.push(v); }, get href() { return ''; }, hash: '' }, document: { title: '' },
     toast: (msg, o) => {
@@ -1066,10 +1066,15 @@ describe('the spawn sheet: the request and the toasts (design 3)', () => {
 });
 
 describe('Settings, the New agents card and Remove project (design 2.5)', () => {
+  // what a row shows: a value that is a menu button reads as its button plus the muted "from Settings" after it (the menu list stays out)
+  const shown = (dd) => {
+    const button = dd.all((n) => n.attrs['data-menu-btn'] !== undefined)[0];
+    return button ? [button.textContent, ...dd.all(withClass('muted')).map((m) => m.textContent)].join(' ') : dd.textContent;
+  };
   const cardRows = (card) => {
     const dl = card.all((n) => n.tag === 'dl')[0];
     const pairs = [];
-    for (let i = 0; i < dl.kids.length; i += 2) pairs.push([dl.kids[i].textContent, dl.kids[i + 1].textContent]);
+    for (let i = 0; i < dl.kids.length; i += 2) pairs.push([dl.kids[i].textContent, shown(dl.kids[i + 1])]);
     return pairs;
   };
   const newAgents = (r, ...args) => r.api.setupCards(r.proj, r.g, ...args).find((c) => c.all((n) => n.tag === 'h2')[0]?.textContent === 'New agents');
@@ -1077,7 +1082,7 @@ describe('Settings, the New agents card and Remove project (design 2.5)', () => 
   test('(+) the New agents card: Permission mode, Pane, Per orchestrator, Spawned from nika, This project', () => {
     const r = projRig();
     assert.deepEqual(cardRows(newAgents(r)), [
-      ['Permission mode', 'Default'], ['Pane', 'Beside'], ['Per orchestrator', '3 at once'], ['Spawned from nika', '0 of 3'], ['This project', '3 of 9 running'],
+      ['Permission mode', 'Default from Settings'], ['Pane', 'Beside from Settings'], ['Per orchestrator', '3 at once from Settings'], ['Spawned from nika', '0 of 3'], ['This project', '3 of 9 running'],
     ]);
     assert.equal(newAgents(r).all(withClass('limit')).length, 0, 'no note below the limits');
   });
@@ -1101,7 +1106,10 @@ describe('Settings, the New agents card and Remove project (design 2.5)', () => 
       assert.equal(chip.className, `mode ${cls}`, mode);
       assert.equal(chip.all((n) => n.tag === 'use')[0].attrs.href, href, mode);
       assert.equal(chip.all(withClass('ml'))[0].textContent, label, mode);
-      assert.equal(dd.kids.length, 1, 'the chip alone');
+      const btn = dd.all((n) => n.attrs['data-menu-btn'] !== undefined)[0];
+      assert.equal(btn.all(withClass('mode')).length, 1, 'one chip in the menu button');
+      assert.equal(btn.all(withClass('mode'))[0], chip, mode);
+      assert.equal(dd.all(withClass('menu'))[0].all(withClass('mode')).length, 7, 'and one per menu item: "Use Settings" and the six modes');
     }
   });
 
@@ -1139,7 +1147,7 @@ describe('Settings, the New agents card and Remove project (design 2.5)', () => 
   test('(+) the counts follow the snapshot and Settings', () => {
     const r = projRig({ settings: { ...SETTINGS, limits: { maxAgents: 5 } } });
     const rows = cardRows(newAgents(r));
-    assert.deepEqual(rows.slice(2), [['Per orchestrator', '5 at once'], ['Spawned from nika', '0 of 5'], ['This project', '3 of 15 running']]);
+    assert.deepEqual(rows.slice(2), [['Per orchestrator', '5 at once from Settings'], ['Spawned from nika', '0 of 5'], ['This project', '3 of 15 running']]);
   });
 
   test('(+) the project cap reached: the note says so and that spawning is off until one ends', () => {

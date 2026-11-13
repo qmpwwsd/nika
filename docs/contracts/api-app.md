@@ -169,14 +169,16 @@ every claude nika starts from then on: the orchestrator (fresh or resumed) and s
 sessions and sessions the user starts are untouched.
 
 ### `GET|PUT /api/app/projects/:key/config` (PUT body ≤ 16 KB, `CAP.settings`)
-One project's own settings, saved on its page (0.3.4; models 0.4). `:key` must match `^[a-z0-9]{16}$`, else `400 invalid`; a key
+One project's own settings, saved on its page (0.3.4; models 0.4; permission mode, pane and agent limit 0.4.0). `:key` must match `^[a-z0-9]{16}$`, else `400 invalid`; a key
 that is not a registered project is `404 not_found`.
-- `GET` → `200 { "plugins": [ "<PLUGIN_NAME>", … ], "models": { "orchestrator": <id|null>, "reasoner": <id|null>, "builder": <id|null>, "scout": <id|null> } }`.
+- `GET` → `200 { "plugins": [ "<PLUGIN_NAME>", … ], "models": { "orchestrator": <id|null>, "reasoner": <id|null>, "builder": <id|null>, "scout": <id|null> }, "permissionMode": <mode|null>, "panePlacement": <placement|null>, "maxAgents": <1–8|null> }`.
   `plugins` are the names to turn on (`[]` when none). `models` always has the four role keys: the project's own `MODEL_ID`, or
-  `null` for "use the default from Settings" (C5).
-- `PUT` takes **exactly one** of `{ "plugins": [ … ] }` or `{ "models": { … } }`, so the plugins dialog and the models dialog
-  never overwrite each other. Two keys, an unknown key or neither is `400 invalid`. The answer is `200` with the project's new
-  `{ plugins, models }` (the `GET` shape), whichever key was sent; the other one is left as it was.
+  `null` for "use the default from Settings" (C5). `permissionMode`, `panePlacement` and `maxAgents` are always present: the
+  project's own value, or `null` for "use Settings" (0.4.0).
+- `PUT` takes **exactly one** of `{ "plugins": [ … ] }`, `{ "models": { … } }`, `{ "permissionMode": … }`, `{ "panePlacement": … }`
+  or `{ "maxAgents": … }`, so the dialogs and the menus never overwrite each other. Two keys, an unknown key or neither is
+  `400 invalid`. The answer is `200` with the project's new config (the `GET` shape), whichever key was sent; the others are
+  left as they were.
   - `{ "plugins": [ "<PLUGIN_NAME>", … ] }`: `[]` removes the list (and the project's entry when nothing else is left):
     `enabledPlugins` is then left as it is when rules are applied. Each name must be installed now (the names from
     `/api/app/plugins`) **or already saved for this project** (so a plugin removed since can still be unticked); any other name
@@ -185,11 +187,25 @@ that is not a registered project is `404 not_found`.
     the default). A missing or extra role, a non-object, or an id that does not match `MODEL_ID` is `400 invalid`. An id need not
     be in the catalog (`GET /api/app/models`): a Custom ID is allowed. `null` removes that role; four nulls remove `models`
     (and the entry when nothing else is left). Only non-null roles are stored.
+  - `{ "permissionMode": "<mode>" | null }`: one of `PERMISSION_MODES` (`default`, `manual`, `acceptEdits`, `plan`, `auto`,
+    `dontAsk`). `bypassPermissions` is `400 invalid` ("bypassPermissions is never allowed") before the store sees it, like the
+    same value in `PUT /api/app/settings` (rules constraint 12), and nothing is saved. Any other string, a non-string or `undefined`
+    is `400 invalid` too.
+  - `{ "panePlacement": "beside" | "under-last" | null }`: any other value is `400 invalid`.
+  - `{ "maxAgents": <integer 1–8> | null }`: 0, 9, a fraction, a string or a boolean is `400 invalid`.
+  - For these three, `null` removes the project's value ("Use Settings"; the entry goes when nothing else is left in it), and
+    the answer shows that field as `null`. A value equal to the Settings one is still stored: the project keeps it when Settings
+    changes later.
   - Non-JSON is `415`, a body over 16 KB is `413`.
 The effective model of a role is the project's id where set, else `models.<role>` from Settings (`effectiveModels` in
 `src/store.js`). It is what `nika` passes to `--model` when it starts the project's orchestrator (fresh start and resume) and
 what the rules file's Roles table lists. Sessions already running keep their model. `nika spawn` keeps its explicit `<model>`
 argument.
+The effective permission mode, pane placement and agent limit are the project's value where set, else `permissionMode`,
+`panePlacement` and `limits.maxAgents` from Settings (`effectiveAgents` in `src/store.js`). They decide the orchestrator's
+`--permission-mode` (fresh start and resume), the default mode, the placement and the per-parent limit (and the project cap
+`min(3 × N, 24)`) of a spawn, and the values the rules file shows, so "Rules current/outdated" follows a change. An explicit
+`permissionMode` in a spawn request (the sheet, the CLI) still wins over the default. Sessions already running are untouched.
 The route reads and writes only this project's entry, in the store's one serial queue, so two pages saving different
 projects (or Settings and a project page) cannot overwrite each other.
 
@@ -778,7 +794,7 @@ warning in `loadConfig().warnings`; a tampered or unreadable file never throws):
   "permissionMode": "default",
   "panePlacement": "beside",
   "limits": { "maxAgents": 3 },
-  "perProject": { "<PROJECT_KEY>": { "plugins": [ "<PLUGIN_NAME>" ], "orchestratorSessionId": "<UUID>", "models": { "<role>": "<MODEL_ID>" } } },
+  "perProject": { "<PROJECT_KEY>": { "plugins": [ "<PLUGIN_NAME>" ], "orchestratorSessionId": "<UUID>", "models": { "<role>": "<MODEL_ID>" }, "permissionMode": "<mode>", "panePlacement": "<placement>", "maxAgents": 1 } },
   "projects": [ { "key": "<PROJECT_KEY>", "dir": "<abs realpath>", "name": "<basename>", "addedAt": "<ISO>" } ],
   "rules": { "localTemplate": null },
   "ui": { "theme": "system", "singleKeyShortcuts": true },
@@ -792,10 +808,12 @@ warning in `loadConfig().warnings`; a tampered or unreadable file never throws):
 Field rules: `models.*` `MODEL_ID`; `remoteControl.prefix` `""` (= project name) or `RC_PREFIX`; `permissionMode` ∈
 `PERMISSION_MODES`; `panePlacement` ∈ `PANE_PLACEMENTS`; `limits.maxAgents` 1–8 (there is no turn limit: Claude Code
 has no `--max-turns` for interactive sessions); `perProject` keys are `PROJECT_KEY`s and each entry holds `plugins` (≤ 200 names, deduplicated), `orchestratorSessionId` (a
-lowercase UUID) and `models` (a partial map of the roles `orchestrator`, `reasoner`, `builder`, `scout` to a `MODEL_ID`; a role
-that is not set uses `models.*`). A bad key or an entry that is not an object drops that entry with a warning; a bad plugin list, a
-bad id or a `models` that is not an object drops just that field; an unknown role or a bad model id drops just that role; any
-other inner key is dropped, each with a warning. An empty `plugins` list, an empty `models` map, and an entry left empty are
+lowercase UUID), `models` (a partial map of the roles `orchestrator`, `reasoner`, `builder`, `scout` to a `MODEL_ID`; a role
+that is not set uses `models.*`) and, 0.4.0, `permissionMode` (`PERMISSION_MODES`, never `bypassPermissions`), `panePlacement`
+(`PANE_PLACEMENTS`) and `maxAgents` (1–8); a key that is not set uses the Settings value. A bad key or an entry that is not an
+object drops that entry with a warning; a bad plugin list, a bad id or a `models` that is not an object drops just that field; an
+unknown role or a bad model id drops just that role; a bad `permissionMode` (also `bypassPermissions`), `panePlacement` or
+`maxAgents` drops just that key; any other inner key is dropped, each with a warning. An empty `plugins` list, an empty `models` map, and an entry left empty are
 "none": dropped on load without a warning, so `[]` and "no entry" are the same thing. Written only by `PUT
 /api/app/projects/:key/config` (and `…/orchestrator` for the id), which check the project is registered;
 `projects` ≤ 100 entries, `key` must equal `keyFor(dir)`;
@@ -816,11 +834,14 @@ plugins untouched; a project with no `perProject[key].plugins` list leaves `enab
 Store API: `loadConfig(env) → { config, warnings, file }`, `saveConfig(config, env)` (re-validates, throws `EINVAL`),
 `addProject(dir, env)`, `removeProject(key, env)` (also drops the project's `perProject` entry), `listProjects(env)`,
 `updateSettings(patch, env)` (throws `EINVAL`, never accepts `projects`, `perProject` or `bypassPermissions`),
-`getProjectConfig(key, env) → { plugins, models }` (`EINVAL` on a bad key; `models` has the four roles, each an id or `null`),
-`updateProjectConfig(key, patch, env)` (the patch is a plain object whose only own key is `plugins` or `models`, else `EINVAL`;
-`models` must have exactly the four roles, each a `MODEL_ID` or `null`; `ENOENT` for a project that is not registered; `[]` and
-four nulls remove their field; returns the `getProjectConfig` shape), `effectiveModels(config, key)` (pure: the project's id per
-role, else `config.models`), `keyFor(realDir)`.
+`getProjectConfig(key, env) → { plugins, models, permissionMode, panePlacement, maxAgents }` (`EINVAL` on a bad key; `models` has the
+four roles, each an id or `null`; the last three are the project's value or `null`),
+`updateProjectConfig(key, patch, env)` (the patch is a plain object whose only own key is `plugins`, `models`, `permissionMode`,
+`panePlacement` or `maxAgents`, else `EINVAL`; `models` must have exactly the four roles, each a `MODEL_ID` or `null`;
+`bypassPermissions` is `EINVAL`; `ENOENT` for a project that is not registered; `[]`, four nulls and a null item remove their
+field; returns the `getProjectConfig` shape), `effectiveModels(config, key)` (pure: the project's id per
+role, else `config.models`), `effectiveAgents(config, key)` (pure: `{ permissionMode, panePlacement, maxAgents }`, the project's
+value per item, else Settings'), `keyFor(realDir)`.
 
 Write API (`src/fwrite.js`): `ensureDir(dir, mode = 0o700)`, `writeAtomic(dir, name, content, { mode = 0o600, root })`,
 `checkComponents(root, relPath) → { dir, name, abs }`, `backupFile(srcAbs, backupRootAbs, relPath)`,

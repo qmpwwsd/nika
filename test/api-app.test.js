@@ -487,7 +487,7 @@ describe('project config (GET|PUT /api/app/projects/:key/config)', () => {
   after(() => fs.rmSync(extra, { recursive: true, force: true }));
   const put = (json, key) => a.call('PUT', url(key), { json });
   const NONE = { orchestrator: null, reasoner: null, builder: null, scout: null };
-  const only = (plugins, models = NONE) => ({ plugins, models });
+  const only = (plugins, models = NONE, items = {}) => ({ plugins, models, permissionMode: null, panePlacement: null, maxAgents: null, ...items });
 
   test('(+) GET answers { plugins: [], models: all null } for a project without a list or models', async () => {
     const r = await a.call('GET', url());
@@ -619,6 +619,87 @@ describe('project config (GET|PUT /api/app/projects/:key/config)', () => {
     assert.equal((await put({ models }, 'short')).status, 400);
     assert.equal((await a.call('PUT', url(), { body: JSON.stringify({ models }), headers: { 'content-type': 'text/plain' } })).status, 415);
     assert.equal((await a.call('PUT', url(), { json: { models }, headers: { 'x-nika-app': null } })).status, 403);
+    assert.deepEqual((await loadConfig(w.env)).config.perProject, {});
+  });
+
+  test('(+) PUT { permissionMode | panePlacement | maxAgents } saves that one value and answers 200 with the whole config; GET, the settings and config.json read it back; null clears it', async () => {
+    const bodies = [{ permissionMode: 'auto' }, { panePlacement: 'under-last' }, { maxAgents: 5 }];
+    let items = {};
+    for (const body of bodies) {
+      items = { ...items, ...body };
+      const r = await put(body);
+      assert.deepEqual([r.status, r.body], [200, only([], NONE, items)], JSON.stringify(body));
+    }
+    assert.deepEqual((await a.call('GET', url())).body, only([], NONE, items));
+    assert.deepEqual((await loadConfig(w.env)).config.perProject[w.project.key], items);
+    assert.deepEqual((await a.call('GET', '/api/app/settings')).body.perProject[w.project.key], items);
+    const settings = (await a.call('GET', '/api/app/settings')).body;
+    assert.deepEqual([settings.permissionMode, settings.panePlacement, settings.limits.maxAgents], ['default', 'beside', 3], 'Settings itself is not changed');
+    for (const mode of ['default', 'manual', 'acceptEdits', 'plan', 'dontAsk']) assert.equal((await put({ permissionMode: mode })).body.permissionMode, mode, mode);
+    assert.equal((await put({ maxAgents: 1 })).body.maxAgents, 1);
+    assert.equal((await put({ maxAgents: 8 })).body.maxAgents, 8);
+    assert.equal((await put({ panePlacement: 'beside' })).body.panePlacement, 'beside');
+    assert.deepEqual((await put({ panePlacement: null })).body, only([], NONE, { permissionMode: 'dontAsk', maxAgents: 8 }));
+    assert.deepEqual((await put({ permissionMode: null })).body, only([], NONE, { maxAgents: 8 }));
+    assert.deepEqual((await put({ maxAgents: null })).body, only([]), 'null = use Settings');
+    assert.deepEqual((await loadConfig(w.env)).config.perProject, {});
+  });
+
+  test('(+) a save of the three leaves plugins and models untouched, and the other way round', async () => {
+    const models = { ...NONE, builder: 'claude-opus-5-5' };
+    assert.equal((await put({ models })).status, 200);
+    assert.equal((await put({ plugins: ['alpha@market'] })).status, 200);
+    assert.deepEqual((await put({ maxAgents: 2 })).body, only(['alpha@market'], models, { maxAgents: 2 }));
+    assert.deepEqual((await put({ permissionMode: 'plan' })).body, only(['alpha@market'], models, { maxAgents: 2, permissionMode: 'plan' }));
+    assert.deepEqual((await put({ models: NONE })).body, only(['alpha@market'], NONE, { maxAgents: 2, permissionMode: 'plan' }));
+    assert.deepEqual((await put({ plugins: [] })).body, only([], NONE, { maxAgents: 2, permissionMode: 'plan' }));
+    await put({ maxAgents: null });
+    assert.deepEqual((await put({ permissionMode: null })).body, only([]));
+    assert.deepEqual((await loadConfig(w.env)).config.perProject, {});
+  });
+
+  test('(−) bypassPermissions is 400 invalid, never saved, and a saved value stays', async () => {
+    assert.equal((await put({ permissionMode: 'plan' })).status, 200);
+    const saved = JSON.stringify((await loadConfig(w.env)).config.perProject);
+    const r = await put({ permissionMode: 'bypassPermissions' });
+    assert.deepEqual([r.status, r.body.error, r.body.message], [400, 'invalid', 'bypassPermissions is never allowed']);
+    assert.equal(JSON.stringify((await loadConfig(w.env)).config.perProject), saved, 'nothing was written');
+    assert.equal((await a.call('GET', url())).body.permissionMode, 'plan');
+    assert.equal((await put({ permissionMode: null })).status, 200);
+    const none = await put({ permissionMode: 'bypassPermissions' });
+    assert.equal(none.status, 400);
+    assert.deepEqual((await loadConfig(w.env)).config.perProject, {}, 'no entry was created for it');
+  });
+
+  test('(−) a body with two fields, a stray key, or a value that is not a mode, a placement or a whole number from 1 to 8 is 400 invalid and nothing is written', async () => {
+    assert.equal((await put({ maxAgents: 3 })).status, 200);
+    const saved = JSON.stringify((await loadConfig(w.env)).config.perProject);
+    const bad = [
+      { permissionMode: 'plan', maxAgents: 2 }, { panePlacement: 'beside', maxAgents: 2 }, { permissionMode: null, panePlacement: null, maxAgents: null }, // two or three fields
+      { maxAgents: 2, plugins: [] }, { permissionMode: 'plan', models: NONE }, { maxAgents: 2, extra: 1 },
+      { permissionMode: 'yolo' }, { permissionMode: '' }, { permissionMode: 5 }, { permissionMode: ['plan'] }, { permissionMode: true },
+      { panePlacement: 'above' }, { panePlacement: 'under_last' }, { panePlacement: 5 }, { panePlacement: [] },
+      { maxAgents: 0 }, { maxAgents: 9 }, { maxAgents: -1 }, { maxAgents: 1.5 }, { maxAgents: '3' }, { maxAgents: '' }, { maxAgents: true }, { maxAgents: [3] }, { maxAgents: {} },
+      { limits: { maxAgents: 2 } }, { permission: 'plan' },
+    ];
+    for (const body of bad) {
+      const r = await put(body);
+      assert.equal(r.status, 400, JSON.stringify(body));
+      assert.equal(r.body.error, 'invalid');
+      assert.ok(r.body.message.length < 160, 'the message is short');
+    }
+    const proto = await a.call('PUT', url(), { body: '{"maxAgents":2,"__proto__":{"permissionMode":"plan"}}', headers: { 'content-type': 'application/json' } });
+    assert.equal(proto.status, 400);
+    assert.equal(JSON.stringify((await loadConfig(w.env)).config.perProject), saved, 'every refusal left the config as it was');
+    assert.equal((await put({ maxAgents: null })).status, 200);
+  });
+
+  test('(−) a PUT of one of the three for an unknown project is 404, for a malformed key 400, as non-JSON 415, and without the secret 403', async () => {
+    const missing = await put({ maxAgents: 2 }, '0123456789abcdef');
+    assert.deepEqual([missing.status, missing.body.error], [404, 'not_found']);
+    assert.equal((await put({ permissionMode: 'plan' }, 'short')).status, 400);
+    assert.equal((await a.call('PUT', url(), { body: '{"maxAgents":2}', headers: { 'content-type': 'text/plain' } })).status, 415);
+    assert.equal((await a.call('PUT', url(), { json: { panePlacement: 'beside' }, headers: { 'x-nika-app': null } })).status, 403);
     assert.deepEqual((await loadConfig(w.env)).config.perProject, {});
   });
 

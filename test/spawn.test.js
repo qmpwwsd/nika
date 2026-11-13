@@ -11,7 +11,7 @@ import { TMUX_SESSION, AGENT_NAME } from '../src/ids.js';
 import { NO_TMUX_SERVER } from '../src/tmuxerr.js';
 import { WINDOW_ENV, PCT_ENV } from '../src/compact.js';
 import { reportsDir } from '../src/paths.js';
-import { addProject } from '../src/store.js';
+import { addProject, updateProjectConfig } from '../src/store.js';
 import { ensureDir, writeAtomic } from '../src/fwrite.js';
 import { collect } from '../src/model.js';
 import { indexReports } from '../src/collect/reports.js';
@@ -107,6 +107,24 @@ describe('spawnAgent: placement and files', () => {
     assert.equal(read(w, '.last-pane'), '%21\n');
   });
 
+  test('(+) the project\'s own placement beats Settings\': under-last for a project on beside, beside for a project on under-last; no choice of its own uses Settings', async () => {
+    const spawnTwo = async (w) => {
+      const exec = fakeTmux({ panes: BASE_PANES() });
+      const ctx = w.ctx(exec);
+      await spawnAgent(req(w, { name: 'one' }), ctx);
+      await spawnAgent(req(w, { name: 'two' }), ctx);
+      return exec.of('split-window')[1].slice(1, 4); // the second pane is the one that can go under the first
+    };
+    const a = await world({ panePlacement: 'beside' });
+    await updateProjectConfig(a.project.key, { panePlacement: 'under-last' }, a.env);
+    assert.deepEqual(await spawnTwo(a), ['-v', '-t', '%20']);
+    const b = await world({ panePlacement: 'under-last' });
+    await updateProjectConfig(b.project.key, { panePlacement: 'beside' }, b.env);
+    assert.deepEqual(await spawnTwo(b), ['-h', '-t', '=My-App:']);
+    assert.deepEqual(await spawnTwo(await world({ panePlacement: 'under-last' })), ['-v', '-t', '%20'], 'Settings alone still works');
+    assert.deepEqual(await spawnTwo(await world({ panePlacement: 'beside' })), ['-h', '-t', '=My-App:']);
+  });
+
   test('(−) under-last falls back to beside when .last-pane is dead, in another session, garbage or a symlink', async () => {
     const w = await world({ panePlacement: 'under-last' });
     const panes = [...BASE_PANES(), { id: '%50', session: 'elsewhere', window: 0, windowName: 'x', command: 'zsh' }];
@@ -169,6 +187,38 @@ describe('spawnAgent: placement and files', () => {
     await spawnAgent(req(w, { name: 'two', permissionMode: 'plan' }), w.ctx(exec));
     assert.equal(JSON.parse(read(w, 'one.agent.json')).permissionMode, 'acceptEdits');
     assert.equal(JSON.parse(read(w, 'two.agent.json')).permissionMode, 'plan');
+  });
+
+  test('(+) the project\'s own permission mode is the default of a spawn; the request still overrides it; no choice of its own uses Settings; default beats a Settings mode', async () => {
+    const w = await world({ permissionMode: 'acceptEdits', limits: { maxAgents: 8 } });
+    await updateProjectConfig(w.project.key, { permissionMode: 'plan' }, w.env);
+    const exec = fakeTmux({ panes: BASE_PANES() });
+    const ctx = w.ctx(exec);
+    const r1 = await spawnAgent(req(w, { name: 'one' }), ctx);
+    const r2 = await spawnAgent(req(w, { name: 'two', permissionMode: 'dontAsk' }), ctx);
+    assert.equal(JSON.parse(read(w, 'one.agent.json')).permissionMode, 'plan');
+    assert.equal(JSON.parse(read(w, 'two.agent.json')).permissionMode, 'dontAsk', 'an explicit request (the sheet, the CLI) wins');
+    assert.deepEqual([ctx.started.get(r1.body.pane).mode, ctx.started.get(r2.body.pane).mode], ['plan', 'dontAsk']);
+    await updateProjectConfig(w.project.key, { permissionMode: 'default' }, w.env);
+    const r3 = await spawnAgent(req(w, { name: 'three' }), ctx);
+    assert.equal(JSON.parse(read(w, 'three.agent.json')).permissionMode, 'default');
+    assert.equal(ctx.started.get(r3.body.pane).mode, 'manual');
+    await updateProjectConfig(w.project.key, { permissionMode: null }, w.env);
+    await spawnAgent(req(w, { name: 'four' }), ctx);
+    assert.equal(JSON.parse(read(w, 'four.agent.json')).permissionMode, 'acceptEdits', 'back to Settings');
+  });
+
+  test('(−) bypassPermissions in a project entry of a tampered config.json is dropped on load: the spawn takes the Settings mode and nothing carries bypass', async () => {
+    const w = await world({ permissionMode: 'plan' });
+    const file = path.join(w.env.NIKA_CONFIG_DIR, 'nika', 'config.json');
+    const cfg = JSON.parse(fs.readFileSync(file, 'utf8'));
+    cfg.perProject = { [w.project.key]: { permissionMode: 'bypassPermissions' } };
+    fs.writeFileSync(file, JSON.stringify(cfg));
+    const exec = fakeTmux({ panes: BASE_PANES() });
+    const r = await spawnAgent(req(w, { name: 'one' }), w.ctx(exec));
+    assert.equal(r.status, 200);
+    assert.equal(JSON.parse(read(w, 'one.agent.json')).permissionMode, 'plan');
+    assert.ok(!JSON.stringify(exec.calls).includes('bypass') && !read(w, 'one.agent.json').includes('bypass'));
   });
 
   test('(+) started records the launch permission mode: request, else settings; `default` (no flag) is manual', async () => {
@@ -1159,6 +1209,39 @@ describe('spawnAgent: nesting and limits (0.4)', () => {
     const w = await world({ limits: { maxAgents: 2 } });
     const panes = [MAIN(w), ...live(w, ['a', 'b'], { from: 31 }), ...live(w, ['c', 'd'], { from: 41, parent: '%1' }), ...live(w, ['e', 'f'], { from: 51, parent: '%2' })];
     assert.equal((await refuse(w, panes, { name: 'g' }, 409, 'limit')).body.scope, 'project');
+  });
+
+  test('(+) the project\'s own limit is the per-parent limit: lower than Settings\' stops sooner (and the message points at the project page), higher lets more through; null goes back to Settings', async () => {
+    const w = await world({ limits: { maxAgents: 3 } });
+    await updateProjectConfig(w.project.key, { maxAgents: 2 }, w.env);
+    const panes = [MAIN(w), ...live(w, ['a', 'b'], { from: 31, parent: '%1' })];
+    const r = await refuse(w, panes, { name: 'c', parent: '%1' }, 409, 'limit');
+    assert.deepEqual([r.body.scope, r.body.running, r.body.max], ['parent', 2, 2]);
+    assert.match(r.body.message, /already runs 2 of 2 agents of its own/);
+    assert.match(r.body.message, /“Per orchestrator” on this project’s New agents card\./, 'raising Settings would not help this project');
+    assert.doesNotMatch(r.body.message, /in Settings/);
+    await updateProjectConfig(w.project.key, { maxAgents: null }, w.env);
+    assert.equal((await spawnAgent(req(w, { name: 'c', parent: '%1' }), w.ctx(fakeTmux({ panes })))).status, 200, 'Settings allows 3');
+    const v = await world({ limits: { maxAgents: 1 } });
+    await updateProjectConfig(v.project.key, { maxAgents: 3 }, v.env);
+    const exec = fakeTmux({ panes: [MAIN(v), ...live(v, ['a', 'b'], { from: 31, parent: '%1' })] });
+    assert.equal((await spawnAgent(req(v, { name: 'c', parent: '%1' }), v.ctx(exec))).status, 200, 'the project allows 3, Settings only 1');
+    const full = await refuse(v, [MAIN(v), ...live(v, ['a', 'b', 'c'], { from: 31, parent: '%1' })], { name: 'd', parent: '%1' }, 409, 'limit');
+    assert.deepEqual([full.body.running, full.body.max], [3, 3]);
+  });
+
+  test('(+) the project\'s own limit sets the project cap min(3 x N, 24) too: N=2 caps at 6 although Settings\' 5 would allow 15, and N=8 reaches 24', async () => {
+    const spread = (w, count, perParent) => Array.from({ length: count }, (_, i) => live(w, [`a${i}`], { from: 100 + i, parent: `%${900 + Math.floor(i / perParent)}` })).flat();
+    const w = await world({ limits: { maxAgents: 5 } });
+    await updateProjectConfig(w.project.key, { maxAgents: 2 }, w.env);
+    const r = await refuse(w, [MAIN(w), ...spread(w, 6, 2)], { name: 'one-more' }, 409, 'limit');
+    assert.deepEqual([r.body.scope, r.body.running, r.body.max], ['project', 6, 6]);
+    const v = await world({ limits: { maxAgents: 2 } });
+    await updateProjectConfig(v.project.key, { maxAgents: 8 }, v.env);
+    const exec = fakeTmux({ panes: [MAIN(v), ...spread(v, 23, 8)] });
+    assert.equal((await spawnAgent(req(v, { name: 'one-more' }), v.ctx(exec))).status, 200, 'Settings\' 2 would have stopped at 6');
+    const capped = await refuse(v, [MAIN(v), ...spread(v, 24, 8)], { name: 'one-more' }, 409, 'limit');
+    assert.deepEqual([capped.body.scope, capped.body.running, capped.body.max], ['project', 24, 24]);
   });
 
   test('(−) other projects\' agents and non-agent roles (the orchestrator, a plain pane) are not in the live set, for the caps or for the name check', async () => {
