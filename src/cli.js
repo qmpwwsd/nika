@@ -138,11 +138,22 @@ function painter(stream, env) {
   return { busy: wrap('32'), idle: wrap('33'), other: wrap('34'), ended: wrap('2'), bold: wrap('1') };
 }
 
-function renderStatus(snapshot, { ended: withEnded, full }, paint) {
+/**
+ * The test "is this group a project added to nika", by key or folder, the same as the app's sidebar (public/dash-model.js
+ * sidebarModel): a folder never added shows in the default view only while something runs there.
+ */
+export function addedTo(projects) {
+  const keys = new Set(projects.map((p) => p.key));
+  const dirs = new Set(projects.map((p) => p.dir));
+  return (g) => keys.has(g.key) || dirs.has(g.root);
+}
+
+export function renderStatus(snapshot, { ended: withEnded, full }, paint, isAdded = () => true) {
   const now = snapshot.generatedAt;
   const lines = [];
   if (snapshot.groups.length === 0) lines.push(`No agents in the last ${snapshot.since}.`);
-  for (const g of snapshot.groups) {
+  const groups = withEnded ? snapshot.groups : snapshot.groups.filter((g) => isAdded(g) || g.agents.some((a) => a.live));
+  for (const g of groups) {
     const c = g.counts;
     lines.push(`${paint.bold(clean(g.label, 120) ?? '')}  ${tilde(g.root)}   busy ${c.busy} · idle ${c.idle}${c.other ? ` · other ${c.other}` : ''} · ended ${c.ended}`);
     const live = g.agents.filter((a) => a.live);
@@ -158,6 +169,8 @@ function renderStatus(snapshot, { ended: withEnded, full }, paint) {
     else if (shown.length < ended.length) lines.push(paint.ended(`  … ${ended.length - shown.length} more ended (nika status --full)`));
     lines.push('');
   }
+  const left = snapshot.groups.length - groups.length;
+  if (left) lines.push(paint.ended(`… ${left} folder${left === 1 ? '' : 's'} not added to nika, with only ended sessions, hidden (nika status --ended)`));
   const bad = Object.entries(snapshot.sources).filter(([, v]) => v !== 'ok');
   for (const [k, v] of bad) lines.push(paint.ended(`note: ${k}: ${clean(v, 300)}`));
   // same words as the dashboard note (public/dash-model.js skippedText)
@@ -461,7 +474,6 @@ function showPreview(project, p, cx) {
     const tags = [f.action, f.foreign && 'not written by nika', f.optional && 'only with --gitignore'].filter(Boolean).join(', ');
     cx.out.write(`\n${paint.bold(f.path)} (${tags})\n`);
     if (f.diff) cx.out.write(`${cleanBlock(f.diff, DIFF_MAX) ?? ''}\n`); // diffs contain project file text: no terminal escapes
-    if (f.note) cx.out.write(`${clean(f.note, 200)}\n`);
   }
   if (p.warnings.length) cx.out.write('\n');
   for (const w of p.warnings) cx.out.write(`warning: ${clean(w, 300)}\n`);
@@ -492,7 +504,7 @@ async function rulesCmd(rest, cx) {
 
   const overwrite = values['overwrite-foreign'] === true;
   const gitignore = values.gitignore === true;
-  if (!p.files.some((f) => f.action !== 'unchanged' && f.action !== 'skipped' && (!f.optional || gitignore))) {
+  if (!p.files.some((f) => f.action !== 'unchanged' && (!f.optional || gitignore))) {
     cx.out.write('\nNothing to apply.\n');
     return 0;
   }
@@ -683,7 +695,8 @@ const COMMANDS = {
   status: async (rest, cx) => {
     const o = parseStatusArgs(rest);
     const { snapshot } = await collect({ config: cx.config, exec: makeExec(), now: Date.now(), sinceMs: parseSince(o.since), since: o.since });
-    cx.out.write(o.json ? `${toJson(snapshot)}\n` : renderStatus(snapshot, o, painter(cx.out, cx.env)));
+    if (o.json) cx.out.write(`${toJson(snapshot)}\n`);
+    else cx.out.write(renderStatus(snapshot, o, painter(cx.out, cx.env), addedTo((await loadConfig(cx.env)).config.projects)));
     return 0;
   },
   serve: async (rest, cx, io) => {

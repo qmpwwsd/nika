@@ -12,7 +12,8 @@ const fx = makeFixture();
 after(() => cleanup(fx));
 
 // NIKA_TMUX points nowhere so the result never depends on the developer's tmux server (review F19).
-const env = { ...process.env, CLAUDE_CONFIG_DIR: fx.claudeDir, NIKA_TMP_ROOT: fx.tmpRoot, NIKA_TMUX: '/nonexistent/tmux', NO_COLOR: '1' };
+// NIKA_CONFIG_DIR / XDG_STATE_HOME: nika's own config and state live in the fixture, never the developer's (status reads the project list).
+const env = { ...process.env, CLAUDE_CONFIG_DIR: fx.claudeDir, NIKA_TMP_ROOT: fx.tmpRoot, NIKA_TMUX: '/nonexistent/tmux', NO_COLOR: '1', NIKA_CONFIG_DIR: path.join(fx.root, 'nika-config'), XDG_STATE_HOME: path.join(fx.root, 'nika-state') };
 
 function run(args, extraEnv = {}) {
   return new Promise((resolve) => {
@@ -102,14 +103,45 @@ describe('cli', () => {
         const sid = `0000000${i}-0000-4000-8000-000000000000`;
         const file = path.join(dir, 'projects', slug, `${sid}.jsonl`);
         fs.mkdirSync(path.dirname(file), { recursive: true });
-        fs.writeFileSync(file, `${JSON.stringify({ type: 'user', cwd: fx.plain, timestamp: new Date(Date.UTC(2026, 10, 1, 0, i)).toISOString() })}\n${JSON.stringify({ type: 'ai-title', aiTitle: `worker-${i}`, sessionId: sid })}\n`);
+        // the real path, as Claude records it (macOS temp folders sit behind a /var -> /private/var link): nika stores projects by realpath
+        fs.writeFileSync(file, `${JSON.stringify({ type: 'user', cwd: fs.realpathSync(fx.plain), timestamp: new Date(Date.UTC(2026, 10, 1, 0, i)).toISOString() })}\n${JSON.stringify({ type: 'ai-title', aiTitle: `worker-${i}`, sessionId: sid })}\n`);
         fs.utimesSync(file, new Date(Date.UTC(2026, 10, 1, 0, i)), new Date(Date.UTC(2026, 10, 1, 0, i)));
       }
       return { CLAUDE_CONFIG_DIR: dir };
     };
 
-    test('(+) by default no ended row is printed; the header still counts them and one line says how to see them', async () => {
+    // a folder added to nika is always listed; one that was never added shows only while something runs there (0.4.0, owner)
+    const added = async (extra) => {
+      const cfg = path.join(fx.root, `nika-config-${Math.random().toString(16).slice(2)}`);
+      const r = await run(['projects', 'add', fx.plain], { ...extra, NIKA_CONFIG_DIR: cfg });
+      assert.equal(r.code, 0, r.stderr);
+      return { ...extra, NIKA_CONFIG_DIR: cfg };
+    };
+
+    test('(+) a folder never added to nika with only ended sessions is left out by default: one line counts it and says how to see it', async () => {
       const r = await run(['status', '--since', 'all'], sevenEnded());
+      assert.equal(r.code, 0, r.stderr);
+      assert.doesNotMatch(r.stdout, /^plain\s/m);
+      assert.match(r.stdout, /^… 1 folder not added to nika, with only ended sessions, hidden \(nika status --ended\)$/m);
+    });
+
+    test('(+) --ended and --full list that folder again', async () => {
+      for (const flag of ['--ended', '--full']) {
+        const r = await run(['status', '--since', 'all', flag], sevenEnded());
+        assert.match(r.stdout, /^plain\s.*ended 7$/m, flag);
+        assert.doesNotMatch(r.stdout, /not added to nika/, flag);
+      }
+    });
+
+    test('(−) a project added to nika is never left out, even with only ended sessions', async () => {
+      const r = await run(['status', '--since', 'all'], await added(sevenEnded()));
+      assert.equal(r.code, 0, r.stderr);
+      assert.match(r.stdout, /^plain\s.*ended 7$/m);
+      assert.doesNotMatch(r.stdout, /not added to nika/);
+    });
+
+    test('(+) by default no ended row is printed; the header still counts them and one line says how to see them', async () => {
+      const r = await run(['status', '--since', 'all'], await added(sevenEnded()));
       assert.equal(r.code, 0, r.stderr);
       assert.match(r.stdout, /^plain\s.*ended 7$/m);
       assert.deepEqual(nameRows(r.stdout), []);
@@ -196,5 +228,45 @@ describe('cli', () => {
     const r = await run(['serve'], { NIKA_PORT: '99999' });
     assert.equal(r.code, 2);
     assert.match(r.stderr, /NIKA_PORT/);
+  });
+});
+
+describe('renderStatus: folders not added to nika (0.4.0)', async () => {
+  const { renderStatus, addedTo } = await import('../src/cli.js');
+  const plainPaint = { busy: (s) => s, idle: (s) => s, other: (s) => s, ended: (s) => s, bold: (s) => s };
+  const agent = (live) => ({ live, state: live ? 'busy' : 'ended', name: live ? 'builder-1' : 'old-run', modelLabel: 'Sonnet 5.5', worktree: null, gitBranch: 'master', pane: null, lastActivity: 0 });
+  const group = (label, key, root, agents) => ({ label, key, root, agents, counts: { busy: agents.filter((a) => a.live).length, idle: 0, other: 0, ended: agents.filter((a) => !a.live).length } });
+  const KEY_A = 'a'.repeat(16);
+  const KEY_W = 'b'.repeat(16);
+  const snapshot = {
+    generatedAt: 0, since: '24h', sources: {}, skipped: { registry: 0 },
+    groups: [
+      group('acme-api', KEY_A, '/work/acme-api', [agent(false)]),     // added, only ended
+      group('web-shop', KEY_W, '/work/web-shop', [agent(true)]),      // not added, live
+      group('scratch-1', 'c'.repeat(16), '/work/scratch-1', [agent(false)]), // not added, only ended
+      group('scratch-2', 'd'.repeat(16), '/work/scratch-2', [agent(false)]), // not added, only ended
+    ],
+  };
+  const isAdded = addedTo([{ key: KEY_A, dir: '/work/acme-api', name: 'acme-api' }]);
+
+  test('(+) an added project with only ended sessions and a live folder not added both show; the other folders are counted on one line', () => {
+    const out = renderStatus(snapshot, { ended: false, full: false }, plainPaint, isAdded);
+    assert.match(out, /^acme-api\s/m);
+    assert.match(out, /^web-shop\s/m);
+    assert.match(out, /builder-1/);
+    assert.doesNotMatch(out, /^scratch-/m);
+    assert.match(out, /^… 2 folders not added to nika, with only ended sessions, hidden \(nika status --ended\)$/m);
+  });
+
+  test('(+) a project counts as added by its folder too, not only by key', () => {
+    const byDir = addedTo([{ key: 'e'.repeat(16), dir: '/work/scratch-1', name: 'scratch-1' }]);
+    assert.equal(byDir(snapshot.groups[2]), true);
+    assert.equal(byDir(snapshot.groups[3]), false);
+  });
+
+  test('(−) with --ended nothing is left out and no line says so', () => {
+    const out = renderStatus(snapshot, { ended: true, full: false }, plainPaint, isAdded);
+    for (const l of ['acme-api', 'web-shop', 'scratch-1', 'scratch-2']) assert.match(out, new RegExp(`^${l}\\s`, 'm'));
+    assert.doesNotMatch(out, /not added to nika/);
   });
 });

@@ -633,19 +633,41 @@ describe('rules', () => {
     assert.match(r.out, /^warning: settings\.local\.json is not gitignored$/m);
   });
 
-  test('(+) a symlinked AGENTS.md beside CLAUDE.md is listed as skipped with its note, and apply --yes leaves it alone', async () => {
+  test('(+) on a project with only AGENTS.md, preview and apply show a new CLAUDE.md that imports it; AGENTS.md is not listed and stays byte for byte', async () => {
+    const w = await world();
+    const agents = path.join(w.project.dir, 'AGENTS.md');
+    fs.writeFileSync(agents, '# acme-api agents\n');
+    const before = fs.lstatSync(agents);
+    const p = await cli(['rules', 'preview'], { env: w.cliEnv, cwd: w.nested });
+    assert.equal(p.code, 0, p.err);
+    assert.match(p.out, /^CLAUDE\.md \(create\)$/m);
+    assert.match(p.out, /^\+@AGENTS\.md$/m);
+    assert.match(p.out, /^\+@rules\/orchestration\.md$/m);
+    assert.doesNotMatch(p.out, /AGENTS\.md \(/, 'AGENTS.md has no entry of its own');
+    assert.doesNotMatch(p.out, /skipped/);
+    const a = await cli(['rules', 'apply', '--yes'], { env: w.cliEnv, cwd: w.nested });
+    assert.equal(a.code, 0, a.err);
+    assert.match(a.out, /written: rules\/orchestration\.md, CLAUDE\.md\n/);
+    assert.equal(fs.readFileSync(path.join(w.project.dir, 'CLAUDE.md'), 'utf8'), '@AGENTS.md\n@rules/orchestration.md\n');
+    const after = fs.lstatSync(agents);
+    assert.deepEqual([after.ino, after.mtimeMs, fs.readFileSync(agents, 'utf8')], [before.ino, before.mtimeMs, '# acme-api agents\n']);
+    const again = await cli(['rules', 'apply', '--yes'], { env: w.cliEnv, cwd: w.nested });
+    assert.equal(again.code, 0, again.err);
+    assert.match(again.out, /Nothing to apply/);
+    assert.doesNotMatch(again.out, /written:|backups?:/i);
+  });
+
+  test('(+) a symlinked AGENTS.md beside CLAUDE.md is not mentioned by preview, and apply --yes leaves it alone', async () => {
     const w = await world();
     fs.writeFileSync(path.join(w.project.dir, 'CLAUDE.md'), '# acme-api\n');
     fs.symlinkSync('CLAUDE.md', path.join(w.project.dir, 'AGENTS.md'));
     const p = await cli(['rules', 'preview'], { env: w.cliEnv, cwd: w.nested });
     assert.equal(p.code, 0, p.err);
-    assert.match(p.out, /^AGENTS\.md \(skipped\)$/m);
-    assert.match(p.out, /^AGENTS\.md is a link; left as is$/m);
+    assert.doesNotMatch(p.out, /AGENTS\.md|skipped/);
     const a = await cli(['rules', 'apply', '--yes'], { env: w.cliEnv, cwd: w.nested });
     assert.equal(a.code, 0, a.err);
     assert.match(a.out, /written: rules\/orchestration\.md, CLAUDE\.md\n/);
     assert.equal(fs.readlinkSync(path.join(w.project.dir, 'AGENTS.md')), 'CLAUDE.md');
-    // (−) a skipped file is not a change: the second apply has nothing to do, writes nothing and never asks
     const again = await cli(['rules', 'apply', '--yes'], { env: w.cliEnv, cwd: w.nested });
     assert.equal(again.code, 0, again.err);
     assert.match(again.out, /Nothing to apply/);
@@ -653,6 +675,17 @@ describe('rules', () => {
     const asked = await cli(['rules', 'apply'], { env: w.cliEnv, cwd: w.nested, tty: true, stdin: input('n\n', true) });
     assert.equal(asked.code, 0, asked.err);
     assert.doesNotMatch(asked.out, /Apply\? \[y\/N\]/);
+  });
+
+  test('(−) a lone symlinked AGENTS.md makes preview and apply fail with the refusal, and nothing is written', async () => {
+    const w = await world();
+    fs.symlinkSync(path.join(w.root, 'no-such-file'), path.join(w.project.dir, 'AGENTS.md'));
+    for (const argv of [['rules', 'preview'], ['rules', 'apply', '--yes']]) {
+      const r = await cli(argv, { env: w.cliEnv, cwd: w.nested });
+      assert.notEqual(r.code, 0, argv.join(' '));
+      assert.match(r.err, /AGENTS\.md is a symlink/);
+    }
+    assert.deepEqual(fs.readdirSync(w.project.dir).sort(), ['AGENTS.md', 'sub']);
   });
 
   test('(+) preview takes an explicit dir', async () => {

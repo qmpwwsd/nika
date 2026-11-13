@@ -695,8 +695,7 @@ resolves it to that pane's session), else exits 1 ("cannot attach: …") and run
 ```json
 { "hash": "<sha256 hex of every planned write>", "files": [
     { "path": "rules/orchestration.md", "action": "create" | "update" | "unchanged", "diff": "<unified>", "foreign": false },
-    { "path": "CLAUDE.md", "action": "update", "diff": "…" },
-    { "path": "AGENTS.md", "action": "update" | "skipped", "diff": "…", "note": "AGENTS.md is a link; left as is" },
+    { "path": "CLAUDE.md", "action": "create" | "update" | "unchanged", "diff": "…" },
     { "path": ".claude/settings.local.json", "action": "update", "diff": "<enabledPlugins block only>", "keysPreserved": true, "keptKeys": 3 },
     { "path": ".gitignore", "action": "update", "diff": "…", "optional": true } ],
   "warnings": [ "settings.local.json is not gitignored" ], "backupDir": "<stateDir>/backups/<key>/<ISO>" }
@@ -704,19 +703,20 @@ resolves it to that pane's session), else exits 1 ("cannot attach: …") and run
 `POST /api/app/rules/apply` `{ "project": "<PROJECT_KEY>", "hash": "<from preview>", "overwriteForeign": false,
 "gitignore": false }` recomputes the preview; a different hash → **409 conflict**. Writes go through `src/fwrite.js`
 (`checkComponents` → backup → `writeAtomic`) and never touch git. Response `200 { "written": [ "rules/orchestration.md",
-"CLAUDE.md", "AGENTS.md", ".claude/settings.local.json" ], "backupDir": "<abs>" }`.
+"CLAUDE.md", ".claude/settings.local.json" ], "backupDir": "<abs>" }`.
 
-The `@rules/orchestration.md` line goes into `CLAUDE.md` and, when the project has one, `AGENTS.md`; each entry is in
-`files` only when it is planned. `AGENTS.md` is never created. `CLAUDE.md` is created (action `create`) only when
-neither file exists, because Claude Code reads `AGENTS.md` only while no `CLAUDE.md` exists: a `CLAUDE.md` created beside a
-lone `AGENTS.md` would turn it off. With only `AGENTS.md`, the `files` list has no `CLAUDE.md` entry. Both files get the
-same checks as every other target (symlink, hard link and owner checks, size limit, UTF-8, hash, byte-for-byte backup).
-A symlinked `AGENTS.md` is never followed or written: it is left alone when `CLAUDE.md` exists (a common
-`AGENTS.md -> CLAUDE.md`), and then its entry has `"action": "skipped"`, an empty `diff` and a `note`, is never in
-`written` and is not backed up; `CLAUDE.md` is handled as without an `AGENTS.md`. A symlinked `AGENTS.md` with no
-`CLAUDE.md` is `409 refused` with `code: "ESYMLINK"`. The skipped entry is part of the plan `hash`, so a link replaced by a
-regular file after the preview is a `409 conflict`. When the plan creates `CLAUDE.md` and an `AGENTS.md` (file or link) has
-appeared by the time of the write, apply answers `409 conflict` and writes nothing.
+The `@rules/orchestration.md` line goes into `CLAUDE.md` only. `AGENTS.md` is never written, backed up or listed in `files`,
+and its content is never read; nika only checks its type with `lstat` (no follow: absent, regular file, symlink), and only
+while the project has no `CLAUDE.md`. Claude Code reads `AGENTS.md` only while no `CLAUDE.md` exists, so for a lone regular
+`AGENTS.md` the plan creates `CLAUDE.md` (action `create`) whose whole content is `@AGENTS.md\n@rules/orchestration.md\n`
+(Claude Code's "share one file" recipe); with neither file it is `@rules/orchestration.md\n`. `CLAUDE.md` gets the same
+checks as every other target (symlink, hard link and owner checks, size limit, UTF-8, hash, byte-for-byte backup). A lone
+symlinked `AGENTS.md` is never followed: `409 refused` with `code: "ESYMLINK"`; a folder, FIFO or other non-regular
+`AGENTS.md` with no `CLAUDE.md` is `409 refused` with `code: "ENOTREG"`. Beside a `CLAUDE.md`, `AGENTS.md` is not looked at
+(a symlink there is not mentioned). The new `CLAUDE.md` body depends on the `AGENTS.md` type, so the plan `hash` covers it: an
+`AGENTS.md` that appears, disappears or changes type after the preview is a `409 conflict`. Right before it creates
+`CLAUDE.md`, apply re-checks the type against the plan; a change is `409 conflict` ("AGENTS.md changed while applying;
+preview again") and nothing is written. The 0.4.0 `skipped` action and its `note` no longer exist.
 
 The preview `diff` for `.claude/settings.local.json` is computed between `{"enabledPlugins": <old>}` and
 `{"enabledPlugins": <new>}` (pretty JSON) only, plus `keptKeys` = the number of other top-level keys; the values of
