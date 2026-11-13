@@ -1460,7 +1460,7 @@ box (§9.3); the `.bar-end` wrapper is gone and `.bar-tools` holds the two butto
 
 Segmented toolbar: Manual, Accept edits, Plan, Auto (`MODE_TARGETS`). Don't ask is never a segment. **Bypass is never a segment in 0.3** (product spec §6.3: only for panes nika launched with bypass allowed, which arrives in 0.4; the mode route refuses it as a target). A bypass footer in 0.3 shows only as the current-mode tag, with the switcher in its "Bypass current (0.3)" state below. The two Bypass segment rows below are the 0.4 look.
 
-**(built amendment 2026-11-09 (0.3.3))** Placement: under the message box, in `div.mode-row#mode-row` (§3.10 order): a muted "Mode" word (`aria-hidden`; the toolbar has its own label), the toolbar, then `#msw-why`. The row is hidden until the switcher is wired (no pane: no row).
+**(built amendment 2026-11-09 (0.3.3))** Placement: under the message box, in `div.mode-row#mode-row` (§3.10 order): the toolbar (labelled "Permission mode" for screen readers; the visible "Mode" word was removed in 0.4.0, owner 2026-11-13), then `#msw-why`. The row is hidden until the switcher is wired (no pane: no row).
 
 Anatomy: `div.msw[role="toolbar"][aria-label="Permission mode"][aria-describedby="msw-why"]` > `button.<mode cls>[aria-pressed]` (icon + label) ×4 (×5 in 0.4 with Bypass), then `span#msw-why.msw-why` (info icon + reason text) when the switcher can't act. `#msw-why` is not a live region (it flips with every working/waiting change); a result message (below) is announced once through the window's announcer. The switcher is disabled while a `prompt` is open, `mode` is `unknown` or `modeConfirmed` is `false` (`docs/contracts/api-app.md`: the route would answer 409).
 

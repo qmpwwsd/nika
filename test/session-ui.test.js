@@ -214,10 +214,10 @@ describe('permission mode: tag, frame, edge and switcher (spec 2.8, 9.1-9.3)', (
     assert.match(tagOf('mode-row'), /\bhidden\b/);
     const row = new RegExp('<div class="mode-row" id="mode-row"[^>]*>([\\s\\S]*?)</div>\\s*<div class="notes" id="notes"').exec(HTML)?.[1] ?? '';
     assert.ok(row.includes('id="mode-switch"') && row.includes('id="msw-why"'), 'both inside #mode-row');
-    assert.match(row, /<span class="mode-lbl" aria-hidden="true">Mode<\/span>/);
+    assert.doesNotMatch(row, /mode-lbl|>\s*Mode\s*</, 'no visible "Mode" word (owner, 2026-11-13): the toolbar names itself');
   });
 
-  test('(−) 0.3.3: the "Mode" word is decoration (aria-hidden): the toolbar has its own label; the row is not a live region', () => {
+  test('(−) the toolbar has its own label (no visible "Mode" word since 0.4.0); the row is not a live region', () => {
     assert.doesNotMatch(tagOf('mode-row'), /aria-live|role=/);
     assert.match(tagOf('mode-switch'), /aria-label="Permission mode"/);
   });

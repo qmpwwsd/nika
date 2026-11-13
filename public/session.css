@@ -187,7 +187,6 @@ body.m-bypass .mode-frame { background: repeating-linear-gradient(135deg, var(--
 .paste-chip { flex: none; display: inline-flex; gap: 6px; align-items: center; font-size: var(--fs-small); padding: 2px 4px 2px 8px; border-radius: var(--r-sm); background: var(--accent-soft); color: var(--accent); font-weight: 600; align-self: center; }
 .paste-chip button { min-height: 20px; border: 0; background: none; color: inherit; text-decoration: underline; }
 .mode-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; min-width: 0; }   /* the mode switcher under the message box (spec 9.3) */
-.mode-row .mode-lbl { font-size: var(--fs-small); color: var(--text-muted); }
 .mode-row .msw-why { flex: 1 1 14em; min-width: 0; }
 .notes { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: var(--fs-small); color: var(--text-muted); }   /* argument hint, shell hint, problem line; the echo in here is screen-reader-only */
 .problem { color: var(--idle); font-weight: 600; overflow-wrap: anywhere; }
