@@ -86,6 +86,7 @@ set). You change them in Settings and on each project's page, not by hand; a key
 |---|---|
 | `~/.claude/sessions/<pid>.json` | live sessions: cwd, status, tmux pane, Remote Control id |
 | `ps -A -o pid=,lstart=` | is the process still alive (and not a reused pid) |
+| `/proc/<pid>/stat` (Linux only) | one field, the process start time, for the pids in Claude's registry (at most 4 KB, your own processes only): tells a live session from a reused pid |
 | `~/.claude/projects/*/<session>.jsonl` | first 64 KB and last 256 KB only: cwd, branch, model, title, last prompt, and from the last reply only its token counts and model id (for the context column; no text) |
 | `…/<session>/subagents/agent-*.meta.json` | subagent type, description, model, finished |
 | `tmux list-panes -a` | pane titles (`[%id] name` convention) and the four tags nika sets on the panes it starts (`@nika-role`, `@nika-agent`, `@nika-depth`, `@nika-parent`: who started whom), each read strictly |
@@ -201,20 +202,27 @@ More: [docs/packaging.md](docs/packaging.md) (build details, signing, Linux pack
 - **Dashboard.** One line says how many agents need you, are waiting or are working. Agents that need you are listed first
   under "Waiting on you", then every repository with its live agents (needs you, waiting, working). Ended agents are hidden:
   a repository with only ended agents says "No live agents."; tick **Show ended** to list them in an "Ended" section under
-  each repository (open; fold it by hand and it stays folded until you tick the box again). Filter by text and change the
+  each repository (open; fold it by hand and it stays folded until you tick the box again). Claude's finished subagents
+  stay hidden the same way. The project page has its own **Show ended** box. When Claude's session files cannot all be
+  read, a muted note says how many were skipped. Filter by text and change the
   time window. Click a row to open its session window. Rows whose Claude pane nika can read
   also show the agent's permission mode as a tag, and their menu has **End session…**.
 - **Sidebar.** **Projects** lists your registered projects with their live or needs-you count; with none it says "No
   projects yet." and points to the "+". Under **Detected** it lists repositories that run live agents but are not projects
-  yet (up to 8, the ones that need you first). The row shows that repository on the dashboard; its small "+" opens the
+  yet (8 at first, the ones that need you first, then an "N more" button). The row shows that repository on the dashboard; its small "+" opens the
   folder picker, like the sidebar "+".
 - **Add a project.** The sidebar "+" (or `Mod+O`) opens the native folder picker. The project page notes when the folder is
   not a git repository. A new project has no orchestration rules yet: use **Apply rules** to preview the exact diffs, then
   confirm. nika writes only the files shown in the preview, keeps a backup outside the repository and never runs git.
+  The `@rules/orchestration.md` line goes into `CLAUDE.md`, and also into `AGENTS.md` when the project has one; a project
+  with only `AGENTS.md` gets no new `CLAUDE.md`, since Claude Code would then stop reading `AGENTS.md`.
 - **Start an orchestrator / spawn an agent.** From a project: **Start orchestrator** opens its tmux session and pane
   (**Resume orchestrator** when the project has a saved one that ended);
   **Spawn agent** and **Spawn sub-orchestrator** open a side sheet (name, model, brief up to 64 KB, permission mode, pane placement). A project at its
-  agent limit shows why and what to do. `bypassPermissions` is not offered. See [Orchestration (0.4)](#orchestration-04).
+  agent limit shows why and what to do. `bypassPermissions` is not offered. Neither needs a terminal or a running tmux:
+  nika starts the project's tmux session when there is none. If Claude exits right after it starts (for example, it
+  needs a login), the project page says so; run `claude` once in a terminal in that folder to see why. See
+  [Orchestration (0.4)](#orchestration-04).
 - **Settings** (`Mod+,`). Appearance (System, Light, Dark) and the **Single-key shortcuts** switch, the model per role (a
   list of current models and aliases, or a custom ID), Remote Control, default permission mode and pane placement, the
   agent limit per orchestrator, **Auto-compact** and the rules template: defaults for every project. The Save and Discard bar appears only after a change; invalid fields are marked in place.
@@ -290,7 +298,10 @@ screen, so a screen nika does not recognize shows "Mode ?" or leaves a control d
   permission mode; it waits until the window has read the pane, and while Claude asks you something). With the box
   empty, the arrow keys and Enter go to Claude too (its menus and earlier prompts); arrow presses go out in batches of
   up to 8 keys, each sent at its 8th press or 120 ms after its first. Tab moves focus; Ctrl+Shift+Tab moves it back.
-  Cmd+/ (Ctrl+/ on Linux) lists every shortcut.
+  Copy, cut, paste, select all, undo and redo work as usual in every text field; Ctrl+Shift+C is always a copy. In Type
+  into pane, Ctrl+Shift+C copies the text selected in the terminal, and Ctrl+Shift+V (and Ctrl+V on Linux) pastes into
+  Claude. On Linux, Ctrl+Q quits nika, Ctrl+W closes the window (in Type into pane it goes to Claude) and
+  Ctrl+Plus, Ctrl+Minus and Ctrl+0 zoom; on macOS the app menu has these keys. Cmd+/ (Ctrl+/ on Linux) lists every shortcut.
 - **Questions.** When Claude asks for permission, one button per option answers it (nika types that option's number),
   plus an Esc button (cancel, same as No). An option that mentions bypass has no button: answer it in the terminal.
 - **Quick actions.** **Stop** (live only while Claude works; it presses Esc, and Esc twice when Claude's input is in

@@ -136,6 +136,17 @@ Fixes:
   `AGENTS.md` instead, and into both files when both exist (same preview, hash check and backup). A symlinked `AGENTS.md`
   beside `CLAUDE.md` is left alone and shown as skipped in the preview; a symlinked `AGENTS.md` with no `CLAUDE.md` is
   refused. `nika rules apply` says "Nothing to apply." when only a skipped file is left.
+- **Linux: the window keys work.** Ctrl+Q quits nika, Ctrl+W closes the window, and Ctrl+Plus (or Ctrl+=), Ctrl+Minus
+  and Ctrl+0 zoom, on every page; in Type into pane Ctrl+W still goes to Claude. The page asks the app through a new
+  app-tier route, `POST /api/app/window`, which sends the shell one `window` line over stdio; the shell ignores any other
+  action. On macOS the app menu keeps these keys (Close Window and Minimize were already there).
+- **Copy and paste in Type into pane.** Ctrl+Shift+C copies the text selected in the terminal; Ctrl+Shift+V, and Ctrl+V on
+  Linux, paste into Claude as one paste instead of "Not sent: … not on the allow-list". Ctrl+C still sends C-c. In the
+  message box Ctrl+Shift+C is now always a copy, never Stop (Ctrl+C alone keeps Stop). Copy, cut, paste, select all, undo
+  and redo work in every text field on both platforms. The Keyboard shortcuts window lists the window and copy keys per
+  platform.
+- The hint row under the message box is gone (its key tips are in the Keyboard shortcuts window). "Sent … to %N" is still
+  read to screen readers; the argument hint, the Shell hint and error messages stay where they were.
 - **macOS: a held key repeats** in nika's window instead of opening the accent popup. The app turns the press-and-hold
   popup off for its own process only, in memory; nothing is written to your preferences. Accents still work with the
   Option key. New dependency: `objc2-foundation` 0.3.2 (macOS only, already in the lock file through Tauri).
