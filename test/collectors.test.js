@@ -169,6 +169,14 @@ describe('registry: procStart as an instant, skipped files, session id case (F1b
     assert.equal(alive('Sat Nov  7 18:57:14 2026'), true);
   });
 
+  // Re-review N-1: the instant is month, day, time and year. A writer that pads the day with a zero or names another weekday still names it.
+  test('(+) a day padded with a zero, or another weekday word, for the same instant is alive (UTC and local)', () => {
+    assert.equal(alive('Sat Nov 07 18:57:14 2026'), true);
+    assert.equal(alive('Mon Nov 7 18:57:14 2026'), true);
+    assert.equal(alive('Sat Nov 17 18:57:14 2026'), false, 'a two-digit day is still compared');
+    assert.deepEqual(aliveIn(KOLKATA, [['Sun Nov 08 00:27:14 2026', PS], ['Fri Nov 8 00:27:14 2026', PS], ['Sun Nov 18 00:27:14 2026', PS]]), [true, true, false]);
+  });
+
   test('(+) a local-time date string for the same instant is alive', () => {
     assert.deepEqual(aliveIn(KOLKATA, [['Sun Nov 8 00:27:14 2026', PS], ['Sun Nov  8 00:27:14 2026', PS]]), [true, true], 'the second is padded like ps');
   });

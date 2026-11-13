@@ -754,6 +754,12 @@ describe('sidebar wiring', () => {
       assert.equal(r.host('#side-det').hidden, false);
     });
 
+    test('(+) one hidden repository: the label says "repository", in the singular', () => {
+      const r = rig(9);
+      assert.equal(textOf(moreBtn(r)), '1 more');
+      assert.equal(moreBtn(r).attrs['aria-label'], 'Show 1 more detected repository');
+    });
+
     test('(+) pressing it shows the rest, drops the button and puts focus on the first row that was behind it', () => {
       const r = rig(11);
       moreBtn(r).attrs.onclick();

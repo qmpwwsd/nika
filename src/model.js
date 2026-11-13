@@ -13,11 +13,11 @@ import { UUID } from './ids.js';
 import { MODEL_CATALOG, modelWindow } from './models.js';
 import { compactLaunch } from './compact.js';
 import { keyFor, loadConfig, defaults } from './store.js';
+// tmux's own wording when no server is running; "error connecting to <socket> (Permission denied)" is a real failure and stays an error
+import { NO_TMUX_SERVER } from './tmuxerr.js';
 
 const PROMPT_MAX = 200;
 const IO_LIMIT = 16;
-// tmux's own wording when no server is running; "error connecting to <socket> (Permission denied)" is a real failure and stays an error
-const NO_TMUX_SERVER = /no server running|error connecting to .*\((?:No such file or directory|Connection refused)\)/;
 const LIVE_ORDER = { busy: 0, idle: 1 };
 
 const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);

@@ -120,19 +120,20 @@ const LSTART = new RegExp(`^(?:${WEEKDAYS.join('|')}) (${MONTHS.join('|')}) (\\d
 // Only an ISO date-time counts as a parsed instant: V8's Date.parse also reads nonsense such as "hello 1" as a date
 const ISO = /^\d{4}-\d{2}-\d{2}T/;
 
-/** `Www Mmm d hh:mm:ss yyyy` (ps's shape, whitespace squashed) of an instant, in UTC or in this process's local time. */
-function lstartText(ms, utc) {
+/** `Www Mmm d hh:mm:ss yyyy` (ps's shape, whitespace squashed) of an instant in this process's local time. */
+function localLstart(ms) {
   const d = new Date(ms);
-  const [wd, mo, day, h, mi, sec, y] = utc
-    ? [d.getUTCDay(), d.getUTCMonth(), d.getUTCDate(), d.getUTCHours(), d.getUTCMinutes(), d.getUTCSeconds(), d.getUTCFullYear()]
-    : [d.getDay(), d.getMonth(), d.getDate(), d.getHours(), d.getMinutes(), d.getSeconds(), d.getFullYear()];
   const two = (n) => String(n).padStart(2, '0');
-  return `${WEEKDAYS[wd]} ${MONTHS[mo]} ${day} ${two(h)}:${two(mi)}:${two(sec)} ${y}`;
+  return `${WEEKDAYS[d.getDay()]} ${MONTHS[d.getMonth()]} ${d.getDate()} ${two(d.getHours())}:${two(d.getMinutes())}:${two(d.getSeconds())} ${d.getFullYear()}`;
 }
+
+// The instant is month, day, time and year: the weekday word and a zero before the day are dropped, so a writer that pads the day
+// or names another weekday still names the same instant. Applied only to strings LSTART matched.
+const instantKey = (s) => s.replace(/^\w+ (\w+) 0?(\d{1,2}) /, '$1 $2 ');
 
 /**
  * Whether the registry's `procStart` (squashed) names the instant `ps` printed (`psText`, in UTC). A date string in ps's shape is
- * compared as text with that instant written out in UTC and in local time (Claude Code has been seen writing either; a local time
+ * compared as text (instantKey) with that instant written out in UTC and in local time (Claude Code has been seen writing either; a local time
  * is never parsed back, because a repeated DST hour names two instants). An ISO date-time (`YYYY-MM-DDT…`) is compared to the second.
  * Anything else, or a `ps` text that is no date, cannot tell a reused pid from the process: it counts as the same, because ps listed the pid.
  */
@@ -140,7 +141,7 @@ function sameInstant(procStart, psText) {
   const m = LSTART.exec(psText);
   if (!m) return true;
   const at = Date.UTC(Number(m[6]), MONTHS.indexOf(m[1]), Number(m[2]), Number(m[3]), Number(m[4]), Number(m[5]));
-  if (LSTART.test(procStart)) return procStart === psText || procStart === lstartText(at, false);
+  if (LSTART.test(procStart)) return [psText, localLstart(at)].some((t) => instantKey(t) === instantKey(procStart));
   const iso = ISO.test(procStart) ? Date.parse(procStart) : NaN;
   return !Number.isFinite(iso) || Math.floor(iso / 1000) === at / 1000;
 }

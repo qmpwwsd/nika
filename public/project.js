@@ -180,7 +180,7 @@ function renderSide() {
       sideLink({ href: '#dashboard', 'data-fk': `det:${r.key}`, title: `Show ${r.name} on the dashboard`, onclick: (e) => { e.preventDefault(); showGroup(r.key); } }, r),
       h('button', { type: 'button', class: 'btn icon ghost', 'data-fk': `detadd:${r.key}`, 'aria-label': `Add ${r.name} as a project`, title: `Add ${r.name} as a project`, onclick: () => addProject() }, icon('plus')))),
     detectedMore ? h('li', { class: 'side-more' }, h('button', {
-      type: 'button', class: 'btn ghost', 'data-fk': 'det-more', 'aria-label': `Show ${detectedMore} more detected repositories`, text: `${detectedMore} more`,
+      type: 'button', class: 'btn ghost', 'data-fk': 'det-more', 'aria-label': `Show ${detectedMore} more detected ${detectedMore === 1 ? 'repository' : 'repositories'}`, text: `${detectedMore} more`,
       onclick: () => { state.expanded.add('detected'); renderSide(); $(`#side-detected li:nth-child(${DETECTED_MAX + 1}) a`)?.focus(); }, // focus: the first row that was behind the button
     })) : null,
   ]);
