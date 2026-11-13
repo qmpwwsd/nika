@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::protocol::{self, Msg, Status};
+use crate::protocol::{self, Msg, Status, WindowAction};
 use crate::secret::Secret;
 
 /// `ready` must arrive within this long after the spawn.
@@ -398,6 +398,8 @@ pub enum Sup {
     Ready(u16),
     Status(Status),
     Pick(String),
+    /// The page asked, through the server, for a window action (only forwarded after `ready`).
+    Window(WindowAction),
     /// No valid `ready` in time, a bad `ready`, an `error` message, or the child exited before `ready`.
     Failed,
     /// The child exited (stdout closed) after `ready`.
@@ -426,6 +428,7 @@ pub fn supervise(rx: &Receiver<Event>, ready_timeout: Duration, mut emit: impl F
         match rx.recv() {
             Ok(Event::Msg(Msg::Status(s))) => emit(Sup::Status(s)),
             Ok(Event::Msg(Msg::PickFolder { req_id })) => emit(Sup::Pick(req_id)),
+            Ok(Event::Msg(Msg::Window(a))) => emit(Sup::Window(a)),
             Ok(Event::Msg(Msg::Error { .. })) => {
                 emit(Sup::Failed);
                 return;
@@ -1037,6 +1040,27 @@ mod tests {
             true,
         );
         assert_eq!(out, vec![Sup::Ready(4321), Sup::Status(status(1)), Sup::Pick("r".into()), Sup::Exited]);
+    }
+
+    #[test]
+    fn supervise_forwards_window_actions_only_after_ready() {
+        // (+) after ready a window action reaches the shell, in order with the other messages
+        // (-) before ready it is ignored (a window action must not count as ready or as a failure)
+        let out = feed(
+            vec![
+                Event::Msg(Msg::Window(WindowAction::Quit)),
+                Event::Msg(Msg::Ready { port: 4321 }),
+                Event::Msg(Msg::Window(WindowAction::ZoomIn)),
+                Event::Msg(Msg::Status(status(1))),
+                Event::Msg(Msg::Window(WindowAction::Close)),
+                Event::Closed,
+            ],
+            Duration::from_secs(5),
+            true,
+        );
+        assert_eq!(out, vec![Sup::Ready(4321), Sup::Window(WindowAction::ZoomIn), Sup::Status(status(1)), Sup::Window(WindowAction::Close), Sup::Exited]);
+        // (-) a window action alone is not a ready: the start still times out
+        assert_eq!(feed(vec![Event::Msg(Msg::Window(WindowAction::Quit))], Duration::from_millis(60), true), vec![Sup::Failed]);
     }
 
     #[test]

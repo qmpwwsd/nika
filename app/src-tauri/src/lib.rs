@@ -6,6 +6,8 @@
 //! supervisor), `nav` (navigation rules, init script, error-page URLs), `tray` (menu content, icons).
 
 mod child;
+#[cfg(target_os = "macos")]
+mod mac;
 mod nav;
 mod protocol;
 mod secret;
@@ -25,6 +27,7 @@ use tauri_plugin_dialog::DialogExt;
 
 use child::{NodeLookup, Server, StopTimes, Sup};
 use nav::{Nav, Reason};
+use protocol::WindowAction;
 use secret::Secret;
 use tray::View;
 
@@ -187,14 +190,63 @@ fn go(app: &AppHandle, hash: &str) {
     }
 }
 
-fn zoom(app: &AppHandle, step: impl FnOnce(f64) -> f64) {
+const ZOOM_MIN: f64 = 0.5;
+const ZOOM_MAX: f64 = 3.0;
+const ZOOM_STEP: f64 = 0.1;
+
+/// The webview zoom after `action`: a tenth up or down, 1.0 on reset, always within `ZOOM_MIN..=ZOOM_MAX`. Any other
+/// action leaves the level alone.
+fn next_zoom(z: f64, action: WindowAction) -> f64 {
+    let raw = match action {
+        WindowAction::ZoomIn => z + ZOOM_STEP,
+        WindowAction::ZoomOut => z - ZOOM_STEP,
+        WindowAction::ZoomReset => 1.0,
+        _ => return z,
+    };
+    ((raw * 10.0).round() / 10.0).clamp(ZOOM_MIN, ZOOM_MAX) // rounding drops float noise: 1.1 + 0.1 is not 1.2
+}
+
+/// One zoom level for the macOS View menu and the page's `window` action alike (`Inner::zoom`).
+fn zoom(app: &AppHandle, action: WindowAction) {
     let (window, z) = {
         let mut i = shell(app).lock();
-        i.zoom = ((step(i.zoom) * 10.0).round() / 10.0).clamp(0.5, 3.0);
+        i.zoom = next_zoom(i.zoom, action);
         (i.window.clone(), i.zoom)
     };
     if let Some(w) = window {
         let _ = w.set_zoom(z);
+    }
+}
+
+/// What the close button does, and the `close` window action: hide the window; a full-screen one (macOS) leaves full
+/// screen first.
+fn close_window(app: &AppHandle, w: &WebviewWindow) {
+    if shell(app).lock().hide_after_fullscreen.is_some() {
+        return; // already leaving full screen: the timer below hides it
+    }
+    let fs = cfg!(target_os = "macos") && w.is_fullscreen().unwrap_or(false);
+    match close_step(fs) {
+        CloseStep::LeaveFullscreen => {
+            let token = {
+                let mut i = shell(app).lock();
+                i.fs_closes += 1;
+                i.hide_after_fullscreen = Some(i.fs_closes);
+                i.fs_closes
+            };
+            let _ = w.set_fullscreen(false);
+            let (app, win) = (app.clone(), w.clone());
+            thread::spawn(move || {
+                thread::sleep(FULLSCREEN_EXIT_WAIT);
+                on_main(&app, move |a| {
+                    // a tray Open, a Retry or a newer close meanwhile: this timer is stale
+                    let due = hide_due(shell(a).lock().hide_after_fullscreen, token);
+                    if due {
+                        hide_window(a, &win);
+                    }
+                });
+            });
+        }
+        CloseStep::Hide => hide_window(app, w),
     }
 }
 
@@ -239,37 +291,11 @@ fn make_window(app: &AppHandle, url: WebviewUrl, port: Option<u16>, init: Option
     if visible {
         set_shown(app, true);
     }
-    let hide = window.clone();
+    let closing = window.clone();
     window.on_window_event(move |event| {
         if let WindowEvent::CloseRequested { api, .. } = event {
             api.prevent_close();
-            if shell(&app_h).lock().hide_after_fullscreen.is_some() {
-                return; // already leaving full screen: the timer below hides it
-            }
-            let fs = cfg!(target_os = "macos") && hide.is_fullscreen().unwrap_or(false);
-            match close_step(fs) {
-                CloseStep::LeaveFullscreen => {
-                    let token = {
-                        let mut i = shell(&app_h).lock();
-                        i.fs_closes += 1;
-                        i.hide_after_fullscreen = Some(i.fs_closes);
-                        i.fs_closes
-                    };
-                    let _ = hide.set_fullscreen(false);
-                    let (app, win) = (app_h.clone(), hide.clone());
-                    thread::spawn(move || {
-                        thread::sleep(FULLSCREEN_EXIT_WAIT);
-                        on_main(&app, move |a| {
-                            // a tray Open, a Retry or a newer close meanwhile: this timer is stale
-                            let due = hide_due(shell(a).lock().hide_after_fullscreen, token);
-                            if due {
-                                hide_window(a, &win);
-                            }
-                        });
-                    });
-                }
-                CloseStep::Hide => hide_window(&app_h, &hide),
-            }
+            close_window(&app_h, &closing);
         }
     });
     Ok(window)
@@ -410,6 +436,7 @@ fn handle(app: &AppHandle, gen: u64, ev: Sup, secret: &Secret) {
         Sup::Ready(port) => on_ready(app, port, secret),
         Sup::Status(s) => refresh_tray(app, Some(View::from_status(&s)), false),
         Sup::Pick(req_id) => start_pick(app, req_id),
+        Sup::Window(action) => dispatch(app, action),
         Sup::Failed => show_error(app, Reason::StartFailed),
         Sup::Exited => show_error(app, Reason::Stopped),
     }
@@ -486,6 +513,47 @@ fn quit(app: &AppHandle) {
     });
 }
 
+/* ---------- window actions from the page ---------- */
+
+/// What the shell can do to its window and itself; `dispatch` picks one per action (a seam so the mapping is testable
+/// without a window).
+trait WindowOps {
+    fn quit(&self);
+    fn close(&self);
+    fn minimize(&self);
+    fn zoom(&self, action: WindowAction);
+}
+
+fn dispatch(ops: &impl WindowOps, action: WindowAction) {
+    match action {
+        WindowAction::Quit => ops.quit(),
+        WindowAction::Close => ops.close(),
+        WindowAction::Minimize => ops.minimize(),
+        WindowAction::ZoomIn | WindowAction::ZoomOut | WindowAction::ZoomReset => ops.zoom(action),
+    }
+}
+
+impl WindowOps for AppHandle {
+    fn quit(&self) {
+        quit(self);
+    }
+    fn close(&self) {
+        let window = shell(self).lock().window.clone();
+        if let Some(w) = window {
+            close_window(self, &w);
+        }
+    }
+    fn minimize(&self) {
+        let window = shell(self).lock().window.clone();
+        if let Some(w) = window {
+            let _ = w.minimize();
+        }
+    }
+    fn zoom(&self, action: WindowAction) {
+        zoom(self, action);
+    }
+}
+
 /* ---------- menus ---------- */
 
 fn on_menu_event(app: &AppHandle, event: MenuEvent) {
@@ -494,9 +562,9 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
         "add" => go(app, "#add-project"),
         "autostart" => toggle_autostart(app),
         "quit" => quit(app),
-        "zoom-in" => zoom(app, |z| z + 0.1),
-        "zoom-out" => zoom(app, |z| z - 0.1),
-        "zoom-reset" => zoom(app, |_| 1.0),
+        "zoom-in" => zoom(app, WindowAction::ZoomIn),
+        "zoom-out" => zoom(app, WindowAction::ZoomOut),
+        "zoom-reset" => zoom(app, WindowAction::ZoomReset),
         id => {
             if let Some(key) = id.strip_prefix("project:").filter(|k| protocol::valid_project_key(k)) {
                 go(app, &format!("#project/{key}"));
@@ -508,8 +576,10 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
 /// macOS menu bar (shown while nika is the active app: activation policy Regular, window shown): Edit for the
 /// standard text shortcuts, View for zoom (spec decision 7; done natively because the zoom hotkey polyfill needs a
 /// Tauri capability for the page's origin, which rules/project-rules.md section 13 forbids) and native full screen
-/// (muda's predefined item: `toggleFullScreen:`, Ctrl+Cmd+F; AppKit retitles it "Exit Full Screen"), Window, and
-/// Cmd+Q through the same quit path.
+/// (muda's predefined item: `toggleFullScreen:`, Ctrl+Cmd+F; AppKit retitles it "Exit Full Screen"), Window (muda's
+/// predefined Minimize, Cmd+M, and Close Window, Cmd+W: `performClose:` reaches the same `CloseRequested` hide as the
+/// close button), and Cmd+Q through the same quit path. Zoom is clamped to `ZOOM_MIN..=ZOOM_MAX`, shared with the page's
+/// `window` actions. Linux has no menu: the page catches its keys and asks over stdio.
 #[cfg(target_os = "macos")]
 fn app_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
     use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
@@ -533,6 +603,9 @@ fn app_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
 /* ---------- entry ---------- */
 
 pub fn run() {
+    // macOS: before any window or webview exists, so a held key repeats (F3)
+    #[cfg(target_os = "macos")]
+    mac::disable_press_and_hold();
     let hidden_launch = std::env::args().any(|a| a == "--hidden");
     let builder = tauri::Builder::default()
         // single-instance first: a second launch must exit before it creates anything
@@ -596,7 +669,9 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{applies, close_step, hide_due, CloseStep};
+    use super::{applies, close_step, dispatch, hide_due, next_zoom, CloseStep, WindowOps};
+    use crate::protocol::WindowAction::{self, *};
+    use std::cell::RefCell;
 
     #[test]
     fn a_decision_applies_only_to_the_current_healthy_generation() {
@@ -632,6 +707,67 @@ mod tests {
         assert!(!hide_due(Some(3), 2));
         // (-) a pending number from an older close does not match a newer timer either
         assert!(!hide_due(Some(1), 2));
+    }
+
+    #[test]
+    fn zoom_steps_by_a_tenth_and_stays_between_half_and_triple() {
+        // (+) one step either way, without float noise (1.1 + 0.1 is 1.2000000000000002 before rounding)
+        assert_eq!(next_zoom(1.0, ZoomIn), 1.1);
+        assert_eq!(next_zoom(1.1, ZoomIn), 1.2);
+        assert_eq!(next_zoom(1.0, ZoomOut), 0.9);
+        // (+) reset gives 1.0 from anywhere
+        assert_eq!(next_zoom(0.5, ZoomReset), 1.0);
+        assert_eq!(next_zoom(3.0, ZoomReset), 1.0);
+        // (-) the ends hold (0.5 to 3.0, the range the macOS View menu used before the page could zoom)
+        assert_eq!(next_zoom(3.0, ZoomIn), 3.0);
+        assert_eq!(next_zoom(0.5, ZoomOut), 0.5);
+        // (-) twenty steps up from 1.0 end at 3.0 exactly and a hundred more do not pass it; the same down to 0.5
+        let up = (0..120).fold(1.0, |z, _| next_zoom(z, ZoomIn));
+        assert_eq!(up, 3.0);
+        let down = (0..110).fold(1.0, |z, _| next_zoom(z, ZoomOut));
+        assert_eq!(down, 0.5);
+        // (-) a level outside the range (an old state) is pulled back in by the next step
+        assert_eq!(next_zoom(4.0, ZoomIn), 3.0);
+        assert_eq!(next_zoom(0.1, ZoomOut), 0.5);
+        // (-) the other actions never change the level
+        for a in [Quit, Close, Minimize] {
+            assert_eq!(next_zoom(1.3, a), 1.3);
+        }
+    }
+
+    #[derive(Default)]
+    struct Recorder(RefCell<Vec<String>>);
+
+    impl WindowOps for Recorder {
+        fn quit(&self) {
+            self.0.borrow_mut().push("quit".into());
+        }
+        fn close(&self) {
+            self.0.borrow_mut().push("close".into());
+        }
+        fn minimize(&self) {
+            self.0.borrow_mut().push("minimize".into());
+        }
+        fn zoom(&self, action: WindowAction) {
+            self.0.borrow_mut().push(format!("zoom:{action:?}"));
+        }
+    }
+
+    #[test]
+    fn each_window_action_reaches_its_own_handler_and_only_that_one() {
+        // (+) / (-) exactly one call per action, the right one
+        for (action, want) in [
+            (Quit, "quit"),
+            (Close, "close"),
+            (Minimize, "minimize"),
+            (ZoomIn, "zoom:ZoomIn"),
+            (ZoomOut, "zoom:ZoomOut"),
+            (ZoomReset, "zoom:ZoomReset"),
+        ] {
+            let r = Recorder::default();
+            dispatch(&r, action);
+            assert_eq!(*r.0.borrow(), vec![want.to_string()], "{action:?}");
+        }
     }
 
     #[cfg(target_os = "macos")]
