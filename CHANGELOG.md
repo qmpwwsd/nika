@@ -152,7 +152,9 @@ Fixes:
   backup as `CLAUDE.md`, and the preview lists both files. Claude Code reads `AGENTS.md` only while a project has no
   `CLAUDE.md`, so a project with only `AGENTS.md` also gets a new `CLAUDE.md` that is just `@AGENTS.md` (Claude Code's own
   way to share one file with other tools); `AGENTS.md` is written first. A `CLAUDE.md` that already imports `@AGENTS.md`
-  is left as it is: it gets the rules through the import, and the preview says so. A symlinked `AGENTS.md`, or a folder or
+  is left as it is: it gets the rules through the import, and the preview says so. Releases up to 0.3.4 always put the line
+  into `CLAUDE.md`, so a `CLAUDE.md` that imports `@AGENTS.md` may have it already: it keeps it (nika never removes a line)
+  and the preview then says Claude may read the rules twice and that deleting that line by hand fixes it. A symlinked `AGENTS.md`, or a folder or
   other non-file of that name, is skipped with a note when a `CLAUDE.md` exists and refused when it does not. "Rules
   outdated" now also means that `CLAUDE.md` or `AGENTS.md` lacks the rules line.
 - **Linux: the window keys work.** Ctrl+Q quits nika, Ctrl+W closes the window, and Ctrl+Plus (or Ctrl+=), Ctrl+Minus

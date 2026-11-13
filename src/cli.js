@@ -474,7 +474,7 @@ function showPreview(project, p, cx) {
     const tags = [f.action, f.foreign && 'not written by nika', f.optional && 'only with --gitignore'].filter(Boolean).join(', ');
     cx.out.write(`\n${paint.bold(f.path)} (${tags})\n`);
     if (f.diff) cx.out.write(`${cleanBlock(f.diff, DIFF_MAX) ?? ''}\n`); // diffs contain project file text: no terminal escapes
-    if (f.note) cx.out.write(`${clean(f.note, 200)}\n`);
+    if (f.note) cx.out.write(`${clean(f.note, 400)}\n`);
   }
   if (p.warnings.length) cx.out.write('\n');
   for (const w of p.warnings) cx.out.write(`warning: ${clean(w, 300)}\n`);

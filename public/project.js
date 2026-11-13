@@ -488,7 +488,7 @@ function subButton(g) {
 /* ---------- project view ---------- */
 const RULE_TEXT = {
   nika: 'rules/orchestration.md matches the current template.',
-  outdated: 'Written from an older template, or CLAUDE.md or AGENTS.md lacks the rules line. Apply rules to bring it current.',
+  outdated: 'Written from an older template, or CLAUDE.md or AGENTS.md lacks the rules line. Update rules to bring it current.',
   foreign: 'rules/orchestration.md exists but nika did not write it. Applying replaces it after you confirm; a backup is kept.',
   none: 'This project has no rules/orchestration.md yet. Agents start without orchestration rules.',
 };

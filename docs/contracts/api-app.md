@@ -118,8 +118,10 @@ settled (never a guess).
 `rules.state`: `none` no `rules/orchestration.md`; `nika` written by nika and current, **and** every regular instruction file
 carries the rules (see "AGENTS.md and CLAUDE.md" under Rules); `outdated` written by nika from an older template, or current but a regular
 `CLAUDE.md` / `AGENTS.md` that Apply would still change; `foreign` a file nika did not write (apply needs the explicit
-`overwriteForeign` flag). A project nika cannot plan (an unreadable instruction file, a lone symlinked `AGENTS.md`) is judged by
-the rules file alone.
+`overwriteForeign` flag). An instruction file nika cannot read safely (hard link, oversized, not UTF-8, a folder or other non-regular
+`CLAUDE.md`, or a lone non-regular `AGENTS.md`) is never covered: the state is `outdated`, so Apply shows the reason. A
+`CLAUDE.md` that is a symlink is ignored by the state (the rules file and a regular `AGENTS.md` decide); preview and apply
+still refuse it with `ESYMLINK`.
 `settingsIgnored`: `.claude/settings.local.json` is covered by the project's `.gitignore`.
 
 **Saved orchestrator (0.4).** `PUT …/orchestrator` saves one session of the project as its orchestrator
@@ -711,13 +713,13 @@ resolves it to that pane's session), else exits 1 ("cannot attach: …") and run
 
 **AGENTS.md and CLAUDE.md (0.4.0, G7).** Other coding tools read `AGENTS.md`, Claude Code reads `CLAUDE.md`, so both carry
 the rules, both are listed in `files`, and Claude must load the rules once. Let L be the line `@rules/orchestration.md` and
-an *import line* a line that, trimmed, is exactly `@AGENTS.md` or `@./AGENTS.md`:
+an *import line* a line that, trimmed, is exactly `@AGENTS.md` or `@./AGENTS.md` and is not inside a fenced code block (``` or ~~~; Claude Code ignores imports in code; inline spans and indented blocks are not tracked, and a fence never closed counts as text):
 
 | The project has | `files` |
 |---|---|
 | only a regular `AGENTS.md` | `AGENTS.md` `update` (adds L); a new `CLAUDE.md` `create` whose whole content is `@AGENTS.md\n` |
 | both, `CLAUDE.md` has no import line | both get L |
-| both, `CLAUDE.md` has an import line | `AGENTS.md` gets L; `CLAUDE.md` is `unchanged` with `note: "Gets the rules through @AGENTS.md."` (even when it lacks L: nika never adds L there and never removes a line) |
+| both, `CLAUDE.md` has an import line (outside a code fence) | `AGENTS.md` gets L; `CLAUDE.md` is `unchanged` with `note: "Gets the rules through @AGENTS.md."` (even when it lacks L: nika never adds L there and never removes a line). When it has its own L too (0.3.x), the note is "Gets the rules through @AGENTS.md. It also has its own @rules/orchestration.md line (from an earlier apply), so Claude may read the rules twice; nika never removes a line, so delete that line by hand if you want them once." |
 | only `CLAUDE.md` (an import line with no `AGENTS.md` on disk counts as this) | `CLAUDE.md` gets L |
 | neither | a new `CLAUDE.md` with `@rules/orchestration.md\n` |
 | `AGENTS.md` is a symlink, folder, FIFO or other non-regular file, and a `CLAUDE.md` exists | `AGENTS.md` `skipped` with a `note` (a symbolic link: nika does not follow links; not a regular file); `CLAUDE.md` gets L (the via-`AGENTS.md` row never applies) |

@@ -26,6 +26,8 @@ const IMPORT_LINE = '@rules/orchestration.md';
 const AGENTS_IMPORT = '@AGENTS.md';
 const AGENTS_IMPORT_DOT = '@./AGENTS.md';
 const VIA_NOTE = 'Gets the rules through @AGENTS.md.';
+// a CLAUDE.md written by 0.3.x (or by this version before an AGENTS.md existed) has its own line beside the import: nika never removes a line
+const VIA_NOTE_TWICE = 'Gets the rules through @AGENTS.md. It also has its own @rules/orchestration.md line (from an earlier apply), so Claude may read the rules twice; nika never removes a line, so delete that line by hand if you want them once.';
 const FILE_MAX = 1024 * 1024;
 const BACKUPS_KEEP = 10; // backup folders kept per project
 const TEMPLATE_MAX = 256 * 1024;
@@ -72,8 +74,15 @@ async function readText(abs, max) {
   }
   let buf;
   try {
-    const probe = Buffer.alloc(max + 1);
-    const { bytesRead } = await opened.handle.read(probe, 0, max + 1, 0);
+    // sized by the file (this runs for every project on each poll), one byte more so a file over the cap is still seen
+    let want = Math.min(opened.st.size, max) + 1;
+    let probe = Buffer.alloc(want);
+    let { bytesRead } = await opened.handle.read(probe, 0, want, 0);
+    if (bytesRead === want && want <= max) { // it grew since fstat: read it again whole, bounded by the cap
+      want = max + 1;
+      probe = Buffer.alloc(want);
+      ({ bytesRead } = await opened.handle.read(probe, 0, want, 0));
+    }
     buf = probe.subarray(0, bytesRead);
   } finally {
     await opened.handle.close();
@@ -164,8 +173,33 @@ function classify(text) {
 
 // ----------------------------------------------------------------------------------------------------- planned file bodies
 
-/** True when a line of `text`, trimmed, is exactly one of `lines`. */
-const hasLine = (text, ...lines) => text.split('\n').some((l) => lines.includes(l.trim()));
+/**
+ * The lines of a markdown text that are not inside a fenced code block (``` or ~~~, up to 3 spaces of indent, closed by a fence of
+ * the same mark that is at least as long and has nothing after it). Claude Code ignores imports in code, so a line there is an
+ * example, not an import.
+ * shortcut: inline code spans and indented code blocks are not tracked (a whole trimmed line is never inside a span); a fence that
+ * is never closed counts as text, not as code to the end of the file, so appending the rules line below it always converges.
+ */
+function unfenced(text) {
+  const out = [];
+  let open = null; // { mark, len, held }: held = the lines since the opening fence, dropped when it closes
+  for (const line of text.split('\n')) {
+    const m = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line.replace(/\r$/, ''));
+    if (open) {
+      open.held.push(line);
+      if (m && m[1][0] === open.mark && m[1].length >= open.len && m[2].trim() === '') open = null;
+    } else if (m && !(m[1][0] === '`' && m[2].includes('`'))) {
+      open = { mark: m[1][0], len: m[1].length, held: [line] };
+    } else {
+      out.push(line);
+    }
+  }
+  if (open) out.push(...open.held);
+  return out;
+}
+
+/** True when a line of `text` outside code fences, trimmed, is exactly one of `lines`. */
+const hasLine = (text, ...lines) => unfenced(text).some((l) => lines.includes(l.trim()));
 
 /** CLAUDE.md or AGENTS.md with the rules import (`current` null: a new file with just the line). */
 function importWith(current) {
@@ -183,14 +217,16 @@ function importWith(current) {
  * itself. Entries come in write order, AGENTS.md first, so an importing CLAUDE.md never lands while AGENTS.md lacks L.
  *   only a regular AGENTS.md          AGENTS.md gets L; a new CLAUDE.md is just `@AGENTS.md`
  *   both, CLAUDE.md has no import      both get L
- *   both, CLAUDE.md imports AGENTS.md  AGENTS.md gets L; CLAUDE.md is left as it is (never loses or gains a line)
+ *   both, CLAUDE.md imports AGENTS.md  AGENTS.md gets L; CLAUDE.md is left as it is (never loses or gains a line; with an L of its
+ *                                      own the note says Claude may read the rules twice)
  *   only CLAUDE.md / neither           CLAUDE.md gets L (new, when absent)
  * An AGENTS.md that is a symlink, folder, FIFO or other non-regular file is skipped beside a CLAUDE.md (which then gets L itself)
  * and refuses the plan without one (nothing could be created that Claude would read it through). Shared by plan() and rulesState().
  */
-async function planInstructions(dir) {
+async function planInstructions(dir, ctx = {}) {
   const claude = await readTarget(dir, CLAUDE);
   const kind = await agentsKind(dir);
+  await ctx.afterAgentsKind?.(); // test injection point (like ctx.now): AGENTS.md changing between the type check and the read
   let text = null;
   if (kind === 'file') {
     text = await readTarget(dir, AGENTS);
@@ -211,7 +247,7 @@ async function planInstructions(dir) {
     files.push({ path: AGENTS, current: null, next: null, skip: true, extra: { note } });
   }
   if (kind === 'file' && claude !== null && hasLine(claude, AGENTS_IMPORT, AGENTS_IMPORT_DOT)) {
-    files.push({ path: CLAUDE, current: claude, next: claude, extra: { note: VIA_NOTE } });
+    files.push({ path: CLAUDE, current: claude, next: claude, extra: { note: hasLine(claude, IMPORT_LINE) ? VIA_NOTE_TWICE : VIA_NOTE } });
   } else {
     files.push({ path: CLAUDE, current: claude, next: claude === null && kind === 'file' ? `${AGENTS_IMPORT}\n` : importWith(claude) });
   }
@@ -343,7 +379,7 @@ async function plan(project, ctx = {}) {
   const rulesCurrent = await readTarget(dir, RULES);
   add(RULES, rulesCurrent, rulesNext, { foreign: rulesCurrent !== null && classify(rulesCurrent) === 'foreign' });
 
-  const instructions = await planInstructions(dir);
+  const instructions = await planInstructions(dir, ctx);
   for (const f of instructions.files) add(f.path, f.current, f.next, f.extra, f.skip);
 
   // plugins are managed only for projects the user configured; no entry means enabledPlugins stays as it is
@@ -381,12 +417,19 @@ async function plan(project, ctx = {}) {
 
 // --------------------------------------------------------------------------------------------------------------- public
 
-/** True when Apply would change none of CLAUDE.md and AGENTS.md. A plan Apply refuses (an unreadable or non-regular file) is nothing it could fix by writing. */
+/**
+ * True when Apply would change none of CLAUDE.md and AGENTS.md. A file nika cannot read safely is never "covered": the user opens
+ * Apply and sees why. One exception, for the state only: a CLAUDE.md that is a symlink (often CLAUDE.md -> AGENTS.md) is ignored,
+ * like a non-regular AGENTS.md beside a CLAUDE.md, so a regular AGENTS.md with the line (or none) and a current rules file read current.
+ * plan() and apply() still refuse such a CLAUDE.md (ESYMLINK).
+ */
 async function instructionsCovered(dir) {
   try {
+    const link = await fs.lstat((await checkComponents(dir, CLAUDE)).abs).then((st) => st.isSymbolicLink(), (err) => (err.code === 'ENOENT' ? false : Promise.reject(err)));
+    if (link) return (await agentsKind(dir)) !== 'file' || hasLine((await readTarget(dir, AGENTS)) ?? '', IMPORT_LINE);
     return (await planInstructions(dir)).files.every((f) => f.skip || f.next === f.current);
   } catch {
-    return true;
+    return false;
   }
 }
 
@@ -473,7 +516,10 @@ export async function apply(project, opts, ctx = {}) {
       // CLAUDE.md was planned for the AGENTS.md type seen above (a new one imports it, an existing one gets L or not because of it): a
       // change turns the plan wrong. Checked here, before the first write (a check between writes could leave a half-applied project); an
       // AGENTS.md swapped in the short gap until the writes needs write access to the project folder (docs/security.md T50, same class as T8)
-      if (f.path === CLAUDE && (await agentsKind(dir)) !== p.agents) throw fail(409, 'conflict', 'AGENTS.md changed while applying; preview again');
+      // AGENTS.md's content too, also when it needed no change: a CLAUDE.md that imports it must not land while it has changed
+      if (f.path === CLAUDE && ((await agentsKind(dir)) !== p.agents || (p.agents === 'file' && (await readTarget(dir, AGENTS)) !== p.files.find((x) => x.path === AGENTS).current))) {
+        throw fail(409, 'conflict', 'AGENTS.md changed while applying; preview again');
+      }
       if (await isRealDir(c.dir)) await ensureDir(c.dir, 0o755, PROJ);
       if ((await readText(c.abs, FILE_MAX)) !== f.current) throw fail(409, 'conflict', `${f.path} changed while applying; preview again`);
       await backupFile(c.abs, backupDir, f.path);

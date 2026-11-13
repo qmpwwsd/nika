@@ -674,6 +674,19 @@ describe('rules', () => {
     assert.equal(fs.readFileSync(path.join(w.project.dir, 'CLAUDE.md'), 'utf8'), `# acme-api\n\n${AGENTS_LINE}\n`);
   });
 
+  test('(+) a CLAUDE.md with the import and its own rules line prints the whole "may be read twice" note, and apply leaves it alone', async () => {
+    const w = await world();
+    const claude = `# acme-api\n\n${AGENTS_LINE}\n\n@rules/orchestration.md\n`;
+    fs.writeFileSync(path.join(w.project.dir, 'CLAUDE.md'), claude);
+    fs.writeFileSync(path.join(w.project.dir, 'AGENTS.md'), '# acme-api agents\n');
+    const p = await cli(['rules', 'preview'], { env: w.cliEnv, cwd: w.nested });
+    assert.equal(p.code, 0, p.err);
+    assert.match(p.out, /^CLAUDE\.md \(unchanged\)\nGets the rules through @AGENTS\.md\. It also has its own @rules\/orchestration\.md line \(from an earlier apply\), so Claude may read the rules twice; nika never removes a line, so delete that line by hand if you want them once\.$/m);
+    const a = await cli(['rules', 'apply', '--yes'], { env: w.cliEnv, cwd: w.nested });
+    assert.equal(a.code, 0, a.err);
+    assert.equal(fs.readFileSync(path.join(w.project.dir, 'CLAUDE.md'), 'utf8'), claude);
+  });
+
   test('(+) a symlinked AGENTS.md beside CLAUDE.md is listed as skipped with its note, and apply --yes leaves it alone', async () => {
     const w = await world();
     fs.writeFileSync(path.join(w.project.dir, 'CLAUDE.md'), '# acme-api\n');
