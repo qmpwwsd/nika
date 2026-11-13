@@ -329,3 +329,42 @@ describe('context on the browser tier (0.4 O5, R3)', () => {
     assert.equal(raw.includes('synthetic prompt'), false);
   });
 });
+
+describe('browser tier: a Claude `shell` status reads as Working (0.4 fix)', () => {
+  // the registry status `shell`: the turn is over and a background shell still runs; Claude lists it as Working, so it is not "needs you"
+  const fx3 = makeFixture();
+  const SHELL = 'dededede-dede-4ede-8ede-dededededede';
+  const WAIT = 'efefefef-efef-4fef-8fef-efefefefefef';
+  let srv;
+  let p3;
+  before(async () => {
+    const reg = (pid, sessionId, status) => fs.writeFileSync(path.join(fx3.claudeDir, 'sessions', `${pid}.json`), JSON.stringify({
+      pid, sessionId, cwd: fx3.plain, status, procStart: 'Sat Nov  7 18:57:14 2026', updatedAt: NOW,
+    }));
+    reg(115, SHELL, 'shell');
+    reg(116, WAIT, 'waiting');
+    const ps = [101, 102, 115, 116].map((p) => `  ${p} Sat Nov  7 18:57:14 2026`);
+    srv = createServer({ config: fx3.config, exec: fakeExec({ psLines: ps }), token: TOKEN, now: () => NOW, version: '0.1.0' });
+    await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+    p3 = srv.address().port;
+  });
+  after(async () => {
+    await new Promise((r) => srv.close(r));
+    cleanup(fx3);
+  });
+  const snap = async () => (await fetch(`http://127.0.0.1:${p3}/api/agents?since=7d`)).json();
+
+  test('(+) /api/agents: the shell session is busy with no attention, and the counts do not call it other', async () => {
+    const body = await snap();
+    const a = body.groups.flatMap((g) => g.agents).find((x) => x.id === SHELL);
+    assert.equal(a.state, 'busy');
+    assert.equal(a.attention, null);
+    assert.deepEqual([body.counts.busy, body.counts.other], [2, 1], 'the fixture busy session and the shell one are busy; only waiting is other');
+  });
+
+  test('(−) /api/agents: a waiting session still needs you', async () => {
+    const a = (await snap()).groups.flatMap((g) => g.agents).find((x) => x.id === WAIT);
+    assert.equal(a.state, 'waiting');
+    assert.equal(a.attention, 'waiting');
+  });
+});

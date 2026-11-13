@@ -1295,6 +1295,30 @@ describe('Task 14b: wiring of the page rules', () => {
     assert.deepEqual(r.log.problems, [[NO_BUTTONS, 'error']]);
   });
 
+  // a session whose turn is over but a background shell runs (Claude's `shell`): the server sends state 'busy' and no attention, so it is Working
+  const kindOf = (agent) => mk(['function statusOf(agent)'], {}).statusOf(agent);
+  const SHELL_AGENT = { live: true, state: 'busy', attention: null };
+
+  test('(+) a shell-status session is Working: no "Answer the prompt first" note, and the message box sends', async () => {
+    assert.equal(kindOf(SHELL_AGENT), 'busy');
+    assert.equal(attnRig({ kind: kindOf(SHELL_AGENT) }).note.hidden, true, 'no needs-you note');
+    const r = composerRig({ value: 'hello', kind: kindOf(SHELL_AGENT) });
+    await r.send();
+    assert.equal(r.log.sent.length, 1, 'the line goes out');
+    assert.deepEqual(r.log.problems, []);
+    assert.equal(r.ta.value, '', 'the box is emptied after a send');
+  });
+
+  test('(−) a waiting session still needs you: the note shows and Send refuses', async () => {
+    const kind = kindOf({ live: true, state: 'waiting', attention: 'waiting' });
+    assert.equal(kind, 'attn');
+    assert.equal(attnRig({ kind }).note.hidden, false);
+    const r = composerRig({ value: 'hello', kind });
+    await r.send();
+    assert.deepEqual(r.log.sent, []);
+    assert.deepEqual(r.log.problems, [[NO_BUTTONS, 'error']]);
+  });
+
   test('(+) B1: the line tells the truth about the screen: buttons above only when the panel shows an answer button', async () => {
     const bypass = cleanPromptReal({ ...RAW_PROMPT, question: 'Switch to bypass permissions?' });
     assert.equal(hasAnswerButtonsReal(bypass), false, 'every option of a bypass prompt is text');

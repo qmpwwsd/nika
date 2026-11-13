@@ -210,3 +210,14 @@ same menu. Removed and hidden commands are left out.
   bypassPermissions; the exact phrase is checked in 0.4.
 - Whether transcripts record the permission mode (V12): moved to the 0.4 plan.
 - Whether don't-ask is part of the Shift+Tab cycle: nika never switches to or from it.
+
+## 8. Registry status
+
+- The `status` of a live session in `sessions/<pid>.json` is one of `busy`, `shell`, `idle` and `waiting` (Claude Code 2.1.321,
+  checked 2026-11-13; the list is Claude's own vocabulary list). Claude's agent list labels `busy` and `shell` both "Working"
+  and `waiting` as blocked.
+- `shell` = the turn is over and a background shell is still running (the footer reads "1 shell still running"). nika reads
+  `shell` as `busy` (`src/model.js`): the agent's `state` is `busy` and `attention` is null, so it shows as Working, sending
+  is allowed and the quick actions stay off. Session control already treats any non-idle state as busy (Stop, End and the mode
+  switch), so it needs no special case.
+- `waiting` and any value nika does not know stay as they are: `state` is the cleaned status and `attention` is set (needs you).

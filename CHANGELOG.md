@@ -102,6 +102,10 @@ Context (both tiers):
 - API: agents in `GET /api/agents` (both tiers) gain `context` (`tokens`, `window`, `compactAt`, `pct`, `compaction`). See
   `docs/contracts/api-app.md`.
 
+Fixes:
+
+- A session whose turn is over but still runs a background shell (Claude's `shell` status) shows as Working, not as needing you, and you can send it messages.
+
 Packaging:
 
 - The `.deb` now depends on `tmux (>= 3.2)`, the version auto-compact needs, and `nika doctor` warns on its tmux row when tmux

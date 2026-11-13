@@ -1763,6 +1763,17 @@ describe('A3 (M1, F1): interrupt, End and the Stop route', () => {
       assert.deepEqual(await w.control().stop('%2'), { status: 200, body: { stopped: true, presses: 1 } });
     });
 
+    test('(+) a session with a background shell (nika sends busy for Claude\'s shell status; shell itself also reads as busy): Stop sends Escape, the mode switch is 409 not-idle', async () => {
+      for (const state of ['busy', 'shell']) {
+        const stop = world({ state });
+        assert.deepEqual(await stop.control().stop('%2'), { status: 200, body: { stopped: true, presses: 1 } }, state);
+        assert.deepEqual(keysOf(stop), ['Escape'], state);
+        const sw = world({ mode: 'manual', state });
+        assert.deepEqual(await sw.control().switchMode('%2', 'plan'), code(409, 'not-idle'), state);
+        assert.deepEqual(sw.sent, [], state);
+      }
+    });
+
     test('(+) the turn ends by itself after the first Escape (state idle on the re-read): no second Escape, presses 1', async () => {
       const w = world({ vim: true, vimMode: 'insert', state: 'busy' });
       idleAfterEscape(w);

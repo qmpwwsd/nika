@@ -235,7 +235,9 @@ export async function collect({ config, exec, now = Date.now(), sinceMs, since =
         lastActivity: s.lastActivity,
       }))
       .sort((a, b) => (a.state === 'running' ? 0 : 1) - (b.state === 'running' ? 0 : 1) || (b.lastActivity ?? 0) - (a.lastActivity ?? 0));
-    const state = isLive ? (clean(reg.status, 32) ?? 'unknown') : 'ended';
+    // Claude's `shell` = the turn is over and a background shell still runs; Claude lists it as Working, so it is busy here, not "needs you"
+    const status = isLive ? (clean(reg.status, 32) ?? 'unknown') : 'ended';
+    const state = status === 'shell' ? 'busy' : status;
     const activity = [reg?.updatedAt, file?.mtimeMs, t?.lastTimestamp].filter(Number.isFinite);
     return {
       project,

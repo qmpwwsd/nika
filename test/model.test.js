@@ -254,6 +254,41 @@ describe('collect: key, role, attention (0.2 UI fields)', () => {
     }
   });
 
+  // Claude Code 2.1.321 writes busy, shell, idle and waiting; `shell` = the turn is over and a background shell still runs (Claude lists it as Working)
+  const withStatus = async (status) => {
+    const fx2 = makeFixture();
+    try {
+      const sid = 'cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd';
+      const ps = ['  101 Sat Nov  7 18:57:14 2026', '  102 Sat Nov  7 18:57:14 2026'];
+      const base = await collect({ config: fx2.config, exec: fakeExec({ psLines: ps }), now: NOW, sinceMs: DAY });
+      fs.writeFileSync(path.join(fx2.claudeDir, 'sessions', '114.json'), JSON.stringify({ pid: 114, sessionId: sid, cwd: fx2.plain, status, procStart: 'Sat Nov  7 18:57:14 2026', updatedAt: NOW }));
+      const s = await collect({ config: fx2.config, exec: fakeExec({ psLines: [...ps, '  114 Sat Nov  7 18:57:14 2026'] }), now: NOW, sinceMs: DAY });
+      const agent = s.snapshot.groups.flatMap((g) => g.agents).find((x) => x.id === sid);
+      const delta = (k) => s.snapshot.counts[k] - base.snapshot.counts[k];
+      return { agent, delta, group: s.snapshot.groups.find((g) => g.agents.includes(agent)) };
+    } finally {
+      cleanup(fx2);
+    }
+  };
+
+  test('(+) registry shell reads as busy: state busy, no attention, counted as busy and not as other', async () => {
+    const { agent, delta, group } = await withStatus('shell');
+    assert.equal(agent.live, true);
+    assert.equal(agent.state, 'busy');
+    assert.equal(agent.attention, null);
+    assert.deepEqual([delta('busy'), delta('other'), delta('idle'), delta('total')], [1, 0, 0, 1]);
+    assert.equal(group.counts.other, 0);
+  });
+
+  test('(−) waiting and an unknown status still need you: state as written, attention set, counted as other', async () => {
+    for (const status of ['waiting', 'paused', 'shell2']) {
+      const { agent, delta } = await withStatus(status);
+      assert.equal(agent.state, status);
+      assert.equal(agent.attention, status);
+      assert.deepEqual([delta('busy'), delta('other')], [0, 1], status);
+    }
+  });
+
   test('(−) attention is null for busy, idle and ended agents', async () => {
     const s = await snap(Infinity);
     for (const id of [SID.busy, SID.idle, SID.dead, SID.ended, SID.old, SID.other]) assert.equal(byId(s, id).attention, null, id);

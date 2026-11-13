@@ -190,7 +190,8 @@ paths. Users add templates by copying a file into that folder (`nika doctor` pri
 Each group gains `"key": "<keyFor(repo root)>"` (16 hex, matches a registered project's key when the repo is
 registered). Each agent gains `"role": "orchestrator" | "sub-orchestrator" | "agent" | null` (from the pane's `@nika-role`, read with
 `list-panes -a -F …\t#{@nika-role}\t#{@nika-agent}\t#{@nika-depth}\t#{@nika-parent}`) and `"attention": "<clean(registry status, 80)>" | null` — set only when a live
-agent's state is neither busy nor idle (e.g. waiting on a permission prompt), else null. No paths or transcript text
+agent's state is neither busy nor idle (e.g. waiting on a permission prompt), else null. The registry status `shell` (the turn is
+over and a background shell still runs) counts as busy: `state` is `busy` and `attention` null (`claude-tui.md` §8). No paths or transcript text
 are added.
 
 0.4 adds the tree, on both tiers (the values are tmux tags nika itself set, read strictly: a value that does not parse is absent,
@@ -676,7 +677,7 @@ No other channel exists: no Tauri IPC, no HTTP client in Rust.
 | server → shell | `error` | `{"type":"error","message":"<clean()>"}` before a non-zero exit (bad `hello`, port in use) |
 
 Limits: one open `pick-folder` at a time; `status` fields are integers ≥ 0; names are `clean()`ed; `attention` = live
-agents whose registry status is neither busy nor idle (e.g. waiting on a permission prompt); `projects[].key` is
+agents whose registry status is neither busy, shell nor idle (e.g. waiting on a permission prompt; `shell` counts as busy); `projects[].key` is
 `keyFor(repo root)`, never a path. Pane eligibility (§3 capture/keys): a registry pane qualifies only while its
 `pane_current_command` is claude-like (`CLAUDE_COMMAND` in `src/ids.js`), because `tmuxPane` is agent-writable; a pane
 nika started qualifies only while its command is claude-like too, because tmux can reuse a pane id after a restart
