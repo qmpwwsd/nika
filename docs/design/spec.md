@@ -1038,7 +1038,7 @@ empty (owner decision 2026-11-09). One pure function holds the rules: `composerK
 | Home End PgUp PgDn ⌫ Del | edit the box | sent as KEY_NAME |
 | Ctrl+U/K/A/E/L/R | box editing | sent as C-u … C-r |
 | Ctrl+W | Linux: closes the window (§4.1); macOS: left to the browser | sent as C-w (Close is not a window key here) |
-| Ctrl+Shift+C | **(0.4.0)** the browser's copy, never Stop (Ctrl+C alone keeps Stop) | **(built amendment 2026-11-13 (0.4.0, F2))** copies the text selected in the mirror to the clipboard; sends nothing. "Select text in the terminal first, …" (3 s) when nothing in the mirror is selected |
+| Ctrl+Shift+C | **(0.4.0)** left to the text field (no engine copies with it there), never Stop; Ctrl+C is Stop only with nothing selected | **(built amendment 2026-11-13 (0.4.0, F2))** copies the text selected in the mirror to the clipboard; sends nothing. "Select text in the terminal first, …" (3 s) when nothing in the mirror is selected |
 | Ctrl+Q, Ctrl+=, Ctrl++, Ctrl+-, Ctrl+0 (Linux) | window keys (§4.1) | window keys (§4.1), not sent to the pane and no "Not sent" message |
 | Ctrl+] | enter passthrough | **leave** passthrough (the only key nika keeps) |
 | ⌘ shortcuts (macOS) | app shortcuts | still app shortcuts (not sent) |
