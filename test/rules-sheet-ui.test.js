@@ -83,6 +83,51 @@ test('(+) a skipped entry has its own mark, "skipped" label and note; it is not 
   assert.equal(view.all(withClass('dl')).length, 0, 'no diff for a file nika does not touch');
 });
 
+const DEFAULT_UNCHANGED = 'Unchanged. Not touched.';
+const viewOf = (r) => r.node('#ru-main').all((n) => n.tag === 'section')[0];
+/** Opens the sheet on `files` and selects the file at `index`; returns the rig and the detail pane. */
+async function pick(files, index) {
+  const r = rig(files);
+  r.api.openRules({ key: KEY, dir: '/work/acme-api', name: 'acme-api' });
+  await settle();
+  navButtons(r)[index].click();
+  return { r, view: viewOf(r) };
+}
+
+test('(+) an unchanged entry with a server note shows the note in the detail pane, the list row still says "unchanged" (0.4.0)', async () => {
+  const note = 'Gets the rules through @AGENTS.md.';
+  const files = [FILES[0], { path: 'CLAUDE.md', action: 'unchanged', diff: '', note }];
+  const { r, view } = await pick(files, 1);
+  assert.ok(view.textContent.includes(note), 'the note is shown');
+  assert.ok(!view.textContent.includes(DEFAULT_UNCHANGED), 'in place of the default line');
+  assert.equal(view.all(withClass('d-note')).length, 1);
+  assert.equal(navButtons(r)[1].all(withClass('fa'))[0].textContent, 'unchanged');
+  assert.equal(view.all(withClass('dl')).length, 0, 'no diff');
+});
+
+test('(−) an unchanged entry without a note, or with one that is not a non-empty string, still says "Unchanged. Not touched."', async () => {
+  for (const extra of [{}, { note: '' }, { note: 42 }, { note: { text: 'x' } }, { note: null }]) {
+    const { view } = await pick([FILES[0], { path: 'CLAUDE.md', action: 'unchanged', diff: '', ...extra }], 1);
+    assert.equal(view.all(withClass('d-note'))[0].textContent, DEFAULT_UNCHANGED, JSON.stringify(extra));
+  }
+});
+
+test('(−) a note with markup characters shows as literal text: no element is built from it', async () => {
+  const note = '<b>x</b> & <img src=x onerror=alert(1)>';
+  for (const action of ['unchanged', 'skipped']) {
+    const { view } = await pick([FILES[0], { path: 'CLAUDE.md', action, diff: '', note }], 1);
+    const p = view.all(withClass('d-note'))[0];
+    assert.equal(p.textContent, note, action);
+    assert.equal(p.kids.length, 0, 'textContent only: no child nodes');
+    assert.equal(view.all((n) => n.tag === 'b' || n.tag === 'img').length, 0, action);
+  }
+});
+
+test('(−) a skipped entry without a note still says "Skipped. Not touched."', async () => {
+  const { view } = await pick([FILES[0], { path: 'AGENTS.md', action: 'skipped', diff: '' }], 1);
+  assert.equal(view.all(withClass('d-note'))[0].textContent, 'Skipped. Not touched.');
+});
+
 test('(+) with nothing else to change the skipped file is still not preselected, and the footer counts it apart', async () => {
   const r = rig([{ ...FILES[0], action: 'unchanged', diff: '' }, { ...FILES[1], action: 'unchanged', diff: '' }, FILES[2], FILES[3]]);
   r.api.openRules({ key: KEY, dir: '/work/acme-api', name: 'acme-api' });

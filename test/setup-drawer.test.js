@@ -1,5 +1,5 @@
 // 0.4.0, G3: on a window 1030 px wide or narrower the project page no longer stacks the Rules, Project setup and New agents cards under
-// the agents list; a "Setup" button opens them in a right-hand drawer (a <dialog class="sheet">, like the Spawn sheet). The browser is
+// the agents list; a "Settings" button in the title row (right before Show ended) opens them in a right-hand drawer (a <dialog class="sheet">, like the Spawn sheet). The browser is
 // exercised by hand; here the real page code (project.js, ui.js, app.js swap) runs against a small fake page (test/fake-dom.js plus the
 // selector matching below) and recorded requests, and the markup and the stylesheet are read as text. Names and ids are synthetic.
 import { test, describe, before, after } from 'node:test';
@@ -60,13 +60,13 @@ const decl = (css, selector) => new RegExp(`(?:^|[}\\s,])${selector.replace(/[.*
 describe('the drawer markup (index.html)', () => {
   const dlg = /<dialog\b[^>]*\bid="dlg-setup"[^>]*>[\s\S]*?<\/dialog>/.exec(HTML)?.[0] ?? '';
 
-  test('(+) a labelled <dialog class="sheet"> for the app tier, titled Setup, with the project name as a muted subtitle and a body to scroll', () => {
+  test('(+) a labelled <dialog class="sheet"> for the app tier, titled Settings, with the project name as a muted subtitle and a body to scroll', () => {
     assert.ok(dlg, '#dlg-setup exists');
     const open = /<dialog\b[^>]*>/.exec(dlg)[0];
     assert.match(open, /\bclass="sheet\b/);
     assert.match(open, /\baria-labelledby="su-h"/);
     assert.match(open, /\bdata-app-only\b/);
-    assert.match(dlg, /<h2 id="su-h" tabindex="-1">Setup<\/h2>/);
+    assert.match(dlg, /<h2 id="su-h" tabindex="-1">Settings<\/h2>/);
     assert.match(dlg, /<p id="su-d"><\/p>/);
     assert.match(dlg, /<div class="dlg-body" id="su-body"><\/div>/);
   });
@@ -90,8 +90,24 @@ describe('the drawer markup (index.html)', () => {
     assert.equal((HTML.match(/id="su-body"/g) ?? []).length, 1);
   });
 
-  test('(+) the panel icon exists in the sprite', () => {
-    assert.match(HTML, /<symbol id="i-panel" viewBox="0 0 16 16">/);
+  test('(+) the gear icon exists in the sprite', () => {
+    assert.match(HTML, /<symbol id="i-gear" viewBox="0 0 16 16">/);
+  });
+
+  test('(+) the header is back link, heading, rules badge, then the Settings host and Show ended together in one group, then the actions', () => {
+    const header = /<header class="bar">[\s\S]*?<\/header>/.exec(/<section class="screen" data-screen="project"[\s\S]*?<\/header>/.exec(HTML)?.[0] ?? '')?.[0] ?? '';
+    const at = (id) => header.indexOf(`id="${id}"`);
+    for (const id of ['proj-h', 'proj-rules', 'proj-settings', 'proj-ended-wrap', 'proj-actions']) assert.ok(at(id) >= 0, id);
+    assert.ok(at('proj-h') < at('proj-rules') && at('proj-rules') < at('proj-settings') && at('proj-settings') < at('proj-ended-wrap') && at('proj-ended-wrap') < at('proj-actions'));
+    const group = /<span class="bar-end">[\s\S]*?<\/label>\s*<\/span>/.exec(header)?.[0] ?? '';
+    assert.ok(group.includes('id="proj-settings"') && group.includes('id="proj-ended-wrap"'), 'one group: the two wrap together');
+    assert.ok(!group.includes('id="proj-actions"'), 'the actions are not in it');
+  });
+
+  test('(−) the host is its own empty element, not inside the actions row; the id is there once', () => {
+    assert.match(HTML, /<span id="proj-settings"><\/span>/);
+    assert.equal((HTML.match(/id="proj-settings"/g) ?? []).length, 1);
+    assert.match(HTML, /<span class="bar-actions" id="proj-actions"><\/span>/);
   });
 });
 
@@ -99,13 +115,13 @@ describe('the stylesheet: the breakpoint is 1030 px', () => {
   const narrow = block(CSS, '@media (max-width: 1030px)');
   const wide = outsideMedia(CSS);
 
-  test('(+) inside the 1030 px query the cards column is hidden from the grid and the Setup button shows', () => {
+  test('(+) inside the 1030 px query the cards column is hidden from the grid and the Settings button shows', () => {
     assert.match(decl(narrow, '#proj-setup') ?? '', /display:\s*none/);
     assert.match(decl(narrow, '.btn.setup-open') ?? '', /display:\s*inline-flex/);
     assert.match(decl(narrow, '.proj-grid') ?? '', /grid-template-columns:\s*minmax\(0,\s*1fr\)/);
   });
 
-  test('(−) outside it the Setup button is display: none and the column is not hidden', () => {
+  test('(−) outside it the Settings button is display: none and the column is not hidden', () => {
     assert.match(decl(wide, '.btn.setup-open') ?? '', /display:\s*none/);
     assert.doesNotMatch(decl(wide, '#proj-setup') ?? '', /display:\s*none/);
   });
@@ -116,6 +132,11 @@ describe('the stylesheet: the breakpoint is 1030 px', () => {
       assert.equal(decl(b, '#proj-setup'), null, q);
       assert.equal(decl(b, '.btn.setup-open'), null, q);
     }
+  });
+
+  test('(+) the title row group keeps Settings and Show ended together (a flex row), and the host adds no box of its own', () => {
+    assert.match(decl(wide, '.bar-end') ?? '', /display:\s*flex/);
+    assert.match(decl(wide, '#proj-settings') ?? '', /display:\s*contents/);
   });
 
   test('(+) the drawer reuses the Spawn sheet: the class .sheet gives the width, the slide-in and the full height', () => {
@@ -258,7 +279,7 @@ function buildPage() {
   const main = add(body, 'section', null, 'screen');
   const h1 = add(main, 'h1', 'proj-h');
   h1.attrs.tabindex = '-1';
-  for (const id of ['proj-rules', 'proj-actions', 'proj-ended-wrap', 'proj-agents', 'proj-setup']) add(main, id === 'proj-setup' ? 'aside' : 'div', id);
+  for (const id of ['proj-rules', 'proj-settings', 'proj-ended-wrap', 'proj-actions', 'proj-agents', 'proj-setup']) add(main, id === 'proj-setup' ? 'aside' : 'div', id);
   return { body, dlg, x, docL: {} };
 }
 
@@ -306,7 +327,8 @@ function rig({ narrow = false, matchMedia = true, rules = 'nika', sub = true } =
   const r = {
     api, proj, g, state, calls, renders, mq, winL, window, ...page,
     q, drawer: q('dlg-setup'), column: q('proj-setup'), body: q('su-body'), actions: q('proj-actions'),
-    setupBtn: () => r.actions.byFk(`setup:${KEY}`),
+    host: q('proj-settings'),
+    setupBtn: () => r.host.byFk(`setup:${KEY}`),
     titles: (host) => host.all((n) => n.tag === 'h2').map((n) => n.textContent),
     ids: () => page.body.all((n) => 'id' in n.attrs).map((n) => n.attrs.id),
     /** A click as the page sees it: the element's own handlers, then the document-level ones (initDialogs, initMenus). */
@@ -328,10 +350,10 @@ function rig({ narrow = false, matchMedia = true, rules = 'nika', sub = true } =
 
 const CARDS = ['Rules', 'Project setup', 'New agents'];
 
-// ---- the Setup button -------------------------------------------------------------------------------------------------------------
+// ---- the Settings button ------------------------------------------------------------------------------------------------------------
 
-describe('the Setup button in the project header', () => {
-  test('(+) the word Setup and a panel icon, announced as a dialog opener for the drawer, with a focus key like the other header buttons', () => {
+describe('the Settings button in the project page title row', () => {
+  test('(+) the word Settings and a gear icon, announced as a dialog opener for the drawer, with a focus key like the other header buttons', () => {
     const r = rig();
     r.api.renderProject(true);
     const b = r.setupBtn();
@@ -342,25 +364,55 @@ describe('the Setup button in the project header', () => {
     assert.match(b.className, /\bsetup-open\b/);
     assert.equal(b.attrs['aria-haspopup'], 'dialog');
     assert.equal(b.attrs['aria-controls'], 'dlg-setup');
-    assert.equal(b.attrs['aria-label'], 'Setup');
-    assert.equal(b.attrs.title, 'Setup', 'icon only below 760 px: the name is also its tooltip');
-    assert.equal(b.textContent, 'Setup');
-    assert.deepEqual(b.all((n) => n.tag === 'use').map((n) => n.attrs.href), ['#i-panel']);
-    assert.equal(b.all((n) => n.className === 'lbl')[0].textContent, 'Setup', 'the .lbl span is what the narrowest rule hides');
+    assert.equal(b.textContent, 'Settings', 'the visible word is the accessible name (WCAG 2.5.3): no aria-label of another word');
+    assert.ok([undefined, 'Settings'].includes(b.attrs['aria-label']));
+    assert.deepEqual(b.all((n) => n.tag === 'use').map((n) => n.attrs.href), ['#i-gear']);
   });
 
-  test('(+) it sits right after Spawn sub-orchestrator and before the More actions menu', () => {
+  test('(+) the word is plain text, not in a .lbl span: no breakpoint hides it', () => {
     const r = rig();
     r.api.renderProject(true);
+    assert.equal(r.setupBtn().all((n) => /\blbl\b/.test(n.className ?? '')).length, 0);
+    assert.doesNotMatch(CSS, /\.setup-open[^{]*\.lbl/);
+  });
+
+  test('(+) it sits in the title row: in the Settings host, after the rules badge and before the Show ended box', () => {
+    const r = rig();
+    r.api.renderProject(true);
+    const b = r.setupBtn();
+    assert.equal(b.parent, r.host);
+    const order = page.body.all((n) => [r.q('proj-rules'), r.host, r.q('proj-ended-wrap'), r.actions].includes(n)); // document order (r.body is the drawer's body)
+    assert.deepEqual(order.map((n) => n.attrs.id), ['proj-rules', 'proj-settings', 'proj-ended-wrap', 'proj-actions']);
+  });
+
+  test('(−) it is not in the actions row; Spawn sub-orchestrator is followed by the More actions menu', () => {
+    const r = rig();
+    r.api.renderProject(true);
+    assert.equal(r.actions.byFk(`setup:${KEY}`), null);
+    assert.equal(r.actions.all((n) => /\bsetup-open\b/.test(n.className ?? '')).length, 0);
     const kids = r.actions.kids;
     const at = (fk) => kids.findIndex((k) => k.attrs['data-fk'] === fk);
     assert.ok(at(`spawn-sub:${KEY}`) >= 0, 'the header has Spawn sub-orchestrator');
-    assert.equal(at(`setup:${KEY}`), at(`spawn-sub:${KEY}`) + 1);
-    assert.match(kids[at(`setup:${KEY}`) + 1].className, /\bmenu-wrap\b/);
+    assert.match(kids[at(`spawn-sub:${KEY}`) + 1].className, /\bmenu-wrap\b/);
+  });
+
+  test('(+) a second render keeps one button in the host (the old one is replaced, not added to)', () => {
+    const r = rig();
+    r.api.renderProject(true);
+    r.api.renderProject(true);
+    assert.equal(r.host.kids.length, 1);
   });
 
   test('(−) the dashboard group actions do not get one (the cards exist only on the project page)', () => {
     assert.doesNotMatch(PROJECT_SRC.slice(PROJECT_SRC.indexOf('function groupActions('), PROJECT_SRC.indexOf('function subButton(')), /setup/i);
+  });
+
+  test('(−) a project that is not registered leaves the host empty', () => {
+    const r = rig();
+    r.api.renderProject(true);
+    r.state.projects = [];
+    r.api.renderProject(true);
+    assert.equal(r.host.kids.length, 0);
   });
 
   test('(−) it works while the server is unreachable (it is not gated like Start and Spawn)', () => {
@@ -437,7 +489,7 @@ describe('opening and closing the drawer', () => {
     r.press(r.setupBtn());
   };
 
-  test('(+) Setup opens the drawer as a modal with the three cards, and focus moves into it (its heading)', () => {
+  test('(+) Settings opens the drawer as a modal with the three cards, and focus moves into it (its heading)', () => {
     const r = rig({ narrow: true });
     open(r);
     assert.equal(r.drawer.open, true);
@@ -463,7 +515,7 @@ describe('opening and closing the drawer', () => {
     assert.equal(r.titles(r.column).length, 0);
   });
 
-  test('(+) the × button closes it and focus returns to the Setup button', () => {
+  test('(+) the × button closes it and focus returns to the Settings button', () => {
     const r = rig({ narrow: true });
     open(r);
     r.press(r.x);
@@ -471,7 +523,7 @@ describe('opening and closing the drawer', () => {
     assert.equal(focus.el, r.setupBtn());
   });
 
-  test('(+) Esc closes it and focus returns to the Setup button', () => {
+  test('(+) Esc closes it and focus returns to the Settings button', () => {
     const r = rig({ narrow: true });
     open(r);
     r.esc(r.drawer);
@@ -479,7 +531,7 @@ describe('opening and closing the drawer', () => {
     assert.equal(focus.el, r.setupBtn());
   });
 
-  test('(+) a click on the backdrop (the dialog itself, pressed and released there) closes it and focus returns to the Setup button', () => {
+  test('(+) a click on the backdrop (the dialog itself, pressed and released there) closes it and focus returns to the Settings button', () => {
     const r = rig({ narrow: true });
     open(r);
     r.drawer.fire('pointerdown', { target: r.drawer });
@@ -568,7 +620,7 @@ describe('opening and closing the drawer', () => {
     assert.equal(r.drawer.open, false);
   });
 
-  test('(+) focus goes back to the Setup button even when a render replaced it while the drawer was open', () => {
+  test('(+) focus goes back to the Settings button even when a render replaced it while the drawer was open', () => {
     const r = rig({ narrow: true });
     open(r);
     const old = r.setupBtn();
@@ -724,7 +776,7 @@ describe('the window width changes', () => {
     assert.equal(r.drawer.open, false);
     assert.deepEqual(r.titles(r.column), CARDS);
     assert.equal(r.body.kids.length, 0);
-    assert.equal(focus.el, r.q('proj-h'), 'the Setup button is hidden now: the heading takes the focus');
+    assert.equal(focus.el, r.q('proj-h'), 'the Settings button is hidden now: the heading takes the focus');
   });
 
   test('(+) shrinking below it moves the cards from the column into the drawer', () => {
@@ -765,19 +817,19 @@ describe('the window width changes', () => {
       assert.equal(focus.el, r.column.byFk(KEEP), 'the same control, in its new home');
     });
 
-    test('(+) shrinking with no drawer open: the control goes into the closed drawer, so focus goes to the Setup button; the drawer stays closed', () => {
+    test('(+) shrinking with no drawer open: the control goes into the closed drawer, so focus goes to the Settings button; the drawer stays closed', () => {
       const r = rig({ narrow: false });
       r.api.wireSetup();
       r.api.renderProject(true);
       r.column.byFk(KEEP).focus();
       r.narrower(true);
-      assert.ok(r.setupBtn(), 'the header has its Setup button');
+      assert.ok(r.setupBtn(), 'the title row has its Settings button');
       assert.equal(focus.el, r.setupBtn());
       assert.equal(r.drawer.open, false, 'a resize never opens the drawer');
       assert.deepEqual(r.titles(r.body), CARDS);
     });
 
-    test('(+) shrinking while a card element with no focus key has the focus: the Setup button as well', () => {
+    test('(+) shrinking while a card element with no focus key has the focus: the Settings button as well', () => {
       const r = rig({ narrow: false });
       r.api.wireSetup();
       r.api.renderProject(true);

@@ -281,7 +281,7 @@ describe('the controls that public/*.js builds: the text scan', () => {
   test('(+) the scan sees the controls it is meant to: the menu trigger (icon) and the project page buttons (.lbl)', () => {
     const seen = (f) => jsControls(fs.readFileSync(path.join(PUBLIC, f), 'utf8'));
     assert.ok(seen('ui.js').some((c) => c.why === 'icon' && c.title), 'ui.js menu trigger');
-    assert.ok(seen('project.js').filter((c) => c.why === 'lbl' && c.title).length >= 3, 'project.js: Setup, Add project, Open orchestrator and the group actions');
+    assert.ok(seen('project.js').filter((c) => c.why === 'lbl' && c.title).length >= 3, 'project.js: Add project, Open orchestrator and the group actions (the Settings button has plain words, so it is not one of them)');
   });
 });
 

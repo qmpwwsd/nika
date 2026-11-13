@@ -488,7 +488,7 @@ function subButton(g) {
 /* ---------- project view ---------- */
 const RULE_TEXT = {
   nika: 'rules/orchestration.md matches the current template.',
-  outdated: 'Written by nika from an older template. Update to bring it current.',
+  outdated: 'Written from an older template, or CLAUDE.md or AGENTS.md lacks the rules line. Apply rules to bring it current.',
   foreign: 'rules/orchestration.md exists but nika did not write it. Applying replaces it after you confirm; a backup is kept.',
   none: 'This project has no rules/orchestration.md yet. Agents start without orchestration rules.',
 };
@@ -511,6 +511,7 @@ function renderProject(force) {
     document.title = 'Project not found · nika';
     swap($('#proj-rules'), []);
     swap($('#proj-actions'), []);
+    swap($('#proj-settings'), []);
     swap($('#proj-setup'), []);
     swap($('#su-body'), []);
     swap($('#proj-agents'), [h('div', { class: 'empty' }, h('h2', { text: 'This project is not registered' }), h('p', { text: 'It may have been removed. Add it again from the dashboard.' }), h('a', { class: 'btn', href: '#dashboard', text: 'Back to the dashboard' }))]);
@@ -522,9 +523,9 @@ function renderProject(force) {
   document.title = `${p.name} · nika`;
   swap($('#proj-rules'), [rulesEl(p.rules?.state)]);
   const pick = savedPick(p);
+  swap($('#proj-settings'), [setupButton(g)]); // the title row, right before Show ended; app.css shows it up to 1030 px
   swap($('#proj-actions'), [
     ...groupActions(g, { primary: 'spawn', sub: true }),
-    setupButton(g),
     menuEl(`More actions for ${p.name}`, [
       { text: 'Copy folder path', run: () => copyText(p.dir, 'folder path') },
       ...(pick ? [{
@@ -538,8 +539,8 @@ function renderProject(force) {
   placeSetup(p, g);
 }
 
-/* ---------- Setup drawer (0.4.0): up to 1030 px wide the cards live in a drawer that the header's Setup button opens ---------- */
-const NARROW = '(max-width: 1030px)'; // the stylesheet's query: app.css hides #proj-setup and shows the Setup button under it
+/* ---------- Settings drawer (0.4.0): up to 1030 px wide the cards live in a drawer that the title row's Settings button opens ---------- */
+const NARROW = '(max-width: 1030px)'; // the stylesheet's query: app.css hides #proj-setup and shows the Settings button under it
 const isNarrow = () => window.matchMedia?.(NARROW)?.matches === true;
 /** A click handler that puts focus on the button first: some web views do not focus a clicked button, and a dialog it opens gives focus back to the element that had it. */
 const focusing = (run) => (e) => { e?.currentTarget?.focus?.(); run(); };
@@ -554,7 +555,7 @@ function focusKey(host) {
 
 /**
  * Puts the focus back after a flip emptied the home that held it: on the same card control when its new home is on screen (the
- * column), else on the Setup button (the drawer is closed and a resize does not open it), else on the project heading.
+ * column), else on the Settings button (the drawer is closed and a resize does not open it), else on the project heading.
  */
 function landFocus(fk, key) {
   const target = isNarrow() ? $(`[data-fk="setup:${key}"]`) : fk && $(`[data-fk="${CSS.escape(fk)}"]`, $('#proj-setup'));
@@ -577,11 +578,11 @@ function openSetup() {
   $('#su-body').scrollTop = 0; // a drawer that was scrolled last time starts at its first card
 }
 
+/** The word stays at every width (no .lbl for a breakpoint to hide), so it is the accessible name as well: no aria-label, no tooltip. */
 function setupButton(g) {
   return h('button', {
-    type: 'button', class: 'btn setup-open', 'data-fk': `setup:${g.key}`, 'aria-haspopup': 'dialog', 'aria-controls': 'dlg-setup',
-    'aria-label': 'Setup', title: 'Setup', onclick: focusing(openSetup), // icon only below 760 px: the name is also the tooltip
-  }, icon('panel'), h('span', { class: 'lbl', text: 'Setup' }));
+    type: 'button', class: 'btn setup-open', 'data-fk': `setup:${g.key}`, 'aria-haspopup': 'dialog', 'aria-controls': 'dlg-setup', onclick: focusing(openSetup),
+  }, icon('gear'), 'Settings');
 }
 
 /** Backdrop click, hash change and the window crossing 1030 px (matchMedia is missing in old web views and in the test rigs: then the page is wide). */
@@ -616,7 +617,7 @@ function wireSetup() {
   window.matchMedia?.(NARROW)?.addEventListener?.('change', () => {
     const grew = dlg.open && !isNarrow();
     const fk = grew ? focusKey($('#su-body')) : null; // read before the close below takes the focus away
-    if (grew) dlg.close(); // the cards go back to the column, and the Setup button is hidden again
+    if (grew) dlg.close(); // the cards go back to the column, and the Settings button is hidden again
     if (state.route.name === 'project') renderProject(true);
     if (grew) landFocus(fk ?? '', state.route.key); // the opener is hidden now: the card control that had the focus, else the heading
   });
@@ -1371,7 +1372,7 @@ function spawnFailure(r, req, g, parent) {
 /* ---------- apply rules ---------- */
 const ru = { project: null, phase: 'loading', preview: null, sel: 0, gitignore: false, foreignOk: false, message: '', result: null, seq: 0 };
 const ACT_MARK = { create: '+', update: '~', unchanged: '=', skipped: '–' };
-// nothing is written for these (a skipped entry carries the server's note)
+// nothing is written for these (either may carry the server's note, shown in the detail pane in place of the default line)
 const inert = (f) => f.action === 'unchanged' || f.action === 'skipped';
 
 function openRules(project) {
@@ -1506,8 +1507,8 @@ function filesPhase() {
     h('section', { class: 'file-view', 'aria-label': `Changes to ${f.path}` },
       h('div', { class: 'file-head' }, h('code', { text: f.path }), badge(f), h('span', { class: 'help', text: label(f) }),
         f.keysPreserved ? h('span', { class: 'help', text: `· only enabledPlugins changes; ${keptText(f)}` }) : null),
-      f.action === 'unchanged' ? h('p', { class: 'diff d-note', text: 'Unchanged. Not touched.' })
-        : f.action === 'skipped' ? h('p', { class: 'diff d-note', text: f.note ?? 'Skipped. Not touched.' }) : diffEl(f.diff ?? ''))));
+      inert(f) ? h('p', { class: 'diff d-note', text: (typeof f.note === 'string' && f.note) || (f.action === 'unchanged' ? 'Unchanged. Not touched.' : 'Skipped. Not touched.') }) // the server's note, as text
+        : diffEl(f.diff ?? ''))));
   out.push(h('div', { class: 'rules-notes' },
     warnings?.length ? h('div', { class: 'alert', 'data-kind': 'warn' }, icon('warn'), h('div', null, warnings.map((w) => h('p', { text: w })))) : null,
     gi ? h('label', { class: 'check' }, h('input', {

@@ -96,7 +96,10 @@
         <h1 id="proj-h" tabindex="-1"></h1>
         <span id="proj-rules"></span>
         <span class="sp"></span>
-        <label class="check center" id="proj-ended-wrap"><input type="checkbox" id="proj-ended"> Show ended</label>
+        <span class="bar-end">
+          <span id="proj-settings"></span>
+          <label class="check center" id="proj-ended-wrap"><input type="checkbox" id="proj-ended"> Show ended</label>
+        </span>
         <span class="bar-actions" id="proj-actions"></span>
       </header>
       <div class="scroll" id="proj-body" aria-busy="true">
@@ -208,7 +211,7 @@
 </div>
 
 <dialog id="dlg-setup" class="sheet" aria-labelledby="su-h" aria-describedby="su-d" data-app-only>
-  <div class="dlg-head"><div><h2 id="su-h" tabindex="-1">Setup</h2><p id="su-d"></p></div><button type="button" class="btn icon ghost" data-close aria-label="Close" title="Close"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button></div>
+  <div class="dlg-head"><div><h2 id="su-h" tabindex="-1">Settings</h2><p id="su-d"></p></div><button type="button" class="btn icon ghost" data-close aria-label="Close" title="Close"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button></div>
   <div class="dlg-body" id="su-body"></div>
 </dialog>
 

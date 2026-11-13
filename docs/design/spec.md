@@ -598,7 +598,7 @@ Messages (exact copy):
 | Kind | Size | Header | Footer |
 |---|---|---|---|
 | Modal (rules) | min(980, vw−32) × min(720, vh−32) | title + close (×) | Cancel · primary |
-| Side sheet (Setup drawer, 0.4.0, §3.20) | 480 × full height, right edge | "Setup" + project name + close | none |
+| Side sheet (Settings drawer, 0.4.0, §3.20) | 480 × full height, right edge | "Settings" + project name + close | none |
 | Side sheet (spawn) | 480 × full height, right edge | title + project + close | count note · Cancel · Spawn agent (or Spawn sub-orchestrator, §3.17) |
 | Confirm (remove project) | 440 wide | title | Cancel · danger action |
 | Modal (Choose plugins, 0.3.4) | min(560, vw−32) × min(640, vh−32) | title + close (×) | Cancel · Save plugins (§3.15) |
@@ -614,7 +614,7 @@ Grid per line: old no (3.5em) · new no (3.5em) · marker (1.5em) · text. Mono 
 |---|---|
 | create | all lines "+", file action badge "create" (busy colours) |
 | update | hunks, badge "update" (idle colours) |
-| unchanged | no diff body: "Unchanged. Not touched." badge "unchanged" (ended colours) |
+| unchanged | no diff body: "Unchanged. Not touched." badge "unchanged" (ended colours). **(built amendment 2026-11-14 (0.4.0))** An entry may carry a server `note` (plain text, shown with `textContent`, only on `unchanged` and `skipped`, for example `CLAUDE.md`: "Gets the rules through @AGENTS.md."); the detail pane then shows it in place of the default line, and the list row still says "unchanged". A `skipped` entry without a note says "Skipped. Not touched." |
 | foreign | full replace diff, badge "replace" (attn colours) + confirm checkbox |
 | settings.local.json | only the `enabledPlugins` block; header note "N other keys kept (values not shown)" |
 | L | 6 skeleton lines |
@@ -996,17 +996,20 @@ inline: "Context" (muted), "312k / 400k ·" (`.hide-narrow`: gone at ≤ 1000 px
 Colour is never alone: the number is always there, `full` also has the warning icon, and the sentence for screen readers carries the level.
 Ids and classes: `sess-ctx`, `.c-ctx`, `.ctx`, `.ctx-l`, `.ctx-t`, `.ctx-v`, `.ctx-bar`; tokens in `public/tokens.css`.
 
-### 3.20 Setup drawer (0.4.0)
+### 3.20 Settings drawer (0.4.0)
 
 On a window 1030 px wide or narrower (§6) the project page shows only the agents. Its three cards, **Rules**, **Project setup** and **New agents**,
-move into a drawer that the **Setup** button opens (owner decision 2026-11-13). Above 1030 px nothing changes: agents plus the 320 px column, and no button.
+move into a drawer that the **Settings** button opens (owner decision 2026-11-13; renamed and moved to the title row, owner decision 2026-11-14). Above 1030 px nothing changes: agents plus the 320 px column, and no button.
 
-- **Button.** In the header row after Spawn sub-orchestrator: the panel icon and the word "Setup" (`button.btn.setup-open`, `aria-haspopup="dialog"`,
-  `aria-controls="dlg-setup"`, `data-fk="setup:<project key>"`). It is hidden by CSS above 1030 px and is icon only below 760 px like the other header buttons,
-  so `aria-label` and `title` both say "Setup". It is never disabled. The "Rules current/outdated" chip stays next to the project name, so a rules warning shows with the drawer closed.
+- **Button.** In the title row, at the far right, right before "Show ended": `< Dashboard  <project>  <rules chip>  [gear Settings]  [ ] Show ended`. It leaves the actions row
+  (Start orchestrator, Spawn agent, Spawn sub-orchestrator, ⋯). The gear icon (`#i-gear`) and the word "Settings" (`button.btn.setup-open`, `aria-haspopup="dialog"`,
+  `aria-controls="dlg-setup"`, `data-fk="setup:<project key>"`); the ids and the key keep the old "setup" name. The word is plain text, not a `.lbl` span, so no breakpoint hides it:
+  the visible word is the accessible name (WCAG 2.5.3) and the button needs no `aria-label` or `title`. It is hidden by CSS above 1030 px and never disabled. It is rendered into
+  `#proj-settings`, an empty host (`display: contents`) inside `.bar-end`, the flex group that holds the host and the Show ended box, so the two wrap together: when the row is
+  too narrow the group moves under the title as one unit. The "Rules current/outdated" chip stays next to the project name, so a rules warning shows with the drawer closed.
 - **Drawer.** `<dialog id="dlg-setup" class="sheet">`, the Spawn sheet's look, keys and animation (§3.6): `showModal()`, the scrim, Esc, the × button and a
-  click on the scrim close it. A press that starts inside the drawer and ends on the scrim (dragging a selection out) does not. Header: "Setup" with the project name
-  as a muted line; the body scrolls and the header stays; it opens at the top. Focus moves to the heading on open and back to the Setup button on close
+  click on the scrim close it. A press that starts inside the drawer and ends on the scrim (dragging a selection out) does not. Header: "Settings" with the project name
+  as a muted line (it tells this drawer from the app's Settings page); the body scrolls and the header stays; it opens at the top. Focus moves to the heading on open and back to the Settings button on close
   (found again by its `data-fk` if a render replaced the button). A hash change (the "Settings" link in the Project setup card, or a way back) closes it.
 - **One home for the cards.** `setupCards()` stays the only builder. Narrow, the cards live in the drawer body (`#su-body`) and `#proj-setup` is empty and hidden;
   wide, they live in `#proj-setup` and the body is empty; never both, so no id appears twice. A render while the drawer is open rebuilds the cards inside it, keeps it
@@ -1096,7 +1099,7 @@ Esc closes the **nearest nika layer**; only when nothing is open does it reach t
 
 ### 4.4 Dialogs
 
-Native `<dialog>.showModal()`: background is inert, Tab cycles inside, Esc fires `cancel` (the Setup drawer lets Esc close an open menu inside it first, §3.20). Initial focus: the element with `autofocus` (first field in spawn, Done on success), else the dialog's `h2` (`tabindex="-1"`). On close, focus returns to the opener; if the opener is gone (row re-rendered), to the screen's `h1`.
+Native `<dialog>.showModal()`: background is inert, Tab cycles inside, Esc fires `cancel` (the Settings drawer lets Esc close an open menu inside it first, §3.20). Initial focus: the element with `autofocus` (first field in spawn, Done on success), else the dialog's `h2` (`tabindex="-1"`). On close, focus returns to the opener; if the opener is gone (row re-rendered), to the screen's `h1`.
 
 ### 4.5 Skip links and landmarks
 
@@ -1336,7 +1339,7 @@ Row: "reviewer-2, Needs you: Asking to run a command, model opus, demo-api, 4 mi
 A control that shows an icon or a symbol and no words, always or only below a breakpoint, carries a `title` equal to its accessible name, so a
 hover says what it is: the dialogs' × buttons, the steppers' − and +, the project tree's fold button, Copy backup path, the sidebar links and
 the Add project button on the 60 px rail, the status glyph on a narrow row (its word is hidden), and the tmux and claude dots on the rail. A
-control that already has a different title (a disabled item's reason) keeps it. `test/tooltips.test.js` reads every page in `public/` and fails
+control that already has a different title (a disabled item's reason) keeps it. A button whose words stay at every width, such as the project page's Settings button (§3.20), is not an icon control and needs none. `test/tooltips.test.js` reads every page in `public/` and fails
 on an icon or symbol control without a title; the controls that page code builds are asserted in the tests that run that code.
 
 ### 5.6 Target size (2.5.8)
@@ -1361,10 +1364,10 @@ Window minimum: **720 × 480** (set `minWidth`/`minHeight` in the Tauri window c
 |---|---|---|---|---|
 | ≥ 1280 | sidebar 232 | all 7 columns | agents + 320 px cards column | split 38 % / 62 % |
 | 1031–1279 | sidebar 232 | rows container ≤ 1010 (browser tier ≤ 860): model + pane hidden, status glyph only | as above | split, transcript min 300 |
-| 1000–1030 | sidebar 232 | as above | agents only; cards in the Setup drawer (§3.20) | split, transcript min 300 |
-| 900–999 | sidebar 232 | as above | agents only; cards in the Setup drawer | **tabs**: Terminal (default) / Transcript |
-| 760–899 | 60 px icon rail, attention counts as corner badges, names in `title` + SR text | group action labels hidden (icon buttons) | agents only; cards in the Setup drawer | tabs; header labels hidden |
-| 720–759 | rail | rows ≤ 600: prompt on a 2nd line; path hidden | agents only; cards in the Setup drawer | tabs |
+| 1000–1030 | sidebar 232 | as above | agents only; cards in the Settings drawer (§3.20), its button in the title row | split, transcript min 300 |
+| 900–999 | sidebar 232 | as above | agents only; cards in the Settings drawer | **tabs**: Terminal (default) / Transcript |
+| 760–899 | 60 px icon rail, attention counts as corner badges, names in `title` + SR text | group action labels hidden (icon buttons) | agents only; cards in the Settings drawer (the button keeps its word) | tabs; header labels hidden |
+| 720–759 | rail | rows ≤ 600: prompt on a 2nd line; path hidden | agents only; cards in the Settings drawer | tabs |
 
 Session details:
 - The composer (quick actions, message box, mode row, notes row) is always visible; the mirror takes the remaining height (min 120 px). **(built amendment 2026-11-09 (0.3.3))**

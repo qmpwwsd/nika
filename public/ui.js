@@ -141,7 +141,7 @@ export function modelEl(a) {
 const RULES = {
   none: { label: 'No rules', hint: 'No rules/orchestration.md yet', glyph: '–' },
   nika: { label: 'Rules current', hint: 'Written by nika from the current template', glyph: '✓' },
-  outdated: { label: 'Rules outdated', hint: 'Written by nika from an older template', glyph: '↻' },
+  outdated: { label: 'Rules outdated', hint: 'An older template, or CLAUDE.md or AGENTS.md lacks the rules line', glyph: '↻' },
   foreign: { label: 'Rules not by nika', hint: 'rules/orchestration.md was not written by nika', glyph: '!' },
 };
 export function rulesEl(s) {
