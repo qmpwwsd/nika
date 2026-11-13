@@ -489,7 +489,7 @@ async function rulesCmd(rest, cx) {
 
   const overwrite = values['overwrite-foreign'] === true;
   const gitignore = values.gitignore === true;
-  if (!p.files.some((f) => f.action !== 'unchanged' && (!f.optional || gitignore))) {
+  if (!p.files.some((f) => f.action !== 'unchanged' && f.action !== 'skipped' && (!f.optional || gitignore))) {
     cx.out.write('\nNothing to apply.\n');
     return 0;
   }

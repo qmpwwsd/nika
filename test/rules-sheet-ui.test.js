@@ -94,8 +94,11 @@ test('(+) the page never sends a file list: apply posts the hash and the two fla
   assert.equal(apply, 'json: { project: ru.project.key, hash: ru.preview.hash, overwriteForeign: ru.foreignOk, gitignore: ru.gitignore }');
 });
 
-test('(+) the stylesheet gives the skipped mark its own look (dashed outline, no fill), apart from the unchanged one', () => {
-  const rule = /\.act\[data-a="skipped"\]\s*\{([^}]*)\}/.exec(APP_CSS)?.[1] ?? '';
-  assert.match(rule, /dashed/);
-  assert.match(rule, /background:\s*none/);
+test('(+) the stylesheet gives the skipped mark its own look (dashed outline, no fill) and its own colour, apart from every other mark', () => {
+  const rule = (a) => new RegExp(`\\.act\\[data-a="${a}"\\]\\s*\\{([^}]*)\\}`).exec(APP_CSS)?.[1] ?? '';
+  const colour = (a) => /(?:^|;)\s*color:\s*([^;]+);/.exec(rule(a))?.[1].trim();
+  assert.match(rule('skipped'), /dashed/);
+  assert.match(rule('skipped'), /background:\s*none/);
+  assert.ok(colour('skipped'), 'the skipped mark sets a colour');
+  for (const other of ['create', 'update', 'unchanged', 'foreign']) assert.notEqual(colour('skipped'), colour(other), `not the colour of ${other}`);
 });

@@ -389,7 +389,7 @@ dialog.dlg-rules[open] { display: flex; flex-direction: column; }
 .act[data-a="update"] { color: var(--idle); background: var(--idle-soft); }
 .act[data-a="unchanged"] { color: var(--ended); background: var(--ended-soft); }
 .act[data-a="foreign"] { color: var(--attn); background: var(--attn-soft); }
-.act[data-a="skipped"] { color: var(--ended); background: none; outline: 1px dashed var(--ended); outline-offset: -1px; }
+.act[data-a="skipped"] { color: var(--accent); background: none; outline: 1px dashed var(--accent); outline-offset: -1px; }
 .file-view { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 .file-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--line); }
 .file-head code { font-weight: 600; }

@@ -645,6 +645,14 @@ describe('rules', () => {
     assert.equal(a.code, 0, a.err);
     assert.match(a.out, /written: rules\/orchestration\.md, CLAUDE\.md\n/);
     assert.equal(fs.readlinkSync(path.join(w.project.dir, 'AGENTS.md')), 'CLAUDE.md');
+    // (−) a skipped file is not a change: the second apply has nothing to do, writes nothing and never asks
+    const again = await cli(['rules', 'apply', '--yes'], { env: w.cliEnv, cwd: w.nested });
+    assert.equal(again.code, 0, again.err);
+    assert.match(again.out, /Nothing to apply/);
+    assert.doesNotMatch(again.out, /written:|backups?:/i);
+    const asked = await cli(['rules', 'apply'], { env: w.cliEnv, cwd: w.nested, tty: true, stdin: input('n\n', true) });
+    assert.equal(asked.code, 0, asked.err);
+    assert.doesNotMatch(asked.out, /Apply\? \[y\/N\]/);
   });
 
   test('(+) preview takes an explicit dir', async () => {
