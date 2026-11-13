@@ -48,8 +48,6 @@ h1:focus, h2:focus, .main:focus { outline: none; }
 .btn[aria-busy="true"] { opacity: 1; }
 kbd { font: var(--fs-cap)/1 var(--mono); padding: 2px 5px; border: 1px solid var(--line-strong); border-bottom-width: 2px; border-radius: var(--r-sm); color: var(--text-muted); background: var(--surface); }
 .model { font: 600 var(--fs-small)/1 var(--font); color: var(--text-muted); padding: 3px 6px; border-radius: var(--r-sm); background: var(--surface-2); border: 1px solid var(--line); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
-.tag { display: inline-flex; align-items: center; min-height: 20px; font-size: var(--fs-cap); font-weight: 600; padding: 0 6px; border-radius: var(--r-sm); color: var(--accent); background: var(--accent-soft); white-space: nowrap; }
-.tag.muted { color: var(--text-muted); background: var(--surface-2); border: 1px solid var(--line); }
 .rules { display: inline-flex; align-items: center; gap: 5px; min-height: 22px; padding: 0 8px; border-radius: 999px; font-size: var(--fs-small); font-weight: 600; border: 1px solid; white-space: nowrap; }
 .rules-g { font-weight: 700; }
 .rules[data-r="nika"] { color: var(--busy); background: var(--busy-soft); border-color: transparent; }
@@ -108,6 +106,9 @@ legend { font-weight: 600; padding: 0; margin-bottom: 4px; }
 .radio-card b { display: block; font-weight: 600; }
 .radio-card span span { color: var(--text-muted); font-size: var(--fs-small); }
 .radio-card[data-on="true"] span span { color: var(--text); }
+.radio-card[data-off="true"] { opacity: 0.5; }   /* the sub-orchestrator card while it cannot be chosen; #sp-role-why beside it says why, at full contrast */
+.sp-kv { font-size: var(--fs-body); }
+.sp-kv dd { overflow-wrap: anywhere; }
 .seg-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
 .counter { justify-self: end; font-size: var(--fs-small); color: var(--text-muted); }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 16px; }
@@ -223,11 +224,11 @@ body[data-tier="browser"] .app { grid-template-columns: minmax(0, 1fr); }
 .rows > li:last-child { border-bottom-left-radius: var(--r-lg); border-bottom-right-radius: var(--r-lg); }
 .row {
   display: grid; align-items: center; gap: 4px 12px; min-height: 40px; padding: 4px 8px 4px 12px;
-  grid-template-columns: 104px minmax(120px, 1.1fr) 88px minmax(0, 2.4fr) 56px 44px 32px;
+  grid-template-columns: 104px minmax(232px, 1.5fr) 88px 64px minmax(0, 2fr) 56px 44px 32px;
   border-top: 1px solid var(--line);
 }
 /* app tier: a mode column after the status (spec 9.9); the browser tier keeps the 0.2 grids above */
-body[data-tier="app"] .row { grid-template-columns: 104px 128px minmax(120px, 1.1fr) 88px minmax(0, 2.4fr) 56px 44px 32px; }
+body[data-tier="app"] .row { grid-template-columns: 104px 128px minmax(232px, 1.5fr) 88px 64px minmax(0, 2fr) 56px 44px 32px; }
 .row:first-child { border-top: 0; }
 .row:hover { background: var(--surface-2); }
 .row[data-s="attn"] { background: var(--attn-row); box-shadow: inset 3px 0 0 var(--attn); }
@@ -235,17 +236,43 @@ body[data-tier="app"] .row { grid-template-columns: 104px 128px minmax(120px, 1.
 .row[data-s="attn"] .what { color: var(--attn); font-weight: 600; }
 .row[data-s="ended"] .name { color: var(--text-muted); }
 .row > .subs { grid-column: 1 / -1; }
-.c-name { display: flex; align-items: center; gap: 6px; min-width: 0; }
-.name { font-weight: 600; color: var(--text); text-decoration: none; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* the nesting tree (design 0.4 section 2.2): the elbow's margins make the indent, 24 px a level, and hang its stroke under the parent's chevron */
+.elbow { flex: none; width: 9px; height: 20px; margin: -20px 4px 0 0; border-left: 1.5px solid var(--line-strong); border-bottom: 1.5px solid var(--line-strong); border-bottom-left-radius: 4px; }
+.row[data-depth="2"] .elbow { margin-left: 11px; }
+.row[data-depth="3"] .elbow { margin-left: 35px; }
+.tree-sp, .tree-tg { flex: none; width: 24px; height: 24px; }
+.tree-tg { display: inline-grid; place-items: center; padding: 0; border: 0; border-radius: var(--r-sm); background: none; color: var(--text-muted); }
+.tree-tg:hover { background: var(--surface-3); color: var(--text); }
+.tree-tg .ic { width: 14px; height: 14px; transition: transform var(--dur-1) var(--ease); }
+.tree-tg[aria-expanded="false"] .ic { transform: rotate(-90deg); }
+.tree-hid { flex: none; display: inline-flex; align-items: center; gap: 4px; font-size: var(--fs-cap); font-weight: 600; color: var(--text-muted); }
+.tree-hid .attn { color: var(--attn); }
+.tree-hid .attn::before { content: ""; display: inline-block; width: 6px; height: 6px; margin-right: 3px; transform: rotate(45deg); background: currentColor; }
+.tree-orphan { flex: 0 20 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-cap); color: var(--text-muted); }   /* gives way before the name does */
+.c-name { display: flex; align-items: center; gap: 6px; min-width: 0; container: cname / inline-size; }
+.c-name .tag { flex: none; }
+/* the long role word ("sub-orchestrator", about 120 px) needs about 270 px with the indent, the fold button and a name of 8 letters; below that the short word shows */
+@container cname (max-width: 269px) {
+  .c-name .tag .tag-l { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }   /* still read by screen readers */
+  .c-name .tag .tag-s { display: inline; }
+}
+.name { font-weight: 600; color: var(--text); text-decoration: none; min-width: 9ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 a.name:hover { text-decoration: underline; }
-.c-what { min-width: 0; display: flex; align-items: center; gap: 8px; }
+.c-what { min-width: 0; display: flex; align-items: center; gap: 8px; container: cwhat / inline-size; }
 .what { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
 .row[data-s="busy"] .what, .row[data-s="ended"] .what { color: var(--text-muted); }
-.proj-chip { flex: none; font-size: var(--fs-small); color: var(--text-muted); }
-.branch { flex: 0 1 auto; max-width: 22ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-cap); color: var(--text-muted); background: var(--surface-2); border: 1px solid var(--line); padding: 1px 5px; border-radius: var(--r-sm); }
+/* an attention row's text is the row's main signal: it never shrinks, and a long one is cut at 60% of the cell but never below 14ch; the chips give way before it (their flex-shrink is 100 times larger) */
+.row[data-s="attn"] .what { flex: none; max-width: max(14ch, 60%); }
+.proj-chip { flex: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-small); color: var(--text-muted); }
+.row[data-s="attn"] .proj-chip { flex: 0 100 auto; }
+.row[data-s="attn"] .proj-chip + .proj-chip { flex-shrink: 300; }   /* "under <parent>" gives way before the project name */
+.branch { flex: 0 100 auto; min-width: 10ch; max-width: 22ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-cap); color: var(--text-muted); background: var(--surface-2); border: 1px solid var(--line); padding: 1px 5px; border-radius: var(--r-sm); }
+/* below 14ch of attention text + the gap + the chip's floor (10ch, about 66 px) there is no room for the branch chip, and the "under <parent>" chip is the first to go (its title and the tree say it): the text gets the cell (the session window shows the branch) */
+@container cwhat (max-width: 188px) { .branch, .proj-chip + .proj-chip { display: none; } }
 .c-act, .c-pane { color: var(--text-muted); font-size: var(--fs-small); text-align: right; }
 .c-pane { font-family: var(--mono); }
 .c-model { min-width: 0; }
+.c-ctx { min-width: 0; display: flex; justify-content: flex-end; }
 .c-mode { min-width: 0; display: flex; align-items: center; }
 .more-row { display: flex; justify-content: center; padding: 8px; border-top: 1px solid var(--line); }
 .subs > summary { cursor: pointer; padding: 2px 0 2px 4px; color: var(--text-muted); width: fit-content; min-height: 24px; }
@@ -266,20 +293,40 @@ details.ended > summary:hover { color: var(--text); }
 .no-agents > span { flex: 1; min-width: 160px; }
 .stale .rows { opacity: 0.6; }
 @container rows (max-width: 860px) {
-  .row { grid-template-columns: 22px minmax(110px, 1fr) minmax(0, 2fr) 52px 32px; }
-  body[data-tier="app"] .row { grid-template-columns: 22px 24px minmax(110px, 1fr) minmax(0, 2fr) 52px 32px; }
+  .row { grid-template-columns: 22px minmax(208px, 1.1fr) 56px minmax(0, 2fr) 52px 32px; }
+  body[data-tier="app"] .row { grid-template-columns: 22px 24px minmax(208px, 1.1fr) 56px minmax(0, 2fr) 52px 32px; }
+  .c-ctx .ctx-bar { display: none; }
   .row .st-l { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
   .row .c-model, .row .c-pane { display: none; }
   .row .c-mode .mode { padding: 0 4px; gap: 0; }   /* icon-only 24 x 24 tag (spec 2.8.5); the label stays for screen readers and in the title */
   .row .c-mode .ml { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .row .tag .tag-l { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }   /* the full word stays for screen readers (design 0.4 section 1.1) */
+  .row .tag .tag-s { display: inline; }
+  .elbow { width: 6px; margin-right: 2px; }
+  .row[data-depth="2"] .elbow { margin-left: 4px; }
+  .row[data-depth="3"] .elbow { margin-left: 16px; }
+}
+/* the app tier's wide grid needs 864 px (its floors add up to 748 + 8 gaps + the padding), so it hands over to the narrow grid at 1010 px: from there up the what cell is at least 147 px; the same rules as the 860 block, app tier only */
+@container rows (max-width: 1010px) {
+  body[data-tier="app"] .row { grid-template-columns: 22px 24px minmax(208px, 1.1fr) 56px minmax(0, 2fr) 52px 32px; }
+  body[data-tier="app"] .c-ctx .ctx-bar { display: none; }
+  body[data-tier="app"] .row .st-l { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  body[data-tier="app"] .row .c-model, body[data-tier="app"] .row .c-pane { display: none; }
+  body[data-tier="app"] .row .c-mode .mode { padding: 0 4px; gap: 0; }
+  body[data-tier="app"] .row .c-mode .ml { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  body[data-tier="app"] .row .tag .tag-l { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  body[data-tier="app"] .row .tag .tag-s { display: inline; }
+  body[data-tier="app"] .elbow { width: 6px; margin-right: 2px; }
+  body[data-tier="app"] .row[data-depth="2"] .elbow { margin-left: 4px; }
+  body[data-tier="app"] .row[data-depth="3"] .elbow { margin-left: 16px; }
 }
 @container rows (max-width: 600px) {
-  .row { grid-template-columns: 22px minmax(0, 1fr) 44px 32px; }
-  body[data-tier="app"] .row { grid-template-columns: 22px 24px minmax(0, 1fr) 44px 32px; }
+  .row { column-gap: 6px; grid-template-columns: 22px minmax(0, 1fr) 56px 40px 32px; }
+  body[data-tier="app"] .row { grid-template-columns: 22px 24px minmax(0, 1fr) 56px 40px 32px; }
   .row .c-what { grid-column: 2 / -1; grid-row: 2; }
-  .row .c-act { grid-row: 1; grid-column: 3; }
+  .row .c-act { grid-row: 1; grid-column: 4; }
   body[data-tier="app"] .row .c-what { grid-column: 3 / -1; grid-row: 2; }
-  body[data-tier="app"] .row .c-act { grid-row: 1; grid-column: 4; }
+  body[data-tier="app"] .row .c-act { grid-row: 1; grid-column: 5; }
 }
 
 /* ---------- menus ---------- */
@@ -288,8 +335,12 @@ details.ended > summary:hover { color: var(--text); }
 .menu[data-up="1"] { top: auto; bottom: calc(100% + 4px); }
 .menu button, .menu a { display: flex; width: 100%; align-items: center; gap: 8px; min-height: 30px; padding: 4px 10px; border: 0; border-radius: var(--r-sm); background: none; text-align: left; text-decoration: none; color: var(--text); }
 .menu button:hover, .menu a:hover { background: var(--surface-2); }
+.menu li.grp { border-top: 1px solid var(--line); margin-top: 4px; padding-top: 4px; }   /* a rule above the item that starts a group */
+.menu [aria-disabled="true"] { opacity: 0.5; cursor: not-allowed; }   /* a disabled item still answers with its reason */
 
 /* ---------- project view ---------- */
+#proj-agents > .alert { margin-bottom: 12px; align-items: center; }
+#proj-agents > .alert .btn { margin-left: auto; flex: none; }
 .proj-grid { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: var(--sp-4); padding: var(--sp-4); align-items: start; }
 .proj-grid > section > h2 { margin: 0 0 8px; font-size: var(--fs-h2); }
 .proj-grid .grp { margin: 0; }
@@ -304,6 +355,7 @@ details.ended > summary:hover { color: var(--text); }
 .kv { display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; margin: 0; font-size: var(--fs-small); }
 .kv dt { color: var(--text-muted); }
 .kv dd { margin: 0; font-weight: 600; }
+.kv dd.mono { overflow-wrap: anywhere; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
 ul.chips { margin: 0; padding: 0; list-style: none; }
 .chip { display: inline-flex; align-items: center; min-height: 24px; padding: 0 8px; border-radius: var(--r-sm); border: 1px solid var(--line); background: var(--surface-2); font-size: var(--fs-small); font-family: var(--mono); overflow-wrap: anywhere; }
@@ -364,6 +416,11 @@ dialog.dlg-rules[open] { display: flex; flex-direction: column; }
 .diff .d-hunk { color: var(--text-muted); background: var(--surface-2); }
 .diff.d-note, .diff .d-note { color: var(--text-muted); font-style: italic; padding: 6px 12px; white-space: normal; display: block; }
 
+/* ---------- choose models dialog (docs/design/spec.md 3.15) ---------- */
+dialog.dlg-models { width: min(480px, calc(100vw - 32px)); }
+dialog.dlg-models[open] { display: flex; flex-direction: column; }
+.md-fields { display: grid; gap: 16px; }
+
 /* ---------- choose plugins dialog (docs/design/spec.md 3.15): only the list scrolls ---------- */
 dialog.dlg-plugins { width: min(560px, calc(100vw - 32px)); height: min(640px, calc(100vh - 32px)); }
 dialog.dlg-plugins[open] { display: flex; flex-direction: column; }
@@ -392,10 +449,17 @@ dialog.dlg-plugins[open] { display: flex; flex-direction: column; }
 .set-sec h2 { margin: 0; font-size: var(--fs-h2); }
 .set-sec > p { margin: -8px 0 0; color: var(--text-muted); }
 .err-sum { margin: 0 0 var(--sp-4); }
+.compact-row { flex-wrap: wrap; }
+.compact-row select { width: auto; min-height: var(--h-ctl-lg); }
+.onoff-st { display: inline-flex; align-items: center; gap: 4px; min-height: 22px; padding: 0 7px 0 5px; border-radius: var(--r-sm); font-size: var(--fs-small); font-weight: 700; border: 1px solid transparent; }
+.onoff-st[data-on="true"] { color: var(--accent); background: var(--accent-soft); border-color: var(--accent-line); }
+.onoff-st[data-on="false"] { color: var(--text-muted); border: 1px dashed var(--line-strong); }
+.onoff-st .ic { width: 14px; height: 14px; }
 .savebar { position: sticky; bottom: 0; display: flex; align-items: center; gap: 8px; padding: 10px var(--sp-4); background: var(--surface); border-top: 1px solid var(--line); box-shadow: 0 -8px 16px -12px rgb(0 0 0 / 30%); }
 
 /* ---------- window width (the app's minimum window is 720 x 480) ---------- */
-@media (max-width: 1000px) {
+/* the list sits beside the cards only while it is 424 px wide or more: its rows (the 600 px grid) need a 198 px name cell for a sub-orchestrator row */
+@media (max-width: 1030px) {
   .proj-grid { grid-template-columns: minmax(0, 1fr); }
 }
 @media (max-width: 900px) {

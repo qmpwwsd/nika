@@ -57,8 +57,8 @@ describe('package dependencies', () => {
   const PACKAGING = fs.readFileSync(path.join(ROOT, 'docs', 'packaging.md'), 'utf8');
   const formula = PACKAGING.slice(PACKAGING.indexOf('class Nika < Formula'), PACKAGING.indexOf('\nend\n', PACKAGING.indexOf('class Nika < Formula')) + 5);
 
-  test('(+) the .deb depends on tmux, and on nothing else', () => {
-    assert.deepEqual(conf.bundle.linux.deb.depends, ['tmux']);
+  test('(+) the .deb depends on tmux 3.2 or newer (auto-compact needs new-session -e), and on nothing else', () => {
+    assert.deepEqual(conf.bundle.linux.deb.depends, ['tmux (>= 3.2)']);
   });
 
   test('(−) no nodejs or npm entry in any deb field, and the other relationship fields stay unused', () => {
@@ -66,7 +66,7 @@ describe('package dependencies', () => {
     assert.doesNotMatch(JSON.stringify(deb), /node|npm/i);
     for (const k of ['recommends', 'provides', 'conflicts', 'replaces']) assert.equal(deb[k], undefined, k);
     // the key is the one Tauri v2 reads: depends (camelCase config, list of package names)
-    assert.ok(Array.isArray(deb.depends) && deb.depends.every((d) => typeof d === 'string' && /^[a-z0-9][a-z0-9+.-]*$/.test(d)));
+    assert.ok(Array.isArray(deb.depends) && deb.depends.every((d) => typeof d === 'string' && /^[a-z0-9][a-z0-9+.-]*( \(>= [0-9]+(\.[0-9]+)*\))?$/.test(d)));
   });
 
   test('(+) the Homebrew formula copy depends on node and tmux', () => {

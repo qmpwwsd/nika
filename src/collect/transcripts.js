@@ -5,7 +5,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { openRegular, readAt } from '../fsafe.js';
 import { mapLimit, lru } from '../util.js';
-import { UUID } from '../ids.js';
+import { UUID, MODEL_ID } from '../ids.js';
 
 export { UUID };
 const TRANSCRIPT_FILE = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/;
@@ -13,6 +13,7 @@ const HEAD_BYTES = 64 * 1024;
 const TAIL_BYTES = 256 * 1024;
 const WIDE_TAIL_BYTES = 2 * 1024 * 1024;
 const IO_LIMIT = 16;
+const TOKEN_CAP = 10_000_000; // a context of more than this is garbage, not a count
 
 /** Room for transcripts that appear between two collect() passes, above the count on disk. */
 export const CACHE_SLACK = 64;
@@ -105,6 +106,32 @@ function scan(entries, acc, { firstWins }) {
   }
 }
 
+/**
+ * The context size of a session from the LAST assistant entry of `entries` (a tail, or a whole small file): `{ tokens, model }` with
+ * tokens = input + cache read + cache creation (a missing field is 0, output tokens are not context), or null for no assistant entry
+ * or a malformed usage (a field that is present, not null and not a whole number from 0 to 10,000,000, or a sum above it). It never looks further back: an
+ * older entry is an older context size. A synthetic entry (model `<...>`: an interrupt or an API error, usage all zeros) is no answer
+ * of the model and is skipped. Numbers and a model id only; no text is kept.
+ */
+function usageOf(entries) {
+  for (let i = entries.length - 1; i >= 0; i -= 1) {
+    const m = entries[i].type === 'assistant' ? entries[i].message : undefined;
+    if (m === undefined) continue;
+    const model = str(m?.model);
+    if (model?.startsWith('<')) continue;
+    const u = m?.usage;
+    if (u === null || typeof u !== 'object' || Array.isArray(u)) return null;
+    let tokens = 0;
+    for (const k of ['input_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens']) {
+      const n = u[k] ?? 0; // absent or null (the API types allow null for the cache counts) is 0
+      if (!Number.isInteger(n) || n < 0 || n > TOKEN_CAP) return null;
+      tokens += n;
+    }
+    return tokens > TOKEN_CAP ? null : { tokens, model: model && MODEL_ID.test(model) ? model : null };
+  }
+  return null;
+}
+
 const fields = () => ({
   cwd: null, gitBranch: null, version: null, startedAt: null, lastTimestamp: null,
   aiTitle: null, customTitle: null, lastPrompt: null, bridgeSessionId: null, model: null,
@@ -120,9 +147,11 @@ export async function readTranscript(file, cache) {
   let head;
   let tail;
   let bytesRead;
+  let whole = false;
   try {
     const size = st.size;
     if (size <= HEAD_BYTES + TAIL_BYTES) {
+      whole = true;
       head = parseLines(await readAt(handle, 0, size), { dropFirst: false, dropLast: false });
       tail = [];
       bytesRead = size;
@@ -155,6 +184,8 @@ export async function readTranscript(file, cache) {
   // A title-only stub (one "ai-title" line, no cwd) never ran a conversation; the model hides it unless live (0.1.1).
   const talk = (e) => e.type === 'user' || e.type === 'assistant';
   data.hasConversation = head.some(talk) || tail.some(talk);
+  // the context size: only from the tail window (or the whole file when it is small), never from a head that is far behind the end
+  data.usage = usageOf(whole ? head : tail);
 
   cache?.set(key, { mtimeMs: file.mtimeMs, size: file.size, data });
   return data;

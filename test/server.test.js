@@ -288,3 +288,83 @@ describe('/api/report finds the reports of agents nika spawned', () => {
     assert.equal((await at(REPORT_ID, port)).status, 404); // the shared 0.1 test server has no env
   });
 });
+
+describe('context on the browser tier (0.4 O5, R3)', () => {
+  // a server with the env (so it reads nika's config.json through loadConfig) over a fixture whose busy session has usage numbers
+  const fx2 = makeFixture();
+  const cfg = path.join(fx2.root, 'cfg');
+  let srv;
+  let p2;
+  before(async () => {
+    const slug = fx2.wt.replace(/[^A-Za-z0-9]/g, '-');
+    fs.appendFileSync(path.join(fx2.claudeDir, 'projects', slug, `${SID.busy}.jsonl`), `${JSON.stringify({
+      type: 'assistant', message: { model: 'claude-sonnet-5-5', usage: { input_tokens: 700, cache_read_input_tokens: 200, cache_creation_input_tokens: 100, output_tokens: 5 } },
+    })}\n`);
+    fs.mkdirSync(path.join(cfg, 'nika'), { recursive: true });
+    fs.writeFileSync(path.join(cfg, 'nika', 'config.json'), JSON.stringify({ compaction: { enabled: true, pct: 50, window: 200000 } }), { mode: 0o600 });
+    srv = createServer({ config: { ...fx2.config, env: { NIKA_CONFIG_DIR: cfg } }, exec: fakeExec(), token: TOKEN, now: () => NOW, version: '0.1.0' });
+    await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+    p2 = srv.address().port;
+  });
+  after(async () => {
+    await new Promise((r) => srv.close(r));
+    cleanup(fx2);
+  });
+  const agents = async () => {
+    const res = await fetch(`http://127.0.0.1:${p2}/api/agents?since=7d`);
+    const body = await res.json();
+    return body.groups.flatMap((g) => g.agents);
+  };
+
+  test('(+) /api/agents carries context numbers per session, measured against the setting nika reads from its own config.json', async () => {
+    const a = (await agents()).find((x) => x.id === SID.busy);
+    assert.deepEqual(a.context, { tokens: 1000, window: 200000, compactAt: null, pct: 0.5, compaction: 'none' });
+  });
+
+  test('(−) a session without usage has context null, and no usage field, model id or text of the transcript is added beside it', async () => {
+    const list = await agents();
+    assert.equal(list.find((x) => x.id === SID.idle).context, null);
+    const raw = JSON.stringify(list);
+    assert.equal(/input_tokens|cache_read|cache_creation|output_tokens|"usage"/.test(raw), false);
+    assert.equal(raw.includes('synthetic prompt'), false);
+  });
+});
+
+describe('browser tier: a Claude `shell` status reads as Working (0.4 fix)', () => {
+  // the registry status `shell`: the turn is over and a background shell still runs; Claude lists it as Working, so it is not "needs you"
+  const fx3 = makeFixture();
+  const SHELL = 'dededede-dede-4ede-8ede-dededededede';
+  const WAIT = 'efefefef-efef-4fef-8fef-efefefefefef';
+  let srv;
+  let p3;
+  before(async () => {
+    const reg = (pid, sessionId, status) => fs.writeFileSync(path.join(fx3.claudeDir, 'sessions', `${pid}.json`), JSON.stringify({
+      pid, sessionId, cwd: fx3.plain, status, procStart: 'Sat Nov  7 18:57:14 2026', updatedAt: NOW,
+    }));
+    reg(115, SHELL, 'shell');
+    reg(116, WAIT, 'waiting');
+    const ps = [101, 102, 115, 116].map((p) => `  ${p} Sat Nov  7 18:57:14 2026`);
+    srv = createServer({ config: fx3.config, exec: fakeExec({ psLines: ps }), token: TOKEN, now: () => NOW, version: '0.1.0' });
+    await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+    p3 = srv.address().port;
+  });
+  after(async () => {
+    await new Promise((r) => srv.close(r));
+    cleanup(fx3);
+  });
+  const snap = async () => (await fetch(`http://127.0.0.1:${p3}/api/agents?since=7d`)).json();
+
+  test('(+) /api/agents: the shell session is busy with no attention, and the counts do not call it other', async () => {
+    const body = await snap();
+    const a = body.groups.flatMap((g) => g.agents).find((x) => x.id === SHELL);
+    assert.equal(a.state, 'busy');
+    assert.equal(a.attention, null);
+    assert.deepEqual([body.counts.busy, body.counts.other], [2, 1], 'the fixture busy session and the shell one are busy; only waiting is other');
+  });
+
+  test('(−) /api/agents: a waiting session still needs you', async () => {
+    const a = (await snap()).groups.flatMap((g) => g.agents).find((x) => x.id === WAIT);
+    assert.equal(a.state, 'waiting');
+    assert.equal(a.attention, 'waiting');
+  });
+});

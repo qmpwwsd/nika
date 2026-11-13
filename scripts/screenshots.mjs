@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // DEV ONLY (not shipped: package.json "files" excludes scripts/). Rebuilds the README screenshots of the desktop app:
 //   node scripts/screenshots.mjs [--out docs/screenshots] [--only <name>] [--root <dir>]
-// It builds an invented machine (4 repositories, 11 agents, fake tmux and ps, invented plugins), runs nika's real app
+// It builds an invented machine (4 repositories, 12 agents in a tree, fake tmux and ps, invented plugins), runs nika's real app
 // tier on it in this process (serveApp, the way the desktop shell starts it), and photographs the app's own pages with a
 // local Google Chrome / Chromium (headless, driven over the DevTools protocol with Node's WebSocket): no npm package.
 // Never touches the real ~/.claude, nika's real config or state, tmux or claude: every path comes from the invented
@@ -78,26 +78,29 @@ const FOOTER = {
  * pane shows: 'work' (a working screen), 'idle', 'review' (the reviewer's whole conversation), 'ask' (a plain question), 'prompt'
  * (a permission prompt).
  * Names of nika-started agents come from the pane title "[%n] name"; the others get their AI title as name.
+ * `parent` = the pane number of the pane that started it (the `@nika-parent` tag; the depth follows the chain); `ctx` = the context
+ * size in thousands of tokens (window 400k with the default Auto-compact setting: under 60 % ok, from 60 % warn, from 80 % full).
  */
 const LIVE = [
-  { id: 1, repo: 'acme-api', pane: 11, name: 'planner', role: 'orchestrator', state: 'busy', mode: 'plan', model: FIRST, branch: 'master', ago: 1.5, screen: 'work', prompt: 'Add rate limiting to the login route and keep the public API unchanged', title: 'Rate limiting plan' },
-  { id: 2, repo: 'acme-api', pane: 12, name: 'builder-1', role: 'agent', state: 'busy', mode: 'acceptEdits', model: SONNET, branch: 'feat/rate-limit', ago: 2.5, screen: 'work', prompt: 'Add rate limiting to the login route', title: 'Add rate limiting' },
-  { id: 3, repo: 'acme-api', pane: 13, name: 'builder-2', role: 'agent', state: 'waiting', mode: 'auto', model: SONNET, branch: 'fix/token-refresh', ago: 7.5, screen: 'prompt', prompt: 'Fix the token refresh race in the auth client', title: 'Fix token refresh' },
-  { id: 4, repo: 'acme-api', pane: 14, name: 'reviewer', role: 'agent', state: 'idle', mode: 'plan', model: OPUS, branch: 'feat/rate-limit', ago: 12.5, screen: 'review', prompt: 'Does the test suite cover window expiry?', title: 'Review rate limiting' },
-  { id: 5, repo: 'web-shop', pane: 21, name: 'planner', role: 'orchestrator', state: 'idle', mode: 'plan', model: FIRST, branch: 'master', ago: 21.5, screen: 'idle', prompt: 'Plan the checkout redesign in three steps', title: 'Checkout redesign plan' },
-  { id: 6, repo: 'web-shop', pane: 22, name: 'builder-1', role: 'agent', state: 'busy', mode: 'acceptEdits', model: SONNET, branch: 'feat/cart-total', ago: 3.5, screen: 'work', prompt: 'Write tests for the cart total', title: 'Cart total tests' },
-  { id: 7, repo: 'web-shop', pane: 23, name: 'builder-2', role: 'agent', state: 'busy', mode: 'auto', model: SONNET, branch: 'feat/checkout-form', ago: 5.5, screen: 'work', prompt: 'Validate the checkout form fields on submit', title: 'Checkout form validation' },
-  { id: 8, repo: 'docs-site', pane: 31, state: 'busy', mode: 'manual', model: SONNET, branch: 'docs/install-guide', ago: 1.5, screen: 'work', prompt: 'Rewrite the install guide for the new CLI', title: 'Rewrite install guide' },
-  { id: 9, repo: 'docs-site', pane: 32, state: 'idle', mode: 'auto', model: HAIKU, branch: 'master', ago: 34.5, screen: 'idle', prompt: 'Find broken links in the docs', title: 'Check broken links' },
-  { id: 10, repo: 'infra', pane: 41, state: 'waiting', mode: 'plan', model: OPUS, branch: 'chore/staging-vpc', ago: 15.5, screen: 'ask', prompt: 'Plan the staging VPC change', title: 'Staging VPC plan' },
-  { id: 11, repo: 'infra', pane: 42, state: 'busy', mode: 'auto', model: SONNET, branch: 'master', ago: 6.5, screen: 'work', prompt: 'Summarize last month cloud costs by service', title: 'Cloud cost report' },
+  { id: 1, repo: 'acme-api', pane: 11, name: 'planner', role: 'orchestrator', state: 'busy', mode: 'plan', model: FIRST, branch: 'master', ago: 1.5, screen: 'work', prompt: 'Add rate limiting to the login route and keep the public API unchanged', title: 'Rate limiting plan', ctx: 220 },
+  { id: 2, repo: 'acme-api', pane: 12, name: 'builder-1', role: 'agent', parent: 11, state: 'busy', mode: 'acceptEdits', model: SONNET, branch: 'feat/rate-limit', ago: 2.5, screen: 'work', prompt: 'Add rate limiting to the login route', title: 'Add rate limiting', ctx: 96 },
+  { id: 15, repo: 'acme-api', pane: 15, name: 'api-lead', role: 'sub-orchestrator', parent: 11, state: 'busy', mode: 'auto', model: OPUS, branch: 'fix/token-refresh', ago: 3.5, screen: 'work', prompt: 'Split the auth fixes between two builders and report back to the planner', title: 'Auth fixes lead', ctx: 164 },
+  { id: 3, repo: 'acme-api', pane: 13, name: 'builder-2', role: 'agent', parent: 15, state: 'waiting', mode: 'auto', model: SONNET, branch: 'fix/token-refresh', ago: 7.5, screen: 'prompt', prompt: 'Fix the token refresh race in the auth client', title: 'Fix token refresh', ctx: 152 },
+  { id: 4, repo: 'acme-api', pane: 14, name: 'reviewer', role: 'agent', parent: 11, state: 'idle', mode: 'plan', model: OPUS, branch: 'feat/rate-limit', ago: 12.5, screen: 'review', prompt: 'Does the test suite cover window expiry?', title: 'Review rate limiting', ctx: 324 },
+  { id: 5, repo: 'web-shop', pane: 21, name: 'planner', role: 'orchestrator', state: 'idle', mode: 'plan', model: FIRST, branch: 'master', ago: 21.5, screen: 'idle', prompt: 'Plan the checkout redesign in three steps', title: 'Checkout redesign plan', ctx: 272 },
+  { id: 6, repo: 'web-shop', pane: 22, name: 'builder-1', role: 'agent', parent: 21, state: 'busy', mode: 'acceptEdits', model: SONNET, branch: 'feat/cart-total', ago: 3.5, screen: 'work', prompt: 'Write tests for the cart total', title: 'Cart total tests', ctx: 48 },
+  { id: 7, repo: 'web-shop', pane: 23, name: 'builder-2', role: 'agent', parent: 21, state: 'busy', mode: 'auto', model: SONNET, branch: 'feat/checkout-form', ago: 5.5, screen: 'work', prompt: 'Validate the checkout form fields on submit', title: 'Checkout form validation', ctx: 130 },
+  { id: 8, repo: 'docs-site', pane: 31, state: 'busy', mode: 'manual', model: SONNET, branch: 'docs/install-guide', ago: 1.5, screen: 'work', prompt: 'Rewrite the install guide for the new CLI', title: 'Rewrite install guide', ctx: 108 },
+  { id: 9, repo: 'docs-site', pane: 32, state: 'idle', mode: 'auto', model: HAIKU, branch: 'master', ago: 34.5, screen: 'idle', prompt: 'Find broken links in the docs', title: 'Check broken links', ctx: 32 },
+  { id: 10, repo: 'infra', pane: 41, state: 'waiting', mode: 'plan', model: OPUS, branch: 'chore/staging-vpc', ago: 15.5, screen: 'ask', prompt: 'Plan the staging VPC change', title: 'Staging VPC plan', ctx: 190 },
+  { id: 11, repo: 'infra', pane: 42, state: 'busy', mode: 'auto', model: SONNET, branch: 'master', ago: 6.5, screen: 'work', prompt: 'Summarize last month cloud costs by service', title: 'Cloud cost report', ctx: 76 },
 ].map((a) => ({ ...a, sid: uuid(a.id), pid: 4100 + a.id }));
 
 /** Agents that have ended: a transcript and no running process. `ago` in days. */
 const ENDED = [
-  { id: 12, repo: 'acme-api', model: HAIKU, branch: 'master', ago: 2, prompt: 'Find where login attempts are logged', title: 'Find login logging' },
-  { id: 13, repo: 'acme-api', model: SONNET, branch: 'feat/request-id', ago: 3, prompt: 'Add a request id to every log line', title: 'Request id in logs' },
-  { id: 14, repo: 'web-shop', model: OPUS, branch: 'feat/cart-refactor', ago: 1, prompt: 'Review the cart refactor for regressions', title: 'Review cart refactor' },
+  { id: 12, repo: 'acme-api', model: HAIKU, branch: 'master', ago: 2, prompt: 'Find where login attempts are logged', title: 'Find login logging', ctx: 60 },
+  { id: 13, repo: 'acme-api', model: SONNET, branch: 'feat/request-id', ago: 3, prompt: 'Add a request id to every log line', title: 'Request id in logs', ctx: 90 },
+  { id: 14, repo: 'web-shop', model: OPUS, branch: 'feat/cart-refactor', ago: 1, prompt: 'Review the cart refactor for regressions', title: 'Review cart refactor', ctx: 130 },
 ].map((a) => ({ ...a, sid: uuid(a.id) }));
 
 const SUBAGENTS = [ // all on the acme-api orchestrator
@@ -106,7 +109,11 @@ const SUBAGENTS = [ // all on the acme-api orchestrator
   { id: 'c3', agentType: 'Plan', description: 'Check the order of the middleware', model: 'opus', finished: false, ago: 4 },
 ];
 
-const REGISTERED = { 'acme-api': { plugins: ['test-runner@demo-plugins', 'lint-helper@demo-plugins'] }, 'web-shop': { plugins: ['test-runner@demo-plugins'] } };
+// acme-api also sets two models of its own (0.4), so its Project setup card shows the Models block
+const REGISTERED = {
+  'acme-api': { plugins: ['test-runner@demo-plugins', 'lint-helper@demo-plugins'], models: { orchestrator: null, reasoner: null, builder: OPUS, scout: SONNET } },
+  'web-shop': { plugins: ['test-runner@demo-plugins'] },
+};
 const PLUGINS = ['test-runner@demo-plugins', 'lint-helper@demo-plugins', 'api-docs@demo-plugins', 'git-notes@demo-plugins'];
 const SESSION_OF = 'reviewer'; // the agent whose session window is photographed (acme-api)
 const SCREEN_NAMES = ['dashboard', 'session', 'project', 'rules', 'settings', 'spawn'];
@@ -218,13 +225,15 @@ function paneScreen(a, kind) {
 // --- transcripts ---------------------------------------------------------------------------------------------------
 
 const iso = (ms) => new Date(ms).toISOString();
+/** The usage of an assistant entry that leaves the session's context at `k` thousand tokens (input + cache read + cache creation). */
+const usage = (k) => ({ input_tokens: 24, cache_creation_input_tokens: 3_000, cache_read_input_tokens: k * 1000 - 3_024, output_tokens: 410 });
 
 function baseLines(a, cwd, at, extra = []) {
   const start = at - 40 * MIN;
   return [
     { type: 'permission-mode', permissionMode: a.mode ?? 'auto', sessionId: a.sid },
     { type: 'user', cwd, sessionId: a.sid, gitBranch: a.branch, version: '2.1.319', timestamp: iso(start), message: { role: 'user', content: a.prompt } },
-    { type: 'assistant', cwd, sessionId: a.sid, gitBranch: a.branch, timestamp: iso(at), message: { role: 'assistant', model: a.model, content: [{ type: 'text', text: "I'll start by reading the code." }] } },
+    { type: 'assistant', cwd, sessionId: a.sid, gitBranch: a.branch, timestamp: iso(at), message: { role: 'assistant', model: a.model, content: [{ type: 'text', text: "I'll start by reading the code." }], usage: usage(a.ctx) } },
     ...extra,
     { type: 'ai-title', aiTitle: a.title, sessionId: a.sid },
     { type: 'last-prompt', lastPrompt: a.prompt, sessionId: a.sid },
@@ -234,7 +243,7 @@ function baseLines(a, cwd, at, extra = []) {
 /** The reviewer's conversation: what its session window lists. */
 function reviewerLines(a, cwd, at) {
   const t = (min) => iso(at - min * MIN);
-  const msg = (role, min, content) => ({ type: role, cwd, sessionId: a.sid, gitBranch: a.branch, version: '2.1.319', timestamp: t(min), message: { role, ...(role === 'assistant' ? { model: a.model } : {}), content } });
+  const msg = (role, min, content, u) => ({ type: role, cwd, sessionId: a.sid, gitBranch: a.branch, version: '2.1.319', timestamp: t(min), message: { role, ...(role === 'assistant' ? { model: a.model } : {}), content, ...(u ? { usage: u } : {}) } });
   const use = (id, name, input) => ({ type: 'tool_use', id, name, input });
   const res = (id, content) => ({ type: 'tool_result', tool_use_id: id, content });
   return [
@@ -249,7 +258,7 @@ function reviewerLines(a, cwd, at) {
     msg('user', 14, 'Does the test suite cover window expiry?'),
     msg('assistant', 13, [use('t3', 'Grep', { pattern: 'useFakeTimers|advanceTimers', path: 'test/' })]),
     msg('user', 13, [res('t3', 'No matches found')]),
-    msg('assistant', 13, [{ type: 'text', text: 'No. The tests cover the limit and the 429 body, but nothing moves the clock, so a window that never expires would still pass. Add a fake-timer test that fills the window, advances 61 seconds and expects the next request to succeed.\n\nThe other findings stand. The first one is the one to fix before merging.' }]),
+    msg('assistant', 13, [{ type: 'text', text: 'No. The tests cover the limit and the 429 body, but nothing moves the clock, so a window that never expires would still pass. Add a fake-timer test that fills the window, advances 61 seconds and expects the next request to succeed.\n\nThe other findings stand. The first one is the one to fix before merging.' }], usage(a.ctx)),
     { type: 'ai-title', aiTitle: a.title, sessionId: a.sid },
     { type: 'last-prompt', lastPrompt: a.prompt, sessionId: a.sid },
   ];
@@ -324,7 +333,10 @@ async function buildWorld(root) {
   const projects = {};
   for (const name of Object.keys(REGISTERED)) projects[name] = await addProject(path.join(root, name), env);
   await updateSettings({ permissionMode: 'acceptEdits', limits: { maxAgents: 5 }, remoteControl: { enabled: true, prefix: 'acme' } }, env);
-  for (const [name, r] of Object.entries(REGISTERED)) await updateProjectConfig(projects[name].key, { plugins: r.plugins }, env);
+  for (const [name, r] of Object.entries(REGISTERED)) {
+    await updateProjectConfig(projects[name].key, { plugins: r.plugins }, env);
+    if (r.models) await updateProjectConfig(projects[name].key, { models: r.models }, env); // one field per call
+  }
 
   // acme-api already has current rules: written by nika's own apply, so the shot shows a real "Rules current"
   const ctx = { env, now: () => NOW };
@@ -338,6 +350,13 @@ async function buildWorld(root) {
   return { root, env, projects, panes, kinds, clock: { skew: 0 } };
 }
 
+/** One `list-panes` row: the pane's title and command, then the four tags nika sets on a pane it started (empty for a hand-started one). */
+function paneRow(world, a) {
+  const depth = (x) => (x.parent ? 1 + depth(LIVE.find((p) => p.pane === x.parent)) : 1);
+  const tags = a.role ? [a.role, `${world.projects[a.repo].key}/${a.role === 'orchestrator' ? 'orchestrator' : a.name}`, depth(a), a.parent ? `%${a.parent}` : ''] : ['', '', '', ''];
+  return [`%${a.pane}`, a.repo, 0, a.role ? `[%${a.pane}] ${a.name}` : 'claude', 'claude', ...tags].join('\t');
+}
+
 /** Fake `ps` and `tmux` for serveApp: nothing real is ever run, and a command nika should not run here fails loudly. */
 function fakeExec(world) {
   return async (cmd, args) => {
@@ -346,7 +365,7 @@ function fakeExec(world) {
     const target = args[args.indexOf('-t') + 1];
     switch (args[1]) {
       case 'list-panes':
-        return { stdout: `${LIVE.map((a) => [`%${a.pane}`, a.repo, 0, a.role ? `[%${a.pane}] ${a.name}` : 'claude', 'claude', a.role ?? ''].join('\t')).join('\n')}\n`, stderr: '' };
+        return { stdout: `${LIVE.map((a) => paneRow(world, a)).join('\n')}\n`, stderr: '' };
       case 'capture-pane':
         return { stdout: paneScreen(world.panes.get(target), world.kinds.get(target)).text, stderr: '' };
       case 'display-message': {
@@ -540,8 +559,8 @@ function screens(world) {
     },
     spawn: {
       url: `/#project/${acme.key}`, ready: projectReady(acme.key),
-      prep: `${click(`#proj-actions [data-fk^="spawn:"]`)}; setTimeout(() => { const b = document.getElementById('sp-brief'); b.value = 'Add pagination to GET /orders. Keep the response shape, cap the page size at 100 and add tests for the limits.'; b.dispatchEvent(new Event('input', { bubbles: true })); }, 50)`,
-      after: `document.getElementById('dlg-spawn').open && document.getElementById('sp-brief').value.length > 20`,
+      prep: `${click(`#proj-actions [data-fk^="spawn-sub:"]`)}; setTimeout(() => { const b = document.getElementById('sp-brief'); b.value = 'Own the pagination work for GET /orders. Split it between two builders, keep the response shape, cap the page size at 100 and report back to the planner when the tests pass.'; b.dispatchEvent(new Event('input', { bubbles: true })); }, 50)`,
+      after: `document.getElementById('dlg-spawn').open && document.getElementById('sp-brief').value.length > 20 && document.getElementById('sp-h').textContent === 'Spawn sub-orchestrator'`,
     },
   };
 }

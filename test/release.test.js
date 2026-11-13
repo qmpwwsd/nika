@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { tagVersion, changelogSection, versionFiles, versionDrift, releaseCheck, unwrapMarkdown } from '../scripts/release-check.mjs';
 
@@ -169,14 +169,33 @@ describe('release check', () => {
     assert.match(jobs['draft-release'], /if: github\.event_name == 'push'/);
   });
 
-  test('(+) the "Check the .deb" step fails the release build when the built .deb does not depend on tmux', () => {
+  test('(+) the "Check the .deb" step fails the release build unless the built .deb depends on exactly "tmux (>= 3.2)"', () => {
     const text = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'release-linux.yml'), 'utf8');
     const step = text.slice(text.indexOf('- name: Check the .deb'), text.indexOf('- name: Collect and checksum'));
     assert.ok(step.length > 0);
     assert.match(step, /depends="\$\(dpkg-deb -f "\$deb" Depends\)"/, 'it reads the built package\'s Depends field');
-    assert.match(step, /grep -qw -- tmux <<<"\$depends" \|\| \{ echo "missing runtime dependency: tmux" >&2; exit 1; \}/);
-    assert.ok(step.indexOf('grep -qw -- tmux') > step.indexOf('dpkg-deb -f'), 'the tmux check reads the field first');
-    assert.ok(text.indexOf('grep -qw -- tmux') < text.indexOf('- name: Collect and checksum'), 'and runs before the package is collected');
+    assert.match(step, /tmux_dep="\$\(tr ',' '\\n' <<<"\$depends" \| sed 's\/\^ \*\/\/; s\/ \*\$\/\/' \| grep -E '\^tmux\( \|\$\)' \|\| true\)"/, 'it takes the tmux entry of the list');
+    assert.match(step, /\[ "\$tmux_dep" = "tmux \(>= 3\.2\)" \] \|\| \{ echo "the \.deb must depend on exactly 'tmux \(>= 3\.2\)' \(auto-compact needs tmux 3\.2 or newer\), found: '\$\{tmux_dep:-nothing\}'" >&2; exit 1; \}/);
+    assert.ok(step.indexOf('tmux_dep=') > step.indexOf('dpkg-deb -f'), 'the tmux check reads the field first');
+    assert.ok(text.indexOf('[ "$tmux_dep"') < text.indexOf('- name: Collect and checksum'), 'and runs before the package is collected');
+    assert.equal(step.includes('grep -qw -- tmux'), false, 'the old check, which passed for any tmux entry, is gone');
+  });
+
+  test('(−) the shell of the "Check the .deb" tmux check accepts only the exact entry: a bare tmux, an older floor, a look-alike package and no tmux are refused', () => {
+    const text = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'release-linux.yml'), 'utf8');
+    const lines = text.split('\n');
+    const grab = (start) => lines.find((l) => l.trim().startsWith(start)).trim();
+    const script = `depends="$1"\n${grab('tmux_dep=')}\n${grab('[ "$tmux_dep"')}\n`;
+    const run = (depends) => spawnSync('bash', ['-c', script, 'x', depends], { encoding: 'utf8' });
+    const ok = run('libwebkit2gtk-4.1-0, libayatana-appindicator3-1, tmux (>= 3.2)');
+    assert.equal(ok.status, 0, ok.stderr);
+    assert.equal(run('tmux (>= 3.2)').status, 0);
+    assert.equal(run('a,tmux (>= 3.2) , b').status, 0, 'spacing around the comma does not matter');
+    for (const bad of ['tmux', 'tmux (>= 3.0)', 'tmux (>= 3.2), tmux', 'libwebkit2gtk-4.1-0, libayatana-appindicator3-1', 'tmux-plugin-manager', '']) {
+      const r = run(bad);
+      assert.equal(r.status, 1, `${bad}: refused`);
+      assert.match(r.stderr, /must depend on exactly 'tmux \(>= 3\.2\)'/, bad);
+    }
   });
 
   test('(−) the workflow checker reports unpinned or third-party actions and write access outside draft-release', () => {

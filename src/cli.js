@@ -10,12 +10,12 @@ import { fileURLToPath } from 'node:url';
 import { spawn as nodeSpawn } from 'node:child_process';
 import { defaultConfig, findClaude, parseSince, DEFAULT_SINCE } from './config.js';
 import { makeExec } from './exec.js';
-import { collect } from './model.js';
+import { collect, findSession } from './model.js';
 import { createServer } from './server.js';
 import { clean, cleanBlock } from './text.js';
 import { configDir, stateDir, backupsRoot } from './paths.js';
 import { openRegular, readAt } from './fsafe.js';
-import { PROJECT_KEY } from './ids.js';
+import { PROJECT_KEY, PANE_ID, TMUX_SESSION } from './ids.js';
 import { addProject, listProjects, loadConfig, removeProject } from './store.js';
 import { rulesState, preview as rulesPreview, apply as rulesApply } from './rules.js';
 import { spawnAgent, runAgent } from './spawn.js';
@@ -65,8 +65,10 @@ commands:
       --project <dir>    project folder (default: the one containing the current directory)
       --permission-mode <m>  default | manual | acceptEdits | plan | auto | dontAsk
       --rc <prefix|off>  Remote Control name prefix, or off
+      --role <agent|orchestrator>  orchestrator starts a sub-orchestrator (only the main orchestrator may); default agent
       --under <%pane>    split below this pane
       --session <name>   tmux session (default: the project's)
+                         the parent is the pane you run it from ($TMUX_PANE), read from tmux's own record; it is never an option
   orchestrate [dir]    start or reuse the project's tmux session with an orchestrator pane
       --detached         do not attach or switch to the session
   doctor               check node, tmux, claude, the app, and nika's config and state folders
@@ -400,6 +402,8 @@ function toolCtx(cx) {
   return {
     env: cx.env, exec: cx.execT(5000), tmuxBin: cx.config.tmuxBin, claudeBin: findClaude(cx.env),
     nikaArgv: [process.execPath, NIKA_BIN], claudeDir: cx.config.claudeDir, now: Date.now, started: new Map(),
+    lenientParent: true, // a `$TMUX_PANE` that tmux no longer lists is "no parent", not an error (a page request names a gone pane: 404)
+    findSession: (id) => findSession(id, { config: cx.config, exec: cx.execT(5000) }), // the saved orchestrator, whatever its age
   };
 }
 
@@ -529,16 +533,30 @@ async function readBrief(src, cx) {
 }
 
 async function spawnCmd(rest, cx) {
-  const { values: v, positionals } = parse(rest, { project: S, 'permission-mode': S, rc: S, under: S, session: S }, 3);
+  const { values: v, positionals } = parse(rest, { project: S, 'permission-mode': S, rc: S, role: S, under: S, session: S }, 3);
   const [name, model, brief] = positionals;
-  if (brief === undefined) throw new UsageError('usage: nika spawn <name> <model> <brief> [--project dir] [--permission-mode m] [--rc prefix|off] [--under %pane] [--session name]');
+  if (brief === undefined) throw new UsageError('usage: nika spawn <name> <model> <brief> [--project dir] [--permission-mode m] [--rc prefix|off] [--role agent|orchestrator] [--under %pane] [--session name]');
+  if (v.role !== undefined && v.role !== 'agent' && v.role !== 'orchestrator') throw new UsageError('--role must be agent or orchestrator');
   if (!cx.env.TMUX && !v.session) throw new UsageError('spawn needs a tmux session: run it inside tmux, or pass --session <name>');
   if (v['permission-mode'] === 'bypassPermissions') throw new CliError('bypassPermissions is never allowed', 3);
   const project = await findProject(v.project, cx);
-  const req = { project: project.key, name, model, brief: await readBrief(brief, cx), permissionMode: v['permission-mode'], under: v.under, session: v.session, rc: v.rc };
+  // the parent is the pane this runs in; spawnAgent reads that pane's role and depth from tmux's own tags (never from here)
+  const parent = typeof cx.env.TMUX_PANE === 'string' && PANE_ID.test(cx.env.TMUX_PANE) ? cx.env.TMUX_PANE : undefined;
+  const req = { project: project.key, name, model, brief: await readBrief(brief, cx), permissionMode: v['permission-mode'], under: v.under, session: v.session, rc: v.rc, role: v.role, parent };
   const o = ok(await spawnAgent(req, toolCtx(cx)));
   cx.out.write(`pane: ${o.pane}\nsession: ${clean(o.session, 60)}\nreport: ${clean(path.join(o.reports.dir, o.reports.report), 500)}\n`);
   return 0;
+}
+
+/**
+ * The `-t` target of the orchestrator's session for switch-client (`tail` ':') or attach-session (`tail` ''): the exact session
+ * (`=<name><tail>`) when the name is a valid TMUX_SESSION, else its pane id (tmux resolves `%n` to that pane's session; the session
+ * of an orchestrator adopted from the user's own tmux can be named anything), else nothing runs. Rules constraint 3.
+ */
+export function sessionTarget(o, tail) {
+  if (typeof o.session === 'string' && TMUX_SESSION.test(o.session)) return `=${o.session}${tail}`;
+  if (typeof o.pane === 'string' && PANE_ID.test(o.pane)) return o.pane;
+  throw new CliError("cannot attach: the orchestrator's tmux session name is not one nika can target", 1);
 }
 
 async function orchestrateCmd(rest, cx) {
@@ -549,15 +567,17 @@ async function orchestrateCmd(rest, cx) {
   cx.out.write(`session: ${clean(o.session, 60)}\npane: ${o.pane}\n${o.created ? 'started a new orchestrator' : 'the orchestrator is already running'}\n`);
   if (values.detached || !cx.out.isTTY) return 0;
   if (cx.env.TMUX) {
+    const target = sessionTarget(o, ':');
     try {
-      await ctx.exec(ctx.tmuxBin, ['-u', 'switch-client', '-t', `=${o.session}:`]);
+      await ctx.exec(ctx.tmuxBin, ['-u', 'switch-client', '-t', target]);
     } catch (err) {
       throw new CliError(`tmux switch-client failed: ${clean(String(err.stderr || err.message).trim().split('\n')[0], 200)}`, 1);
     }
     return 0;
   }
+  const target = sessionTarget(o, '');
   return new Promise((resolve) => {
-    const child = cx.spawn(ctx.tmuxBin, ['-u', 'attach-session', '-t', `=${o.session}`], { stdio: 'inherit', shell: false });
+    const child = cx.spawn(ctx.tmuxBin, ['-u', 'attach-session', '-t', target], { stdio: 'inherit', shell: false });
     child.once('error', (err) => {
       cx.err.write(`nika: cannot run tmux: ${clean(err.code ?? err.message, 100)}\n`);
       resolve(1);
@@ -589,6 +609,18 @@ async function copyNote(cx) {
   return note ? `  (${note})` : '';
 }
 
+/**
+ * What `nika doctor` adds to the tmux row (0.4): a warning below tmux 3.2, which auto-compact needs (`new-session -e`, ADR 0014);
+ * "version unknown" when the first line of `tmux -V` is not exactly `tmux <major>.<minor>` with an optional letter (a build such
+ * as `tmux next-3.5` or `tmux master` is not guessed at). Empty when the version is 3.2 or newer.
+ */
+function tmuxVersionNote(line) {
+  const m = /^tmux (\d{1,3})\.(\d{1,3})[a-z]?$/.exec(line);
+  if (!m) return '  (version unknown)';
+  const old = Number(m[1]) < 3 || (Number(m[1]) === 3 && Number(m[2]) < 2);
+  return old ? `  (tmux ${line.slice(5)} is older than 3.2: nika's auto-compact needs 3.2 or newer)` : '';
+}
+
 async function doctor(cx) {
   const row = (k, v) => cx.out.write(`${k.padEnd(7)} ${v}\n`);
   const firstLine = async (bin, arg) => {
@@ -603,7 +635,7 @@ async function doctor(cx) {
   row('node', `${process.version}${major >= 22 ? '' : '  (nika needs >= 22)'}`);
   const tmuxV = await firstLine(cx.config.tmuxBin, '-V');
   const tmuxInstall = cx.platform === 'darwin' ? 'brew install tmux' : cx.platform === 'linux' ? 'sudo apt install tmux' : null; // no command elsewhere
-  row('tmux', tmuxV ? `${tilde(cx.config.tmuxBin)}  ${tmuxV}` : `not found (${tmuxInstall ? `install: ${tmuxInstall}; or set NIKA_TMUX` : 'add it to PATH or set NIKA_TMUX'})`);
+  row('tmux', tmuxV ? `${tilde(cx.config.tmuxBin)}  ${tmuxV}${tmuxVersionNote(tmuxV)}` : `not found (${tmuxInstall ? `install: ${tmuxInstall}; or set NIKA_TMUX` : 'add it to PATH or set NIKA_TMUX'})`);
   const claudeBin = findClaude(cx.env);
   const claudeV = claudeBin ? await firstLine(claudeBin, '--version') : null;
   row('claude', !claudeBin ? 'not found (add it to PATH or set NIKA_CLAUDE)' : `${tilde(claudeBin)}  ${claudeV ?? '--version failed'}`);
@@ -620,6 +652,56 @@ function toJson(v) {
   return JSON.stringify(v, null, 2).replace(/[\u0080-\u009f]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
 }
 
+const showVersion = (rest, cx) => {
+  cx.out.write(`nika ${VERSION}\n`);
+  return 0;
+};
+const showHelp = (rest, cx) => {
+  cx.out.write(USAGE);
+  return 0;
+};
+
+/**
+ * The command table: every first word nika answers to, with its handler (`rest`, `cx`, the caller's `io`). The one place a command
+ * is added, and the table a sub-orchestrator's deny list is built from (src/spawn.js `deniedTools`): every command here except
+ * `spawn` and `status` is denied to it, so a new command is denied by default.
+ */
+const COMMANDS = {
+  '--version': showVersion,
+  '-v': showVersion,
+  version: showVersion,
+  help: showHelp,
+  '-h': showHelp,
+  '--help': showHelp,
+  status: async (rest, cx) => {
+    const o = parseStatusArgs(rest);
+    const { snapshot } = await collect({ config: cx.config, exec: makeExec(), now: Date.now(), sinceMs: parseSince(o.since), since: o.since });
+    cx.out.write(o.json ? `${toJson(snapshot)}\n` : renderStatus(snapshot, o, painter(cx.out, cx.env)));
+    return 0;
+  },
+  serve: async (rest, cx, io) => {
+    const { values } = parse(rest, { app: B });
+    if (values.app) return serveAppCmd(cx, io);
+    if (cx.config.port === null) throw new UsageError('NIKA_PORT must be a port number 1-65535');
+    return serve(cx.config, io);
+  },
+  open: openCmd,
+  app: appCmd,
+  projects: projectsCmd,
+  rules: rulesCmd,
+  spawn: spawnCmd,
+  orchestrate: orchestrateCmd,
+  doctor: (rest, cx) => {
+    parse(rest);
+    return doctor(cx);
+  },
+  '_run-agent': (rest, cx) => { // hidden: the wrapper `spawn` starts inside a tmux pane
+    if (rest.length !== 2) throw new UsageError('_run-agent takes <key> <name>');
+    return runAgent(rest[0], rest[1], { env: cx.env, claudeBin: findClaude(cx.env), commands: COMMAND_NAMES, stderr: cx.err, spawn: cx.spawn });
+  },
+};
+export const COMMAND_NAMES = Object.freeze(Object.keys(COMMANDS));
+
 export async function main(argv, env = process.env, io = { out: process.stdout, err: process.stderr }) {
   const [cmd = 'open', ...rest] = argv;
   const config = defaultConfig(env);
@@ -630,50 +712,8 @@ export async function main(argv, env = process.env, io = { out: process.stdout, 
     home: io.home ?? os.homedir(), root: io.root ?? INSTALL_ROOT, brewApps: io.brewApps,
   };
   try {
-    switch (cmd) {
-      case '--version':
-      case '-v':
-      case 'version':
-        io.out.write(`nika ${VERSION}\n`);
-        return 0;
-      case 'help':
-      case '-h':
-      case '--help':
-        io.out.write(USAGE);
-        return 0;
-      case 'status': {
-        const o = parseStatusArgs(rest);
-        const { snapshot } = await collect({ config, exec: makeExec(), now: Date.now(), sinceMs: parseSince(o.since), since: o.since });
-        io.out.write(o.json ? `${toJson(snapshot)}\n` : renderStatus(snapshot, o, painter(io.out, env)));
-        return 0;
-      }
-      case 'serve': {
-        const { values } = parse(rest, { app: B });
-        if (values.app) return await serveAppCmd(cx, io);
-        if (config.port === null) throw new UsageError('NIKA_PORT must be a port number 1-65535');
-        return await serve(config, io);
-      }
-      case 'open':
-        return await openCmd(rest, cx);
-      case 'app':
-        return await appCmd(rest, cx);
-      case 'projects':
-        return await projectsCmd(rest, cx);
-      case 'rules':
-        return await rulesCmd(rest, cx);
-      case 'spawn':
-        return await spawnCmd(rest, cx);
-      case 'orchestrate':
-        return await orchestrateCmd(rest, cx);
-      case 'doctor':
-        parse(rest);
-        return await doctor(cx);
-      case '_run-agent': // hidden: the wrapper `spawn` starts inside a tmux pane
-        if (rest.length !== 2) throw new UsageError('_run-agent takes <key> <name>');
-        return await runAgent(rest[0], rest[1], { env, claudeBin: findClaude(env), stderr: io.err, spawn: cx.spawn });
-      default:
-        throw new UsageError(`unknown command ${cmd}`);
-    }
+    if (!Object.hasOwn(COMMANDS, cmd)) throw new UsageError(`unknown command ${clean(cmd, 60)}`);
+    return await COMMANDS[cmd](rest, cx, io);
   } catch (err) {
     if (err instanceof UsageError) {
       io.err.write(`nika: ${err.message}\n\n${USAGE}`);

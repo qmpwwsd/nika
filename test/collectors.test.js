@@ -162,6 +162,88 @@ describe('transcripts', () => {
   });
 });
 
+describe('transcripts: context usage (0.4, R1)', () => {
+  const asst = (usage, model = 'claude-sonnet-5-5') => ({ type: 'assistant', message: { model, usage } });
+  const read = async (lines, name) => {
+    const file = path.join(fx.root, 'usage', `${name}.jsonl`);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, jsonl(lines));
+    const st = fs.statSync(file);
+    return readTranscript({ path: file, mtimeMs: st.mtimeMs, size: st.size }, createTranscriptCache());
+  };
+  const U = { input_tokens: 10, cache_read_input_tokens: 2000, cache_creation_input_tokens: 300, output_tokens: 999 };
+
+  test('(+) tokens = input + cache read + cache creation of the LAST assistant entry; output tokens and earlier entries do not count', async () => {
+    const t = await read([{ type: 'user', cwd: '/u' }, asst({ input_tokens: 1, cache_read_input_tokens: 1, cache_creation_input_tokens: 1 }), asst(U)], 'sum');
+    assert.deepEqual(t.usage, { tokens: 2310, model: 'claude-sonnet-5-5' });
+  });
+
+  test('(+) the model of that entry is read, and a missing field counts as 0', async () => {
+    const t = await read([asst({ input_tokens: 42 }, 'claude-opus-5-5')], 'model');
+    assert.deepEqual(t.usage, { tokens: 42, model: 'claude-opus-5-5' });
+  });
+
+  test('(+) a synthetic assistant entry after the real one (an interrupt or an API error: zeros) is skipped', async () => {
+    const zero = { input_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
+    const t = await read([asst(U), asst(zero, '<synthetic>')], 'synthetic');
+    assert.deepEqual(t.usage, { tokens: 2310, model: 'claude-sonnet-5-5' });
+  });
+
+  test('(+) a model that is not a MODEL_ID is ignored; the tokens stay', async () => {
+    for (const model of ['not a model', 'CLAUDE-OPUS', undefined, 7]) {
+      const t = await read([{ type: 'assistant', message: { model, usage: U } }], 'badmodel');
+      assert.deepEqual(t.usage, { tokens: 2310, model: null }, String(model));
+    }
+  });
+
+  test('(−) no assistant entry, or an assistant entry without usage: no usage', async () => {
+    assert.equal((await read([{ type: 'user', cwd: '/u' }], 'none')).usage, null);
+    assert.equal((await read([{ type: 'assistant', message: { model: 'claude-sonnet-5-5', content: [] } }], 'nousage')).usage, null);
+    assert.equal((await read([{ type: 'assistant' }], 'nomsg')).usage, null);
+  });
+
+  test('(−) malformed usage: a non-number, a fraction, a negative, over 10,000,000 (a field or the sum), a non-object: no usage, and no fall back to an earlier entry', async () => {
+    const cases = [
+      { input_tokens: '12' }, { input_tokens: 1.5 }, { input_tokens: -1 }, { cache_read_input_tokens: '5' }, { cache_creation_input_tokens: -3 }, { cache_creation_input_tokens: true },
+      { input_tokens: [5] }, { input_tokens: {} }, { input_tokens: 10_000_001 }, { cache_read_input_tokens: 10_000_001 },
+      { input_tokens: 6_000_000, cache_read_input_tokens: 6_000_000 }, 'many', 7, [1, 2], null,
+    ];
+    for (const [i, usage] of cases.entries()) {
+      const t = await read([asst(U), asst(usage)], `bad${i}`);
+      assert.equal(t.usage, null, JSON.stringify(usage));
+    }
+  });
+
+  test('(+) a null field counts as 0, the same as a missing one (the API types allow null for the cache counts)', async () => {
+    assert.deepEqual((await read([asst({ input_tokens: 40, cache_read_input_tokens: 2, cache_creation_input_tokens: null })], 'null1')).usage, { tokens: 42, model: 'claude-sonnet-5-5' });
+    assert.deepEqual((await read([asst({ input_tokens: null, cache_read_input_tokens: null, cache_creation_input_tokens: null })], 'null3')).usage, { tokens: 0, model: 'claude-sonnet-5-5' });
+  });
+
+  test('(+) exactly 10,000,000 is accepted', async () => {
+    assert.deepEqual((await read([asst({ cache_read_input_tokens: 10_000_000 })], 'cap')).usage, { tokens: 10_000_000, model: 'claude-sonnet-5-5' });
+  });
+
+  test('(+) large file: the usage comes from the tail chunk', async () => {
+    const pad = { type: 'attachment', pad: 'p'.repeat(1000) };
+    const t = await read([asst({ input_tokens: 5 }), ...Array.from({ length: 700 }, () => pad), asst({ input_tokens: 77, cache_read_input_tokens: 23 }, 'claude-opus-5-5')], 'bigtail');
+    assert.deepEqual(t.usage, { tokens: 100, model: 'claude-opus-5-5' });
+  });
+
+  test('(−) large file: a usage line that sits only before the tail window (in the head) is not read', async () => {
+    const pad = { type: 'attachment', pad: 'p'.repeat(1000) };
+    const t = await read([asst({ input_tokens: 5 }), ...Array.from({ length: 700 }, () => pad), { type: 'user', cwd: '/u' }], 'bighead');
+    assert.equal(t.usage, null);
+    assert.equal(t.model, 'claude-sonnet-5-5'); // the existing head fall-back still works
+    assert.equal(t.bytesRead < fs.statSync(path.join(fx.root, 'usage', 'bighead.jsonl')).size, true);
+  });
+
+  test('(−) large file whose tail sits inside one huge last line: the head\'s usage is far behind the end and is not used', async () => {
+    const t = await read([asst({ input_tokens: 5 }), { type: 'user', cwd: '/u', pad: 'x'.repeat(2_500_000) }], 'hugeline');
+    assert.equal(t.usage, null);
+    assert.equal(t.model, 'claude-sonnet-5-5'); // the existing head fall-back for the other fields still works
+  });
+});
+
 describe('subagents', () => {
   test('(+) reads meta.json of each subagent with its transcript mtime', async () => {
     const idx = await indexTranscripts(fx.claudeDir);
@@ -208,12 +290,39 @@ describe('tmux', () => {
     assert.equal(panes.get('%4').command, 'zsh');
   });
 
-  test('(+) listPanes asks tmux for #{@nika-role} as the last field', async () => {
+  test('(+) listPanes asks tmux for the nika tags after the title and command: role, agent, depth, parent', async () => {
     const exec = fakeExec();
     await listPanes(exec);
     const format = exec.calls[0].at(-1);
-    assert.ok(format.endsWith('\t#{@nika-role}'));
-    assert.equal(format.split('\t').length, 6);
+    assert.ok(format.endsWith('\t#{@nika-role}\t#{@nika-agent}\t#{@nika-depth}\t#{@nika-parent}'));
+    assert.equal(format.split('\t').length, 9);
+  });
+
+  const KEY = '0123456789abcdef';
+  const TAGS = (role, agent, depth, parent) => `%5\twork\t1\t[%5] x\tnode\t${role}\t${agent}\t${depth}\t${parent}\n`;
+
+  test('(+) @nika-role sub-orchestrator, @nika-agent, @nika-depth and @nika-parent are read when they parse', () => {
+    const p = parsePaneLines(TAGS('sub-orchestrator', `${KEY}/planner`, '2', '%3')).get('%5');
+    assert.deepEqual([p.role, p.agent, p.depth, p.parent], ['sub-orchestrator', `${KEY}/planner`, 2, '%3']);
+    const a = parsePaneLines(TAGS('agent', `${KEY}/build-1`, '3', '%5')).get('%5');
+    assert.deepEqual([a.role, a.agent, a.depth, a.parent], ['agent', `${KEY}/build-1`, 3, '%5']);
+    const o = parsePaneLines(TAGS('orchestrator', `${KEY}/orchestrator`, '1', '')).get('%5');
+    assert.deepEqual([o.role, o.agent, o.depth, o.parent], ['orchestrator', `${KEY}/orchestrator`, 1, null]);
+  });
+
+  test('(−) a bad agent tag, depth or parent becomes null (never cleaned up into something valid); a line without the fields has none', () => {
+    for (const depth of ['0', '4', '12', '1 ', ' 2', '2.0', 'x', '-1', '٣']) assert.equal(parsePaneLines(TAGS('agent', `${KEY}/a`, depth, '')).get('%5').depth, null, JSON.stringify(depth));
+    for (const parent of ['5', '%', '%x', '% 5', '%5 ', ' %5', '%1234567', '%5\u0000', '#{pane_id}', '%3;%4', '%03a']) assert.equal(parsePaneLines(TAGS('agent', `${KEY}/a`, '2', parent)).get('%5').parent, null, JSON.stringify(parent));
+    for (const agent of ['a', `${KEY}`, `${KEY}/`, `${KEY.toUpperCase()}/a`, `${KEY}/a/b`, ` ${KEY}/a`, `${KEY}/A b`]) assert.equal(parsePaneLines(TAGS('agent', agent, '2', '')).get('%5').agent, null, JSON.stringify(agent));
+    const old = parsePaneLines('%5\twork\t1\tt\tzsh\tagent\n').get('%5');
+    assert.deepEqual([old.role, old.agent, old.depth, old.parent], ['agent', null, null, null]);
+  });
+
+  test('(−) a pane with no nika role carries no agent tag, depth or parent, whatever its options say', () => {
+    const p = parsePaneLines(TAGS('', `${KEY}/a`, '2', '%3')).get('%5');
+    assert.deepEqual([p.role, p.agent, p.depth, p.parent], [null, null, null, null]);
+    const q = parsePaneLines(TAGS('admin', `${KEY}/a`, '2', '%3')).get('%5');
+    assert.deepEqual([q.role, q.agent, q.depth, q.parent], [null, null, null, null]);
   });
 
   test('(+) listPanes calls tmux -u list-panes -a with a fixed format', async () => {

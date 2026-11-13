@@ -141,7 +141,7 @@ describe('session.html under the strict CSP', () => {
 describe('contracts with the other UI modules', () => {
   test('(+) session.js imports only names the shared modules export, from sibling files', () => {
     const imports = [...JS['session.js'].matchAll(/import \{([^}]+)\} from '([^']+)'/g)];
-    assert.deepEqual(imports.map((m) => m[2]), ['./dom.js', './api.js', './mirror-render.js', './modes.js', './quick-actions.js', './models-ui.js', './end-dialog.js', './palette.js', './shortcuts.js']);
+    assert.deepEqual(imports.map((m) => m[2]), ['./dom.js', './api.js', './dash-model.js', './mirror-render.js', './modes.js', './quick-actions.js', './models-ui.js', './end-dialog.js', './palette.js', './shortcuts.js']);
     for (const [, names, from] of imports) {
       const exported = read(from.slice(2));
       for (const n of names.split(',').map((x) => x.trim())) assert.match(exported, new RegExp(`export (async )?(function|const|let) ${n}\\b`), `${from} exports ${n}`);
@@ -1290,6 +1290,30 @@ describe('Task 14b: wiring of the page rules', () => {
 
   test('(+) B1: the agent needing you is enough, even before a capture shows the prompt; with no buttons the line names the terminal', async () => {
     const r = composerRig({ value: 'hello', promptOpen: false, kind: 'attn' });
+    await r.send();
+    assert.deepEqual(r.log.sent, []);
+    assert.deepEqual(r.log.problems, [[NO_BUTTONS, 'error']]);
+  });
+
+  // a session whose turn is over but a background shell runs (Claude's `shell`): the server sends state 'busy' and no attention, so it is Working
+  const kindOf = (agent) => mk(['function statusOf(agent)'], {}).statusOf(agent);
+  const SHELL_AGENT = { live: true, state: 'busy', attention: null };
+
+  test('(+) a shell-status session is Working: no "Answer the prompt first" note, and the message box sends', async () => {
+    assert.equal(kindOf(SHELL_AGENT), 'busy');
+    assert.equal(attnRig({ kind: kindOf(SHELL_AGENT) }).note.hidden, true, 'no needs-you note');
+    const r = composerRig({ value: 'hello', kind: kindOf(SHELL_AGENT) });
+    await r.send();
+    assert.equal(r.log.sent.length, 1, 'the line goes out');
+    assert.deepEqual(r.log.problems, []);
+    assert.equal(r.ta.value, '', 'the box is emptied after a send');
+  });
+
+  test('(−) a waiting session still needs you: the note shows and Send refuses', async () => {
+    const kind = kindOf({ live: true, state: 'waiting', attention: 'waiting' });
+    assert.equal(kind, 'attn');
+    assert.equal(attnRig({ kind }).note.hidden, false);
+    const r = composerRig({ value: 'hello', kind });
     await r.send();
     assert.deepEqual(r.log.sent, []);
     assert.deepEqual(r.log.problems, [[NO_BUTTONS, 'error']]);

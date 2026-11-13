@@ -56,6 +56,8 @@ body.m-bypass .mode-frame { background: repeating-linear-gradient(135deg, var(--
 .bar h1.untitled { color: var(--text-muted); font-weight: 400; }
 .sess-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; color: var(--text-muted); font-size: var(--fs-small); }
 .sess-meta .mono { color: var(--text); }
+.sess-meta .ctx { display: inline-flex; align-items: center; gap: 6px; }
+.sess-meta .ctx-l { color: var(--text-muted); }
 /* the right of the bar: the claude.ai link and the shortcuts button never part (nowrap), so the button can not end up alone on a line */
 .bar-tools { display: flex; flex-wrap: nowrap; align-items: center; gap: 12px; flex: none; }
 .model { padding: 1px 8px; border-radius: var(--r-sm); background: var(--surface-2); color: var(--text); font-weight: 600; }

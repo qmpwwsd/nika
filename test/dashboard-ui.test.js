@@ -9,8 +9,9 @@ import path from 'node:path';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 import { MODE_META, parseModes, modesAfter, rowMode, canEndRow } from '../public/modes.js';
-import { CUSTOM, fillModelSelect } from '../public/models-ui.js';
+import { CUSTOM, ROLE_LABEL, fillModelSelect, effectiveRoleModels } from '../public/models-ui.js';
 import { h } from '../public/dom.js';
+import { statusOf, spawnLimits } from '../public/dash-model.js';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const read = (f) => fs.readFileSync(path.join(PUBLIC, f), 'utf8');
@@ -122,12 +123,14 @@ describe('rowMode and canEndRow (the mode cell and the End item share one rule)'
 
 class FNode {
   constructor(tag, text = '') {
-    this.tag = tag; this.text = text; this.kids = []; this.attrs = {}; this.className = ''; this.value = '';
+    this.tag = tag; this.text = text; this.kids = []; this.attrs = {}; this.className = ''; this.value = ''; this.dataset = {};
   }
 
   setAttribute(k, v) { this.attrs[k] = String(v); }
 
   getAttribute(k) { return this.attrs[k] ?? null; }
+
+  removeAttribute(k) { delete this.attrs[k]; }
 
   append(...nodes) { this.kids.push(...nodes); }
 
@@ -274,10 +277,11 @@ describe('dashboard row', () => {
   });
 
   test('(+) the row menu gets "End session…" after the other items, for live agents with a pane in the latest /modes answer only', () => {
-    assert.match(APP, /if \(isApp && canEndRow\(a, state\.modes\.map\)\) \{\s*items\.push\(\{ text: 'End session…', run: \(\) => endSession\(a, fk\('m'\), fk\('m', endedScope\(scope\)\)\) \}\);\s*\}/);
+    assert.match(APP, /if \(isApp && canEndRow\(a, state\.modes\.map\)\) \{\s*items\.push\(\{ text: 'End session…', group: orchItems\.length > 0, run: \(\) => endSession\(a, fk\('m'\), fk\('m', endedScope\(scope\)\)\) \}\);\s*\}/);
     assert.match(fn(APP, 'export function agentNodes('), /scope: endedScope\(scope\)/, 'the Ended group draws its rows under the scope the End item computes');
     const row = fn(APP, 'function rowEl(');
-    assert.ok(row.indexOf('Focus pane') < row.indexOf('End session'), 'the destructive item is last');
+    assert.ok(row.indexOf('Focus pane') < row.indexOf('hooks.rowItems') && row.indexOf('hooks.rowItems') < row.indexOf('End session'), 'the orchestrator items sit between the pane item and the destructive one, which is last');
+    assert.match(row, /const orchItems = isApp \? hooks\.rowItems\?\.\(a, g, scope\) \?\? \[\] : \[\];/, 'asked on the app tier only');
   });
 
   test('(−) the End item is not built for ended agents or off the app tier: the guard is the pure rule, not the status text', () => {
@@ -328,6 +332,7 @@ describe('End session from the row menu', () => {
     const h1 = { focus: () => events.push('focus:h1') };
     const ctx = {
       isApp,
+      statusOf,
       state: { data: null },
       CSS: { escape: (x) => x },
       $: (sel) => {
@@ -441,23 +446,43 @@ describe('browser tier has no mode polling', () => {
     assert.match(fn(PROJECT, 'export async function initApp('), /hooks\.pollApp = pollApp;/);
   });
 
-  test('(−) the row has no mode cell and the grids stay as in 0.2 off the app tier (the app grids are scoped to body[data-tier="app"])', () => {
-    assert.match(APP_CSS, /\.row \{[^}]*grid-template-columns: 104px minmax\(120px, 1\.1fr\) 88px minmax\(0, 2\.4fr\) 56px 44px 32px;/);
-    assert.match(APP_CSS, /@container rows \(max-width: 860px\) \{\s*\.row \{ grid-template-columns: 22px minmax\(110px, 1fr\) minmax\(0, 2fr\) 52px 32px; \}/);
-    assert.match(APP_CSS, /@container rows \(max-width: 600px\) \{\s*\.row \{ grid-template-columns: 22px minmax\(0, 1fr\) 44px 32px; \}/);
+  test('(−) the row has no mode cell and the grids keep the 0.2 columns (only the name column is wider since 0.4) off the app tier (the app grids are scoped to body[data-tier="app"])', () => {
+    assert.match(APP_CSS, /\.row \{[^}]*grid-template-columns: 104px minmax\(232px, 1\.5fr\) 88px 64px minmax\(0, 2fr\) 56px 44px 32px;/);
+    assert.match(APP_CSS, /@container rows \(max-width: 860px\) \{\s*\.row \{ grid-template-columns: 22px minmax\(208px, 1\.1fr\) 56px minmax\(0, 2fr\) 52px 32px; \}/);
+    assert.match(APP_CSS, /@container rows \(max-width: 600px\) \{\s*\.row \{ column-gap: 6px; grid-template-columns: 22px minmax\(0, 1fr\) 56px 40px 32px; \}/);
     assert.equal([...APP_CSS.matchAll(/^\s*\.row \{ ?grid-template-columns: [^;]*\b24px\b/gm)].length, 0, 'no unscoped rule gives the browser tier a mode column');
     assert.equal([...APP_CSS.matchAll(/^\s*\.row \{ ?grid-template-columns: [^;]*\b128px\b/gm)].length, 0);
   });
 });
 
 describe('row grids with the mode column (spec 9.9)', () => {
-  test('(+) app tier: 8 columns wide, then status glyph + icon-only mode at 860, the name row above the prompt at 600', () => {
-    assert.match(APP_CSS, /body\[data-tier="app"\] \.row \{ grid-template-columns: 104px 128px minmax\(120px, 1\.1fr\) 88px minmax\(0, 2\.4fr\) 56px 44px 32px; \}/);
-    assert.match(APP_CSS, /@container rows \(max-width: 860px\) \{[^@]*body\[data-tier="app"\] \.row \{ grid-template-columns: 22px 24px minmax\(110px, 1fr\) minmax\(0, 2fr\) 52px 32px; \}/);
+  test('(+) app tier: 9 columns wide (the context meter after the model, 0.4), then status glyph + icon-only mode at 860, the name row above the prompt at 600', () => {
+    assert.match(APP_CSS, /body\[data-tier="app"\] \.row \{ grid-template-columns: 104px 128px minmax\(232px, 1\.5fr\) 88px 64px minmax\(0, 2fr\) 56px 44px 32px; \}/);
+    assert.match(APP_CSS, /@container rows \(max-width: 860px\) \{[^@]*body\[data-tier="app"\] \.row \{ grid-template-columns: 22px 24px minmax\(208px, 1\.1fr\) 56px minmax\(0, 2fr\) 52px 32px; \}/);
     const small = /@container rows \(max-width: 600px\) \{([^@]*?)\n\}/.exec(APP_CSS)?.[1] ?? '';
-    assert.match(small, /body\[data-tier="app"\] \.row \{ grid-template-columns: 22px 24px minmax\(0, 1fr\) 44px 32px; \}/);
+    assert.match(small, /body\[data-tier="app"\] \.row \{ grid-template-columns: 22px 24px minmax\(0, 1fr\) 56px 40px 32px; \}/);
     assert.match(small, /body\[data-tier="app"\] \.row \.c-what \{ grid-column: 3 \/ -1; grid-row: 2; \}/);
-    assert.match(small, /body\[data-tier="app"\] \.row \.c-act \{ grid-row: 1; grid-column: 4; \}/);
+    assert.match(small, /body\[data-tier="app"\] \.row \.c-act \{ grid-row: 1; grid-column: 5; \}/);
+  });
+
+  test('(+) app tier: its wide grid needs 864 px, so the narrow grid takes over at 1010 px with the same rules as the 860 px block (every rule has an app-tier twin)', () => {
+    assert.equal(104 + 128 + 232 + 88 + 64 + 56 + 44 + 32 + 8 * 12 + 20, 864, 'the floors of the app wide grid');
+    const norm = (t) => t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\s+/g, ' ').trim();
+    const narrow = norm(/@container rows \(max-width: 860px\) \{([^@]*?)\n\}/.exec(APP_CSS)?.[1] ?? '');
+    const app = norm(/@container rows \(max-width: 1010px\) \{([^@]*?)\n\}/.exec(APP_CSS)?.[1] ?? '');
+    assert.match(app, /^body\[data-tier="app"\] \.row \{ grid-template-columns: 22px 24px minmax\(208px, 1\.1fr\) 56px minmax\(0, 2fr\) 52px 32px; \}/);
+    const rules = [...narrow.matchAll(/([^{}]+)\{([^}]*)\}/g)].map((m) => [m[1].trim(), m[2].trim()]).filter(([sel]) => sel !== '.row' && !sel.startsWith('body[data-tier'));
+    assert.equal(rules.length, 10, 'the 860 px block has ten rules besides the two grids');
+    for (const [sel, decl] of rules) {
+      const twin = `${sel.split(',').map((s) => `body[data-tier="app"] ${s.trim()}`).join(', ')} { ${decl} }`;
+      assert.ok(app.includes(twin), `no app-tier twin for ${sel}`);
+    }
+    assert.equal([...app.matchAll(/([^{}]+)\{/g)].every((m) => m[1].split(',').every((s) => s.trim().startsWith('body[data-tier="app"]'))), true, 'the 1010 px block is app-tier only: the browser tier keeps 860 px');
+  });
+
+  test('(−) the project page stacks its cards under the list at 1030 px, not 1000: beside the list a 400 px list clipped the sub-orchestrator tag', () => {
+    assert.match(APP_CSS, /@media \(max-width: 1030px\) \{\s*\.proj-grid \{ grid-template-columns: minmax\(0, 1fr\); \}/);
+    assert.doesNotMatch(APP_CSS, /@media \(max-width: 1000px\) \{\s*\.proj-grid/);
   });
 
   test('(+) at 860 px and below the tag is icon-only: the label leaves the layout but stays for screen readers and in the title', () => {
@@ -493,9 +518,11 @@ describe('Settings and spawn sheet pickers', () => {
   });
 
   test('(+) the spawn sheet lists Roles first, then the catalog, then Custom ID; the chosen id is the select or the checked custom field', () => {
-    const open = fn(PROJECT, 'function openSpawn(');
-    assert.match(open, /fillModelSelect\(\$\('#sp-model'\), state\.models, pref\.model \?\? roles\[0\]\.value, roles\)/);
-    assert.match(open, /\$\('#sp-model-custom'\)\.hidden = !custom;/);
+    const fill = fn(PROJECT, 'function fillSpawnModel(');
+    assert.match(fn(PROJECT, 'function openSpawn('), /fillSpawnModel\(start, pref\.model\);/);
+    assert.match(fill, /fillModelSelect\(\$\('#sp-model'\), state\.models, value, roles\)/);
+    assert.match(fill, /roles\[role === 'orchestrator' \? 3 : 0\]\.value/, 'Builder for an agent, Orchestrator for a sub-orchestrator');
+    assert.match(fill, /\$\('#sp-model-custom'\)\.hidden = !custom;/);
     assert.match(fn(PROJECT, 'async function submitSpawn('), /const model = spawnModel\(\);/, 'one reading of the picker, the one the tests below run');
     assert.match(fn(PROJECT, 'function validateSpawn('), /MODEL_ID\.test\(/);
   });
@@ -607,17 +634,16 @@ describe('spawn sheet model picker (project.js openSpawn and spawnModel)', () =>
   const SETTINGS_MODELS = { builder: 'claude-sonnet-5-5', reasoner: 'claude-opus-5-5', scout: 'haiku', orchestrator: 'claude-fable-1' };
   const group = { project: { key: 'k1' }, label: 'demo', agents: [] };
 
+  const PROJECT_MOD = PROJECT.replace(/^import[\s\S]*?from '[^']+';$/gm, '').replace(/^export /gm, '');
   const rig = ({ catalog = CATALOG, settings = { models: SETTINGS_MODELS, permissionMode: 'default', panePlacement: 'beside' }, pref } = {}) => {
     const nodes = new Map();
     const node = (sel) => { if (!nodes.has(sel)) nodes.set(sel, new FNode(sel === '#sp-model' ? 'select' : 'input')); return nodes.get(sel); };
-    const spawnPrefs = new Map(pref ? [['k1', pref]] : []);
     const ctx = {
-      $: node, h, state: { models: catalog, settings }, fillModelSelect, CUSTOM, spawnPrefs, sp: {},
-      limitInfo: () => ({ reached: false, running: 1, max: 5 }), toast() {}, spawnName: () => 'builder-1',
-      PERM_LABEL: { default: 'Ask first', plan: 'Plan' }, PLACE_LABEL: { beside: 'Beside' },
-      fieldError() {}, briefCount() {}, openDialog() {},
+      $: node, h, state: { models: catalog, settings }, fillModelSelect, CUSTOM, ROLE_LABEL, effectiveRoleModels, spawnLimits,
+      toast() {}, fieldError() {}, openDialog() {}, syncRadioCards() {}, TextEncoder,
     };
-    const api = vm.runInNewContext(`${fn(PROJECT, 'function openSpawn(')}\n${fn(PROJECT, 'function spawnModel(')}\n({ openSpawn, spawnModel })`, ctx);
+    const api = vm.runInNewContext(`${PROJECT_MOD}\n({ openSpawn, spawnModel, spawnPrefs })`, ctx);
+    if (pref) api.spawnPrefs.set('k1:agent', pref);
     return { ...api, node, ctx };
   };
   const optionsOf = (sel) => sel.kids.flatMap((k) => (k.tag === 'optgroup' ? k.kids.map((o) => [k.attrs.label, o.attrs.value, o.textContent]) : [[null, k.attrs.value, k.textContent]]));

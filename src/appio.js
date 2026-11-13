@@ -9,7 +9,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { findTmux, findClaude, parseSince, DEFAULT_SINCE } from './config.js';
 import { makeExec } from './exec.js';
-import { collect } from './model.js';
+import { collect, findSession, findSessions } from './model.js';
 import { createServer } from './server.js';
 import { createAppApi } from './api-app.js';
 import { addProject, keyFor } from './store.js';
@@ -173,8 +173,12 @@ export function serveApp({ config, env = process.env, stdin, stdout, stderr, exe
       phase = 'running';
       const tmuxBin = findTmux(env);
       const cfg = { ...config, env, tmuxBin };
-      const ctx = { env, exec, tmuxBin, claudeBin: findClaude(env), nikaArgv: [process.execPath, NIKA_BIN], claudeDir: config.claudeDir, now, started: new Map() };
       const collectorCache = {};
+      const ctx = {
+        env, exec, tmuxBin, claudeBin: findClaude(env), nikaArgv: [process.execPath, NIKA_BIN], claudeDir: config.claudeDir, now, started: new Map(),
+        findSession: (id) => findSession(id, { config: cfg, exec, now: now(), cache: collectorCache }), // one session by id, whatever its age (the saved orchestrator)
+        findSessions: (ids) => findSessions(ids, { config: cfg, now: now(), cache: collectorCache }), // ended sessions by id in one transcript-index walk (the project list's saved orchestrators)
+      };
       const snapshot = () => collect({ config: cfg, exec, now: now(), sinceMs: parseSince(DEFAULT_SINCE), since: DEFAULT_SINCE, cache: collectorCache }).then((r) => r.snapshot);
       const picker = createPicker({ send: say, env });
       // the copy of the app in ~/Applications (ADR 0011): where it comes from and goes to is fixed by this install, never by a request

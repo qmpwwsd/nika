@@ -100,6 +100,33 @@ describe('built-in template', () => {
     assert.match(text, /At most 3 spawned agents/);
   });
 
+  test('(+) template version 2 adds a Sub-orchestrators section: when to use one, the spawn command, the three levels, the limit from the settings', async () => {
+    assert.equal(TEMPLATE_VERSION, 2);
+    const w = await world();
+    await updateSettings({ limits: { maxAgents: 4 } }, w.env);
+    await go(w, await prev(w));
+    const text = get(w, 'rules/orchestration.md');
+    assert.ok(text.startsWith('<!-- nika:orchestration v2 sha256:'));
+    const section = /^## Sub-orchestrators\n([\s\S]*?)(?=^## )/m.exec(text)?.[1] ?? '';
+    assert.match(section, /nika spawn <name> <model> <brief> --role orchestrator/);
+    assert.match(section, /three levels/);
+    assert.match(section, /Only the main orchestrator/);
+    assert.match(section, /at most 4 agents of its own/i);
+    assert.match(section, /`nika spawn` and `nika status`/);
+    assert.match(text, /At most 4 spawned agents are live at a time under each orchestrator/);
+  });
+
+  test('(−) a file written by template version 1 reads as outdated, not current: applying it offers the new section', async () => {
+    const w = await world();
+    put(w, 'rules/orchestration.md', rulesMarker('# old rules\n', 1));
+    const body = await prev(w);
+    const rules = entry(body, 'rules/orchestration.md');
+    assert.equal(rules.action, 'update');
+    assert.notEqual(rules.foreign, true);
+    await go(w, body);
+    assert.match(get(w, 'rules/orchestration.md'), /^## Sub-orchestrators$/m);
+  });
+
   test('(+) settings flow into the rendered file: models, limit, placement, permission mode, Remote Control, plugins', async () => {
     const w = await world({ plugins: ['alpha@demo-market', 'beta_x@demo-market'] });
     await updateSettings({ models: { builder: 'sonnet' }, limits: { maxAgents: 5 }, panePlacement: 'under-last', permissionMode: 'plan', remoteControl: { enabled: true, prefix: 'demo' } }, w.env);
@@ -114,6 +141,36 @@ describe('built-in template', () => {
     await updateSettings({ remoteControl: { prefix: '' } }, w.env);
     await go(w, await prev(w));
     assert.match(get(w, 'rules/orchestration.md'), /on \(name prefix: the project name\)/);
+  });
+
+  test('(+) the project\'s models override the defaults in the Roles table; the roles left alone keep the Settings value', async () => {
+    const w = await world();
+    await updateSettings({ models: { builder: 'sonnet' } }, w.env);
+    await go(w, await prev(w));
+    await updateProjectConfig(w.project.key, { models: { orchestrator: null, reasoner: 'opus[1m]', builder: 'claude-opus-5-5', scout: null } }, w.env);
+    const body = await prev(w);
+    const rules = entry(body, 'rules/orchestration.md');
+    assert.equal(rules.action, 'update', 'saved models make the applied file out of date');
+    assert.match(rules.diff, /^-\| Builder \| `sonnet` \|/m);
+    assert.match(rules.diff, /^\+\| Builder \| `claude-opus-5-5` \|/m);
+    await go(w, body);
+    const text = get(w, 'rules/orchestration.md');
+    assert.match(text, /\| Orchestrator \| `claude-fable-5-1` \|/);
+    assert.match(text, /\| Reasoner \| `opus\[1m\]` \|/);
+    assert.match(text, /\| Builder \| `claude-opus-5-5` \|/);
+    assert.match(text, /\| Scout \| `claude-haiku-5-5` \|/);
+  });
+
+  test('(−) another project\'s override does not leak into this one, and a Settings change still shows through where nothing is overridden', async () => {
+    const w = await world();
+    const other = await addProject(fs.mkdtempSync(path.join(w.base, 'other-')), w.env);
+    await updateProjectConfig(other.key, { models: { orchestrator: 'opus', reasoner: 'opus', builder: 'opus', scout: 'opus' } }, w.env);
+    await go(w, await prev(w));
+    const text = get(w, 'rules/orchestration.md');
+    assert.doesNotMatch(text, /`opus`/);
+    assert.match(text, /\| Scout \| `claude-haiku-5-5` \|/);
+    await updateSettings({ models: { scout: 'haiku' } }, w.env);
+    assert.match(entry(await prev(w), 'rules/orchestration.md').diff, /^\+\| Scout \| `haiku` \|/m);
   });
 });
 
@@ -189,7 +246,7 @@ describe('preview', () => {
     assert.deepEqual(body.files.map((f) => [f.path, f.action]), [['rules/orchestration.md', 'create'], ['CLAUDE.md', 'create'], ['.claude/settings.local.json', 'unchanged']]);
     const rules = entry(body, 'rules/orchestration.md');
     assert.equal(rules.foreign, false);
-    assert.match(rules.diff, /^--- a\/rules\/orchestration\.md\n\+\+\+ b\/rules\/orchestration\.md\n@@ -0,0 \+1,\d+ @@\n\+<!-- nika:orchestration v1 sha256:[0-9a-f]{64} -->\n/);
+    assert.match(rules.diff, /^--- a\/rules\/orchestration\.md\n\+\+\+ b\/rules\/orchestration\.md\n@@ -0,0 \+1,\d+ @@\n\+<!-- nika:orchestration v2 sha256:[0-9a-f]{64} -->\n/);
     assert.equal(entry(body, 'CLAUDE.md').diff, `--- a/CLAUDE.md\n+++ b/CLAUDE.md\n@@ -0,0 +1 @@\n+${IMPORT}\n`);
     assert.equal(entry(body, '.claude/settings.local.json').diff, '');
     assert.ok(body.warnings.some((x) => /not a git repository/.test(x)));

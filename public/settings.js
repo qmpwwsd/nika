@@ -3,10 +3,11 @@
 // Per-project choices (plugins) are saved on the project page, never here. The Save bar shows only while the form differs from the
 // saved state. Every server string is rendered through h() (textContent).
 import { appFetch, applyTheme } from './api.js';
-import { h } from './dom.js';
+import { h, icon } from './dom.js';
 import { $, $$, state, hooks, RX, toast, announce, errText, fieldError, setBusy, syncRadioCards } from './ui.js';
 import { CUSTOM, MODEL_ID, MODEL_HINT, fillModelSelect } from './models-ui.js';
 import { loadSettings, loadModels } from './project.js';
+import { compactPreview } from './ctx.js';
 import { render } from './app.js';
 
 let templates = [];
@@ -17,6 +18,9 @@ const ROLES = ['orchestrator', 'reasoner', 'builder', 'scout'];
 const roleSel = (r) => $(`#set-model-${r}`);
 const roleCustom = (r) => $(`#set-model-${r}-custom`);
 
+const PCT_MSG = 'Choose a whole number from 20 to 95.';
+const DEFAULT_COMPACT = { enabled: true, pct: 80, window: 400000 };
+
 const form = () => $('#set-form');
 const radio = (name) => $(`input[name="${name}"]:checked`, form())?.value;
 const setRadio = (name, value) => {
@@ -25,7 +29,53 @@ const setRadio = (name, value) => {
 
 function clearErrors() {
   for (const i of $$('[aria-invalid="true"]', form())) fieldError(i, '');
+  compactError('');
   $('#set-sum').hidden = true;
+}
+
+// ---- Auto-compact (design 0.4 section 5) ----
+
+/** The window select as the server stores it: a number, or 'model'. */
+const compactWindow = () => {
+  const v = $('#set-compact-win').value;
+  return v === 'model' ? v : Number(v);
+};
+
+/** Whether the number is a whole number from 20 to 95 (blank and fractions are not). */
+function compactPctOk() {
+  const v = String($('#set-compact-pct').value).trim();
+  const n = Number(v);
+  return v !== '' && Number.isInteger(n) && n >= 20 && n <= 95;
+}
+
+/** The number's error line (its id is set-compact-err, not <input id>-err, so fieldError() does not fit). */
+function compactError(msg) {
+  $('#set-compact-pct').setAttribute('aria-invalid', msg ? 'true' : 'false');
+  const err = $('#set-compact-err');
+  err.textContent = msg;
+  err.hidden = !msg;
+}
+
+/**
+ * Brings the Auto-compact row in line with its three controls: Off disables the number, its stepper and the window (values kept)
+ * and puts the saved number back when it was invalid; the chip shows icon, word and colour; the result line is redrawn (hidden
+ * while the number is invalid); a shown error goes once the number is valid or the row is off.
+ */
+function syncCompact() {
+  const on = $('#set-compact').checked;
+  const pct = $('#set-compact-pct');
+  if (!on && !compactPctOk()) pct.value = (state.settings?.compaction ?? DEFAULT_COMPACT).pct;
+  if (!$('#set-compact-err').hidden && (!on || compactPctOk())) compactError('');
+  pct.disabled = !on;
+  $('#set-compact-win').disabled = !on;
+  for (const b of $$('[data-step-for="set-compact-pct"]', form())) b.disabled = !on;
+  const chip = $('#set-compact-st');
+  chip.dataset.on = String(on);
+  chip.replaceChildren(icon(on ? 'compact' : 'compact-off'), h('span', { text: on ? 'On' : 'Off' }));
+  const line = compactPreview({ enabled: on, pct: Number(pct.value), window: compactWindow() });
+  const result = $('#set-compact-result');
+  result.textContent = line ?? '';
+  result.hidden = line === null;
 }
 
 function renderTemplates(current) {
@@ -60,6 +110,7 @@ function formValue() {
     limits: { maxAgents: Number($('#set-max').value) },
     rules: { localTemplate: $('#set-tpl').value || null },
     ui: { theme: radio('theme'), singleKeyShortcuts: $('#set-singlekey').checked },
+    compaction: { enabled: $('#set-compact').checked, pct: Number($('#set-compact-pct').value), window: compactWindow() },
   };
 }
 
@@ -84,8 +135,13 @@ function populate() {
   setRadio('place', s.panePlacement);
   $('#set-max').value = s.limits?.maxAgents ?? 3;
   renderTemplates(s.rules?.localTemplate ?? null);
+  const c = s.compaction ?? DEFAULT_COMPACT;
+  $('#set-compact').checked = c.enabled !== false;
+  $('#set-compact-pct').value = c.pct;
+  $('#set-compact-win').value = String(c.window);
   syncRadioCards(form());
   clearErrors();
+  syncCompact();
   snapshot = JSON.stringify(formValue());
   $('#set-bar').hidden = true;
 }
@@ -111,6 +167,9 @@ function validate() {
   const okMax = max.value.trim() !== '' && Number.isInteger(n) && n >= 1 && n <= 8;
   fieldError(max, okMax ? '' : 'Choose a whole number from 1 to 8.');
   if (!okMax) bad.push(max);
+  const okPct = !$('#set-compact').checked || compactPctOk();
+  compactError(okPct ? '' : PCT_MSG);
+  if (!okPct) bad.push($('#set-compact-pct'));
   return bad;
 }
 
@@ -156,12 +215,17 @@ async function save(e) {
 function wire() {
   wired = true;
   const f = form();
-  f.addEventListener('input', syncBar);
+  f.addEventListener('input', () => {
+    syncCompact();
+    syncBar();
+  });
   f.addEventListener('change', () => {
     syncRadioCards(f);
     $('#set-rc-prefix').disabled = !$('#set-rc').checked;
+    syncCompact();
     syncBar();
   });
+  $('#set-compact-pct').addEventListener('blur', () => compactError($('#set-compact').checked && !compactPctOk() ? PCT_MSG : ''));
   f.addEventListener('submit', save);
   $('#set-discard').addEventListener('click', () => {
     populate();
@@ -185,9 +249,10 @@ function wire() {
     });
   }
   for (const b of $$('[data-step]', f)) {
-    b.addEventListener('click', () => {
-      const i = $('#set-max');
-      i.value = Math.min(8, Math.max(1, (Number(i.value) || 1) + Number(b.dataset.step)));
+    b.addEventListener('click', () => { // data-step-for names the number (default set-max); its own min and max are the clamp
+      const i = $(`#${b.getAttribute('data-step-for') || 'set-max'}`);
+      const lo = Number(i.min);
+      i.value = Math.min(Number(i.max), Math.max(lo, (Math.round(Number(i.value)) || lo) + Number(b.dataset.step)));
       i.dispatchEvent(new Event('input', { bubbles: true }));
     });
   }

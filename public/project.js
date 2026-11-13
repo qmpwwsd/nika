@@ -4,13 +4,15 @@
 import { appFetch, applyTheme } from './api.js';
 import { h, icon } from './dom.js';
 import {
-  $, state, hooks, RX, toast, announce, errText, copyText, setBusy, fieldError, openDialog, rulesEl, sessionHref, menuEl,
+  $, state, hooks, RX, toast, announce, errText, copyText, setBusy, fieldError, openDialog, rulesEl, sessionHref, menuEl, syncRadioCards,
 } from './ui.js';
 import { parseModes, modesAfter } from './modes.js';
 import { copyBanner, copyErrorText, copyToast } from './app-copy.js';
-import { CUSTOM, MODEL_ID, MODEL_HINT, fillModelSelect } from './models-ui.js';
+import {
+  CUSTOM, MODEL_ID, MODEL_HINT, ROLES, ROLE_LABEL, modelLabel, fillModelSelect, fillRoleOverride, effectiveRoleModels,
+} from './models-ui.js';
 import { buildGroups, agentNodes, swap, interacting, render } from './app.js';
-import { sidebarModel } from './dash-model.js';
+import { sidebarModel, orchState, savedPick, otherRunning, roleTag, spawnLimits } from './dash-model.js';
 import { pluginView, pluginSave, sortIds, countText, filterNote } from './plugin-view.js';
 
 const PERM_LABEL = {
@@ -97,18 +99,47 @@ async function pollApp() {
   }
 }
 
+/** Reason an action that needs only the server is off right now, or null. */
+const offlineReason = () => (state.error ? 'Offline. nika is reconnecting.' : null);
+
 /** Reason the privileged actions are off right now, or null. */
 function blockedReason() {
-  if (state.error) return 'Offline. nika is reconnecting.';
+  if (offlineReason()) return offlineReason();
   if (state.me?.tmux === false) return 'Needs tmux. Install it, then check again.';
   if (state.me?.claude === false) return 'Needs Claude Code (claude) on your PATH.';
   return null;
 }
 
-function limitInfo(g) {
+/* ---------- limits (design 0.4 section 2.4): the page counts from its snapshot, the server's count is the one that decides ---------- */
+const LIMIT_TAIL = 'Wait for one to finish, or raise “Agents per orchestrator” in Settings.';
+
+/** The counts for a spawn under the pane `parentPane` (null = you): `{ max, parent: { running, max }, project: { running, cap } }`. */
+function limitsOf(g, parentPane) {
   const max = state.settings?.limits?.maxAgents ?? 3;
-  const running = g.agents.filter((a) => a.live && a.role === 'agent').length;
-  return { max, running, reached: running >= max };
+  return { max, ...spawnLimits(g, parentPane, max) };
+}
+
+/** The fixed copy of a limit, by scope; used for a disabled opener and for the server's 409 `limit`. `parent` = the parent's name, or null for "you". */
+function limitCopy({ scope, parent, project, running, max }) {
+  if (scope === 'project') return `${project} already runs ${running} of ${max} agents, the most one project can run. Wait for one to finish.`;
+  return parent
+    ? `${parent} already runs ${running} of ${max} agents of its own. ${LIMIT_TAIL}`
+    : `You already run ${running} of ${max} agents spawned from nika in ${project}. ${LIMIT_TAIL}`;
+}
+
+/** Why no spawn can start under `parent` (an agent row, or null for you) right now, or null: the parent's limit, then the project's. */
+function limitReason(g, parent) {
+  const l = limitsOf(g, parent?.pane?.id ?? null);
+  const project = trunc(g.label, 40);
+  if (l.parent.running >= l.parent.max) return limitCopy({ scope: 'parent', parent: parent && trunc(parent.name, 40), project, running: l.parent.running, max: l.parent.max });
+  if (l.project.running >= l.project.cap) return limitCopy({ scope: 'project', project, running: l.project.running, max: l.project.cap });
+  return null;
+}
+
+/** The main orchestrator the project's sub-orchestrators run under: `{ id, name, role, pane }` or null (it needs a live session with a pane). */
+function mainOrchestrator(g) {
+  const st = g.project ? orchState(g.project, g) : null;
+  return st?.kind === 'live' && st.pane ? { id: st.id, name: st.name ?? 'the orchestrator', role: 'orchestrator', pane: { id: st.pane } } : null;
 }
 
 /* ---------- sidebar and environment ---------- */
@@ -207,21 +238,66 @@ async function addProject() {
   }
 }
 
-/* ---------- start orchestrator ---------- */
-let starting = false;
-async function startOrchestrator(project) {
-  if (starting) return;
+/* ---------- the orchestrator: start, resume, pick (docs/design/spec.md 3.16) ---------- */
+let starting = false; // Start / Resume runs
+let orchBusy = false; // Set / Stop using runs
+const savedName = (name) => (name ? trunc(name, 40) : 'the saved session');
+const NO_TMUX_ORCH = "This session isn't running in tmux, so nika can't make it the orchestrator. End it, then use Resume as orchestrator.";
+const runningText = (other) => `${other?.name ? trunc(other.name, 40) : 'Another session'} is running as this project's orchestrator. End it first, then choose another.`;
+const PICK_ERRORS = {
+  not_found: "nika can't find that session any more. Its transcript may have been deleted. Nothing changed.",
+  other_project: "That session belongs to another project, so it can't be this project's orchestrator. Nothing changed.",
+  no_pane: NO_TMUX_ORCH,
+};
+
+/** Fixed copy by error code (design 1.5); anything else is the server's own message. `other` = who runs, for orchestrator_running. */
+function pickError(r, other) {
+  const code = r?.body?.error;
+  if (r?.status === 409 && code === 'orchestrator_running') return runningText(other);
+  if (typeof code === 'string' && Object.hasOwn(PICK_ERRORS, code)) return PICK_ERRORS[code];
+  return errText(r);
+}
+
+/**
+ * Start a new orchestrator, or (`resume`) resume the saved one: the server decides from the saved id (POST orchestrator/start).
+ * `resume` = { name } only words the toasts. `save` = { id, other } saves that session as the orchestrator first (a row's
+ * "Resume as orchestrator" on a session that is not the saved one yet); when the start then fails the pick stays, and the toast says so.
+ */
+async function startOrchestrator(project, { resume = null, save = null } = {}) {
+  if (starting || orchBusy) return;
   starting = true;
-  const wait = toast(`Starting the orchestrator for ${project.name}…`, { ms: 0, spin: true });
+  const who = savedName(resume?.name);
+  const wait = toast(resume ? `Resuming ${who} as the orchestrator for ${project.name}…` : `Starting the orchestrator for ${project.name}…`, { ms: 0, spin: true });
   try {
+    if (save) {
+      const put = await appFetch(`/api/app/projects/${encodeURIComponent(project.key)}/orchestrator`, { method: 'PUT', json: { sessionId: save.id } });
+      if (put.status !== 200) {
+        toast(pickError(put, save.other), { kind: 'error' });
+        return;
+      }
+    }
     const r = await appFetch('/api/app/orchestrator/start', { method: 'POST', json: { project: project.key } });
     if (r.status !== 200) {
-      toast(errText(r), { kind: 'error' });
+      toast(save ? `${who} is saved as the orchestrator, but it didn't start: ${errText(r)} Try Resume orchestrator in the header.` : errText(r), { kind: 'error' });
+      if (save) {
+        await pollApp();
+        render(true);
+      }
       return;
     }
-    const href = sessionHref({ session: r.body.sessionId, pane: r.body.pane, project: project.key });
-    if (href) location.href = href;
-    else toast(`Started the orchestrator for ${project.name}.`);
+    const gone = r.body.cleared === 'gone';
+    const created = r.body.created !== false; // false: an orchestrator was already running and was opened
+    const link = sessionHref({ session: r.body.sessionId, pane: r.body.pane, project: project.key });
+    // This page is about to go, so a toast here would die with it: the session window shows the notice, asked for with a fixed token (never text).
+    const href = link && gone ? `${link}&notice=${created ? 'pick-gone' : 'pick-gone-open'}` : link;
+    if (gone && !href) toast(created ? 'Started a new orchestrator. The saved one was gone.' : 'The saved orchestrator was gone. Opened the one that is running.');
+    if (href) {
+      location.href = href;
+      return;
+    }
+    if (!gone) toast(resume ? `Resumed ${who} as the orchestrator for ${project.name}.` : `Started the orchestrator for ${project.name}.`);
+    await pollApp();
+    render(true);
   } catch {
     toast('Could not reach the nika server.', { kind: 'error' });
   } finally {
@@ -230,32 +306,146 @@ async function startOrchestrator(project) {
   }
 }
 
+/** Set a session as the project's orchestrator (PUT). A live one is tagged by the server; an ended one is only remembered. */
+async function setPick(a, g) {
+  if (orchBusy || starting) return;
+  orchBusy = true;
+  const project = g.project;
+  const before = savedPick(project);
+  const wait = toast('Saving…', { ms: 0, spin: true });
+  try {
+    const r = await appFetch(`/api/app/projects/${encodeURIComponent(project.key)}/orchestrator`, { method: 'PUT', json: { sessionId: a.id } });
+    if (r.status !== 200) {
+      toast(pickError(r, otherRunning(g, before?.id, a.id)), { kind: 'error' });
+      return;
+    }
+    const name = savedName(a.name);
+    const was = before && before.id !== a.id ? ` (was ${savedName(before.name)})` : '';
+    const reply = r.body?.orchestrator?.state;
+    const live = reply === 'live' || reply === 'ended' ? reply === 'live' : a.live === true;
+    if (live) {
+      const href = sessionHref({ session: a.id, pane: r.body?.orchestrator?.pane ?? a.pane?.id, project: project.key });
+      toast(`${name} is now the orchestrator for ${project.name}${was}.`, href ? { action: { label: 'Open', run: () => { location.href = href; } } } : {});
+    } else {
+      toast(`${name} is the orchestrator for ${project.name}${was}. Resume it from the header when you need it.`, { action: { label: 'Resume now', run: () => startOrchestrator(project, { resume: { name: a.name } }) } });
+    }
+    await pollApp();
+    render(true);
+  } catch {
+    toast('Could not reach the nika server.', { kind: 'error' });
+  } finally {
+    wait.remove();
+    orchBusy = false;
+  }
+}
+
+/** Forget the saved orchestrator's id (DELETE). A pane that still runs keeps its tags until it ends. */
+async function forgetPick(project, pick, { fromAlert = false } = {}) {
+  if (orchBusy || starting) return;
+  orchBusy = true;
+  const wait = toast('Saving…', { ms: 0, spin: true });
+  try {
+    const r = await appFetch(`/api/app/projects/${encodeURIComponent(project.key)}/orchestrator`, { method: 'DELETE' });
+    if (r.status !== 200) {
+      toast(errText(r), { kind: 'error' });
+      return;
+    }
+    toast(pick?.state === 'live'
+      ? `${savedName(pick.name)} is no longer the saved orchestrator. It keeps running until you end it.`
+      : `${project.name} has no saved orchestrator now. Start orchestrator starts a new one.`);
+    await pollApp();
+    render(true);
+    if (fromAlert) $('#proj-h')?.focus(); // the alert that held focus is gone
+  } catch {
+    toast('Could not reach the nika server.', { kind: 'error' });
+  } finally {
+    wait.remove();
+    orchBusy = false;
+  }
+}
+
+/**
+ * The orchestrator items of a session's row menu (app tier; hooks.rowItems, called by app.js rowEl), design 1.2:
+ * Set as orchestrator, Resume as orchestrator, Stop using as orchestrator. A live nika agent or sub-orchestrator gets none.
+ */
+function rowItems(a, g, scope) {
+  if (!g.project) return [];
+  const fk = (k) => `${k}:${scope}:${a.id}`;
+  const items = a.live && a.role != null && a.role !== 'orchestrator' ? [] : pickItems(a, g, fk);
+  // spawn items (design 1.2): a running orchestrator or sub-orchestrator can parent agents, only the main one sub-orchestrators
+  if (a.live && a.pane?.id && (a.role === 'orchestrator' || a.role === 'sub-orchestrator')) {
+    const why = blockedReason() ?? limitReason(g, a);
+    const name = trunc(a.name, 40);
+    const spawn = [{ text: `Spawn agent under ${name}…`, fk: fk('spawn-under'), reason: why, run: () => openSpawn(g, { parent: a, role: 'agent' }) }];
+    if (a.role === 'orchestrator') spawn.push({ text: `Spawn sub-orchestrator under ${name}…`, fk: fk('spawn-sub'), reason: why, run: () => openSpawn(g, { parent: a, role: 'orchestrator' }) });
+    if (items.length) spawn[0].group = true;
+    items.push(...spawn);
+  }
+  return items;
+}
+
+/** Set, Resume and Stop using for a row (design 1.2); a live nika agent or sub-orchestrator gets none (the caller checks). */
+function pickItems(a, g, fk) {
+  const project = g.project;
+  const pick = savedPick(project);
+  const isPick = pick?.id === a.id;
+  const other = otherRunning(g, pick?.id, a.id); // R1
+  const r1 = other ? runningText(other) : null;
+  const items = [];
+  if (!isPick) {
+    items.push({
+      text: 'Set as orchestrator', fk: fk('orch-set'), run: () => setPick(a, g),
+      reason: (a.live ? blockedReason() : offlineReason()) ?? r1 ?? (a.live && !a.pane ? NO_TMUX_ORCH : null),
+    });
+  }
+  if (!a.live) {
+    items.push({
+      text: 'Resume as orchestrator', fk: fk('orch-resume'), reason: blockedReason() ?? r1,
+      run: () => startOrchestrator(project, { resume: { name: a.name }, save: isPick ? null : { id: a.id, other } }),
+    });
+  }
+  if (isPick) items.push({ text: 'Stop using as orchestrator', fk: fk('orch-stop'), reason: offlineReason(), run: () => forgetPick(project, pick) });
+  return items;
+}
+
 /* ---------- group actions (dashboard group header, empty box, project header) ---------- */
-function act(label, iconName, run, { primary = false, fk, reason = null } = {}) {
+function act(label, iconName, run, { primary = false, fk, reason = null, title = null } = {}) {
   const why = blockedReason() ?? reason;
   return h('button', {
-    type: 'button', class: `btn${primary ? ' primary' : ''}`, 'data-fk': fk, 'aria-disabled': why ? 'true' : null, title: why ?? label,
+    type: 'button', class: `btn${primary ? ' primary' : ''}`, 'data-fk': fk, 'aria-disabled': why ? 'true' : null, title: why ?? title ?? label,
     onclick: (e) => (why ? toast(why, { kind: 'error' }) : run(e.currentTarget)),
   }, icon(iconName), h('span', { class: 'lbl', text: label }));
 }
 
-/** primary: true = "Start orchestrator" is the primary button, 'spawn' = "Spawn agent" is. */
-function groupActions(g, { primary = false } = {}) {
+/** primary: true = "Start orchestrator" is the primary button, 'spawn' = "Spawn agent" is. `sub`: add Spawn sub-orchestrator (the project page's header only). */
+function groupActions(g, { primary = false, sub = false } = {}) {
   if (!g.project) {
     return [h('button', { type: 'button', class: 'btn', 'data-fk': `add:${g.key}`, onclick: () => addProject() }, icon('plus'), h('span', { class: 'lbl', text: 'Add project' }))];
   }
-  const orch = g.agents.find((a) => a.live && a.role === 'orchestrator');
-  const href = orch ? sessionHref({ session: orch.id, pane: orch.pane?.id, project: g.project.key }) : null;
-  const lim = limitInfo(g);
+  const st = orchState(g.project, g);
+  const key = g.project.key;
+  const href = st.kind === 'live' ? sessionHref({ session: st.id, pane: st.pane, project: key }) : null;
   return [
     href
-      ? h('a', { class: 'btn', href, 'data-fk': `orch:${g.key}` }, icon('term'), h('span', { class: 'lbl', text: 'Open orchestrator' }))
-      : act('Start orchestrator', 'play', () => startOrchestrator(g.project), { primary: primary === true, fk: `start:${g.key}` }),
-    act('Spawn agent', 'spawn', () => openSpawn(g), {
-      primary: primary === 'spawn', fk: `spawn:${g.key}`,
-      reason: lim.reached ? `${lim.running} of ${lim.max} agents are already running in ${g.label}. Wait for one to finish, or raise “Agents per project” in Settings.` : null,
-    }),
+      ? h('a', { class: 'btn', href, 'data-fk': `orch:${g.key}`, title: st.name ? `Open ${trunc(st.name, 40)}` : 'Open orchestrator' }, icon('term'), h('span', { class: 'lbl', text: 'Open orchestrator' }))
+      : st.kind === 'ended'
+        ? act('Resume orchestrator', 'resume', () => startOrchestrator(g.project, { resume: { name: st.name } }), { primary: primary === true, fk: `resume:${g.key}`, title: `Resume ${savedName(st.name)} in tmux` })
+        : act('Start orchestrator', 'play', () => startOrchestrator(g.project), {
+          primary: primary === true, fk: `start:${g.key}`, title: st.kind === 'gone' ? 'The saved orchestrator is gone. Starts a new one.' : null,
+        }),
+    act('Spawn agent', 'spawn', () => openSpawn(g), { primary: primary === 'spawn', fk: `spawn:${g.key}`, reason: limitReason(g, null) }),
+    ...(sub ? [subButton(g)] : []),
   ];
+}
+
+/** The header's Spawn sub-orchestrator (design 2.3): it runs under the main orchestrator, so it is off without one. Icon only below 760 px, so the name is an aria-label. */
+function subButton(g) {
+  const main = mainOrchestrator(g);
+  const btn = act('Spawn sub-orchestrator', 'sub-spawn', () => openSpawn(g, { parent: main, role: 'orchestrator' }), {
+    fk: `spawn-sub:${g.key}`, reason: main ? limitReason(g, main) : 'Start the orchestrator first: sub-orchestrators run under it.',
+  });
+  btn.setAttribute('aria-label', 'Spawn sub-orchestrator');
+  return btn;
 }
 
 /* ---------- project view ---------- */
@@ -271,7 +461,7 @@ function renderProject(force) {
   const key = state.route.key;
   const p = state.projects?.find((x) => x.key === key) ?? null;
   const g = buildGroups().find((x) => x.project?.key === key) ?? null;
-  const sig = JSON.stringify([p, g?.agents, state.modes.map, state.settings, state.plugins, state.me?.tmux, state.me?.claude, state.error, state.showEnded, [...state.open], [...state.expanded], key]);
+  const sig = JSON.stringify([p, g?.agents, state.modes.map, state.settings, state.plugins, state.models, state.me?.tmux, state.me?.claude, state.error, state.showEnded, [...state.open], [...state.expanded], key]);
   if (!force && (sig === projSig || interacting())) return;
   projSig = sig;
   const body = $('#proj-body');
@@ -291,24 +481,53 @@ function renderProject(force) {
   $('#proj-h').title = p.name;
   document.title = `${p.name} · nika`;
   swap($('#proj-rules'), [rulesEl(p.rules?.state)]);
+  const pick = savedPick(p);
   swap($('#proj-actions'), [
-    ...groupActions(g, { primary: 'spawn' }),
+    ...groupActions(g, { primary: 'spawn', sub: true }),
     menuEl(`More actions for ${p.name}`, [
       { text: 'Copy folder path', run: () => copyText(p.dir, 'folder path') },
+      ...(pick ? [{
+        text: pick.state === 'gone' ? 'Stop using the saved orchestrator' : `Stop using ${savedName(pick.name)} as orchestrator`,
+        fk: 'orch-stop-proj', reason: offlineReason(), run: () => forgetPick(p, pick),
+      }] : []),
       { text: 'Remove from nika…', run: () => confirmRemove(p) },
     ], 'proj-menu'),
   ]);
-  swap($('#proj-agents'), agentNodes(g, '', `pv:${key}`, { endedOpen: true }));
+  swap($('#proj-agents'), [...(orchState(p, g).kind === 'gone' ? [goneAlert(p, pick)] : []), ...agentNodes(g, '', `pv:${key}`, { endedOpen: true })]);
   swap($('#proj-setup'), setupCards(p, g));
+}
+
+/** The project page's alert for a saved orchestrator whose transcript is gone (design 1.4): state, not an event, so no role="alert". */
+function goneAlert(p, pick) {
+  return h('div', { class: 'alert', 'data-kind': 'warn', 'data-fk': 'orch-gone' },
+    icon('warn'),
+    h('p', { text: "The saved orchestrator is gone: its transcript was deleted, so it can't be resumed. Start orchestrator starts a new one." }),
+    h('button', { type: 'button', class: 'btn link', 'data-fk': 'orch-forget', text: 'Stop using it', onclick: () => forgetPick(p, pick, { fromAlert: true }) }));
 }
 
 const CHIPS_MAX = 8;
 
+/** The card's note once a limit is reached (design 2.5): the project's cap first, else the agents you spawn from nika. */
+function limitNote(lim) {
+  const text = lim.project.running >= lim.project.cap
+    ? `Limit reached: ${lim.project.running} of ${lim.project.cap} agents are running in this project. Spawning is off until one ends.`
+    : lim.parent.running >= lim.max
+      ? `Limit reached: you run ${lim.parent.running} of ${lim.max} agents spawned from nika. Spawn from an orchestrator's row, or wait for one to end.`
+      : null;
+  return text ? h('p', { class: 'limit', id: 'limit-note' }, icon('warn'), h('span', { text })) : null;
+}
+
 function setupCards(p, g) {
   const rs = p.rules?.state ?? 'none';
   const picked = sortIds(state.settings?.perProject?.[p.key]?.plugins ?? []);
-  const lim = limitInfo(g);
+  const lim = limitsOf(g, null);
   const s = state.settings;
+  const own = s?.perProject?.[p.key]?.models ?? {};
+  const set = ROLES.filter((r) => own[r]); // only the roles this project sets; the rest use Settings
+  const modelRow = (r, id) => {
+    const label = modelLabel(id, state.models);
+    return [h('dt', { text: ROLE_LABEL[r] }), h('dd', { class: label ? null : 'mono', title: id, text: label ?? id })];
+  };
   const chip = (id) => {
     const gone = Array.isArray(state.plugins) && !state.plugins.includes(id);
     return h('li', { class: `chip${gone ? ' missing' : ''}` }, gone ? [icon('warn'), id, ' (not installed)'] : id);
@@ -331,14 +550,22 @@ function setupCards(p, g) {
         : h('p', { class: 'muted', text: 'No plugins chosen. Agents use only what the project already enables.' }),
       picked.length > CHIPS_MAX ? h('p', { class: 'help', 'data-fk': 'setup-more', text: `+${picked.length - CHIPS_MAX} more` }) : null,
       h('p', { class: 'muted', text: 'Written into .claude/settings.local.json when you apply rules.' }),
-      h('div', null, h('button', { type: 'button', class: 'btn', 'aria-haspopup': 'dialog', 'data-fk': 'choose-plugins', onclick: () => openPlugins(p), text: 'Choose plugins…' }))),
+      h('div', null, h('button', { type: 'button', class: 'btn', 'aria-haspopup': 'dialog', 'data-fk': 'choose-plugins', onclick: () => openPlugins(p), text: 'Choose plugins…' })),
+      h('h3', null, set.length ? ['Models ', h('span', { class: 'help', text: `${set.length} set here` })] : 'Models'),
+      !s ? h('p', { class: 'muted', text: 'Not loaded yet.' })
+        : set.length ? h('dl', { class: 'kv', 'data-fk': 'setup-models' }, set.flatMap((r) => modelRow(r, own[r])))
+          : h('p', { class: 'muted', text: 'All roles use the defaults from Settings.' }),
+      h('p', { class: 'muted', text: "Used when nika starts this project's orchestrator or spawns its agents." }),
+      h('div', null, h('button', { type: 'button', class: 'btn', 'aria-haspopup': 'dialog', 'data-fk': 'choose-models', onclick: () => openModels(p), text: 'Choose models…' }))),
     h('div', { class: 'card' },
       h('h2', { text: 'New agents' }),
       h('dl', { class: 'kv' },
         h('dt', { text: 'Permission mode' }), h('dd', { text: s ? PERM_LABEL[s.permissionMode] ?? s.permissionMode : '–' }),
         h('dt', { text: 'Pane' }), h('dd', { text: s ? PLACE_LABEL[s.panePlacement] ?? s.panePlacement : '–' }),
-        h('dt', { text: 'Running' }), h('dd', { class: 'num', text: `${lim.running} of ${lim.max}` })),
-      lim.reached ? h('p', { class: 'limit', id: 'limit-note' }, icon('warn'), h('span', { text: `Limit reached: ${lim.running} of ${lim.max} agents are running. Spawning is off until one ends.` })) : null),
+        h('dt', { text: 'Per orchestrator' }), h('dd', { class: 'num', text: `${lim.max} at once` }),
+        h('dt', { text: 'Spawned from nika' }), h('dd', { class: 'num', text: `${lim.parent.running} of ${lim.max}` }),
+        h('dt', { text: 'This project' }), h('dd', { class: 'num', text: `${lim.project.running} of ${lim.project.cap} running` })),
+      limitNote(lim)),
   ];
 }
 
@@ -476,17 +703,19 @@ function plugBusy(on) {
   setBusy($('#pl-save'), on, 'Saving…');
 }
 
-/** The settings copy of one project's saved list, so the card is right before the next load. [] drops the list (and the entry when it was the only key). */
-function rememberPlugins(key, plugins) {
+/** The settings copy of one project's saved `field` (a plugin list or a models map), so the card is right before the next load. Empty drops it (and the entry when it was the only key). */
+function rememberField(key, field, value) {
   const s = state.settings;
   if (!s) return;
   const map = { ...s.perProject };
-  const entry = { ...map[key], plugins };
-  if (!plugins.length) delete entry.plugins;
+  const entry = { ...map[key], [field]: value };
+  if (!Object.keys(value).length) delete entry[field];
   if (Object.keys(entry).length) map[key] = entry;
   else delete map[key];
   s.perProject = map;
 }
+
+const rememberPlugins = (key, plugins) => rememberField(key, 'plugins', plugins);
 
 async function plugSave() {
   if (pl.phase !== 'ready' || pl.saving) return;
@@ -529,12 +758,172 @@ function wirePlugins() {
   $('#pl-retry').addEventListener('click', plugLoad);
 }
 
+/* ---------- choose models (dialog; docs/design/spec.md 3.15) ---------- */
+const MODELS_LOAD_ERROR = 'The model settings could not be loaded. Check that nika is still running, then try again.';
+// phase: loading | ready | error. The draft lives in the selects and Custom ID fields; `loaded` is what the server held when the
+// dialog opened ({ role: id | null }), and Save is on only while the draft differs from it.
+const md = { project: null, phase: 'loading', loaded: null, alert: '', saving: false, seq: 0 };
+const mdSel = (r) => $(`#md-model-${r}`);
+const mdCustom = (r) => $(`#md-model-${r}-custom`);
+
+/** Each role's draft: a model id (a Custom ID's text is trimmed and may still be invalid), or null for "use the default". */
+function mdDraft() {
+  return Object.fromEntries(ROLES.map((r) => [r, mdSel(r).value === '' ? null : mdSel(r).value === CUSTOM ? mdCustom(r).value.trim() : mdSel(r).value]));
+}
+
+const mdChanged = () => {
+  const draft = mdDraft();
+  return ROLES.filter((r) => draft[r] !== md.loaded[r]);
+};
+
+function mdAlert(text) {
+  md.alert = text;
+  $('#md-alert-text').textContent = text;
+  $('#md-alert').hidden = !text;
+}
+
+/** The footer count and Save: on only when the draft differs from what was loaded (changed back, off again). */
+function mdSync() {
+  const n = md.phase === 'ready' ? mdChanged().length : 0;
+  if (!md.saving) $('#md-save').disabled = n === 0;
+  $('#md-dirty').textContent = md.phase !== 'ready' ? '' : n ? `${n} role${n === 1 ? '' : 's'} changed` : 'No changes yet.';
+}
+
+function mdRender() {
+  const { phase } = md;
+  const show = (b, on) => { // hidden and off together, so Mod+Enter (the first enabled primary button) never presses a button that is not shown
+    b.hidden = !on;
+    b.disabled = !on;
+  };
+  $('#md-skel').replaceChildren(...(phase === 'loading'
+    ? [h('span', { class: 'sr-only', text: 'Loading models…' }), [1, 2, 3, 4].map(() => h('div', { class: 'sk sk-line', 'aria-hidden': 'true' }))].flat()
+    : []));
+  $('#md-skel').hidden = phase !== 'loading';
+  $('#md-fields').hidden = phase !== 'ready';
+  $('#md-note').hidden = phase !== 'ready' || Boolean(state.models);
+  show($('#md-retry'), phase === 'error');
+  show($('#md-save'), phase !== 'error');
+  mdAlert(md.alert);
+  mdSync();
+}
+
+/** Each select reads "Use default (<Settings model>)" or the project's model; a saved id the catalog lacks opens as Custom ID, filled. */
+function mdFill() {
+  for (const r of ROLES) {
+    const custom = fillRoleOverride(mdSel(r), state.models, md.loaded[r], state.settings.models?.[r]);
+    mdCustom(r).value = custom ? md.loaded[r] : '';
+    mdCustom(r).hidden = !custom;
+    fieldError(mdCustom(r), '');
+  }
+}
+
+function openModels(p) {
+  Object.assign(md, { project: p, phase: 'loading', loaded: null, alert: '' });
+  $('#md-h').textContent = `Models for ${trunc(p.name, 32)}`;
+  mdRender();
+  openDialog($('#dlg-models'));
+  mdLoad();
+}
+
+/** The settings (for the defaults), the catalog and this project's saved models, asked together. No catalog is not an error: Custom ID still works. */
+async function mdLoad() {
+  const my = ++md.seq;
+  Object.assign(md, { phase: 'loading', alert: '' });
+  mdRender();
+  let r = null;
+  try {
+    r = await Promise.all([loadSettings(), loadModels().catch(() => null), appFetch(`/api/app/projects/${encodeURIComponent(md.project.key)}/config`)]);
+  } catch {
+    // shown as the load error
+  }
+  if (my !== md.seq || !$('#dlg-models').open) return;
+  const [set, , cfg] = r ?? [];
+  if (set?.status === 200 && cfg?.status === 200 && cfg.body?.models && typeof cfg.body.models === 'object') {
+    md.loaded = Object.fromEntries(ROLES.map((role) => [role, typeof cfg.body.models[role] === 'string' ? cfg.body.models[role] : null]));
+    mdFill();
+    md.phase = 'ready';
+  } else Object.assign(md, { phase: 'error', alert: MODELS_LOAD_ERROR });
+  mdRender();
+  if (md.phase === 'error') $('#md-alert').focus();
+  else mdSel('orchestrator').focus();
+}
+
+/** Everything a save in flight turns off, and back. */
+function mdBusy(on) {
+  const dlg = $('#dlg-models');
+  md.saving = on;
+  if (on) {
+    dlg.dataset.busy = '1';
+    mdAlert('');
+  } else delete dlg.dataset.busy;
+  for (const r of ROLES) {
+    mdSel(r).disabled = on;
+    mdCustom(r).disabled = on;
+  }
+  for (const id of ['#md-cancel', '#md-x']) $(id).disabled = on;
+  setBusy($('#md-save'), on, 'Saving…');
+  mdSync();
+}
+
+async function mdSave() {
+  if (md.phase !== 'ready' || md.saving || !mdChanged().length) return;
+  const p = md.project;
+  const bad = ROLES.filter((r) => !mdCustom(r).hidden && !MODEL_ID.test(mdCustom(r).value.trim()));
+  for (const r of ROLES) fieldError(mdCustom(r), bad.includes(r) ? MODEL_HINT : '');
+  if (bad.length) {
+    mdAlert(`${bad.length} field${bad.length === 1 ? ' needs' : 's need'} a fix before saving.`);
+    mdCustom(bad[0]).focus();
+    return;
+  }
+  const models = mdDraft();
+  mdBusy(true);
+  let r = null;
+  try {
+    r = await appFetch(`/api/app/projects/${encodeURIComponent(p.key)}/config`, { method: 'PUT', json: { models } });
+  } catch {
+    // handled below as "could not reach"
+  }
+  mdBusy(false);
+  if (r?.status === 200) {
+    const saved = r.body?.models ?? models;
+    rememberField(p.key, 'models', Object.fromEntries(ROLES.filter((role) => saved[role]).map((role) => [role, saved[role]])));
+    $('#dlg-models').close();
+    render(true);
+    const rules = (state.projects?.find((x) => x.key === p.key) ?? p).rules?.state; // a rules file nika wrote lists the models, and only Apply updates it
+    toast(`Models saved for ${trunc(p.name, 40)}. Sessions nika starts from now on use them.${rules === 'nika' || rules === 'outdated' ? ' Apply rules to update the models in rules/orchestration.md.' : ''}`);
+    return;
+  }
+  mdAlert(r ? errText(r) : 'Could not reach the nika server.');
+  $('#md-alert').focus();
+}
+
+function wireModels() {
+  for (const r of ROLES) {
+    mdSel(r).addEventListener('change', () => { // Custom ID shows its field; any other choice hides it and drops its error
+      mdCustom(r).hidden = mdSel(r).value !== CUSTOM;
+      fieldError(mdCustom(r), '');
+      mdSync();
+    });
+    mdCustom(r).addEventListener('input', mdSync);
+    mdCustom(r).addEventListener('blur', () => {
+      if (!mdCustom(r).hidden) fieldError(mdCustom(r), MODEL_ID.test(mdCustom(r).value.trim()) ? '' : MODEL_HINT);
+    });
+    mdCustom(r).addEventListener('keydown', (e) => { // no <form>: Enter saves only when there is something to save
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      mdSave();
+    });
+  }
+  $('#md-save').addEventListener('click', mdSave);
+  $('#md-retry').addEventListener('click', mdLoad);
+}
+
 /* ---------- remove project ---------- */
 let confirmCtl = null; // the confirm dialog is reused: drop the previous opening's click handler
 function confirmRemove(p) {
   const dlg = $('#dlg-confirm');
   $('#cf-h').textContent = `Remove ${trunc(p.name, 40)} from nika?`;
-  $('#cf-d').textContent = 'nika stops listing this project and forgets its plugin choices. No files change and running agents keep running.';
+  $('#cf-d').textContent = 'nika stops listing this project and forgets its plugin and model choices and its saved orchestrator. No files change and running agents keep running.';
   $('#cf-ok').textContent = 'Remove project';
   confirmCtl?.abort();
   confirmCtl = new AbortController();
@@ -562,37 +951,106 @@ function confirmRemove(p) {
   openDialog(dlg, { focus: $('#cf-cancel') });
 }
 
-/* ---------- spawn sheet ---------- */
-const sp = { group: null, busy: false, under: null };
-const spawnPrefs = new Map(); // per project: last model, permission mode and placement (kept for this window only)
+/* ---------- spawn sheet (design 0.4 section 3) ---------- */
+// parent = the agent row the sheet was opened under (the main orchestrator, or a sub-orchestrator), null = you; role = agent | orchestrator
+// (a sub-orchestrator); autoName = the last default name the sheet filled; touched = the user picked a model, so a role switch leaves it.
+const sp = { group: null, busy: false, under: null, parent: null, role: 'agent', autoName: '', touched: false };
+const spawnPrefs = new Map(); // per project and role (`<key>:<role>`): last model, permission mode and placement (kept for this window only)
+const SP_PREFIX = { agent: 'builder', orchestrator: 'lead' };
+const SP_TITLE = { agent: 'Spawn agent', orchestrator: 'Spawn sub-orchestrator' };
+const SP_BRIEF = {
+  agent: "The agent's first message: more than one word. It never passes through the tmux command line.",
+  orchestrator: "The sub-orchestrator's first message: the part of the work it plans and hands out. More than one word. It never passes through the tmux command line.",
+};
+const SP_WHY = {
+  none: "Sub-orchestrators run under the orchestrator. Use Spawn sub-orchestrator in the header, or the orchestrator's row menu.",
+  sub: 'Only the main orchestrator can start sub-orchestrators: nika allows three levels.',
+};
 
-function spawnName(g) {
+function spawnName(g, role = 'agent') {
   const used = new Set(g.agents.map((a) => a.name));
-  for (let i = 1; i < 100; i += 1) if (!used.has(`builder-${i}`)) return `builder-${i}`;
+  for (let i = 1; i < 100; i += 1) if (!used.has(`${SP_PREFIX[role]}-${i}`)) return `${SP_PREFIX[role]}-${i}`;
   return '';
 }
 
-function openSpawn(g) {
-  const lim = limitInfo(g);
-  if (lim.reached) {
-    toast(`${lim.running} of ${lim.max} agents are already running in ${g.label}.`, { kind: 'error' });
-    return;
-  }
-  sp.group = g;
-  const pref = spawnPrefs.get(g.project.key) ?? {};
+/** The Roles group of the model select: the project's effective models (design 4), or the four aliases while Settings has not loaded. */
+function spawnRoles(key) {
   const s = state.settings;
-  $('#sp-d').textContent = `In ${g.label}. Opens a new tmux pane and starts Claude Code with your brief.`;
-  $('#sp-name').value = spawnName(g);
-  $('#sp-brief').value = '';
-  const m = s?.models;
-  const roles = (m
-    ? [['Builder', m.builder], ['Reasoner', m.reasoner], ['Scout', m.scout], ['Orchestrator', m.orchestrator]].map(([role, id]) => [`${role} · ${id}`, id])
+  const own = s?.perProject?.[key]?.models ?? {}; // the roles this project sets itself
+  const m = effectiveRoleModels(s, key);
+  return (s?.models
+    ? ['builder', 'reasoner', 'scout', 'orchestrator'].map((r) => [`${ROLE_LABEL[r]} · ${m[r]}${own[r] ? ' (this project)' : ''}`, m[r]])
     : [['Opus', 'opus'], ['Sonnet', 'sonnet'], ['Haiku', 'haiku'], ['Fable', 'fable']]
   ).map(([text, value]) => ({ value, text }));
-  const custom = fillModelSelect($('#sp-model'), state.models, pref.model ?? roles[0].value, roles);
-  $('#sp-model-custom').value = custom ? pref.model : '';
+}
+
+/** Fill the model select: `remembered` (this window's last choice for the role), else Roles › Builder, or › Orchestrator for a sub-orchestrator. */
+function fillSpawnModel(role, remembered) {
+  const roles = spawnRoles(sp.group.project.key);
+  const value = remembered ?? roles[role === 'orchestrator' ? 3 : 0].value;
+  const custom = fillModelSelect($('#sp-model'), state.models, value, roles);
+  $('#sp-model-custom').value = custom ? value : '';
   $('#sp-model-custom').hidden = !custom;
   fieldError($('#sp-model-custom'), '');
+}
+
+/** What the role changes in the sheet's words: the title, the button, the brief help and the selected card. */
+function paintRole(role) {
+  $('#sp-h').textContent = SP_TITLE[role];
+  $('#sp-go').textContent = SP_TITLE[role];
+  $('#sp-brief-help').textContent = SP_BRIEF[role];
+  syncRadioCards($('#sp-role'));
+}
+
+/** The role the radios say. */
+const spawnRole = () => ($('#sp-role-orch').checked ? 'orchestrator' : 'agent');
+
+/** A role switch inside the open sheet: the name and the model follow only while the user has not changed them. */
+function changeRole() {
+  const role = spawnRole();
+  if (sp.busy || !sp.group || role === sp.role) return;
+  sp.role = role;
+  if ($('#sp-name').value === sp.autoName) {
+    sp.autoName = spawnName(sp.group, role);
+    $('#sp-name').value = sp.autoName;
+  }
+  if (!sp.touched) fillSpawnModel(role, spawnPrefs.get(`${sp.group.project.key}:${role}`)?.model);
+  paintRole(role);
+}
+
+/** Open the sheet for `g`. `parent` = the agent row it runs under (null = you), `role` = agent or orchestrator (a sub-orchestrator, only under the main one). */
+function openSpawn(g, { parent = null, role = 'agent' } = {}) {
+  const why = limitReason(g, parent);
+  if (why) {
+    toast(why, { kind: 'error' });
+    return;
+  }
+  const canSub = parent?.role === 'orchestrator';
+  const start = role === 'orchestrator' && canSub ? 'orchestrator' : 'agent';
+  Object.assign(sp, { group: g, parent, role: start, touched: false });
+  const pref = spawnPrefs.get(`${g.project.key}:${start}`) ?? {};
+  const s = state.settings;
+  const l = limitsOf(g, parent?.pane?.id ?? null);
+  $('#sp-d').textContent = `In ${g.label}. Opens a new tmux pane and starts Claude Code with your brief.`;
+  $('#sp-parent').textContent = parent ? `${parent.name} · ${parent.role === 'sub-orchestrator' ? 'sub-orchestrator' : 'orchestrator'} · pane ${parent.pane.id}` : 'None. You start it from nika.';
+  $('#sp-role-agent').checked = start === 'agent';
+  $('#sp-role-orch').checked = start === 'orchestrator';
+  $('#sp-role-orch').disabled = !canSub;
+  $('#sp-role-orch-d').textContent = `Plans the work and spawns up to ${l.max} agents of its own. It may run only nika spawn and nika status.`;
+  if (canSub) {
+    delete $('#sp-role-orch-card').dataset.off;
+    $('#sp-role-orch').removeAttribute('aria-describedby');
+  } else {
+    $('#sp-role-orch-card').dataset.off = 'true';
+    $('#sp-role-orch').setAttribute('aria-describedby', 'sp-role-why');
+  }
+  $('#sp-role-why').textContent = canSub ? '' : parent ? SP_WHY.sub : SP_WHY.none;
+  $('#sp-role-why').hidden = canSub;
+  sp.autoName = spawnName(g, start);
+  $('#sp-name').value = sp.autoName;
+  $('#sp-brief').value = '';
+  fillSpawnModel(start, pref.model);
+  paintRole(start);
   $('#sp-perm').replaceChildren(
     h('option', { value: '', text: `Use my setting: ${s ? PERM_LABEL[s.permissionMode] ?? s.permissionMode : 'default'}` }),
     ...Object.entries(PERM_LABEL).map(([v, t]) => h('option', { value: v, text: t })));
@@ -606,7 +1064,8 @@ function openSpawn(g) {
   ].filter(Boolean)); // replaceChildren would turn null into the text "null"
   const want = pref.place === 'under' && under ? 'under' : 'settings';
   $(`input[name="sp-place"][value="${want}"]`).checked = true;
-  $('#sp-note').textContent = `${lim.running} of ${lim.max} agents running in ${g.label}`;
+  // counted once, when the sheet opens: not live while it is open
+  $('#sp-note').textContent = `${parent ? trunc(parent.name, 24) : 'Spawned from nika'}: ${l.parent.running} of ${l.max} · ${trunc(g.label, 24)}: ${l.project.running} of ${l.project.cap} running`;
   for (const id of ['sp-name', 'sp-brief']) fieldError($(`#${id}`), '');
   $('#sp-alert').hidden = true;
   briefCount();
@@ -668,7 +1127,10 @@ async function submitSpawn(e) {
   const name = $('#sp-name').value;
   const place = $('input[name="sp-place"]:checked')?.value ?? 'settings';
   const model = spawnModel();
-  const req = { project: g.project.key, name, model, brief: $('#sp-brief').value };
+  const role = spawnRole();
+  const parent = sp.parent;
+  const req = { project: g.project.key, name, model, brief: $('#sp-brief').value, role };
+  if (parent) req.parent = parent.pane.id;
   if ($('#sp-perm').value) req.permissionMode = $('#sp-perm').value;
   if (place === 'under' && sp.under) req.under = sp.under;
   const dlg = $('#dlg-spawn');
@@ -676,6 +1138,7 @@ async function submitSpawn(e) {
   sp.busy = true;
   dlg.dataset.busy = '1';
   $('#sp-cancel').disabled = true;
+  $('#sp-role').disabled = true;
   setBusy(go, true, `Starting ${name}…`);
   let r = null;
   try {
@@ -686,18 +1149,37 @@ async function submitSpawn(e) {
   sp.busy = false;
   delete dlg.dataset.busy;
   $('#sp-cancel').disabled = false;
+  $('#sp-role').disabled = false;
   setBusy(go, false);
   if (r?.status === 200) {
-    spawnPrefs.set(g.project.key, { model: req.model, perm: $('#sp-perm').value, place });
+    spawnPrefs.set(`${g.project.key}:${role}`, { model: req.model, perm: $('#sp-perm').value, place });
     dlg.close();
     const href = sessionHref({ session: r.body.sessionId, pane: r.body.pane, project: g.project.key });
-    toast(`Spawned ${name} in pane ${r.body.pane}`, href ? { action: { label: 'Open session', run: () => { location.href = href; } } } : {});
+    const who = parent ? ` under ${trunc(parent.name, 40)}` : '';
+    toast(`Spawned ${role === 'orchestrator' ? 'sub-orchestrator ' : ''}${name}${who} in pane ${r.body.pane}`, href ? { action: { label: 'Open session', run: () => { location.href = href; } } } : {});
     await pollApp();
     render(true);
     return;
   }
-  spawnAlert(r ? errText(r) : 'Could not reach the nika server.');
+  spawnAlert(spawnFailure(r, req, g, parent));
   $('#sp-alert').focus();
+}
+
+/** The sheet's alert for a refused or failed spawn: the fixed copy of design 2.4 by code, else the server's own message. */
+function spawnFailure(r, req, g, parent) {
+  if (!r) return 'Could not reach the nika server.';
+  const b = r.body ?? {};
+  const who = parent ? trunc(parent.name, 40) : null;
+  if (r.status === 409 && b.error === 'limit' && (b.scope === 'parent' || b.scope === 'project') && Number.isInteger(b.running) && Number.isInteger(b.max)) {
+    return limitCopy({ scope: b.scope, parent: who, project: trunc(g.label, 40), running: b.running, max: b.max });
+  }
+  if (r.status === 409 && b.error === 'depth' && req.role === 'orchestrator') {
+    return `${who ?? 'That session'} can't start a sub-orchestrator. Only the main orchestrator can: nika allows three levels (orchestrator, sub-orchestrators, their agents). Nothing was started.`;
+  }
+  if (r.status === 404 && b.error === 'not_found' && req.parent && !req.under) { // with `under` the pane that is gone may be that one: the server's words then
+    return `${who} is no longer running, so nothing was started. Close this and spawn from a session that is running.`;
+  }
+  return errText(r);
 }
 
 /* ---------- apply rules ---------- */
@@ -960,6 +1442,7 @@ export async function initApp() {
   hooks.renderProject = renderProject;
   hooks.enterProject = () => { loadInstalled().then(() => render()); };
   hooks.groupActions = groupActions;
+  hooks.rowItems = rowItems;
   hooks.addProject = addProject;
   hooks.checkEnv = async () => {
     await loadMe().catch(() => {});
@@ -967,12 +1450,16 @@ export async function initApp() {
   };
   $('#side-add').addEventListener('click', () => addProject());
   wirePlugins();
+  wireModels();
   $('#spawn-form').addEventListener('submit', submitSpawn);
   $('#sp-brief').addEventListener('input', briefCount);
   $('#sp-model').addEventListener('change', () => { // Custom ID shows its field; any other choice hides it and drops its error
+    sp.touched = true;
     $('#sp-model-custom').hidden = $('#sp-model').value !== CUSTOM;
     fieldError($('#sp-model-custom'), '');
   });
+  $('#sp-model-custom').addEventListener('input', () => { sp.touched = true; });
+  for (const id of ['#sp-role-agent', '#sp-role-orch']) $(id).addEventListener('change', changeRole);
   for (const [id, key] of [['sp-name', 'agent']]) {
     $(`#${id}`).addEventListener('blur', () => fieldError($(`#${id}`), RX[key][0].test($(`#${id}`).value) ? '' : RX[key][1]));
   }

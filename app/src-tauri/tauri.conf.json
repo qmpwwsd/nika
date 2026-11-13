@@ -1,6 +1,6 @@
 {
   "productName": "nika",
-  "version": "0.3.4",
+  "version": "0.4.0",
   "identifier": "io.github.qmpwwsd.nika",
   "build": {
     "frontendDist": "ui"
@@ -32,7 +32,7 @@
     },
     "linux": {
       "deb": {
-        "depends": ["tmux"],
+        "depends": ["tmux (>= 3.2)"],
         "desktopTemplate": "linux/nika.desktop",
         "files": {
           "/usr/share/applications/io.github.qmpwwsd.nika.desktop": "linux/io.github.qmpwwsd.nika.desktop"

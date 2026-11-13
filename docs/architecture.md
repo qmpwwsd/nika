@@ -84,6 +84,33 @@ pane; Claude Code has no other channel into a running interactive session ([ADR 
 Routes: [`contracts/api-app.md` section 3](contracts/api-app.md). Parsed screen text:
 [`contracts/claude-tui.md`](contracts/claude-tui.md). Threats: T22, T23 and T26 in [security](security.md).
 
+## Nesting (0.4)
+
+A main orchestrator can start sub-orchestrators, and a sub-orchestrator can start agents: three levels, never an agent under
+an agent ([ADR 0013](adr/0013-nested-orchestration.md)). The only record of who started whom is tmux's own. nika sets four tags
+on a pane with `set-option -p` and fixed argv (`@nika-role` `orchestrator`, `sub-orchestrator` or `agent`; `@nika-agent`
+`<project key>/<name>`; `@nika-depth` `1` to `3`; `@nika-parent` a pane id), and `collect/tmux.js` reads them back strictly. A
+spawn names its parent (the page sends a `parent` pane id; the CLI uses `$TMUX_PANE`), and `spawn.js` resolves the parent and
+computes the depth from one fresh `tmux list-panes -a`, never from argv, env or a file. Only this project's orchestrator and
+sub-orchestrators can parent; any other nika-tagged pane is refused (409 `depth`). Limits: `limits.maxAgents` (N) bounds the
+live agents and sub-orchestrators under each parent, and a project runs at most `min(3 × N, 24)`; a refusal is 409 `limit` with
+`{ scope, running, max }`. On the read side `model.js` `linkTree()` turns the tags into `parent`, `depth` and `children` for
+each live agent (the depth is the place in the parent chain, not the tag's value), and `dash-model.js` `treeRows()` lays the
+rows out as a folding tree on both tiers.
+
+## Auto-compact (0.4)
+
+The Settings choice ("Auto-compact at 80 % of 400k", `compaction` in `config.json`) reaches a session only through its launch
+environment ([ADR 0014](adr/0014-auto-compact-launch-env.md)). `compact.js` `compactLaunch(model, setting)` computes, for the
+model's window, the pair `CLAUDE_CODE_AUTO_COMPACT_WINDOW` and `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` (both always, so an
+inherited value never stays in force; never the `--autocompact` flag), and `compactEnv` validates it. The orchestrator gets the
+pair as tmux `-e` values on its `new-session` or `new-window` (right after a `new-session` nika unsets the pair from the tmux
+session environment, so later panes do not inherit it); an agent or sub-orchestrator gets it through `compact` in its
+`<name>.agent.json`, which `_run-agent` validates again before adding the pair to the environment of the claude it starts.
+tmux 3.2 is the floor (`new-session -e`); `nika doctor` warns below it and the `.deb` depends on it. The context column reads
+the other way: `model.js` `contextOf()` turns the last `usage` of a transcript tail and the same setting into each agent's
+`context`.
+
 ## Memory bounds (0.3.4)
 
 Every cache that is keyed by path or id has a cap, so a day-long run does not grow with the number of sessions it has seen.
@@ -114,6 +141,7 @@ latency. `--optimize-for-size` saved about 10 MB more but made history requests 
 | `appio.js` | The app-tier process: stdio handshake, private server, status feed, folder picker relay. |
 | `cli.js` | The `nika` command: `serve`, `open`, `app` (`app install`), `status`, `projects`, `rules`, `spawn`, `orchestrate`, `doctor`, `_run-agent`. |
 | `commands-builtin.js` | The curated built-in slash commands for the palette, from `claude-tui.md` section 4. Nothing is read from disk. |
+| `compact.js` | Auto-compact (ADR 0014): `compactLaunch(model, setting)` turns the Settings choice into the two launch variables for one model, and `compactEnv` validates them. Pure. |
 | `config.js` | Defaults from the environment, port and `--since` parsing, `findTmux`, `findClaude`. |
 | `diff.js` | Unified diff for the rules preview. |
 | `exec.js` | `makeExec()`: `execFile` with a timeout and optional stdin input. |
@@ -123,15 +151,15 @@ latency. `--optimize-for-size` saved about 10 MB more but made history requests 
 | `keys.js` | Keystrokes and bracketed paste into a tmux pane. |
 | `mirror.js` | `capture-pane` output turned into rows of whitelisted styled spans; a `fresh` capture skips the 250 ms cache for the control actions. |
 | `mode.js` | Pure parsers over mirror rows: the permission mode from the footer and the permission prompt. They fail closed. |
-| `model.js` | `collect()`: merges every source into agent records and groups them by project. |
-| `models.js` | The static model catalog behind the model dropdowns (`GET /api/app/models`). |
-| `orchestrate.js` | Starts a project's orchestrator in a tmux session. |
+| `model.js` | `collect()`: merges every source into agent records and groups them by project; `findSession(id)` finds one session of any age in the transcript index (the saved orchestrator's lookup); `findSessions(ids)` does the same for several ids in one index walk, with no ps, tmux or registry (the project list's lookup). `contextOf` turns the last usage, nika's compaction setting (read through `loadConfig`, both tiers) and whether nika started the session into the agent's `context` (contract C6). |
+| `models.js` | The static model catalog behind the model dropdowns (`GET /api/app/models`), with each model's context window and `modelWindow(id)`. |
+| `orchestrate.js` | Starts or resumes a project's orchestrator in a tmux session (`launchArgv` builds its claude flags in one place) and finds an adopted orchestrator pane. |
 | `paths.js` | nika's own config and state dirs (XDG). |
 | `rules.js` | Renders, previews, hashes and applies the orchestration rules to a project. |
 | `server.js` | The HTTP server both tiers share: Host check, static files with the CSP, the 0.1 routes, a mount hook for the app tier. |
 | `session-control.js` | The four controls on a live pane: switch the mode, End, run a slash command, answer a prompt. One lock per pane, keys only through `keys.js`, fail closed, never kills. |
-| `spawn.js` | `spawnAgent()` splits a pane; `runAgent()` is the `_run-agent` wrapper that runs `claude` with the safety flags. |
-| `store.js` | The validated `config.json` and the project registry. |
+| `spawn.js` | `spawnAgent()` splits a pane (resolving the parent and depth from tmux's tags and applying the per-parent and per-project limits, ADR 0013); `runAgent()` is the `_run-agent` wrapper that runs `claude` with the safety flags. |
+| `store.js` | The validated `config.json`, the project registry and each project's saved orchestrator id. |
 | `text.js` | `clean()` and `cleanBlock()`: strip controls and bidi marks from agent-controlled text. |
 | `tmuxerr.js` | Maps a failed tmux call to a contract error body. |
 | `util.js` | `mapLimit`: bounded concurrency. `lru`: a Map capped in size (see Memory bounds). |
@@ -147,8 +175,8 @@ latency. `--optimize-for-size` saved about 10 MB more but made history requests 
 | `registry.js` | The live session registry, one `<pid>.json` per running Claude Code process. |
 | `reports.js` | Spawn report files (`.session`, `.md`, `.rc`) in the scratchpad and in nika's own report dirs. |
 | `subagents.js` | In-process subagents of a session. |
-| `tmux.js` | tmux panes (`list-panes -a`), pane titles and the `@nika-role` option. |
-| `transcripts.js` | Session transcripts: only the head and tail are read; results are cached by path, mtime and size. |
+| `tmux.js` | tmux panes (`list-panes -a`), pane titles and the pane tags nika sets (`@nika-role`, `@nika-agent`, `@nika-depth`, `@nika-parent`), each parsed strictly. |
+| `transcripts.js` | Session transcripts: only the head and tail are read; results are cached by path, mtime and size. From the tail it also keeps the context size of the last assistant entry (`usage`: the sum of the input and cache tokens, and the model id; numbers only). |
 
 ### `public/` (the page, plain browser modules, strict CSP)
 
@@ -158,12 +186,13 @@ latency. `--optimize-for-size` saved about 10 MB more but made history requests 
 | `tokens.css`, `app.css`, `session.css` | Design tokens and styles (light, dark, system). |
 | `api.js` | The only client of the app tier: takes the secret once and sends `X-Nika-App`. In the browser tier it refuses to run. |
 | `app-copy.js` | The Add to Applications banner: which banner `appCopy` shows and its fixed copy. Pure; the two POSTs live in `project.js`. |
-| `dash-model.js` | The dashboard's Show ended rule (`endedPlan`, `resetEndedState`) and the sidebar's Projects and Detected lists (`sidebarModel`). Pure, both tiers. |
+| `dash-model.js` | The dashboard's Show ended rule (`endedPlan`, `resetEndedState`), the sidebar's Projects and Detected lists (`sidebarModel`) and the orchestrator's state and badge (`orchState`, `savedPick`, `otherRunning`, `roleTag`, `ROLE_TAGS`). Pure, both tiers. |
 | `app.js` | Main page: shell, dashboard (in the app tier: mode tags, the row menu's End and the Add to Applications banner), router, the poll loop and the Keyboard shortcuts keys. Runs in both tiers. |
 | `ui.js` | Shared state and widgets for the main page. |
-| `dom.js` | `h()`: builds DOM with `textContent`, never parses markup. |
+| `dom.js` | `h()`: builds DOM with `textContent`, never parses markup; `roleTagEl()` draws the orchestrator badge. |
 | `end-dialog.js` | The End-session dialog, shared by the session window and the dashboard row menu. |
 | `modes.js` | Permission modes in the UI: labels, icons, the switcher's state and the dashboard's mode map and tag. |
+| `ctx.js` | Pure text helpers for token counts, the Auto-compact result line and the context meter (`fmtTokens`, `compactPreview`, `ctxView`). No DOM; `dom.js` `ctxEl` draws the meter. |
 | `models-ui.js` | The model dropdown shared by the session window, Settings and the spawn sheet: groups from the catalog, the Custom ID field and its `MODEL_ID` check. |
 | `palette.js` | The slash-command palette's rules and copy (ranking, views, insertion). No DOM, no requests. |
 | `plugin-view.js` | The "Choose plugins" dialog's model: the rows and their fixed order, the filter, the counts and what Save sends. Pure; the dialog itself lives in `project.js`. |
@@ -183,7 +212,7 @@ nika's own files follow XDG ([ADR 0008](adr/0008-xdg-config-state.md)). Folders 
 
 | Path | Holds |
 |---|---|
-| `${NIKA_CONFIG_DIR or XDG_CONFIG_HOME or ~/.config}/nika/config.json` | Settings, the project registry and each project's own settings (`perProject`, its plugins). Validated on load; garbage falls back to defaults with a warning. |
+| `${NIKA_CONFIG_DIR or XDG_CONFIG_HOME or ~/.config}/nika/config.json` | Settings, the project registry and each project's own settings (`perProject`: its plugins, models and saved orchestrator). Validated on load; garbage falls back to defaults with a warning. |
 | `…/nika/templates/<name>.md` | Rule templates you imported locally. |
 | `${XDG_STATE_HOME or ~/.local/state}/nika/projects/<key>/reports/` | Per spawned agent: brief, settings, session id, pane, exit code, report. |
 | `${XDG_STATE_HOME or ~/.local/state}/nika/backups/<key>/<ISO>/` | Byte-for-byte copies taken before "apply rules" overwrites a file; the last 10 folders per project are kept. Never inside a repo. |

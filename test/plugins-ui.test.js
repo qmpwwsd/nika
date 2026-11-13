@@ -9,8 +9,10 @@ import path from 'node:path';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 import { h, icon } from '../public/dom.js';
+import { spawnLimits } from '../public/dash-model.js';
 import { pluginView, pluginSave, sortIds, countText, filterNote } from '../public/plugin-view.js';
-import { fillModelSelect, CUSTOM, MODEL_ID, MODEL_HINT } from '../public/models-ui.js';
+import { fillModelSelect, CUSTOM, MODEL_ID, MODEL_HINT, ROLES, ROLE_LABEL, modelLabel, fillRoleOverride, effectiveRoleModels } from '../public/models-ui.js';
+import { compactPreview } from '../public/ctx.js';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const read = (f) => fs.readFileSync(path.join(PUBLIC, f), 'utf8');
@@ -168,7 +170,8 @@ function projectRig({ installed = [A, B, C, D], savedList = [], pluginsStatus = 
     render: (force) => renders.push(force),
     setTimeout: (fn, ms) => { timers.push({ fn, ms, done: false }); return timers.length - 1; },
     clearTimeout: (id) => { if (timers[id]) timers[id].done = true; },
-    pluginView, pluginSave, sortIds, countText, filterNote,
+    pluginView, pluginSave, sortIds, countText, filterNote, spawnLimits,
+    ROLES, ROLE_LABEL, modelLabel, fillRoleOverride, effectiveRoleModels,
     rulesEl: () => new El('span'),
   };
   const api = runModule('project.js', ctx, '({ openPlugins, plugSave, plugLoad, wirePlugins, setupCards, pl, rememberPlugins, loadInstalled })');
@@ -667,10 +670,10 @@ describe('Project setup card', () => {
     assert.deepEqual(r.location.hashSets, []);
   });
 
-  test('(+) the card carries no row of the other cards: Rules and New agents are unchanged', () => {
+  test('(+) the card carries no row of the other cards: Rules is unchanged, New agents has the 0.4 limit rows', () => {
     const cards = cardOf(projectRig({}), [], null);
     assert.deepEqual(cards[0].all((n) => n.tag === 'h2').map((n) => n.textContent), ['Rules']);
-    assert.deepEqual(cards[2].all((n) => n.tag === 'dt').map((n) => n.textContent), ['Permission mode', 'Pane', 'Running']);
+    assert.deepEqual(cards[2].all((n) => n.tag === 'dt').map((n) => n.textContent), ['Permission mode', 'Pane', 'Per orchestrator', 'Spawned from nika', 'This project']);
   });
 });
 
@@ -698,7 +701,7 @@ describe('installed plugins for the card (loadInstalled)', () => {
   test('(+) entering a project loads them and redraws; the card is redrawn when they change (they are part of its signature)', () => {
     const src = code(read('project.js'));
     assert.match(src, /hooks\.enterProject = \(\) => \{ loadInstalled\(\)\.then\(\(\) => render\(\)\); \};/);
-    assert.match(src, /state\.settings, state\.plugins, state\.me\?\.tmux/);
+    assert.match(src, /state\.settings, state\.plugins, state\.models, state\.me\?\.tmux/, 'the catalog too: the Models block shows its labels');
   });
 });
 
@@ -771,7 +774,7 @@ function settingsRig({ settings, put = { status: 200 }, templates = ['mine.md'],
   const base = {
     ui: { theme: 'system', singleKeyShortcuts: true }, models: { orchestrator: 'opus', reasoner: 'opus', builder: 'claude-sonnet-5-5', scout: 'haiku' },
     remoteControl: { enabled: false, prefix: '' }, permissionMode: 'default', panePlacement: 'beside', limits: { maxAgents: 3 },
-    rules: { localTemplate: null }, perProject: {},
+    rules: { localTemplate: null }, perProject: {}, compaction: { enabled: true, pct: 80, window: 400000 },
   };
   const radios = {
     theme: ['system', 'light', 'dark'].map((v) => Object.assign(new El('input'), { value: v })),
@@ -800,7 +803,7 @@ function settingsRig({ settings, put = { status: 200 }, templates = ['mine.md'],
     return m ? radios[m[1]] : [];
   };
   const ctx = {
-    h, $, $$, state, hooks, CUSTOM, MODEL_ID, MODEL_HINT, fillModelSelect, JSON, Number, Promise, Object, Array, Set,
+    h, icon, $, $$, state, hooks, CUSTOM, MODEL_ID, MODEL_HINT, fillModelSelect, compactPreview, JSON, Number, Promise, Object, Array, Set,
     RX: { agent: [/^[a-z0-9][a-z0-9-]{0,39}$/, 'x'], prefix: [/^(?:[a-z0-9][a-z0-9-]{0,19})?$/, 'Lowercase letters, digits and dashes, up to 20, starting with a letter or digit. Leave empty to use the project name.'] },
     toast: (msg) => toasts.push(msg), announce: (m) => announced.push(m), errText: (r) => r?.body?.message ?? 'x',
     fieldError: () => {}, syncRadioCards: () => {}, applyTheme: () => {}, render: (f) => renders.push(f),
@@ -817,7 +820,7 @@ function settingsRig({ settings, put = { status: 200 }, templates = ['mine.md'],
       throw new Error(`unexpected request ${method} ${url}`);
     },
   };
-  node('#set-form'); node('#set-bar').hidden = true; node('#set-sum').hidden = true;
+  node('#set-form'); node('#set-bar').hidden = true; node('#set-sum').hidden = true; node('#set-compact-err').hidden = true;
   const api = runModule('settings.js', ctx, '({ hooks })');
   return {
     api, ctx, node, radios, calls, announced, toasts, renders, release, state,
@@ -839,7 +842,7 @@ describe('Settings holds defaults only', () => {
     s.submit();
     await settle();
     const put = s.calls.find((c) => c.method === 'PUT');
-    assert.deepEqual(Object.keys(put.json).sort(), ['limits', 'models', 'panePlacement', 'permissionMode', 'remoteControl', 'rules', 'ui']);
+    assert.deepEqual(Object.keys(put.json).sort(), ['compaction', 'limits', 'models', 'panePlacement', 'permissionMode', 'remoteControl', 'rules', 'ui']);
     assert.equal('plugins' in put.json, false);
     assert.equal('perProject' in put.json, false);
     assert.equal(put.json.limits.maxAgents, 5);

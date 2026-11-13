@@ -7,11 +7,12 @@ import { configDir } from './paths.js';
 import { ensureDir, writeAtomic } from './fwrite.js';
 import { readHead } from './fsafe.js';
 import { clean } from './text.js';
-import { PROJECT_KEY, MODEL_ID, RC_PREFIX, PLUGIN_NAME, PERMISSION_MODES, PANE_PLACEMENTS } from './ids.js';
+import { PROJECT_KEY, UUID, MODEL_ID, RC_PREFIX, PLUGIN_NAME, PERMISSION_MODES, PANE_PLACEMENTS } from './ids.js';
 
 const CONFIG_MAX = 256 * 1024;
 const PLUGINS_MAX = 200;
 const PROJECTS_MAX = 100;
+const ROLES = ['orchestrator', 'reasoner', 'builder', 'scout']; // the keys of `models`, in the order the page lists them
 export const TEMPLATE_NAME = /^[A-Za-z0-9_-]{1,64}\.md$/;
 const THEMES = ['system', 'light', 'dark']; // system = follow prefers-color-scheme
 const hasOwn = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
@@ -30,6 +31,7 @@ export function defaults() {
     projects: [],
     rules: { localTemplate: null },
     ui: { theme: 'system', singleKeyShortcuts: true },
+    compaction: { enabled: true, pct: 80, window: 400000 }, // auto-compact for the sessions nika starts (src/compact.js)
   };
 }
 
@@ -45,7 +47,12 @@ function pluginList(v) {
   return ok ? [...new Set(v)] : undefined;
 }
 
-/** perProject: { <PROJECT_KEY>: { plugins?: string[] } }. A bad key, entry or list drops that entry; other inner keys are dropped (0.4 adds more). An empty list or an empty entry is "none" and is not kept. */
+/**
+ * perProject: { <PROJECT_KEY>: { plugins?: string[], orchestratorSessionId?: UUID, models?: { <role>: MODEL_ID } } }. A bad key or an
+ * entry that is not an object drops that entry; a bad plugin list drops just the list, a bad id just the id, a `models` that is not
+ * an object just `models`, an unknown role or a bad model id just that role (each with a warning); other inner keys are dropped.
+ * An entry that holds no non-empty plugin list, no id and no model is "none" and is not kept.
+ */
 function perProject(v, warn) {
   if (!isPlainObject(v)) return undefined;
   const out = {};
@@ -53,12 +60,30 @@ function perProject(v, warn) {
     const at = `perProject.${clean(key, 40) ?? '?'}`;
     const entry = v[key];
     const plugins = isPlainObject(entry) && hasOwn(entry, 'plugins') ? pluginList(entry.plugins) : undefined;
-    if (!isProjectKey(key) || !isPlainObject(entry) || (hasOwn(entry, 'plugins') && plugins === undefined)) {
+    if (!isProjectKey(key) || !isPlainObject(entry)) {
       warn(`${at} dropped`);
       continue;
     }
-    for (const k of Object.keys(entry)) if (k !== 'plugins') warn(`unknown key ${at}.${clean(k, 40) ?? '?'} dropped`);
-    if (plugins?.length) out[key] = { plugins }; // an empty list is a valid "none": no entry (the entry holds only `plugins` until 0.4)
+    if (hasOwn(entry, 'plugins') && plugins === undefined) warn(`${at}.plugins invalid, dropped`);
+    for (const k of Object.keys(entry)) if (k !== 'plugins' && k !== 'orchestratorSessionId' && k !== 'models') warn(`unknown key ${at}.${clean(k, 40) ?? '?'} dropped`);
+    const id = hasOwn(entry, 'orchestratorSessionId') ? entry.orchestratorSessionId : undefined;
+    const idOk = typeof id === 'string' && UUID.test(id);
+    if (hasOwn(entry, 'orchestratorSessionId') && !idOk) warn(`${at}.orchestratorSessionId invalid, dropped`);
+    const models = {};
+    if (hasOwn(entry, 'models')) {
+      if (!isPlainObject(entry.models)) warn(`${at}.models invalid, dropped`);
+      else {
+        for (const role of Object.keys(entry.models)) {
+          if (!ROLES.includes(role)) warn(`unknown key ${at}.models.${clean(role, 40) ?? '?'} dropped`);
+          else if (typeof entry.models[role] === 'string' && MODEL_ID.test(entry.models[role])) models[role] = entry.models[role];
+          else warn(`${at}.models.${role} invalid, dropped`);
+        }
+      }
+    }
+    const hasModels = Object.keys(models).length > 0;
+    if (plugins?.length || idOk || hasModels) {
+      out[key] = { ...(plugins?.length ? { plugins } : {}), ...(idOk ? { orchestratorSessionId: id } : {}), ...(hasModels ? { models } : {}) };
+    }
   }
   return out;
 }
@@ -92,6 +117,7 @@ const SCHEMA = {
   projects,
   rules: { localTemplate: (v) => (v === null ? v : str(TEMPLATE_NAME)(v)) },
   ui: { theme: oneOf(THEMES), singleKeyShortcuts: bool },
+  compaction: { enabled: bool, pct: intIn(20, 95), window: oneOf([200000, 400000, 1000000, 'model']) },
 };
 
 /** Walks SCHEMA: unknown keys dropped, bad values replaced by defaults; every deviation is a warning. */
@@ -228,32 +254,81 @@ export function updateSettings(patch, env = process.env) {
   });
 }
 
-/** `{ plugins }` saved for a project: the names to turn on, [] when none. Throws EINVAL on a bad key. */
+/** The Settings models with the project's own ids laid over them: what nika starts and renders for that project. Pure. */
+export function effectiveModels(config, key) {
+  return Object.fromEntries(ROLES.map((role) => [role, config.perProject?.[key]?.models?.[role] ?? config.models[role]]));
+}
+
+/** `{ plugins, models }` of one project: [] when no plugin is on; `models` always has the four roles, each an id or null. */
+const projectConfig = (config, key) => ({
+  plugins: config.perProject[key]?.plugins ?? [],
+  models: Object.fromEntries(ROLES.map((role) => [role, config.perProject[key]?.models?.[role] ?? null])),
+});
+
+/** Throws EINVAL on a bad key. */
 export async function getProjectConfig(key, env = process.env) {
   if (!isProjectKey(key)) throw bad('invalid project key');
-  return { plugins: (await loadConfig(env)).config.perProject[key]?.plugins ?? [] };
+  return projectConfig((await loadConfig(env)).config, key);
+}
+
+/** The ids of a `{ models }` patch that have a value, in role order; undefined unless it has exactly the four roles, each a MODEL_ID or null. */
+function modelPatch(v) {
+  const ok = isPlainObject(v) && Object.keys(v).length === ROLES.length && ROLES.every((r) => hasOwn(v, r) && (v[r] === null || (typeof v[r] === 'string' && MODEL_ID.test(v[r]))));
+  return ok ? Object.fromEntries(ROLES.filter((r) => v[r] !== null).map((r) => [r, v[r]])) : undefined;
 }
 
 /**
- * Sets one project's config. Today the patch is exactly `{ plugins: string[] }` (0.4 adds more); `plugins: []` removes the list
- * and the entry with it. Runs in the serial queue, so two pages saving different projects cannot overwrite each other.
- * Throws EINVAL (bad key or patch) or ENOENT (not a registered project); returns the project's new `{ plugins }`.
+ * Sets one project's config. The patch is exactly one of `{ plugins: string[] }` or `{ models: { orchestrator, reasoner, builder,
+ * scout } }` (each a MODEL_ID, or null for "use the Settings default"), so the two dialogs never overwrite each other. `plugins: []`
+ * and four nulls remove their list; the entry goes when nothing is left in it. Runs in the serial queue, so two pages saving
+ * different projects cannot overwrite each other. Throws EINVAL (bad key or patch) or ENOENT (not a registered project); returns
+ * the project's new `{ plugins, models }`.
  */
 export function updateProjectConfig(key, patch, env = process.env) {
   return serial(async () => {
     if (!isProjectKey(key)) throw bad('invalid project key');
-    // own keys only: an inherited or `__proto__` key never counts as `plugins`
-    if (!isPlainObject(patch) || Object.keys(patch).length !== 1 || !hasOwn(patch, 'plugins')) throw bad('patch must be { plugins: [...] }');
-    const plugins = pluginList(patch.plugins);
-    if (plugins === undefined) throw bad(`plugins must be a list of at most ${PLUGINS_MAX} plugin names like name@marketplace`);
+    // own keys only: an inherited or `__proto__` key never counts as `plugins` or `models`
+    const field = isPlainObject(patch) && Object.keys(patch).length === 1 ? Object.keys(patch)[0] : null;
+    if (field !== 'plugins' && field !== 'models') throw bad('patch must be { plugins: [...] } or { models: {...} }');
+    const value = field === 'plugins' ? pluginList(patch.plugins) : modelPatch(patch.models);
+    if (value === undefined) {
+      throw bad(field === 'plugins' ? `plugins must be a list of at most ${PLUGINS_MAX} plugin names like name@marketplace` : 'models must have orchestrator, reasoner, builder and scout, each a model id or null');
+    }
     const { config } = await loadConfig(env);
     if (!config.projects.some((p) => p.key === key)) throw Object.assign(new Error('project is not registered'), { code: 'ENOENT' });
     const entry = { ...config.perProject[key] };
-    if (plugins.length) entry.plugins = plugins;
-    else delete entry.plugins;
+    if (Object.keys(value).length) entry[field] = value;
+    else delete entry[field];
     if (Object.keys(entry).length) config.perProject[key] = entry;
     else delete config.perProject[key];
     await writeConfig(config, env);
-    return { plugins };
+    return projectConfig(config, key);
+  });
+}
+
+/** The project's saved orchestrator session id (a UUID), or null. Throws EINVAL on a bad key. */
+export async function getOrchestrator(key, env = process.env) {
+  if (!isProjectKey(key)) throw bad('invalid project key');
+  return (await loadConfig(env)).config.perProject[key]?.orchestratorSessionId ?? null;
+}
+
+/**
+ * Saves (a UUID) or forgets (null) the project's orchestrator session id; the plugin list beside it is untouched. Runs in the
+ * serial queue. Throws EINVAL (bad key, or an id that is neither null nor a lowercase UUID) or ENOENT (not a registered project);
+ * returns the new id or null.
+ */
+export function setOrchestrator(key, id, env = process.env) {
+  return serial(async () => {
+    if (!isProjectKey(key)) throw bad('invalid project key');
+    if (id !== null && !(typeof id === 'string' && UUID.test(id))) throw bad('orchestrator must be a session id (a UUID) or null');
+    const { config } = await loadConfig(env);
+    if (!config.projects.some((p) => p.key === key)) throw Object.assign(new Error('project is not registered'), { code: 'ENOENT' });
+    const entry = { ...config.perProject[key] };
+    if (id) entry.orchestratorSessionId = id;
+    else delete entry.orchestratorSessionId;
+    if (Object.keys(entry).length) config.perProject[key] = entry;
+    else delete config.perProject[key];
+    await writeConfig(config, env);
+    return id;
   });
 }

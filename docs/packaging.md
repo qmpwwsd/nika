@@ -31,7 +31,7 @@ Decision record: [ADR 0009](adr/0009-packaging.md). Shell facts: [architecture](
   but none is new enough, the error page says `Node.js is too old` and names the newest version seen; when none
   exists or none answers, it says `Node.js was not found`. Only folder listings and `--version` are used: no shell, dotfile or
   version-manager config is read. Anything else: set `NIKA_NODE`.
-- tmux and Claude Code, for the session window, spawn and orchestrator features.
+- tmux 3.2 or newer (the orchestrator's `new-session -e` needs it) and Claude Code, for the session window, spawn and orchestrator features.
 
 ## macOS: build from source
 
@@ -96,7 +96,7 @@ cargo tauri build --bundles deb,appimage
 - **AppIndicator** for the tray icon (`libayatana-appindicator3-1`). Some desktops, such as stock GNOME, need an
   AppIndicator extension to show the icon. Without a tray icon the window still works; starting the app again focuses
   the existing window.
-- **tmux** is a declared dependency of the `.deb` (`bundle.linux.deb.depends` is `["tmux"]`; the bundler adds the two
+- **tmux** (3.2 or newer; Ubuntu 22.04 ships 3.2a and Debian 12 ships 3.3a) is a declared dependency of the `.deb` (`bundle.linux.deb.depends` is `["tmux (>= 3.2)"]`; the bundler adds the two
   libraries above itself). Node.js is deliberately not declared: apt would install the distribution's `nodejs`, which
   is older than 22 on current Debian and Ubuntu releases. The AppImage cannot declare dependencies, so tmux and Node 22+
   must already be installed (the README says so).

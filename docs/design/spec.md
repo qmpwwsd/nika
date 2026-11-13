@@ -481,8 +481,8 @@ Markup (`modeEl`): `span.mode.<cls>[data-confirmed][title]` > icon (`aria-hidden
 | Variant | Where | Look |
 |---|---|---|
 | full | session header | icon + label (+ "unconfirmed") |
-| compact | dashboard rows ≥ 860 px | icon + label; an unconfirmed tag is hollow and dashed, the word "unconfirmed" goes to `.sr-only` and `title` (keeps the 128 px column) |
-| icon-only | dashboard rows ≤ 860 px | icon in the 24 px box, edge and fill as above; label in `.sr-only` + `title` (same rule as the status glyph in §3.3) |
+| compact | dashboard rows ≥ 860 px (app tier > 1010 px) | icon + label; an unconfirmed tag is hollow and dashed, the word "unconfirmed" goes to `.sr-only` and `title` (keeps the 128 px column) |
+| icon-only | dashboard rows ≤ 860 px (app tier ≤ 1010 px) | icon in the 24 px box, edge and fill as above; label in `.sr-only` + `title` (same rule as the status glyph in §3.3) |
 
 #### 2.8.6 Confirmed, unconfirmed, unknown
 
@@ -538,7 +538,7 @@ Privileged actions when tmux or claude is missing: keep visible, `aria-disabled=
 
 ### 3.3 Agent row (A)
 
-Grid: status 104 · name ≥120 · model 64 · what (prompt + branch chip) · activity 56 · pane 44 · ⋯ 32. Height ≥ 40.
+Grid: status 104 · name ≥120 · model 64 · **(0.4) context 64 (§3.19)** · what (prompt + branch chip) · activity 56 · pane 44 · ⋯ 32. Height ≥ 40.
 
 | State | Look |
 |---|---|
@@ -552,7 +552,13 @@ Grid: status 104 · name ≥120 · model 64 · what (prompt + branch chip) · ac
 | error | whole list at 60 % opacity + banner "Disconnected… reconnecting every 3 s" (stale data stays readable) |
 | 0 | "No agents in this project. [Start orchestrator] [Spawn agent]" inside the group |
 
-Container widths: ≤ 860 px hides model and pane columns and shows status as glyph only; ≤ 600 px moves the prompt to a second line.
+Container widths: ≤ 860 px (app tier: ≤ 1010 px) hides model and pane columns and shows status as glyph only (the context column stays at 56 px, number only, no bar); ≤ 600 px moves the prompt to a second line.
+
+**(0.4) Context** cell (`div.c-ctx`) right after the model, on both tiers: the meter of §3.19. Ended rows show their last value muted.
+
+**(0.4) Role badge** after the name (`roleTagEl(roleTag(a, pickId))`; markup and words in §3.16). At ≤ 860 px (app tier ≤ 1010 px) the long word is clipped like the mode label (still read by screen readers) and a short one shows.
+
+**(0.4) Nesting.** A group whose live agents hang under each other draws one flat `ul.rows` in tree order, each row indented by its place in the tree (§3.17). A group where nothing nests is drawn exactly as before.
 
 ### 3.4 Project group / card
 
@@ -561,7 +567,9 @@ Container widths: ≤ 860 px hides model and pane columns and shows status as gl
 | D | name (h2, ellipsis at 32ch, link), rules badge, path (muted, ellipsis at 40ch, hidden ≤ 760 px), counts, actions [Start orchestrator] [Spawn agent] |
 | H/F | name link underline / ring |
 | unregistered repo | "not a nika project" muted + [Add project] instead of the actions |
-| limit reached | Spawn shows `aria-disabled` + "3/3 running" note |
+| limit reached | Spawn shows `aria-disabled` and the limit as its title; a click toasts it (§3.17) |
+| **(0.4)** orchestrator | the first button follows `orchState`: **Open orchestrator** (live), **Resume orchestrator** (ended), **Start orchestrator** (none, or gone with its own title). §3.16 |
+| **(0.4)** sub-orchestrator | the project page's header adds **Spawn sub-orchestrator** (`i-sub-spawn`, secondary) after Spawn agent; the dashboard group header keeps its two buttons. §3.17 |
 | 0 | see agent row 0 |
 
 ### 3.5 Form fields
@@ -588,9 +596,10 @@ Messages (exact copy):
 | Kind | Size | Header | Footer |
 |---|---|---|---|
 | Modal (rules) | min(980, vw−32) × min(720, vh−32) | title + close (×) | Cancel · primary |
-| Side sheet (spawn) | 480 × full height, right edge | title + project + close | count note · Cancel · Spawn agent |
+| Side sheet (spawn) | 480 × full height, right edge | title + project + close | count note · Cancel · Spawn agent (or Spawn sub-orchestrator, §3.17) |
 | Confirm (remove project) | 440 wide | title | Cancel · danger action |
 | Modal (Choose plugins, 0.3.4) | min(560, vw−32) × min(640, vh−32) | title + close (×) | Cancel · Save plugins (§3.15) |
+| Modal (Choose models, 0.4) | min(480, vw−32) | title + close (×) | Cancel · Save models (§3.15) |
 
 States: D (open, scrim `--scrim`), L (primary shows spinner; Esc and Cancel are disabled while a write is in flight; the `cancel` event is prevented), E (inline alert at the top of the body, focus moves to it), success (body replaced by a result list + Done, which gets focus).
 
@@ -666,6 +675,7 @@ every other allow-listed key. The prompt gates the Shift-Tab and Enter chips had
 ### 3.12 Menus, tabs, skeletons
 
 - Row menu ("⋯"): disclosure button (`aria-expanded`, `aria-controls`) + list of buttons; Esc closes and returns focus; one open at a time; items: Copy resume command, Show report, Open in claude.ai ↗, Focus pane %n in tmux.
+- **(0.4)** `menuEl` items may carry `fk` (`data-fk`), `group: true` (`li.grp`: a rule above the item) and `reason` (the item is `aria-disabled="true"` with the reason as its `title`; it stays focusable, a click shows the reason as an error toast and runs nothing). The app tier adds the orchestrator items of §3.16 between "Focus pane" and "End session…", each group set off by a rule.
 - Tabs (session narrow layout): `role="tablist"` / `tab` / `aria-selected`; Left/Right move, Home/End jump (spec; mock uses click).
 - Skeleton: `--surface-2` → `--surface-3` sweep 1.4 s; flat with reduced motion; `aria-busy="true"` on the container, plus "Loading agents…" `sr-only`.
 
@@ -719,7 +729,7 @@ driven by `GET /api/app/me` `appCopy` (read at load and after each action). One 
 - Icon: `i-apps` (a 2×2 grid of rounded squares, 16 px, same stroke as the set). Every string is static copy plus the
   server's version number (rendered with `textContent`).
 
-### 3.15 Project setup card and Choose plugins dialog (0.3.4)
+### 3.15 Project setup card, Choose plugins dialog (0.3.4) and Models (0.4)
 
 Per-project settings live on the project page, not in Settings (ADR 0012). Settings keeps only the defaults for every project.
 
@@ -752,9 +762,233 @@ scrolls); a help line; footer Cancel · **Save plugins**.
 - Keys: Tab order × → alert → filter → boxes (Space) → Clear filter → Cancel → Save. Esc in a filter with text clears it, else
   closes. Mod+Enter saves. Focus returns to **Choose plugins…**.
 
+**(0.4) Models block and Choose models dialog.** Under the Plugins block the card has a **Models** block (same `h3` shape, with
+"<n> set here" when n > 0): a `dl.kv` (`data-fk="setup-models"`) listing only the roles this project sets, in the order
+Orchestrator, Reasoner, Builder, Scout; each `dd` shows the catalog label ("Opus 5.5") with the id in its `title`, and a Custom ID
+in mono, wrapping anywhere. With none set: "All roles use the defaults from Settings."; before Settings has loaded: "Not loaded
+yet." Then "Used when nika starts this project's orchestrator or spawns its agents." and **Choose models…**
+(`button.btn`, `aria-haspopup="dialog"`, `data-fk="choose-models"`).
+
+**Choose models dialog** (static `<dialog id="dlg-models" class="dlg-models">`, no `<form>`, width min(480, 100vw−32); only the
+body scrolls): header "Models for <project>" (name cut at 32) and ×; "Used when nika starts this project's orchestrator or
+spawns its agents. Running sessions keep their model."; an alert slot; four `.field`s (label, `select#md-model-<role>`, a
+Custom ID input and its error line); "Defaults are in Settings."; footer `span#md-dirty` · Cancel · (Retry) · **Save models**.
+- Each select is `fillRoleOverride`: **Use default (<Settings model's label>)** first, then the catalog groups, then Custom ID.
+  A saved id the catalog lacks opens as Custom ID with its field filled. The Custom ID field checks `MODEL_ID` on blur and on
+  Save, with the Settings copy (`MODEL_HINT`).
+- Open: focus the title while loading, then the Orchestrator select. `loadSettings()`, `loadModels()` and
+  `GET /api/app/projects/:key/config` run together.
+- Save is off until the draft differs from what was loaded, and off again when changed back; the footer says "No changes yet."
+  or "<n> role changed" / "<n> roles changed". Enter in a Custom ID field saves only while Save is on.
+- States: loading (4 skeleton lines, Save off) · load error (alert "The model settings could not be loaded. Check that nika is
+  still running, then try again."; footer Cancel · Retry) · no catalog (a help line "The model list did not load. Choose Use
+  default, or type a model ID."; each select offers Use default and Custom ID) · invalid custom (field error; on Save the alert
+  "<n> field(s) need a fix before saving." and focus on the first) · saving (Save "Saving…", Cancel, ×, selects and fields off, dialog
+  busy) · save error (alert, draft kept, focus on the alert).
+- Save sends `PUT /api/app/projects/:key/config` `{ "models": { "orchestrator", "reasoner", "builder", "scout" } }`, each an id or
+  `null` (= default), and the page copy (`state.settings.perProject[key].models`) follows. Toast "Models saved for <name>.
+  Sessions nika starts from now on use them."; when the project's rules state is `nika` or `outdated` it adds "Apply rules to
+  update the models in rules/orchestration.md." (the rendered file changes only on Apply).
+- The spawn sheet's Roles group lists the project's effective models; an overridden role reads "Builder · claude-opus-5-5 (this
+  project)". The page computes them with `effectiveRoleModels`, which mirrors the server's `effectiveModels`.
+- Keys: Tab order × → alert → each select / Custom ID field → Cancel → Retry → Save. Esc, Cancel and × discard silently. Focus
+  returns to **Choose models…**.
+
 **Settings save bar.** The bar (Save · Discard) is hidden until the form differs from what was loaded, and hidden again when
 the values are put back. Showing it announces "Unsaved changes. Save or discard them at the bottom." Discard repopulates the
 form, focuses the page heading and announces "Changes discarded." While the bar is hidden Enter and Mod+Enter send nothing.
+
+### 3.16 Pick or resume an orchestrator (0.4)
+
+A project remembers one orchestrator by session id (`perProject.<key>.orchestratorSessionId`, app tier only). Start orchestrator saves the session it starts, so the header can **Resume** it after it ends. Any other session of the project can be made the orchestrator (**Set**), and **Stop using** forgets the id (it never ends a session or removes a tag).
+
+**Badge** (`span.tag[title] > span.tag-l + span.tag-s[aria-hidden]`, the same markup in rows and the session header). Never colour alone: each state has its own word.
+
+| Kind | When | Class | Words |
+|---|---|---|---|
+| main | live, role `orchestrator` | `.tag` | "orchestrator" (short "orch") |
+| sub | live, role `sub-orchestrator` (read from the role, never derived from depth; an orphan keeps it) | `.tag.sub` (outlined) | "sub-orchestrator" (short "sub-orch") |
+| saved | not live, it is the project's saved orchestrator | `.tag.muted` | "orchestrator"; title "Saved orchestrator. Resume it from the header or this row's menu." |
+
+The browser tier shows main and sub only (they come from tmux tags); it never shows saved, which needs the project's pick.
+
+**Row menu** (app tier, registered projects only): Copy resume command · Show report · Open in claude.ai ↗ · Focus pane · *rule* · Set as orchestrator · Resume as orchestrator · Stop using as orchestrator · *rule* · Spawn agent under <name>… · Spawn sub-orchestrator under <name>… · *rule* · End session…
+
+| Row | Set | Resume | Stop using | Spawn agent under | Spawn sub-orchestrator under |
+|---|---|---|---|---|---|
+| live main orchestrator, is the pick | – | – | shown | shown | shown |
+| live main orchestrator, not the pick (a 0.3 pane) | shown | – | – | shown | shown |
+| live sub-orchestrator | – | – | – | shown | – |
+| live nika agent | – | – | – | – | – |
+| live session, no nika role, in tmux | shown | – | – | – | – |
+| live session, no nika role, no pane | shown, off | – | – | – | – |
+| ended, is the pick | – | shown | shown | – | – |
+| ended, not the pick | shown | shown | – | – | – |
+
+A spawn item needs a live row with a pane. Both spawn items of a row share one reason (R0 first, then the limits of §3.17).
+
+Items are `aria-disabled` with their reason (a click shows it): offline or no tmux / claude (`blockedReason`; Set on an ended session and Stop using need only the server); R1 "<other> is running as this project's orchestrator. End it first, then choose another." (Set and Resume while another orchestrator runs); R2 "This session isn't running in tmux, so nika can't make it the orchestrator. End it, then use Resume as orchestrator." (Set on a live session without a pane).
+
+**Header button** (project header and dashboard group header): **Open orchestrator** (live; link to the session window, title "Open <name>"), **Resume orchestrator** (ended; `i-resume`; title "Resume <name> in tmux"), **Start orchestrator** (none; gone: title "The saved orchestrator is gone. Starts a new one."). The project header's ⋯ menu gains "Stop using <name> as orchestrator" (gone: "Stop using the saved orchestrator") after "Copy folder path" whenever a pick is saved.
+
+**Gone alert** (project page, top of the agents area): `div.alert[data-kind="warn"]` with the warning icon, "The saved orchestrator is gone: its transcript was deleted, so it can't be resumed. Start orchestrator starts a new one." and **Stop using it** (`btn.link`). It is state, not an event, so it has no `role="alert"`. Stop using it moves focus to the page heading.
+
+**Toasts** (names cut at 40 characters; a session with no name is "the saved session"; `Saving…` spinner while a request runs, one request at a time):
+- Set, live: "<name> is now the orchestrator for <project>." + **Open**. Set, ended: "<name> is the orchestrator for <project>. Resume it from the header when you need it." + **Resume now**. Replacing a pick adds " (was <old>)" after the project.
+- Resume: "Resuming <name> as the orchestrator for <project>…", then the session window opens; when the save worked but the start failed: "<name> is saved as the orchestrator, but it didn't start: <reason> Try Resume orchestrator in the header."
+- Stop using: live "<name> is no longer the saved orchestrator. It keeps running until you end it."; ended or gone "<project> has no saved orchestrator now. Start orchestrator starts a new one."
+- Start with a gone pick: the server forgets it and starts fresh; "Started a new orchestrator. The saved one was gone." When the server instead opened an orchestrator that was already running (`created: false`): "The saved orchestrator was gone. Opened the one that is running." The project page shows no toast of its own when it opens the window (it would die with the page): the window address carries the fixed token `notice=pick-gone` (new) or `notice=pick-gone-open` (already running), and the window shows the matching text once, for exactly one such token only, and removes the parameter with `history.replaceState`. With no usable link the page stays and toasts the text itself.
+- A second Set while one runs: "Another change to this project's orchestrator is still running. Try again." (409 `busy`).
+- Refusals: not_found "nika can't find that session any more. Its transcript may have been deleted. Nothing changed."; other_project "That session belongs to another project, so it can't be this project's orchestrator. Nothing changed."; no_pane and orchestrator_running as R2 and R1; agent_session and the rest show the server's message; unreachable "Could not reach the nika server."
+
+Test hooks (`data-fk`): header `resume:<key>`, `start:<key>`, `orch:<key>`; header menu `orch-stop-proj`; alert `orch-gone`, `orch-forget`; row items `orch-set:<scope>:<id>`, `orch-resume:<scope>:<id>`, `orch-stop:<scope>:<id>`, `spawn-under:<scope>:<id>`, `spawn-sub:<scope>:<id>`.
+
+### 3.17 Nesting tree, spawn sheet and limits (0.4)
+
+An orchestrator can have sub-orchestrators, and each parent has agents of its own (three levels at most). The page gets `role`, `parent`, `depth` and `children` on every live agent (contract C3, C6) on both tiers; the tree shows on both, the spawn controls only in the app.
+
+**Tree rows** (project page and dashboard; `treeRows` in `dash-model.js`). One flat `ul.rows` in tree order, so the row grid and the tab order (name link, then ⋯ button, row after row) stay as they are. The page builds the tree itself from `parent` (a session id, or a pane id the server could not resolve): a root is level 1, each parent above adds one, never more than 3. The server's `depth` is not used for placement, so a forged value moves nothing. Siblings: the most urgent status in each subtree first (a subtree with a child that needs you rises), then the most recent activity in the subtree. A loop of parents is cut.
+
+| Part | Markup and look |
+|---|---|
+| row | `li.row[data-depth][aria-level]`, `id="row-<scope>-<agent id>"`, `hidden` while an ancestor is folded |
+| slot | a 24 × 24 box before the name: the collapse button `button.tree-tg` when the row has children, else `span.tree-sp[aria-hidden]` (names stay aligned) |
+| toggle | `aria-expanded`, `aria-controls` = the ids of every descendant row, in row order; label "Hide the 3 agents under planner" / "Show the 3 agents under planner, 1 needs you" (singular for 1); chevron `i-chev` turns −90° when folded; `data-fk="tree:<scope>:<id>"` |
+| elbow | `span.elbow[aria-hidden]` at level 2 and 3: the margins make the indent, 24 px a level (12 px at ≤ 860 px, app tier ≤ 1010 px); a visually hidden ", under <parent>" follows the name |
+| folded | the row shows `span.tree-hid[aria-hidden]` "+N", with the number of hidden agents that need you beside it (the attention diamond and `--attn`) |
+| orphan | a parent that is not running: the row is a root, keeps its role tag, and shows `span.tree-orphan` "parent ended" (title "This agent's parent session is no longer running.") |
+
+Folding is local to the page (`state.open`, key `!tree:<scope>:<id>`, the "!" pattern of the Ended sections; rebuilt rows get focus back through `data-fk`). The 12-row cap counts root subtrees and never splits one: "Show N more live agents" counts every agent left out.
+
+Flat lists: Ended, the "Waiting on you" queue and any filter draw rows without tree markup. A row whose parent is listed gets a chip "under <parent>" (cut at 24 characters, full name in the title) after the project chip. An ended row has no parent (the server gives a parent only to live agents), so it gets no chip. A group where nothing nests (no row has children, none is an orphan) is drawn exactly as in 0.3.
+
+**Spawn entry points.**
+
+| Entry | Parent | Role preset | Shown when |
+|---|---|---|---|
+| header **Spawn agent** | none (you) | agent | always (registered project) |
+| header **Spawn sub-orchestrator** (project page only; `aria-label` always "Spawn sub-orchestrator", icon only at ≤ 760 px) | the main orchestrator | sub-orchestrator | always; off without a live main orchestrator ("Start the orchestrator first: sub-orchestrators run under it.") |
+| row "Spawn agent under <name>…" | that row's pane | agent | §3.16 matrix |
+| row "Spawn sub-orchestrator under <name>…" | that row's pane | sub-orchestrator | §3.16 matrix |
+
+**Disabled reasons and server refusals** (checked in this order, after offline and missing tmux / claude; one text for `aria-disabled` + toast and for the sheet's alert on a 409; the page counts from its snapshot, the server decides):
+
+| Case | Copy |
+|---|---|
+| parent at its limit (an orchestrator) | "<parent> already runs <r> of <max> agents of its own. Wait for one to finish, or raise “Agents per orchestrator” in Settings." |
+| parent at its limit (you) | "You already run <r> of <max> agents spawned from nika in <project>. Wait for one to finish, or raise “Agents per orchestrator” in Settings." |
+| project cap min(3 × N, 24) | "<project> already runs <r> of <cap> agents, the most one project can run. Wait for one to finish." |
+| 409 `depth` (a sub-orchestrator request) | "<parent> can't start a sub-orchestrator. Only the main orchestrator can: nika allows three levels (orchestrator, sub-orchestrators, their agents). Nothing was started." |
+| 404 `not_found` with a parent | "<parent> is no longer running, so nothing was started. Close this and spawn from a session that is running." |
+
+The 409 `limit` copy is chosen by the body's `scope` (`parent` or `project`) and uses its `running` and `max`; a body that does not parse, a 409 `depth` on a plain agent request, a 404 with no parent (or with an `under` pane, which may be the one that is gone) and every other refusal show the server's own message. Sub-orchestrators count toward their parent's limit and the project cap.
+
+**Spawn sheet.** The title and button read "Spawn agent" or "Spawn sub-orchestrator". A `dl.kv.sp-kv` row "Parent" shows "<name> · orchestrator|sub-orchestrator · pane %3", or "None. You start it from nika.". A **Role** fieldset has two radio cards, Agent ("Does one task and reports back.") and Sub-orchestrator ("Plans the work and spawns up to <N> agents of its own. It may run only nika spawn and nika status."). When the parent cannot have a sub-orchestrator (none, or a sub-orchestrator) the radio is `disabled`, its card gets `data-off="true"` (50 % opacity) and `p.help#sp-role-why` (full contrast, the radio's `aria-describedby`) says why: "Sub-orchestrators run under the orchestrator. Use Spawn sub-orchestrator in the header, or the orchestrator's row menu." / "Only the main orchestrator can start sub-orchestrators: nika allows three levels." Switching the role changes the title, the button, the brief help, the name (only while it still holds the last default, `builder-N` or `lead-N`) and the model (only while the select is untouched: Roles › Builder, or › Orchestrator). The remembered model, permission mode and placement are kept per project and role. The footer note counts at open time: "<parent>: 2 of 3 · <project>: 5 of 9 running" (or "Spawned from nika: …"; names cut at 24). The request carries `role` (`agent` or `orchestrator`) and, with a parent, `parent` (its pane); the header's Spawn agent sends no parent. Success toast: "Spawned builder-3 in pane %12", "Spawned builder-3 under planner in pane %12" or "Spawned sub-orchestrator lead-1 under planner in pane %9", with **Open session**. A refusal keeps every field and puts the copy in the sheet's alert, with focus on it.
+
+**Settings and the New agents card.** Settings › Panes and limits: the label "Agents per project at once" is now **Agents per orchestrator**; help: "1 to 8. How many agents each orchestrator can run at once; the agents you spawn from nika share one more such limit. One project runs at most 3 times this number, and never more than 24." The Models section line ends "A project can override them on its page." The project page's **New agents** card lists Permission mode, Pane, **Per orchestrator** "<N> at once", **Spawned from nika** "<r> of <N>" and **This project** "<r> of <cap> running"; the `.limit` note appears at the project cap ("Limit reached: <r> of <cap> agents are running in this project. Spawning is off until one ends.") or when your own bucket is full ("Limit reached: you run <r> of <N> agents spawned from nika. Spawn from an orchestrator's row, or wait for one to end."). Remove project: "nika stops listing this project and forgets its plugin and model choices and its saved orchestrator. No files change and running agents keep running."
+
+Test hooks (`data-fk`): tree toggle `tree:<scope>:<id>`, header `spawn-sub:<key>`, row items `spawn-under:` and `spawn-sub:` (§3.16), sheet `sp-parent`, `sp-role-agent`, `sp-role-orch`; ids `sp-role`, `sp-role-why`, `sp-note`, `limit-note`.
+
+### 3.18 Auto-compact setting (0.4, ADR 0014)
+
+Settings gets a section `#s-compact` ("Auto-compact") after Models, and an index link "Auto-compact" after "Models". It sets when the
+sessions nika starts compact their conversation. Default: on, 80 %, 400k.
+
+```
+Auto-compact
+Compacts a session's conversation before it gets too long.
+
+[ (•)] Auto-compact at  [−][ 80 ][+] % of [400k            v]    [▣ On]
+Compacts at about 320k tokens (about 160k on 200k-window models).
+On a model with a 200k window, Claude can't compact later than about 83 %, so a higher % acts as about 83 % on those models.
+Applies only to sessions nika starts: the orchestrator, a resumed orchestrator and spawned agents, from their next start.
+Running sessions and sessions you start yourself keep Claude Code's own setting.
+```
+
+**Controls**, in order, in `div.inline.compact-row`: the switch `input#set-compact[role=switch]` (`data-fk=compact-on`, described by
+`set-compact-result` and `set-compact-help`); `label[for=set-compact]` "Auto-compact at"; `span.stepper` with `−` (`data-step=-5`,
+`data-step-for=set-compact-pct`, aria-label "5 percent less"), `input#set-compact-pct[type=number][min=20][max=95]` (`data-fk=compact-pct`,
+aria-label "Auto-compact at, percent of the window", described by `set-compact-result set-compact-cap set-compact-err`) and `+`
+("5 percent more"); `span[aria-hidden]` "% of"; `select#set-compact-win` (`data-fk=compact-win`, aria-label "Window the percent applies
+to"; 200k, 400k, 1M, "Model's full window"); and the chip `span.onoff-st#set-compact-st[aria-hidden]`.
+
+**Lines under the row.** `p.help#set-compact-result` is the result line (no live region; the inputs point at it);
+`p.help#set-compact-cap` and `p.help#set-compact-help` are static; `p.err#set-compact-err` reads "Choose a whole number from 20 to 95."
+and shows for a blank, a fraction or an out-of-range number, on blur and on Save (a shown error goes as soon as the number is valid
+or the row is switched off).
+
+**Result line** (`compactPreview({ enabled, pct, window })` in `public/ctx.js`; it previews the unsaved form and decides nothing the server
+launches with). A window larger than a model's own is cut to it, and a session never compacts above `window - 33000` tokens, so for a
+percent P and a window W the amount is `min(floor(W x P / 100), W - 33000)`, rounded down to 1k and written short ("320k", "1M"):
+
+| Window | Copy |
+|---|---|
+| 200k | "Compacts at about {X200} tokens." |
+| 400k | "Compacts at about {X400} tokens (about {X200} on 200k-window models)." |
+| 1M | "Compacts at about {X1M} tokens on 1M-window models (about {X200} on 200k-window models)." |
+| Model's full window | "Compacts at {P} % of each model's window: about {X1M} tokens on 1M-window models, about {X200} on 200k-window models." |
+| off | "Off. Sessions nika starts keep Claude Code's own setting." |
+| invalid number | the line is hidden; the error shows |
+
+80 % of 400k reads "about 320k tokens (about 160k on 200k-window models)"; 90 % of 400k reads "about 360k tokens (about 167k on 200k-window
+models)", because the 200k window cannot go past 167k. (Correction to the first design, which capped the percent at 83 and so wrote 166k.
+The 200k row has no addendum: it is already the 200k number.)
+
+**On and off, by colour, icon and word.** On: accent track, chip `i-compact` + "On" (`--accent` on `--accent-soft`), number, stepper and window
+enabled. Off: `--line-strong` track, chip `i-compact-off` + "Off" (`--text-muted`, dashed `--line-strong` edge), number, stepper and window
+`disabled` with their values kept, and the result line reads the Off sentence. Switching off while the number is invalid puts the saved
+number back and clears the error.
+
+**Save.** `formValue()` gains `compaction: { enabled, pct: Number(value), window }` (`window` a number or `'model'`); the Save bar, Discard and
+the summary work as in §3.15. The stepper buttons are generic: `data-step-for` names the number (default `set-max`), the clamp is the
+number's own `min` and `max`, and a typed whole number from 20 to 95 works. The result line redraws on every `input` and `change`.
+
+Test hooks (`data-fk`): `compact-on`, `compact-pct`, `compact-dec`, `compact-inc`, `compact-win`; ids `set-compact-result`, `set-compact-cap`,
+`set-compact-help`, `set-compact-err`, `set-compact-st`.
+
+### 3.19 Context meter (0.4)
+
+How full a session's context is, on every row of both tiers and in the session header. The server sends `context` (contract C6: `tokens`,
+`window`, `compactAt`, `pct`, `compaction`); the page formats it (`ctxView`, `public/ctx.js`; `ctxEl`, `public/dom.js`) and never computes a
+window, a per cent or a threshold.
+
+**What the per cent means.** `tokens / window`, where `window` is the one auto-compact uses: Settings' window cut to the model's own when
+auto-compact is on, the model's full window when it is off. For a session nika started, the meter therefore shows how close it is to
+compacting. Sessions nika did not start (and ended ones) are measured against the same window, but nika's setting does not act on them.
+
+| `lvl` | When | Visible | Bar |
+|---|---|---|---|
+| `unknown` | no `context`, or no tokens | "–", `--text-muted` | none |
+| `nowin` | tokens, but no window or per cent (no model seen yet) | "124k", `--text-muted` | none |
+| `ok` | pct < 60 | "41 %" | `--line-strong` |
+| `warn` | 60 ≤ pct < 80 | "63 %" in `--idle` 600 | `--idle` |
+| `full` | pct ≥ 80 | `i-warn` + "86 %" in `--danger` 700 | `--danger` |
+
+The thresholds are fixed at 60 % and 80 % on both tiers (they do not follow the auto-compact per cent). Per cent: `Math.round(pct)`, a
+no-break space, "%"; over 100 shows as is and fills the bar. Tokens: "999", "8.5k", "124k", "1M", "1.2M" (`fmtTokens`, rounded down).
+Bar: `span.ctx-bar[data-q="0".."10"][aria-hidden] > i`, `q = min(10, round(pct / 10))`: ten CSS classes, no inline style, no CSSOM write.
+
+**Title** (a mouse aid: the cells take no focus) and **screen-reader text** (an `.sr-only` span; the visible parts are `aria-hidden`):
+
+| `compaction` | Title | Screen-reader text |
+|---|---|---|
+| `on` | "Context: 312k of 400k tokens (compacts at 320k)" | "Context 78 % used, 312k of 400k tokens, compacts at 320k" |
+| `off` | "Context: 312k of 1M tokens (the model's window; auto-compact is off)" | "Context 31 % used, 312k of 1M tokens, auto-compact off" |
+| `none` (nika did not start it, or it ended) | "Context: 312k of 400k tokens" | "Context 78 % used, 312k of 400k tokens" |
+| `unknown` | "Context: no usage yet" | "Context unknown" |
+| `nowin` | "Context: 124k tokens; the window is not known yet" | "Context 124k tokens, window unknown" |
+
+`full` adds ", nearly full" to the screen-reader text. A bad `compactAt` on `on` reads as `none`.
+
+**Rows.** Grids per container width (§9.9): the 64 px column sits after the model; at ≤ 860 px (app tier ≤ 1010 px) it is 56 px with the bar hidden; at ≤ 600 px it stays on
+line 1 beside the age. `.c-ctx { display: flex; justify-content: flex-end; }`; `.ctx` stacks the number over the bar. Ended rows: `--text-muted`
+number, `--line-strong` bar fill at every level. A stale list (error banner) is at 60 % opacity as a whole.
+
+**Session header.** `span.ctx#sess-ctx` in `.sess-meta` after the model, `hidden` until the first agent poll; each poll fills it again. It lays out
+inline: "Context" (muted), "312k / 400k ·" (`.hide-narrow`: gone at ≤ 1000 px), the number, the bar. The title is the row's.
+
+Colour is never alone: the number is always there, `full` also has the warning icon, and the sentence for screen readers carries the level.
+Ids and classes: `sess-ctx`, `.c-ctx`, `.ctx`, `.ctx-l`, `.ctx-t`, `.ctx-v`, `.ctx-bar`; tokens in `public/tokens.css`.
 
 ## 4. Keyboard model
 
@@ -1043,7 +1277,7 @@ ANSI 0 on the dark surface is deliberately close to the background: programs use
 
 ### 5.5 Screen-reader text for status
 
-Row: "reviewer-2, Needs you: Asking to run a command, model opus, demo-api, 4 minutes ago, pane %14". Session header: "builder-1, Working, demo-api, sonnet, pane %12". Tray: "demo-api — 1 needs you, 1 waiting, 2 working".
+Row: "reviewer-2, Needs you: Asking to run a command, model opus, demo-api, 4 minutes ago, pane %14". Session header: "builder-1, Working, demo-api, sonnet, pane %12" (an orchestrator: "planner, orchestrator, Working, demo-api, …"; the badge's long word is always read, the short one is `aria-hidden`). **(0.4)** The context meter adds one sentence after the model, in both: "…, Fable 5.1, Context 78 % used, 312k of 400k tokens, compacts at 320k, pane %3" (§3.19 has the other forms). Tray: "demo-api — 1 needs you, 1 waiting, 2 working".
 
 ### 5.6 Target size (2.5.8)
 
@@ -1066,7 +1300,8 @@ Window minimum: **720 × 480** (set `minWidth`/`minHeight` in the Tauri window c
 | Width | Shell | Dashboard rows | Project view | Session |
 |---|---|---|---|---|
 | ≥ 1280 | sidebar 232 | all 7 columns | agents + 320 px cards column | split 38 % / 62 % |
-| 1000–1279 | sidebar 232 | rows container ≤ 860: model + pane hidden, status glyph only | as above | split, transcript min 300 |
+| 1031–1279 | sidebar 232 | rows container ≤ 1010 (browser tier ≤ 860): model + pane hidden, status glyph only | as above | split, transcript min 300 |
+| 1000–1030 | sidebar 232 | as above | one column, cards below agents (0.4: beside the cards the list is under 424 px) | split, transcript min 300 |
 | 900–999 | sidebar 232 | as above | one column, cards below agents | **tabs**: Terminal (default) / Transcript |
 | 760–899 | 60 px icon rail, attention counts as corner badges, names in `title` + SR text | group action labels hidden (icon buttons) | one column | tabs; header labels hidden |
 | 720–759 | rail | rows ≤ 600: prompt on a 2nd line; path hidden | one column | tabs; hint line: the two short tips (§3.10) |
@@ -1100,7 +1335,7 @@ B: centred column max 760 px; drawer pushes ≥ 1180 px and overlays below. C: l
 | Unregistered repo with live agents | group/lane shows "not a nika project" + [Add project] |
 | Untitled session (no agent name) | shown as "untitled session" in `--text-muted`; still clickable |
 | Permission prompt | row and tray become "Needs you"; session shows the prompt panel (§9.5) and the prompt in the mirror; Esc and, from an empty box, ↑ ↓ go to the pane; Enter, Shift+Tab, digits and pastes wait (§9.5); nika never answers on its own. **(built amendment 2026-11-09 (0.3.3))** |
-| Spawn at limit | spawn button `aria-disabled` with "3/3 running"; a 409 limit from the server shows the same text inside the sheet |
+| Spawn at limit | the spawn opener is `aria-disabled` with the limit copy of §3.17 as its title; a 409 limit from the server shows the same text inside the sheet |
 | Rules conflict (409 hash) | "These files changed after the preview. Nothing was written. [Reload preview]" |
 | Rules refused (409, e.g. symlink) | "nika refused to write: rules/ is a symbolic link. Nothing was changed." |
 | Foreign rules file | Apply stays disabled until "Replace rules/orchestration.md (not written by nika). A backup is kept." is checked |
@@ -1110,6 +1345,15 @@ B: centred column max 760 px; drawer pushes ≥ 1180 px and overlays below. C: l
 | Folder picker busy | toast "A folder picker is already open. Finish or cancel it first." |
 | Folder picker cancelled | toast "No folder chosen. Nothing was added." |
 | Times | "now" (< 1 min), "N min", "N h", "N d"; absolute time in `title` |
+| **(0.4)** Saved orchestrator is gone (transcript deleted) | header Start orchestrator + the project-page alert (§3.16); Start forgets the id and starts fresh |
+| **(0.4)** Saved orchestrator outside the time window | the header still says Resume (the project list checks the transcript index, not the window); its row is just not listed |
+| **(0.4)** Two main orchestrators live (a 0.3 leftover) | Open orchestrator uses the saved one if it runs, else the most recent; Set and Resume are off (R1) |
+| **(0.4)** Older server (no `orchestrator` field) | the snapshot decides: Open or Start, never Resume or the saved badge |
+| **(0.4)** No usage yet in the transcript tail (a new session, or the last assistant entry is beyond the tail window) | the context meter reads "–" (`unknown`) |
+| **(0.4)** A model nika does not know | the server counts it as 200k, so the meter shows a per cent against 200k; `nowin` means only that no model id was seen |
+| **(0.4)** Context over 100 % (a window smaller than the context) | the number is shown as is and the bar is full |
+| **(0.4)** Auto-compact off, or a session nika did not start | the same meter against the model's window (off) or the setting's window (`none`); the title says which, and says nothing about compacting for `none` |
+| **(0.4)** Older server (no `context` field) | every row shows "–" |
 
 ---
 
@@ -1184,7 +1428,7 @@ The edge and the focus ring are two shadows in one declaration, so focus adds th
 
 ### 9.2 Header
 
-Order: back crumb · `h1` name · status pill · **mode tag** (`#sess-mode`) · model · pane · branch · spacer · Open in
+Order: back crumb · `h1` name · **role badge** (`#sess-role`, §3.16; hidden when there is none) · status pill · **mode tag** (`#sess-mode`) · model · **context meter** (`#sess-ctx`, §3.19; hidden until the first poll) · pane · branch · spacer · Open in
 claude.ai · Keyboard shortcuts. **(built amendment 2026-11-09 (0.3.3))** The mode switcher moved under the message
 box (§9.3); the `.bar-end` wrapper is gone and `.bar-tools` holds the two buttons.
 
@@ -1419,18 +1663,24 @@ Confirm dialog, 440 px (§3.6), opened from the quick-actions row, the dashboard
 - App tier only: a mode column after status, 128 px. The browser tier keeps the 0.2 grids. App-tier grids, per container width (`public/app.css` container queries):
 
 ```css
-.row { grid-template-columns: 104px 128px minmax(120px, 1.1fr) 88px minmax(0, 2.4fr) 56px 44px 32px; }
-@container (max-width: 860px) {   /* status glyph, mode icon, name, what, age, ⋯ */
-  .row { grid-template-columns: 22px 24px minmax(110px, 1fr) minmax(0, 2fr) 52px 32px; } }
+.row { grid-template-columns: 104px 128px minmax(232px, 1.5fr) 88px 64px minmax(0, 2fr) 56px 44px 32px; }
+@container (max-width: 1010px) {   /* app tier; the browser tier switches at 860px. Status glyph, mode icon, name, context, what, age, ⋯ */
+  .row { grid-template-columns: 22px 24px minmax(208px, 1.1fr) 56px minmax(0, 2fr) 52px 32px; } }
 @container (max-width: 600px) {   /* what drops to line 2 under name */
-  .row { grid-template-columns: 22px 24px minmax(0, 1fr) 44px 32px; }
+  .row { column-gap: 6px; grid-template-columns: 22px 24px minmax(0, 1fr) 56px 40px 32px; }
   .row .c-what { grid-column: 3 / -1; grid-row: 2; }
-  .row .c-act { grid-row: 1; grid-column: 4; } }
+  .row .c-act { grid-row: 1; grid-column: 5; } }
 ```
+
+**(0.4)** The 64 px column after the model is the context meter (§3.19), on both tiers; in the narrow grids (≤ 860 px, in the app tier ≤ 1010 px) it is 56 px (the bar is hidden and the number stays), wide enough for the warn icon and a 3-digit percent ("⚠ 105 %" is 55 px). The app tier's wide grid needs 864 px (its floors add up to 748, plus 8 gaps of 12 and the 20 px padding), so it hands over to the narrow grid at 1010 px, where the `what` cell is still at least 147 px; with the narrow grid from 861 to 1010 px the rules of the 860 px block apply to the app tier. The browser tier has the same grids without the mode column
+(`104px minmax(232px, 1.5fr) 88px 64px minmax(0, 2fr) 56px 44px 32px`, at least 137 px of `what`; ≤ 860 px `22px minmax(208px, 1.1fr) 56px minmax(0, 2fr) 52px 32px`; ≤ 600 px
+`22px minmax(0, 1fr) 56px 40px 32px` with a 6 px column gap, age in column 4).
+
+**(0.4 names)** The name column takes room from the `what` column: its floor is 232 px wide and 208 px at ≤ 860 px (app tier ≤ 1010 px), enough for a depth-3 name (`builder-2`) or a depth-2 sub-orchestrator row (`api-lead`) in full. The name cell (`.c-name`) is a size container: the role tag shows its long word ("orchestrator", "sub-orchestrator") only while the cell is at least 270 px wide and swaps to the short word ("orch", "sub-orch") below that, so the tag is whole or narrow, never clipped mid-word; the tag never shrinks, and `.name` keeps a floor of 9ch. The `what` cell (`.c-what`, also a size container) puts the text first. On every row the branch chip shrinks 100 times faster than the text, down to a floor of 10ch, and the branch chip and the "under <parent>" chip are not shown when the cell is 188 px or less. On a row that needs you the text never shrinks (it is cut at 60% of the cell, never below 14ch), and the project chip shrinks 100 times and the "under <parent>" chip 300 times faster than it; on every other row the project chip keeps its size. The project page puts its cards under the list at 1030 px or less (not 1000), so that its rows keep a 198 px name cell in the 600 px grid.
 
 - The compact tag (§2.8.5). Rows without an eligible pane (ended, not in tmux) leave the cell empty. Attention rows keep their tint and left bar; the tag keeps its own fill on top.
 - A "Needs you" row shows the held mode (the prompt covers the footer): hollow, dashed, its mode colour, "unconfirmed" in `.sr-only` and `title`. Never "Mode ?" unless nika has no reading at all (§2.8.6).
-- ≤ 860 px container: icon-only tag (24×24), next to the glyph-only status.
+- ≤ 860 px container (app tier ≤ 1010 px): icon-only tag (24×24), next to the glyph-only status.
 - Row SR text (§5.5) gains the mode after the status: "reviewer-2, Needs you: Asking to run a command, Accept edits mode, unconfirmed, model opus, demo-api, 4 minutes ago, pane %14". Confirmed: "Plan mode".
 - Row menu: "End session…" for live agents with an eligible pane (opens §9.8).
 
@@ -1483,3 +1733,15 @@ Used features: `<dialog>`, `:focus-visible`, `color-mix()`, `:has()` (B only), c
 | 6 Tray | menu, attention, add-project (with cancel and busy simulations) |
 | 7 Browser tier | read-only board/list |
 | C only | command palette (open, query) |
+
+The three variants are frozen: they show the 0.2 design (the 0.3 session controls have their own mockup, `variants/session-controls.html`),
+and only their text was touched afterwards ("Agents per orchestrator" in the Settings field and the limit alert). What came after them has no
+mockup. It is specified in the sections named here and shown built in `docs/screenshots/`:
+
+| Built after the mockups | Specified in | Screenshot |
+|---|---|---|
+| Project setup card, Choose plugins dialog (0.3.4) and the Models block and dialog (0.4) | §3.15 | `project-*.png` (the card; the dialogs are not photographed) |
+| Pick or resume an orchestrator, the orchestrator badge (0.4) | §3.16 | `project-*.png` |
+| Nesting tree, Spawn sub-orchestrator sheet, limits and the New agents card (0.4) | §3.17 | `dashboard-*.png`, `project-*.png`, `spawn-*.png` |
+| Auto-compact row in Settings (0.4) | §3.18 | `settings-*.png` |
+| Context column and meter (0.4) | §3.19 | `dashboard-*.png`, `project-*.png`, `session-*.png` |

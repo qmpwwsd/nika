@@ -14,7 +14,7 @@ and edited in Settings. Two problems came with that:
 
 ## Decision
 - `config.json` gets a top-level `perProject: { <PROJECT_KEY>: { plugins?: string[] } }`. Unknown inner keys are dropped with
-  a warning (0.4 adds its own). The old `plugins` group is gone from the schema.
+  a warning (0.4 adds its own: see the addendum below). The old `plugins` group is gone from the schema.
 - A project's entry is read with `GET /api/app/projects/:key/config` and written with `PUT` on the same path. The store
   function `updateProjectConfig` changes only that project's entry, inside the store's one serial queue, so nothing else in
   the file can be overwritten by a stale page.
@@ -25,6 +25,13 @@ and edited in Settings. Two problems came with that:
 - A config written by 0.3.3 or older is migrated on load, silently: `plugins.perProject[key]` becomes
   `perProject[key].plugins`. When both shapes exist `perProject` wins. The old group is never written back.
 - `removeProject` deletes the project's `perProject` entry.
+
+**0.4 addendum — per-project models.** A project may override the model of each of the four roles (orchestrator, reasoner,
+builder, scout) under `perProject[key].models`, a partial map that stores only the roles it sets. They use this same route:
+`PUT …/config` takes exactly one of `{ plugins }` or `{ models }`, so the plugins dialog and the models dialog cannot overwrite
+each other, and `GET …/config` returns both. The effective model of a role is the project's id where set, else Settings';
+`effectiveModels` in `src/store.js` is the one place that decides it, for the orchestrator's `--model`, the rendered Roles table
+and (mirrored in `public/models-ui.js`) the spawn sheet.
 
 ## Alternatives considered
 - **Keep the map in Settings and fix only the layout.** Leaves the race and the jump to another screen. Rejected.

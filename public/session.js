@@ -4,8 +4,9 @@
 // URL: session.html?session=<UUID>&pane=<%n>&project=<key>   (pane is sent as %25n, i.e. encodeURIComponent('%n')).
 // Rules: every string from the server is rendered with textContent (h() from dom.js, applyMirror from mirror-render.js);
 // no innerHTML, no inline handlers, element.style only for numbers this file computes. Contracts: docs/contracts/api-app.md.
-import { h, icon } from './dom.js';
+import { h, icon, roleTagEl, ctxEl } from './dom.js';
 import { isApp, appFetch, getJSON, applyTheme } from './api.js';
+import { roleTag, savedPick } from './dash-model.js';
 import { toRenderModel, applyMirror, planSend, planPaste, chunkText, keyForEvent, KEY_LABEL, arrowEcho } from './mirror-render.js';
 import { MODE_META, MODE_TARGETS, modeKey, modeEl, bypassTag, switcherState, modeNote, switchFailure } from './modes.js';
 import {
@@ -52,6 +53,27 @@ function param(name, shape) {
   if (decoded !== null && shape.test(decoded)) return decoded;
   const raw = new RegExp(`[?&]${name}=([^&#]*)`).exec(location.search)?.[1];
   return raw !== undefined && shape.test(raw) ? raw : null;
+}
+
+// A page that opens this window can ask for one notice, by a fixed token in the address (`&notice=pick-gone`). The texts are ours;
+// nothing from the address is ever shown, and any other value, or more than one `notice`, shows nothing.
+const URL_NOTICES = new Map([
+  ['notice=pick-gone', 'Started a new orchestrator. The saved one was gone.'],
+  ['notice=pick-gone-open', 'The saved orchestrator was gone. Opened the one that is running.'],
+]);
+
+/** Shows the requested notice once and takes every `notice` parameter out of the address (the other parameters stay as they were). */
+function showUrlNotice() {
+  const parts = location.search.replace(/^\?/, '').split('&').filter(Boolean);
+  const asked = parts.filter((x) => x === 'notice' || x.startsWith('notice='));
+  if (!asked.length) return;
+  const rest = parts.filter((x) => !asked.includes(x));
+  try {
+    history.replaceState(history.state, '', `${location.pathname}${rest.length ? `?${rest.join('&')}` : ''}${location.hash}`);
+  } catch {
+    // the address stays as it is
+  }
+  if (asked.length === 1 && URL_NOTICES.has(asked[0])) toast(URL_NOTICES.get(asked[0]));
 }
 
 let sessionId = param('session', SESSION_ID); // follows the pane to its new session after /clear (followSession)
@@ -132,13 +154,38 @@ function claudeUrl(raw) {
 // ---- header and agent poll ---------------------------------------------------------------------------------------
 
 // A is what the agent poll said: name, status kind, the attention reason (why a 'Needs you' agent waits), the model id and label.
-const A = { name: 'the agent', kind: null, attention: '', modelId: '', projectLooked: false };
+const A = { name: 'the agent', kind: null, attention: '', modelId: '', projectLooked: false, pickId: null, pickAsked: false };
+
+/** The role badge next to the title (design 0.4 section 1.1, the same markup as the rows): orchestrator, sub-orchestrator or, for a session that ended, saved. */
+function renderRole(agent) {
+  const tag = roleTagEl(roleTag(agent, A.pickId));
+  const el = $('sess-role');
+  el.replaceChildren(...(tag ? [tag] : []));
+  el.hidden = !tag;
+}
+
+/** App tier, once per window and only for a session that ended: is it the project's saved orchestrator? (A running one shows its tmux tags.) True when it has just learned the answer. */
+async function loadPick(agent) {
+  if (!isApp || !projectKey || A.pickAsked || agent.live) return;
+  A.pickAsked = true;
+  const r = await call('/api/app/projects');
+  if (r.status !== 200 || !Array.isArray(r.body?.projects)) return false;
+  A.pickId = savedPick(r.body.projects.find((p) => p?.key === projectKey))?.id ?? null;
+  return true;
+}
 
 /** The Back link names the project only when this window came from one (its href is then /#project/<key>); otherwise it stays "Dashboard". */
 function applyBackLabel(group) {
   if (!projectKey || !group?.label) return;
   $('proj').textContent = String(group.label);
   setBack(String(group.label));
+}
+
+/** The header meter (design 0.4 section 6.4): hidden until the first poll, then drawn from the polled agent's `context` at every poll. */
+function renderContext(agent) {
+  const el = $('sess-ctx');
+  ctxEl(agent.context, { header: true, el });
+  el.hidden = false;
 }
 
 function applyAgent(agent, group) {
@@ -155,11 +202,14 @@ function applyAgent(agent, group) {
   model.hidden = false;
   A.modelId = typeof agent.model === 'string' ? agent.model : '';
   renderModelName(agent.modelLabel || agent.model || '');
+  renderContext(agent);
   const pane = paneId ?? agent.pane?.id;
   $('meta-pane').hidden = !(typeof pane === 'string' && PANE_ID.test(pane));
   $('sess-pane').textContent = typeof pane === 'string' && PANE_ID.test(pane) ? pane : '';
   $('sess-branch').hidden = !agent.gitBranch;
   $('sess-branch').textContent = agent.gitBranch ? String(agent.gitBranch) : '';
+  renderRole(agent);
+  loadPick(agent).then((learned) => { if (learned) renderRole(agent); }, () => {});
 
   const link = $('claude-link');
   const url = claudeUrl(agent.bridgeUrl);
@@ -1744,6 +1794,7 @@ function boot() {
   if (q.has('session') && !sessionId) bad.push('session id');
   if (q.has('pane') && !paneId) bad.push('pane id');
   if (bad.length) showNotice(`The link had an invalid ${bad.join(' and ')}; it was ignored.`);
+  showUrlNotice();
 
   wireTabs();
   wireHistory();

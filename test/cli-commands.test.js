@@ -10,9 +10,10 @@ import http from 'node:http';
 import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { main } from '../src/cli.js';
+import { main, COMMAND_NAMES, sessionTarget } from '../src/cli.js';
+import { deniedTools } from '../src/spawn.js';
 import { reportsDir } from '../src/paths.js';
-import { listProjects } from '../src/store.js';
+import { listProjects, getOrchestrator, setOrchestrator } from '../src/store.js';
 import { fakeTmux, makeWorld, TMUX } from './tmux-fake.js';
 
 const APP_ID = 'io.github.qmpwwsd.nika';
@@ -749,7 +750,7 @@ describe('spawn', () => {
       { env: w.cliEnv, cwd: w.root, exec, stdin: input(brief) });
     assert.equal(r.code, 0, r.err);
     assert.deepEqual(JSON.parse(fs.readFileSync(path.join(reportsDir(w.project.key, w.env), 'planner.agent.json'), 'utf8')),
-      { model: 'opus', permissionMode: 'plan', rc: 'team-planner' });
+      { model: 'opus', permissionMode: 'plan', rc: 'team-planner', role: 'agent', parent: null, depth: 1, compact: { window: 400000, pct: '84.2106' } });
     assert.equal(exec.tmux.of('split-window')[0][3], '=My-App:');
   });
 
@@ -828,7 +829,7 @@ describe('spawn', () => {
     const k = w2.project.key;
     const full = await cli(['spawn', 'builder-2', 'sonnet', '-'], base(w2, { exec: tmuxExec([PANE_1, agent('%31', `${k}/a`), agent('%32', `${k}/b`, 'elsewhere')]), stdin: input(brief) }));
     assert.equal(full.code, 3);
-    assert.match(full.err, /limit: 2 of 2 agents/);
+    assert.match(full.err, /limit: You already run 2 of 2 agents spawned from nika/);
     const dup = await cli(['spawn', 'a', 'sonnet', '-'], base(w2, { exec: tmuxExec([PANE_1, agent('%31', `${k}/a`)]), stdin: input(brief) }));
     assert.equal(dup.code, 3);
     assert.match(dup.err, /conflict: agent a is already running/);
@@ -905,7 +906,70 @@ describe('orchestrate', () => {
     assert.deepEqual(spawn.calls[0].args, ['-u', 'attach-session', '-t', '=My-App']);
     assert.equal(spawn.calls[0].opts.stdio, 'inherit');
     assert.equal(spawn.calls[0].opts.shell, false);
-    assert.equal((await cli(['orchestrate'], at(w, { exec: tmuxExec([]), spawn: spawnLog(1), tty: true }))).code, 1, 'a failed attach is exit 1');
+    const w2 = await world(); // a start saves its session as the pick: the second run needs a project of its own
+    assert.equal((await cli(['orchestrate'], at(w2, { exec: tmuxExec([]), spawn: spawnLog(1), tty: true }))).code, 1, 'a failed attach is exit 1');
+  });
+
+  describe('an orchestrator adopted in the user\'s own tmux session (0.4): the target of switch-client and attach-session', () => {
+    // tagged `<key>/orchestrator` by the adopt route, running in a session of its own; the project's session does not exist
+    const adopted = (w, session) => [{ id: '%7', session, window: 0, windowName: 'main', command: 'claude', role: 'orchestrator', agent: `${w.project.key}/orchestrator`, depth: '1' }];
+    const inTmux = (w, extra) => at(w, { env: { ...w.cliEnv, TMUX: 'x,1,0' }, tty: true, ...extra });
+
+    test('(+) a valid session name keeps the exact session targets for both commands (the project\'s own session is pinned above)', async () => {
+      const w = await world();
+      const exec = tmuxExec(adopted(w, 'work'));
+      const spawn = spawnLog();
+      const r = await cli(['orchestrate'], inTmux(w, { exec, spawn }));
+      assert.equal(r.code, 0, r.err);
+      assert.match(r.out, /^session: work$/m);
+      assert.deepEqual(exec.calls.at(-1), [TMUX, '-u', 'switch-client', '-t', '=work:']);
+      assert.equal(exec.tmux.of('new-session').length + exec.tmux.of('new-window').length, 0, 'no second orchestrator');
+      const w2 = await world();
+      const out = spawnLog();
+      assert.equal((await cli(['orchestrate'], at(w2, { exec: tmuxExec(adopted(w2, 'work')), spawn: out, tty: true }))).code, 0);
+      assert.deepEqual(out.calls[0].args, ['-u', 'attach-session', '-t', '=work']);
+    });
+
+    test('(+) a session name nika cannot target (`my work`) is addressed by the pane id: both commands get -t %7, and the real name is still shown', async () => {
+      const w = await world();
+      const exec = tmuxExec(adopted(w, 'my work'));
+      const spawn = spawnLog();
+      const r = await cli(['orchestrate'], inTmux(w, { exec, spawn }));
+      assert.equal(r.code, 0, r.err);
+      assert.match(r.out, /^session: my work$/m);
+      assert.match(r.out, /^pane: %7$/m);
+      assert.deepEqual(exec.calls.at(-1), [TMUX, '-u', 'switch-client', '-t', '%7']);
+      assert.equal(spawn.calls.length, 0);
+      const w2 = await world();
+      const out = spawnLog();
+      assert.equal((await cli(['orchestrate'], at(w2, { exec: tmuxExec(adopted(w2, 'my work')), spawn: out, tty: true }))).code, 0);
+      assert.deepEqual(out.calls[0].args, ['-u', 'attach-session', '-t', '%7']);
+      assert.equal(out.calls[0].opts.shell, false);
+    });
+  });
+
+  describe('sessionTarget: what orchestrate hands to tmux (it runs before any exec or spawn call)', () => {
+    const NO_TARGET = { code: 1, message: "cannot attach: the orchestrator's tmux session name is not one nika can target" };
+
+    test('(+) a valid session name gives the exact target (`=<name>:` for switch-client, `=<name>` for attach-session), whatever the pane', () => {
+      assert.equal(sessionTarget({ session: 'My-App', pane: '%3' }, ':'), '=My-App:');
+      assert.equal(sessionTarget({ session: 'My-App', pane: '%3' }, ''), '=My-App');
+      assert.equal(sessionTarget({ session: 'work_2', pane: undefined }, ':'), '=work_2:');
+    });
+
+    test('(+) a session name that is not a TMUX_SESSION (space, leading dash, colon, empty, too long, not a string) falls back to a valid pane id, for both commands', () => {
+      for (const session of ['my work', '-t', 'a:b', '', 'x'.repeat(49), 'é', undefined, null, 5]) {
+        for (const tail of [':', '']) assert.equal(sessionTarget({ session, pane: '%7' }, tail), '%7', JSON.stringify(session));
+      }
+    });
+
+    test('(−) an invalid session name and an invalid pane id: CliError exit 1, no target', () => {
+      for (const session of ['my work', '', undefined]) {
+        for (const pane of ['7', '%', '%x', '%1234567', '%7;%8', '-t', '', undefined, null, 7]) {
+          for (const tail of [':', '']) assert.throws(() => sessionTarget({ session, pane }, tail), NO_TARGET, `${JSON.stringify(session)} ${JSON.stringify(pane)}`);
+        }
+      }
+    });
   });
 
   test('(+) a running orchestrator is reused', async () => {
@@ -916,6 +980,60 @@ describe('orchestrate', () => {
     assert.match(r.out, /^pane: %1$/m);
     assert.match(r.out, /already running/);
     assert.equal(exec.tmux.of('new-session').length + exec.tmux.of('new-window').length, 0);
+  });
+
+  describe('the saved orchestrator (0.4)', () => {
+    const PICK = '11111111-1111-4111-8111-111111111111';
+    /** A transcript of `id` under the world's Claude dir, so nika's index knows the session (it is not running: no registry entry). */
+    const transcript = (w, id) => {
+      const dir = path.join(w.root, 'claude', 'projects', '-synthetic-project');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, `${id}.jsonl`), `${JSON.stringify({ type: 'user', cwd: w.project.dir, sessionId: id, timestamp: '2026-11-01T10:00:00.000Z', message: { role: 'user', content: 'synthetic' } })}\n`);
+    };
+
+    test('(+) a fresh start saves the session it passes to claude as the project\'s pick', async () => {
+      const w = await world();
+      const exec = tmuxExec([]);
+      assert.equal((await cli(['orchestrate', '--detached'], at(w, { exec }))).code, 0);
+      const argv = exec.tmux.of('new-session')[0];
+      const id = argv[argv.indexOf('--session-id') + 1];
+      assert.equal(await getOrchestrator(w.project.key, w.env), id);
+    });
+
+    test('(+) an ended pick is resumed with claude --resume <id>', async () => {
+      const w = await world();
+      await setOrchestrator(w.project.key, PICK, w.env);
+      transcript(w, PICK);
+      const exec = tmuxExec([]);
+      const r = await cli(['orchestrate', '--detached'], at(w, { exec }));
+      assert.equal(r.code, 0, r.err);
+      const argv = exec.tmux.of('new-session')[0];
+      assert.deepEqual(argv.slice(argv.indexOf('--') + 2, argv.indexOf('--') + 4), ['--resume', PICK]);
+      assert.equal(await getOrchestrator(w.project.key, w.env), PICK);
+    });
+
+    test('(−) a pick nika cannot check (the transcript index is unreadable) is exit 1: nothing starts and the pick stays', async () => {
+      const w = await world();
+      await setOrchestrator(w.project.key, PICK, w.env);
+      const exec = tmuxExec([]);
+      const r = await cli(['orchestrate', '--detached'], at(w, { exec }));
+      assert.equal(r.code, 1);
+      assert.match(r.err, /saved orchestrator/);
+      assert.deepEqual(exec.tmux.calls.map((c) => c[2]), ['list-panes'], 'only the read-only listing of the lookup: nothing is created or tagged');
+      assert.equal(await getOrchestrator(w.project.key, w.env), PICK);
+    });
+
+    test('(−) a pick whose transcript is gone (the index is readable) is forgotten and a new orchestrator starts', async () => {
+      const w = await world();
+      await setOrchestrator(w.project.key, PICK, w.env);
+      transcript(w, '22222222-2222-4222-8222-222222222222');
+      const exec = tmuxExec([]);
+      const r = await cli(['orchestrate', '--detached'], at(w, { exec }));
+      assert.equal(r.code, 0, r.err);
+      const argv = exec.tmux.of('new-session')[0];
+      assert.equal(argv.includes('--session-id'), true);
+      assert.notEqual(await getOrchestrator(w.project.key, w.env), PICK);
+    });
   });
 
   test('(−) an unregistered cwd is refused (3), two directories are a usage error (2), missing tmux or claude is exit 1', async () => {
@@ -1015,6 +1133,179 @@ describe('doctor: tmux install hint per platform', () => {
     }
   });
 });
+
+describe('doctor: the tmux 3.2 floor (0.4, auto-compact needs new-session -e)', () => {
+  const tmuxRow = async (version) => {
+    const w = await world();
+    const exec = execLog({ [TMUX]: () => ({ stdout: `${version}\nsecond line\n`, stderr: '' }), mdfind: () => OK });
+    const r = await cli(['doctor'], { env: w.cliEnv, platform: 'darwin', exec });
+    assert.equal(r.code, 0, r.err);
+    return r.out.split('\n').find((l) => /^tmux\s/.test(l));
+  };
+
+  test('(+) tmux 3.2, 3.2a, 3.8 and 10.0 are fine: nothing is added to the row', async () => {
+    for (const v of ['tmux 3.2', 'tmux 3.2a', 'tmux 3.8', 'tmux 10.0']) {
+      assert.match(await tmuxRow(v), new RegExp(`^tmux\\s+\\S+\\s+${v.replace('.', '\\.')}$`), v);
+    }
+  });
+
+  test('(−) tmux 3.1, 3.1c and 2.9 warn that auto-compact needs 3.2 or newer', async () => {
+    for (const v of ['3.1', '3.1c', '2.9']) {
+      assert.match(await tmuxRow(`tmux ${v}`), new RegExp(`^tmux\\s+\\S+\\s+tmux ${v.replace('.', '\\.')}  \\(tmux ${v.replace('.', '\\.')} is older than 3\\.2: nika's auto-compact needs 3\\.2 or newer\\)$`), v);
+    }
+  });
+
+  test('(−) a first line that is not "tmux <major>.<minor>" gets "version unknown" and no warning', async () => {
+    for (const v of ['tmux next-3.5', 'tmux master', 'tmux 3', 'tmux 3.1-rc', 'something else', 'tmux 3.1 extra']) {
+      const row = await tmuxRow(v);
+      assert.match(row, /\(version unknown\)$/, v);
+      assert.doesNotMatch(row, /older than/, v);
+    }
+  });
+});
+
+describe('spawn: nesting from $TMUX_PANE and --role (0.4)', () => {
+  const brief = 'Write the summary.\n';
+  const main = (w, over = {}) => ({ ...PANE_1, agent: `${w.project.key}/orchestrator`, depth: '1', ...over });
+  const at = (w, pane, extra = {}) => ({ env: { ...w.cliEnv, TMUX: 'x,1,0', ...(pane === undefined ? {} : { TMUX_PANE: pane }) }, cwd: w.nested, stdin: input(brief), ...extra });
+  const stored = (w, name) => JSON.parse(fs.readFileSync(path.join(reportsDir(w.project.key, w.env), `${name}.agent.json`), 'utf8'));
+
+  test('(+) --role orchestrator from the main orchestrator\'s pane ($TMUX_PANE) starts a sub-orchestrator at depth 2 under that pane', async () => {
+    const w = await world();
+    const exec = tmuxExec([main(w)]);
+    const r = await cli(['spawn', 'planner', 'opus', '-', '--role', 'orchestrator'], at(w, '%1', { exec }));
+    assert.equal(r.code, 0, r.err);
+    assert.deepEqual(stored(w, 'planner'), { model: 'opus', permissionMode: 'default', rc: '', role: 'sub-orchestrator', parent: '%1', depth: 2, compact: { window: 400000, pct: '84.2106' } });
+    const p = exec.tmux.panes.find((x) => x.id === '%20');
+    assert.deepEqual([p.role, p.depth, p.parent], ['sub-orchestrator', '2', '%1']);
+  });
+
+  test('(+) an agent spawned from the orchestrator\'s pane is its child (depth 2); from a sub-orchestrator\'s pane, depth 3; the default role is agent', async () => {
+    const w = await world();
+    const sub = { id: '%2', session: 'My-App', window: 0, windowName: 'orchestrator', command: 'node', role: 'sub-orchestrator', agent: `${w.project.key}/planner`, depth: '2', parent: '%1' };
+    const exec = tmuxExec([main(w), sub]);
+    assert.equal((await cli(['spawn', 'one', 'haiku', '-'], at(w, '%1', { exec }))).code, 0);
+    assert.equal((await cli(['spawn', 'two', 'haiku', '-', '--role', 'agent'], at(w, '%2', { exec }))).code, 0);
+    assert.deepEqual([stored(w, 'one').parent, stored(w, 'one').depth, stored(w, 'one').role], ['%1', 2, 'agent']);
+    assert.deepEqual([stored(w, 'two').parent, stored(w, 'two').depth, stored(w, 'two').role], ['%2', 3, 'agent']);
+  });
+
+  test('(−) a bad --role is a usage error (2) and tmux is never called; there is no --parent option', async () => {
+    const w = await world();
+    for (const args of [['--role', 'admin'], ['--role', 'sub-orchestrator'], ['--role', 'Agent'], ['--role', ''], ['--role'], ['--parent', '%1'], ['--parent=%1']]) {
+      const exec = tmuxExec([main(w)]);
+      const r = await cli(['spawn', 'x', 'haiku', '-', ...args], at(w, '%1', { exec }));
+      assert.equal(r.code, 2, args.join(' '));
+      assert.equal(exec.calls.length, 0, args.join(' '));
+    }
+    assert.equal(fs.existsSync(reportsDir(w.project.key, w.env)), false);
+  });
+
+  test('(−) a $TMUX_PANE that is not a pane id is no parent: depth 1, and --role orchestrator is refused (3, depth) with nothing started', async () => {
+    const w = await world();
+    for (const pane of ['%x', '%', '1', '$(id)', '%1;%2', '%1234567', '%1\n', ' %1', '']) {
+      const exec = tmuxExec([main(w)]);
+      const ok = await cli(['spawn', 'child', 'haiku', '-'], at(w, pane, { exec }));
+      assert.equal(ok.code, 0, `${JSON.stringify(pane)} ${ok.err}`);
+      assert.deepEqual([stored(w, 'child').parent, stored(w, 'child').depth], [null, 1], JSON.stringify(pane));
+      fs.rmSync(reportsDir(w.project.key, w.env), { recursive: true });
+      const e2 = tmuxExec([main(w)]);
+      const refused = await cli(['spawn', 'planner', 'haiku', '-', '--role', 'orchestrator'], at(w, pane, { exec: e2 }));
+      assert.equal(refused.code, 3, JSON.stringify(pane));
+      assert.match(refused.err, /depth: /);
+      assert.equal(e2.tmux.of('split-window').length, 0);
+    }
+  });
+
+  test('(−) a $TMUX_PANE that is not in tmux\'s listing (or no $TMUX_PANE at all) is "you" for the CLI: it spawns at depth 1', async () => {
+    const w = await world();
+    const exec = tmuxExec([main(w)]);
+    assert.equal((await cli(['spawn', 'child', 'haiku', '-'], at(w, '%77', { exec }))).code, 0);
+    assert.deepEqual([stored(w, 'child').parent, stored(w, 'child').depth], [null, 1]);
+    assert.equal((await cli(['spawn', 'other', 'haiku', '-'], at(w, undefined, { exec }))).code, 0);
+    assert.deepEqual([stored(w, 'other').parent, stored(w, 'other').depth], [null, 1]);
+  });
+
+  test('(−) a sub-orchestrator cannot start another one, and an agent\'s pane cannot parent anything (3, depth)', async () => {
+    const w = await world();
+    const sub = { id: '%2', session: 'My-App', window: 0, windowName: 'orchestrator', command: 'node', role: 'sub-orchestrator', agent: `${w.project.key}/planner`, depth: '2', parent: '%1' };
+    const leaf = { id: '%3', session: 'My-App', window: 0, windowName: 'orchestrator', command: 'node', role: 'agent', agent: `${w.project.key}/leaf`, depth: '3', parent: '%2' };
+    const exec = tmuxExec([main(w), sub, leaf]);
+    const a = await cli(['spawn', 'deeper', 'haiku', '-', '--role', 'orchestrator'], at(w, '%2', { exec }));
+    assert.equal(a.code, 3);
+    assert.match(a.err, /depth: That session can't start a sub-orchestrator/);
+    const b = await cli(['spawn', 'child', 'haiku', '-'], at(w, '%3', { exec }));
+    assert.equal(b.code, 3);
+    assert.match(b.err, /depth: leaf can't start agents for this project: only this project's orchestrator and its sub-orchestrators can\. Nothing was started\./);
+    assert.equal(exec.tmux.of('split-window').length, 0);
+  });
+
+  test('(−) the main orchestrator or a sub-orchestrator of ANOTHER project, running nika in this project (--project / its folder), is refused (3, depth): nothing sent', async () => {
+    const w = await world();
+    const other = '0123456789abcdef';
+    const orch = { ...PANE_1, session: 'Other', agent: `${other}/orchestrator`, depth: '1' };
+    const sub = { id: '%2', session: 'Other', window: 0, windowName: 'orchestrator', command: 'node', role: 'sub-orchestrator', agent: `${other}/planner`, depth: '2', parent: '%1' };
+    const exec = tmuxExec([orch, sub, { id: '%9', session: 'My-App', window: 0, windowName: 'zsh', command: 'zsh' }]);
+    for (const pane of ['%1', '%2']) {
+      for (const args of [['spawn', 'child', 'haiku', '-'], ['spawn', 'planner', 'haiku', '-', '--role', 'orchestrator'], ['spawn', 'child', 'haiku', '-', '--project', w.project.dir]]) {
+        const r = await cli(args, at(w, pane, { exec }));
+        assert.equal(r.code, 3, `${pane} ${args.join(' ')}: ${r.err}`);
+        assert.match(r.err, /depth: /);
+      }
+    }
+    assert.equal(exec.tmux.of('split-window').length, 0);
+    assert.equal(exec.tmux.of('set-option').length, 0);
+    assert.equal(fs.existsSync(reportsDir(w.project.key, w.env)), false);
+  });
+
+  test('(+) a pane that carries no nika role (a human\'s shell) is "you": depth 1, no parent; so is a pane that tmux does not list', async () => {
+    const w = await world();
+    const shell = { id: '%4', session: 'My-App', window: 1, windowName: 'zsh', command: 'zsh' };
+    const exec = tmuxExec([main(w), shell]);
+    assert.equal((await cli(['spawn', 'fromshell', 'haiku', '-'], at(w, '%4', { exec }))).code, 0);
+    assert.deepEqual([stored(w, 'fromshell').parent, stored(w, 'fromshell').depth, stored(w, 'fromshell').role], [null, 1, 'agent']);
+    assert.equal((await cli(['spawn', 'stale', 'haiku', '-'], at(w, '%88', { exec }))).code, 0);
+    assert.deepEqual([stored(w, 'stale').parent, stored(w, 'stale').depth], [null, 1]);
+  });
+});
+
+describe('the command table and a sub-orchestrator\'s deny list (0.4)', () => {
+  test('(+) COMMAND_NAMES is the table nika dispatches on, and the sub-orchestrator deny list built from it is pinned', () => {
+    assert.deepEqual([...COMMAND_NAMES].sort(), ['--help', '--version', '-h', '-v', '_run-agent', 'app', 'doctor', 'help', 'open', 'orchestrate', 'projects', 'rules', 'serve', 'spawn', 'status', 'version']);
+    assert.deepEqual(deniedTools('sub-orchestrator', COMMAND_NAMES), [
+      'Bash(tmux:*)', 'Bash(claude:*)', 'Bash(git add:*)', 'Bash(git commit:*)', 'Bash(git push:*)', 'Bash(nika)',
+      'Bash(nika --version:*)', 'Bash(nika -v:*)', 'Bash(nika version:*)', 'Bash(nika help:*)', 'Bash(nika -h:*)', 'Bash(nika --help:*)',
+      'Bash(nika serve:*)', 'Bash(nika open:*)', 'Bash(nika app:*)', 'Bash(nika projects:*)', 'Bash(nika rules:*)', 'Bash(nika orchestrate:*)',
+      'Bash(nika doctor:*)', 'Bash(nika _run-agent:*)',
+    ]);
+  });
+
+  test('(−) every command the CLI answers to is in the table (a command outside it would not be denied); unknown words are a usage error', async () => {
+    const dispatch = fs.readFileSync(path.join(path.dirname(NIKA_BIN), '..', 'src', 'cli.js'), 'utf8');
+    assert.equal(/switch \(cmd\)/.test(dispatch), false, 'dispatch goes through the table, not a switch');
+    for (const bad of ['nope', 'toString', '__proto__', 'constructor', 'hasOwnProperty']) {
+      const r = await cli([bad], { env: {} });
+      assert.equal(r.code, 2, bad);
+      assert.match(r.err, /unknown command/);
+    }
+  });
+
+  test('(+) _run-agent hands the table to runAgent: a sub-orchestrator started through the CLI denies every other nika command', async () => {
+    const w = await world();
+    const main = { ...PANE_1, agent: `${w.project.key}/orchestrator`, depth: '1' };
+    const made = await cli(['spawn', 'planner', 'opus', '-', '--role', 'orchestrator'], { env: { ...w.cliEnv, TMUX: 'x', TMUX_PANE: '%1' }, cwd: w.nested, exec: tmuxExec([main]), stdin: input('Plan the work.\n') });
+    assert.equal(made.code, 0, made.err);
+    const spawn = spawnLog(0);
+    const r = await cli(['_run-agent', w.project.key, 'planner'], { env: { ...w.cliEnv, TMUX_PANE: '%5' }, spawn });
+    assert.equal(r.code, 0, r.err);
+    const args = spawn.calls[0].args;
+    const denied = args.slice(args.indexOf('--disallowedTools') + 1, args.indexOf('--'));
+    assert.deepEqual(denied, deniedTools('sub-orchestrator', COMMAND_NAMES));
+    assert.ok(!denied.includes('Bash(nika spawn:*)') && !denied.includes('Bash(nika status:*)') && !denied.includes('Bash(nika:*)'));
+    assert.match(args[args.indexOf('--append-system-prompt') + 1], /sub-orchestrator/);
+  });
+});
+
 
 describe('_run-agent', () => {
   test('(+) passes key and name to runAgent and returns claude\'s exit code', async () => {

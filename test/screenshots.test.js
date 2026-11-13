@@ -78,3 +78,28 @@ describe('screenshots: nika reads the invented panes', () => {
     assert.equal(modeFromRows(broken), 'unknown');
   });
 });
+
+describe('screenshots: the invented tree and context use (0.4)', () => {
+  const byPane = new Map(LIVE.map((a) => [a.pane, a]));
+
+  test('(+) a sub-orchestrator hangs under the main orchestrator and has an agent of its own; every parent is a live pane of the same repository', () => {
+    const sub = LIVE.filter((a) => a.role === 'sub-orchestrator');
+    assert.equal(sub.length, 1);
+    assert.equal(byPane.get(sub[0].parent).role, 'orchestrator');
+    assert.ok(LIVE.some((a) => a.role === 'agent' && a.parent === sub[0].pane), 'the sub-orchestrator has an agent');
+    for (const a of LIVE.filter((x) => x.parent)) assert.equal(byPane.get(a.parent)?.repo, a.repo, `${a.name}: its parent runs in the same repository`);
+  });
+
+  test('(−) only nika-started panes (those with a role) have a parent, and an agent never parents anything', () => {
+    for (const a of LIVE.filter((x) => x.parent)) assert.ok(a.role, `${a.name} has a parent but no role`);
+    for (const a of LIVE.filter((x) => x.role === 'agent')) assert.equal(LIVE.some((x) => x.parent === a.pane), false, `${a.name} parents something`);
+  });
+
+  test('(+) the context sizes cover ok, warn (60 % and up) and full (80 % and up) of the default 400k window, one each for warn and full', () => {
+    const pct = LIVE.map((a) => (a.ctx * 1000) / 400000 * 100);
+    assert.equal(pct.filter((p) => p >= 80).length, 1);
+    assert.equal(pct.filter((p) => p >= 60 && p < 80).length, 1);
+    assert.ok(pct.filter((p) => p < 60).length >= 8);
+    assert.ok(LIVE.every((a) => Number.isInteger(a.ctx) && a.ctx > 0));
+  });
+});

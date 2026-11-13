@@ -21,6 +21,9 @@
   <symbol id="i-plus" viewBox="0 0 16 16"><path d="M8 3v10M3 8h10"/></symbol>
   <symbol id="i-play" viewBox="0 0 16 16"><path d="M5 3.5v9l7-4.5z"/></symbol>
   <symbol id="i-spawn" viewBox="0 0 16 16"><circle cx="6" cy="5.5" r="2.5"/><path d="M1.5 13.5c.6-2.6 2.4-4 4.5-4s3.9 1.4 4.5 4M12.5 5v5M10 7.5h5"/></symbol>
+  <symbol id="i-sub-spawn" viewBox="0 0 16 16"><circle cx="5" cy="8" r="2"/><circle cx="11" cy="4" r="1.5"/><circle cx="11" cy="12" r="1.5"/><path d="M6.8 7.1 9.6 4.8M6.8 8.9l2.8 2.3M13.5 6.5v3M12 8h3"/></symbol>
+  <symbol id="i-chev" viewBox="0 0 16 16"><path d="m4.5 6.5 3.5 3.5 3.5-3.5"/></symbol>
+  <symbol id="i-resume" viewBox="0 0 16 16"><path d="M2.5 8a5.5 5.5 0 1 0 1.6-3.9M2.5 2.5v2.6h2.6"/><path d="M6.8 5.9v4.2L10.2 8z"/></symbol>
   <symbol id="i-term" viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><path d="M4.5 6l2 2-2 2M8.5 10.5h3"/></symbol>
   <symbol id="i-back" viewBox="0 0 16 16"><path d="M10 3 5 8l5 5"/></symbol>
   <symbol id="i-kbd" viewBox="0 0 16 16"><rect x="1.5" y="4" width="13" height="8.5" rx="1.5"/><path d="M4 7h1M7 7h1M10 7h1M4.5 10h7"/></symbol>
@@ -36,6 +39,8 @@
   <symbol id="i-m-auto" viewBox="0 0 16 16"><path d="M9 1.8 3.6 9h4l-.8 5.2L12.4 7h-4z"/></symbol>
   <symbol id="i-m-bypass" viewBox="0 0 16 16"><path d="M8 1.8 13 3.6V8c0 3-2.1 5.1-5 6.4C5.1 13.1 3 11 3 8V3.6zM2.2 2.2l11.6 11.6"/></symbol>
   <symbol id="i-m-dontask" viewBox="0 0 16 16"><rect x="3.2" y="7" width="9.6" height="7" rx="1.5"/><path d="M5.3 7V5.2a2.7 2.7 0 0 1 5.4 0V7M8 9.8v1.4"/></symbol>
+  <symbol id="i-compact" viewBox="0 0 16 16"><path d="M6 2.5V6H2.5M10 2.5V6h3.5M6 13.5V10H2.5M10 13.5V10h3.5"/></symbol>
+  <symbol id="i-compact-off" viewBox="0 0 16 16"><path d="M6 2.5V6H2.5M10 2.5V6h3.5M6 13.5V10H2.5M10 13.5V10h3.5M2.2 2.2l11.6 11.6"/></symbol>
   <symbol id="i-m-unknown" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.2"/><path d="M6.2 6.3a1.9 1.9 0 1 1 2.7 1.7c-.6.3-.9.7-.9 1.3v.3M8 11.5v.2"/></symbol>
 </svg>
 
@@ -106,7 +111,7 @@
         <form id="set-form" novalidate>
           <div class="set-grid">
             <nav class="set-index" aria-label="Settings sections">
-              <a href="#settings" data-jump="s-appearance">Appearance</a><a href="#settings" data-jump="s-models">Models</a><a href="#settings" data-jump="s-rc">Remote Control</a><a href="#settings" data-jump="s-perm">Permission mode</a><a href="#settings" data-jump="s-panes">Panes and limits</a><a href="#settings" data-jump="s-tpl">Rules template</a>
+              <a href="#settings" data-jump="s-appearance">Appearance</a><a href="#settings" data-jump="s-models">Models</a><a href="#settings" data-jump="s-compact">Auto-compact</a><a href="#settings" data-jump="s-rc">Remote Control</a><a href="#settings" data-jump="s-perm">Permission mode</a><a href="#settings" data-jump="s-panes">Panes and limits</a><a href="#settings" data-jump="s-tpl">Rules template</a>
             </nav>
             <div>
               <div class="alert err-sum" data-kind="danger" role="alert" id="set-sum" hidden tabindex="-1"><svg class="ic" aria-hidden="true"><use href="#i-warn"/></svg><p id="set-sum-text"></p></div>
@@ -127,13 +132,30 @@
 
               <section class="set-sec" id="s-models" aria-labelledby="s-models-h">
                 <h2 id="s-models-h">Models</h2>
-                <p>Which model plays each role when nika starts an orchestrator or spawns an agent.</p>
+                <p>Which model plays each role when nika starts an orchestrator or spawns an agent. A project can override them on its page.</p>
                 <div class="grid2">
                   <div class="field"><label for="set-model-orchestrator">Orchestrator</label><select id="set-model-orchestrator"><option value="__custom__">Custom ID…</option></select><input type="text" id="set-model-orchestrator-custom" hidden spellcheck="false" autocomplete="off" placeholder="claude-sonnet-5-5 or sonnet[1m]" aria-label="Custom model ID for the orchestrator" aria-describedby="set-model-orchestrator-custom-err"><p class="err" id="set-model-orchestrator-custom-err" hidden></p></div>
                   <div class="field"><label for="set-model-reasoner">Reasoner</label><select id="set-model-reasoner"><option value="__custom__">Custom ID…</option></select><input type="text" id="set-model-reasoner-custom" hidden spellcheck="false" autocomplete="off" placeholder="claude-sonnet-5-5 or sonnet[1m]" aria-label="Custom model ID for the reasoner" aria-describedby="set-model-reasoner-custom-err"><p class="err" id="set-model-reasoner-custom-err" hidden></p></div>
                   <div class="field"><label for="set-model-builder">Builder</label><select id="set-model-builder"><option value="__custom__">Custom ID…</option></select><input type="text" id="set-model-builder-custom" hidden spellcheck="false" autocomplete="off" placeholder="claude-sonnet-5-5 or sonnet[1m]" aria-label="Custom model ID for the builder" aria-describedby="set-model-builder-custom-err"><p class="err" id="set-model-builder-custom-err" hidden></p></div>
                   <div class="field"><label for="set-model-scout">Scout</label><select id="set-model-scout"><option value="__custom__">Custom ID…</option></select><input type="text" id="set-model-scout-custom" hidden spellcheck="false" autocomplete="off" placeholder="claude-sonnet-5-5 or sonnet[1m]" aria-label="Custom model ID for the scout" aria-describedby="set-model-scout-custom-err"><p class="err" id="set-model-scout-custom-err" hidden></p></div>
                 </div>
+              </section>
+
+              <section class="set-sec" id="s-compact" aria-labelledby="s-compact-h">
+                <h2 id="s-compact-h">Auto-compact</h2>
+                <p>Compacts a session's conversation before it gets too long.</p>
+                <div class="inline compact-row">
+                  <input type="checkbox" role="switch" class="switch" id="set-compact" data-fk="compact-on" aria-describedby="set-compact-result set-compact-help">
+                  <label for="set-compact">Auto-compact at</label>
+                  <span class="stepper"><button type="button" class="btn" data-fk="compact-dec" data-step="-5" data-step-for="set-compact-pct" aria-label="5 percent less">−</button><input type="number" id="set-compact-pct" data-fk="compact-pct" min="20" max="95" aria-label="Auto-compact at, percent of the window" aria-describedby="set-compact-result set-compact-cap set-compact-err"><button type="button" class="btn" data-fk="compact-inc" data-step="5" data-step-for="set-compact-pct" aria-label="5 percent more">+</button></span>
+                  <span aria-hidden="true">% of</span>
+                  <select id="set-compact-win" data-fk="compact-win" aria-label="Window the percent applies to" aria-describedby="set-compact-result"><option value="200000">200k</option><option value="400000">400k</option><option value="1000000">1M</option><option value="model">Model's full window</option></select>
+                  <span class="onoff-st" id="set-compact-st" aria-hidden="true"></span>
+                </div>
+                <p class="help" id="set-compact-result"></p>
+                <p class="help" id="set-compact-cap">On a model with a 200k window, Claude can't compact later than about 83 %, so a higher % acts as about 83 % on those models.</p>
+                <p class="help" id="set-compact-help">Applies only to sessions nika starts: the orchestrator, a resumed orchestrator and spawned agents, from their next start. Running sessions and sessions you start yourself keep Claude Code's own setting. Compact in the session window works at any time.</p>
+                <p class="err" id="set-compact-err" hidden></p>
               </section>
 
               <section class="set-sec" id="s-rc" aria-labelledby="s-rc-h">
@@ -164,9 +186,9 @@
                   <label class="radio-card"><input type="radio" name="place" value="beside"><span><b>Beside</b><span>A new pane to the right in the project's tmux window.</span></span></label>
                   <label class="radio-card"><input type="radio" name="place" value="under-last"><span><b>Under the last agent</b><span>Stacks below the most recently started agent pane.</span></span></label>
                 </fieldset>
-                <div class="field"><label for="set-max">Agents per project at once</label>
+                <div class="field"><label for="set-max">Agents per orchestrator</label>
                   <div class="inline"><span class="stepper"><button type="button" class="btn" data-step="-1" aria-label="One fewer">−</button><input type="number" id="set-max" min="1" max="8" aria-describedby="set-max-help set-max-err"><button type="button" class="btn" data-step="1" aria-label="One more">+</button></span></div>
-                  <p class="help" id="set-max-help">1 to 8. Counts only agents nika spawned that are still running.</p><p class="err" id="set-max-err" hidden></p></div>
+                  <p class="help" id="set-max-help">1 to 8. How many agents each orchestrator can run at once; the agents you spawn from nika share one more such limit. One project runs at most 3 times this number, and never more than 24.</p><p class="err" id="set-max-err" hidden></p></div>
               </section>
 
               <section class="set-sec" id="s-tpl" aria-labelledby="s-tpl-h">
@@ -187,6 +209,12 @@
     <div class="dlg-head"><div><h2 id="sp-h" tabindex="-1">Spawn agent</h2><p id="sp-d"></p></div><button type="button" class="btn icon ghost" data-close aria-label="Close"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button></div>
     <div class="dlg-body">
       <div class="alert" data-kind="danger" role="alert" id="sp-alert" hidden tabindex="-1"><svg class="ic" aria-hidden="true"><use href="#i-warn"/></svg><p id="sp-alert-text"></p></div>
+      <dl class="kv sp-kv"><dt>Parent</dt><dd id="sp-parent" data-fk="sp-parent">None. You start it from nika.</dd></dl>
+      <fieldset id="sp-role"><legend>Role</legend>
+        <label class="radio-card"><input type="radio" name="sp-role" value="agent" id="sp-role-agent" data-fk="sp-role-agent" checked><span><b>Agent</b><span>Does one task and reports back.</span></span></label>
+        <label class="radio-card" id="sp-role-orch-card"><input type="radio" name="sp-role" value="orchestrator" id="sp-role-orch" data-fk="sp-role-orch" disabled><span><b>Sub-orchestrator</b><span id="sp-role-orch-d">Plans the work and spawns up to 3 agents of its own. It may run only nika spawn and nika status.</span></span></label>
+        <p class="help" id="sp-role-why" hidden></p>
+      </fieldset>
       <div class="field"><label for="sp-name">Name</label><input type="text" id="sp-name" data-rx="agent" autocomplete="off" spellcheck="false" aria-describedby="sp-name-help sp-name-err"><p class="help" id="sp-name-help">Lowercase letters, digits and dashes. Used for the pane title and the report file.</p><p class="err" id="sp-name-err" hidden></p></div>
       <div class="field"><label for="sp-model">Model</label><select id="sp-model"></select><input type="text" id="sp-model-custom" hidden spellcheck="false" autocomplete="off" placeholder="claude-sonnet-5-5 or sonnet[1m]" aria-label="Custom model ID" aria-describedby="sp-model-custom-err"><p class="err" id="sp-model-custom-err" hidden></p></div>
       <div class="field"><label for="sp-brief">Brief</label><textarea id="sp-brief" rows="8" aria-describedby="sp-brief-help sp-brief-err"></textarea><p class="help" id="sp-brief-help">The agent's first message: more than one word. It never passes through the tmux command line.</p><p class="err" id="sp-brief-err" hidden></p><span class="counter num" id="sp-count"></span></div>
@@ -215,6 +243,23 @@
     <p class="help" id="pl-help">Ticked plugins are turned on and other plugins that are on in that file are removed when you apply rules. Leave all unticked to leave the file's plugins as they are.</p>
   </div>
   <div class="dlg-foot"><span class="sp"></span><button type="button" class="btn lg" data-close id="pl-cancel" data-fk="pl-cancel">Cancel</button><button type="button" class="btn primary lg" id="pl-retry" data-fk="pl-retry" hidden disabled>Retry</button><button type="button" class="btn primary lg" id="pl-save" data-fk="pl-save">Save plugins</button></div>
+</dialog>
+
+<dialog id="dlg-models" class="dlg-models" aria-labelledby="md-h" aria-describedby="md-d" data-app-only>
+  <div class="dlg-head"><div><h2 id="md-h" tabindex="-1"></h2><p id="md-d">Used when nika starts this project's orchestrator or spawns its agents. Running sessions keep their model.</p></div><button type="button" class="btn icon ghost" data-close id="md-x" data-fk="md-x" aria-label="Close"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button></div>
+  <div class="dlg-body">
+    <div class="alert" data-kind="danger" role="alert" id="md-alert" tabindex="-1" hidden><svg class="ic" aria-hidden="true"><use href="#i-warn"/></svg><p id="md-alert-text"></p></div>
+    <div id="md-skel" aria-busy="true" hidden></div>
+    <p class="help" id="md-note" hidden>The model list did not load. Choose Use default, or type a model ID.</p>
+    <div class="md-fields" id="md-fields" hidden>
+      <div class="field"><label for="md-model-orchestrator">Orchestrator</label><select id="md-model-orchestrator"></select><input type="text" id="md-model-orchestrator-custom" hidden spellcheck="false" autocomplete="off" placeholder="claude-sonnet-5-5 or sonnet[1m]" aria-label="Custom model ID for the orchestrator" aria-describedby="md-model-orchestrator-custom-err"><p class="err" id="md-model-orchestrator-custom-err" hidden></p></div>
+      <div class="field"><label for="md-model-reasoner">Reasoner</label><select id="md-model-reasoner"></select><input type="text" id="md-model-reasoner-custom" hidden spellcheck="false" autocomplete="off" placeholder="claude-sonnet-5-5 or sonnet[1m]" aria-label="Custom model ID for the reasoner" aria-describedby="md-model-reasoner-custom-err"><p class="err" id="md-model-reasoner-custom-err" hidden></p></div>
+      <div class="field"><label for="md-model-builder">Builder</label><select id="md-model-builder"></select><input type="text" id="md-model-builder-custom" hidden spellcheck="false" autocomplete="off" placeholder="claude-sonnet-5-5 or sonnet[1m]" aria-label="Custom model ID for the builder" aria-describedby="md-model-builder-custom-err"><p class="err" id="md-model-builder-custom-err" hidden></p></div>
+      <div class="field"><label for="md-model-scout">Scout</label><select id="md-model-scout"></select><input type="text" id="md-model-scout-custom" hidden spellcheck="false" autocomplete="off" placeholder="claude-sonnet-5-5 or sonnet[1m]" aria-label="Custom model ID for the scout" aria-describedby="md-model-scout-custom-err"><p class="err" id="md-model-scout-custom-err" hidden></p></div>
+      <p class="help">Defaults are in Settings.</p>
+    </div>
+  </div>
+  <div class="dlg-foot"><span class="help" id="md-dirty"></span><span class="sp"></span><button type="button" class="btn lg" data-close id="md-cancel" data-fk="md-cancel">Cancel</button><button type="button" class="btn primary lg" id="md-retry" data-fk="md-retry" hidden disabled>Retry</button><button type="button" class="btn primary lg" id="md-save" data-fk="md-save" disabled>Save models</button></div>
 </dialog>
 
 <dialog id="dlg-confirm" class="dlg-confirm" aria-labelledby="cf-h" aria-describedby="cf-d" data-app-only>
