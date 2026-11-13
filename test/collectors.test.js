@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { makeFixture, cleanup, fakeExec, SID, NOW, PROC_START, jsonl } from './helpers.js';
-import { readRegistry, processTable, isAlive } from '../src/collect/registry.js';
+import { readRegistry, processTable, isAlive, parseStarttime, procStarts } from '../src/collect/registry.js';
 import { indexTranscripts, readTranscript, createTranscriptCache } from '../src/collect/transcripts.js';
 import { readSubagents } from '../src/collect/subagents.js';
 import { listPanes, parsePaneLines } from '../src/collect/tmux.js';
@@ -69,6 +69,76 @@ describe('registry', () => {
     assert.equal(await processTable(exec), null);
     assert.equal(isAlive({ pid: process.pid }, null), true);
     assert.equal(isAlive({ pid: 2 ** 30 }, null), false);
+  });
+
+  describe('Linux procStart (digits: starttime in clock ticks, issue #14)', () => {
+    // Synthetic /proc/<pid>/stat: field 22 (starttime) is the 20th token after the comm's closing parenthesis.
+    const stat = (pid, comm, start) => `${pid} (${comm}) S 1 ${pid} ${pid} 0 -1 4194304 100 0 0 0 5 3 0 0 20 0 8 0 ${start} 1000000 500 18446744073709551615 1 1 0 0 0 0 0 0 0 0 0 0 17 2 0 0 0 0 0\n`;
+    const table = new Map([[201, 'Sat Nov 7 18:57:14 2026']]);
+    const entry = { pid: 201, procStart: '3304488' };
+
+    test('(+) a digits procStart equal to the stat starttime is alive', async () => {
+      const starts = await procStarts([entry], async (pid) => stat(pid, 'claude', '3304488'));
+      assert.equal(starts.get(201), '3304488');
+      assert.equal(isAlive(entry, table, starts), true);
+    });
+
+    test('(−) a digits procStart that differs from the stat starttime (reused pid) is not alive', async () => {
+      const starts = await procStarts([entry], async (pid) => stat(pid, 'claude', '3304999'));
+      assert.equal(isAlive(entry, table, starts), false);
+    });
+
+    test('(+) an unreadable stat leaves the pid out and the session alive, because ps listed the pid', async () => {
+      const starts = await procStarts([entry], async () => { throw Object.assign(new Error('gone'), { code: 'ENOENT' }); });
+      assert.equal(starts.size, 0);
+      assert.equal(isAlive(entry, table, starts), true);
+      assert.equal(isAlive(entry, table), true);
+    });
+
+    test('(−) a pid ps does not list is not alive whatever the stat says', async () => {
+      const starts = await procStarts([{ pid: 202, procStart: '5' }], async (pid) => stat(pid, 'claude', '5'));
+      assert.equal(isAlive({ pid: 202, procStart: '5' }, table, starts), false);
+    });
+
+    test('(−) only digits procStart entries are read: date strings and missing values never touch /proc', async () => {
+      const seen = [];
+      const starts = await procStarts(
+        [{ pid: 1, procStart: PROC_START }, { pid: 2, procStart: null }, { pid: 3, procStart: '12ab' }, { pid: 4, procStart: '77' }],
+        async (pid) => { seen.push(pid); return stat(pid, 'x', '77'); },
+      );
+      assert.deepEqual(seen, [4]);
+      assert.deepEqual([...starts], [[4, '77']]);
+    });
+
+    test('(+) parseStarttime takes field 22 after the last parenthesis, whatever the comm holds', () => {
+      assert.equal(parseStarttime(stat(201, 'claude', '3304488')), '3304488');
+      assert.equal(parseStarttime(stat(201, 'a ) (b c) d', '42')), '42');
+      assert.equal(parseStarttime(stat(201, '(((', '9')), '9');
+    });
+
+    test('(−) parseStarttime returns null for garbage, a short line or a non-numeric field', () => {
+      for (const bad of ['', 'garbage', '201 claude S 1', '201 (claude) S 1 2 3', stat(201, 'claude', 'abc'), stat(201, 'claude', '-5'), null, undefined, 42]) {
+        assert.equal(parseStarttime(bad), null, String(bad));
+      }
+    });
+
+    test('(+) the macOS date-string path is unchanged: starts is ignored for a date procStart', () => {
+      const starts = new Map([[101, '1']]);
+      const t = new Map([[101, 'Sat Nov 7 18:57:14 2026']]);
+      assert.equal(isAlive({ pid: 101, procStart: PROC_START }, t, starts), true);
+      assert.equal(isAlive({ pid: 101, procStart: 'Mon Oct  5 10:00:00 2026' }, t, starts), false);
+      assert.equal(isAlive({ pid: 101, procStart: null }, t, starts), true);
+    });
+
+    test('(+) Linux only: the real reader on this process gives a starttime that isAlive accepts', { skip: process.platform !== 'linux' }, async () => {
+      const probe = { pid: process.pid, procStart: '1' };
+      const first = await procStarts([probe]);
+      assert.match(first.get(process.pid) ?? '', /^\d+$/);
+      const real = { pid: process.pid, procStart: first.get(process.pid) };
+      const starts = await procStarts([real]);
+      assert.equal(isAlive(real, new Map([[process.pid, 'x']]), starts), true);
+      assert.equal(isAlive({ pid: process.pid, procStart: String(Number(real.procStart) + 1) }, new Map([[process.pid, 'x']]), starts), false);
+    });
   });
 });
 

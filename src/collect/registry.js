@@ -78,12 +78,53 @@ export async function processTable(exec) {
   }
 }
 
-/** Alive = pid present and, when the registry recorded a start time, the same start time (guards pid reuse). */
-export function isAlive(entry, table) {
+const DIGITS = /^\d+$/;
+const STAT_MAX_BYTES = 4096;
+
+/**
+ * Field 22 (`starttime`, clock ticks since boot) of a /proc/<pid>/stat line, or null. The comm (field 2) may hold spaces
+ * and parentheses, so the fields are counted from the text after the last `)`: token 0 is field 3, token 19 is field 22.
+ */
+export function parseStarttime(text) {
+  if (typeof text !== 'string') return null;
+  const close = text.lastIndexOf(')');
+  if (close < 0) return null;
+  const value = text.slice(close + 1).trim().split(/\s+/)[19];
+  return value !== undefined && DIGITS.test(value) ? value : null;
+}
+
+// readHead works on /proc files (regular, one link, owned by the process's user); a pid of another user fails and is left out.
+const defaultReadStat = (pid) => readHead(`/proc/${pid}/stat`, STAT_MAX_BYTES);
+
+/**
+ * Map pid → `starttime` for the entries whose `procStart` is digits (Claude Code on Linux writes the /proc starttime;
+ * on macOS it writes a date and nothing is read). A read or parse failure leaves that pid out.
+ */
+export async function procStarts(entries, readStat = defaultReadStat) {
+  const starts = new Map();
+  await Promise.all(entries.filter((e) => DIGITS.test(e.procStart ?? '')).map(async (e) => {
+    try {
+      const start = parseStarttime(await readStat(e.pid));
+      if (start) starts.set(e.pid, start);
+    } catch { /* unreadable: isAlive trusts ps for this pid */ }
+  }));
+  return starts;
+}
+
+/**
+ * Alive = pid present and, when the registry recorded a start time, the same start time (guards pid reuse).
+ * A digits `procStart` is compared with `starts` (see procStarts); a pid missing there stays alive, because ps listed it.
+ */
+export function isAlive(entry, table, starts) {
   if (table) {
     const started = table.get(entry.pid);
     if (started === undefined) return false;
-    return !entry.procStart || squash(entry.procStart) === started;
+    if (!entry.procStart) return true;
+    if (DIGITS.test(entry.procStart)) {
+      const start = starts?.get(entry.pid);
+      return start === undefined || start === entry.procStart;
+    }
+    return squash(entry.procStart) === started;
   }
   try {
     process.kill(entry.pid, 0);

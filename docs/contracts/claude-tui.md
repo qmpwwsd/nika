@@ -221,3 +221,15 @@ same menu. Removed and hidden commands are left out.
   is allowed and the quick actions stay off. Session control already treats any non-idle state as busy (Stop, End and the mode
   switch), so it needs no special case.
 - `waiting` and any value nika does not know stay as they are: `state` is the cleaned status and `attention` is set (needs you).
+
+## 9. Registry procStart
+
+- `procStart` in `sessions/<pid>.json` identifies the process, so nika can tell a live session from a reused pid. Its format
+  depends on the system (checked 2026-11-13, issue #14):
+  - macOS: a date string in UTC, such as `Sat Nov  7 18:57:14 2026`, the same clock as `ps -o lstart=` run with `TZ=UTC`.
+  - Linux: digits, the `starttime` of the process (field 22 of `/proc/<pid>/stat`, in clock ticks since boot), such as `3304488`.
+    It never equals the `ps` date, so nika compares it with the `starttime` it reads from `/proc/<pid>/stat` itself
+    (`parseStarttime`, `procStarts` in `src/collect/registry.js`). Field 2 of that file (the command name) may hold spaces and
+    parentheses, so the fields are counted from the text after the last `)`: field 22 is the 20th token there.
+  - When `/proc/<pid>/stat` cannot be read (another user's process, a race with exit) the session counts as alive,
+    because `ps` listed the pid.

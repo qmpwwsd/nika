@@ -1,7 +1,7 @@
 // Merges every source into Agent records and groups them by project.
 import fs from 'node:fs';
 import path from 'node:path';
-import { readRegistry, processTable, isAlive } from './collect/registry.js';
+import { readRegistry, processTable, isAlive, procStarts } from './collect/registry.js';
 import { indexTranscripts, readTranscript, createTranscriptCache, CACHE_SLACK } from './collect/transcripts.js';
 import { readSubagents } from './collect/subagents.js';
 import { listPanes } from './collect/tmux.js';
@@ -185,9 +185,10 @@ export async function collect({ config, exec, now = Date.now(), sinceMs, since =
     reports: 'ok',
   };
 
+  const starts = await procStarts(registry.entries);
   const live = new Map();
   for (const e of registry.entries) {
-    if (!isAlive(e, table)) continue;
+    if (!isAlive(e, table, starts)) continue;
     const prev = live.get(e.sessionId);
     if (!prev || (prev.updatedAt ?? 0) < (e.updatedAt ?? 0)) live.set(e.sessionId, e);
   }
