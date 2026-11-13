@@ -225,10 +225,11 @@ same menu. Removed and hidden commands are left out.
 ## 9. Registry procStart
 
 - `procStart` in `sessions/<pid>.json` identifies the process, so nika can tell a live session from a reused pid. Its format
-  depends on the system (checked 2026-11-13, issue #14); nika reads it as an instant, never as text to match:
+  depends on the system (checked 2026-11-13, issue #14); nika first compares it with `ps`'s text as is, then as an instant:
   - Digits (Linux): the `starttime` of the process (field 22 of `/proc/<pid>/stat`, in clock ticks since boot), such as `3304488`.
     It never equals the `ps` date, so nika compares it with the `starttime` it reads from `/proc/<pid>/stat` itself
-    (`parseStarttime`, `procStarts` in `src/collect/registry.js`), only for the registry pids whose `procStart` is digits. Field 2
+    (`parseStarttime`, `procStarts` in `src/collect/registry.js`), only on Linux and only for the registry pids whose `procStart` is
+    digits and that `ps` listed. Field 2
     of that file (the command name) may hold spaces, parentheses and newlines, so the fields are counted from the text after the
     last `)`: field 22 is the 20th token there, and a line with 20 tokens or fewer there is cut short and not trusted.
   - A date string `Www Mmm d hh:mm:ss yyyy` (macOS), such as `Sat Nov  7 18:57:14 2026`: nika takes the instant `ps -o lstart=`

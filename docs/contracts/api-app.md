@@ -642,7 +642,10 @@ A new start saves its own `--session-id` as the project's pick, so Resume is off
 
 **Early exit (0.4).** After the pane is created and tagged, Start and Resume wait 1 s and ask tmux whether the pane still exists and is
 not dead (§8; the same check as spawn, one helper, the wait injectable for tests). Gone or dead → `502 claude_exited` (message under
-`POST /api/app/spawn`): nothing is saved (a fresh start's pick is not written, a resumed pick stays) and the request is not retried. The
+`POST /api/app/spawn`): nothing is saved (a fresh start's pick is not written, a resumed pick stays) and the request is not retried. When
+Start resumed a session, the body also carries `"resume": "<session id>"` and the message is "Claude exited right after it started. Run
+`claude --resume <session id>` in a terminal in this folder to see why." (a plain `claude` would start a fresh session); the page shows
+that sentence when `resume` is a session id, else the plain one. The
 pane is tagged before the wait, so a second Start during it finds this orchestrator instead of opening another window; that second Start
 answers `200 created: false` with a pane that may still fail the check a moment later. A tmux error or timeout on the check counts as gone (as for
 spawn). A pane that is dead (remain-on-exit) is never taken for the orchestrator. The page shows the

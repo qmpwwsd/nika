@@ -165,7 +165,7 @@ async function compactionOf(config) {
  * @returns {{ snapshot: object, reportPaths: Map<string,string> }}
  *   snapshot is the public JSON (no file paths of reports); reportPaths stays server-side.
  */
-export async function collect({ config, exec, now = Date.now(), sinceMs, since = null, cache = {}, include = [], indexOnly = false }) {
+export async function collect({ config, exec, now = Date.now(), sinceMs, since = null, cache = {}, include = [], indexOnly = false, platform = process.platform }) {
   cache.transcripts ??= createTranscriptCache();
   // indexOnly: just the transcript index (findSessions); no registry, ps, tmux or reports, so nothing is live
   const [registry, table, index, tmux, reportDirs] = indexOnly
@@ -188,8 +188,9 @@ export async function collect({ config, exec, now = Date.now(), sinceMs, since =
     reports: 'ok',
   };
 
-  // /proc is read only to compare with a ps table; with no table liveness is signal 0 and nothing under /proc is opened
-  const starts = table ? await procStarts(registry.entries) : new Map();
+  // /proc is read only on Linux, only to compare with a ps table, and only for pids ps listed (isAlive drops the others first); with no
+  // table liveness is signal 0 and nothing under /proc is opened
+  const starts = table && platform === 'linux' ? await procStarts(registry.entries.filter((e) => table.has(e.pid))) : new Map();
   const live = new Map();
   for (const e of registry.entries) {
     if (!isAlive(e, table, starts)) continue;

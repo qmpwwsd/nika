@@ -200,9 +200,10 @@ describe('collect', () => {
   });
 
   // review I1: the contract says that with no ps table nika uses signal 0 and does not read /proc
-  test('(−) no ps table: /proc is not opened; (+) with a ps table the digits procStart entry is read', async () => {
+  test('(−) no ps table, a pid ps did not list, or not Linux: /proc is not opened; (+) on Linux a listed digits procStart is read', async () => {
     const fx2 = makeFixture();
     const pid = 2_000_000_001; // no such process anywhere: the default reader fails on it, and no real process is looked at
+    const unlisted = 2_000_000_002; // a registry file naming a pid ps did not list
     const opened = [];
     const real = fsp.open;
     fsp.open = async (file, ...rest) => {
@@ -210,17 +211,21 @@ describe('collect', () => {
       return real(file, ...rest);
     };
     try {
-      fs.writeFileSync(path.join(fx2.claudeDir, 'sessions', `${pid}.json`), JSON.stringify({ pid, sessionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', cwd: fx2.repo, procStart: '3304488' }));
+      for (const [p, id] of [[pid, 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'], [unlisted, 'dddddddd-dddd-4ddd-8ddd-dddddddddddd']]) {
+        fs.writeFileSync(path.join(fx2.claudeDir, 'sessions', `${p}.json`), JSON.stringify({ pid: p, sessionId: id, cwd: fx2.repo, procStart: '3304488' }));
+      }
       const withPs = fakeExec({ psLines: [`  ${pid} ${PROC_START}`] });
       const noPs = async (cmd, args, opts) => {
         if (cmd.endsWith('ps')) throw new Error('ps missing');
         return withPs(cmd, args, opts);
       };
-      const down = await collect({ config: fx2.config, exec: noPs, now: NOW, sinceMs: 7 * DAY });
+      const down = await collect({ config: fx2.config, exec: noPs, now: NOW, sinceMs: 7 * DAY, platform: 'linux' });
       assert.match(down.snapshot.sources.processes, /^ps unavailable/);
       assert.deepEqual(opened, [], 'signal 0 decides; nothing under /proc is opened');
-      await collect({ config: fx2.config, exec: withPs, now: NOW, sinceMs: 7 * DAY });
-      assert.deepEqual(opened, [`/proc/${pid}/stat`]);
+      await collect({ config: fx2.config, exec: withPs, now: NOW, sinceMs: 7 * DAY, platform: 'darwin' });
+      assert.deepEqual(opened, [], 'macOS has no /proc: a digits procStart (a copied or forged file) is not looked up');
+      await collect({ config: fx2.config, exec: withPs, now: NOW, sinceMs: 7 * DAY, platform: 'linux' });
+      assert.deepEqual(opened, [`/proc/${pid}/stat`], 'only the pid ps listed');
     } finally {
       fsp.open = real;
       cleanup(fx2);

@@ -265,6 +265,9 @@ function pickError(r, other) {
 }
 
 const CLAUDE_EXITED = 'Claude exited right after it started. Run `claude` once in a terminal in this folder to see why (for example, to log in).';
+const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+/** A resumed session that claude ended at once: the same `--resume` shows why (the server names the id it resumed). */
+const resumeExited = (id) => `Claude exited right after it started. Run \`claude --resume ${id}\` in a terminal in this folder to see why.`;
 const LAUNCH_TOAST_MS = 10000; // these sentences name the next step: longer than a toast's usual 4 s
 
 /**
@@ -278,7 +281,8 @@ function launchError(r) {
     const why = String(b.message ?? '').replace(/^tmux failed:\s*/, '').trim();
     return why ? `tmux failed: ${why}` : 'tmux failed';
   }
-  return b?.error === 'claude_exited' ? CLAUDE_EXITED : null;
+  if (b?.error !== 'claude_exited') return null;
+  return typeof b.resume === 'string' && SESSION_ID.test(b.resume) ? resumeExited(b.resume) : CLAUDE_EXITED;
 }
 
 /**

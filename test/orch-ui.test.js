@@ -477,6 +477,18 @@ describe('start and resume from the header', () => {
     }
   });
 
+  test('(+) a resume that claude ended at once names `claude --resume <id>` instead of the login hint; (−) a `resume` that is no session id is ignored', async () => {
+    const resumed = { status: 502, body: { error: 'claude_exited', message: 'server words', resume: ID } };
+    const r = flowRig({ answers: { [START]: resumed } });
+    await r.api.startOrchestrator(r.proj); // Start resumes too when the saved pick has ended: the server says so, not the button
+    assert.equal(r.last().msg, `Claude exited right after it started. Run \`claude --resume ${ID}\` in a terminal in this folder to see why.`);
+    for (const bad of ['../x', 'not-an-id', 7, null]) {
+      const q = flowRig({ answers: { [START]: { status: 502, body: { error: 'claude_exited', message: 'server words', resume: bad } } } });
+      await q.api.startOrchestrator(q.proj);
+      assert.equal(q.last().msg, EXITED, String(bad));
+    }
+  });
+
   test('(+) Resume shows the same sentences', async () => {
     for (const [answer, text] of STOPPED) {
       const r = flowRig({ answers: { [START]: answer } });

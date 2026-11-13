@@ -45,6 +45,8 @@ export function tmuxFail(err) {
 // How long Claude has to die at launch before a start or spawn counts as a success, and what the user is told when it did (contract §3).
 const SETTLE_MS = 1000;
 const CLAUDE_EXITED = 'Claude exited right after it started. Run `claude` once in a terminal in this folder to see why (for example, to log in).';
+// a resume that fails inside claude (an id it no longer knows) needs the same --resume to show why; a plain `claude` starts a fresh session
+const resumeExited = (id) => `Claude exited right after it started. Run \`claude --resume ${id}\` in a terminal in this folder to see why.`;
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
@@ -52,8 +54,9 @@ const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  * so tests don't wait), then asks tmux whether the pane still exists and is not dead (`display-message -p -t <%pane> '#{pane_dead}'`,
  * fixed argv, a constant format). Only `0` is running; a dead pane, a gone pane, a gone server and any tmux error all mean claude is
  * gone → 502 `claude_exited`, else null. A claude that dies later than that is not caught here (`shortcut: one check at 1 s`).
+ * `resumeId`: the session Start resumed (a UUID, checked again here); the refusal then carries it as `resume` and names `claude --resume`.
  */
-export async function earlyExit(ctx, pane) {
+export async function earlyExit(ctx, pane, resumeId = null) {
   if (!PANE_ID.test(pane)) return fail(502, 'tmux_failed', 'tmux did not return a pane id');
   await (ctx.sleep ?? pause)(SETTLE_MS);
   try {
@@ -62,6 +65,7 @@ export async function earlyExit(ctx, pane) {
   } catch {
     // gone: the pane, or the whole server with its last session
   }
+  if (typeof resumeId === 'string' && UUID.test(resumeId)) return { status: 502, body: { error: 'claude_exited', resume: resumeId, message: resumeExited(resumeId) } };
   return fail(502, 'claude_exited', CLAUDE_EXITED);
 }
 
@@ -251,7 +255,7 @@ export async function startOrchestrator(projectKey, ctx) {
     ctx.started?.set(pane, { key: projectKey, name: 'orchestrator', sessionId, role: 'orchestrator', mode: launchMode(config.permissionMode) });
     // tagged before the wait, so a second Start during it finds this orchestrator instead of opening another window
     await tagPane(ctx, pane, 'orchestrator', `${projectKey}/orchestrator`, 1);
-    const exited = await earlyExit(ctx, pane);
+    const exited = await earlyExit(ctx, pane, resume ? sessionId : null);
     if (exited) {
       ctx.started?.delete(pane);
       return exited; // nothing is saved: the pick stays as it was, and the page stays where it is

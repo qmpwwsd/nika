@@ -298,7 +298,9 @@ screen, so a screen nika does not recognize shows "Mode ?" or leaves a control d
   permission mode; it waits until the window has read the pane, and while Claude asks you something). With the box
   empty, the arrow keys and Enter go to Claude too (its menus and earlier prompts); arrow presses go out in batches of
   up to 8 keys, each sent at its 8th press or 120 ms after its first. Tab moves focus; Ctrl+Shift+Tab moves it back.
-  Copy, cut, paste, select all, undo and redo work as usual in every text field; Ctrl+Shift+C is always a copy. In Type
+  Copy, cut, paste, select all, undo and redo work as usual in every text field. In the message box Ctrl+C is Stop only
+  with nothing selected (with a selection the text field keeps it: a copy on Linux), and Ctrl+Shift+C never stops
+  Claude. In Type
   into pane, Ctrl+Shift+C copies the text selected in the terminal, and Ctrl+Shift+V (and Ctrl+V on Linux) pastes into
   Claude. On Linux, Ctrl+Q quits nika, Ctrl+W closes the window (in Type into pane it goes to Claude) and
   Ctrl+Plus, Ctrl+Minus and Ctrl+0 zoom; on macOS the app menu has these keys. Cmd+/ (Ctrl+/ on Linux) lists every shortcut.

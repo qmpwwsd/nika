@@ -749,7 +749,8 @@ describe('startOrchestrator: the early-exit check (F4)', () => {
       const ctx = dying(w, exec, { findSession: sessionLookup({}, w.project.key) });
       const r = await startOrchestrator(w.project.key, ctx);
       assert.ok(claudeFlags(exec.of(panes.length ? 'new-window' : 'new-session')[0]).includes('--resume'));
-      assert.deepEqual([r.status, r.body.error, r.body.message], [502, 'claude_exited', EXITED]);
+      // the next step names the resumed session, not the login hint: a plain `claude` would start a fresh session and show nothing
+      assert.deepEqual([r.status, r.body], [502, { error: 'claude_exited', resume: PICK, message: `Claude exited right after it started. Run \`claude --resume ${PICK}\` in a terminal in this folder to see why.` }]);
       assert.equal(ctx.started.size, 0);
       assert.equal(await pickNow(w), PICK);
     }

@@ -128,7 +128,8 @@ Fixes:
   no tmux server or no project session exists, instead of answering "tmux unavailable" or "start the orchestrator first".
   Start orchestrator, Resume and Spawn agent check one second after starting that Claude is still running; if it exited
   right away (for example, it needs a login), the project page says "Claude exited right after it started. Run `claude`
-  once in a terminal in this folder to see why (for example, to log in)." and stays on the project page. "tmux not
+  once in a terminal in this folder to see why (for example, to log in)." (after a resume: "Run `claude --resume <id>`…")
+  and stays on the project page. "tmux not
   found" now means only that the tmux program is missing. A dead orchestrator or agent pane kept by tmux's
   `remain-on-exit` no longer counts as running, toward the agent limits or for the duplicate-name check. When tmux
   fails for any other reason than "no server running", Spawn agent refuses with tmux's own message instead of skipping
@@ -144,7 +145,8 @@ Fixes:
   action. On macOS the app menu keeps these keys (Close Window and Minimize were already there).
 - **Copy and paste in Type into pane.** Ctrl+Shift+C copies the text selected in the terminal; Ctrl+Shift+V, and Ctrl+V on
   Linux, paste into Claude as one paste instead of "Not sent: … not on the allow-list". Ctrl+C still sends C-c. In the
-  message box Ctrl+Shift+C is now always a copy, never Stop (Ctrl+C alone keeps Stop). Copy, cut, paste, select all, undo
+  message box Ctrl+Shift+C no longer stops Claude; Ctrl+C is Stop only with nothing selected (with a selection the text
+  field keeps it: a copy on Linux). Copy, cut, paste, select all, undo
   and redo work in every text field on both platforms. The Keyboard shortcuts window lists the window and copy keys per
   platform.
 - The hint row under the message box is gone (its key tips are in the Keyboard shortcuts window). "Sent … to %N" is still

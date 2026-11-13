@@ -1042,7 +1042,7 @@ empty (owner decision 2026-11-09). One pure function holds the rules: `composerK
 | Ctrl+Q, Ctrl+=, Ctrl++, Ctrl+-, Ctrl+0 (Linux) | window keys (§4.1) | window keys (§4.1), not sent to the pane and no "Not sent" message |
 | Ctrl+] | enter passthrough | **leave** passthrough (the only key nika keeps) |
 | ⌘ shortcuts (macOS) | app shortcuts | still app shortcuts (not sent) |
-| paste (Mod+V; on Linux also Ctrl+Shift+V) | inserted; multi-line → paste chip | sent as one bracketed paste (≤ 16 KB). Ctrl+V (Linux) and Ctrl+Shift+V are not cancelled: the browser pastes and the mirror's `paste` handler sends it. On macOS Ctrl+V is not on the allow-list (Command+V pastes) |
+| paste (Mod+V; on Linux also Ctrl+Shift+V) | inserted; multi-line → paste chip | sent as one bracketed paste (≤ 16 KB). Ctrl+V (Linux) and Ctrl+Shift+V are not cancelled: the browser pastes and the mirror's `paste` handler sends it. WebKitGTK maps Ctrl+V to its Paste command and Ctrl+Shift+V to PasteAsPlainText (`Source/WebKit/UIProcess/gtk/KeyBindingTranslator.cpp`, read 2026-11-13); both fire the DOM `paste` event. Checked by reading the source, not yet on a Linux build: on the owner's 0.4.0 Linux checklist. On macOS Ctrl+V is not on the allow-list (Command+V pastes) |
 | other keys | — | not sent; echo "Not sent: Alt-x is not on the allow-list" |
 
 The box is never a keyboard trap: Tab leaves forward, Ctrl+Shift+Tab backward. Its accessible name says so: "Message
