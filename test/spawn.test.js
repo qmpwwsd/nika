@@ -208,6 +208,20 @@ describe('spawnAgent: placement and files', () => {
     assert.equal(JSON.parse(read(w, 'four.agent.json')).permissionMode, 'acceptEdits', 'back to Settings');
   });
 
+  test('(−) a project-level bypassPermissions that got past load (a hand-built config) is refused with 400: no tmux call, no agent file', async () => {
+    const w = await world({ permissionMode: 'plan' });
+    const { loadConfig } = await import('../src/store.js');
+    const { config } = await loadConfig(w.env);
+    config.perProject = { [w.project.key]: { permissionMode: 'bypassPermissions' } };
+    const exec = fakeTmux({ panes: BASE_PANES() });
+    const r = await spawnAgent(req(w, { name: 'one' }), { ...w.ctx(exec), loadConfig: async () => ({ config }) });
+    assert.equal(r.status, 400);
+    assert.equal(r.body.error, 'invalid');
+    assert.match(r.body.message, /bypassPermissions/);
+    assert.equal(exec.calls.length, 0, 'tmux is never called');
+    assert.throws(() => read(w, 'one.agent.json'), { code: 'ENOENT' });
+  });
+
   test('(−) bypassPermissions in a project entry of a tampered config.json is dropped on load: the spawn takes the Settings mode and nothing carries bypass', async () => {
     const w = await world({ permissionMode: 'plan' });
     const file = path.join(w.env.NIKA_CONFIG_DIR, 'nika', 'config.json');

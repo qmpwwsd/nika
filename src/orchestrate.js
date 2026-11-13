@@ -207,7 +207,7 @@ export async function startOrchestrator(projectKey, ctx) {
   if (typeof projectKey !== 'string' || !PROJECT_KEY.test(projectKey)) return fail(400, 'invalid', 'invalid project key');
   const missing = binsMissing(ctx);
   if (missing) return missing;
-  const { config } = await loadConfig(ctx.env);
+  const { config } = await (ctx.loadConfig ?? loadConfig)(ctx.env); // ctx.loadConfig: tests only, to pin the bypass check below on a config load would never give
   const project = config.projects.find((p) => p.key === projectKey);
   if (!project) return fail(404, 'not_found', 'project is not registered');
   const { permissionMode } = effectiveAgents(config, project.key);

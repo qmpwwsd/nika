@@ -1172,7 +1172,7 @@ describe('Settings, the New agents card and Remove project (design 2.5)', () => 
   test('(+) Remove project: the dialog says what is forgotten and that running agents keep running', () => {
     const r = projRig();
     r.api.confirmRemove(r.proj);
-    assert.equal(r.node('#cf-d').textContent, 'nika stops listing this project and forgets its plugin and model choices and its saved orchestrator. No files change and running agents keep running.');
+    assert.equal(r.node('#cf-d').textContent, 'nika stops listing this project and forgets its plugin, model, permission mode, pane and agent limit choices and its saved orchestrator. No files change and running agents keep running.');
     assert.equal(r.node('#cf-h').textContent, 'Remove demo-api from nika?');
     assert.equal(r.node('#cf-ok').textContent, 'Remove project');
     assert.equal(r.opened.length, 1);

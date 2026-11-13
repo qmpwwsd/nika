@@ -188,6 +188,16 @@ describe('New agents card: the menus', () => {
     assert.equal(itemsOf(card, 'Permission mode')[0].all(withClass('sr-only'))[0]?.textContent, ': ', 'the colon is screen-reader only');
   });
 
+  test('(+) a mode item whose long label says more carries it as a tooltip (Auto: the classifier warning); (−) Plan and the other rows get none', () => {
+    const card = rig({ loaded: settingsWith(null, { permissionMode: 'auto' }) }).card();
+    const items = itemsOf(card, 'Permission mode');
+    assert.deepEqual(items.map((b) => b.attrs.title), [
+      'Auto: a classifier approves actions without asking you', // Use Settings, while Settings says Auto
+      'Claude Code default (no flag)', 'Manual: ask every time', undefined, undefined, 'Auto: a classifier approves actions without asking you', undefined,
+    ]);
+    for (const name of ['Pane', 'Per orchestrator']) assert.ok(itemsOf(card, name).every((b) => b.attrs.title === undefined), name);
+  });
+
   test('(−) no menu offers bypass, and the card never says it', () => {
     for (const permissionMode of ['default', 'plan', 'dontAsk']) {
       const card = rig({ loaded: settingsWith({ permissionMode }, { permissionMode: 'auto' }) }).card();
@@ -406,12 +416,19 @@ describe('menuEl: optional trigger content and a current flag', () => {
     assert.equal(b.attrs['data-fk'], 'agent-panePlacement');
     assert.equal(b.attrs['aria-expanded'], 'false');
     assert.equal(b.className, 'btn ghost menu-val');
+    assert.equal(menu.all((n) => n.tag === 'ul')[0].className, 'menu menu-vals', 'a value menu gets its own class (no wrapping)');
+  });
+
+  test('(+) an item title becomes its tooltip; (−) a reason still wins over it', () => {
+    const menu = menuEl('M', [{ text: 'A', run: noop, title: 'Long A', current: true }, { text: 'B', run: noop, title: 'Long B', reason: 'Not now.' }, { text: 'C', run: noop }], 'm', [h('span', { text: 'x' })]);
+    assert.deepEqual(lis(menu).map((li) => li.kids[0].attrs.title), ['Long A', 'Not now.', undefined]);
   });
 
   test('(−) without a trigger the button is what it was: the "⋯" icon button, and no item is marked or given a check slot', () => {
     const menu = menuEl('More', [{ text: 'One', run: noop }, { text: 'Two', run: noop }], 'm');
     const b = button(menu);
     assert.equal(b.className, 'btn icon ghost');
+    assert.equal(menu.all((n) => n.tag === 'ul')[0].className, 'menu', 'a row menu keeps the plain class');
     assert.equal(b.textContent, '⋯');
     assert.equal(b.all((n) => n.attrs['aria-hidden'] === 'true')[0].textContent, '⋯');
     for (const li of lis(menu)) {
@@ -450,7 +467,8 @@ describe('app.css: the value menu', () => {
     assert.match(APP_CSS, /\.menu-val\s*\{/);
     assert.match(APP_CSS, /\.menu-chk\s*\{/);
     assert.match(APP_CSS, /\.menu button, \.menu a \{/);
-    assert.match(APP_CSS, /\.menu button, \.menu a \{[^}]*white-space: nowrap/, 'an item never wraps: "Use Settings" and its chip stay on one line');
+    assert.match(APP_CSS, /\.menu-vals button \{[^}]*white-space: nowrap/, 'a value-menu item never wraps: "Use Settings" and its chip stay on one line');
+    assert.doesNotMatch(APP_CSS, /\.menu button, \.menu a \{[^}]*white-space: nowrap/, 'row menus (⋯) still wrap a long item');
     assert.match(APP_CSS, /\.kv dd \.from-set \{[^}]*display: block/, '"from Settings" is its own line under the value, never broken mid-phrase');
   });
 

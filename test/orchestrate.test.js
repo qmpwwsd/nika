@@ -149,6 +149,18 @@ describe('startOrchestrator: new session', () => {
     assert.equal(ctx.started.get(r.body.pane).mode, 'manual');
   });
 
+  test('(−) a project-level bypassPermissions that got past load (a hand-built config) is refused with 400 before any tmux call', async () => {
+    const w = await world({ permissionMode: 'plan' });
+    const { config } = await loadConfig(w.env);
+    config.perProject = { [w.project.key]: { permissionMode: 'bypassPermissions' } };
+    const exec = fakeTmux();
+    const r = await startOrchestrator(w.project.key, { ...w.ctx(exec), loadConfig: async () => ({ config }) });
+    assert.equal(r.status, 400);
+    assert.equal(r.body.error, 'invalid');
+    assert.match(r.body.message, /bypassPermissions/);
+    assert.equal(exec.calls.length, 0, 'tmux is never called');
+  });
+
   test('(−) bypassPermissions in a project entry of a tampered config.json is dropped on load: the Settings mode starts, nothing reaches claude', async () => {
     const w = await world({ permissionMode: 'plan' });
     const file = path.join(configDir(w.env), 'config.json');

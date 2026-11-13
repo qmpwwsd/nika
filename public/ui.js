@@ -260,10 +260,10 @@ export function menuEl(label, items, fk, trigger) {
   return h('div', { class: 'menu-wrap' },
     h('button', { type: 'button', class: trigger ? 'btn ghost menu-val' : 'btn icon ghost', 'data-menu-btn': true, 'data-fk': fk, 'aria-expanded': 'false', 'aria-controls': id, 'aria-label': label, title: label },
       trigger ?? h('span', { 'aria-hidden': 'true', text: '⋯' })),
-    h('ul', { class: 'menu', id, hidden: true }, items.map((it) => h('li', { class: it.group ? 'grp' : null }, it.href
+    h('ul', { class: trigger ? 'menu menu-vals' : 'menu', id, hidden: true }, items.map((it) => h('li', { class: it.group ? 'grp' : null }, it.href
       ? h('a', { href: it.href, target: '_blank', rel: 'noopener noreferrer', 'data-fk': it.fk, text: it.text })
       : h('button', {
-        type: 'button', 'data-fk': it.fk, 'aria-disabled': it.reason ? 'true' : null, 'aria-current': it.current ? 'true' : null, title: it.reason || null, text: marks ? null : it.text,
+        type: 'button', 'data-fk': it.fk, 'aria-disabled': it.reason ? 'true' : null, 'aria-current': it.current ? 'true' : null, title: it.reason || it.title || null, text: marks ? null : it.text,
         onclick: it.reason ? () => toast(it.reason, { kind: 'error' }) : it.run,
       }, marks ? [h('span', { class: 'menu-chk', 'aria-hidden': 'true' }, it.current ? icon('check') : null), it.content ?? it.text] : null)))));
 }

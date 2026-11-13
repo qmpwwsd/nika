@@ -336,7 +336,8 @@ details.ended > summary:hover { color: var(--text); }
 .menu-wrap { position: relative; display: inline-block; }
 .menu { position: absolute; right: 0; top: calc(100% + 4px); z-index: 30; min-width: 220px; margin: 0; padding: 4px; list-style: none; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-md); box-shadow: var(--elev-2); }
 .menu[data-up="1"] { top: auto; bottom: calc(100% + 4px); }
-.menu button, .menu a { display: flex; width: 100%; align-items: center; gap: 8px; min-height: 30px; padding: 4px 10px; border: 0; border-radius: var(--r-sm); background: none; text-align: left; text-decoration: none; color: var(--text); white-space: nowrap; }
+.menu button, .menu a { display: flex; width: 100%; align-items: center; gap: 8px; min-height: 30px; padding: 4px 10px; border: 0; border-radius: var(--r-sm); background: none; text-align: left; text-decoration: none; color: var(--text); }
+.menu-vals button { white-space: nowrap; }   /* a value menu (New agents card): "Use Settings" and its chip stay on one line; row menus still wrap long names */
 .menu button:hover, .menu a:hover { background: var(--surface-2); }
 .menu li.grp { border-top: 1px solid var(--line); margin-top: 4px; padding-top: 4px; }   /* a rule above the item that starts a group */
 .menu [aria-disabled="true"] { opacity: 0.5; cursor: not-allowed; }   /* a disabled item still answers with its reason */

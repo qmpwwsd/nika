@@ -288,7 +288,7 @@ export async function spawnAgent(req, ctx) {
   if (!Array.isArray(ctx.nikaArgv) || !ctx.nikaArgv.length || !ctx.nikaArgv.every((a) => typeof a === 'string' && a && !a.includes('\0'))) {
     return fail(500, 'internal', 'nikaArgv must be a non-empty array of strings');
   }
-  const { config } = await loadConfig(ctx.env);
+  const { config } = await (ctx.loadConfig ?? loadConfig)(ctx.env); // ctx.loadConfig: tests only, to pin the bypass check below on a config load would never give
   const project = config.projects.find((p) => p.key === parsed.value.project);
   if (!project) return fail(404, 'not_found', 'project is not registered');
   if (effectiveAgents(config, project.key).permissionMode === 'bypassPermissions') return fail(400, 'invalid', 'bypassPermissions is never allowed');

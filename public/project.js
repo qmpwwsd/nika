@@ -573,9 +573,11 @@ function agentItemEl(p, field, s, mine) {
   const label = `${it.label} for ${trunc(p.name, 40)}: ${it.word(now)}, ${inherited ? 'from Settings' : 'set for this project'}`;
   // a mode is always shown as its own chip (colour, icon, word), in the menu as on the button; the words read the same either way
   const chip = field === 'permissionMode' ? (v) => settingModeEl(v) : null;
+  // a mode whose long label says more than its word (Default, Manual, and Auto's classifier warning) carries it as the item's tooltip, as in the spawn sheet
+  const tip = (m) => (chip && Object.hasOwn(PERM_LABEL, m) && PERM_LABEL[m] !== it.word(m) ? PERM_LABEL[m] : undefined);
   const items = [
-    { text: chip ? `Use Settings: ${it.word(fallback)}` : `Use Settings (${it.word(fallback)})`, content: chip ? ['Use Settings', h('span', { class: 'sr-only', text: ': ' }), chip(fallback)] : undefined, current: inherited, fk: `agent-${field}:settings`, run: () => saveAgentItem(p, field, null) },
-    ...it.choices.map((c, i) => ({ text: it.word(c), content: chip ? chip(c) : undefined, current: !inherited && mine[field] === c, group: i === 0, fk: `agent-${field}:${c}`, run: () => saveAgentItem(p, field, c) })),
+    { text: chip ? `Use Settings: ${it.word(fallback)}` : `Use Settings (${it.word(fallback)})`, content: chip ? ['Use Settings', h('span', { class: 'sr-only', text: ': ' }), chip(fallback)] : undefined, title: tip(fallback), current: inherited, fk: `agent-${field}:settings`, run: () => saveAgentItem(p, field, null) },
+    ...it.choices.map((c, i) => ({ text: it.word(c), content: chip ? chip(c) : undefined, title: tip(c), current: !inherited && mine[field] === c, group: i === 0, fk: `agent-${field}:${c}`, run: () => saveAgentItem(p, field, c) })),
   ];
   return [
     menuEl(label, items, `agent-${field}`, [field === 'permissionMode' ? settingModeEl(now) : it.word(now), icon('chev')]),
@@ -1016,7 +1018,7 @@ let confirmCtl = null; // the confirm dialog is reused: drop the previous openin
 function confirmRemove(p) {
   const dlg = $('#dlg-confirm');
   $('#cf-h').textContent = `Remove ${trunc(p.name, 40)} from nika?`;
-  $('#cf-d').textContent = 'nika stops listing this project and forgets its plugin and model choices and its saved orchestrator. No files change and running agents keep running.';
+  $('#cf-d').textContent = 'nika stops listing this project and forgets its plugin, model, permission mode, pane and agent limit choices and its saved orchestrator. No files change and running agents keep running.';
   $('#cf-ok').textContent = 'Remove project';
   confirmCtl?.abort();
   confirmCtl = new AbortController();
