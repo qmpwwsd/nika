@@ -633,6 +633,20 @@ describe('rules', () => {
     assert.match(r.out, /^warning: settings\.local\.json is not gitignored$/m);
   });
 
+  test('(+) a symlinked AGENTS.md beside CLAUDE.md is listed as skipped with its note, and apply --yes leaves it alone', async () => {
+    const w = await world();
+    fs.writeFileSync(path.join(w.project.dir, 'CLAUDE.md'), '# acme-api\n');
+    fs.symlinkSync('CLAUDE.md', path.join(w.project.dir, 'AGENTS.md'));
+    const p = await cli(['rules', 'preview'], { env: w.cliEnv, cwd: w.nested });
+    assert.equal(p.code, 0, p.err);
+    assert.match(p.out, /^AGENTS\.md \(skipped\)$/m);
+    assert.match(p.out, /^AGENTS\.md is a link; left as is$/m);
+    const a = await cli(['rules', 'apply', '--yes'], { env: w.cliEnv, cwd: w.nested });
+    assert.equal(a.code, 0, a.err);
+    assert.match(a.out, /written: rules\/orchestration\.md, CLAUDE\.md\n/);
+    assert.equal(fs.readlinkSync(path.join(w.project.dir, 'AGENTS.md')), 'CLAUDE.md');
+  });
+
   test('(+) preview takes an explicit dir', async () => {
     const w = await world();
     const r = await cli(['rules', 'preview', w.project.dir], { env: w.cliEnv, cwd: w.root });

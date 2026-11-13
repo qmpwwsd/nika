@@ -1184,7 +1184,9 @@ function spawnFailure(r, req, g, parent) {
 
 /* ---------- apply rules ---------- */
 const ru = { project: null, phase: 'loading', preview: null, sel: 0, gitignore: false, foreignOk: false, message: '', result: null, seq: 0 };
-const ACT_MARK = { create: '+', update: '~', unchanged: '=' };
+const ACT_MARK = { create: '+', update: '~', unchanged: '=', skipped: '–' };
+// nothing is written for these (a skipped entry carries the server's note)
+const inert = (f) => f.action === 'unchanged' || f.action === 'skipped';
 
 function openRules(project) {
   Object.assign(ru, { project, preview: null, sel: 0, gitignore: false, foreignOk: false, message: '', result: null });
@@ -1208,7 +1210,7 @@ async function rulesPreview() {
     ru.preview = r.body;
     ru.phase = 'preview';
     ru.foreignOk = false;
-    const first = r.body.files.findIndex((f) => f.action !== 'unchanged' && !f.optional);
+    const first = r.body.files.findIndex((f) => !inert(f) && !f.optional);
     ru.sel = Math.max(0, first);
   } else {
     ru.phase = 'error';
@@ -1318,7 +1320,8 @@ function filesPhase() {
     h('section', { class: 'file-view', 'aria-label': `Changes to ${f.path}` },
       h('div', { class: 'file-head' }, h('code', { text: f.path }), badge(f), h('span', { class: 'help', text: label(f) }),
         f.keysPreserved ? h('span', { class: 'help', text: `· only enabledPlugins changes; ${keptText(f)}` }) : null),
-      f.action === 'unchanged' ? h('p', { class: 'diff d-note', text: 'Unchanged. Not touched.' }) : diffEl(f.diff ?? ''))));
+      f.action === 'unchanged' ? h('p', { class: 'diff d-note', text: 'Unchanged. Not touched.' })
+        : f.action === 'skipped' ? h('p', { class: 'diff d-note', text: f.note ?? 'Skipped. Not touched.' }) : diffEl(f.diff ?? ''))));
   out.push(h('div', { class: 'rules-notes' },
     warnings?.length ? h('div', { class: 'alert', 'data-kind': 'warn' }, icon('warn'), h('div', null, warnings.map((w) => h('p', { text: w })))) : null,
     gi ? h('label', { class: 'check' }, h('input', {
@@ -1364,8 +1367,9 @@ function rulesRender() {
   } else {
     body = filesPhase();
     const files = ru.preview.files;
-    const changing = files.filter((f) => f.action !== 'unchanged' && !f.optional).length;
-    const note = `${changing} file${changing === 1 ? '' : 's'} change · ${files.filter((f) => f.action === 'unchanged').length} unchanged`;
+    const changing = files.filter((f) => !inert(f) && !f.optional).length;
+    const skipped = files.filter((f) => f.action === 'skipped').length;
+    const note = `${changing} file${changing === 1 ? '' : 's'} change · ${files.filter((f) => f.action === 'unchanged').length} unchanged${skipped ? ` · ${skipped} skipped` : ''}`;
     const foreign = files.some((f) => f.foreign);
     if (ru.phase === 'conflict') buttons = [close(), h('button', { type: 'button', class: 'btn primary lg', onclick: () => rulesPreview(), text: 'Reload preview' })];
     else if (ru.phase === 'refused') buttons = [close('Close')];

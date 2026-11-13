@@ -462,6 +462,11 @@ describe('AGENTS.md (F8): the import line goes into AGENTS.md too, and CLAUDE.md
     fs.mkdirSync(path.join(u.dir, 'AGENTS.md'));
     const dirIn = await preview(u.project, u.ctx);
     assert.deepEqual([dirIn.status, dirIn.body.error, dirIn.body.code], [409, 'refused', 'ENOTREG']);
+    const f = await world();
+    execFileSync('mkfifo', [path.join(f.dir, 'AGENTS.md')]);
+    const fifo = await preview(f.project, f.ctx); // must not block on the open
+    assert.deepEqual([fifo.status, fifo.body.error, fifo.body.code], [409, 'refused', 'ENOTREG']);
+    assert.equal(fs.lstatSync(path.join(f.dir, 'AGENTS.md')).isFIFO(), true);
   });
 
   test('(−) a symlinked CLAUDE.md still refuses when an AGENTS.md exists beside it, and AGENTS.md is left alone', async () => {
@@ -472,6 +477,98 @@ describe('AGENTS.md (F8): the import line goes into AGENTS.md too, and CLAUDE.md
     const p = await preview(w.project, w.ctx);
     assert.deepEqual([p.status, p.body.error, p.body.code], [409, 'refused', 'ESYMLINK']);
     assert.equal(get(w, 'AGENTS.md'), '# a\n');
+  });
+
+  test('(+) a symlinked AGENTS.md beside a regular CLAUDE.md is skipped: CLAUDE.md is applied as before, the link and its target are left alone', async () => {
+    const SKIP_NOTE = 'AGENTS.md is a link; left as is';
+    const targets = {
+      'the common AGENTS.md -> CLAUDE.md': (w) => 'CLAUDE.md',
+      'a file elsewhere': (w) => { fs.writeFileSync(path.join(w.base, 'elsewhere.md'), 'SECRET'); return path.join(w.base, 'elsewhere.md'); },
+      'a dangling link': (w) => path.join(w.base, 'no-such-file'),
+    };
+    for (const [label, target] of Object.entries(targets)) {
+      const w = await world();
+      put(w, 'CLAUDE.md', '# web-shop\n');
+      const to = target(w);
+      fs.symlinkSync(to, path.join(w.dir, 'AGENTS.md'));
+      const body = await prev(w);
+      assert.deepEqual(body.files.map((f) => [f.path, f.action]), [['rules/orchestration.md', 'create'], ['CLAUDE.md', 'update'], ['AGENTS.md', 'skipped'], ['.claude/settings.local.json', 'unchanged']], label);
+      assert.deepEqual(entry(body, 'AGENTS.md'), { path: 'AGENTS.md', action: 'skipped', diff: '', note: SKIP_NOTE }, label);
+      const r = await go(w, body);
+      assert.deepEqual([r.status, r.body.written], [200, ['rules/orchestration.md', 'CLAUDE.md']], label);
+      assert.equal(get(w, 'CLAUDE.md'), `# web-shop\n\n${IMPORT}\n`, label);
+      assert.equal(fs.lstatSync(path.join(w.dir, 'AGENTS.md')).isSymbolicLink(), true, label);
+      assert.equal(fs.readlinkSync(path.join(w.dir, 'AGENTS.md')), to, label);
+      if (label === 'a file elsewhere') assert.equal(fs.readFileSync(to, 'utf8'), 'SECRET');
+      if (label === 'a dangling link') assert.equal(fs.existsSync(to), false, 'never created through the link');
+      assert.equal(fs.existsSync(path.join(r.body.backupDir, 'AGENTS.md')), false, 'a skipped file is not backed up');
+      // idempotent: the skip stays in the preview, nothing more is written
+      const again = await prev(w);
+      assert.deepEqual(again.files.map((f) => f.action), ['unchanged', 'unchanged', 'skipped', 'unchanged'], label);
+      assert.deepEqual((await go(w, again)).body.written, [], label);
+    }
+  });
+
+  test('(−) a skipped AGENTS.md is part of the plan: replacing the link with a regular file after the preview is a conflict, nothing is written', async () => {
+    const w = await world();
+    put(w, 'CLAUDE.md', '# web-shop\n');
+    fs.symlinkSync('CLAUDE.md', path.join(w.dir, 'AGENTS.md'));
+    const body = await prev(w);
+    fs.rmSync(path.join(w.dir, 'AGENTS.md'));
+    put(w, 'AGENTS.md', '# now a regular file\n');
+    const before = snapshot(w.dir);
+    const r = await go(w, body);
+    assert.deepEqual([r.status, r.body.error], [409, 'conflict']);
+    assert.deepEqual(snapshot(w.dir), before);
+  });
+
+  test('(−) a lone symlinked AGENTS.md (no CLAUDE.md) still refuses with 409 ESYMLINK and a message that says why; nothing is written', async () => {
+    const w = await world();
+    fs.writeFileSync(path.join(w.base, 'elsewhere.md'), 'SECRET');
+    fs.symlinkSync(path.join(w.base, 'elsewhere.md'), path.join(w.dir, 'AGENTS.md'));
+    const before = snapshot(w.dir);
+    const p = await preview(w.project, w.ctx);
+    assert.deepEqual([p.status, p.body.error, p.body.code], [409, 'refused', 'ESYMLINK']);
+    assert.match(p.body.message, /AGENTS\.md is a symlink/);
+    assert.match(p.body.message, /no CLAUDE\.md/);
+    const a = await apply(w.project, { hash: '0'.repeat(64) }, w.ctx);
+    assert.deepEqual([a.status, a.body.error, a.body.code], [409, 'refused', 'ESYMLINK']);
+    assert.deepEqual(snapshot(w.dir), before);
+    assert.equal(fs.readFileSync(path.join(w.base, 'elsewhere.md'), 'utf8'), 'SECRET');
+  });
+
+  test('(−) a symlinked CLAUDE.md refuses even with a symlinked AGENTS.md beside it', async () => {
+    const w = await world();
+    fs.writeFileSync(path.join(w.base, 'elsewhere.md'), 'SECRET');
+    fs.symlinkSync(path.join(w.base, 'elsewhere.md'), path.join(w.dir, 'CLAUDE.md'));
+    fs.symlinkSync(path.join(w.base, 'elsewhere.md'), path.join(w.dir, 'AGENTS.md'));
+    const p = await preview(w.project, w.ctx);
+    assert.deepEqual([p.status, p.body.error, p.body.code], [409, 'refused', 'ESYMLINK']);
+    assert.match(p.body.message, /CLAUDE\.md/);
+  });
+
+  test('(−) an AGENTS.md that appears after the hash check and before CLAUDE.md would be created: 409, nothing written', async () => {
+    for (const kind of ['file', 'symlink']) {
+      const w = await world();
+      const body = await prev(w); // neither file exists: the plan creates CLAUDE.md
+      assert.equal(entry(body, 'CLAUDE.md').action, 'create');
+      let calls = 0;
+      const ctx = {
+        env: w.env,
+        now: () => { // called once, at the end of the apply's own plan: after the hash matched, before any write
+          if (++calls === 1) {
+            if (kind === 'file') put(w, 'AGENTS.md', '# arrived in the gap\n');
+            else fs.symlinkSync(path.join(w.base, 'no-such-file'), path.join(w.dir, 'AGENTS.md'));
+          }
+          return NOW;
+        },
+      };
+      const r = await apply(w.project, { hash: body.hash }, ctx);
+      assert.deepEqual([r.status, r.body.error], [409, 'conflict'], kind);
+      assert.match(r.body.message, /AGENTS\.md/, kind);
+      assert.deepEqual(Object.keys(snapshot(w.dir)), ['AGENTS.md'], `${kind}: only the file that arrived, no CLAUDE.md, no rules/`);
+      assert.equal(fs.existsSync(backupsDir(w.project.key, w.env)), false, kind);
+    }
   });
 });
 

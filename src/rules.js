@@ -86,6 +86,17 @@ async function readTarget(dir, rel) {
   return readText((await checkComponents(dir, rel)).abs, FILE_MAX);
 }
 
+/**
+ * AGENTS.md is never followed: `{ link: true }` for a symlink (the plan skips it or refuses, see plan()), else `{ text }`, read
+ * like any target (null when absent). A link swapped in after the lstat is still refused by readText's O_NOFOLLOW.
+ */
+async function readAgents(dir) {
+  const { abs } = await checkComponents(dir, AGENTS);
+  const st = await fs.lstat(abs).catch((err) => (err.code === 'ENOENT' ? null : Promise.reject(err)));
+  if (st?.isSymbolicLink()) return { link: true };
+  return { text: await readText(abs, FILE_MAX) };
+}
+
 // -------------------------------------------------------------------------------------------------------------- template
 
 /** Replaces `{{a.b}}` with `values.a.b`. Unknown placeholders, objects and stray `{{` / `}}` throw EPLACEHOLDER. */
@@ -285,11 +296,16 @@ async function plan(project, ctx = {}) {
   add(RULES, rulesCurrent, rulesNext, { foreign: rulesCurrent !== null && classify(rulesCurrent) === 'foreign' });
 
   // Claude reads AGENTS.md only while no CLAUDE.md exists: a CLAUDE.md nika created beside a lone AGENTS.md would turn it off.
-  // So CLAUDE.md is created only when there is no AGENTS.md; an AGENTS.md is edited, never created.
+  // So CLAUDE.md is created only when there is no AGENTS.md; an AGENTS.md is edited, never created. A symlinked AGENTS.md is
+  // never followed or written: it is skipped when CLAUDE.md exists (the usual AGENTS.md -> CLAUDE.md), refused when it is alone.
   const claudeCurrent = await readTarget(dir, CLAUDE);
-  const agentsCurrent = await readTarget(dir, AGENTS);
-  if (claudeCurrent !== null || agentsCurrent === null) add(CLAUDE, claudeCurrent, importWith(claudeCurrent));
-  if (agentsCurrent !== null) add(AGENTS, agentsCurrent, importWith(agentsCurrent));
+  const agents = await readAgents(dir);
+  if (agents.link && claudeCurrent === null) {
+    throw fail(409, 'refused', 'AGENTS.md is a symlink and there is no CLAUDE.md; nika never follows links, so it cannot add the rules import. Replace the link with a regular file, then apply again.', 'ESYMLINK');
+  }
+  if (claudeCurrent !== null || (!agents.link && agents.text === null)) add(CLAUDE, claudeCurrent, importWith(claudeCurrent));
+  if (agents.link) add(AGENTS, null, null, { note: 'AGENTS.md is a link; left as is' });
+  else if (agents.text !== null) add(AGENTS, agents.text, importWith(agents.text));
 
   // plugins are managed only for projects the user configured; no entry means enabledPlugins stays as it is
   const selected = config.perProject[project.key]?.plugins;
@@ -312,12 +328,12 @@ async function plan(project, ctx = {}) {
   }
 
   for (const f of files) {
-    f.action = f.next === null || f.next === f.current ? 'unchanged' : f.current === null ? 'create' : 'update';
+    f.action = f.extra.note ? 'skipped' : f.next === null || f.next === f.current ? 'unchanged' : f.current === null ? 'create' : 'update';
     let [from, to] = [f.current ?? '', f.next];
     if (f.path === SETTINGS) {
       ({ from, to, keptKeys: f.extra.keptKeys } = settingsView(f.current, f.next)); // the hash below still covers the whole file
     }
-    f.diff = f.action === 'unchanged' ? '' : unifiedDiff(from, to, f.path);
+    f.diff = f.action === 'unchanged' || f.action === 'skipped' ? '' : unifiedDiff(from, to, f.path);
   }
   const hash = sha(JSON.stringify(files.map((f) => [f.path, f.current === null ? null : sha(f.current), f.next])));
   return { files, hash, warnings, backupDir: path.join(backupsDir(project.key, env), stamp(nowMs(ctx))) };
@@ -395,12 +411,14 @@ export async function apply(project, opts, ctx = {}) {
 
     const dir = project.dir;
     const PROJ = { project: true, platform: ctx.platform, gid: ctx.gid }; // platform and gid are injectable for tests only
-    const todo = p.files.filter((f) => f.action !== 'unchanged' && (!f.extra.optional || opts.gitignore === true));
+    const todo = p.files.filter((f) => f.action !== 'unchanged' && f.action !== 'skipped' && (!f.extra.optional || opts.gitignore === true));
     backupDir = await freshBackupDir(p.backupDir);
     await ensureDir(dir, 0o755, PROJ); // the project root itself: world-writable is refused, nothing is created yet
     const prepared = [];
     for (const f of todo) {
       const c = await checkComponents(dir, f.path);
+      // CLAUDE.md is created only because there is no AGENTS.md: if one arrived since the plan, creating it would turn that file off
+      if (f.path === CLAUDE && f.current === null && (await exists(path.join(dir, AGENTS)))) throw fail(409, 'conflict', 'AGENTS.md appeared while applying; preview again');
       if (await isRealDir(c.dir)) await ensureDir(c.dir, 0o755, PROJ);
       if ((await readText(c.abs, FILE_MAX)) !== f.current) throw fail(409, 'conflict', `${f.path} changed while applying; preview again`);
       await backupFile(c.abs, backupDir, f.path);

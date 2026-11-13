@@ -640,7 +640,7 @@ resolves it to that pane's session), else exits 1 ("cannot attach: …") and run
 { "hash": "<sha256 hex of every planned write>", "files": [
     { "path": "rules/orchestration.md", "action": "create" | "update" | "unchanged", "diff": "<unified>", "foreign": false },
     { "path": "CLAUDE.md", "action": "update", "diff": "…" },
-    { "path": "AGENTS.md", "action": "update", "diff": "…" },
+    { "path": "AGENTS.md", "action": "update" | "skipped", "diff": "…", "note": "AGENTS.md is a link; left as is" },
     { "path": ".claude/settings.local.json", "action": "update", "diff": "<enabledPlugins block only>", "keysPreserved": true, "keptKeys": 3 },
     { "path": ".gitignore", "action": "update", "diff": "…", "optional": true } ],
   "warnings": [ "settings.local.json is not gitignored" ], "backupDir": "<stateDir>/backups/<key>/<ISO>" }
@@ -655,6 +655,12 @@ The `@rules/orchestration.md` line goes into `CLAUDE.md` and, when the project h
 neither file exists, because Claude Code reads `AGENTS.md` only while no `CLAUDE.md` exists: a `CLAUDE.md` created beside a
 lone `AGENTS.md` would turn it off. With only `AGENTS.md`, the `files` list has no `CLAUDE.md` entry. Both files get the
 same checks as every other target (symlink, hard link and owner checks, size limit, UTF-8, hash, byte-for-byte backup).
+A symlinked `AGENTS.md` is never followed or written: it is left alone when `CLAUDE.md` exists (a common
+`AGENTS.md -> CLAUDE.md`), and then its entry has `"action": "skipped"`, an empty `diff` and a `note`, is never in
+`written` and is not backed up; `CLAUDE.md` is handled as without an `AGENTS.md`. A symlinked `AGENTS.md` with no
+`CLAUDE.md` is `409 refused` with `code: "ESYMLINK"`. The skipped entry is part of the plan `hash`, so a link replaced by a
+regular file after the preview is a `409 conflict`. When the plan creates `CLAUDE.md` and an `AGENTS.md` (file or link) has
+appeared by the time of the write, apply answers `409 conflict` and writes nothing.
 
 The preview `diff` for `.claude/settings.local.json` is computed between `{"enabledPlugins": <old>}` and
 `{"enabledPlugins": <new>}` (pretty JSON) only, plus `keptKeys` = the number of other top-level keys; the values of
