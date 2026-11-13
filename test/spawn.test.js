@@ -608,6 +608,72 @@ describe('spawnAgent: nesting and limits (0.4)', () => {
     assert.deepEqual([exec.panes[0].agent, exec.panes[0].depth], ['', '']);
   });
 
+  // an orchestrator the user adopted from a tmux session of their own (tagged `<key>/orchestrator` by the adopt route)
+  const ADOPTED = (w, over = {}) => MAIN(w, { session: 'work', windowName: 'main', ...over });
+  const SPLIT_BESIDE_PARENT = (w) => [TMUX, '-u', 'split-window', '-h', '-t', '=work:', '-c', w.project.dir, '-P', '-F', '#{pane_id}', '--', ...NIKA_ARGV, '_run-agent', w.project.key, 'builder-1'];
+
+  test('(+) an agent under an orchestrator adopted in another tmux session lands beside it there, even with no project session (argv snapshot)', async () => {
+    const w = await world();
+    const exec = fakeTmux({ panes: [ADOPTED(w)] });
+    const r = await spawnAgent(req(w, { parent: '%1' }), w.ctx(exec));
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.equal(r.body.session, 'work');
+    assert.deepEqual(exec.calls, [
+      LIST_ALL,
+      LIST_AGENTS,
+      SPLIT_BESIDE_PARENT(w),
+      [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-role', 'agent'],
+      [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-agent', `${w.project.key}/builder-1`],
+      [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-depth', '2'],
+      [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-parent', '%1'],
+      [TMUX, '-u', 'select-pane', '-t', '%20', '-T', '[%20] builder-1'],
+    ]);
+    assert.equal(exec.panes.find((p) => p.id === '%20').session, 'work');
+    assert.deepEqual(tags(exec, '%20'), ['agent', 'builder-1', '2', '%1']);
+  });
+
+  test('(+) the project\'s own session exists too: the child still goes to its parent\'s session; a sub-orchestrator and an agent under one follow it', async () => {
+    const w = await world();
+    const exec = fakeTmux({ panes: [ADOPTED(w), { id: '%9', session: 'My-App', window: 0, windowName: 'zsh', command: 'zsh' }] });
+    assert.equal((await spawnAgent(req(w, { name: 'planner', role: 'orchestrator', parent: '%1' }), w.ctx(exec))).body.session, 'work');
+    assert.equal((await spawnAgent(req(w, { name: 'helper', parent: '%20' }), w.ctx(exec))).body.session, 'work');
+    assert.deepEqual(exec.of('split-window').map((c) => c[3]), ['=work:', '=work:']);
+    assert.deepEqual(exec.panes.filter((p) => ['%20', '%21'].includes(p.id)).map((p) => p.session), ['work', 'work']);
+    assert.deepEqual(tags(exec, '%21'), ['agent', 'helper', '3', '%20']);
+  });
+
+  test('(−) no parent and no project session is still 404, with nothing split, tagged or written (an adopted orchestrator elsewhere changes nothing)', async () => {
+    const w = await world();
+    const panes = [ADOPTED(w), { id: '%5', session: 'work', window: 1, windowName: 'shell', command: 'zsh' }];
+    for (const over of [{}, { parent: '%5' }]) { // no parent at all, and a plain pane with no nika role ("you")
+      const r = await refuse(w, panes, over, 404, 'not_found');
+      assert.match(r.body.message, /tmux session My-App not found/);
+    }
+  });
+
+  test('(+) an explicit `session` or `under` wins over the parent\'s session', async () => {
+    const w = await world();
+    const exec = fakeTmux({ panes: [ADOPTED(w), { id: '%9', session: 'My-App', window: 0, windowName: 'zsh', command: 'zsh' }, { id: '%7', session: 'other', window: 0, windowName: 'zsh', command: 'zsh' }] });
+    const a = await spawnAgent(req(w, { name: 'explicit', parent: '%1', session: 'My-App' }), w.ctx(exec));
+    assert.deepEqual([a.status, a.body.session, exec.of('split-window')[0].slice(1, 4)], [200, 'My-App', ['-h', '-t', '=My-App:']]);
+    const b = await spawnAgent(req(w, { name: 'below', parent: '%1', under: '%7' }), w.ctx(exec));
+    assert.deepEqual([b.status, b.body.session, exec.of('split-window')[1].slice(1, 4)], [200, 'other', ['-v', '-t', '%7']]);
+    assert.deepEqual(tags(exec, '%21'), ['agent', 'below', '2', '%1']); // still the adopted orchestrator's child
+    // a session the project does not have is still 404, even though the parent's own session exists
+    await refuse(w, [ADOPTED(w)], { parent: '%1', session: 'My-App' }, 404, 'not_found');
+  });
+
+  test('(−) a parent session name that is not a valid TMUX_SESSION falls back to the project\'s session (404 when it has no pane, beside it when it has)', async () => {
+    const w = await world();
+    for (const session of ['my work', '-t', 'a:b', '']) {
+      await refuse(w, [ADOPTED(w, { session })], { parent: '%1' }, 404, 'not_found');
+      const exec = fakeTmux({ panes: [ADOPTED(w, { session }), { id: '%9', session: 'My-App', window: 0, windowName: 'zsh', command: 'zsh' }] });
+      const r = await spawnAgent(req(w, { name: `ok-${session.length}`, parent: '%1' }), w.ctx(exec));
+      assert.deepEqual([r.status, r.body.session], [200, 'My-App'], JSON.stringify(session));
+      assert.deepEqual(exec.of('split-window')[0].slice(1, 4), ['-h', '-t', '=My-App:']);
+    }
+  });
+
   test('(−) role orchestrator under a sub-orchestrator → 409 depth', async () => {
     const w = await world();
     const r = await refuse(w, [MAIN(w), SUB(w)], { name: 'deeper', role: 'orchestrator', parent: '%2' }, 409, 'depth');

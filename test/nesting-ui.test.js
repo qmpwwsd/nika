@@ -777,6 +777,19 @@ describe('the spawn sheet: the request and the toasts (design 3)', () => {
     assert.equal(body.model, 'claude-fable-1');
   });
 
+  test('(+) the header button end to end: click Spawn sub-orchestrator, fill the sheet, submit; the request is exactly role orchestrator under the main orchestrator\'s pane', async () => {
+    const r = projRig({ answers: { 'POST /api/app/spawn': READY } });
+    r.api.groupActions(r.g, { primary: 'spawn', sub: true })[2].fire('click'); // the page's own button, not openSpawn called by the test
+    assert.equal(r.opened.length, 1);
+    r.node('#sp-brief').value = 'Plan the API work and split it between agents.';
+    r.node('#dlg-spawn').open = true;
+    await r.api.submitSpawn({ preventDefault() {} });
+    await settle();
+    assert.equal(r.posts().length, 1);
+    assert.deepEqual(r.posts()[0].json, { project: KEY, name: 'lead-1', model: 'claude-fable-1', brief: 'Plan the API work and split it between agents.', role: 'orchestrator', parent: '%1' });
+    assert.equal(r.last().msg, 'Spawned sub-orchestrator lead-1 under planner in pane %9');
+  });
+
   test('(+) under a sub-orchestrator: parent is the sub-orchestrator\'s pane', async () => {
     const r = await run({ parent: subRow() });
     assert.equal(r.posts()[0].json.parent, '%2');

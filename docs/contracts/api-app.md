@@ -552,7 +552,11 @@ A one-word `brief` (no whitespace once trimmed) → 400 `brief must be more than
 prompt after `--`, and a lone `update` or `doctor` could be read as a subcommand; `_run-agent` refuses a stored one-word
 brief too (exit 3). `permissionMode` defaults to settings; `bypassPermissions` → 400. `rc` overrides the Remote Control setting for this
 agent. `under`: split `-v` below that pane (unknown pane → 404, pane in another session than `session` → 400; the
-response `session` is the pane's session). Response:
+response `session` is the pane's session). With neither `under` nor `session`, a spawn under a `parent` (see Nesting) opens beside that
+parent, in the parent's own tmux session (read from the tags listing, and only when the name is a valid `TMUX_SESSION`), so an orchestrator
+adopted from the user's own tmux session keeps its children with it; an explicit `under` or `session` always wins, and with no parent, or a
+parent session name that is not valid, the project's session is used as before (no pane there → 404 `tmux session <name> not found`,
+nothing started). Response:
 ```json
 { "pane": "%12", "session": "<tmux session>", "sessionId": "<UUID>", "reports": { "dir": "<stateDir>/projects/<key>/reports",
   "session": "<name>.session", "report": "<name>.md", "rc": "<name>.rc", "remote": "<name>.remote" } }
@@ -616,11 +620,17 @@ The window shows the matching text once, only for exactly one `notice` that equa
 and removes the parameter (`history.replaceState`). The texts are constants of the window, never taken from the address. When there
 is no usable link the page stays, and its own toast carries the text.
 
-Without a saved orchestrator: no session → `new-session` whose first window (`orchestrator`) runs claude. Existing session
-(`has-session -t =<name>`) → its orchestrator is returned when one exists (`created: false`, `sessionId: null` unless nika started
-or adopted it in this process): the pane tagged `orchestrator` in the window named `orchestrator`, else (0.4) a pane tagged
-`orchestrator` anywhere in the session that runs claude (an adopted one); otherwise a `new-window -n orchestrator` is added. The UI
-opens the session window with `sessionId`.
+Without a saved orchestrator (never saved, or cleared with Stop using), the server first looks for the project's main orchestrator in
+every tmux session (`list-panes -a`, §8) and answers it when it exists (`created: false`, `session` = that pane's session, `sessionId:
+null` unless nika started or adopted it in this process, so a CLI start never opens a second main orchestrator beside one the user adopted
+in their own session). It is the pane tagged `orchestrator` that runs claude in the window named `orchestrator` of the project's session
+(a 0.3 pane with no `@nika-agent` tag counts there), else (0.4) a pane tagged `orchestrator` with `@nika-agent <key>/orchestrator` for this
+project that runs claude, in any session (an adopted one). A sub-orchestrator, an agent, a tag of another project and a pane that no longer
+runs claude never match. Otherwise: no session of the project (`has-session -t =<name>`) → `new-session` whose first window
+(`orchestrator`) runs claude; the session exists → a `new-window -n orchestrator` is added. The UI opens the session window with `sessionId`.
+The answer's `session` is the pane's real tmux session name (display only, through `clean()`); `nika orchestrate` targets it with
+`=<name>:` (switch-client) or `=<name>` (attach-session) only when it matches `TMUX_SESSION`, else with the pane id (`-t %n`, tmux
+resolves it to that pane's session), else exits 1 ("cannot attach: …") and runs nothing.
 
 ### Rules
 
@@ -830,7 +840,7 @@ multi-argument shell-commands (tmux execs them directly, no `sh -c`, T6).
 | adopt a live session as orchestrator (0.4) | `tmux -u set-option -p -t %n @nika-role orchestrator`, then `@nika-agent <PROJECT_KEY>/orchestrator`, then `@nika-depth 1` (`PUT …/orchestrator`; the depth is a constant 1, 2 or 3, never request data) |
 | resume the orchestrator (0.4) | the orchestrator argv above (the same `-e` pairs) with `--resume <UUID>` instead of `--session-id <UUID>`; the UUID is the stored pick |
 | tags of a spawn | `tmux -u list-panes -a -F #{pane_id}\t#{@nika-role}\t#{@nika-agent}\t#{@nika-depth}\t#{@nika-parent}\t#{session_name}\t#{window_name}` (one fresh listing per spawn; the names are last because they are free text) → (1) the requested parent's role and depth (`POST /spawn`, "Nesting"), and (2) the live set: the panes with `@nika-role` = `agent` or `sub-orchestrator` whose `@nika-agent` is `<key>/<name>` for the project's key, for the duplicate-name check and the two caps. A tag is parsed strictly (exactly one `/`, `PROJECT_KEY` before it, `AGENT_NAME` after it; a depth is exactly `1`, `2` or `3`; a parent is a `PANE_ID`); anything else is agent-writable noise and is ignored, never trusted |
-| find orchestrator pane | `tmux -u list-panes -s -t =<session> -F #{pane_id}\t#{pane_current_command}\t#{@nika-role}\t#{@nika-agent}\t#{window_name}` (`-s` = every window of the session; 0.4) → the pane with `@nika-role` = `orchestrator` whose command is claude (`claude`, `node` or a version string) and which is the project's main one: tagged `<key>/orchestrator`, or a 0.3 pane with no `@nika-agent` tag in the window named exactly `orchestrator`. One in the window named `orchestrator` wins, else an adopted tagged pane in another window; agent and sub-orchestrator panes, and a tag of another project, never match |
+| find orchestrator pane | `tmux -u list-panes -a -F #{pane_id}\t#{pane_current_command}\t#{@nika-role}\t#{@nika-agent}\t#{session_name}\t#{window_name}` (`-a` = every session, 0.4; a failing listing, e.g. no server, means none) → the pane with `@nika-role` = `orchestrator` whose command is claude (`claude`, `node` or a version string) and which is the project's main one: tagged `<key>/orchestrator` in any session, or a 0.3 pane with no `@nika-agent` tag in the project's session, window named exactly `orchestrator`. One in the window named `orchestrator` of the project's session wins, else a tagged pane in any other window or session; agent and sub-orchestrator panes, and a tag of another project, never match |
 | spawn beside | `tmux -u split-window -h -t =<session>: -c <projectDir> -P -F #{pane_id} -- <nikaBin…> _run-agent <key> <name>` |
 | spawn under last | `tmux -u split-window -v -t <lastPane> -c <projectDir> -P -F #{pane_id} -- <nikaBin…> _run-agent <key> <name>` |
 | pane title | `tmux -u select-pane -t %n -T [%n] <name>` |

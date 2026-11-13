@@ -36,7 +36,9 @@ a big job can be split without one orchestrator holding every brief. Three thing
   as "you", which let an honestly tagged sub-orchestrator of project A spawn into project B at depth 1 with `--project`.) A page request naming a pane that is not in the listing is 404 `not_found`; for the CLI a stale
   `$TMUX_PANE` is "you". The name `orchestrator` is reserved, so an agent's tag can never take the main orchestrator's form.
   The depth is never read from the request, argv, env or a file; the parent's
-  `@nika-depth` is only a consistency check.
+  `@nika-depth` is only a consistency check. With no `under` or `session` in the request, a child opens beside its parent, in the
+  parent's own tmux session (a valid `TMUX_SESSION` name, else the project's session as before), so an orchestrator adopted from the
+  user's own tmux session keeps its children with it.
 - **Limits.** `N = limits.maxAgents` (1–8), now read as "agents per orchestrator". The live set is the panes in any tmux
   session with role `agent` or `sub-orchestrator` and an `@nika-agent` tag for this project, plus the panes this process
   started. The per-project cap is `min(3 × N, 24)`; the per-parent cap is `N` live entries with the same `@nika-parent` (for

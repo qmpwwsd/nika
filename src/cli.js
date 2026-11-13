@@ -15,7 +15,7 @@ import { createServer } from './server.js';
 import { clean, cleanBlock } from './text.js';
 import { configDir, stateDir, backupsRoot } from './paths.js';
 import { openRegular, readAt } from './fsafe.js';
-import { PROJECT_KEY, PANE_ID } from './ids.js';
+import { PROJECT_KEY, PANE_ID, TMUX_SESSION } from './ids.js';
 import { addProject, listProjects, loadConfig, removeProject } from './store.js';
 import { rulesState, preview as rulesPreview, apply as rulesApply } from './rules.js';
 import { spawnAgent, runAgent } from './spawn.js';
@@ -548,6 +548,17 @@ async function spawnCmd(rest, cx) {
   return 0;
 }
 
+/**
+ * The `-t` target of the orchestrator's session for switch-client (`tail` ':') or attach-session (`tail` ''): the exact session
+ * (`=<name><tail>`) when the name is a valid TMUX_SESSION, else its pane id (tmux resolves `%n` to that pane's session; the session
+ * of an orchestrator adopted from the user's own tmux can be named anything), else nothing runs. Rules constraint 3.
+ */
+export function sessionTarget(o, tail) {
+  if (typeof o.session === 'string' && TMUX_SESSION.test(o.session)) return `=${o.session}${tail}`;
+  if (typeof o.pane === 'string' && PANE_ID.test(o.pane)) return o.pane;
+  throw new CliError("cannot attach: the orchestrator's tmux session name is not one nika can target", 1);
+}
+
 async function orchestrateCmd(rest, cx) {
   const { values, positionals } = parse(rest, { detached: B }, 1);
   const project = await findProject(positionals[0], cx);
@@ -556,15 +567,17 @@ async function orchestrateCmd(rest, cx) {
   cx.out.write(`session: ${clean(o.session, 60)}\npane: ${o.pane}\n${o.created ? 'started a new orchestrator' : 'the orchestrator is already running'}\n`);
   if (values.detached || !cx.out.isTTY) return 0;
   if (cx.env.TMUX) {
+    const target = sessionTarget(o, ':');
     try {
-      await ctx.exec(ctx.tmuxBin, ['-u', 'switch-client', '-t', `=${o.session}:`]);
+      await ctx.exec(ctx.tmuxBin, ['-u', 'switch-client', '-t', target]);
     } catch (err) {
       throw new CliError(`tmux switch-client failed: ${clean(String(err.stderr || err.message).trim().split('\n')[0], 200)}`, 1);
     }
     return 0;
   }
+  const target = sessionTarget(o, '');
   return new Promise((resolve) => {
-    const child = cx.spawn(ctx.tmuxBin, ['-u', 'attach-session', '-t', `=${o.session}`], { stdio: 'inherit', shell: false });
+    const child = cx.spawn(ctx.tmuxBin, ['-u', 'attach-session', '-t', target], { stdio: 'inherit', shell: false });
     child.once('error', (err) => {
       cx.err.write(`nika: cannot run tmux: ${clean(err.code ?? err.message, 100)}\n`);
       resolve(1);

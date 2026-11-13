@@ -18,8 +18,8 @@ after(() => worlds.forEach((w) => w.cleanup()));
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const claudeFlags = (argv) => argv.slice(argv.indexOf('--') + 2);
-// the one tmux listing findOrchestratorPane makes: every pane of the project's session with its window name
-const LIST_ORCH = [TMUX, '-u', 'list-panes', '-s', '-t', '=My-App', '-F', '#{pane_id}\t#{pane_current_command}\t#{@nika-role}\t#{@nika-agent}\t#{window_name}'];
+// the one tmux listing findOrchestratorPane makes: every pane of every session, with its tags, session and window name (last: free text)
+const LIST_ORCH = [TMUX, '-u', 'list-panes', '-a', '-F', '#{pane_id}\t#{pane_current_command}\t#{@nika-role}\t#{@nika-agent}\t#{session_name}\t#{window_name}'];
 const PICK = '11111111-1111-4111-8111-111111111111';
 const PICK_PANE = { id: '%8', session: 'other-session', command: 'claude' };
 /** ctx.findSession as src/model.js gives it: { agent, group } of one session, or null when nika has no transcript for it. */
@@ -66,6 +66,7 @@ describe('startOrchestrator: new session', () => {
     assert.match(r.body.sessionId, UUID);
     assert.deepEqual(exec.calls, [
       [TMUX, '-u', 'has-session', '-t', '=My-App'],
+      LIST_ORCH, // the session may not exist but the orchestrator may run in another one, so the listing is always read (here it fails: no server)
       [TMUX, '-u', 'new-session', '-d', '-s', 'My-App', '-n', 'orchestrator', '-c', w.project.dir, '-x', '200', '-y', '50',
         '-P', '-F', '#{pane_id}', '-e', 'CLAUDE_CODE_AUTO_COMPACT_WINDOW=400000', '-e', 'CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=84.2106', '--', CLAUDE,
         '--session-id', r.body.sessionId, '--model', 'claude-fable-5-1', '-n', 'My-App'],
@@ -316,13 +317,106 @@ describe('startOrchestrator: an adopted pane outside the orchestrator window', (
     }
   });
 
-  test('(−) a pane tagged orchestrator in another tmux session (even a longer name with the same prefix) is not this project\'s', async () => {
+  test('(−) in another tmux session (even a longer name with the same prefix) only a pane tagged for this project counts: another project\'s tag and a 0.3 pane with no tag do not', async () => {
+    for (const over of [{ session: 'My-App-2', agent: 'ffffffffffffffff/orchestrator' }, { session: 'My-App-2', agent: '', windowName: 'orchestrator' }]) {
+      const w = await world();
+      const exec = fakeTmux({ panes: [adopted(w, over)] });
+      const r = await startOrchestrator(w.project.key, w.ctx(exec));
+      assert.equal(r.body.created, true, JSON.stringify(over));
+      assert.equal(exec.of('new-session').length, 1);
+    }
+    const w = await world(); // this project's own tag, in a session whose name only shares the prefix: the adopted orchestrator itself (M1)
+    const r = await startOrchestrator(w.project.key, w.ctx(fakeTmux({ panes: [adopted(w, { session: 'My-App-2' })] })));
+    assert.deepEqual(r.body, { pane: '%6', session: 'My-App-2', sessionId: null, created: false });
+  });
+});
+
+describe('startOrchestrator: an orchestrator adopted in another tmux session (the pick was cleared with Stop using)', () => {
+  // adopting tags the user's own pane `<key>/orchestrator`; Stop using forgets the pick but the claude keeps running in `work`
+  const inWork = (w, over = {}) => ({ id: '%6', session: 'work', window: 2, windowName: 'main', command: 'claude', role: 'orchestrator', agent: `${w.project.key}/orchestrator`, depth: '1', ...over });
+  const nothingStarted = (exec) => {
+    for (const sub of ['new-session', 'new-window', 'set-option', 'split-window']) assert.equal(exec.of(sub).length, 0, sub);
+  };
+
+  test('(+) the adopted orchestrator still live in `work` is answered: that pane and session, created false, nothing started or tagged (argv snapshot)', async () => {
     const w = await world();
-    const exec = fakeTmux({ panes: [adopted(w, { session: 'My-App-2' })] });
+    const exec = fakeTmux({ panes: [inWork(w)] });
+    const ctx = w.ctx(exec);
+    const r = await startOrchestrator(w.project.key, ctx);
+    assert.deepEqual(r, { status: 200, body: { pane: '%6', session: 'work', sessionId: null, created: false } });
+    assert.deepEqual(exec.calls, [[TMUX, '-u', 'has-session', '-t', '=My-App'], LIST_ORCH]);
+    nothingStarted(exec);
+    assert.equal(ctx.started.size, 0);
+    assert.equal(await getOrchestrator(w.project.key, w.env), null, 'no pick is written for a pane nika did not start');
+  });
+
+  test('(+) the same with a project session that holds no orchestrator: still no second one', async () => {
+    const w = await world();
+    const exec = fakeTmux({ panes: [{ id: '%1', session: 'My-App', window: 0, windowName: 'zsh', command: 'zsh' }, inWork(w)] });
     const r = await startOrchestrator(w.project.key, w.ctx(exec));
-    assert.equal(r.body.created, true);
-    assert.equal(exec.of('new-session').length, 1);
-    assert.equal(exec.of('list-panes').length, 0, 'there is no session of that name to list');
+    assert.deepEqual([r.status, r.body.pane, r.body.session, r.body.created], [200, '%6', 'work', false]);
+    nothingStarted(exec);
+  });
+
+  test('(+) the pane in the `orchestrator` window of the project\'s own session wins over a tagged one in another session, whatever the listing order', async () => {
+    const w = await world();
+    const own = { id: '%3', session: 'My-App', window: 1, windowName: 'orchestrator', command: 'claude', role: 'orchestrator', agent: `${w.project.key}/orchestrator` };
+    for (const panes of [[inWork(w), own], [own, inWork(w)]]) {
+      const r = await startOrchestrator(w.project.key, w.ctx(fakeTmux({ panes: panes.map((p) => ({ ...p })) })));
+      assert.deepEqual([r.body.pane, r.body.session, r.body.created], ['%3', 'My-App', false]);
+    }
+    // a window named `orchestrator` in ANOTHER session earns no such preference
+    const other = inWork(w, { id: '%7', session: 'zz', windowName: 'orchestrator' });
+    for (const panes of [[other, own], [own, other]]) {
+      const r = await startOrchestrator(w.project.key, w.ctx(fakeTmux({ panes: panes.map((p) => ({ ...p })) })));
+      assert.deepEqual([r.body.pane, r.body.session], ['%3', 'My-App']);
+    }
+  });
+
+  test('(−) an orchestrator of ANOTHER project in another session is not taken: a new orchestrator starts', async () => {
+    const w = await world();
+    for (const agent of ['ffffffffffffffff/orchestrator', 'ffffffffffffffff/planner', `${w.project.key}/planner`, `${w.project.key}`, '']) {
+      const exec = fakeTmux({ panes: [inWork(w, { agent })] });
+      const r = await startOrchestrator(w.project.key, w.ctx(exec));
+      assert.deepEqual([r.body.created, r.body.session, exec.of('new-session').length], [true, 'My-App', 1], JSON.stringify(agent));
+      await setOrchestrator(w.project.key, null, w.env); // each start saves its own session as the pick
+    }
+  });
+
+  test('(−) a sub-orchestrator is never taken, in any session, whatever its tag says', async () => {
+    const w = await world();
+    for (const over of [{ role: 'sub-orchestrator', agent: `${w.project.key}/orchestrator`, depth: '2', parent: '%1' }, { role: 'sub-orchestrator', agent: `${w.project.key}/planner`, depth: '2', parent: '%1' }, { role: 'agent' }, { role: '' }, { role: 'Orchestrator' }]) {
+      const exec = fakeTmux({ panes: [inWork(w, over)] });
+      const r = await startOrchestrator(w.project.key, w.ctx(exec));
+      assert.deepEqual([r.body.created, r.body.pane !== '%6', exec.of('new-session').length], [true, true, 1], JSON.stringify(over));
+      await setOrchestrator(w.project.key, null, w.env);
+    }
+  });
+
+  test('(−) a tagged pane in another session that no longer runs claude is not taken', async () => {
+    const w = await world();
+    for (const command of ['zsh', 'vim', '']) {
+      const exec = fakeTmux({ panes: [inWork(w, { command })] });
+      assert.equal((await startOrchestrator(w.project.key, w.ctx(exec))).body.created, true, JSON.stringify(command));
+      await setOrchestrator(w.project.key, null, w.env);
+    }
+  });
+
+  test('(−) the 0.3 rule (no tag, window `orchestrator`) holds only in the project\'s own session', async () => {
+    const w = await world();
+    const legacyElsewhere = fakeTmux({ panes: [{ id: '%3', session: 'work', window: 1, windowName: 'orchestrator', command: 'claude', role: 'orchestrator' }] });
+    assert.equal((await startOrchestrator(w.project.key, w.ctx(legacyElsewhere))).body.created, true);
+    const v = await world();
+    const legacyHere = fakeTmux({ panes: [{ id: '%3', session: 'My-App', window: 1, windowName: 'orchestrator', command: 'claude', role: 'orchestrator' }] });
+    assert.deepEqual((await startOrchestrator(v.project.key, v.ctx(legacyHere))).body, { pane: '%3', session: 'My-App', sessionId: null, created: false });
+  });
+
+  test('(−) tmux not installed is still a 503 from the listing; no server running is just "no orchestrator" (a new session starts)', async () => {
+    const w = await world();
+    assert.equal((await startOrchestrator(w.project.key, w.ctx(fakeTmux({ enoent: true })))).status, 503);
+    const v = await world();
+    const exec = fakeTmux();
+    assert.deepEqual([(await startOrchestrator(v.project.key, v.ctx(exec))).body.created, exec.of('new-session').length], [true, 1]);
   });
 });
 
@@ -386,6 +480,7 @@ describe('startOrchestrator: the saved orchestrator (the project\'s pick)', () =
     assert.deepEqual(r, { status: 200, body: { pane: '%20', session: 'My-App', sessionId: PICK, created: true } });
     assert.deepEqual(exec.calls, [
       [TMUX, '-u', 'has-session', '-t', '=My-App'],
+      LIST_ORCH,
       [TMUX, '-u', 'new-session', '-d', '-s', 'My-App', '-n', 'orchestrator', '-c', w.project.dir, '-x', '200', '-y', '50',
         '-P', '-F', '#{pane_id}', '-e', 'CLAUDE_CODE_AUTO_COMPACT_WINDOW=400000', '-e', 'CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=84.2106', '--', CLAUDE,
         '--resume', PICK, '--model', 'opus', '--permission-mode', 'plan', '-n', 'My-App'],

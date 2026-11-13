@@ -10,7 +10,7 @@ import http from 'node:http';
 import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { main, COMMAND_NAMES } from '../src/cli.js';
+import { main, COMMAND_NAMES, sessionTarget } from '../src/cli.js';
 import { deniedTools } from '../src/spawn.js';
 import { reportsDir } from '../src/paths.js';
 import { listProjects, getOrchestrator, setOrchestrator } from '../src/store.js';
@@ -908,6 +908,68 @@ describe('orchestrate', () => {
     assert.equal(spawn.calls[0].opts.shell, false);
     const w2 = await world(); // a start saves its session as the pick: the second run needs a project of its own
     assert.equal((await cli(['orchestrate'], at(w2, { exec: tmuxExec([]), spawn: spawnLog(1), tty: true }))).code, 1, 'a failed attach is exit 1');
+  });
+
+  describe('an orchestrator adopted in the user\'s own tmux session (0.4): the target of switch-client and attach-session', () => {
+    // tagged `<key>/orchestrator` by the adopt route, running in a session of its own; the project's session does not exist
+    const adopted = (w, session) => [{ id: '%7', session, window: 0, windowName: 'main', command: 'claude', role: 'orchestrator', agent: `${w.project.key}/orchestrator`, depth: '1' }];
+    const inTmux = (w, extra) => at(w, { env: { ...w.cliEnv, TMUX: 'x,1,0' }, tty: true, ...extra });
+
+    test('(+) a valid session name keeps the exact session targets for both commands (the project\'s own session is pinned above)', async () => {
+      const w = await world();
+      const exec = tmuxExec(adopted(w, 'work'));
+      const spawn = spawnLog();
+      const r = await cli(['orchestrate'], inTmux(w, { exec, spawn }));
+      assert.equal(r.code, 0, r.err);
+      assert.match(r.out, /^session: work$/m);
+      assert.deepEqual(exec.calls.at(-1), [TMUX, '-u', 'switch-client', '-t', '=work:']);
+      assert.equal(exec.tmux.of('new-session').length + exec.tmux.of('new-window').length, 0, 'no second orchestrator');
+      const w2 = await world();
+      const out = spawnLog();
+      assert.equal((await cli(['orchestrate'], at(w2, { exec: tmuxExec(adopted(w2, 'work')), spawn: out, tty: true }))).code, 0);
+      assert.deepEqual(out.calls[0].args, ['-u', 'attach-session', '-t', '=work']);
+    });
+
+    test('(+) a session name nika cannot target (`my work`) is addressed by the pane id: both commands get -t %7, and the real name is still shown', async () => {
+      const w = await world();
+      const exec = tmuxExec(adopted(w, 'my work'));
+      const spawn = spawnLog();
+      const r = await cli(['orchestrate'], inTmux(w, { exec, spawn }));
+      assert.equal(r.code, 0, r.err);
+      assert.match(r.out, /^session: my work$/m);
+      assert.match(r.out, /^pane: %7$/m);
+      assert.deepEqual(exec.calls.at(-1), [TMUX, '-u', 'switch-client', '-t', '%7']);
+      assert.equal(spawn.calls.length, 0);
+      const w2 = await world();
+      const out = spawnLog();
+      assert.equal((await cli(['orchestrate'], at(w2, { exec: tmuxExec(adopted(w2, 'my work')), spawn: out, tty: true }))).code, 0);
+      assert.deepEqual(out.calls[0].args, ['-u', 'attach-session', '-t', '%7']);
+      assert.equal(out.calls[0].opts.shell, false);
+    });
+  });
+
+  describe('sessionTarget: what orchestrate hands to tmux (it runs before any exec or spawn call)', () => {
+    const NO_TARGET = { code: 1, message: "cannot attach: the orchestrator's tmux session name is not one nika can target" };
+
+    test('(+) a valid session name gives the exact target (`=<name>:` for switch-client, `=<name>` for attach-session), whatever the pane', () => {
+      assert.equal(sessionTarget({ session: 'My-App', pane: '%3' }, ':'), '=My-App:');
+      assert.equal(sessionTarget({ session: 'My-App', pane: '%3' }, ''), '=My-App');
+      assert.equal(sessionTarget({ session: 'work_2', pane: undefined }, ':'), '=work_2:');
+    });
+
+    test('(+) a session name that is not a TMUX_SESSION (space, leading dash, colon, empty, too long, not a string) falls back to a valid pane id, for both commands', () => {
+      for (const session of ['my work', '-t', 'a:b', '', 'x'.repeat(49), 'é', undefined, null, 5]) {
+        for (const tail of [':', '']) assert.equal(sessionTarget({ session, pane: '%7' }, tail), '%7', JSON.stringify(session));
+      }
+    });
+
+    test('(−) an invalid session name and an invalid pane id: CliError exit 1, no target', () => {
+      for (const session of ['my work', '', undefined]) {
+        for (const pane of ['7', '%', '%x', '%1234567', '%7;%8', '-t', '', undefined, null, 7]) {
+          for (const tail of [':', '']) assert.throws(() => sessionTarget({ session, pane }, tail), NO_TARGET, `${JSON.stringify(session)} ${JSON.stringify(pane)}`);
+        }
+      }
+    });
   });
 
   test('(+) a running orchestrator is reused', async () => {

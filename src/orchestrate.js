@@ -134,32 +134,32 @@ async function unsetCompactEnv(ctx, session, run) {
   }
 }
 
-// every pane of the project's tmux session, with its window: the pane's own record of who started it (`@nika-role`, `@nika-agent`)
-const PANE_LIST = '#{pane_id}\t#{pane_current_command}\t#{@nika-role}\t#{@nika-agent}\t#{window_name}';
+// every pane of every tmux session: the pane's own record of who started it (`@nika-role`, `@nika-agent`), then the session and window
+// names (free text, so last)
+const PANE_LIST = '#{pane_id}\t#{pane_current_command}\t#{@nika-role}\t#{@nika-agent}\t#{session_name}\t#{window_name}';
 
 /**
- * Pane of the project's main orchestrator in the tmux session that runs claude, or null. Only `@nika-role` orchestrator counts
- * (a sub-orchestrator or an agent never does). It is either tagged `<key>/orchestrator` for this project (the 0.4 tag, set on start,
- * resume and adopt; any window of the session), or it is a 0.3 pane with no `@nika-agent` tag in the window named `orchestrator`. The one
- * in the `orchestrator` window wins over an adopted one. A tag of another project or another name never matches.
+ * Pane of the project's main orchestrator, `{ id, session }`, or null. Only `@nika-role` orchestrator running claude counts (a
+ * sub-orchestrator or an agent never does). It is either tagged `<key>/orchestrator` for this project (the 0.4 tag, set on start, resume
+ * and adopt) in any session, or it is a 0.3 pane with no `@nika-agent` tag in the project's own `session`, window `orchestrator`. That one,
+ * or a tagged pane in the `orchestrator` window of `session`, wins over an adopted one. A tag of another project or another name never matches.
  */
 async function findOrchestratorPane(ctx, session, key) {
   let stdout;
   try {
-    // `=<session>` is an exact session match; `-s` lists every window of it
-    ({ stdout } = await tmux(ctx, 'list-panes', '-s', '-t', `=${session}`, '-F', PANE_LIST));
+    ({ stdout } = await tmux(ctx, 'list-panes', '-a', '-F', PANE_LIST));
   } catch (err) {
     if (err?.code === 'ENOENT') throw err;
-    return null;
+    return null; // no tmux server running: no orchestrator
   }
   let adopted = null;
   for (const line of String(stdout).split('\n')) {
-    const [id, command = '', role = '', tag = '', window = ''] = line.split('\t');
+    const [id, command = '', role = '', tag = '', where = '', ...window] = line.split('\t');
     if (!PANE_ID.test(id ?? '') || role.trim() !== 'orchestrator' || !CLAUDE_COMMAND.test(command.trim())) continue;
-    const legacy = tag === '' && window.trim() === 'orchestrator';
-    if (!legacy && tag !== `${key}/orchestrator`) continue;
-    if (window.trim() === 'orchestrator') return id;
-    adopted ??= id;
+    const inOrchestratorWindow = where === session && window.join('\t').trim() === 'orchestrator';
+    if (tag !== `${key}/orchestrator` && !(tag === '' && inOrchestratorWindow)) continue;
+    if (inOrchestratorWindow) return { id, session: where };
+    adopted ??= { id, session: where };
   }
   return adopted;
 }
@@ -215,10 +215,9 @@ export async function startOrchestrator(projectKey, ctx) {
       if (err?.code === 'ENOENT') throw err;
       exists = false; // exit 1: no such session, or no server running at all
     }
-    if (exists) {
-      const pane = await findOrchestratorPane(ctx, session, project.key);
-      if (pane) return { status: 200, body: { pane, session, sessionId: ctx.started?.get(pane)?.sessionId ?? null, created: false, ...cleared } };
-    }
+    // any session: an orchestrator adopted from the user's own tmux session still runs after "Stop using" cleared the pick (M1)
+    const found = await findOrchestratorPane(ctx, session, project.key);
+    if (found) return { status: 200, body: { pane: found.id, session: found.session, sessionId: ctx.started?.get(found.id)?.sessionId ?? null, created: false, ...cleared } };
     const { stdout } = await tmux(ctx, ...(exists
       ? ['new-window', '-t', `=${session}:`, '-n', 'orchestrator', '-c', tmuxLiteral(project.dir), ...run]
       : ['new-session', '-d', '-s', session, '-n', 'orchestrator', '-c', tmuxLiteral(project.dir), '-x', '200', '-y', '50', ...run]));

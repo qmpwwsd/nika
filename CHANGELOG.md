@@ -38,6 +38,7 @@ Sub-orchestrators and limits:
   sub-orchestrator: nika answers "can't start a sub-orchestrator" (409 `depth`) and starts nothing. Only this project's
   orchestrator and its sub-orchestrators can start agents of the project: any other nika session, such as an agent or another
   project's orchestrator, is refused the same way. The name `orchestrator` is reserved for the main orchestrator.
+- Spawning under an orchestrator you adopted from your own tmux session opens the agent beside it.
 - A sub-orchestrator can run only `nika spawn` and `nika status`; the other nika commands are on its deny list (advisory, like
   the agents' list). It gets its own guard prompt, written for orchestrating.
 - **Limits per parent and per project.** **Agents per orchestrator** (Settings, 1 to 8) now bounds the agents and

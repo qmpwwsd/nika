@@ -1045,6 +1045,20 @@ describe('spawn and orchestrator', () => {
       assert.equal(r.exec.of('split-window').length, 1, 'only the first sub-orchestrator was started');
     });
 
+    test('(−) the 409 depth text reaches the page whole: for a role-agent parent and for another project\'s orchestrator, whatever role is asked; nothing is started', async () => {
+      const foreign = { id: '%50', session: 'My-App', window: 0, windowName: 'orchestrator', command: 'claude', role: 'orchestrator', agent: 'ffffffffffffffff/orchestrator', depth: '1' };
+      const r = await rigSpawn({}, (world) => [...agents(world, ['helper'], '%1'), foreign]);
+      const text = (who) => `${who} can't start agents for this project: only this project's orchestrator and its sub-orchestrators can. Nothing was started.`;
+      for (const role of ['agent', 'orchestrator']) {
+        for (const [parent, who] of [['%40', 'helper'], ['%50', 'orchestrator']]) {
+          const res = await r.post({ name: 'child', role, parent });
+          assert.deepEqual([res.status, res.body], [409, { error: 'depth', message: text(who) }], `${role} under ${parent}`);
+        }
+      }
+      assert.equal(r.exec.of('split-window').length, 0);
+      assert.equal(r.exec.of('set-option').length, 0);
+    });
+
     test('(−) a 409 limit body carries { scope, running, max }: parent, then project', async () => {
       const r = await rigSpawn({ limits: { maxAgents: 2 } }, (world) => agents(world, ['a', 'b'], '%1'));
       const parent = await r.post({ name: 'c', parent: '%1' });

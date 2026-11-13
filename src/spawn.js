@@ -172,10 +172,6 @@ async function doSpawn(v, project, config, ctx) {
   const underPane = v.under ? panes.get(v.under) : null;
   if (v.under && !underPane) return fail(404, 'not_found', 'under pane not found');
   if (underPane && v.session && underPane.session !== v.session) return fail(400, 'invalid', 'under pane is in another tmux session');
-  const session = v.session ?? underPane?.session ?? sessionNameFor(project);
-  if (!underPane && ![...panes.values()].some((p) => p.session === session)) {
-    return fail(404, 'not_found', `tmux session ${session} not found (start the orchestrator first)`);
-  }
 
   const dir = reportsDir(project.key, ctx.env);
   let tags;
@@ -186,6 +182,13 @@ async function doSpawn(v, project, config, ctx) {
   }
   const who = resolveParent(v, project, tags, ctx);
   if (who.failure) return who.failure;
+  // With nothing asked for, the agent opens beside its parent, so an orchestrator adopted from the user's own tmux session keeps its
+  // children with it; a parent session name that is not a valid TMUX_SESSION is not used (today's rule: the project's session).
+  const parentSession = who.parent ? tags.get(who.parent)?.session : undefined;
+  const session = v.session ?? underPane?.session ?? (TMUX_SESSION.test(parentSession ?? '') ? parentSession : sessionNameFor(project));
+  if (!underPane && ![...panes.values()].some((p) => p.session === session)) {
+    return fail(404, 'not_found', `tmux session ${session} not found (start the orchestrator first)`);
+  }
   const live = liveAgents(ctx, project.key, tags, panes);
   if (live.some((e) => e.name === v.name)) return fail(409, 'conflict', `agent ${v.name} is already running`);
   // the project's cap first, then the parent's own: sub-orchestrators and agents count the same
