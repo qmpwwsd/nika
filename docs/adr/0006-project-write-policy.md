@@ -16,6 +16,11 @@ Project root is the realpath taken at add time and re-checked; `rules` and `.cla
 directories; targets must be absent or regular, user-owned, single-link files; a `rules/orchestration.md` nika did not
 write needs the explicit overwrite flag. nika never runs git.
 
+Amendment 2026-11-13 (0.4.0): a fourth project file, `AGENTS.md`, gets the same `@rules/orchestration.md` line, only
+when it already exists, under the same checks. `CLAUDE.md` is created only when neither file exists, because Claude Code
+reads `AGENTS.md` only while there is no `CLAUDE.md`. A symlinked `AGENTS.md` is never followed: skipped beside an
+existing `CLAUDE.md`, refused when alone (`docs/templates.md`, T50).
+
 ## Alternatives
 - Writing to global `~/.claude/CLAUDE.md`: changes every project at once; owner wants per-project opt-in. Rejected.
 - Committing the change for the user: violates ORCHESTRATION §19. Rejected.

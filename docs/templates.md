@@ -1,7 +1,7 @@
 # Rules template
 
 "Apply rules" copies a generic orchestration rules file into a registered project and wires it into the project's
-`CLAUDE.md`. Code: `src/rules.js`, `src/diff.js`, `src/fwrite.js`. Contract: `docs/contracts/api-app.md` §3 and §9;
+`CLAUDE.md`, its `AGENTS.md`, or both. Code: `src/rules.js`, `src/diff.js`, `src/fwrite.js`. Contract: `docs/contracts/api-app.md` §3 and §9;
 write policy: ADR 0006.
 
 ## What gets written
@@ -11,14 +11,32 @@ Exactly these files, relative to the project folder (the realpath taken when the
 | File | Change |
 |---|---|
 | `rules/orchestration.md` | the rendered template, with a marker line (below) |
-| `CLAUDE.md` | created if missing; otherwise one line `@rules/orchestration.md` is appended (after a blank line) unless a line with exactly that text, ignoring surrounding spaces, is already there |
+| `CLAUDE.md` | one line `@rules/orchestration.md` is appended (after a blank line) unless a line with exactly that text, ignoring surrounding spaces, is already there; created only when neither `CLAUDE.md` nor `AGENTS.md` exists |
+| `AGENTS.md` | only when it already exists: the same one line, the same way. Never created |
 | `.claude/settings.local.json` | only `enabledPlugins` (below) |
 | `.gitignore` | optional, off by default: one line `.claude/settings.local.json` when the file is not already covered |
 
+Why `AGENTS.md` (0.4.0): Claude Code reads `AGENTS.md` only when the project has no `CLAUDE.md`. Creating a
+`CLAUDE.md` in a project that has only `AGENTS.md` would silently turn that file off, so nika writes the line into
+`AGENTS.md` instead. The cases:
+
+| The project has | nika writes the line into |
+|---|---|
+| only `CLAUDE.md`, or neither | `CLAUDE.md` (created when missing), as before 0.4.0 |
+| only `AGENTS.md` | `AGENTS.md`; no `CLAUDE.md` is created |
+| both | both |
+
+`AGENTS.md` goes through the same preview, hash check, backup and `verifyInside` as `CLAUDE.md`. A symlinked
+`AGENTS.md` beside a regular `CLAUDE.md` is left alone: the preview lists it as skipped ("AGENTS.md is a link; left as
+is") and only `CLAUDE.md` gets the line. A symlinked `AGENTS.md` with no `CLAUDE.md` is refused (`ESYMLINK`). If an
+`AGENTS.md` appears between the preview and the apply in a project where nika would create `CLAUDE.md`, the apply is
+refused and nothing is written. When your `CLAUDE.md` already imports `@AGENTS.md`, the rules line ends up in both files
+and the rules are imported twice; remove the line from one of them if you prefer.
+
 nika never runs git. Nothing is committed, staged or pushed. Folders it creates are 0755. File modes never widen: a file
 that exists keeps its mode with group and other write bits cleared (`mode & ~0o022`, so an existing 0600
-`settings.local.json` stays 0600 and a 0664 `CLAUDE.md` becomes 0644). A new `.claude/settings.local.json` is 0600; a new
-`rules/orchestration.md`, `CLAUDE.md` or `.gitignore` is 0644. Writes go through
+`settings.local.json` stays 0600 and a 0664 `CLAUDE.md` or `AGENTS.md` becomes 0644). A new `.claude/settings.local.json`
+is 0600; a new `rules/orchestration.md`, `CLAUDE.md` or `.gitignore` is 0644. Writes go through
 `checkComponents` → backup → `ensureDir` → `writeAtomic`. `rules/` and `.claude/` must be absent or real folders;
 targets must be absent or regular, user-owned files with one link. A symlink, hard link, FIFO or file-where-a-folder-should-be
 refuses the whole apply with the fwrite error code (`ESYMLINK`, `ENLINK`, `ENOTREG`, `ENOTDIR`); every check and backup
