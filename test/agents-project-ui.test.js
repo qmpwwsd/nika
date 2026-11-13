@@ -459,3 +459,14 @@ describe('app.css: the value menu', () => {
     for (const name of ROW_NAMES) assert.equal(rowOf(card, name).all(withClass('from-set'))[0]?.className, 'muted from-set', name);
   });
 });
+
+describe('index.html: Settings says a project can set its own', () => {
+  const html = read('index.html');
+  test('(+) the Permission mode and Panes and limits sections point at the project page', () => {
+    assert.match(html, /<p>What new agents may do without asking\. A project can set its own on its page \(New agents\), and you can override it per agent when you spawn one\.<\/p>/);
+    assert.match(html, /<h2 id="s-panes-h">Panes and limits<\/h2>\s*<p>Defaults for every project\. A project can set its own on its page \(New agents\)\.<\/p>/);
+  });
+  test('(−) Settings still offers no bypass mode', () => {
+    assert.doesNotMatch(html, /name="perm" value="bypassPermissions"/);
+  });
+});

@@ -169,7 +169,7 @@
 
               <section class="set-sec" id="s-perm" aria-labelledby="s-perm-h">
                 <h2 id="s-perm-h">Permission mode</h2>
-                <p>What new agents may do without asking. You can override it per agent when you spawn one.</p>
+                <p>What new agents may do without asking. A project can set its own on its page (New agents), and you can override it per agent when you spawn one.</p>
                 <fieldset><legend class="sr-only">Permission mode for new agents</legend>
                   <label class="radio-card"><input type="radio" name="perm" value="default"><span><b>Claude Code default (no flag)</b><span>nika passes no permission flag; Claude Code asks before the first use of each tool.</span></span></label>
                   <label class="radio-card"><input type="radio" name="perm" value="manual"><span><b>Manual: ask every time</b><span>Same behaviour as the default, passed explicitly as <code>--permission-mode manual</code>.</span></span></label>
@@ -183,6 +183,7 @@
 
               <section class="set-sec" id="s-panes" aria-labelledby="s-panes-h">
                 <h2 id="s-panes-h">Panes and limits</h2>
+                <p>Defaults for every project. A project can set its own on its page (New agents).</p>
                 <fieldset><legend>Where new agent panes open</legend>
                   <label class="radio-card"><input type="radio" name="place" value="beside"><span><b>Beside</b><span>A new pane to the right in the project's tmux window.</span></span></label>
                   <label class="radio-card"><input type="radio" name="place" value="under-last"><span><b>Under the last agent</b><span>Stacks below the most recently started agent pane.</span></span></label>

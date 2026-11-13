@@ -47,6 +47,14 @@ Orchestration (desktop app):
 - Settings: **Agents per project at once** is now **Agents per orchestrator**, with help on how the limits add up. The
   project page's **New agents** card lists the per-orchestrator limit, how many you have spawned from nika and how many
   the project runs, and says so when a limit is reached.
+- **New agents settings per project.** The project page's **New agents** card now sets this project's own **Permission
+  mode**, **Pane** and **Per orchestrator** limit: click a value to open its menu, then pick a value or **Use Settings**. A
+  value the project takes from Settings is marked "from Settings". nika uses them when it starts or resumes the project's
+  orchestrator, when it spawns an agent or sub-orchestrator in the project (the spawn sheet's first permission choice is
+  "Use this project's setting"), and in the project's `rules/orchestration.md` when you apply rules. A project's own
+  limit N also sets its project cap, min(3 × N, 24), and a limit refusal then points at the project's card instead of
+  Settings. `bypassPermissions` is refused for a project too, at the store, the API and spawn; a hand-edited
+  `config.json` with a bad value loses only that value, with a warning.
 - Remove project now says it also forgets the project's saved orchestrator.
 - `rules/orchestration.md` has a new **Sub-orchestrators** section (template version 2): apply rules to a project to get it.
 - Every orchestrator nika starts, resumes or adopts is now tagged for its project (`@nika-agent <key>/orchestrator`,
@@ -67,7 +75,8 @@ Models (desktop app):
 - nika uses these models when it starts or resumes the project's orchestrator, in the Roles table of `rules/orchestration.md`,
   and in the spawn sheet's Roles list (marked "(this project)"). Sessions that are already running keep their model, and the
   rules file changes only when you apply rules, so the toast after saving says so.
-- API: `PUT /api/app/projects/:key/config` takes exactly one of `{ plugins }` or `{ models }`, and `GET` returns both. See
+- API: `PUT /api/app/projects/:key/config` takes exactly one of `{ plugins }`, `{ models }`, `{ permissionMode }`,
+  `{ panePlacement }` or `{ maxAgents }` (`null` for the last three means "Use Settings"), and `GET` returns all five. See
   `docs/contracts/api-app.md`.
 
 Auto-compact (desktop app):
@@ -124,6 +133,7 @@ Fixes:
   per project, `--full` shows all of them. `--json` is unchanged.
 - The project page's **New agents** card shows the permission mode as a chip with its own colour, icon and short word
   (Default, Manual, Accept edits, Plan, Auto, Don't ask), like the session header, instead of a sentence.
+- The session window's permission-mode switcher no longer has a "Mode" word in front of it.
 - **Start and spawn without tmux running.** Spawn agent now creates the project's tmux session (first window `agents`) when
   no tmux server or no project session exists, instead of answering "tmux unavailable" or "start the orchestrator first".
   Start orchestrator, Resume and Spawn agent check one second after starting that Claude is still running; if it exited

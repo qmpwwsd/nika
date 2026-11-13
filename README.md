@@ -226,6 +226,10 @@ More: [docs/packaging.md](docs/packaging.md) (build details, signing, Linux pack
 - **Settings** (`Mod+,`). Appearance (System, Light, Dark) and the **Single-key shortcuts** switch, the model per role (a
   list of current models and aliases, or a custom ID), Remote Control, default permission mode and pane placement, the
   agent limit per orchestrator, **Auto-compact** and the rules template: defaults for every project. The Save and Discard bar appears only after a change; invalid fields are marked in place.
+- **New agents, per project.** The project page's **New agents** card shows the permission mode, pane placement and agent
+  limit this project's new sessions get. Click a value to pick this project's own, or **Use Settings** to follow the
+  default (marked "from Settings"). They apply to Start and Resume orchestrator, to Spawn agent and Spawn
+  sub-orchestrator, and to the rules file when you apply rules. `bypassPermissions` is not offered.
 - **Project setup.** On the project page, the **Project setup** card lists the plugins that project turns on and the models it sets for its roles; **Choose plugins…**
   opens a window to tick the plugins (filter, count, Save), **Choose models…** one to set a model per role. Plugins are written into the project's `.claude/settings.local.json` when you apply rules.
 - **Keyboard.** `Mod+1` dashboard, `Mod+,` settings, `Mod+O` add project, `Mod+F` filter, `Mod+[` (macOS) or `Alt+Left`
@@ -270,7 +274,7 @@ The browser dashboard at `http://127.0.0.1:3335` shows the same list without any
   <img src="docs/screenshots/settings-light.png" alt="The Settings screen with the model for each role, the Auto-compact setting (on, at 80 % of 400k, with the result line under it) and Remote Control.">
 </picture>
 
-**Settings.** The model for each role, Auto-compact and Remote Control. The permission mode for new agents, the agent limit per orchestrator and the rules template are further down; plugins and per-project models are chosen on each project's page.
+**Settings.** The model for each role, Auto-compact and Remote Control. The permission mode for new agents, the agent limit per orchestrator and the rules template are further down; plugins, per-project models and a project's own permission mode, pane placement and agent limit are chosen on each project's page.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/spawn-dark.png">
