@@ -389,113 +389,204 @@ describe('preview', () => {
   });
 });
 
-describe('AGENTS.md (G5): nika never writes it; a lone AGENTS.md gets a new CLAUDE.md that imports it', () => {
+describe('AGENTS.md and CLAUDE.md (G7): both carry the rules import, and Claude loads it once', () => {
   const AGENTS_LINE = '@AGENTS.md';
-  const BOTH = `${AGENTS_LINE}\n${IMPORT}\n`;
+  const VIA = 'Gets the rules through @AGENTS.md.';
   /** What must stay the same for a file nika must not touch: type, inode, mtime, size, mode, content or link target. */
   const identity = (w, rel = 'AGENTS.md') => {
     const p = path.join(w.dir, rel);
     const st = fs.lstatSync(p);
     return { ino: st.ino, mtimeMs: st.mtimeMs, size: st.size, mode: st.mode, link: st.isSymbolicLink() ? fs.readlinkSync(p) : fs.readFileSync(p, 'latin1') };
   };
+  const shape = (body) => body.files.map((f) => [f.path, f.action]);
+  const outsideFile = (w) => {
+    fs.mkdirSync(path.join(w.base, 'outside'));
+    const f = path.join(w.base, 'outside', 'secret.txt');
+    fs.writeFileSync(f, 'SECRET');
+    return f;
+  };
 
-  test('(+) only AGENTS.md: a new CLAUDE.md imports it and the rules; AGENTS.md is not listed, not written, not backed up', async () => {
+  test('(+) only AGENTS.md: it gets the import, a new CLAUDE.md is just @AGENTS.md, AGENTS.md is written before CLAUDE.md and backed up', async () => {
     const w = await world();
-    put(w, 'AGENTS.md', '# acme-api agents\n\nRun npm test.\n');
-    const before = identity(w);
+    const original = '# acme-api agents\n\nRun npm test.\n';
+    put(w, 'AGENTS.md', original);
+    fs.chmodSync(path.join(w.dir, 'AGENTS.md'), 0o664);
     const body = await prev(w);
-    assert.deepEqual(body.files.map((f) => [f.path, f.action]), [['rules/orchestration.md', 'create'], ['CLAUDE.md', 'create'], ['.claude/settings.local.json', 'unchanged']]);
-    assert.equal(entry(body, 'AGENTS.md'), undefined);
-    assert.equal(entry(body, 'CLAUDE.md').diff, ['--- a/CLAUDE.md', '+++ b/CLAUDE.md', '@@ -0,0 +1,2 @@', `+${AGENTS_LINE}`, `+${IMPORT}`, ''].join('\n'));
+    assert.deepEqual(shape(body), [['rules/orchestration.md', 'create'], ['AGENTS.md', 'update'], ['CLAUDE.md', 'create'], ['.claude/settings.local.json', 'unchanged']]);
+    const a = entry(body, 'AGENTS.md');
+    assert.match(a.diff, /^--- a\/AGENTS\.md\n\+\+\+ b\/AGENTS\.md\n@@ /);
+    assert.match(a.diff, /^\+@rules\/orchestration\.md$/m, 'the diff adds the import line');
+    assert.equal(entry(body, 'CLAUDE.md').diff, `--- a/CLAUDE.md\n+++ b/CLAUDE.md\n@@ -0,0 +1 @@\n+${AGENTS_LINE}\n`);
+    for (const f of body.files) assert.equal('note' in f, false, `${f.path}: a note only on a skipped or via-AGENTS.md entry`);
+
     const r = await go(w, body);
-    assert.deepEqual([r.status, r.body.written], [200, ['rules/orchestration.md', 'CLAUDE.md']]);
-    assert.equal(get(w, 'CLAUDE.md'), BOTH);
+    assert.deepEqual([r.status, r.body.written], [200, ['rules/orchestration.md', 'AGENTS.md', 'CLAUDE.md']], 'AGENTS.md lands before CLAUDE.md');
+    assert.equal(get(w, 'AGENTS.md'), `${original}\n${IMPORT}\n`);
+    assert.equal(get(w, 'CLAUDE.md'), `${AGENTS_LINE}\n`);
+    assert.equal(mode(path.join(w.dir, 'AGENTS.md')), 0o644, 'group write dropped like any target');
     assert.equal(mode(path.join(w.dir, 'CLAUDE.md')), 0o644);
-    assert.deepEqual(identity(w), before, 'AGENTS.md: same bytes, inode and mtime');
-    assert.equal(get(w, 'AGENTS.md'), '# acme-api agents\n\nRun npm test.\n');
-    assert.equal(fs.existsSync(path.join(r.body.backupDir, 'AGENTS.md')), false, 'nothing to back up for a file nika never writes');
-    assert.deepEqual(Object.keys(snapshot(w.dir)).sort(), ['AGENTS.md', 'CLAUDE.md', 'rules/', 'rules/orchestration.md']);
-    // idempotent: the second round has nothing to do and CLAUDE.md keeps both lines exactly once
+    assert.equal(fs.readFileSync(path.join(r.body.backupDir, 'AGENTS.md'), 'utf8'), original, 'byte-for-byte backup outside the repo');
+    assert.equal(r.body.backupDir.startsWith(w.base), true);
+    assert.equal(fs.existsSync(path.join(r.body.backupDir, 'CLAUDE.md')), false, 'a new file has nothing to back up');
+
+    // idempotent: CLAUDE.md imports AGENTS.md, which has the import, so the rules load once and nothing is left to do
     const again = await prev(w);
-    assert.deepEqual(again.files.map((f) => f.action), ['unchanged', 'unchanged', 'unchanged']);
+    assert.deepEqual(shape(again), [['rules/orchestration.md', 'unchanged'], ['AGENTS.md', 'unchanged'], ['CLAUDE.md', 'unchanged'], ['.claude/settings.local.json', 'unchanged']]);
+    assert.equal(entry(again, 'CLAUDE.md').note, VIA);
     assert.deepEqual((await go(w, again)).body.written, []);
-    assert.equal(get(w, 'CLAUDE.md'), BOTH);
-    assert.deepEqual(identity(w), before);
+    assert.equal(get(w, 'AGENTS.md'), `${original}\n${IMPORT}\n`);
+    assert.equal(get(w, 'CLAUDE.md'), `${AGENTS_LINE}\n`);
   });
 
-  test('(+) CLAUDE.md beside AGENTS.md: only CLAUDE.md gets the line, AGENTS.md is not listed and stays as it is', async () => {
-    for (const [claude, expected] of [['# web-shop\n', `# web-shop\n\n${IMPORT}\n`], ['@AGENTS.md\n', `@AGENTS.md\n\n${IMPORT}\n`], [BOTH, BOTH]]) {
+  test('(+) both files and CLAUDE.md does not import AGENTS.md: both get the import, AGENTS.md first', async () => {
+    const w = await world();
+    put(w, 'CLAUDE.md', '# web-shop\n');
+    put(w, 'AGENTS.md', 'Agents read this.');
+    const body = await prev(w);
+    assert.deepEqual(shape(body), [['rules/orchestration.md', 'create'], ['AGENTS.md', 'update'], ['CLAUDE.md', 'update'], ['.claude/settings.local.json', 'unchanged']]);
+    for (const f of body.files) assert.equal('note' in f, false, f.path);
+    const r = await go(w, body);
+    assert.deepEqual(r.body.written, ['rules/orchestration.md', 'AGENTS.md', 'CLAUDE.md']);
+    assert.equal(get(w, 'AGENTS.md'), `Agents read this.\n\n${IMPORT}\n`);
+    assert.equal(get(w, 'CLAUDE.md'), `# web-shop\n\n${IMPORT}\n`);
+    assert.equal(fs.readFileSync(path.join(r.body.backupDir, 'AGENTS.md'), 'utf8'), 'Agents read this.');
+    assert.equal(fs.readFileSync(path.join(r.body.backupDir, 'CLAUDE.md'), 'utf8'), '# web-shop\n');
+    const again = await prev(w);
+    assert.deepEqual(again.files.map((f) => f.action), ['unchanged', 'unchanged', 'unchanged', 'unchanged']);
+    assert.deepEqual((await go(w, again)).body.written, []);
+  });
+
+  test('(+) both files and CLAUDE.md imports @AGENTS.md (or @./AGENTS.md): AGENTS.md gets the import, CLAUDE.md is left byte for byte with a note', async () => {
+    const claudes = [`# web-shop\n\n${AGENTS_LINE}\n`, '@./AGENTS.md\n', `# web-shop\r\n  ${AGENTS_LINE}  \r\n`, AGENTS_LINE, `${AGENTS_LINE}\n${IMPORT}\n`];
+    for (const claude of claudes) {
       const w = await world();
       put(w, 'CLAUDE.md', claude);
-      put(w, 'AGENTS.md', 'Agents read this.');
-      const before = identity(w);
+      put(w, 'AGENTS.md', '# acme-api agents\n');
+      const before = identity(w, 'CLAUDE.md');
       const body = await prev(w);
-      assert.deepEqual(body.files.map((f) => f.path), ['rules/orchestration.md', 'CLAUDE.md', '.claude/settings.local.json'], JSON.stringify(claude));
+      assert.deepEqual(shape(body), [['rules/orchestration.md', 'create'], ['AGENTS.md', 'update'], ['CLAUDE.md', 'unchanged'], ['.claude/settings.local.json', 'unchanged']], JSON.stringify(claude));
+      assert.deepEqual(entry(body, 'CLAUDE.md'), { path: 'CLAUDE.md', action: 'unchanged', diff: '', note: VIA }, JSON.stringify(claude));
+      assert.equal('note' in entry(body, 'AGENTS.md'), false);
       const r = await go(w, body);
-      assert.deepEqual(r.body.written, claude === expected ? ['rules/orchestration.md'] : ['rules/orchestration.md', 'CLAUDE.md'], JSON.stringify(claude));
-      assert.equal(get(w, 'CLAUDE.md'), expected);
-      assert.deepEqual(identity(w), before, 'AGENTS.md untouched');
-      assert.equal(fs.existsSync(path.join(r.body.backupDir, 'AGENTS.md')), false);
+      assert.deepEqual(r.body.written, ['rules/orchestration.md', 'AGENTS.md'], JSON.stringify(claude));
+      assert.equal(get(w, 'AGENTS.md'), `# acme-api agents\n\n${IMPORT}\n`);
+      assert.deepEqual(identity(w, 'CLAUDE.md'), before, `CLAUDE.md untouched: ${JSON.stringify(claude)}`);
+      assert.equal(fs.existsSync(path.join(r.body.backupDir, 'CLAUDE.md')), false);
+      const again = await prev(w);
+      assert.deepEqual(again.files.map((f) => f.action), ['unchanged', 'unchanged', 'unchanged', 'unchanged'], JSON.stringify(claude));
+      assert.equal(entry(again, 'CLAUDE.md').note, VIA);
+      assert.deepEqual((await go(w, again)).body.written, []);
     }
   });
 
-  test('(+) neither file: a new CLAUDE.md with the rules line only, and no AGENTS.md is created', async () => {
+  test('(+) CLAUDE.md imports @AGENTS.md and AGENTS.md already has the import: only the rules file is written', async () => {
     const w = await world();
-    const none = await prev(w);
-    assert.deepEqual(none.files.map((f) => [f.path, f.action]), [['rules/orchestration.md', 'create'], ['CLAUDE.md', 'create'], ['.claude/settings.local.json', 'unchanged']]);
-    assert.equal(entry(none, 'CLAUDE.md').diff, '--- a/CLAUDE.md\n+++ b/CLAUDE.md\n@@ -0,0 +1 @@\n+@rules/orchestration.md\n');
-    await go(w, none);
-    assert.equal(get(w, 'CLAUDE.md'), `${IMPORT}\n`);
-    assert.equal(has(w, 'AGENTS.md'), false);
+    put(w, 'CLAUDE.md', `${AGENTS_LINE}\n`);
+    put(w, 'AGENTS.md', `# acme-api agents\n\n${IMPORT}\n`);
+    const body = await prev(w);
+    assert.deepEqual(shape(body), [['rules/orchestration.md', 'create'], ['AGENTS.md', 'unchanged'], ['CLAUDE.md', 'unchanged'], ['.claude/settings.local.json', 'unchanged']]);
+    assert.deepEqual((await go(w, body)).body.written, ['rules/orchestration.md']);
   });
 
-  test('(+) the AGENTS.md content is never read: oversized, non-UTF-8 or hard-linked, it is neither refused nor touched', async () => {
-    const outsideFile = (w) => {
-      fs.mkdirSync(path.join(w.base, 'outside'));
-      const f = path.join(w.base, 'outside', 'secret.txt');
-      fs.writeFileSync(f, 'SECRET');
-      return f;
-    };
-    const makers = {
-      oversized: (w) => put(w, 'AGENTS.md', 'x'.repeat(1024 * 1024 + 1)),
-      'non-UTF-8': (w) => fs.writeFileSync(path.join(w.dir, 'AGENTS.md'), Buffer.from([0x23, 0x20, 0xe9, 0x0a])),
-      'hard-linked': (w) => fs.linkSync(outsideFile(w), path.join(w.dir, 'AGENTS.md')),
-    };
-    for (const [label, make] of Object.entries(makers)) {
+  test('(−) a look-alike @AGENTS.md (inline mention, extra text, another file) is no import: CLAUDE.md gets the line itself', async () => {
+    for (const claude of ['see @AGENTS.md for more\n', '@AGENTS.md.bak\n', '@AGENTS.md and more\n', '@docs/AGENTS.md\n', '# @AGENTS.md\n']) {
       const w = await world();
-      make(w);
-      const before = identity(w);
+      put(w, 'CLAUDE.md', claude);
+      put(w, 'AGENTS.md', '# a\n');
       const body = await prev(w);
-      assert.equal(entry(body, 'CLAUDE.md').action, 'create', label);
-      assert.equal(entry(body, 'AGENTS.md'), undefined, label);
+      assert.equal(entry(body, 'CLAUDE.md').action, 'update', JSON.stringify(claude));
+      assert.equal('note' in entry(body, 'CLAUDE.md'), false, JSON.stringify(claude));
+      assert.equal(entry(body, 'AGENTS.md').action, 'update');
+    }
+  });
+
+  test('(+) an @AGENTS.md line in a CLAUDE.md with no AGENTS.md on disk counts as "only CLAUDE.md": it gets the import itself', async () => {
+    const w = await world();
+    put(w, 'CLAUDE.md', `${AGENTS_LINE}\n`);
+    const body = await prev(w);
+    assert.deepEqual(shape(body), [['rules/orchestration.md', 'create'], ['CLAUDE.md', 'update'], ['.claude/settings.local.json', 'unchanged']]);
+    assert.equal(entry(body, 'AGENTS.md'), undefined);
+    await go(w, body);
+    assert.equal(get(w, 'CLAUDE.md'), `${AGENTS_LINE}\n\n${IMPORT}\n`);
+    assert.equal(has(w, 'AGENTS.md'), false, 'nika never creates an AGENTS.md');
+  });
+
+  test('(+) only CLAUDE.md and neither file keep working as before', async () => {
+    const w = await world();
+    put(w, 'CLAUDE.md', '# web-shop\n');
+    const only = await prev(w);
+    assert.deepEqual(shape(only), [['rules/orchestration.md', 'create'], ['CLAUDE.md', 'update'], ['.claude/settings.local.json', 'unchanged']]);
+    await go(w, only);
+    assert.equal(get(w, 'CLAUDE.md'), `# web-shop\n\n${IMPORT}\n`);
+    const v = await world();
+    const none = await prev(v);
+    assert.deepEqual(shape(none), [['rules/orchestration.md', 'create'], ['CLAUDE.md', 'create'], ['.claude/settings.local.json', 'unchanged']]);
+    assert.equal(entry(none, 'CLAUDE.md').diff, '--- a/CLAUDE.md\n+++ b/CLAUDE.md\n@@ -0,0 +1 @@\n+@rules/orchestration.md\n');
+    await go(v, none);
+    assert.equal(get(v, 'CLAUDE.md'), `${IMPORT}\n`);
+    assert.equal(has(v, 'AGENTS.md'), false);
+  });
+
+  test('(+) existing modes: a 0600 AGENTS.md stays 0600, a 0664 one loses group write, a new CLAUDE.md is 0644', async () => {
+    for (const [from, to] of [[0o600, 0o600], [0o664, 0o644], [0o640, 0o640]]) {
+      const w = await world();
+      put(w, 'AGENTS.md', '# a\n');
+      fs.chmodSync(path.join(w.dir, 'AGENTS.md'), from);
+      await go(w, await prev(w));
+      assert.equal(mode(path.join(w.dir, 'AGENTS.md')), to, from.toString(8));
+      assert.equal(mode(path.join(w.dir, 'CLAUDE.md')), 0o644);
+    }
+  });
+
+  test('(−) a symlink, folder or FIFO named AGENTS.md beside a CLAUDE.md is skipped with a note: never followed, CLAUDE.md gets the import itself', async () => {
+    const makers = {
+      'a link to CLAUDE.md': { make: (w) => fs.symlinkSync('CLAUDE.md', path.join(w.dir, 'AGENTS.md')), note: /symbolic link/ },
+      'a link to a file elsewhere': { make: (w) => fs.symlinkSync(outsideFile(w), path.join(w.dir, 'AGENTS.md')), note: /symbolic link/ },
+      'a dangling link': { make: (w) => fs.symlinkSync(path.join(w.base, 'no-such-file'), path.join(w.dir, 'AGENTS.md')), note: /symbolic link/ },
+      'a folder': { make: (w) => fs.mkdirSync(path.join(w.dir, 'AGENTS.md')), note: /not a regular file/ },
+      'a FIFO': { make: (w) => execFileSync('mkfifo', [path.join(w.dir, 'AGENTS.md')]), note: /not a regular file/ },
+    };
+    for (const [label, { make, note }] of Object.entries(makers)) {
+      const w = await world();
+      put(w, 'CLAUDE.md', '# web-shop\n');
+      make(w);
+      const body = await prev(w); // must not block on a FIFO
+      assert.deepEqual(shape(body), [['rules/orchestration.md', 'create'], ['AGENTS.md', 'skipped'], ['CLAUDE.md', 'update'], ['.claude/settings.local.json', 'unchanged']], label);
+      const s = entry(body, 'AGENTS.md');
+      assert.deepEqual(Object.keys(s).sort(), ['action', 'diff', 'note', 'path'], label);
+      assert.equal(s.diff, '', label);
+      assert.match(s.note, note, label);
+      assert.match(s.note, /does not follow|left it as it is/, label);
+      assert.equal('note' in entry(body, 'CLAUDE.md'), false, label);
+      const before = fs.lstatSync(path.join(w.dir, 'AGENTS.md'));
       const r = await go(w, body);
       assert.deepEqual([r.status, r.body.written], [200, ['rules/orchestration.md', 'CLAUDE.md']], label);
-      assert.equal(get(w, 'CLAUDE.md'), BOTH, label);
-      assert.deepEqual(identity(w), before, label);
-      if (label === 'hard-linked') assert.equal(fs.readFileSync(path.join(w.base, 'outside', 'secret.txt'), 'utf8'), 'SECRET');
+      assert.equal(get(w, 'CLAUDE.md'), `# web-shop\n\n${IMPORT}\n`, label);
+      const after = fs.lstatSync(path.join(w.dir, 'AGENTS.md'));
+      assert.deepEqual([after.ino, after.mode, after.isSymbolicLink()], [before.ino, before.mode, before.isSymbolicLink()], label);
+      if (label === 'a link to CLAUDE.md') assert.equal(fs.readlinkSync(path.join(w.dir, 'AGENTS.md')), 'CLAUDE.md');
+      if (label === 'a link to a file elsewhere') assert.equal(fs.readFileSync(path.join(w.base, 'outside', 'secret.txt'), 'utf8'), 'SECRET');
+      if (label === 'a dangling link') assert.equal(fs.existsSync(path.join(w.base, 'no-such-file')), false, 'never created through the link');
+      assert.equal(fs.existsSync(path.join(r.body.backupDir, 'AGENTS.md')), false, label);
+      const again = await prev(w);
+      assert.deepEqual(again.files.map((f) => f.action), ['unchanged', 'skipped', 'unchanged', 'unchanged'], label);
+      assert.deepEqual((await go(w, again)).body.written, [], label);
     }
   });
 
-  test('(−) a directory or a FIFO as AGENTS.md with no CLAUDE.md is refused (ENOTREG) without being opened; beside a CLAUDE.md it is ignored', async () => {
-    const dirIn = await world();
-    fs.mkdirSync(path.join(dirIn.dir, 'AGENTS.md'));
-    const d = await preview(dirIn.project, dirIn.ctx);
-    assert.deepEqual([d.status, d.body.error, d.body.code], [409, 'refused', 'ENOTREG']);
-    assert.equal(has(dirIn, 'CLAUDE.md'), false);
-    const f = await world();
-    execFileSync('mkfifo', [path.join(f.dir, 'AGENTS.md')]);
-    const fifo = await preview(f.project, f.ctx); // must not block on an open
-    assert.deepEqual([fifo.status, fifo.body.error, fifo.body.code], [409, 'refused', 'ENOTREG']);
-    assert.equal(fs.lstatSync(path.join(f.dir, 'AGENTS.md')).isFIFO(), true);
-    const g = await world();
-    put(g, 'CLAUDE.md', '# web-shop\n');
-    execFileSync('mkfifo', [path.join(g.dir, 'AGENTS.md')]);
-    const beside = await go(g, await prev(g));
-    assert.deepEqual([beside.status, beside.body.written], [200, ['rules/orchestration.md', 'CLAUDE.md']]);
-    assert.equal(fs.lstatSync(path.join(g.dir, 'AGENTS.md')).isFIFO(), true);
+  test('(−) a CLAUDE.md with an @AGENTS.md line beside a symlinked AGENTS.md gets the import itself: the via-AGENTS.md row never applies', async () => {
+    const w = await world();
+    put(w, 'CLAUDE.md', `${AGENTS_LINE}\n`);
+    fs.symlinkSync(path.join(w.base, 'no-such-file'), path.join(w.dir, 'AGENTS.md'));
+    const body = await prev(w);
+    assert.equal(entry(body, 'AGENTS.md').action, 'skipped');
+    assert.equal(entry(body, 'CLAUDE.md').action, 'update');
+    assert.equal('note' in entry(body, 'CLAUDE.md'), false);
+    await go(w, body);
+    assert.equal(get(w, 'CLAUDE.md'), `${AGENTS_LINE}\n\n${IMPORT}\n`);
   });
 
-  test('(−) a lone symlinked AGENTS.md (live or dangling) is refused 409 ESYMLINK with a message that does not promise an edit; nothing is written', async () => {
+  test('(−) a lone symlinked AGENTS.md (live or dangling) is refused 409 ESYMLINK; a lone folder or FIFO is refused 409 ENOTREG; nothing is written', async () => {
     for (const target of ['elsewhere.md', 'no-such-file']) {
       const w = await world();
       fs.writeFileSync(path.join(w.base, 'elsewhere.md'), 'SECRET');
@@ -505,41 +596,25 @@ describe('AGENTS.md (G5): nika never writes it; a lone AGENTS.md gets a new CLAU
       assert.deepEqual([p.status, p.body.error, p.body.code], [409, 'refused', 'ESYMLINK'], target);
       assert.match(p.body.message, /AGENTS\.md is a symlink/);
       assert.match(p.body.message, /no CLAUDE\.md/);
-      assert.doesNotMatch(p.body.message, /add the rules import/, 'nika no longer edits AGENTS.md');
       const a = await apply(w.project, { hash: '0'.repeat(64) }, w.ctx);
       assert.deepEqual([a.status, a.body.error, a.body.code], [409, 'refused', 'ESYMLINK'], target);
       assert.deepEqual(snapshot(w.dir), before, target);
       assert.equal(fs.readFileSync(path.join(w.base, 'elsewhere.md'), 'utf8'), 'SECRET');
       assert.equal(fs.existsSync(path.join(w.base, 'no-such-file')), false, 'never created through the link');
     }
-  });
-
-  test('(+) a symlinked AGENTS.md beside a regular CLAUDE.md is not mentioned: no entry, CLAUDE.md applied as before, the link and its target untouched', async () => {
-    const targets = {
-      'the common AGENTS.md -> CLAUDE.md': () => 'CLAUDE.md',
-      'a file elsewhere': (w) => { fs.writeFileSync(path.join(w.base, 'elsewhere.md'), 'SECRET'); return path.join(w.base, 'elsewhere.md'); },
-      'a dangling link': (w) => path.join(w.base, 'no-such-file'),
-    };
-    for (const [label, target] of Object.entries(targets)) {
-      const w = await world();
-      put(w, 'CLAUDE.md', '# web-shop\n');
-      const to = target(w);
-      fs.symlinkSync(to, path.join(w.dir, 'AGENTS.md'));
-      const body = await prev(w);
-      assert.deepEqual(body.files.map((f) => [f.path, f.action]), [['rules/orchestration.md', 'create'], ['CLAUDE.md', 'update'], ['.claude/settings.local.json', 'unchanged']], label);
-      assert.equal(JSON.stringify(body).includes('AGENTS.md'), false, `${label}: the preview does not mention AGENTS.md`);
-      const r = await go(w, body);
-      assert.deepEqual([r.status, r.body.written], [200, ['rules/orchestration.md', 'CLAUDE.md']], label);
-      assert.equal(get(w, 'CLAUDE.md'), `# web-shop\n\n${IMPORT}\n`, label);
-      assert.equal(fs.lstatSync(path.join(w.dir, 'AGENTS.md')).isSymbolicLink(), true, label);
-      assert.equal(fs.readlinkSync(path.join(w.dir, 'AGENTS.md')), to, label);
-      if (label === 'a file elsewhere') assert.equal(fs.readFileSync(to, 'utf8'), 'SECRET');
-      if (label === 'a dangling link') assert.equal(fs.existsSync(to), false, 'never created through the link');
-      assert.equal(fs.existsSync(path.join(r.body.backupDir, 'AGENTS.md')), false, label);
-      const again = await prev(w);
-      assert.deepEqual(again.files.map((f) => f.action), ['unchanged', 'unchanged', 'unchanged'], label);
-      assert.deepEqual((await go(w, again)).body.written, [], label);
-    }
+    const dirIn = await world();
+    fs.mkdirSync(path.join(dirIn.dir, 'AGENTS.md'));
+    const d = await preview(dirIn.project, dirIn.ctx);
+    assert.deepEqual([d.status, d.body.error, d.body.code], [409, 'refused', 'ENOTREG']);
+    assert.equal(has(dirIn, 'CLAUDE.md'), false);
+    const f = await world();
+    execFileSync('mkfifo', [path.join(f.dir, 'AGENTS.md')]);
+    const fifo = await preview(f.project, f.ctx); // must not block on an open
+    assert.deepEqual([fifo.status, fifo.body.error, fifo.body.code], [409, 'refused', 'ENOTREG']);
+    const fa = await apply(f.project, { hash: '0'.repeat(64) }, f.ctx);
+    assert.deepEqual([fa.status, fa.body.code], [409, 'ENOTREG']);
+    assert.equal(fs.lstatSync(path.join(f.dir, 'AGENTS.md')).isFIFO(), true);
+    assert.equal(has(f, 'rules'), false);
   });
 
   test('(−) a symlinked CLAUDE.md still refuses, with or without an AGENTS.md beside it, and AGENTS.md is left alone', async () => {
@@ -557,48 +632,84 @@ describe('AGENTS.md (G5): nika never writes it; a lone AGENTS.md gets a new CLAU
     }
   });
 
-  test('(−) the hash covers the AGENTS.md type: it appearing, disappearing or becoming a link after the preview is a conflict, nothing is written', async () => {
-    const appears = await world();
-    const none = await prev(appears);
-    put(appears, 'AGENTS.md', 'arrived later\n');
-    const late = await go(appears, none);
-    assert.deepEqual([late.status, late.body.error], [409, 'conflict']);
-    assert.equal(has(appears, 'CLAUDE.md'), false, 'a CLAUDE.md created now would turn the new AGENTS.md off');
-    const gone = await world();
-    put(gone, 'AGENTS.md', 'was here\n');
-    const withFile = await prev(gone);
-    fs.rmSync(path.join(gone.dir, 'AGENTS.md'));
-    const lost = await go(gone, withFile);
-    assert.deepEqual([lost.status, lost.body.error], [409, 'conflict']);
-    assert.deepEqual(Object.keys(snapshot(gone.dir)), []);
+  test('(−) AGENTS.md is read as safely as CLAUDE.md: oversized, non-UTF-8 and hard-linked files are refused, nothing is written or leaked', async () => {
+    const makers = {
+      oversized: { make: (w) => put(w, 'AGENTS.md', 'x'.repeat(1024 * 1024 + 1)), status: 409, code: 'EFBIG' },
+      'non-UTF-8': { make: (w) => fs.writeFileSync(path.join(w.dir, 'AGENTS.md'), Buffer.from([0x23, 0x20, 0xe9, 0x0a])), status: 400, error: 'invalid' },
+      'hard-linked': { make: (w) => fs.linkSync(outsideFile(w), path.join(w.dir, 'AGENTS.md')), status: 409, code: 'ENLINK' },
+    };
+    for (const [label, { make, status, code, error }] of Object.entries(makers)) {
+      for (const withClaude of [false, true]) {
+        const w = await world();
+        if (withClaude) put(w, 'CLAUDE.md', '# web-shop\n');
+        make(w);
+        const before = snapshot(w.dir);
+        const p = await preview(w.project, w.ctx);
+        assert.equal(p.status, status, `${label} ${withClaude}`);
+        if (code) assert.equal(p.body.code, code, label);
+        if (error) assert.equal(p.body.error, error, label);
+        assert.match(p.body.message, /AGENTS\.md|hard-linked/, label);
+        const a = await apply(w.project, { hash: '0'.repeat(64) }, w.ctx);
+        assert.equal(a.status, status, label);
+        assert.deepEqual(snapshot(w.dir), before, `${label}: nothing written`);
+        if (label === 'hard-linked') assert.equal(fs.readFileSync(path.join(w.base, 'outside', 'secret.txt'), 'utf8'), 'SECRET');
+      }
+    }
   });
 
-  test('(+) a change of the AGENTS.md text after the preview is no conflict: its content is not part of the plan', async () => {
-    const w = await world();
-    put(w, 'AGENTS.md', 'before\n');
-    const body = await prev(w);
-    put(w, 'AGENTS.md', 'changed after the preview\n');
-    const r = await go(w, body);
-    assert.deepEqual([r.status, r.body.written], [200, ['rules/orchestration.md', 'CLAUDE.md']]);
-    assert.equal(get(w, 'AGENTS.md'), 'changed after the preview\n');
-  });
-
-  test('(−) AGENTS.md changing type inside the apply, after the hash check and before CLAUDE.md is created: 409 conflict, nothing written', async () => {
-    const steps = {
-      'appears as a file': { start: () => {}, change: (w) => put(w, 'AGENTS.md', '# arrived in the gap\n'), left: ['AGENTS.md'] },
-      'appears as a link': { start: () => {}, change: (w) => fs.symlinkSync(path.join(w.base, 'no-such-file'), path.join(w.dir, 'AGENTS.md')), left: ['AGENTS.md'] },
-      disappears: { start: (w) => put(w, 'AGENTS.md', '# leaving\n'), change: (w) => fs.rmSync(path.join(w.dir, 'AGENTS.md')), left: [] },
+  test('(−) the hash covers AGENTS.md: a change of its text or type after the preview is a conflict (or a refusal) and nothing is written', async () => {
+    const edits = {
+      'text changes': { start: (w) => put(w, 'AGENTS.md', 'before\n'), change: (w) => put(w, 'AGENTS.md', 'after\n'), left: ['AGENTS.md'] },
+      'text gets the import': { start: (w) => put(w, 'AGENTS.md', 'before\n'), change: (w) => put(w, 'AGENTS.md', `before\n${IMPORT}\n`), left: ['AGENTS.md'] },
+      appears: { start: () => {}, change: (w) => put(w, 'AGENTS.md', 'arrived later\n'), left: ['AGENTS.md'] },
+      disappears: { start: (w) => put(w, 'AGENTS.md', 'was here\n'), change: (w) => fs.rmSync(path.join(w.dir, 'AGENTS.md')), left: [] },
       'becomes a link': {
         start: (w) => put(w, 'AGENTS.md', '# swapped\n'),
         change: (w) => { fs.rmSync(path.join(w.dir, 'AGENTS.md')); fs.symlinkSync(path.join(w.base, 'no-such-file'), path.join(w.dir, 'AGENTS.md')); },
         left: ['AGENTS.md'],
       },
     };
+    for (const [label, step] of Object.entries(edits)) {
+      const w = await world();
+      step.start(w);
+      const body = await prev(w);
+      step.change(w);
+      const r = await go(w, body);
+      assert.equal(r.status, 409, label);
+      assert.ok(['conflict', 'refused'].includes(r.body.error), label);
+      assert.deepEqual(Object.keys(snapshot(w.dir)), step.left, `${label}: no rules/, no CLAUDE.md`);
+      assert.equal(fs.existsSync(backupsDir(w.project.key, w.env)), false, label);
+    }
+    // beside a CLAUDE.md the hash sees it too, including a link turning into a folder (the note changes)
+    const w = await world();
+    put(w, 'CLAUDE.md', '# web-shop\n');
+    fs.symlinkSync(path.join(w.base, 'no-such-file'), path.join(w.dir, 'AGENTS.md'));
+    const linked = await prev(w);
+    fs.rmSync(path.join(w.dir, 'AGENTS.md'));
+    fs.mkdirSync(path.join(w.dir, 'AGENTS.md'));
+    assert.notEqual((await prev(w)).hash, linked.hash);
+    assert.deepEqual([(await go(w, linked)).status], [409]);
+    assert.equal(get(w, 'CLAUDE.md'), '# web-shop\n');
+  });
+
+  test('(−) AGENTS.md appearing, disappearing or changing inside the apply, after the hash check: 409, nothing written', async () => {
+    const steps = {
+      'appears as a file (none planned)': { start: () => {}, change: (w) => put(w, 'AGENTS.md', '# arrived in the gap\n'), left: ['AGENTS.md'], msg: /^AGENTS\.md changed while applying; preview again$/ },
+      'appears as a link (none planned)': { start: () => {}, change: (w) => fs.symlinkSync(path.join(w.base, 'no-such-file'), path.join(w.dir, 'AGENTS.md')), left: ['AGENTS.md'], msg: /^AGENTS\.md changed while applying; preview again$/ },
+      'appears beside an existing CLAUDE.md': { start: (w) => put(w, 'CLAUDE.md', '# web-shop\n'), change: (w) => put(w, 'AGENTS.md', '# arrived\n'), left: ['AGENTS.md', 'CLAUDE.md'], msg: /^AGENTS\.md changed while applying; preview again$/ },
+      disappears: { start: (w) => put(w, 'AGENTS.md', '# leaving\n'), change: (w) => fs.rmSync(path.join(w.dir, 'AGENTS.md')), left: [], msg: /^AGENTS\.md changed while applying; preview again$/ },
+      'text changes': { start: (w) => put(w, 'AGENTS.md', '# before\n'), change: (w) => put(w, 'AGENTS.md', '# after\n'), left: ['AGENTS.md'], msg: /^AGENTS\.md changed while applying; preview again$/ },
+      'becomes a link': {
+        start: (w) => put(w, 'AGENTS.md', '# swapped\n'),
+        change: (w) => { fs.rmSync(path.join(w.dir, 'AGENTS.md')); fs.symlinkSync(path.join(w.base, 'no-such-file'), path.join(w.dir, 'AGENTS.md')); },
+        left: ['AGENTS.md'],
+        msg: /symlink/,
+      },
+    };
     for (const [label, step] of Object.entries(steps)) {
       const w = await world();
       step.start(w);
       const body = await prev(w);
-      assert.equal(entry(body, 'CLAUDE.md').action, 'create', label);
       let calls = 0;
       const ctx = {
         env: w.env,
@@ -608,25 +719,67 @@ describe('AGENTS.md (G5): nika never writes it; a lone AGENTS.md gets a new CLAU
         },
       };
       const r = await apply(w.project, { hash: body.hash }, ctx);
-      assert.deepEqual([r.status, r.body.error], [409, 'conflict'], label);
-      assert.match(r.body.message, /^AGENTS\.md changed while applying; preview again$/, label);
-      assert.deepEqual(Object.keys(snapshot(w.dir)), step.left, `${label}: no CLAUDE.md, no rules/`);
+      assert.equal(r.status, 409, label);
+      assert.match(r.body.message, step.msg, label);
+      assert.deepEqual(Object.keys(snapshot(w.dir)), step.left, `${label}: no rules/, nothing written`);
       assert.equal(fs.existsSync(backupsDir(w.project.key, w.env)), false, label);
     }
   });
 
-  test('(+) rules state: a CLAUDE.md that imports @AGENTS.md and the rules beside a current rules file reads current; AGENTS.md is not consulted', async () => {
-    const w = await world();
-    put(w, 'CLAUDE.md', BOTH);
-    await go(w, await prev(w));
-    assert.equal(get(w, 'CLAUDE.md'), BOTH);
-    assert.equal((await rulesState(w.project)).state, 'nika');
-    const v = await world(); // a symlinked AGENTS.md beside that CLAUDE.md changes nothing either
-    fs.symlinkSync(path.join(v.base, 'no-such-file'), path.join(v.dir, 'AGENTS.md'));
-    put(v, 'CLAUDE.md', BOTH);
-    await go(v, await prev(v));
-    assert.equal((await rulesState(v.project)).state, 'nika');
-    assert.deepEqual((await prev(v)).files.map((f) => f.action), ['unchanged', 'unchanged', 'unchanged']);
+  test('(+) rules state: current needs the rules file and every regular instruction file covered', async () => {
+    const current = {
+      'the import in both': (w) => { put(w, 'CLAUDE.md', `${IMPORT}\n`); put(w, 'AGENTS.md', `${IMPORT}\n`); },
+      'CLAUDE.md imports @AGENTS.md, AGENTS.md has the import': (w) => { put(w, 'CLAUDE.md', `${AGENTS_LINE}\n`); put(w, 'AGENTS.md', `# a\n\n${IMPORT}\n`); },
+      'the same with @./AGENTS.md': (w) => { put(w, 'CLAUDE.md', '@./AGENTS.md\n'); put(w, 'AGENTS.md', `${IMPORT}\n`); },
+      'only CLAUDE.md with the import': (w) => put(w, 'CLAUDE.md', `${IMPORT}\n`),
+      'a symlinked AGENTS.md beside a CLAUDE.md with the import is ignored': (w) => { put(w, 'CLAUDE.md', `${IMPORT}\n`); fs.symlinkSync(path.join(w.base, 'no-such-file'), path.join(w.dir, 'AGENTS.md')); },
+      'a folder named AGENTS.md beside a CLAUDE.md with the import is ignored': (w) => { put(w, 'CLAUDE.md', `${IMPORT}\n`); fs.mkdirSync(path.join(w.dir, 'AGENTS.md')); },
+    };
+    for (const [label, make] of Object.entries(current)) {
+      const w = await world();
+      make(w);
+      await go(w, await prev(w), {}); // writes the rules file; the instruction files above already cover it, so they are not changed
+      assert.equal((await rulesState(w.project)).state, 'nika', label);
+    }
+    // what Apply itself writes reads as current, in every layout
+    for (const setup of [() => {}, (w) => put(w, 'CLAUDE.md', '# a\n'), (w) => put(w, 'AGENTS.md', '# a\n'), (w) => { put(w, 'CLAUDE.md', '# a\n'); put(w, 'AGENTS.md', '# b\n'); }, (w) => { put(w, 'CLAUDE.md', '@AGENTS.md\n'); put(w, 'AGENTS.md', '# b\n'); }]) {
+      const w = await world();
+      setup(w);
+      assert.equal((await rulesState(w.project)).state, 'none');
+      await go(w, await prev(w));
+      assert.equal((await rulesState(w.project)).state, 'nika');
+    }
+  });
+
+  test('(−) rules state: outdated when a regular instruction file does not carry the rules, though the rules file is current', async () => {
+    const outdated = {
+      'CLAUDE.md imports @AGENTS.md, AGENTS.md lacks the import': (w) => { put(w, 'CLAUDE.md', `${AGENTS_LINE}\n`); put(w, 'AGENTS.md', '# a\n'); },
+      'AGENTS.md has the import, no CLAUDE.md': (w) => put(w, 'AGENTS.md', `${IMPORT}\n`),
+      'CLAUDE.md has the import, AGENTS.md lacks it': (w) => { put(w, 'CLAUDE.md', `${IMPORT}\n`); put(w, 'AGENTS.md', '# a\n'); },
+      'AGENTS.md has the import, CLAUDE.md has neither': (w) => { put(w, 'CLAUDE.md', '# a\n'); put(w, 'AGENTS.md', `${IMPORT}\n`); },
+      'CLAUDE.md lacks the import, no AGENTS.md': (w) => put(w, 'CLAUDE.md', '# a\n'),
+      'neither file exists': () => {},
+    };
+    for (const [label, make] of Object.entries(outdated)) {
+      const w = await world();
+      await go(w, await prev(w)); // a current rules file ...
+      for (const rel of ['CLAUDE.md', 'AGENTS.md']) fs.rmSync(path.join(w.dir, rel), { force: true });
+      make(w); // ... beside instruction files that do not all cover it
+      assert.equal((await rulesState(w.project)).state, 'outdated', label);
+    }
+    // the rules file's own state wins where it is worse: foreign stays foreign, and no rules file stays none
+    const f = await world();
+    put(f, 'rules/orchestration.md', '# my own rules\n');
+    put(f, 'AGENTS.md', '# a\n');
+    assert.equal((await rulesState(f.project)).state, 'foreign');
+    const n = await world();
+    put(n, 'AGENTS.md', '# a\n');
+    assert.equal((await rulesState(n.project)).state, 'none');
+    // an instruction file nika cannot read safely is not something Apply could fix by writing: the rules file decides
+    const u = await world();
+    await go(u, await prev(u));
+    put(u, 'AGENTS.md', 'x'.repeat(1024 * 1024 + 1));
+    assert.equal((await rulesState(u.project)).state, 'nika');
   });
 });
 

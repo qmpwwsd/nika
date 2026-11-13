@@ -115,8 +115,11 @@ the snapshot does not hold are ended or gone, and `findSessions` settles all of 
 full collect per project. With no snapshot, or an index that cannot be read, the field is `null` for the picks that could not be
 settled (never a guess).
 
-`rules.state`: `none` no `rules/orchestration.md`; `nika` written by nika and current; `outdated` written by nika from an
-older template; `foreign` a file nika did not write (apply needs the explicit `overwriteForeign` flag).
+`rules.state`: `none` no `rules/orchestration.md`; `nika` written by nika and current, **and** every regular instruction file
+carries the rules (see "AGENTS.md and CLAUDE.md" under Rules); `outdated` written by nika from an older template, or current but a regular
+`CLAUDE.md` / `AGENTS.md` that Apply would still change; `foreign` a file nika did not write (apply needs the explicit
+`overwriteForeign` flag). A project nika cannot plan (an unreadable instruction file, a lone symlinked `AGENTS.md`) is judged by
+the rules file alone.
 `settingsIgnored`: `.claude/settings.local.json` is covered by the project's `.gitignore`.
 
 **Saved orchestrator (0.4).** `PUT …/orchestrator` saves one session of the project as its orchestrator
@@ -695,7 +698,8 @@ resolves it to that pane's session), else exits 1 ("cannot attach: …") and run
 ```json
 { "hash": "<sha256 hex of every planned write>", "files": [
     { "path": "rules/orchestration.md", "action": "create" | "update" | "unchanged", "diff": "<unified>", "foreign": false },
-    { "path": "CLAUDE.md", "action": "create" | "update" | "unchanged", "diff": "…" },
+    { "path": "AGENTS.md", "action": "update" | "unchanged" | "skipped", "diff": "…", "note": "<only when skipped>" },
+    { "path": "CLAUDE.md", "action": "create" | "update" | "unchanged", "diff": "…", "note": "<only on the unchanged via-AGENTS.md case>" },
     { "path": ".claude/settings.local.json", "action": "update", "diff": "<enabledPlugins block only>", "keysPreserved": true, "keptKeys": 3 },
     { "path": ".gitignore", "action": "update", "diff": "…", "optional": true } ],
   "warnings": [ "settings.local.json is not gitignored" ], "backupDir": "<stateDir>/backups/<key>/<ISO>" }
@@ -703,20 +707,32 @@ resolves it to that pane's session), else exits 1 ("cannot attach: …") and run
 `POST /api/app/rules/apply` `{ "project": "<PROJECT_KEY>", "hash": "<from preview>", "overwriteForeign": false,
 "gitignore": false }` recomputes the preview; a different hash → **409 conflict**. Writes go through `src/fwrite.js`
 (`checkComponents` → backup → `writeAtomic`) and never touch git. Response `200 { "written": [ "rules/orchestration.md",
-"CLAUDE.md", ".claude/settings.local.json" ], "backupDir": "<abs>" }`.
+"AGENTS.md", "CLAUDE.md", ".claude/settings.local.json" ], "backupDir": "<abs>" }` (in write order).
 
-The `@rules/orchestration.md` line goes into `CLAUDE.md` only. `AGENTS.md` is never written, backed up or listed in `files`,
-and its content is never read; nika only checks its type with `lstat` (no follow: absent, regular file, symlink), and only
-while the project has no `CLAUDE.md`. Claude Code reads `AGENTS.md` only while no `CLAUDE.md` exists, so for a lone regular
-`AGENTS.md` the plan creates `CLAUDE.md` (action `create`) whose whole content is `@AGENTS.md\n@rules/orchestration.md\n`
-(Claude Code's "share one file" recipe); with neither file it is `@rules/orchestration.md\n`. `CLAUDE.md` gets the same
-checks as every other target (symlink, hard link and owner checks, size limit, UTF-8, hash, byte-for-byte backup). A lone
-symlinked `AGENTS.md` is never followed: `409 refused` with `code: "ESYMLINK"`; a folder, FIFO or other non-regular
-`AGENTS.md` with no `CLAUDE.md` is `409 refused` with `code: "ENOTREG"`. Beside a `CLAUDE.md`, `AGENTS.md` is not looked at
-(a symlink there is not mentioned). The new `CLAUDE.md` body depends on the `AGENTS.md` type, so the plan `hash` covers it: an
-`AGENTS.md` that appears, disappears or changes type after the preview is a `409 conflict`. Before its first write, apply
-re-checks the type against the plan; a change is `409 conflict` ("AGENTS.md changed while applying; preview again") and
-nothing is written. The 0.4.0 `skipped` action and its `note` no longer exist.
+**AGENTS.md and CLAUDE.md (0.4.0, G7).** Other coding tools read `AGENTS.md`, Claude Code reads `CLAUDE.md`, so both carry
+the rules, both are listed in `files`, and Claude must load the rules once. Let L be the line `@rules/orchestration.md` and
+an *import line* a line that, trimmed, is exactly `@AGENTS.md` or `@./AGENTS.md`:
+
+| The project has | `files` |
+|---|---|
+| only a regular `AGENTS.md` | `AGENTS.md` `update` (adds L); a new `CLAUDE.md` `create` whose whole content is `@AGENTS.md\n` |
+| both, `CLAUDE.md` has no import line | both get L |
+| both, `CLAUDE.md` has an import line | `AGENTS.md` gets L; `CLAUDE.md` is `unchanged` with `note: "Gets the rules through @AGENTS.md."` (even when it lacks L: nika never adds L there and never removes a line) |
+| only `CLAUDE.md` (an import line with no `AGENTS.md` on disk counts as this) | `CLAUDE.md` gets L |
+| neither | a new `CLAUDE.md` with `@rules/orchestration.md\n` |
+| `AGENTS.md` is a symlink, folder, FIFO or other non-regular file, and a `CLAUDE.md` exists | `AGENTS.md` `skipped` with a `note` (a symbolic link: nika does not follow links; not a regular file); `CLAUDE.md` gets L (the via-`AGENTS.md` row never applies) |
+| a lone non-regular `AGENTS.md` | `409 refused`, `code: "ESYMLINK"` (symlink) or `"ENOTREG"` (other), nothing written |
+
+Entry shape: `{ path, action: "create" | "update" | "unchanged" | "skipped", diff?, note? }`; `note` appears only on the
+`unchanged` via-`AGENTS.md` `CLAUDE.md` and on a `skipped` entry, and a `skipped` entry has an empty `diff` and is never written.
+The `AGENTS.md` entry exists only when the project folder has an `AGENTS.md`; nika never creates one. The order of `files` is the order of the writes: rules file, `AGENTS.md`, `CLAUDE.md`, settings, `.gitignore`. `AGENTS.md` is read
+only when it is a regular file, through the same safe read as `CLAUDE.md` (no follow, user-owned, single link, 1 MiB, UTF-8;
+an oversized, non-UTF-8 or hard-linked one is refused like `CLAUDE.md`: `409 refused` `EFBIG` / `ENLINK`, `400 invalid`). Both files get the
+same checks as every other target (hash, byte-for-byte backup, modes, `verifyInside`). The plan `hash` covers `AGENTS.md`'s
+content and type (and a skipped entry's note), so any change after the preview is a `409 conflict`. Before its first write,
+apply re-checks `AGENTS.md`'s type against the plan before it writes `CLAUDE.md`, and re-reads `AGENTS.md` before writing it; a
+change is `409 conflict` ("AGENTS.md changed while applying; preview again", or "AGENTS.md changed while reading" in the plan) or
+`409 refused` `ESYMLINK` when it became a link, and nothing is written.
 
 The preview `diff` for `.claude/settings.local.json` is computed between `{"enabledPlugins": <old>}` and
 `{"enabledPlugins": <new>}` (pretty JSON) only, plus `keptKeys` = the number of other top-level keys; the values of

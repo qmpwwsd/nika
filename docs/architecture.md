@@ -230,8 +230,9 @@ regular single-link files, an O_EXCL temp file with fsync, then rename. nika wri
 
 - its own config and state files (above);
 - into a registered project, only after a diff preview, your confirmation and a hash check: `rules/orchestration.md`,
-  one `@rules/orchestration.md` line in `CLAUDE.md` (a new `CLAUDE.md` beside a lone `AGENTS.md` imports `@AGENTS.md` first,
-  so Claude keeps reading it; nika never writes or reads `AGENTS.md` itself; `docs/templates.md`), `enabledPlugins` in
+  one `@rules/orchestration.md` line in `CLAUDE.md` and in a regular `AGENTS.md` (a `CLAUDE.md` that imports `@AGENTS.md` gets
+  the rules through it and is left as it is, a lone `AGENTS.md` gets a new `CLAUDE.md` that is just `@AGENTS.md`; non-regular
+  `AGENTS.md` is skipped, never followed; `docs/templates.md`), `enabledPlugins` in
   `.claude/settings.local.json`, and, if you opt in, one `.gitignore` line;
 - macOS only, on `nika app install`, the app's Add/Update button, or a launch command refreshing a copy nika made
   earlier: `~/Applications/nika.app`, a `ditto` copy of the app that came with this install. Fixed target, never

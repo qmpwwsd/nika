@@ -612,6 +612,7 @@ describe('projects', () => {
 });
 
 describe('rules', () => {
+  const AGENTS_LINE = '@AGENTS.md'; // used inside template literals: an escaped newline right before it would look like an email address to test/hygiene.test.js
   test('(+) preview from a nested cwd finds the project and prints a diff per file', async () => {
     const w = await world();
     const r = await cli(['rules', 'preview'], { env: w.cliEnv, cwd: w.nested });
@@ -633,44 +634,63 @@ describe('rules', () => {
     assert.match(r.out, /^warning: settings\.local\.json is not gitignored$/m);
   });
 
-  test('(+) on a project with only AGENTS.md, preview and apply show a new CLAUDE.md that imports it; AGENTS.md is not listed and stays byte for byte', async () => {
+  test('(+) on a project with only AGENTS.md, preview and apply show the AGENTS.md update and a new CLAUDE.md that imports it', async () => {
     const w = await world();
     const agents = path.join(w.project.dir, 'AGENTS.md');
     fs.writeFileSync(agents, '# acme-api agents\n');
-    const before = fs.lstatSync(agents);
     const p = await cli(['rules', 'preview'], { env: w.cliEnv, cwd: w.nested });
     assert.equal(p.code, 0, p.err);
+    assert.match(p.out, /^AGENTS\.md \(update\)$/m);
     assert.match(p.out, /^CLAUDE\.md \(create\)$/m);
     assert.match(p.out, /^\+@AGENTS\.md$/m);
-    assert.match(p.out, /^\+@rules\/orchestration\.md$/m);
-    assert.doesNotMatch(p.out, /AGENTS\.md \(/, 'AGENTS.md has no entry of its own');
+    assert.equal(p.out.match(/^\+@rules\/orchestration\.md$/gm).length, 1, 'the import line goes into AGENTS.md only; CLAUDE.md just imports AGENTS.md');
+    assert.ok(p.out.indexOf('AGENTS.md (update)') < p.out.indexOf('CLAUDE.md (create)'), 'listed in write order');
     assert.doesNotMatch(p.out, /skipped/);
     const a = await cli(['rules', 'apply', '--yes'], { env: w.cliEnv, cwd: w.nested });
     assert.equal(a.code, 0, a.err);
-    assert.match(a.out, /written: rules\/orchestration\.md, CLAUDE\.md\n/);
-    assert.equal(fs.readFileSync(path.join(w.project.dir, 'CLAUDE.md'), 'utf8'), '@AGENTS.md\n@rules/orchestration.md\n');
-    const after = fs.lstatSync(agents);
-    assert.deepEqual([after.ino, after.mtimeMs, fs.readFileSync(agents, 'utf8')], [before.ino, before.mtimeMs, '# acme-api agents\n']);
+    assert.match(a.out, /written: rules\/orchestration\.md, AGENTS\.md, CLAUDE\.md\n/);
+    assert.equal(fs.readFileSync(agents, 'utf8'), '# acme-api agents\n\n@rules/orchestration.md\n');
+    assert.equal(fs.readFileSync(path.join(w.project.dir, 'CLAUDE.md'), 'utf8'), '@AGENTS.md\n');
+    const backupDir = /^backups: (.+)$/m.exec(a.out)[1];
+    assert.equal(fs.readFileSync(path.join(backupDir, 'AGENTS.md'), 'utf8'), '# acme-api agents\n');
     const again = await cli(['rules', 'apply', '--yes'], { env: w.cliEnv, cwd: w.nested });
     assert.equal(again.code, 0, again.err);
+    assert.match(again.out, /^CLAUDE\.md \(unchanged\)\nGets the rules through @AGENTS\.md\.$/m, 'the note prints under the file line');
     assert.match(again.out, /Nothing to apply/);
     assert.doesNotMatch(again.out, /written:|backups?:/i);
   });
 
-  test('(+) a symlinked AGENTS.md beside CLAUDE.md is not mentioned by preview, and apply --yes leaves it alone', async () => {
+  test('(+) a CLAUDE.md that imports @AGENTS.md stays as it is: AGENTS.md gets the line and the note prints under CLAUDE.md', async () => {
+    const w = await world();
+    fs.writeFileSync(path.join(w.project.dir, 'CLAUDE.md'), `# acme-api\n\n${AGENTS_LINE}\n`);
+    fs.writeFileSync(path.join(w.project.dir, 'AGENTS.md'), '# acme-api agents\n');
+    const p = await cli(['rules', 'preview'], { env: w.cliEnv, cwd: w.nested });
+    assert.equal(p.code, 0, p.err);
+    assert.match(p.out, /^AGENTS\.md \(update\)$/m);
+    assert.match(p.out, /^CLAUDE\.md \(unchanged\)\nGets the rules through @AGENTS\.md\.$/m);
+    const a = await cli(['rules', 'apply', '--yes'], { env: w.cliEnv, cwd: w.nested });
+    assert.equal(a.code, 0, a.err);
+    assert.match(a.out, /written: rules\/orchestration\.md, AGENTS\.md\n/);
+    assert.equal(fs.readFileSync(path.join(w.project.dir, 'CLAUDE.md'), 'utf8'), `# acme-api\n\n${AGENTS_LINE}\n`);
+  });
+
+  test('(+) a symlinked AGENTS.md beside CLAUDE.md is listed as skipped with its note, and apply --yes leaves it alone', async () => {
     const w = await world();
     fs.writeFileSync(path.join(w.project.dir, 'CLAUDE.md'), '# acme-api\n');
     fs.symlinkSync('CLAUDE.md', path.join(w.project.dir, 'AGENTS.md'));
     const p = await cli(['rules', 'preview'], { env: w.cliEnv, cwd: w.nested });
     assert.equal(p.code, 0, p.err);
-    assert.doesNotMatch(p.out, /AGENTS\.md|skipped/);
+    assert.match(p.out, /^AGENTS\.md \(skipped\)\nAGENTS\.md is a symbolic link; nika does not follow links/m);
+    assert.match(p.out, /^CLAUDE\.md \(update\)$/m);
     const a = await cli(['rules', 'apply', '--yes'], { env: w.cliEnv, cwd: w.nested });
     assert.equal(a.code, 0, a.err);
     assert.match(a.out, /written: rules\/orchestration\.md, CLAUDE\.md\n/);
+    assert.equal(fs.readFileSync(path.join(w.project.dir, 'CLAUDE.md'), 'utf8'), '# acme-api\n\n@rules/orchestration.md\n');
     assert.equal(fs.readlinkSync(path.join(w.project.dir, 'AGENTS.md')), 'CLAUDE.md');
     const again = await cli(['rules', 'apply', '--yes'], { env: w.cliEnv, cwd: w.nested });
     assert.equal(again.code, 0, again.err);
-    assert.match(again.out, /Nothing to apply/);
+    assert.match(again.out, /AGENTS\.md \(skipped\)/);
+    assert.match(again.out, /Nothing to apply/, 'a skipped entry alone is nothing to apply');
     assert.doesNotMatch(again.out, /written:|backups?:/i);
     const asked = await cli(['rules', 'apply'], { env: w.cliEnv, cwd: w.nested, tty: true, stdin: input('n\n', true) });
     assert.equal(asked.code, 0, asked.err);
@@ -686,6 +706,15 @@ describe('rules', () => {
       assert.match(r.err, /AGENTS\.md is a symlink/);
     }
     assert.deepEqual(fs.readdirSync(w.project.dir).sort(), ['AGENTS.md', 'sub']);
+  });
+
+  test('(+) nika projects list shows a project outdated while AGENTS.md lacks the rules line, and current once Apply wrote it', async () => {
+    const w = await world();
+    fs.writeFileSync(path.join(w.project.dir, 'AGENTS.md'), '# acme-api agents\n');
+    assert.equal((await cli(['rules', 'apply', '--yes'], { env: w.cliEnv, cwd: w.nested })).code, 0);
+    assert.match((await cli(['projects', 'list'], { env: w.cliEnv })).out, new RegExp(`${w.project.key}\\s+\\S.*\\snika\\s`));
+    fs.writeFileSync(path.join(w.project.dir, 'AGENTS.md'), '# acme-api agents\n');
+    assert.match((await cli(['projects', 'list'], { env: w.cliEnv })).out, new RegExp(`${w.project.key}\\s+\\S.*\\soutdated\\s`));
   });
 
   test('(+) preview takes an explicit dir', async () => {

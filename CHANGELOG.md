@@ -147,11 +147,14 @@ Fixes:
   `remain-on-exit` no longer counts as running, toward the agent limits or for the duplicate-name check. When tmux
   fails for any other reason than "no server running", Spawn agent refuses with tmux's own message instead of skipping
   the limits.
-- **Projects with an `AGENTS.md` keep it working.** Claude Code reads `AGENTS.md` only while a project has no `CLAUDE.md`,
-  so Apply rules now gives a project with only `AGENTS.md` a new `CLAUDE.md` that imports it: `@AGENTS.md`, then
-  `@rules/orchestration.md` (Claude Code's own way to share one file with other tools). nika never writes, backs up or
-  reads `AGENTS.md`; it only checks that it is a regular file. A project with a `CLAUDE.md` gets the line in `CLAUDE.md`
-  only, as before. A symlinked `AGENTS.md` with no `CLAUDE.md` is refused, and so is a folder or other non-file of that name.
+- **Rules reach `AGENTS.md` as well as `CLAUDE.md`, and Claude loads them once.** Apply rules adds the
+  `@rules/orchestration.md` line to `AGENTS.md` too (other coding tools read it), with the same preview, hash check and
+  backup as `CLAUDE.md`, and the preview lists both files. Claude Code reads `AGENTS.md` only while a project has no
+  `CLAUDE.md`, so a project with only `AGENTS.md` also gets a new `CLAUDE.md` that is just `@AGENTS.md` (Claude Code's own
+  way to share one file with other tools); `AGENTS.md` is written first. A `CLAUDE.md` that already imports `@AGENTS.md`
+  is left as it is: it gets the rules through the import, and the preview says so. A symlinked `AGENTS.md`, or a folder or
+  other non-file of that name, is skipped with a note when a `CLAUDE.md` exists and refused when it does not. "Rules
+  outdated" now also means that `CLAUDE.md` or `AGENTS.md` lacks the rules line.
 - **Linux: the window keys work.** Ctrl+Q quits nika, Ctrl+W closes the window, and Ctrl+Plus (or Ctrl+=), Ctrl+Minus
   and Ctrl+0 zoom, on every page; in Type into pane Ctrl+W still goes to Claude. The page asks the app through a new
   app-tier route, `POST /api/app/window`, which sends the shell one `window` line over stdio; the shell ignores any other
@@ -167,9 +170,9 @@ Fixes:
 - **macOS: a held key repeats** in nika's window instead of opening the accent popup. The app turns the press-and-hold
   popup off for its own process only, in memory; nothing is written to your preferences. Accents still work with the
   Option key. New dependency: `objc2-foundation` 0.3.2 (macOS only, already in the lock file through Tauri).
-- **Project page: a Setup drawer on narrow windows.** At 1030 px and narrower the Rules, Project setup and New agents cards no
-  longer stack under the agents: a **Setup** button next to Spawn sub-orchestrator opens them in a side drawer (Esc, × or a
-  click outside closes it). Choose plugins…, Choose models… and Preview rules open on top of it and give the focus back to
+- **Project page: a Settings drawer on narrow windows.** At 1030 px and narrower the Rules, Project setup and New agents cards no
+  longer stack under the agents: a **Settings** button (gear) at the right of the title row, before Show ended, opens them in
+  a side drawer (Esc, × or a click outside closes it). Choose plugins…, Choose models… and Preview rules open on top of it and give the focus back to
   their button. Above 1030 px nothing changes. In the drawer, Esc closes an open value menu before the drawer, and a menu that
   does not fit below its button and does not fit above it in a short window opens below and scrolls into view instead of being cut off.
 - **Tooltips on icon-only controls.** Every control that shows an icon or a symbol and no words now says what it is on hover: the

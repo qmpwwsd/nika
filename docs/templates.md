@@ -1,7 +1,7 @@
 # Rules template
 
 "Apply rules" copies a generic orchestration rules file into a registered project and wires it into the project's
-`CLAUDE.md` (a project with only an `AGENTS.md` gets a new `CLAUDE.md` that imports it). Code: `src/rules.js`, `src/diff.js`, `src/fwrite.js`. Contract: `docs/contracts/api-app.md` §3 and §9;
+`CLAUDE.md` and `AGENTS.md` (a project with only an `AGENTS.md` gets a new `CLAUDE.md` that imports it). Code: `src/rules.js`, `src/diff.js`, `src/fwrite.js`. Contract: `docs/contracts/api-app.md` §3 and §9;
 write policy: ADR 0006.
 
 ## What gets written
@@ -11,26 +11,32 @@ Exactly these files, relative to the project folder (the realpath taken when the
 | File | Change |
 |---|---|
 | `rules/orchestration.md` | the rendered template, with a marker line (below) |
-| `CLAUDE.md` | one line `@rules/orchestration.md` is appended (after a blank line) unless a line with exactly that text, ignoring surrounding spaces, is already there; a new file is created when the project has none (its content is below) |
+| `AGENTS.md` | only an existing regular file: the same one line `@rules/orchestration.md` is appended (after a blank line) unless it is already there. nika never creates an `AGENTS.md` |
+| `CLAUDE.md` | one line `@rules/orchestration.md` is appended (after a blank line) unless a line with exactly that text, ignoring surrounding spaces, is already there, or the file imports `AGENTS.md` (below); a new file is created when the project has none (its content is below) |
 | `.claude/settings.local.json` | only `enabledPlugins` (below) |
 | `.gitignore` | optional, off by default: one line `.claude/settings.local.json` when the file is not already covered |
 
-Why `AGENTS.md` (0.4.0): Claude Code reads `AGENTS.md` only when the project has no `CLAUDE.md`; with a `CLAUDE.md` it reads
-only that. A `CLAUDE.md` that imports `@AGENTS.md` loads it through the import, so nika uses Claude Code's own "share one
-file" recipe. nika never writes, backs up or reads the content of `AGENTS.md`; it only checks its type (absent, regular
-file, symlink) without following it. The cases:
+Why both (0.4.0): other coding tools read `AGENTS.md`, Claude Code reads `CLAUDE.md` (it reads `AGENTS.md` only when the
+project has no `CLAUDE.md`, or through an `@AGENTS.md` import, which "never makes Claude read `AGENTS.md` twice"). So both
+files carry the rules, both appear in the preview, and Claude must still load the rules once. nika reads and writes
+`AGENTS.md` only when it is a regular file, exactly like `CLAUDE.md` (safe read, hash, backup, modes). An *import line* is a
+line that, trimmed, is exactly `@AGENTS.md` or `@./AGENTS.md`. The cases:
 
 | The project has | nika writes |
 |---|---|
-| a `CLAUDE.md` (with or without `AGENTS.md`) | the `@rules/orchestration.md` line into `CLAUDE.md` only |
-| a regular-file `AGENTS.md` and no `CLAUDE.md` | a new `CLAUDE.md` whose whole content is `@AGENTS.md` and `@rules/orchestration.md` (one per line) |
+| only a regular `AGENTS.md` | the rules line into `AGENTS.md`; a new `CLAUDE.md` whose whole content is `@AGENTS.md` |
+| both, `CLAUDE.md` has no import line | the rules line into both |
+| both, `CLAUDE.md` has an import line | the rules line into `AGENTS.md` only; `CLAUDE.md` is left as it is (the preview says "Gets the rules through @AGENTS.md."), even when it has no rules line: nika never adds one there, and never removes one |
+| only a `CLAUDE.md` (even with an import line and no `AGENTS.md`) | the rules line into `CLAUDE.md` |
 | neither | a new `CLAUDE.md` with `@rules/orchestration.md` |
-| a symlinked `AGENTS.md` and no `CLAUDE.md` | nothing: the apply is refused (`ESYMLINK`) |
+| a symlink, folder or FIFO named `AGENTS.md`, and a `CLAUDE.md` | `AGENTS.md` is listed as skipped with a note and not followed; the rules line goes into `CLAUDE.md` |
+| a symlink (or folder, FIFO) named `AGENTS.md`, and no `CLAUDE.md` | nothing: the apply is refused (`ESYMLINK` / `ENOTREG`) |
 
-The new `CLAUDE.md` goes through the same preview, hash check, backup and `verifyInside` as every target. A symlinked
-`AGENTS.md` beside a `CLAUDE.md` is not mentioned. If `AGENTS.md` appears, disappears or changes type between the preview
-and the apply, the apply is refused and nothing is written. A Claude Code version that does not read a lone `AGENTS.md` by itself
-(older than 2.1.277) still loads it through the import.
+`AGENTS.md` is written before `CLAUDE.md`, so a `CLAUDE.md` that imports it never lands while it lacks the rules line. A
+project's rules badge reads current only when the rules file is current and every regular instruction file carries the rules
+(`CLAUDE.md` has the line, or imports `AGENTS.md` while `AGENTS.md` has it; a regular `AGENTS.md` has it). If
+`AGENTS.md` appears, disappears, changes or changes type between the preview and the apply, the apply is refused and nothing
+is written.
 
 nika never runs git. Nothing is committed, staged or pushed. Folders it creates are 0755. File modes never widen: a file
 that exists keeps its mode with group and other write bits cleared (`mode & ~0o022`, so an existing 0600
@@ -71,9 +77,11 @@ The first line of the written file is
 | State | Meaning |
 |---|---|
 | `none` | no file |
-| `nika` | marker present, the hash matches the body, template version is current |
-| `outdated` | marker present, body unmodified, written by an older template version |
+| `nika` | marker present, the hash matches the body, template version is current, and every regular instruction file carries the rules (below) |
+| `outdated` | marker present, body unmodified, written by an older template version; or current but a regular `CLAUDE.md` / `AGENTS.md` that Apply would still change |
 | `foreign` | anything else: no marker, a body edited by hand, a newer version, or a file that cannot be read safely |
+
+The instruction files count the way Apply plans them: `AGENTS.md` (when regular) has the rules line; `CLAUDE.md` has the line, or has an import line while a regular `AGENTS.md` has it; a missing `CLAUDE.md` counts as not covered (Apply would create it). A non-regular `AGENTS.md` beside a `CLAUDE.md` is ignored; a project Apply would refuse (an unreadable instruction file, a lone symlinked `AGENTS.md`) is judged by the rules file alone.
 
 `TEMPLATE_VERSION` (in `src/rules.js`) is bumped when the built-in template or its placeholder set changes. The state says
 who wrote the file; whether a write is needed is the preview's `action` (a `nika` file still shows `update` after a
@@ -104,9 +112,9 @@ Only `enabledPlugins` is written, and only for projects that have a plugin selec
 
 ## Preview, hash and apply
 
-`preview` reads the project and returns, for each of the four files, `action` (`create`, `update`, `unchanged`), a unified
+`preview` reads the project and returns, for each file it plans, `action` (`create`, `update`, `unchanged`, `skipped` for a non-regular `AGENTS.md`), a unified
 diff (`src/diff.js`, 3 lines of context, `--- a/<path>` / `+++ b/<path>`), plus `foreign`, `keysPreserved` and `optional`
-flags, `warnings`, the `backupDir` and a `hash`. The hash is a sha256 over every listed file's path, the hash of its
+flags, a `note` on a skipped `AGENTS.md` and on a `CLAUDE.md` that gets the rules through `@AGENTS.md`, `warnings`, the `backupDir` and a `hash`. The hash is a sha256 over every listed file's path, the hash of its
 current content and the content planned for it, so it changes when the project files or the settings that feed the
 template change.
 

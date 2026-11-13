@@ -24,6 +24,8 @@ const SETTINGS = '.claude/settings.local.json';
 const GITIGNORE = '.gitignore';
 const IMPORT_LINE = '@rules/orchestration.md';
 const AGENTS_IMPORT = '@AGENTS.md';
+const AGENTS_IMPORT_DOT = '@./AGENTS.md';
+const VIA_NOTE = 'Gets the rules through @AGENTS.md.';
 const FILE_MAX = 1024 * 1024;
 const BACKUPS_KEEP = 10; // backup folders kept per project
 const TEMPLATE_MAX = 256 * 1024;
@@ -88,17 +90,14 @@ async function readTarget(dir, rel) {
 }
 
 /**
- * AGENTS.md is never read, written, backed up or followed: only its type matters (lstat, no follow), because Claude reads it
- * only while the project has no CLAUDE.md. `absent`, `file` or `link`; a folder, FIFO or socket is refused like any
- * non-regular target.
+ * AGENTS.md is never followed and a FIFO is never opened: its type comes from lstat first. `absent`, `file`, `link` (a symlink)
+ * or `other` (folder, FIFO, socket). Only a `file` is read (through readTarget) or written, like CLAUDE.md.
  */
 async function agentsKind(dir) {
   const { abs } = await checkComponents(dir, AGENTS);
   const st = await fs.lstat(abs).catch((err) => (err.code === 'ENOENT' ? null : Promise.reject(err)));
   if (st === null) return 'absent';
-  if (st.isSymbolicLink()) return 'link';
-  if (!st.isFile()) throw Object.assign(new Error(`${AGENTS} is not a regular file`), { code: 'ENOTREG' });
-  return 'file';
+  return st.isSymbolicLink() ? 'link' : st.isFile() ? 'file' : 'other';
 }
 
 // -------------------------------------------------------------------------------------------------------------- template
@@ -165,14 +164,58 @@ function classify(text) {
 
 // ----------------------------------------------------------------------------------------------------- planned file bodies
 
-/** CLAUDE.md with the rules import; a new one also imports AGENTS.md first when `withAgents` (a lone AGENTS.md, see plan()). */
-function importWith(current, withAgents = false) {
-  if (current === null) return withAgents ? `${AGENTS_IMPORT}\n${IMPORT_LINE}\n` : `${IMPORT_LINE}\n`;
-  if (current.split('\n').some((l) => l.trim() === IMPORT_LINE)) return current;
+/** True when a line of `text`, trimmed, is exactly one of `lines`. */
+const hasLine = (text, ...lines) => text.split('\n').some((l) => lines.includes(l.trim()));
+
+/** CLAUDE.md or AGENTS.md with the rules import (`current` null: a new file with just the line). */
+function importWith(current) {
+  if (current === null) return `${IMPORT_LINE}\n`;
+  if (hasLine(current, IMPORT_LINE)) return current;
   let t = current;
   if (t !== '' && !t.endsWith('\n')) t += '\n';
   if (t !== '' && !t.endsWith('\n\n')) t += '\n';
   return `${t}${IMPORT_LINE}\n`;
+}
+
+/**
+ * CLAUDE.md and AGENTS.md (L = the line `@rules/orchestration.md`). Claude Code reads CLAUDE.md, other tools read AGENTS.md, so both
+ * carry the rules, and Claude must load them once: a CLAUDE.md that imports AGENTS.md gets them through it and is never given L
+ * itself. Entries come in write order, AGENTS.md first, so an importing CLAUDE.md never lands while AGENTS.md lacks L.
+ *   only a regular AGENTS.md          AGENTS.md gets L; a new CLAUDE.md is just `@AGENTS.md`
+ *   both, CLAUDE.md has no import      both get L
+ *   both, CLAUDE.md imports AGENTS.md  AGENTS.md gets L; CLAUDE.md is left as it is (never loses or gains a line)
+ *   only CLAUDE.md / neither           CLAUDE.md gets L (new, when absent)
+ * An AGENTS.md that is a symlink, folder, FIFO or other non-regular file is skipped beside a CLAUDE.md (which then gets L itself)
+ * and refuses the plan without one (nothing could be created that Claude would read it through). Shared by plan() and rulesState().
+ */
+async function planInstructions(dir) {
+  const claude = await readTarget(dir, CLAUDE);
+  const kind = await agentsKind(dir);
+  let text = null;
+  if (kind === 'file') {
+    text = await readTarget(dir, AGENTS);
+    if (text === null) throw fail(409, 'conflict', 'AGENTS.md changed while reading; preview again'); // gone since the lstat
+  }
+  if (claude === null && kind === 'link') {
+    throw fail(409, 'refused', 'AGENTS.md is a symlink and there is no CLAUDE.md; nika never follows links, so it cannot create a CLAUDE.md that imports it. Replace the link with a regular file, or create CLAUDE.md yourself, then apply again.', 'ESYMLINK');
+  }
+  if (claude === null && kind === 'other') {
+    throw fail(409, 'refused', 'AGENTS.md is not a regular file and there is no CLAUDE.md; nika cannot create a CLAUDE.md that imports it.', 'ENOTREG');
+  }
+  const files = [];
+  if (kind === 'file') files.push({ path: AGENTS, current: text, next: importWith(text) });
+  else if (kind !== 'absent') {
+    const note = kind === 'link'
+      ? 'AGENTS.md is a symbolic link; nika does not follow links, so it left it as it is.'
+      : 'AGENTS.md is not a regular file; nika left it as it is.';
+    files.push({ path: AGENTS, current: null, next: null, skip: true, extra: { note } });
+  }
+  if (kind === 'file' && claude !== null && hasLine(claude, AGENTS_IMPORT, AGENTS_IMPORT_DOT)) {
+    files.push({ path: CLAUDE, current: claude, next: claude, extra: { note: VIA_NOTE } });
+  } else {
+    files.push({ path: CLAUDE, current: claude, next: claude === null && kind === 'file' ? `${AGENTS_IMPORT}\n` : importWith(claude) });
+  }
+  return { kind, files };
 }
 
 function gitignoreWith(current) {
@@ -294,21 +337,14 @@ async function plan(project, ctx = {}) {
   const warnings = configWarnings.map((w) => `config: ${w}`);
 
   const files = [];
-  const add = (rel, current, next, extra = {}) => files.push({ path: rel, current, next, extra });
+  const add = (rel, current, next, extra = {}, skip = false) => files.push({ path: rel, current, next, extra, skip });
 
   const rulesNext = await renderRules(config, project, env);
   const rulesCurrent = await readTarget(dir, RULES);
   add(RULES, rulesCurrent, rulesNext, { foreign: rulesCurrent !== null && classify(rulesCurrent) === 'foreign' });
 
-  // Claude reads AGENTS.md only while no CLAUDE.md exists, so a CLAUDE.md that nika creates beside a lone AGENTS.md imports it
-  // first ("share one file"). AGENTS.md itself is never written; with a CLAUDE.md it is not looked at. A lone symlinked one is
-  // never followed: refused.
-  const claudeCurrent = await readTarget(dir, CLAUDE);
-  const agents = claudeCurrent === null ? await agentsKind(dir) : null;
-  if (agents === 'link') {
-    throw fail(409, 'refused', 'AGENTS.md is a symlink and there is no CLAUDE.md; nika never follows links, so it cannot create a CLAUDE.md that imports it. Replace the link with a regular file, or create CLAUDE.md yourself, then apply again.', 'ESYMLINK');
-  }
-  add(CLAUDE, claudeCurrent, importWith(claudeCurrent, agents === 'file'));
+  const instructions = await planInstructions(dir);
+  for (const f of instructions.files) add(f.path, f.current, f.next, f.extra, f.skip);
 
   // plugins are managed only for projects the user configured; no entry means enabledPlugins stays as it is
   const selected = config.perProject[project.key]?.plugins;
@@ -331,20 +367,33 @@ async function plan(project, ctx = {}) {
   }
 
   for (const f of files) {
-    f.action = f.next === null || f.next === f.current ? 'unchanged' : f.current === null ? 'create' : 'update';
+    f.action = f.skip ? 'skipped' : f.next === null || f.next === f.current ? 'unchanged' : f.current === null ? 'create' : 'update';
     let [from, to] = [f.current ?? '', f.next];
     if (f.path === SETTINGS) {
       ({ from, to, keptKeys: f.extra.keptKeys } = settingsView(f.current, f.next)); // the hash below still covers the whole file
     }
-    f.diff = f.action === 'unchanged' ? '' : unifiedDiff(from, to, f.path);
+    f.diff = f.action === 'unchanged' || f.action === 'skipped' ? '' : unifiedDiff(from, to, f.path);
   }
-  const hash = sha(JSON.stringify(files.map((f) => [f.path, f.current === null ? null : sha(f.current), f.next])));
-  return { files, hash, warnings, agents, backupDir: path.join(backupsDir(project.key, env), stamp(nowMs(ctx))) };
+  // the hash covers every file's content and the note too (a skipped AGENTS.md has no content; its note names its type)
+  const hash = sha(JSON.stringify(files.map((f) => [f.path, f.current === null ? null : sha(f.current), f.next, f.extra.note ?? null])));
+  return { files, hash, warnings, agents: instructions.kind, backupDir: path.join(backupsDir(project.key, env), stamp(nowMs(ctx))) };
 }
 
 // --------------------------------------------------------------------------------------------------------------- public
 
-/** `{ state, settingsIgnored, git }` for the project list. Never throws for a registered project: an unreadable rules file counts as foreign. */
+/** True when Apply would change none of CLAUDE.md and AGENTS.md. A plan Apply refuses (an unreadable or non-regular file) is nothing it could fix by writing. */
+async function instructionsCovered(dir) {
+  try {
+    return (await planInstructions(dir)).files.every((f) => f.skip || f.next === f.current);
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * `{ state, settingsIgnored, git }` for the project list. Never throws for a registered project: an unreadable rules file counts as
+ * foreign. `nika` (current) also needs every regular instruction file to carry the rules (planInstructions); else `outdated`.
+ */
 export async function rulesState(project) {
   const dir = project.dir;
   let state = 'none';
@@ -354,6 +403,7 @@ export async function rulesState(project) {
   } catch {
     state = 'foreign';
   }
+  if (state === 'nika' && !(await instructionsCovered(dir))) state = 'outdated';
   let settingsIgnored = false;
   try {
     settingsIgnored = isIgnored(await readTarget(dir, GITIGNORE));
@@ -414,16 +464,16 @@ export async function apply(project, opts, ctx = {}) {
 
     const dir = project.dir;
     const PROJ = { project: true, platform: ctx.platform, gid: ctx.gid }; // platform and gid are injectable for tests only
-    const todo = p.files.filter((f) => f.action !== 'unchanged' && (!f.extra.optional || opts.gitignore === true));
+    const todo = p.files.filter((f) => f.action !== 'unchanged' && f.action !== 'skipped' && (!f.extra.optional || opts.gitignore === true));
     backupDir = await freshBackupDir(p.backupDir);
     await ensureDir(dir, 0o755, PROJ); // the project root itself: world-writable is refused, nothing is created yet
     const prepared = [];
     for (const f of todo) {
       const c = await checkComponents(dir, f.path);
-      // the new CLAUDE.md was planned for the AGENTS.md type seen above (imports it, or must not exist beside it): a change turns it wrong.
-      // Checked here, before the first write (a check between writes could leave a half-applied project); an AGENTS.md created in the
-      // short gap until CLAUDE.md is written needs write access to the project folder (docs/security.md T50, same class as T8)
-      if (f.path === CLAUDE && f.current === null && (await agentsKind(dir)) !== p.agents) throw fail(409, 'conflict', 'AGENTS.md changed while applying; preview again');
+      // CLAUDE.md was planned for the AGENTS.md type seen above (a new one imports it, an existing one gets L or not because of it): a
+      // change turns the plan wrong. Checked here, before the first write (a check between writes could leave a half-applied project); an
+      // AGENTS.md swapped in the short gap until the writes needs write access to the project folder (docs/security.md T50, same class as T8)
+      if (f.path === CLAUDE && (await agentsKind(dir)) !== p.agents) throw fail(409, 'conflict', 'AGENTS.md changed while applying; preview again');
       if (await isRealDir(c.dir)) await ensureDir(c.dir, 0o755, PROJ);
       if ((await readText(c.abs, FILE_MAX)) !== f.current) throw fail(409, 'conflict', `${f.path} changed while applying; preview again`);
       await backupFile(c.abs, backupDir, f.path);
