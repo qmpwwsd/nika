@@ -31,7 +31,7 @@ the [desktop app](#desktop-app-02) are never available on `http://127.0.0.1:3335
 |---|---|
 | `nika` / `nika open` | open the desktop app when it is installed, else the browser dashboard (the server must be running); see [CLI (0.2)](#cli-02) |
 | `nika serve` | run the server in the foreground (what `brew services` runs) |
-| `nika status` | print agents grouped by project; `--json`, `--since 24h\|7d\|30d\|all`, `--ended`, `--full` |
+| `nika status` | print agents grouped by project: every project added to nika, and other folders while a session runs there; `--json`, `--since 24h\|7d\|30d\|all`, `--ended` (also ended agents and every folder), `--full` |
 | `nika --version` | print the version |
 
 ## CLI (0.2)
@@ -214,8 +214,8 @@ More: [docs/packaging.md](docs/packaging.md) (build details, signing, Linux pack
 - **Add a project.** The sidebar "+" (or `Mod+O`) opens the native folder picker. The project page notes when the folder is
   not a git repository. A new project has no orchestration rules yet: use **Apply rules** to preview the exact diffs, then
   confirm. nika writes only the files shown in the preview, keeps a backup outside the repository and never runs git.
-  The `@rules/orchestration.md` line goes into `CLAUDE.md`, and also into `AGENTS.md` when the project has one; a project
-  with only `AGENTS.md` gets no new `CLAUDE.md`, since Claude Code would then stop reading `AGENTS.md`.
+  The `@rules/orchestration.md` line goes into `CLAUDE.md`. A project with only `AGENTS.md` gets a new `CLAUDE.md` that
+  imports it (`@AGENTS.md`, then `@rules/orchestration.md`), so Claude Code keeps reading it; nika never writes `AGENTS.md`.
 - **Start an orchestrator / spawn an agent.** From a project: **Start orchestrator** opens its tmux session and pane
   (**Resume orchestrator** when the project has a saved one that ended);
   **Spawn agent** and **Spawn sub-orchestrator** open a side sheet (name, model, brief up to 64 KB, permission mode, pane placement). A project at its

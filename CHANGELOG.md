@@ -130,7 +130,10 @@ Fixes:
   dashboard, the project page and the browser dashboard until **Show ended** is on. The project page has its own remembered
   **Show ended** box (its Ended section no longer opens by itself). A row's subagent summary adds a muted "+N ended" while
   some are hidden. `nika status` lists no ended agents by default and says how many it hid: `--ended` shows the latest 5
-  per project, `--full` shows all of them. `--json` is unchanged.
+  per project, `--full` shows all of them. It always lists the projects you added to nika, even with only ended sessions
+  (you can resume them); a folder you never added shows only while a session runs there, and one line counts the others
+  ("… 3 folders not added to nika, with only ended sessions, hidden"). A `config.json` nika cannot use is named in a note.
+  `--json` is unchanged.
 - The project page's **New agents** card shows the permission mode as a chip with its own colour, icon and short word
   (Default, Manual, Accept edits, Plan, Auto, Don't ask), like the session header, instead of a sentence.
 - The session window's permission-mode switcher no longer has a "Mode" word in front of it.
@@ -144,11 +147,11 @@ Fixes:
   `remain-on-exit` no longer counts as running, toward the agent limits or for the duplicate-name check. When tmux
   fails for any other reason than "no server running", Spawn agent refuses with tmux's own message instead of skipping
   the limits.
-- **Apply rules also writes `AGENTS.md`.** Claude Code reads `AGENTS.md` only when a project has no `CLAUDE.md`, so
-  Apply no longer creates `CLAUDE.md` in a project that has only `AGENTS.md`: the `@rules/orchestration.md` line goes into
-  `AGENTS.md` instead, and into both files when both exist (same preview, hash check and backup). A symlinked `AGENTS.md`
-  beside `CLAUDE.md` is left alone and shown as skipped in the preview; a symlinked `AGENTS.md` with no `CLAUDE.md` is
-  refused. `nika rules apply` says "Nothing to apply." when only a skipped file is left.
+- **Projects with an `AGENTS.md` keep it working.** Claude Code reads `AGENTS.md` only while a project has no `CLAUDE.md`,
+  so Apply rules now gives a project with only `AGENTS.md` a new `CLAUDE.md` that imports it: `@AGENTS.md`, then
+  `@rules/orchestration.md` (Claude Code's own way to share one file with other tools). nika never writes, backs up or
+  reads `AGENTS.md`; it only checks that it is a regular file. A project with a `CLAUDE.md` gets the line in `CLAUDE.md`
+  only, as before. A symlinked `AGENTS.md` with no `CLAUDE.md` is refused, and so is a folder or other non-file of that name.
 - **Linux: the window keys work.** Ctrl+Q quits nika, Ctrl+W closes the window, and Ctrl+Plus (or Ctrl+=), Ctrl+Minus
   and Ctrl+0 zoom, on every page; in Type into pane Ctrl+W still goes to Claude. The page asks the app through a new
   app-tier route, `POST /api/app/window`, which sends the shell one `window` line over stdio; the shell ignores any other

@@ -703,7 +703,7 @@ const COMMANDS = {
     const added = o.ended ? null : await loadConfig(cx.env);
     const paint = painter(cx.out, cx.env);
     cx.out.write(renderStatus(snapshot, o, paint, added ? addedTo(added.config.projects) : undefined));
-    // a config.json nika could not use leaves no project "added": say so, or ended-only projects would vanish without a word
+    // config.json warnings (an unusable file leaves no project "added", a dropped key may drop one): said here, like nika doctor
     for (const w of added?.warnings ?? []) cx.out.write(`${paint.ended(`note: config.json: ${clean(w, 200)}`)}\n`);
     return 0;
   },
