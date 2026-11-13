@@ -777,6 +777,18 @@ describe('spawnAgent: a broken tmux listing, dead panes and a lost race (F4, fix
     assert.equal((await spawnWith('1', three)).status, 200);
   });
 
+  test('(−) a pane this server started that died after the check is no longer live: the same name spawns again', async () => {
+    const w = await world();
+    const exec = fakeTmux({ panes: BASE_PANES() });
+    const ctx = w.ctx(exec);
+    const first = await spawnAgent(req(w), ctx);
+    assert.deepEqual([first.status, first.body.pane], [200, '%20']);
+    assert.deepEqual([(await spawnAgent(req(w), ctx)).status], [409], 'alive: a duplicate');
+    exec.panes.find((p) => p.id === '%20').dead = '1'; // claude exits later; remain-on-exit keeps the pane listed
+    const again = await spawnAgent(req(w), ctx);
+    assert.deepEqual([again.status, again.body.pane], [200, '%21'], JSON.stringify(again.body));
+  });
+
   test('(−) a dead tagged agent pane does not make its name a duplicate', async () => {
     const w = await world();
     const live = await spawnAgent(req(w, { name: 'old' }), w.ctx(fakeTmux({ panes: [...BASE_PANES(), agent(w, '%31', 'old')] })));

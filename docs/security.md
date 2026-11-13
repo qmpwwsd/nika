@@ -102,11 +102,12 @@ Accepted, with the reason.
 - **j. A dead pane kept by `remain-on-exit` (0.4.0).** With tmux's `remain-on-exit` on, a pane whose claude has exited
   stays listed, keeps nika's tags, and tmux still names its command after its argv (so it "looks like claude"). nika
   skips such a pane (`#{pane_dead}`) when it looks for the orchestrator and when it counts agents for the limits, the
-  duplicate-name check and the parent; the 1 s check after Start, Resume and spawn reports it as `claude_exited`. The
-  pane mirror and the key routes still accept it while it is in the registry or was started by this process: keys to a
-  dead pane do nothing and the mirror shows its last screen. Accepted until 0.5 (the eligibility check will read
-  `#{pane_dead}` too), because no process receives the keys. Spawn may also start a tmux server (0.4.0): it runs with the
-  app child's own environment (constraint 13), the same as Start.
+  duplicate-name check and the parent, also when this process started it; the 1 s check after Start, Resume and spawn
+  reports it as `claude_exited`. The pane mirror and the key routes still accept it while it is in the registry or was
+  started by this process: keys to a dead pane do nothing and the mirror shows its last screen. Accepted for 0.4.0,
+  because no process receives the keys; the eligibility check reading `#{pane_dead}` is planned for 0.5. Spawn may also
+  start a tmux server (0.4.0): from the app it runs with the app child's own environment (constraint 13), the same as
+  Start; from the CLI, with the CLI's environment.
 - **k. The window route has no rate limit (0.4.0).** `POST /api/app/window` writes one stdio line per call, at whatever
   speed the caller sends. Only a holder of the app secret can call it, the body is one of six fixed actions, the shell
   clamps zoom to 0.5–3.0, and quit, close and minimize act once. A caller with the secret can already do far more.

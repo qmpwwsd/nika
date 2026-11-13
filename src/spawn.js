@@ -114,6 +114,7 @@ function liveAgents(ctx, key, tags, panes) {
   }
   for (const [pane, rec] of ctx.started ?? []) {
     if (!panes.has(pane)) ctx.started.delete(pane);
+    else if (!tags.has(pane)) continue; // dead (remain-on-exit): readTags left it out, so it is not live even though this process started it
     else if (rec.key === key && (rec.role === 'agent' || rec.role === SUB_ROLE)) live.set(pane, { pane, name: rec.name, role: rec.role, parent: rec.parent ?? null, depth: rec.depth ?? null });
   }
   return [...live.values()];
