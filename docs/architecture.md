@@ -186,7 +186,7 @@ latency. `--optimize-for-size` saved about 10 MB more but made history requests 
 | `tokens.css`, `app.css`, `session.css` | Design tokens and styles (light, dark, system). |
 | `api.js` | The only client of the app tier: takes the secret once and sends `X-Nika-App`. In the browser tier it refuses to run. |
 | `app-copy.js` | The Add to Applications banner: which banner `appCopy` shows and its fixed copy. Pure; the two POSTs live in `project.js`. |
-| `dash-model.js` | The Show ended rule of the dashboard and the project page (`endedPlan`, `resetEndedState(view)`; ended sessions and finished subagents stay hidden until it is on), the sidebar's Projects and Detected lists (`sidebarModel`) and the orchestrator's state and badge (`orchState`, `savedPick`, `otherRunning`, `roleTag`, `ROLE_TAGS`). Pure, both tiers. |
+| `dash-model.js` | The Show ended rule of the dashboard and the project page (`endedPlan`, `resetEndedState`, per view; ended sessions and finished subagents stay hidden until it is on), the sidebar's Projects and Detected lists (`sidebarModel`) and the orchestrator's state and badge (`orchState`, `savedPick`, `otherRunning`, `roleTag`, `ROLE_TAGS`). Pure, both tiers. |
 | `app.js` | Main page: shell, dashboard (in the app tier: mode tags, the row menu's End and the Add to Applications banner), router, the poll loop and the Keyboard shortcuts keys. Runs in both tiers. |
 | `ui.js` | Shared state and widgets for the main page. |
 | `dom.js` | `h()`: builds DOM with `textContent`, never parses markup; `roleTagEl()` draws the orchestrator badge. |

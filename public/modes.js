@@ -67,19 +67,22 @@ export const bypassTag = () => modeEl('bypassPermissions');
 export const modeEl = (mode, opts) => chipEl(MODE_META[modeKey(mode)], opts);
 
 // `default` is a Settings value (Claude Code's own default, no flag), not a mode a pane can be in, so it stays out of MODE_META and modeKey
-// still calls it unknown. It gets the neutral Manual colour (Claude Code asks every time by default), the gear icon and its own word.
-const SETTING_DEFAULT = { label: 'Default', icon: 'gear', cls: 'm-manual' };
+// still calls it unknown. Like every state it has its own colour (tokens.css .m-default), icon (gear) and word.
+const SETTING_DEFAULT = { label: 'Default', icon: 'gear', cls: 'm-default' };
 
-/** The chip for a Settings value (the project page's New agents card): the pane modes through modeEl's look, plus `default`. */
-export const settingModeEl = (value) => chipEl(value === 'default' ? SETTING_DEFAULT : MODE_META[modeKey(value)]);
+/**
+ * The chip for a Settings value (the project page's New agents card): the pane modes through modeEl's look, plus `default`.
+ * The card's own label already says "Permission mode", so the chip does not say it again to a screen reader (the title keeps it).
+ */
+export const settingModeEl = (value) => chipEl(value === 'default' ? SETTING_DEFAULT : MODE_META[modeKey(value)], { named: false });
 
-function chipEl(meta, { confirmed = true, compact = false, iconOnly = false } = {}) {
+function chipEl(meta, { confirmed = true, compact = false, iconOnly = false, named = true } = {}) {
   const sure = confirmed === true;
   const title = `Permission mode: ${meta.label}${sure ? '' : " (not confirmed: Claude's footer is covered or not shown yet)"}`;
   const quiet = compact || iconOnly;
   return h('span', { class: `mode ${meta.cls}${iconOnly ? ' icon-only' : ''}`, 'data-confirmed': String(sure), title },
     icon(meta.icon),
-    h('span', { class: 'sr-only', text: 'Permission mode: ' }),
+    named && h('span', { class: 'sr-only', text: 'Permission mode: ' }),
     h('span', { class: iconOnly ? 'sr-only' : 'ml', text: meta.label }),
     !sure && (quiet ? h('span', { class: 'sr-only', text: ', unconfirmed' }) : h('span', { class: 'mnote', text: 'unconfirmed' })));
 }

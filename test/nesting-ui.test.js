@@ -991,14 +991,14 @@ describe('Settings, the New agents card and Remove project (design 2.5)', () => 
   test('(+) the New agents card: Permission mode, Pane, Per orchestrator, Spawned from nika, This project', () => {
     const r = projRig();
     assert.deepEqual(cardRows(newAgents(r)), [
-      ['Permission mode', 'Permission mode: Default'], ['Pane', 'Beside'], ['Per orchestrator', '3 at once'], ['Spawned from nika', '0 of 3'], ['This project', '3 of 9 running'],
+      ['Permission mode', 'Default'], ['Pane', 'Beside'], ['Per orchestrator', '3 at once'], ['Spawned from nika', '0 of 3'], ['This project', '3 of 9 running'],
     ]);
     assert.equal(newAgents(r).all(withClass('limit')).length, 0, 'no note below the limits');
   });
 
   // F6: the card shows the mode as the session header's chip (colour class, icon, short word), not as a sentence. Written out here on purpose.
   const CHIPS = {
-    default: ['m-manual', '#i-gear', 'Default'],
+    default: ['m-default', '#i-gear', 'Default'],
     manual: ['m-manual', '#i-m-manual', 'Manual'],
     acceptEdits: ['m-edits', '#i-m-edits', 'Accept edits'],
     plan: ['m-plan', '#i-m-plan', 'Plan'],
@@ -1019,13 +1019,13 @@ describe('Settings, the New agents card and Remove project (design 2.5)', () => 
     }
   });
 
-  test('(+) the chip is the one the session header builds (modeEl): same class, text and title as the real element', () => {
+  test('(+) the chip is the one the session header builds (modeEl): same class and title; its text drops only the spoken "Permission mode: ", which the card\'s label says', () => {
     for (const mode of ['manual', 'acceptEdits', 'plan', 'auto', 'dontAsk']) {
       const r = projRig({ settings: { ...SETTINGS, permissionMode: mode } });
       const chip = newAgents(r).all(withClass('mode'))[0];
       const header = modeEl(mode);
       assert.equal(chip.className, header.className, mode);
-      assert.equal(chip.textContent, header.textContent, mode);
+      assert.equal(`Permission mode: ${chip.textContent}`, header.textContent, mode);
       assert.equal(chip.attrs.title, header.attrs.title, mode);
     }
   });
