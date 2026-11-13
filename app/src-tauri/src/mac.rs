@@ -16,7 +16,7 @@ fn set_bool_in_argument_domain(key: &NSString, value: bool) {
     unsafe { defaults.setVolatileDomain_forName(&merged, domain) };
 }
 
-/// F3: a held key repeats instead of opening the accent popup. Call before any window or webview exists.
+/// A held key repeats instead of opening the accent popup. Call before any window or webview exists.
 pub fn disable_press_and_hold() {
     set_bool_in_argument_domain(ns_string!("ApplePressAndHoldEnabled"), false);
 }

@@ -603,7 +603,7 @@ fn app_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
 /* ---------- entry ---------- */
 
 pub fn run() {
-    // macOS: before any window or webview exists, so a held key repeats (F3)
+    // macOS: before any window or webview exists, so a held key repeats
     #[cfg(target_os = "macos")]
     mac::disable_press_and_hold();
     let hidden_launch = std::env::args().any(|a| a == "--hidden");
