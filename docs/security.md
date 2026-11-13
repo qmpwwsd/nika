@@ -99,6 +99,14 @@ Accepted, with the reason.
   account; nothing confines a prompt-injected agent's shell commands, and the deny lists (T3, T4) are advisory. Planned
   as an optional Settings switch (owner decision 2026-11-08). Until then the protection is the single-user trust
   model, the app secret and the permission mode you choose.
+- **j. A dead pane kept by `remain-on-exit` (0.4.0).** With tmux's `remain-on-exit` on, a pane whose claude has exited
+  stays listed, keeps nika's tags, and tmux still names its command after its argv (so it "looks like claude"). nika
+  skips such a pane (`#{pane_dead}`) when it looks for the orchestrator and when it counts agents for the limits, the
+  duplicate-name check and the parent; the 1 s check after Start, Resume and spawn reports it as `claude_exited`. The
+  pane mirror and the key routes still accept it while it is in the registry or was started by this process: keys to a
+  dead pane do nothing and the mirror shows its last screen. Accepted until 0.5 (the eligibility check will read
+  `#{pane_dead}` too), because no process receives the keys. Spawn may also start a tmux server (0.4.0): it runs with the
+  app child's own environment (constraint 13), the same as Start.
 
 ## Supply chain
 

@@ -14,6 +14,7 @@ import { ensureDir, writeAtomic } from './fwrite.js';
 import { openRegular, readAt, readHead } from './fsafe.js';
 import { listPanes } from './collect/tmux.js';
 import { clean } from './text.js';
+import { NO_TMUX_SERVER } from './tmuxerr.js';
 import { compactLaunch, compactEnv, PCT_ENV } from './compact.js';
 import { PROJECT_KEY, AGENT_NAME, parseAgentTag, MODEL_ID, TMUX_SESSION, PANE_ID, RC_PREFIX, RC_NAME, PERMISSION_MODES } from './ids.js';
 import { fail, binsMissing, tmux, tmuxFail, tagPane, earlyExit, sessionNameFor, reduceRc, permissionFlags, launchMode, tmuxLiteral } from './orchestrate.js';
@@ -22,9 +23,9 @@ const BRIEF_MAX = 64 * 1024;
 const AGENT_JSON_MAX = 4096;
 const GUARD_TEMPLATE = new URL('../templates/guard-prompt.txt', import.meta.url);
 const GUARD_ORCHESTRATOR = new URL('../templates/guard-orchestrator.txt', import.meta.url);
-// tmux's record of nika's panes: pane id and the tags tagPane sets (`@nika-role`, `@nika-agent` = `<project key>/<name>`, `@nika-depth`,
-// `@nika-parent`), then the session and window names (free text, so last)
-const AGENT_LIST = '#{pane_id}\t#{@nika-role}\t#{@nika-agent}\t#{@nika-depth}\t#{@nika-parent}\t#{session_name}\t#{window_name}';
+// tmux's record of nika's panes: pane id, whether the pane is dead (remain-on-exit keeps it, tags and all), the tags tagPane sets
+// (`@nika-role`, `@nika-agent` = `<project key>/<name>`, `@nika-depth`, `@nika-parent`), then the session and window names (free text, so last)
+const AGENT_LIST = '#{pane_id}\t#{pane_dead}\t#{@nika-role}\t#{@nika-agent}\t#{@nika-depth}\t#{@nika-parent}\t#{session_name}\t#{window_name}';
 const DENIED_TOOLS = ['Bash(nika:*)', 'Bash(tmux:*)', 'Bash(claude:*)', 'Bash(git add:*)', 'Bash(git commit:*)', 'Bash(git push:*)'];
 // A sub-orchestrator may run `nika spawn` and `nika status` and nothing else of nika (advisory, like every list here: rules constraint 12)
 const SUB_ALLOWED = new Set(['spawn', 'status']);
@@ -85,13 +86,16 @@ function serial(key, fn) {
   return run;
 }
 
-/** `tmux list-panes -a` in AGENT_LIST form → Map<paneId, tags>. Every tag is kept as tmux wrote it: only an exact match is trusted later. */
+/**
+ * `tmux list-panes -a` in AGENT_LIST form → Map<paneId, tags>. Every tag is kept as tmux wrote it: only an exact match is trusted later.
+ * A dead pane (remain-on-exit) is left out, so it is never live (the caps, the duplicate-name check) and never a parent.
+ */
 async function readTags(ctx) {
   const { stdout } = await tmux(ctx, 'list-panes', '-a', '-F', AGENT_LIST);
   const tags = new Map();
   for (const line of String(stdout).split('\n')) {
-    const [pane, role = '', agent = '', depth = '', parent = '', session = '', ...window] = line.split('\t');
-    if (PANE_ID.test(pane ?? '')) tags.set(pane, { role, agent, depth, parent, session, window: window.join('\t') });
+    const [pane, dead = '', role = '', agent = '', depth = '', parent = '', session = '', ...window] = line.split('\t');
+    if (PANE_ID.test(pane ?? '') && dead.trim() !== '1') tags.set(pane, { role, agent, depth, parent, session, window: window.join('\t') });
   }
   return tags;
 }
@@ -168,16 +172,20 @@ async function lastPane(dir) {
 
 async function doSpawn(v, project, config, ctx) {
   const { panes, error } = await listPanes(ctx.exec, ctx.tmuxBin);
-  // A failed listing is "no panes yet" (no tmux server running): the spawn creates the project session below. listPanes cannot tell that from a
-  // missing binary, so tmux's own answer to the tag listing does: only ENOENT is "tmux unavailable"; any other failure surfaces as tmux_failed from new-session.
+  // A failed listing is "no panes yet" only when tmux says no server runs (NO_TMUX_SERVER): the spawn then creates the project session below.
+  // Any other failure fails closed (502 tmux_failed, nothing created): the parent, the depth and both caps are read from this listing, and
+  // an unreadable listing is not an empty one. listPanes keeps only a string, so the raw error comes from the tag listing: ENOENT is "tmux unavailable".
   let tags = null;
   if (error) {
+    let raw = null;
     try {
-      tags = await readTags(ctx);
+      await readTags(ctx);
     } catch (err) {
-      if (err?.code === 'ENOENT') return tmuxFail(err);
-      tags = new Map();
+      raw = err;
     }
+    if (!raw) return tmuxFail({ message: error.replace(/^tmux unavailable: /, '') }); // the two listings disagree: trust neither
+    if (raw.code === 'ENOENT' || !NO_TMUX_SERVER.test(String(raw.stderr || raw.message || ''))) return tmuxFail(raw);
+    tags = new Map();
   }
 
   // Where the pane goes: -t is `=<session>:` (beside) or a pane id (below another pane).

@@ -787,6 +787,16 @@ describe('startOrchestrator: the early-exit check (F4)', () => {
     assert.deepEqual([ctx.slept, live.slept, found.of('display-message').length], [[], [], 0]);
   });
 
+  test('(−) Start losing a race ("duplicate session" from new-session): 502 tmux_failed, nothing recorded, no pick, no check', async () => {
+    const w = await world();
+    const base = fakeTmux({ panes: [ZSH] });
+    const exec = async (cmd, args) => (args[1] === 'has-session' ? Promise.reject(Object.assign(new Error('x'), { code: 1, stderr: "can't find session: My-App\n" })) : base(cmd, args)); // it did not exist a moment ago
+    const ctx = w.ctx(exec);
+    const r = await startOrchestrator(w.project.key, ctx);
+    assert.deepEqual([r.status, r.body.error, r.body.message], [502, 'tmux_failed', 'tmux failed: duplicate session: My-App']);
+    assert.deepEqual([ctx.started.size, ctx.slept, base.of('display-message').length, await pickNow(w)], [0, [], 0, null]);
+  });
+
   test('(−) new-session or new-window failing is still 502 tmux_failed (no wait); a missing tmux binary is 503 tmux_unavailable', async () => {
     const w = await world();
     const ctx = w.ctx(fakeTmux({ failOn: ['new-session'] }));
