@@ -34,7 +34,10 @@ Orchestration (desktop app):
   row shows how many are hidden and how many of them need you. A sub-orchestrator whose parent has ended stays in the list
   with a "parent ended" mark. Ended agents, the "Waiting on you" queue and any filter stay flat. In a flat list a row whose
   parent is running says "under <parent>"; an ended agent has no parent, so its row does not. Projects where no agent has a
-  parent look the same as before. The sub-orchestrator badge now comes from the session's role, not from its depth.
+  parent look the same as before. The sub-orchestrator badge now comes from the session's role, not from its depth. Names stay
+  whole at every width: the role badge shows its short word ("orch", "sub-orch") unless the name cell can hold the long one,
+  the context column fits the warn icon and a three-digit percent, and on a row that needs you the attention text ("waiting")
+  stays whole: the branch and project chips give way first, and the branch chip drops out when the cell is narrow.
 - **Spawn a sub-orchestrator (desktop app).** The project page has a **Spawn sub-orchestrator** button next to Spawn agent,
   and the orchestrator's row menu has **Spawn agent under…** and **Spawn sub-orchestrator under…**; a sub-orchestrator's
   menu has **Spawn agent under…**. The spawn sheet shows the parent, lets you choose Agent or Sub-orchestrator (the second
@@ -90,8 +93,8 @@ Context (both tiers):
   meter ("Context 312k / 400k · 78 %"). Hover it for "Context: 312k of 400k tokens (compacts at 320k)"; a screen reader hears
   "Context 78 % used, 312k of 400k tokens, compacts at 320k" and "nearly full" from 80 %.
 - The percentage is measured against the window auto-compact uses: your Settings window (cut to the model's own) when
-  auto-compact is on, the model's full window when it is off. For a session nika started, 80 % therefore means it is about to
-  compact. A session you started yourself, or one that has ended, is measured against the same window, but nika's setting
+  auto-compact is on, the model's full window when it is off. With the default 80 % setting, 80 % means a session nika started is about to
+  compact; the tooltip always says where it compacts. A session you started yourself, or one that has ended, is measured against the same window, but nika's setting
   does not act on it, so its tooltip says nothing about compacting. Narrow rows drop the bar and keep the percentage.
 - The numbers come from the `usage` of the last assistant entry in the transcript tail. The browser tier shows them too: it
   now reads the compaction setting from nika's own `config.json`, and sends token counts and the model's window per session,
@@ -99,13 +102,8 @@ Context (both tiers):
 - API: agents in `GET /api/agents` (both tiers) gain `context` (`tokens`, `window`, `compactAt`, `pct`, `compaction`). See
   `docs/contracts/api-app.md`.
 
-Fixes:
+Packaging:
 
-- Names in the agent tree are no longer squeezed. The name column of a row is wider (taking room from the `what` column), so a
-  sub-orchestrator and the agents under it show their names in full; the role badge shows its short word ("orch",
-  "sub-orch") unless the name cell is wide enough for the long one, and the context column is wide enough for the warn icon
-  and a three-digit percent at every width. On a row that needs you, the attention text ("waiting") stays whole: the branch
-  and project chips give way first, and the branch chip drops out when the cell is narrow.
 - The `.deb` now depends on `tmux (>= 3.2)`, the version auto-compact needs, and `nika doctor` warns on its tmux row when tmux
   is older than 3.2 ("tmux 3.1 is older than 3.2: nika's auto-compact needs 3.2 or newer"). A version it cannot read shows
   "version unknown" and no warning.

@@ -306,6 +306,20 @@ details.ended > summary:hover { color: var(--text); }
   .row[data-depth="2"] .elbow { margin-left: 4px; }
   .row[data-depth="3"] .elbow { margin-left: 16px; }
 }
+/* the app tier's wide grid needs 864 px (its floors add up to 748 + 8 gaps + the padding), so it hands over to the narrow grid at 1010 px: from there up the what cell is at least 147 px; the same rules as the 860 block, app tier only */
+@container rows (max-width: 1010px) {
+  body[data-tier="app"] .row { grid-template-columns: 22px 24px minmax(208px, 1.1fr) 56px minmax(0, 2fr) 52px 32px; }
+  body[data-tier="app"] .c-ctx .ctx-bar { display: none; }
+  body[data-tier="app"] .row .st-l { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  body[data-tier="app"] .row .c-model, body[data-tier="app"] .row .c-pane { display: none; }
+  body[data-tier="app"] .row .c-mode .mode { padding: 0 4px; gap: 0; }
+  body[data-tier="app"] .row .c-mode .ml { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  body[data-tier="app"] .row .tag .tag-l { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  body[data-tier="app"] .row .tag .tag-s { display: inline; }
+  body[data-tier="app"] .elbow { width: 6px; margin-right: 2px; }
+  body[data-tier="app"] .row[data-depth="2"] .elbow { margin-left: 4px; }
+  body[data-tier="app"] .row[data-depth="3"] .elbow { margin-left: 16px; }
+}
 @container rows (max-width: 600px) {
   .row { column-gap: 6px; grid-template-columns: 22px minmax(0, 1fr) 56px 40px 32px; }
   body[data-tier="app"] .row { grid-template-columns: 22px 24px minmax(0, 1fr) 56px 40px 32px; }
@@ -444,7 +458,8 @@ dialog.dlg-plugins[open] { display: flex; flex-direction: column; }
 .savebar { position: sticky; bottom: 0; display: flex; align-items: center; gap: 8px; padding: 10px var(--sp-4); background: var(--surface); border-top: 1px solid var(--line); box-shadow: 0 -8px 16px -12px rgb(0 0 0 / 30%); }
 
 /* ---------- window width (the app's minimum window is 720 x 480) ---------- */
-@media (max-width: 1000px) {
+/* the list sits beside the cards only while it is 424 px wide or more: its rows (the 600 px grid) need a 198 px name cell for a sub-orchestrator row */
+@media (max-width: 1030px) {
   .proj-grid { grid-template-columns: minmax(0, 1fr); }
 }
 @media (max-width: 900px) {

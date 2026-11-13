@@ -218,7 +218,7 @@ More: [docs/packaging.md](docs/packaging.md) (build details, signing, Linux pack
 - **Settings** (`Mod+,`). Appearance (System, Light, Dark) and the **Single-key shortcuts** switch, the model per role (a
   list of current models and aliases, or a custom ID), Remote Control, default permission mode and pane placement, the
   agent limit per orchestrator, **Auto-compact** and the rules template: defaults for every project. The Save and Discard bar appears only after a change; invalid fields are marked in place.
-- **Project setup for a project.** On the project page, the **Project setup** card lists the plugins that project turns on and the models it sets for its roles; **Choose plugins…**
+- **Project setup.** On the project page, the **Project setup** card lists the plugins that project turns on and the models it sets for its roles; **Choose plugins…**
   opens a window to tick the plugins (filter, count, Save), **Choose models…** one to set a model per role. Plugins are written into the project's `.claude/settings.local.json` when you apply rules.
 - **Keyboard.** `Mod+1` dashboard, `Mod+,` settings, `Mod+O` add project, `Mod+F` filter, `Mod+[` (macOS) or `Alt+Left`
   (Linux) back (the project view and Settings go to the dashboard; the session window goes to its project, or the
@@ -269,7 +269,7 @@ The browser dashboard at `http://127.0.0.1:3335` shows the same list without any
   <img src="docs/screenshots/spawn-light.png" alt="The Spawn sub-orchestrator sheet over a project page: the parent (the project's orchestrator), the choice between Agent and Sub-orchestrator, a name, a model and a brief, and under the form the counts against each limit.">
 </picture>
 
-**Spawn agent, or sub-orchestrator.** A name, a model, the brief, a permission mode and where the pane opens; the sheet also shows the parent and lets you choose Agent or Sub-orchestrator, and its footer counts how many each limit allows ("planner: 3 of 5 · acme-api: 4 of 15 running"). The shot shows a sub-orchestrator started under the orchestrator. The session starts in a new tmux pane.
+**Spawn agent, or sub-orchestrator.** A name, a model, the brief, a permission mode and where the pane opens; the sheet also shows the parent and lets you choose Agent or Sub-orchestrator, and its footer counts how many each limit allows ("planner: 3 of 5 · acme-api: 4 of 15 running"). The shot shows a sub-orchestrator being started under the orchestrator. The session starts in a new tmux pane.
 
 ### Session window (0.3)
 
@@ -348,7 +348,7 @@ shows the tree and the context column, read-only.
   like the agents' list; see [docs/security.md](docs/security.md), T36).
 - **Limits.** **Agents per orchestrator** (Settings, 1 to 8) caps the agents and sub-orchestrators under each parent. A
   project as a whole runs at most three times that number, never more than 24. The spawn sheet shows both counts, and a
-  spawn that would pass a limit is off, with the reason beside it.
+  spawn that would pass a limit is off, with the reason as its tooltip.
 - **Models per project.** On the project page, **Project setup**, **Models** lists the roles this project sets and
   **Choose models…** changes them (Orchestrator, Reasoner, Builder, Scout; **Use default** follows Settings). They apply
   the next time nika starts or resumes the orchestrator, in the spawn sheet, and in `rules/orchestration.md` once you apply
@@ -357,11 +357,11 @@ shows the tree and the context column, read-only.
   after that (the orchestrator, agents, sub-orchestrators) compacts at that point; nika passes it two environment
   variables, `CLAUDE_CODE_AUTO_COMPACT_WINDOW` and `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`, and never your Claude settings.
   Sessions that are already running, and sessions you start yourself, keep Claude Code's own setting. It needs tmux 3.2 or
-  newer: on an older tmux the orchestrator will not start until you turn Auto-compact off. Why: [ADR 0014](docs/adr/0014-auto-compact-launch-env.md).
+  newer: on an older tmux the orchestrator may not start until you turn Auto-compact off. Why: [ADR 0014](docs/adr/0014-auto-compact-launch-env.md).
 - **Context column.** Every row on the dashboard and the project page, in the browser too, shows how much of the window
   the session's context fills: a percentage with a thin bar, amber from 60 %, red with a warning icon from 80 %, and "–"
-  while there is no usage yet. For a session nika started, 80 % means it is about to compact. The numbers come from the
-  last reply in the transcript (token counts only, no text).
+  while there is no usage yet. With the default 80 % setting, 80 % means a session nika started is about to compact; the
+  tooltip always says where it compacts. The numbers come from the last reply in the transcript (token counts only, no text).
 
 Why the tree works the way it does: [ADR 0013](docs/adr/0013-nested-orchestration.md).
 

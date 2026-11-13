@@ -482,7 +482,7 @@ Markup (`modeEl`): `span.mode.<cls>[data-confirmed][title]` > icon (`aria-hidden
 |---|---|---|
 | full | session header | icon + label (+ "unconfirmed") |
 | compact | dashboard rows ≥ 860 px | icon + label; an unconfirmed tag is hollow and dashed, the word "unconfirmed" goes to `.sr-only` and `title` (keeps the 128 px column) |
-| icon-only | dashboard rows ≤ 860 px | icon in the 24 px box, edge and fill as above; label in `.sr-only` + `title` (same rule as the status glyph in §3.3) |
+| icon-only | dashboard rows ≤ 860 px (app tier ≤ 1010 px) | icon in the 24 px box, edge and fill as above; label in `.sr-only` + `title` (same rule as the status glyph in §3.3) |
 
 #### 2.8.6 Confirmed, unconfirmed, unknown
 
@@ -552,11 +552,11 @@ Grid: status 104 · name ≥120 · model 64 · **(0.4) context 64 (§3.19)** · 
 | error | whole list at 60 % opacity + banner "Disconnected… reconnecting every 3 s" (stale data stays readable) |
 | 0 | "No agents in this project. [Start orchestrator] [Spawn agent]" inside the group |
 
-Container widths: ≤ 860 px hides model and pane columns and shows status as glyph only (the context column stays at 44 px, number only, no bar); ≤ 600 px moves the prompt to a second line.
+Container widths: ≤ 860 px (app tier: ≤ 1010 px) hides model and pane columns and shows status as glyph only (the context column stays at 56 px, number only, no bar); ≤ 600 px moves the prompt to a second line.
 
 **(0.4) Context** cell (`div.c-ctx`) right after the model, on both tiers: the meter of §3.19. Ended rows show their last value muted.
 
-**(0.4) Role badge** after the name (`roleTagEl(roleTag(a, pickId))`; markup and words in §3.16). At ≤ 860 px the long word is clipped like the mode label (still read by screen readers) and a short one shows.
+**(0.4) Role badge** after the name (`roleTagEl(roleTag(a, pickId))`; markup and words in §3.16). At ≤ 860 px (app tier ≤ 1010 px) the long word is clipped like the mode label (still read by screen readers) and a short one shows.
 
 **(0.4) Nesting.** A group whose live agents hang under each other draws one flat `ul.rows` in tree order, each row indented by its place in the tree (§3.17). A group where nothing nests is drawn exactly as before.
 
@@ -854,7 +854,7 @@ An orchestrator can have sub-orchestrators, and each parent has agents of its ow
 | row | `li.row[data-depth][aria-level]`, `id="row-<scope>-<agent id>"`, `hidden` while an ancestor is folded |
 | slot | a 24 × 24 box before the name: the collapse button `button.tree-tg` when the row has children, else `span.tree-sp[aria-hidden]` (names stay aligned) |
 | toggle | `aria-expanded`, `aria-controls` = the ids of every descendant row, in row order; label "Hide the 3 agents under planner" / "Show the 3 agents under planner, 1 needs you" (singular for 1); chevron `i-chev` turns −90° when folded; `data-fk="tree:<scope>:<id>"` |
-| elbow | `span.elbow[aria-hidden]` at level 2 and 3: the margins make the indent, 24 px a level (12 px at ≤ 860 px); a visually hidden ", under <parent>" follows the name |
+| elbow | `span.elbow[aria-hidden]` at level 2 and 3: the margins make the indent, 24 px a level (12 px at ≤ 860 px, app tier ≤ 1010 px); a visually hidden ", under <parent>" follows the name |
 | folded | the row shows `span.tree-hid[aria-hidden]` "+N", with the number of hidden agents that need you beside it (the attention diamond and `--attn`) |
 | orphan | a parent that is not running: the row is a root, keeps its role tag, and shows `span.tree-orphan` "parent ended" (title "This agent's parent session is no longer running.") |
 
@@ -980,7 +980,7 @@ Bar: `span.ctx-bar[data-q="0".."10"][aria-hidden] > i`, `q = min(10, round(pct /
 
 `full` adds ", nearly full" to the screen-reader text. A bad `compactAt` on `on` reads as `none`.
 
-**Rows.** Grids per container width (§9.9): the 64 px column sits after the model; at ≤ 860 px it is 44 px with the bar hidden; at ≤ 600 px it stays on
+**Rows.** Grids per container width (§9.9): the 64 px column sits after the model; at ≤ 860 px (app tier ≤ 1010 px) it is 56 px with the bar hidden; at ≤ 600 px it stays on
 line 1 beside the age. `.c-ctx { display: flex; justify-content: flex-end; }`; `.ctx` stacks the number over the bar. Ended rows: `--text-muted`
 number, `--line-strong` bar fill at every level. A stale list (error banner) is at 60 % opacity as a whole.
 
@@ -1300,7 +1300,8 @@ Window minimum: **720 × 480** (set `minWidth`/`minHeight` in the Tauri window c
 | Width | Shell | Dashboard rows | Project view | Session |
 |---|---|---|---|---|
 | ≥ 1280 | sidebar 232 | all 7 columns | agents + 320 px cards column | split 38 % / 62 % |
-| 1000–1279 | sidebar 232 | rows container ≤ 860: model + pane hidden, status glyph only | as above | split, transcript min 300 |
+| 1031–1279 | sidebar 232 | rows container ≤ 1010 (browser tier ≤ 860): model + pane hidden, status glyph only | as above | split, transcript min 300 |
+| 1000–1030 | sidebar 232 | as above | one column, cards below agents (0.4: beside the cards the list is under 424 px) | split, transcript min 300 |
 | 900–999 | sidebar 232 | as above | one column, cards below agents | **tabs**: Terminal (default) / Transcript |
 | 760–899 | 60 px icon rail, attention counts as corner badges, names in `title` + SR text | group action labels hidden (icon buttons) | one column | tabs; header labels hidden |
 | 720–759 | rail | rows ≤ 600: prompt on a 2nd line; path hidden | one column | tabs; hint line: the two short tips (§3.10) |
@@ -1663,7 +1664,7 @@ Confirm dialog, 440 px (§3.6), opened from the quick-actions row, the dashboard
 
 ```css
 .row { grid-template-columns: 104px 128px minmax(232px, 1.5fr) 88px 64px minmax(0, 2fr) 56px 44px 32px; }
-@container (max-width: 860px) {   /* status glyph, mode icon, name, context, what, age, ⋯ */
+@container (max-width: 1010px) {   /* app tier; the browser tier switches at 860px. Status glyph, mode icon, name, context, what, age, ⋯ */
   .row { grid-template-columns: 22px 24px minmax(208px, 1.1fr) 56px minmax(0, 2fr) 52px 32px; } }
 @container (max-width: 600px) {   /* what drops to line 2 under name */
   .row { column-gap: 6px; grid-template-columns: 22px 24px minmax(0, 1fr) 56px 40px 32px; }
@@ -1671,15 +1672,15 @@ Confirm dialog, 440 px (§3.6), opened from the quick-actions row, the dashboard
   .row .c-act { grid-row: 1; grid-column: 5; } }
 ```
 
-**(0.4)** The 64 px column after the model is the context meter (§3.19), on both tiers; at ≤ 860 px it is 56 px (the bar is hidden and the number stays), wide enough for the warn icon and a 3-digit percent ("⚠ 105 %" is 55 px). The browser tier has the same grids without the mode column
-(`104px minmax(232px, 1.5fr) 88px 64px minmax(0, 2fr) 56px 44px 32px`; ≤ 860 px `22px minmax(208px, 1.1fr) 56px minmax(0, 2fr) 52px 32px`; ≤ 600 px
+**(0.4)** The 64 px column after the model is the context meter (§3.19), on both tiers; in the narrow grids (≤ 860 px, in the app tier ≤ 1010 px) it is 56 px (the bar is hidden and the number stays), wide enough for the warn icon and a 3-digit percent ("⚠ 105 %" is 55 px). The app tier's wide grid needs 864 px (its floors add up to 748, plus 8 gaps of 12 and the 20 px padding), so it hands over to the narrow grid at 1010 px, where the `what` cell is still at least 147 px; with the narrow grid from 861 to 1010 px the rules of the 860 px block apply to the app tier. The browser tier has the same grids without the mode column
+(`104px minmax(232px, 1.5fr) 88px 64px minmax(0, 2fr) 56px 44px 32px`, at least 137 px of `what`; ≤ 860 px `22px minmax(208px, 1.1fr) 56px minmax(0, 2fr) 52px 32px`; ≤ 600 px
 `22px minmax(0, 1fr) 56px 40px 32px` with a 6 px column gap, age in column 4).
 
-**(0.4 names)** The name column takes room from the `what` column: its floor is 232 px wide and 208 px at ≤ 860 px, enough for a depth-3 name (`builder-2`) or a depth-2 sub-orchestrator row (`api-lead`) in full. The name cell (`.c-name`) is a size container: the role tag shows its long word ("orchestrator", "sub-orchestrator") only while the cell is at least 270 px wide and swaps to the short word ("orch", "sub-orch") below that, so the tag is whole or narrow, never clipped mid-word; the tag never shrinks, and `.name` keeps a floor of 9ch. The `what` cell (`.c-what`, also a size container) puts the text first: the project and "under <parent>" chips and the branch chip shrink 100 and 300 times faster than the text, an attention row's text never shrinks (it is cut at 60% of the cell, never below 14ch), the branch chip keeps a floor of 10ch and drops out when the cell is 188 px or less.
+**(0.4 names)** The name column takes room from the `what` column: its floor is 232 px wide and 208 px at ≤ 860 px, enough for a depth-3 name (`builder-2`) or a depth-2 sub-orchestrator row (`api-lead`) in full. The name cell (`.c-name`) is a size container: the role tag shows its long word ("orchestrator", "sub-orchestrator") only while the cell is at least 270 px wide and swaps to the short word ("orch", "sub-orch") below that, so the tag is whole or narrow, never clipped mid-word; the tag never shrinks, and `.name` keeps a floor of 9ch. The `what` cell (`.c-what`, also a size container) puts the text first. On every row the branch chip shrinks 100 times faster than the text, down to a floor of 10ch, and the branch chip and the "under <parent>" chip are not shown when the cell is 188 px or less. On a row that needs you the text never shrinks (it is cut at 60% of the cell, never below 14ch), and the project chip shrinks 100 times and the "under <parent>" chip 300 times faster than it; on every other row the project chip keeps its size. The project page puts its cards under the list at 1030 px or less (not 1000), so that its rows keep a 198 px name cell in the 600 px grid.
 
 - The compact tag (§2.8.5). Rows without an eligible pane (ended, not in tmux) leave the cell empty. Attention rows keep their tint and left bar; the tag keeps its own fill on top.
 - A "Needs you" row shows the held mode (the prompt covers the footer): hollow, dashed, its mode colour, "unconfirmed" in `.sr-only` and `title`. Never "Mode ?" unless nika has no reading at all (§2.8.6).
-- ≤ 860 px container: icon-only tag (24×24), next to the glyph-only status.
+- ≤ 860 px container (app tier ≤ 1010 px): icon-only tag (24×24), next to the glyph-only status.
 - Row SR text (§5.5) gains the mode after the status: "reviewer-2, Needs you: Asking to run a command, Accept edits mode, unconfirmed, model opus, demo-api, 4 minutes ago, pane %14". Confirmed: "Plan mode".
 - Row menu: "End session…" for live agents with an eligible pane (opens §9.8).
 

@@ -465,6 +465,26 @@ describe('row grids with the mode column (spec 9.9)', () => {
     assert.match(small, /body\[data-tier="app"\] \.row \.c-act \{ grid-row: 1; grid-column: 5; \}/);
   });
 
+  test('(+) app tier: its wide grid needs 864 px, so the narrow grid takes over at 1010 px with the same rules as the 860 px block (every rule has an app-tier twin)', () => {
+    assert.equal(104 + 128 + 232 + 88 + 64 + 56 + 44 + 32 + 8 * 12 + 20, 864, 'the floors of the app wide grid');
+    const norm = (t) => t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\s+/g, ' ').trim();
+    const narrow = norm(/@container rows \(max-width: 860px\) \{([^@]*?)\n\}/.exec(APP_CSS)?.[1] ?? '');
+    const app = norm(/@container rows \(max-width: 1010px\) \{([^@]*?)\n\}/.exec(APP_CSS)?.[1] ?? '');
+    assert.match(app, /^body\[data-tier="app"\] \.row \{ grid-template-columns: 22px 24px minmax\(208px, 1\.1fr\) 56px minmax\(0, 2fr\) 52px 32px; \}/);
+    const rules = [...narrow.matchAll(/([^{}]+)\{([^}]*)\}/g)].map((m) => [m[1].trim(), m[2].trim()]).filter(([sel]) => sel !== '.row' && !sel.startsWith('body[data-tier'));
+    assert.equal(rules.length, 10, 'the 860 px block has ten rules besides the two grids');
+    for (const [sel, decl] of rules) {
+      const twin = `${sel.split(',').map((s) => `body[data-tier="app"] ${s.trim()}`).join(', ')} { ${decl} }`;
+      assert.ok(app.includes(twin), `no app-tier twin for ${sel}`);
+    }
+    assert.equal([...app.matchAll(/([^{}]+)\{/g)].every((m) => m[1].split(',').every((s) => s.trim().startsWith('body[data-tier="app"]'))), true, 'the 1010 px block is app-tier only: the browser tier keeps 860 px');
+  });
+
+  test('(−) the project page stacks its cards under the list at 1030 px, not 1000: beside the list a 400 px list clipped the sub-orchestrator tag', () => {
+    assert.match(APP_CSS, /@media \(max-width: 1030px\) \{\s*\.proj-grid \{ grid-template-columns: minmax\(0, 1fr\); \}/);
+    assert.doesNotMatch(APP_CSS, /@media \(max-width: 1000px\) \{\s*\.proj-grid/);
+  });
+
   test('(+) at 860 px and below the tag is icon-only: the label leaves the layout but stays for screen readers and in the title', () => {
     const wide = /@container rows \(max-width: 860px\) \{([^@]*?)\n\}/.exec(APP_CSS)?.[1] ?? '';
     assert.match(wide, /\.row \.c-mode \.ml \{[^}]*position: absolute;[^}]*clip: rect\(0 0 0 0\)/);
