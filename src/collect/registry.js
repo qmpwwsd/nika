@@ -50,8 +50,9 @@ export async function readRegistry(claudeDir) {
     try {
       const entry = normalise(JSON.parse(await readHead(path.join(dir, n), MAX_BYTES)));
       if (entry) entries.push(entry); else skipped.push(n);
-    } catch {
-      skipped.push(n);
+    } catch (err) {
+      // Claude deletes <pid>.json when a session exits: a file gone since readdir is a session that ended, not a file nika skipped
+      if (err?.code !== 'ENOENT') skipped.push(n);
     }
   }));
   skipped.sort();
@@ -113,28 +114,35 @@ export async function procStarts(entries, readStat = defaultReadStat) {
   return starts;
 }
 
+const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-const LSTART = /^[A-Z][a-z]{2} ([A-Z][a-z]{2}) (\d{1,2}) (\d{2}):(\d{2}):(\d{2}) (\d{4})$/;
+const LSTART = new RegExp(`^(?:${WEEKDAYS.join('|')}) (${MONTHS.join('|')}) (\\d{1,2}) (\\d{2}):(\\d{2}):(\\d{2}) (\\d{4})$`);
+// Only an ISO date-time counts as a parsed instant: V8's Date.parse also reads nonsense such as "hello 1" as a date
+const ISO = /^\d{4}-\d{2}-\d{2}T/;
 
-/** Seconds since the epoch of a squashed `Www Mmm d hh:mm:ss yyyy` string read as UTC or as local time; NaN when it is not that shape. */
-function lstartSeconds(text, utc) {
-  const m = LSTART.exec(text);
-  const month = m ? MONTHS.indexOf(m[1]) : -1;
-  if (month < 0) return NaN;
-  const [day, hour, minute, second, year] = m.slice(2).map(Number);
-  return (utc ? Date.UTC(year, month, day, hour, minute, second) : new Date(year, month, day, hour, minute, second).getTime()) / 1000;
+/** `Www Mmm d hh:mm:ss yyyy` (ps's shape, whitespace squashed) of an instant, in UTC or in this process's local time. */
+function lstartText(ms, utc) {
+  const d = new Date(ms);
+  const [wd, mo, day, h, mi, sec, y] = utc
+    ? [d.getUTCDay(), d.getUTCMonth(), d.getUTCDate(), d.getUTCHours(), d.getUTCMinutes(), d.getUTCSeconds(), d.getUTCFullYear()]
+    : [d.getDay(), d.getMonth(), d.getDate(), d.getHours(), d.getMinutes(), d.getSeconds(), d.getFullYear()];
+  const two = (n) => String(n).padStart(2, '0');
+  return `${WEEKDAYS[wd]} ${MONTHS[mo]} ${day} ${two(h)}:${two(mi)}:${two(sec)} ${y}`;
 }
 
 /**
- * Whether the registry's `procStart` (squashed) names the instant `ps` printed. A date string is read as UTC and as local time
- * (Claude Code has been seen writing either); any other string `Date.parse` accepts (ISO) is compared to the second. A string nobody
- * can parse, or a `ps` text that is no date, cannot tell a reused pid from the process: it counts as the same, because ps listed the pid.
+ * Whether the registry's `procStart` (squashed) names the instant `ps` printed (`psText`, in UTC). A date string in ps's shape is
+ * compared as text with that instant written out in UTC and in local time (Claude Code has been seen writing either; a local time
+ * is never parsed back, because a repeated DST hour names two instants). An ISO date-time (`YYYY-MM-DDT…`) is compared to the second.
+ * Anything else, or a `ps` text that is no date, cannot tell a reused pid from the process: it counts as the same, because ps listed the pid.
  */
 function sameInstant(procStart, psText) {
-  const at = lstartSeconds(psText, true);
-  const mine = LSTART.test(procStart) ? [lstartSeconds(procStart, true), lstartSeconds(procStart, false)] : [Math.floor(Date.parse(procStart) / 1000)];
-  const known = mine.filter(Number.isFinite);
-  return !known.length || !Number.isFinite(at) || known.includes(at);
+  const m = LSTART.exec(psText);
+  if (!m) return true;
+  const at = Date.UTC(Number(m[6]), MONTHS.indexOf(m[1]), Number(m[2]), Number(m[3]), Number(m[4]), Number(m[5]));
+  if (LSTART.test(procStart)) return procStart === psText || procStart === lstartText(at, false);
+  const iso = ISO.test(procStart) ? Date.parse(procStart) : NaN;
+  return !Number.isFinite(iso) || Math.floor(iso / 1000) === at / 1000;
 }
 
 /**

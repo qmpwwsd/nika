@@ -473,7 +473,7 @@ dialog.dlg-plugins[open] { display: flex; flex-direction: column; }
   .nav a, .side-projects a { justify-content: center; padding: 0; position: relative; min-height: 36px; }
   .side-projects .cnt { position: absolute; top: 2px; right: 6px; }
   .side-projects li.has-act .btn { display: none; } /* the rail keeps one "+": the header's opens the same folder picker */
-  .side-more .btn { justify-content: center; padding: 0; font-size: var(--fs-small); } /* "12 more" fits the 44 px of the rail */
+  .side-more .btn { justify-content: center; padding: 0; font-size: var(--fs-small); } /* "12 more" fits the 60 px rail */
   .side-det { margin-top: 6px; border-top: 1px solid var(--line); }
   .side-projects .cnt:not([data-s="attn"]) { display: none; }
   .brand { justify-content: center; padding: 14px 0; }

@@ -276,7 +276,7 @@ export function agentNodes(g, q, scope, { showEnded = state.showEnded } = {}) {
     const more = state.expanded.has(capId) ? 0 : Math.max(0, ended.length - ROW_CAP);
     const list = rowsEl(more ? ended.slice(0, ROW_CAP) : ended, g, { scope: endedScope(scope), showEnded }, `${g.label} ended agents`);
     if (more) {
-      list.append(h('li', { class: 'more-row' }, h('button', { type: 'button', class: 'btn', 'data-fk': `more:${scope}`, text: `Show ${more} more ended agents`, onclick: () => { state.expanded.add(capId); render(true); } })));
+      list.append(h('li', { class: 'more-row' }, h('button', { type: 'button', class: 'btn', 'data-fk': `more:${scope}`, text: `Show ${more} more ended agent${more === 1 ? '' : 's'}`, onclick: () => { state.expanded.add(capId); render(true); } })));
     }
     const d = h('details', { class: 'ended', open: plan.open },
       h('summary', { 'data-fk': `sum:${id}`, text: `Ended (${ended.length})` }),

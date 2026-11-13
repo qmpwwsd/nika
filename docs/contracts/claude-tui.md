@@ -231,15 +231,20 @@ same menu. Removed and hidden commands are left out.
     (`parseStarttime`, `procStarts` in `src/collect/registry.js`), only for the registry pids whose `procStart` is digits. Field 2
     of that file (the command name) may hold spaces, parentheses and newlines, so the fields are counted from the text after the
     last `)`: field 22 is the 20th token there, and a line with 20 tokens or fewer there is cut short and not trusted.
-  - A date string `Www Mmm d hh:mm:ss yyyy` (macOS), such as `Sat Nov  7 18:57:14 2026`: nika reads it as UTC and as local time
-    (the writer's clock is not settled), and the session is alive when either equals the instant `ps -o lstart=` prints, which
-    nika asks for in the C locale with `TZ=UTC`, to the second.
-  - Any other string `Date.parse` accepts (ISO 8601, with or without an offset): compared with the `ps` instant to the second.
-  - A string nobody can parse counts like a missing `procStart`: the session is alive when `ps` lists the pid.
+  - A date string `Www Mmm d hh:mm:ss yyyy` (macOS), such as `Sat Nov  7 18:57:14 2026`: nika takes the instant `ps -o lstart=`
+    prints, which it asks for in the C locale with `TZ=UTC`, writes it out in that shape in UTC and in local time, and the
+    session is alive when `procStart` (whitespace squashed) equals either text (the writer's clock is not settled). The local
+    string is never parsed back, so both passes of a repeated DST hour match. The local form is read in nika's own time zone, so a
+    Claude run with a different `TZ` than nika's reads as ended.
+  - An ISO 8601 date-time (it starts `YYYY-MM-DDT`, with or without an offset) that `Date.parse` accepts: compared with the `ps`
+    instant to the second.
+  - Any other string, one `Date.parse` rejects, or a `ps` text that is no date, counts like a missing `procStart`: the session is
+    alive when `ps` lists the pid. (V8 also reads text such as `hello 1` as a date; nika does not.)
 - A parsed instant (or a readable `/proc` value) that differs from the process is a reused pid: not alive.
 - When `/proc/<pid>/stat` cannot be read or parsed (another user's process, a race with exit, a cut line) the session counts as
   alive, because `ps` listed the pid.
 - With no `ps` table (`ps` failed or printed nothing) nika uses signal 0 for liveness and does not read `/proc`.
-- A registry file that is unreadable, not JSON, over 64 KB or without a `pid` and a UUID `sessionId` is skipped. An upper-case
+- A registry file that is unreadable, not JSON, over 64 KB or without a `pid` and a UUID `sessionId` is skipped; a file that is
+  gone by the time nika reads it (Claude deletes it when the session exits) is not counted. An upper-case
   UUID is accepted and kept in lower case. nika counts the skipped files (`snapshot.skipped.registry`) and says so: `nika status`
   prints "N session files skipped (unreadable or not in Claude's format)" and the dashboard shows the same text as a muted note.

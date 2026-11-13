@@ -1,6 +1,7 @@
 import { test, describe, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { makeFixture, cleanup, fakeExec, SID, NOW, PROC_START, jsonl } from './helpers.js';
 import { parseStarttime } from '../src/collect/registry.js';
@@ -177,7 +178,7 @@ describe('collect', () => {
 
   // F1b: with no tmux server running there are no panes and nothing is wrong, so the dashboard shows no "sources unavailable" banner
   test('(+) no tmux server running is a normal state: source ok, no panes, the agents still listed', async () => {
-    for (const msg of ['no server running on /tmp/tmux-501/default', 'error connecting to /private/tmp/tmux-501/default (No such file or directory)']) {
+    for (const msg of ['no server running on /tmp/tmux-501/default', 'error connecting to /private/tmp/tmux-501/default (No such file or directory)', 'error connecting to /tmp/tmux-501/default (Connection refused)']) {
       const s = await snap(7 * DAY, fakeExec({ tmuxError: msg }));
       assert.equal(s.snapshot.sources.tmux, 'ok', msg);
       assert.equal(byId(s, SID.busy).pane, null);
@@ -188,6 +189,42 @@ describe('collect', () => {
   test('(−) any other tmux failure still shows: a missing binary, a version mismatch', async () => {
     assert.match((await snap(7 * DAY, fakeExec({ tmuxError: 'ENOENT' }))).snapshot.sources.tmux, /^tmux unavailable: tmux not found/);
     assert.equal((await snap(7 * DAY, fakeExec({ tmuxError: 'protocol version mismatch (client 8, server 7)' }))).snapshot.sources.tmux, 'tmux unavailable: protocol version mismatch (client 8, server 7)');
+  });
+
+  // M-2: tmux says "error connecting to <socket> (Permission denied)" for a socket that is not yours: a real failure, not "no server"
+  test('(−) "error connecting to" with Permission denied (or any reason but a missing or refusing socket) still shows the banner source', async () => {
+    for (const why of ['Permission denied', 'Not a directory']) {
+      const msg = `error connecting to /tmp/tmux-0/default (${why})`;
+      assert.equal((await snap(7 * DAY, fakeExec({ tmuxError: msg }))).snapshot.sources.tmux, `tmux unavailable: ${msg}`, why);
+    }
+  });
+
+  // review I1: the contract says that with no ps table nika uses signal 0 and does not read /proc
+  test('(−) no ps table: /proc is not opened; (+) with a ps table the digits procStart entry is read', async () => {
+    const fx2 = makeFixture();
+    const pid = 2_000_000_001; // no such process anywhere: the default reader fails on it, and no real process is looked at
+    const opened = [];
+    const real = fsp.open;
+    fsp.open = async (file, ...rest) => {
+      if (String(file).startsWith('/proc/')) opened.push(String(file));
+      return real(file, ...rest);
+    };
+    try {
+      fs.writeFileSync(path.join(fx2.claudeDir, 'sessions', `${pid}.json`), JSON.stringify({ pid, sessionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', cwd: fx2.repo, procStart: '3304488' }));
+      const withPs = fakeExec({ psLines: [`  ${pid} ${PROC_START}`] });
+      const noPs = async (cmd, args, opts) => {
+        if (cmd.endsWith('ps')) throw new Error('ps missing');
+        return withPs(cmd, args, opts);
+      };
+      const down = await collect({ config: fx2.config, exec: noPs, now: NOW, sinceMs: 7 * DAY });
+      assert.match(down.snapshot.sources.processes, /^ps unavailable/);
+      assert.deepEqual(opened, [], 'signal 0 decides; nothing under /proc is opened');
+      await collect({ config: fx2.config, exec: withPs, now: NOW, sinceMs: 7 * DAY });
+      assert.deepEqual(opened, [`/proc/${pid}/stat`]);
+    } finally {
+      fsp.open = real;
+      cleanup(fx2);
+    }
   });
 
   test('(+) skipped.registry counts the registry files nika could not use (the fixture has one corrupt file)', async () => {

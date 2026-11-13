@@ -1,6 +1,8 @@
 import { test, describe, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
+import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { makeFixture, cleanup, fakeExec, SID, NOW, PROC_START, jsonl } from './helpers.js';
@@ -154,17 +156,13 @@ describe('registry: procStart as an instant, skipped files, session id case (F1b
   const PS = 'Sat Nov 7 18:57:14 2026'; // what ps prints in UTC (whitespace squashed)
   const table = new Map([[301, PS]]);
   const alive = (procStart, t = table) => isAlive({ pid: 301, procStart }, t);
-  // Date reads the zone from TZ when it is set at run time. Asia/Kolkata is UTC+5:30 all year: no DST, so the strings below are fixed.
-  const inKolkata = (run) => {
-    const prev = process.env.TZ;
-    process.env.TZ = 'Asia/Kolkata';
-    try {
-      assert.equal(new Date(2026, 10, 8, 0, 27, 14).toISOString(), '2026-11-07T18:57:14.000Z', 'the zone switch took effect');
-      run();
-    } finally {
-      if (prev === undefined) delete process.env.TZ; else process.env.TZ = prev;
-    }
-  };
+  // The writer's local zone is a property of the process: it is set in a child node (TZ=<zone>), never in this one, so no other test sees it.
+  const REGISTRY_URL = new URL('../src/collect/registry.js', import.meta.url).href;
+  const aliveIn = (tz, cases) => JSON.parse(execFileSync(process.execPath, ['--input-type=module', '-e',
+    `import { isAlive } from ${JSON.stringify(REGISTRY_URL)};\nconsole.log(JSON.stringify(JSON.parse(process.argv[1]).map(([s, ps]) => isAlive({ pid: 1, procStart: s }, new Map([[1, ps]])))));`,
+    JSON.stringify(cases)], { env: { ...process.env, TZ: tz }, encoding: 'utf8' }));
+  // Asia/Kolkata is UTC+5:30 all year (no DST): 18:57:14Z on Nov 7 is 00:27:14 on Nov 8.
+  const KOLKATA = 'Asia/Kolkata';
 
   test('(+) the UTC date string, with the day padded or not, is alive', () => {
     assert.equal(alive(PS), true);
@@ -172,10 +170,25 @@ describe('registry: procStart as an instant, skipped files, session id case (F1b
   });
 
   test('(+) a local-time date string for the same instant is alive', () => {
-    inKolkata(() => {
-      assert.equal(alive('Sun Nov 8 00:27:14 2026'), true);
-      assert.equal(alive('Sun Nov  8 00:27:14 2026'), true, 'padded like ps');
-    });
+    assert.deepEqual(aliveIn(KOLKATA, [['Sun Nov 8 00:27:14 2026', PS], ['Sun Nov  8 00:27:14 2026', PS]]), [true, true], 'the second is padded like ps');
+  });
+
+  // M-1: a repeated local hour (fall back) names two instants. The local form is made from the ps instant, so both passes match.
+  test('(+) the repeated hour of a DST fall-back: the local time 01:30 is alive for the first pass (EDT) and for the second (EST)', () => {
+    const NY = 'America/New_York'; // 2026-11-01: 01:30 EDT is 05:30Z, 01:30 EST is 06:30Z
+    assert.deepEqual(aliveIn(NY, [
+      ['Sun Nov 1 01:30:00 2026', 'Sun Nov 1 05:30:00 2026'],
+      ['Sun Nov 1 01:30:00 2026', 'Sun Nov 1 06:30:00 2026'],
+      ['Sun Nov 1 06:30:00 2026', 'Sun Nov 1 06:30:00 2026'],
+    ]), [true, true, true]);
+  });
+
+  test('(−) the repeated hour does not make a different second alive, in either pass', () => {
+    assert.deepEqual(aliveIn('America/New_York', [
+      ['Sun Nov 1 01:30:01 2026', 'Sun Nov 1 05:30:00 2026'],
+      ['Sun Nov 1 01:30:01 2026', 'Sun Nov 1 06:30:00 2026'],
+      ['Sun Nov 1 00:30:00 2026', 'Sun Nov 1 06:30:00 2026'],
+    ]), [false, false, false]);
   });
 
   test('(+) an ISO string for the same instant is alive, with Z, an offset or milliseconds; the comparison is to the second', () => {
@@ -188,6 +201,11 @@ describe('registry: procStart as an instant, skipped files, session id case (F1b
     for (const odd of ['not a date', 'Sat Foo 7 18:57:14 2026', 'pid-reuse-unknown']) assert.equal(alive(odd), true, odd);
   });
 
+  // M-4: V8's legacy Date.parse reads many nonsense strings as dates; only an ISO date-time (YYYY-MM-DDT…) counts as a parsed instant
+  test('(+) text that only V8 would read as a date is unparseable, so alive: "hello 1", "12 3", a bare year, a date without a time', () => {
+    for (const odd of ['hello 1', '12 3', '2026', '1', '2026-11-07', 'Nov 7 2026']) assert.equal(alive(odd), true, odd);
+  });
+
   test('(+) the ps side cannot be read as a date: nothing to compare, the pid ps lists stays alive', () => {
     assert.equal(alive('Mon Oct 5 10:00:00 2026', new Map([[301, 'garbled']])), true);
   });
@@ -198,7 +216,7 @@ describe('registry: procStart as an instant, skipped files, session id case (F1b
     assert.equal(alive('2026-11-07T18:57:15Z'), false);
     assert.equal(alive('2026-11-07T18:57:13.999Z'), false);
     assert.equal(alive('2026-11-07T18:57:14'.replace('18', '19') + 'Z'), false);
-    inKolkata(() => assert.equal(alive('Sun Nov 8 00:27:15 2026'), false));
+    assert.deepEqual(aliveIn(KOLKATA, [['Sun Nov 8 00:27:15 2026', PS], ['Sun Nov 8 00:27:14 2026', PS]]), [false, true]);
   });
 
   test('(−) a pid ps does not list is not alive, whatever the format', () => {
@@ -222,6 +240,19 @@ describe('registry: procStart as an instant, skipped files, session id case (F1b
       const e = r.entries.find((x) => x.pid === 401);
       assert.equal(e?.sessionId, UP.toLowerCase());
       assert.equal(r.entries.find((x) => x.pid === 403)?.sessionId, UP.toLowerCase(), 'both spellings are one session id');
+    });
+
+    // M-3: Claude deletes <pid>.json when a session exits, so a file can be listed by readdir and gone by the time it is read
+    test('(−) a file that is gone between readdir and read is not a skipped file, but an unreadable one still is', async () => {
+      const real = fsp.readdir;
+      fsp.readdir = async (...args) => [...await real(...args), '405.json'];
+      try {
+        const r = await readRegistry(dir);
+        assert.deepEqual(r.skipped, ['402.json', '404.json']);
+        assert.equal(r.entries.length, 2);
+      } finally {
+        fsp.readdir = real;
+      }
     });
 
     test('(−) an id that is no UUID in any case, and a file that is not JSON, are skipped and listed', async () => {

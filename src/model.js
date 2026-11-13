@@ -16,8 +16,8 @@ import { keyFor, loadConfig, defaults } from './store.js';
 
 const PROMPT_MAX = 200;
 const IO_LIMIT = 16;
-// tmux's own wording when no server is running (macOS says "error connecting to <socket>" when the socket does not exist)
-const NO_TMUX_SERVER = /no server running|error connecting to/;
+// tmux's own wording when no server is running; "error connecting to <socket> (Permission denied)" is a real failure and stays an error
+const NO_TMUX_SERVER = /no server running|error connecting to .*\((?:No such file or directory|Connection refused)\)/;
 const LIVE_ORDER = { busy: 0, idle: 1 };
 
 const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
@@ -188,7 +188,8 @@ export async function collect({ config, exec, now = Date.now(), sinceMs, since =
     reports: 'ok',
   };
 
-  const starts = await procStarts(registry.entries);
+  // /proc is read only to compare with a ps table; with no table liveness is signal 0 and nothing under /proc is opened
+  const starts = table ? await procStarts(registry.entries) : new Map();
   const live = new Map();
   for (const e of registry.entries) {
     if (!isAlive(e, table, starts)) continue;

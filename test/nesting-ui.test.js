@@ -424,7 +424,7 @@ describe('row caps (design 2.1, F1b): live rows are never capped, the Ended sect
     assert.equal(endedRows(nodes).length, 12);
     assert.equal(sectionOf(nodes).all((n) => n.tag === 'summary')[0].textContent, 'Ended (13)');
     const [more] = moreOf(sectionOf(nodes));
-    assert.equal(more.textContent, 'Show 1 more ended agents');
+    assert.equal(more.textContent, 'Show 1 more ended agent', 'singular for one');
     assert.equal(more.attrs['data-fk'], 'more:g:k');
   });
 
