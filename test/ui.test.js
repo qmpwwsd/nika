@@ -556,6 +556,38 @@ describe('Back button and the Keyboard shortcuts window on the dashboard (spec 3
     assert.deepEqual(buttons.map((b) => [b.title, b.attrs['aria-keyshortcuts']]), Array(2).fill(['Keyboard shortcuts (Ctrl+/)', 'Control+Slash']));
   });
 
+  test('(−) F2: the dashboard\'s own key handler swallows no editing key in a text field: copy, cut, paste, select all, undo, redo, on both platforms', () => {
+    const editing = [['a', {}], ['c', {}], ['x', {}], ['v', {}], ['z', {}], ['y', {}], ['Z', { shiftKey: true }]];
+    for (const [mac, mod] of [[false, 'ctrlKey'], [true, 'metaKey']]) {
+      for (const route of ['dashboard', 'project', 'settings']) {
+        const r = keyRig({ mac, route });
+        for (const [key, more] of editing) assert.equal(r.press(key, { [mod]: true, ...more }, { tagName: 'INPUT' }), 0, `${mac ? 'Command' : 'Ctrl'}+${key} on ${route}`);
+        assert.deepEqual(r.log.hash, []);
+      }
+    }
+  });
+
+  test('(+) F2: app.js wires the window keys once, in the app tier only, with the platform and the shell relay (windowCommand from api.js)', () => {
+    const app = read('app.js');
+    const boot = /\nasync function boot\(\) \{[^]*?\n\}\n/.exec(app)?.[0] ?? '';
+    assert.match(boot, /if \(isApp\) \{[^}]*wireWindowKeys\(\{ mac: MAC, send: windowCommand \}\);/);
+    assert.equal((code(app).match(/wireWindowKeys\(/g) ?? []).length, 1);
+    assert.match(app, /import \{[^}]*\bisApp\b[^}]*\bwindowCommand\b[^}]*\} from '\.\/api\.js';/);
+    assert.match(app, /import \{[^}]*\bwireWindowKeys\b[^}]*\} from '\.\/shortcuts\.js';/);
+  });
+
+  test('(+) F2: api.js sends the window action through appFetch to POST /api/app/window, never throws, and sends nothing on the browser tier', () => {
+    const c = code(read('api.js'));
+    assert.match(c, /export function windowCommand\(action\) \{\s*return appFetch\('\/api\/app\/window', \{ method: 'POST', json: \{ action \} \}\)\.catch\(\(\) => \{\}\);\s*\}/);
+    const calls = [];
+    const ctx = { appFetch: async (path, opts) => { calls.push([path, opts]); throw new Error('app tier only'); } };
+    const run = vm.runInNewContext(`${/export (function windowCommand[\s\S]*?\n\})/.exec(read('api.js'))[1]}; windowCommand`, ctx);
+    return run('zoom-in').then((r) => {
+      assert.equal(r, undefined, 'a refusal is swallowed');
+      assert.deepEqual(JSON.parse(JSON.stringify(calls)), [['/api/app/window', { method: 'POST', json: { action: 'zoom-in' } }]]); // objects built in the vm have another prototype
+    });
+  });
+
   test('(+) every back link gets its title and aria-keyshortcuts from backHint with its own label', () => {
     const src = code(read('app.js'));
     assert.match(src, /for \(const a of \$\$\('a\.back'\)\) \{[^}]*backHint\(\{ label: \$\('span', a\)\.textContent, mac: MAC \}\)/);

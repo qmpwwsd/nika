@@ -9,9 +9,9 @@ import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 import { KEY_NAME } from '../src/ids.js';
 import { moveActive as moveActiveReal, cleanCommands as cleanCommandsReal, paletteQuery as paletteQueryReal, shouldFetch as shouldFetchReal } from '../public/palette.js';
-import { wantsHelp, wantsBack, wantsHistToggle, isTextEntry, backHint, helpHint, histHint, passKeyLabel, hintTips as hintTipsReal } from '../public/shortcuts.js';
+import { wantsHelp, wantsBack, wantsHistToggle, isTextEntry, backHint, helpHint, histHint, passKeyLabel, wireWindowKeys as wireWindowKeysReal } from '../public/shortcuts.js';
 import { quickState as quickStateReal, sendGate as sendGateReal, keysRefusal as keysRefusalReal, stopOutcome as stopOutcomeReal, commandSaid as commandSaidReal, commandFailure as commandFailureReal, problemKind as problemKindReal, followSession as followSessionReal, planShell as planShellReal, cleanPrompt as cleanPromptReal, hasAnswerButtons as hasAnswerButtonsReal, attnNote as attnNoteReal, answerOutcome as answerOutcomeReal, promptOff as promptOffReal, composerKey as composerKeyReal } from '../public/quick-actions.js';
-import { planSend as planSendReal, arrowEcho as arrowEchoReal } from '../public/mirror-render.js';
+import { planSend as planSendReal, arrowEcho as arrowEchoReal, keyForEvent as keyForEventReal, planPaste as planPasteReal } from '../public/mirror-render.js';
 import { switchFailure as switchFailureReal, MODE_TARGETS, MODE_META } from '../public/modes.js';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
@@ -205,14 +205,14 @@ describe('permission mode: tag, frame, edge and switcher (spec 2.8, 9.1-9.3)', (
     assert.ok(!header.includes('id="mode-switch"') && !header.includes('id="msw-why"') && !header.includes('bar-end'));
   });
 
-  test('(+) 0.3.3: the mode row sits in the composer after the message box and before the hint line; it is hidden until the script wires the switcher', () => {
+  test('(+) 0.3.3: the mode row sits in the composer after the message box and before the notes row; it is hidden until the script wires the switcher', () => {
     const box = HTML.slice(at('id="composer-box"'));
-    const order = ['class="inbox"', 'id="mode-row"', 'id="mode-switch"', 'id="msw-why"', 'class="hintline"'].map((n) => box.indexOf(n));
+    const order = ['class="inbox"', 'id="mode-row"', 'id="mode-switch"', 'id="msw-why"', 'id="notes"'].map((n) => box.indexOf(n));
     assert.ok(order.every((i) => i > 0), 'all five are in #composer-box');
     assert.deepEqual(order, [...order].sort((a, b) => a - b));
     assert.match(tagOf('mode-row'), /\bclass="mode-row"/);
     assert.match(tagOf('mode-row'), /\bhidden\b/);
-    const row = new RegExp('<div class="mode-row" id="mode-row"[^>]*>([\\s\\S]*?)</div>\\s*<div class="hintline"').exec(HTML)?.[1] ?? '';
+    const row = new RegExp('<div class="mode-row" id="mode-row"[^>]*>([\\s\\S]*?)</div>\\s*<div class="notes" id="notes"').exec(HTML)?.[1] ?? '';
     assert.ok(row.includes('id="mode-switch"') && row.includes('id="msw-why"'), 'both inside #mode-row');
     assert.match(row, /<span class="mode-lbl" aria-hidden="true">Mode<\/span>/);
   });
@@ -655,11 +655,11 @@ describe('command palette wiring (spec 9.7, Task 11)', () => {
     for (const n of ['i-cmd', 'i-dialog']) assert.match(HTML, new RegExp(`<symbol id="${n}"`));
   });
 
-  test('(−) 0.3.3: the markup has no static tip; the hint line has an id for renderTips and a hidden slot for the argument hint', () => {
-    assert.doesNotMatch(HTML, /class="tip"|class="tip more"/);
-    assert.match(HTML, /<div class="hintline" id="hintline">/);
+  test('(−) F7: the markup has no tip and no hint line; the notes row holds a hidden argument hint, the shell hint, the problem line and the echo', () => {
+    assert.doesNotMatch(HTML, /class="tip"|class="tip more"|hintline/);
+    assert.match(HTML, /<div class="notes" id="notes">/);
     assert.match(tag('arg-hint'), /\bhidden\b/);
-    assert.ok(HTML.indexOf('id="hintline"') < HTML.indexOf('id="arg-hint"'));
+    assert.ok(HTML.indexOf('id="notes"') < HTML.indexOf('id="arg-hint"'));
     const order = ['id="arg-hint"', 'id="shell-hint"', 'id="problem"', 'id="echo"'].map((n) => HTML.indexOf(n));
     assert.deepEqual(order, [...order].sort((a, b) => a - b), 'the hints, the problem line, then the echo');
   });
@@ -851,6 +851,21 @@ describe('command palette wiring (spec 9.7, Task 11)', () => {
       assert.deepEqual(press(state, event), { calls: [], prevented: false }, JSON.stringify(event));
       assert.equal(press.ends, 0);
     }
+  });
+
+  test('(−) F2: the native editing keys stay the browser\'s in the message box on both platforms: cut, paste, select all, undo, redo, and a copy with a selection', () => {
+    const editing = [
+      { key: 'x', ctrlKey: true }, { key: 'v', ctrlKey: true }, { key: 'a', ctrlKey: true }, { key: 'z', ctrlKey: true }, { key: 'Z', ctrlKey: true, shiftKey: true }, { key: 'y', ctrlKey: true },
+      { key: 'V', ctrlKey: true, shiftKey: true },
+      { key: 'x', metaKey: true }, { key: 'c', metaKey: true }, { key: 'v', metaKey: true }, { key: 'a', metaKey: true }, { key: 'z', metaKey: true }, { key: 'Z', metaKey: true, shiftKey: true },
+    ];
+    for (const event of editing) assert.deepEqual(press({ ...CLOSED, value: 'hello' }, event), { calls: [], prevented: false }, JSON.stringify(event));
+    for (const status of ['busy', 'idle', 'attn']) {
+      for (const event of [{ key: 'c', ctrlKey: true }, { key: 'C', ctrlKey: true, shiftKey: true }]) {
+        assert.deepEqual(press({ ...CLOSED, value: 'hello', status, selection: true }, event), { calls: [], prevented: false }, `${JSON.stringify(event)} with a selection, ${status}`);
+      }
+    }
+    assert.equal(press.ends, 0);
   });
 
   test('(+) 0.3.3: Ctrl+C while Claude works runs Stop (the stop route, not a key); it is not queued as C-c', () => {
@@ -1854,7 +1869,7 @@ describe('Task 14b: the header and the 320 px table (markup and stylesheet)', ()
     assert.match(rule('.bar') ?? '', /flex-wrap:\s*wrap/, 'the bar itself still wraps, so a narrow window moves the block, not a lone button');
   });
 
-  test('(+) 320 px: .composer is a grid with one shrinkable column, so a wide child (the tool row, the mode row) cannot push the window sideways; it is the container the hint tips query', () => {
+  test('(+) 320 px: .composer is a grid with one shrinkable column, so a wide child (the tool row, the mode row) cannot push the window sideways; it stays a size container (no query reads it since F7)', () => {
     const body = rule('.composer') ?? '';
     assert.match(body, /display:\s*grid/);
     assert.match(body, /grid-template-columns:\s*minmax\(0,\s*1fr\)/);
@@ -2073,29 +2088,33 @@ describe('0.3.3: the hint line, the mode row and the message box name (markup, s
   const h = (tag, attrs, ...kids) => ({ tag, class: attrs?.class, text: attrs?.text, kids: kids.flat(Infinity).filter((k) => k !== null && k !== undefined && k !== false) });
   const plain = (n) => (typeof n === 'string' ? n : n.text ?? n.kids.map(plain).join(''));
 
-  const tips = (mac) => {
-    const line = { kids: [], prepend(...n) { this.kids = n; } };
-    mk(['function renderTips()'], { $: (id) => { assert.equal(id, 'hintline'); return line; }, hintTips: hintTipsReal, MAC: mac, h }).renderTips();
-    return line.kids;
-  };
-
-  test('(+) renderTips puts the platform\'s four tips in front of the hints: Linux words, macOS glyphs; two of them are "more"', () => {
-    const linux = tips(false);
-    assert.deepEqual(linux.map(plain), ['Esc Ctrl+C Shift+Tab go to Claude', '\u2191 \u2193 Enter too, in an empty box', 'Ctrl+Shift+Tab moves focus back', 'Ctrl+/ all shortcuts']);
-    assert.deepEqual(linux.map((t) => t.class), ['tip', 'tip more', 'tip', 'tip more']);
-    assert.deepEqual(tips(true).map(plain), ['Esc \u2303C \u21e7Tab go to Claude', '\u2191 \u2193 Enter too, in an empty box', '\u2303\u21e7Tab moves focus back', '\u2318/ all shortcuts']);
-    assert.deepEqual(linux[0].kids.map((k) => k.tag ?? 'text'), ['kbd', 'text', 'kbd', 'text', 'kbd', 'text'], 'one keycap per key, a space between, then the words');
+  test('(+) F7: the hint line is gone: no #hintline or .hintline, no tip markup, no renderTips or hintTips, and no rule that styled them', () => {
+    assert.doesNotMatch(HTML, /hintline|class="tip/);
+    assert.doesNotMatch(css, /hintline|\.tip\b/);
+    assert.doesNotMatch(SRC, /renderTips|hintTips|hintline/);
+    assert.doesNotMatch(code(JS['shortcuts.js']), /hintTips/);
+    assert.doesNotMatch(css, /@container composer/, 'the 940 px query only served the tips');
   });
 
-  test('(−) renderTips builds text only (h, textContent) and runs once at boot, next to syncPassKeys', () => {
-    assert.doesNotMatch(fnOf('function renderTips()'), /innerHTML|insertAdjacent/);
-    assert.match(fnOf('function boot()'), /syncPassKeys\(\);\s*renderTips\(\);/);
-    assert.equal((SRC.match(/renderTips\(\)/g) ?? []).length, 2, 'declared once, called once');
+  test('(+) F7: #echo stays a polite live region and is visually hidden by the page\'s screen-reader-only class', () => {
+    const tag = /<[a-z]+\b[^>]*\bid="echo"[^>]*>/.exec(HTML)?.[0] ?? '';
+    assert.match(tag, /\baria-live="polite"/);
+    assert.match(tag, /\bclass="sr-only"/);
+    assert.doesNotMatch(tag, /\bhidden\b|aria-hidden|display/, 'a hidden node is not announced');
+    assert.match(css, /\.sr-only \{[^}]*position:\s*absolute[^}]*clip:\s*rect\(0 0 0 0\)/);
+    assert.doesNotMatch(css, /\.echo\b/, 'the visible styling of the echo is gone');
   });
 
-  test('(+) the tips hide by the composer\'s width (container query, 940 px) and by window height (560 px)', () => {
-    assert.match(css, /@container composer \(max-width: 940px\)\s*\{\s*\.hintline \.tip\.more\s*\{\s*display:\s*none;\s*\}\s*\}/);
-    assert.match(css, /@media \(max-height: 560px\)\s*\{\s*\.hintline \.tip\s*\{\s*display:\s*none;\s*\}\s*\}/);
+  test('(+) F7: say() still writes the echo text, so the screen reader hears "Sent Enter to %5"', () => {
+    const node = { textContent: '' };
+    mk(['function say(msg)'], { $: (id) => { assert.equal(id, 'echo'); return node; } }).say('Sent Enter to %5');
+    assert.equal(node.textContent, 'Sent Enter to %5');
+  });
+
+  test('(+) F7: the notes row keeps the problem line as an alert, the shell hint and the argument hint', () => {
+    for (const id of ['problem', 'shell-hint', 'arg-hint']) assert.match(HTML, new RegExp(`id="${id}"`), id);
+    assert.match(HTML, /id="problem" role="alert"/);
+    assert.match(css, /\.notes \{[^}]*display:\s*flex[^}]*flex-wrap:\s*wrap/);
   });
 
   test('(−) the 760 px block no longer hides the tips or the switcher\'s words', () => {
@@ -2402,5 +2421,177 @@ describe('0.3.4: the transcript toggle', () => {
     assert.match(fnOf('function setHist('), /storeSet\('transcript', on \? 'shown' : 'hidden'\)/);
     assert.match(fnOf('function wireHist()'), /storeGet\('transcript'\) !== 'hidden'/);
     assert.doesNotMatch(SRC.replace(/function storeGet[\s\S]*?\n\}\n[\s\S]*?function storeSet[\s\S]*?\n\}\n/, ''), /localStorage/, 'no other storage call');
+  });
+});
+
+
+// ---- F2: Type into pane keys, copy, window keys ------------------------------------------------------------------------------------
+
+describe('F2: Type into pane keys (wirePassthrough), copy, and the window keys', () => {
+  const SRC = code(JS['session.js']);
+  const fnOf = (head) => {
+    const at = SRC.indexOf(head);
+    assert.ok(at >= 0, head);
+    return SRC.slice(at, SRC.indexOf('\n}\n', at) + 2);
+  };
+  const mk = (names, ctx) => vm.runInNewContext(`${names.map(fnOf).join('\n')}; ({ ${names.map((n) => n.replace(/^(async )?function /, '').replace(/\(.*$/, '')).join(', ')} })`, ctx);
+
+  /** wirePassthrough against stubs, with the real keyForEvent and planPaste. */
+  const rig = ({ mac = false, on = true } = {}) => {
+    const log = { keys: [], copies: 0, problems: [], text: [], pastes: [], flushes: 0 };
+    const handlers = {};
+    const term = { addEventListener: (type, f) => { handlers[type] = f; } };
+    const ctx = {
+      $: (id) => (id === 'term' ? term : { addEventListener() {} }), MAC: mac, P: { on, buf: '', timer: 0 },
+      keyForEvent: keyForEventReal, planPaste: planPasteReal, setTimeout: () => 1, setPass() {}, say() {}, paneId: '%7',
+      flushPass: () => { log.flushes += 1; }, sendKey: (k) => log.keys.push(k), copySelection: () => { log.copies += 1; },
+      showProblem: (m) => log.problems.push(m), enqueue: async (payload) => { log.pastes.push(payload); return { ok: true }; },
+    };
+    mk(['function wirePassthrough()'], ctx).wirePassthrough();
+    const mkEvent = (key, over) => ({ key, ctrlKey: false, shiftKey: false, altKey: false, metaKey: false, isComposing: false, prevented: 0, stopped: 0, preventDefault() { this.prevented += 1; }, stopPropagation() { this.stopped += 1; }, ...over });
+    return {
+      log, ctx,
+      press: (key, over = {}) => {
+        const e = mkEvent(key, over);
+        handlers.keydown(e);
+        return e;
+      },
+      paste: (text) => {
+        const e = { prevented: 0, preventDefault() { this.prevented += 1; }, clipboardData: { getData: () => text } };
+        handlers.paste(e);
+        return e;
+      },
+    };
+  };
+
+  test('(+) Ctrl+C sends C-c to Claude and is consumed', () => {
+    const r = rig();
+    const e = r.press('c', { ctrlKey: true });
+    assert.deepEqual(r.log.keys, ['C-c']);
+    assert.deepEqual([e.prevented, e.stopped], [1, 1]);
+    assert.equal(r.log.copies, 0);
+  });
+
+  test('(+) Ctrl+Shift+C copies the mirror\'s selection: it sends no key and the key is consumed', () => {
+    for (const mac of [false, true]) {
+      const r = rig({ mac });
+      const e = r.press('C', { ctrlKey: true, shiftKey: true });
+      assert.equal(r.log.copies, 1, `mac ${mac}`);
+      assert.deepEqual(r.log.keys, []);
+      assert.deepEqual([e.prevented, e.stopped], [1, 1]);
+    }
+  });
+
+  test('(+) Linux: Ctrl+V and Ctrl+Shift+V are left to the browser (not prevented, nothing sent), and the paste event then goes to Claude as one paste', () => {
+    const r = rig();
+    for (const e of [r.press('v', { ctrlKey: true }), r.press('V', { ctrlKey: true, shiftKey: true })]) assert.deepEqual([e.prevented, e.stopped], [0, 0], e.key);
+    assert.deepEqual(r.log.keys, []);
+    assert.equal(r.paste('hello').prevented, 1, 'the paste handler takes it over');
+    assert.deepEqual(r.log.pastes, [{ text: 'hello' }]);
+    assert.deepEqual(r.log.problems, []);
+  });
+
+  test('(+) Linux: Ctrl+Q and the zoom keys are left to the window handler on the document: not prevented, not stopped, nothing sent to the pane', () => {
+    const r = rig();
+    for (const [key, over] of [['q', {}], ['=', {}], ['+', { shiftKey: true }], ['-', {}], ['0', {}]]) {
+      const e = r.press(key, { ctrlKey: true, ...over });
+      assert.deepEqual([e.prevented, e.stopped], [0, 0], key);
+    }
+    assert.deepEqual(r.log.keys, []);
+    assert.deepEqual(r.log.problems, [], 'no "Not sent" message for a key that is not meant for the pane');
+  });
+
+  test('(−) Ctrl+W goes to Claude as C-w in Type into pane (it is not Close)', () => {
+    const r = rig();
+    const e = r.press('w', { ctrlKey: true });
+    assert.deepEqual(r.log.keys, ['C-w']);
+    assert.deepEqual([e.prevented, e.stopped], [1, 1]);
+  });
+
+  test('(−) macOS: Ctrl+V and Ctrl+Q are not on the allow-list (the user sees why); Command keys are left to the app', () => {
+    const r = rig({ mac: true });
+    r.press('v', { ctrlKey: true });
+    r.press('q', { ctrlKey: true });
+    assert.equal(r.log.problems.length, 2);
+    assert.match(r.log.problems[0], /Not sent: Ctrl-v is not on the allow-list/);
+    const e = r.press('v', { metaKey: true });
+    assert.deepEqual([e.prevented, e.stopped], [0, 0]);
+    assert.deepEqual(r.log.keys, []);
+  });
+
+  test('(−) with Type into pane off the handler does nothing at all', () => {
+    const r = rig({ on: false });
+    for (const e of [r.press('c', { ctrlKey: true }), r.press('C', { ctrlKey: true, shiftKey: true }), r.press('q', { ctrlKey: true })]) assert.deepEqual([e.prevented, e.stopped], [0, 0]);
+    assert.deepEqual(r.log.keys, []);
+    assert.equal(r.log.copies, 0);
+  });
+
+  // -- copySelection
+  const copyRig = ({ selection, writeText = async () => {} } = {}) => {
+    const log = { written: [], said: [], problems: [] };
+    const inside = new Set(['a', 'b']);
+    const ctx = {
+      $: () => ({ contains: (n) => inside.has(n) }), document: { getSelection: () => selection },
+      navigator: { clipboard: { writeText: async (t) => { log.written.push(t); return writeText(t); } } },
+      say: (m) => log.said.push(m), showProblem: (m, kind, ms) => log.problems.push([m, kind, ms]),
+    };
+    return { log, copy: mk(['async function copySelection()'], ctx).copySelection };
+  };
+  const sel = (text, over = {}) => ({ isCollapsed: false, anchorNode: 'a', focusNode: 'b', toString: () => text, ...over });
+
+  test('(+) copySelection writes the selected text of the mirror to the clipboard and says so', async () => {
+    const r = copyRig({ selection: sel('npm test\nall green') });
+    await r.copy();
+    assert.deepEqual(r.log.written, ['npm test\nall green']);
+    assert.deepEqual(r.log.said, ['Copied 18 characters']);
+    assert.deepEqual(r.log.problems, []);
+  });
+
+  test('(−) copySelection copies nothing for no selection, a collapsed one, or one that reaches outside the mirror, and says what to do', async () => {
+    for (const selection of [null, undefined, sel('x', { isCollapsed: true }), sel('x', { anchorNode: 'out' }), sel('x', { focusNode: 'out' }), sel('')]) {
+      const r = copyRig({ selection });
+      await r.copy();
+      assert.deepEqual(r.log.written, [], JSON.stringify(selection));
+      assert.equal(r.log.problems.length, 1);
+      assert.deepEqual(r.log.problems[0].slice(1), ['warn', 3000]);
+      assert.match(r.log.problems[0][0], /Select text in the terminal/);
+    }
+  });
+
+  test('(−) copySelection: a clipboard that refuses is reported, not thrown', async () => {
+    const r = copyRig({ selection: sel('abc'), writeText: async () => { throw new Error('denied'); } });
+    await r.copy();
+    assert.deepEqual(r.log.said, []);
+    assert.deepEqual(r.log.problems, [['Could not copy the selection.', 'warn', 3000]]);
+  });
+
+  // -- the window keys on the session page
+  test('(+) boot wires the window keys once, in the app tier, with the platform, the live Type into pane flag and the shell relay', () => {
+    const boot = fnOf('function boot()');
+    assert.match(boot, /wireWindowKeys\(\{ mac: MAC, passthrough: \(\) => P\.on, send: windowCommand \}\);/);
+    assert.equal((SRC.match(/wireWindowKeys\(/g) ?? []).length, 1);
+    assert.ok(boot.indexOf('wireWindowKeys(') > boot.indexOf('if (!appMode)'), 'after the browser-tier early return');
+    assert.match(JS['session.js'], /import \{[^}]*\bwindowCommand\b[^}]*\} from '\.\/api\.js';/);
+    assert.match(JS['session.js'], /import \{[^}]*\bwireWindowKeys\b[^}]*\} from '\.\/shortcuts\.js';/);
+  });
+
+  test('(+) the session page\'s window keys run for real: Ctrl+Q while typing into the pane reaches the shell relay, Ctrl+W does not', () => {
+    const doc = { listeners: [], addEventListener(type, f) { if (type === 'keydown') this.listeners.push(f); } };
+    const prevDoc = globalThis.document;
+    globalThis.document = doc;
+    try {
+      const P = { on: true };
+      const sent = [];
+      wireWindowKeysReal({ mac: false, passthrough: () => P.on, send: (a) => sent.push(a) });
+      const press = (key) => doc.listeners[0]({ key, ctrlKey: true, metaKey: false, altKey: false, shiftKey: false, repeat: false, preventDefault() {} });
+      press('q');
+      press('w');
+      P.on = false;
+      press('w');
+      assert.deepEqual(sent, ['quit', 'close']);
+    } finally {
+      if (prevDoc === undefined) delete globalThis.document;
+      else globalThis.document = prevDoc;
+    }
   });
 });

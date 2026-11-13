@@ -5,7 +5,7 @@
 // Rules: every string from the server is rendered with textContent (h() from dom.js, applyMirror from mirror-render.js);
 // no innerHTML, no inline handlers, element.style only for numbers this file computes. Contracts: docs/contracts/api-app.md.
 import { h, icon, roleTagEl, ctxEl } from './dom.js';
-import { isApp, appFetch, getJSON, applyTheme } from './api.js';
+import { isApp, appFetch, getJSON, applyTheme, windowCommand } from './api.js';
 import { roleTag, savedPick } from './dash-model.js';
 import { toRenderModel, applyMirror, planSend, planPaste, chunkText, keyForEvent, KEY_LABEL, arrowEcho } from './mirror-render.js';
 import { MODE_META, MODE_TARGETS, modeKey, modeEl, bypassTag, switcherState, modeNote, switchFailure } from './modes.js';
@@ -16,7 +16,7 @@ import {
 import { MODEL_ID, MODEL_HINT, CUSTOM, fillModelSelect } from './models-ui.js';
 import { openEndDialog } from './end-dialog.js';
 import { paletteQuery, cleanCommands, paletteView, commandsButton, shouldFetch, sourceLabel, insertion, moveActive } from './palette.js';
-import { isMac, isTextEntry, wantsHelp, wantsBack, wantsHistToggle, backHint, helpHint, histHint, passKeyLabel, hintTips, openShortcuts } from './shortcuts.js';
+import { isMac, isTextEntry, wantsHelp, wantsBack, wantsHistToggle, backHint, helpHint, histHint, passKeyLabel, openShortcuts, wireWindowKeys } from './shortcuts.js';
 
 const PROJECT_KEY = /^[a-z0-9]{16}$/;
 const CLAUDE_SESSION = /^session_[A-Za-z0-9]{1,64}$/;
@@ -1507,23 +1507,42 @@ function setPass(on, keepFocus = false) {
   }
 }
 
+/** Ctrl+Shift+C in the mirror: the selected text goes to the clipboard. Only a selection that lies inside the mirror counts. */
+async function copySelection() {
+  const sel = document.getSelection();
+  const term = $('term');
+  const text = sel && !sel.isCollapsed && term.contains(sel.anchorNode) && term.contains(sel.focusNode) ? sel.toString() : '';
+  if (!text) {
+    showProblem('Select text in the terminal first, then press Ctrl+Shift+C to copy it.', 'warn', 3000);
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(text);
+    say(`Copied ${text.length} characters`);
+  } catch {
+    showProblem('Could not copy the selection.', 'warn', 3000);
+  }
+}
+
 function wirePassthrough() {
   const term = $('term');
   term.addEventListener('keydown', (e) => {
     if (!P.on) return;
-    const k = keyForEvent(e);
+    const k = keyForEvent(e, { mac: MAC });
     if (k.kind === 'leave') {
       e.preventDefault();
       setPass(false);
       return;
     }
-    if (k.kind === 'ignore') return; // Cmd shortcuts and IME stay with the app and the OS
+    if (k.kind === 'ignore') return; // Cmd shortcuts, IME, paste and the window keys (Ctrl+Q, zoom) stay with the browser, the app and the OS
     e.preventDefault();
     e.stopPropagation(); // in passthrough only Ctrl+] belongs to nika
     if (k.kind === 'text') {
       P.buf += k.text;
       if (P.buf.length >= 1000) flushPass();
       else if (!P.timer) P.timer = setTimeout(flushPass, 120); // batched, so typing stays under the 20 requests/s limit
+    } else if (k.kind === 'copy') {
+      copySelection();
     } else if (k.kind === 'skip') {
       say(k.reason);
       showProblem(k.reason, 'warn', 3000);
@@ -1725,12 +1744,6 @@ function syncKbdHint() {
   $('kbd-open').setAttribute('aria-keyshortcuts', hint.keys);
 }
 
-/** The hint line's tips (spec 3.10), before the hints, the problem line and the echo; written once, with the platform's key names. */
-function renderTips() {
-  $('hintline').prepend(...hintTips(MAC).map((t) => h('span', { class: t.more ? 'tip more' : 'tip' },
-    t.keys.map((k, i) => [i ? ' ' : null, h('kbd', { text: k })]), ` ${t.text}`)));
-}
-
 /** The passthrough key is written with the control glyph on a Mac, as in the Keyboard shortcuts window. aria-keyshortcuts stays Control+]. */
 function syncPassKeys() {
   const label = passKeyLabel(MAC);
@@ -1779,7 +1792,6 @@ function boot() {
   syncKbdHint();
   syncHistHint();
   syncPassKeys();
-  renderTips();
   if (!appMode) {
     $('kbd-open').hidden = true;
     showEmpty('The session window is part of the nika app. This page was opened in a browser, which only shows the read-only dashboard.');
@@ -1802,6 +1814,7 @@ function boot() {
   wireTerminal();
   wireComposer();
   document.addEventListener('keydown', onPageKey);
+  wireWindowKeys({ mac: MAC, passthrough: () => P.on, send: windowCommand }); // Ctrl+Q, Ctrl+W (not while typing into the pane) and zoom off macOS
   $('kbd-open').addEventListener('click', () => openKbd($('kbd-open')));
   loadSettings();
   startAgentPoll();

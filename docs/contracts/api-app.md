@@ -74,6 +74,15 @@ just replaced (the page says to quit and reopen nika). `dismiss` → `200 { "dis
 `{ "error": "<code>", "message": "<fixed text>" }` with the code above (never a path or OS text), and the body must be exactly
 `{ "action": … }` (extra keys → `400 invalid`). Steps and checks: §6 "App copy".
 
+### `POST /api/app/window` (body ≤ 4 KB, `CAP.small`)
+The page asks the desktop shell to act on its window (0.4, F2). Body: exactly `{ "action": "quit" | "close" | "minimize" |
+"zoom-in" | "zoom-out" | "zoom-reset" }`. Any other action, a missing or non-string one, or an extra key → `400 invalid` and
+nothing is sent; a body that is not `application/json` → `415`, over the cap → `413`, no secret → `403` (§2). Success: the server
+writes one `window` line to the shell (§5) and answers `204` with no body. The server does not know whether the shell acted:
+`204` means the line was written. The page sends it from the keys the OS has no menu for (Linux: Ctrl+Q quit, Ctrl+W close —
+not while "Type into pane" is on, where Ctrl+W goes to Claude — and Ctrl+= / Ctrl++, Ctrl+-, Ctrl+0 for zoom); on macOS the app
+menu owns Command+Q/W/M and zoom and the page does not call this route. Never mounted on the browser tier (§4).
+
 ### Projects
 
 | Route | Request | Response |
@@ -709,6 +718,7 @@ No other channel exists: no Tauri IPC, no HTTP client in Rust.
 | server → shell | `status` (every 3 s and after each `collect()`) | `{"type":"status","busy":n,"idle":n,"other":n,"ended":n,"attention":n,"projects":[{"key":"…","name":"…","busy":n,"idle":n,"attention":n}]}` (≤ 8 projects) |
 | server → shell | `pick-folder` | `{"type":"pick-folder","reqId":"<UUID>"}` |
 | shell → server | `folder` | `{"type":"folder","reqId":"<UUID>","path":"<abs dir>" \| null}` — the server validates `reqId` (open request) and the path (absolute, existing, real dir) before `addProject` |
+| server → shell | `window` | `{"type":"window","action":"quit"\|"close"\|"minimize"\|"zoom-in"\|"zoom-out"\|"zoom-reset"}` — one line per `POST /api/app/window` (§3); the line names no window, so which window it applies to is the shell's decision; the shell answers nothing. Not a command from the shell: a `window` line on stdin is ignored |
 | server → shell | `error` | `{"type":"error","message":"<clean()>"}` before a non-zero exit (bad `hello`, port in use) |
 
 Limits: one open `pick-folder` at a time; `status` fields are integers ≥ 0; names are `clean()`ed; `attention` = live
@@ -849,7 +859,7 @@ Write API (`src/fwrite.js`): `ensureDir(dir, mode = 0o700)`, `writeAtomic(dir, n
 | `nika app` | launch the desktop app (same lookup as `open --app`, does not block); exit 1 with an install hint when it is missing |
 | `nika app install` | macOS: copy or update the app in `~/Applications` (§6 "App copy"); prints "added nika X.Y.Z to ~/Applications (find it with Spotlight)", "updated …" or "already current"; exit 1 with the reason for `no-source` / `foreign-target` / `copy-failed`; Linux: exit 1, "the .deb or AppImage installs the desktop entry" |
 | `nika serve [--app]` | browser tier on `NIKA_PORT` (3335) · app tier on port 0 with the stdio protocol (§5); `--app` refuses a TTY stdin |
-| `nika status [--json] [--since w] [--full]` | unchanged from 0.1 |
+| `nika status [--json] [--since w] [--ended] [--full]` | 0.4.0: ended rows only with `--ended` (the latest 5 per project) or `--full` (all, implies `--ended`); otherwise one line says how many are hidden. `--json` is unchanged and carries every agent |
 | `nika spawn <name> <model> <brief> [--project dir] [--permission-mode m] [--rc prefix\|off] [--role agent\|orchestrator] [--under %pane] [--session name]` | spawn an agent in tmux (needs `$TMUX` or `--session`); `brief` is a file path or `-` for stdin. 0.4: `--role orchestrator` starts a sub-orchestrator (only the main orchestrator's pane may; else exit 3, `depth`). The parent is the pane it runs in, `$TMUX_PANE`, when that is a pane id (else none); there is no `--parent` option, and a `$TMUX_PANE` that tmux no longer lists is "no parent". The server reads that pane's role and depth from tmux's tags |
 | `nika orchestrate [dir]` | create or reuse the project's tmux session and start the orchestrator pane |
 | `nika projects list\|add <dir>\|remove <key>` | project registry |

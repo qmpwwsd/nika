@@ -26,6 +26,16 @@ const alts = (...list) => ({ mac: list.map((k) => [k]), other: list.map((k) => [
 const HELP = { mac: [['?'], [CMD, '/']], other: [['?'], ['Ctrl', '/']] };
 const BACK = { mac: [[CMD, '[']], other: [['Alt', LEFT]] };
 const row = (window, tier, group, name, keys, description, alt = ' or ') => ({ window, tier, group, name, keys, description, alt });
+// The window keys. macOS has them in the app menu; on Linux the page runs them (windowAction below) through POST /api/app/window.
+const ZOOM_IN = { mac: [[CMD, '=']], other: [['Ctrl', '='], ['Ctrl', '+']] };
+const windowRows = (win, { quit, close }) => [
+  row(win, 'app', 'Window', 'Quit nika', mod('Q'), quit),
+  row(win, 'app', 'Window', 'Close window', mod('W'), close),
+  row(win, 'app', 'Window', 'Zoom in', ZOOM_IN, 'Make the window content larger'),
+  row(win, 'app', 'Window', 'Zoom out', mod('-'), 'Make the window content smaller'),
+  row(win, 'app', 'Window', 'Actual size', mod('0'), 'Reset the zoom'),
+];
+const QUIT = 'Quit the app (your agents keep running in tmux)';
 
 export const SHORTCUTS = [
   row('dashboard', 'app', 'Navigation', 'Dashboard', mod('1'), 'Show all projects and agents'),
@@ -36,6 +46,7 @@ export const SHORTCUTS = [
   row('dashboard', 'app', 'Navigation', 'Keyboard shortcuts', HELP, 'Show this list'),
   row('dashboard', 'app', 'Dialogs and menus', 'Run the main action', mod('Enter'), 'Spawn, save or apply in the open dialog or in Settings'),
   row('dashboard', 'app', 'Dialogs and menus', 'Close', one('Esc'), 'Close the open menu or dialog'),
+  ...windowRows('dashboard', { quit: QUIT, close: 'Close this window' }),
   // the browser tier cannot store the Settings switch, so "?" is app-tier only
   row('dashboard', 'browser', 'Navigation', 'Keyboard shortcuts', mod('/'), 'Show this list'),
   row('dashboard', 'browser', 'Dialogs and menus', 'Close', one('Esc'), 'Close the open menu'),
@@ -43,6 +54,7 @@ export const SHORTCUTS = [
   row('session', 'app', 'Window', 'Back', BACK, 'Back to the dashboard'),
   row('session', 'app', 'Window', 'Show or hide transcript', { mac: [[CMD, SHIFT, 'H']], other: [['Ctrl', 'Shift', 'H']] }, 'Give the terminal the full width (wide windows; narrow ones have tabs)'),
   row('session', 'app', 'Window', 'Keyboard shortcuts', HELP, 'Show this list'),
+  ...windowRows('session', { quit: `${QUIT}, also while typing into the pane`, close: 'Close this window (while typing into the pane, Ctrl+W goes to Claude)' }),
   row('session', 'app', 'Message box', 'Send', one('Enter'), 'Send the text, then Enter, to Claude (empty box: Enter only)'),
   row('session', 'app', 'Message box', 'New line', { mac: [[SHIFT, 'Enter']], other: [['Shift', 'Enter']] }, 'Start a new line in the message box'),
   row('session', 'app', 'Message box', 'Press Esc in Claude', one('Esc'), "Stop Claude's turn or close Claude's menu (when nothing in nika is open)"),
@@ -53,6 +65,8 @@ export const SHORTCUTS = [
   row('session', 'app', 'Message box', 'Commands', one('/'), 'Open the command list (at the start of an empty box)'),
   row('session', 'app', 'Message box', 'Type into the pane', { mac: [[CTRL, ']']], other: [['Ctrl', ']']] }, "Send every key straight to Claude's terminal"),
   row('session', 'app', 'Typing into the pane', 'Stop typing into the pane', { mac: [[CTRL, ']']], other: [['Ctrl', ']']] }, 'Keys go to the message box again'),
+  row('session', 'app', 'Typing into the pane', 'Copy', { mac: [[CMD, 'C']], other: [['Ctrl', 'Shift', 'C']] }, 'Copy the text selected in the terminal (Ctrl+C goes to Claude)'),
+  row('session', 'app', 'Typing into the pane', 'Paste', { mac: [[CMD, 'V']], other: [['Ctrl', 'Shift', 'V'], ['Ctrl', 'V']] }, 'Send the clipboard to Claude as one paste'),
   row('session', 'app', 'Mode switcher', 'Move between modes', alts(LEFT, RIGHT, 'Home', 'End'), 'Moves focus; does not switch', ' '),
   row('session', 'app', 'Mode switcher', 'Switch', alts('Enter', 'Space'), 'Switch to the focused mode'),
   row('session', 'app', 'Command list', 'Move', alts(UP, DOWN), 'Move through the commands', ' '),
@@ -112,6 +126,37 @@ export function wantsHistToggle(e, { mac, passthrough, dialogOpen }) {
   return modKey && typeof e.key === 'string' && e.key.toLowerCase() === 'h';
 }
 
+/**
+ * F2. The window action a key stands for, or null. Only where the OS has no menu for it: macOS keeps Command+Q/W/M and zoom in the
+ * app menu and the page ignores every Meta key. Elsewhere: Ctrl+Q quit, Ctrl+W close, Ctrl+= / Ctrl++ zoom in, Ctrl+- zoom out,
+ * Ctrl+0 actual size; Shift only for the plus (Shift+= types one), no Alt, no Meta. In passthrough Ctrl+W is Claude's (C-w), so it is
+ * not Close there; the other window keys stay the window's.
+ */
+export function windowAction(e, { mac, passthrough } = {}) {
+  if (mac || !e?.ctrlKey || e.metaKey || e.altKey || e.isComposing || typeof e.key !== 'string') return null;
+  const key = e.key.toLowerCase();
+  if (key === '=' || key === '+') return 'zoom-in';
+  if (key === '-') return 'zoom-out';
+  if (e.shiftKey) return null;
+  if (key === 'q') return 'quit';
+  if (key === 'w') return passthrough ? null : 'close';
+  return key === '0' ? 'zoom-reset' : null;
+}
+
+/**
+ * App tier: one document keydown listener that hands a window key to `send(action)` (api.js windowCommand). `passthrough()` is read at
+ * each key press. A held Ctrl+Q or Ctrl+W is consumed but sent once; a held zoom key repeats. Nothing else is touched, so the native
+ * copy, cut, paste, select all, undo and redo of every text field stay as they are.
+ */
+export function wireWindowKeys({ mac, passthrough = () => false, send }) {
+  document.addEventListener('keydown', (e) => {
+    const action = windowAction(e, { mac, passthrough: passthrough() });
+    if (!action) return;
+    e.preventDefault();
+    if (!e.repeat || action.startsWith('zoom')) send(action);
+  });
+}
+
 // ---- hints for the buttons and the Back link ---------------------------------------------------------------------------------
 
 /** `title` and `aria-keyshortcuts` of a Back link (spec 3.13). */
@@ -133,20 +178,6 @@ export function helpHint({ mac, singleKey }) {
 
 /** The passthrough key as page copy: the control glyph and "]" on macOS (as the table above), "Ctrl+]" elsewhere. aria-keyshortcuts stays Control+]. */
 export const passKeyLabel = (mac) => (mac ? `${CTRL}]` : 'Ctrl+]');
-
-/**
- * The tips of the session window's hint line (spec 3.10), in order: [{ keys: caps, text, more }]. `more` tips hide when the composer
- * is narrow (a container query in session.css). Same glyph rule as passKeyLabel: macOS runs the glyphs together in one cap, Linux joins words with "+".
- */
-export function hintTips(mac) {
-  const k = (glyphs, words) => (mac ? glyphs : words);
-  return [
-    { keys: ['Esc', k(`${CTRL}C`, 'Ctrl+C'), k(`${SHIFT}Tab`, 'Shift+Tab')], text: 'go to Claude', more: false },
-    { keys: [UP, DOWN, 'Enter'], text: 'too, in an empty box', more: true },
-    { keys: [k(`${CTRL}${SHIFT}Tab`, 'Ctrl+Shift+Tab')], text: 'moves focus back', more: false },
-    { keys: [k(`${CMD}/`, 'Ctrl+/')], text: 'all shortcuts', more: true },
-  ];
-}
 
 // ---- the window --------------------------------------------------------------------------------------------------------------
 

@@ -58,6 +58,7 @@ function makeDeps(over = {}) {
     mirror: { capture: rec('capture', async (pane, inm) => (inm === '"abc"' ? { status: 304, body: null, etag: 'abc' } : { status: 200, body: { cols: 80, rows: [], cursor: { x: 0, y: 0, visible: true }, etag: 'abc' }, etag: 'abc' })) },
     keys: { send: rec('keys', async (pane, body) => (body.text === 'busy' ? { status: 429, body: { error: 'busy', message: 'x' } } : body.text === 'bad' ? { status: 400, body: { error: 'invalid', message: 'x' } } : { status: 200, body: { sent: { text: 1, paste: 0, keys: 0 } } })) },
     picker: { start: () => null, status: () => null },
+    window: rec('window', async () => {}),
     appCopy: {
       state: rec('appCopyState', async () => APP_COPY),
       install: rec('appCopyInstall', async () => ({ state: 'current', version: '9.9.9', restart: false, changed: 'added' })),
@@ -346,6 +347,56 @@ describe('app copy (ADR 0011)', () => {
     assert.equal(get.status, 405);
     assert.equal(get.headers.allow, 'POST');
     assert.deepEqual(a.deps.calls.filter((c) => c[0] === 'appCopyInstall'), []);
+  });
+});
+
+describe('POST /api/app/window (F2): the page asks the shell to act on its window', () => {
+  const ACTIONS = ['quit', 'close', 'minimize', 'zoom-in', 'zoom-out', 'zoom-reset'];
+  const windowCalls = (b) => b.deps.calls.filter((c) => c[0] === 'window');
+  let a;
+  before(async () => { a = await boot(); });
+
+  test('(+) each action answers 204 with no body and hands exactly that action to the shell, once', async () => {
+    for (const action of ACTIONS) {
+      const before = windowCalls(a).length;
+      const r = await a.call('POST', '/api/app/window', { json: { action } });
+      assert.equal(r.status, 204, action);
+      assert.equal(r.raw, '', action);
+      assert.equal(r.headers['cache-control'], 'no-store', action);
+      assert.deepEqual(windowCalls(a).slice(before), [['window', action]], action);
+    }
+  });
+
+  test('(−) an unknown, missing, non-string or extra field is 400 invalid and the shell hears nothing', async () => {
+    const before = windowCalls(a).length;
+    for (const json of [{ action: 'maximize' }, { action: 'Quit' }, { action: ' quit' }, { action: '' }, {}, { action: 1 }, { action: ['quit'] }, { action: null }, { action: 'quit', extra: 1 }, { acton: 'quit' }]) {
+      const r = await a.call('POST', '/api/app/window', { json });
+      assert.equal(r.status, 400, JSON.stringify(json));
+      assert.equal(r.body.error, 'invalid', JSON.stringify(json));
+    }
+    assert.equal((await a.call('POST', '/api/app/window', { body: '{"action":"quit"', headers: { 'content-type': 'application/json' } })).status, 400);
+    assert.equal(windowCalls(a).length, before);
+  });
+
+  test('(−) a body that is not JSON is 415; (−) a body over the 4 KB cap is 413; neither reaches the shell', async () => {
+    const before = windowCalls(a).length;
+    for (const type of ['text/plain', 'application/x-www-form-urlencoded', null]) {
+      assert.equal((await a.call('POST', '/api/app/window', { body: '{"action":"quit"}', headers: { 'content-type': type } })).status, 415, String(type));
+    }
+    assert.equal((await a.call('POST', '/api/app/window', { json: { action: 'quit', pad: 'x'.repeat(5000) } })).status, 413);
+    assert.equal(windowCalls(a).length, before);
+  });
+
+  test('(−) the usual app checks apply: no secret or a wrong one is 403, a foreign Origin is 403, GET is 405', async () => {
+    const before = windowCalls(a).length;
+    assert.equal((await a.call('POST', '/api/app/window', { json: { action: 'quit' }, headers: { 'x-nika-app': null } })).status, 403);
+    assert.equal((await a.call('POST', '/api/app/window', { json: { action: 'quit' }, headers: { 'x-nika-app': WRONG_SAME_LENGTH } })).status, 403);
+    assert.equal((await a.call('POST', '/api/app/window', { json: { action: 'quit' }, headers: { origin: 'http://evil.example' } })).status, 403);
+    assert.equal((await a.call('POST', '/api/app/window', { json: { action: 'quit' }, headers: { 'sec-fetch-site': 'cross-site' } })).status, 403);
+    const get = await a.call('GET', '/api/app/window');
+    assert.equal(get.status, 405);
+    assert.equal(get.headers.allow, 'POST');
+    assert.equal(windowCalls(a).length, before);
   });
 });
 

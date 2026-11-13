@@ -1,10 +1,10 @@
 // nika main page: shell, dashboard, router and the poll loop. It runs in both tiers. The privileged screens live in
 // project.js and settings.js; they are imported only when api.js says this is the app tier, so the browser tier
 // (read-only, 127.0.0.1:3335) never loads them. Every server string is rendered through h() (textContent).
-import { isApp, getJSON } from './api.js';
+import { isApp, getJSON, windowCommand } from './api.js';
 import { h, icon, roleTagEl, ctxEl } from './dom.js';
 import { modeEl, rowMode, canEndRow } from './modes.js';
-import { wantsHelp, wantsBack, isTextEntry, openShortcuts, helpHint, backHint } from './shortcuts.js';
+import { wantsHelp, wantsBack, isTextEntry, openShortcuts, helpHint, backHint, wireWindowKeys } from './shortcuts.js';
 import { copyBanner } from './app-copy.js';
 import { endedPlan, noMatchText, resetEndedState, roleTag, skippedText, statusOf, parentOf, treeRows, hasTree } from './dash-model.js';
 import {
@@ -686,6 +686,7 @@ async function boot() {
   initControls();
   initKeys();
   if (isApp) {
+    wireWindowKeys({ mac: MAC, send: windowCommand }); // Ctrl+Q, Ctrl+W and zoom off macOS (docs/design/spec.md 4.6)
     try {
       const [project] = await Promise.all([import('./project.js'), import('./settings.js')]);
       await project.initApp();

@@ -323,7 +323,7 @@ describe('keyForEvent (passthrough)', () => {
 
   test('(+) Ctrl+letter on the allow-list maps to C-x, case-insensitively', () => {
     for (const l of 'cukaelrw') assert.deepEqual(keyForEvent(ev(l, { ctrlKey: true })), { kind: 'key', name: `C-${l}` });
-    assert.deepEqual(keyForEvent(ev('C', { ctrlKey: true, shiftKey: true })), { kind: 'key', name: 'C-c' });
+    assert.deepEqual(keyForEvent(ev('C', { ctrlKey: true })), { kind: 'key', name: 'C-c' }, 'a capital from Caps Lock is still Ctrl+C');
   });
 
   test('(+) printable characters, including non-ASCII and emoji, are text', () => {
@@ -340,6 +340,44 @@ describe('keyForEvent (passthrough)', () => {
       assert.equal(r.kind, 'skip', JSON.stringify(e));
       assert.match(r.reason, /Not sent: .* is not on the allow-list/);
     }
+  });
+
+  test('(+) F2: Ctrl+Shift+C is a copy of the mirror\'s selection on both platforms; Ctrl+C alone still sends C-c', () => {
+    for (const opts of [undefined, { mac: false }, { mac: true }]) {
+      assert.deepEqual(keyForEvent(ev('C', { ctrlKey: true, shiftKey: true }), opts), { kind: 'copy' }, JSON.stringify(opts));
+      assert.deepEqual(keyForEvent(ev('c', { ctrlKey: true, shiftKey: true }), opts), { kind: 'copy' }, JSON.stringify(opts));
+      assert.deepEqual(keyForEvent(ev('c', { ctrlKey: true }), opts), { kind: 'key', name: 'C-c' }, JSON.stringify(opts));
+    }
+  });
+
+  test('(+) F2: Ctrl+Shift+V is ignored on both platforms and Ctrl+V on Linux, so the browser pastes and the paste handler sends it', () => {
+    for (const opts of [undefined, { mac: false }, { mac: true }]) {
+      assert.deepEqual(keyForEvent(ev('V', { ctrlKey: true, shiftKey: true }), opts), { kind: 'ignore' }, JSON.stringify(opts));
+      assert.deepEqual(keyForEvent(ev('v', { ctrlKey: true, shiftKey: true }), opts), { kind: 'ignore' }, JSON.stringify(opts));
+    }
+    assert.deepEqual(keyForEvent(ev('v', { ctrlKey: true })), { kind: 'ignore' });
+    assert.deepEqual(keyForEvent(ev('v', { ctrlKey: true }), { mac: false }), { kind: 'ignore' });
+    assert.deepEqual(keyForEvent(ev('V', { ctrlKey: true }), { mac: false }), { kind: 'ignore' }, 'Caps Lock');
+  });
+
+  test('(−) F2: on macOS Ctrl+V is not a paste (Command+V is): it stays off the allow-list; Alt+Ctrl+V is skipped on Linux', () => {
+    const r = keyForEvent(ev('v', { ctrlKey: true }), { mac: true });
+    assert.equal(r.kind, 'skip');
+    assert.match(r.reason, /Not sent: Ctrl-v is not on the allow-list/);
+    assert.equal(keyForEvent(ev('v', { ctrlKey: true, altKey: true }), { mac: false }).kind, 'skip');
+  });
+
+  test('(+) F2: on Linux Ctrl+Q and the zoom keys (Ctrl+=, +, -, 0) are ignored, so the window handler gets them even in Type into pane', () => {
+    for (const key of ['q', '=', '+', '-', '0']) assert.deepEqual(keyForEvent(ev(key, { ctrlKey: true }), { mac: false }), { kind: 'ignore' }, key);
+    assert.deepEqual(keyForEvent(ev('+', { ctrlKey: true, shiftKey: true })), { kind: 'ignore' }, 'Ctrl+Shift+= types a plus');
+  });
+
+  test('(−) F2: on macOS the same keys are not window keys and not on the allow-list (Command owns them)', () => {
+    for (const key of ['q', '=', '-', '0']) assert.equal(keyForEvent(ev(key, { ctrlKey: true }), { mac: true }).kind, 'skip', key);
+  });
+
+  test('(−) F2: Ctrl+W goes to Claude as C-w on both platforms; it is not Close in Type into pane', () => {
+    for (const opts of [undefined, { mac: false }, { mac: true }]) assert.deepEqual(keyForEvent(ev('w', { ctrlKey: true }), opts), { kind: 'key', name: 'C-w' }, JSON.stringify(opts));
   });
 
   test('(−) meta shortcuts and IME composition are ignored so the app and the OS keep them', () => {

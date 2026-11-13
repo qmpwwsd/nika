@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { SHORTCUTS, shortcutsFor, isMac, isTextEntry, wantsHelp, wantsBack, wantsHistToggle, backHint, helpHint, histHint, passKeyLabel, hintTips, openShortcuts } from '../public/shortcuts.js';
+import { SHORTCUTS, shortcutsFor, isMac, isTextEntry, wantsHelp, wantsBack, wantsHistToggle, backHint, helpHint, histHint, passKeyLabel, windowAction, wireWindowKeys, openShortcuts } from '../public/shortcuts.js';
 import { initDialogs, initMenus, openDialog } from '../public/ui.js';
 
 const SRC = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public', 'shortcuts.js'), 'utf8');
@@ -155,8 +155,21 @@ describe('shortcutsFor: the dashboard, app tier', () => {
     ['Close', 'Esc', 'Close the open menu or dialog'],
   ];
 
-  test('(+) lists the spec rows in order, in two groups (Linux labels)', () => {
-    assert.deepEqual(table(shortcutsFor({ window: 'dashboard', tier: 'app', mac: false })), [['Navigation', NAV], ['Dialogs and menus', DIALOGS]]);
+  const WINDOW = [
+    ['Quit nika', 'Ctrl+Q', 'Quit the app (your agents keep running in tmux)'],
+    ['Close window', 'Ctrl+W', 'Close this window'],
+    ['Zoom in', 'Ctrl+= or Ctrl++', 'Make the window content larger'],
+    ['Zoom out', 'Ctrl+-', 'Make the window content smaller'],
+    ['Actual size', 'Ctrl+0', 'Reset the zoom'],
+  ];
+
+  test('(+) lists the spec rows in order, in three groups (Linux labels); F2: the window keys are the last group', () => {
+    assert.deepEqual(table(shortcutsFor({ window: 'dashboard', tier: 'app', mac: false })), [['Navigation', NAV], ['Dialogs and menus', DIALOGS], ['Window', WINDOW]]);
+  });
+
+  test('(+) F2: macOS lists the app menu\'s keys in the same group: Command+Q, W, =, - and 0', () => {
+    const win = shortcutsFor({ window: 'dashboard', tier: 'app', mac: true }).find((g) => g.group === 'Window');
+    assert.deepEqual(win.rows.map((r) => [r.name, cell(r)]), [['Quit nika', `${CMD}+Q`], ['Close window', `${CMD}+W`], ['Zoom in', `${CMD}+=`], ['Zoom out', `${CMD}+-`], ['Actual size', `${CMD}+0`]]);
   });
 
   test('(+) macOS labels use the command glyph, and Back is the command glyph plus [', () => {
@@ -208,6 +221,11 @@ describe('shortcutsFor: the session window', () => {
       ['Back', `Alt+${LEFT}`, 'Back to the dashboard'],
       ['Show or hide transcript', 'Ctrl+Shift+H', 'Give the terminal the full width (wide windows; narrow ones have tabs)'],
       ['Keyboard shortcuts', '? or Ctrl+/', 'Show this list'],
+      ['Quit nika', 'Ctrl+Q', 'Quit the app (your agents keep running in tmux), also while typing into the pane'],
+      ['Close window', 'Ctrl+W', 'Close this window (while typing into the pane, Ctrl+W goes to Claude)'],
+      ['Zoom in', 'Ctrl+= or Ctrl++', 'Make the window content larger'],
+      ['Zoom out', 'Ctrl+-', 'Make the window content smaller'],
+      ['Actual size', 'Ctrl+0', 'Reset the zoom'],
     ]],
     ['Message box', [
       ['Send', 'Enter', 'Send the text, then Enter, to Claude (empty box: Enter only)'],
@@ -220,7 +238,11 @@ describe('shortcutsFor: the session window', () => {
       ['Commands', '/', 'Open the command list (at the start of an empty box)'],
       ['Type into the pane', 'Ctrl+]', "Send every key straight to Claude's terminal"],
     ]],
-    ['Typing into the pane', [['Stop typing into the pane', 'Ctrl+]', 'Keys go to the message box again']]],
+    ['Typing into the pane', [
+      ['Stop typing into the pane', 'Ctrl+]', 'Keys go to the message box again'],
+      ['Copy', 'Ctrl+Shift+C', 'Copy the text selected in the terminal (Ctrl+C goes to Claude)'],
+      ['Paste', 'Ctrl+Shift+V or Ctrl+V', 'Send the clipboard to Claude as one paste'],
+    ]],
     ['Mode switcher', [
       ['Move between modes', `${LEFT} ${RIGHT} Home End`, 'Moves focus; does not switch'],
       ['Switch', 'Enter or Space', 'Switch to the focused mode'],
@@ -249,10 +271,18 @@ describe('shortcutsFor: the session window', () => {
     assert.equal(by['Keyboard shortcuts'], `? or ${CMD}+/`);
   });
 
+  test('(+) F2: macOS lists Command+Q/W/=/-/0 and Command+C/V for the pane; Linux and macOS name Ctrl+C as Claude\'s', () => {
+    const rows = shortcutsFor({ window: 'session', tier: 'app', mac: true }).flatMap((g) => g.rows);
+    const by = Object.fromEntries(rows.map((r) => [r.name, cell(r)]));
+    assert.deepEqual([by['Quit nika'], by['Close window'], by['Zoom in'], by['Zoom out'], by['Actual size']], [`${CMD}+Q`, `${CMD}+W`, `${CMD}+=`, `${CMD}+-`, `${CMD}+0`]);
+    assert.equal(by.Copy, `${CMD}+C`);
+    assert.equal(by.Paste, `${CMD}+V`);
+  });
+
   test('(+) 0.3.4: the transcript row sits in the Window group right after Back, and only in the session window', () => {
     for (const mac of [false, true]) {
       const names = shortcutsFor({ window: 'session', tier: 'app', mac })[0].rows.map((r) => r.name);
-      assert.deepEqual(names, ['Back', 'Show or hide transcript', 'Keyboard shortcuts']);
+      assert.deepEqual(names, ['Back', 'Show or hide transcript', 'Keyboard shortcuts', 'Quit nika', 'Close window', 'Zoom in', 'Zoom out', 'Actual size']);
     }
     for (const tier of ['app', 'browser']) {
       const all = shortcutsFor({ window: 'dashboard', tier, mac: false }).flatMap((g) => g.rows).map((r) => r.name);
@@ -280,7 +310,7 @@ describe('shortcutsFor: filtering and shape', () => {
   });
 
   test('(+) every row is complete data: both platforms, at least one key, a description', () => {
-    assert.equal(SHORTCUTS.length, 28, '10 dashboard rows (8 app, 2 browser) and 18 session rows');
+    assert.equal(SHORTCUTS.length, 40, '15 dashboard rows (13 app, 2 browser) and 25 session rows');
     for (const r of SHORTCUTS) {
       assert.ok(['dashboard', 'session'].includes(r.window), r.name);
       assert.ok(['app', 'browser', 'both'].includes(r.tier), r.name);
@@ -428,6 +458,140 @@ describe('wantsHistToggle (0.3.4, spec 4.1: Mod+Shift+H shows or hides the trans
   });
 });
 
+describe('windowAction (F2): the keys the page turns into window actions where the OS has no menu for them (Linux)', () => {
+  const W = { mac: false, passthrough: false };
+  const ctrl = (key, more = {}) => ev(key, { ctrlKey: true, ...more });
+
+  test('(+) Linux: Ctrl+Q quits, Ctrl+W closes, Ctrl+= and Ctrl++ zoom in, Ctrl+- zooms out, Ctrl+0 resets', () => {
+    assert.equal(windowAction(ctrl('q'), W), 'quit');
+    assert.equal(windowAction(ctrl('w'), W), 'close');
+    assert.equal(windowAction(ctrl('='), W), 'zoom-in');
+    assert.equal(windowAction(ctrl('+', { shiftKey: true }), W), 'zoom-in', 'Shift+= types a plus');
+    assert.equal(windowAction(ctrl('+'), W), 'zoom-in', 'the numpad plus');
+    assert.equal(windowAction(ctrl('-'), W), 'zoom-out');
+    assert.equal(windowAction(ctrl('0'), W), 'zoom-reset');
+  });
+
+  test('(+) a capital Q or W (Caps Lock, no Shift) counts like the small one', () => {
+    assert.equal(windowAction(ctrl('Q'), W), 'quit');
+    assert.equal(windowAction(ctrl('W'), W), 'close');
+  });
+
+  test('(+) in Type into pane Ctrl+Q and the zoom keys still belong to the window', () => {
+    const P = { mac: false, passthrough: true };
+    assert.equal(windowAction(ctrl('q'), P), 'quit');
+    for (const [key, action] of [['=', 'zoom-in'], ['-', 'zoom-out'], ['0', 'zoom-reset']]) assert.equal(windowAction(ctrl(key), P), action, key);
+  });
+
+  test('(−) in Type into pane Ctrl+W is not Close: it goes to Claude', () => {
+    assert.equal(windowAction(ctrl('w'), { mac: false, passthrough: true }), null);
+  });
+
+  test('(−) macOS: the page ignores every one of them (the app menu owns Command+Q/W/M and zoom), Command and Ctrl alike', () => {
+    for (const key of ['q', 'w', '=', '+', '-', '0', 'm']) {
+      for (const more of [{ metaKey: true }, { ctrlKey: true }]) {
+        for (const passthrough of [false, true]) assert.equal(windowAction(ev(key, more), { mac: true, passthrough }), null, `${key} ${JSON.stringify(more)}`);
+      }
+    }
+  });
+
+  test('(−) a missing Ctrl, an extra Shift, Alt or Command, a composing IME or another key is not a window key', () => {
+    for (const e of [ev('q'), ev('w'), ev('-'), ev('0'), ctrl('q', { shiftKey: true }), ctrl('w', { shiftKey: true }), ctrl('0', { shiftKey: true }), ctrl('q', { altKey: true }), ctrl('-', { altKey: true }),
+      ctrl('q', { metaKey: true }), ctrl('w', { metaKey: true }), ctrl('q', { isComposing: true }), ctrl('m'), ctrl('Q', { shiftKey: true }), ctrl('x'), { ctrlKey: true }]) {
+      assert.equal(windowAction(e, W), null, JSON.stringify(e));
+    }
+  });
+
+  test('(−) the native editing keys are never window keys: copy, cut, paste, select all, undo, redo (Ctrl+Y and Ctrl+Shift+Z)', () => {
+    for (const e of [ctrl('c'), ctrl('x'), ctrl('v'), ctrl('a'), ctrl('z'), ctrl('y'), ctrl('Z', { shiftKey: true }), ctrl('V', { shiftKey: true }), ctrl('C', { shiftKey: true })]) {
+      assert.equal(windowAction(e, W), null, JSON.stringify(e));
+    }
+  });
+
+  test('(−) no options at all is the safe answer: nothing', () => {
+    assert.equal(windowAction(ctrl('q')), 'quit', 'a missing mac means not a Mac');
+    assert.equal(windowAction(ctrl('q'), { mac: true }), null);
+    assert.equal(windowAction(undefined, W), null);
+  });
+});
+
+describe('wireWindowKeys (F2): one document keydown listener that sends the action to the shell', () => {
+  const rig = ({ mac = false, passthrough = false } = {}) => {
+    freshPage();
+    const sent = [];
+    wireWindowKeys({ mac, passthrough: () => passthrough, send: (a) => sent.push(a) });
+    const [listener, ...more] = page.docListeners.keydown ?? [];
+    assert.equal(more.length, 0, 'exactly one listener');
+    return {
+      sent,
+      press: (key, over = {}) => {
+        const e = { ...ev(key, { ctrlKey: true }), repeat: false, prevented: 0, stopped: 0, preventDefault() { this.prevented += 1; }, stopPropagation() { this.stopped += 1; }, ...over };
+        listener(e);
+        return e;
+      },
+    };
+  };
+
+  test('(+) Ctrl+Q sends quit and the key is consumed; the zoom keys send their action', () => {
+    const r = rig();
+    assert.equal(r.press('q').prevented, 1);
+    for (const key of ['=', '-', '0']) r.press(key);
+    assert.deepEqual(r.sent, ['quit', 'zoom-in', 'zoom-out', 'zoom-reset']);
+  });
+
+  test('(+) a held zoom key repeats; a held Ctrl+Q or Ctrl+W sends once (the repeat is consumed, not sent)', () => {
+    const r = rig();
+    r.press('=');
+    r.press('=', { repeat: true });
+    const q = r.press('q', { repeat: true });
+    r.press('w', { repeat: true });
+    assert.deepEqual(r.sent, ['zoom-in', 'zoom-in']);
+    assert.equal(q.prevented, 1, 'a repeat of Ctrl+Q does not fall through to the page');
+  });
+
+  test('(+) with a dialog open the window keys still work (they are not page navigation)', () => {
+    const r = rig();
+    page.dialogs[0].open = true;
+    r.press('q');
+    assert.deepEqual(r.sent, ['quit']);
+  });
+
+  test('(+) Ctrl+W closes outside Type into pane; the answer of passthrough() is read at the key press', () => {
+    const state = { on: false };
+    freshPage();
+    const sent = [];
+    wireWindowKeys({ mac: false, passthrough: () => state.on, send: (a) => sent.push(a) });
+    const listener = page.docListeners.keydown[0];
+    listener({ ...ev('w', { ctrlKey: true }), repeat: false, preventDefault() {} });
+    state.on = true;
+    listener({ ...ev('w', { ctrlKey: true }), repeat: false, preventDefault() {} });
+    listener({ ...ev('q', { ctrlKey: true }), repeat: false, preventDefault() {} });
+    assert.deepEqual(sent, ['close', 'quit']);
+  });
+
+  test('(−) in Type into pane Ctrl+W is neither sent nor consumed (the pane gets it)', () => {
+    const r = rig({ passthrough: true });
+    const e = r.press('w');
+    assert.deepEqual(r.sent, []);
+    assert.equal(e.prevented, 0);
+  });
+
+  test('(−) macOS: no key does anything and none is consumed', () => {
+    const r = rig({ mac: true });
+    for (const key of ['q', 'w', '=', '-', '0']) {
+      assert.equal(r.press(key, { metaKey: true, ctrlKey: false }).prevented, 0, key);
+      assert.equal(r.press(key).prevented, 0, `Ctrl+${key}`);
+    }
+    assert.deepEqual(r.sent, []);
+  });
+
+  test('(−) editing keys and other keys are left alone, so a text field keeps copy, cut, paste, select all, undo and redo', () => {
+    const r = rig();
+    for (const e of [r.press('c'), r.press('x'), r.press('v'), r.press('a'), r.press('z'), r.press('y'), r.press('Z', { shiftKey: true }), r.press('f'), r.press('o'), r.press('1')]) assert.equal(e.prevented, 0, e.key);
+    assert.deepEqual(r.sent, []);
+  });
+});
+
 describe('isTextEntry', () => {
   const el = (tag, more = {}) => ({ tagName: tag, isContentEditable: false, closest: () => null, ...more });
 
@@ -498,7 +662,7 @@ describe('openShortcuts', () => {
     assert.equal(ids['kbd-sub'].textContent, 'Dashboard');
     assert.equal(page.active, ids['kbd-h']);
     const sections = tagged(ids['kbd-body'], 'section');
-    assert.deepEqual(sections.map((s) => tagged(s, 'h3')[0].textContent), ['Navigation', 'Dialogs and menus']);
+    assert.deepEqual(sections.map((s) => tagged(s, 'h3')[0].textContent), ['Navigation', 'Dialogs and menus', 'Window']);
     for (const s of sections) {
       const t = tagged(s, 'table')[0];
       assert.equal(tagged(t, 'caption')[0].textContent, tagged(s, 'h3')[0].textContent, 'the hidden caption is the group name');
@@ -747,44 +911,6 @@ describe('openShortcuts next to menus and dialogs (ui.js)', () => {
       const html = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public', f), 'utf8');
       assert.match(/<dialog\b[^>]*\bid="kbd-dlg"[^>]*>/.exec(html)?.[0] ?? '', /\bdata-own-focus\b/, f);
     }
-  });
-});
-
-describe('hintTips: the session window\'s hint line (0.3.3)', () => {
-  const LINUX = [
-    { keys: ['Esc', 'Ctrl+C', 'Shift+Tab'], text: 'go to Claude', more: false },
-    { keys: [UP, DOWN, 'Enter'], text: 'too, in an empty box', more: true },
-    { keys: ['Ctrl+Shift+Tab'], text: 'moves focus back', more: false },
-    { keys: ['Ctrl+/'], text: 'all shortcuts', more: true },
-  ];
-  const MACOS = [
-    { keys: ['Esc', `${CTRL}C`, `${SHIFT}Tab`], text: 'go to Claude', more: false },
-    { keys: [UP, DOWN, 'Enter'], text: 'too, in an empty box', more: true },
-    { keys: [`${CTRL}${SHIFT}Tab`], text: 'moves focus back', more: false },
-    { keys: [`${CMD}/`], text: 'all shortcuts', more: true },
-  ];
-
-  test('(+) Linux writes the words joined with "+"', () => {
-    assert.deepEqual(hintTips(false), LINUX);
-  });
-
-  test('(+) macOS runs the glyphs together in one keycap', () => {
-    assert.deepEqual(hintTips(true), MACOS);
-  });
-
-  test('(−) only the second and fourth tip hide when the composer is narrow; the first and third always show', () => {
-    for (const mac of [true, false]) assert.deepEqual(hintTips(mac).map((t) => t.more), [false, true, false, true]);
-  });
-
-  test('(−) the tips name nothing the buttons carry: no send, commands, new line or type into pane', () => {
-    for (const mac of [true, false]) {
-      for (const t of hintTips(mac)) assert.doesNotMatch(t.text, /send|commands|new line|type into pane/i);
-    }
-  });
-
-  test('(−) the Linux tips never use a glyph keycap and the macOS tips never spell a Ctrl or Shift word', () => {
-    for (const t of hintTips(false)) for (const k of t.keys) assert.doesNotMatch(k, /[\u2303\u21e7\u2318]/);
-    for (const t of hintTips(true)) for (const k of t.keys) assert.doesNotMatch(k, /Ctrl|Shift/);
   });
 });
 

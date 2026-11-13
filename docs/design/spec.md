@@ -74,7 +74,7 @@ Rules for every direction:
 - One window. Dialogs are modal (`<dialog>.showModal()`), never nested; opening one closes any other.
 - The session window is a screen, not a dialog: it keeps the app chrome so the user can jump to any other agent.
 - "Needs you" (attention) always sorts first, everywhere: queue, groups, tray, palette.
-- Ended agents are collapsed by default ("N ended" disclosure) and never count toward the attention badge. Built amendment 2026-11-09 (0.3.1): on the dashboard "Show ended" hides them (off: no "Ended" section, and a group with nothing live says "No live agents."; on: every "Ended (n)" section is open until folded by hand, and the checkbox resets those folds); the project view always shows its open "Ended" section. **(built amendment 2026-11-13 (0.4.0))** Finished is hidden by default everywhere (owner: "finished must be hidden by default everywhere"). Every view has **one remembered "Show ended" toggle, off by default**, and it hides two things together: ended sessions and Claude's finished or stopped subagents. The dashboard keeps its checkbox in the header bar (`nika.showEnded`); the **project page has its own** in the same style, in its header bar before the actions (`nika.showEndedProject`), and no longer forces its "Ended" section open. The browser tier is the same page code, so it follows the dashboard rule. The session window lists no subagents and has no toggle. A stored value that is not exactly `true`, or storage that is blocked, means off. Under a row, "N subagents · M running" counts only what is shown; running subagents always show; while the rest is hidden a muted "+K ended" follows the count (a row with nothing running and nothing shown draws no subagent line). The CLI follows the same rule: `nika status` prints no ended rows and one muted line, "… N ended hidden (nika status --ended)"; `--ended` lists the latest 5 per project, `--full` lists them all and implies `--ended`; `--json` always carries every agent.
+- Ended agents are collapsed by default ("N ended" disclosure) and never count toward the attention badge. Built amendment 2026-11-09 (0.3.1): on the dashboard "Show ended" hides them (off: no "Ended" section, and a group with nothing live says "No live agents."; on: every "Ended (n)" section is open until folded by hand, and the checkbox resets those folds); until 0.4.0 the project view always showed its open "Ended" section (superseded below). **(built amendment 2026-11-13 (0.4.0))** Finished is hidden by default everywhere (owner: "finished must be hidden by default everywhere"). Every view has **one remembered "Show ended" toggle, off by default**, and it hides two things together: ended sessions and Claude's finished or stopped subagents. The dashboard keeps its checkbox in the header bar (`nika.showEnded`); the **project page has its own** in the same style, in its header bar before the actions (`nika.showEndedProject`), and no longer forces its "Ended" section open. The browser tier is the same page code, so it follows the dashboard rule. The session window lists no subagents and has no toggle. A stored value that is not exactly `true`, or storage that is blocked, means off. Under a row, "N subagents · M running" counts only what is shown; running subagents always show; while the rest is hidden a muted "+K ended" follows the count (a row with nothing running and nothing shown draws no subagent line). The CLI follows the same rule: `nika status` prints no ended rows and one muted line, "… N ended hidden (nika status --ended)"; `--ended` lists the latest 5 per project, `--full` lists them all and implies `--ended`; `--json` always carries every agent.
 - The browser tier shows the same dashboard data with every privileged control removed (not disabled) and one info line pointing to the app.
 
 ### 1.3 The three directions
@@ -643,7 +643,7 @@ Monospace textarea with a "›" prompt, grows 1 → 8 lines (20 px each), then s
 Its keys are in §4.2; there is no row of key buttons (§3.11). **(built amendment 2026-11-09 (0.3.3))**
 
 Order inside the composer, top to bottom: quick actions and their reason line (§9.4) · model popover (while open) ·
-attention note or prompt panel (§9.5) · message box · mode row ("Mode" + switcher + reason line, §9.3) · hint line.
+attention note or prompt panel (§9.5) · message box · mode row ("Mode" + switcher + reason line, §9.3) · notes row (argument hint, shell hint, problem line).
 
 | State | Look |
 |---|---|
@@ -652,20 +652,14 @@ attention note or prompt panel (§9.5) · message box · mode row ("Mode" + swit
 | multi-line paste | chip "Pasted 14 lines · sends as one paste [Clear]" |
 | X | pane gone / tmux error: disabled, placeholder "Pane is gone" |
 | rate-limited | line under the box in `--idle`: "Too fast: max 20 keys per second. Your text is kept." (`role="alert"`) |
-| echo | right side of the hint line, polite live region: "Sent 23 characters + Enter to %12", "Sent Esc to %12", "Sent Shift-Tab to %12", one line per arrow run ("Sent 3 × Down to %12", "Sent 5 arrow keys to %12") |
+| echo | not shown: a screen-reader-only (`.sr-only`) polite live region in the notes row, so a screen reader still hears: "Sent 23 characters + Enter to %12", "Sent Esc to %12", "Sent Shift-Tab to %12", one line per arrow run ("Sent 3 × Down to %12", "Sent 5 arrow keys to %12") |
 | permission prompt | attention note above: "reviewer-2 asks to run a command. Use ↑ ↓ and Enter to choose, or Esc to refuse." |
 
-Hint line, left side, then the argument hint, the shell hint, the problem line and the echo (right); the row wraps.
-Tips (keycaps as the Keyboard shortcuts window writes them; macOS glyphs run together in one `kbd`):
-
-| macOS | Linux | Shown |
-|---|---|---|
-| `Esc` `⌃C` `⇧Tab` go to Claude | `Esc` `Ctrl+C` `Shift+Tab` go to Claude | always |
-| `↑` `↓` `Enter` too, in an empty box | same | composer wider than 940 px |
-| `⌃⇧Tab` moves focus back | `Ctrl+Shift+Tab` moves focus back | always |
-| `⌘/` all shortcuts | `Ctrl+/` all shortcuts | composer wider than 940 px |
-
-Below 560 px window height every tip hides; the hints, the problem line and the echo stay. The 940 px limit is the width of the composer's content: the four Linux tips need about 800 px, a short echo ("Sent Shift-Tab to %12", 130 px) the rest; at 840 px the echo already wrapped to a second line in the 0.3.3 build check.
+Notes row: the argument hint, the shell hint and the problem line, in that order; the row wraps and takes no height while all three are empty. **(built amendment 2026-11-13 (0.4.0, F7))**
+The hint row with the key tips ("Esc ^C ⇧Tab go to Claude", "⌃⇧Tab moves focus back", "⌘/ all shortcuts") and the visible "Sent … to %12" echo is
+gone (owner decision 2026-11-13): the keys are in the Keyboard shortcuts window (§4.6) and in the message box's accessible name (§4.2), and the
+echo keeps only its screen-reader job. Nothing else in the row changed. The `.hintline` rules and the composer-width and height
+queries that hid the tips went with it.
 
 ### 3.11 Key chips (removed in 0.3.3)
 
@@ -1011,7 +1005,15 @@ Mod = ⌘ on macOS, Ctrl on Linux. No single-character shortcuts (WCAG 2.1.4), w
 | Mod+Enter | Submit the open form (Spawn agent, Save settings) | |
 | ? · Mod+/ | Keyboard shortcuts (§4.6) | `?` only outside text entry and while "Single-key shortcuts" is on |
 | Mod+Shift+H | Show or hide the transcript (session window) | Direction A, **(built amendment 2026-11-09 (0.3.4))**: the key of the **Transcript** toggle (§4.7); wide windows only; direction B's drawer is not built |
+| Mod+Q | Quit nika | **(built amendment 2026-11-13 (0.4.0, F2))** macOS: the app menu. Linux: the page, as Ctrl+Q, through `POST /api/app/window` (`quit`); also while "Type into pane" is on |
+| Mod+W | Close the window | macOS: the app menu. Linux: the page, as Ctrl+W (`close`); not while "Type into pane" is on, where Ctrl+W goes to Claude |
+| Mod+= (Ctrl++ too on Linux) · Mod+- · Mod+0 | Zoom in · zoom out · actual size | macOS: the View menu. Linux: the page (`zoom-in`, `zoom-out`, `zoom-reset`); also while "Type into pane" is on. A held zoom key repeats; a held Ctrl+Q or Ctrl+W acts once |
 | Tab / Shift+Tab | Normal order: skip link → sidebar → main → … | |
+
+The window keys above are the only keys the page adds for the OS's default shortcuts. Everything a text field does natively (copy, cut,
+paste, select all, undo, redo, on both platforms) is never prevented by nika's key handlers: the message box (`composerKey`), the
+dashboard's and the session window's global handlers and the window keys leave Ctrl/Command+C/X/V/A/Z/Y and Ctrl+Shift+Z alone, and Ctrl+C
+in the message box is Stop only when nothing is selected. macOS Command keys are never read by the page.
 
 Shortcuts are listed in the UI next to their targets (`<kbd>` in nav, `title`), and in `aria-keyshortcuts`.
 
@@ -1034,10 +1036,13 @@ empty (owner decision 2026-11-09). One pure function holds the rules: `composerK
 | Ctrl+Shift+Tab | moves focus back, to the Shell toggle | not sent (not on the allow-list) |
 | ↑ ↓ ← → | empty box: sent to the pane in batches (a batch holds ≤ 8 keys and goes out at the 8th key or 120 ms after the first, whichever is first; held repeats dropped while 2 batches wait); text in the box: caret; palette: ↑ ↓ choose | sent as KEY_NAME |
 | Home End PgUp PgDn ⌫ Del | edit the box | sent as KEY_NAME |
-| Ctrl+U/K/A/E/L/R/W | box editing | sent as C-u … C-w |
+| Ctrl+U/K/A/E/L/R | box editing | sent as C-u … C-r |
+| Ctrl+W | Linux: closes the window (§4.1); macOS: left to the browser | sent as C-w (Close is not a window key here) |
+| Ctrl+Shift+C | **(0.4.0)** the browser's copy, never Stop (Ctrl+C alone keeps Stop) | **(built amendment 2026-11-13 (0.4.0, F2))** copies the text selected in the mirror to the clipboard; sends nothing. "Select text in the terminal first, …" (3 s) when nothing in the mirror is selected |
+| Ctrl+Q, Ctrl+=, Ctrl++, Ctrl+-, Ctrl+0 (Linux) | window keys (§4.1) | window keys (§4.1), not sent to the pane and no "Not sent" message |
 | Ctrl+] | enter passthrough | **leave** passthrough (the only key nika keeps) |
 | ⌘ shortcuts (macOS) | app shortcuts | still app shortcuts (not sent) |
-| paste (Mod+V) | inserted; multi-line → paste chip | sent as one bracketed paste (≤ 16 KB) |
+| paste (Mod+V; on Linux also Ctrl+Shift+V) | inserted; multi-line → paste chip | sent as one bracketed paste (≤ 16 KB). Ctrl+V (Linux) and Ctrl+Shift+V are not cancelled: the browser pastes and the mirror's `paste` handler sends it. On macOS Ctrl+V is not on the allow-list (Command+V pastes) |
 | other keys | — | not sent; echo "Not sent: Alt-x is not on the allow-list" |
 
 The box is never a keyboard trap: Tab leaves forward, Ctrl+Shift+Tab backward. Its accessible name says so: "Message
@@ -1107,6 +1112,11 @@ Dashboard (app tier):
 | | Keyboard shortcuts | ? or Mod+/ | Show this list |
 | Dialogs and menus | Run the main action | Mod+Enter | Spawn, save or apply in the open dialog or in Settings |
 | | Close | Esc | Close the open menu or dialog |
+| Window **(0.4.0, F2)** | Quit nika | Mod+Q | Quit the app (your agents keep running in tmux) |
+| | Close window | Mod+W | Close this window |
+| | Zoom in | ⌘= / Ctrl+= or Ctrl++ | Make the window content larger |
+| | Zoom out | Mod+- | Make the window content smaller |
+| | Actual size | Mod+0 | Reset the zoom |
 
 Dashboard (browser tier): Keyboard shortcuts — Mod+/ — Show this list; Close — Esc — Close the open menu. (`?` is app-tier
 only: the browser tier cannot store the setting that turns it off.)
@@ -1118,6 +1128,11 @@ Session window:
 | Window | Back | ⌘[ / Alt+← | Back to the dashboard |
 | | Show or hide transcript | Mod+Shift+H | Give the terminal the full width (wide windows; narrow ones have tabs) |
 | | Keyboard shortcuts | ? or Mod+/ | Show this list |
+| | Quit nika | Mod+Q | Quit the app (your agents keep running in tmux), also while typing into the pane |
+| | Close window | Mod+W | Close this window (while typing into the pane, Ctrl+W goes to Claude) |
+| | Zoom in | ⌘= / Ctrl+= or Ctrl++ | Make the window content larger |
+| | Zoom out | Mod+- | Make the window content smaller |
+| | Actual size | Mod+0 | Reset the zoom |
 | Message box | Send | Enter | Send the text, then Enter, to Claude (empty box: Enter only) |
 | | New line | Shift+Enter | Start a new line in the message box |
 | | Press Esc in Claude | Esc | Stop Claude's turn or close Claude's menu (when nothing in nika is open) |
@@ -1128,13 +1143,15 @@ Session window:
 | | Commands | / | Open the command list (at the start of an empty box) |
 | | Type into the pane | Ctrl+] | Send every key straight to Claude's terminal |
 | Typing into the pane | Stop typing into the pane | Ctrl+] | Keys go to the message box again |
+| | Copy | ⌘C / Ctrl+Shift+C | Copy the text selected in the terminal (Ctrl+C goes to Claude) |
+| | Paste | ⌘V / Ctrl+Shift+V or Ctrl+V | Send the clipboard to Claude as one paste |
 | Mode switcher | Move between modes | ← → Home End | Moves focus; does not switch |
 | | Switch | Enter or Space | Switch to the focused mode |
 | Command list | Move | ↑ ↓ | Move through the commands |
 | | Insert | Enter or Tab | Put the command in the message box |
 | | Close | Esc | Close the list and keep the text |
 
-**(built amendment 2026-11-09 (0.3.3))** Next permission mode, Arrow keys in Claude and Move focus back are new; Interrupt now stops the turn through the Stop route and keeps the selection rule. **(built amendment 2026-11-09 (0.3.4))** Show or hide transcript is new (§4.7).
+**(built amendment 2026-11-13 (0.4.0, F2))** The Window group gains Quit nika, Close window, Zoom in, Zoom out and Actual size (the dashboard gets the same five as a Window group of its own); Typing into the pane gains Copy and Paste. **(built amendment 2026-11-09 (0.3.3))** Next permission mode, Arrow keys in Claude and Move focus back are new; Interrupt now stops the turn through the Stop route and keeps the selection rule. **(built amendment 2026-11-09 (0.3.4))** Show or hide transcript is new (§4.7).
 
 **Settings.** Settings → Appearance gets a checkbox **Single-key shortcuts** (on by default), help text "Press ? to show
 keyboard shortcuts. Turn this off if you use speech input or single-key commands." Stored as `ui.singleKeyShortcuts`
@@ -1267,7 +1284,7 @@ ANSI 0 on the dark surface is deliberately close to the background: programs use
 | Toasts | `role="status"` (info) / `role="alert"` (error) |
 | Banners (tmux missing, offline) | `role="alert"` on first appearance only |
 | Terminal mirror | `role="region"`, `aria-label="Live terminal of builder-1, pane %12"`, `tabindex="0"`, **not** a live region; in passthrough `role="application"` with the exit instruction in its label |
-| Mirror echo ("Sent … to %12") | polite live region |
+| Mirror echo ("Sent … to %12") | polite live region, visually hidden (`.sr-only`), not shown to sighted users since 0.4.0 |
 | Transcript | `ol` of entries; each entry has who + time; folded parts are `<details>` / `<summary>` |
 | Rows | `ul` > `li`; name is a link; status text present (visually hidden when compact) |
 | Counts | glyphs `aria-hidden`, numbers followed by `sr-only` words |
@@ -1306,12 +1323,12 @@ Window minimum: **720 × 480** (set `minWidth`/`minHeight` in the Tauri window c
 | 1000–1030 | sidebar 232 | as above | one column, cards below agents (0.4: beside the cards the list is under 424 px) | split, transcript min 300 |
 | 900–999 | sidebar 232 | as above | one column, cards below agents | **tabs**: Terminal (default) / Transcript |
 | 760–899 | 60 px icon rail, attention counts as corner badges, names in `title` + SR text | group action labels hidden (icon buttons) | one column | tabs; header labels hidden |
-| 720–759 | rail | rows ≤ 600: prompt on a 2nd line; path hidden | one column | tabs; hint line: the two short tips (§3.10) |
+| 720–759 | rail | rows ≤ 600: prompt on a 2nd line; path hidden | one column | tabs |
 
 Session details:
-- The composer (quick actions, message box, mode row, hint line) is always visible; the mirror takes the remaining height (min 120 px). **(built amendment 2026-11-09 (0.3.3))**
+- The composer (quick actions, message box, mode row, notes row) is always visible; the mirror takes the remaining height (min 120 px). **(built amendment 2026-11-09 (0.3.3))**
 - Mirror never wraps or scales: a 92-column pane at 12 px mono is ~670 px; wider panes scroll horizontally inside the mirror. Font never below 11 px.
-- Height < 560 px: the hint line tips hide (the mode row stays); the transcript tab keeps "Load older" sticky at the top. **(built amendment 2026-11-09 (0.3.3))**
+- The transcript tab keeps "Load older" sticky at the top. **(built amendment 2026-11-09 (0.3.3))**
 - Above 1000 px the **Transcript** toggle (§4.7) can hide the transcript column and give the terminal the full width; at 1000 px and below the toggle is not shown and the tabs stay. **(built amendment 2026-11-09 (0.3.4))**
 
 Rules dialog ≤ 900 px: the file list becomes a horizontal strip above the diff. Settings ≤ 900 px: the in-page index hides and field pairs stack. **(built amendment 2026-11-09 (0.3.4))** The Choose plugins dialog is min(560, vw−32) × min(640, vh−32) at every width (so it still fits 720 × 480); only its list scrolls, and a long plugin name wraps instead of widening the row.
@@ -1593,7 +1610,7 @@ Shell: a 26 px toggle at the left edge inside the message box: `i-shell` (`$`) +
 | toggle | `--surface`, `--line-strong` edge, `--text-muted`, chip "off" | `--shell` fill, `--on-shell` text, chip "on" |
 | message box | mode edge (§9.1), prompt sign "›" | 2 px `--shell` border instead of the mode edge, prompt sign "!" in `--shell` |
 | placeholder | "Message builder-1…" | "Shell command for Claude's ! mode…" |
-| hint line | — | "Shell on: Enter runs this through Claude's ! mode, then shell turns off." |
+| notes row | — | "Shell on: Enter runs this through Claude's ! mode, then shell turns off." |
 
 Ink is shell's own colour: it is not a mode hue, a status hue or the accent, and it matches the terminal look of the mirror. (Claude's own `!` mode border is pink, which would collide with Needs you.)
 
@@ -1636,7 +1653,7 @@ Anatomy: header row "**Commands**" + muted "6 match /co" on the left, key hints 
 - Order: `rankCommands` (exact name match first, then name prefix, then name substring, then description), ≤ 50.
 - **The first option is active on open and after every keystroke that filters**, so Enter always has a target while the list has one.
 - Empty: "No command matches /xyz. Enter sends the text as typed." Loading: "Loading commands…". Error: "Couldn't load the command list. Enter sends the text as typed."
-- **(built amendment 2026-11-09 (0.3.3))** The hint line has no "/ commands" tip any more (the Commands button and the Keyboard shortcuts window name it). After insert, it shows the argument hint: "Arguments: [model]" (a textarea placeholder can't show it once there is text).
+- **(built amendment 2026-11-09 (0.3.3))** The notes row (once the hint line) has no "/ commands" tip any more (the Commands button and the Keyboard shortcuts window name it). After insert, it shows the argument hint: "Arguments: [model]" (a textarea placeholder can't show it once there is text).
 
 Keyboard (focus never leaves the textarea): ↑ ↓ move the active option (no wrap); Enter or Tab inserts `/<name> ` and closes; Esc closes and keeps the text (an Esc ladder step before "send Escape to the pane"); typing filters and makes the first option active again; a space closes it. Enter on an exact match inserts it like any other option (`/compact` + Enter gives `/compact `; a second Enter sends). With no match (empty list, loading or error), Enter sends the text as typed. Click inserts.
 

@@ -24,6 +24,7 @@ const MODES_AT_ONCE = 4; // captures in flight for GET /modes
 const COMMAND_MAX = 200; // characters of a slash command typed into Claude
 const CONTROL = /[\u0000-\u001f\u007f-\u009f]/; // C0, DEL, C1
 const SIG = /^[0-9a-f]{16}$/;
+const WINDOW_ACTIONS = ['quit', 'close', 'minimize', 'zoom-in', 'zoom-out', 'zoom-reset']; // what the shell can do to its window (contract §3, §5)
 const CAP = { small: 4 * 1024, settings: 16 * 1024, keys: 20 * 1024, spawn: 80 * 1024 };
 // What can answer a permission prompt: Enter confirms the highlighted option, a digit picks an option, a paste may hold either,
 // and Shift-Tab (BTab) can pick "allow for this session".
@@ -91,6 +92,7 @@ async function listTemplates(dir) {
  *                           all of them, no ps and no tmux; throws EINDEX) }; handed to the modules as is
  * @param {object} o.deps    { version, collect() → snapshot, listPanes() → { panes, error }, readHistory, listPlugins, rulesState,
  *                           preview, apply, spawnAgent, startOrchestrator, mirror, keys, picker, listCommands;
+ *                           window(action), the shell relay: writes one `window` line (appio.js);
  *                           appCopy { state(), install(), dismiss() } (src/appcopy.js bound to this install);
  *                           createSessionControl, a test seam for the factory in session-control.js }
  * @returns {(req, res, url, port) => Promise<boolean>} true when it handled the request (every /api/app/* request)
@@ -270,6 +272,15 @@ export function createAppApi({ secret, ctx, deps }) {
       const code = body.action === 'dismiss' ? 'dismiss-failed' : Object.hasOwn(COPY_ERRORS, e?.code) && e.code !== 'dismiss-failed' ? e.code : 'copy-failed';
       return err(COPY_ERRORS[code][0], code, COPY_ERRORS[code][1]);
     }
+  });
+
+  // --- the desktop window (F2): the page asks, the shell acts; the request names an action and nothing else ---
+
+  route('POST', /^\/api\/app\/window$/, CAP.small, async ({ body }) => {
+    const keys = Object.keys(body);
+    if (keys.length !== 1 || keys[0] !== 'action' || !WINDOW_ACTIONS.includes(body.action)) return err(400, 'invalid', `action must be one of ${WINDOW_ACTIONS.join(', ')}`);
+    deps.window(body.action);
+    return { status: 204, body: null };
   });
 
   route('GET', /^\/api\/app\/projects$/, 0, async () => {
@@ -575,7 +586,7 @@ export function createAppApi({ secret, ctx, deps }) {
   }
 
   function reply(res, r) {
-    if (r.status === 304) return send(res, 304, '', 'application/json; charset=utf-8', r.headers);
+    if (r.status === 304 || r.status === 204) return send(res, r.status, '', 'application/json; charset=utf-8', r.headers);
     return send(res, r.status, JSON.stringify(r.body), 'application/json; charset=utf-8', r.headers);
   }
 
