@@ -158,7 +158,7 @@ latency. `--optimize-for-size` saved about 10 MB more but made history requests 
 | `rules.js` | Renders, previews, hashes and applies the orchestration rules to a project. |
 | `server.js` | The HTTP server both tiers share: Host check, static files with the CSP, the 0.1 routes, a mount hook for the app tier. |
 | `session-control.js` | The four controls on a live pane: switch the mode, End, run a slash command, answer a prompt. One lock per pane, keys only through `keys.js`, fail closed, never kills. |
-| `spawn.js` | `spawnAgent()` splits a pane (resolving the parent and depth from tmux's tags and applying the per-parent and per-project limits, ADR 0013); `runAgent()` is the `_run-agent` wrapper that runs `claude` with the safety flags. |
+| `spawn.js` | `spawnAgent()` splits a pane, or creates the project's tmux session (window `agents`) when there is no server or no session (resolving the parent and depth from tmux's tags and applying the per-parent and per-project limits, ADR 0013); `runAgent()` is the `_run-agent` wrapper that runs `claude` with the safety flags. |
 | `store.js` | The validated `config.json`, the project registry and each project's saved orchestrator id. |
 | `text.js` | `clean()` and `cleanBlock()`: strip controls and bidi marks from agent-controlled text. |
 | `tmuxerr.js` | Maps a failed tmux call to a contract error body. |

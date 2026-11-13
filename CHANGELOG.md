@@ -105,6 +105,40 @@ Context (both tiers):
 Fixes:
 
 - A session whose turn is over but still runs a background shell (Claude's `shell` status) shows as Working, not as needing you, and you can send it messages.
+- **Linux: live sessions no longer show as ended** (issue #14). Claude Code on Linux records a session's start as the
+  `starttime` field of `/proc/<pid>/stat`, which never matched the `ps` date nika compared it with. nika now reads that one
+  field (at most 4 KB, your own processes only) for the sessions in Claude's registry. A different value means the process
+  id was reused, so that session counts as ended.
+- **macOS: live sessions nika missed now show.** A session's start time is compared as a moment, not as text. It matches
+  when it equals the process start read as UTC or as local time, and ISO dates are compared to the second. A start time
+  nika cannot read counts as running while the process runs. An upper-case session id is accepted. Session files nika
+  cannot use are no longer dropped silently: the dashboard shows "N session files skipped (unreadable or not in Claude's
+  format)" as a muted note, and `nika status` prints the same line.
+- Running sessions are never hidden behind "Show N more": the 12-row limit now applies only to the Ended section. The
+  sidebar's Detected list shows 8 repositories, then an "N more" button.
+- No tmux server running is a normal state, no longer reported as "Some sources are unavailable".
+- **Ended and finished are hidden by default.** Ended sessions and Claude's finished or stopped subagents stay out of the
+  dashboard, the project page and the browser dashboard until **Show ended** is on. The project page has its own remembered
+  **Show ended** box (its Ended section no longer opens by itself). A row's subagent summary adds a muted "+N ended" while
+  some are hidden. `nika status` lists no ended agents by default and says how many it hid: `--ended` shows the latest 5
+  per project, `--full` shows all of them. `--json` is unchanged.
+- The project page's **New agents** card shows the permission mode as a chip with its own colour, icon and short word
+  (Default, Manual, Accept edits, Plan, Auto, Don't ask), like the session header, instead of a sentence.
+- **Start and spawn without tmux running.** Spawn agent now creates the project's tmux session (first window `agents`) when
+  no tmux server or no project session exists, instead of answering "tmux unavailable" or "start the orchestrator first".
+  Start orchestrator, Resume and Spawn agent check one second after starting that Claude is still running; if it exited
+  right away (for example, it needs a login), the project page says "Claude exited right after it started. Run `claude`
+  once in a terminal in this folder to see why (for example, to log in)." and stays on the project page. "tmux not
+  found" now means only that the tmux program is missing. A dead orchestrator pane kept by tmux's `remain-on-exit` no
+  longer counts as running.
+- **Apply rules also writes `AGENTS.md`.** Claude Code reads `AGENTS.md` only when a project has no `CLAUDE.md`, so
+  Apply no longer creates `CLAUDE.md` in a project that has only `AGENTS.md`: the `@rules/orchestration.md` line goes into
+  `AGENTS.md` instead, and into both files when both exist (same preview, hash check and backup). A symlinked `AGENTS.md`
+  beside `CLAUDE.md` is left alone and shown as skipped in the preview; a symlinked `AGENTS.md` with no `CLAUDE.md` is
+  refused. `nika rules apply` says "Nothing to apply." when only a skipped file is left.
+- **macOS: a held key repeats** in nika's window instead of opening the accent popup. The app turns the press-and-hold
+  popup off for its own process only, in memory; nothing is written to your preferences. Accents still work with the
+  Option key. New dependency: `objc2-foundation` 0.3.2 (macOS only, already in the lock file through Tauri).
 
 Packaging:
 
