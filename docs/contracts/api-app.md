@@ -714,9 +714,9 @@ checks as every other target (symlink, hard link and owner checks, size limit, U
 symlinked `AGENTS.md` is never followed: `409 refused` with `code: "ESYMLINK"`; a folder, FIFO or other non-regular
 `AGENTS.md` with no `CLAUDE.md` is `409 refused` with `code: "ENOTREG"`. Beside a `CLAUDE.md`, `AGENTS.md` is not looked at
 (a symlink there is not mentioned). The new `CLAUDE.md` body depends on the `AGENTS.md` type, so the plan `hash` covers it: an
-`AGENTS.md` that appears, disappears or changes type after the preview is a `409 conflict`. Right before it creates
-`CLAUDE.md`, apply re-checks the type against the plan; a change is `409 conflict` ("AGENTS.md changed while applying;
-preview again") and nothing is written. The 0.4.0 `skipped` action and its `note` no longer exist.
+`AGENTS.md` that appears, disappears or changes type after the preview is a `409 conflict`. Before its first write, apply
+re-checks the type against the plan; a change is `409 conflict` ("AGENTS.md changed while applying; preview again") and
+nothing is written. The 0.4.0 `skipped` action and its `note` no longer exist.
 
 The preview `diff` for `.claude/settings.local.json` is computed between `{"enabledPlugins": <old>}` and
 `{"enabledPlugins": <new>}` (pretty JSON) only, plus `keptKeys` = the number of other top-level keys; the values of

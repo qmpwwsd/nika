@@ -695,8 +695,16 @@ const COMMANDS = {
   status: async (rest, cx) => {
     const o = parseStatusArgs(rest);
     const { snapshot } = await collect({ config: cx.config, exec: makeExec(), now: Date.now(), sinceMs: parseSince(o.since), since: o.since });
-    if (o.json) cx.out.write(`${toJson(snapshot)}\n`);
-    else cx.out.write(renderStatus(snapshot, o, painter(cx.out, cx.env), addedTo((await loadConfig(cx.env)).config.projects)));
+    if (o.json) {
+      cx.out.write(`${toJson(snapshot)}\n`);
+      return 0;
+    }
+    // nika's project list decides which folders the default view keeps; --ended shows every folder, so it is not read then
+    const added = o.ended ? null : await loadConfig(cx.env);
+    const paint = painter(cx.out, cx.env);
+    cx.out.write(renderStatus(snapshot, o, paint, added ? addedTo(added.config.projects) : undefined));
+    // a config.json nika could not use leaves no project "added": say so, or ended-only projects would vanish without a word
+    for (const w of added?.warnings ?? []) cx.out.write(`${paint.ended(`note: config.json: ${clean(w, 200)}`)}\n`);
     return 0;
   },
   serve: async (rest, cx, io) => {

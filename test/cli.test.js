@@ -140,6 +140,25 @@ describe('cli', () => {
       assert.doesNotMatch(r.stdout, /not added to nika/);
     });
 
+    test('(+) a config.json nika cannot use is named in a note, since no project then counts as added', async () => {
+      const cfg = path.join(fx.root, 'nika-config-bad');
+      fs.mkdirSync(path.join(cfg, 'nika'), { recursive: true });
+      fs.writeFileSync(path.join(cfg, 'nika', 'config.json'), '{ not json');
+      const r = await run(['status', '--since', 'all'], { ...sevenEnded(), NIKA_CONFIG_DIR: cfg });
+      assert.equal(r.code, 0, r.stderr);
+      assert.match(r.stdout, /^note: config\.json: /m);
+    });
+
+    test('(−) with --ended the project list is not read: the same bad config.json gives no note', async () => {
+      const cfg = path.join(fx.root, 'nika-config-bad2');
+      fs.mkdirSync(path.join(cfg, 'nika'), { recursive: true });
+      fs.writeFileSync(path.join(cfg, 'nika', 'config.json'), '{ not json');
+      const r = await run(['status', '--since', 'all', '--ended'], { ...sevenEnded(), NIKA_CONFIG_DIR: cfg });
+      assert.equal(r.code, 0, r.stderr);
+      assert.doesNotMatch(r.stdout, /config\.json/);
+      assert.match(r.stdout, /^plain\s/m);
+    });
+
     test('(+) by default no ended row is printed; the header still counts them and one line says how to see them', async () => {
       const r = await run(['status', '--since', 'all'], await added(sevenEnded()));
       assert.equal(r.code, 0, r.stderr);

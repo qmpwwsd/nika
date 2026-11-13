@@ -420,7 +420,9 @@ export async function apply(project, opts, ctx = {}) {
     const prepared = [];
     for (const f of todo) {
       const c = await checkComponents(dir, f.path);
-      // the new CLAUDE.md was planned for the AGENTS.md type seen above (imports it, or must not exist beside it): a change turns it wrong
+      // the new CLAUDE.md was planned for the AGENTS.md type seen above (imports it, or must not exist beside it): a change turns it wrong.
+      // Checked here, before the first write (a check between writes could leave a half-applied project); an AGENTS.md created in the
+      // short gap until CLAUDE.md is written needs write access to the project folder (docs/security.md T50, same class as T8)
       if (f.path === CLAUDE && f.current === null && (await agentsKind(dir)) !== p.agents) throw fail(409, 'conflict', 'AGENTS.md changed while applying; preview again');
       if (await isRealDir(c.dir)) await ensureDir(c.dir, 0o755, PROJ);
       if ((await readText(c.abs, FILE_MAX)) !== f.current) throw fail(409, 'conflict', `${f.path} changed while applying; preview again`);
