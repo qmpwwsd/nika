@@ -508,7 +508,13 @@ describe('windowAction (F2): the keys the page turns into window actions where t
     }
   });
 
-  test('(−) no options at all is the safe answer: nothing', () => {
+  test('(+) Shift is ignored on the zoom keys only: Ctrl+Shift+= and Ctrl+Shift+- still zoom, Ctrl+Shift+Q/W/0 do nothing', () => {
+    assert.equal(windowAction(ctrl('=', { shiftKey: true }), W), 'zoom-in');
+    assert.equal(windowAction(ctrl('-', { shiftKey: true }), W), 'zoom-out');
+    for (const k of ['Q', 'W', '0']) assert.equal(windowAction(ctrl(k, { shiftKey: true }), W), null, k);
+  });
+
+  test('(+) without options it is not a Mac (Ctrl+Q quits); (−) no event at all gives nothing', () => {
     assert.equal(windowAction(ctrl('q')), 'quit', 'a missing mac means not a Mac');
     assert.equal(windowAction(ctrl('q'), { mac: true }), null);
     assert.equal(windowAction(undefined, W), null);

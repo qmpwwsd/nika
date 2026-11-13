@@ -1,5 +1,5 @@
 // The Keyboard shortcuts window and the key rules around it (docs/design/spec.md 3.13 and 4.6), shared by the dashboard and the
-// session window. Everything except openShortcuts is pure, so Node tests it (test/shortcuts.test.js). The content is static copy
+// session window. Everything except openShortcuts and wireWindowKeys is pure, so Node tests it (test/shortcuts.test.js). The content is static copy
 // kept here; nothing in the window comes from the server. ASCII only: key glyphs are escapes, because the session window's
 // files are scanned for invisible characters.
 import { h } from './dom.js';
@@ -129,7 +129,7 @@ export function wantsHistToggle(e, { mac, passthrough, dialogOpen }) {
 /**
  * F2. The window action a key stands for, or null. Only where the OS has no menu for it: macOS keeps Command+Q/W/M and zoom in the
  * app menu and the page ignores every Meta key. Elsewhere: Ctrl+Q quit, Ctrl+W close, Ctrl+= / Ctrl++ zoom in, Ctrl+- zoom out,
- * Ctrl+0 actual size; Shift only for the plus (Shift+= types one), no Alt, no Meta. In passthrough Ctrl+W is Claude's (C-w), so it is
+ * Ctrl+0 actual size; Shift is ignored on the two zoom keys (Shift+= types the plus) and refused on the others, no Alt, no Meta. In passthrough Ctrl+W is Claude's (C-w), so it is
  * not Close there; the other window keys stay the window's.
  */
 export function windowAction(e, { mac, passthrough } = {}) {

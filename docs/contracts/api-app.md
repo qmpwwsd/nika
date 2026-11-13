@@ -81,7 +81,8 @@ nothing is sent; a body that is not `application/json` → `415`, over the cap �
 writes one `window` line to the shell (§5) and answers `204` with no body. The server does not know whether the shell acted:
 `204` means the line was written. The page sends it from the keys the OS has no menu for (Linux: Ctrl+Q quit, Ctrl+W close —
 not while "Type into pane" is on, where Ctrl+W goes to Claude — and Ctrl+= / Ctrl++, Ctrl+-, Ctrl+0 for zoom); on macOS the app
-menu owns Command+Q/W/M and zoom and the page does not call this route. Never mounted on the browser tier (§4).
+menu owns Command+Q/W/M and zoom and the page does not call this route. Not rate limited: the page sends at key-repeat
+speed, and the shell clamps zoom to 0.5–3.0 (`docs/security.md`, residual risk k). Never mounted on the browser tier (§4).
 
 ### Projects
 

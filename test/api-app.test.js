@@ -375,6 +375,10 @@ describe('POST /api/app/window (F2): the page asks the shell to act on its windo
       assert.equal(r.body.error, 'invalid', JSON.stringify(json));
     }
     assert.equal((await a.call('POST', '/api/app/window', { body: '{"action":"quit"', headers: { 'content-type': 'application/json' } })).status, 400);
+    for (const body of ['[]', 'null', '"quit"', '[{"action":"quit"}]']) { // JSON, but not an object: the shared reader refuses it here too
+      const r = await a.call('POST', '/api/app/window', { body, headers: { 'content-type': 'application/json' } });
+      assert.equal(r.status, 400, body);
+    }
     assert.equal(windowCalls(a).length, before);
   });
 
