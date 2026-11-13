@@ -14,7 +14,7 @@ import { menuEl, sessionHref, RX } from '../public/ui.js';
 import {
   orchState, roleTag, savedPick, otherRunning, parentOf, spawnLimits, statusOf, treeRows, capRoots, hasTree, endedPlan, STATUS_ORDER,
 } from '../public/dash-model.js';
-import { parseModes, modesAfter } from '../public/modes.js';
+import { parseModes, modesAfter, modeEl, settingModeEl } from '../public/modes.js';
 import { pluginView, pluginSave, sortIds, countText, filterNote } from '../public/plugin-view.js';
 import { ROLES, ROLE_LABEL, CUSTOM, MODEL_ID, MODEL_HINT, modelLabel, fillModelSelect, fillRoleOverride, effectiveRoleModels } from '../public/models-ui.js';
 
@@ -74,7 +74,7 @@ const fn = (src, head) => {
 const line = (re) => re.exec(APP)[0];
 const TREE_SRC = [
   fn(APP, 'export function sOf(').replace('export ', ''), fn(APP, 'function matches('), line(/const byStatus = [^\n]+/), line(/const endedScope = [^\n]+/),
-  fn(APP, 'function treeSlot('), fn(APP, 'function rowEl('), line(/const rowsEl = [^\n]+/), line(/const treeEl = [^\n]+/),
+  fn(APP, 'function subagentsEl('), fn(APP, 'function treeSlot('), fn(APP, 'function rowEl('), line(/const rowsEl = [^\n]+/), line(/const treeEl = [^\n]+/),
   fn(APP, 'export function agentNodes(').replace('export ', ''), fn(APP, 'export function swap(').replace('export ', ''),
 ].join('\n');
 
@@ -86,7 +86,7 @@ function treeRig({ isApp = true, open = [], expanded = [], rowItems = null } = {
     isApp, state, hooks: rowItems ? { rowItems: (...args) => { seen.push(args); return rowItems; } } : {}, ORDER: STATUS_ORDER, ROW_CAP: 12,
     endedPlan, statusOf, treeRows, capRoots, hasTree, parentOf, roleTag, roleTagEl, ctxEl, h, icon, menuEl, sessionHref, SHAPE,
     rowMode: () => null, canEndRow: () => false, reasonOf: () => 'Needs you', endedText: () => 'Ended',
-    statusEl: () => new El('span'), modeEl: () => new El('span'), modelEl: () => new El('span'), timeEl: () => new El('span'), subagentsEl: () => new El('details'),
+    statusEl: () => new El('span'), modeEl: () => new El('span'), modelEl: () => new El('span'), timeEl: () => new El('span'),
     copyText: () => {}, showReport: () => {}, focusPane: () => {}, endSession: () => {},
     render: (force) => renders.push(force), document: { getSelection: () => ({ isCollapsed: true }), activeElement: null }, location: {},
     CSS: { escape: (s) => s }, $: (sel, root) => root.byFk(/data-fk="(.*)"\]/.exec(sel)[1]),
@@ -319,6 +319,72 @@ describe('flat lists: the filter, the queue and Ended (design 2.1)', () => {
   });
 });
 
+// F5 (0.4): finished and stopped subagents hide with the ended sessions; the running ones stay. One toggle per view.
+describe('Claude\'s own subagents under a row: hidden when finished until "Show ended" (F5)', () => {
+  const sub = (id, state, over = {}) => ({ id, type: 'Explore', description: `task ${id}`, model: 'haiku', modelLabel: 'Haiku 4.5', state, lastActivity: 5, ...over });
+  const SUBS = [sub('s1', 'running'), sub('s2', 'finished'), sub('s3', 'stopped')];
+  const busy = () => ag(B1, 'builder-1', { state: 'busy', subagents: SUBS });
+  const subsOf = (nodes) => nodes.flatMap((n) => n.all(withClass('subs')));
+  const summaryOf = (d) => d.all((n) => n.tag === 'summary')[0];
+  const itemsOf = (d) => d.all((n) => n.tag === 'li').map((li) => li.all(withClass('sub-desc'))[0].textContent);
+
+  test('(+) by default only the running subagent is listed; the summary counts what is shown and a muted "+2 ended" hint says the rest is hidden', () => {
+    const r = treeRig();
+    const [d] = subsOf(r.agentNodes(group([busy()]), '', 'g:k'));
+    assert.deepEqual(itemsOf(d), ['task s1']);
+    assert.equal(summaryOf(d).textContent, '1 subagent · 1 running +2 ended');
+    const hint = summaryOf(d).all(withClass('muted'))[0];
+    assert.equal(hint.textContent, '+2 ended');
+  });
+
+  test('(+) with the toggle on every subagent is listed, the summary counts all of them and there is no hint', () => {
+    const r = treeRig();
+    r.state.showEnded = true;
+    const [d] = subsOf(r.agentNodes(group([busy()]), '', 'g:k'));
+    assert.deepEqual(itemsOf(d).sort(), ['task s1', 'task s2', 'task s3']);
+    assert.equal(summaryOf(d).textContent, '3 subagents · 1 running');
+    assert.equal(summaryOf(d).all(withClass('muted')).length, 0);
+  });
+
+  test('(+) a row whose subagents are all finished or stopped draws no subagent line at all while they are hidden', () => {
+    const a = ag(B1, 'builder-1', { state: 'busy', subagents: [sub('s2', 'finished'), sub('s3', 'stopped')] });
+    const r = treeRig();
+    assert.equal(subsOf(r.agentNodes(group([a]), '', 'g:k')).length, 0);
+    r.state.showEnded = true;
+    assert.equal(itemsOf(subsOf(r.agentNodes(group([a]), '', 'g:k'))[0]).length, 2);
+  });
+
+  test('(+) the project page has its own toggle: the option decides, the dashboard flag does not leak in, either way round', () => {
+    const r = treeRig();
+    r.state.showEnded = true; // the dashboard checkbox is on, the project page one is off
+    assert.deepEqual(itemsOf(subsOf(r.agentNodes(group([busy()]), '', 'pv:k', { showEnded: false }))[0]), ['task s1']);
+    r.state.showEnded = false;
+    assert.equal(itemsOf(subsOf(r.agentNodes(group([busy()]), '', 'pv:k', { showEnded: true }))[0]).length, 3);
+  });
+
+  test('(+) an ended session in the Ended section keeps its subagents hidden with the toggle off (the section itself is not drawn) and shows them with it on', () => {
+    const gone = ag(B2, 'builder-2', { live: false, state: 'ended', pane: null, subagents: [sub('s4', 'stopped')] });
+    const r = treeRig();
+    assert.equal(subsOf(r.agentNodes(group([gone]), '', 'g:k')).length, 0);
+    const nodes = r.agentNodes(group([gone]), '', 'g:k', { showEnded: true });
+    assert.deepEqual(itemsOf(subsOf(nodes)[0]), ['task s4']);
+  });
+
+  test('(−) a subagent state that is not "running" is never shown by default, whatever the word', () => {
+    const odd = ag(B1, 'builder-1', { state: 'busy', subagents: [sub('s5', 'Running'), sub('s6', undefined), sub('s7', 'running')] });
+    const [d] = subsOf(treeRig().agentNodes(group([odd]), '', 'g:k'));
+    assert.deepEqual(itemsOf(d), ['task s7']);
+    assert.equal(summaryOf(d).textContent, '1 subagent · 1 running +2 ended');
+  });
+
+  test('(+) the open mark of the disclosure survives the redraw as before (same id per session)', () => {
+    const r = treeRig({ open: [`subs:${B1}`] });
+    const [d] = subsOf(r.agentNodes(group([busy()]), '', 'g:k'));
+    assert.ok(d.hasAttribute('open'));
+    assert.ok(!subsOf(treeRig().agentNodes(group([busy()]), '', 'g:k'))[0].hasAttribute('open'), 'closed unless opened by hand');
+  });
+});
+
 describe('the root cap (design 2.1)', () => {
   const many = (n) => Array.from({ length: n }, (_, i) => ag(`${String(i + 1).padStart(8, '0')}-0000-4000-8000-000000000000`, `agent-${i + 1}`, { pane: { id: `%${i + 20}`, command: 'claude' }, lastActivity: 100 - i }));
 
@@ -387,7 +453,7 @@ function projRig({ agents = family(), project = {}, settings = SETTINGS, me = { 
     return typeof a === 'function' ? a(opts) : a;
   };
   const ctx = {
-    h, icon, $: node, state, hooks: {}, appFetch, menuEl, sessionHref, roleTag, orchState, savedPick, otherRunning, spawnLimits, parseModes, modesAfter, RX,
+    h, icon, $: node, state, hooks: {}, appFetch, menuEl, sessionHref, roleTag, orchState, savedPick, otherRunning, spawnLimits, parseModes, modesAfter, settingModeEl, RX,
     pluginView, pluginSave, sortIds, countText, filterNote, ROLES, ROLE_LABEL, CUSTOM, MODEL_ID, MODEL_HINT, modelLabel, fillModelSelect, fillRoleOverride, effectiveRoleModels,
     location: { set href(v) { navs.push(v); }, get href() { return ''; }, hash: '' }, document: { title: '' },
     toast: (msg, o) => {
@@ -925,9 +991,63 @@ describe('Settings, the New agents card and Remove project (design 2.5)', () => 
   test('(+) the New agents card: Permission mode, Pane, Per orchestrator, Spawned from nika, This project', () => {
     const r = projRig();
     assert.deepEqual(cardRows(newAgents(r)), [
-      ['Permission mode', 'Claude Code default (no flag)'], ['Pane', 'Beside'], ['Per orchestrator', '3 at once'], ['Spawned from nika', '0 of 3'], ['This project', '3 of 9 running'],
+      ['Permission mode', 'Permission mode: Default'], ['Pane', 'Beside'], ['Per orchestrator', '3 at once'], ['Spawned from nika', '0 of 3'], ['This project', '3 of 9 running'],
     ]);
     assert.equal(newAgents(r).all(withClass('limit')).length, 0, 'no note below the limits');
+  });
+
+  // F6: the card shows the mode as the session header's chip (colour class, icon, short word), not as a sentence. Written out here on purpose.
+  const CHIPS = {
+    default: ['m-manual', '#i-gear', 'Default'],
+    manual: ['m-manual', '#i-m-manual', 'Manual'],
+    acceptEdits: ['m-edits', '#i-m-edits', 'Accept edits'],
+    plan: ['m-plan', '#i-m-plan', 'Plan'],
+    auto: ['m-auto', '#i-m-auto', 'Auto'],
+    dontAsk: ['m-dontask', '#i-m-dontask', "Don't ask"],
+  };
+
+  test('(+) the Permission mode value is a mode chip with the short label, the mode\'s icon and its colour class, for every mode', () => {
+    for (const [mode, [cls, href, label]] of Object.entries(CHIPS)) {
+      const r = projRig({ settings: { ...SETTINGS, permissionMode: mode } });
+      const dd = newAgents(r).all((n) => n.tag === 'dd')[0];
+      const chip = dd.all(withClass('mode'))[0];
+      assert.ok(chip, mode);
+      assert.equal(chip.className, `mode ${cls}`, mode);
+      assert.equal(chip.all((n) => n.tag === 'use')[0].attrs.href, href, mode);
+      assert.equal(chip.all(withClass('ml'))[0].textContent, label, mode);
+      assert.equal(dd.kids.length, 1, 'the chip alone');
+    }
+  });
+
+  test('(+) the chip is the one the session header builds (modeEl): same class, text and title as the real element', () => {
+    for (const mode of ['manual', 'acceptEdits', 'plan', 'auto', 'dontAsk']) {
+      const r = projRig({ settings: { ...SETTINGS, permissionMode: mode } });
+      const chip = newAgents(r).all(withClass('mode'))[0];
+      const header = modeEl(mode);
+      assert.equal(chip.className, header.className, mode);
+      assert.equal(chip.textContent, header.textContent, mode);
+      assert.equal(chip.attrs.title, header.attrs.title, mode);
+    }
+  });
+
+  test('(−) the long descriptions are not on the card: they stay in the spawn sheet\'s select', () => {
+    for (const mode of Object.keys(CHIPS)) {
+      const r = projRig({ settings: { ...SETTINGS, permissionMode: mode } });
+      const text = newAgents(r).textContent;
+      for (const gone of ['classifier', 'approves actions', 'ask every time', 'no flag', 'Claude Code default', 'without asking you']) assert.ok(!text.includes(gone), `${mode}: ${gone}`);
+    }
+    const r = projRig({ settings: { ...SETTINGS, permissionMode: 'auto' } });
+    r.api.openSpawn(r.g);
+    const options = r.node('#sp-perm').kids.map((o) => o.textContent);
+    assert.ok(options.includes('Auto: a classifier approves actions without asking you'), 'the select keeps the warning copy');
+    assert.ok(options.includes('Manual: ask every time') && options.includes('Claude Code default (no flag)'));
+  });
+
+  test('(−) a value Settings cannot hold shows the "Mode ?" chip, never raw text', () => {
+    const r = projRig({ settings: { ...SETTINGS, permissionMode: '<b>x</b>' } });
+    const chip = newAgents(r).all(withClass('mode'))[0];
+    assert.equal(chip.className, 'mode m-unknown');
+    assert.ok(!newAgents(r).textContent.includes('<b>'));
   });
 
   test('(+) the counts follow the snapshot and Settings', () => {

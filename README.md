@@ -31,7 +31,7 @@ the [desktop app](#desktop-app-02) are never available on `http://127.0.0.1:3335
 |---|---|
 | `nika` / `nika open` | open the desktop app when it is installed, else the browser dashboard (the server must be running); see [CLI (0.2)](#cli-02) |
 | `nika serve` | run the server in the foreground (what `brew services` runs) |
-| `nika status` | print agents grouped by project; `--json`, `--since 24h\|7d\|30d\|all`, `--full` |
+| `nika status` | print agents grouped by project; `--json`, `--since 24h\|7d\|30d\|all`, `--ended`, `--full` |
 | `nika --version` | print the version |
 
 ## CLI (0.2)

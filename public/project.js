@@ -4,15 +4,15 @@
 import { appFetch, applyTheme } from './api.js';
 import { h, icon } from './dom.js';
 import {
-  $, state, hooks, RX, toast, announce, errText, copyText, setBusy, fieldError, openDialog, rulesEl, sessionHref, menuEl, syncRadioCards,
+  $, state, hooks, RX, save, toast, announce, errText, copyText, setBusy, fieldError, openDialog, rulesEl, sessionHref, menuEl, syncRadioCards,
 } from './ui.js';
-import { parseModes, modesAfter } from './modes.js';
+import { parseModes, modesAfter, settingModeEl } from './modes.js';
 import { copyBanner, copyErrorText, copyToast } from './app-copy.js';
 import {
   CUSTOM, MODEL_ID, MODEL_HINT, ROLES, ROLE_LABEL, modelLabel, fillModelSelect, fillRoleOverride, effectiveRoleModels,
 } from './models-ui.js';
 import { buildGroups, agentNodes, swap, interacting, render } from './app.js';
-import { sidebarModel, orchState, savedPick, otherRunning, roleTag, spawnLimits } from './dash-model.js';
+import { sidebarModel, orchState, savedPick, otherRunning, roleTag, spawnLimits, resetEndedState } from './dash-model.js';
 import { pluginView, pluginSave, sortIds, countText, filterNote } from './plugin-view.js';
 
 const PERM_LABEL = {
@@ -461,7 +461,7 @@ function renderProject(force) {
   const key = state.route.key;
   const p = state.projects?.find((x) => x.key === key) ?? null;
   const g = buildGroups().find((x) => x.project?.key === key) ?? null;
-  const sig = JSON.stringify([p, g?.agents, state.modes.map, state.settings, state.plugins, state.models, state.me?.tmux, state.me?.claude, state.error, state.showEnded, [...state.open], [...state.expanded], key]);
+  const sig = JSON.stringify([p, g?.agents, state.modes.map, state.settings, state.plugins, state.models, state.me?.tmux, state.me?.claude, state.error, state.showEndedProject, [...state.open], [...state.expanded], key]);
   if (!force && (sig === projSig || interacting())) return;
   projSig = sig;
   const body = $('#proj-body');
@@ -493,7 +493,7 @@ function renderProject(force) {
       { text: 'Remove from nika…', run: () => confirmRemove(p) },
     ], 'proj-menu'),
   ]);
-  swap($('#proj-agents'), [...(orchState(p, g).kind === 'gone' ? [goneAlert(p, pick)] : []), ...agentNodes(g, '', `pv:${key}`, { endedOpen: true })]);
+  swap($('#proj-agents'), [...(orchState(p, g).kind === 'gone' ? [goneAlert(p, pick)] : []), ...agentNodes(g, '', `pv:${key}`, { showEnded: state.showEndedProject === true })]);
   swap($('#proj-setup'), setupCards(p, g));
 }
 
@@ -560,7 +560,7 @@ function setupCards(p, g) {
     h('div', { class: 'card' },
       h('h2', { text: 'New agents' }),
       h('dl', { class: 'kv' },
-        h('dt', { text: 'Permission mode' }), h('dd', { text: s ? PERM_LABEL[s.permissionMode] ?? s.permissionMode : '–' }),
+        h('dt', { text: 'Permission mode' }), h('dd', null, s ? settingModeEl(s.permissionMode) : '–'),
         h('dt', { text: 'Pane' }), h('dd', { text: s ? PLACE_LABEL[s.panePlacement] ?? s.panePlacement : '–' }),
         h('dt', { text: 'Per orchestrator' }), h('dd', { class: 'num', text: `${lim.max} at once` }),
         h('dt', { text: 'Spawned from nika' }), h('dd', { class: 'num', text: `${lim.parent.running} of ${lim.max}` }),
@@ -1434,6 +1434,18 @@ async function appCopyDismiss() {
 }
 
 /* ---------- start ---------- */
+/** The project page's own "Show ended" checkbox (default off, remembered): ended sessions and finished subagents of this page. */
+function wireEnded() {
+  const box = $('#proj-ended');
+  box.checked = state.showEndedProject;
+  box.addEventListener('change', () => {
+    state.showEndedProject = box.checked;
+    save('showEndedProject', state.showEndedProject);
+    resetEndedState(state.open, 'pv'); // every Ended section starts open again, folded by hand or not
+    render(true); // a user action always redraws, even with a selection in the list
+  });
+}
+
 export async function initApp() {
   hooks.pollApp = pollApp;
   hooks.appCopyInstall = appCopyInstall;
@@ -1449,6 +1461,7 @@ export async function initApp() {
     render(true);
   };
   $('#side-add').addEventListener('click', () => addProject());
+  wireEnded();
   wirePlugins();
   wireModels();
   $('#spawn-form').addEventListener('submit', submitSpawn);

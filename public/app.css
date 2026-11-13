@@ -277,6 +277,7 @@ a.name:hover { text-decoration: underline; }
 .more-row { display: flex; justify-content: center; padding: 8px; border-top: 1px solid var(--line); }
 .subs > summary { cursor: pointer; padding: 2px 0 2px 4px; color: var(--text-muted); width: fit-content; min-height: 24px; }
 .subs > summary:hover { color: var(--text); }
+.subs > summary .sub-hid { font-size: var(--fs-small); }
 .subs ul { list-style: none; margin: 4px 0 6px; padding: 0 0 0 4px; display: grid; gap: 4px; }
 .subs li { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; padding: 4px 0; border-top: 1px dashed var(--line); }
 .sub-desc { flex: 1 1 160px; min-width: 0; overflow-wrap: anywhere; }

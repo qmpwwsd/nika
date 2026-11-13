@@ -64,8 +64,16 @@ export const bypassTag = () => modeEl('bypassPermissions');
  * The mode tag: span.mode.<cls>[data-confirmed][title] > icon + sr-only "Permission mode: " + label (+ "unconfirmed").
  * Default: icon + label (+ the word). compact: the word moves to sr-only, after a comma ("Accept edits, unconfirmed"). iconOnly: the label moves to sr-only too.
  */
-export function modeEl(mode, { confirmed = true, compact = false, iconOnly = false } = {}) {
-  const meta = MODE_META[modeKey(mode)];
+export const modeEl = (mode, opts) => chipEl(MODE_META[modeKey(mode)], opts);
+
+// `default` is a Settings value (Claude Code's own default, no flag), not a mode a pane can be in, so it stays out of MODE_META and modeKey
+// still calls it unknown. It gets the neutral Manual colour (Claude Code asks every time by default), the gear icon and its own word.
+const SETTING_DEFAULT = { label: 'Default', icon: 'gear', cls: 'm-manual' };
+
+/** The chip for a Settings value (the project page's New agents card): the pane modes through modeEl's look, plus `default`. */
+export const settingModeEl = (value) => chipEl(value === 'default' ? SETTING_DEFAULT : MODE_META[modeKey(value)]);
+
+function chipEl(meta, { confirmed = true, compact = false, iconOnly = false } = {}) {
   const sure = confirmed === true;
   const title = `Permission mode: ${meta.label}${sure ? '' : " (not confirmed: Claude's footer is covered or not shown yet)"}`;
   const quiet = compact || iconOnly;

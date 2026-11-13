@@ -61,11 +61,80 @@ describe('cli', () => {
   });
 
   test('(+) status text shows a header per project and agent names', async () => {
-    const r = await run(['status', '--since', 'all']);
+    const r = await run(['status', '--since', 'all', '--ended']);
     assert.equal(r.code, 0, r.stderr);
     assert.match(r.stdout, /^repo\s/m);
     assert.match(r.stdout, /build-7-1/);
     assert.match(r.stdout, /^plain\s/m);
+  });
+
+  // F5 (0.4): ended agents are hidden by default everywhere. Seven ended sessions in one folder: more than the cap of 5 that --ended shows.
+  describe('status and ended agents', () => {
+    const nameRows = (out) => out.split('\n').filter((l) => /^ {2}○ ended/.test(l));
+    const sevenEnded = () => {
+      const dir = path.join(fx.root, 'claude-ended7');
+      const slug = '-ended7';
+      for (let i = 1; i <= 7; i += 1) {
+        const sid = `0000000${i}-0000-4000-8000-000000000000`;
+        const file = path.join(dir, 'projects', slug, `${sid}.jsonl`);
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+        fs.writeFileSync(file, `${JSON.stringify({ type: 'user', cwd: fx.plain, timestamp: new Date(Date.UTC(2026, 10, 1, 0, i)).toISOString() })}\n${JSON.stringify({ type: 'ai-title', aiTitle: `worker-${i}`, sessionId: sid })}\n`);
+        fs.utimesSync(file, new Date(Date.UTC(2026, 10, 1, 0, i)), new Date(Date.UTC(2026, 10, 1, 0, i)));
+      }
+      return { CLAUDE_CONFIG_DIR: dir };
+    };
+
+    test('(+) by default no ended row is printed; the header still counts them and one line says how to see them', async () => {
+      const r = await run(['status', '--since', 'all'], sevenEnded());
+      assert.equal(r.code, 0, r.stderr);
+      assert.match(r.stdout, /^plain\s.*ended 7$/m);
+      assert.deepEqual(nameRows(r.stdout), []);
+      assert.match(r.stdout, /^ {2}… 7 ended hidden \(nika status --ended\)$/m);
+    });
+
+    test('(+) --ended prints the latest 5 ended rows and points at --full for the rest', async () => {
+      const r = await run(['status', '--since', 'all', '--ended'], sevenEnded());
+      assert.equal(r.code, 0, r.stderr);
+      assert.equal(nameRows(r.stdout).length, 5);
+      assert.match(r.stdout, /worker-7/);
+      assert.doesNotMatch(r.stdout, /worker-2\b/);
+      assert.match(r.stdout, /^ {2}… 2 more ended \(nika status --full\)$/m);
+      assert.doesNotMatch(r.stdout, /hidden/);
+    });
+
+    test('(+) --full lists every ended row, with no cap and no hint (it implies --ended)', async () => {
+      const r = await run(['status', '--since', 'all', '--full'], sevenEnded());
+      assert.equal(r.code, 0, r.stderr);
+      assert.equal(nameRows(r.stdout).length, 7);
+      assert.doesNotMatch(r.stdout, /more ended|hidden/);
+    });
+
+    test('(+) a project with nothing ended prints no hint', async () => {
+      const dir = path.join(fx.root, 'claude-nothing-ended');
+      fs.mkdirSync(path.join(dir, 'projects'), { recursive: true });
+      const r = await run(['status', '--since', 'all'], { CLAUDE_CONFIG_DIR: dir });
+      assert.equal(r.code, 0, r.stderr);
+      assert.doesNotMatch(r.stdout, /hidden|more ended/);
+    });
+
+    test('(+) --json is not affected: every agent stays in the machine-readable output', async () => {
+      const r = await run(['status', '--json', '--since', 'all'], sevenEnded());
+      assert.equal(JSON.parse(r.stdout).groups.flatMap((g) => g.agents).length, 7);
+    });
+
+    test('(−) an unknown option is still refused with exit 2, also next to --ended; so is --ended=1', async () => {
+      for (const args of [['status', '--bogus'], ['status', '--ended', '--bogus'], ['status', '--ended=1'], ['status', '--endedx']]) {
+        const r = await run(args);
+        assert.equal(r.code, 2, args.join(' '));
+        assert.match(r.stderr, /unknown option/);
+      }
+    });
+
+    test('(+) the usage text lists --ended, and --full says it implies it', async () => {
+      const r = await run(['help']);
+      assert.match(r.stdout, /^ {6}--ended {12}also list ended agents \(the latest 5 per project\)$/m);
+      assert.match(r.stdout, /^ {6}--full {13}list every ended agent, not only the latest 5 \(implies --ended\)$/m);
+    });
   });
 
   test('(−) unknown command and bad --since exit 2 with usage', async () => {

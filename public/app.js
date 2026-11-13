@@ -8,7 +8,7 @@ import { wantsHelp, wantsBack, isTextEntry, openShortcuts, helpHint, backHint } 
 import { copyBanner } from './app-copy.js';
 import { endedPlan, noMatchText, resetEndedState, roleTag, statusOf, parentOf, treeRows, capRoots, hasTree } from './dash-model.js';
 import {
-  $, $$, MAC, SHAPE, ORDER, state, hooks, load, save, timeEl, tickTimes, announce, toast, copyText,
+  $, $$, MAC, SHAPE, ORDER, state, hooks, load, loadFlag, save, timeEl, tickTimes, announce, toast, copyText,
   statusEl, modelEl, rulesEl, countsLine, sessionHref, menuEl, menuIsOpen, openDialog, initDialogs, initMenus,
 } from './ui.js';
 
@@ -114,12 +114,17 @@ async function showReport(a) {
 }
 
 /* ---------- rows ---------- */
-function subagentsEl(a) {
+/** Claude's own subagents under a row. Finished and stopped ones are "ended": hidden until the view's "Show ended" is on (F5); a row with none left to show draws nothing. */
+function subagentsEl(a, showEnded) {
   const id = `subs:${a.id}`;
-  const running = a.subagents.filter((s) => s.state === 'running').length;
+  const shown = showEnded ? a.subagents : a.subagents.filter((s) => s.state === 'running');
+  if (!shown.length) return null;
+  const running = shown.filter((s) => s.state === 'running').length;
+  const hidden = a.subagents.length - shown.length;
   const d = h('details', { class: 'subs', open: state.open.has(id) },
-    h('summary', { 'data-fk': `sum:${id}` }, `${a.subagents.length} subagent${a.subagents.length === 1 ? '' : 's'}${running ? ` · ${running} running` : ''}`),
-    h('ul', null, a.subagents.map((s) => h('li', null,
+    h('summary', { 'data-fk': `sum:${id}` }, `${shown.length} subagent${shown.length === 1 ? '' : 's'}${running ? ` · ${running} running` : ''}`,
+      hidden ? [' ', h('span', { class: 'muted sub-hid', text: `+${hidden} ended` })] : null),
+    h('ul', null, shown.map((s) => h('li', null,
       h('span', { class: 'tag muted', text: s.state }),
       h('span', { class: 'sub-desc', text: s.description ?? '(no description)' }),
       s.type ? h('span', { class: 'sub-type', text: s.type }) : null,
@@ -185,7 +190,7 @@ function treeSlot(a, scope, tree) {
   }, icon('chev'));
 }
 
-function rowEl(a, g, { scope, showProject = false, tree = null }) {
+function rowEl(a, g, { scope, showProject = false, tree = null, showEnded = state.showEnded }) {
   const s = sOf(a);
   const mode = isApp ? rowMode(a, state.modes.map) : null;
   const href = isApp ? sessionHref({ session: a.id, pane: a.pane?.id, project: g.project?.key }) : null;
@@ -228,7 +233,7 @@ function rowEl(a, g, { scope, showProject = false, tree = null }) {
     h('div', { class: 'c-act num', title: s === 'ended' ? 'Ended' : 'Last activity' }, h('span', { class: 'sr-only', text: 'Last activity: ' }), timeEl(a.lastActivity)),
     h('div', { class: 'c-pane', title: a.pane ? `tmux pane ${a.pane.id}` : 'No tmux pane' }, h('span', { class: 'sr-only', text: 'Pane ' }), a.pane?.id ?? '–'),
     h('div', { class: 'c-actions' }, menuEl(`More actions for ${a.name}`, items, fk('m'))),
-    a.subagents?.length ? subagentsEl(a) : null);
+    a.subagents?.length ? subagentsEl(a, showEnded) : null);
   // a click anywhere on the row opens the session, unless the user is selecting text
   if (href) {
     li.addEventListener('click', (e) => {
@@ -241,26 +246,27 @@ function rowEl(a, g, { scope, showProject = false, tree = null }) {
 
 const rowsEl = (list, g, opts, label) => h('ul', { class: 'rows', 'aria-label': label }, list.map((a) => rowEl(a, g, opts)));
 /** The live rows of a nested group (dash-model.js treeRows): one flat list, each row carrying its place in the tree. */
-const treeEl = (rows, g, scope, label) => h('ul', { class: 'rows', 'aria-label': label }, rows.map((tree) => rowEl(tree.a, g, { scope, tree })));
+const treeEl = (rows, g, scope, label, showEnded) => h('ul', { class: 'rows', 'aria-label': label }, rows.map((tree) => rowEl(tree.a, g, { scope, tree, showEnded })));
 
 /**
  * Live rows (first ROW_CAP root subtrees, then "show more"), the empty box and the "Ended" disclosure of one group (dash-model.js
  * endedPlan). The live rows nest under their parent (treeRows) unless a filter is on; a group where nothing nests is drawn as a flat
- * list. Used by the dashboard and by the project view (`endedOpen`: its Ended section is always there, open).
+ * list. Used by the dashboard and by the project view. `showEnded` is the view's own "Show ended" toggle (the dashboard's by default,
+ * the project page passes its own): it shows the Ended section and the finished subagents, and hides both when off.
  */
-export function agentNodes(g, q, scope, { endedOpen = false } = {}) {
+export function agentNodes(g, q, scope, { showEnded = state.showEnded } = {}) {
   const list = g.agents.filter((a) => matches(a, g, q)).sort(byStatus);
   const live = list.filter((a) => sOf(a) !== 'ended');
   const ended = list.filter((a) => sOf(a) === 'ended');
   const id = `ended:${scope}`;
-  const plan = endedPlan({ live: live.length, ended: ended.length, showEnded: endedOpen || state.showEnded, collapsed: state.open.has(`!${id}`) });
+  const plan = endedPlan({ live: live.length, ended: ended.length, showEnded, collapsed: state.open.has(`!${id}`) });
   const nodes = [];
   const capId = `cap:${scope}`;
   const folded = new Set(live.filter((a) => state.open.has(`!tree:${scope}:${a.id}`)).map((a) => a.id));
   const rows = treeRows(live, { collapsed: folded, filtering: Boolean(q) });
   const { rows: shown, more } = state.expanded.has(capId) ? { rows, more: 0 } : capRoots(rows, ROW_CAP);
   const label = `${g.label} agents`;
-  const ul = !rows.length ? null : hasTree(rows) ? treeEl(shown, g, scope, label) : rowsEl(shown.map((r) => r.a), g, { scope }, label);
+  const ul = !rows.length ? null : hasTree(rows) ? treeEl(shown, g, scope, label, showEnded) : rowsEl(shown.map((r) => r.a), g, { scope, showEnded }, label);
   if (ul && more) {
     ul.append(h('li', { class: 'more-row' }, h('button', { type: 'button', class: 'btn', 'data-fk': `more:${scope}`, text: `Show ${more} more live agents`, onclick: () => { state.expanded.add(capId); render(true); } })));
   }
@@ -273,7 +279,7 @@ export function agentNodes(g, q, scope, { endedOpen = false } = {}) {
   if (plan.endedSection) {
     const d = h('details', { class: 'ended', open: plan.open },
       h('summary', { 'data-fk': `sum:${id}`, text: `Ended (${ended.length})` }),
-      rowsEl(ended, g, { scope: endedScope(scope) }, `${g.label} ended agents`));
+      rowsEl(ended, g, { scope: endedScope(scope), showEnded }, `${g.label} ended agents`));
     d.addEventListener('toggle', () => {
       if (d.open) { state.open.add(id); state.open.delete(`!${id}`); } else { state.open.delete(id); state.open.add(`!${id}`); }
     });
@@ -663,7 +669,8 @@ function initKeys() {
 async function boot() {
   const since = load('since', '7d');
   state.since = SINCE.includes(since) ? since : '7d';
-  state.showEnded = load('showEnded', false) === true;
+  state.showEnded = loadFlag('showEnded');
+  state.showEndedProject = loadFlag('showEndedProject');
   document.body.dataset.tier = isApp ? 'app' : 'browser';
   // the browser tier gets no privileged markup at all (removed, not hidden)
   for (const el of $$(isApp ? '[data-browser-only]' : '[data-app-only]')) el.remove();

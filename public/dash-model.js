@@ -7,16 +7,16 @@ export const DETECTED_MAX = 8;
 /**
  * What one group draws for its ended agents. `live` and `ended` are counts. `collapsed` = the user folded this section by hand.
  * "Show ended" off: the ended agents are not drawn, and a group with nothing live says so in one line. On: the section, open
- * unless folded by hand. The project view always passes showEnded = true.
+ * unless folded by hand. The dashboard and the project view each pass their own toggle.
  */
 export function endedPlan({ live, ended, showEnded, collapsed = false }) {
   const endedSection = showEnded && ended > 0;
   return { endedSection, open: endedSection && !collapsed, noLiveLine: !showEnded && live === 0 && ended > 0 };
 }
 
-/** Forget what the user opened or folded in the dashboard's Ended sections (`ended:g:<key>` and `!ended:g:<key>`); the project view's stay. */
-export function resetEndedState(open) {
-  for (const id of [...open]) if (/^!?ended:g:/.test(id)) open.delete(id);
+/** Forget what the user opened or folded in one view's Ended sections (`ended:<view>:<key>` and `!ended:<view>:<key>`): `g` the dashboard (default), `pv` the project page. The other view's stay. */
+export function resetEndedState(open, view = 'g') {
+  for (const id of [...open]) if (id.replace(/^!/, '').startsWith(`ended:${view}:`)) open.delete(id);
 }
 
 /**

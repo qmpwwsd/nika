@@ -20,7 +20,8 @@ export const SHAPE = {
 /** One object for the whole page; the render functions read it, the poll loop and the app-tier modules write it. */
 export const state = {
   since: '7d',
-  showEnded: false,
+  showEnded: false, // the dashboard's "Show ended"
+  showEndedProject: false, // the project page's own "Show ended"
   filter: '',
   data: null, // last /api/agents snapshot
   error: null, // message of the last failed poll, null when the last poll worked
@@ -50,6 +51,8 @@ export function load(key, fallback) {
     return fallback;
   }
 }
+/** A remembered on/off toggle: on only for a stored `true`; anything else (nothing, garbage, blocked storage) is off. */
+export const loadFlag = (key) => load(key, false) === true;
 export function save(key, value) {
   try {
     localStorage.setItem(`nika.${key}`, JSON.stringify(value));

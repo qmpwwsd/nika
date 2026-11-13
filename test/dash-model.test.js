@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
+import { load, loadFlag } from '../public/ui.js';
 import {
   DETECTED_MAX, endedPlan, noMatchText, resetEndedState, sidebarModel, orchState, roleTag, savedPick, otherRunning, ROLE_TAGS,
   statusOf, STATUS_ORDER, parentOf, treeRows, capRoots, hasTree, spawnLimits,
@@ -103,6 +104,19 @@ describe('resetEndedState (the checkbox changes: every dashboard section starts 
     const open = new Set(['!ended:g:k1', ...keep]);
     resetEndedState(open);
     assert.deepEqual([...open], keep);
+  });
+
+  test('(+) the project view\'s own toggle forgets only the project sections (view "pv"), and the dashboard ones stay', () => {
+    const open = new Set(['ended:pv:abcdef0123456789', '!ended:pv:abcdef0123456789', 'ended:pv:fedcba9876543210', '!ended:g:k1', 'ended:g:k2', 'subs:agent-a']);
+    resetEndedState(open, 'pv');
+    assert.deepEqual([...open], ['!ended:g:k1', 'ended:g:k2', 'subs:agent-a']);
+  });
+
+  test('(−) a view name that is not a plain word forgets nothing (it is never turned into a pattern)', () => {
+    const open = new Set(['ended:pv:k1', '!ended:g:k1']);
+    resetEndedState(open, '.*');
+    resetEndedState(open, 'pv|g');
+    assert.deepEqual([...open], ['ended:pv:k1', '!ended:g:k1']);
   });
 
   test('(−) an empty set stays empty, and a key that only contains the prefix somewhere else is kept', () => {
@@ -281,14 +295,18 @@ describe('agentNodes with "Show ended"', () => {
     assert.deepEqual(sigs(off.agentNodes(group([LIVE('a'), DONE('b')]), '', 'g:k1')), ['ul.rows']);
   });
 
-  test('(−) the project view is unchanged: its Ended section is there and open whatever the checkbox says', () => {
-    for (const showEnded of [false, true]) {
-      const { agentNodes } = rig({ showEnded });
-      const nodes = agentNodes(group([LIVE('a'), DONE('b')], { key: 'p1' }), '', 'pv:p1', { endedOpen: true });
-      assert.deepEqual(sigs(nodes), ['ul.rows', 'details.ended'], `showEnded ${showEnded}`);
-      assert.equal(nodes[1].attrs.open, true);
-      const alone = agentNodes(group([DONE('b')], { key: 'p1' }), '', 'pv:p1', { endedOpen: true });
-      assert.deepEqual(sigs(alone), ['details.ended'], 'no "No live agents." line there');
+  test('(+) the project view hides its Ended section too until its own toggle is on (F5): the option decides, the dashboard checkbox does not', () => {
+    for (const dashboard of [false, true]) {
+      const { agentNodes } = rig({ showEnded: dashboard });
+      const off = agentNodes(group([LIVE('a'), DONE('b')], { key: 'p1' }), '', 'pv:p1', { showEnded: false });
+      assert.deepEqual(sigs(off), ['ul.rows'], `dashboard checkbox ${dashboard}: project toggle off`);
+      const aloneOff = agentNodes(group([DONE('b')], { key: 'p1' }), '', 'pv:p1', { showEnded: false });
+      assert.deepEqual(sigs(aloneOff), ['div.rows.no-agents'], 'only ended agents: the "No live agents." line');
+      assert.equal(textOf(aloneOff[0]), 'No live agents.');
+      const on = agentNodes(group([LIVE('a'), DONE('b')], { key: 'p1' }), '', 'pv:p1', { showEnded: true });
+      assert.deepEqual(sigs(on), ['ul.rows', 'details.ended'], `dashboard checkbox ${dashboard}: project toggle on`);
+      assert.equal(on[1].attrs.open, true, 'open until folded by hand');
+      assert.deepEqual(sigs(agentNodes(group([DONE('b')], { key: 'p1' }), '', 'pv:p1', { showEnded: true })), ['details.ended']);
     }
   });
 
@@ -326,7 +344,9 @@ describe('dashboard wiring', () => {
     assert.match(APP, /import \{[^}]*\bendedPlan\b[^}]*\} from '\.\/dash-model\.js'/);
     assert.match(APP, /import \{[^}]*\bresetEndedState\b[^}]*\} from '\.\/dash-model\.js'/);
     const nodes = fn(APP, 'export function agentNodes(');
-    assert.match(nodes, /endedPlan\(\{[^}]*showEnded: endedOpen \|\| state\.showEnded/);
+    assert.match(nodes, /agentNodes\(g, q, scope, \{ showEnded = state\.showEnded \} = \{\}\)/);
+    assert.match(nodes, /endedPlan\(\{[^}]*\bshowEnded,/);
+    assert.doesNotMatch(APP, /endedOpen/, 'the project view no longer forces its Ended section open');
     assert.match(nodes, /collapsed: state\.open\.has\(`!\$\{id\}`\)/);
     assert.match(nodes, /if \(plan\.endedSection\)/);
     assert.match(nodes, /plan\.noLiveLine/);
@@ -349,12 +369,111 @@ describe('dashboard wiring', () => {
     assert.match(fn(APP, 'function groupMatches('), /state\.showEnded \|\| sOf\(a\) !== 'ended'/);
   });
 
-  test('(+) the project view still asks for its Ended section open', () => {
-    assert.match(PROJECT, /agentNodes\(g, '', `pv:\$\{key\}`, \{ endedOpen: true \}\)/);
+  test('(+) the project view passes its own toggle (true only for a real true), never the dashboard one, and redraws when it flips', () => {
+    assert.match(PROJECT, /agentNodes\(g, '', `pv:\$\{key\}`, \{ showEnded: state\.showEndedProject === true \}\)/);
+    assert.doesNotMatch(PROJECT, /endedOpen/);
+    assert.match(fn(PROJECT, 'function renderProject('), /state\.showEndedProject/, 'the redraw signature includes the toggle');
+  });
+
+  test('(+) boot reads both remembered toggles through loadFlag; nothing else reads them', () => {
+    const boot = fn(APP, 'async function boot(');
+    assert.match(boot, /state\.showEnded = loadFlag\('showEnded'\);/);
+    assert.match(boot, /state\.showEndedProject = loadFlag\('showEndedProject'\);/);
+    assert.doesNotMatch(APP, /load\('showEnded/);
+    assert.match(read('ui.js'), /showEndedProject: false,/, 'off until the stored value says true');
+  });
+
+  test('(+) the project header has its "Show ended" checkbox in the dashboard\'s style, in the app-only screen, next to the actions', () => {
+    const screen = /<section class="screen" data-screen="project"[^>]*data-app-only>[\s\S]*?<\/section>\s*<section class="screen" data-screen="settings"/.exec(HTML);
+    assert.ok(screen, 'the project screen is app-only');
+    assert.match(screen[0], /<label class="check center"><input type="checkbox" id="proj-ended"> Show ended<\/label>\s*<span class="bar-actions" id="proj-actions">/);
+    assert.match(HTML, /<label class="check center"><input type="checkbox" id="dash-ended"> Show ended<\/label>/, 'the dashboard\'s is the model');
   });
 
   test('(+) a group heading can take focus from the sidebar (tabindex -1, like the screen headings)', () => {
     assert.match(fn(APP, 'function groupEl('), /h\('h2', \{ id: `g-\$\{g\.key\}`, tabindex: '-1', 'data-fk'/);
+  });
+});
+
+// ---- the remembered "Show ended" toggles (F5) -----------------------------------------------------------------------------------
+
+describe('loadFlag: a remembered toggle is on only for a stored true', () => {
+  const realStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+  const store = (map) => { globalThis.localStorage = { getItem: (k) => map[k] ?? null, setItem(k, v) { map[k] = v; } }; };
+  const restore = () => { if (realStorage) Object.defineProperty(globalThis, 'localStorage', realStorage); else delete globalThis.localStorage; };
+
+  test('(+) the stored value true is on; false, nothing stored and a throwing storage are off', () => {
+    try {
+      store({ 'nika.showEnded': 'true' });
+      assert.equal(loadFlag('showEnded'), true);
+      store({ 'nika.showEnded': 'false' });
+      assert.equal(loadFlag('showEnded'), false);
+      store({});
+      assert.equal(loadFlag('showEnded'), false);
+      globalThis.localStorage = { getItem() { throw new Error('blocked'); } };
+      assert.equal(loadFlag('showEnded'), false);
+    } finally { restore(); }
+  });
+
+  test('(−) a garbage stored value is off: not JSON, a string, a number, an object, an array, null', () => {
+    try {
+      for (const bad of ['{not json', '"true"', '1', 'yes', 'TRUE', '{"on":true}', '[true]', 'null', '']) {
+        store({ 'nika.showEnded': bad, 'nika.showEndedProject': bad });
+        assert.equal(loadFlag('showEnded'), false, bad);
+        assert.equal(loadFlag('showEndedProject'), false, bad);
+      }
+    } finally { restore(); }
+  });
+
+  test('(+) the two views remember separately: the project one is its own key', () => {
+    try {
+      store({ 'nika.showEndedProject': 'true' });
+      assert.equal(loadFlag('showEnded'), false);
+      assert.equal(loadFlag('showEndedProject'), true);
+      assert.equal(load('showEndedProject', false), true);
+    } finally { restore(); }
+  });
+});
+
+describe('the project page "Show ended" toggle (project.js wireEnded)', () => {
+  const rig = ({ checked = false } = {}) => {
+    const box = { checked, listeners: {}, addEventListener(t, f) { this.listeners[t] = f; } };
+    const calls = [];
+    const state = { showEndedProject: false, open: new Set(['ended:pv:k1', '!ended:pv:k1', 'ended:g:k1', 'subs:x']) };
+    const ctx = {
+      state, $: (sel) => (sel === '#proj-ended' ? box : null), save: (k, v) => calls.push(['save', k, v]), render: (force) => calls.push(['render', force]),
+      resetEndedState: (open, view) => { calls.push(['reset', view]); for (const id of [...open]) if (id.replace(/^!/, '').startsWith(`ended:${view}:`)) open.delete(id); },
+    };
+    const wire = vm.runInNewContext(`${fn(PROJECT, 'function wireEnded(')}\nwireEnded`, ctx);
+    return { box, state, calls, wire };
+  };
+
+  test('(+) wiring shows the remembered value; ticking it turns the project page on, remembers it under its own key, forgets manual folds and redraws', () => {
+    const r = rig();
+    r.state.showEndedProject = true;
+    r.wire();
+    assert.equal(r.box.checked, true, 'the box starts as remembered');
+    r.box.checked = false;
+    r.box.listeners.change();
+    assert.equal(r.state.showEndedProject, false);
+    r.box.checked = true;
+    r.box.listeners.change();
+    assert.equal(r.state.showEndedProject, true);
+    assert.deepEqual(r.calls.slice(-3), [['save', 'showEndedProject', true], ['reset', 'pv'], ['render', true]]);
+    assert.deepEqual([...r.state.open], ['ended:g:k1', 'subs:x'], 'the project page\'s Ended folds are forgotten; the dashboard\'s and other marks stay');
+  });
+
+  test('(−) it never touches the dashboard toggle or its stored key', () => {
+    const r = rig();
+    r.wire();
+    r.box.checked = true;
+    r.box.listeners.change();
+    assert.ok(!r.calls.some((c) => c[0] === 'save' && c[1] === 'showEnded'));
+    assert.equal(r.state.showEnded, undefined);
+  });
+
+  test('(+) initApp wires it', () => {
+    assert.match(fn(PROJECT, 'export async function initApp('), /\bwireEnded\(\);/);
   });
 });
 

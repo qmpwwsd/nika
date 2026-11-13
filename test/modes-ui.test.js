@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { MODE_META, MODE_TARGETS, modeKey, modeEl, bypassTag, switcherState, modeNote, switchFailure } from '../public/modes.js';
+import { MODE_META, MODE_TARGETS, modeKey, modeEl, settingModeEl, bypassTag, switcherState, modeNote, switchFailure } from '../public/modes.js';
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const read = (...p) => fs.readFileSync(path.join(ROOT, ...p), 'utf8');
@@ -160,6 +160,54 @@ describe('modeEl', () => {
       assert.doesNotMatch(textOf(el), /img|onerror|alert/);
       assert.equal(el.getAttribute('title'), 'Permission mode: Mode ?');
     }
+  });
+});
+
+// ---- settingModeEl: a Settings value on a card (F6) -------------------------------------------------------------------
+
+describe('settingModeEl (the project page\'s New agents card)', () => {
+  const textOf = (el) => el.textContent;
+  const icons = (el) => el.find((n) => n.tag === 'svg');
+
+  test('(+) a mode a pane can be in gives exactly the chip modeEl builds: same class, icon, label and title', () => {
+    for (const m of ['manual', 'acceptEdits', 'plan', 'auto', 'dontAsk']) {
+      const a = settingModeEl(m);
+      const b = modeEl(m);
+      assert.equal(a.className, b.className, m);
+      assert.equal(textOf(a), textOf(b), m);
+      assert.equal(a.getAttribute('title'), b.getAttribute('title'), m);
+      assert.equal(icons(a)[0].kids[0].getAttribute('href'), icons(b)[0].kids[0].getAttribute('href'), m);
+    }
+  });
+
+  test('(+) default (Claude Code\'s own default, no flag) is a chip of its own: the word Default, the gear icon, the neutral Manual colour', () => {
+    const el = settingModeEl('default');
+    assert.equal(el.className, 'mode m-manual');
+    assert.equal(el.find((n) => n.className === 'ml')[0].textContent, 'Default');
+    assert.equal(icons(el)[0].kids[0].getAttribute('href'), '#i-gear');
+    assert.equal(el.getAttribute('title'), 'Permission mode: Default');
+    assert.equal(textOf(el), 'Permission mode: Default');
+    assert.notEqual(icons(el)[0].kids[0].getAttribute('href'), `#i-${MODE_META.manual.icon}`, 'not the Manual icon: the two are told apart without colour');
+    assert.match(read('public', 'index.html'), /<symbol id="i-gear"/, 'the icon exists in the sprite');
+  });
+
+  test('(−) default stays out of MODE_META: a pane can never be in it, so modeKey still calls it unknown', () => {
+    assert.equal(Object.hasOwn(MODE_META, 'default'), false);
+    assert.equal(modeKey('default'), 'unknown');
+    assert.equal(modeEl('default').className, 'mode m-unknown');
+  });
+
+  test('(−) a value that is not a setting falls back to "Mode ?", and text never becomes markup', () => {
+    for (const bad of ['<img src=x onerror=alert(1)>', '__proto__', 'toString', null, undefined, 7]) {
+      const el = settingModeEl(bad);
+      assert.equal(el.className, 'mode m-unknown');
+      assert.doesNotMatch(textOf(el), /img|onerror|alert/);
+    }
+  });
+
+  test('(+) the chip is confirmed (a setting has no footer to read): no unconfirmed note', () => {
+    assert.equal(settingModeEl('plan').getAttribute('data-confirmed'), 'true');
+    assert.doesNotMatch(textOf(settingModeEl('default')), /unconfirmed/);
   });
 });
 

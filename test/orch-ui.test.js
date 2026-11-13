@@ -12,7 +12,7 @@ import { El, installDom, withClass, focus } from './fake-dom.js';
 import { h, icon, roleTagEl, ctxEl } from '../public/dom.js';
 import { menuEl, sessionHref } from '../public/ui.js';
 import { orchState, roleTag, savedPick, otherRunning, parentOf, spawnLimits } from '../public/dash-model.js';
-import { parseModes, modesAfter } from '../public/modes.js';
+import { parseModes, modesAfter, settingModeEl } from '../public/modes.js';
 import { pluginView, pluginSave, sortIds, countText, filterNote } from '../public/plugin-view.js';
 import { ROLES, ROLE_LABEL, modelLabel, fillRoleOverride, effectiveRoleModels } from '../public/models-ui.js';
 
@@ -255,7 +255,7 @@ function flowRig({ project = {}, agents = [], answers = {}, me = { tmux: true, c
     return typeof a === 'function' ? a(opts) : a;
   };
   const ctx = {
-    h, icon, $: node, state, hooks: {}, appFetch, menuEl, sessionHref, roleTag, orchState, savedPick, otherRunning, spawnLimits, parseModes, modesAfter,
+    h, icon, $: node, state, hooks: {}, appFetch, menuEl, sessionHref, roleTag, orchState, savedPick, otherRunning, spawnLimits, parseModes, modesAfter, settingModeEl,
     pluginView, pluginSave, sortIds, countText, filterNote, ROLES, ROLE_LABEL, modelLabel, fillRoleOverride, effectiveRoleModels,
     location: { set href(v) { navs.push(v); }, get href() { return ''; }, hash: '' },
     document: { title: '' },
@@ -749,6 +749,33 @@ describe('Stop using as orchestrator (DELETE) and the header menu item', () => {
     assert.equal(r.calls.length, 0);
     const shown = globalThis.document.toastBox.kids.at(-1); // menuEl raises its own toast (ui.js)
     assert.deepEqual([shown.attrs['data-kind'], shown.textContent], ['error', OFFLINE]);
+  });
+});
+
+describe('the project page asks for its own "Show ended" toggle (F5)', () => {
+  const asked = (r) => { const seen = []; r.ctx.agentNodes = (...args) => { seen.push(args.map((a) => (typeof a === 'object' && a !== null && !('agents' in a) ? plain(a) : a))); return [new El('ul')]; }; r.api.renderProject(true); return seen; };
+
+  test('(+) by default it asks for the ended rows hidden: { showEnded: false } under the project scope', () => {
+    const seen = asked(flowRig());
+    assert.equal(seen.length, 1);
+    assert.deepEqual([seen[0][1], seen[0][2], seen[0][3]], ['', `pv:${KEY}`, { showEnded: false }]);
+  });
+
+  test('(+) once the project toggle is on it asks for them shown, and the dashboard flag changes nothing either way', () => {
+    const on = flowRig();
+    on.state.showEndedProject = true;
+    assert.equal(asked(on)[0][3].showEnded, true);
+    const mixed = flowRig();
+    mixed.state.showEnded = true; // the dashboard checkbox only
+    assert.equal(asked(mixed)[0][3].showEnded, false);
+  });
+
+  test('(−) a garbage value in state never turns it on: only a real true does', () => {
+    for (const bad of ['true', 1, {}, [true], 'yes', undefined, null]) {
+      const r = flowRig();
+      r.state.showEndedProject = bad;
+      assert.equal(asked(r)[0][3].showEnded, false, String(bad));
+    }
   });
 });
 

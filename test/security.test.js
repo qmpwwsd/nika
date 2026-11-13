@@ -140,7 +140,7 @@ describe('F4 terminal escapes', () => {
 
   test('(−) nika status prints no ESC bytes', async () => {
     const out = await new Promise((resolve) => {
-      execFile(process.execPath, [BIN, 'status', '--since', 'all'], {
+      execFile(process.execPath, [BIN, 'status', '--since', 'all', '--ended'], {
         env: { ...process.env, CLAUDE_CONFIG_DIR: dir, NIKA_TMP_ROOT: path.join(fx.root, 'none'), NIKA_TMUX: '/nonexistent/tmux', NO_COLOR: '1' },
       }, (err, stdout) => resolve(stdout));
     });

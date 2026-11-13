@@ -51,7 +51,8 @@ commands:
   status [options]     print agents grouped by project
       --json             machine-readable output
       --since <window>   24h | 7d | 30d | all (default ${DEFAULT_SINCE})
-      --full             list every ended agent, not only the latest ${ENDED_SHOWN}
+      --ended            also list ended agents (the latest ${ENDED_SHOWN} per project)
+      --full             list every ended agent, not only the latest ${ENDED_SHOWN} (implies --ended)
   projects list        list registered projects with their rules state
   projects add <dir>   register a project folder
   projects remove <key>  unregister a project (its files are never touched)
@@ -97,11 +98,12 @@ class CliError extends Error {
 }
 
 function parseStatusArgs(args) {
-  const o = { json: false, full: false, since: DEFAULT_SINCE };
+  const o = { json: false, ended: false, full: false, since: DEFAULT_SINCE };
   for (let i = 0; i < args.length; i += 1) {
     const a = args[i];
     if (a === '--json') o.json = true;
-    else if (a === '--full') o.full = true;
+    else if (a === '--ended') o.ended = true;
+    else if (a === '--full') o.full = o.ended = true;
     else if (a === '--since') o.since = args[(i += 1)];
     else if (a.startsWith('--since=')) o.since = a.slice('--since='.length);
     else throw new UsageError(`unknown option ${a}`);
@@ -136,7 +138,7 @@ function painter(stream, env) {
   return { busy: wrap('32'), idle: wrap('33'), other: wrap('34'), ended: wrap('2'), bold: wrap('1') };
 }
 
-function renderStatus(snapshot, { full }, paint) {
+function renderStatus(snapshot, { ended: withEnded, full }, paint) {
   const now = snapshot.generatedAt;
   const lines = [];
   if (snapshot.groups.length === 0) lines.push(`No agents in the last ${snapshot.since}.`);
@@ -145,14 +147,15 @@ function renderStatus(snapshot, { full }, paint) {
     lines.push(`${paint.bold(clean(g.label, 120) ?? '')}  ${tilde(g.root)}   busy ${c.busy} · idle ${c.idle}${c.other ? ` · other ${c.other}` : ''} · ended ${c.ended}`);
     const live = g.agents.filter((a) => a.live);
     const ended = g.agents.filter((a) => !a.live);
-    const shown = full ? ended : ended.slice(0, ENDED_SHOWN);
+    const shown = !withEnded ? [] : full ? ended : ended.slice(0, ENDED_SHOWN);
     for (const a of [...live, ...shown]) {
       const kind = !a.live ? 'ended' : (a.state === 'busy' || a.state === 'idle' ? a.state : 'other');
       const dot = a.live ? '●' : '○';
       const where = [a.worktree, a.gitBranch].filter(Boolean).join(' · ');
       lines.push(`  ${paint[kind](`${dot} ${fit(a.state, 7)}`)} ${fit(a.name, 28)} ${fit(a.modelLabel ?? '-', 11)} ${fit(where, 34)} ${fit(a.pane?.id ?? '', 6)} ${ago(a.lastActivity, now)}`);
     }
-    if (shown.length < ended.length) lines.push(paint.ended(`  … ${ended.length - shown.length} more ended (nika status --full)`));
+    if (!withEnded && ended.length) lines.push(paint.ended(`  … ${ended.length} ended hidden (nika status --ended)`));
+    else if (shown.length < ended.length) lines.push(paint.ended(`  … ${ended.length - shown.length} more ended (nika status --full)`));
     lines.push('');
   }
   const bad = Object.entries(snapshot.sources).filter(([, v]) => v !== 'ok');
