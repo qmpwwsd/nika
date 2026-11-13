@@ -515,7 +515,7 @@ function projRig({ agents = family(), project = {}, settings = SETTINGS, me = { 
     render: (force) => renders.push(force), buildGroups: () => [g], agentNodes: () => [new El('ul')], swap: (host, list) => host.replaceChildren(...list), interacting: () => false,
     rulesEl: () => new El('span'), setTimeout, clearTimeout, AbortController, TextEncoder, window: { addEventListener: () => {} },
   };
-  const api = vm.runInNewContext(`${PROJECT_SRC}\n({ groupActions, rowItems, openSpawn, changeRole, submitSpawn, setupCards, confirmRemove, limitCopy, limitReason, spawnPrefs, sp })`, ctx);
+  const api = vm.runInNewContext(`${PROJECT_SRC}\n({ groupActions, rowItems, openSpawn, changeRole, submitSpawn, setupCards, confirmRemove, limitCopy, limitReason, spawnPrefs, sp, renderProject })`, ctx);
   const set = (sel, patch) => Object.assign(node(sel), patch);
   const role = (which) => { // the radios say which role is chosen
     set('#sp-role-agent', { checked: which === 'agent' });
@@ -528,6 +528,24 @@ function projRig({ agents = family(), project = {}, settings = SETTINGS, me = { 
 const mainRow = () => family()[0];
 const subRow = () => family()[1];
 const textOf = (n) => n.textContent;
+
+describe('renderProject: the "Show ended" box', () => {
+  test('(−) a project that is not registered shows no "Show ended" box: there is nothing to show', () => {
+    const r = projRig();
+    r.state.route = { name: 'project', key: 'ffffffffffffffff' };
+    r.api.renderProject(true);
+    assert.equal(r.node('#proj-h').textContent, 'Project not found');
+    assert.equal(r.node('#proj-ended-wrap').hidden, true);
+  });
+
+  test('(+) a registered project shows it again', () => {
+    const r = projRig();
+    r.node('#proj-ended-wrap').hidden = true;
+    try { r.api.renderProject(true); } catch { /* the rest of the page needs more of the DOM than this rig has */ }
+    assert.equal(r.node('#proj-h').textContent, 'demo-api');
+    assert.equal(r.node('#proj-ended-wrap').hidden, false);
+  });
+});
 
 describe('rowItems: the Spawn columns of the menu matrix (design 1.2)', () => {
   const texts = (items) => Array.from(items, (i) => i.text);

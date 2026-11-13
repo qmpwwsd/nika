@@ -495,6 +495,7 @@ function renderProject(force) {
   if (!p || !g) {
     $('#proj-h').textContent = 'Project not found';
     $('#proj-h').removeAttribute('title');
+    $('#proj-ended-wrap').hidden = true; // nothing to show
     document.title = 'Project not found · nika';
     swap($('#proj-rules'), []);
     swap($('#proj-actions'), []);
@@ -504,6 +505,7 @@ function renderProject(force) {
   }
   $('#proj-h').textContent = p.name;
   $('#proj-h').title = p.name;
+  $('#proj-ended-wrap').hidden = false;
   document.title = `${p.name} · nika`;
   swap($('#proj-rules'), [rulesEl(p.rules?.state)]);
   const pick = savedPick(p);

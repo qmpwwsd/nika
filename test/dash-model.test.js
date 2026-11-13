@@ -467,7 +467,7 @@ describe('dashboard wiring', () => {
   test('(+) the project header has its "Show ended" checkbox in the dashboard\'s style, in the app-only screen, next to the actions', () => {
     const screen = /<section class="screen" data-screen="project"[^>]*data-app-only>[\s\S]*?<\/section>\s*<section class="screen" data-screen="settings"/.exec(HTML);
     assert.ok(screen, 'the project screen is app-only');
-    assert.match(screen[0], /<label class="check center"><input type="checkbox" id="proj-ended"> Show ended<\/label>\s*<span class="bar-actions" id="proj-actions">/);
+    assert.match(screen[0], /<label class="check center" id="proj-ended-wrap"><input type="checkbox" id="proj-ended"> Show ended<\/label>\s*<span class="bar-actions" id="proj-actions">/);
     assert.match(HTML, /<label class="check center"><input type="checkbox" id="dash-ended"> Show ended<\/label>/, 'the dashboard\'s is the model');
   });
 
