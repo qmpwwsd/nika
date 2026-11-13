@@ -407,7 +407,7 @@ async function findProject(dirArg, cx) {
 function toolCtx(cx) {
   return {
     env: cx.env, exec: cx.execT(5000), tmuxBin: cx.config.tmuxBin, claudeBin: findClaude(cx.env),
-    nikaArgv: [process.execPath, NIKA_BIN], claudeDir: cx.config.claudeDir, now: Date.now, started: new Map(),
+    nikaArgv: [process.execPath, NIKA_BIN], claudeDir: cx.config.claudeDir, now: Date.now, started: new Map(), sleep: cx.sleep,
     lenientParent: true, // a `$TMUX_PANE` that tmux no longer lists is "no parent", not an error (a page request names a gone pane: 404)
     findSession: (id) => findSession(id, { config: cx.config, exec: cx.execT(5000) }), // the saved orchestrator, whatever its age
   };
@@ -712,11 +712,11 @@ export const COMMAND_NAMES = Object.freeze(Object.keys(COMMANDS));
 export async function main(argv, env = process.env, io = { out: process.stdout, err: process.stderr }) {
   const [cmd = 'open', ...rest] = argv;
   const config = defaultConfig(env);
-  // `io` may carry test doubles: in (stdin), cwd, platform, exec, spawn, serveApp, and for the app copy home, root, brewApps.
+  // `io` may carry test doubles: in (stdin), cwd, platform, exec, spawn, sleep (the 1 s early-exit wait of orchestrate and spawn), serveApp, and for the app copy home, root, brewApps.
   const cx = {
     env, config, out: io.out, err: io.err, stdin: io.in ?? process.stdin, cwd: io.cwd ?? process.cwd(),
     platform: io.platform ?? process.platform, spawn: io.spawn ?? nodeSpawn, execT: (timeout) => io.exec ?? makeExec({ timeout }),
-    home: io.home ?? os.homedir(), root: io.root ?? INSTALL_ROOT, brewApps: io.brewApps,
+    home: io.home ?? os.homedir(), root: io.root ?? INSTALL_ROOT, brewApps: io.brewApps, sleep: io.sleep,
   };
   try {
     if (!Object.hasOwn(COMMANDS, cmd)) throw new UsageError(`unknown command ${clean(cmd, 60)}`);

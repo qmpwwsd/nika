@@ -42,6 +42,29 @@ export function tmuxFail(err) {
   return fail(502, 'tmux_failed', `tmux failed: ${why}`);
 }
 
+// How long Claude has to die at launch before a start or spawn counts as a success, and what the user is told when it did (contract §3).
+const SETTLE_MS = 1000;
+const CLAUDE_EXITED = 'Claude exited right after it started. Run `claude` once in a terminal in this folder to see why (for example, to log in).';
+const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * The early-exit check of Start, Resume and spawn, called once the new pane is created and tagged: waits 1 s (`ctx.sleep(ms)`, injectable
+ * so tests don't wait), then asks tmux whether the pane still exists and is not dead (`display-message -p -t <%pane> '#{pane_dead}'`,
+ * fixed argv, a constant format). Only `0` is running; a dead pane, a gone pane, a gone server and any tmux error all mean claude is
+ * gone → 502 `claude_exited`, else null. A claude that dies later than that is not caught here (`shortcut: one check at 1 s`).
+ */
+export async function earlyExit(ctx, pane) {
+  if (!PANE_ID.test(pane)) return fail(502, 'tmux_failed', 'tmux did not return a pane id');
+  await (ctx.sleep ?? pause)(SETTLE_MS);
+  try {
+    const { stdout } = await tmux(ctx, 'display-message', '-p', '-t', pane, '#{pane_dead}');
+    if (String(stdout).trim() === '0') return null;
+  } catch {
+    // gone: the pane, or the whole server with its last session
+  }
+  return fail(502, 'claude_exited', CLAUDE_EXITED);
+}
+
 /** The project name reduced to TMUX_SESSION (invalid chars → `-`, no leading `-`, ≤ 48); the key when nothing is left. */
 export function sessionNameFor(project) {
   const v = String(project.name).replace(/[^A-Za-z0-9_-]/g, '-').replace(/^-+/, '').slice(0, 48);
@@ -136,7 +159,7 @@ async function unsetCompactEnv(ctx, session, run) {
 
 // every pane of every tmux session: the pane's own record of who started it (`@nika-role`, `@nika-agent`), then the session and window
 // names (free text, so last)
-const PANE_LIST = '#{pane_id}\t#{pane_current_command}\t#{@nika-role}\t#{@nika-agent}\t#{session_name}\t#{window_name}';
+const PANE_LIST = '#{pane_id}\t#{pane_current_command}\t#{pane_dead}\t#{@nika-role}\t#{@nika-agent}\t#{session_name}\t#{window_name}';
 
 /**
  * Pane of the project's main orchestrator, `{ id, session }`, or null. Only `@nika-role` orchestrator running claude counts (a
@@ -154,8 +177,9 @@ async function findOrchestratorPane(ctx, session, key) {
   }
   let adopted = null;
   for (const line of String(stdout).split('\n')) {
-    const [id, command = '', role = '', tag = '', where = '', ...window] = line.split('\t');
-    if (!PANE_ID.test(id ?? '') || role.trim() !== 'orchestrator' || !CLAUDE_COMMAND.test(command.trim())) continue;
+    const [id, command = '', dead = '', role = '', tag = '', where = '', ...window] = line.split('\t');
+    // a dead pane (remain-on-exit) still names its command claude (tmux falls back to the pane's argv): it is not an orchestrator
+    if (!PANE_ID.test(id ?? '') || dead.trim() === '1' || role.trim() !== 'orchestrator' || !CLAUDE_COMMAND.test(command.trim())) continue;
     const inOrchestratorWindow = where === session && window.join('\t').trim() === 'orchestrator';
     if (tag !== `${key}/orchestrator` && !(tag === '' && inOrchestratorWindow)) continue;
     if (inOrchestratorWindow) return { id, session: where };
@@ -225,7 +249,13 @@ export async function startOrchestrator(projectKey, ctx) {
     const pane = String(stdout).trim();
     if (!PANE_ID.test(pane)) return fail(502, 'tmux_failed', 'tmux did not return a pane id');
     ctx.started?.set(pane, { key: projectKey, name: 'orchestrator', sessionId, role: 'orchestrator', mode: launchMode(config.permissionMode) });
+    // tagged before the wait, so a second Start during it finds this orchestrator instead of opening another window
     await tagPane(ctx, pane, 'orchestrator', `${projectKey}/orchestrator`, 1);
+    const exited = await earlyExit(ctx, pane);
+    if (exited) {
+      ctx.started?.delete(pane);
+      return exited; // nothing is saved: the pick stays as it was, and the page stays where it is
+    }
     // the pane already runs: failing to remember it (the project was removed meanwhile) must not fail the start
     if (!resume) await setOrchestrator(projectKey, sessionId, ctx.env).catch(() => {});
     return { status: 200, body: { pane, session, sessionId, created: true, ...cleared } };

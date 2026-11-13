@@ -264,6 +264,23 @@ function pickError(r, other) {
   return errText(r);
 }
 
+const CLAUDE_EXITED = 'Claude exited right after it started. Run `claude` once in a terminal in this folder to see why (for example, to log in).';
+const LAUNCH_TOAST_MS = 10000; // these sentences name the next step: longer than a toast's usual 4 s
+
+/**
+ * The sentence, with the next step, for a Start, Resume or spawn that tmux or claude stopped (contract §3), chosen by code and not by
+ * the server's wording; null for any other failure (the server's own message then applies).
+ */
+function launchError(r) {
+  const b = r?.body;
+  if (b?.error === 'tmux_unavailable') return 'tmux not found. Install tmux 3.2 or newer, then try again.';
+  if (b?.error === 'tmux_failed') {
+    const why = String(b.message ?? '').replace(/^tmux failed:\s*/, '').trim();
+    return why ? `tmux failed: ${why}` : 'tmux failed';
+  }
+  return b?.error === 'claude_exited' ? CLAUDE_EXITED : null;
+}
+
 /**
  * Start a new orchestrator, or (`resume`) resume the saved one: the server decides from the saved id (POST orchestrator/start).
  * `resume` = { name } only words the toasts. `save` = { id, other } saves that session as the orchestrator first (a row's
@@ -284,7 +301,9 @@ async function startOrchestrator(project, { resume = null, save = null } = {}) {
     }
     const r = await appFetch('/api/app/orchestrator/start', { method: 'POST', json: { project: project.key } });
     if (r.status !== 200) {
-      toast(save ? `${who} is saved as the orchestrator, but it didn't start: ${errText(r)} Try Resume orchestrator in the header.` : errText(r), { kind: 'error' });
+      const launch = launchError(r);
+      const why = launch ?? errText(r);
+      toast(save ? `${who} is saved as the orchestrator, but it didn't start: ${why} Try Resume orchestrator in the header.` : why, { kind: 'error', ...(launch ? { ms: LAUNCH_TOAST_MS } : {}) });
       if (save) {
         await pollApp();
         render(true);
@@ -1185,7 +1204,7 @@ function spawnFailure(r, req, g, parent) {
   if (r.status === 404 && b.error === 'not_found' && req.parent && !req.under) { // with `under` the pane that is gone may be that one: the server's words then
     return `${who} is no longer running, so nothing was started. Close this and spawn from a session that is running.`;
   }
-  return errText(r);
+  return launchError(r) ?? errText(r);
 }
 
 /* ---------- apply rules ---------- */

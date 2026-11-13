@@ -1032,6 +1032,22 @@ describe('spawn and orchestrator', () => {
       assert.deepEqual(r.exec.panes.find((x) => x.id === '%21').depth, '3');
     });
 
+    test('(+) F4: with no tmux server a spawn through the route creates the project session; (−) a claude that dies at launch is a 502 claude_exited body, for spawn and for start', async () => {
+      const world = await makeWorld();
+      const exec = fakeTmux();
+      const ctxOver = { exec, tmuxBin: TMUX, claudeBin: CLAUDE };
+      const a = await boot({ world, deps: makeDeps({ spawnAgent, startOrchestrator }), ctxOver });
+      const body = { project: world.project.key, name: 'builder-1', model: 'sonnet', brief: 'Do the thing.' };
+      const made = await a.call('POST', '/api/app/spawn', { json: body });
+      assert.deepEqual([made.status, made.body.pane, made.body.session, exec.of('new-session').length], [200, '%20', 'My-App', 1], made.raw);
+      const dying = fakeTmux();
+      const d = await boot({ world, deps: makeDeps({ spawnAgent, startOrchestrator }), ctxOver: { ...ctxOver, exec: dying, sleep: async () => { dying.panes.splice(0); } } });
+      for (const [route, json] of [['/api/app/spawn', { ...body, name: 'builder-2' }], ['/api/app/orchestrator/start', { project: world.project.key }]]) {
+        const r = await d.call('POST', route, { json });
+        assert.deepEqual([r.status, r.body.error, r.body.message], [502, 'claude_exited', 'Claude exited right after it started. Run `claude` once in a terminal in this folder to see why (for example, to log in).'], route);
+      }
+    });
+
     test('(−) the 409 depth and 404 parent-gone answers reach the page with their codes and nothing is started', async () => {
       const r = await rigSpawn();
       assert.equal((await r.post({ name: 'planner', role: 'orchestrator', parent: '%1' })).status, 200);

@@ -964,6 +964,26 @@ describe('the spawn sheet: the request and the toasts (design 3)', () => {
     assert.equal(r.texts().length, 0, 'no success toast');
   });
 
+  test('(+) F4: tmux_unavailable, tmux_failed and claude_exited show their sentence in the sheet\'s alert; the sheet stays open, nothing navigates, no toast', async () => {
+    const EXITED = 'Claude exited right after it started. Run `claude` once in a terminal in this folder to see why (for example, to log in).';
+    for (const [reply, text] of [
+      [refuse(503, { error: 'tmux_unavailable', message: 'tmux not found (add it to PATH or set NIKA_TMUX)' }), 'tmux not found. Install tmux 3.2 or newer, then try again.'],
+      [refuse(502, { error: 'tmux_failed', message: 'tmux failed: no space left on device' }), 'tmux failed: no space left on device'],
+      [refuse(502, { error: 'claude_exited', message: 'server words' }), EXITED],
+    ]) {
+      const r = await run({ reply });
+      assert.deepEqual(alertOf(r), { text, shown: true, focused: true });
+      assert.equal(r.node('#dlg-spawn').open, true);
+      assert.deepEqual([r.navs, r.texts()], [[], []]);
+      assert.equal(r.node('#sp-brief').value, 'Add the /health route and a test for it.', 'the fields are kept');
+    }
+  });
+
+  test('(−) F4: any other code keeps the server\'s words in the alert', async () => {
+    const r = await run({ reply: refuse(503, { error: 'claude_unavailable', message: 'claude not found (add it to PATH or set NIKA_CLAUDE)' }) });
+    assert.equal(alertOf(r).text, 'claude not found (add it to PATH or set NIKA_CLAUDE)');
+  });
+
   test('(+) 409 limit, scope parent, from the header ("you"): the "You already run..." line', async () => {
     const r = await run({ reply: refuse(409, { error: 'limit', scope: 'parent', running: 3, max: 3 }) });
     assert.equal(alertOf(r).text, `You already run 3 of 3 agents spawned from nika in demo-api. ${TAIL}`);

@@ -29,6 +29,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{1
 const LIST_ALL = [TMUX, '-u', 'list-panes', '-a', '-F', '#{pane_id}\t#{session_name}\t#{window_index}\t#{pane_title}\t#{pane_current_command}\t#{@nika-role}\t#{@nika-agent}\t#{@nika-depth}\t#{@nika-parent}'];
 const LIST_AGENTS = [TMUX, '-u', 'list-panes', '-a', '-F', '#{pane_id}\t#{@nika-role}\t#{@nika-agent}\t#{@nika-depth}\t#{@nika-parent}\t#{session_name}\t#{window_name}'];
 const OTHER_KEY = '0123456789abcdef'; // the key of some other project
+const CHECK = (pane) => [TMUX, '-u', 'display-message', '-p', '-t', pane, '#{pane_dead}']; // the early-exit check (F4), made once the pane is created and tagged
 const DENY_SETTINGS = '{"permissions":{"deny":["Read(**/.env*)","Edit(**/.env*)","Read(**/*.key)","Edit(**/*.key)"]}}';
 const DENIED = ['Bash(nika:*)', 'Bash(tmux:*)', 'Bash(claude:*)', 'Bash(git add:*)', 'Bash(git commit:*)', 'Bash(git push:*)'];
 const COMPACT_1M = { window: 400000, pct: '84.2106' }; // the default setting on a 1M model such as `sonnet`: W = 400k, 80 %
@@ -61,6 +62,7 @@ describe('spawnAgent: placement and files', () => {
       [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-role', 'agent'],
       [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-agent', `${w.project.key}/builder-1`],
       [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-depth', '1'],
+      CHECK('%20'),
       [TMUX, '-u', 'select-pane', '-t', '%20', '-T', '[%20] builder-1'],
     ]);
     assert.equal(mode(rd(w)), 0o700);
@@ -145,18 +147,18 @@ describe('spawnAgent: placement and files', () => {
     assert.equal(fs.existsSync(rd(w)), false);
   });
 
-  test('(+) explicit session: =other: ; (−) a session that does not exist → 404 telling to start the orchestrator', async () => {
+  test('(+) explicit session: =other: ; (−) a session that does not exist and is not the project\'s → 404, nothing created; the project\'s own is created (F4)', async () => {
     const w = await world();
     const exec = fakeTmux({ panes: [...BASE_PANES(), { id: '%7', session: 'other', window: 0, windowName: 'x', command: 'zsh' }] });
     const ok = await spawnAgent(req(w, { session: 'other' }), w.ctx(exec));
     assert.equal(ok.body.session, 'other');
     assert.equal(exec.of('split-window')[0][3], '=other:');
     const none = await spawnAgent(req(w, { name: 'x', session: 'nope' }), w.ctx(exec));
-    assert.deepEqual([none.status, none.body.error], [404, 'not_found']);
-    assert.match(none.body.message, /orchestrator/);
-    // the default session is the project's orchestrator session; without it there is nowhere to go
-    const alone = await spawnAgent(req(w, { name: 'y' }), w.ctx(fakeTmux({ panes: [{ id: '%7', session: 'other' }] })));
-    assert.equal(alone.status, 404);
+    assert.deepEqual([none.status, none.body.error, none.body.message], [404, 'not_found', 'tmux session nope not found']);
+    // the default session is the project's own; without it the spawn creates it (F4)
+    const alone = fakeTmux({ panes: [{ id: '%7', session: 'other' }] });
+    const made = await spawnAgent(req(w, { name: 'y' }), w.ctx(alone));
+    assert.deepEqual([made.status, made.body.session, alone.of('new-session').length], [200, 'My-App', 1]);
   });
 
   test('(+) settings: default permission mode comes from the settings, the request overrides it', async () => {
@@ -299,9 +301,9 @@ describe('spawnAgent: refusals', () => {
     assert.equal(exec.calls.length, 0);
   });
 
-  test('(−) tmux missing → 503 tmux_unavailable: no binary, binary not runnable, or no server running', async () => {
+  test('(−) tmux missing → 503 tmux_unavailable: no binary, or the binary cannot be run (no server running is not an error any more, F4)', async () => {
     const w = await world();
-    for (const [exec, extra] of [[fakeTmux(), { tmuxBin: null }], [fakeTmux({ enoent: true }), {}], [fakeTmux(), {}]]) {
+    for (const [exec, extra] of [[fakeTmux(), { tmuxBin: null }], [fakeTmux({ enoent: true }), {}]]) {
       const r = await spawnAgent(req(w), w.ctx(exec, extra));
       assert.deepEqual([r.status, r.body.error], [503, 'tmux_unavailable']);
     }
@@ -520,6 +522,166 @@ describe('spawnAgent: limits and conflicts', () => {
   });
 });
 
+// --- F4: no tmux server or no project session, and the early-exit check -----------------------------------------------------
+
+describe('spawnAgent: no tmux server or no project session (F4)', () => {
+  const EXITED = 'Claude exited right after it started. Run `claude` once in a terminal in this folder to see why (for example, to log in).';
+  const newSession = (w, name = 'builder-1', session = 'My-App') => [TMUX, '-u', 'new-session', '-d', '-s', session, '-n', 'agents', '-c', w.project.dir, '-x', '200', '-y', '50', '-P', '-F', '#{pane_id}', '--', ...NIKA_ARGV, '_run-agent', w.project.key, name];
+  const OTHER = { id: '%7', session: 'other', window: 0, windowName: 'zsh', command: 'zsh' };
+
+  test('(+) no tmux server: one new-session with the pinned argv creates the project session, the pane is tagged and titled, 200', async () => {
+    const w = await world();
+    const exec = fakeTmux();
+    const ctx = w.ctx(exec);
+    const r = await spawnAgent(req(w), ctx);
+    assert.deepEqual(r, {
+      status: 200,
+      body: { pane: '%20', session: 'My-App', sessionId: null, reports: { dir: rd(w), session: 'builder-1.session', report: 'builder-1.md', rc: 'builder-1.rc', remote: 'builder-1.remote' } },
+    });
+    assert.deepEqual(exec.calls, [
+      LIST_ALL, // no server: both listings fail, which is "no panes", not an error
+      LIST_AGENTS,
+      newSession(w),
+      [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-role', 'agent'],
+      [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-agent', `${w.project.key}/builder-1`],
+      [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-depth', '1'],
+      CHECK('%20'),
+      [TMUX, '-u', 'select-pane', '-t', '%20', '-T', '[%20] builder-1'],
+    ]);
+    assert.deepEqual(ctx.slept, [1000]);
+    assert.equal(exec.of('split-window').length, 0);
+    assert.deepEqual(exec.panes.map((p) => [p.id, p.session, p.windowName, p.role, p.agent, p.depth]), [['%20', 'My-App', 'agents', 'agent', `${w.project.key}/builder-1`, '1']]);
+    assert.deepEqual(ctx.started.get('%20'), { key: w.project.key, name: 'builder-1', sessionId: null, role: 'agent', parent: null, depth: 1, mode: 'manual' });
+    assert.equal(read(w, '.last-pane'), '%20\n');
+    assert.deepEqual(JSON.parse(read(w, 'builder-1.agent.json')), { model: 'sonnet', permissionMode: 'default', rc: '', role: 'agent', parent: null, depth: 1, compact: COMPACT_1M });
+  });
+
+  test('(+) a server runs but has no project session (only the user\'s own): the same new-session, the other session is left alone', async () => {
+    const w = await world();
+    const exec = fakeTmux({ panes: [OTHER] });
+    const r = await spawnAgent(req(w), w.ctx(exec));
+    assert.deepEqual([r.status, r.body.pane, r.body.session], [200, '%20', 'My-App']);
+    assert.deepEqual(exec.of('new-session'), [newSession(w).slice(2)]);
+    assert.deepEqual([exec.of('split-window').length, exec.panes.find((p) => p.id === '%7').session], [0, 'other']);
+    assert.deepEqual(exec.panes.find((p) => p.id === '%20').session, 'My-App');
+  });
+
+  test('(+) the project session exists: unchanged, a split-window beside, no new-session', async () => {
+    const w = await world();
+    const exec = fakeTmux({ panes: BASE_PANES() });
+    const r = await spawnAgent(req(w), w.ctx(exec));
+    assert.deepEqual([r.status, r.body.session], [200, 'My-App']);
+    assert.equal(exec.of('new-session').length, 0);
+    assert.deepEqual(exec.of('split-window')[0].slice(1, 4), ['-h', '-t', '=My-App:']);
+  });
+
+  test('(+) the session just created is the project session for the next spawn: under-last now has a last pane to split under (placement only when the session exists)', async () => {
+    const w = await world({ panePlacement: 'under-last' });
+    const exec = fakeTmux();
+    const ctx = w.ctx(exec);
+    assert.equal((await spawnAgent(req(w, { name: 'one' }), ctx)).status, 200);
+    assert.equal((await spawnAgent(req(w, { name: 'two' }), ctx)).status, 200);
+    assert.deepEqual([exec.of('new-session').length, exec.of('split-window').length], [1, 1]);
+    assert.deepEqual(exec.of('split-window')[0].slice(1, 4), ['-v', '-t', '%20']); // under-last now has a last pane
+  });
+
+  test('(+) under-last with no session yet: placement is ignored (the stale .last-pane of an earlier run changes nothing)', async () => {
+    const w = await world({ panePlacement: 'under-last' });
+    await put(w, '.last-pane', '%1\n');
+    const exec = fakeTmux();
+    assert.equal((await spawnAgent(req(w), w.ctx(exec))).status, 200);
+    assert.deepEqual([exec.of('new-session').length, exec.of('split-window').length], [1, 0]);
+  });
+
+  test('(+) an explicit `session` that is the project\'s own name is created too; any other missing session is still 404, nothing created', async () => {
+    const w = await world();
+    const mine = fakeTmux();
+    assert.equal((await spawnAgent(req(w, { session: 'My-App' }), w.ctx(mine))).status, 200);
+    assert.equal(mine.of('new-session').length, 1);
+    const v = await world();
+    const other = fakeTmux();
+    const r = await spawnAgent(req(v, { session: 'Nope' }), v.ctx(other));
+    assert.deepEqual([r.status, r.body.error], [404, 'not_found']);
+    assert.match(r.body.message, /Nope/);
+    assert.equal(other.of('new-session').length, 0);
+    assert.equal(exists(v, 'builder-1.brief.md'), false);
+  });
+
+  test('(−) the tmux binary is missing (ENOENT): 503 tmux_unavailable, no session created, nothing written', async () => {
+    const w = await world();
+    const exec = fakeTmux({ enoent: true });
+    const r = await spawnAgent(req(w), w.ctx(exec));
+    assert.deepEqual([r.status, r.body.error], [503, 'tmux_unavailable']);
+    assert.match(r.body.message, /tmux not found/);
+    assert.equal(exec.of('new-session').length, 0);
+    assert.equal(fs.existsSync(rd(w)), false);
+  });
+
+  test('(−) new-session failing is a 502 tmux_failed with tmux\'s reason; no pane is recorded, no .last-pane, no check', async () => {
+    const w = await world();
+    const exec = fakeTmux({ failOn: ['new-session'] });
+    const ctx = w.ctx(exec);
+    const r = await spawnAgent(req(w), ctx);
+    assert.deepEqual([r.status, r.body.error, r.body.message], [502, 'tmux_failed', 'tmux failed: new-session failed']);
+    assert.equal(ctx.started.size, 0);
+    assert.equal(exists(w, '.last-pane'), false);
+    assert.deepEqual([exec.of('display-message').length, ctx.slept.length], [0, 0]);
+  });
+
+  test('(−) a tmux failure that is not "no server" while listing the tags is still a 502 tmux_failed (the panes were listed fine)', async () => {
+    const w = await world();
+    const base = fakeTmux({ panes: BASE_PANES() });
+    const exec = async (cmd, args) => {
+      if (args[1] === 'list-panes' && args.some((a) => String(a).endsWith('#{session_name}\t#{window_name}'))) throw Object.assign(new Error('boom'), { stderr: 'boom\n' });
+      return base(cmd, args);
+    };
+    const r = await spawnAgent(req(w), w.ctx(exec));
+    assert.deepEqual([r.status, r.body.error], [502, 'tmux_failed']);
+    assert.equal(base.of('new-session').length + base.of('split-window').length, 0);
+  });
+
+  test('(−) the pane is gone after the wait (claude died at launch): 502 claude_exited with the fixed words; no record, no .last-pane, no title', async () => {
+    const w = await world();
+    for (const panes of [[], [OTHER], BASE_PANES()]) { // no server, a server without the project session, the project session (split-window)
+      const exec = fakeTmux({ panes });
+      const ctx = w.ctx(exec, { sleep: async (ms) => { ctx.slept.push(ms); exec.panes.splice(exec.panes.findIndex((p) => p.id === '%20'), 1); } });
+      const r = await spawnAgent(req(w), ctx);
+      assert.deepEqual([r.status, r.body], [502, { error: 'claude_exited', message: EXITED }], JSON.stringify(panes));
+      assert.deepEqual(ctx.slept, [1000]);
+      assert.equal(exec.of('display-message').length, 1);
+      assert.equal(exec.of('select-pane').length, 0);
+      assert.equal(ctx.started.size, 0);
+      assert.equal(exists(w, '.last-pane'), false);
+    }
+  });
+
+  test('(−) the pane still exists but is dead (remain-on-exit): 502 claude_exited too', async () => {
+    const w = await world();
+    const exec = fakeTmux();
+    const ctx = w.ctx(exec, { sleep: async () => { exec.panes.find((p) => p.id === '%20').dead = '1'; } });
+    const r = await spawnAgent(req(w), ctx);
+    assert.deepEqual([r.status, r.body.error], [502, 'claude_exited']);
+    assert.equal(ctx.started.size, 0);
+    assert.equal(exists(w, '.last-pane'), false);
+  });
+
+  test('(−) a failed check (tmux errors on display-message) means gone: 502 claude_exited', async () => {
+    const w = await world();
+    const r = await spawnAgent(req(w), w.ctx(fakeTmux({ panes: BASE_PANES(), failOn: ['display-message'] })));
+    assert.deepEqual([r.status, r.body.error], [502, 'claude_exited']);
+  });
+
+  test('(−) a refused spawn (duplicate name) starts nothing and waits for nothing', async () => {
+    const w = await world();
+    const exec = fakeTmux({ panes: BASE_PANES() });
+    const ctx = w.ctx(exec);
+    assert.equal((await spawnAgent(req(w), ctx)).status, 200);
+    assert.deepEqual(ctx.slept, [1000]);
+    assert.equal((await spawnAgent(req(w), ctx)).status, 409);
+    assert.deepEqual(ctx.slept, [1000], 'the refusal did not wait');
+  });
+});
+
 // --- nesting (0.4): who the parent is, how deep the child sits, and the caps ----------------------------------------------
 
 describe('spawnAgent: nesting and limits (0.4)', () => {
@@ -562,6 +724,7 @@ describe('spawnAgent: nesting and limits (0.4)', () => {
       [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-agent', `${w.project.key}/planner`],
       [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-depth', '2'],
       [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-parent', '%1'],
+      CHECK('%20'),
       [TMUX, '-u', 'select-pane', '-t', '%20', '-T', '[%20] planner'],
     ]);
     assert.deepEqual(JSON.parse(read(w, 'planner.agent.json')), { model: 'sonnet', permissionMode: 'default', rc: '', role: 'sub-orchestrator', parent: '%1', depth: 2, compact: COMPACT_1M });
@@ -626,6 +789,7 @@ describe('spawnAgent: nesting and limits (0.4)', () => {
       [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-agent', `${w.project.key}/builder-1`],
       [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-depth', '2'],
       [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-parent', '%1'],
+      CHECK('%20'),
       [TMUX, '-u', 'select-pane', '-t', '%20', '-T', '[%20] builder-1'],
     ]);
     assert.equal(exec.panes.find((p) => p.id === '%20').session, 'work');
@@ -642,12 +806,15 @@ describe('spawnAgent: nesting and limits (0.4)', () => {
     assert.deepEqual(tags(exec, '%21'), ['agent', 'helper', '3', '%20']);
   });
 
-  test('(−) no parent and no project session is still 404, with nothing split, tagged or written (an adopted orchestrator elsewhere changes nothing)', async () => {
+  test('(+) F4: no parent and no project session creates the project session (new-session); an adopted orchestrator elsewhere is left alone and is not the parent', async () => {
     const w = await world();
     const panes = [ADOPTED(w), { id: '%5', session: 'work', window: 1, windowName: 'shell', command: 'zsh' }];
     for (const over of [{}, { parent: '%5' }]) { // no parent at all, and a plain pane with no nika role ("you")
-      const r = await refuse(w, panes, over, 404, 'not_found');
-      assert.match(r.body.message, /tmux session My-App not found/);
+      const exec = fakeTmux({ panes: panes.map((p) => ({ ...p })) });
+      const r = await spawnAgent(req(w, { name: `a${Object.keys(over).length}`, ...over }), w.ctx(exec));
+      assert.deepEqual([r.status, r.body.session, exec.of('new-session').length, exec.of('split-window').length], [200, 'My-App', 1, 0], JSON.stringify(over));
+      assert.deepEqual(tags(exec, '%20').slice(2), ['1', ''], 'depth 1, no parent: the agent is "you"');
+      assert.deepEqual(exec.panes.filter((p) => p.session === 'work').map((p) => p.id), ['%1', '%5']);
     }
   });
 
@@ -659,14 +826,17 @@ describe('spawnAgent: nesting and limits (0.4)', () => {
     const b = await spawnAgent(req(w, { name: 'below', parent: '%1', under: '%7' }), w.ctx(exec));
     assert.deepEqual([b.status, b.body.session, exec.of('split-window')[1].slice(1, 4)], [200, 'other', ['-v', '-t', '%7']]);
     assert.deepEqual(tags(exec, '%21'), ['agent', 'below', '2', '%1']); // still the adopted orchestrator's child
-    // a session the project does not have is still 404, even though the parent's own session exists
-    await refuse(w, [ADOPTED(w)], { parent: '%1', session: 'My-App' }, 404, 'not_found');
+    // a session that is not the project's and does not exist is still 404, even though the parent's own session exists
+    const none = await refuse(w, [ADOPTED(w)], { parent: '%1', session: 'Nope' }, 404, 'not_found');
+    assert.equal(none.body.message, 'tmux session Nope not found');
   });
 
-  test('(−) a parent session name that is not a valid TMUX_SESSION falls back to the project\'s session (404 when it has no pane, beside it when it has)', async () => {
+  test('(−) a parent session name that is not a valid TMUX_SESSION falls back to the project\'s session (created when it has no pane, F4; beside it when it has)', async () => {
     const w = await world();
     for (const session of ['my work', '-t', 'a:b', '']) {
-      await refuse(w, [ADOPTED(w, { session })], { parent: '%1' }, 404, 'not_found');
+      const fresh = fakeTmux({ panes: [ADOPTED(w, { session })] });
+      const made = await spawnAgent(req(w, { name: `new-${session.length}`, parent: '%1' }), w.ctx(fresh));
+      assert.deepEqual([made.status, made.body.session, fresh.of('new-session').length], [200, 'My-App', 1], JSON.stringify(session));
       const exec = fakeTmux({ panes: [ADOPTED(w, { session }), { id: '%9', session: 'My-App', window: 0, windowName: 'zsh', command: 'zsh' }] });
       const r = await spawnAgent(req(w, { name: `ok-${session.length}`, parent: '%1' }), w.ctx(exec));
       assert.deepEqual([r.status, r.body.session], [200, 'My-App'], JSON.stringify(session));
@@ -924,7 +1094,10 @@ describe('tmux format expansion (T6)', () => {
     assert.equal((await startOrchestrator(project.key, w.ctx(fresh))).body.created, true); // new-session
     assert.equal((await startOrchestrator(project.key, w.ctx(present, { findSession: async () => null }))).body.created, true); // new-window (the first start saved a pick; this lookup finds no transcript for it)
     assert.equal((await spawnAgent({ project: project.key, name: 'builder-1', model: 'sonnet', brief: 'Do the thing.' }, w.ctx(fresh))).status, 200); // split-window, select-pane
-    const values = (flag) => [fresh, present].flatMap((e) => e.calls.flatMap((c) => c.map((a, i) => (c[i - 1] === flag ? a : null)).filter((a) => a !== null)));
+    const bare = fakeTmux({ panes: [] });
+    assert.equal((await spawnAgent({ project: project.key, name: 'builder-1', model: 'sonnet', brief: 'Do the thing.' }, w.ctx(bare))).status, 200); // F4: a spawn with no server runs new-session -s -n agents
+    assert.deepEqual([bare.of('new-session')[0].at(bare.of('new-session')[0].indexOf('-n') + 1), bare.of('new-session')[0].at(bare.of('new-session')[0].indexOf('-s') + 1)], ['agents', session]);
+    const values = (flag) => [fresh, present, bare].flatMap((e) => e.calls.flatMap((c) => c.map((a, i) => (c[i - 1] === flag ? a : null)).filter((a) => a !== null)));
     for (const flag of ['-s', '-n', '-T']) {
       const seen = values(flag);
       assert.ok(seen.length > 0, `${flag} was passed`);
@@ -932,7 +1105,7 @@ describe('tmux format expansion (T6)', () => {
     }
     assert.ok(values('-T').includes('[%21] builder-1'));
     const dirs = values('-c');
-    assert.ok(dirs.length >= 3 && dirs.every((d) => d.replaceAll('##', '').includes('#') === false && d.includes('##')), JSON.stringify(dirs));
+    assert.ok(dirs.length >= 4 && dirs.every((d) => d.replaceAll('##', '').includes('#') === false && d.includes('##')), JSON.stringify(dirs));
   });
 });
 

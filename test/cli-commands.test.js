@@ -62,7 +62,7 @@ const input = (text = '', isTTY = false) => Object.assign(Readable.from(text ? [
 async function cli(argv, { env, cwd, stdin, tty = false, ...io } = {}) {
   const out = new Sink(tty);
   const err = new Sink();
-  const code = await main(argv, env, { out, err, in: stdin ?? input(), cwd, home: COPY_HOME, brewApps: [], ...io });
+  const code = await main(argv, env, { out, err, in: stdin ?? input(), cwd, home: COPY_HOME, brewApps: [], sleep: async () => {}, ...io }); // sleep: the 1 s early-exit wait of orchestrate and spawn
   return { code, out: out.text, err: err.text };
 }
 
@@ -882,6 +882,20 @@ describe('spawn', () => {
     assert.equal(noClaude.code, 1);
     assert.match(noClaude.err, /claude/);
   });
+
+  test('(+) F4: with no tmux server `spawn` creates the project session (new-session) and prints its pane; (−) a claude that dies at launch is exit 1 with the reason', async () => {
+    const w = await world();
+    const exec = tmuxExec([]);
+    const made = await cli(['spawn', 'builder-1', 'sonnet', '-'], base(w, { exec, stdin: input(brief) }));
+    assert.equal(made.code, 0, made.err);
+    assert.match(made.out, /pane: %20\nsession: My-App\n/);
+    assert.deepEqual([exec.tmux.of('new-session').length, exec.tmux.of('split-window').length], [1, 0]);
+    const w2 = await world();
+    const dying = tmuxExec([]);
+    const gone = await cli(['spawn', 'builder-1', 'sonnet', '-'], base(w2, { exec: dying, stdin: input(brief), sleep: async () => { dying.tmux.panes.splice(0); } }));
+    assert.equal(gone.code, 1);
+    assert.match(gone.err, /claude_exited: Claude exited right after it started\. Run `claude` once in a terminal/);
+  });
 });
 
 describe('orchestrate', () => {
@@ -1056,6 +1070,15 @@ describe('orchestrate', () => {
       assert.equal(argv.includes('--session-id'), true);
       assert.notEqual(await getOrchestrator(w.project.key, w.env), PICK);
     });
+  });
+
+  test('(−) F4: an orchestrator whose claude dies at launch is exit 1 with the reason, and attaches to nothing', async () => {
+    const w = await world();
+    const exec = tmuxExec([]);
+    const r = await cli(['orchestrate', '--detached'], at(w, { exec, sleep: async () => { exec.tmux.panes.splice(0); } }));
+    assert.equal(r.code, 1);
+    assert.match(r.err, /claude_exited: Claude exited right after it started/);
+    assert.equal(r.out, '');
   });
 
   test('(−) an unregistered cwd is refused (3), two directories are a usage error (2), missing tmux or claude is exit 1', async () => {

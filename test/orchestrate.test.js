@@ -1,9 +1,9 @@
 // startOrchestrator and the shared tmux/rc helpers; in-memory tmux, temp dirs, synthetic data only.
-import { test, describe, after } from 'node:test';
+import { test, describe, after, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { startOrchestrator, launchArgv, compactArgs, inProject, pickState, claudePane, sessionNameFor, reduceRc, tmuxLiteral } from '../src/orchestrate.js';
+import { startOrchestrator, earlyExit, launchArgv, compactArgs, inProject, pickState, claudePane, sessionNameFor, reduceRc, tmuxLiteral } from '../src/orchestrate.js';
 import { configDir } from '../src/paths.js';
 import { addProject, getOrchestrator, setOrchestrator, loadConfig, updateProjectConfig } from '../src/store.js';
 import { fakeTmux, makeWorld, TMUX, CLAUDE } from './tmux-fake.js';
@@ -19,7 +19,7 @@ after(() => worlds.forEach((w) => w.cleanup()));
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const claudeFlags = (argv) => argv.slice(argv.indexOf('--') + 2);
 // the one tmux listing findOrchestratorPane makes: every pane of every session, with its tags, session and window name (last: free text)
-const LIST_ORCH = [TMUX, '-u', 'list-panes', '-a', '-F', '#{pane_id}\t#{pane_current_command}\t#{@nika-role}\t#{@nika-agent}\t#{session_name}\t#{window_name}'];
+const LIST_ORCH = [TMUX, '-u', 'list-panes', '-a', '-F', '#{pane_id}\t#{pane_current_command}\t#{pane_dead}\t#{@nika-role}\t#{@nika-agent}\t#{session_name}\t#{window_name}'];
 const PICK = '11111111-1111-4111-8111-111111111111';
 const PICK_PANE = { id: '%8', session: 'other-session', command: 'claude' };
 /** ctx.findSession as src/model.js gives it: { agent, group } of one session, or null when nika has no transcript for it. */
@@ -76,6 +76,7 @@ describe('startOrchestrator: new session', () => {
       [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-role', 'orchestrator'],
       [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-agent', `${w.project.key}/orchestrator`],
       [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-depth', '1'],
+      [TMUX, '-u', 'display-message', '-p', '-t', '%20', '#{pane_dead}'], // the early-exit check (F4)
     ]);
     assert.deepEqual(ctx.started.get('%20'), { key: w.project.key, name: 'orchestrator', sessionId: r.body.sessionId, role: 'orchestrator', mode: 'manual' });
   });
@@ -180,6 +181,17 @@ describe('startOrchestrator: existing session', () => {
     }
   });
 
+  test('(−) a dead orchestrator pane (remain-on-exit keeps it, and tmux still names its command claude) is not running: Start opens a new window', async () => {
+    const w = await world();
+    const exec = sessionWith('claude', { dead: '1', agent: `${w.project.key}/orchestrator` });
+    const ctx = w.ctx(exec);
+    const r = await startOrchestrator(w.project.key, ctx);
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.equal(r.body.created, true);
+    assert.notEqual(r.body.pane, '%3');
+    assert.equal(exec.of('new-window').length, 1);
+  });
+
   test('(+) sessionId is returned when nika started that pane in this process', async () => {
     const w = await world();
     const sid = '11111111-1111-4111-8111-111111111111';
@@ -203,6 +215,7 @@ describe('startOrchestrator: existing session', () => {
       [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-role', 'orchestrator'],
       [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-agent', `${w.project.key}/orchestrator`],
       [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-depth', '1'],
+      [TMUX, '-u', 'display-message', '-p', '-t', '%20', '#{pane_dead}'], // the early-exit check (F4)
     ]);
     assert.equal(ctx.started.get('%20').sessionId, r.body.sessionId);
     assert.equal(exec.panes.find((p) => p.id === '%20').role, 'orchestrator');
@@ -490,6 +503,7 @@ describe('startOrchestrator: the saved orchestrator (the project\'s pick)', () =
       [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-role', 'orchestrator'],
       [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-agent', `${w.project.key}/orchestrator`],
       [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-depth', '1'],
+      [TMUX, '-u', 'display-message', '-p', '-t', '%20', '#{pane_dead}'], // the early-exit check (F4)
     ]);
     assert.deepEqual(ctx.started.get('%20'), { key: w.project.key, name: 'orchestrator', sessionId: PICK, role: 'orchestrator', mode: 'plan' });
     assert.equal(await pickNow(w), PICK, 'the pick is the same session after the resume');
@@ -685,6 +699,133 @@ describe('startOrchestrator: refusals', () => {
     const r = await startOrchestrator(w.project.key, w.ctx(exec, { claudeBin: null }));
     assert.deepEqual([r.status, r.body.error], [503, 'claude_unavailable']);
     assert.equal(exec.calls.length, 0);
+  });
+});
+
+describe('startOrchestrator: the early-exit check (F4)', () => {
+  const EXITED = 'Claude exited right after it started. Run `claude` once in a terminal in this folder to see why (for example, to log in).';
+  const CHECK = (pane) => [TMUX, '-u', 'display-message', '-p', '-t', pane, '#{pane_dead}'];
+  const pickNow = (w) => getOrchestrator(w.project.key, w.env);
+  /** a ctx whose wait removes the new pane, as a claude that dies at launch does (and the server with its last session) */
+  const dying = (w, exec, extra = {}) => {
+    const ctx = w.ctx(exec, { sleep: async (ms) => { ctx.slept.push(ms); const i = exec.panes.findIndex((p) => p.id === '%20'); if (i >= 0) exec.panes.splice(i, 1); }, ...extra });
+    return ctx;
+  };
+  const ZSH = { id: '%1', session: 'My-App', window: 0, windowName: 'zsh', command: 'zsh' };
+
+  test('(+) after the pane is created and tagged, nika waits 1 s and asks tmux once whether the pane is alive; then 200 and the pick is saved', async () => {
+    const w = await world();
+    for (const panes of [[], [ZSH]]) { // new-session, new-window
+      const exec = fakeTmux({ panes });
+      const ctx = w.ctx(exec);
+      const r = await startOrchestrator(w.project.key, ctx);
+      assert.deepEqual([r.status, r.body.pane, r.body.created], [200, '%20', true]);
+      assert.deepEqual(exec.calls.slice(-2), [[TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-depth', '1'], CHECK('%20')]);
+      assert.deepEqual(ctx.slept, [1000]);
+      assert.equal(await pickNow(w), r.body.sessionId);
+      await setOrchestrator(w.project.key, null, w.env);
+    }
+  });
+
+  test('(−) Start: the pane is gone after the wait → 502 claude_exited; nothing recorded, no pick saved', async () => {
+    const w = await world();
+    for (const panes of [[], [ZSH]]) { // new-session (the server dies with its only session), new-window
+      const exec = fakeTmux({ panes });
+      const ctx = dying(w, exec);
+      const r = await startOrchestrator(w.project.key, ctx);
+      assert.deepEqual([r.status, r.body], [502, { error: 'claude_exited', message: EXITED }]);
+      assert.deepEqual(ctx.slept, [1000]);
+      assert.equal(exec.of('display-message').length, 1);
+      assert.equal(ctx.started.size, 0);
+      assert.equal(await pickNow(w), null);
+    }
+  });
+
+  test('(−) Resume: the resumed pane is gone after the wait → 502 claude_exited; the pick is kept (the session itself is fine)', async () => {
+    const w = await world();
+    await setOrchestrator(w.project.key, PICK, w.env);
+    for (const panes of [[], [ZSH]]) {
+      const exec = fakeTmux({ panes });
+      const ctx = dying(w, exec, { findSession: sessionLookup({}, w.project.key) });
+      const r = await startOrchestrator(w.project.key, ctx);
+      assert.ok(claudeFlags(exec.of(panes.length ? 'new-window' : 'new-session')[0]).includes('--resume'));
+      assert.deepEqual([r.status, r.body.error, r.body.message], [502, 'claude_exited', EXITED]);
+      assert.equal(ctx.started.size, 0);
+      assert.equal(await pickNow(w), PICK);
+    }
+  });
+
+  test('(−) the pane exists but is dead (remain-on-exit), or tmux fails the check → 502 claude_exited', async () => {
+    const w = await world();
+    const exec = fakeTmux();
+    const ctx = w.ctx(exec, { sleep: async () => { exec.panes.find((p) => p.id === '%20').dead = '1'; } });
+    assert.deepEqual([(await startOrchestrator(w.project.key, ctx)).body.error, ctx.started.size, await pickNow(w)], ['claude_exited', 0, null]);
+    const failing = await startOrchestrator(w.project.key, w.ctx(fakeTmux({ failOn: ['display-message'] })));
+    assert.deepEqual([failing.status, failing.body.error], [502, 'claude_exited']);
+  });
+
+  test('(+) the pane is tagged before the wait: a second Start during it finds the orchestrator and opens no second window', async () => {
+    const w = await world();
+    const exec = fakeTmux({ panes: [ZSH] });
+    let second;
+    const ctx = w.ctx(exec, { sleep: async () => { second = await startOrchestrator(w.project.key, w.ctx(exec, { sleep: async () => assert.fail('the second start waited') })); } });
+    const first = await startOrchestrator(w.project.key, ctx);
+    assert.deepEqual([first.status, first.body.created], [200, true]);
+    assert.ok(second, 'the wait ran a second Start');
+    assert.deepEqual([second.status, second.body.created, second.body.pane], [200, false, '%20']);
+    assert.equal(exec.of('new-window').length, 1);
+  });
+
+  test('(−) no new pane, no wait: a running orchestrator is answered as before (live pick, or found in tmux)', async () => {
+    const w = await world();
+    const found = fakeTmux({ panes: [{ id: '%3', session: 'My-App', window: 1, windowName: 'orchestrator', command: 'claude', role: 'orchestrator' }] });
+    const ctx = w.ctx(found);
+    assert.equal((await startOrchestrator(w.project.key, ctx)).body.created, false);
+    await setOrchestrator(w.project.key, PICK, w.env);
+    const live = w.ctx(fakeTmux(), { findSession: sessionLookup({ live: true, pane: { id: '%8', session: 'x', command: 'claude' } }, w.project.key) });
+    assert.equal((await startOrchestrator(w.project.key, live)).body.created, false);
+    assert.deepEqual([ctx.slept, live.slept, found.of('display-message').length], [[], [], 0]);
+  });
+
+  test('(−) new-session or new-window failing is still 502 tmux_failed (no wait); a missing tmux binary is 503 tmux_unavailable', async () => {
+    const w = await world();
+    const ctx = w.ctx(fakeTmux({ failOn: ['new-session'] }));
+    assert.deepEqual([(await startOrchestrator(w.project.key, ctx)).body.error, ctx.slept], ['tmux_failed', []]);
+    const gone = await startOrchestrator(w.project.key, w.ctx(fakeTmux({ enoent: true })));
+    assert.deepEqual([gone.status, gone.body.error], [503, 'tmux_unavailable']);
+  });
+
+  test('(+) earlyExit: with no injected sleep it waits 1000 ms on the real timer, then asks tmux; only "0" counts as running', async (t) => {
+    const w = await world();
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const ctx = { ...w.ctx(fakeTmux({ panes: [{ ...ZSH, id: '%5' }] })), sleep: undefined };
+    let done = false;
+    const p = earlyExit(ctx, '%5').then((r) => { done = true; return r; });
+    t.mock.timers.tick(999);
+    await Promise.resolve();
+    assert.equal(done, false, 'still waiting at 999 ms');
+    t.mock.timers.tick(1);
+    assert.equal(await p, null);
+    t.mock.timers.reset();
+  });
+
+  test('(−) earlyExit never hands tmux a target that is not a pane id (rules constraint 3): no wait, no call', async () => {
+    const w = await world();
+    const exec = fakeTmux({ panes: [ZSH] });
+    const ctx = w.ctx(exec);
+    for (const bad of ['%1; ls', '-t', '=My-App', '%', '', undefined, 5]) {
+      const r = await earlyExit(ctx, bad);
+      assert.deepEqual([r.status, r.body.error], [502, 'tmux_failed'], String(bad));
+    }
+    assert.deepEqual([exec.calls.length, ctx.slept], [0, []]);
+  });
+
+  test('(−) earlyExit: a stdout that is not "0" (dead, garbage, empty) is not running', async () => {
+    const w = await world();
+    for (const stdout of ['1\n', 'x\n', '']) {
+      const r = await earlyExit(w.ctx(async () => ({ stdout, stderr: '' })), '%5');
+      assert.deepEqual([r.status, r.body.error], [502, 'claude_exited'], JSON.stringify(stdout));
+    }
   });
 });
 

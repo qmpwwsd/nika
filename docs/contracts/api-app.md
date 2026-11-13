@@ -41,8 +41,10 @@ Id shapes come from `src/ids.js`:
 5. Every response: `Cache-Control: no-store`, the 0.1 security headers, no CORS headers.
 
 Common error body: `{"error": "<code>", "message": "<short text>"}`; codes used below: `forbidden` 403, `not_found` 404,
-`invalid` 400, `unsupported_media` 415, `too_large` 413, `conflict` 409, `busy` 429, `tmux_unavailable` 503,
-`claude_unavailable` 503, `tmux_failed` 502 (a tmux call failed unexpectedly), `limit` 409 (maxAgents reached), `foreign` 409 (rules file not written by nika, apply without
+`invalid` 400, `unsupported_media` 415, `too_large` 413, `conflict` 409, `busy` 429, `tmux_unavailable` 503 (the tmux binary is
+missing; since 0.4 a tmux server that is not running is not an error for Start or spawn: they create the session),
+`claude_unavailable` 503, `tmux_failed` 502 (a tmux call failed unexpectedly), `claude_exited` 502 (0.4: the new pane was gone or dead
+a second after Start, Resume or spawn created it), `limit` 409 (maxAgents reached), `foreign` 409 (rules file not written by nika, apply without
 `overwriteForeign`), `refused` 409 (a write-safety check failed; `"code"` carries the fwrite/OS code such as `ESYMLINK`),
 and for session control (0.3) `not-idle`, `mode-unknown`, `mode-unchanged`, `not-in-cycle`, `busy-switching`, `no-prompt`,
 `prompt-changed`, `already-answered`, `input-not-empty`, `input-unreadable`, `not-at-prompt`, `bypass-prompt`, `screen-unclear`, all 409. The 0.3 codes are hyphenated, as the spec names them; the older codes keep their underscores.
@@ -556,8 +558,20 @@ agent. `under`: split `-v` below that pane (unknown pane → 404, pane in anothe
 response `session` is the pane's session). With neither `under` nor `session`, a spawn under a `parent` (see Nesting) opens beside that
 parent, in the parent's own tmux session (read from the tags listing, and only when the name is a valid `TMUX_SESSION`), so an orchestrator
 adopted from the user's own tmux session keeps its children with it; an explicit `under` or `session` always wins, and with no parent, or a
-parent session name that is not valid, the project's session is used as before (no pane there → 404 `tmux session <name> not found`,
-nothing started). Response:
+parent session name that is not valid, the project's session is used as before.
+
+**No server or no project session (0.4).** When the session to use does not exist, because no tmux server runs or the server has no
+session of that name, and it is the project's own (`TMUX_SESSION` reduction of its name, §8), the spawn creates it: one `new-session -d
+-s <session> -n agents …` (§8) whose first pane runs the agent, tagged and titled like any spawned pane. There is no placement then
+(`beside` and `under last` apply only to a session that exists). A named `session` that is not the project's own and does not exist is
+still `404 not_found` (`tmux session <name> not found`, nothing started): nika creates only the project's session. A failed `new-session` is
+`502 tmux_failed`; `503 tmux_unavailable` now means only that the tmux binary is missing (no binary, or ENOENT when it is run).
+
+**Early exit (0.4).** Once the pane is created and tagged, nika waits 1 s and asks tmux whether the pane still exists and is not dead
+(§8, `display-message … #{pane_dead}`; a tmux error counts as gone). A pane that is gone or dead means claude died at launch (a login
+needed, a broken install) and took the pane, and a server nika had just started, with it: nothing is recorded (`.last-pane`, the title) and the
+answer is `502 claude_exited`, message "Claude exited right after it started. Run `claude` once in a terminal in this folder to see why (for
+example, to log in)." The same check runs for Start and Resume. One check at 1 s: a claude that dies later is not caught here. Response:
 ```json
 { "pane": "%12", "session": "<tmux session>", "sessionId": "<UUID>", "reports": { "dir": "<stateDir>/projects/<key>/reports",
   "session": "<name>.session", "report": "<name>.md", "rc": "<name>.rc", "remote": "<name>.remote" } }
@@ -612,6 +626,14 @@ With a saved orchestrator (0.4) the server looks it up in the transcript index f
 - the lookup failing (index unreadable) → `503 index_unavailable`, nothing started, the pick kept.
 
 A new start saves its own `--session-id` as the project's pick, so Resume is offered after it ends.
+
+**Early exit (0.4).** After the pane is created and tagged, Start and Resume wait 1 s and ask tmux whether the pane still exists and is
+not dead (§8; the same check as spawn, one helper, the wait injectable for tests). Gone or dead → `502 claude_exited` (message under
+`POST /api/app/spawn`): nothing is saved (a fresh start's pick is not written, a resumed pick stays) and the request is not retried. The
+pane is tagged before the wait, so a second Start during it finds this orchestrator instead of opening another window. The page shows the
+sentence as an error toast and stays on the project page; it never opens the session window after an error. The page words
+`tmux_unavailable` as "tmux not found. Install tmux 3.2 or newer, then try again.", `tmux_failed` as "tmux failed: <reason>" and `claude_exited` as the message
+above, by code, in the Start and Resume toast and in the spawn sheet's alert; any other code keeps the server's message.
 
 The page words its toast from `created`: `cleared: "gone"` with `created: true` → "Started a new orchestrator. The saved one was
 gone."; with `created: false` (an orchestrator was already running and is opened) → "The saved orchestrator was gone. Opened the
@@ -849,6 +871,8 @@ multi-argument shell-commands (tmux execs them directly, no `sh -c`, T6).
 | session exists | `tmux -u has-session -t =<session>` |
 | create session + orchestrator | `tmux -u new-session -d -s <session> -n orchestrator -c <projectDir> -x 200 -y 50 -P -F #{pane_id} [-e CLAUDE_CODE_AUTO_COMPACT_WINDOW=<W> [-e CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=<PCT>]] -- <claudeBin> <orchestrator flags>` |
 | remove the pair from the session environment (0.4) | `tmux -u set-environment -t =<session> -u CLAUDE_CODE_AUTO_COMPACT_WINDOW`, then the same for `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`: only after a `new-session` that carried `-e`, only for a name it sent; best effort (a failure is ignored) |
+| create session + first agent (0.4) | `tmux -u new-session -d -s <session> -n agents -c <projectDir> -x 200 -y 50 -P -F #{pane_id} -- <nikaBin…> _run-agent <key> <name>`: a spawn when the project's session does not exist (no server, or a server without it); no `-e` pair (an agent's compaction travels in `<name>.agent.json`, so nothing is added to the session environment); the pane is tagged as a split-window one |
+| early-exit check (0.4) | `tmux -u display-message -p -t %n #{pane_dead}` 1 s after Start, Resume or spawn created pane `%n`: `0` = running; `1`, a tmux error (pane or server gone) or anything else = `502 claude_exited`. A constant format and a pane id nika got from tmux and matched against `PANE_ID`; no request data |
 | orchestrator in existing session | `tmux -u new-window -t =<session>: -n orchestrator -c <projectDir> -P -F #{pane_id} [-e … as above] -- <claudeBin> <orchestrator flags>` |
 | tag a pane nika created | `tmux -u set-option -p -t %n @nika-role orchestrator` (after new-session / new-window), `… @nika-role agent` or (0.4) `… @nika-role sub-orchestrator` (after split-window), then `@nika-agent <PROJECT_KEY>/<AGENT_NAME>` (0.4: `<PROJECT_KEY>/orchestrator` for an orchestrator), `@nika-depth <1\|2\|3>` (an orchestrator 1) and, for a nested spawn, `@nika-parent <PANE_ID>`; every value is a constant, a validated name or a pane id (no `#`); best effort |
 | adopt a live session as orchestrator (0.4) | `tmux -u set-option -p -t %n @nika-role orchestrator`, then `@nika-agent <PROJECT_KEY>/orchestrator`, then `@nika-depth 1` (`PUT …/orchestrator`; the depth is a constant 1, 2 or 3, never request data) |
@@ -870,7 +894,7 @@ and `#(cmd)` in a path would run `cmd` (verified on tmux 3.8). Shell-command arg
 
 tmux also format-expands `new-session -s <session>`, `new-window -n <name>` and `select-pane -T <title>`. Those values
 are passed unescaped and are safe only because they can never contain a `#`: `TMUX_SESSION` and `AGENT_NAME` exclude it,
-the window name is the constant `orchestrator`, and the title is `[%n] <AGENT_NAME>` with `%n` a `PANE_ID`. A change that
+the window names are the constants `orchestrator` and `agents`, and the title is `[%n] <AGENT_NAME>` with `%n` a `PANE_ID`. A change that
 lets another string reach `-s`, `-n` or `-T` must escape it with `tmuxLiteral()` first. `test/spawn.test.js` ("tmux format
 expansion (T6)") asserts it.
 
