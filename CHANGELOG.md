@@ -129,8 +129,10 @@ Fixes:
   Start orchestrator, Resume and Spawn agent check one second after starting that Claude is still running; if it exited
   right away (for example, it needs a login), the project page says "Claude exited right after it started. Run `claude`
   once in a terminal in this folder to see why (for example, to log in)." and stays on the project page. "tmux not
-  found" now means only that the tmux program is missing. A dead orchestrator pane kept by tmux's `remain-on-exit` no
-  longer counts as running.
+  found" now means only that the tmux program is missing. A dead orchestrator or agent pane kept by tmux's
+  `remain-on-exit` no longer counts as running, toward the agent limits or for the duplicate-name check. When tmux
+  fails for any other reason than "no server running", Spawn agent refuses with tmux's own message instead of skipping
+  the limits.
 - **Apply rules also writes `AGENTS.md`.** Claude Code reads `AGENTS.md` only when a project has no `CLAUDE.md`, so
   Apply no longer creates `CLAUDE.md` in a project that has only `AGENTS.md`: the `@rules/orchestration.md` line goes into
   `AGENTS.md` instead, and into both files when both exist (same preview, hash check and backup). A symlinked `AGENTS.md`
