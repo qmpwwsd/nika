@@ -640,6 +640,7 @@ resolves it to that pane's session), else exits 1 ("cannot attach: …") and run
 { "hash": "<sha256 hex of every planned write>", "files": [
     { "path": "rules/orchestration.md", "action": "create" | "update" | "unchanged", "diff": "<unified>", "foreign": false },
     { "path": "CLAUDE.md", "action": "update", "diff": "…" },
+    { "path": "AGENTS.md", "action": "update", "diff": "…" },
     { "path": ".claude/settings.local.json", "action": "update", "diff": "<enabledPlugins block only>", "keysPreserved": true, "keptKeys": 3 },
     { "path": ".gitignore", "action": "update", "diff": "…", "optional": true } ],
   "warnings": [ "settings.local.json is not gitignored" ], "backupDir": "<stateDir>/backups/<key>/<ISO>" }
@@ -647,7 +648,13 @@ resolves it to that pane's session), else exits 1 ("cannot attach: …") and run
 `POST /api/app/rules/apply` `{ "project": "<PROJECT_KEY>", "hash": "<from preview>", "overwriteForeign": false,
 "gitignore": false }` recomputes the preview; a different hash → **409 conflict**. Writes go through `src/fwrite.js`
 (`checkComponents` → backup → `writeAtomic`) and never touch git. Response `200 { "written": [ "rules/orchestration.md",
-"CLAUDE.md", ".claude/settings.local.json" ], "backupDir": "<abs>" }`.
+"CLAUDE.md", "AGENTS.md", ".claude/settings.local.json" ], "backupDir": "<abs>" }`.
+
+The `@rules/orchestration.md` line goes into `CLAUDE.md` and, when the project has one, `AGENTS.md`; each entry is in
+`files` only when it is planned. `AGENTS.md` is never created. `CLAUDE.md` is created (action `create`) only when
+neither file exists, because Claude Code reads `AGENTS.md` only while no `CLAUDE.md` exists: a `CLAUDE.md` created beside a
+lone `AGENTS.md` would turn it off. With only `AGENTS.md`, the `files` list has no `CLAUDE.md` entry. Both files get the
+same checks as every other target (symlink, hard link and owner checks, size limit, UTF-8, hash, byte-for-byte backup).
 
 The preview `diff` for `.claude/settings.local.json` is computed between `{"enabledPlugins": <old>}` and
 `{"enabledPlugins": <new>}` (pretty JSON) only, plus `keptKeys` = the number of other top-level keys; the values of

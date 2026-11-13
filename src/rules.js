@@ -1,5 +1,5 @@
 // "Apply orchestration rules to a project" (ADR 0006, contracts §3 and §9, rules T5 and T8): render the template, plan the
-// four allowed writes, show them as unified diffs, and write them only when the plan's hash still matches. All writes go
+// allowed writes, show them as unified diffs, and write them only when the plan's hash still matches. All writes go
 // through src/fwrite.js; nothing here runs git. Handlers return { status, body } like the other app-tier modules.
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
@@ -19,6 +19,7 @@ export const TEMPLATE_VERSION = 2;
 
 const RULES = 'rules/orchestration.md';
 const CLAUDE = 'CLAUDE.md';
+const AGENTS = 'AGENTS.md';
 const SETTINGS = '.claude/settings.local.json';
 const GITIGNORE = '.gitignore';
 const IMPORT_LINE = '@rules/orchestration.md';
@@ -148,7 +149,8 @@ function classify(text) {
 
 // ----------------------------------------------------------------------------------------------------- planned file bodies
 
-function claudeWith(current) {
+/** The import line for CLAUDE.md and AGENTS.md alike; null (no file yet) only ever happens for CLAUDE.md. */
+function importWith(current) {
   if (current === null) return `${IMPORT_LINE}\n`;
   if (current.split('\n').some((l) => l.trim() === IMPORT_LINE)) return current;
   let t = current;
@@ -282,8 +284,12 @@ async function plan(project, ctx = {}) {
   const rulesCurrent = await readTarget(dir, RULES);
   add(RULES, rulesCurrent, rulesNext, { foreign: rulesCurrent !== null && classify(rulesCurrent) === 'foreign' });
 
+  // Claude reads AGENTS.md only while no CLAUDE.md exists: a CLAUDE.md nika created beside a lone AGENTS.md would turn it off.
+  // So CLAUDE.md is created only when there is no AGENTS.md; an AGENTS.md is edited, never created.
   const claudeCurrent = await readTarget(dir, CLAUDE);
-  add(CLAUDE, claudeCurrent, claudeWith(claudeCurrent));
+  const agentsCurrent = await readTarget(dir, AGENTS);
+  if (claudeCurrent !== null || agentsCurrent === null) add(CLAUDE, claudeCurrent, importWith(claudeCurrent));
+  if (agentsCurrent !== null) add(AGENTS, agentsCurrent, importWith(agentsCurrent));
 
   // plugins are managed only for projects the user configured; no entry means enabledPlugins stays as it is
   const selected = config.perProject[project.key]?.plugins;
