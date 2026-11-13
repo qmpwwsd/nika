@@ -609,6 +609,18 @@ async function copyNote(cx) {
   return note ? `  (${note})` : '';
 }
 
+/**
+ * What `nika doctor` adds to the tmux row (0.4): a warning below tmux 3.2, which auto-compact needs (`new-session -e`, ADR 0014);
+ * "version unknown" when the first line of `tmux -V` is not exactly `tmux <major>.<minor>` with an optional letter (a build such
+ * as `tmux next-3.5` or `tmux master` is not guessed at). Empty when the version is 3.2 or newer.
+ */
+function tmuxVersionNote(line) {
+  const m = /^tmux (\d{1,3})\.(\d{1,3})[a-z]?$/.exec(line);
+  if (!m) return '  (version unknown)';
+  const old = Number(m[1]) < 3 || (Number(m[1]) === 3 && Number(m[2]) < 2);
+  return old ? `  (tmux ${line.slice(5)} is older than 3.2: nika's auto-compact needs 3.2 or newer)` : '';
+}
+
 async function doctor(cx) {
   const row = (k, v) => cx.out.write(`${k.padEnd(7)} ${v}\n`);
   const firstLine = async (bin, arg) => {
@@ -623,7 +635,7 @@ async function doctor(cx) {
   row('node', `${process.version}${major >= 22 ? '' : '  (nika needs >= 22)'}`);
   const tmuxV = await firstLine(cx.config.tmuxBin, '-V');
   const tmuxInstall = cx.platform === 'darwin' ? 'brew install tmux' : cx.platform === 'linux' ? 'sudo apt install tmux' : null; // no command elsewhere
-  row('tmux', tmuxV ? `${tilde(cx.config.tmuxBin)}  ${tmuxV}` : `not found (${tmuxInstall ? `install: ${tmuxInstall}; or set NIKA_TMUX` : 'add it to PATH or set NIKA_TMUX'})`);
+  row('tmux', tmuxV ? `${tilde(cx.config.tmuxBin)}  ${tmuxV}${tmuxVersionNote(tmuxV)}` :`not found (${tmuxInstall ? `install: ${tmuxInstall}; or set NIKA_TMUX` : 'add it to PATH or set NIKA_TMUX'})`);
   const claudeBin = findClaude(cx.env);
   const claudeV = claudeBin ? await firstLine(claudeBin, '--version') : null;
   row('claude', !claudeBin ? 'not found (add it to PATH or set NIKA_CLAUDE)' : `${tilde(claudeBin)}  ${claudeV ?? '--version failed'}`);

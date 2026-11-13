@@ -84,6 +84,33 @@ pane; Claude Code has no other channel into a running interactive session ([ADR 
 Routes: [`contracts/api-app.md` section 3](contracts/api-app.md). Parsed screen text:
 [`contracts/claude-tui.md`](contracts/claude-tui.md). Threats: T22, T23 and T26 in [security](security.md).
 
+## Nesting (0.4)
+
+A main orchestrator can start sub-orchestrators, and a sub-orchestrator can start agents: three levels, never an agent under
+an agent ([ADR 0013](adr/0013-nested-orchestration.md)). The only record of who started whom is tmux's own. nika sets four tags
+on a pane with `set-option -p` and fixed argv (`@nika-role` `orchestrator`, `sub-orchestrator` or `agent`; `@nika-agent`
+`<project key>/<name>`; `@nika-depth` `1` to `3`; `@nika-parent` a pane id), and `collect/tmux.js` reads them back strictly. A
+spawn names its parent (the page sends a `parent` pane id; the CLI uses `$TMUX_PANE`), and `spawn.js` resolves the parent and
+computes the depth from one fresh `tmux list-panes -a`, never from argv, env or a file. Only this project's orchestrator and
+sub-orchestrators can parent; any other nika-tagged pane is refused (409 `depth`). Limits: `limits.maxAgents` (N) bounds the
+live agents and sub-orchestrators under each parent, and a project runs at most `min(3 × N, 24)`; a refusal is 409 `limit` with
+`{ scope, running, max }`. On the read side `model.js` `linkTree()` turns the tags into `parent`, `depth` and `children` for
+each live agent (the depth is the place in the parent chain, not the tag's value), and `dash-model.js` `treeRows()` lays the
+rows out as a folding tree on both tiers.
+
+## Auto-compact (0.4)
+
+The Settings choice ("Auto-compact at 80 % of 400k", `compaction` in `config.json`) reaches a session only through its launch
+environment ([ADR 0014](adr/0014-auto-compact-launch-env.md)). `compact.js` `compactLaunch(model, setting)` computes, for the
+model's window, the pair `CLAUDE_CODE_AUTO_COMPACT_WINDOW` and `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` (both always, so an
+inherited value never stays in force; never the `--autocompact` flag), and `compactEnv` validates it. The orchestrator gets the
+pair as tmux `-e` values on its `new-session` or `new-window` (right after a `new-session` nika unsets the pair from the tmux
+session environment, so later panes do not inherit it); an agent or sub-orchestrator gets it through `compact` in its
+`<name>.agent.json`, which `_run-agent` validates again before adding the pair to the environment of the claude it starts.
+tmux 3.2 is the floor (`new-session -e`); `nika doctor` warns below it and the `.deb` depends on it. The context column reads
+the other way: `model.js` `contextOf()` turns the last `usage` of a transcript tail and the same setting into each agent's
+`context`.
+
 ## Memory bounds (0.3.4)
 
 Every cache that is keyed by path or id has a cap, so a day-long run does not grow with the number of sessions it has seen.

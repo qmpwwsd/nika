@@ -1134,6 +1134,36 @@ describe('doctor: tmux install hint per platform', () => {
   });
 });
 
+describe('doctor: the tmux 3.2 floor (0.4, auto-compact needs new-session -e)', () => {
+  const tmuxRow = async (version) => {
+    const w = await world();
+    const exec = execLog({ [TMUX]: () => ({ stdout: `${version}\nsecond line\n`, stderr: '' }), mdfind: () => OK });
+    const r = await cli(['doctor'], { env: w.cliEnv, platform: 'darwin', exec });
+    assert.equal(r.code, 0, r.err);
+    return r.out.split('\n').find((l) => /^tmux\s/.test(l));
+  };
+
+  test('(+) tmux 3.2, 3.2a, 3.8 and 10.0 are fine: nothing is added to the row', async () => {
+    for (const v of ['tmux 3.2', 'tmux 3.2a', 'tmux 3.8', 'tmux 10.0']) {
+      assert.match(await tmuxRow(v), new RegExp(`^tmux\\s+\\S+\\s+${v.replace('.', '\\.')}$`), v);
+    }
+  });
+
+  test('(−) tmux 3.1, 3.1c and 2.9 warn that auto-compact needs 3.2 or newer', async () => {
+    for (const v of ['3.1', '3.1c', '2.9']) {
+      assert.match(await tmuxRow(`tmux ${v}`), new RegExp(`^tmux\\s+\\S+\\s+tmux ${v.replace('.', '\\.')}  \\(tmux ${v.replace('.', '\\.')} is older than 3\\.2: nika's auto-compact needs 3\\.2 or newer\\)$`), v);
+    }
+  });
+
+  test('(−) a first line that is not "tmux <major>.<minor>" gets "version unknown" and no warning', async () => {
+    for (const v of ['tmux next-3.5', 'tmux master', 'tmux 3', 'tmux 3.1-rc', 'something else', 'tmux 3.1 extra']) {
+      const row = await tmuxRow(v);
+      assert.match(row, /\(version unknown\)$/, v);
+      assert.doesNotMatch(row, /older than/, v);
+    }
+  });
+});
+
 describe('spawn: nesting from $TMUX_PANE and --role (0.4)', () => {
   const brief = 'Write the summary.\n';
   const main = (w, over = {}) => ({ ...PANE_1, agent: `${w.project.key}/orchestrator`, depth: '1', ...over });

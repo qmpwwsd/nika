@@ -860,7 +860,7 @@ An orchestrator can have sub-orchestrators, and each parent has agents of its ow
 
 Folding is local to the page (`state.open`, key `!tree:<scope>:<id>`, the "!" pattern of the Ended sections; rebuilt rows get focus back through `data-fk`). The 12-row cap counts root subtrees and never splits one: "Show N more live agents" counts every agent left out.
 
-Flat lists: Ended, the "Waiting on you" queue and any filter draw rows without tree markup. A row whose parent is listed gets a chip "under <parent>" (cut at 24 characters, full name in the title) after the project chip. A group where nothing nests (no row has children, none is an orphan) is drawn exactly as in 0.3.
+Flat lists: Ended, the "Waiting on you" queue and any filter draw rows without tree markup. A row whose parent is listed gets a chip "under <parent>" (cut at 24 characters, full name in the title) after the project chip. An ended row has no parent (the server gives a parent only to live agents), so it gets no chip. A group where nothing nests (no row has children, none is an orphan) is drawn exactly as in 0.3.
 
 **Spawn entry points.**
 
@@ -1662,18 +1662,20 @@ Confirm dialog, 440 px (§3.6), opened from the quick-actions row, the dashboard
 - App tier only: a mode column after status, 128 px. The browser tier keeps the 0.2 grids. App-tier grids, per container width (`public/app.css` container queries):
 
 ```css
-.row { grid-template-columns: 104px 128px minmax(120px, 1.1fr) 88px 64px minmax(0, 2.4fr) 56px 44px 32px; }
+.row { grid-template-columns: 104px 128px minmax(232px, 1.5fr) 88px 64px minmax(0, 2fr) 56px 44px 32px; }
 @container (max-width: 860px) {   /* status glyph, mode icon, name, context, what, age, ⋯ */
-  .row { grid-template-columns: 22px 24px minmax(110px, 1fr) 44px minmax(0, 2fr) 52px 32px; } }
+  .row { grid-template-columns: 22px 24px minmax(208px, 1.1fr) 56px minmax(0, 2fr) 52px 32px; } }
 @container (max-width: 600px) {   /* what drops to line 2 under name */
-  .row { grid-template-columns: 22px 24px minmax(0, 1fr) 44px 44px 32px; }
+  .row { column-gap: 6px; grid-template-columns: 22px 24px minmax(0, 1fr) 56px 40px 32px; }
   .row .c-what { grid-column: 3 / -1; grid-row: 2; }
   .row .c-act { grid-row: 1; grid-column: 5; } }
 ```
 
-**(0.4)** The 64 px column after the model is the context meter (§3.19), on both tiers. The browser tier has the same grids without the mode column
-(`104px minmax(120px, 1.1fr) 88px 64px minmax(0, 2.4fr) 56px 44px 32px`; ≤ 860 px `22px minmax(110px, 1fr) 44px minmax(0, 2fr) 52px 32px`; ≤ 600 px
-`22px minmax(0, 1fr) 44px 44px 32px`, age in column 4). At ≤ 860 px the bar is hidden and the number stays.
+**(0.4)** The 64 px column after the model is the context meter (§3.19), on both tiers; at ≤ 860 px it is 56 px (the bar is hidden and the number stays), wide enough for the warn icon and a 3-digit percent ("⚠ 105 %" is 55 px). The browser tier has the same grids without the mode column
+(`104px minmax(232px, 1.5fr) 88px 64px minmax(0, 2fr) 56px 44px 32px`; ≤ 860 px `22px minmax(208px, 1.1fr) 56px minmax(0, 2fr) 52px 32px`; ≤ 600 px
+`22px minmax(0, 1fr) 56px 40px 32px` with a 6 px column gap, age in column 4).
+
+**(0.4 names)** The name column takes room from the `what` column: its floor is 232 px wide and 208 px at ≤ 860 px, enough for a depth-3 name (`builder-2`) or a depth-2 sub-orchestrator row (`api-lead`) in full. The name cell (`.c-name`) is a size container: the role tag shows its long word ("orchestrator", "sub-orchestrator") only while the cell is at least 270 px wide and swaps to the short word ("orch", "sub-orch") below that, so the tag is whole or narrow, never clipped mid-word; the tag never shrinks, and `.name` keeps a floor of 9ch. The `what` cell (`.c-what`, also a size container) puts the text first: the project and "under <parent>" chips and the branch chip shrink 100 and 300 times faster than the text, an attention row's text never shrinks (it is cut at 60% of the cell, never below 14ch), the branch chip keeps a floor of 10ch and drops out when the cell is 188 px or less.
 
 - The compact tag (§2.8.5). Rows without an eligible pane (ended, not in tmux) leave the cell empty. Attention rows keep their tint and left bar; the tag keeps its own fill on top.
 - A "Needs you" row shows the held mode (the prompt covers the footer): hollow, dashed, its mode colour, "unconfirmed" in `.sr-only` and `title`. Never "Mode ?" unless nika has no reading at all (§2.8.6).
@@ -1730,3 +1732,15 @@ Used features: `<dialog>`, `:focus-visible`, `color-mix()`, `:has()` (B only), c
 | 6 Tray | menu, attention, add-project (with cancel and busy simulations) |
 | 7 Browser tier | read-only board/list |
 | C only | command palette (open, query) |
+
+The three variants are frozen: they show the 0.2 design (the 0.3 session controls have their own mockup, `variants/session-controls.html`),
+and only their text was touched afterwards ("Agents per orchestrator" in the Settings field and the limit alert). What came after them has no
+mockup. It is specified in the sections named here and shown built in `docs/screenshots/`:
+
+| Built after the mockups | Specified in | Screenshot |
+|---|---|---|
+| Project setup card, Choose plugins dialog (0.3.4) and the Models block and dialog (0.4) | §3.15 | `project-*.png` (the card; the dialogs are not photographed) |
+| Pick or resume an orchestrator, the orchestrator badge (0.4) | §3.16 | `project-*.png` |
+| Nesting tree, Spawn sub-orchestrator sheet, limits and the New agents card (0.4) | §3.17 | `dashboard-*.png`, `project-*.png`, `spawn-*.png` |
+| Auto-compact row in Settings (0.4) | §3.18 | `settings-*.png` |
+| Context column and meter (0.4) | §3.19 | `dashboard-*.png`, `project-*.png`, `session-*.png` |

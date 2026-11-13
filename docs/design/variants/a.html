@@ -697,7 +697,7 @@ dialog.dlg-rules[open] { display: flex; flex-direction: column; }
                 <label class="radio-card"><input type="radio" name="place" value="beside" checked><span><b>Beside</b><span>A new pane to the right in the project’s tmux window.</span></span></label>
                 <label class="radio-card"><input type="radio" name="place" value="under-last"><span><b>Under the last agent</b><span>Stacks below the most recently started agent pane.</span></span></label>
               </fieldset>
-              <div class="field"><label for="set-max">Agents per project at once</label>
+              <div class="field"><label for="set-max">Agents per orchestrator</label>
                 <div class="inline"><span class="stepper"><button type="button" class="btn" data-step="-1" aria-label="One fewer">−</button><input type="number" id="set-max" min="1" max="8" value="3" aria-describedby="set-max-help set-max-err"><button type="button" class="btn" data-step="1" aria-label="One more">+</button></span></div>
                 <p class="help" id="set-max-help">1 to 8. Counts only agents nika spawned that are still running.</p><p class="err" id="set-max-err" hidden></p></div>
             </section>
@@ -818,7 +818,7 @@ dialog.dlg-rules[open] { display: flex; flex-direction: column; }
   <form method="dialog" novalidate id="spawn-form" style="display:contents">
     <div class="dlg-head"><div><h2 id="sp-h" tabindex="-1">Spawn agent</h2><p id="sp-d">In web-console. Opens a new tmux pane and starts Claude Code with your brief.</p></div><button type="button" class="btn icon ghost" data-close aria-label="Close"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button></div>
     <div class="dlg-body">
-      <div class="alert" data-kind="danger" role="alert" data-when="limit"><svg class="ic" aria-hidden="true"><use href="#i-warn"/></svg><p><strong>3 of 3 agents are already running in demo-api.</strong> Wait for one to finish, or raise “Agents per project” in Settings.</p></div>
+      <div class="alert" data-kind="danger" role="alert" data-when="limit"><svg class="ic" aria-hidden="true"><use href="#i-warn"/></svg><p><strong>3 of 3 agents are already running in demo-api.</strong> Wait for one to finish, or raise “Agents per orchestrator” in Settings.</p></div>
       <div class="field"><label for="sp-name">Name</label><input type="text" id="sp-name" data-rx="agent" value="builder-3" autofocus aria-describedby="sp-name-help sp-name-err" spellcheck="false"><p class="help" id="sp-name-help">Lowercase letters, digits and dashes. Used for the pane title and the report file.</p><p class="err" id="sp-name-err" hidden></p></div>
       <div class="field"><label for="sp-model">Model</label><select id="sp-model"><option>Builder · claude-sonnet-5-5</option><option>Reasoner · claude-opus-5-5</option><option>Scout · claude-haiku-5-5</option><option>Orchestrator · claude-fable-5-1</option></select></div>
       <div class="field"><label for="sp-brief">Brief</label><textarea id="sp-brief" rows="8" aria-describedby="sp-brief-help sp-brief-err">Fix the overflowing settings table on screens under 760 px wide. Keep the column order. Add a visual test for 720 px.</textarea><p class="help" id="sp-brief-help">The agent’s first message. It never passes through the tmux command line.</p><p class="err" id="sp-brief-err" hidden></p><span class="counter num">118 / 65,536 bytes</span></div>

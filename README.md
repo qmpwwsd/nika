@@ -4,10 +4,10 @@ A local dashboard of every Claude Code agent on your Mac: live sessions (working
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/dashboard-dark.png">
-  <img src="docs/screenshots/dashboard-light.png" alt="The nika desktop app's dashboard: a queue of agents waiting on you, repositories with their live agents, and a sidebar with projects.">
+  <img src="docs/screenshots/dashboard-light.png" alt="The nika desktop app's dashboard: a queue of agents waiting on you, repositories with their live agents nested under the orchestrator that started them, a context column on every row, and a sidebar with projects.">
 </picture>
 
-The desktop app's dashboard. Agents that need you come first, then every repository with its live agents. The browser dashboard shows the same list without the sidebar and the controls. All screenshots show invented data.
+The desktop app's dashboard. Agents that need you come first, then every repository with its live agents; an orchestrator's agents and sub-orchestrators sit under it as a tree, and each row shows how full its context is (amber from 60 %, red from 80 %). The browser dashboard shows the same list without the sidebar and the controls. All screenshots show invented data.
 
 - Groups by repository; git worktrees fold under their main repository and carry a worktree tag.
 - Shows model, branch, tmux pane, last prompt, start and last-activity time, and the `STATUS:` line of orchestrator spawn reports.
@@ -47,9 +47,9 @@ the [desktop app](#desktop-app-02) are never available on `http://127.0.0.1:3335
 | `nika projects add <dir>` / `remove <key>` | register a folder (stored as its real path) or unregister it; project files are never touched |
 | `nika rules preview [dir]` | print the diffs of the orchestration rules nika would write into the project, plus warnings |
 | `nika rules apply [dir]` | preview, ask `Apply? [y/N]`, then write; `--yes` skips the question (required without a terminal), `--overwrite-foreign` replaces a `rules/orchestration.md` nika did not write, `--gitignore` also adds `.claude/settings.local.json` to `.gitignore`. Backups go to nika's state folder, never into the repository; nika never runs git |
-| `nika spawn <name> <model> <brief>` | start an agent in a tmux pane. Needs `$TMUX` (run it inside tmux) or `--session <name>`. `<brief>` is a file (at most 64 KB) or `-` for stdin. Options: `--project <dir>`, `--permission-mode <mode>` (`bypassPermissions` is refused), `--rc <prefix\|off>`, `--under <%pane>`. Prints pane, session and report path |
+| `nika spawn <name> <model> <brief>` | start an agent in a tmux pane. Needs `$TMUX` (run it inside tmux) or `--session <name>`. `<brief>` is a file (at most 64 KB) or `-` for stdin. Options: `--project <dir>`, `--permission-mode <mode>` (`bypassPermissions` is refused), `--rc <prefix\|off>`, `--role <agent\|orchestrator>` (`orchestrator` starts a sub-orchestrator, only from the main orchestrator's pane; see [Orchestration (0.4)](#orchestration-04)), `--under <%pane>`. Prints pane, session and report path |
 | `nika orchestrate [dir]` | create or reuse the project's tmux session and start the orchestrator pane. On a terminal it then attaches (inside tmux: switches the client to the session; otherwise `tmux attach-session`); `--detached`, or output that is not a terminal, only prints the session and pane |
-| `nika doctor` | node, tmux, claude and app status, nika's config and state folders with their modes, and config warnings |
+| `nika doctor` | node, tmux, claude and app status (it warns when tmux is older than 3.2), nika's config and state folders with their modes, and config warnings |
 
 `[dir]` is optional: it defaults to the registered project that contains the current directory (an explicit `dir` must be the project folder itself). Register a folder first with `nika projects add <dir>`.
 
@@ -63,9 +63,22 @@ Exit codes: `0` ok, `1` runtime error, `2` usage, `3` refused (invalid input, li
 | `CLAUDE_CONFIG_DIR` | `~/.claude` | Claude Code config dir |
 | `NIKA_TMP_ROOT` | `/private/tmp/claude-<uid>` | Claude scratchpad root searched for spawn reports |
 | `NIKA_REPORT_DIRS` | – | extra report dirs, colon-separated |
-| `NIKA_TMUX` | first `tmux` on `PATH`, then `/opt/homebrew/bin`, `/usr/local/bin` | tmux binary |
+| `NIKA_TMUX` | first `tmux` on `PATH`, then `/opt/homebrew/bin`, `/usr/local/bin` | tmux binary (3.2 or newer) |
 
 With `brew services`, set variables in the service environment (for example with `launchctl setenv`) or run `nika serve` yourself.
+
+The desktop app keeps its settings in `config.json` in `~/.config/nika` (under `NIKA_CONFIG_DIR` or `XDG_CONFIG_HOME` when
+set). You change them in Settings and on each project's page, not by hand; a key that is wrong is dropped with a warning
+(`nika doctor` shows it). Three keys came with 0.4:
+
+| Key | Meaning |
+|---|---|
+| `compaction` | `{ enabled, pct, window }`: when the sessions nika starts compact. Default on, 80 %, 400k. Settings, **Auto-compact** |
+| `perProject.<key>.models` | a model for any of `orchestrator`, `reasoner`, `builder` and `scout` in one project; a role left out follows Settings. The project page, **Project setup**, **Models** |
+| `perProject.<key>.orchestratorSessionId` | the session id of the project's saved orchestrator, so nika can resume it. Set when you start or pick one |
+
+`<key>` is the project's key (the first 16 hex characters of the SHA-256 of its real folder path). The older
+`limits.maxAgents` now reads as **Agents per orchestrator**.
 
 ## What nika reads
 
@@ -73,10 +86,11 @@ With `brew services`, set variables in the service environment (for example with
 |---|---|
 | `~/.claude/sessions/<pid>.json` | live sessions: cwd, status, tmux pane, Remote Control id |
 | `ps -A -o pid=,lstart=` | is the process still alive (and not a reused pid) |
-| `~/.claude/projects/*/<session>.jsonl` | first 64 KB and last 256 KB only: cwd, branch, model, title, last prompt |
+| `~/.claude/projects/*/<session>.jsonl` | first 64 KB and last 256 KB only: cwd, branch, model, title, last prompt, and from the last reply only its token counts and model id (for the context column; no text) |
 | `…/<session>/subagents/agent-*.meta.json` | subagent type, description, model, finished |
-| `tmux list-panes -a` | pane titles (`[%id] name` convention) |
+| `tmux list-panes -a` | pane titles (`[%id] name` convention) and the four tags nika sets on the panes it starts (`@nika-role`, `@nika-agent`, `@nika-depth`, `@nika-parent`: who started whom), each read strictly |
 | `<scratchpad>/reports/<name>.session\|.md\|.rc` | agent role name, `STATUS:` line, report text |
+| nika's own `config.json` | the project list, each project's own settings and the auto-compact setting (the context column needs it); never a Claude settings file |
 | `<cwd>/.git`, `commondir` | repository root for grouping |
 
 It never reads `*.key` files, credentials or `.env` files. The browser tier never writes anything; what the app tier and the CLI write is listed in [docs/architecture.md](docs/architecture.md#where-writes-happen).
@@ -132,7 +146,7 @@ sha256sum -c SHA256SUMS --ignore-missing
 sudo apt install ./nika_*_amd64.deb       # Debian and Ubuntu; or run the AppImage directly
 ```
 
-The `.deb` pulls in tmux but not Node.js: the `nodejs` package of most Debian and Ubuntu releases is older than 22. Get
+The `.deb` pulls in tmux 3.2 or newer but not Node.js: the `nodejs` package of most Debian and Ubuntu releases is older than 22. Get
 Node.js 22 from [NodeSource](https://github.com/nodesource/distributions) or with a version manager. The app finds
 Node.js in these places, in this order: Homebrew, `/usr/local/bin`, Linuxbrew's `/home/linuxbrew/.linuxbrew`,
 `~/.local/bin`, Volta, then mise, fnm, nvm and asdf (their default folders) and `/usr/bin`. It uses the first one that is
@@ -197,14 +211,15 @@ More: [docs/packaging.md](docs/packaging.md) (build details, signing, Linux pack
 - **Add a project.** The sidebar "+" (or `Mod+O`) opens the native folder picker. The project page notes when the folder is
   not a git repository. A new project has no orchestration rules yet: use **Apply rules** to preview the exact diffs, then
   confirm. nika writes only the files shown in the preview, keeps a backup outside the repository and never runs git.
-- **Start an orchestrator / spawn an agent.** From a project: **Start orchestrator** opens its tmux session and pane;
-  **Spawn agent** opens a side sheet (name, model, brief up to 64 KB, permission mode, pane placement). A project at its
-  agent limit shows why and what to do. `bypassPermissions` is not offered.
+- **Start an orchestrator / spawn an agent.** From a project: **Start orchestrator** opens its tmux session and pane
+  (**Resume orchestrator** when the project has a saved one that ended);
+  **Spawn agent** and **Spawn sub-orchestrator** open a side sheet (name, model, brief up to 64 KB, permission mode, pane placement). A project at its
+  agent limit shows why and what to do. `bypassPermissions` is not offered. See [Orchestration (0.4)](#orchestration-04).
 - **Settings** (`Mod+,`). Appearance (System, Light, Dark) and the **Single-key shortcuts** switch, the model per role (a
   list of current models and aliases, or a custom ID), Remote Control, default permission mode and pane placement, the
-  per-project agent limit and the rules template: defaults for every project. The Save and Discard bar appears only after a change; invalid fields are marked in place.
-- **Plugins for a project.** On the project page, the **Project setup** card lists the plugins that project turns on; **Choose plugins…**
-  opens a window to tick them (filter, count, Save). They are written into the project's `.claude/settings.local.json` when you apply rules.
+  agent limit per orchestrator, **Auto-compact** and the rules template: defaults for every project. The Save and Discard bar appears only after a change; invalid fields are marked in place.
+- **Project setup for a project.** On the project page, the **Project setup** card lists the plugins that project turns on and the models it sets for its roles; **Choose plugins…**
+  opens a window to tick the plugins (filter, count, Save), **Choose models…** one to set a model per role. Plugins are written into the project's `.claude/settings.local.json` when you apply rules.
 - **Keyboard.** `Mod+1` dashboard, `Mod+,` settings, `Mod+O` add project, `Mod+F` filter, `Mod+[` (macOS) or `Alt+Left`
   (Linux) back (the project view and Settings go to the dashboard; the session window goes to its project, or the
   dashboard when it has none), `Mod+Enter` confirm the open
@@ -223,17 +238,17 @@ The browser dashboard at `http://127.0.0.1:3335` shows the same list without any
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/session-dark.png">
-  <img src="docs/screenshots/session-light.png" alt="The session window of an agent: its transcript on the left, a live mirror of its tmux pane on the right, the quick actions above the message box and the permission-mode switcher under it.">
+  <img src="docs/screenshots/session-light.png" alt="The session window of an agent: a header with its context meter, its transcript on the left, a live mirror of its tmux pane on the right, the quick actions above the message box and the permission-mode switcher under it.">
 </picture>
 
-**Session window.** The transcript, a live mirror of the agent's tmux pane, the quick actions (Stop, Compact, Clear, Model, Rewind, End session), the message box and, under it, the permission-mode switcher. The **Transcript** button (or `Mod+Shift+H`) hides the transcript so the terminal takes the full width.
+**Session window.** The header (with the session's context meter), the transcript, a live mirror of the agent's tmux pane, the quick actions (Stop, Compact, Clear, Model, Rewind, End session), the message box and, under it, the permission-mode switcher. The **Transcript** button (or `Mod+Shift+H`) hides the transcript so the terminal takes the full width.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/project-dark.png">
-  <img src="docs/screenshots/project-light.png" alt="A project page listing the project's agents with their subagents, and cards for its rules, its project setup (plugins) and the settings new agents start with.">
+  <img src="docs/screenshots/project-light.png" alt="A project page listing the project's agents as a tree: an orchestrator with its subagents, a sub-orchestrator with an agent of its own, and two more agents, each with its context use; and cards for its rules, its project setup (plugins and models) and the settings new agents start with.">
 </picture>
 
-**Project view.** The project's agents with their subagents, and cards for its rules, its project setup (plugins) and the settings new agents start with.
+**Project view.** The project's agents as a tree under the orchestrator, with their subagents and context use, and cards for its rules, its project setup (plugins and models) and the settings new agents start with. The buttons above the cards open the orchestrator and spawn an agent or a sub-orchestrator.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/rules-dark.png">
@@ -244,17 +259,17 @@ The browser dashboard at `http://127.0.0.1:3335` shows the same list without any
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/settings-dark.png">
-  <img src="docs/screenshots/settings-light.png" alt="The Settings screen with the model for each role, Remote Control and the permission mode for new agents.">
+  <img src="docs/screenshots/settings-light.png" alt="The Settings screen with the model for each role, the Auto-compact setting (on, at 80 % of 400k, with the result line under it) and Remote Control.">
 </picture>
 
-**Settings.** The model for each role, Remote Control and the permission mode for new agents. Limits and the rules template are further down; plugins are chosen on each project's page.
+**Settings.** The model for each role, Auto-compact and Remote Control. The permission mode for new agents, the agent limit per orchestrator and the rules template are further down; plugins and per-project models are chosen on each project's page.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/spawn-dark.png">
-  <img src="docs/screenshots/spawn-light.png" alt="The Spawn agent sheet over a project page, filled in with a name, a model, a brief, a permission mode and a pane placement.">
+  <img src="docs/screenshots/spawn-light.png" alt="The Spawn sub-orchestrator sheet over a project page: the parent (the project's orchestrator), the choice between Agent and Sub-orchestrator, a name, a model and a brief, and under the form the counts against each limit.">
 </picture>
 
-**Spawn agent.** A name, a model, the brief, a permission mode and where the pane opens. The agent starts in a new tmux pane.
+**Spawn agent, or sub-orchestrator.** A name, a model, the brief, a permission mode and where the pane opens; the sheet also shows the parent and lets you choose Agent or Sub-orchestrator, and its footer counts how many each limit allows ("planner: 3 of 5 · acme-api: 4 of 15 running"). The shot shows a sub-orchestrator started under the orchestrator. The session starts in a new tmux pane.
 
 ### Session window (0.3)
 
@@ -311,6 +326,44 @@ If a screen nika cannot read blocks a control, use the keys in the message box (
 box), Type into pane, or your terminal. The routes behind these controls and their limits are in
 [docs/contracts/api-app.md](docs/contracts/api-app.md) (section 3); the threats, in [docs/security.md](docs/security.md)
 (T22, T23, T26).
+
+### Orchestration (0.4)
+
+The orchestrator is the Claude session that plans the work and starts agents for it. 0.4 lets you keep and reuse it, split
+work across levels, and stop sessions from running out of context. All of it is in the desktop app; the browser dashboard
+shows the tree and the context column, read-only.
+
+- **Pick or resume an orchestrator.** **Start orchestrator** on a project's page starts one in the project's tmux session
+  and remembers its session. After it ends, the same button says **Resume orchestrator** and continues that conversation.
+  To use a Claude session you already run (in tmux, or ended), open its row menu: **Set as orchestrator** or **Resume as
+  orchestrator**. **Stop using as orchestrator** only forgets the choice; a running session keeps running. A project has one
+  orchestrator running at a time. An agent you spawn under an orchestrator you adopted from your own tmux session opens
+  beside it, in that session.
+- **Sub-orchestrators and the tree.** The orchestrator can start sub-orchestrators (**Spawn sub-orchestrator** on the
+  project page, or `nika spawn … --role orchestrator` from the orchestrator's pane), and a sub-orchestrator can start
+  agents. That is three levels at most, and an agent never starts another agent. The dashboard and the project page draw
+  them as a tree: each level is indented, and the button before a parent's name folds its agents (a folded row says how
+  many are hidden and how many need you). Ended agents, the "Waiting on you" queue and filtered lists stay flat. A
+  sub-orchestrator may run only `nika spawn` and `nika status`; the other nika commands are on its deny list (advisory
+  like the agents' list; see [docs/security.md](docs/security.md), T36).
+- **Limits.** **Agents per orchestrator** (Settings, 1 to 8) caps the agents and sub-orchestrators under each parent. A
+  project as a whole runs at most three times that number, never more than 24. The spawn sheet shows both counts, and a
+  spawn that would pass a limit is off, with the reason beside it.
+- **Models per project.** On the project page, **Project setup**, **Models** lists the roles this project sets and
+  **Choose models…** changes them (Orchestrator, Reasoner, Builder, Scout; **Use default** follows Settings). They apply
+  the next time nika starts or resumes the orchestrator, in the spawn sheet, and in `rules/orchestration.md` once you apply
+  rules again. Running sessions keep their model.
+- **Auto-compact.** Settings, **Auto-compact**: "Auto-compact at 80 % of 400k", on by default. Every claude nika starts
+  after that (the orchestrator, agents, sub-orchestrators) compacts at that point; nika passes it two environment
+  variables, `CLAUDE_CODE_AUTO_COMPACT_WINDOW` and `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`, and never your Claude settings.
+  Sessions that are already running, and sessions you start yourself, keep Claude Code's own setting. It needs tmux 3.2 or
+  newer: on an older tmux the orchestrator will not start until you turn Auto-compact off. Why: [ADR 0014](docs/adr/0014-auto-compact-launch-env.md).
+- **Context column.** Every row on the dashboard and the project page, in the browser too, shows how much of the window
+  the session's context fills: a percentage with a thin bar, amber from 60 %, red with a warning icon from 80 %, and "–"
+  while there is no usage yet. For a session nika started, 80 % means it is about to compact. The numbers come from the
+  last reply in the transcript (token counts only, no text).
+
+Why the tree works the way it does: [ADR 0013](docs/adr/0013-nested-orchestration.md).
 
 ## Development
 

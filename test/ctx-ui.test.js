@@ -268,12 +268,12 @@ describe('the CSS (design 6.2, 6.3)', () => {
 
   test('(+) app.css: the row grids of section 6.2 at the three widths, both tiers, and the c-ctx cell', () => {
     const rules = [
-      '104px minmax(120px, 1.1fr) 88px 64px minmax(0, 2.4fr) 56px 44px 32px',
-      '104px 128px minmax(120px, 1.1fr) 88px 64px minmax(0, 2.4fr) 56px 44px 32px',
-      '22px minmax(110px, 1fr) 44px minmax(0, 2fr) 52px 32px',
-      '22px 24px minmax(110px, 1fr) 44px minmax(0, 2fr) 52px 32px',
-      '22px minmax(0, 1fr) 44px 44px 32px',
-      '22px 24px minmax(0, 1fr) 44px 44px 32px',
+      '104px minmax(232px, 1.5fr) 88px 64px minmax(0, 2fr) 56px 44px 32px',
+      '104px 128px minmax(232px, 1.5fr) 88px 64px minmax(0, 2fr) 56px 44px 32px',
+      '22px minmax(208px, 1.1fr) 56px minmax(0, 2fr) 52px 32px',
+      '22px 24px minmax(208px, 1.1fr) 56px minmax(0, 2fr) 52px 32px',
+      '22px minmax(0, 1fr) 56px 40px 32px',
+      '22px 24px minmax(0, 1fr) 56px 40px 32px',
     ];
     for (const r of rules) assert.ok(APPCSS.includes(`grid-template-columns: ${r};`), r);
     assert.ok(APPCSS.includes('.c-ctx { min-width: 0; display: flex; justify-content: flex-end; }'));
@@ -287,6 +287,48 @@ describe('the CSS (design 6.2, 6.3)', () => {
       '104px minmax(120px, 1.1fr) 88px minmax(0, 2.4fr) 56px 44px 32px', '104px 128px minmax(120px, 1.1fr) 88px minmax(0, 2.4fr) 56px 44px 32px',
       '22px minmax(110px, 1fr) minmax(0, 2fr) 52px 32px', '22px 24px minmax(110px, 1fr) minmax(0, 2fr) 52px 32px', '22px minmax(0, 1fr) 44px 32px', '22px 24px minmax(0, 1fr) 44px 32px',
     ]) assert.equal(APPCSS.includes(`grid-template-columns: ${old};`), false, old);
+  });
+
+  test('(−) the first 0.4 grids (a 120px or 110px name column) are gone: the name lost its room to the elbow and the role tag', () => {
+    for (const old of [
+      '104px minmax(120px, 1.1fr) 88px 64px minmax(0, 2.4fr) 56px 44px 32px', '104px 128px minmax(120px, 1.1fr) 88px 64px minmax(0, 2.4fr) 56px 44px 32px',
+      '22px minmax(110px, 1fr) 44px minmax(0, 2fr) 52px 32px', '22px 24px minmax(110px, 1fr) 44px minmax(0, 2fr) 52px 32px',
+    ]) assert.equal(APPCSS.includes(`grid-template-columns: ${old};`), false, old);
+  });
+
+  test('(−) the narrow grids with a 44px context column are gone: "⚠ 105 %" is 55px wide and spilled 11px into the name or the gap', () => {
+    for (const old of [
+      '22px minmax(208px, 1.1fr) 44px minmax(0, 2fr) 52px 32px', '22px 24px minmax(208px, 1.1fr) 44px minmax(0, 2fr) 52px 32px',
+      '22px minmax(0, 1fr) 44px 44px 32px', '22px 24px minmax(0, 1fr) 44px 44px 32px',
+    ]) assert.equal(APPCSS.includes(`grid-template-columns: ${old};`), false, old);
+  });
+
+  test('(+) the name cell is a container and the role tag swaps to its short word below 270 px, never clipped; the name keeps a floor of 9ch and the tag never shrinks', () => {
+    const css = APPCSS.replace(/\/\*[\s\S]*?\*\//g, '');
+    assert.match(css, /\.c-name \{[^}]*container: cname \/ inline-size;[^}]*\}/);
+    assert.match(css, /\.c-name \.tag \{ flex: none; \}/);
+    const block = /@container cname \(max-width: 269px\) \{([\s\S]*?)\n\}/.exec(css)?.[1] ?? '';
+    assert.match(block, /\.c-name \.tag \.tag-l \{[^}]*position: absolute;[^}]*clip: rect\(0 0 0 0\)[^}]*\}/, 'the long word stays for screen readers');
+    assert.match(block, /\.c-name \.tag \.tag-s \{ display: inline; \}/);
+    assert.match(css, /\.name \{[^}]*min-width: 9ch;[^}]*text-overflow: ellipsis;[^}]*\}/);
+    assert.match(css, /\.tree-orphan \{[^}]*flex: 0 20 auto;[^}]*text-overflow: ellipsis;[^}]*\}/, 'the orphan mark gives way before the name');
+  });
+
+  test('(+) the what cell: the chips give way before the text, an attention row keeps its text whole (14ch at least), the branch chip drops out below 189 px', () => {
+    const css = APPCSS.replace(/\/\*[\s\S]*?\*\//g, '');
+    assert.match(css, /\.c-what \{[^}]*container: cwhat \/ inline-size;[^}]*\}/);
+    assert.match(css, /\.row\[data-s="attn"\] \.what \{ flex: none; max-width: max\(14ch, 60%\); \}/, 'the attention text never shrinks');
+    assert.match(css, /\.proj-chip \{ flex: none;[^}]*text-overflow: ellipsis;[^}]*white-space: nowrap;[^}]*\}/);
+    assert.match(css, /\.row\[data-s="attn"\] \.proj-chip \{ flex: 0 100 auto; \}/, 'on a row that needs you the project chip may shrink');
+    assert.match(css, /\.row\[data-s="attn"\] \.proj-chip \+ \.proj-chip \{ flex-shrink: 300; \}/, 'the "under <parent>" chip gives way before the project name');
+    assert.match(css, /\.branch \{ flex: 0 100 auto; min-width: 10ch; max-width: 22ch;[^}]*text-overflow: ellipsis;[^}]*\}/, 'the branch chip keeps a floor, then ellipsis');
+    assert.match(css, /@container cwhat \(max-width: 188px\) \{ \.branch, \.proj-chip \+ \.proj-chip \{ display: none; \} \}/);
+  });
+
+  test('(−) the branch chip no longer shrinks at the text\'s rate (it left the attention text 38 px), and the project chip shrinks only on a row that needs you', () => {
+    const css = APPCSS.replace(/\/\*[\s\S]*?\*\//g, '');
+    assert.equal(/^\.proj-chip \{ flex: 0 100 auto;/m.test(css), false, 'the project chip keeps its size on every row but one that needs you');
+    assert.equal(css.includes('.branch { flex: 0 1 auto;'), false);
   });
 
   test('(+) session.css: the header meter lays out inline, and the label is muted', () => {

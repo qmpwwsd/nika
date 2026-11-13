@@ -1,8 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 — 2026-11-13
 
-Orchestrator (desktop app):
+Orchestration (desktop app):
 
 - **Resume your orchestrator.** nika now remembers each project's orchestrator by its session id. Start orchestrator saves the
   session it starts, so after it ends the project's first button says **Resume orchestrator** and continues that same
@@ -15,30 +15,15 @@ Orchestrator (desktop app):
 - The orchestrator now has a badge next to its name on the dashboard, the project page and the session window:
   "orchestrator", or a muted "orchestrator" for a saved one that has ended. Narrow rows show "orch".
 - Row menus can show an item that is off, with the reason as its tooltip; clicking it says why.
-- API: `PUT` and `DELETE /api/app/projects/:key/orchestrator` are new; each project in `GET /api/app/projects` gains
-  `orchestrator`; `POST /api/app/orchestrator/start` can answer `cleared: "gone"`. See `docs/contracts/api-app.md`.
-
-Models per project (desktop app):
-
-- Each project can use its own model for any of the four roles (Orchestrator, Reasoner, Builder, Scout). On the project page,
-  **Project setup** has a new **Models** block that lists the roles this project sets, and **Choose models…** opens a window
-  with one menu per role: **Use default** (the model from Settings) or a model from the list, or a Custom ID. Save is on
-  only while something changed.
-- nika uses these models when it starts or resumes the project's orchestrator, in the Roles table of `rules/orchestration.md`,
-  and in the spawn sheet's Roles list (marked "(this project)"). Sessions that are already running keep their model, and the
-  rules file changes only when you apply rules, so the toast after saving says so.
-- API: `PUT /api/app/projects/:key/config` takes exactly one of `{ plugins }` or `{ models }`, and `GET` returns both. See
-  `docs/contracts/api-app.md`.
-
-Sub-orchestrators and limits:
-
 - **Three levels.** The main orchestrator can start sub-orchestrators, and a sub-orchestrator can start agents of its own.
   `nika spawn <name> <model> <brief> --role orchestrator` starts a sub-orchestrator; run from an orchestrator's pane, the
   new session becomes its child. An agent cannot start other agents, and a sub-orchestrator cannot start another
   sub-orchestrator: nika answers "can't start a sub-orchestrator" (409 `depth`) and starts nothing. Only this project's
   orchestrator and its sub-orchestrators can start agents of the project: any other nika session, such as an agent or another
   project's orchestrator, is refused the same way. The name `orchestrator` is reserved for the main orchestrator.
-- Spawning under an orchestrator you adopted from your own tmux session opens the agent beside it.
+- Spawning under an orchestrator you adopted from your own tmux session opens the agent beside it, in that session. Starting
+  the orchestrator with `nika orchestrate` while one you adopted is running in another tmux session switches to it instead of
+  starting a second one.
 - A sub-orchestrator can run only `nika spawn` and `nika status`; the other nika commands are on its deny list (advisory, like
   the agents' list). It gets its own guard prompt, written for orchestrating.
 - **Limits per parent and per project.** **Agents per orchestrator** (Settings, 1 to 8) now bounds the agents and
@@ -47,9 +32,9 @@ Sub-orchestrators and limits:
 - **The tree.** On the dashboard and the project page (browser and app), agents now sit under the orchestrator or
   sub-orchestrator that started them, indented a level at a time. A button before a parent's name folds its agents; a folded
   row shows how many are hidden and how many of them need you. A sub-orchestrator whose parent has ended stays in the list
-  with a "parent ended" mark. Ended agents, the "Waiting on you" queue and any filter stay flat, and say "under <parent>".
-  Projects where no agent has a parent look the same as before. The sub-orchestrator badge now comes from the session's
-  role, not from its depth.
+  with a "parent ended" mark. Ended agents, the "Waiting on you" queue and any filter stay flat. In a flat list a row whose
+  parent is running says "under <parent>"; an ended agent has no parent, so its row does not. Projects where no agent has a
+  parent look the same as before. The sub-orchestrator badge now comes from the session's role, not from its depth.
 - **Spawn a sub-orchestrator (desktop app).** The project page has a **Spawn sub-orchestrator** button next to Spawn agent,
   and the orchestrator's row menu has **Spawn agent under…** and **Spawn sub-orchestrator under…**; a sub-orchestrator's
   menu has **Spawn agent under…**. The spawn sheet shows the parent, lets you choose Agent or Sub-orchestrator (the second
@@ -64,9 +49,23 @@ Sub-orchestrators and limits:
 - Every orchestrator nika starts, resumes or adopts is now tagged for its project (`@nika-agent <key>/orchestrator`,
   `@nika-depth 1`). An orchestrator started by 0.3 still counts, as long as it is in the project's own tmux session and window.
 - Setting a session as the orchestrator is refused for a sub-orchestrator nika started, like for agents.
-- API: `POST /api/app/spawn` takes `role` (`agent` or `orchestrator`) and `parent` (a pane id); agents in
-  `GET /api/agents` (both tiers) gain `parent`, `depth` and `children`; the role of a
-  sub-orchestrator is `sub-orchestrator`. See `docs/contracts/api-app.md` and `docs/adr/0013-nested-orchestration.md`.
+- API: `PUT` and `DELETE /api/app/projects/:key/orchestrator` are new; each project in `GET /api/app/projects` gains
+  `orchestrator`; `POST /api/app/orchestrator/start` can answer `cleared: "gone"`. `POST /api/app/spawn` takes `role` (`agent`
+  or `orchestrator`) and `parent` (a pane id); agents in `GET /api/agents` (both tiers) gain `parent`, `depth` and `children`;
+  the role of a sub-orchestrator is `sub-orchestrator`. See `docs/contracts/api-app.md` and
+  `docs/adr/0013-nested-orchestration.md`.
+
+Models (desktop app):
+
+- Each project can use its own model for any of the four roles (Orchestrator, Reasoner, Builder, Scout). On the project page,
+  **Project setup** has a new **Models** block that lists the roles this project sets, and **Choose models…** opens a window
+  with one menu per role: **Use default** (the model from Settings) or a model from the list, or a Custom ID. Save is on
+  only while something changed.
+- nika uses these models when it starts or resumes the project's orchestrator, in the Roles table of `rules/orchestration.md`,
+  and in the spawn sheet's Roles list (marked "(this project)"). Sessions that are already running keep their model, and the
+  rules file changes only when you apply rules, so the toast after saving says so.
+- API: `PUT /api/app/projects/:key/config` takes exactly one of `{ plugins }` or `{ models }`, and `GET` returns both. See
+  `docs/contracts/api-app.md`.
 
 Auto-compact (desktop app):
 
@@ -83,7 +82,7 @@ Auto-compact (desktop app):
   model a `window`. nika sets `CLAUDE_CODE_AUTO_COMPACT_WINDOW` and `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` for the new claude and
   never the `--autocompact` flag. See `docs/contracts/api-app.md` and `docs/adr/0014-auto-compact-launch-env.md`.
 
-Context indicator (both tiers):
+Context (both tiers):
 
 - **How full is each session.** Every row on the dashboard and the project page, in the browser and in the app, has a new
   **Context** column: the percentage of the window the session's context fills, with a thin bar, and "–" when there is no
@@ -99,6 +98,23 @@ Context indicator (both tiers):
   numbers only and no text. A model nika does not know counts as 200k.
 - API: agents in `GET /api/agents` (both tiers) gain `context` (`tokens`, `window`, `compactAt`, `pct`, `compaction`). See
   `docs/contracts/api-app.md`.
+
+Fixes:
+
+- Names in the agent tree are no longer squeezed. The name column of a row is wider (taking room from the `what` column), so a
+  sub-orchestrator and the agents under it show their names in full; the role badge shows its short word ("orch",
+  "sub-orch") unless the name cell is wide enough for the long one, and the context column is wide enough for the warn icon
+  and a three-digit percent at every width. On a row that needs you, the attention text ("waiting") stays whole: the branch
+  and project chips give way first, and the branch chip drops out when the cell is narrow.
+- The `.deb` now depends on `tmux (>= 3.2)`, the version auto-compact needs, and `nika doctor` warns on its tmux row when tmux
+  is older than 3.2 ("tmux 3.1 is older than 3.2: nika's auto-compact needs 3.2 or newer"). A version it cannot read shows
+  "version unknown" and no warning.
+
+Docs:
+
+- README has an **Orchestration (0.4)** section, and its requirements, "What nika reads" and "Configuration" cover the new
+  settings. New: `docs/adr/0013-nested-orchestration.md` and `docs/adr/0014-auto-compact-launch-env.md`; the design spec has
+  new sections for the tree, the spawn sheet, auto-compact and the context column, and the screenshots show them.
 
 ## 0.3.4 — 2026-11-09
 

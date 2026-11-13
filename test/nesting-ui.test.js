@@ -299,8 +299,8 @@ describe('flat lists: the filter, the queue and Ended (design 2.1)', () => {
     assert.equal(chip.attrs.title, 'Under api-lead-with-a-really-long-name-here');
   });
 
-  test('(+) an ended agent in the Ended section is a flat row with its "under" chip and no tree markup', () => {
-    const agents = [...family(), ag('77777777-7777-4777-8777-777777777777', 'builder-3', { live: false, state: 'ended', pane: null, parent: MAIN })];
+  test('(+) an ended agent in the Ended section is a flat row with no tree markup and no "under" chip: the server gives it no parent', () => {
+    const agents = [...family(), ag('77777777-7777-4777-8777-777777777777', 'builder-3', { live: false, state: 'ended', pane: null, parent: null })];
     const r = treeRig();
     r.state.showEnded = true;
     const nodes = r.agentNodes(group(agents), '', 'g:k');
@@ -308,7 +308,7 @@ describe('flat lists: the filter, the queue and Ended (design 2.1)', () => {
     const row = rowsOf(ended.all((n) => n.tag === 'ul')[0])[0];
     assert.equal(nameOf(row), 'builder-3');
     assert.equal(row.attrs['data-depth'], undefined);
-    assert.deepEqual(row.all(withClass('proj-chip')).map((n) => n.textContent), ['under planner']);
+    assert.deepEqual(row.all(withClass('proj-chip')).map((n) => n.textContent), []);
     assert.equal(rowsOf(nodes[0]).length, 4, 'the tree above holds the live four only');
   });
 

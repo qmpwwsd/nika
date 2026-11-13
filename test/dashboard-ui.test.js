@@ -446,10 +446,10 @@ describe('browser tier has no mode polling', () => {
     assert.match(fn(PROJECT, 'export async function initApp('), /hooks\.pollApp = pollApp;/);
   });
 
-  test('(−) the row has no mode cell and the grids stay as in 0.2 off the app tier (the app grids are scoped to body[data-tier="app"])', () => {
-    assert.match(APP_CSS, /\.row \{[^}]*grid-template-columns: 104px minmax\(120px, 1\.1fr\) 88px 64px minmax\(0, 2\.4fr\) 56px 44px 32px;/);
-    assert.match(APP_CSS, /@container rows \(max-width: 860px\) \{\s*\.row \{ grid-template-columns: 22px minmax\(110px, 1fr\) 44px minmax\(0, 2fr\) 52px 32px; \}/);
-    assert.match(APP_CSS, /@container rows \(max-width: 600px\) \{\s*\.row \{ grid-template-columns: 22px minmax\(0, 1fr\) 44px 44px 32px; \}/);
+  test('(−) the row has no mode cell and the grids keep the 0.2 columns (only the name column is wider since 0.4) off the app tier (the app grids are scoped to body[data-tier="app"])', () => {
+    assert.match(APP_CSS, /\.row \{[^}]*grid-template-columns: 104px minmax\(232px, 1\.5fr\) 88px 64px minmax\(0, 2fr\) 56px 44px 32px;/);
+    assert.match(APP_CSS, /@container rows \(max-width: 860px\) \{\s*\.row \{ grid-template-columns: 22px minmax\(208px, 1\.1fr\) 56px minmax\(0, 2fr\) 52px 32px; \}/);
+    assert.match(APP_CSS, /@container rows \(max-width: 600px\) \{\s*\.row \{ column-gap: 6px; grid-template-columns: 22px minmax\(0, 1fr\) 56px 40px 32px; \}/);
     assert.equal([...APP_CSS.matchAll(/^\s*\.row \{ ?grid-template-columns: [^;]*\b24px\b/gm)].length, 0, 'no unscoped rule gives the browser tier a mode column');
     assert.equal([...APP_CSS.matchAll(/^\s*\.row \{ ?grid-template-columns: [^;]*\b128px\b/gm)].length, 0);
   });
@@ -457,10 +457,10 @@ describe('browser tier has no mode polling', () => {
 
 describe('row grids with the mode column (spec 9.9)', () => {
   test('(+) app tier: 9 columns wide (the context meter after the model, 0.4), then status glyph + icon-only mode at 860, the name row above the prompt at 600', () => {
-    assert.match(APP_CSS, /body\[data-tier="app"\] \.row \{ grid-template-columns: 104px 128px minmax\(120px, 1\.1fr\) 88px 64px minmax\(0, 2\.4fr\) 56px 44px 32px; \}/);
-    assert.match(APP_CSS, /@container rows \(max-width: 860px\) \{[^@]*body\[data-tier="app"\] \.row \{ grid-template-columns: 22px 24px minmax\(110px, 1fr\) 44px minmax\(0, 2fr\) 52px 32px; \}/);
+    assert.match(APP_CSS, /body\[data-tier="app"\] \.row \{ grid-template-columns: 104px 128px minmax\(232px, 1\.5fr\) 88px 64px minmax\(0, 2fr\) 56px 44px 32px; \}/);
+    assert.match(APP_CSS, /@container rows \(max-width: 860px\) \{[^@]*body\[data-tier="app"\] \.row \{ grid-template-columns: 22px 24px minmax\(208px, 1\.1fr\) 56px minmax\(0, 2fr\) 52px 32px; \}/);
     const small = /@container rows \(max-width: 600px\) \{([^@]*?)\n\}/.exec(APP_CSS)?.[1] ?? '';
-    assert.match(small, /body\[data-tier="app"\] \.row \{ grid-template-columns: 22px 24px minmax\(0, 1fr\) 44px 44px 32px; \}/);
+    assert.match(small, /body\[data-tier="app"\] \.row \{ grid-template-columns: 22px 24px minmax\(0, 1fr\) 56px 40px 32px; \}/);
     assert.match(small, /body\[data-tier="app"\] \.row \.c-what \{ grid-column: 3 \/ -1; grid-row: 2; \}/);
     assert.match(small, /body\[data-tier="app"\] \.row \.c-act \{ grid-row: 1; grid-column: 5; \}/);
   });
