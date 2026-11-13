@@ -221,8 +221,7 @@ export function openDialog(dlg, { focus, keep } = {}) {
 
 function restoreFocus(dlg) {
   const o = openers.get(dlg);
-  const other = $('dialog[open]'); // the first open one in the page: the drawer comes first in index.html
-  if (other && other !== o?.under) return;
+  if ($$('dialog[open]').some((d) => d !== dlg && d !== o?.under)) return; // another dialog is still open: it gives the focus back when it closes
   openers.delete(dlg);
   let el = o?.el?.isConnected ? o.el : null;
   const menu = el?.closest('.menu');

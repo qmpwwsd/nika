@@ -77,7 +77,7 @@ describe('the drawer markup (index.html)', () => {
     assert.match(x, /\btitle="Close"/);
   });
 
-  test('(+) it sits before the other dialogs, so the first open dialog in the page is the drawer when it is under another one', () => {
+  test('(+) it sits before the other dialogs in the markup (ui.js restoreFocus no longer depends on that order; the page keeps it)', () => {
     const at = (id) => HTML.indexOf(`<dialog id="${id}"`);
     assert.ok(at('dlg-setup') >= 0);
     for (const id of ['dlg-spawn', 'dlg-rules', 'dlg-plugins', 'dlg-models', 'dlg-confirm']) assert.ok(at('dlg-setup') < at(id), id);
@@ -133,6 +133,7 @@ describe('the stylesheet: the breakpoint is 1030 px', () => {
 const TOKEN = /(^[a-z][a-z0-9]*)|#([\w-]+)|\.([\w-]+)|:not\(\[([\w-]+)\]\)|\[([\w-]+)(?:="([^"]*)")?\]/g;
 class PEl extends El {
   replaceChildren(...nodes) {
+    if (focus.el && this.contains(focus.el) && !nodes.some((n) => n.contains?.(focus.el))) focus.el = null; // a browser drops the focus of a control that leaves the page
     for (const k of this.kids) k.parent = null;
     super.replaceChildren(...nodes);
   }
@@ -292,7 +293,7 @@ function rig({ narrow = false, matchMedia = true, rules = 'nika', sub = true } =
     h, icon, $: ui.$, state, hooks: {}, appFetch, applyTheme: () => {}, menuEl: ui.menuEl, sessionHref: ui.sessionHref, RX: ui.RX, roleTag, orchState, savedPick, otherRunning, spawnLimits, effectiveAgents,
     syncRadioCards: () => {}, parseModes, modesAfter, settingModeEl, MODE_META, pluginView, pluginSave, sortIds, countText, filterNote,
     CUSTOM, MODEL_ID, MODEL_HINT, ROLES, ROLE_LABEL, modelLabel, fillModelSelect, fillRoleOverride, effectiveRoleModels,
-    location: { set href(v) {}, get href() { return ''; }, hash: '' }, document: { title: '', getElementById: () => null },
+    location: { set href(v) {}, get href() { return ''; }, hash: '' }, document: { title: '', getElementById: () => null, get activeElement() { return focus.el; } }, CSS: globalThis.CSS,
     toast: () => ({ remove() {} }), announce: () => {}, errText: (r) => r?.body?.message ?? `The server answered ${r?.status}.`, copyText: () => {},
     setBusy: () => {}, fieldError: () => {}, openDialog: ui.openDialog, closeMenu: ui.closeMenu, render: (force) => renders.push(force),
     buildGroups: () => [g], agentNodes: () => [h('ul')], swap, interacting: () => false, rulesEl: () => h('span', { class: 'rules' }),
@@ -747,6 +748,106 @@ describe('the window width changes', () => {
     assert.deepEqual(r.titles(r.column), CARDS);
   });
 
+  // ---- focus that sits in a card when the layout flips: it follows the card, or lands on a control that is on screen -----------------
+
+  describe('focus on a card control when the layout flips', () => {
+    const KEEP = 'choose-plugins';
+
+    test('(+) growing with the drawer open: the focused card control is focused again in the column, and the drawer is closed', () => {
+      const r = rig({ narrow: true });
+      r.api.wireSetup();
+      r.api.renderProject(true);
+      r.press(r.setupBtn());
+      r.body.byFk(KEEP).focus();
+      r.narrower(false);
+      assert.equal(r.drawer.open, false);
+      assert.ok(r.column.byFk(KEEP), 'the card is in the column');
+      assert.equal(focus.el, r.column.byFk(KEEP), 'the same control, in its new home');
+    });
+
+    test('(+) shrinking with no drawer open: the control goes into the closed drawer, so focus goes to the Setup button; the drawer stays closed', () => {
+      const r = rig({ narrow: false });
+      r.api.wireSetup();
+      r.api.renderProject(true);
+      r.column.byFk(KEEP).focus();
+      r.narrower(true);
+      assert.ok(r.setupBtn(), 'the header has its Setup button');
+      assert.equal(focus.el, r.setupBtn());
+      assert.equal(r.drawer.open, false, 'a resize never opens the drawer');
+      assert.deepEqual(r.titles(r.body), CARDS);
+    });
+
+    test('(+) shrinking while a card element with no focus key has the focus: the Setup button as well', () => {
+      const r = rig({ narrow: false });
+      r.api.wireSetup();
+      r.api.renderProject(true);
+      const link = new PEl('a');
+      r.column.kids[0].append(link);
+      link.focus();
+      r.narrower(true);
+      assert.equal(focus.el, r.setupBtn());
+    });
+
+    test('(+) growing with the drawer open and the focus on something with no home in the column (a key that is gone, the drawer\'s ×): the project heading', () => {
+      const r = rig({ narrow: true });
+      r.api.wireSetup();
+      r.api.renderProject(true);
+      r.press(r.setupBtn());
+      const stray = new PEl('button');
+      stray.attrs['data-fk'] = 'not-in-the-column';
+      r.body.append(stray);
+      stray.focus();
+      r.narrower(false);
+      assert.equal(focus.el, r.q('proj-h'));
+      const r2 = rig({ narrow: true });
+      r2.api.wireSetup();
+      r2.api.renderProject(true);
+      r2.press(r2.setupBtn());
+      r2.x.focus();
+      r2.narrower(false);
+      assert.equal(focus.el, r2.q('proj-h'));
+    });
+
+    test('(−) focus outside the cards is never moved by a flip: the project heading, a header action', () => {
+      for (const narrow of [false, true]) {
+        const r = rig({ narrow });
+        r.api.wireSetup();
+        r.api.renderProject(true);
+        r.q('proj-h').focus();
+        r.narrower(!narrow);
+        assert.equal(focus.el, r.q('proj-h'), `heading, narrow was ${narrow}`);
+        r.actions.byFk('proj-menu').focus();
+        r.narrower(narrow);
+        assert.equal(focus.el?.attrs['data-fk'], 'proj-menu', `header action, narrow was ${narrow}`);
+      }
+    });
+
+    test('(−) shrinking with nothing focused leaves nothing focused', () => {
+      const r = rig({ narrow: false });
+      r.api.wireSetup();
+      r.api.renderProject(true);
+      assert.equal(focus.el, null);
+      r.narrower(true);
+      assert.equal(focus.el, null);
+    });
+
+    test('(−) a plain render with no flip keeps the focus on the same card control, in the column and in the open drawer', () => {
+      const wide = rig({ narrow: false });
+      wide.api.renderProject(true);
+      wide.column.byFk(KEEP).focus();
+      wide.api.renderProject(true);
+      assert.equal(focus.el, wide.column.byFk(KEEP));
+      const narrow = rig({ narrow: true });
+      narrow.api.wireSetup();
+      narrow.api.renderProject(true);
+      narrow.press(narrow.setupBtn());
+      narrow.body.byFk(KEEP).focus();
+      narrow.api.renderProject(true);
+      assert.equal(focus.el, narrow.body.byFk(KEEP));
+      assert.equal(narrow.drawer.open, true);
+    });
+  });
+
   test('(−) on another screen the change only moves nothing: the project page is drawn when you get there', () => {
     const r = rig({ narrow: true });
     r.api.wireSetup();
@@ -865,6 +966,42 @@ describe('dialogs opened from the cards in the drawer stack on top of it', () =>
     dlg.confirm.close();
     assert.equal(focus.el, b);
   });
+
+  /** The markup order of index.html turned around: the drawer is the LAST <dialog>, so a lookup of "the first open dialog" no longer finds it first. */
+  const drawerLast = (r) => { page.body.kids = [...page.body.kids.filter((k) => k !== r.drawer), r.drawer]; };
+
+  test('(+) the drawer is not the first <dialog> in the markup: closing a stacked dialog still returns focus to its opener inside the drawer', async () => {
+    const r = rig({ narrow: true });
+    drawerLast(r);
+    assert.equal(page.body.querySelector('dialog'), r.dlg.spawn, 'the first <dialog> is another one now');
+    r.api.wireSetup();
+    r.api.renderProject(true);
+    r.press(r.setupBtn());
+    const btn = r.body.byFk('choose-models');
+    r.press(btn);
+    await settle();
+    assert.equal(r.dlg.models.open, true);
+    r.esc(r.dlg.models);
+    assert.equal(r.drawer.open, true, 'Esc closed only the top dialog');
+    assert.equal(focus.el, btn, 'focus is back on the opener inside the drawer');
+  });
+
+  for (const last of [false, true]) {
+    test(`(−) a third, unrelated dialog is open (drawer ${last ? 'last' : 'first'} in the markup): closing the stacked one moves no focus`, async () => {
+      const r = rig({ narrow: true });
+      if (last) drawerLast(r);
+      r.api.wireSetup();
+      r.api.renderProject(true);
+      r.press(r.setupBtn());
+      r.press(r.body.byFk('choose-plugins'));
+      await settle();
+      r.dlg.confirm.showModal(); // opened by something that did not go through openDialog: it is still on screen
+      focus.el = null;
+      r.dlg.plugins.close();
+      assert.equal(focus.el, null, 'the dialog that is still open restores focus when it closes, not this one');
+      assert.equal(r.drawer.open, true);
+    });
+  }
 
   test('(+) the drawer marks the dialogs that may stack on it in the source: project.js passes keep, ui.js skips only that one', () => {
     const uiSrc = code(read('ui.js'));

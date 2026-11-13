@@ -176,13 +176,15 @@ function renderSide() {
   const sig = JSON.stringify([rows, detected, detectedMore, cur, env]);
   if (sig === sideSig) return;
   sideSig = sig;
+  // the count as the row's link is read to a screen reader, and so in its tooltip (the rail shows only the badge): ", needs you: 2", ", live agents: 1" or nothing
+  const sideCount = (r) => (r.attn ? `, needs you: ${r.attn}` : r.live ? `, live agents: ${r.live}` : '');
   swap($('#side-projects'), rows.map((r) => h('li', null,
-    sideLink({ href: `#project/${r.key}`, 'data-fk': `side:${r.key}`, title: r.name, 'aria-current': r.key === cur ? 'page' : null }, r))));
+    sideLink({ href: `#project/${r.key}`, 'data-fk': `side:${r.key}`, title: `${r.name}${sideCount(r)}`, 'aria-current': r.key === cur ? 'page' : null }, r))));
   $('#side-projects').hidden = empty;
   $('#side-hint').hidden = !empty;
   swap($('#side-detected'), [
     detected.map((r) => h('li', { class: 'has-act' },
-      sideLink({ href: '#dashboard', 'data-fk': `det:${r.key}`, title: `Show ${r.name} on the dashboard`, onclick: (e) => { e.preventDefault(); showGroup(r.key); } }, r),
+      sideLink({ href: '#dashboard', 'data-fk': `det:${r.key}`, title: `Show ${r.name} on the dashboard${sideCount(r)}`, onclick: (e) => { e.preventDefault(); showGroup(r.key); } }, r),
       h('button', { type: 'button', class: 'btn icon ghost', 'data-fk': `detadd:${r.key}`, 'aria-label': `Add ${r.name} as a project`, title: `Add ${r.name} as a project`, onclick: () => addProject() }, icon('plus')))),
     detectedMore ? h('li', { class: 'side-more' }, h('button', {
       type: 'button', class: 'btn ghost', 'data-fk': 'det-more', 'aria-label': `Show ${detectedMore} more detected ${detectedMore === 1 ? 'repository' : 'repositories'}`, text: `${detectedMore} more`,
@@ -544,12 +546,30 @@ const focusing = (run) => (e) => { e?.currentTarget?.focus?.(); run(); };
 /** Options for a dialog opened from a card: it stacks on the open drawer instead of closing it. */
 const overSetup = () => ({ keep: $('#dlg-setup') });
 
+/** The data-fk of the control that has focus inside `host` ('' when it has none), or null when the focus is elsewhere. */
+function focusKey(host) {
+  const el = document.activeElement; // null when nothing has the focus
+  return el && host.contains(el) ? el.dataset.fk ?? '' : null;
+}
+
+/**
+ * Puts the focus back after a flip emptied the home that held it: on the same card control when its new home is on screen (the
+ * column), else on the Setup button (the drawer is closed and a resize does not open it), else on the project heading.
+ */
+function landFocus(fk, key) {
+  const target = isNarrow() ? $(`[data-fk="setup:${key}"]`) : fk && $(`[data-fk="${CSS.escape(fk)}"]`, $('#proj-setup'));
+  (target || $('#proj-h'))?.focus();
+}
+
 /** The cards have one home: the drawer's body when narrow, the page column otherwise. Never both, so no id appears twice. */
 function placeSetup(p, g) {
   const narrow = isNarrow();
+  const from = $(narrow ? '#proj-setup' : '#su-body'); // the home that is emptied
+  const fk = focusKey(from); // not null: the window crossed 1030 px under a focused card control (in any other render the focus is in the new home, which swap keeps)
   $('#su-d').textContent = p.name;
   swap($(narrow ? '#su-body' : '#proj-setup'), setupCards(p, g));
-  swap($(narrow ? '#proj-setup' : '#su-body'), []);
+  swap(from, []);
+  if (fk !== null) landFocus(fk, g.key);
 }
 
 function openSetup() {
@@ -595,9 +615,10 @@ function wireSetup() {
   window.addEventListener('hashchange', () => { if (dlg.open) dlg.close(); }); // the Settings link in a card, or a way back
   window.matchMedia?.(NARROW)?.addEventListener?.('change', () => {
     const grew = dlg.open && !isNarrow();
+    const fk = grew ? focusKey($('#su-body')) : null; // read before the close below takes the focus away
     if (grew) dlg.close(); // the cards go back to the column, and the Setup button is hidden again
     if (state.route.name === 'project') renderProject(true);
-    if (grew) $('#proj-h').focus(); // the opener is hidden now
+    if (grew) landFocus(fk ?? '', state.route.key); // the opener is hidden now: the card control that had the focus, else the heading
   });
 }
 

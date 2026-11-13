@@ -1123,19 +1123,19 @@ describe('ui.js restoreFocus: a dialog opened from a menu item gives focus back 
   const head = src.indexOf('function restoreFocus(dlg)');
   const body = src.slice(head, src.indexOf('\n}\n', head) + 2);
   const node = (name, over = {}) => ({ name, isConnected: true, focused: 0, focus() { this.focused += 1; }, closest: () => null, ...over });
-  /** restoreFocus as shipped, run against a tiny page: `$` answers from `byQuery`, `openers` holds what openDialog would have stored. */
+  /** restoreFocus as shipped, run against a tiny page: `$` answers from `byQuery`, `$$` lists the open dialogs, `openers` holds what openDialog would have stored. */
   const rig = ({ opener, fk = null, menu = null, button = null, openDialogs = false, heading = node('h1') }) => {
     const asked = [];
     const byQuery = (sel) => {
       asked.push(sel);
-      if (sel === 'dialog[open]') return openDialogs ? node('dialog') : null;
       if (menu && sel === `[aria-controls="${menu.id}"]`) return button;
       if (sel === '.screen:not([hidden]) h1') return heading;
       return null;
     };
     const dlg = {};
     const openers = new Map([[dlg, { el: opener, fk }]]);
-    const run = vm.runInNewContext(`${body}; restoreFocus`, { $: byQuery, openers, CSS: { escape: (s) => s } });
+    const all = (sel) => (sel === 'dialog[open]' && openDialogs ? [node('dialog')] : []); // restoreFocus asks for every open dialog
+    const run = vm.runInNewContext(`${body}; restoreFocus`, { $: byQuery, $$: all, openers, CSS: { escape: (s) => s } });
     return { run: () => run(dlg), asked, heading, openers, dlg };
   };
   const menuItem = (menu, over = {}) => node('item', { closest: (s) => (s === '.menu' ? menu : null), ...over });
