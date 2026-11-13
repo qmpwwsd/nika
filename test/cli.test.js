@@ -68,6 +68,30 @@ describe('cli', () => {
     assert.match(r.stdout, /^plain\s/m);
   });
 
+  // F1b: a registry file nika cannot use would hide a live session without a word, so the count is printed (and is in the --json snapshot)
+  test('(+) status prints one line when registry files were skipped (the fixture has one corrupt file), and --json carries the count', async () => {
+    const r = await run(['status', '--since', 'all']);
+    assert.equal(r.code, 0, r.stderr);
+    assert.match(r.stdout, /^1 session file skipped \(unreadable or not in Claude's format\)$/m);
+    assert.deepEqual(JSON.parse((await run(['status', '--json', '--since', 'all'])).stdout).skipped, { registry: 1 });
+  });
+
+  test('(+) the line counts every skipped file, in the plural', async () => {
+    const dir = path.join(fx.root, 'claude-skip3');
+    fs.mkdirSync(path.join(dir, 'sessions'), { recursive: true });
+    for (const n of [1, 2, 3]) fs.writeFileSync(path.join(dir, 'sessions', `${n}.json`), '{broken');
+    assert.match((await run(['status'], { CLAUDE_CONFIG_DIR: dir })).stdout, /^3 session files skipped \(unreadable or not in Claude's format\)$/m);
+  });
+
+  test('(−) nothing skipped: no such line', async () => {
+    const dir = path.join(fx.root, 'claude-skip0');
+    fs.mkdirSync(path.join(dir, 'sessions'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'sessions', '1.json'), JSON.stringify({ pid: 1, sessionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' }));
+    const r = await run(['status'], { CLAUDE_CONFIG_DIR: dir });
+    assert.equal(r.code, 0, r.stderr);
+    assert.doesNotMatch(r.stdout, /skipped/);
+  });
+
   // F5 (0.4): ended agents are hidden by default everywhere. Seven ended sessions in one folder: more than the cap of 5 that --ended shows.
   describe('status and ended agents', () => {
     const nameRows = (out) => out.split('\n').filter((l) => /^ {2}○ ended/.test(l));

@@ -9,8 +9,8 @@ import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 import { load, loadFlag } from '../public/ui.js';
 import {
-  DETECTED_MAX, endedPlan, noMatchText, resetEndedState, sidebarModel, orchState, roleTag, savedPick, otherRunning, ROLE_TAGS,
-  statusOf, STATUS_ORDER, parentOf, treeRows, capRoots, hasTree, spawnLimits,
+  DETECTED_MAX, skippedText, endedPlan, noMatchText, resetEndedState, sidebarModel, orchState, roleTag, savedPick, otherRunning, ROLE_TAGS,
+  statusOf, STATUS_ORDER, parentOf, treeRows, hasTree, spawnLimits,
 } from '../public/dash-model.js';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
@@ -139,7 +139,7 @@ describe('sidebarModel (the sidebar\'s Projects list and its Detected repositori
 
   test('(+) no registered projects: empty is true (the page shows the hint) and the list has no rows', () => {
     const m = sidebarModel({ projects: [], groups: [] });
-    assert.deepEqual(m, { empty: true, rows: [], detected: [] });
+    assert.deepEqual(m, { empty: true, rows: [], detected: [], detectedMore: 0 });
   });
 
   test('(+) registered projects are listed in their own order with the counts of their group; a project without agents shows 0 and 0', () => {
@@ -164,12 +164,27 @@ describe('sidebarModel (the sidebar\'s Projects list and its Detected repositori
     assert.deepEqual(names(sidebarModel({ projects: [], groups }).detected), ['oscar', 'lima', 'kilo', 'zulu', 'alpha', 'mike']);
   });
 
-  test('(+) at most 8 rows, the best 8 by that order', () => {
+  test('(+) 8 rows by default, the best 8 by that order, and `detectedMore` counts the rest (F1b)', () => {
     const groups = Array.from({ length: 11 }, (_, i) => grp(`d${i}`, `repo-${String(i).padStart(2, '0')}`, counts(0, i + 1)));
     const m = sidebarModel({ projects: [], groups });
     assert.equal(DETECTED_MAX, 8);
     assert.equal(m.detected.length, 8);
     assert.deepEqual(m.detected.map((r) => r.live), [11, 10, 9, 8, 7, 6, 5, 4]);
+    assert.equal(m.detectedMore, 3);
+  });
+
+  test('(+) `showAll` lists every detected repository in the same order and leaves nothing behind the button (F1b)', () => {
+    const groups = Array.from({ length: 11 }, (_, i) => grp(`d${i}`, `repo-${String(i).padStart(2, '0')}`, counts(0, i + 1)));
+    const m = sidebarModel({ projects: [], groups, showAll: true });
+    assert.deepEqual(m.detected.map((r) => r.live), [11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1]);
+    assert.equal(m.detectedMore, 0);
+  });
+
+  test('(−) 8 or fewer detected repositories: no "more" count, with showAll or without', () => {
+    const groups = Array.from({ length: 8 }, (_, i) => grp(`d${i}`, `repo-${i}`, counts(0, i + 1)));
+    assert.equal(sidebarModel({ projects: [], groups }).detectedMore, 0);
+    assert.equal(sidebarModel({ projects: [], groups, showAll: true }).detectedMore, 0);
+    assert.equal(sidebarModel({ projects: [], groups: [] }).detectedMore, 0);
   });
 
   test('(−) a repository with only ended agents is not detected', () => {
@@ -204,15 +219,82 @@ describe('sidebarModel (the sidebar\'s Projects list and its Detected repositori
 
   test('(+) the project list has not loaded (null): no hint, no rows and no Detected, even with live unregistered groups', () => {
     const groups = [grp('d1', 'gamma', counts(0, 2)), grp('d2', 'delta', counts(1, 1))];
-    assert.deepEqual(sidebarModel({ projects: null, groups }), { empty: false, rows: [], detected: [] });
-    assert.deepEqual(sidebarModel({ projects: null, groups: [] }), { empty: false, rows: [], detected: [] });
+    assert.deepEqual(sidebarModel({ projects: null, groups }), { empty: false, rows: [], detected: [], detectedMore: 0 });
+    assert.deepEqual(sidebarModel({ projects: null, groups: [] }), { empty: false, rows: [], detected: [], detectedMore: 0 });
   });
 
   test('(−) a loaded empty list (not null) still shows the hint and fills Detected as before', () => {
     const groups = [grp('d1', 'gamma', counts(0, 2)), grp('d2', 'delta', counts(1, 1))];
     assert.deepEqual(sidebarModel({ projects: [], groups }), {
-      empty: true, rows: [], detected: [{ key: 'd2', name: 'delta', attn: 1, live: 1 }, { key: 'd1', name: 'gamma', attn: 0, live: 2 }],
+      empty: true, rows: [], detected: [{ key: 'd2', name: 'delta', attn: 1, live: 1 }, { key: 'd1', name: 'gamma', attn: 0, live: 2 }], detectedMore: 0,
     });
+  });
+});
+
+// ---- the note for skipped session files (F1b) -------------------------------------------------------------------------------------
+
+describe('skippedText (the dashboard note; the same words as `nika status`)', () => {
+  test('(+) a count of 2 or more: the exact line', () => {
+    assert.equal(skippedText(3), "3 session files skipped (unreadable or not in Claude's format)");
+  });
+
+  test('(+) a count of 1 reads in the singular', () => {
+    assert.equal(skippedText(1), "1 session file skipped (unreadable or not in Claude's format)");
+  });
+
+  test('(−) nothing skipped, or a value that is not a positive whole number: no note', () => {
+    for (const v of [0, -1, 1.5, NaN, Infinity, '3', null, undefined, {}]) assert.equal(skippedText(v), null, String(v));
+  });
+
+  test('(+) nika status prints the same words (the browser page cannot import src/, so both spell the line)', () => {
+    const cli = fs.readFileSync(path.join(PUBLIC, '..', 'src', 'cli.js'), 'utf8');
+    assert.ok(cli.includes("session file${n === 1 ? '' : 's'} skipped (unreadable or not in Claude's format)"), 'cli.js spells the line');
+    assert.ok(read('dash-model.js').includes("session file${n === 1 ? '' : 's'} skipped (unreadable or not in Claude's format)"), 'dash-model.js spells it the same');
+  });
+});
+
+describe('the dashboard draws the note as a muted line above the groups, not as a banner (F1b)', () => {
+  const rig = (data) => {
+    const swaps = [];
+    const ctx = {
+      state: { data, projects: null, modes: { map: {} }, filter: '', showEnded: false, open: new Set(), expanded: new Set(), me: null, error: null },
+      isApp: false, interacting: () => false, dashboardNodes: () => [makeNode('p', { text: 'groups' }, [])], skippedText,
+      $: () => ({ classList: { toggle() {} } }), swap: (host, nodes) => swaps.push(nodes),
+      h: (tag, attrs, ...kids) => makeNode(tag, attrs, kids),
+    };
+    const src = `${/let dashSig = '';/.exec(APP)[0]}\n${fn(APP, 'function skippedNote(')}\n${fn(APP, 'function renderDashboard(')}`;
+    const { renderDashboard } = vm.runInNewContext(`${src}\n({ renderDashboard })`, ctx);
+    return { renderDashboard, swaps };
+  };
+  const tops = (swaps) => Array.from(swaps.at(-1)).filter(Boolean).map((n) => `${n.tag}${n.attrs.class ? `.${n.attrs.class.split(' ').join('.')}` : ''}:${textOf(n)}`);
+
+  test('(+) skipped files: a muted <p> first, then the groups', () => {
+    const { renderDashboard, swaps } = rig({ groups: [], skipped: { registry: 2 } });
+    renderDashboard(true);
+    assert.deepEqual(tops(swaps), ["p.skip-note.muted:2 session files skipped (unreadable or not in Claude's format)", 'p:groups']);
+  });
+
+  test('(−) none skipped, an older server that sends no field, or junk: no note, only the groups', () => {
+    for (const skipped of [{ registry: 0 }, undefined, { registry: 'x' }, null]) {
+      const { renderDashboard, swaps } = rig({ groups: [], skipped });
+      renderDashboard(true);
+      assert.deepEqual(tops(swaps), ['p:groups'], JSON.stringify(skipped));
+    }
+  });
+
+  test('(+) a change in the count redraws the dashboard; the same count does not', () => {
+    const data = { groups: [], skipped: { registry: 1 } };
+    const { renderDashboard, swaps } = rig(data);
+    renderDashboard();
+    renderDashboard();
+    assert.equal(swaps.length, 1);
+    data.skipped = { registry: 2 };
+    renderDashboard();
+    assert.equal(swaps.length, 2);
+  });
+
+  test('(−) not an error banner: the sources banner never mentions the skipped count', () => {
+    assert.doesNotMatch(fn(APP, 'function bannerList('), /skipped/);
   });
 });
 
@@ -232,7 +314,6 @@ describe('agentNodes with "Show ended"', () => {
       endedPlan,
       statusOf,
       treeRows,
-      capRoots,
       hasTree,
       endedScope: (s) => `${s}-e`,
       render: () => {},
@@ -633,12 +714,66 @@ describe('sidebar wiring', () => {
   test('(+) renderSide draws from sidebarModel; the hint shows when there are no projects and Detected only when it has rows', () => {
     assert.match(PROJECT, /import \{[^}]*\bsidebarModel\b[^}]*\} from '\.\/dash-model\.js'/);
     const side = fn(PROJECT, 'function renderSide(');
-    assert.match(side, /sidebarModel\(\{ projects: state\.projects, groups: buildGroups\(\) \}\)/);
+    assert.match(side, /sidebarModel\(\{ projects: state\.projects, groups: buildGroups\(\), showAll: /);
     assert.doesNotMatch(side, /state\.projects \?\?/, 'a project list that has not loaded (null) is not turned into an empty one');
     assert.match(side, /\$\('#side-projects'\)\.hidden = empty;/);
     assert.match(side, /\$\('#side-hint'\)\.hidden = !empty;/);
     assert.match(side, /\$\('#side-det'\)\.hidden = !detected\.length;/);
-    assert.match(side, /JSON\.stringify\(\[rows, detected, cur, env\]\)/, 'a change in Detected redraws the sidebar');
+    assert.match(side, /JSON\.stringify\(\[rows, detected, detectedMore, cur, env\]\)/, 'a change in Detected or in the "more" count redraws the sidebar');
+    assert.match(side, /sidebarModel\(\{[^}]*showAll: state\.expanded\.has\('detected'\)/, 'the button\'s state lives in state.expanded like the other "show more" buttons');
+  });
+
+  describe('the Detected list shows 8 rows, then an "N more" button (F1b)', () => {
+    const rig = (n, { expanded = [] } = {}) => {
+      const groups = Array.from({ length: n }, (_, i) => ({ key: `d${String(i).padStart(2, '0')}`, label: `repo-${String(i).padStart(2, '0')}`, root: `/r/${i}`, project: null, counts: { attn: 0, idle: 0, busy: 0, ended: 0, live: n - i } }));
+      const hosts = {};
+      const host = (sel) => (hosts[sel] ??= { sel, nodes: [], hidden: false, textContent: '' });
+      const focused = [];
+      const ctx = {
+        state: { projects: [], route: { name: 'dashboard' }, me: null, expanded: new Set(expanded) },
+        DETECTED_MAX, sidebarModel, buildGroups: () => groups, showGroup() {}, addProject() {}, icon: (name) => makeNode('svg', { 'data-i': name }, []),
+        h: (tag, attrs, ...kids) => makeNode(tag, attrs, kids),
+        $: (sel) => (sel.startsWith('#side-detected li:nth-child(') ? { focus: () => focused.push(sel) } : host(sel)),
+        swap: (el, nodes) => { el.nodes = nodes.flat().filter(Boolean); },
+      };
+      const src = [/let sideSig = '';/.exec(PROJECT)[0], fn(PROJECT, 'function sideLink('), fn(PROJECT, 'function renderSide(')].join('\n');
+      const { renderSide } = vm.runInNewContext(`${src}\n({ renderSide })`, ctx);
+      renderSide();
+      return { renderSide, ctx, host, focused };
+    };
+    const lis = (r) => r.host('#side-detected').nodes;
+    const moreBtn = (r) => lis(r).flatMap(walk).find((x) => x.tag === 'button' && x.attrs['data-fk'] === 'det-more');
+
+    test('(+) 11 detected repositories: 8 rows with their Add buttons, then one button that counts the other 3', () => {
+      const r = rig(11);
+      assert.equal(lis(r).filter((li) => li.attrs.class === 'has-act').length, 8);
+      assert.equal(lis(r).length, 9);
+      assert.equal(lis(r)[8].attrs.class, 'side-more');
+      assert.equal(textOf(moreBtn(r)), '3 more');
+      assert.equal(moreBtn(r).attrs['aria-label'], 'Show 3 more detected repositories');
+      assert.equal(r.host('#side-det').hidden, false);
+    });
+
+    test('(+) pressing it shows the rest, drops the button and puts focus on the first row that was behind it', () => {
+      const r = rig(11);
+      moreBtn(r).attrs.onclick();
+      assert.ok(r.ctx.state.expanded.has('detected'));
+      assert.equal(lis(r).filter((li) => li.attrs.class === 'has-act').length, 11);
+      assert.equal(moreBtn(r), undefined);
+      assert.deepEqual(r.focused, ['#side-detected li:nth-child(9) a']);
+    });
+
+    test('(+) already expanded (state kept across redraws): all rows, no button', () => {
+      const r = rig(11, { expanded: ['detected'] });
+      assert.equal(lis(r).length, 11);
+      assert.equal(moreBtn(r), undefined);
+    });
+
+    test('(−) 8 or fewer detected repositories: no button', () => {
+      const r = rig(8);
+      assert.equal(lis(r).length, 8);
+      assert.equal(moreBtn(r), undefined);
+    });
   });
 
   test('(+) a Detected row: the repo name and counts as text, a link to the dashboard, and an Add button that calls addProject()', () => {
@@ -691,6 +826,15 @@ describe('sidebar wiring', () => {
     assert.match(rail, /\.side-projects li\.has-act \.btn \{ display: none; \}/, 'the rail drops the per-row "+"');
     assert.doesNotMatch(rail, /#side-add|\.side-h[^{,]*\{[^}]*display:\s*none/, 'the header "+" stays in the rail');
     assert.doesNotMatch(rail, /\.side-projects li\.has-act a[^{]*\{[^}]*display:\s*none/, 'the Detected row link stays in the rail');
+  });
+
+  test('(+) app.css (F1b): the skipped-files note is small muted text, and the "N more" row stays inside the narrow rail; tokens only', () => {
+    const rule = (sel) => new RegExp(`${sel.replace(/[.[\]]/g, '\\$&')} \\{([^}]*)\\}`).exec(CSS)?.[1] ?? '';
+    assert.match(rule('.skip-note'), /color: var\(--text-muted\)/);
+    assert.match(rule('.skip-note'), /font-size: var\(--fs-small\)/);
+    assert.ok(rule('.side-more .btn'), '.side-more .btn is styled');
+    for (const sel of ['.skip-note', '.side-more .btn']) assert.doesNotMatch(rule(sel), /#[0-9a-f]{3,8}\b|rgb\(/i, `${sel} uses tokens, not colours`);
+    assert.match(CSS.slice(CSS.indexOf('@media (max-width: 900px)')), /\.side-more \.btn \{[^}]*\}/, 'the rail has its own size for the button');
   });
 });
 
@@ -1053,25 +1197,7 @@ describe('treeRows (the live rows of one group, in tree order)', () => {
   });
 });
 
-describe('capRoots and hasTree', () => {
-  const row = (name, root) => ({ a: { name }, root, kids: 0, orphan: false });
-  test('(+) the cap counts root subtrees and never splits one', () => {
-    const rows = [row('a', true), row('a1', false), row('a2', false), row('b', true), row('c', true), row('c1', false)];
-    assert.deepEqual(capRoots(rows, 2), { rows: rows.slice(0, 4), more: 2 });
-    assert.deepEqual(capRoots(rows, 1), { rows: rows.slice(0, 3), more: 3 });
-  });
-
-  test('(+) at or under the cap everything is shown', () => {
-    const rows = [row('a', true), row('a1', false), row('b', true)];
-    assert.deepEqual(capRoots(rows, 2), { rows, more: 0 });
-    assert.deepEqual(capRoots(rows, 12), { rows, more: 0 });
-  });
-
-  test('(−) nothing, and a cap of zero', () => {
-    assert.deepEqual(capRoots([], 12), { rows: [], more: 0 });
-    assert.deepEqual(capRoots([row('a', true)], 0), { rows: [], more: 1 });
-  });
-
+describe('hasTree', () => {
   test('(+) hasTree: a row with kids or an orphan makes the group a tree; (−) plain roots do not', () => {
     assert.equal(hasTree([{ kids: 1, orphan: false }, { kids: 0, orphan: false }]), true);
     assert.equal(hasTree([{ kids: 0, orphan: true }]), true);

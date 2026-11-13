@@ -160,6 +160,9 @@ function renderStatus(snapshot, { ended: withEnded, full }, paint) {
   }
   const bad = Object.entries(snapshot.sources).filter(([, v]) => v !== 'ok');
   for (const [k, v] of bad) lines.push(paint.ended(`note: ${k}: ${clean(v, 300)}`));
+  // same words as the dashboard note (public/dash-model.js skippedText)
+  const n = snapshot.skipped?.registry;
+  if (Number.isInteger(n) && n > 0) lines.push(paint.ended(`${n} session file${n === 1 ? '' : 's'} skipped (unreadable or not in Claude's format)`));
   return `${lines.join('\n').trimEnd()}\n`;
 }
 

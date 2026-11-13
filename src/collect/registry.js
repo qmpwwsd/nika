@@ -15,12 +15,13 @@ const ms = (v) => (Number.isFinite(v) && v > 0 && v < MAX_DATE_MS ? v : null);
 
 function normalise(raw) {
   if (!raw || typeof raw !== 'object' || !Number.isInteger(raw.pid) || raw.pid <= 0) return null;
-  // Session ids end up in a shell command (Copy resume): only uuids pass (review F3).
-  if (typeof raw.sessionId !== 'string' || !UUID.test(raw.sessionId)) return null;
+  // Session ids end up in a shell command (Copy resume): only uuids pass (review F3). An upper-case uuid is the same id, kept in lower case.
+  const sessionId = typeof raw.sessionId === 'string' ? raw.sessionId.toLowerCase() : '';
+  if (!UUID.test(sessionId)) return null;
   const pane = /(%\d+)$/.exec(str(raw.tmux) ?? '');
   return {
     pid: raw.pid,
-    sessionId: raw.sessionId,
+    sessionId,
     cwd: str(raw.cwd),
     name: str(raw.name),
     nameSource: str(raw.nameSource),
@@ -89,8 +90,9 @@ export function parseStarttime(text) {
   if (typeof text !== 'string') return null;
   const close = text.lastIndexOf(')');
   if (close < 0) return null;
-  const value = text.slice(close + 1).trim().split(/\s+/)[19];
-  return value !== undefined && DIGITS.test(value) ? value : null;
+  const tokens = text.slice(close + 1).trim().split(/\s+/);
+  // A real line has 44 fields or more; one that ends at field 22 was cut short and is not trusted.
+  return tokens.length > 20 && DIGITS.test(tokens[19]) ? tokens[19] : null;
 }
 
 // readHead works on /proc files (regular, one link, owned by the process's user); a pid of another user fails and is left out.
@@ -111,9 +113,34 @@ export async function procStarts(entries, readStat = defaultReadStat) {
   return starts;
 }
 
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const LSTART = /^[A-Z][a-z]{2} ([A-Z][a-z]{2}) (\d{1,2}) (\d{2}):(\d{2}):(\d{2}) (\d{4})$/;
+
+/** Seconds since the epoch of a squashed `Www Mmm d hh:mm:ss yyyy` string read as UTC or as local time; NaN when it is not that shape. */
+function lstartSeconds(text, utc) {
+  const m = LSTART.exec(text);
+  const month = m ? MONTHS.indexOf(m[1]) : -1;
+  if (month < 0) return NaN;
+  const [day, hour, minute, second, year] = m.slice(2).map(Number);
+  return (utc ? Date.UTC(year, month, day, hour, minute, second) : new Date(year, month, day, hour, minute, second).getTime()) / 1000;
+}
+
+/**
+ * Whether the registry's `procStart` (squashed) names the instant `ps` printed. A date string is read as UTC and as local time
+ * (Claude Code has been seen writing either); any other string `Date.parse` accepts (ISO) is compared to the second. A string nobody
+ * can parse, or a `ps` text that is no date, cannot tell a reused pid from the process: it counts as the same, because ps listed the pid.
+ */
+function sameInstant(procStart, psText) {
+  const at = lstartSeconds(psText, true);
+  const mine = LSTART.test(procStart) ? [lstartSeconds(procStart, true), lstartSeconds(procStart, false)] : [Math.floor(Date.parse(procStart) / 1000)];
+  const known = mine.filter(Number.isFinite);
+  return !known.length || !Number.isFinite(at) || known.includes(at);
+}
+
 /**
  * Alive = pid present and, when the registry recorded a start time, the same start time (guards pid reuse).
  * A digits `procStart` is compared with `starts` (see procStarts); a pid missing there stays alive, because ps listed it.
+ * A date or ISO `procStart` is compared as an instant (sameInstant).
  */
 export function isAlive(entry, table, starts) {
   if (table) {
@@ -124,7 +151,8 @@ export function isAlive(entry, table, starts) {
       const start = starts?.get(entry.pid);
       return start === undefined || start === entry.procStart;
     }
-    return squash(entry.procStart) === started;
+    const mine = squash(entry.procStart);
+    return mine === started || sameInstant(mine, started);
   }
   try {
     process.kill(entry.pid, 0);

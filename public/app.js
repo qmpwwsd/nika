@@ -6,7 +6,7 @@ import { h, icon, roleTagEl, ctxEl } from './dom.js';
 import { modeEl, rowMode, canEndRow } from './modes.js';
 import { wantsHelp, wantsBack, isTextEntry, openShortcuts, helpHint, backHint } from './shortcuts.js';
 import { copyBanner } from './app-copy.js';
-import { endedPlan, noMatchText, resetEndedState, roleTag, statusOf, parentOf, treeRows, capRoots, hasTree } from './dash-model.js';
+import { endedPlan, noMatchText, resetEndedState, roleTag, skippedText, statusOf, parentOf, treeRows, hasTree } from './dash-model.js';
 import {
   $, $$, MAC, SHAPE, ORDER, state, hooks, load, loadFlag, save, timeEl, tickTimes, announce, toast, copyText,
   statusEl, modelEl, rulesEl, countsLine, sessionHref, menuEl, menuIsOpen, openDialog, initDialogs, initMenus,
@@ -14,7 +14,7 @@ import {
 
 const REFRESH_MS = 3000;
 const SINCE = ['24h', '7d', '30d', 'all'];
-const ROW_CAP = 12;
+const ROW_CAP = 12; // ended rows drawn before "Show N more"; live rows are never capped (a hidden live session looks like a missing one)
 const QUEUE_CAP = 6;
 let token = $('meta[name="nika-token"]')?.content ?? '';
 
@@ -249,8 +249,8 @@ const rowsEl = (list, g, opts, label) => h('ul', { class: 'rows', 'aria-label': 
 const treeEl = (rows, g, scope, label, showEnded) => h('ul', { class: 'rows', 'aria-label': label }, rows.map((tree) => rowEl(tree.a, g, { scope, tree, showEnded })));
 
 /**
- * Live rows (first ROW_CAP root subtrees, then "show more"), the empty box and the "Ended" disclosure of one group (dash-model.js
- * endedPlan). The live rows nest under their parent (treeRows) unless a filter is on; a group where nothing nests is drawn as a flat
+ * Live rows (all of them), the empty box and the "Ended" disclosure of one group (dash-model.js endedPlan; its first ROW_CAP
+ * rows, then "Show N more ended agents"). The live rows nest under their parent (treeRows) unless a filter is on; a group where nothing nests is drawn as a flat
  * list. Used by the dashboard and by the project view. `showEnded` is the view's own "Show ended" toggle (the dashboard's by default,
  * the project page passes its own): it shows the Ended section and the finished subagents, and hides both when off.
  */
@@ -261,15 +261,10 @@ export function agentNodes(g, q, scope, { showEnded = state.showEnded } = {}) {
   const id = `ended:${scope}`;
   const plan = endedPlan({ live: live.length, ended: ended.length, showEnded, collapsed: state.open.has(`!${id}`) });
   const nodes = [];
-  const capId = `cap:${scope}`;
   const folded = new Set(live.filter((a) => state.open.has(`!tree:${scope}:${a.id}`)).map((a) => a.id));
   const rows = treeRows(live, { collapsed: folded, filtering: Boolean(q) });
-  const { rows: shown, more } = state.expanded.has(capId) ? { rows, more: 0 } : capRoots(rows, ROW_CAP);
   const label = `${g.label} agents`;
-  const ul = !rows.length ? null : hasTree(rows) ? treeEl(shown, g, scope, label, showEnded) : rowsEl(shown.map((r) => r.a), g, { scope, showEnded }, label);
-  if (ul && more) {
-    ul.append(h('li', { class: 'more-row' }, h('button', { type: 'button', class: 'btn', 'data-fk': `more:${scope}`, text: `Show ${more} more live agents`, onclick: () => { state.expanded.add(capId); render(true); } })));
-  }
+  const ul = !rows.length ? null : hasTree(rows) ? treeEl(rows, g, scope, label, showEnded) : rowsEl(rows.map((r) => r.a), g, { scope, showEnded }, label);
   if (ul) nodes.push(ul);
   else if (!q && isApp && g.project && !ended.length) {
     nodes.push(h('div', { class: 'rows no-agents' }, h('span', { text: 'No agents in this project.' }), hooks.groupActions?.(g, { primary: true })));
@@ -277,9 +272,15 @@ export function agentNodes(g, q, scope, { showEnded = state.showEnded } = {}) {
     nodes.push(h('div', { class: 'rows no-agents' }, h('span', { text: 'No live agents.' })));
   }
   if (plan.endedSection) {
+    const capId = `cap:${scope}`;
+    const more = state.expanded.has(capId) ? 0 : Math.max(0, ended.length - ROW_CAP);
+    const list = rowsEl(more ? ended.slice(0, ROW_CAP) : ended, g, { scope: endedScope(scope), showEnded }, `${g.label} ended agents`);
+    if (more) {
+      list.append(h('li', { class: 'more-row' }, h('button', { type: 'button', class: 'btn', 'data-fk': `more:${scope}`, text: `Show ${more} more ended agents`, onclick: () => { state.expanded.add(capId); render(true); } })));
+    }
     const d = h('details', { class: 'ended', open: plan.open },
       h('summary', { 'data-fk': `sum:${id}`, text: `Ended (${ended.length})` }),
-      rowsEl(ended, g, { scope: endedScope(scope), showEnded }, `${g.label} ended agents`));
+      list);
     d.addEventListener('toggle', () => {
       if (d.open) { state.open.add(id); state.open.delete(`!${id}`); } else { state.open.delete(id); state.open.add(`!${id}`); }
     });
@@ -374,13 +375,19 @@ export function swap(host, nodes) {
   if (fk) $(`[data-fk="${CSS.escape(fk)}"]`, host)?.focus({ preventScroll: true });
 }
 
+/** A muted line, not a banner, when Claude session files could not be used: the list is only short of those sessions (dash-model.js skippedText). */
+function skippedNote() {
+  const text = skippedText(state.data?.skipped?.registry);
+  return text ? h('p', { class: 'skip-note muted', text }) : null;
+}
+
 let dashSig = '';
 function renderDashboard(force) {
-  const sig = JSON.stringify([state.data.groups, isApp ? state.projects : null, isApp ? state.modes.map : null, state.filter, state.showEnded, [...state.open], [...state.expanded], state.me?.tmux, state.me?.claude, state.error]);
+  const sig = JSON.stringify([state.data.groups, state.data.skipped, isApp ? state.projects : null, isApp ? state.modes.map : null, state.filter, state.showEnded, [...state.open], [...state.expanded], state.me?.tmux, state.me?.claude, state.error]);
   if (!force && (sig === dashSig || interacting())) return;
   dashSig = sig;
   const body = $('#dash-body');
-  swap(body, dashboardNodes());
+  swap(body, [skippedNote(), ...dashboardNodes()]);
   body.classList.toggle('stale', Boolean(state.error));
 }
 

@@ -765,6 +765,21 @@ describe('Add to Applications notice (spec 3.14)', () => {
     assert.equal(bannerRig({ me: null }).get(), undefined);
   });
 
+  // F1b: collect() now answers `tmux: 'ok'` when no tmux server runs (test/model.test.js); the banner follows the sources it is given
+  test('(+) sources all ok (also with no tmux server): no "Some sources are unavailable" banner; (−) a real failure still shows it, naming the source', () => {
+    const NO_COPY = { state: 'unsupported', available: null };
+    const rig = (sources) => {
+      const r = bannerRig({ me: { tmux: true, claude: true, appCopy: NO_COPY } });
+      r.ctx.state.data = { sources };
+      return r;
+    };
+    const ok = { registry: 'ok', processes: 'ok', transcripts: 'ok', tmux: 'ok', reports: 'ok' };
+    assert.equal(rig(ok).byId('sources'), undefined);
+    const bad = rig({ ...ok, tmux: 'tmux unavailable: protocol version mismatch' }).byId('sources');
+    assert.equal(bad.title, 'Some sources are unavailable');
+    assert.match(bad.text, /tmux: tmux unavailable: protocol version mismatch/);
+  });
+
   test('(+) the tmux banner names the install command of the platform: brew on macOS, apt on Linux', () => {
     const NO_COPY = { state: 'unsupported', available: null };
     const tmux = (platform) => bannerRig({ me: { tmux: false, claude: true, platform, appCopy: NO_COPY } }).byId('tmux');

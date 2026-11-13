@@ -16,6 +16,8 @@ import { keyFor, loadConfig, defaults } from './store.js';
 
 const PROMPT_MAX = 200;
 const IO_LIMIT = 16;
+// tmux's own wording when no server is running (macOS says "error connecting to <socket>" when the socket does not exist)
+const NO_TMUX_SERVER = /no server running|error connecting to/;
 const LIVE_ORDER = { busy: 0, idle: 1 };
 
 const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
@@ -167,7 +169,7 @@ export async function collect({ config, exec, now = Date.now(), sinceMs, since =
   cache.transcripts ??= createTranscriptCache();
   // indexOnly: just the transcript index (findSessions); no registry, ps, tmux or reports, so nothing is live
   const [registry, table, index, tmux, reportDirs] = indexOnly
-    ? [{ entries: [], error: null }, null, await indexTranscripts(config.claudeDir), { panes: new Map(), error: null }, []]
+    ? [{ entries: [], skipped: [], error: null }, null, await indexTranscripts(config.claudeDir), { panes: new Map(), error: null }, []]
     : await Promise.all([
       readRegistry(config.claudeDir),
       processTable(exec),
@@ -181,7 +183,8 @@ export async function collect({ config, exec, now = Date.now(), sinceMs, since =
     registry: registry.error ?? 'ok',
     processes: table ? 'ok' : 'ps unavailable: liveness by signal 0',
     transcripts: index.error ?? 'ok',
-    tmux: tmux.error ?? 'ok',
+    // no tmux server is a normal state (nothing runs under tmux yet), not a failure: no panes and no warning
+    tmux: tmux.error && !NO_TMUX_SERVER.test(tmux.error) ? tmux.error : 'ok',
     reports: 'ok',
   };
 
@@ -298,7 +301,8 @@ export async function collect({ config, exec, now = Date.now(), sinceMs, since =
   sorted.sort((a, b) => b.lastActivity - a.lastActivity || a.label.localeCompare(b.label));
 
   return {
-    snapshot: { generatedAt: now, since, sources, counts, groups: sorted },
+    // registry files that were unreadable or not in Claude's format: those sessions are missing from the list without a word otherwise
+    snapshot: { generatedAt: now, since, sources, skipped: { registry: registry.skipped.length }, counts, groups: sorted },
     reportPaths,
   };
 }

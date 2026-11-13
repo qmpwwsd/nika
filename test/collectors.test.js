@@ -1,6 +1,7 @@
 import { test, describe, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { makeFixture, cleanup, fakeExec, SID, NOW, PROC_START, jsonl } from './helpers.js';
 import { readRegistry, processTable, isAlive, parseStarttime, procStarts } from '../src/collect/registry.js';
@@ -114,6 +115,13 @@ describe('registry', () => {
       assert.equal(parseStarttime(stat(201, 'claude', '3304488')), '3304488');
       assert.equal(parseStarttime(stat(201, 'a ) (b c) d', '42')), '42');
       assert.equal(parseStarttime(stat(201, '(((', '9')), '9');
+      assert.equal(parseStarttime(stat(201, 'a\nb) c', '7')), '7', 'a newline in the comm');
+    });
+
+    test('(−) parseStarttime needs more than the 20 tokens up to field 22: a line cut right after the value is not trusted (F1b M3)', () => {
+      const cut = '201 (claude) S 1 201 201 0 -1 4194304 100 0 0 0 5 3 0 0 20 0 8 0 3304488'; // field 22 is the last token
+      assert.equal(parseStarttime(cut), null);
+      assert.equal(parseStarttime(`${cut} 1000000`), '3304488');
     });
 
     test('(−) parseStarttime returns null for garbage, a short line or a non-numeric field', () => {
@@ -138,6 +146,88 @@ describe('registry', () => {
       const starts = await procStarts([real]);
       assert.equal(isAlive(real, new Map([[process.pid, 'x']]), starts), true);
       assert.equal(isAlive({ pid: process.pid, procStart: String(Number(real.procStart) + 1) }, new Map([[process.pid, 'x']]), starts), false);
+    });
+  });
+});
+
+describe('registry: procStart as an instant, skipped files, session id case (F1b)', () => {
+  const PS = 'Sat Nov 7 18:57:14 2026'; // what ps prints in UTC (whitespace squashed)
+  const table = new Map([[301, PS]]);
+  const alive = (procStart, t = table) => isAlive({ pid: 301, procStart }, t);
+  // Date reads the zone from TZ when it is set at run time. Asia/Kolkata is UTC+5:30 all year: no DST, so the strings below are fixed.
+  const inKolkata = (run) => {
+    const prev = process.env.TZ;
+    process.env.TZ = 'Asia/Kolkata';
+    try {
+      assert.equal(new Date(2026, 10, 8, 0, 27, 14).toISOString(), '2026-11-07T18:57:14.000Z', 'the zone switch took effect');
+      run();
+    } finally {
+      if (prev === undefined) delete process.env.TZ; else process.env.TZ = prev;
+    }
+  };
+
+  test('(+) the UTC date string, with the day padded or not, is alive', () => {
+    assert.equal(alive(PS), true);
+    assert.equal(alive('Sat Nov  7 18:57:14 2026'), true);
+  });
+
+  test('(+) a local-time date string for the same instant is alive', () => {
+    inKolkata(() => {
+      assert.equal(alive('Sun Nov 8 00:27:14 2026'), true);
+      assert.equal(alive('Sun Nov  8 00:27:14 2026'), true, 'padded like ps');
+    });
+  });
+
+  test('(+) an ISO string for the same instant is alive, with Z, an offset or milliseconds; the comparison is to the second', () => {
+    assert.equal(alive('2026-11-07T18:57:14Z'), true);
+    assert.equal(alive('2026-11-07T20:57:14+02:00'), true);
+    assert.equal(alive('2026-11-07T18:57:14.987Z'), true);
+  });
+
+  test('(+) a string nobody can parse is alive, like a missing procStart: ps lists the pid', () => {
+    for (const odd of ['not a date', 'Sat Foo 7 18:57:14 2026', 'pid-reuse-unknown']) assert.equal(alive(odd), true, odd);
+  });
+
+  test('(+) the ps side cannot be read as a date: nothing to compare, the pid ps lists stays alive', () => {
+    assert.equal(alive('Mon Oct 5 10:00:00 2026', new Map([[301, 'garbled']])), true);
+  });
+
+  test('(−) a parsed instant that differs is a reused pid: not alive, in every format', () => {
+    assert.equal(alive('Mon Oct  5 10:00:00 2026'), false);
+    assert.equal(alive('Sat Nov 7 18:57:15 2026'), false, 'one second off');
+    assert.equal(alive('2026-11-07T18:57:15Z'), false);
+    assert.equal(alive('2026-11-07T18:57:13.999Z'), false);
+    assert.equal(alive('2026-11-07T18:57:14'.replace('18', '19') + 'Z'), false);
+    inKolkata(() => assert.equal(alive('Sun Nov 8 00:27:15 2026'), false));
+  });
+
+  test('(−) a pid ps does not list is not alive, whatever the format', () => {
+    assert.equal(isAlive({ pid: 999, procStart: '2026-11-07T18:57:14Z' }, table), false);
+  });
+
+  describe('files', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nika-reg-'));
+    after(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const UP = 'AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA';
+    const sessions = path.join(dir, 'sessions');
+    fs.mkdirSync(sessions);
+    const put = (name, body) => fs.writeFileSync(path.join(sessions, name), typeof body === 'string' ? body : JSON.stringify(body));
+    put('401.json', { pid: 401, sessionId: UP, cwd: '/x' });
+    put('402.json', { pid: 402, sessionId: 'not-a-uuid' });
+    put('403.json', { pid: 403, sessionId: UP.toLowerCase() });
+    put('404.json', '{broken');
+
+    test('(+) an upper-case UUID session id is accepted and stored in lower case', async () => {
+      const r = await readRegistry(dir);
+      const e = r.entries.find((x) => x.pid === 401);
+      assert.equal(e?.sessionId, UP.toLowerCase());
+      assert.equal(r.entries.find((x) => x.pid === 403)?.sessionId, UP.toLowerCase(), 'both spellings are one session id');
+    });
+
+    test('(−) an id that is no UUID in any case, and a file that is not JSON, are skipped and listed', async () => {
+      const r = await readRegistry(dir);
+      assert.deepEqual(r.skipped, ['402.json', '404.json']);
+      assert.deepEqual(r.entries.map((x) => x.pid).sort(), [401, 403]);
     });
   });
 });

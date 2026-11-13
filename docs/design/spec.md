@@ -96,7 +96,7 @@ Rules for every direction:
 └────────────┴──────────────────────────────────────────────────────────┘
 ```
 
-- Shell: left sidebar 232 px (brand, Dashboard, Settings, project list with attention counts, environment footer); collapses to a 60 px icon rail at window width ≤ 900 px. Built amendment 2026-11-09 (0.3.1): with no projects the list shows "No projects yet." and "Add a repo with + to start agents and apply rules here."; below it a "Detected" sub-heading lists up to 8 unregistered repositories with live agents (needs-you count, then live count, then name), each row linking to its group heading on the dashboard plus a small "Add project" button (`aria-label` "Add <name> as a project") that opens the same folder picker; the list is hidden when empty.
+- Shell: left sidebar 232 px (brand, Dashboard, Settings, project list with attention counts, environment footer); collapses to a 60 px icon rail at window width ≤ 900 px. Built amendment 2026-11-09 (0.3.1): with no projects the list shows "No projects yet." and "Add a repo with + to start agents and apply rules here."; below it a "Detected" sub-heading lists up to 8 unregistered repositories with live agents (needs-you count, then live count, then name), each row linking to its group heading on the dashboard plus a small "Add project" button (`aria-label` "Add <name> as a project") that opens the same folder picker; the list is hidden when empty. Built amendment 2026-11-13 (0.4, F1b): past 8 rows the list ends with one ghost button "N more" (`aria-label` "Show N more detected repositories", `data-fk="det-more"`; the 60 px rail uses `--fs-small` and no side padding); it shows the rest in the same order, then leaves, and focus goes to the first row that was behind it. The state is `state.expanded` id `detected`, so it survives redraws.
 - Dashboard: "Waiting on you" queue on top, then one group per project of dense 40 px rows (status · name · model · prompt + branch · last activity · pane · ⋯).
 - Project view: agents on the left (a "Show ended" checkbox in the header bar, §1.2), three cards on the right (Rules, Project setup, New agents: defaults and limit). **(built amendment 2026-11-09 (0.3.4))** The Plugins card became **Project setup**; its button opens the Choose plugins dialog (§3.15) instead of leaving for Settings.
 - Spawn: right side sheet (480 px). Rules: large modal with file list + diff + notes.
@@ -622,7 +622,7 @@ Grid per line: old no (3.5em) · new no (3.5em) · marker (1.5em) · text. Mono 
 ### 3.8 Toast and banner
 
 - Toast: bottom centre, max 440 px, `--text` on `--bg` (inverted), 4.2 s, optional one action button; errors use `--danger` + white and `role="alert"`, info uses `role="status"`. Toasts never steal focus. Every toast action also exists elsewhere (e.g. Apply rules in the project view), so a missed toast never blocks a task.
-- Banner (page-level): icon + bold first sentence + fix + optional [Retry]. Kinds: danger (tmux missing, disconnected), warn (claude missing), info (browser tier read-only).
+- Banner (page-level): icon + bold first sentence + fix + optional [Retry]. Kinds: danger (tmux missing, disconnected), warn (claude missing), info (browser tier read-only). Not banners: a `tmux` source that only says no server is running is `ok` (no panes, nothing wrong), and registry files nika skipped (unreadable or not in Claude's format) show as one muted line, `p.skip-note.muted` (`--fs-small`, `--text-muted`), at the top of the dashboard, with the same text as `nika status`: "N session files skipped (unreadable or not in Claude's format)" ("1 session file skipped …" for one). It is information, not an error: the list is only short of those sessions.
 
 ### 3.9 Terminal mirror
 
@@ -860,7 +860,7 @@ An orchestrator can have sub-orchestrators, and each parent has agents of its ow
 | folded | the row shows `span.tree-hid[aria-hidden]` "+N", with the number of hidden agents that need you beside it (the attention diamond and `--attn`) |
 | orphan | a parent that is not running: the row is a root, keeps its role tag, and shows `span.tree-orphan` "parent ended" (title "This agent's parent session is no longer running.") |
 
-Folding is local to the page (`state.open`, key `!tree:<scope>:<id>`, the "!" pattern of the Ended sections; rebuilt rows get focus back through `data-fk`). The 12-row cap counts root subtrees and never splits one: "Show N more live agents" counts every agent left out.
+Folding is local to the page (`state.open`, key `!tree:<scope>:<id>`, the "!" pattern of the Ended sections; rebuilt rows get focus back through `data-fk`). Live rows are never capped (0.4, F1b: a live session behind a button looks like a missing one). The 12-row cap (`ROW_CAP`) applies to the Ended section only: it draws its first 12 rows, then a ghost button "Show N more ended agents" (`data-fk="more:<scope>"`, state id `cap:<scope>`), and its summary "Ended (n)" counts all of them.
 
 Flat lists: Ended, the "Waiting on you" queue and any filter draw rows without tree markup. A row whose parent is listed gets a chip "under <parent>" (cut at 24 characters, full name in the title) after the project chip. An ended row has no parent (the server gives a parent only to live agents), so it gets no chip. A group where nothing nests (no row has children, none is an orphan) is drawn exactly as in 0.3.
 
@@ -1328,7 +1328,7 @@ B: centred column max 760 px; drawer pushes ≥ 1180 px and overlays below. C: l
 | Long agent name (≤ 40 by `AGENT_NAME`) | ellipsis in rows and tiles; full in the session header |
 | Long branch | chip max 22ch, ellipsis, full in `title` |
 | Long prompt | one line with ellipsis in rows; 2 lines (`line-clamp`) in cards/tiles; full in the session header tooltip and the transcript |
-| 50+ agents | ended folded per project; live rows per project capped at 12 with "Show N more"; Mod+F filter by name, prompt or branch; sidebar shows only attention counts; announcements grouped; C caps lanes at 6 tiles and turns tails off for tiles beyond the first 12 on screen |
+| 50+ agents | ended folded per project; live rows never capped, the Ended section draws 12 rows then "Show N more ended agents"; Mod+F filter by name, prompt or branch; sidebar shows only attention counts; announcements grouped; C caps lanes at 6 tiles and turns tails off for tiles beyond the first 12 on screen |
 | Very long transcript entry | text > 12 lines clamps with "Show all N lines"; tool output in a `<pre>` (max-height 22em, scroll); entries > 32 KB arrive with `truncated: true` → "This entry is over 32 KB; nika shows the first part only."; history pages of 50 with "Load older" (keeps scroll position) |
 | 200-column terminal | rendered at full width with horizontal scroll; header shows "200 × 50"; jump-to-live also scrolls to column 0 |
 | Wide characters (CJK, emoji) | rendered as text; column math must count terminal cells (wide = 2), see Risks |

@@ -12,7 +12,7 @@ import {
   CUSTOM, MODEL_ID, MODEL_HINT, ROLES, ROLE_LABEL, modelLabel, fillModelSelect, fillRoleOverride, effectiveRoleModels,
 } from './models-ui.js';
 import { buildGroups, agentNodes, swap, interacting, render } from './app.js';
-import { sidebarModel, orchState, savedPick, otherRunning, roleTag, spawnLimits, resetEndedState } from './dash-model.js';
+import { DETECTED_MAX, sidebarModel, orchState, savedPick, otherRunning, roleTag, spawnLimits, resetEndedState } from './dash-model.js';
 import { pluginView, pluginSave, sortIds, countText, filterNote } from './plugin-view.js';
 
 const PERM_LABEL = {
@@ -165,19 +165,25 @@ function showGroup(key) {
 
 let sideSig = '';
 function renderSide() {
-  const { empty, rows, detected } = sidebarModel({ projects: state.projects, groups: buildGroups() });
+  const { empty, rows, detected, detectedMore } = sidebarModel({ projects: state.projects, groups: buildGroups(), showAll: state.expanded.has('detected') });
   const cur = state.route.name === 'project' ? state.route.key : '';
   const env = [state.me?.tmux, state.me?.claude, state.me?.version];
-  const sig = JSON.stringify([rows, detected, cur, env]);
+  const sig = JSON.stringify([rows, detected, detectedMore, cur, env]);
   if (sig === sideSig) return;
   sideSig = sig;
   swap($('#side-projects'), rows.map((r) => h('li', null,
     sideLink({ href: `#project/${r.key}`, 'data-fk': `side:${r.key}`, title: r.name, 'aria-current': r.key === cur ? 'page' : null }, r))));
   $('#side-projects').hidden = empty;
   $('#side-hint').hidden = !empty;
-  swap($('#side-detected'), detected.map((r) => h('li', { class: 'has-act' },
-    sideLink({ href: '#dashboard', 'data-fk': `det:${r.key}`, title: `Show ${r.name} on the dashboard`, onclick: (e) => { e.preventDefault(); showGroup(r.key); } }, r),
-    h('button', { type: 'button', class: 'btn icon ghost', 'data-fk': `detadd:${r.key}`, 'aria-label': `Add ${r.name} as a project`, title: `Add ${r.name} as a project`, onclick: () => addProject() }, icon('plus')))));
+  swap($('#side-detected'), [
+    detected.map((r) => h('li', { class: 'has-act' },
+      sideLink({ href: '#dashboard', 'data-fk': `det:${r.key}`, title: `Show ${r.name} on the dashboard`, onclick: (e) => { e.preventDefault(); showGroup(r.key); } }, r),
+      h('button', { type: 'button', class: 'btn icon ghost', 'data-fk': `detadd:${r.key}`, 'aria-label': `Add ${r.name} as a project`, title: `Add ${r.name} as a project`, onclick: () => addProject() }, icon('plus')))),
+    detectedMore ? h('li', { class: 'side-more' }, h('button', {
+      type: 'button', class: 'btn ghost', 'data-fk': 'det-more', 'aria-label': `Show ${detectedMore} more detected repositories`, text: `${detectedMore} more`,
+      onclick: () => { state.expanded.add('detected'); renderSide(); $(`#side-detected li:nth-child(${DETECTED_MAX + 1}) a`)?.focus(); }, // focus: the first row that was behind the button
+    })) : null,
+  ]);
   $('#side-det').hidden = !detected.length;
   const me = state.me;
   $('#brand-ver').textContent = me?.version ? me.version.split('.').slice(0, 2).join('.') : '';

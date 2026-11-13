@@ -1,6 +1,6 @@
 // 0.4, O2b: the nesting tree, the spawn items and the spawn sheet, the page side (design 0.4 sections 2 and 3).
 // The real page code runs in a vm against the small fake DOM (test/fake-dom.js) and recorded requests; the browser is exercised by
-// hand. The pure helpers (treeRows, capRoots, spawnLimits) are tested in test/dash-model.test.js. The copy strings are written out
+// hand. The pure helpers (treeRows, spawnLimits) are tested in test/dash-model.test.js. The copy strings are written out
 // here from design 2.4 / 2.5 / 3 on purpose: the tests must not read them back from the code under test. Names and ids are synthetic.
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -12,7 +12,7 @@ import { El, installDom, withClass, focus } from './fake-dom.js';
 import { h, icon, roleTagEl, ctxEl } from '../public/dom.js';
 import { menuEl, sessionHref, RX } from '../public/ui.js';
 import {
-  orchState, roleTag, savedPick, otherRunning, parentOf, spawnLimits, statusOf, treeRows, capRoots, hasTree, endedPlan, STATUS_ORDER,
+  orchState, roleTag, savedPick, otherRunning, parentOf, spawnLimits, statusOf, treeRows, hasTree, endedPlan, STATUS_ORDER,
 } from '../public/dash-model.js';
 import { parseModes, modesAfter, modeEl, settingModeEl } from '../public/modes.js';
 import { pluginView, pluginSave, sortIds, countText, filterNote } from '../public/plugin-view.js';
@@ -84,7 +84,7 @@ function treeRig({ isApp = true, open = [], expanded = [], rowItems = null } = {
   const seen = [];
   const ctx = {
     isApp, state, hooks: rowItems ? { rowItems: (...args) => { seen.push(args); return rowItems; } } : {}, ORDER: STATUS_ORDER, ROW_CAP: 12,
-    endedPlan, statusOf, treeRows, capRoots, hasTree, parentOf, roleTag, roleTagEl, ctxEl, h, icon, menuEl, sessionHref, SHAPE,
+    endedPlan, statusOf, treeRows, hasTree, parentOf, roleTag, roleTagEl, ctxEl, h, icon, menuEl, sessionHref, SHAPE,
     rowMode: () => null, canEndRow: () => false, reasonOf: () => 'Needs you', endedText: () => 'Ended',
     statusEl: () => new El('span'), modeEl: () => new El('span'), modelEl: () => new El('span'), timeEl: () => new El('span'),
     copyText: () => {}, showReport: () => {}, focusPane: () => {}, endSession: () => {},
@@ -385,27 +385,75 @@ describe('Claude\'s own subagents under a row: hidden when finished until "Show 
   });
 });
 
-describe('the root cap (design 2.1)', () => {
-  const many = (n) => Array.from({ length: n }, (_, i) => ag(`${String(i + 1).padStart(8, '0')}-0000-4000-8000-000000000000`, `agent-${i + 1}`, { pane: { id: `%${i + 20}`, command: 'claude' }, lastActivity: 100 - i }));
+describe('row caps (design 2.1, F1b): live rows are never capped, the Ended section is', () => {
+  const idOf = (i) => `${String(i + 1).padStart(8, '0')}-0000-4000-8000-000000000000`;
+  const many = (n) => Array.from({ length: n }, (_, i) => ag(idOf(i), `agent-${i + 1}`, { pane: { id: `%${i + 20}`, command: 'claude' }, lastActivity: 100 - i }));
+  const done = (n) => Array.from({ length: n }, (_, i) => ag(idOf(i + 500), `done-${i + 1}`, { live: false, state: 'ended', pane: null, lastActivity: 100 - i }));
+  const sectionOf = (nodes) => nodes.find((n) => n.tag === 'details');
+  const endedRows = (nodes) => rowsOf(sectionOf(nodes).all((n) => n.tag === 'ul')[0]);
+  const moreOf = (node) => node.all((n) => n.tag === 'button' && /^more:/.test(n.attrs['data-fk'] ?? ''));
 
-  test('(+) 12 root subtrees show; the button counts every agent left out, a whole subtree at a time', () => {
-    const roots = many(13);
-    const kid = ag('99999999-9999-4999-8999-999999999999', 'kid', { parent: roots[12].id, pane: { id: '%60', command: 'claude' }, lastActivity: 1 });
-    const { agentNodes } = treeRig();
-    const [ul] = agentNodes(group([...roots, kid]), '', 'g:k');
-    assert.equal(rowsOf(ul).length, 12);
-    const more = ul.all((n) => n.tag === 'button' && n.attrs['data-fk'] === 'more:g:k')[0];
-    assert.equal(more.textContent, 'Show 2 more live agents');
+  test('(+) 20 live root rows in one group all render, and there is no "Show more" button', () => {
+    const [ul, ...rest] = treeRig().agentNodes(group(many(20)), '', 'g:k');
+    assert.equal(rowsOf(ul).length, 20);
+    assert.equal(moreOf(ul).length, 0);
+    assert.deepEqual(rest, []);
   });
 
-  test('(+) "Show more" asks for a render and the expanded group shows all of it', () => {
-    const roots = many(13);
+  test('(+) a live tree is never cut: 20 roots and a child under the last one give 21 rows', () => {
+    const roots = many(20);
+    const kid = ag('99999999-9999-4999-8999-999999999999', 'kid', { parent: roots[19].id, pane: { id: '%90', command: 'claude' }, lastActivity: 1 });
+    const [ul] = treeRig().agentNodes(group([...roots, kid]), '', 'g:k');
+    assert.equal(rowsOf(ul).length, 21);
+    assert.equal(moreOf(ul).length, 0);
+  });
+
+  test('(+) 20 live rows beside 3 ended ones: all live rows draw and the 3 ended fit, so no button at all', () => {
     const r = treeRig();
-    const [ul] = r.agentNodes(group(roots), '', 'g:k');
-    ul.all((n) => n.attrs['data-fk'] === 'more:g:k')[0].fire('click');
+    r.state.showEnded = true;
+    const nodes = r.agentNodes(group([...many(20), ...done(3)]), '', 'g:k');
+    assert.equal(rowsOf(nodes[0]).length, 20);
+    assert.equal(endedRows(nodes).length, 3);
+    assert.equal(nodes.flatMap(moreOf).length, 0);
+  });
+
+  test('(+) 13 ended rows: the Ended section draws 12 and a button that counts the one left out; its summary still counts all 13', () => {
+    const r = treeRig();
+    r.state.showEnded = true;
+    const nodes = r.agentNodes(group(done(13)), '', 'g:k');
+    assert.equal(endedRows(nodes).length, 12);
+    assert.equal(sectionOf(nodes).all((n) => n.tag === 'summary')[0].textContent, 'Ended (13)');
+    const [more] = moreOf(sectionOf(nodes));
+    assert.equal(more.textContent, 'Show 1 more ended agents');
+    assert.equal(more.attrs['data-fk'], 'more:g:k');
+  });
+
+  test('(+) "Show more" on the Ended section asks for a render and the expanded section then shows all of it, without the button', () => {
+    const r = treeRig();
+    r.state.showEnded = true;
+    const first = r.agentNodes(group(done(30)), '', 'g:k');
+    assert.equal(moreOf(sectionOf(first))[0].textContent, 'Show 18 more ended agents');
+    moreOf(sectionOf(first))[0].fire('click');
     assert.ok(r.state.expanded.has('cap:g:k'));
     assert.deepEqual(r.renders, [true]);
-    assert.equal(rowsOf(r.agentNodes(group(roots), '', 'g:k')[0]).length, 13);
+    const again = r.agentNodes(group(done(30)), '', 'g:k');
+    assert.equal(endedRows(again).length, 30);
+    assert.equal(moreOf(sectionOf(again)).length, 0);
+  });
+
+  test('(−) exactly 12 ended rows: nothing is cut, no button', () => {
+    const r = treeRig();
+    r.state.showEnded = true;
+    const nodes = r.agentNodes(group(done(12)), '', 'g:k');
+    assert.equal(endedRows(nodes).length, 12);
+    assert.equal(moreOf(sectionOf(nodes)).length, 0);
+  });
+
+  test('(−) the project page counts its own scope: expanding the dashboard group leaves the project page capped', () => {
+    const r = treeRig({ expanded: ['cap:g:k'] });
+    r.state.showEnded = true;
+    assert.equal(endedRows(r.agentNodes(group(done(13)), '', 'g:k')).length, 13);
+    assert.equal(endedRows(r.agentNodes(group(done(13)), '', 'pv:k', { showEnded: true })).length, 12);
   });
 });
 
