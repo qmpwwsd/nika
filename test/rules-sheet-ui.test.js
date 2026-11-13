@@ -41,20 +41,23 @@ function rig(files) {
     return nodes.get(sel);
   };
   const calls = [];
+  const copied = [];
   const appFetch = async (url, opts = {}) => {
     calls.push({ method: opts.method ?? 'GET', url, json: opts.json });
+    if (url === '/api/app/rules/apply') return { status: 200, body: { written: ['rules/orchestration.md'], backupDir: '/state/backups/acme-api/20261113T000000Z' } };
     if (url === '/api/app/rules/preview') return { status: 200, body: { hash: 'a'.repeat(64), files, warnings: [], backupDir: '/state/backups/acme-api/20261113T000000Z' } };
     throw new Error(`unexpected request ${url}`);
   };
   const ctx = {
-    h, icon, $: node, state: { settings: {}, projects: [] }, hooks: {}, appFetch, announce: () => {}, copyText: () => {},
+    h, icon, $: node, state: { settings: {}, projects: [], modes: { map: {} } }, hooks: {}, appFetch, announce: () => {}, copyText: (text, what) => copied.push([text, what]),
+    parseModes: () => null, modesAfter: (modes) => modes, // the poll that follows an apply finds nothing new here
     errText: (r) => r?.body?.message ?? `The server answered ${r?.status}.`,
     openDialog: (dlg) => { dlg.open = true; }, swap: (host, list) => host.replaceChildren(...list.flat().filter(Boolean)),
     setBusy: () => {}, render: () => {}, rulesEl: () => new El('span'), location: { hash: '' }, document: { title: '' }, window: { addEventListener: () => {} },
     setTimeout, clearTimeout, AbortController, TextEncoder,
   };
   const api = vm.runInNewContext(`${PROJECT_SRC}\n({ openRules, ru })`, ctx);
-  return { api, node, calls, ctx };
+  return { api, node, calls, ctx, copied };
 }
 
 const navButtons = (r) => r.node('#ru-main').all((n) => n.tag === 'button' && n.attrs['data-fk']?.startsWith('ruf:'));
@@ -86,6 +89,23 @@ test('(+) with nothing else to change the skipped file is still not preselected,
   await settle();
   assert.equal(r.api.ru.sel, 0);
   assert.match(r.node('#ru-foot').textContent, /^0 files change · 3 unchanged · 1 skipped/);
+});
+
+test('(+) after Apply the backup path has a copy button with a title equal to its name (icon only); a failed apply shows none (0.4.0)', async () => {
+  const r = rig(FILES);
+  r.api.openRules({ key: KEY, dir: '/work/acme-api', name: 'acme-api' });
+  await settle();
+  r.node('#ru-foot').all((n) => n.attrs.id === 'ru-apply')[0].click();
+  await settle();
+  const copy = r.node('#ru-main').all((n) => n.tag === 'button' && n.attrs['aria-label'] === 'Copy backup path')[0];
+  assert.ok(copy, 'the success view has it');
+  assert.equal(copy.attrs.title, 'Copy backup path');
+  copy.click();
+  assert.deepEqual(r.copied, [['/state/backups/acme-api/20261113T000000Z', 'backup path']]);
+  const fresh = rig(FILES);
+  fresh.api.openRules({ key: KEY, dir: '/work/acme-api', name: 'acme-api' });
+  await settle();
+  assert.equal(fresh.node('#ru-main').all((n) => n.attrs?.['aria-label'] === 'Copy backup path').length, 0, 'the preview has no such button');
 });
 
 test('(+) the page never sends a file list: apply posts the hash and the two flags only, so a skipped file cannot be written from here', () => {

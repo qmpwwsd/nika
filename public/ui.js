@@ -128,7 +128,8 @@ export const STATUS = {
 export const ORDER = STATUS_ORDER;
 
 export function statusEl(s, { compact = false, pill = false } = {}) {
-  return h('span', { class: `st${pill ? ' pill-st' : ''}`, 'data-s': s },
+  // The word is hidden from sight at narrow widths (rows show only the glyph): the title is what a hover shows (0.4.0).
+  return h('span', { class: `st${pill ? ' pill-st' : ''}`, 'data-s': s, title: STATUS[s].label },
     h('span', { class: 'st-g', 'aria-hidden': 'true' }),
     h('span', { class: compact ? 'sr-only' : 'st-l', text: STATUS[s].label }));
 }
@@ -205,17 +206,23 @@ export function setBusy(btn, busy, label) {
 /* ---------- dialogs: native showModal, focus returns to the opener ---------- */
 const openers = new Map();
 
-export function openDialog(dlg, { focus } = {}) {
+/**
+ * Opens `dlg` as a modal and closes every other open dialog, except `keep`: the dialog this one stacks on (the project page's Setup
+ * drawer, whose cards open the rules, plugins and models dialogs). When `dlg` closes, focus goes back to its opener once `keep` is the
+ * only dialog left open.
+ */
+export function openDialog(dlg, { focus, keep } = {}) {
   const el = document.activeElement;
-  openers.set(dlg, { el, fk: el?.dataset?.fk ?? null });
-  for (const d of $$('dialog[open]')) if (d !== dlg) d.close();
+  openers.set(dlg, { el, fk: el?.dataset?.fk ?? null, under: keep?.open ? keep : null });
+  for (const d of $$('dialog[open]')) if (d !== dlg && d !== keep) d.close();
   if (!dlg.open) dlg.showModal();
   (focus ?? $('[autofocus]', dlg) ?? $('h2', dlg))?.focus();
 }
 
 function restoreFocus(dlg) {
-  if ($('dialog[open]')) return;
   const o = openers.get(dlg);
+  const other = $('dialog[open]'); // the first open one in the page: the drawer comes first in index.html
+  if (other && other !== o?.under) return;
   openers.delete(dlg);
   let el = o?.el?.isConnected ? o.el : null;
   const menu = el?.closest('.menu');
@@ -270,7 +277,7 @@ export function menuEl(label, items, fk, trigger) {
 
 export const menuIsOpen = () => Boolean($('.menu:not([hidden])'));
 
-function closeMenu(m, focus = true) {
+export function closeMenu(m, focus = true) {
   m.hidden = true;
   m.removeAttribute('data-up');
   m.previousElementSibling?.setAttribute('aria-expanded', 'false');
@@ -289,8 +296,12 @@ export function initMenus() {
     m.hidden = !open;
     btn.setAttribute('aria-expanded', String(open));
     if (!open) return;
-    // flip above the button when the list would run past the bottom of the window
-    if (window.innerHeight - btn.getBoundingClientRect().bottom < m.offsetHeight + 16) m.dataset.up = '1';
+    // flip above the button when the list would run past the bottom of the window and fits above it (inside a dialog: above the top of its
+    // scrolling body, which would cut it off); else it stays below and the body scrolls to show all of it
+    const r = btn.getBoundingClientRect();
+    const need = m.offsetHeight + 16;
+    if (window.innerHeight - r.bottom < need && r.top - (btn.closest('.dlg-body')?.getBoundingClientRect().top ?? 0) >= need) m.dataset.up = '1';
+    else m.scrollIntoView({ block: 'nearest' });
     $('button, a', m)?.focus();
   });
   document.addEventListener('keydown', (e) => {

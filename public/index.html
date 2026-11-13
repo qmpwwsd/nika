@@ -33,6 +33,7 @@
   <symbol id="i-warn" viewBox="0 0 16 16"><path d="M8 2 1.5 13.5h13z"/><path d="M8 6.5v3.5M8 11.8v.2"/></symbol>
   <symbol id="i-check" viewBox="0 0 16 16"><path d="m3 8.5 3 3 7-7"/></symbol>
   <symbol id="i-x" viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8"/></symbol>
+  <symbol id="i-panel" viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><path d="M10 2.5v11"/></symbol>
   <symbol id="i-m-manual" viewBox="0 0 16 16"><path d="M4.5 9V5.5M7 8V3M9.5 8V3.5M12 9V5.5M4.5 9v1.5a4 4 0 0 0 4 4h.5a3 3 0 0 0 3-3V9M4.5 11 2.9 9.4"/></symbol>
   <symbol id="i-m-edits" viewBox="0 0 16 16"><path d="M10.5 2.8l2.7 2.7L6 12.7l-3.3.6.6-3.3zM9 4.3l2.7 2.7"/></symbol>
   <symbol id="i-m-plan" viewBox="0 0 16 16"><path d="M1.8 4.2 5.6 2.6l4.8 1.6 3.8-1.6v9.2l-3.8 1.6-4.8-1.6-3.8 1.6zM5.6 2.6v9.2M10.4 4.2v9.2"/></symbol>
@@ -48,8 +49,8 @@
   <nav class="side" aria-label="Main" data-app-only>
     <div class="brand"><svg class="logo" aria-hidden="true"><use href="#i-logo"/></svg><b>nika</b><span id="brand-ver"></span></div>
     <div class="nav">
-      <a href="#dashboard" data-nav="dashboard"><svg class="ic" aria-hidden="true"><use href="#i-grid"/></svg><span class="label">Dashboard</span><kbd data-mod="1"></kbd></a>
-      <a href="#settings" data-nav="settings"><svg class="ic" aria-hidden="true"><use href="#i-gear"/></svg><span class="label">Settings</span><kbd data-mod=","></kbd></a>
+      <a href="#dashboard" data-nav="dashboard" title="Dashboard"><svg class="ic" aria-hidden="true"><use href="#i-grid"/></svg><span class="label">Dashboard</span><kbd data-mod="1"></kbd></a>
+      <a href="#settings" data-nav="settings" title="Settings"><svg class="ic" aria-hidden="true"><use href="#i-gear"/></svg><span class="label">Settings</span><kbd data-mod=","></kbd></a>
     </div>
     <div class="side-h"><h2 id="side-p">Projects</h2><button type="button" class="btn icon ghost" id="side-add" aria-label="Add project" title="Add project"><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg></button></div>
     <div class="side-hint" id="side-hint" hidden><p>No projects yet.</p><p>Add a repo with + to start agents and apply rules here.</p></div>
@@ -148,7 +149,7 @@
                 <div class="inline compact-row">
                   <input type="checkbox" role="switch" class="switch" id="set-compact" data-fk="compact-on" aria-describedby="set-compact-result set-compact-help">
                   <label for="set-compact">Auto-compact at</label>
-                  <span class="stepper"><button type="button" class="btn" data-fk="compact-dec" data-step="-5" data-step-for="set-compact-pct" aria-label="5 percent less">−</button><input type="number" id="set-compact-pct" data-fk="compact-pct" min="20" max="95" aria-label="Auto-compact at, percent of the window" aria-describedby="set-compact-result set-compact-cap set-compact-err"><button type="button" class="btn" data-fk="compact-inc" data-step="5" data-step-for="set-compact-pct" aria-label="5 percent more">+</button></span>
+                  <span class="stepper"><button type="button" class="btn" data-fk="compact-dec" data-step="-5" data-step-for="set-compact-pct" aria-label="5 percent less" title="5 percent less">−</button><input type="number" id="set-compact-pct" data-fk="compact-pct" min="20" max="95" aria-label="Auto-compact at, percent of the window" aria-describedby="set-compact-result set-compact-cap set-compact-err"><button type="button" class="btn" data-fk="compact-inc" data-step="5" data-step-for="set-compact-pct" aria-label="5 percent more" title="5 percent more">+</button></span>
                   <span aria-hidden="true">% of</span>
                   <select id="set-compact-win" data-fk="compact-win" aria-label="Window the percent applies to" aria-describedby="set-compact-result"><option value="200000">200k</option><option value="400000">400k</option><option value="1000000">1M</option><option value="model">Model's full window</option></select>
                   <span class="onoff-st" id="set-compact-st" aria-hidden="true"></span>
@@ -189,7 +190,7 @@
                   <label class="radio-card"><input type="radio" name="place" value="under-last"><span><b>Under the last agent</b><span>Stacks below the most recently started agent pane.</span></span></label>
                 </fieldset>
                 <div class="field"><label for="set-max">Agents per orchestrator</label>
-                  <div class="inline"><span class="stepper"><button type="button" class="btn" data-step="-1" aria-label="One fewer">−</button><input type="number" id="set-max" min="1" max="8" aria-describedby="set-max-help set-max-err"><button type="button" class="btn" data-step="1" aria-label="One more">+</button></span></div>
+                  <div class="inline"><span class="stepper"><button type="button" class="btn" data-step="-1" aria-label="One fewer" title="One fewer">−</button><input type="number" id="set-max" min="1" max="8" aria-describedby="set-max-help set-max-err"><button type="button" class="btn" data-step="1" aria-label="One more" title="One more">+</button></span></div>
                   <p class="help" id="set-max-help">1 to 8. How many agents each orchestrator can run at once; the agents you spawn from nika share one more such limit. One project runs at most 3 times this number, and never more than 24.</p><p class="err" id="set-max-err" hidden></p></div>
               </section>
 
@@ -206,9 +207,14 @@
   </main>
 </div>
 
+<dialog id="dlg-setup" class="sheet" aria-labelledby="su-h" aria-describedby="su-d" data-app-only>
+  <div class="dlg-head"><div><h2 id="su-h" tabindex="-1">Setup</h2><p id="su-d"></p></div><button type="button" class="btn icon ghost" data-close aria-label="Close" title="Close"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button></div>
+  <div class="dlg-body" id="su-body"></div>
+</dialog>
+
 <dialog id="dlg-spawn" class="sheet" aria-labelledby="sp-h" aria-describedby="sp-d" data-app-only>
   <form id="spawn-form" class="dlg-form" novalidate>
-    <div class="dlg-head"><div><h2 id="sp-h" tabindex="-1">Spawn agent</h2><p id="sp-d"></p></div><button type="button" class="btn icon ghost" data-close aria-label="Close"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button></div>
+    <div class="dlg-head"><div><h2 id="sp-h" tabindex="-1">Spawn agent</h2><p id="sp-d"></p></div><button type="button" class="btn icon ghost" data-close aria-label="Close" title="Close"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button></div>
     <div class="dlg-body">
       <div class="alert" data-kind="danger" role="alert" id="sp-alert" hidden tabindex="-1"><svg class="ic" aria-hidden="true"><use href="#i-warn"/></svg><p id="sp-alert-text"></p></div>
       <dl class="kv sp-kv"><dt>Parent</dt><dd id="sp-parent" data-fk="sp-parent">None. You start it from nika.</dd></dl>
@@ -230,13 +236,13 @@
 </dialog>
 
 <dialog id="dlg-rules" class="dlg-rules" aria-labelledby="ru-h" aria-describedby="ru-d" data-app-only>
-  <div class="dlg-head"><div><h2 id="ru-h" tabindex="-1">Apply rules</h2><p id="ru-d">Review each change. nika writes only after you confirm and keeps a backup outside the repository. It never runs git.</p></div><button type="button" class="btn icon ghost" data-close id="ru-x" aria-label="Close"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button></div>
+  <div class="dlg-head"><div><h2 id="ru-h" tabindex="-1">Apply rules</h2><p id="ru-d">Review each change. nika writes only after you confirm and keeps a backup outside the repository. It never runs git.</p></div><button type="button" class="btn icon ghost" data-close id="ru-x" aria-label="Close" title="Close"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button></div>
   <div class="dlg-main" id="ru-main"></div>
   <div class="dlg-foot" id="ru-foot"></div>
 </dialog>
 
 <dialog id="dlg-plugins" class="dlg-plugins" aria-labelledby="pl-h" aria-describedby="pl-d" data-app-only>
-  <div class="dlg-head"><div><h2 id="pl-h" tabindex="-1"></h2><p id="pl-d">Ticked plugins are turned on in <code>.claude/settings.local.json</code> the next time you apply rules.</p></div><button type="button" class="btn icon ghost" data-close id="pl-x" data-fk="pl-x" aria-label="Close"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button></div>
+  <div class="dlg-head"><div><h2 id="pl-h" tabindex="-1"></h2><p id="pl-d">Ticked plugins are turned on in <code>.claude/settings.local.json</code> the next time you apply rules.</p></div><button type="button" class="btn icon ghost" data-close id="pl-x" data-fk="pl-x" aria-label="Close" title="Close"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button></div>
   <div class="pl-main">
     <div class="alert" data-kind="danger" role="alert" id="pl-alert" tabindex="-1" hidden><svg class="ic" aria-hidden="true"><use href="#i-warn"/></svg><p id="pl-alert-text"></p></div>
     <label class="search" id="pl-search"><span class="sr-only">Filter plugins</span><svg class="ic" aria-hidden="true"><use href="#i-search"/></svg><input type="search" id="pl-filter" data-fk="pl-filter" placeholder="Filter plugins" autocomplete="off" spellcheck="false"></label>
@@ -248,7 +254,7 @@
 </dialog>
 
 <dialog id="dlg-models" class="dlg-models" aria-labelledby="md-h" aria-describedby="md-d" data-app-only>
-  <div class="dlg-head"><div><h2 id="md-h" tabindex="-1"></h2><p id="md-d">Used when nika starts this project's orchestrator or spawns its agents. Running sessions keep their model.</p></div><button type="button" class="btn icon ghost" data-close id="md-x" data-fk="md-x" aria-label="Close"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button></div>
+  <div class="dlg-head"><div><h2 id="md-h" tabindex="-1"></h2><p id="md-d">Used when nika starts this project's orchestrator or spawns its agents. Running sessions keep their model.</p></div><button type="button" class="btn icon ghost" data-close id="md-x" data-fk="md-x" aria-label="Close" title="Close"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button></div>
   <div class="dlg-body">
     <div class="alert" data-kind="danger" role="alert" id="md-alert" tabindex="-1" hidden><svg class="ic" aria-hidden="true"><use href="#i-warn"/></svg><p id="md-alert-text"></p></div>
     <div id="md-skel" aria-busy="true" hidden></div>
@@ -287,7 +293,7 @@
 </dialog>
 
 <dialog id="dlg-report" class="dlg-report" aria-labelledby="report-title">
-  <div class="dlg-head"><div><h2 id="report-title" tabindex="-1">Report</h2></div><button type="button" class="btn icon ghost" data-close aria-label="Close"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button></div>
+  <div class="dlg-head"><div><h2 id="report-title" tabindex="-1">Report</h2></div><button type="button" class="btn icon ghost" data-close aria-label="Close" title="Close"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button></div>
   <pre id="report-body" class="report-body" tabindex="0"></pre>
 </dialog>
 

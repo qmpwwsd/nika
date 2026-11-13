@@ -260,7 +260,7 @@ The browser dashboard at `http://127.0.0.1:3335` shows the same list without any
   <img src="docs/screenshots/project-light.png" alt="A project page listing the project's agents as a tree: an orchestrator with its subagents, a sub-orchestrator with an agent of its own, and two more agents, each with its context use; and cards for its rules, its project setup (plugins and models) and the settings new agents start with.">
 </picture>
 
-**Project view.** The project's agents as a tree under the orchestrator, with their subagents and context use, and cards for its rules, its project setup (plugins and models) and the settings new agents start with. The buttons above the cards open the orchestrator and spawn an agent or a sub-orchestrator.
+**Project view.** The project's agents as a tree under the orchestrator, with their subagents and context use, and cards for its rules, its project setup (plugins and models) and the settings new agents start with. The buttons above the cards open the orchestrator and spawn an agent or a sub-orchestrator. On a window 1030 px wide or narrower the cards move into a **Setup** drawer that the button next to them opens.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/rules-dark.png">

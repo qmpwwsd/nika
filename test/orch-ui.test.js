@@ -351,6 +351,15 @@ describe('groupActions: the first button follows the orchestrator state (design 
     assert.equal(out.length, 1);
     assert.equal(out[0].attrs['data-fk'], `add:${KEY}`);
   });
+
+  test('(+) Add project hides its word below 900 px, so the title carries it (0.4.0); the (−) side: the other header buttons keep their own titles', () => {
+    const r = flowRig();
+    const [add] = r.api.groupActions({ ...r.g, project: null }, {});
+    assert.equal(add.attrs.title, 'Add project');
+    assert.equal(add.all((n) => n.className === 'lbl')[0].textContent, 'Add project', 'equal to the word the breakpoint hides');
+    const [first] = r.api.groupActions(r.g, { primary: true });
+    assert.notEqual(first.attrs.title, 'Add project');
+  });
 });
 
 describe('start and resume from the header', () => {

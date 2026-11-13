@@ -178,10 +178,11 @@ function treeSlot(a, scope, tree) {
   if (!tree.kids) return h('span', { class: 'tree-sp', 'aria-hidden': 'true' });
   const n = tree.desc.length;
   const need = tree.collapsed && tree.hiddenAttn ? `, ${tree.hiddenAttn} need${tree.hiddenAttn === 1 ? 's' : ''} you` : '';
+  const name = `${tree.collapsed ? 'Show' : 'Hide'} the ${n} agent${n === 1 ? '' : 's'} under ${a.name}${need}`;
   return h('button', {
     type: 'button', class: 'tree-tg', 'data-fk': `tree:${scope}:${a.id}`, 'aria-expanded': String(!tree.collapsed),
     'aria-controls': tree.desc.map((id) => `row-${scope}-${id}`).join(' '),
-    'aria-label': `${tree.collapsed ? 'Show' : 'Hide'} the ${n} agent${n === 1 ? '' : 's'} under ${a.name}${need}`,
+    'aria-label': name, title: name,
     onclick: () => {
       const closed = `!tree:${scope}:${a.id}`; // same pattern as the Ended sections: "!" = folded on purpose
       if (state.open.has(closed)) state.open.delete(closed); else state.open.add(closed);

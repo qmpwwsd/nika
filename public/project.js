@@ -4,7 +4,7 @@
 import { appFetch, applyTheme } from './api.js';
 import { h, icon } from './dom.js';
 import {
-  $, state, hooks, RX, save, toast, announce, errText, copyText, setBusy, fieldError, openDialog, rulesEl, sessionHref, menuEl, syncRadioCards,
+  $, state, hooks, RX, save, toast, announce, errText, copyText, setBusy, fieldError, openDialog, rulesEl, sessionHref, menuEl, closeMenu, syncRadioCards,
 } from './ui.js';
 import { parseModes, modesAfter, settingModeEl, MODE_META } from './modes.js';
 import { copyBanner, copyErrorText, copyToast } from './app-copy.js';
@@ -192,9 +192,10 @@ function renderSide() {
   $('#side-det').hidden = !detected.length;
   const me = state.me;
   $('#brand-ver').textContent = me?.version ? me.version.split('.').slice(0, 2).join('.') : '';
+  const envWord = (name, ok) => `${name} ${ok ? 'ready' : 'missing'}`; // the rail shows only the dot: the title says which one it is
   swap($('#env'), me ? [
-    h('span', { class: me.tmux ? 'env-ok' : 'env-bad' }, h('span', { class: 'long', text: me.tmux ? 'tmux ready' : 'tmux missing' })),
-    h('span', { class: me.claude ? 'env-ok' : 'env-bad' }, h('span', { class: 'long', text: me.claude ? 'claude ready' : 'claude missing' })),
+    h('span', { class: me.tmux ? 'env-ok' : 'env-bad', title: envWord('tmux', me.tmux) }, h('span', { class: 'long', text: envWord('tmux', me.tmux) })),
+    h('span', { class: me.claude ? 'env-ok' : 'env-bad', title: envWord('claude', me.claude) }, h('span', { class: 'long', text: envWord('claude', me.claude) })),
     h('span', { class: 'long', text: `nika ${me.version} · app` }),
   ] : []);
 }
@@ -454,7 +455,7 @@ function act(label, iconName, run, { primary = false, fk, reason = null, title =
 /** primary: true = "Start orchestrator" is the primary button, 'spawn' = "Spawn agent" is. `sub`: add Spawn sub-orchestrator (the project page's header only). */
 function groupActions(g, { primary = false, sub = false } = {}) {
   if (!g.project) {
-    return [h('button', { type: 'button', class: 'btn', 'data-fk': `add:${g.key}`, onclick: () => addProject() }, icon('plus'), h('span', { class: 'lbl', text: 'Add project' }))];
+    return [h('button', { type: 'button', class: 'btn', 'data-fk': `add:${g.key}`, title: 'Add project', onclick: () => addProject() }, icon('plus'), h('span', { class: 'lbl', text: 'Add project' }))]; // the label is hidden below 900 px: the title is the tooltip
   }
   const st = orchState(g.project, g);
   const key = g.project.key;
@@ -509,6 +510,7 @@ function renderProject(force) {
     swap($('#proj-rules'), []);
     swap($('#proj-actions'), []);
     swap($('#proj-setup'), []);
+    swap($('#su-body'), []);
     swap($('#proj-agents'), [h('div', { class: 'empty' }, h('h2', { text: 'This project is not registered' }), h('p', { text: 'It may have been removed. Add it again from the dashboard.' }), h('a', { class: 'btn', href: '#dashboard', text: 'Back to the dashboard' }))]);
     return;
   }
@@ -520,6 +522,7 @@ function renderProject(force) {
   const pick = savedPick(p);
   swap($('#proj-actions'), [
     ...groupActions(g, { primary: 'spawn', sub: true }),
+    setupButton(g),
     menuEl(`More actions for ${p.name}`, [
       { text: 'Copy folder path', run: () => copyText(p.dir, 'folder path') },
       ...(pick ? [{
@@ -530,7 +533,72 @@ function renderProject(force) {
     ], 'proj-menu'),
   ]);
   swap($('#proj-agents'), [...(orchState(p, g).kind === 'gone' ? [goneAlert(p, pick)] : []), ...agentNodes(g, '', `pv:${key}`, { showEnded: state.showEndedProject === true })]);
-  swap($('#proj-setup'), setupCards(p, g));
+  placeSetup(p, g);
+}
+
+/* ---------- Setup drawer (0.4.0): up to 1030 px wide the cards live in a drawer that the header's Setup button opens ---------- */
+const NARROW = '(max-width: 1030px)'; // the stylesheet's query: app.css hides #proj-setup and shows the Setup button under it
+const isNarrow = () => window.matchMedia?.(NARROW)?.matches === true;
+/** A click handler that puts focus on the button first: some web views do not focus a clicked button, and a dialog it opens gives focus back to the element that had it. */
+const focusing = (run) => (e) => { e?.currentTarget?.focus?.(); run(); };
+/** Options for a dialog opened from a card: it stacks on the open drawer instead of closing it. */
+const overSetup = () => ({ keep: $('#dlg-setup') });
+
+/** The cards have one home: the drawer's body when narrow, the page column otherwise. Never both, so no id appears twice. */
+function placeSetup(p, g) {
+  const narrow = isNarrow();
+  $('#su-d').textContent = p.name;
+  swap($(narrow ? '#su-body' : '#proj-setup'), setupCards(p, g));
+  swap($(narrow ? '#proj-setup' : '#su-body'), []);
+}
+
+function openSetup() {
+  openDialog($('#dlg-setup'));
+  $('#su-body').scrollTop = 0; // a drawer that was scrolled last time starts at its first card
+}
+
+function setupButton(g) {
+  return h('button', {
+    type: 'button', class: 'btn setup-open', 'data-fk': `setup:${g.key}`, 'aria-haspopup': 'dialog', 'aria-controls': 'dlg-setup',
+    'aria-label': 'Setup', title: 'Setup', onclick: focusing(openSetup), // icon only below 760 px: the name is also the tooltip
+  }, icon('panel'), h('span', { class: 'lbl', text: 'Setup' }));
+}
+
+/** Backdrop click, hash change and the window crossing 1030 px (matchMedia is missing in old web views and in the test rigs: then the page is wide). */
+function wireSetup() {
+  const dlg = $('#dlg-setup');
+  let down = null; // where the press began: a drag that ends on the backdrop (a text selection) is not a click on it
+  dlg.addEventListener('pointerdown', (e) => { down = e.target; });
+  dlg.addEventListener('click', (e) => {
+    if (e.target === dlg && down === dlg) dlg.close();
+    down = null;
+  });
+  // Esc: an open value menu is the innermost layer, so it closes first and the drawer stays. The key is stopped at keydown (no close request
+  // starts), and `cancel` covers focus outside the drawer and a web view that sends it after a prevented keydown (as plugFilterKey does).
+  let swallow = false;
+  const closeOpenMenu = (e) => {
+    const m = $('.menu:not([hidden])', dlg);
+    if (!m) return false;
+    e.preventDefault();
+    closeMenu(m);
+    return true;
+  };
+  dlg.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape' || !closeOpenMenu(e)) return;
+    swallow = true;
+    setTimeout(() => { swallow = false; }, 0);
+  });
+  dlg.addEventListener('cancel', (e) => {
+    if (swallow) e.preventDefault();
+    else closeOpenMenu(e);
+  });
+  window.addEventListener('hashchange', () => { if (dlg.open) dlg.close(); }); // the Settings link in a card, or a way back
+  window.matchMedia?.(NARROW)?.addEventListener?.('change', () => {
+    const grew = dlg.open && !isNarrow();
+    if (grew) dlg.close(); // the cards go back to the column, and the Setup button is hidden again
+    if (state.route.name === 'project') renderProject(true);
+    if (grew) $('#proj-h').focus(); // the opener is hidden now
+  });
 }
 
 /** The project page's alert for a saved orchestrator whose transcript is gone (design 1.4): state, not an event, so no role="alert". */
@@ -634,7 +702,7 @@ function setupCards(p, g) {
       p.rules?.git === false ? h('p', { class: 'muted', text: 'No .git folder here: this is not a git repository.' }) : null,
       h('div', null, h('button', {
         type: 'button', class: `btn${rs === 'nika' ? '' : ' primary'}`, 'data-fk': 'rules-open',
-        onclick: () => openRules(p), text: rs === 'nika' ? 'Preview rules' : rs === 'none' ? 'Set up rules…' : 'Update rules…',
+        onclick: focusing(() => openRules(p)), text: rs === 'nika' ? 'Preview rules' : rs === 'none' ? 'Set up rules…' : 'Update rules…',
       }))),
     h('div', { class: 'card' },
       h('h2', { text: 'Project setup' }),
@@ -645,13 +713,13 @@ function setupCards(p, g) {
         : h('p', { class: 'muted', text: 'No plugins chosen. Agents use only what the project already enables.' }),
       picked.length > CHIPS_MAX ? h('p', { class: 'help', 'data-fk': 'setup-more', text: `+${picked.length - CHIPS_MAX} more` }) : null,
       h('p', { class: 'muted', text: 'Written into .claude/settings.local.json when you apply rules.' }),
-      h('div', null, h('button', { type: 'button', class: 'btn', 'aria-haspopup': 'dialog', 'data-fk': 'choose-plugins', onclick: () => openPlugins(p), text: 'Choose plugins…' })),
+      h('div', null, h('button', { type: 'button', class: 'btn', 'aria-haspopup': 'dialog', 'data-fk': 'choose-plugins', onclick: focusing(() => openPlugins(p)), text: 'Choose plugins…' })),
       h('h3', null, set.length ? ['Models ', h('span', { class: 'help', text: `${set.length} set here` })] : 'Models'),
       !s ? h('p', { class: 'muted', text: 'Not loaded yet.' })
         : set.length ? h('dl', { class: 'kv', 'data-fk': 'setup-models' }, set.flatMap((r) => modelRow(r, own[r])))
           : h('p', { class: 'muted', text: 'All roles use the defaults from Settings.' }),
       h('p', { class: 'muted', text: "Used when nika starts this project's orchestrator or spawns its agents." }),
-      h('div', null, h('button', { type: 'button', class: 'btn', 'aria-haspopup': 'dialog', 'data-fk': 'choose-models', onclick: () => openModels(p), text: 'Choose models…' }))),
+      h('div', null, h('button', { type: 'button', class: 'btn', 'aria-haspopup': 'dialog', 'data-fk': 'choose-models', onclick: focusing(() => openModels(p)), text: 'Choose models…' }))),
     h('div', { class: 'card' },
       h('h2', { text: 'New agents' }),
       h('dl', { class: 'kv' },
@@ -755,7 +823,7 @@ function openPlugins(p) {
   $('#pl-filter').value = '';
   $('#pl-h').textContent = `Choose plugins for ${trunc(p.name, 32)}`;
   plugRender();
-  openDialog($('#dlg-plugins'), { focus: $('#pl-filter') });
+  openDialog($('#dlg-plugins'), { focus: $('#pl-filter'), ...overSetup() });
   plugLoad();
 }
 
@@ -916,7 +984,7 @@ function openModels(p) {
   Object.assign(md, { project: p, phase: 'loading', loaded: null, alert: '' });
   $('#md-h').textContent = `Models for ${trunc(p.name, 32)}`;
   mdRender();
-  openDialog($('#dlg-models'));
+  openDialog($('#dlg-models'), overSetup());
   mdLoad();
 }
 
@@ -1043,7 +1111,7 @@ function confirmRemove(p) {
       toast(r ? errText(r) : 'Could not reach the nika server.', { kind: 'error' });
     }
   }, { signal: confirmCtl.signal });
-  openDialog(dlg, { focus: $('#cf-cancel') });
+  openDialog(dlg, { focus: $('#cf-cancel'), ...overSetup() });
 }
 
 /* ---------- spawn sheet (design 0.4 section 3) ---------- */
@@ -1287,7 +1355,7 @@ const inert = (f) => f.action === 'unchanged' || f.action === 'skipped';
 
 function openRules(project) {
   Object.assign(ru, { project, preview: null, sel: 0, gitignore: false, foreignOk: false, message: '', result: null });
-  openDialog($('#dlg-rules'));
+  openDialog($('#dlg-rules'), overSetup());
   rulesPreview();
 }
 
@@ -1440,7 +1508,7 @@ function successPhase() {
     written.length ? h('ul', null, written.map((w) => h('li', null, icon('check'), w))) : null,
     ru.result?.backupDir ? [h('p', { class: 'help', text: 'Previous versions are in the backup folder:' }),
       h('div', { class: 'pathbox' }, h('span', { text: ru.result.backupDir }),
-        h('button', { type: 'button', class: 'btn icon ghost', 'aria-label': 'Copy backup path', onclick: () => copyText(ru.result.backupDir, 'backup path') }, icon('copy')))] : null)];
+        h('button', { type: 'button', class: 'btn icon ghost', 'aria-label': 'Copy backup path', title: 'Copy backup path', onclick: () => copyText(ru.result.backupDir, 'backup path') }, icon('copy')))] : null)];
 }
 
 function rulesRender() {
@@ -1565,6 +1633,7 @@ export async function initApp() {
   wireEnded();
   wirePlugins();
   wireModels();
+  wireSetup();
   $('#spawn-form').addEventListener('submit', submitSpawn);
   $('#sp-brief').addEventListener('input', briefCount);
   $('#sp-model').addEventListener('change', () => { // Custom ID shows its field; any other choice hides it and drops its error

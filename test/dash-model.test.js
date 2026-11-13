@@ -724,13 +724,13 @@ describe('sidebar wiring', () => {
   });
 
   describe('the Detected list shows 8 rows, then an "N more" button (F1b)', () => {
-    const rig = (n, { expanded = [] } = {}) => {
+    const rig = (n, { expanded = [], me = null } = {}) => {
       const groups = Array.from({ length: n }, (_, i) => ({ key: `d${String(i).padStart(2, '0')}`, label: `repo-${String(i).padStart(2, '0')}`, root: `/r/${i}`, project: null, counts: { attn: 0, idle: 0, busy: 0, ended: 0, live: n - i } }));
       const hosts = {};
       const host = (sel) => (hosts[sel] ??= { sel, nodes: [], hidden: false, textContent: '' });
       const focused = [];
       const ctx = {
-        state: { projects: [], route: { name: 'dashboard' }, me: null, expanded: new Set(expanded) },
+        state: { projects: [], route: { name: 'dashboard' }, me, expanded: new Set(expanded) },
         DETECTED_MAX, sidebarModel, buildGroups: () => groups, showGroup() {}, addProject() {}, icon: (name) => makeNode('svg', { 'data-i': name }, []),
         h: (tag, attrs, ...kids) => makeNode(tag, attrs, kids),
         $: (sel) => (sel.startsWith('#side-detected li:nth-child(') ? { focus: () => focused.push(sel) } : host(sel)),
@@ -752,6 +752,17 @@ describe('sidebar wiring', () => {
       assert.equal(textOf(moreBtn(r)), '3 more');
       assert.equal(moreBtn(r).attrs['aria-label'], 'Show 3 more detected repositories');
       assert.equal(r.host('#side-det').hidden, false);
+    });
+
+    test('(+) the environment dots: the words are hidden on the rail (900 px and below), so each dot has its words as a title (0.4.0)', () => {
+      const dots = (me) => rig(0, { me }).host('#env').nodes;
+      const [tmux, claude, ver] = dots({ tmux: true, claude: false, version: '0.4.0' });
+      assert.deepEqual([textOf(tmux), tmux.attrs.title, tmux.attrs.class], ['tmux ready', 'tmux ready', 'env-ok']);
+      assert.deepEqual([textOf(claude), claude.attrs.title, claude.attrs.class], ['claude missing', 'claude missing', 'env-bad']);
+      assert.equal(ver.attrs.title, undefined, 'the version line is text with no dot: no title');
+      const [t2, c2] = dots({ tmux: false, claude: true, version: '0.4.0' });
+      assert.deepEqual([t2.attrs.title, c2.attrs.title], ['tmux missing', 'claude ready']);
+      assert.equal(dots(null).length, 0, '(−) no answer from the server yet: no dots, no titles');
     });
 
     test('(+) one hidden repository: the label says "repository", in the singular', () => {

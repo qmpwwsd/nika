@@ -182,6 +182,17 @@ describe('the tree rows (design 2.1)', () => {
     assert.equal(rows[0].all(withClass('tree-hid')).length, 0, 'an expanded row shows no count');
   });
 
+  test('(+) the toggle is an icon-only button, so its title is its aria-label, folded or not; the empty slot is not a control and has none (0.4.0)', () => {
+    const open = rowsOf(treeRig().agentNodes(group(family()), '', 'g:k')[0]);
+    assert.equal(toggleOf(open[0]).attrs.title, 'Hide the 3 agents under planner');
+    assert.equal(toggleOf(open[0]).attrs.title, toggleOf(open[0]).attrs['aria-label']);
+    assert.equal(toggleOf(open[1]).attrs.title, 'Hide the 1 agent under api-lead');
+    const folded = rowsOf(treeRig({ open: [`!tree:g:k:${MAIN}`] }).agentNodes(group(family()), '', 'g:k')[0]);
+    assert.equal(toggleOf(folded[0]).attrs.title, 'Show the 3 agents under planner, 1 needs you');
+    assert.equal(toggleOf(folded[0]).attrs.title, toggleOf(folded[0]).attrs['aria-label'], 'the count of agents that need you is in the tooltip too');
+    assert.equal(open[2].all(withClass('tree-sp'))[0].attrs.title, undefined);
+  });
+
   test('(+) clicking the toggle flips the folded mark in state.open (the "!" pattern of the Ended sections) and asks for a render', () => {
     const r = treeRig();
     const mark = `!tree:g:k:${MAIN}`;

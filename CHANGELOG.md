@@ -164,6 +164,15 @@ Fixes:
 - **macOS: a held key repeats** in nika's window instead of opening the accent popup. The app turns the press-and-hold
   popup off for its own process only, in memory; nothing is written to your preferences. Accents still work with the
   Option key. New dependency: `objc2-foundation` 0.3.2 (macOS only, already in the lock file through Tauri).
+- **Project page: a Setup drawer on narrow windows.** At 1030 px and narrower the Rules, Project setup and New agents cards no
+  longer stack under the agents: a **Setup** button next to Spawn sub-orchestrator opens them in a side drawer (Esc, × or a
+  click outside closes it). Choose plugins…, Choose models… and Preview rules open on top of it and give the focus back to
+  their button. Above 1030 px nothing changes. In the drawer, Esc closes an open value menu before the drawer, and a menu that
+  does not fit below its button and does not fit above it in a short window opens below and scrolls into view instead of being cut off.
+- **Tooltips on icon-only controls.** Every control that shows an icon or a symbol and no words now says what it is on hover: the
+  × of each dialog, the − and + of the steppers, the fold button of the agent tree, Copy backup path, the sidebar links and Add
+  project when the sidebar is the narrow rail, the status glyph of a narrow row, and the tmux and claude dots. A test reads every
+  page and fails on a new icon control without a title.
 
 Packaging:
 
