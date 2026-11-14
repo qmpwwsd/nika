@@ -4,7 +4,8 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import { parseDraft, RULE_ROW, HISTORY_LABEL, normDraft, sameDraft, inEnvelope, chunks } from '../src/draft.js';
 import { rowText } from '../src/mode.js';
-import { boxRows, span } from './helpers.js';
+import { readDraft } from '../src/session-control.js';
+import { boxRows, span, subagentRows } from './helpers.js';
 
 // Synthetic screens only (acme-api, web-shop). The layout follows docs/contracts/claude-tui.md and spike S9 (Claude Code 2.1.321):
 // top rule, `glyph + no-break space + text`, two-space continuation rows, bottom rule, status line, mode line.
@@ -993,6 +994,105 @@ describe('parseDraft: no plain box (null)', () => {
     assert.equal(parseDraft('rows', null, 120), null);
     assert.equal(parseDraft({}, null, 120), null);
     assert.equal(parseDraft([], null, 120), null);
+  });
+});
+
+describe('parseDraft: the subagent list below the footer (F2, live capture 2.1.325)', () => {
+  const BUSY = '⏸ manual mode on · esc to interrupt · ↓ to manage';
+  /** The screen with Claude's subagent list appended below its footer. */
+  const withTree = (opts, tree = {}) => {
+    const s = boxRows(opts);
+    return { ...s, rows: [...s.rows, ...subagentRows({ cols: s.cols, ...tree })] };
+  };
+  const readTree = (opts, tree) => {
+    const s = withTree(opts, tree);
+    return parseDraft(s.rows, s.cursor, s.cols);
+  };
+
+  test('(+) the box is read through a 1- and a 2-agent block: the same Draft as without it', () => {
+    for (const opts of [{ lines: [''] }, { lines: ['hello'] }, { lines: ['line one', 'line two'] }, { lines: ['hello'], insert: true }, { lines: ['hello'], ghost: ' there' }]) {
+      const bare = read(opts);
+      assert.notEqual(bare, null);
+      for (const agents of [1, 2]) assert.deepEqual(readTree(opts, { agents }), bare, `${JSON.stringify(opts)} with ${agents} agents`);
+    }
+  });
+
+  test('(+) text in the box while the tree shows, with the busy footer, the tasks footer and a 60 column pane', () => {
+    const typed = readTree({ lines: ['draft text here'], cursor: undefined, footer: BUSY }, { agents: 2 });
+    assert.equal(typed.state, 'text');
+    assert.equal(typed.text, 'draft text here');
+    assert.equal(typed.cursorAtEnd, true);
+    assert.equal(readTree({ lines: ['x'], footer: '⏵⏵ auto mode on (shift+tab to cycle) · /tasks to see subagents' }, { agents: 1 }).text, 'x');
+    const narrow = readTree({ cols: 60, lines: ['narrow'] }, { cols: 60, agents: [{ label: 'Grep the demo project o…', elapsed: '19s' }] });
+    assert.equal(narrow.text, 'narrow');
+    assert.equal(readTree({ lines: ['x'] }, { agents: 5, more: 3 }).text, 'x', 'five agents and the overflow row');
+  });
+
+  test('(+) a `!` box reads through the block (the bash footer is the footer)', () => {
+    const d = readTree({ mode: 'bash', lines: ['echo hi'] }, { agents: 1 });
+    assert.equal(d.mode, 'bash');
+    assert.equal(d.text, 'echo hi');
+  });
+
+  test('(+) draft sync reads the box: the live reader (cursor and width from the capture) gets the Draft while the tree shows', () => {
+    const s = withTree({ lines: ['sync me'], insert: true }, { agents: 2 });
+    const d = readDraft({ rows: s.rows, cursor: s.cursor, cols: s.cols });
+    assert.equal(d.text, 'sync me');
+    assert.equal(d.cursorAtEnd, true);
+    assert.equal(d.sig, sigOf('text', 'prompt', 'sync me'));
+    const empty = withTree({ lines: [''] }, { agents: 1 });
+    assert.equal(readDraft({ rows: empty.rows, cursor: empty.cursor, cols: empty.cols }).state, 'empty');
+  });
+
+  test('(−) a label shaped like a footer or a rule row neither fakes a footer nor a box edge', () => {
+    for (const label of ['⏵⏵ auto mode on', '⏸ manual mode on', '─'.repeat(40), '! for shell mode']) {
+      // a real footer above: the labels change nothing
+      assert.deepEqual(readTree({ lines: ['hello'] }, { agents: [{ label }, { label }] }), read({ lines: ['hello'] }), label);
+      // no mode line above (a dialog's row): a label cannot stand in for it
+      assert.equal(readTree({ lines: ['hello'], footer: '? for shortcuts' }, { agents: [{ label }] }), null, label);
+    }
+  });
+
+  test('(−) a block that is not exactly the captured shape leaves the footer unknown: null', () => {
+    const shapes = [{ blank: false }, { main: false }, { agents: 0 }, { agents: [{ label: 'a', elapsed: 'soon' }] }];
+    for (const tree of shapes) assert.equal(readTree({ lines: ['hello'] }, tree), null, JSON.stringify(tree));
+    const s = withTree({ lines: ['hello'] }, { agents: 1 });
+    assert.equal(parseDraft([...s.rows, [span('junk below the list')]], s.cursor, s.cols), null, 'junk after the block');
+    assert.equal(parseDraft([...s.rows.slice(0, -1), [span('  ◯ Explore  a')], ...s.rows.slice(-1)], s.cursor, s.cols), null, 'an agent row without its elapsed time');
+    const bare = boxRows({ lines: ['hello'] });
+    assert.equal(parseDraft([...bare.rows, [span('junk below the footer')]], bare.cursor, bare.cols), null, 'junk below the footer, no block');
+  });
+
+  describe('the feedback survey takes the digits 0-3: no box while it shows', () => {
+    const SURVEY = ['● How is Claude doing this session? (optional)', '  1: Bad    2: Fine    3: Good    0: Dismiss'];
+    /** The screen with the survey rows between the lower rule and the status line (the cursor does not move). */
+    const below = (opts, rowsOf = SURVEY) => {
+      const s = boxRows(opts);
+      const rows = s.rows.slice();
+      rows.splice(rows.length - 2, 0, ...rowsOf.map((t) => [span(t)]));
+      return { ...s, rows };
+    };
+    const parse = (s) => parseDraft(s.rows, s.cursor, s.cols);
+
+    test('(−) the question and the options row, below the box: null for an empty box, text and a digit draft', () => {
+      for (const lines of [[''], ['hello'], ['1 fix the bug'], ['0']]) assert.equal(parse(below({ lines })), null, JSON.stringify(lines));
+      assert.equal(parse(below({ lines: ['x'] }, [SURVEY[0]])), null, 'the question row alone');
+      assert.equal(parse(below({ lines: ['x'] }, [SURVEY[1]])), null, 'the options row alone');
+    });
+
+    test('(−) above the box, in the footer rows, and with the subagent list below', () => {
+      for (const row of SURVEY) assert.equal(parse(boxRows({ lines: ['hello'], hint: row.trim() })), null, row);
+      const tree = withTree({ lines: ['hello'] }, { agents: 1 });
+      tree.rows.splice(tree.rows.length - 5, 0, [span(SURVEY[1])]);
+      assert.equal(parse(tree), null, 'survey row between the status line and the footer, tree below');
+      assert.equal(readDraft({ rows: below({ lines: ['1 go'] }).rows, cursor: boxRows({ lines: ['1 go'] }).cursor, cols: 120 }), null, 'the live reader too');
+    });
+
+    test('(+) the control: the same screens without the survey rows read as before; prose that quotes the survey does not block', () => {
+      assert.equal(parse(below({ lines: ['hello'] }, [])).text, 'hello');
+      assert.equal(parse(below({ lines: ['hello'] }, ['Claude asked: how is Claude doing this session? and moved on'])).text, 'hello');
+      assert.equal(parse(boxRows({ lines: ['1: Bad    2: Fine    3: Good    0: Dismiss'] })).text, '1: Bad    2: Fine    3: Good    0: Dismiss', 'a draft that contains the words is a draft (it is not a row of its own: it starts with the glyph)');
+    });
   });
 });
 

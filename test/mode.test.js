@@ -3,8 +3,10 @@ import assert from 'node:assert/strict';
 import * as mode from '../src/mode.js';
 import {
   MODES, MODE_TARGETS, PROMPT_ROWS, FOOTER, OPTION, rowText, lastNonBlank, modeFromRows, promptFromRows, mentionsBypass, bypassWindow,
+  surveyShown, SHELL_FOOTER,
 } from '../src/mode.js';
 import { parseCapture } from '../src/mirror.js';
+import { subagentRows } from './helpers.js';
 
 const DEF = { b: false, fg: null, bg: null, u: false, i: false, d: false };
 const span = (t, s = DEF) => ({ t, s });
@@ -424,5 +426,132 @@ describe('bypassWindow', () => {
     assert.equal(bypassWindow(rowsOf('the word bypass', ...filler)), false, 'one row too old');
     assert.equal(bypassWindow(rowsOf('Do you want to proceed?', '1. Yes', '2. No')), false);
     for (const bad of [null, undefined, 'bypass', 5, [], {}]) assert.equal(bypassWindow(bad), false, String(bad));
+  });
+});
+
+// ---- F2: the subagent list Claude draws BELOW the footer (live capture, Claude Code 2.1.325) ---------------------------------
+describe('subagent list below the footer', () => {
+  const head = (footer = PHRASE.auto) => rowsOf('transcript line', ...BOX, '  Haiku 5.5  acme-api  master', footer);
+  const BUSY = '⏸ manual mode on · esc to interrupt · ↓ to manage';
+  const TASKS = `${PHRASE.auto} (shift+tab to cycle) · /tasks to see subagents`;
+  const two = [{ label: 'List project files', elapsed: '0s', tokens: null }, { label: 'Count lines', elapsed: '1m 11s', tokens: '↑ 50' }];
+
+  test('(+) one agent, two agents and the busy / tasks footers: the mode is read through the block', () => {
+    for (const n of [1, 2]) assert.equal(modeFromRows([...head(), ...subagentRows({ agents: n })]), 'auto', `${n} agents`);
+    assert.equal(modeFromRows([...head(BUSY), ...subagentRows({ agents: 2 })]), 'manual', 'busy parent');
+    assert.equal(modeFromRows([...head(TASKS), ...subagentRows({ agents: 1 })]), 'auto', '/tasks variant');
+    assert.equal(modeFromRows([...head(`-- INSERT -- ${PHRASE.plan}`), ...subagentRows({ agents: 2 })]), 'plan', 'vim insert prefix');
+    assert.equal(modeFromRows([...head(), ...subagentRows({ agents: two })]), 'auto', 'no tokens yet, minutes, up arrow');
+  });
+
+  test('(+) the captured shapes: elapsed, tokens, a truncated label at 60 columns, five agents and the overflow row', () => {
+    const labels = [{ label: 'Grep the demo project o…', elapsed: '19s' }, { label: 'x', elapsed: '2h 3m 4s', tokens: '↓ 1.2m' }, { label: 'y', elapsed: '3m', tokens: '↑ 300' }];
+    assert.equal(modeFromRows([...head(), ...subagentRows({ cols: 60, agents: labels })]), 'auto');
+    assert.equal(modeFromRows([...head(), ...subagentRows({ agents: 5, more: 3 })]), 'auto');
+    assert.equal(modeFromRows([...head(), ...subagentRows({ agents: 1, more: 12 })]), 'auto');
+  });
+
+  test('(+) lastNonBlank skips the block, so every reader of the footer row sees the footer', () => {
+    const rows = [...head(), ...subagentRows({ agents: 2, more: 2 }), [], []];
+    assert.deepEqual(lastNonBlank(rows, 2), ['  Haiku 5.5  acme-api  master', PHRASE.auto]);
+    assert.equal(lastNonBlank(rows, 1)[0], PHRASE.auto);
+  });
+
+  test('(+) the bash footer and the vim prefix are read through the block too', () => {
+    const rows = [...rowsOf(...BOX, '-- INSERT -- ! for shell mode'), ...subagentRows({ agents: 1 })];
+    assert.ok(SHELL_FOOTER.test(lastNonBlank(rows, 1)[0]));
+  });
+
+  test('(+) a label shaped like a footer, a rule, a main row or Esc to cancel is only a label', () => {
+    const fake = ['⏵⏵ auto mode on', '⏸ manual mode on', '─'.repeat(40), '  ⏺ main', 'Esc to cancel', '-- INSERT --', 'bypass permissions on'];
+    for (const label of fake) {
+      assert.equal(modeFromRows([...head(PHRASE.plan), ...subagentRows({ agents: [{ label }, { label }] })]), 'plan', label);
+      assert.equal(lastNonBlank([...head(PHRASE.plan), ...subagentRows({ agents: [{ label }] })], 1)[0], PHRASE.plan, label);
+    }
+  });
+
+  test('(−) a label that looks like a footer fakes nothing when no real mode line sits above the block', () => {
+    for (const above of ['Esc to cancel', '? for shortcuts', '  some dialog row', '1. Yes']) {
+      const rows = [...rowsOf('Do you want to proceed?', above), ...subagentRows({ agents: [{ label: PHRASE.auto }] })];
+      assert.equal(modeFromRows(rows), 'unknown', above);
+      assert.equal(lastNonBlank(rows, 1)[0].includes('◯'), true, 'the block stays: nothing is hidden above a row that is not a mode line');
+    }
+  });
+
+  test('(−) the block must be exactly the captured shape; anything else below the footer is unknown', () => {
+    const block = subagentRows({ agents: 2 });
+    const agent = block.at(-1);
+    const bad = {
+      'no blank row': subagentRows({ agents: 2, blank: false }),
+      'no main row': subagentRows({ agents: 2, main: false }),
+      'junk instead of the blank row': [rowsOf('junk')[0], ...block.slice(1)],
+      'two blank rows': [[], ...block],
+      'a blank row inside': [...block.slice(0, 2), [], ...block.slice(2)],
+      'junk after the block': [...block, rowsOf('junk')[0]],
+      'junk between main and the agents': [...block.slice(0, 2), rowsOf('junk')[0], ...block.slice(2)],
+      'main with a suffix': [block[0], rowsOf('  ⏺ main (selected)')[0], ...block.slice(2)],
+      'main with other indent': [block[0], rowsOf('    ⏺ main')[0], ...block.slice(2)],
+      'no agent rows': subagentRows({ agents: 0 }),
+      'overflow row without agents': subagentRows({ agents: 0, more: 2 }),
+      'overflow row before an agent row': [...block.slice(0, 2), rowsOf('  ↓ 2 more')[0], agent],
+      'an up arrow overflow row': [...block, rowsOf('  ↑ 2 more')[0]],
+      'two overflow rows': [...block, rowsOf('  ↓ 2 more')[0], rowsOf('  ↓ 2 more')[0]],
+      'agent glyph changed': [...block.slice(0, 2), rowsOf('  ● Explore  A  5s')[0]],
+      'agent indent changed': [...block.slice(0, 2), rowsOf(' ◯ Explore  A  5s')[0]],
+      'agent without the two spaces after the type': [...block.slice(0, 2), rowsOf('  ◯ Explore A  5s')[0]],
+      'agent without an elapsed time': [...block.slice(0, 2), rowsOf('  ◯ Explore  A  tokens')[0]],
+      'elapsed time not at the end': [...block.slice(0, 2), rowsOf('  ◯ Explore  A  5s and more')[0]],
+      'tokens without the arrow': [...block.slice(0, 2), rowsOf('  ◯ Explore  A  5s · 23 tokens')[0]],
+      'wrapped label': [...block.slice(0, 2), rowsOf('  ◯ Explore  A very long label that wrapped')[0], rowsOf('  onto a second row  5s')[0]],
+    };
+    for (const [name, extra] of Object.entries(bad)) {
+      const rows = [...head(), ...extra];
+      assert.equal(modeFromRows(rows), 'unknown', name);
+      assert.notEqual(lastNonBlank(rows, 1)[0], PHRASE.auto, name);
+    }
+  });
+
+  test('(−) junk below the footer without a block stays unknown, and so does a block under a non-footer row', () => {
+    assert.equal(modeFromRows([...head(), ...rowsOf('', 'junk')]), 'unknown');
+    assert.equal(modeFromRows([...rowsOf(...BOX, 'main ✓', ''), ...subagentRows({ agents: 1 })]), 'unknown');
+    assert.equal(modeFromRows([...rowsOf(PHRASE.auto, 'status line'), ...subagentRows({ agents: 1 })]), 'unknown', 'a footer two rows up does not count');
+  });
+
+  test('(−) a block with no row above it, or only blanks above, is not stripped (never throws)', () => {
+    assert.equal(modeFromRows(subagentRows({ agents: 1 })), 'unknown');
+    assert.equal(modeFromRows([[], ...subagentRows({ agents: 1 })]), 'unknown');
+    assert.deepEqual(lastNonBlank(subagentRows({ agents: 1 }), 1).length, 1);
+  });
+});
+
+describe('surveyShown', () => {
+  const rowsWith = (...lines) => rowsOf('transcript', ...BOX, ...lines, PHRASE.auto);
+
+  test('(+) the question row and the options row of the feedback survey, with or without the bullet', () => {
+    assert.equal(surveyShown(rowsWith('● How is Claude doing this session? (optional)')), true);
+    assert.equal(surveyShown(rowsWith('  How is Claude doing this session? (optional)')), true);
+    assert.equal(surveyShown(rowsWith('  1: Bad    2: Fine    3: Good    0: Dismiss')), true);
+    assert.equal(surveyShown(rowsWith('1: Bad 2: Fine 3: Good 0: Dismiss')), true);
+    assert.equal(surveyShown([...rowsWith('  1: Bad    2: Fine    3: Good    0: Dismiss'), ...subagentRows({ agents: 1 })]), true);
+  });
+
+  test('(+) the other digit-taking questions Claude ships (strings from the binary) count as well', () => {
+    assert.equal(surveyShown(rowsWith('Can Anthropic look at your session transcript to help us improve Claude Code?')), true);
+    assert.equal(surveyShown(rowsWith('● How well is Claude following the instructions you gave earlier in this conversation? (optional)')), true);
+  });
+
+  test('(−) ordinary screens, prose that mentions the survey and a menu that merely has a Dismiss are not the survey', () => {
+    assert.equal(surveyShown(rowsWith()), false);
+    assert.equal(surveyShown(rowsWith('I asked: how is Claude doing this session? and it said fine')), false);
+    assert.equal(surveyShown(rowsWith('The survey row reads "How is Claude doing this session? (optional)" and then options')), false);
+    assert.equal(surveyShown(rowsWith('  Dismiss')), false);
+    assert.equal(surveyShown(rowsWith('we asked: How is Claude doing this session?')), false, 'mid-row');
+    assert.equal(surveyShown(rowsWith('the form says Can Anthropic look at your session transcript?')), false, 'mid-row');
+    assert.equal(surveyShown(rowsWith('0: Dismiss')), false, 'no option 1');
+    assert.equal(surveyShown(rowsWith('see 1: a list item and later 0: Dismiss')), false, 'prose, not an options row');
+  });
+
+  test('(−) malformed input is false, never throws', () => {
+    for (const bad of [null, undefined, 'abc', 7, {}, [], [null], [[{}]]]) assert.equal(surveyShown(bad), false, String(bad));
   });
 });

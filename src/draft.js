@@ -4,7 +4,7 @@
 // Keep this file ASCII: write every symbol as an escape.
 import { createHash } from 'node:crypto';
 import { clean } from './text.js';
-import { lastNonBlank, modeFromRows, promptFromRows, rowText } from './mode.js';
+import { SHELL_FOOTER, lastNonBlank, modeFromRows, promptFromRows, rowText, surveyShown } from './mode.js';
 
 // A rule row of Claude's input box (trimmed): two or more box-drawing dashes, plain, or labelled with the session name
 // (`-n <name>` or /rename), which Claude draws into the upper rule as `--- <name> -` (claude-tui.md section 5). The label is
@@ -14,8 +14,8 @@ export const RULE_ROW = /^\u2500{2,}(?: [^\u2500\p{Cc}\s](?:[^\u2500\p{Cc}]{0,78
 export const HISTORY_LABEL = /^History\s+\d+\s*\/\s*\d+$/;
 
 const LABELLED = /^\u2500{2,} ([^\u2500]+) \u2500+$/u;
-// Bash mode (`!`) draws `! for shell mode` instead of the permission-mode phrase (spike S9 Q6), so modeFromRows reads `unknown` there.
-const SHELL_FOOTER = /^\s{0,2}(?:-- INSERT --\s*)?! for shell mode/;
+// Bash mode (`!`) draws `! for shell mode` instead of the permission-mode phrase (spike S9 Q6), so modeFromRows reads `unknown` there:
+// SHELL_FOOTER (src/mode.js) is the one line that is a footer without a mode.
 // Claude's own stand-ins for content it cannot show as text: a paste (`[Pasted text #4 +3 lines]`) and an image (`[Image #1]`).
 const PASTED = /\[(?:Pasted text|Image) #\d+(?: \+\d+ lines)?\]/;
 const pastedIn = (text) => PASTED.test(text.replace(/\s+/g, ' ')); // a wrap or a newline may sit anywhere inside it
@@ -192,7 +192,8 @@ function joinRows(bodies, w) {
  *   suggestion    dim text of an empty box (not the `Try "..."` example), clean() at most 200; else null
  *   ghost         true when any dim, reverse-video or fg-246 hint cell of the box was dropped as ghost text (a suggestion, the
  *                 placeholder, a completion, the slash hint); false for plain text, an empty box and every unreadable draft
- * Null: the footer is not a known mode line (a dialog, a menu, a prompt), a permission prompt parses, fewer than two rule rows,
+ * The footer is the last non-blank row, minus a subagent list Claude draws below it (lastNonBlank in src/mode.js; F2).
+ * Null: Claude's feedback survey is on screen (it takes digits as answers), the footer is not a known mode line (a dialog, a menu, a prompt), a permission prompt parses, fewer than two rule rows,
  * nothing between the last two, the first box row does not start with the prompt glyph or `!` and Claude's no-break space
  * (U+00A0; a plain space is a status line of the user's, I-1), or the cursor (integer x and y given) is not on a row strictly
  * between the two rules (N-1: a status line drawn under Claude's box can look like a box; a missing cursor changes nothing).
@@ -201,6 +202,7 @@ function joinRows(bodies, w) {
  */
 export function parseDraft(rows, cursor, cols) {
   if (!Array.isArray(rows)) return null;
+  if (surveyShown(rows)) return null; // F2: the survey takes the digits 0-3, so no box is offered (sync pauses, nothing is typed)
   const rules = [];
   rows.forEach((row, i) => { if (RULE_ROW.test(rowText(row).trimEnd())) rules.push(i); }); // column 0: a draft line of dashes has two spaces before it
   if (rules.length < 2) return null;

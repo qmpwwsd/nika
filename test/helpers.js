@@ -204,3 +204,27 @@ export function boxRows({ cols = 120, lines = [''], mode = 'prompt', insert = fa
   };
   return { rows, cursor: where, cols };
 }
+
+// ---- Claude's subagent list below the footer (F2; live capture, Claude Code 2.1.325, 60 and 120 columns) ---------------
+/**
+ * The rows Claude draws BELOW the footer while background subagents run, to append to a screen: a blank row, `  ⏺ main` (bold),
+ * one row per agent `  ◯ <type>  <label>   <elapsed>[ · <arrow> <n> tokens]` (fg 246, the elapsed and tokens right-aligned to
+ * `cols`), and `  ↓ N more` when more than five run. Synthetic labels only.
+ *   agents  a number (n generic agents) or [{ type = 'Explore', label, elapsed = '5s', tokens = '↓ 23.4k' (null: none) }]
+ *   more    N: add the overflow row
+ *   blank   false drops the blank row above `main`; main false drops the `main` row (the (-) shapes)
+ */
+export function subagentRows({ cols = 120, agents = 1, more = 0, blank = true, main = true } = {}) {
+  const list = typeof agents === 'number' ? Array.from({ length: agents }, (_, i) => ({ label: `Agent ${i + 1}` })) : agents;
+  const rows = list.map(({ type = 'Explore', label, elapsed = '5s', tokens = '↓ 23.4k' }) => {
+    const head = `  ◯ ${type}  ${label}`;
+    const tail = tokens === null ? elapsed : `${elapsed} · ${tokens} tokens`;
+    return [span(head, { fg: 246 }), span(' '.repeat(Math.max(1, cols - cells(head) - cells(tail))), {}), span(tail, { fg: 246 })];
+  });
+  return [
+    ...(blank ? [[]] : []),
+    ...(main ? [[span('  ⏺ main', { b: true })]] : []),
+    ...rows,
+    ...(more > 0 ? [[span(`  ↓ ${more} more`, { fg: 246 })]] : []),
+  ];
+}
