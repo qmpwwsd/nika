@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.5.0 (unreleased)
+
+Session window (desktop app):
+
+- **The message box and Claude's input box follow each other.** Type in the terminal and the text shows up in the message
+  box once you stop typing for a moment (1.5 seconds). Type in the message box and the text appears in Claude's input a
+  quarter of a second after your last key. Both ways work with several lines, pasted text and the Shell toggle: when Claude's
+  box is in its `!` mode, Shell turns on, and Shell on puts `!` in front. Text you have not sent is never overwritten by what the
+  terminal shows, and a window you reopen with text in the box does not wipe it.
+- **Send is smaller.** When Claude's input already holds your message, Send presses only Enter. When it does not, nika copies
+  the message into Claude's input first and then presses Enter. If the copy fails, nothing is sent, you see why, and your text
+  stays.
+- **Claude's input box is no longer drawn twice.** The terminal view now stops above Claude's input box and ends with a thin
+  line, "Input box · mirrored in the message box below". Turn on **Type into pane** to see every row again. When nika cannot
+  read the box (a menu or a question is open), the view shows every row, too.
+- **When nika cannot read Claude's input, it stops syncing and says so** ("Sync paused: Claude's input holds …"): a pasted
+  block, a draft longer than 14 rows, text that ends in spaces, an older prompt that you recalled with the up arrow, or
+  something nika does not recognise. It never writes over such an input. Edit or clear it in the terminal, and the sync
+  continues. Send is refused while it is paused, with the same words.
+- **Long messages.** Text that does not fit Claude's box (more than 1024 characters, 12 line breaks or 13 rows) is not mirrored
+  ("Not mirrored: Long text goes to Claude when you send it"). Send still pastes it into an empty input, as before. If Claude's
+  input already holds other text, Send refuses, so the two are never sent together; clear it in the terminal or shorten your
+  message.
+- **While Claude works**, a message that only adds to what is in the box, or fills an empty box, is copied at once. Anything that
+  would replace text waits until Claude is idle ("Waiting for Claude: …"), because clearing a box takes an Escape.
+- **End, Compact, Clear and Model read the input box more carefully.** A box in Claude's `!` mode, a pasted block, a long draft
+  or an older prompt that is showing now count as "not empty" or "cannot read", and nothing is typed. End and the commands do
+  not press Enter when grey completion text is still in the box.
+- Known limit: at a few rare line breaks (for example a line break typed exactly where Claude would have wrapped the line anyway)
+  the text nika reads back from Claude's box can differ from what you typed by one space or line break. nika then shows what
+  Claude holds and sends nothing wrongly. Plain-mode input and a busy session were checked less than vim mode and an idle one.
+
 ## 0.4.0 — 2026-11-13
 
 Orchestration (desktop app):

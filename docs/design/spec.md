@@ -632,6 +632,7 @@ Grid per line: old no (3.5em) · new no (3.5em) · marker (1.5em) · text. Mono 
 | live | rows rendered from capture; cursor block; header "● Live · 92 × 30" |
 | paused | user scrolled up > 8 px from bottom: header dot turns to an amber square + "Paused"; "Jump to live ↓" button bottom-right; new captures are applied but scroll position is kept |
 | passthrough | 2 px `--accent` inset outline + accent banner "Typing goes to pane %12. Ctrl+] to stop." |
+| input box mirrored (0.5) | with a readable draft and Type into pane off, the rows from Claude's input box down are not drawn; a one-row strip "Input box · mirrored in the message box below" ends the mirror (§9.12) |
 | unfocused | cursor becomes a hollow outline |
 | pane gone | overlay "Pane %12 is gone. The agent ended or the pane was closed. The transcript is still readable." composer disabled |
 | tmux error | overlay `role="alert"` "tmux failed: capture-pane exited 1. Retrying every 2 s. [Retry now]" |
@@ -656,7 +657,7 @@ attention note or prompt panel (§9.5) · message box · mode row ("Mode" + swit
 | echo | not shown: a screen-reader-only (`.sr-only`) polite live region in the notes row, so a screen reader still hears: "Sent 23 characters + Enter to %12", "Sent Esc to %12", "Sent Shift-Tab to %12", one line per arrow run ("Sent 3 × Down to %12", "Sent 5 arrow keys to %12") |
 | permission prompt | attention note above: "reviewer-2 asks to run a command. Use ↑ ↓ and Enter to choose, or Esc to refuse." |
 
-Notes row: the argument hint, the shell hint and the problem line, in that order; the row wraps and takes no height while all three are empty. **(built amendment 2026-11-13 (0.4.0, F7))**
+Notes row: the argument hint, the shell hint, the draft note (0.5, §9.12) and the problem line, in that order; the row wraps and takes no height while all four are empty. **(built amendment 2026-11-13 (0.4.0, F7); the draft note 2026-11-14 (0.5))**
 The hint row with the key tips ("Esc ^C ⇧Tab go to Claude", "⌃⇧Tab moves focus back", "⌘/ all shortcuts") and the visible "Sent … to %12" echo is
 gone (owner decision 2026-11-13): the keys are in the Keyboard shortcuts window (§4.6) and in the message box's accessible name (§4.2), and the
 echo keeps only its screen-reader job. Nothing else in the row changed. The `.hintline` rules and the composer-width and height
@@ -1762,6 +1763,82 @@ Esc ladder (§4.3) gains two rungs, in this order: model popover or row menu →
 | < 760 | as 0.2 (labels of header buttons hidden) | under the message box, icon + word; the row wraps | Compact, Clear, Rewind icon only | same, source tags stay |
 
 **(built amendment 2026-11-09 (0.3.3))**
+
+### 9.12 Draft sync and the input-box cut (0.5, W5 and W6)
+
+**(built 2026-11-14 (0.5).)** The message box and Claude's input box mirror each other. Contract: `api-app.md` (`draft` on the
+capture, `PUT /api/app/pane/:id/draft`); how the screen is read: `claude-tui.md` §10. Always on, no setting (owner decision
+2026-11-14). The logic that has no DOM is `public/draft-sync.js`; the wiring is `public/session.js`.
+
+**What moves, and when**
+
+| Direction | Rule |
+|---|---|
+| terminal → message box (a pull) | the screen's draft changed and the user has not typed here for 1.5 s, and nothing unsent is in the box. The caret stays where it was when the text only grew, else it goes to the end. Focus never moves. A pull does not count as an edit |
+| message box → terminal (a push) | 250 ms after the last edit, one request in flight at a time, only text that fits (at most 1024 characters, 12 newlines, 13 rows); spaces and tabs at the very end are not pushed |
+| first readable capture of a window | pulls only into an empty box; text already in the box is kept and never wiped (it goes to Claude with the next edit or with Send) |
+| typing in an IME composition | no pull and no push until the composition ends |
+| both change | the box wins while the user types here; a terminal change that comes first (the push answers 409) wins, the box then shows the screen's text |
+| Shell | Claude's `!` mode and the Shell toggle are one thing: a `!` draft turns Shell on with the text after the `!`, and Shell on pushes `!` + text (§9.6) |
+
+**The cut (W6).** The mirror stops above Claude's input box, because the box is in the message box:
+
+| Screen | Mirror rows | Strip |
+|---|---|---|
+| draft readable (`empty` or `text`), Type into pane off | the rows above the input box's top rule | one row at the bottom of the mirror: icon `i-kbd` and the words "Input box · mirrored in the message box below", muted in the terminal grey (`--a8`) with a dashed top edge, not focusable, `aria-hidden` (the message box carries the content) |
+| draft unreadable | every row | none: the user must see `[Pasted text #4]` or the history entry; the paused note says what to do |
+| no plain box (a permission prompt, a dialog, an unknown footer) | every row | none |
+| Type into pane on | every row | none (the user types into the real box) |
+| capture without a `draft` (an older server) | every row | none |
+
+The header keeps the pane's real size ("Live · 120 × 39"). The cursor is not drawn when its row is cut. Auto-scroll and Paused are
+unchanged.
+
+**The note under the box.** One note at a time in the notes row (`#draft-note`, a polite `role="status"` region, referenced by
+`aria-describedby` of the message box). Each kind has its own colour, icon and word (the visible-state rule of §9.6):
+
+| Kind | Icon | Colour | Words | When |
+|---|---|---|---|---|
+| paused | `i-pause` | `--idle` on `--idle-soft` | **Sync paused:** Claude's input holds <reason>. Edit or clear it in the terminal. | the screen's draft is unreadable; nothing is pulled or pushed, and nika never writes over it |
+| long | `i-info` | `--text` on `--surface-3` | **Not mirrored:** Long text goes to Claude when you send it. | unsent text that does not fit Claude's box, or that the server refused as too long |
+| wait | `i-clock` | `--busy` on `--busy-soft` | **Waiting for Claude:** Claude is working. Your text goes into its input when it waits. | a replace was refused because Claude is busy (409 `not-idle`); the push is tried again every 3 s |
+
+The reasons: `pasted` "a pasted block nika can't read back"; `tall` "a draft longer than 14 rows"; `trailing` "text that ends in
+spaces"; `history` "a prompt-history entry"; `layout` "something nika doesn't recognise". While paused the message box stays
+editable and Send obeys the table below. The arrow keys of an empty box still go to the pane (0.3.3): `Up` in the terminal
+recalls history, which pauses the sync and says why.
+
+**Send** (after the permission-prompt gate of §9.5; the text is the message box's, Shell adds its `!`):
+
+| Message box | Claude's input box | What Send does |
+|---|---|---|
+| any | readable, same text | `Enter` alone |
+| empty | anything | `Enter` alone (Shell on with an empty box does nothing, §9.6) |
+| text that fits | readable, different | copies the text into Claude's input first (`PUT …/draft`), then `Enter`; a copy that fails sends no `Enter` and shows its line, and the text stays |
+| text that does not fit | readable and empty (prompt mode) | as before 0.5: one paste, then `Enter` |
+| text that does not fit | readable with other text | refused: "Claude's input already holds text; it would be sent together with yours. Clear it in the terminal or shorten your message." |
+| text | unreadable | refused: "Claude's input holds <reason>. Send or clear it in the terminal." |
+| text | no plain box | as before 0.5 (the paste or Shell path) |
+
+nika never clears Claude's draft to make room for a long message (owner decision 2026-11-14). The problem lines of a failed copy are
+fixed copy chosen by the status and code, never the server's text, in the `role="alert"` slot, with the text kept:
+
+| Answer | Line |
+|---|---|
+| 409 `draft-changed`, `screen-changed`, `draft-mismatch` | "Claude's input changed while nika was copying your text. nika shows what it holds now. Nothing was sent." |
+| 409 `draft-unreadable` | the paused line above, with "Send or clear it in the terminal." |
+| 409 `not-idle` | "Claude is busy or a prompt is open, so nika can't change its input now. Nothing was sent. Your text is kept." |
+| 409 `input-unreadable`, `mode-unknown` | "nika can't read Claude's input box right now (a menu may be open). Nothing was sent. Your text is kept." |
+| 409 `busy-switching` | "Another action is running on this session. Try again in a moment. Your text is kept." |
+| 400 | "This text can't be copied into Claude's input as it is. Your text is kept." |
+| 404 | "The session is gone." |
+| 429 | "Too many keys at once; try again. Your text is kept." |
+| no answer | "nika did not answer. Your text is kept." |
+| anything else | "nika couldn't copy your text into Claude's input. Your text is kept." |
+
+A background push that fails says its line once (a warning for 6 s): "nika did not answer. Your text is kept." or "nika couldn't
+copy your text into Claude's input. It is kept here."; after three failures it stops until the next edit. The Send echo for a copied
+message reads "Sent 23 characters + Enter to %12" ("Sent a shell command (23 characters) + Enter to %12" with Shell on).
 
 ### 8.8 WebView support
 
