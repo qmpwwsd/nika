@@ -67,6 +67,8 @@ export const SHORTCUTS = [
   row('session', 'app', 'Typing into the pane', 'Stop typing into the pane', { mac: [[CTRL, ']']], other: [['Ctrl', ']']] }, 'Keys go to the message box again'),
   row('session', 'app', 'Typing into the pane', 'Copy', { mac: [[CMD, 'C']], other: [['Ctrl', 'Shift', 'C']] }, 'Copy the text selected in the terminal (Ctrl+C goes to Claude)'),
   row('session', 'app', 'Typing into the pane', 'Paste', { mac: [[CMD, 'V']], other: [['Ctrl', 'Shift', 'V'], ['Ctrl', 'V']] }, 'Send the clipboard to Claude as one paste'),
+  row('session', 'app', 'Terminal (Type into pane off)', 'Scroll Claude\'s view', alts('PgUp', 'PgDn'), 'Scroll Claude\'s view one page (the mouse wheel and the trackpad scroll it over the terminal)', ' / '),
+  row('session', 'app', 'Terminal (Type into pane off)', 'Top, or back to live', alts('Home', 'End'), 'Claude\'s view: top / back to live (Ctrl+Home and Ctrl+End do the same)', ' / '),
   row('session', 'app', 'Mode switcher', 'Move between modes', alts(LEFT, RIGHT, 'Home', 'End'), 'Moves focus; does not switch', ' '),
   row('session', 'app', 'Mode switcher', 'Switch', alts('Enter', 'Space'), 'Switch to the focused mode'),
   row('session', 'app', 'Command list', 'Move', alts(UP, DOWN), 'Move through the commands', ' '),

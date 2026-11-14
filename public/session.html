@@ -20,6 +20,7 @@
   <symbol id="i-kbd" viewBox="0 0 16 16"><rect x="1.5" y="4" width="13" height="8.5" rx="1.5"/><path d="M4 7h1M7 7h1M10 7h1M4.5 10h7"/></symbol>
   <symbol id="i-send" viewBox="0 0 16 16"><path d="M2.5 8h10M8.5 3.5 13 8l-4.5 4.5"/></symbol>
   <symbol id="i-down" viewBox="0 0 16 16"><path d="M8 3v10M3.5 8.5 8 13l4.5-4.5"/></symbol>
+  <symbol id="i-up" viewBox="0 0 16 16"><path d="M8 13V3M12.5 7.5 8 3 3.5 7.5"/></symbol>
   <symbol id="i-info" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.2"/><path d="M8 7.3v3.9M8 4.9v.1"/></symbol>
   <symbol id="i-warn" viewBox="0 0 16 16"><path d="M8 2 1.5 13.5h13z"/><path d="M8 6.5v3.5M8 11.8v.2"/></symbol>
   <symbol id="i-m-manual" viewBox="0 0 16 16"><path d="M4.5 9V5.5M7 8V3M9.5 8V3.5M12 9V5.5M4.5 9v1.5a4 4 0 0 0 4 4h.5a3 3 0 0 0 3-3V9M4.5 11 2.9 9.4"/></symbol>
@@ -106,8 +107,8 @@
         <button type="button" class="btn" id="pass-leave">Leave</button>
       </div>
       <div class="termbox">
-        <div class="term" id="term" data-surface="dark" tabindex="0" role="region" aria-label="Live terminal"><div class="term-rows" id="term-rows"></div><div class="tl cut" id="term-cut" aria-hidden="true" hidden><svg class="ic" aria-hidden="true"><use href="#i-kbd"/></svg><span>Input box &middot; mirrored in the message box below</span></div><div class="fit-probe" id="fit-probe" aria-hidden="true">0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000</div></div>
-        <span class="paused-note" id="paused-note" hidden>Paused while you scroll</span>
+        <div class="term" id="term" data-surface="dark" tabindex="0" role="region" aria-label="Live terminal" aria-keyshortcuts="PageUp PageDown Home End"><div class="term-rows" id="term-rows"></div><div class="tl cut" id="term-cut" aria-hidden="true" hidden><svg class="ic" aria-hidden="true"><use href="#i-kbd"/></svg><span>Input box &middot; mirrored in the message box below</span></div><div class="fit-probe" id="fit-probe" aria-hidden="true">0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000</div></div>
+        <span class="paused-note" id="paused-note" hidden></span>
         <button type="button" class="btn primary jump" id="jump-live" hidden><svg class="ic" aria-hidden="true"><use href="#i-down"/></svg>Jump to live</button>
         <div class="term-over" id="term-over"><div><h3 id="over-title">Connecting&hellip;</h3><p id="over-text"></p><button type="button" class="btn" id="over-retry" hidden>Retry now</button></div></div>
       </div>

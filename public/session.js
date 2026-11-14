@@ -21,6 +21,7 @@ import { openEndDialog } from './end-dialog.js';
 import { paletteQuery, cleanCommands, paletteView, commandsButton, shouldFetch, sourceLabel, insertion, moveActive } from './palette.js';
 import { isMac, isTextEntry, wantsHelp, wantsBack, wantsHistToggle, backHint, helpHint, histHint, passKeyLabel, openShortcuts, wireWindowKeys } from './shortcuts.js';
 import { panelSize, scaleFor, createFitPlanner } from './fit-ui.js';
+import { createScrollPlanner, routeFor, wheelRows, scrollGate, viewRowsOf, pageRowsOf, refusalLine, noteView, scrolledSay, NOTE_MS } from './scroll.js';
 
 const PROJECT_KEY = /^[a-z0-9]{16}$/;
 const CLAUDE_SESSION = /^session_[A-Za-z0-9]{1,64}$/;
@@ -1069,6 +1070,7 @@ function setGone() {
   clearTimeout(M.timer);
   DS.stop();
   FIT.planner?.close(); // the heartbeat stops and the tmux window comes back (one DELETE); the next capture that answers starts a new lease
+  SC.planner?.close();
   setLive('off', 'Not live');
   setPaneState('gone');
   setInputEnabled(false, 'Pane is gone');
@@ -1079,8 +1081,7 @@ function setGone() {
 function setFrozen(on) {
   if (on === M.frozen) return;
   M.frozen = on;
-  $('jump-live').hidden = !on;
-  $('paused-note').hidden = !on;
+  renderNote();
   if (on) setLive('paused', `Paused${MID}${M.cols} ${TIMES} ${M.rows}`);
   else {
     setLive('live', `Live${MID}${M.cols} ${TIMES} ${M.rows}`);
@@ -1139,6 +1140,11 @@ function handleCapture(r) {
     } catch {
       // the mirror keeps working without the fit
     }
+    try {
+      scrollCaptured(r.body);
+    } catch {
+      // the mirror keeps working without scrolling
+    }
     if (!M.frozen) term.scrollTop = term.scrollHeight; // a paused mirror still applies captures but keeps the reader's place
     return;
   }
@@ -1149,6 +1155,7 @@ function handleCapture(r) {
   if (r.status === 403) {
     M.fatal = true;
     clearTimeout(M.timer);
+    SC.planner?.close();
     setLive('off', 'Not live');
     setPaneState('tmux');
     showOverlay('nika lost its connection to the app', 'The app refused this request. Close this window and open it again from the nika app.', { alert: true });
@@ -1200,6 +1207,7 @@ function jumpToLive() {
   M.etag = null;
   term.scrollTop = term.scrollHeight;
   term.scrollLeft = 0; // a wide pane: back to column 0 as well
+  if (SC.scrolled) SC.planner?.jump('bottom'); // Claude's own view too
   setFrozen(false);
   $('composer').focus();
 }
@@ -1281,6 +1289,111 @@ function wireFit() {
     FIT.planner.restart();
   });
   fitResize();
+}
+
+// ---- scroll (design W3): the wheel, PgUp/PgDn/Home/End and Jump to live move Claude's own full-screen view (POST /api/app/pane/:id/scroll) ----
+
+// planner: the request planner of scroll.js, made by wireScroll. scrolled: Claude's own view is not at the bottom (the capture's `scrolled`, or
+// the route's answer). lastLine: when a refusal line was last shown (at most one per NOTE_MS).
+const SC = { planner: null, scrolled: false, lastLine: 0 };
+// PgUp/PgDn are one page; Home/End (and Ctrl+Home/Ctrl+End) are the ends of Claude's view. dir: -1 up, 1 down, for the native-first rule.
+const SCROLL_KEYS = new Map([['PageUp', ['page', 'up', -1]], ['PageDown', ['page', 'down', 1]], ['Home', ['jump', 'top', -1]], ['End', ['jump', 'bottom', 1]]]);
+
+/** The scroll route; a window with no pane, or a pane that is gone, has none. */
+function scrollCall(body) {
+  if (!paneId || M.gone) return Promise.resolve({ status: 0, body: null });
+  return call(`/api/app/pane/${encodeURIComponent(paneId)}/scroll`, { method: 'POST', json: body });
+}
+
+/** Jump to live and the corner note follow nika's own Paused (M.frozen) and Claude's scrolled-up view (SC.scrolled): each state its own colour (data-k), icon and words. */
+function renderNote() {
+  const v = noteView({ frozen: M.frozen, scrolled: SC.scrolled });
+  const el = $('paused-note');
+  $('jump-live').hidden = !v.jump;
+  el.hidden = v.note === null;
+  if (v.note === null) {
+    el.removeAttribute('data-k');
+    el.replaceChildren();
+    return;
+  }
+  el.setAttribute('data-k', v.note.kind);
+  el.replaceChildren(icon(v.note.icon), h('span', { text: v.note.text }));
+}
+
+/** A change of Claude's scrolled-up view: the corner note and Jump to live follow, announced once. */
+function setScrolled(on) {
+  if (on === SC.scrolled) return;
+  SC.scrolled = on;
+  renderNote();
+  announce(scrolledSay(on));
+}
+
+/** After every drawn capture: the pill Claude draws when its view is scrolled up (the server reads it: `scrolled`, only with its full-screen view on). */
+function scrollCaptured(body) {
+  setScrolled(body.alt === true && body.scrolled === true);
+}
+
+/** A refusal in fixed words, at most once per NOTE_MS (design 6.4). */
+function scrollLine(answer) {
+  const line = refusalLine(answer);
+  const t = Date.now();
+  if (line === null || t - SC.lastLine < NOTE_MS) return;
+  SC.lastLine = t;
+  showProblem(line, 'warn', NOTE_MS);
+}
+
+/** The route answered (the planner has already dropped what was queued behind a refusal): 200 says where Claude's view is now, 404 the pane is gone, the rest is a line. */
+function scrollDone(r) {
+  if (r.status === 200) {
+    if (typeof r.body?.scrolled === 'boolean') setScrolled(r.body.scrolled);
+    kickMirror(0); // the route refreshed the capture: the mirror shows the new view on its next tick
+  } else if (r.status === 404) setGone();
+  else scrollLine({ status: r.status, code: r.body?.error });
+}
+
+/** After the native check chose Claude: true when a request may go. A pane that is not in its full-screen view, or not read yet, gets nothing at all (no line); a closed gate gets the line. */
+function scrollOpen() {
+  if (!SC.planner || M.gone || M.fatal || !M.body || M.body.alt !== true) return false;
+  const code = scrollGate(M.body, M.draft);
+  if (code !== null) scrollLine({ status: 409, code });
+  return code === null;
+}
+
+/** The wheel over the terminal (design 6.1, 6.2): vertical travel only, the mirror's own overflow first, then Claude's view. A pinch zoom or an app gesture (Ctrl, Meta) and sideways travel (Shift, deltaX) stay with the browser; focus never moves. */
+function scrollWheel(e) {
+  if (e.ctrlKey || e.metaKey || e.shiftKey || !(Math.abs(e.deltaY) > Math.abs(e.deltaX || 0))) return;
+  const term = $('term');
+  const rows = wheelRows(e, { cellH: $('fit-probe').getBoundingClientRect().height * FIT.scale, viewRows: viewRowsOf(M.body, M.draft) });
+  if (rows === 0 || routeFor({ dir: rows, top: term.scrollTop, height: term.scrollHeight, client: term.clientHeight }) === 'native') return;
+  e.preventDefault(); // no overscroll bounce
+  if (scrollOpen()) SC.planner.wheel(rows, pageRowsOf(M.body, M.draft));
+}
+
+/** PgUp, PgDn, Home, End and Ctrl+Home, Ctrl+End while the terminal has focus and Type into pane is off (the message box keeps its own editing keys; with Type into pane on the keys route sends the user's own keys). */
+function scrollKey(e) {
+  if (P.on || e.defaultPrevented || e.isComposing || e.altKey || e.metaKey || e.shiftKey || !SCROLL_KEYS.has(e.key)) return;
+  const [kind, what, dir] = SCROLL_KEYS.get(e.key);
+  if (e.ctrlKey && kind === 'page') return; // Ctrl+PgUp and Ctrl+PgDn belong to the app (tabs)
+  const term = $('term');
+  if (routeFor({ dir, top: term.scrollTop, height: term.scrollHeight, client: term.clientHeight }) === 'native') return;
+  e.preventDefault();
+  if (!scrollOpen()) return;
+  if (kind === 'page') SC.planner.page(what);
+  else SC.planner.jump(what);
+}
+
+function wireScroll() {
+  SC.planner = createScrollPlanner({
+    send: scrollCall,
+    after: (fn, ms) => setTimeout(fn, ms),
+    cancel: (timer) => clearTimeout(timer),
+    now: () => Date.now(),
+    done: scrollDone,
+  });
+  const term = $('term');
+  term.addEventListener('wheel', scrollWheel, { passive: false }); // not passive: preventDefault must work
+  term.addEventListener('keydown', scrollKey);
+  window.addEventListener('pagehide', () => SC.planner.close());
 }
 
 // ---- sending ------------------------------------------------------------------------------------------------------
@@ -1826,6 +1939,7 @@ function wireTerminal() {
   const term = $('term');
   term.addEventListener('scroll', () => setFrozen(term.scrollHeight - term.scrollTop - term.clientHeight >= 8));
   $('jump-live').addEventListener('click', jumpToLive);
+  wireScroll();
   $('over-retry').addEventListener('click', () => {
     M.gone = false;
     M.fatal = false;

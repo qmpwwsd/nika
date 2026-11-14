@@ -25,6 +25,7 @@ const STATIC = new Map([
   ['/mirror-render.js', ['mirror-render.js', 'text/javascript; charset=utf-8']],
   ['/draft-sync.js', ['draft-sync.js', 'text/javascript; charset=utf-8']],
   ['/fit-ui.js', ['fit-ui.js', 'text/javascript; charset=utf-8']],
+  ['/scroll.js', ['scroll.js', 'text/javascript; charset=utf-8']],
   ['/modes.js', ['modes.js', 'text/javascript; charset=utf-8']],
   ['/quick-actions.js', ['quick-actions.js', 'text/javascript; charset=utf-8']],
   ['/models-ui.js', ['models-ui.js', 'text/javascript; charset=utf-8']],

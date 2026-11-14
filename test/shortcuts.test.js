@@ -243,6 +243,10 @@ describe('shortcutsFor: the session window', () => {
       ['Copy', 'Ctrl+Shift+C', 'Copy the text selected in the terminal (Ctrl+C goes to Claude)'],
       ['Paste', 'Ctrl+Shift+V or Ctrl+V', 'Send the clipboard to Claude as one paste'],
     ]],
+    ['Terminal (Type into pane off)', [
+      ["Scroll Claude's view", 'PgUp / PgDn', "Scroll Claude's view one page (the mouse wheel and the trackpad scroll it over the terminal)"],
+      ['Top, or back to live', 'Home / End', "Claude's view: top / back to live (Ctrl+Home and Ctrl+End do the same)"],
+    ]],
     ['Mode switcher', [
       ['Move between modes', `${LEFT} ${RIGHT} Home End`, 'Moves focus; does not switch'],
       ['Switch', 'Enter or Space', 'Switch to the focused mode'],
@@ -310,7 +314,7 @@ describe('shortcutsFor: filtering and shape', () => {
   });
 
   test('(+) every row is complete data: both platforms, at least one key, a description', () => {
-    assert.equal(SHORTCUTS.length, 40, '15 dashboard rows (13 app, 2 browser) and 25 session rows');
+    assert.equal(SHORTCUTS.length, 42, '15 dashboard rows (13 app, 2 browser) and 27 session rows');
     for (const r of SHORTCUTS) {
       assert.ok(['dashboard', 'session'].includes(r.window), r.name);
       assert.ok(['app', 'browser', 'both'].includes(r.tier), r.name);
@@ -789,7 +793,7 @@ describe('openShortcuts', () => {
     ids['kbd-dlg'].close();
     openShortcuts({ window: 'session', tier: 'app', mac: true, singleKey: false, opener: null });
     assert.equal(ids['kbd-sub'].textContent, 'Session window');
-    assert.equal(tagged(ids['kbd-body'], 'section').length, 5);
+    assert.equal(tagged(ids['kbd-body'], 'section').length, 6);
     assert.equal(ids['kbd-foot'].textContent.includes('Single-key shortcuts: Off'), true);
   });
 });

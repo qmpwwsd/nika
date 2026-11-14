@@ -15,6 +15,7 @@ import { planSend as planSendReal, arrowEcho as arrowEchoReal, keyForEvent as ke
 import { draftSendPlan as draftSendPlanReal, cleanDraft as cleanDraftReal, cutAt as cutAtReal, caretAfter as caretAfterReal, noteView as noteViewReal, suggestionFor as suggestionForReal } from '../public/draft-sync.js';
 import { switchFailure as switchFailureReal, MODE_TARGETS, MODE_META } from '../public/modes.js';
 import { createFitPlanner as createFitPlannerReal, panelSize as panelSizeReal, scaleFor as scaleForReal, chipView as chipViewReal } from '../public/fit-ui.js';
+import { createScrollPlanner as createScrollPlannerReal, routeFor as routeForReal, wheelRows as wheelRowsReal, scrollGate as scrollGateReal, viewRowsOf as viewRowsOfReal, pageRowsOf as pageRowsOfReal, refusalLine as refusalLineReal, noteView as scrollNoteViewReal, scrolledSay as scrolledSayReal, NOTE_MS as NOTE_MS_REAL } from '../public/scroll.js';
 import { h as hReal, icon as iconReal } from '../public/dom.js';
 import { installDom, El } from './fake-dom.js';
 
@@ -24,7 +25,7 @@ const HTML = read('session.html');
 const JS = {
   'session.js': read('session.js'), 'mirror-render.js': read('mirror-render.js'), 'modes.js': read('modes.js'),
   'quick-actions.js': read('quick-actions.js'), 'models-ui.js': read('models-ui.js'), 'end-dialog.js': read('end-dialog.js'),
-  'palette.js': read('palette.js'), 'shortcuts.js': read('shortcuts.js'), 'draft-sync.js': read('draft-sync.js'), 'fit-ui.js': read('fit-ui.js'),
+  'palette.js': read('palette.js'), 'shortcuts.js': read('shortcuts.js'), 'draft-sync.js': read('draft-sync.js'), 'fit-ui.js': read('fit-ui.js'), 'scroll.js': read('scroll.js'),
 };
 const TOKENS = read('tokens.css');
 const CSS = read('session.css');
@@ -145,7 +146,7 @@ describe('session.html under the strict CSP', () => {
 describe('contracts with the other UI modules', () => {
   test('(+) session.js imports only names the shared modules export, from sibling files', () => {
     const imports = [...JS['session.js'].matchAll(/import \{([^}]+)\} from '([^']+)'/g)];
-    assert.deepEqual(imports.map((m) => m[2]), ['./dom.js', './api.js', './dash-model.js', './mirror-render.js', './draft-sync.js', './modes.js', './quick-actions.js', './models-ui.js', './end-dialog.js', './palette.js', './shortcuts.js', './fit-ui.js']);
+    assert.deepEqual(imports.map((m) => m[2]), ['./dom.js', './api.js', './dash-model.js', './mirror-render.js', './draft-sync.js', './modes.js', './quick-actions.js', './models-ui.js', './end-dialog.js', './palette.js', './shortcuts.js', './fit-ui.js', './scroll.js']);
     for (const [, names, from] of imports) {
       const exported = read(from.slice(2));
       for (const n of names.split(',').map((x) => x.trim())) assert.match(exported, new RegExp(`export (async )?(function|const|let) ${n}\\b`), `${from} exports ${n}`);
@@ -3425,7 +3426,7 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     const chip = new El('span');
     chip.hidden = true;
     const ctx = {
-      paneId: pane, M: { cols: 0, rows: 0, gone: false, timer: 0, errors: 0, inputOff: false }, FIT: { planner: null, panel: null, scale: 1 },
+      paneId: pane, M: { cols: 0, rows: 0, gone: false, timer: 0, errors: 0, inputOff: false }, FIT: { planner: null, panel: null, scale: 1 }, SC: { planner: null, scrolled: false },
       $: (id) => ({ term, 'fit-probe': probe, 'fit-chip': chip })[id],
       call: async (path, opts) => { log.calls.push({ path, ...opts }); return replies.length ? replies.shift() : FITTED; },
       announce: (m) => log.said.push(m), h: hReal, icon: iconReal,
@@ -3873,7 +3874,7 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
 
   test('(+) setGone closes the planner and handleCapture is guarded: the hooks are in the source where the design puts them', () => {
     assert.match(fnOf('function setGone()'), /M\.gone = true;[\s\S]*FIT\.planner\?\.close\(\);/);
-    assert.match(fnOf('function handleCapture(r)'), /try \{\s*fitCaptured\(\);\s*\} catch \{[^}]*\}\s*if \(!M\.frozen\) term\.scrollTop = term\.scrollHeight;/);
+    assert.match(fnOf('function handleCapture(r)'), /try \{\s*fitCaptured\(\);\s*\} catch \{[^}]*\}\s*try \{\s*scrollCaptured\(r\.body\);\s*\} catch \{[^}]*\}\s*if \(!M\.frozen\) term\.scrollTop = term\.scrollHeight;/);
     assert.match(fnOf('function boot()'), /FIT\.planner\?\.beat\(\);/);
   });
 
@@ -3982,5 +3983,579 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     assert.match(src, /h\('span', \{ text: view\.text \}\)/);
     assert.match(src, /setAttribute\('title', view\.title\)/);
     assert.deepEqual(findSinks(src), []);
+  });
+});
+
+// ---- 0.5, W3-T3: scrolling Claude's view (the wheel, PgUp/PgDn/Home/End, Jump to live, the corner note) ----------------------------------
+// The pure rules are public/scroll.js (test/scroll-ui.test.js, with the twin of the server's gate). Here: the markup and stylesheet, and the
+// functions of session.js run for real in a vm against a fake route, a manual clock and a fake DOM.
+
+describe('W3-T3: scroll (markup and stylesheet)', () => {
+  const css = strip(CSS);
+  const tag = (id) => new RegExp(`<[a-z]+\\b[^>]*\\bid="${id}"[^>]*>`).exec(HTML)?.[0] ?? '';
+  const rules = (sel) => [...css.matchAll(new RegExp(`(?:^|[\\s}])${sel.replace(/[.[\]"=]/g, '\\$&')}\\s*\\{([^}]*)\\}`, 'g'))].map((m) => m[1]);
+  const symbol = (n) => new RegExp(`<symbol id="i-${n}" viewBox="0 0 16 16">([\\s\\S]*?)</symbol>`).exec(HTML)?.[1] ?? null;
+
+  test('(+) the sprite draws i-up as the i-down path turned half a turn, and every icon the corner note names is in the sprite', () => {
+    assert.equal(symbol('down'), '<path d="M8 3v10M3.5 8.5 8 13l4.5-4.5"/>');
+    assert.equal(symbol('up'), '<path d="M8 13V3M12.5 7.5 8 3 3.5 7.5"/>');
+    assert.doesNotMatch(symbol('up'), /\b(fill|stroke|style)=/, 'the .ic class draws the stroke');
+    for (const state of [{ frozen: true }, { scrolled: true }]) assert.match(HTML, new RegExp(`<symbol id="i-${scrollNoteViewReal(state).note.icon}"`));
+  });
+
+  test('(+) #paused-note is empty and hidden in the markup (the script draws its icon and words); it keeps its place after #term', () => {
+    assert.match(HTML, /<span class="paused-note" id="paused-note" hidden><\/span>/);
+    assert.ok(HTML.indexOf('id="term"') < HTML.indexOf('id="paused-note"') && HTML.indexOf('id="paused-note"') < HTML.indexOf('id="jump-live"'));
+  });
+
+  test('(+) the terminal names its scroll keys in aria-keyshortcuts, stays a focusable region, and is still not a live region', () => {
+    const t = tag('term');
+    assert.match(t, /\baria-keyshortcuts="PageUp PageDown Home End"/);
+    assert.match(t, /\btabindex="0"/);
+    assert.match(t, /\brole="region"/);
+    assert.doesNotMatch(t, /aria-live|role="log"|role="status"/);
+  });
+
+  test('(+) the note lays its icon and words out in a row (inline-flex), and Claude\'s scrolled view has its own colours (accent), apart from the idle pair of Paused', () => {
+    const all = rules('.paused-note').join(' ');
+    assert.match(all, /display:\s*inline-flex/);
+    assert.match(all, /align-items:\s*center/);
+    assert.match(all, /gap:\s*5px/);
+    const base = rules('.paused-note')[0];
+    assert.match(base, /background:\s*var\(--idle-soft\)/);
+    assert.match(base, /(^|[\s;])color:\s*var\(--idle\)/);
+    const scrolled = rules('.paused-note[data-k="scrolled"]');
+    assert.equal(scrolled.length, 1);
+    assert.match(scrolled[0], /(^|[\s;])color:\s*var\(--accent\)/);
+    assert.match(scrolled[0], /background:\s*var\(--accent-soft\)/);
+    assert.ok(css.lastIndexOf('.paused-note[data-k="scrolled"]') > css.indexOf('.paused-note {'), 'it comes after the base rule, so the cascade picks it');
+  });
+
+  test('(+) the [hidden] rule still hides the note (inline-flex must not override the attribute)', () => {
+    assert.match(css, /\[hidden\]\s*\{\s*display:\s*none\s*!important/);
+  });
+
+  test('(−) no style attribute, inline style or new token: the colours are the existing accent and idle pairs', () => {
+    assert.doesNotMatch(HTML, /\sstyle\s*=/i);
+    assert.doesNotMatch(css, /color-mix\(|:has\(/);
+    const own = rules('.paused-note[data-k="scrolled"]').join(' ');
+    for (const v of own.match(/var\(--[a-z0-9-]+\)/g)) assert.ok(TOKENS.includes(`${v.slice(4, -1)}:`), `${v} is a token`);
+  });
+
+  const blockAt = (opener) => {
+    const at = TOKENS.indexOf(opener);
+    assert.ok(at >= 0, opener);
+    const open = TOKENS.indexOf('{', at);
+    return TOKENS.slice(open + 1, TOKENS.indexOf('}', open));
+  };
+  const vars = (block) => Object.fromEntries([...block.matchAll(/(--[a-z0-9-]+)\s*:\s*([^;]+);/g)].map((m) => [m[1], m[2].trim()]));
+  const light = vars(blockAt(':root {'));
+  const THEME = { light, dark: { ...light, ...vars(blockAt(':root:not([data-theme="light"]) {')) }, darkPinned: { ...light, ...vars(blockAt(':root[data-theme="dark"] {')) } };
+  const lin = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255).map((v) => (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4));
+  const lum = (hex) => { const c = lin(hex); return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]; };
+  const ratio = (a, b) => { const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x); return (hi + 0.05) / (lo + 0.05); };
+
+  for (const [name, v] of Object.entries(THEME)) {
+    test(`(+) contrast (${name}): the note text is at least 4.5:1 on its fill in both states, and the two states differ`, () => {
+      assert.match(v['--accent'], /^#[0-9a-f]{6}$/i);
+      assert.ok(ratio(v['--accent'], v['--accent-soft']) >= 4.5, `scrolled ${ratio(v['--accent'], v['--accent-soft']).toFixed(2)}`);
+      assert.ok(ratio(v['--idle'], v['--idle-soft']) >= 4.5, `paused ${ratio(v['--idle'], v['--idle-soft']).toFixed(2)}`);
+      assert.notEqual(v['--accent'], v['--idle']);
+      assert.notEqual(v['--accent-soft'], v['--idle-soft']);
+    });
+  }
+
+  test('(+) the module is served: /scroll.js is on the static list next to /fit-ui.js', () => {
+    const server = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'src', 'server.js'), 'utf8');
+    assert.match(server, /\['\/scroll\.js', \['scroll\.js', 'text\/javascript; charset=utf-8'\]\]/);
+    assert.ok(server.indexOf("'/fit-ui.js'") < server.indexOf("'/scroll.js'"));
+  });
+
+  test('(+) the Keyboard shortcuts window lists the scroll keys for the session window only (shortcuts.js)', async () => {
+    const { shortcutsFor } = await import('../public/shortcuts.js');
+    const names = (win) => shortcutsFor({ window: win, tier: 'app', mac: false }).flatMap((g) => g.rows).map((r) => r.name);
+    assert.ok(names('session').includes("Scroll Claude's view") && names('session').includes('Top, or back to live'));
+    assert.ok(!names('dashboard').includes("Scroll Claude's view"));
+  });
+});
+
+describe('W3-T3: scroll in the session window (wiring)', () => {
+  const SRC = code(JS['session.js']);
+  const fnOf = (head) => {
+    const at = SRC.indexOf(head);
+    assert.ok(at >= 0, head);
+    return SRC.slice(at, SRC.indexOf('\n}\n', at) + 2);
+  };
+  const constOf = (head) => { // a one-line `const` of session.js
+    const at = SRC.indexOf(head);
+    assert.ok(at >= 0, head);
+    return SRC.slice(at, SRC.indexOf('\n', at));
+  };
+  let restoreDom;
+  before(() => { restoreDom = installDom(); });
+  after(() => restoreDom());
+
+  const NAMES = [
+    'function scrollCall(body)', 'function renderNote()', 'function setScrolled(on)', 'function scrollCaptured(body)', 'function scrollLine(answer)',
+    'function scrollDone(r)', 'function scrollOpen()', 'function scrollWheel(e)', 'function scrollKey(e)', 'function wireScroll()',
+    'function setFrozen(on)', 'function jumpToLive()', 'function setGone()',
+  ];
+  const BOX = { top: 32, bottom: 34 }; // 32 rows above the input box: a page is 16 rows, 288 px at an 18 px cell
+  const draftOf = (over = {}) => ({ state: 'empty', mode: 'prompt', text: '', sig: '0000000000000001', box: BOX, cursorAtEnd: true, suggestion: null, ...over });
+  const bodyOf = (over = {}) => ({ alt: true, scrolled: false, prompt: null, cols: 120, rows: Array.from({ length: 36 }, () => []), draft: draftOf(), ...over });
+
+  /** A manual clock for setTimeout / clearTimeout / Date.now; advance(ms) runs the timers due and lets the promises settle. */
+  const clock = () => {
+    let now = 5_000_000;
+    let next = 1;
+    const timers = new Map();
+    const settle = () => new Promise((resolve) => { setImmediate(resolve); });
+    return {
+      setTimeout(fn, ms) { const id = next++; timers.set(id, { at: now + ms, fn }); return id; },
+      clearTimeout(id) { timers.delete(id); },
+      Date: { now: () => now },
+      async advance(ms) {
+        const end = now + ms;
+        for (;;) {
+          const due = [...timers.entries()].filter(([, t]) => t.at <= end).sort((a, b) => a[1].at - b[1].at || a[0] - b[0])[0];
+          if (!due) break;
+          timers.delete(due[0]);
+          now = due[1].at;
+          due[1].fn();
+          await settle();
+        }
+        now = end;
+        await settle();
+      },
+    };
+  };
+
+  /**
+   * The scroll functions of session.js with a pane, a mirror box (term: scrollTop / scrollHeight / clientHeight), the last capture, and the route's
+   * replies in order (then a 200 that says scrolled). The default box has no overflow, so the wheel and the keys are Claude's.
+   */
+  const rig = ({ pane = '%12', box = { top: 0, height: 400, client: 400 }, body = bodyOf(), replies = [] } = {}) => {
+    const clk = clock();
+    const log = { calls: [], problems: [], said: [], kicks: [], lives: [], events: {}, focus: [] };
+    const el = (id) => { const e = new El('div'); e.id = id; return e; };
+    const term = Object.assign(el('term'), { scrollTop: box.top, scrollHeight: box.height, clientHeight: box.client, scrollLeft: 5 });
+    const jump = el('jump-live');
+    jump.hidden = true;
+    const note = el('paused-note');
+    note.hidden = true;
+    const composer = Object.assign(el('composer'), { focus() { log.focus.push('composer'); } });
+    const probe = Object.assign(el('fit-probe'), { getBoundingClientRect: () => ({ width: 800, height: 18 }) });
+    const byId = { term, 'jump-live': jump, 'paused-note': note, composer, 'hist-scroll': el('hist-scroll'), 'fit-probe': probe };
+    const ctx = {
+      paneId: pane, M: { gone: false, fatal: false, frozen: false, cols: 120, rows: 36, etag: 'ab', timer: 0, body, draft: cleanDraftReal(body?.draft) }, P: { on: false }, FIT: { scale: 1, planner: null },
+      $: (id) => byId[id], call: async (path, opts) => { log.calls.push({ path, ...opts }); return replies.length ? replies.shift() : { status: 200, body: { sent: 1, scrolled: true } }; },
+      showProblem: (m, k, ms) => log.problems.push([m, k, ms]), announce: (m) => log.said.push(m), kickMirror: (ms) => log.kicks.push(ms),
+      setLive: (state, text) => log.lives.push([state, text]), MID: ' - ', TIMES: 'x', h: hReal, icon: iconReal,
+      window: { addEventListener: (type, fn) => { log.events[type] = fn; } }, setTimeout: clk.setTimeout, clearTimeout: clk.clearTimeout, Date: clk.Date,
+      createScrollPlanner: createScrollPlannerReal, routeFor: routeForReal, wheelRows: wheelRowsReal, scrollGate: scrollGateReal, viewRowsOf: viewRowsOfReal, pageRowsOf: pageRowsOfReal,
+      refusalLine: refusalLineReal, noteView: scrollNoteViewReal, scrolledSay: scrolledSayReal, NOTE_MS: NOTE_MS_REAL, encodeURIComponent,
+      // setGone's other collaborators
+      DS: { stop() {} }, setPaneState() {}, setInputEnabled() {}, showOverlay() {},
+    };
+    const src = `${constOf('const SC = ')}\n${constOf('const SCROLL_KEYS = ')}\n${NAMES.map(fnOf).join('\n')}; ({ scrollCall, renderNote, setScrolled, scrollCaptured, scrollLine, scrollDone, scrollOpen, scrollWheel, scrollKey, wireScroll, setFrozen, jumpToLive, setGone, SC })`;
+    const fns = vm.runInNewContext(src, ctx);
+    ctx.SC = fns.SC; // the file's own const, so tests read the state the functions use
+    return { ...fns, ctx, log, clk, term, jump, note, composer, byId };
+  };
+  const ROUTE = '/api/app/pane/%2512/scroll';
+  const POST = (json) => ({ path: ROUTE, method: 'POST', json });
+  const wheel = (over = {}) => ({ deltaY: 144, deltaX: 0, deltaMode: 0, ctrlKey: false, metaKey: false, shiftKey: false, altKey: false, ...over }); // 144 px = 8 rows = half a page
+  const key = (k, over = {}) => ({ key: k, ctrlKey: false, metaKey: false, shiftKey: false, altKey: false, isComposing: false, ...over });
+  const calls = (r) => norm(r.log.calls);
+  const wired = (opts) => { const r = rig(opts); r.wireScroll(); return r; };
+  const fire = (r, type, e) => r.term.fire(type, e);
+
+  // -- the wheel
+  test('(+) a vertical wheel over the terminal with the gate open posts one scroll request and prevents the default (no overscroll bounce); focus does not move', () => {
+    const r = wired();
+    const e = fire(r, 'wheel', wheel());
+    assert.equal(e.defaultPrevented, true);
+    assert.deepEqual(calls(r), [POST({ dir: 'down', pages: 1 })]);
+    assert.deepEqual(r.log.focus, []);
+    assert.deepEqual(norm(r.log.problems), []);
+  });
+
+  test('(+) a wheel up is { dir: up }; the travel adds up over several events, and a page is half the rows above the input box', () => {
+    const r = wired();
+    fire(r, 'wheel', wheel({ deltaY: -72 })); // 4 rows
+    assert.deepEqual(calls(r), [], 'a quarter of a page: nothing yet');
+    fire(r, 'wheel', wheel({ deltaY: -72 }));
+    assert.deepEqual(calls(r), [POST({ dir: 'up', pages: 1 })]);
+  });
+
+  test('(+) the cell height is the probe\'s height times the text scale: a scaled-down pane needs less pixel travel', () => {
+    const r = wired();
+    r.ctx.FIT.scale = 0.5; // 9 px per row, so 72 px is 8 rows
+    fire(r, 'wheel', wheel({ deltaY: 72 }));
+    assert.deepEqual(calls(r), [POST({ dir: 'down', pages: 1 })]);
+  });
+
+  test('(+) lines and pages as units: deltaMode 1 is rows, 2 is whole views', () => {
+    const lines = wired();
+    fire(lines, 'wheel', wheel({ deltaY: 8, deltaMode: 1 }));
+    assert.deepEqual(calls(lines), [POST({ dir: 'down', pages: 1 })]);
+    const pages = wired();
+    fire(pages, 'wheel', wheel({ deltaY: -1, deltaMode: 2 })); // one view (32 rows) = two pages
+    assert.deepEqual(calls(pages), [POST({ dir: 'up', pages: 2 })]);
+  });
+
+  test('(+) native first: the mirror\'s own overflow scrolls before Claude\'s view, in both directions', () => {
+    const mid = wired({ box: { top: 300, height: 1000, client: 400 } });
+    for (const dy of [-144, 144]) assert.equal(fire(mid, 'wheel', wheel({ deltaY: dy })).defaultPrevented, false, `${dy}: the browser scrolls`);
+    assert.deepEqual(calls(mid), []);
+    const top = wired({ box: { top: 0, height: 1000, client: 400 } });
+    assert.equal(fire(top, 'wheel', wheel({ deltaY: 144 })).defaultPrevented, false, 'down from the top is native');
+    assert.equal(fire(top, 'wheel', wheel({ deltaY: -144 })).defaultPrevented, true, 'up at the top is Claude\'s');
+    assert.deepEqual(calls(top), [POST({ dir: 'up', pages: 1 })]);
+    const bottom = wired({ box: { top: 600, height: 1000, client: 400 } });
+    assert.equal(fire(bottom, 'wheel', wheel({ deltaY: -144 })).defaultPrevented, false, 'up from the bottom is native');
+    assert.equal(fire(bottom, 'wheel', wheel({ deltaY: 144 })).defaultPrevented, true);
+    assert.deepEqual(calls(bottom), [POST({ dir: 'down', pages: 1 })]);
+  });
+
+  test('(−) a pinch zoom or app gesture (Ctrl, Meta), sideways travel (Shift, deltaX) and a wheel with no travel stay with the browser: no request, no preventDefault', () => {
+    const r = wired();
+    for (const over of [{ ctrlKey: true }, { metaKey: true }, { shiftKey: true }, { deltaX: 144 }, { deltaX: 200, deltaY: 144 }, { deltaY: 0 }, { deltaY: NaN }]) {
+      assert.equal(fire(r, 'wheel', wheel(over)).defaultPrevented, false, JSON.stringify(over));
+    }
+    assert.deepEqual(calls(r), []);
+  });
+
+  test('(−) Claude not in its full-screen view (alt false or missing), no capture yet, a gone pane or a lost connection: no request and no line', () => {
+    for (const body of [bodyOf({ alt: false }), (({ alt, ...rest }) => rest)(bodyOf()), bodyOf({ alt: 'true' }), null]) {
+      const r = wired({ body });
+      fire(r, 'wheel', wheel());
+      assert.deepEqual(calls(r), []);
+      assert.deepEqual(norm(r.log.problems), []);
+    }
+    for (const flag of ['gone', 'fatal']) {
+      const r = wired();
+      r.ctx.M[flag] = true;
+      fire(r, 'wheel', wheel());
+      assert.deepEqual(calls(r), [], flag);
+      assert.deepEqual(norm(r.log.problems), []);
+    }
+  });
+
+  test('(−) a gate that is closed (a prompt, a dialog, a slash menu) sends nothing and says why, in the page\'s own words, once per 3 s', async () => {
+    const r = wired({ body: bodyOf({ prompt: { question: 'Do you want to proceed?', options: [] } }) });
+    fire(r, 'wheel', wheel());
+    fire(r, 'wheel', wheel());
+    assert.deepEqual(calls(r), []);
+    assert.deepEqual(norm(r.log.problems), [[refusalLineReal({ status: 409, code: 'prompt-open' }), 'warn', 3000]], 'one line');
+    await r.clk.advance(2999);
+    fire(r, 'wheel', wheel());
+    assert.equal(r.log.problems.length, 1);
+    await r.clk.advance(1);
+    fire(r, 'wheel', wheel());
+    assert.equal(r.log.problems.length, 2, 'the window passed');
+    const codes = { 'screen-unclear': bodyOf({ draft: null }), 'menu-open': bodyOf({ draft: draftOf({ state: 'text', text: '/com' }) }) };
+    for (const [code, body] of Object.entries(codes)) {
+      const q = wired({ body });
+      fire(q, 'wheel', wheel());
+      assert.deepEqual(calls(q), []);
+      assert.equal(q.log.problems[0][0], refusalLineReal({ status: 409, code }), code);
+    }
+  });
+
+  test('(−) wheel events over the transcript or the message box are nobody\'s: wireScroll listens on the terminal only', () => {
+    const r = wired();
+    assert.deepEqual(Object.keys(r.term.listeners).sort(), ['keydown', 'wheel']);
+    for (const [id, e] of Object.entries(r.byId)) if (id !== 'term') assert.deepEqual(e.listeners, {}, id);
+    assert.deepEqual(Object.keys(r.log.events), ['pagehide']);
+    assert.match(fnOf('function wireScroll()'), /\$\('term'\);/);
+    assert.match(fnOf('function wireScroll()'), /addEventListener\('wheel', scrollWheel, \{ passive: false \}\)/);
+  });
+
+  // -- the keys
+  test('(+) PgUp, PgDn, Home, End and Ctrl+Home, Ctrl+End in the terminal, Type into pane off: one page, or an end of Claude\'s view; the default is prevented', () => {
+    const cases = [[key('PageUp'), { dir: 'up', pages: 1 }], [key('PageDown'), { dir: 'down', pages: 1 }], [key('Home'), { to: 'top' }], [key('End'), { to: 'bottom' }],
+      [key('Home', { ctrlKey: true }), { to: 'top' }], [key('End', { ctrlKey: true }), { to: 'bottom' }]];
+    for (const [e, json] of cases) {
+      const r = wired();
+      assert.equal(fire(r, 'keydown', e).defaultPrevented, true, e.key);
+      assert.deepEqual(calls(r), [POST(json)], `${e.key}${e.ctrlKey ? ' + Ctrl' : ''}`);
+      assert.deepEqual(r.log.focus, [], 'focus stays where it is');
+    }
+  });
+
+  test('(+) the keys follow the same native-first rule: below the mirror\'s own top they are the browser\'s; Home at the top is Claude\'s, End from the top is not', () => {
+    const mid = wired({ box: { top: 300, height: 1000, client: 400 } });
+    for (const k of ['PageUp', 'PageDown', 'Home', 'End']) assert.equal(fire(mid, 'keydown', key(k)).defaultPrevented, false, k);
+    assert.deepEqual(calls(mid), []);
+    const top = wired({ box: { top: 0, height: 1000, client: 400 } });
+    assert.equal(fire(top, 'keydown', key('Home')).defaultPrevented, true);
+    assert.equal(fire(top, 'keydown', key('End')).defaultPrevented, false, 'End from the top: the mirror scrolls to its own bottom first');
+    assert.deepEqual(calls(top), [POST({ to: 'top' })]);
+  });
+
+  test('(−) with Type into pane on, the keys are the pane\'s own: this handler sends nothing, and the passthrough maps them to PPage / NPage / Home / End for the keys route', () => {
+    const r = wired();
+    r.ctx.P.on = true;
+    for (const k of ['PageUp', 'PageDown', 'Home', 'End']) assert.equal(fire(r, 'keydown', key(k)).defaultPrevented, false, k);
+    assert.deepEqual(calls(r), []);
+    const names = ['PageUp', 'PageDown', 'Home', 'End'].map((k) => keyForEventReal(key(k), { mac: false }));
+    assert.deepEqual(names, [{ kind: 'key', name: 'PPage' }, { kind: 'key', name: 'NPage' }, { kind: 'key', name: 'Home' }, { kind: 'key', name: 'End' }]);
+    for (const { name } of names) assert.ok(KEY_NAME.has(name), name);
+  });
+
+  test('(−) other chords stay with the browser: Shift, Alt or Meta with the keys, Ctrl+PgUp / Ctrl+PgDn (tabs), a key already handled, an IME key, other keys', () => {
+    const r = wired();
+    const nope = [key('PageUp', { shiftKey: true }), key('PageUp', { altKey: true }), key('PageUp', { metaKey: true }), key('PageUp', { ctrlKey: true }), key('PageDown', { ctrlKey: true }),
+      key('Home', { shiftKey: true }), key('End', { altKey: true }), key('PageUp', { isComposing: true }), key('PageUp', { defaultPrevented: true }), key('ArrowUp'), key('Space'), key('a'), key('Enter')];
+    for (const e of nope) assert.equal(r.term.fire('keydown', e).defaultPrevented, e.defaultPrevented === true, JSON.stringify(e));
+    assert.deepEqual(calls(r), []);
+  });
+
+  test('(−) the message box keeps its own editing keys: nothing of this module listens there', () => {
+    const r = wired();
+    assert.deepEqual(r.composer.listeners, {});
+    r.composer.fire('keydown', key('PageUp'));
+    r.composer.fire('keydown', key('End'));
+    assert.deepEqual(calls(r), []);
+  });
+
+  test('(−) a closed gate sends no key either, and says why', () => {
+    const r = wired({ body: bodyOf({ prompt: { question: 'x?', options: [] } }) });
+    assert.equal(fire(r, 'keydown', key('PageDown')).defaultPrevented, true);
+    assert.deepEqual(calls(r), []);
+    assert.equal(r.log.problems.length, 1);
+    assert.match(r.log.problems[0][0], /^A prompt is open/);
+  });
+
+  // -- the answers
+  test('(+) 200 says where Claude\'s view is now (a boolean), and the mirror is kicked to show it; a null leaves the state as it was', async () => {
+    const r = wired({ replies: [{ status: 200, body: { sent: 1, scrolled: true } }, { status: 200, body: { sent: 1, scrolled: null } }, { status: 200, body: { sent: 1, scrolled: false } }] });
+    fire(r, 'wheel', wheel());
+    await r.clk.advance(0);
+    assert.equal(r.ctx.SC.scrolled, true);
+    assert.deepEqual(r.log.kicks, [0]);
+    await r.clk.advance(100);
+    fire(r, 'wheel', wheel({ deltaY: 288 })); // a whole page of travel: the first page was sent at half a page, so this one is due
+    await r.clk.advance(0);
+    assert.equal(r.ctx.SC.scrolled, true, 'null: unknown, unchanged');
+    await r.clk.advance(100);
+    fire(r, 'wheel', wheel({ deltaY: 288 }));
+    await r.clk.advance(0);
+    assert.equal(r.ctx.SC.scrolled, false);
+    assert.equal(r.log.kicks.length, 3);
+  });
+
+  test('(−) a refusal shows its fixed line (409 by code, 0 and the rest by status) and drops what was queued; 429 says nothing', async () => {
+    const cases = [
+      [{ status: 409, body: { error: 'prompt-open', message: 'server words' } }, refusalLineReal({ status: 409, code: 'prompt-open' })],
+      [{ status: 409, body: { error: 'busy-switching' } }, 'Another action is running on this session. Scroll again in a moment.'],
+      [{ status: 502, body: { message: 'tmux said no' } }, "nika couldn't scroll Claude's view."],
+      [{ status: 0, body: null }, 'nika did not answer.'],
+      [{ status: 429, body: { error: 'busy' } }, null],
+    ];
+    for (const [reply, line] of cases) {
+      const r = wired({ replies: [reply] });
+      fire(r, 'wheel', wheel({ deltaY: 144 * 4 }));
+      fire(r, 'wheel', wheel({ deltaY: 144 * 4 })); // queued behind the first
+      await r.clk.advance(0);
+      await r.clk.advance(1000);
+      assert.equal(r.log.calls.length, 1, `status ${reply.status}: nothing behind a refusal`);
+      assert.deepEqual(norm(r.log.problems), line === null ? [] : [[line, 'warn', 3000]], `status ${reply.status}`);
+    }
+  });
+
+  test('(−) nothing the server says reaches the page: a hostile message or code is never shown', async () => {
+    const hostile = '<img src=x onerror=alert(1)>';
+    const r = wired({ replies: [{ status: 409, body: { error: hostile, message: hostile } }] });
+    fire(r, 'wheel', wheel());
+    await r.clk.advance(0);
+    assert.doesNotMatch(JSON.stringify([r.log.problems, r.log.said, r.note.attrs, r.note.textContent]), /img|onerror/);
+    assert.equal(r.log.problems[0][0], "nika couldn't scroll Claude's view.");
+  });
+
+  test('(+) a 404 means the pane is gone (setGone closes the scroll planner); a 403 stops the planner for good', async () => {
+    const gone = wired({ replies: [{ status: 404, body: { error: 'not_found' } }] });
+    fire(gone, 'wheel', wheel());
+    fire(gone, 'wheel', wheel({ deltaY: 144 * 3 }));
+    await gone.clk.advance(0);
+    assert.equal(gone.ctx.M.gone, true, 'setGone ran');
+    await gone.clk.advance(1000);
+    assert.equal(gone.log.calls.length, 1, 'the queued pages never went');
+    assert.deepEqual(norm(gone.log.problems), []);
+    const lost = wired({ replies: [{ status: 403, body: null }] });
+    fire(lost, 'wheel', wheel());
+    await lost.clk.advance(0);
+    for (let i = 0; i < 3; i += 1) { fire(lost, 'wheel', wheel()); await lost.clk.advance(200); }
+    fire(lost, 'keydown', key('PageUp'));
+    lost.ctx.SC.scrolled = true;
+    lost.jumpToLive();
+    await lost.clk.advance(200);
+    assert.equal(lost.log.calls.length, 1, 'no request after a 403');
+    assert.deepEqual(norm(lost.log.problems), [], '403: the capture\'s overlay speaks, not this module');
+  });
+
+  test('(+) a pane that is gone, or a window with no pane, sends nothing: the route call itself refuses', async () => {
+    const r = rig();
+    r.ctx.M.gone = true;
+    assert.deepEqual(norm(await r.scrollCall({ to: 'bottom' })), { status: 0, body: null });
+    const none = rig({ pane: null });
+    assert.deepEqual(norm(await none.scrollCall({ to: 'bottom' })), { status: 0, body: null });
+    assert.deepEqual(r.log.calls.concat(none.log.calls), []);
+  });
+
+  // -- the corner note and Jump to live
+  test('(+) a scrolled-up view: the note has data-k="scrolled", the i-up icon and the words, Jump to live shows, and it is announced once', () => {
+    const r = rig();
+    r.scrollCaptured({ alt: true, scrolled: true });
+    assert.equal(r.note.hidden, false);
+    assert.equal(r.note.getAttribute('data-k'), 'scrolled');
+    assert.equal(r.note.kids.length, 2);
+    assert.equal(r.note.kids[0].kids[0].getAttribute('href'), '#i-up');
+    assert.equal(r.note.kids[1].textContent, "Scrolled up in Claude's view");
+    assert.equal(r.jump.hidden, false);
+    assert.deepEqual(r.log.said, ["Scrolled up in Claude's view. Jump to live returns to the bottom."]);
+    r.scrollCaptured({ alt: true, scrolled: true });
+    r.scrollCaptured({ alt: true, scrolled: true });
+    assert.equal(r.log.said.length, 1, 'the same state again says nothing');
+  });
+
+  test('(+) back at the bottom: the note and Jump to live are hidden, announced once', () => {
+    const r = rig();
+    r.scrollCaptured({ alt: true, scrolled: true });
+    r.scrollCaptured({ alt: true, scrolled: false });
+    assert.equal(r.note.hidden, true);
+    assert.equal(r.note.getAttribute('data-k'), null);
+    assert.equal(r.note.kids.length, 0);
+    assert.equal(r.jump.hidden, true);
+    assert.equal(r.log.said.at(-1), 'Back at the live bottom.');
+    assert.equal(r.log.said.length, 2);
+    r.scrollCaptured({ alt: true, scrolled: false });
+    assert.equal(r.log.said.length, 2);
+  });
+
+  test('(−) a pill without the full-screen view, or a missing or odd field, is not "scrolled", and a fresh page says nothing', () => {
+    const r = rig();
+    for (const body of [{ alt: false, scrolled: true }, { scrolled: true }, { alt: true }, { alt: true, scrolled: 'true' }, { alt: true, scrolled: 1 }, {}]) r.scrollCaptured(body);
+    assert.equal(r.ctx.SC.scrolled, false);
+    assert.deepEqual(r.log.said, []);
+    assert.equal(r.note.hidden, true);
+    assert.equal(r.jump.hidden, true);
+  });
+
+  test('(+) nika\'s own Paused keeps its words and gains the pause icon, with its own data-k; Jump to live shows; the header says Paused as before', () => {
+    const r = rig();
+    r.setFrozen(true);
+    assert.equal(r.note.hidden, false);
+    assert.equal(r.note.getAttribute('data-k'), 'paused');
+    assert.equal(r.note.kids[0].kids[0].getAttribute('href'), '#i-pause');
+    assert.equal(r.note.kids[1].textContent, 'Paused while you scroll');
+    assert.equal(r.jump.hidden, false);
+    assert.deepEqual(r.log.lives, [['paused', 'Paused - 120 x 36']]);
+    r.setFrozen(true);
+    assert.equal(r.log.lives.length, 1, 'no change, no redraw');
+    r.setFrozen(false);
+    assert.equal(r.note.hidden, true);
+    assert.equal(r.jump.hidden, true);
+    assert.deepEqual(r.log.lives.at(-1), ['live', 'Live - 120 x 36']);
+    assert.deepEqual(r.log.kicks, [0], 'leaving Paused kicks the mirror, as today');
+    assert.deepEqual(r.log.said, [], 'Paused is not announced (unchanged)');
+  });
+
+  test('(+) both at once: the note says Claude\'s view is scrolled, the header says Paused, and ending Paused keeps the note and Jump to live', () => {
+    const r = rig();
+    r.setFrozen(true);
+    r.scrollCaptured({ alt: true, scrolled: true });
+    assert.equal(r.note.getAttribute('data-k'), 'scrolled');
+    assert.equal(r.jump.hidden, false);
+    assert.deepEqual(r.log.lives, [['paused', 'Paused - 120 x 36']]);
+    r.setFrozen(false);
+    assert.equal(r.note.getAttribute('data-k'), 'scrolled');
+    assert.equal(r.jump.hidden, false, 'Claude\'s view is still up');
+    r.scrollCaptured({ alt: true, scrolled: false });
+    assert.equal(r.jump.hidden, true);
+    assert.equal(r.note.hidden, true);
+  });
+
+  test('(+) Jump to live while Claude is scrolled posts { to: "bottom" }, returns the mirror to its bottom and first column, and focuses the message box', () => {
+    const r = wired({ box: { top: 120, height: 1000, client: 400 } });
+    r.scrollCaptured({ alt: true, scrolled: true });
+    r.setFrozen(true);
+    r.jumpToLive();
+    assert.deepEqual(calls(r), [POST({ to: 'bottom' })]);
+    assert.equal(r.term.scrollTop, 1000);
+    assert.equal(r.term.scrollLeft, 0);
+    assert.equal(r.ctx.M.etag, null);
+    assert.deepEqual(r.log.focus, ['composer']);
+    assert.equal(r.ctx.M.frozen, false);
+    assert.equal(r.jump.hidden, false, 'it stays while Claude stays scrolled; the route\'s answer or the next capture hides it');
+  });
+
+  test('(+) Jump to live while only nika is Paused behaves as today: no request', () => {
+    const r = wired({ box: { top: 120, height: 1000, client: 400 } });
+    r.setFrozen(true);
+    r.jumpToLive();
+    assert.deepEqual(calls(r), []);
+    assert.equal(r.term.scrollTop, 1000);
+    assert.equal(r.ctx.M.frozen, false);
+    assert.equal(r.jump.hidden, true);
+    assert.deepEqual(r.log.focus, ['composer']);
+  });
+
+  test('(+) a refusal on Jump to live shows its line and the button stays while Claude stays scrolled', async () => {
+    const r = wired({ replies: [{ status: 409, body: { error: 'screen-unclear' } }] });
+    r.scrollCaptured({ alt: true, scrolled: true });
+    r.jumpToLive();
+    await r.clk.advance(0);
+    assert.equal(r.log.problems[0][0], refusalLineReal({ status: 409, code: 'screen-unclear' }));
+    assert.equal(r.jump.hidden, false);
+    assert.equal(r.ctx.SC.scrolled, true);
+  });
+
+  test('(+) the route says Claude is back at the bottom: the note and the button go away at once, announced once, and the next capture agrees', async () => {
+    const r = wired({ replies: [{ status: 200, body: { sent: 1, scrolled: false } }] });
+    r.scrollCaptured({ alt: true, scrolled: true });
+    r.jumpToLive();
+    await r.clk.advance(0);
+    assert.equal(r.jump.hidden, true);
+    assert.equal(r.note.hidden, true);
+    r.scrollCaptured({ alt: true, scrolled: false });
+    assert.deepEqual(r.log.said, ["Scrolled up in Claude's view. Jump to live returns to the bottom.", 'Back at the live bottom.']);
+  });
+
+  // -- the hooks, where the design puts them
+  test('(+) the hooks sit where the design puts them: S3 handleCapture, S4 setFrozen, S5 jumpToLive, S6 setGone, the 403 branch and wireTerminal', () => {
+    assert.match(SRC, /try \{\s*fitCaptured\(\);\s*\} catch \{[^}]*\}\s*try \{\s*scrollCaptured\(r\.body\);\s*\} catch \{[^}]*\}\s*if \(!M\.frozen\) term\.scrollTop = term\.scrollHeight;/);
+    assert.match(fnOf('function setFrozen(on)'), /M\.frozen = on;\s*renderNote\(\);/);
+    assert.doesNotMatch(fnOf('function setFrozen(on)'), /\.hidden = /, 'renderNote owns both elements now');
+    assert.match(fnOf('function jumpToLive()'), /if \(SC\.scrolled\) SC\.planner\?\.jump\('bottom'\);\s*setFrozen\(false\);/);
+    assert.match(fnOf('function setGone()'), /M\.gone = true;[\s\S]*SC\.planner\?\.close\(\);/);
+    assert.match(SRC, /if \(r\.status === 403\) \{\s*M\.fatal = true;\s*clearTimeout\(M\.timer\);\s*SC\.planner\?\.close\(\);/);
+    assert.match(fnOf('function wireTerminal()'), /wireScroll\(\);/);
+    assert.match(SRC, /import \{[^}]*\} from '\.\/scroll\.js';/);
+  });
+
+  test('(+) closing the planner (what the 403 branch of handleCapture does) stops queued pages from going', async () => {
+    const r = wired();
+    fire(r, 'wheel', wheel()); // in flight
+    fire(r, 'wheel', wheel({ deltaY: 144 * 3 })); // queued
+    r.ctx.SC.planner.close();
+    await r.clk.advance(1000);
+    assert.equal(r.log.calls.length, 1);
+  });
+
+  test('(−) the page writes with h() text and the sprite only: no markup sink anywhere in the scroll code, and the note sets its attributes through setAttribute', () => {
+    const body = NAMES.map(fnOf).join('\n');
+    assert.deepEqual(findSinks(body), []);
+    assert.match(fnOf('function renderNote()'), /h\('span', \{ text: v\.note\.text \}\)/);
+    assert.match(fnOf('function renderNote()'), /setAttribute\('data-k', v\.note\.kind\)/);
+    assert.doesNotMatch(body, /\.style\b|innerText/);
+  });
+
+  test('(+) the only route the scroll code calls is POST .../scroll, with a body that names a direction and a count or an end, never a key', () => {
+    const src = `${fnOf('function scrollCall(body)')}${fnOf('function scrollKey(e)')}${fnOf('function wireScroll()')}`;
+    assert.deepEqual([...src.matchAll(/\/api\/[^`'"]*/g)].map((m) => m[0]), ['/api/app/pane/${encodeURIComponent(paneId)}/scroll']);
+    assert.match(src, /method: 'POST', json: body/);
+    assert.doesNotMatch(src, /PPage|NPage|C-Home|C-End|keys:/);
   });
 });
