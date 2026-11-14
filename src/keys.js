@@ -2,8 +2,11 @@
 // a key name or option; a paste goes through a private tmux buffer filled from stdin (argv over ~16 KB fails) and
 // `paste-buffer -p` (bracketed paste); named keys come from the KEY_NAME allow-list. Every call is exec with a fixed
 // argv, never a shell. The caller has already checked that the pane may receive input; the id is still validated here.
+// Text goes out in the draft write's chunks (draft.js chunks(), at most 700 characters, CHUNK_GAP_MS apart): Claude reads a burst of 801+
+// characters as a paste and at 1024 keeps only the last 1-2 (live check L8, S9 Q4).
 import { randomBytes } from 'node:crypto';
 import { PANE_ID, KEY_NAME } from './ids.js';
+import { chunks, CHUNK_GAP_MS } from './draft.js';
 import { tmuxFailure } from './tmuxerr.js';
 
 const MAX_TEXT = 1024; // characters
@@ -15,6 +18,7 @@ const WINDOW_MS = 1000;
 const CONTROL = /[\u0000-\u001f\u007f-\u009f]/; // C0, DEL, C1
 const PASTE_STRIP = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g; // all of it except \t and \n (ESC included)
 
+const realSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const invalid = (message) => ({ status: 400, body: { error: 'invalid', message } });
 const count = (s) => [...s].length;
 
@@ -40,10 +44,10 @@ function validate(body) {
 }
 
 /**
- * Sender with a sliding-window rate limit (20 requests/s per pane). `now` is a () => ms clock.
+ * Sender with a sliding-window rate limit (20 requests/s per pane). `now` is a () => ms clock; `sleep(ms)` waits between text chunks.
  * send(pane, { text, paste, keys }) → { status, body }; 200 body is { sent: { text, paste, keys } } (characters, characters, keys).
  */
-export function createKeys({ exec, tmuxBin = 'tmux', now = Date.now } = {}) {
+export function createKeys({ exec, tmuxBin = 'tmux', now = Date.now, sleep = realSleep } = {}) {
   const clock = typeof now === 'function' ? now : Date.now;
   const hits = new Map(); // pane → timestamps of requests inside the window
 
@@ -85,7 +89,13 @@ export function createKeys({ exec, tmuxBin = 'tmux', now = Date.now } = {}) {
       if (req.error) return req.error;
       if (!allow(pane)) return { status: 429, body: { error: 'busy', message: `at most ${RATE} requests per second per pane` } };
       try {
-        if (req.text) await tmux(['send-keys', '-t', pane, '-l', '--', req.text]);
+        if (req.text) {
+          const parts = chunks(req.text); // a failed chunk throws: no later chunk and no named key follows
+          for (let i = 0; i < parts.length; i += 1) {
+            if (i > 0) await sleep(CHUNK_GAP_MS);
+            await tmux(['send-keys', '-t', pane, '-l', '--', parts[i]]);
+          }
+        }
         if (req.paste) await paste(pane, req.paste);
         for (const key of req.keys) await tmux(['send-keys', '-t', pane, '--', key]);
       } catch (err) {

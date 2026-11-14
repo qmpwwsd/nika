@@ -27,6 +27,7 @@ const MAX_NEWLINES = 12;
 const MAX_ROWS = 13;
 const CHUNK_CHARS = 700; // 801 characters or 3 newlines in one burst become `[Pasted text #N]` (S9 Q4)
 const CHUNK_NEWLINES = 2;
+export const CHUNK_GAP_MS = 300; // between typed chunks: the draft write (session-control) and the keys route wait this long
 const MAX_RUN = CHUNK_CHARS - 1; // a run of this many spaces and tabs cannot be cut around, see chunks()
 const LONG_RUN = new RegExp(`[ \\t]{${MAX_RUN},}`);
 

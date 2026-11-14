@@ -2,6 +2,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { createKeys } from '../src/keys.js';
 import { KEY_NAME } from '../src/ids.js';
+import { CHUNK_GAP_MS } from '../src/draft.js';
 
 const ESC = '\u001b';
 
@@ -22,7 +23,8 @@ function fakeTmux(fail) {
 }
 const tmuxErr = (stderr, code = 1) => Object.assign(new Error('tmux failed'), { code, stderr });
 let t = 1_000_000;
-const make = (exec) => createKeys({ exec, tmuxBin: '/opt/x/tmux', now: () => t });
+const noSleep = async () => {};
+const make = (exec, sleep = noSleep) => createKeys({ exec, tmuxBin: '/opt/x/tmux', now: () => t, sleep });
 const BUFFER = /^nika-[0-9a-f]{16}$/;
 
 describe('createKeys.send: text and named keys', () => {
@@ -127,6 +129,89 @@ describe('createKeys.send: text and named keys', () => {
       assert.equal(r.body.error, 'invalid');
       assert.equal(typeof r.body.message, 'string');
     }
+    assert.equal(exec.calls.length, 0);
+  });
+});
+
+describe('createKeys.send: long text goes out in chunks', () => {
+  // Claude reads a burst of 801+ characters as a paste (`[Pasted text #N]`) and at 1024 only the last 1-2 arrive (live check L8, S9 Q4).
+  const words = 'alpha beta gamma delta '.repeat(60).slice(0, 1024); // synthetic, spaces in it so the cut has something to move around
+  const typed = (exec) => exec.calls.filter((c) => c.includes('-l')).map((c) => c.at(-1));
+
+  test('(+) 700 characters go as one send-keys -l, no wait', async () => {
+    const exec = fakeTmux();
+    const slept = [];
+    const text = 'x'.repeat(700);
+    const r = await make(exec, async (ms) => { slept.push(ms); }).send('%5', { text });
+    assert.deepEqual(r, { status: 200, body: { sent: { text: 700, paste: 0, keys: 0 } } });
+    assert.deepEqual(exec.calls, [['/opt/x/tmux', '-u', 'send-keys', '-t', '%5', '-l', '--', text]]);
+    assert.deepEqual(slept, []);
+  });
+
+  test('(+) 701 characters go as two calls of at most 700 that join to the text, in order, then the keys', async () => {
+    const exec = fakeTmux();
+    const text = 'abcdefghij'.repeat(70) + 'k';
+    const r = await make(exec).send('%5', { text, keys: ['Enter'] });
+    assert.deepEqual(r.body, { sent: { text: 701, paste: 0, keys: 1 } });
+    assert.equal(exec.calls.length, 3);
+    assert.deepEqual(exec.calls.slice(0, 2).map((c) => c.slice(0, 7)), Array(2).fill(['/opt/x/tmux', '-u', 'send-keys', '-t', '%5', '-l', '--']));
+    const parts = typed(exec);
+    assert.ok(parts.length === 2 && parts.every((p) => p.length <= 700));
+    assert.equal(parts.join(''), text);
+    assert.deepEqual(exec.calls[2], ['/opt/x/tmux', '-u', 'send-keys', '-t', '%5', '--', 'Enter']);
+  });
+
+  test('(+) 1024 characters (spaces in them) go as chunks of at most 700 that join to the text, in order, then the keys', async () => {
+    const exec = fakeTmux();
+    assert.equal(words.length, 1024);
+    const r = await make(exec).send('%5', { text: words, keys: ['Enter', 'Up'] });
+    assert.deepEqual(r.body, { sent: { text: 1024, paste: 0, keys: 2 } });
+    const parts = typed(exec);
+    assert.equal(parts.length, 2);
+    assert.ok(parts.every((p) => p.length <= 700 && !/[ \t]$/.test(p)));
+    assert.equal(parts.join(''), words);
+    assert.deepEqual(exec.calls.slice(2).map((c) => c.at(-1)), ['Enter', 'Up']);
+  });
+
+  test('(+) the gap between chunks is awaited: the next chunk waits for it, nothing waits before the first chunk or before the keys', async () => {
+    const exec = fakeTmux();
+    const slept = [];
+    let release;
+    const sleep = (ms) => new Promise((ok) => { slept.push(ms); release = ok; });
+    const pending = make(exec, sleep).send('%5', { text: words, keys: ['Enter'] });
+    await new Promise((ok) => setImmediate(ok));
+    assert.equal(exec.calls.length, 1, 'only the first chunk went out');
+    assert.deepEqual(slept, [CHUNK_GAP_MS]);
+    release();
+    const r = await pending;
+    assert.equal(r.status, 200);
+    assert.equal(exec.calls.length, 3);
+    assert.deepEqual(slept, [CHUNK_GAP_MS], 'one gap for two chunks');
+  });
+
+  test('(−) when the second chunk fails, no key goes out (no Enter after half a text) and the failure is answered', async () => {
+    let n = 0;
+    const exec = fakeTmux((a) => (a.includes('-l') && (n += 1) === 2 ? tmuxErr('boom\nsecond line') : null));
+    const r = await make(exec).send('%5', { text: words, keys: ['Enter'] });
+    assert.deepEqual([r.status, r.body.error, r.body.message], [502, 'tmux_failed', 'boom']);
+    assert.equal(exec.calls.length, 2);
+    assert.ok(exec.calls.every((c) => c.includes('-l')), 'no named key was sent');
+  });
+
+  test('(−) when the first chunk fails, the second is not sent and nothing waits', async () => {
+    const exec = fakeTmux(() => tmuxErr("can't find pane: %5"));
+    const slept = [];
+    const r = await make(exec, async (ms) => { slept.push(ms); }).send('%5', { text: words, keys: ['Enter'] });
+    assert.deepEqual([r.status, r.body.error], [404, 'not_found']);
+    assert.equal(exec.calls.length, 1);
+    assert.deepEqual(slept, []);
+  });
+
+  test('(−) 1025 characters are still refused with 400, nothing is sent', async () => {
+    const exec = fakeTmux();
+    const r = await make(exec).send('%5', { text: 'x'.repeat(1025), keys: ['Enter'] });
+    assert.deepEqual([r.status, r.body.error], [400, 'invalid']);
+    assert.match(r.body.message, /1024/);
     assert.equal(exec.calls.length, 0);
   });
 });

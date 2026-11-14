@@ -9,7 +9,7 @@
 import { createHash } from 'node:crypto';
 import { CLAUDE_COMMAND } from './ids.js';
 import { MODE_TARGETS, OPTION, PROMPT_ROWS, bypassWindow, lastNonBlank, modeFromRows, promptFromRows, rowText } from './mode.js';
-import { RULE_ROW, parseDraft, normDraft, sameDraft, inEnvelope, chunks } from './draft.js';
+import { RULE_ROW, parseDraft, normDraft, sameDraft, inEnvelope, chunks, CHUNK_GAP_MS } from './draft.js';
 
 const EXIT_POLL_MS = 500;
 const LOCK_POLL_MS = 20; // withPaneLock: poll step and the longest wait (5 s) for a running control action
@@ -183,7 +183,7 @@ function rawOption(rows, n) {
 export function createSessionControl({
   mirror, keys, paneCommand, stateOf, vimOf, plainOf = () => false, setEdit = () => {}, now = Date.now, sleep = realSleep,
   pollMs = 300, settleMs = 1800, maxPresses = 6, escWaitMs = 1000, exitWaitMs = 3000, answerHoldMs = 3000,
-  settleTries = 4, settlePollMs = 150, draftPollMs = 20, escGapMs = 60, chunkGapMs = 300,
+  settleTries = 4, settlePollMs = 150, draftPollMs = 20, escGapMs = 60, chunkGapMs = CHUNK_GAP_MS,
 }) {
   // Typing without knowing whether the input is in vim normal mode could send stray vim commands, so there is no default.
   if (typeof vimOf !== 'function') throw new TypeError('vimOf must be a function (pane) => boolean');
