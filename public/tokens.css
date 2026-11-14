@@ -52,6 +52,8 @@
   --m-dontask: #8a2597; --m-dontask-soft: #f7e4f8; --m-dontask-line: #a843b3;
   --m-unknown: #545b66; --m-unknown-soft: #ffffff; --m-unknown-line: #7c8490;
   --m-default: #3b5b84; --m-default-soft: #e6edf6; --m-default-line: #6f8fb8;
+  /* the session window's fit chip, state `other` (W7): a cerulean no status and no permission mode uses; text 5.2:1 on its fill, edge 3.5:1; the blocked state keeps the muted grey */
+  --fit-other: #0f68a2; --fit-other-soft: #ddf2ff; --fit-other-line: #3786c3;
   --shell: var(--text); --on-shell: var(--surface);
 }
 
@@ -82,6 +84,7 @@
     --m-dontask: #eaa0ea; --m-dontask-soft: #3a1d3d; --m-dontask-line: #c46fc8;
     --m-unknown: #a4abb6; --m-unknown-soft: #202328; --m-unknown-line: #6f7783;
     --m-default: #a9c3e6; --m-default-soft: #1e2a3a; --m-default-line: #5f7fa8;
+    --fit-other: #4abce9; --fit-other-soft: #0e2a36; --fit-other-line: #1c8cb4;
   }
 }
 
@@ -114,6 +117,7 @@
   --m-dontask: #eaa0ea; --m-dontask-soft: #3a1d3d; --m-dontask-line: #c46fc8;
   --m-unknown: #a4abb6; --m-unknown-soft: #202328; --m-unknown-line: #6f7783;
   --m-default: #a9c3e6; --m-default-soft: #1e2a3a; --m-default-line: #5f7fa8;
+  --fit-other: #4abce9; --fit-other-soft: #0e2a36; --fit-other-line: #1c8cb4;
 }
 
 /* permission modes (docs/design/spec.md 2.8.1, 2.8.5, 9.3): one class per mode sets the local trio the tag, the frame, the

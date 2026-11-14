@@ -1,7 +1,7 @@
 // Static checks on the session window files (public/session.{html,js,css}, public/mirror-render.js): strict-CSP rules,
 // forbidden DOM sinks, ids used by the script exist in the page, the keys the page asks for are on the server's allow-list.
 // The browser itself is exercised by hand (Playwright); these checks keep the rules from regressing.
-import { test, describe, afterEach, mock } from 'node:test';
+import { test, describe, before, after, afterEach, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -14,6 +14,9 @@ import { quickState as quickStateReal, sendGate as sendGateReal, keysRefusal as 
 import { planSend as planSendReal, arrowEcho as arrowEchoReal, keyForEvent as keyForEventReal, planPaste as planPasteReal, toRenderModel as toRenderModelReal, cutCursor as cutCursorReal } from '../public/mirror-render.js';
 import { draftSendPlan as draftSendPlanReal, cleanDraft as cleanDraftReal, cutAt as cutAtReal, caretAfter as caretAfterReal, noteView as noteViewReal, suggestionFor as suggestionForReal } from '../public/draft-sync.js';
 import { switchFailure as switchFailureReal, MODE_TARGETS, MODE_META } from '../public/modes.js';
+import { createFitPlanner as createFitPlannerReal, panelSize as panelSizeReal, scaleFor as scaleForReal, chipView as chipViewReal } from '../public/fit-ui.js';
+import { h as hReal, icon as iconReal } from '../public/dom.js';
+import { installDom, El } from './fake-dom.js';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const read = (f) => fs.readFileSync(path.join(PUBLIC, f), 'utf8');
@@ -21,7 +24,7 @@ const HTML = read('session.html');
 const JS = {
   'session.js': read('session.js'), 'mirror-render.js': read('mirror-render.js'), 'modes.js': read('modes.js'),
   'quick-actions.js': read('quick-actions.js'), 'models-ui.js': read('models-ui.js'), 'end-dialog.js': read('end-dialog.js'),
-  'palette.js': read('palette.js'), 'shortcuts.js': read('shortcuts.js'), 'draft-sync.js': read('draft-sync.js'),
+  'palette.js': read('palette.js'), 'shortcuts.js': read('shortcuts.js'), 'draft-sync.js': read('draft-sync.js'), 'fit-ui.js': read('fit-ui.js'),
 };
 const TOKENS = read('tokens.css');
 const CSS = read('session.css');
@@ -142,7 +145,7 @@ describe('session.html under the strict CSP', () => {
 describe('contracts with the other UI modules', () => {
   test('(+) session.js imports only names the shared modules export, from sibling files', () => {
     const imports = [...JS['session.js'].matchAll(/import \{([^}]+)\} from '([^']+)'/g)];
-    assert.deepEqual(imports.map((m) => m[2]), ['./dom.js', './api.js', './dash-model.js', './mirror-render.js', './draft-sync.js', './modes.js', './quick-actions.js', './models-ui.js', './end-dialog.js', './palette.js', './shortcuts.js']);
+    assert.deepEqual(imports.map((m) => m[2]), ['./dom.js', './api.js', './dash-model.js', './mirror-render.js', './draft-sync.js', './modes.js', './quick-actions.js', './models-ui.js', './end-dialog.js', './palette.js', './shortcuts.js', './fit-ui.js']);
     for (const [, names, from] of imports) {
       const exported = read(from.slice(2));
       for (const n of names.split(',').map((x) => x.trim())) assert.match(exported, new RegExp(`export (async )?(function|const|let) ${n}\\b`), `${from} exports ${n}`);
@@ -3188,5 +3191,732 @@ describe('W4: Claude\'s prompt suggestion in the message box (wiring)', () => {
   test('(+) the note\'s icon exists in the page\'s sprite', () => {
     assert.match(HTML, /<symbol[^>]*id="i-kbd"/);
     assert.equal(noteViewReal({ kind: 'suggest' }).icon, 'kbd');
+  });
+});
+
+// ---- 0.5, W7-T3: the fit (measure, requests, text scale, chip) ----------------------------------------------------------------------
+// The pure rules are public/fit-ui.js (test/fit-ui.test.js). Here: the markup and stylesheet, and the functions of session.js run for
+// real in a vm against a fake route, a manual clock and a fake DOM.
+
+describe('W7-T3: the fit chip, the probe and the text scale (markup and stylesheet)', () => {
+  const css = strip(CSS);
+  const tag = (id) => new RegExp(`<[a-z]+\\b[^>]*\\bid="${id}"[^>]*>`).exec(HTML)?.[0] ?? '';
+  const rule = (sel) => new RegExp(`(^|[\\s}])${sel.replace(/[.[\]]/g, '\\$&')}\\s*\\{([^}]*)\\}`).exec(css)?.[2] ?? null;
+  const head = /<div class="term-head"[^>]*>([\s\S]*?)<div class="pass-banner"/.exec(HTML)?.[1] ?? '';
+
+  test('(+) #fit-chip is a hidden span in .term-head, after the Live label and before the spacer; it is not a live region (announce() speaks for it)', () => {
+    const t = tag('fit-chip');
+    assert.match(t, /^<span class="fit"/);
+    assert.match(t, /\bhidden\b/);
+    assert.doesNotMatch(t, /aria-live|role=|tabindex/);
+    assert.ok(head.indexOf('id="live-label"') >= 0 && head.indexOf('id="live-label"') < head.indexOf('id="fit-chip"'), 'after Live C x R');
+    assert.ok(head.indexOf('id="fit-chip"') < head.indexOf('<span class="sp">'), 'before the spacer');
+    assert.match(HTML, /id="fit-chip" hidden><\/span>/, 'empty: the script fills it');
+  });
+
+  test('(+) the sprite draws the four chip icons in the 16 x 16 stroke style, each different, and every icon chipView names is among them', () => {
+    const bodies = ['fit', 'zoom', 'off', 'window'].map((n) => {
+      const m = new RegExp(`<symbol id="i-${n}" viewBox="0 0 16 16">([\\s\\S]*?)</symbol>`).exec(HTML);
+      assert.ok(m, `i-${n}`);
+      assert.match(m[1], /<(path|circle|rect)\b/);
+      assert.doesNotMatch(m[1], /\b(fill|stroke|style)=/, 'the .ic class draws the stroke');
+      return m[1];
+    });
+    assert.equal(new Set(bodies).size, 4);
+    for (const state of ['fitted', 'zoomed', 'blocked', 'other']) {
+      const v = chipViewReal({ fit: { state, reason: state === 'zoomed' ? 'panel-smaller' : null } });
+      assert.match(HTML, new RegExp(`<symbol id="i-${v.icon}"`), `${state} draws i-${v.icon}`);
+    }
+  });
+
+  test('(+) each state has its own colour (data-k), and the chip is a bordered inline-flex label that does not wrap its words', () => {
+    assert.match(rule('.fit') ?? '', /display:\s*inline-flex/);
+    assert.match(rule('.fit') ?? '', /white-space:\s*nowrap/);
+    const colours = ['fitted', 'zoomed', 'blocked', 'other'].map((k) => {
+      const r = rule(`.fit[data-k="${k}"]`);
+      assert.ok(r, k);
+      return /(?:^|[\s;])color:\s*(var\(--[a-z-]+\))/.exec(r)?.[1];
+    });
+    assert.ok(colours.every(Boolean), `${colours}`);
+    assert.equal(new Set(colours).size, 4, `four states, four colours: ${colours}`);
+    assert.doesNotMatch(css, /color-mix\(|:has\(/);
+  });
+
+  test('(+) a header too narrow for the chip wraps instead of pushing the window sideways', () => {
+    assert.match(css, /(^|[\s}])\.term-head\s*\{[^}]*flex-wrap:\s*wrap/);
+  });
+
+  test('(+) the probe is hidden, aria-hidden, in .term after the rows, holds 100 zeros, and has the unscaled terminal font', () => {
+    const t = tag('fit-probe');
+    assert.match(t, /\bclass="fit-probe"/);
+    assert.match(t, /\baria-hidden="true"/);
+    assert.match(HTML, /id="fit-probe"[^>]*>0{100}<\/div>/);
+    const term = HTML.slice(HTML.indexOf('<div class="term"'), HTML.indexOf('<span class="paused-note"'));
+    assert.ok(term.indexOf('id="term-rows"') < term.indexOf('id="fit-probe"'), 'in .term, after the rows');
+    const r = rule('.fit-probe') ?? '';
+    assert.match(r, /position:\s*absolute/);
+    assert.match(r, /visibility:\s*hidden/);
+    assert.match(r, /left:\s*-9999px/);
+    assert.match(r, /top:\s*0/, 'at the top, so it adds no height to the scroll area');
+    assert.match(r, /white-space:\s*pre/);
+    assert.match(r, /font:\s*var\(--fs-term\)\/1\.35 var\(--mono\)/);
+    assert.match(rule('.term-rows') ?? '', /font:\s*var\(--fs-term\)\/1\.35 var\(--mono\)/, 'the probe measures the same font as the rows');
+  });
+
+  test('(+) the rows take their size from --fit-scale (1 when unset), after the font shorthand; the cut strip keeps its own font', () => {
+    assert.match(rule('.term-rows') ?? '', /font:[^;]*;[^}]*font-size:\s*calc\(var\(--fs-term\) \* var\(--fit-scale, 1\)\)/);
+    assert.match(rule('.tl') ?? '', /min-height:\s*1\.35em/, 'a row is 1.35 em, so its height scales with the text');
+    assert.match(css, /\.tl\.cut\s*\{[^}]*font:\s*var\(--fs-small\)/);
+  });
+
+  test('(+) --fit-scale is set through CSSOM only: one setProperty in session.js, no style attribute, no style string anywhere', () => {
+    const src = code(JS['session.js']);
+    assert.equal([...src.matchAll(/--fit-scale/g)].length, 1, 'named once');
+    assert.match(src, /\$\('term'\)\.style\.setProperty\('--fit-scale', String\(s\)\)/);
+    assert.doesNotMatch(HTML, /\sstyle\s*=/i);
+    assert.doesNotMatch(code(JS['fit-ui.js']), /--fit-scale|\.style\b|setAttribute/, 'the pure module never touches the page');
+  });
+
+  test('(−) the pure module has no DOM, request, storage or timer of its own', () => {
+    assert.doesNotMatch(code(JS['fit-ui.js']), /\b(document|window|navigator|location)\s*[.[]|\b(fetch|setTimeout|setInterval|clearTimeout|XMLHttpRequest)\s*\(|localStorage|sessionStorage|\/api\//);
+  });
+});
+
+describe('W7-T3 fix round 1: the "other" chip has its own hue (tokens.css --fit-other*)', () => {
+  const css = strip(CSS);
+  const blockAt = (opener) => {
+    const at = TOKENS.indexOf(opener);
+    assert.ok(at >= 0, `${opener} exists`);
+    const open = TOKENS.indexOf('{', at);
+    return TOKENS.slice(open + 1, TOKENS.indexOf('}', open));
+  };
+  const vars = (block) => Object.fromEntries([...block.matchAll(/(--[a-z0-9-]+)\s*:\s*([^;]+);/g)].map((m) => [m[1], m[2].trim()]));
+  const BLOCKS = {
+    light: blockAt(':root {'),
+    dark: blockAt(':root:not([data-theme="light"]) {'),
+    darkPinned: blockAt(':root[data-theme="dark"] {'),
+  };
+  const THEME = Object.fromEntries(Object.entries(BLOCKS).map(([k, b]) => [k, k === 'light' ? vars(b) : { ...vars(BLOCKS.light), ...vars(b) }]));
+  const NAMES = ['--fit-other', '--fit-other-soft', '--fit-other-line'];
+
+  // WCAG 2.x contrast, and OKLab distance (Ottosson) for "a different colour", not only a different hex
+  const lin = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255).map((v) => (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4));
+  const lum = (hex) => { const c = lin(hex); return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]; };
+  const ratio = (a, b) => { const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x); return (hi + 0.05) / (lo + 0.05); };
+  const oklab = (hex) => {
+    const [r, g, b] = lin(hex);
+    const l = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b);
+    const m = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b);
+    const s = Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b);
+    return [0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s, 1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s, 0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s];
+  };
+  const dE = (a, b) => { const [p, q] = [oklab(a), oklab(b)]; return Math.hypot(p[0] - q[0], p[1] - q[1], p[2] - q[2]); };
+  const MIN_DE = 0.05; // the palette's own closest pair of colours that are meant to differ is 0.053 (dark: --m-manual and --m-default)
+
+  test('(+) the three tokens are plain 6-digit hex in the light block and in both dark blocks, and the dark blocks agree', () => {
+    for (const [name, v] of Object.entries(THEME)) for (const n of NAMES) assert.match(v[n] ?? '', /^#[0-9a-f]{6}$/i, `${n} in ${name}`);
+    for (const n of NAMES) assert.equal(THEME.dark[n], THEME.darkPinned[n], n);
+    for (const n of NAMES) assert.notEqual(THEME.light[n], THEME.dark[n], `${n} is tuned per theme`);
+  });
+
+  for (const name of Object.keys(THEME)) {
+    test(`(+) contrast (${name}): the chip text is 4.5:1 on its soft fill and on the surfaces it can sit on; the edge is 3:1`, () => {
+      const v = THEME[name];
+      for (const ground of [v['--fit-other-soft'], v['--surface'], v['--bg'], v['--surface-2'], v['--surface-3'], v['--attn-row']]) {
+        assert.ok(ratio(v['--fit-other'], ground) >= 4.5, `text on ${ground}: ${ratio(v['--fit-other'], ground).toFixed(2)}`);
+      }
+      for (const ground of [v['--bg'], v['--surface'], v['--surface-2']]) {
+        assert.ok(ratio(v['--fit-other-line'], ground) >= 3, `edge on ${ground}: ${ratio(v['--fit-other-line'], ground).toFixed(2)}`);
+      }
+    });
+
+    test(`(+) distinct (${name}): the colour is at least ${MIN_DE} OKLab away from accent, busy, idle, attention, danger, ended, the muted grey and every --m-* mode colour`, () => {
+      const v = THEME[name];
+      const peers = ['--accent', '--busy', '--idle', '--attn', '--danger', '--ended', '--text-muted', ...Object.keys(v).filter((k) => /^--m-[a-z]+$/.test(k))];
+      assert.ok(peers.length >= 7 + 8, `the mode colours were found: ${peers.length}`);
+      for (const p of peers) assert.ok(dE(v['--fit-other'], v[p]) >= MIN_DE, `${p} ${v[p]}: ${dE(v['--fit-other'], v[p]).toFixed(3)}`);
+    });
+  }
+
+  test('(+) the other state reads the three tokens for text, fill and edge; blocked keeps the muted grey; fitted and zoomed keep accent and idle', () => {
+    const rule = (k) => new RegExp(`\\.fit\\[data-k="${k}"\\]\\s*\\{([^}]*)\\}`).exec(css)?.[1] ?? '';
+    const other = rule('other');
+    assert.match(other, /(^|[\s;])color:\s*var\(--fit-other\)/);
+    assert.match(other, /background:\s*var\(--fit-other-soft\)/);
+    assert.match(other, /border-color:\s*var\(--fit-other-line\)/);
+    assert.match(rule('blocked'), /(^|[\s;])color:\s*var\(--text-muted\)/);
+    assert.match(rule('blocked'), /dashed/);
+    assert.match(rule('fitted'), /(^|[\s;])color:\s*var\(--accent\)/);
+    assert.match(rule('zoomed'), /(^|[\s;])color:\s*var\(--idle\)/);
+  });
+
+  test('(−) the new tokens are used by the other chip only, and tokens.css stays ASCII with no color-mix() or :has()', () => {
+    const users = ['session.css', 'app.css', 'tokens.css'].flatMap((f) => (read(f).match(/var\(--fit-other[a-z-]*\)/g) ?? []).map((u) => `${f} ${u}`));
+    assert.deepEqual(users.filter((u) => !u.startsWith('session.css')), []);
+    assert.equal(users.length, 3);
+    const tokens = TOKENS.replace(/\/\*[\s\S]*?\*\//g, '');
+    assert.doesNotMatch(tokens, /color-mix\(|:has\(/);
+    assert.equal([...TOKENS].every((ch) => ch.codePointAt(0) < 128), true);
+  });
+});
+
+describe('W7-T3: the fit in the session window (wiring)', () => {
+  const SRC = code(JS['session.js']);
+  const fnOf = (head) => {
+    const at = SRC.indexOf(head);
+    assert.ok(at >= 0, head);
+    return SRC.slice(at, SRC.indexOf('\n}\n', at) + 2);
+  };
+  const FITTED = { status: 200, body: { fit: { state: 'fitted', reason: null, pane: { cols: 100, rows: 30 }, panes: 3, userZoom: false } } };
+  const answer = (state, reason = null) => ({ status: 200, body: { fit: { state, reason, pane: { cols: 100, rows: 30 }, panes: 3, userZoom: false } } });
+  let restoreDom;
+  before(() => { restoreDom = installDom(); });
+  after(() => restoreDom());
+
+  /** A manual clock for the page's setTimeout / clearTimeout; advance(ms) runs the timers due and lets the promises settle. */
+  const fakeClock = () => {
+    let now = 0;
+    let next = 1;
+    const timers = new Map();
+    const settle = () => new Promise((resolve) => { setImmediate(resolve); });
+    return {
+      setTimeout(fn, ms) { const id = next++; timers.set(id, { at: now + ms, fn }); return id; },
+      clearTimeout(id) { timers.delete(id); },
+      get pending() { return timers.size; },
+      async advance(ms) {
+        const end = now + ms;
+        for (;;) {
+          const due = [...timers.entries()].filter(([, t]) => t.at <= end).sort((a, b) => a[1].at - b[1].at || a[0] - b[0])[0];
+          if (!due) break;
+          timers.delete(due[0]);
+          now = due[1].at;
+          due[1].fn();
+          await settle();
+        }
+        now = end;
+        await settle();
+      },
+    };
+  };
+
+  const NAMES = ['function fitCall(', 'function fitMeasure()', 'function fitScale()', 'function fitResize()', 'function fitCaptured()', 'function renderFit(view)', 'function wireFit()', 'function setGone()'];
+  /**
+   * The fit functions of session.js with a pane (or none), a terminal box of box.w x box.h CSS px, a glyph cell of cell.w / 100 x cell.h px
+   * (the probe is 100 glyphs wide) and the route's replies in order (then FITTED). The box 827 x 562 with an 8 x 18 cell is 100 x 30 cells.
+   */
+  const rig = ({ pane = '%12', box = { w: 827, h: 562 }, cell = { w: 800, h: 18 }, replies = [], observer = true } = {}) => {
+    const clk = fakeClock();
+    const log = { calls: [], said: [], props: [], ro: null, observed: null, events: {}, gone: 0 };
+    const term = { clientWidth: box.w, clientHeight: box.h, style: { setProperty: (k, v) => log.props.push([k, v]) } };
+    const probe = { getBoundingClientRect: () => ({ width: cell.w, height: cell.h }) };
+    const chip = new El('span');
+    chip.hidden = true;
+    const ctx = {
+      paneId: pane, M: { cols: 0, rows: 0, gone: false, timer: 0 }, FIT: { planner: null, panel: null, scale: 1 },
+      $: (id) => ({ term, 'fit-probe': probe, 'fit-chip': chip })[id],
+      call: async (path, opts) => { log.calls.push({ path, ...opts }); return replies.length ? replies.shift() : FITTED; },
+      announce: (m) => log.said.push(m), h: hReal, icon: iconReal,
+      panelSize: panelSizeReal, scaleFor: scaleForReal, createFitPlanner: createFitPlannerReal,
+      setTimeout: clk.setTimeout, clearTimeout: clk.clearTimeout,
+      ResizeObserver: observer ? class { constructor(cb) { log.ro = cb; } observe(el) { log.observed = el; } } : undefined,
+      document: { fonts: { ready: Promise.resolve() } },
+      window: { addEventListener: (type, fn) => { log.events[type] = fn; } },
+      DS: { stop() {} }, setLive() {}, setPaneState() {}, setInputEnabled() {}, showOverlay() {},
+    };
+    const fns = vm.runInNewContext(`${NAMES.map(fnOf).join('\n')}; ({ fitCall, fitMeasure, fitScale, fitResize, fitCaptured, renderFit, wireFit, setGone })`, ctx);
+    return { ...fns, ctx, log, clk, term, chip };
+  };
+  const calls = (r) => norm(r.log.calls);
+  const PUT = (cols, rows, open) => ({ path: '/api/app/pane/%2512/fit', method: 'PUT', json: { cols, rows, open } });
+  const DELETE = { path: '/api/app/pane/%2512/fit', method: 'DELETE', keepalive: true };
+
+  test('(+) measuring: the box 827 x 562 with a probe of 800 x 18 px (8 x 18 per glyph) is 100 x 30 cells; padding is taken off first', () => {
+    const r = rig();
+    assert.deepEqual(norm(r.fitMeasure()), { cols: 100, rows: 30 });
+    assert.deepEqual(norm(r.ctx.FIT.panel), { cols: 100, rows: 30 });
+  });
+
+  test('(−) a box that cannot be measured (a hidden tab) keeps the last good size and asks nothing new', async () => {
+    const r = rig();
+    r.wireFit();
+    r.term.clientWidth = 0;
+    r.term.clientHeight = 0;
+    assert.deepEqual(norm(r.fitMeasure()), { cols: 100, rows: 30 });
+    r.ctx.M.cols = 120;
+    r.ctx.M.rows = 39;
+    r.fitCaptured();
+    assert.deepEqual(calls(r), [PUT(100, 30, true)]);
+  });
+
+  test('(+) wireFit watches the terminal box with a ResizeObserver and the page\'s fonts, and measures at once; it asks nothing until a capture has answered', async () => {
+    const r = rig();
+    r.wireFit();
+    assert.equal(r.log.observed, r.term);
+    assert.deepEqual(norm(r.ctx.FIT.panel), { cols: 100, rows: 30 });
+    await r.clk.advance(60000);
+    assert.deepEqual(calls(r), []);
+    assert.equal(typeof r.log.events.pagehide, 'function');
+  });
+
+  test('(+) the first capture starts the fit: one PUT to the pane\'s fit route with exactly cols, rows and open: true', async () => {
+    const r = rig();
+    r.wireFit();
+    r.ctx.M.cols = 120;
+    r.ctx.M.rows = 39;
+    r.fitCaptured();
+    assert.deepEqual(calls(r), [PUT(100, 30, true)]);
+    r.fitCaptured(); // every capture calls it
+    r.fitCaptured();
+    await r.clk.advance(0);
+    assert.equal(r.log.calls.length, 1, 'start is once');
+  });
+
+  test('(+) a resize of the box is asked for 250 ms after the last change, with open: false; an unchanged size is not asked for', async () => {
+    const r = rig();
+    r.wireFit();
+    r.fitCaptured();
+    await r.clk.advance(0);
+    r.term.clientWidth = 24 + 8 * 110 + 1;
+    r.log.ro();
+    await r.clk.advance(249);
+    assert.equal(r.log.calls.length, 1);
+    await r.clk.advance(1);
+    assert.deepEqual(calls(r), [PUT(100, 30, true), PUT(110, 30, false)]);
+    r.log.ro();
+    r.log.ro();
+    await r.clk.advance(1000);
+    assert.equal(r.log.calls.length, 2, 'the observer fired again with the same size');
+  });
+
+  test('(+) the heartbeat is a PUT every 5 s with the current size and open: false', async () => {
+    const r = rig();
+    r.wireFit();
+    r.fitCaptured();
+    await r.clk.advance(0);
+    await r.clk.advance(4999);
+    assert.equal(r.log.calls.length, 1);
+    await r.clk.advance(1);
+    await r.clk.advance(5000);
+    assert.deepEqual(calls(r), [PUT(100, 30, true), PUT(100, 30, false), PUT(100, 30, false)]);
+  });
+
+  test('(+) the window showing again is one PUT now: boot\'s visibilitychange handler calls planner.beat() when the page is visible, and not when it is hidden', () => {
+    const boot = fnOf('function boot()');
+    const at = boot.indexOf("document.addEventListener('visibilitychange'");
+    assert.ok(at > 0);
+    const stmt = boot.slice(at, boot.indexOf('\n  });', at) + 6);
+    const run = ({ hidden, planner }) => {
+      const log = [];
+      let handler;
+      vm.runInNewContext(stmt, {
+        document: { hidden, addEventListener: (type, fn) => { if (type === 'visibilitychange') handler = fn; } },
+        kickMirror: () => log.push('mirror'), refreshHistory: () => log.push('history'), refreshAgent: () => log.push('agent'),
+        FIT: { planner },
+      });
+      handler();
+      return log;
+    };
+    assert.deepEqual(run({ hidden: false, planner: { beat: () => 'ignored' } }).length, 3, 'the old three still run');
+    const beats = [];
+    run({ hidden: false, planner: { beat: () => beats.push(1) } });
+    assert.equal(beats.length, 1);
+    run({ hidden: true, planner: { beat: () => beats.push(1) } });
+    assert.equal(beats.length, 1, 'hidden: nothing');
+    assert.doesNotThrow(() => run({ hidden: false, planner: null }), 'a window with no pane has no planner');
+  });
+
+  test('(+) the visibilitychange PUT really goes out: beat() through the page\'s planner sends one request', async () => {
+    const r = rig();
+    r.wireFit();
+    r.fitCaptured();
+    await r.clk.advance(0);
+    await r.clk.advance(2000);
+    r.ctx.FIT.planner.beat();
+    await r.clk.advance(0);
+    assert.deepEqual(calls(r), [PUT(100, 30, true), PUT(100, 30, false)]);
+  });
+
+  test('(+) pagehide sends one DELETE to the same route with keepalive: true and nothing else; a second pagehide sends none', async () => {
+    const r = rig();
+    r.wireFit();
+    r.fitCaptured();
+    await r.clk.advance(0);
+    r.log.events.pagehide();
+    r.log.events.pagehide();
+    assert.deepEqual(calls(r), [PUT(100, 30, true), DELETE]);
+    assert.equal(Object.hasOwn(r.log.calls[1], 'json'), false, 'no body');
+    await r.clk.advance(60000);
+    assert.equal(r.log.calls.length, 2, 'no heartbeat after the page left');
+  });
+
+  // -- fix round 1: back from the back/forward cache is a new page load
+  test('(+) a persisted pageshow after pagehide restarts the fit as a new page load: one PUT with open: true, then open: false heartbeats', async () => {
+    const r = rig();
+    r.wireFit();
+    r.ctx.M.cols = 120;
+    r.ctx.M.rows = 39;
+    r.fitCaptured();
+    await r.clk.advance(0);
+    r.log.events.pagehide();
+    assert.equal(typeof r.log.events.pageshow, 'function');
+    r.log.events.pageshow({ persisted: true });
+    await r.clk.advance(0);
+    assert.deepEqual(calls(r), [PUT(100, 30, true), DELETE, PUT(100, 30, true)]);
+    await r.clk.advance(5000);
+    assert.deepEqual(calls(r).slice(3), [PUT(100, 30, false)]);
+    r.fitCaptured(); // the next capture finds it started
+    assert.equal(r.log.calls.length, 4);
+  });
+
+  test('(+) the persisted pageshow measures the box again first: a panel resized while the page was frozen is the size asked for', async () => {
+    const r = rig();
+    r.wireFit();
+    r.ctx.M.cols = 120;
+    r.ctx.M.rows = 39;
+    r.fitCaptured();
+    await r.clk.advance(0);
+    r.log.events.pagehide();
+    r.term.clientWidth = 24 + 8 * 90;
+    r.log.events.pageshow({ persisted: true });
+    await r.clk.advance(0);
+    assert.deepEqual(calls(r).slice(2), [PUT(90, 30, true)]);
+  });
+
+  test('(−) a pageshow that is not persisted (every first load fires one) does nothing extra, whatever the event holds', async () => {
+    const r = rig();
+    r.wireFit();
+    r.ctx.M.cols = 120;
+    r.ctx.M.rows = 39;
+    r.fitCaptured();
+    await r.clk.advance(0);
+    for (const ev of [{ persisted: false }, {}, undefined, { persisted: 'true' }]) r.log.events.pageshow(ev);
+    await r.clk.advance(0);
+    assert.deepEqual(calls(r), [PUT(100, 30, true)], 'no second open: true, no release');
+    r.log.events.pagehide();
+    r.log.events.pageshow({ persisted: false });
+    await r.clk.advance(60000);
+    assert.deepEqual(calls(r), [PUT(100, 30, true), DELETE], 'a non-persisted pageshow after pagehide starts nothing');
+  });
+
+  test('(−) a persisted pageshow while the lease is still on (no pagehide before it), for a pane that is gone, or before any capture, sends nothing', async () => {
+    const live = rig();
+    live.wireFit();
+    live.ctx.M.cols = 120;
+    live.ctx.M.rows = 39;
+    live.fitCaptured();
+    await live.clk.advance(0);
+    live.log.events.pageshow({ persisted: true });
+    await live.clk.advance(0);
+    assert.deepEqual(calls(live), [PUT(100, 30, true)]);
+
+    const gone = rig();
+    gone.wireFit();
+    gone.ctx.M.cols = 120;
+    gone.ctx.M.rows = 39;
+    gone.fitCaptured();
+    await gone.clk.advance(0);
+    gone.log.events.pagehide();
+    gone.ctx.M.gone = true;
+    gone.log.events.pageshow({ persisted: true });
+    await gone.clk.advance(60000);
+    assert.deepEqual(calls(gone), [PUT(100, 30, true), DELETE], 'the pane is gone: no lease to ask for');
+
+    const early = rig();
+    early.wireFit();
+    early.log.events.pageshow({ persisted: true });
+    await early.clk.advance(60000);
+    assert.deepEqual(calls(early), [], 'no capture has answered yet: the first one starts the fit, as on a first load');
+  });
+
+  test('(−) after a 403 a persisted pageshow asks nothing', async () => {
+    const r = rig({ replies: [{ status: 403, body: { error: 'forbidden' } }] });
+    r.wireFit();
+    r.ctx.M.cols = 120;
+    r.ctx.M.rows = 39;
+    r.fitCaptured();
+    await r.clk.advance(0);
+    r.log.events.pagehide();
+    r.log.events.pageshow({ persisted: true });
+    await r.clk.advance(60000);
+    assert.deepEqual(calls(r), [PUT(100, 30, true)]);
+  });
+
+  test('(+) the pane is gone (capture 404): setGone stops the heartbeat and sends one DELETE; a pane that answers again starts a new lease', async () => {
+    const r = rig();
+    r.wireFit();
+    r.fitCaptured();
+    await r.clk.advance(0);
+    r.setGone();
+    r.setGone();
+    r.log.events.pagehide(); // the page leaving after that sends no second release
+    assert.deepEqual(calls(r), [PUT(100, 30, true), DELETE]);
+    await r.clk.advance(60000);
+    assert.equal(r.log.calls.length, 2);
+    r.fitCaptured(); // "Check again" found the pane: open: true was sent once in this page load, the new lease is asked for with false
+    assert.deepEqual(calls(r).slice(2), [PUT(100, 30, false)]);
+  });
+
+  test('(−) a window with no pane id asks nothing: fitCall never reaches the route, and boot wires the fit only inside the pane branch', async () => {
+    const r = rig({ pane: null });
+    assert.deepEqual(norm(await r.fitCall('PUT', { json: { cols: 100, rows: 30, open: true } })), { status: 0, body: null });
+    assert.deepEqual(norm(await r.fitCall('DELETE', { keepalive: true })), { status: 0, body: null });
+    assert.equal(r.log.calls.length, 0);
+    const boot = fnOf('function boot()');
+    assert.equal((boot.match(/wireFit\(\)/g) ?? []).length, 1);
+    const inPane = boot.slice(boot.indexOf('if (paneId) {'), boot.indexOf('} else {', boot.indexOf('if (paneId) {')));
+    assert.match(inPane, /wireSwitcher\(\);\s*wireQuick\(\);\s*wireFit\(\);/);
+    assert.doesNotMatch(boot.slice(boot.indexOf('} else {', boot.indexOf('if (paneId) {'))), /wireFit|FIT\./);
+  });
+
+  test('(−) 429 and 409 are not retried before the next heartbeat', async () => {
+    for (const status of [429, 409]) {
+      const r = rig({ replies: [{ status, body: { error: 'busy', message: 'busy' } }] });
+      r.wireFit();
+      r.fitCaptured();
+      await r.clk.advance(0);
+      r.term.clientWidth = 24 + 8 * 120;
+      r.log.ro();
+      await r.clk.advance(4000);
+      assert.equal(r.log.calls.length, 1, `${status}: nothing before the beat`);
+      await r.clk.advance(1000);
+      assert.deepEqual(calls(r), [PUT(100, 30, true), PUT(120, 30, true)], `${status}: the beat asks again, still open: true (nothing was opened)`);
+    }
+  });
+
+  test('(−) 403 stops everything, as the mirror does: no heartbeat, no resize, no DELETE at pagehide', async () => {
+    const r = rig({ replies: [{ status: 403, body: { error: 'forbidden' } }] });
+    r.wireFit();
+    r.fitCaptured();
+    await r.clk.advance(0);
+    r.term.clientWidth = 24 + 8 * 120;
+    r.log.ro();
+    r.ctx.FIT.planner.beat();
+    await r.clk.advance(60000);
+    r.log.events.pagehide();
+    r.setGone();
+    r.fitCaptured();
+    assert.deepEqual(calls(r), [PUT(100, 30, true)]);
+    assert.equal(r.clk.pending, 0);
+  });
+
+  test('(+) after blocked / user-change the next heartbeat still sends open: false (the server keeps it off; only a page load opens)', async () => {
+    const r = rig({ replies: [answer('blocked', 'user-change'), answer('blocked', 'user-change')] });
+    r.wireFit();
+    r.fitCaptured();
+    await r.clk.advance(0);
+    await r.clk.advance(5000);
+    await r.clk.advance(5000);
+    assert.deepEqual(calls(r).map((c) => c.json.open), [true, false, false]);
+  });
+
+  // -- the text scale
+  test('(+) the scale is set through setProperty only, once per change: 100 x 30 cells for a 120 x 39 pane is the tighter axis', () => {
+    const r = rig();
+    r.wireFit();
+    r.ctx.M.cols = 120;
+    r.ctx.M.rows = 39;
+    r.fitScale();
+    r.fitScale();
+    assert.deepEqual(norm(r.log.props), [['--fit-scale', String(Math.min(100 / 120, 30 / 39))]]);
+    assert.deepEqual(Object.keys(r.term.style), ['setProperty'], 'no other style property was written');
+    assert.equal(r.term.setAttribute, undefined);
+    r.ctx.M.cols = 100;
+    r.ctx.M.rows = 30;
+    r.fitScale();
+    assert.deepEqual(norm(r.log.props).at(-1), ['--fit-scale', '1'], 'the pane was fitted: back to exactly 1');
+  });
+
+  test('(−) the scale never goes above 1: a pane smaller than the panel leaves the text at its normal size (and sets nothing)', () => {
+    const r = rig();
+    r.wireFit();
+    r.ctx.M.cols = 80;
+    r.ctx.M.rows = 24;
+    r.fitScale();
+    assert.deepEqual(norm(r.log.props), []);
+    assert.equal(r.ctx.FIT.scale, 1);
+  });
+
+  test('(−) no capture yet, or no measure yet: the scale is left alone', () => {
+    const r = rig();
+    r.wireFit();
+    r.fitScale();
+    assert.deepEqual(norm(r.log.props), []);
+    const r2 = rig();
+    r2.ctx.M.cols = 120;
+    r2.ctx.M.rows = 39;
+    r2.fitScale();
+    assert.deepEqual(norm(r2.log.props), []);
+  });
+
+  test('(+) a resize of the box changes the scale at once (no debounce), while the request waits its 250 ms', async () => {
+    const r = rig();
+    r.wireFit();
+    r.ctx.M.cols = 100;
+    r.ctx.M.rows = 30;
+    r.fitCaptured();
+    await r.clk.advance(0);
+    r.term.clientWidth = 24 + 8 * 50;
+    r.log.ro();
+    assert.deepEqual(norm(r.log.props), [['--fit-scale', String(50 / 100)]]);
+    assert.equal(r.log.calls.length, 1);
+  });
+
+  // -- handleCapture
+  const captureRig = ({ frozen = false, planner = {}, fitCaptured } = {}) => {
+    const order = [];
+    const term = {
+      style: { setProperty: (k, v) => order.push(`scale ${v}`) }, scrollHeight: 9,
+      get scrollTop() { return 0; }, set scrollTop(v) { order.push('scroll'); },
+    };
+    const ctx = {
+      recovered() {}, noteScreen() {}, $: (id) => (id === 'term' ? term : { style: {} }), M: { frozen, scrollTop: 0, cols: 0, rows: 0 },
+      setLive: (state, text) => order.push(`${state}: ${text}`), MID: ' - ', TIMES: 'x', ETAG: /^[0-9a-f]{1,64}$/,
+      cleanDraft: cleanDraftReal, DS: { capture() {} }, drawMirror: () => order.push('draw'), renderSuggestion() {},
+      FIT: { planner: { start: () => order.push('start'), ...planner }, panel: { cols: 100, rows: 30 }, scale: 1 },
+      scaleFor: scaleForReal, setGone() {}, serverMessage: () => '', setPaneState() {}, setInputEnabled() {}, showOverlay() {},
+    };
+    const src = `${fnOf('function handleCapture(r)')}\n${fnOf('function fitScale()')}\n${fnOf('function fitCaptured()')}; handleCapture`;
+    if (fitCaptured) ctx.fitCaptured = fitCaptured;
+    const run = vm.runInNewContext(fitCaptured ? fnOf('function handleCapture(r)') + '; handleCapture' : src, ctx);
+    return { order, run, ctx };
+  };
+  const BODY = { cols: 120, rows: Array.from({ length: 39 }, (_, i) => [{ t: `row ${i}`, s: {} }]), cursor: { x: 0, y: 0, visible: true }, etag: 'ab12' };
+
+  test('(+) a drawn capture starts the fit, applies the scale, and only then scrolls to the end; the header keeps the pane\'s real 120 x 39', () => {
+    const c = captureRig();
+    c.run({ status: 200, body: BODY });
+    assert.deepEqual(c.order, ['draw', 'live: Live - 120 x 39', 'start', `scale ${Math.min(100 / 120, 30 / 39)}`, 'scroll']);
+  });
+
+  test('(+) a paused mirror gets the scale too (and keeps the reader\'s place)', () => {
+    const c = captureRig({ frozen: true });
+    c.run({ status: 200, body: BODY });
+    assert.deepEqual(c.order, ['draw', 'paused: Paused - 120 x 39', 'start', `scale ${Math.min(100 / 120, 30 / 39)}`]);
+  });
+
+  test('(−) a fit that throws never takes the mirror down: the rows are drawn, the label is set, the scroll happens, nothing is thrown', () => {
+    const c = captureRig({ fitCaptured: () => { throw new Error('boom'); } });
+    assert.doesNotThrow(() => c.run({ status: 200, body: BODY }));
+    assert.deepEqual(c.order, ['draw', 'live: Live - 120 x 39', 'scroll']);
+  });
+
+  test('(−) a 304 and a refused capture do not start the fit', () => {
+    const c = captureRig();
+    c.run({ status: 304, body: null });
+    c.run({ status: 500, body: { message: 'x' } });
+    assert.deepEqual(c.order.filter((x) => x === 'start'), []);
+  });
+
+  test('(+) setGone closes the planner and handleCapture is guarded: the hooks are in the source where the design puts them', () => {
+    assert.match(fnOf('function setGone()'), /M\.gone = true;[\s\S]*FIT\.planner\?\.close\(\);/);
+    assert.match(fnOf('function handleCapture(r)'), /try \{\s*fitCaptured\(\);\s*\} catch \{[^}]*\}\s*if \(!M\.frozen\) term\.scrollTop = term\.scrollHeight;/);
+    assert.match(fnOf('function boot()'), /FIT\.planner\?\.beat\(\);/);
+  });
+
+  // -- the chip
+  test('(+) the chip is hidden until the first answer, then shows one of four states with colour (data-k), icon, words and the reason as its title', async () => {
+    const r = rig({ replies: [answer('fitted')] });
+    r.wireFit();
+    assert.equal(r.chip.hidden, true);
+    r.fitCaptured();
+    await r.clk.advance(0);
+    assert.equal(r.chip.hidden, false);
+    assert.equal(r.chip.getAttribute('data-k'), 'fitted');
+    assert.equal(r.chip.kids.length, 2);
+    assert.equal(r.chip.kids[0].kids[0].getAttribute('href'), '#i-fit');
+    assert.equal(r.chip.kids[1].textContent, 'Fit · fills the panel');
+    assert.equal(r.chip.getAttribute('title'), chipViewReal(FITTED.body).title);
+  });
+
+  test('(+) all four states draw their own data-k, icon href, text and title; the six reasons draw their sentences', () => {
+    const r = rig();
+    const seen = new Set();
+    const cases = [['fitted', null, 'fit'], ['zoomed', 'panel-smaller', 'zoom'], ['blocked', 'user-zoom', 'off'], ['other', null, 'window']];
+    for (const [state, reason, ico] of cases) {
+      const v = chipViewReal(answer(state, reason).body);
+      r.renderFit(v);
+      assert.equal(r.chip.getAttribute('data-k'), state);
+      assert.equal(r.chip.kids[0].kids[0].getAttribute('href'), `#i-${ico}`);
+      assert.equal(r.chip.kids[1].textContent, v.text);
+      assert.equal(r.chip.getAttribute('title'), v.title);
+      seen.add(`${state}|${ico}|${v.text}`);
+    }
+    assert.equal(seen.size, 4);
+    const SIX = {
+      'user-zoom': 'You zoomed another pane in this window; nika leaves it',
+      'size-option': 'This tmux window has a window-size setting nika does not change',
+      'foreign-tag': 'Another program marks this tmux window',
+      changed: 'The tmux window changed while nika was fitting it, so nika put it back',
+      'user-change': 'You changed this tmux window, so nika put it back. Reopen the session window to fit again',
+    };
+    for (const [reason, title] of Object.entries(SIX)) {
+      r.renderFit(chipViewReal(answer('blocked', reason).body));
+      assert.equal(r.chip.getAttribute('title'), title, reason);
+      assert.equal(r.chip.kids[1].textContent, 'Fit · off', reason);
+    }
+    r.renderFit(chipViewReal(answer('zoomed', 'panel-smaller').body));
+    assert.equal(r.chip.getAttribute('title'), 'Other panes in this tmux window would be squeezed, so nika zoomed the pane and scaled the text');
+  });
+
+  test('(+) a state change is announced once through announce(); the same state again, and a 502, say nothing', async () => {
+    const r = rig({ replies: [answer('fitted'), answer('fitted'), answer('blocked', 'user-zoom'), { status: 502, body: { error: 'tmux_failed', message: 'tmux said no' } }, answer('blocked', 'user-zoom')] });
+    r.wireFit();
+    r.fitCaptured();
+    await r.clk.advance(0);
+    assert.equal(r.log.said.length, 1);
+    assert.match(r.log.said[0], /^Fit: fills the panel\. /);
+    await r.clk.advance(5000);
+    assert.equal(r.log.said.length, 1, 'fitted again');
+    await r.clk.advance(5000);
+    assert.equal(r.log.said.length, 2);
+    assert.equal(r.log.said[1], 'Fit: off. You zoomed another pane in this window; nika leaves it');
+    assert.equal(r.chip.getAttribute('data-k'), 'blocked');
+    await r.clk.advance(5000); // the 502
+    await r.clk.advance(5000); // blocked again
+    assert.equal(r.log.said.length, 2);
+    assert.equal(r.chip.getAttribute('data-k'), 'blocked', 'the 502 left the chip as it was');
+  });
+
+  test('(−) a 502 or an odd body as the first answer leaves the chip hidden and says nothing', async () => {
+    for (const first of [{ status: 502, body: { error: 'tmux_failed', message: 'tmux said no' } }, { status: 200, body: { fit: { state: 'none' } } }, { status: 200, body: null }]) {
+      const r = rig({ replies: [first] });
+      r.wireFit();
+      r.fitCaptured();
+      await r.clk.advance(0);
+      assert.equal(r.chip.hidden, true);
+      assert.deepEqual(r.log.said, []);
+    }
+  });
+
+  test('(+) renderFit(null) hides and empties the chip; the pane going away hides it', async () => {
+    const r = rig({ replies: [answer('other')] });
+    r.wireFit();
+    r.fitCaptured();
+    await r.clk.advance(0);
+    assert.equal(r.chip.hidden, false);
+    r.setGone();
+    assert.equal(r.chip.hidden, true);
+    assert.equal(r.chip.getAttribute('data-k'), null);
+    assert.equal(r.chip.getAttribute('title'), null);
+    assert.equal(r.chip.kids.length, 0);
+  });
+
+  test('(−) nothing the server says reaches the chip: a hostile reason or message is never in its text, title or attributes', async () => {
+    const hostile = '<img src=x onerror=alert(1)>';
+    const r = rig({ replies: [{ status: 200, body: { fit: { state: 'blocked', reason: hostile, message: hostile, pane: { cols: hostile, rows: 1 } }, message: hostile } }] });
+    r.wireFit();
+    r.fitCaptured();
+    await r.clk.advance(0);
+    assert.equal(r.chip.hidden, false);
+    const all = JSON.stringify([r.chip.attrs, r.chip.textContent, r.log.said]);
+    assert.doesNotMatch(all, /img|onerror/);
+    assert.equal(r.chip.getAttribute('title'), 'nika is not fitting this tmux window');
+  });
+
+  test('(+) renderFit writes with h() text and the icon sprite only: no markup sink, and the title through setAttribute', () => {
+    const src = fnOf('function renderFit(view)');
+    assert.match(src, /h\('span', \{ text: view\.text \}\)/);
+    assert.match(src, /setAttribute\('title', view\.title\)/);
+    assert.deepEqual(findSinks(src), []);
   });
 });

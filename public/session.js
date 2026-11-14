@@ -1,7 +1,8 @@
 // nika session window (app tier): transcript history + live terminal mirror + input composer for one agent, with the permission
 // mode switcher, the quick actions (Stop, Compact, Clear, Model, Rewind, End), the permission-prompt buttons, Shell mode and the
 // slash-command palette. The message box and Claude's input box mirror each other (draft-sync.js, design W5), and the mirror leaves
-// Claude's input box out while the message box carries it (W6).
+// Claude's input box out while the message box carries it (W6). The terminal panel is measured in cells and the mirrored pane is asked to
+// fit it, or the text is scaled down when it cannot (fit-ui.js, design W7).
 // URL: session.html?session=<UUID>&pane=<%n>&project=<key>   (pane is sent as %25n, i.e. encodeURIComponent('%n')).
 // Rules: every string from the server is rendered with textContent (h() from dom.js, applyMirror from mirror-render.js);
 // no innerHTML, no inline handlers, element.style only for numbers this file computes. Contracts: docs/contracts/api-app.md.
@@ -19,6 +20,7 @@ import { MODEL_ID, MODEL_HINT, CUSTOM, fillModelSelect } from './models-ui.js';
 import { openEndDialog } from './end-dialog.js';
 import { paletteQuery, cleanCommands, paletteView, commandsButton, shouldFetch, sourceLabel, insertion, moveActive } from './palette.js';
 import { isMac, isTextEntry, wantsHelp, wantsBack, wantsHistToggle, backHint, helpHint, histHint, passKeyLabel, openShortcuts, wireWindowKeys } from './shortcuts.js';
+import { panelSize, scaleFor, createFitPlanner } from './fit-ui.js';
 
 const PROJECT_KEY = /^[a-z0-9]{16}$/;
 const CLAUDE_SESSION = /^session_[A-Za-z0-9]{1,64}$/;
@@ -1066,6 +1068,7 @@ function setGone() {
   M.gone = true;
   clearTimeout(M.timer);
   DS.stop();
+  FIT.planner?.close(); // the heartbeat stops and the tmux window comes back (one DELETE); the next capture that answers starts a new lease
   setLive('off', 'Not live');
   setPaneState('gone');
   setInputEnabled(false, 'Pane is gone');
@@ -1130,7 +1133,12 @@ function handleCapture(r) {
     } catch {
       // the mirror keeps working without the sync
     }
-    setLive(M.frozen ? 'paused' : 'live', `${M.frozen ? 'Paused' : 'Live'}${MID}${cols} ${TIMES} ${M.rows}`);
+    setLive(M.frozen ? 'paused' : 'live', `${M.frozen ? 'Paused' : 'Live'}${MID}${cols} ${TIMES} ${M.rows}`); // the pane's real size, not the panel's
+    try {
+      fitCaptured();
+    } catch {
+      // the mirror keeps working without the fit
+    }
     if (!M.frozen) term.scrollTop = term.scrollHeight; // a paused mirror still applies captures but keeps the reader's place
     return;
   }
@@ -1194,6 +1202,85 @@ function jumpToLive() {
   term.scrollLeft = 0; // a wide pane: back to column 0 as well
   setFrozen(false);
   $('composer').focus();
+}
+
+// ---- fit (design W7): the panel in cells goes to the server, which fits the pane to it; a pane that stays larger is drawn at a smaller text scale ----
+
+// planner: the request planner of fit-ui.js, made when the window has a pane. panel: the last size measured, { cols, rows } in cells (null
+// before one). scale: the --fit-scale now set.
+const FIT = { planner: null, panel: null, scale: 1 };
+
+/** The pane's fit route; a window with no pane has none, and asks nothing. */
+function fitCall(method, opts = {}) {
+  if (!paneId) return Promise.resolve({ status: 0, body: null });
+  return call(`/api/app/pane/${encodeURIComponent(paneId)}/fit`, { method, ...opts });
+}
+
+/** The panel in cells: the terminal's client box over one glyph cell, taken from the probe (100 glyphs in the unscaled font). A box that cannot be measured (a hidden tab) keeps the last good size. */
+function fitMeasure() {
+  const term = $('term');
+  const cell = $('fit-probe').getBoundingClientRect();
+  const panel = panelSize({ width: term.clientWidth, height: term.clientHeight, cellW: cell.width / 100, cellH: cell.height });
+  if (panel) FIT.panel = panel;
+  return FIT.panel;
+}
+
+/** The text scale: 1 while the pane fits the panel, smaller while it is larger (not below fit-ui.js SCALE_MIN, never above 1). Set through CSSOM only: the CSP allows no style attribute. */
+function fitScale() {
+  const p = FIT.panel;
+  if (!p || !M.cols) return;
+  const s = scaleFor({ panelCols: p.cols, panelRows: p.rows, cols: M.cols, rows: M.rows });
+  if (s === FIT.scale) return;
+  FIT.scale = s;
+  $('term').style.setProperty('--fit-scale', String(s));
+}
+
+/** The box changed size, or the font arrived: the scale follows at once, the request after its debounce. */
+function fitResize() {
+  const p = fitMeasure();
+  if (p) FIT.planner?.size(p.cols, p.rows);
+  fitScale();
+}
+
+/** After every drawn capture: the first one starts the fit (the pane answered, so it is live), and the scale follows the pane's size. */
+function fitCaptured() {
+  FIT.planner?.start();
+  fitScale();
+}
+
+/** The fit chip: hidden until the server has answered, then one of four states, each with its own colour (data-k), icon and words; the reason is the title. Called on a change of state, so it is announced once. */
+function renderFit(view) {
+  const el = $('fit-chip');
+  el.hidden = !view;
+  if (!view) {
+    el.removeAttribute('data-k');
+    el.removeAttribute('title');
+    el.replaceChildren();
+    return;
+  }
+  el.setAttribute('data-k', view.state);
+  el.setAttribute('title', view.title);
+  el.replaceChildren(icon(view.icon), h('span', { text: view.text }));
+  announce(view.say);
+}
+
+function wireFit() {
+  FIT.planner = createFitPlanner({
+    send: (body) => fitCall('PUT', { json: body }),
+    release: () => fitCall('DELETE', { keepalive: true }), // the lease goes back when the page does
+    after: (fn, ms) => setTimeout(fn, ms),
+    cancel: (timer) => clearTimeout(timer),
+    chip: renderFit,
+  });
+  if (typeof ResizeObserver === 'function') new ResizeObserver(fitResize).observe($('term')); // the app's zoom changes the box too
+  document.fonts?.ready.then(fitResize, () => {});
+  window.addEventListener('pagehide', () => FIT.planner.close());
+  window.addEventListener('pageshow', (e) => { // back from the back/forward cache: pagehide gave the window back, so this is a new page load (open: true)
+    if (!e || e.persisted !== true || M.gone || !M.cols) return; // a first load, a pane that is gone, or no capture yet: nothing to restart
+    fitResize();
+    FIT.planner.restart();
+  });
+  fitResize();
 }
 
 // ---- sending ------------------------------------------------------------------------------------------------------
@@ -1948,6 +2035,7 @@ function boot() {
     kickMirror(0);
     refreshHistory();
     refreshAgent();
+    FIT.planner?.beat(); // timers may have been suspended while the window was hidden: one request now, the lease may have lapsed
   });
 
   const split = $('split');
@@ -1962,6 +2050,7 @@ function boot() {
   if (paneId) {
     wireSwitcher();
     wireQuick();
+    wireFit();
     $('pb-pane').textContent = paneId;
     $('term').setAttribute('aria-label', `Live terminal of ${A.name}, pane ${paneId}`);
     showOverlay(`Connecting to pane ${paneId}${DOTS}`, '');

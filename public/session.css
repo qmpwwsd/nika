@@ -88,7 +88,7 @@ body.m-bypass .mode-frame { background: repeating-linear-gradient(135deg, var(--
 .hist { background: var(--surface); border-right: 1px solid var(--line); }
 .hist-head, .term-head { flex: none; display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 4px 8px 4px 14px; border-bottom: 1px solid var(--line); }
 .hist-head h2 { margin: 0; font-size: var(--fs-h3); }
-.term-head { background: var(--surface); }
+.term-head { background: var(--surface); flex-wrap: wrap; }   /* the fit chip (W7) can make the head wider than a narrow window: it wraps, the window does not scroll sideways */
 
 /* transcript */
 .hist-scroll { position: relative; flex: 1; min-height: 0; overflow: auto; padding: 8px 0 16px; scroll-padding-bottom: 64px; }
@@ -119,6 +119,12 @@ body.m-bypass .mode-frame { background: repeating-linear-gradient(135deg, var(--
 .live-dot::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--busy); }
 .term-head[data-s="paused"] .live-dot::before { background: var(--idle); border-radius: 1px; }
 .term-head[data-s="wait"] .live-dot::before, .term-head[data-s="off"] .live-dot::before { background: var(--ended); border-radius: 1px; }
+/* the fit chip (W7, spec 9.6 rule): each of the four states has its own colour, icon and words; the reason is the title and the announcement */
+.fit { display: inline-flex; align-items: center; gap: 5px; min-height: 22px; padding: 0 8px 0 6px; border: 1px solid transparent; border-radius: var(--r-sm); font-size: var(--fs-small); font-weight: 600; white-space: nowrap; }
+.fit[data-k="fitted"] { color: var(--accent); background: var(--accent-soft); border-color: var(--accent-line); }
+.fit[data-k="zoomed"] { color: var(--idle); background: var(--idle-soft); border-color: var(--idle-line); }
+.fit[data-k="blocked"] { color: var(--text-muted); border: 1px dashed var(--line-strong); }
+.fit[data-k="other"] { color: var(--fit-other); background: var(--fit-other-soft); border-color: var(--fit-other-line); }
 .seg { display: inline-flex; border: 1px solid var(--line-strong); border-radius: var(--r-md); overflow: hidden; }
 .seg button { min-height: 24px; padding: 0 8px; border: 0; background: var(--surface); font-size: var(--fs-small); }
 .seg button[aria-pressed="true"] { background: var(--text); color: var(--surface); }
@@ -139,7 +145,9 @@ body.m-bypass .mode-frame { background: repeating-linear-gradient(135deg, var(--
 }
 .term:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
 .term.pass { box-shadow: inset 0 0 0 2px var(--accent); }
-.term-rows { width: max-content; min-width: 100%; font: var(--fs-term)/1.35 var(--mono); white-space: pre; tab-size: 8; }
+.term-rows { width: max-content; min-width: 100%; font: var(--fs-term)/1.35 var(--mono); font-size: calc(var(--fs-term) * var(--fit-scale, 1)); white-space: pre; tab-size: 8; }   /* --fit-scale (W7): set by session.js through CSSOM when the pane is larger than the panel; ch and the row height are em-based, so the pane's grid stays exact */
+/* the fit probe (W7): 100 glyphs in the unscaled terminal font, measured for the size of one cell; hidden, and at the top so it adds nothing to the scroll area */
+.fit-probe { position: absolute; top: 0; left: -9999px; visibility: hidden; pointer-events: none; font: var(--fs-term)/1.35 var(--mono); white-space: pre; }
 .tl { display: block; min-height: 1.35em; }
 /* the strip that stands in for Claude's input box while the message box mirrors it (W6): muted terminal ink, one row, below the output */
 .tl.cut { display: flex; align-items: center; gap: 6px; margin-top: 6px; padding-top: 4px; border-top: 1px dashed var(--a8); color: var(--a8); font: var(--fs-small)/1.35 var(--font); }
