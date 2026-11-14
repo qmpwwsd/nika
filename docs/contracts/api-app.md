@@ -587,7 +587,7 @@ number of panes in its tmux window, `userZoom` whether the user had the mirrored
 | `zoomed` | `panel-smaller` | the panel is smaller than a window with several panes; resizing would squeeze the other panes | zoom only, window at its own size; the page scales its text |
 | `blocked` | `user-zoom` | the user zoomed another pane of this window | nothing |
 | `blocked` | `size-option` | the window has a window-level `window-size` that is not unset or one of `latest largest smallest manual` (nika could not put it back exactly) | nothing |
-| `blocked` | `foreign-tag` | `@nika-fit` on the window holds a value nika has no lease for (another program, or a stale tag with no usable lease file) | nothing |
+| `blocked` | `foreign-tag` | `@nika-fit` on the window holds a value nika has no lease for (another program, a stale tag with no usable lease file, or a value that is not 16 lowercase hex characters: the listing reads it as foreign, never as an unreadable row that is dropped) | nothing |
 | `blocked` | `changed` | something nika read did not hold (a layout nika may not keep, a lease file over 16 KB, no active pane), or the read-back after its own change differed (a tmux hook fought back) | nothing, or everything put back |
 | `blocked` | `user-change` | the user changed the window (unzoomed, navigated, split, killed a pane, resized) after nika fitted it | everything put back |
 | `other` | `null` | another session window of nika holds this tmux window and this request has `open: false` | nothing |
@@ -595,7 +595,8 @@ number of panes in its tmux window, `userZoom` whether the user had the mirrored
 `user-change` and `changed` (after a read-back mismatch) keep the window **off**: the answer to every later request with
 `open: false` is `blocked` with that reason and nothing is changed, until a request with `open: true` arrives (the session window
 opened again). nika never fits a window again behind the user's back (owner decision 2026-11-14, Q6). The mark is in memory, for
-at most 64 windows. `none` is not a state of this route (the page shows no chip before its first answer and after a `DELETE`).
+at most 64 windows. It is set only after the restore found its own tag on the window, inside the pane lock: a lease dropped because
+its tag or window was gone sets none (M4), and neither does a refusal of an acquire (see "Reads inside the lock"). `none` is not a state of this route (the page shows no chip before its first answer and after a `DELETE`).
 
 **What the server decides**, in this order (the first row that matches ends the request):
 
@@ -607,8 +608,8 @@ at most 64 windows. `none` is not a state of this route (the page shows no chip 
 | 4 | the window holds a lease whose tag is gone or differs | the lease is dropped, no tmux call (a restarted tmux server reuses window ids) |
 | 5 | `@nika-fit` holds a nonce nika has no lease for | a lease file of that nonce for this window is used to put the window back (a crash), then on; no usable file, or the tag still there: `blocked / foreign-tag` |
 | 6 | another pane holds the window | `open: false`: `other`; `open: true`: that lease is released (the last opened window wins) and the request goes on |
-| 7 | this pane holds the window with another size | renew: the user changed the window since the last look → released, `blocked / user-change`; otherwise resized as in rows 12–13 and read back |
-| 8 | the window is marked off and `open` is `false` | `blocked` with the mark (`user-change` or `changed`) |
+| 7 | this pane holds the window with another size | renew: the user changed the window since the last look → released, `blocked / user-change`; otherwise resized as in rows 12–13 and read back. A renew that has to resize looks again inside the pane lock, before `resize-window` (see "Reads inside the lock") |
+| 8 | `open` is `false` and the window is marked off, or this page's own `DELETE` gave the window back 2000 ms ago or less (its last heartbeat in flight) | `blocked` with the mark (`user-change` or `changed`); for the late heartbeat `blocked / user-change`, no tmux call and no mark |
 | 9 | the window-level `window-size` is unknown | `blocked / size-option` |
 | 10 | the window is zoomed on a pane other than this one | `blocked / user-zoom` |
 | 11 | no active pane, or `#{window_layout}` is not printable ASCII of 1–8192 characters without `#`, or the lease file would pass 16 KB | `blocked / changed` |
@@ -618,6 +619,30 @@ at most 64 windows. `none` is not a state of this route (the page shows no chip 
 
 A window with several panes is never made smaller than it was: another pane would be squeezed (spike S10). The lease lives in
 three places: server memory, a 0600 file `<state>/fit/fit-<nonce>.json` and the window option `@nika-fit <nonce>` (§8).
+
+**Reads inside the lock (review I1).** Rows 9–11 and 12–13 are decided from reads taken before the lock wait (a listing, the
+`window-size` option, `#{window_layout}`), and the wait can be long (a draft write holds the lock). So a fit **reads again with the
+lock held, before its first change**: the listing (the pane still in the same window, with the same pane count, zoom flag, active
+pane, window size and pane size, and no tag on the window), the layout (compared with tmux 3.8's focus markers stripped) and the
+`window-size` option. Any difference → `blocked / changed`; nothing is changed: no tag, zoom or resize, no lease kept, no lease file,
+no mark (the next beat looks at the window as it is then). The pane gone, or in another window → `404`. An acquire's calls are
+therefore: listing, option, layout, then inside the lock listing, layout, option, tag, zoom (a window nobody zoomed), resize, and
+after the lock the read-back (listing, layout; row 14). A pane control lock that stays taken for the whole wait (`409 busy`) before
+the step ran drops the lease directly: nothing had been changed, so nothing is given back.
+
+A **renew that resizes** (row 7, a panel of another size) does the same before its one `resize-window` (N1): inside the lock it
+lists the window again and judges it with the lease as nika holds it (the size and zoom it set before, not the ones it is about to
+set). Any difference the watch's rules would act on (the user resized, unzoomed, moved the focus, split or killed a pane, the pane
+left the window or stopped being claude, or the tag or window is gone) → no `resize-window`; the lease is released as a user change
+(a separate turn of the lock), the answer is `blocked / user-change` as in "A request that ends in a release" below, and the window
+stays off until `open: true`: nika never resizes over a user's resize and never tries again. A tag or window that is gone is dropped
+instead (nothing touched, no mark). If that release finds the pane busy, the answer is `409 busy` and the lease stays as it was; the
+next beat or the watch tick releases it. A heartbeat at the size nika holds makes no tmux call and takes no lock.
+
+A request that ends in a release (`blocked / user-change`, or `blocked / changed` after a read-back mismatch) answers with the
+window **as it is after the restore** (T5-F2): `pane` and `panes` come from a listing taken after the release, and `userZoom` is
+`true` only when the user had the pane zoomed before the fit and that zoom still holds (the pane is zoomed and active). If that
+listing fails, the answer carries the pane size nika read before its change, the lease's pane count and the lease's `userZoom`.
 
 **Errors**
 | Status | Code | When |
@@ -634,7 +659,17 @@ three places: server memory, a 0600 file `<state>/fit/fit-<nonce>.json` and the 
 command, answer, draft and suggestion): a resize re-wraps Claude's input box, so a draft write must not read the box across it. A
 fit step **waits** for a running action on the pane, at most 5 s (then `409 busy`, above); while a step holds the pane, every other
 action that takes the lock answers `409 busy-switching`, nothing sent, and the page's draft sync pushes again about 300 ms later.
-Stop and the keys route take no lock. A step is at most six tmux calls (a restore: unzoom, size, option, layout, focus, untag).
+Stop and the keys route take no lock. What a fit step holds the lock for (code at `828d52b`), at most:
+
+| Step | Calls inside the lock | After the lock |
+|---|---|---|
+| restore (`DELETE`, the watch, a lapse, quit, start, spawn, a take-over, a user change found by a renew) | 8: a listing and the layout read, then unzoom, size, option, layout, focus, untag (it decides each step from those two reads) | R9: one listing, to log a difference |
+| acquire | 6: a listing, the layout and the `window-size` option read, then tag, zoom (a window nobody zoomed), resize | the read-back: a listing and the layout |
+| renew that resizes | 2: a listing, then `resize-window` | the read-back: a listing and the layout |
+| renew at the size nika holds (a heartbeat) | none (no lock) | none |
+
+Steps that find a change release in a separate turn of the lock (a renew that finds the user's change, an acquire that fails its
+read-back), so a lock is never held for two steps at once.
 
 **When the server gives the window back by itself** (the watch, one `list-panes` per second while any lease is held; `src/fit.js`
 `observe`):
@@ -648,8 +683,11 @@ Stop and the keys route take no lock. A step is at most six tmux calls (a restor
 | tmux answers that no server runs | every lease is dropped |
 
 A restore (`DELETE`, the watch, quit, the next start, a spawn) undoes only what nika did, in this order, each step on its own
-(a failing step does not stop the later ones): unzoom, only when nika zoomed, the pane is still the active zoomed one; resize the
-window back to its saved size; the saved window-level `window-size` back (unset again when it was unset); the saved layout, only
+(a failing step does not stop the later ones). It starts with a listing inside the lock: the window gone, or its tag no longer this
+lease's nonce → the lease is dropped (the file removed) and nothing is touched or marked. Then: unzoom, only when nika zoomed, the
+pane is still the active zoomed one; resize the window back to its saved size, **even when the user resized the window during the
+lease** (the one step that overrides a user action: the saved size is the only size nika can name, and a lease nika did not
+release would leave the window at the panel's size); the saved window-level `window-size` back (unset again when it was unset); the saved layout, only
 when the layout is still the one nika left, the pane count is unchanged and the window is unzoomed; focus back to the pane that
 had it, only when that pane still exists and the focus still sits on the mirrored pane; the tag off; the lease file removed. One more read at the end logs a
 difference (`nika: fit restore of @n differs after <step>`) and never retries.
@@ -662,6 +700,12 @@ after a burst of beats still works. Answer `200 { "released": true }` when this 
 was dropped because its window was gone), `200 { "released": false }` when it held none (no tmux call is made) or a release for it
 is already running. `409 busy` when the pane's control lock stayed taken for more than 5 s (the lease is kept; the watch or the
 next request goes on); `502` / `503` when tmux could not be read (the lease is kept too).
+
+**Late heartbeat (M1).** After a `DELETE` that answered `released: true`, the server remembers the window for 2000 ms, inclusive
+(an in-memory map, at most 64 windows, the oldest dropped first): a `PUT` with `open: false` in that time is the page's last
+heartbeat in flight, not a page that wants the window, and answers `blocked / user-change` with no tmux call and no mark (row 8). A
+`PUT` with `open: true` clears the note and any mark. Nothing is noted by a `DELETE` that held no lease (`released: false`) or
+failed (409, 502, 503), by `releaseWindow` (a spawn), by the watch, by a lapse or by quit.
 
 **What the page does with an answer** (`public/fit-ui.js`): 200 shows the chip for `state` and `reason` (spec §9.13) and nothing
 else; 403 stops the fit for good and hides the chip; `404`, `409`, `429`, `502`, `503`, any other status and a lost request change
@@ -1066,7 +1110,7 @@ the folder-picker flow once (`hooks.addProject()` in `public/app.js`), then the 
 | `${XDG_STATE_HOME \|\| ~/.local/state}/nika/` | 0700 | state dir |
 | `…/nika/projects/<key>/reports/` | 0700 | per agent: `<name>.brief.md` and `<name>.agent.json` (`{model, permissionMode, rc, role, parent, depth, compact}`, re-validated on read) written by `spawn`; `<name>.session` (UUID), `<name>.remote` (RC name or empty), `<name>.pane` (`$TMUX_PANE`, display only: never counted) written by `_run-agent` before claude starts and `<name>.rc` (claude's exit code, as in 0.1) after it exits; `<name>.md` written by the agent; `.last-pane` |
 | `…/nika/backups/<key>/<ISO>/<relPath>` | 0700 / 0600 | byte-for-byte copies taken by `rules apply` before each overwrite (`<ISO>` = `YYYYMMDDTHHMMSSZ`, plus `-<n>` for a second apply in the same second); the newest 10 folders per project are kept: after a successful apply `pruneBackups` removes the older ones, touching only stamp-named real directories owned by the user |
-| `…/nika/fit/fit-<nonce>.json` | 0700 / 0600 | the fit's lease (0.5, W7): exactly the keys `v nonce window pane panes zoomed0 active0 width0 height0 size0 layout0 layout1 cols rows resized userZoom at`, written by `writeAtomic` before the first tmux change and after each resize, removed by `removeOwnFile` on release; `<nonce>` is 16 hex (`FIT_NONCE`); at most 20 files are read back at the app tier's start, each ≤ 16 KB through `fsafe`, every field shape-checked, and a file that does not parse is removed; a symlinked `fit/` folder is not followed |
+| `…/nika/fit/fit-<nonce>.json` | 0700 / 0600 | the fit's lease (0.5, W7): exactly the keys `v nonce window pane panes zoomed0 active0 width0 height0 size0 layout0 layout1 cols rows resized userZoom at`, written by `writeAtomic` before the first tmux change and after each resize, removed by `removeOwnFile` on release; `<nonce>` is 16 hex (`FIT_NONCE`); at most 20 files are read back at the app tier's start (when more match, `nika: fit recover read 20 of N lease files` is logged, counts only and never names; the rest stay on disk), each ≤ 16 KB through `fsafe`, every field shape-checked, and a file that does not parse is removed; a symlinked `fit/` folder is not followed |
 
 `config.json` schema and defaults (unknown keys are dropped, wrong types fall back to the default; both produce a
 warning in `loadConfig().warnings`; a tampered or unreadable file never throws):

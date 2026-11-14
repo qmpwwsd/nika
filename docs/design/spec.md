@@ -1899,7 +1899,8 @@ wiring is `public/session.js`. App tier only. The window can change the user's t
 | the pane keeps its real size (text scaled when it is larger than the panel) | `blocked` or `other`: nika changed nothing |
 
 The tmux window is given back when this window closes, 15 s after the page goes quiet, or on the first change the user makes in
-tmux (unzoom, move, split, kill, resize). After such a change nika does not fit again until the session window is opened again.
+tmux (unzoom, move, split, kill, resize; nika sees it within one second, and the restore follows within tens of milliseconds). After
+such a change nika does not fit again until the session window is opened again.
 
 **Measuring the panel** (`panelSize`)
 

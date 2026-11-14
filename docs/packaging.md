@@ -165,6 +165,14 @@ Two scripts prove the Linux side. Both refuse to run on macOS and exit non-zero 
 - tmux, through nika's own `mirror.js` and `keys.js`: SGR colours survive the mirror, OSC 52, OSC 8 and DCS do not,
   `send-keys -l -- '-x text'` arrives literally, a multi-line paste through `load-buffer -` and `paste-buffer -p -d`
   arrives bracketed, and no tmux buffer is left behind;
+- the session window's fit (0.5, group e), driving `src/fit.js` through `makeExec` on the same private socket with no client
+  attached, on whatever tmux is installed (the CI job installs it with apt on ubuntu-latest, tmux 3.4 at the time of writing; the
+  Docker image has Debian's; the script writes `tmux -V` into its log): L1, a 3-pane
+  window and a panel bigger than the window, is fitted (the mirrored pane gets the panel's size, the window is zoomed) and
+  given back, and the layout, size, `window-size` option, focus and tag are then exactly as before; L3, a single pane
+  80x24 and a panel of 60x15, is fitted to 60x15 and given back to 80x24; L4, `select-layout -- <window_layout>` is accepted and
+  changes nothing, and `show-options -w window-size` prints nothing while the option is unset; and nothing is left held after
+  the releases. The comparisons strip the focus markers (`"a"`, `"l"`) tmux 3.8 writes into a layout string;
 - cleanup: the tmux server, background jobs and the temp dir are gone.
 
 Run it in Docker (the image is the pinned `node:22-bookworm-slim` plus tmux, procps and iproute2; it holds a copy of the

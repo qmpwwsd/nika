@@ -84,6 +84,11 @@ the agent rows are fg 246, but nika reads text only. In a pane of 5 to 11 rows t
 simply not on the screen. Not seen, so read as `unknown`: a different glyph (for example an agent selected with the arrow keys),
 `↑ <n> more`, a wrapped label, and a permission prompt or dialog drawn with the list below it.
 
+**Known limit (fail closed).** A permission prompt or a dialog with the subagent list under it stays `unknown` (its footer is not the
+last row, and gate 5 does not hold for it). nika then reads no prompt, so it cannot answer it from the page, and the mode
+switch, End and the commands stop on the unrecognized footer without typing; the user answers it in the terminal. This is the intended direction: the
+alternative, reading a prompt with something below it, is the guess the reader refuses to make.
+
 ## 2. Permission prompt
 
 Bottom of the pane while Claude asks (labels here are examples):
@@ -358,7 +363,7 @@ shows every row) when any of these holds:
 | Condition | Why |
 |---|---|
 | the mode line is unknown: a permission prompt, a dialog or an unknown footer replaces it (§1), including the transient `paste again to expand` hint | a dialog that draws `❯ 1. Yes` between two `─` rows must never be read as a draft |
-| a feedback survey is on screen (`surveyShown` in `src/mode.js`): any row that is exactly `How is Claude doing this session?` with an optional ` (optional)` (and an optional `●` before it), or the options row `1: … 0: Dismiss`; also a row that starts with `How well is Claude following the instructions`, `How was Claude's recollection` or `Can Anthropic look at your session transcript` | the survey answers to the digits 0–3 (the transcript question to 1–3), so a draft that starts with a digit must never be typed while one shows. The capture's `draft` is null (the sync pauses), the draft write, End and the commands answer 409 `input-unreadable` with nothing typed. Matched on whole rows, so prose that quotes the question does not trigger it. The keys route has no such guard: a digit pressed in the mirror is the user's own key |
+| a feedback survey is on screen (`surveyShown` in `src/mode.js`; only the first question and the options row were ever captured, see §10.11): any row that is exactly `How is Claude doing this session?` with an optional ` (optional)` (and an optional `●` before it), or the options row `1: … 0: Dismiss`; also a row that starts with `How well is Claude following the instructions`, `How was Claude's recollection` or `Can Anthropic look at your session transcript` | the survey answers to the digits 0–3 (the transcript question to 1–3), so a draft that starts with a digit must never be typed while one shows. The capture's `draft` is null (the sync pauses), the draft write, End and the commands answer 409 `input-unreadable` with nothing typed. Matched on whole rows, so prose that quotes the question does not trigger it. The keys route has no such guard: a digit pressed in the mirror is the user's own key |
 | the footer is `! for shell mode` but the box does not start with `!` (that footer is accepted only for a bash box) | §1 |
 | a permission prompt parses on the screen (§2) | redundant with the footer rule; it is the T51 anchor |
 | fewer than two rule rows, or nothing between the last two | no box |
@@ -568,8 +573,12 @@ and vim insert mode, made-up text).
 ### 10.11 Not verified
 
 - The feedback survey was never seen on screen (4 prompts, 8 subagent runs, 2026-11-14): only the first question row and the options
-  row come from an earlier capture (spike S15); the other three question starts are strings of the 2.1.325 binary, with their layout not
-  captured. Whether the survey takes a digit while the input box has focus is not known, so the guard stays for every box.
+  row come from an earlier capture (spike S15). The three other question variants (`How well is Claude following the instructions`,
+  `How was Claude's recollection`, `Can Anthropic look at your session transcript`) are strings of the 2.1.325 binary only: how and
+  where they are drawn, and whether their options row has the same shape, was never captured (§10.1 matches the start of the row, so a
+  different layout may go unnoticed). Whether the survey takes a digit while the input box has focus is not known, so the guard stays for every box.
+- A permission prompt or a dialog drawn with the background-subagent list below it (§1): never seen, so it reads `unknown` and nika
+  cannot answer it (the user does, in the terminal).
 - Plain-mode replace and append were exercised against a fake pane only (the Claude of the checking session was in vim mode).
 - `→` and `Tab` in vim insert mode, `Tab` in vim normal mode, and `Tab` and `Enter` on a real suggestion through nika's accept route and Send (the owner checks
   them).

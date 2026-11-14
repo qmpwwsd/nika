@@ -37,19 +37,35 @@ values must not be steerable from a request, a tag or a file.
   with the same pane count? Then: unzoom only a zoom nika made and only while it is still on the mirrored pane; `resize-window` back;
   the saved `window-size` back exactly (unset again when it was unset); `select-layout` of the saved layout only when the layout is
   unchanged and the window unzoomed (the 3.8 `"a"` and `"l"` markers removed, so focus does not move); focus back only when it still
-  sits where nika put it; tag off; file removed; one read at the end that logs a difference and never retries.
+  sits where nika put it; tag off; file removed; one read at the end that logs a difference and never retries. The restore is exact
+  except tmux's last-pane order: the `l` markers are stripped before the layout is applied, so the pane `last-pane` would jump back to
+  is not restored. The resize back also overrides a resize the user made during the lease: the saved size is the only size nika can
+  name, and a window left at the panel's size would be worse. The answer of a request that ends in a release (`blocked /
+  user-change`, `blocked / changed`) describes the window after the restore (a fresh pane size and pane count; `userZoom` only while
+  the user's own zoom still holds), not the read-back taken while fitted.
 - **A page that goes quiet, or a user who changes the window, ends the lease.** The page beats every 5 s; 15 s without a beat
   releases. A 1 s watch (only while a lease is held) releases on the first sign of a user change: unzoom, navigation, a different
   pane count or window size, the pane gone. After a user change, or a read-back that differs from what nika set (a tmux hook fought
   back), the window stays off (`blocked / user-change`, `blocked / changed`) until the session window is opened again (`open: true`):
-  nika never re-asserts and never loops (owner decision 2026-11-14, Q6).
+  nika never re-asserts and never loops (owner decision 2026-11-14, Q6). A heartbeat that was already on its way when the page's own
+  `DELETE` gave the window back would otherwise fit it again: for 2 s after a `DELETE` that gave a lease back, a `PUT` with `open:
+  false` answers `blocked / user-change` and changes nothing (an in-memory note, at most 64 windows; `open: true` clears it).
 - **A user's zoom of another pane blocks the fit** (`blocked / user-zoom`, owner decision Q1); a user's zoom of the mirrored pane is
   kept and never undone. A `window-size` option that is not unset or one of the four known values blocks the fit, because it could
   not be put back exactly.
-- **Everything under the pane's control lock.** Every tmux change of a fit runs in `withPaneLock` of `createSessionControl`, which
-  waits for a running End, draft write, mode switch or command (at most 5 s, then 409 `busy`), so a resize never lands in the middle
-  of a draft write. While a fit step holds the pane the other control actions answer 409 `busy-switching`. One acquire, renew or
-  release runs at a time per window.
+- **Everything under the pane's control lock, reads included.** Every tmux change of a fit runs in `withPaneLock` of
+  `createSessionControl`, which waits for a running End, draft write, mode switch or command (at most 5 s, then 409 `busy`), so a
+  resize never lands in the middle of a draft write. Because that wait can be long, every read that decides a zoom, a resize or a
+  restore is taken inside the lock too (review I1): an acquire lists the window again, reads the layout and the `window-size`
+  option again and compares them with what its decision rested on (pane count, zoom flag, active pane, tag, window and pane size,
+  layout, option), and changes nothing when any of them differs (`blocked / changed`; no tag, no lease, no file, no mark); a
+  restore runs wholly inside the lock, from its own listing and layout read; a renew that resizes lists the window again inside the
+  lock and judges it against the size nika holds (review N1), and on a difference (the user resized, unzoomed, moved the focus or
+  split during the wait) it resizes nothing and releases as a user change, so a user's resize is never overridden. Otherwise a
+  user's `C-b z` or focus change during the wait would meet a blind `resize-pane -Z` built from an older listing, and their resize
+  a `resize-window` built from an older size. A step holds the lock for at most 8 calls (a restore), 6 (an acquire) or 2 (a
+  resizing renew). While a fit step holds the pane the other control actions
+  answer 409 `busy-switching`. One acquire, renew or release runs at a time per window.
 - **Spawn gives the window back first** (owner decision Q3). A split into a fitted window would unzoom it and put the new pane
   into a nika-sized window, so `spawnAgent` reads the window id of its split target (`display-message -p -t <target> -F
   '#{window_id}'`) and calls `releaseWindow` before the `split-window`; the page fits again on its next beat.
@@ -82,7 +98,8 @@ values must not be steerable from a request, a tag or a file.
 ## Consequences
 - nika now changes the user's tmux window while the session window is open, which is why the chip is always visible (colour, icon
   and words) and why the lease, the watch and the tag exist. A crash leaves the window at nika's size until the next app-tier start;
-  the watch is up to one second late; every `resize-window` sends SIGWINCH to every pane of the window, and with `focus-events on`
+  a user's change is seen within one 1 s tick of the watch, and the restore follows within tens of milliseconds (measured on
+  tmux 3.8: the whole restore was done 1009 to 1045 ms after the change); every `resize-window` sends SIGWINCH to every pane of the window, and with `focus-events on`
   zoom and restore flip the active pane (`ESC[I` / `ESC[O` to panes that asked for focus reports). A tmux hook that rewrites the
   layout makes nika release and stay off. `docs/security.md` T52 and residual risk m list them.
 - `pane-border-status` (a pane smaller than its window) makes the read-back differ, so such a window is never fitted; the text is
@@ -91,7 +108,9 @@ values must not be steerable from a request, a tag or a file.
   300 ms later).
 - Rules 3, 4, 11 and 12 gain the fit: new tmux argv shapes (and the spawn read of the window id), new reads, the lease files and
   `removeOwnFile`. `src/ids.js` holds `WINDOW_ID` and `FIT_NONCE`.
-- Verified on tmux 3.8 only (spike S10). The floor is 3.2; the output of `show-options -w` when unset, `select-layout --` and the
-  older layout string (no markers) still need the release's live checks on that version.
+- Verified live on tmux 3.8 (spike S10 and the release's live checks) and, through the fit group of `scripts/linux-verify.sh`, by
+  the `linux-verify` CI job on the Linux runner's tmux (ubuntu-latest ships tmux 3.4): a 3-pane window and a single pane fitted and
+  given back exactly, `select-layout -- <layout>` accepted, and `show-options -w window-size` empty while unset. The floor is 3.2;
+  tmux 3.2 to 3.3 and 3.5 to 3.7 are not verified (the older layout string without markers is exercised only by 3.4).
 - Not built: the take-over of a user's zoom, re-asserting after a user change, reading `#{window_manual_width}` (3.8 only), any fit on
   the browser tier.

@@ -52,12 +52,16 @@ Session window (desktop app):
   zoomed, text scaled", "Fit · off" (hover for why: you zoomed another pane, the window has a `window-size` setting nika does not
   change, another program marks the window, the window changed while nika was fitting it, or you changed it) and "Fit · another
   window" (another nika window shows a pane of the same tmux window; the one you opened last fits it).
-- **nika gives your tmux window back exactly as it was.** On closing the session window, 15 seconds after the window goes quiet,
+- **nika gives your tmux window back as it was.** On closing the session window, 15 seconds after the window goes quiet,
   when you quit nika, and at the next start after a crash, nika undoes only what it did: the zoom, the window size, the
   `window-size` setting and, when you have not touched the layout, the layout and the focus. If you unzoom, move, split, kill a
-  pane or resize in tmux while the window is fitted, nika puts the window back within a second and does not fit it again until you
-  open the session window again. A zoom you made yourself is never undone. Spawning an agent into a fitted window puts it back first.
-- Known limits: the fit works on tmux 3.8 so far (3.2 to 3.7 are checked later); a crash leaves the window at nika's size until
+  pane or resize in tmux while the window is fitted, nika sees it within a second, puts the window back right after, and does not
+  fit it again until you open the session window again (a resize you make while the window is fitted is also undone: nika puts the
+  window back to its old size). A zoom you made yourself is never undone. Spawning an agent into a fitted window puts it back
+  first. The restore is exact except for tmux's last-pane order: which pane `last-pane` jumps back to is not restored.
+- Known limits: the fit was tried on tmux 3.8, and the `linux-verify` check on CI runs it on the Linux runner's tmux (3.4 on
+  ubuntu-latest: a 3-pane and a single-pane window fitted and given back exactly, `select-layout --` accepted, `window-size`
+  unset reads empty); tmux 3.2, the lowest supported, and the other versions up to 3.7 are not checked yet; a crash leaves the window at nika's size until
   nika starts again; with `pane-border-status` on, nika does not fit and scales the text instead; the reason a fit is off shows as a
   tooltip and one spoken announcement only.
 
@@ -66,7 +70,8 @@ Fixes:
 - **Background subagents no longer hide the footer.** While Claude runs background subagents it draws their list under the footer
   line. nika used to read that list as the footer, so the mode showed as unknown and the message box could not mirror Claude's
   input. nika now sees through the list. It also stops mirroring while Claude's feedback survey is on screen, so a draft that
-  starts with a digit can never answer it.
+  starts with a digit can never answer it. A permission prompt or a dialog drawn with the list below it still reads as unknown, so
+  nika cannot answer it: answer it in the terminal.
 
 ## 0.4.0 — 2026-11-13
 

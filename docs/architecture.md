@@ -124,7 +124,9 @@ The session window measures its terminal panel and the app tier makes the mirror
 3. `fit.js` reads tmux's own listing and decides: zoom a window with several panes, resize only when the panel is at least as big as
    the window. It takes a lease on the window (memory, `<state>/fit/fit-<nonce>.json`, the window option `@nika-fit`); a 1 s watch, a
    15 s lapse, `DELETE`, quit and the next start give the window back, and a change by the user ends the lease for good until the
-   session window is opened again. Every change runs under `session-control.js` `withPaneLock`.
+   session window is opened again. Every change runs under `session-control.js` `withPaneLock`, and so does every read that decides a
+   zoom, a resize or a restore: an acquire and a renew that resizes look again after the lock wait and change nothing when the window
+   moved on (the renew then releases as a user change), a restore runs wholly inside the lock.
 4. `appio.js` runs `recover()` before `ready` and `releaseAll()` at quit; `spawn.js` gives a fitted window back before a split lands in it.
 
 Routes: [`contracts/api-app.md` section 3](contracts/api-app.md). Page: design spec 9.13. Threat: T52 in [security](security.md).
@@ -162,6 +164,7 @@ latency. `--optimize-for-size` saved about 10 MB more but made history requests 
 | `compact.js` | Auto-compact (ADR 0014): `compactLaunch(model, setting)` turns the Settings choice into the two launch variables for one model, and `compactEnv` validates them. Pure. |
 | `config.js` | Defaults from the environment, port and `--since` parsing, `findTmux`, `findClaude`. |
 | `diff.js` | Unified diff for the rules preview. |
+| `draft.js` | Claude's input box (the draft), pure: `parseDraft` reads it from the mirror rows and fails closed (`null` for no plain box, `unreadable` with a reason for one that must not be written over); `inEnvelope` (≤ 1024 characters, 12 newlines, 13 rows), `chunks` (what is typed, what is pasted), `normDraft` / `sameDraft`. |
 | `exec.js` | `makeExec()`: `execFile` with a timeout and optional stdin input. |
 | `fit.js` | The fit (0.5, [ADR 0017](adr/0017-fit-lease.md)): `createFit()` zooms the mirrored pane and sizes its tmux window to the session window's panel only when no other pane would be squeezed, keeps one lease per window (memory, a lease file, the window tag `@nika-fit`) and gives back exactly what it changed. Every tmux argv of the fit is built here. App tier only. |
 | `fsafe.js` | Safe reads of agent-writable files (no symlink, no FIFO, owned by you, size cap). |
@@ -208,6 +211,7 @@ latency. `--optimize-for-size` saved about 10 MB more but made history requests 
 | `dash-model.js` | The Show ended rule of the dashboard and the project page (`endedPlan`, `resetEndedState`, per view; ended sessions and finished subagents stay hidden until it is on), the sidebar's Projects and Detected lists (`sidebarModel`) and the orchestrator's state and badge (`orchState`, `savedPick`, `otherRunning`, `roleTag`, `ROLE_TAGS`). Pure, both tiers. |
 | `app.js` | Main page: shell, dashboard (in the app tier: mode tags, the row menu's End and the Add to Applications banner), router, the poll loop and the Keyboard shortcuts keys. Runs in both tiers. |
 | `ui.js` | Shared state and widgets for the main page. |
+| `draft-sync.js` | The draft sync, page side (0.5), no DOM and no request of its own: `createDraftSync` pulls a changed screen into the message box after 1.5 s of quiet and pushes a local edit 250 ms after the last key; `draftSendPlan` decides what Send does (Enter alone, copy then Enter, the old paste, refuse); twins of `src/draft.js` checked by test. |
 | `dom.js` | `h()`: builds DOM with `textContent`, never parses markup; `roleTagEl()` draws the orchestrator badge. |
 | `end-dialog.js` | The End-session dialog, shared by the session window and the dashboard row menu. |
 | `fit-ui.js` | The fit, page side (0.5): `panelSize` (the terminal box in cells, 40–400 × 10–200), `scaleFor` (text scale 0.4 to 1), `chipView` (the four chips and their fixed titles), `createFitPlanner` (the first `open: true`, a 5 s beat, a 250 ms debounce, one `DELETE` on `pagehide`). No DOM, no requests of its own; `session.js` wires it. |
