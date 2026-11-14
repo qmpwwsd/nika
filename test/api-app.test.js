@@ -20,6 +20,7 @@ import { lastNonBlank, modeFromRows, PROMPT_ROWS } from '../src/mode.js';
 import { MODEL_CATALOG } from '../src/models.js';
 import { makeWorld, fakeTmux, TMUX, CLAUDE } from './tmux-fake.js';
 import { makeFixture, cleanup, fakeExec, SID, NOW, boxRows } from './helpers.js';
+import { createMirror } from '../src/mirror.js';
 
 const SECRET = 'Zm9vYmFyZm9vYmFyZm9vYmFyZm9vYmFyZm9vYmFyZm9v'.slice(0, 43);
 const REQ_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -1859,6 +1860,8 @@ function fakeControl(answers = {}) {
       stop: method('stop', () => ({ status: 200, body: { stopped: true, presses: 1 } })),
       writeDraft: method('writeDraft', () => ({ status: 200, body: { draft: null, typed: 0 } })),
       acceptSuggestion: method('acceptSuggestion', () => ({ status: 200, body: { draft: null } })),
+      withPaneLock: async (id, fn) => fn(), // the lock and the interrupt gap the scroll controller is built with (src/scroll.js insists on both)
+      keyGap: () => false,
     };
   };
   return f;
@@ -3561,6 +3564,285 @@ describe('PUT|DELETE /api/app/pane/:id/fit', () => {
     }
     assert.ok(lines.some((l) => /PUT .*fit failed/.test(l)), 'the internal error was logged (so the check is real)');
     assert.deepEqual(lines.filter((l) => /\bcols\b|\brows\b|"open"|321|\b77\b/.test(l.split('\n')[0])), []);
+  });
+});
+
+// --- scroll (0.5, W3, ADR 0018): POST /api/app/pane/:id/scroll ---------------------------------------------------------------
+
+/** A scroll factory that records what the router builds it with (`opts`) and what the route calls; `answer` (a value or a function) replaces the result. */
+function fakeScroller(answer) {
+  const f = { calls: [], opts: null, answer };
+  f.factory = (opts) => {
+    f.opts = opts;
+    return {
+      scroll: async (id, body) => {
+        f.calls.push([id, body]);
+        return typeof f.answer === 'function' ? f.answer(id, body) : f.answer ?? { status: 200, body: { sent: body.pages ?? 1, scrolled: true } };
+      },
+    };
+  };
+  return f;
+}
+const scrollPane = (a, id, opts = {}) => pane(a, id, 'scroll', { method: 'POST', ...opts });
+const SCROLL_UP3 = { dir: 'up', pages: 3 };
+const keyCalls = (a) => a.deps.calls.filter((c) => c[0] === 'keys').map((c) => c[2]);
+
+describe('POST /api/app/pane/:id/scroll', () => {
+  /** A router with the REAL session and scroll controllers over a mirror that shows a plain input box in Claude's full-screen view. `seen` lists every capture { pane, fresh }; `hold()` stops the next captures until `open()`. */
+  async function liveRouter(over = {}) {
+    const { a, mirror } = await bootScreens({ fake: false, over });
+    const seen = [];
+    const gate = { wait: null, hit: null };
+    const shot = () => ({ status: 200, body: { ...boxRows({ cols: 80, lines: [''] }), alt: true, scrolled: true, etag: 'e' }, etag: 'e' });
+    mirror.capture = async (pane, inm, o) => {
+      seen.push({ pane, fresh: o?.fresh === true });
+      gate.hit?.();
+      if (gate.wait) await gate.wait;
+      return shot();
+    };
+    const hold = () => {
+      let open;
+      gate.wait = new Promise((r) => { open = r; });
+      const entered = new Promise((r) => { gate.hit = r; });
+      return { entered, open };
+    };
+    return { a, seen, hold };
+  }
+
+  test('(+) the route hands the pane id and exactly the body to the controller and relays its status, body and no-store; every shape of the body passes', async () => {
+    const sc = fakeScroller();
+    const { a } = await bootScreens({ over: { createScroll: sc.factory } });
+    const r = await scrollPane(a, '%6', { json: SCROLL_UP3 });
+    assert.deepEqual([r.status, r.body], [200, { sent: 3, scrolled: true }]);
+    assert.equal(r.headers['cache-control'], 'no-store');
+    for (const json of [{ dir: 'down', pages: 1 }, { dir: 'up', pages: 8 }, { to: 'top' }, { to: 'bottom' }]) assert.equal((await scrollPane(a, '%6', { json })).status, 200, JSON.stringify(json));
+    assert.deepEqual(sc.calls, [['%6', SCROLL_UP3], ['%6', { dir: 'down', pages: 1 }], ['%6', { dir: 'up', pages: 8 }], ['%6', { to: 'top' }], ['%6', { to: 'bottom' }]]);
+    sc.answer = { status: 409, body: { error: 'prompt-open', message: 'x' } };
+    const refused = await scrollPane(a, '%6', { json: SCROLL_UP3 });
+    assert.deepEqual([refused.status, refused.body.error], [409, 'prompt-open'], 'a refusal passes through');
+    sc.answer = { status: 200, body: { sent: 1, scrolled: null } };
+    assert.deepEqual((await scrollPane(a, '%6', { json: { to: 'bottom' } })).body, { sent: 1, scrolled: null });
+  });
+
+  test('(+) a started pane is eligible, like for any control', async () => {
+    const sc = fakeScroller();
+    const { a } = await bootScreens({ over: { createScroll: sc.factory } });
+    a.ctx.started.set('%8', { key: w.project.key, name: 'x', sessionId: null, role: 'agent', mode: 'plan' });
+    assert.equal((await scrollPane(a, '%8', { json: SCROLL_UP3 })).status, 200);
+    assert.deepEqual(sc.calls, [['%8', SCROLL_UP3]]);
+  });
+
+  test('(+) the router builds the controller with the mirror, the keys, the session controller\'s pane lock and keyGap, and the router\'s clock; building it touches nothing', async () => {
+    const sc = fakeScroller();
+    const control = fakeControl();
+    const lock = async (id, fn) => fn();
+    const gap = () => false;
+    const { a } = await bootScreens({ fake: false, over: { createScroll: sc.factory, createSessionControl: (o) => ({ ...control.factory(o), withPaneLock: lock, keyGap: gap }) } });
+    assert.equal(sc.opts.mirror, a.deps.mirror);
+    assert.equal(sc.opts.keys, a.deps.keys);
+    assert.equal(sc.opts.lock, lock);
+    assert.equal(sc.opts.keyGap, gap);
+    a.clock.t = 4242;
+    assert.equal(sc.opts.now(), 4242, 'the controller reads the same clock as the router');
+    assert.deepEqual(keyCalls(a), []);
+  });
+
+  test('(−) Stop, then a scroll before its Escape is 40 ms old, is 409 busy-switching: nothing is captured or sent; once the gap has passed it goes (the real controllers share keyGap)', async () => {
+    const busy = { groups: [{ agents: [{ live: true, state: 'busy', pane: { id: '%6' } }] }] };
+    const { a, seen } = await liveRouter({ collect: async () => busy });
+    const stopped = await pane(a, '%6', 'stop', { method: 'POST', json: {} });
+    assert.deepEqual([stopped.status, stopped.body], [200, { stopped: true, presses: 1 }]);
+    const captures = seen.length;
+    const early = await scrollPane(a, '%6', { json: SCROLL_UP3 });
+    assert.deepEqual([early.status, early.body.error], [409, 'busy-switching']);
+    assert.deepEqual([seen.length, keyCalls(a)], [captures, [{ keys: ['Escape'] }]], 'the Escape is the only key, and the refused scroll captured nothing');
+    a.clock.t += 41;
+    assert.equal((await scrollPane(a, '%6', { json: SCROLL_UP3 })).status, 200);
+    assert.deepEqual(keyCalls(a), [{ keys: ['Escape'] }, { keys: ['PPage', 'PPage', 'PPage'] }]);
+  });
+
+  test('(+) end to end with the real controllers: up 3 is one keys.send of PPage x 3 after a fresh capture, and the answer says where Claude\'s view is; bottom is C-End', async () => {
+    const { a, seen } = await liveRouter();
+    const r = await scrollPane(a, '%6', { json: SCROLL_UP3 });
+    assert.deepEqual([r.status, r.body], [200, { sent: 3, scrolled: true }]);
+    assert.deepEqual(keyCalls(a), [{ keys: ['PPage', 'PPage', 'PPage'] }]);
+    assert.deepEqual(seen, [{ pane: '%6', fresh: true }, { pane: '%6', fresh: true }], 'one fresh capture before the keys, one after');
+    a.clock.t += 1500;
+    assert.equal((await scrollPane(a, '%6', { json: { to: 'bottom' } })).status, 200);
+    assert.deepEqual(keyCalls(a).at(-1), { keys: ['C-End'] });
+    assert.equal(keyCalls(a).length, 2);
+  });
+
+  test('(+) the capture body carries alt and scrolled from the mirror, and its ETag changes when only alt flips (the real mirror over a scripted tmux)', async () => {
+    const pill = `${'\u001b'}[38;5;231m${'\u001b'}[48;5;237m Jump to bottom: fn+↓ to scroll ${'\u001b'}[39m${'\u001b'}[49m\n`;
+    const view = { alt: '1' };
+    const exec = async (cmd, args) => (args.includes('display-message')
+      ? { stdout: `80\t24\t0\t0\t1\t${view.alt}\n`, stderr: '' }
+      : { stdout: `older output\n${pill}input\n`, stderr: '' });
+    const clock = { t: 1_000_000 };
+    const mirror = createMirror({ exec, now: () => clock.t });
+    const a = await boot({ deps: makeDeps({ mirror }) });
+    const on = await pane(a, '%6', 'capture');
+    assert.deepEqual([on.status, on.body.alt, on.body.scrolled], [200, true, true]);
+    view.alt = '0';
+    clock.t += 1000;
+    const off = await pane(a, '%6', 'capture', { headers: { 'if-none-match': on.headers.etag } });
+    assert.equal(off.status, 200, 'only alt changed: not a 304');
+    assert.deepEqual([off.body.alt, off.body.scrolled], [false, false], 'no scrolled without the alternate screen');
+    assert.notEqual(off.body.etag, on.body.etag);
+  });
+
+  test('(−) 400 before 404 before 429: a bad body is 400 on any pane and on a full bucket, an ineligible pane is 404 and takes no rate slot, then the 11th good request is 429', async () => {
+    const sc = fakeScroller();
+    const { a } = await bootScreens({ over: { createScroll: sc.factory } });
+    const bad = [{}, { dir: 'up' }, { pages: 3 }, { dir: 'up', pages: 0 }, { dir: 'up', pages: 9 }, { dir: 'up', pages: 1.5 }, { dir: 'up', pages: '3' }, { dir: 'left', pages: 1 }, { to: 'middle' },
+      { to: 'top', dir: 'up' }, { to: 'top', pages: 1 }, { dir: 'up', pages: 3, keys: ['PPage'] }, { to: 'bottom', text: 'x' }, { dir: 'PPage', pages: 1 }, { to: 'C-End' }];
+    for (const json of bad) {
+      for (const id of ['%6', '%5', '%99']) {
+        const r = await scrollPane(a, id, { json });
+        assert.deepEqual([r.status, r.body.error], [400, 'invalid'], `${JSON.stringify(json)} on ${id}`);
+        assert.equal(r.body.message, 'body must be { dir: up|down, pages: 1-8 } or { to: top|bottom }');
+      }
+    }
+    assert.equal((await scrollPane(a, '%6', { body: '[]', headers: { 'content-type': 'application/json' } })).body.error, 'invalid');
+    assert.deepEqual(sc.calls, [], 'a bad body reaches no controller');
+    for (let i = 0; i < 15; i += 1) for (const id of ['%5', '%7', '%8', '%99', 'abc', '..']) assert.equal((await scrollPane(a, id, { json: SCROLL_UP3 })).status, 404, id);
+    assert.deepEqual(sc.calls, [], 'an ineligible pane reaches no controller either');
+  });
+
+  test('(−) the 11th scroll request on one pane within a second is 429 busy: nothing is captured or sent for it; another pane is served; a second later it is served again (real controllers)', async () => {
+    const { a, seen } = await liveRouter();
+    a.ctx.started.set('%8', { key: w.project.key, name: 'x', sessionId: null, role: 'agent', mode: 'plan' });
+    for (let i = 0; i < 10; i += 1) assert.equal((await scrollPane(a, '%6', { json: SCROLL_UP3 })).status, 200, `request ${i + 1}`);
+    const captures = seen.length;
+    const sent = keyCalls(a).length;
+    const eleventh = await scrollPane(a, '%6', { json: SCROLL_UP3 });
+    assert.deepEqual([eleventh.status, eleventh.body.error], [429, 'busy']);
+    assert.match(eleventh.body.message, /at most 10 scroll requests per second per pane/);
+    assert.deepEqual([seen.length, keyCalls(a).length], [captures, sent], 'the refused request captured and sent nothing');
+    assert.equal((await scrollPane(a, '%8', { json: SCROLL_UP3 })).status, 200, 'another pane has its own count');
+    a.clock.t += 1001;
+    assert.equal((await scrollPane(a, '%6', { json: SCROLL_UP3 })).status, 200);
+  });
+
+  test('(−) a shell pane, an ended agent, a pane that is not claude and an unknown or malformed id are 404: nothing is captured or sent (real controllers)', async () => {
+    const { a, seen } = await liveRouter();
+    for (const id of ['%5', '%7', '%8', '%99', 'abc', '..']) {
+      const r = await scrollPane(a, id, { json: SCROLL_UP3 });
+      assert.deepEqual([r.status, r.body.error], [404, 'not_found'], id);
+    }
+    assert.deepEqual([seen.length, keyCalls(a).length], [0, 0]);
+    await leaveAndReturn(a, '%6'); // a pane that dropped out of the tmux list is 404 as well, and comes back
+    assert.deepEqual([seen.length, keyCalls(a).length], [0, 0]);
+    assert.equal((await scrollPane(a, '%6', { json: SCROLL_UP3 })).status, 200);
+  });
+
+  test('(−) the guard of every /api/app route holds: no secret or a wrong one 403, a wrong Origin 403, text/plain 415, GET 405, a body over 4 KB 413; no controller is reached', async () => {
+    const sc = fakeScroller();
+    const { a } = await bootScreens({ over: { createScroll: sc.factory } });
+    assert.equal((await scrollPane(a, '%6', { json: SCROLL_UP3, headers: { 'x-nika-app': null } })).status, 403);
+    assert.equal((await scrollPane(a, '%6', { json: SCROLL_UP3, headers: { 'x-nika-app': WRONG_SAME_LENGTH } })).status, 403);
+    assert.equal((await scrollPane(a, '%6', { json: SCROLL_UP3, headers: { origin: 'http://evil.example' } })).status, 403);
+    assert.equal((await scrollPane(a, '%6', { body: JSON.stringify(SCROLL_UP3), headers: { 'content-type': 'text/plain' } })).status, 415);
+    assert.equal((await scrollPane(a, '%6', { method: 'GET' })).status, 405);
+    assert.equal((await scrollPane(a, '%6', { json: { ...SCROLL_UP3, pad: 'p'.repeat(4097) } })).status, 413);
+    assert.deepEqual(sc.calls, []);
+  });
+
+  test('(+) a scroll waits for a running End on the same pane (one lock), then goes: PPage x 3 is sent after End finished', async () => {
+    const { a, hold } = await liveRouter();
+    const stop = hold();
+    const end = pane(a, '%6', 'end', { method: 'POST', json: {} });
+    await stop.entered;
+    let answered = false;
+    const scroll = scrollPane(a, '%6', { json: SCROLL_UP3 }).then((r) => { answered = true; return r; });
+    await new Promise((r) => setTimeout(r, 120)); // several polls of the waiting lock
+    assert.equal(answered, false, 'the scroll waits while End holds the pane');
+    assert.deepEqual(keyCalls(a).filter((b) => b.keys?.includes('PPage')), [], 'no scroll key went out yet');
+    stop.open();
+    await end;
+    const r = await scroll;
+    assert.deepEqual([r.status, r.body.sent], [200, 3]);
+    assert.deepEqual(keyCalls(a).at(-1), { keys: ['PPage', 'PPage', 'PPage'] }, 'the scroll keys went out last, after End was done');
+  });
+
+  test('(−) while a scroll holds the pane, End, a mode switch, a command and a draft write answer 409 busy-switching and type nothing; then the scroll finishes', async () => {
+    const { a, hold } = await liveRouter();
+    const stop = hold();
+    const scroll = scrollPane(a, '%6', { json: SCROLL_UP3 });
+    await stop.entered;
+    const typed = keyCalls(a).length;
+    assert.equal((await pane(a, '%6', 'end', { method: 'POST', json: {} })).body.error, 'busy-switching');
+    assert.equal((await pane(a, '%6', 'mode', { method: 'POST', json: { target: 'plan' } })).body.error, 'busy-switching');
+    assert.equal((await pane(a, '%6', 'command', { method: 'POST', json: { text: '/compact' } })).body.error, 'busy-switching');
+    const draft = await pane(a, '%6', 'draft', { method: 'PUT', json: { text: 'hi', base: '' } });
+    assert.deepEqual([draft.status, draft.body.error], [409, 'busy-switching']);
+    assert.equal(keyCalls(a).length, typed, 'nothing was typed');
+    stop.open();
+    assert.equal((await scroll).status, 200);
+    assert.deepEqual(keyCalls(a), [{ keys: ['PPage', 'PPage', 'PPage'] }]);
+  });
+
+  test('(−) a screen that is not a plain input box in Claude\'s full-screen view is a 409 and no key goes (alt off, a permission prompt, a dialog footer, a slash menu)', async () => {
+    const { a, mirror } = await bootScreens({ fake: false });
+    const shot = (body) => ({ status: 200, body: { cols: 80, cursor: { x: 0, y: 0, visible: true }, alt: true, scrolled: false, ...body, etag: 'e' }, etag: 'e' });
+    const screens = {
+      'no-view': shot({ ...boxRows({ cols: 80, lines: [''] }), alt: false }),
+      'prompt-open': shot({ rows: rowsOf(PROMPT), cursor: null }),
+      'screen-unclear': shot({ ...boxRows({ cols: 80, lines: ['hello'], footer: 'Enter to select · ↑/↓ to navigate · Esc to cancel' }) }),
+      'menu-open': shot({ ...boxRows({ cols: 80, lines: ['/com'] }) }),
+    };
+    for (const [code, view] of Object.entries(screens)) {
+      mirror.capture = async () => view;
+      a.clock.t += 1500;
+      const r = await scrollPane(a, '%6', { json: SCROLL_UP3 });
+      assert.deepEqual([r.status, r.body.error], [409, code]);
+    }
+    assert.deepEqual(keyCalls(a), []);
+  });
+
+  test('(−) the browser tier has no scroll route: POST is 404 there, whatever the headers', async () => {
+    const server = createServer({ config: fx.config, exec: fakeExec(), token: 'tok', now: () => NOW, version: '0.0.0' });
+    await new Promise((res) => server.listen(0, '127.0.0.1', res));
+    servers.push(server);
+    const port = server.address().port;
+    const status = await new Promise((resolve, reject) => {
+      const q = http.request({ host: '127.0.0.1', port, method: 'POST', path: '/api/app/pane/%256/scroll', headers: { host: `127.0.0.1:${port}`, 'x-nika-app': SECRET, 'content-type': 'application/json', 'content-length': '2' } }, (res) => {
+        res.resume();
+        res.on('end', () => resolve(res.statusCode));
+      });
+      q.on('error', reject);
+      q.end('{}');
+    });
+    assert.equal(status, 404);
+  });
+
+  test('(−) the browser tier never loads scroll.js: only api-app.js imports it (and only appio.js imports api-app.js, which cli.js reaches by a dynamic import)', () => {
+    const dir = new URL('../src/', import.meta.url);
+    const files = fs.readdirSync(dir, { recursive: true }).filter((f) => f.endsWith('.js'));
+    const importers = files.filter((f) => /(from\s+|import\()\s*'(\.\/|\.\.\/)scroll\.js'/.test(fs.readFileSync(new URL(f, dir), 'utf8')));
+    assert.deepEqual(importers, ['api-app.js']);
+  });
+
+  test('(−) nothing of the body reaches a log line, on success and on an internal error', async () => {
+    const lines = [];
+    const saved = { error: console.error, log: console.log, warn: console.warn, info: console.info };
+    for (const name of Object.keys(saved)) console[name] = (...args) => { lines.push(args.map((x) => (x instanceof Error ? `${x.message}\n${x.stack}` : String(x))).join(' ')); };
+    try {
+      for (const answer of [undefined, () => { throw new Error('boom'); }]) {
+        const sc = fakeScroller(answer);
+        const { a } = await bootScreens({ over: { createScroll: sc.factory } });
+        await scrollPane(a, '%6', { json: { dir: 'up', pages: 7 } });
+      }
+      // and the real controller, whose capture fails with an error
+      const real = await liveRouter();
+      real.a.deps.mirror.capture = async () => { throw new Error('boom'); };
+      await scrollPane(real.a, '%6', { json: { dir: 'down', pages: 5 } });
+    } finally {
+      Object.assign(console, saved);
+    }
+    assert.ok(lines.some((l) => /POST .*scroll failed/.test(l)), 'the internal error was logged (so the check is real)');
+    assert.deepEqual(lines.filter((l) => /\bdir\b|\bpages\b|"up"|"down"|\b7\b|\b5\b/.test(l.split('\n')[0])), []);
   });
 });
 

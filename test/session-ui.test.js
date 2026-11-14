@@ -4136,7 +4136,7 @@ describe('W3-T3: scroll in the session window (wiring)', () => {
    */
   const rig = ({ pane = '%12', box = { top: 0, height: 400, client: 400 }, body = bodyOf(), replies = [] } = {}) => {
     const clk = clock();
-    const log = { calls: [], problems: [], said: [], kicks: [], lives: [], events: {}, focus: [] };
+    const log = { calls: [], signals: [], problems: [], said: [], kicks: [], lives: [], events: {}, focus: [] };
     const el = (id) => { const e = new El('div'); e.id = id; return e; };
     const term = Object.assign(el('term'), { scrollTop: box.top, scrollHeight: box.height, clientHeight: box.client, scrollLeft: 5 });
     const jump = el('jump-live');
@@ -4148,9 +4148,9 @@ describe('W3-T3: scroll in the session window (wiring)', () => {
     const byId = { term, 'jump-live': jump, 'paused-note': note, composer, 'hist-scroll': el('hist-scroll'), 'fit-probe': probe };
     const ctx = {
       paneId: pane, M: { gone: false, fatal: false, frozen: false, cols: 120, rows: 36, etag: 'ab', timer: 0, body, draft: cleanDraftReal(body?.draft) }, P: { on: false }, FIT: { scale: 1, planner: null },
-      $: (id) => byId[id], call: async (path, opts) => { log.calls.push({ path, ...opts }); return replies.length ? replies.shift() : { status: 200, body: { sent: 1, scrolled: true } }; },
+      $: (id) => byId[id], call: async (path, { signal, ...opts } = {}) => { log.calls.push({ path, ...opts }); log.signals.push(signal); return replies.length ? replies.shift() : { status: 200, body: { sent: 1, scrolled: true } }; },
       showProblem: (m, k, ms) => log.problems.push([m, k, ms]), announce: (m) => log.said.push(m), kickMirror: (ms) => log.kicks.push(ms),
-      setLive: (state, text) => log.lives.push([state, text]), MID: ' - ', TIMES: 'x', h: hReal, icon: iconReal,
+      setLive: (state, text) => log.lives.push([state, text]), MID: ' - ', TIMES: 'x', h: hReal, icon: iconReal, AbortController,
       window: { addEventListener: (type, fn) => { log.events[type] = fn; } }, setTimeout: clk.setTimeout, clearTimeout: clk.clearTimeout, Date: clk.Date,
       createScrollPlanner: createScrollPlannerReal, routeFor: routeForReal, wheelRows: wheelRowsReal, scrollGate: scrollGateReal, viewRowsOf: viewRowsOfReal, pageRowsOf: pageRowsOfReal,
       refusalLine: refusalLineReal, noteView: scrollNoteViewReal, scrolledSay: scrolledSayReal, NOTE_MS: NOTE_MS_REAL, encodeURIComponent,
@@ -4402,6 +4402,47 @@ describe('W3-T3: scroll in the session window (wiring)', () => {
     const none = rig({ pane: null });
     assert.deepEqual(norm(await none.scrollCall({ to: 'bottom' })), { status: 0, body: null });
     assert.deepEqual(r.log.calls.concat(none.log.calls), []);
+  });
+
+  test('(−) a call that never answers is cut off after 10 s (its signal aborts) and settles the planner like a lost request: one line, and the next wheel goes out', async () => {
+    const r = wired();
+    const signals = [];
+    // a fetch that never answers until it is aborted, as the real one behaves
+    r.ctx.call = (path, { signal }) => { signals.push(signal); return new Promise((resolve) => { signal.addEventListener('abort', () => resolve({ status: 0, body: null })); }); };
+    fire(r, 'wheel', wheel());
+    await r.clk.advance(0);
+    assert.equal(signals.length, 1);
+    await r.clk.advance(9999);
+    assert.equal(signals[0].aborted, false, 'still waiting at 9.999 s');
+    assert.deepEqual(norm(r.log.problems), []);
+    fire(r, 'wheel', wheel({ deltaY: 144 * 4 })); // queued behind the call that is still out
+    assert.equal(signals.length, 1, 'one request in flight');
+    await r.clk.advance(1);
+    assert.equal(signals[0].aborted, true, 'cut off at 10 s');
+    assert.deepEqual(norm(r.log.problems), [['nika did not answer.', 'warn', 3000]], 'a failed answer: its fixed line');
+    assert.equal(signals.length, 1, 'what was queued behind a failed answer is dropped');
+    fire(r, 'wheel', wheel());
+    await r.clk.advance(0);
+    assert.equal(signals.length, 2, 'the planner is usable after the limit');
+  });
+
+  test('(+) an answer inside the limit clears the timer: the signal is never aborted afterwards, and the call carries a signal', async () => {
+    const r = wired();
+    fire(r, 'wheel', wheel());
+    await r.clk.advance(0);
+    assert.equal(r.log.signals.length, 1);
+    assert.equal(r.log.signals[0] instanceof AbortSignal, true);
+    await r.clk.advance(60000);
+    assert.equal(r.log.signals[0].aborted, false);
+  });
+
+  test('(−) the limit is an AbortController with a timer, not AbortSignal.timeout (missing in older macOS web views); the signal goes to appFetch through call', () => {
+    const fn = fnOf('function scrollCall(body)');
+    assert.doesNotMatch(fn, /AbortSignal\.timeout/);
+    assert.match(fn, /new AbortController\(\)/);
+    assert.match(fn, /setTimeout\(\(\) => ctl\.abort\(\), 10000\)/);
+    assert.match(fn, /signal: ctl\.signal/);
+    assert.match(fn, /\.finally\(\(\) => clearTimeout\(timer\)\)/);
   });
 
   // -- the corner note and Jump to live

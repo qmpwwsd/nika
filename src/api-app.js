@@ -18,6 +18,7 @@ import { matches as etagMatches } from './mirror.js';
 import { createSessionControl, promptSig, insertShown, editMode, readDraft, checkDraftBody, checkSuggestionBody } from './session-control.js';
 import { tagPane, pickState, claudePane } from './orchestrate.js';
 import { createFit, checkFitBody, FIT_RATE } from './fit.js';
+import { createScroll, checkScrollBody } from './scroll.js';
 import { ID, UPLOAD_CAP, checkUploadBody } from './attachments.js';
 import { createAttachSend, checkAttachBody, logLine } from './attach-send.js';
 import { SIG } from './draft.js';
@@ -101,6 +102,7 @@ async function listTemplates(dir) {
  *                           appCopy { state(), install(), dismiss() } (src/appcopy.js bound to this install);
  *                           createSessionControl, a test seam for the factory in session-control.js;
  *                           createFit, the same for the factory in fit.js;
+ *                           createScroll, the same for the factory in scroll.js;
  *                           attachments, the attachment store (src/attachments.js, built by appio.js: save, lookup, remove, markSent);
  *                           createAttachSend, the same seam for the factory in attach-send.js;
  *                           log(line), where the attachment lines (`nika: attachments: <code>`) go: appio's stderr, the same as the store's (default: process.stderr) }
@@ -210,6 +212,8 @@ export function createAppApi({ secret, ctx, deps }) {
   // spawnAgent reads it from ctx (a window is released before a split lands in it) and appio.js recovers and releases through it.
   const fit = (deps.createFit ?? createFit)({ exec: ctx.exec, tmuxBin: ctx.tmuxBin, now: () => ctx.now(), stateDir: stateDir(ctx.env), lock: control.withPaneLock });
   ctx.fit = fit;
+  // The scroll controller (0.5, W3, ADR 0018): one lock with every other control action, and no key while a Stop/End interrupt runs (keyGap).
+  const scroller = (deps.createScroll ?? createScroll)({ mirror: deps.mirror, keys: deps.keys, lock: control.withPaneLock, keyGap: control.keyGap, now: () => ctx.now() });
   const fitHits = new Map(); // `<METHOD> <pane id>` → timestamps of the fit requests inside the last FIT_WINDOW_MS (PUT and DELETE each have their own bucket)
 
   /**
@@ -589,6 +593,15 @@ export function createAppApi({ secret, ctx, deps }) {
     if (!id) return err(400, 'invalid', 'invalid pane id');
     if (!fitAllowed('DELETE', id)) return err(429, 'busy', `at most ${FIT_RATE} fit requests per second per pane`);
     return fit.release(id);
+  });
+
+  // Scroll (0.5, W3, ADR 0018): Claude's own full-screen view, by a direction and a count or an end, never a key. Order: body 400, pane 404, then the
+  // controller (10 requests/s per pane 429, the lock, the screen checks, the keys). Nothing of the body is logged here or there. App tier only.
+  route('POST', /^\/api\/app\/pane\/([^/]+)\/scroll$/, CAP.small, async ({ params, body }) => {
+    const bad = checkScrollBody(body);
+    if (bad) return bad;
+    const { id, failure } = await eligiblePane(params[0]);
+    return failure ?? scroller.scroll(id, body);
   });
 
   // Attachments (0.5, W2): upload (JSON { name, data }, base64), delete before sending, and the send that pastes the stored paths into Claude's input

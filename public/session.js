@@ -1299,10 +1299,12 @@ const SC = { planner: null, scrolled: false, lastLine: 0 };
 // PgUp/PgDn are one page; Home/End (and Ctrl+Home/Ctrl+End) are the ends of Claude's view. dir: -1 up, 1 down, for the native-first rule.
 const SCROLL_KEYS = new Map([['PageUp', ['page', 'up', -1]], ['PageDown', ['page', 'down', 1]], ['Home', ['jump', 'top', -1]], ['End', ['jump', 'bottom', 1]]]);
 
-/** The scroll route; a window with no pane, or a pane that is gone, has none. */
+/** The scroll route; a window with no pane, or a pane that is gone, has none. A call that does not answer within 10 s is cut off and settles as a lost request (status 0), so the planner is never stuck waiting. */
 function scrollCall(body) {
   if (!paneId || M.gone) return Promise.resolve({ status: 0, body: null });
-  return call(`/api/app/pane/${encodeURIComponent(paneId)}/scroll`, { method: 'POST', json: body });
+  const ctl = new AbortController(); // AbortSignal.timeout() is missing in older macOS web views (project.js does the same)
+  const timer = setTimeout(() => ctl.abort(), 10000);
+  return call(`/api/app/pane/${encodeURIComponent(paneId)}/scroll`, { method: 'POST', json: body, signal: ctl.signal }).finally(() => clearTimeout(timer));
 }
 
 /** Jump to live and the corner note follow nika's own Paused (M.frozen) and Claude's scrolled-up view (SC.scrolled): each state its own colour (data-k), icon and words. */
