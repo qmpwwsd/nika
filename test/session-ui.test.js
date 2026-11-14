@@ -11,7 +11,8 @@ import { KEY_NAME } from '../src/ids.js';
 import { moveActive as moveActiveReal, cleanCommands as cleanCommandsReal, paletteQuery as paletteQueryReal, shouldFetch as shouldFetchReal } from '../public/palette.js';
 import { wantsHelp, wantsBack, wantsHistToggle, isTextEntry, backHint, helpHint, histHint, passKeyLabel, wireWindowKeys as wireWindowKeysReal } from '../public/shortcuts.js';
 import { quickState as quickStateReal, sendGate as sendGateReal, keysRefusal as keysRefusalReal, stopOutcome as stopOutcomeReal, commandSaid as commandSaidReal, commandFailure as commandFailureReal, problemKind as problemKindReal, followSession as followSessionReal, planShell as planShellReal, cleanPrompt as cleanPromptReal, hasAnswerButtons as hasAnswerButtonsReal, attnNote as attnNoteReal, answerOutcome as answerOutcomeReal, promptOff as promptOffReal, composerKey as composerKeyReal } from '../public/quick-actions.js';
-import { planSend as planSendReal, arrowEcho as arrowEchoReal, keyForEvent as keyForEventReal, planPaste as planPasteReal } from '../public/mirror-render.js';
+import { planSend as planSendReal, arrowEcho as arrowEchoReal, keyForEvent as keyForEventReal, planPaste as planPasteReal, toRenderModel as toRenderModelReal, cutCursor as cutCursorReal } from '../public/mirror-render.js';
+import { draftSendPlan as draftSendPlanReal, cleanDraft as cleanDraftReal, cutAt as cutAtReal, caretAfter as caretAfterReal, noteView as noteViewReal } from '../public/draft-sync.js';
 import { switchFailure as switchFailureReal, MODE_TARGETS, MODE_META } from '../public/modes.js';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
@@ -20,7 +21,7 @@ const HTML = read('session.html');
 const JS = {
   'session.js': read('session.js'), 'mirror-render.js': read('mirror-render.js'), 'modes.js': read('modes.js'),
   'quick-actions.js': read('quick-actions.js'), 'models-ui.js': read('models-ui.js'), 'end-dialog.js': read('end-dialog.js'),
-  'palette.js': read('palette.js'), 'shortcuts.js': read('shortcuts.js'),
+  'palette.js': read('palette.js'), 'shortcuts.js': read('shortcuts.js'), 'draft-sync.js': read('draft-sync.js'),
 };
 const TOKENS = read('tokens.css');
 const CSS = read('session.css');
@@ -141,7 +142,7 @@ describe('session.html under the strict CSP', () => {
 describe('contracts with the other UI modules', () => {
   test('(+) session.js imports only names the shared modules export, from sibling files', () => {
     const imports = [...JS['session.js'].matchAll(/import \{([^}]+)\} from '([^']+)'/g)];
-    assert.deepEqual(imports.map((m) => m[2]), ['./dom.js', './api.js', './dash-model.js', './mirror-render.js', './modes.js', './quick-actions.js', './models-ui.js', './end-dialog.js', './palette.js', './shortcuts.js']);
+    assert.deepEqual(imports.map((m) => m[2]), ['./dom.js', './api.js', './dash-model.js', './mirror-render.js', './draft-sync.js', './modes.js', './quick-actions.js', './models-ui.js', './end-dialog.js', './palette.js', './shortcuts.js']);
     for (const [, names, from] of imports) {
       const exported = read(from.slice(2));
       for (const n of names.split(',').map((x) => x.trim())) assert.match(exported, new RegExp(`export (async )?(function|const|let) ${n}\\b`), `${from} exports ${n}`);
@@ -1278,6 +1279,7 @@ describe('Task 14b: wiring of the page rules', () => {
       sending: false, composer: () => ta, S: { on: shell }, W: { promptOpen, prompt, pane }, A: { kind }, sendGate: sendGateReal, hasAnswerButtons: hasAnswerButtonsReal, planShell: planShellReal, planSend: planSendReal,
       showProblem: (m, k) => log.problems.push([m, k]), enqueueSeq: async (p) => { log.sent.push(p); return { ok: true }; }, $: () => el(), say: (m) => log.said.push(m),
       paneId: '%12', setShell: () => { log.shellOff += 1; }, grow() {}, updateChip() {},
+      DS: { screen: () => null, beginSend() {}, endSend() {}, sent() {} }, draftSendPlan: draftSendPlanReal, M: { cols: 120 },
     };
     return { log, ta, send: mk(['async function sendComposer()'], ctx).sendComposer };
   };
@@ -2017,7 +2019,7 @@ describe('0.3.3: arrow keys from an empty message box are batched (spec 4.2)', (
     const run = (on, { disabled = false, was = false } = {}) => {
       const log = [];
       const el = () => ({ classList: { toggle() {} }, setAttribute() {}, focus() {}, textContent: '', hidden: false });
-      const ctx = { P: { on: was }, paneId: '%12', M: { gone: false }, composer: () => ({ disabled, focus() {} }), flushPass: () => log.push('flush'), $: el, announce() {}, A: { name: 'n' }, endArrows: () => log.push('end') };
+      const ctx = { P: { on: was }, paneId: '%12', M: { gone: false }, composer: () => ({ disabled, focus() {} }), flushPass: () => log.push('flush'), $: el, announce() {}, A: { name: 'n' }, endArrows: () => log.push('end'), drawMirror() {} };
       vm.runInNewContext(`${fnOf('function setPass(on, keepFocus = false)')}; setPass`, ctx)(on);
       return log;
     };
@@ -2593,5 +2595,422 @@ describe('F2: Type into pane keys (wirePassthrough), copy, and the window keys',
       if (prevDoc === undefined) delete globalThis.document;
       else globalThis.document = prevDoc;
     }
+  });
+});
+
+// ---- 0.5: draft sync (W5) and the cut (W6) ---------------------------------------------------------------------------------------
+// The functions of session.js run for real in a vm against stubs; the pure rules (public/draft-sync.js) are the real ones.
+
+describe('0.5: the cut and the draft note (markup and stylesheet)', () => {
+  const css = strip(CSS);
+  const tag = (id) => new RegExp(`<[a-z]+\\b[^>]*\\bid="${id}"[^>]*>`).exec(HTML)?.[0] ?? '';
+
+  test('(+) the strip is one hidden, aria-hidden row at the end of the mirror, with the keyboard icon and its words', () => {
+    const t = tag('term-cut');
+    assert.match(t, /\bclass="tl cut"/);
+    assert.match(t, /\bhidden\b/);
+    assert.match(t, /\baria-hidden="true"/);
+    const block = /<div class="tl cut"[\s\S]*?<\/div>/.exec(HTML)?.[0] ?? '';
+    assert.match(block, /<use href="#i-kbd"\/>/);
+    assert.match(block, /Input box &middot; mirrored in the message box below/);
+    const term = HTML.slice(HTML.indexOf('<div class="term"'), HTML.indexOf('<span class="paused-note"'));
+    assert.ok(term.indexOf('id="term-rows"') < term.indexOf('id="term-cut"'), 'after the rows');
+    assert.doesNotMatch(block, /tabindex|<button|<a /, 'not focusable');
+  });
+
+  test('(+) the draft note is a polite status line in the notes row, before the problem line, hidden until a state shows; the box points at it', () => {
+    const t = tag('draft-note');
+    assert.match(t, /\bclass="dnote"/);
+    assert.match(t, /\brole="status"/);
+    assert.match(t, /\bhidden\b/);
+    assert.ok(HTML.indexOf('id="notes"') < HTML.indexOf('id="draft-note"') && HTML.indexOf('id="draft-note"') < HTML.indexOf('id="problem"'));
+    assert.match(tag('composer'), /\baria-describedby="draft-note"/);
+  });
+
+  test('(+) the sprite draws the two new note icons', () => {
+    for (const n of ['i-pause', 'i-clock', 'i-kbd', 'i-info']) assert.match(HTML, new RegExp(`<symbol id="${n}"`), n);
+  });
+
+  test('(+) the strip is muted terminal ink on its own row; each note kind has its own colour (paused, long, wait) and a bold word', () => {
+    assert.match(css, /\.tl\.cut\s*\{[^}]*display:\s*flex[^}]*color:\s*var\(--a8\)/);
+    for (const k of ['paused', 'long', 'wait']) assert.match(css, new RegExp(`\\.dnote\\[data-k="${k}"\\]\\s*\\{[^}]*color:\\s*var\\(--[a-z-]+\\)`), k);
+    const colours = ['paused', 'long', 'wait'].map((k) => new RegExp(`\\.dnote\\[data-k="${k}"\\]\\s*\\{[^}]*color:\\s*(var\\(--[a-z-]+\\))`).exec(css)[1]);
+    assert.equal(new Set(colours).size, 3, `three kinds, three colours: ${colours}`);
+    assert.match(css, /\.dnote\s*\{[^}]*display:\s*inline-flex/);
+    assert.match(css, /\.dnote b\s*\{[^}]*font-weight:\s*(600|700)/);
+  });
+
+  test('(−) no inline style anywhere for the new parts, and the new files stay out of the sinks', () => {
+    assert.doesNotMatch(HTML, /\sstyle\s*=/i);
+    assert.deepEqual(findSinks(JS['draft-sync.js']), []);
+  });
+});
+
+describe('0.5: drawing the mirror with the cut (design W6, section 5)', () => {
+  const SRC = code(JS['session.js']);
+  const fnOf = (head) => {
+    const at = SRC.indexOf(head);
+    assert.ok(at >= 0, head);
+    return SRC.slice(at, SRC.indexOf('\n}\n', at) + 2);
+  };
+  const row = (t) => [{ t, s: {} }];
+  const BODY = { cols: 120, rows: Array.from({ length: 12 }, (_, i) => row(`row ${i}`)), cursor: { x: 2, y: 10, visible: true } };
+  const BOX = { top: 8, bottom: 11 };
+  const readable = (state = 'text') => ({ state, mode: 'prompt', text: state === 'text' ? 'hello' : '', sig: '0000000000000001', box: BOX, cursorAtEnd: true, suggestion: null });
+  const unreadable = { state: 'unreadable', mode: 'prompt', text: '', sig: null, reason: 'pasted', box: BOX, cursorAtEnd: false, suggestion: null };
+
+  const draw = ({ body = BODY, draft, pass = false }) => {
+    const out = { calls: [], strip: { hidden: true } };
+    const ctx = {
+      M: { body, draft }, P: { on: pass }, cutAt: cutAtReal, cutCursor: cutCursorReal, toRenderModel: toRenderModelReal,
+      applyMirror: (container, model, cursor) => out.calls.push({ container, rows: model.length, last: model.at(-1)?.[0]?.text, cursor }),
+      $: (id) => (id === 'term-cut' ? out.strip : id),
+    };
+    vm.runInNewContext(`${fnOf('function drawMirror()')}; drawMirror`, ctx)();
+    return { ...out, call: out.calls[0] };
+  };
+
+  test('(+) a readable draft with Type into pane off: the rows above the input box, no cursor, the strip shown', () => {
+    for (const state of ['text', 'empty']) {
+      const r = draw({ draft: readable(state) });
+      assert.equal(r.calls.length, 1);
+      assert.equal(r.call.container, 'term-rows');
+      assert.equal(r.call.rows, 8, state);
+      assert.equal(r.call.last, 'row 7');
+      assert.equal(r.call.cursor, null, 'the cursor sat in the hidden box');
+      assert.equal(r.strip.hidden, false, state);
+    }
+  });
+
+  test('(−) an unreadable draft: every row, the cursor, no strip (the user must see what Enter would send)', () => {
+    const r = draw({ draft: unreadable });
+    assert.equal(r.call.rows, 12);
+    assert.deepEqual(norm(r.call.cursor), BODY.cursor);
+    assert.equal(r.strip.hidden, true);
+  });
+
+  test('(−) no plain box (a prompt, a dialog): every row, no strip', () => {
+    const r = draw({ draft: null });
+    assert.equal(r.call.rows, 12);
+    assert.equal(r.strip.hidden, true);
+  });
+
+  test('(−) Type into pane on: every row and the cursor, no strip (the user types into the real box)', () => {
+    const r = draw({ draft: readable(), pass: true });
+    assert.equal(r.call.rows, 12);
+    assert.deepEqual(norm(r.call.cursor), BODY.cursor);
+    assert.equal(r.strip.hidden, true);
+  });
+
+  test('(−) a capture without a draft field (an older server): every row, no strip', () => {
+    const r = draw({ draft: cleanDraftReal(undefined) });
+    assert.equal(r.call.rows, 12);
+    assert.equal(r.strip.hidden, true);
+  });
+
+  test('(−) before the first capture there is nothing to draw', () => {
+    const r = draw({ body: null, draft: null });
+    assert.equal(r.calls.length, 0);
+  });
+
+  test('(+) the cut follows the state at every draw: unreadable, then readable, then Type into pane', () => {
+    const states = [[unreadable, false, 12, true], [readable(), false, 8, false], [readable(), true, 12, true], [readable(), false, 8, false]];
+    for (const [draft, pass, rows, hidden] of states) {
+      const r = draw({ draft, pass });
+      assert.deepEqual([r.call.rows, r.strip.hidden], [rows, hidden]);
+    }
+  });
+
+  test('(+) setPass draws again, so the strip appears and goes the moment Type into pane flips, not at the next capture', () => {
+    const src = fnOf('function setPass(on, keepFocus = false)');
+    assert.match(src, /P\.on = on;[\s\S]*drawMirror\(\);/);
+  });
+
+  test('(+) handleCapture keeps the body and its cleaned draft, draws through drawMirror, then tells the sync', () => {
+    const log = [];
+    const ctx = {
+      recovered() {}, noteScreen() {}, $: () => ({ style: {}, scrollTop: 0, scrollHeight: 9 }), M: { frozen: false, scrollTop: 0 }, setLive() {}, MID: ' - ', TIMES: 'x', ETAG: /^[0-9a-f]{1,64}$/,
+      cleanDraft: cleanDraftReal, DS: { capture: (d, cols) => log.push(['capture', d, cols]) }, drawMirror: () => log.push(['draw']),
+      setGone() {}, serverMessage: () => '', setPaneState() {}, setInputEnabled() {}, showOverlay() {},
+    };
+    const body = { ...BODY, draft: readable(), etag: 'ab12' };
+    vm.runInNewContext(`${fnOf('function handleCapture(r)')}; handleCapture`, ctx)({ status: 200, body });
+    assert.deepEqual(norm(log), [['draw'], ['capture', readable(), 120]].map(norm), 'the rows first: a sync can never delay the mirror');
+    assert.equal(ctx.M.body, body);
+    assert.deepEqual(norm(ctx.M.draft), readable());
+  });
+
+  test('(−) a sync that throws never takes the mirror down: the rows are drawn and the error is not thrown', () => {
+    const drew = [];
+    const ctx = {
+      recovered() {}, noteScreen() {}, $: () => ({ style: {}, scrollTop: 0, scrollHeight: 9 }), M: { frozen: false }, setLive() {}, MID: ' - ', TIMES: 'x', ETAG: /^[0-9a-f]{1,64}$/,
+      cleanDraft: cleanDraftReal, DS: { capture: () => { throw new Error('boom'); } }, drawMirror: () => drew.push(1),
+    };
+    assert.doesNotThrow(() => vm.runInNewContext(`${fnOf('function handleCapture(r)')}; handleCapture`, ctx)({ status: 200, body: { ...BODY, draft: readable() } }));
+    assert.equal(drew.length, 1);
+  });
+});
+
+function norm(v) { return JSON.parse(JSON.stringify(v ?? null)); } // objects built inside a vm have another Object.prototype
+
+describe('0.5: the note, the pull and the edits (wiring)', () => {
+  const SRC = code(JS['session.js']);
+  const fnOf = (head) => {
+    const at = SRC.indexOf(head);
+    assert.ok(at >= 0, head);
+    return SRC.slice(at, SRC.indexOf('\n}\n', at) + 2);
+  };
+  const mk = (names, ctx) => vm.runInNewContext(`${names.map(fnOf).join('\n')}; ({ ${names.map((n) => n.replace(/^(async )?function /, '').replace(/\(.*$/, '')).join(', ')} })`, ctx);
+  const h = (tag, attrs, ...kids) => ({ tag, text: attrs?.text, kids: kids.flat(Infinity).filter((k) => k !== null && k !== undefined && k !== false) });
+
+  const noteRig = () => {
+    const el = { hidden: true, attrs: {}, kids: [], setAttribute(k, v) { this.attrs[k] = v; }, removeAttribute(k) { delete this.attrs[k]; }, replaceChildren(...k) { this.kids = k; } };
+    const api = mk(['function renderDraftNote(view)'], { $: () => el, icon: (n) => ({ icon: n }), h });
+    return { el, ...api };
+  };
+
+  test('(+) renderDraftNote draws icon + bold word + text through the element builder, and the kind drives the colour', () => {
+    const r = noteRig();
+    r.renderDraftNote(noteViewReal({ kind: 'paused', reason: 'pasted' }));
+    assert.equal(r.el.hidden, false);
+    assert.equal(r.el.attrs['data-k'], 'paused');
+    assert.deepEqual(norm(r.el.kids[0]), { icon: 'pause' });
+    assert.equal(r.el.kids[1].text, 'Sync paused:');
+    assert.equal(r.el.kids[2].text, " Claude's input holds a pasted block nika can't read back. Edit or clear it in the terminal.");
+  });
+
+  test('(−) no note hides the line, empties it and drops the kind (the live region has nothing left to read)', () => {
+    const r = noteRig();
+    r.renderDraftNote(noteViewReal({ kind: 'long' }));
+    r.renderDraftNote(null);
+    assert.equal(r.el.hidden, true);
+    assert.equal(r.el.attrs['data-k'], undefined);
+    assert.deepEqual(r.el.kids, []);
+  });
+
+  test('(+) the page hands the sync its box, a PUT to the draft route, the clock, the note and the gone state', () => {
+    const src = fnOf('const DS = createDraftSync({').length ? SRC.slice(SRC.indexOf('const DS = createDraftSync({'), SRC.indexOf('});', SRC.indexOf('const DS = createDraftSync({')) + 3) : '';
+    assert.match(src, /box: \(\) => \(\{ value: composer\(\)\.value, shell: S\.on \}\)/);
+    assert.match(src, /put: \(body\) => call\(`\/api\/app\/pane\/\$\{encodeURIComponent\(paneId\)\}\/draft`, \{ method: 'PUT', json: body \}\)/);
+    assert.match(src, /setBox: pullIntoBox/);
+    assert.match(src, /note: renderDraftNote/);
+    assert.match(src, /gone: setGone/);
+    assert.match(src, /now: \(\) => Date\.now\(\)/);
+  });
+
+  const pullRig = ({ value = 'old', caret = 3, focused = true } = {}) => {
+    const log = [];
+    const ta = {
+      value, selectionStart: caret, setSelectionRange: (a, b) => log.push(['caret', a, b]),
+    };
+    const doc = { activeElement: focused ? ta : null };
+    const api = mk(['function pullIntoBox(value, shell)'], {
+      composer: () => ta, document: doc, caretAfter: caretAfterReal, setShell: (on) => log.push(['shell', on]), grow: () => log.push(['grow']),
+      updateChip: () => log.push(['chip']), closePalette: () => log.push(['palette']),
+    });
+    return { log, ta, ...api };
+  };
+
+  test('(+) pullIntoBox sets the text and Shell, resizes, refreshes the chip and keeps the caret at the end of text that grew', () => {
+    const r = pullRig({ value: 'fix the', caret: 7 });
+    r.pullIntoBox('fix the typo', false);
+    assert.equal(r.ta.value, 'fix the typo');
+    assert.deepEqual(r.log, [['caret', 12, 12], ['shell', false], ['grow'], ['chip']]);
+  });
+
+  test('(+) pullIntoBox turns Shell on for a ! draft', () => {
+    const r = pullRig({ value: '', caret: 0 });
+    r.pullIntoBox('ls -la', true);
+    assert.deepEqual(r.log.filter(([k]) => k === 'shell'), [['shell', true]]);
+  });
+
+  test('(−) a pull never moves focus or the caret of a box that is not focused, and closes a palette the text opened', () => {
+    const r = pullRig({ focused: false });
+    r.pullIntoBox('/com', false);
+    assert.equal(r.log.some(([k]) => k === 'caret'), false);
+    assert.deepEqual(r.log.at(-1), ['palette']);
+    assert.doesNotMatch(fnOf('function pullIntoBox(value, shell)'), /\.focus\(/);
+  });
+
+  test('(−) a pull is not an edit: the function never calls DS.edited', () => {
+    assert.doesNotMatch(fnOf('function pullIntoBox(value, shell)'), /DS\./);
+  });
+
+  test('(+) every user edit of the box tells the sync: typing, composing, Clear, the Commands button, the palette insert and the Shell toggle', () => {
+    const wire = fnOf('function wireComposer()');
+    assert.match(wire, /addEventListener\('input', \(\) => \{ grow\(\); updateChip\(\); DS\.edited\(\); \}\)/);
+    assert.match(wire, /addEventListener\('compositionstart', \(\) => DS\.composition\(true\)\)/);
+    assert.match(wire, /addEventListener\('compositionend', \(\) => DS\.composition\(false\)\)/);
+    assert.match(wire, /\$\('paste-clear'\)\.addEventListener\('click', \(\) => \{[^}]*DS\.edited\(\);/);
+    assert.match(wire, /\$\('shell-toggle'\)\.addEventListener\('click', \(\) => \{ setShell\(!S\.on\); DS\.edited\(\); \}\)/);
+    assert.match(fnOf('function wirePalette()'), /ta\.value = '\/';[\s\S]*DS\.edited\(\);/);
+    assert.match(fnOf('function insertActive()'), /ta\.value = ins\.text;[\s\S]*DS\.edited\(\);/);
+  });
+
+  test('(+) the listeners run for real: an input event is an edit, composition is told, nothing else is', () => {
+    const calls = [];
+    const listeners = {};
+    const el = (id) => ({ addEventListener(type, f) { listeners[`${id}:${type}`] = f; }, focus() {} });
+    const ta = { ...el('composer'), value: '', selectionStart: 0, selectionEnd: 0 };
+    const ctx = {
+      composer: () => ta, $: el, grow: () => calls.push('grow'), updateChip: () => calls.push('chip'), wirePalette() {}, endArrows() {}, sendComposer() {}, setShell: (on) => calls.push(`shell ${on}`), S: { on: false },
+      DS: { edited: () => calls.push('edited'), composition: (on) => calls.push(`composition ${on}`) },
+    };
+    vm.runInNewContext(`${fnOf('function wireComposer()')}; wireComposer`, ctx)();
+    listeners['composer:input']();
+    listeners['composer:compositionstart']();
+    listeners['composer:compositionend']();
+    listeners['shell-toggle:click']();
+    listeners['paste-clear:click']();
+    assert.deepEqual(calls, ['grow', 'chip', 'edited', 'composition true', 'composition false', 'shell true', 'edited', 'grow', 'chip', 'edited']);
+  });
+
+  test('(+) a lost connection ends with a retry that follows the first-capture rule; a gone pane stops the sync', () => {
+    assert.match(fnOf('function setGone()'), /DS\.stop\(\);/);
+    assert.match(SRC, /\$\('over-retry'\)\.addEventListener\('click', \(\) => \{[\s\S]*?DS\.reset\(\);/);
+    const reset = [];
+    const ctx = { M: { errors: 2 }, hideOverlay() {}, W: { got: true, pane: 'ok' }, setPaneState() {}, DS: { reset: () => reset.push(1) } };
+    vm.runInNewContext(`${fnOf('function recovered()')}; recovered`, ctx)();
+    assert.equal(reset.length, 1, 'tmux was failing and answers again');
+    ctx.M.errors = 0;
+    vm.runInNewContext(`${fnOf('function recovered()')}; recovered`, ctx)();
+    assert.equal(reset.length, 1, 'a healthy connection is not reset at every capture');
+  });
+});
+
+describe('0.5: Send with the synced box (design W5, section 4)', () => {
+  const SRC = code(JS['session.js']);
+  const fnOf = (head) => {
+    const at = SRC.indexOf(head);
+    assert.ok(at >= 0, head);
+    return SRC.slice(at, SRC.indexOf('\n}\n', at) + 2);
+  };
+  const mk = (names, ctx) => vm.runInNewContext(`${names.map(fnOf).join('\n')}; ({ ${names.map((n) => n.replace(/^(async )?function /, '').replace(/\(.*$/, '')).join(', ')} })`, ctx);
+  const BOX = { top: 30, bottom: 32 };
+  const D = (state, text = '', over = {}) => ({ state, mode: 'prompt', text, sig: '0000000000000001', box: BOX, cursorAtEnd: true, suggestion: null, ...over });
+  const UNREADABLE = { state: 'unreadable', mode: 'prompt', text: '', sig: null, reason: 'pasted', box: BOX, cursorAtEnd: false, suggestion: null };
+  const GATE = 'Answer the prompt with the buttons above or in the terminal.';
+
+  /** sendComposer for real, with the real plans (draftSendPlan, planSend, planShell, sendGate) and a fake sync. `pushAnswer`: what DS.send answers. */
+  const rig = ({ value, screen, shell = false, promptOpen = false, pushAnswer = { ok: true } } = {}) => {
+    const log = { order: [], problems: [], said: [], payloads: [], pushed: [], shellOff: 0 };
+    const ta = { value, disabled: false };
+    const ctx = {
+      sending: false, composer: () => ta, S: { on: shell }, W: { promptOpen, prompt: null, pane: 'ok' }, A: { kind: 'idle' }, M: { cols: 120 },
+      sendGate: sendGateReal, hasAnswerButtons: hasAnswerButtonsReal, planShell: planShellReal, planSend: planSendReal, draftSendPlan: draftSendPlanReal,
+      showProblem: (m, k) => log.problems.push([m, k]), $: () => ({ setAttribute() {}, removeAttribute() {} }), say: (m) => log.said.push(m), paneId: '%12',
+      setShell: () => { log.shellOff += 1; }, grow() {}, updateChip() {},
+      DS: {
+        screen: () => screen,
+        beginSend: () => log.order.push('begin'), endSend: () => log.order.push('end'), sent: () => log.order.push('sent'),
+        send: async (text) => { log.order.push('push'); log.pushed.push(text); return pushAnswer; },
+      },
+      enqueueJob: (run) => run(),
+      enqueueSeq: async (p) => { log.order.push('keys'); log.payloads.push(norm(p)); return { ok: true }; },
+      deliver: async (p) => { log.order.push('keys'); log.payloads.push([norm(p)]); return { ok: true }; },
+    };
+    return { log, ta, send: mk(['async function sendComposer()', 'async function pushThenEnter(route)'], ctx).sendComposer };
+  };
+  const ENTER = [[{ keys: ['Enter'] }]];
+
+  test('(+) row 1: the screen equals the box: Enter alone, no push, no text, then the box is cleared and the sync told', async () => {
+    const r = rig({ value: 'fix the typo', screen: D('text', 'fix the typo') });
+    await r.send();
+    assert.deepEqual(r.log.payloads, ENTER);
+    assert.deepEqual(r.log.pushed, []);
+    assert.deepEqual(r.log.order, ['begin', 'keys', 'sent', 'end']);
+    assert.deepEqual(r.log.said, ['Sent Enter to %12']);
+    assert.equal(r.ta.value, '');
+  });
+
+  test('(+) row 1, Shell: the screen equals "!" + the box: Enter alone with no C-u and no text; Shell turns itself off after', async () => {
+    const r = rig({ value: 'ls -la', shell: true, screen: D('text', 'ls -la', { mode: 'bash' }) });
+    await r.send();
+    assert.deepEqual(r.log.payloads, ENTER);
+    assert.equal(r.log.shellOff, 1);
+  });
+
+  test('(+) row 2: an empty box sends Enter, whatever the screen holds', async () => {
+    for (const screen of [D('empty'), D('text', 'typed in the terminal'), UNREADABLE, null]) {
+      const r = rig({ value: '', screen });
+      await r.send();
+      assert.deepEqual(r.log.payloads, ENTER);
+      assert.deepEqual(r.log.pushed, []);
+    }
+  });
+
+  test('(+) row 3: text the screen does not hold is pushed first and Enter follows; nothing else goes out', async () => {
+    const r = rig({ value: 'fix the typo in acme-api', screen: D('text', 'fix the') });
+    await r.send();
+    assert.deepEqual(r.log.pushed, ['fix the typo in acme-api']);
+    assert.deepEqual(r.log.payloads, ENTER);
+    assert.deepEqual(r.log.order, ['begin', 'push', 'keys', 'sent', 'end'], 'the push comes before the Enter');
+    assert.deepEqual(r.log.said, ['Sent 24 characters + Enter to %12']);
+    assert.equal(r.ta.value, '');
+  });
+
+  test('(+) row 3, Shell: "!" + the text is pushed, then Enter', async () => {
+    const r = rig({ value: 'ls -la', shell: true, screen: D('empty') });
+    await r.send();
+    assert.deepEqual(r.log.pushed, ['!ls -la']);
+    assert.deepEqual(r.log.payloads, ENTER);
+  });
+
+  test('(−) row 3: a push that does not land sends no Enter, shows its line, keeps the text and Shell, and lets the sync go on', async () => {
+    const message = "Claude's input changed while nika was copying your text. nika shows what it holds now. Nothing was sent.";
+    const r = rig({ value: 'mine', shell: true, screen: D('text', 'theirs'), pushAnswer: { ok: false, message } });
+    await r.send();
+    assert.deepEqual(r.log.payloads, []);
+    assert.deepEqual(r.log.problems, [[message, 'error']]);
+    assert.equal(r.ta.value, 'mine');
+    assert.equal(r.log.shellOff, 0);
+    assert.deepEqual(r.log.order, ['begin', 'push', 'end'], 'the sync is released and was not told "sent"');
+  });
+
+  test('(+) row 4: a long text onto an empty prompt goes as today\'s paste + Enter', async () => {
+    const r = rig({ value: 'y'.repeat(2000), screen: D('empty') });
+    await r.send();
+    assert.equal(r.log.payloads.length, 1);
+    assert.equal(Object.hasOwn(r.log.payloads[0][0], 'paste') || Object.hasOwn(r.log.payloads[0][0], 'text'), true);
+    assert.deepEqual(r.log.pushed, []);
+  });
+
+  test('(−) row 5 and 6: refusals send nothing, show the fixed line as an error, keep the text, and never begin a send', async () => {
+    const long = rig({ value: 'y'.repeat(2000), screen: D('text', 'something else') });
+    await long.send();
+    assert.deepEqual(long.log.problems, [["Claude's input already holds text; it would be sent together with yours. Clear it in the terminal or shorten your message.", 'error']]);
+    const paused = rig({ value: 'fix', screen: UNREADABLE });
+    await paused.send();
+    assert.deepEqual(paused.log.problems, [["Claude's input holds a pasted block nika can't read back. Send or clear it in the terminal.", 'error']]);
+    for (const r of [long, paused]) {
+      assert.deepEqual(r.log.payloads, []);
+      assert.deepEqual(r.log.order, []);
+      assert.equal(r.ta.value.length > 0, true);
+    }
+  });
+
+  test('(+) row 7: no readable box is today\'s path, including Shell\'s C-u, text, Enter', async () => {
+    const line = rig({ value: 'hello', screen: null });
+    await line.send();
+    assert.deepEqual(line.log.payloads, [[{ text: 'hello', keys: ['Enter'] }]]);
+    const shell = rig({ value: 'ls', shell: true, screen: null });
+    await shell.send();
+    assert.deepEqual(shell.log.payloads, [[{ keys: ['C-u'] }, { text: '!ls' }, { keys: ['Enter'] }]]);
+  });
+
+  test('(−) a permission prompt still gates every row first: nothing is pushed or sent, and no send begins', async () => {
+    const r = rig({ value: 'fix the typo', screen: D('text', 'fix the typo'), promptOpen: true });
+    await r.send();
+    assert.deepEqual(r.log.problems, [[GATE === r.log.problems[0][0] ? GATE : r.log.problems[0][0], 'error']]);
+    assert.deepEqual(r.log.order, []);
+    assert.deepEqual(r.log.payloads, []);
+  });
+
+  test('(+) the push and its Enter are one job in the keys chain, so arrows queued before it go first', () => {
+    const src = fnOf('async function sendComposer()');
+    assert.match(src, /route\.act === 'push' \? enqueueJob\(\(\) => pushThenEnter\(route\)\)/);
+    assert.match(fnOf('function enqueueJob(run)'), /chain\.then\(run\)/);
+    assert.match(fnOf('function enqueueSeq(payloads)'), /enqueueJob\(/);
+    assert.match(fnOf('async function pushThenEnter(route)'), /await DS\.send\(route\.text\)[\s\S]*deliver\(\{ keys: \['Enter'\] \}\)/);
   });
 });

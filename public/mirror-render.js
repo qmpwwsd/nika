@@ -74,10 +74,20 @@ function rowModel(row) {
   return out;
 }
 
-/** capture body -> rows (array of span models), at most LIMITS.rows rows. Cursor is added separately by withCursor. */
-export function toRenderModel(capture) {
+/**
+ * capture body -> rows (array of span models), at most LIMITS.rows rows. Cursor is added separately by withCursor.
+ * `cutAt` (0.5, draft sync): the first row to leave out, the input box's top rule, so Claude's input box is not drawn while the
+ * message box mirrors it. A value that is not a row of this capture (not an integer, negative, past the end) cuts nothing.
+ */
+export function toRenderModel(capture, { cutAt } = {}) {
   const rows = Array.isArray(capture?.rows) ? capture.rows.slice(0, LIMITS.rows) : [];
-  return rows.map(rowModel);
+  const n = Number.isInteger(cutAt) && cutAt >= 0 && cutAt < rows.length ? cutAt : rows.length;
+  return rows.slice(0, n).map(rowModel);
+}
+
+/** The cursor to draw under a cut: one on or below the cut row sat in the hidden box, so it is dropped (withCursor would pad blank rows for it). */
+export function cutCursor(cursor, cutAt) {
+  return Number.isInteger(cutAt) && Number.isInteger(cursor?.y) && cursor.y >= cutAt ? null : cursor;
 }
 
 /** Terminal cells a code point occupies (wcwidth approximation: combining 0, CJK and emoji 2, else 1). */

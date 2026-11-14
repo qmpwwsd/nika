@@ -1,13 +1,15 @@
 // nika session window (app tier): transcript history + live terminal mirror + input composer for one agent, with the permission
 // mode switcher, the quick actions (Stop, Compact, Clear, Model, Rewind, End), the permission-prompt buttons, Shell mode and the
-// slash-command palette.
+// slash-command palette. The message box and Claude's input box mirror each other (draft-sync.js, design W5), and the mirror leaves
+// Claude's input box out while the message box carries it (W6).
 // URL: session.html?session=<UUID>&pane=<%n>&project=<key>   (pane is sent as %25n, i.e. encodeURIComponent('%n')).
 // Rules: every string from the server is rendered with textContent (h() from dom.js, applyMirror from mirror-render.js);
 // no innerHTML, no inline handlers, element.style only for numbers this file computes. Contracts: docs/contracts/api-app.md.
 import { h, icon, roleTagEl, ctxEl } from './dom.js';
 import { isApp, appFetch, getJSON, applyTheme, windowCommand } from './api.js';
 import { roleTag, savedPick } from './dash-model.js';
-import { toRenderModel, applyMirror, planSend, planPaste, chunkText, keyForEvent, KEY_LABEL, arrowEcho } from './mirror-render.js';
+import { toRenderModel, cutCursor, applyMirror, planSend, planPaste, chunkText, keyForEvent, KEY_LABEL, arrowEcho } from './mirror-render.js';
+import { createDraftSync, cleanDraft, cutAt, caretAfter, draftSendPlan } from './draft-sync.js';
 import { MODE_META, MODE_TARGETS, modeKey, modeEl, bypassTag, switcherState, modeNote, switchFailure } from './modes.js';
 import {
   quickState, cleanPrompt, answerOutcome, escOutcome, promptOff, promptNote, commandFailure, commandSaid, problemKind, planShell, sendGate, keysRefusal, stopOutcome, followSession,
@@ -1025,7 +1027,7 @@ function startHistoryPoll() {
 
 // ---- terminal mirror ---------------------------------------------------------------------------------------------
 
-const M = { etag: null, timer: 0, busy: false, gone: false, frozen: false, errors: 0, cols: 0, rows: 0, fatal: false, inputOff: false, sent: 0, waiters: [] };
+const M = { etag: null, timer: 0, busy: false, gone: false, frozen: false, errors: 0, cols: 0, rows: 0, fatal: false, inputOff: false, sent: 0, waiters: [], body: null, draft: null };
 
 function setLive(state, text) {
   $('term-head').dataset.s = state;
@@ -1062,6 +1064,7 @@ function setInputEnabled(on, why) {
 function setGone() {
   M.gone = true;
   clearTimeout(M.timer);
+  DS.stop();
   setLive('off', 'Not live');
   setPaneState('gone');
   setInputEnabled(false, 'Pane is gone');
@@ -1082,6 +1085,7 @@ function setFrozen(on) {
 }
 
 function recovered() {
+  if (M.errors) DS.reset(); // tmux answers again: the first readable capture follows the first-capture rule (no wipe)
   M.errors = 0;
   hideOverlay();
   const pane = W.got ? 'ok' : 'connecting';
@@ -1090,6 +1094,16 @@ function recovered() {
     M.inputOff = false;
     setInputEnabled(true);
   }
+}
+
+/** Draws the last capture: every row, or, while the message box carries Claude's input box (a readable draft, Type into pane off), the rows above it and the one-row strip in its place. */
+function drawMirror() {
+  const body = M.body;
+  if (!body) return;
+  const cut = cutAt(M.draft, P.on);
+  const on = cut !== null && cut < body.rows.length;
+  applyMirror($('term-rows'), toRenderModel(body, { cutAt: on ? cut : null }), cutCursor(body.cursor, on ? cut : null));
+  $('term-cut').hidden = !on;
 }
 
 function handleCapture(r) {
@@ -1106,7 +1120,14 @@ function handleCapture(r) {
     M.rows = r.body.rows.length;
     M.etag = typeof r.body.etag === 'string' && ETAG.test(r.body.etag) ? r.body.etag : null;
     $('term-rows').style.minWidth = `${cols}ch`;
-    applyMirror($('term-rows'), toRenderModel(r.body), r.body.cursor);
+    M.body = r.body;
+    M.draft = cleanDraft(r.body.draft);
+    drawMirror();
+    try {
+      DS.capture(M.draft, cols);
+    } catch {
+      // the mirror keeps working without the sync
+    }
     setLive(M.frozen ? 'paused' : 'live', `${M.frozen ? 'Paused' : 'Live'}${MID}${cols} ${TIMES} ${M.rows}`);
     if (!M.frozen) term.scrollTop = term.scrollHeight; // a paused mirror still applies captures but keeps the reader's place
     return;
@@ -1201,16 +1222,19 @@ async function deliver(payload) {
 }
 
 /** Sends the bodies in order as one job; the first failure stops the rest (an Enter must not follow a text that never arrived). */
+function enqueueJob(run) {
+  const job = chain.then(run);
+  chain = job.catch(() => {});
+  return job;
+}
 function enqueueSeq(payloads) {
-  const job = chain.then(async () => {
+  return enqueueJob(async () => {
     for (const payload of payloads) {
       const r = await deliver(payload);
       if (!r.ok) return r;
     }
     return { ok: true };
   });
-  chain = job.catch(() => {});
-  return job;
 }
 const enqueue = (payload) => enqueueSeq([payload]);
 
@@ -1278,26 +1302,89 @@ async function sendComposer() {
     return;
   }
   const value = ta.value;
-  const plan = S.on ? planShell(value) : planSend(value);
+  // the box is mirrored in Claude's input box: when the screen already holds this text only Enter goes out, else the text is copied over first (design W5, section 4)
+  const route = draftSendPlan({ value, shell: S.on, screen: DS.screen(), cols: M.cols });
+  if (route.act === 'refuse') {
+    showProblem(route.message, 'error'); // nothing is sent and the text stays in the box
+    return;
+  }
+  const plan = route.act !== 'legacy' ? route : S.on ? planShell(value) : planSend(value);
   if (plan.empty) return; // Shell on and nothing to run: no lone "!"
   if (!plan.ok) {
     showProblem(plan.message, 'error');
     return;
   }
   sending = true;
+  DS.beginSend(); // the background sync holds still until this send is over
   $('send').setAttribute('aria-busy', 'true');
-  const r = await enqueueSeq(plan.payloads ?? [plan.payload]);
+  const r = await (route.act === 'push' ? enqueueJob(() => pushThenEnter(route)) : enqueueSeq(plan.payloads ?? [plan.payload]));
   sending = false;
   $('send').removeAttribute('aria-busy');
-  if (!r.ok) return; // the text stays in the box, and Shell stays on so a retry still goes as a command
-  say(`Sent ${plan.summary} to ${paneId}`);
-  if (S.on) setShell(false); // like Claude's own ! mode: the next message is a message
-  if (ta.value === value) {
-    ta.value = '';
-    grow();
-    updateChip();
+  if (r.ok) { // else the text stays in the box, and Shell stays on so a retry still goes as a command
+    say(`Sent ${plan.summary} to ${paneId}`);
+    if (S.on) setShell(false); // like Claude's own ! mode: the next message is a message
+    if (ta.value === value) {
+      ta.value = '';
+      grow();
+      updateChip();
+      DS.sent(); // nothing of it is unsent any more
+    }
   }
+  DS.endSend();
 }
+
+/** A synced Send: the text is copied into Claude's input (a non-200 sends no Enter), then Enter. One job in the keys chain, so arrows queued before it go first. */
+async function pushThenEnter(route) {
+  const p = await DS.send(route.text);
+  if (!p.ok) {
+    showProblem(p.message, 'error');
+    return p;
+  }
+  return deliver({ keys: ['Enter'] });
+}
+
+// ---- draft sync (W5): the message box and Claude's input box mirror each other; the rules and the copy: draft-sync.js ----------
+
+/** A pull: the terminal's draft becomes the box's text. No `input` event fires, so it is not taken for an edit; focus never moves. */
+function pullIntoBox(value, shell) {
+  const ta = composer();
+  const before = ta.value;
+  const caret = ta.selectionStart;
+  ta.value = value;
+  if (document.activeElement === ta) {
+    const at = caretAfter(before, value, caret);
+    ta.setSelectionRange(at, at);
+  }
+  setShell(shell);
+  grow();
+  updateChip();
+  if (document.activeElement !== ta) closePalette(); // the list belongs to a box that has focus
+}
+
+/** The one note under the box: a paused sync, a long text, a refused replace. Colour from data-k, icon and word in the line. */
+function renderDraftNote(view) {
+  const el = $('draft-note');
+  el.hidden = view === null;
+  if (view === null) {
+    el.removeAttribute('data-k');
+    el.replaceChildren();
+    return;
+  }
+  el.setAttribute('data-k', view.kind);
+  el.replaceChildren(icon(view.icon), h('b', { text: view.label }), h('span', { text: ` ${view.text}` }));
+}
+
+const DS = createDraftSync({
+  now: () => Date.now(),
+  after: (fn, ms) => setTimeout(fn, ms),
+  cancel: (timer) => clearTimeout(timer),
+  box: () => ({ value: composer().value, shell: S.on }),
+  setBox: pullIntoBox,
+  put: (body) => call(`/api/app/pane/${encodeURIComponent(paneId)}/draft`, { method: 'PUT', json: body }),
+  note: renderDraftNote,
+  problem: (message) => showProblem(message, 'warn', 6000),
+  gone: setGone,
+});
 
 // ---- Shell mode (spec 9.6): Enter sends Ctrl-U, "!" + the text, Enter; it turns itself off after a successful send -------------
 
@@ -1444,6 +1531,7 @@ function insertActive() {
   ta.focus();
   grow();
   updateChip();
+  DS.edited();
   announce(ins.hint ? `Inserted ${ins.text.trim()}. ${ins.hint}` : `Inserted ${ins.text.trim()}`);
 }
 
@@ -1461,6 +1549,7 @@ function wirePalette() {
     ta.value = '/';
     grow();
     updateChip(); // "/" is a query: this opens the list
+    DS.edited();
     ta.focus();
   });
   $('pal').addEventListener('mousedown', (e) => e.preventDefault()); // a click in the list does not blur the box
@@ -1498,6 +1587,7 @@ function setPass(on, keepFocus = false) {
     : `Live terminal of ${A.name}, pane ${paneId}`);
   $('pass-toggle').setAttribute('aria-pressed', String(on));
   $('pass-onoff').textContent = on ? 'on' : 'off';
+  drawMirror(); // the strip stands in for Claude's input box only while Type into pane is off
   if (on) {
     term.focus();
     announce(`Passthrough on: every key goes to pane ${paneId}. Press Control and ] to leave.`);
@@ -1574,7 +1664,9 @@ function wirePassthrough() {
 
 function wireComposer() {
   const ta = composer();
-  ta.addEventListener('input', () => { grow(); updateChip(); });
+  ta.addEventListener('input', () => { grow(); updateChip(); DS.edited(); });
+  ta.addEventListener('compositionstart', () => DS.composition(true));
+  ta.addEventListener('compositionend', () => DS.composition(false));
   ta.addEventListener('keydown', (e) => {
     const a = composerKey(e, {
       empty: ta.value === '', selection: ta.selectionStart !== ta.selectionEnd, choosing: PL.active >= 0, paletteOpen: PL.open,
@@ -1604,10 +1696,11 @@ function wireComposer() {
     ta.value = '';
     grow();
     updateChip();
+    DS.edited();
     ta.focus();
   });
   $('send').addEventListener('click', () => { endArrows(); sendComposer(); ta.focus(); });
-  $('shell-toggle').addEventListener('click', () => setShell(!S.on)); // focus stays on the toggle; the text stays in the box
+  $('shell-toggle').addEventListener('click', () => { setShell(!S.on); DS.edited(); }); // focus stays on the toggle; the text stays in the box; Shell on or off is another form of the draft
   wirePalette();
 }
 
@@ -1621,6 +1714,7 @@ function wireTerminal() {
     M.inputOff = false;
     M.etag = null;
     W.got = false;
+    DS.reset();
     setPaneState('connecting');
     setInputEnabled(true);
     showOverlay(`Connecting to pane ${paneId}${DOTS}`, '');

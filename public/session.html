@@ -37,6 +37,8 @@
   <symbol id="i-model" viewBox="0 0 16 16"><rect x="4" y="4" width="8" height="8" rx="1.5"/><path d="M6.5 1.8V4M9.5 1.8V4M6.5 12v2.2M9.5 12v2.2M1.8 6.5H4M1.8 9.5H4M12 6.5h2.2M12 9.5h2.2"/></symbol>
   <symbol id="i-rewind" viewBox="0 0 16 16"><path d="M2.5 8a5.5 5.5 0 1 0 1.6-3.9M2.5 2.5v2.6h2.6"/></symbol>
   <symbol id="i-end" viewBox="0 0 16 16"><path d="M8 1.8V8M4.6 4.2a5 5 0 1 0 6.8 0"/></symbol>
+  <symbol id="i-pause" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.2"/><path d="M6.4 5.6v4.8M9.6 5.6v4.8"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.2"/><path d="M8 4.6V8l2.4 1.6"/></symbol>
   <symbol id="i-chev" viewBox="0 0 16 16"><path d="m4.5 6.5 3.5 3.5 3.5-3.5"/></symbol>
   <symbol id="i-cmd" viewBox="0 0 16 16"><rect x="1.8" y="1.8" width="12.4" height="12.4" rx="2"/><path d="M9.8 4.5 6.2 11.5"/></symbol>
   <symbol id="i-dialog" viewBox="0 0 16 16"><rect x="1.8" y="2.8" width="12.4" height="10.4" rx="1.5"/><path d="M1.8 5.8h12.4"/></symbol>
@@ -99,7 +101,7 @@
         <button type="button" class="btn" id="pass-leave">Leave</button>
       </div>
       <div class="termbox">
-        <div class="term" id="term" data-surface="dark" tabindex="0" role="region" aria-label="Live terminal"><div class="term-rows" id="term-rows"></div></div>
+        <div class="term" id="term" data-surface="dark" tabindex="0" role="region" aria-label="Live terminal"><div class="term-rows" id="term-rows"></div><div class="tl cut" id="term-cut" aria-hidden="true" hidden><svg class="ic" aria-hidden="true"><use href="#i-kbd"/></svg><span>Input box &middot; mirrored in the message box below</span></div></div>
         <span class="paused-note" id="paused-note" hidden>Paused while you scroll</span>
         <button type="button" class="btn primary jump" id="jump-live" hidden><svg class="ic" aria-hidden="true"><use href="#i-down"/></svg>Jump to live</button>
         <div class="term-over" id="term-over"><div><h3 id="over-title">Connecting&hellip;</h3><p id="over-text"></p><button type="button" class="btn" id="over-retry" hidden>Retry now</button></div></div>
@@ -138,7 +140,7 @@
           <button type="button" class="shell" id="shell-toggle" aria-pressed="false" title="Shell mode: send the text as a ! command"><svg class="ic" aria-hidden="true"><use href="#i-shell"/></svg><span>Shell</span><span class="onoff" aria-hidden="true">off</span></button>
           <span class="prompt" aria-hidden="true">&rsaquo;</span>
           <label for="composer" class="sr-only" id="composer-label">Message to the agent. Enter sends, Shift+Enter adds a line. Escape, Control+C and Shift+Tab go to Claude, and so do the arrow keys and Enter when the box is empty. Control+Shift+Tab moves focus back.</label>
-          <textarea id="composer" rows="1" spellcheck="false" autocomplete="off" autocapitalize="off" aria-controls="palette" placeholder="Message the agent&hellip;"></textarea>
+          <textarea id="composer" rows="1" spellcheck="false" autocomplete="off" autocapitalize="off" aria-controls="palette" aria-describedby="draft-note" placeholder="Message the agent&hellip;"></textarea>
           <span class="paste-chip" id="paste-chip" hidden><span id="paste-n"></span><button type="button" id="paste-clear">Clear</button></span>
           <button type="button" class="btn ghost icon" id="cmd-btn" aria-label="Commands (/)" title="Commands (/)" aria-disabled="false"><svg class="ic" aria-hidden="true"><use href="#i-cmd"/></svg></button>
           <button type="button" class="btn primary icon" id="send" aria-label="Send (Enter)" title="Send (Enter)"><svg class="ic" aria-hidden="true"><use href="#i-send"/></svg></button>
@@ -155,6 +157,7 @@
         <div class="notes" id="notes">
           <span class="arg-hint" id="arg-hint" hidden></span>
           <span class="shell-hint" id="shell-hint" hidden>Shell on: Enter runs this through Claude&rsquo;s ! mode, then shell turns off.</span>
+          <span class="dnote" id="draft-note" role="status" hidden></span>
           <span class="problem" id="problem" role="alert"></span>
           <span class="sr-only" id="echo" aria-live="polite"></span>
         </div>

@@ -141,6 +141,8 @@ body.m-bypass .mode-frame { background: repeating-linear-gradient(135deg, var(--
 .term.pass { box-shadow: inset 0 0 0 2px var(--accent); }
 .term-rows { width: max-content; min-width: 100%; font: var(--fs-term)/1.35 var(--mono); white-space: pre; tab-size: 8; }
 .tl { display: block; min-height: 1.35em; }
+/* the strip that stands in for Claude's input box while the message box mirrors it (W6): muted terminal ink, one row, below the output */
+.tl.cut { display: flex; align-items: center; gap: 6px; margin-top: 6px; padding-top: 4px; border-top: 1px dashed var(--a8); color: var(--a8); font: var(--fs-small)/1.35 var(--font); }
 .f0{color:var(--a0)}.f1{color:var(--a1)}.f2{color:var(--a2)}.f3{color:var(--a3)}.f4{color:var(--a4)}.f5{color:var(--a5)}.f6{color:var(--a6)}.f7{color:var(--a7)}
 .f8{color:var(--a8)}.f9{color:var(--a9)}.f10{color:var(--a10)}.f11{color:var(--a11)}.f12{color:var(--a12)}.f13{color:var(--a13)}.f14{color:var(--a14)}.f15{color:var(--a15)}
 .b0{background:var(--a0)}.b1{background:var(--a1)}.b2{background:var(--a2)}.b3{background:var(--a3)}.b4{background:var(--a4)}.b5{background:var(--a5)}.b6{background:var(--a6)}.b7{background:var(--a7)}
@@ -193,6 +195,13 @@ body.m-bypass .mode-frame { background: repeating-linear-gradient(135deg, var(--
 .problem.error { color: var(--danger); }
 .problem:empty { display: none; }
 .shell-hint, .arg-hint { color: var(--text); font-weight: 600; }
+/* the draft sync note (W5): one line under the box. Each state has its own colour, icon and word: paused (amber), not mirrored (ink), waiting (green) */
+.dnote { display: inline-flex; align-items: flex-start; gap: 6px; padding: 1px 8px 1px 6px; border-radius: var(--r-sm); color: var(--text); background: var(--surface-3); overflow-wrap: anywhere; }
+.dnote .ic { margin-top: 3px; }
+.dnote b { font-weight: 600; }
+.dnote[data-k="paused"] { color: var(--idle); background: var(--idle-soft); }
+.dnote[data-k="long"] { color: var(--text); background: var(--surface-3); }
+.dnote[data-k="wait"] { color: var(--busy); background: var(--busy-soft); }
 
 /* command palette (spec 9.7): opens upward from the message box, anchored to its left and right edges; focus never leaves the textarea */
 .btn.ghost { border-color: transparent; background: transparent; }
