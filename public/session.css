@@ -163,7 +163,7 @@ body.m-bypass .mode-frame { background: repeating-linear-gradient(135deg, var(--
 .term-over p:empty { display: none; }
 
 /* composer */
-.composer { flex: none; border-top: 1px solid var(--line); background: var(--surface); padding: 8px 12px 10px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; container: composer / inline-size; } /* an auto column grows to its widest child (380 px at 320); the container hides the extra hint tips (spec 3.10) */
+.composer { flex: none; border-top: 1px solid var(--line); background: var(--surface); padding: 8px 12px 10px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; container: composer / inline-size; } /* an auto column grows to its widest child (380 px at 320); no query reads the container since the hint tips went (F7), it only keeps the composer's width from following its content */
 .attn-note { display: flex; gap: 8px; align-items: flex-start; padding: 8px 10px; border-radius: var(--r-md); background: var(--attn-soft); font-size: var(--fs-small); }
 .attn-note .st { margin-top: 2px; }
 .attn-note p { margin: 0; overflow-wrap: anywhere; }
@@ -187,16 +187,12 @@ body.m-bypass .mode-frame { background: repeating-linear-gradient(135deg, var(--
 .paste-chip { flex: none; display: inline-flex; gap: 6px; align-items: center; font-size: var(--fs-small); padding: 2px 4px 2px 8px; border-radius: var(--r-sm); background: var(--accent-soft); color: var(--accent); font-weight: 600; align-self: center; }
 .paste-chip button { min-height: 20px; border: 0; background: none; color: inherit; text-decoration: underline; }
 .mode-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; min-width: 0; }   /* the mode switcher under the message box (spec 9.3) */
-.mode-row .mode-lbl { font-size: var(--fs-small); color: var(--text-muted); }
 .mode-row .msw-why { flex: 1 1 14em; min-width: 0; }
-.hintline { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: var(--fs-small); color: var(--text-muted); }
-.hintline .echo { margin-left: auto; color: var(--text); font-weight: 600; overflow-wrap: anywhere; }
+.notes { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: var(--fs-small); color: var(--text-muted); }   /* argument hint, shell hint, problem line; the echo in here is screen-reader-only */
 .problem { color: var(--idle); font-weight: 600; overflow-wrap: anywhere; }
 .problem.error { color: var(--danger); }
 .problem:empty { display: none; }
 .shell-hint, .arg-hint { color: var(--text); font-weight: 600; }
-@container composer (max-width: 940px) { .hintline .tip.more { display: none; } }   /* the composer, not the window, decides (spec 3.10); 940 = the four Linux tips (799 px with gaps) + a short echo (about 130 px) on one line */
-@media (max-height: 560px) { .hintline .tip { display: none; } }
 
 /* command palette (spec 9.7): opens upward from the message box, anchored to its left and right edges; focus never leaves the textarea */
 .btn.ghost { border-color: transparent; background: transparent; }

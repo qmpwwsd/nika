@@ -8,28 +8,31 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn as nodeSpawn } from 'node:child_process';
-import { loadConfig } from './store.js';
+import { loadConfig, effectiveAgents } from './store.js';
 import { reportsDir } from './paths.js';
 import { ensureDir, writeAtomic } from './fwrite.js';
 import { openRegular, readAt, readHead } from './fsafe.js';
 import { listPanes } from './collect/tmux.js';
 import { clean } from './text.js';
+import { NO_TMUX_SERVER } from './tmuxerr.js';
 import { compactLaunch, compactEnv, PCT_ENV } from './compact.js';
 import { PROJECT_KEY, AGENT_NAME, parseAgentTag, MODEL_ID, TMUX_SESSION, PANE_ID, RC_PREFIX, RC_NAME, PERMISSION_MODES } from './ids.js';
-import { fail, binsMissing, tmux, tmuxFail, tagPane, sessionNameFor, reduceRc, permissionFlags, launchMode, tmuxLiteral } from './orchestrate.js';
+import { fail, binsMissing, tmux, tmuxFail, tagPane, earlyExit, sessionNameFor, reduceRc, permissionFlags, launchMode, tmuxLiteral } from './orchestrate.js';
 
 const BRIEF_MAX = 64 * 1024;
 const AGENT_JSON_MAX = 4096;
 const GUARD_TEMPLATE = new URL('../templates/guard-prompt.txt', import.meta.url);
 const GUARD_ORCHESTRATOR = new URL('../templates/guard-orchestrator.txt', import.meta.url);
-// tmux's record of nika's panes: pane id and the tags tagPane sets (`@nika-role`, `@nika-agent` = `<project key>/<name>`, `@nika-depth`,
-// `@nika-parent`), then the session and window names (free text, so last)
-const AGENT_LIST = '#{pane_id}\t#{@nika-role}\t#{@nika-agent}\t#{@nika-depth}\t#{@nika-parent}\t#{session_name}\t#{window_name}';
+// tmux's record of nika's panes: pane id, whether the pane is dead (remain-on-exit keeps it, tags and all), the tags tagPane sets
+// (`@nika-role`, `@nika-agent` = `<project key>/<name>`, `@nika-depth`, `@nika-parent`), then the session and window names (free text, so last)
+const AGENT_LIST = '#{pane_id}\t#{pane_dead}\t#{@nika-role}\t#{@nika-agent}\t#{@nika-depth}\t#{@nika-parent}\t#{session_name}\t#{window_name}';
 const DENIED_TOOLS = ['Bash(nika:*)', 'Bash(tmux:*)', 'Bash(claude:*)', 'Bash(git add:*)', 'Bash(git commit:*)', 'Bash(git push:*)'];
 // A sub-orchestrator may run `nika spawn` and `nika status` and nothing else of nika (advisory, like every list here: rules constraint 12)
 const SUB_ALLOWED = new Set(['spawn', 'status']);
 const SUB_ROLE = 'sub-orchestrator';
 const MAX_DEPTH = 3;
+// First window of a project session that a spawn had to create (a constant, no `#`: tmux format-expands `new-session -n`; asserted by the T6 test)
+const AGENTS_WINDOW = 'agents';
 
 /**
  * The `--disallowedTools` of a role. An agent keeps the whole list. A sub-orchestrator keeps it except `Bash(nika:*)`, which becomes
@@ -83,13 +86,16 @@ function serial(key, fn) {
   return run;
 }
 
-/** `tmux list-panes -a` in AGENT_LIST form → Map<paneId, tags>. Every tag is kept as tmux wrote it: only an exact match is trusted later. */
+/**
+ * `tmux list-panes -a` in AGENT_LIST form → Map<paneId, tags>. Every tag is kept as tmux wrote it: only an exact match is trusted later.
+ * A dead pane (remain-on-exit) is left out, so it is never live (the caps, the duplicate-name check) and never a parent.
+ */
 async function readTags(ctx) {
   const { stdout } = await tmux(ctx, 'list-panes', '-a', '-F', AGENT_LIST);
   const tags = new Map();
   for (const line of String(stdout).split('\n')) {
-    const [pane, role = '', agent = '', depth = '', parent = '', session = '', ...window] = line.split('\t');
-    if (PANE_ID.test(pane ?? '')) tags.set(pane, { role, agent, depth, parent, session, window: window.join('\t') });
+    const [pane, dead = '', role = '', agent = '', depth = '', parent = '', session = '', ...window] = line.split('\t');
+    if (PANE_ID.test(pane ?? '') && dead.trim() !== '1') tags.set(pane, { role, agent, depth, parent, session, window: window.join('\t') });
   }
   return tags;
 }
@@ -108,6 +114,7 @@ function liveAgents(ctx, key, tags, panes) {
   }
   for (const [pane, rec] of ctx.started ?? []) {
     if (!panes.has(pane)) ctx.started.delete(pane);
+    else if (!tags.has(pane)) continue; // dead (remain-on-exit): readTags left it out, so it is not live even though this process started it
     else if (rec.key === key && (rec.role === 'agent' || rec.role === SUB_ROLE)) live.set(pane, { pane, name: rec.name, role: rec.role, parent: rec.parent ?? null, depth: rec.depth ?? null });
   }
   return [...live.values()];
@@ -166,7 +173,21 @@ async function lastPane(dir) {
 
 async function doSpawn(v, project, config, ctx) {
   const { panes, error } = await listPanes(ctx.exec, ctx.tmuxBin);
-  if (error) return fail(503, 'tmux_unavailable', clean(error, 200) ?? 'tmux unavailable');
+  // A failed listing is "no panes yet" only when tmux says no server runs (NO_TMUX_SERVER): the spawn then creates the project session below.
+  // Any other failure fails closed (502 tmux_failed, nothing created): the parent, the depth and both caps are read from this listing, and
+  // an unreadable listing is not an empty one. listPanes keeps only a string, so the raw error comes from the tag listing: ENOENT is "tmux unavailable".
+  let tags = null;
+  if (error) {
+    let raw = null;
+    try {
+      await readTags(ctx);
+    } catch (err) {
+      raw = err;
+    }
+    if (!raw) return tmuxFail({ message: error.replace(/^tmux unavailable: /, '') }); // the two listings disagree: trust neither
+    if (raw.code === 'ENOENT' || !NO_TMUX_SERVER.test(String(raw.stderr || raw.message || ''))) return tmuxFail(raw);
+    tags = new Map();
+  }
 
   // Where the pane goes: -t is `=<session>:` (beside) or a pane id (below another pane).
   const underPane = v.under ? panes.get(v.under) : null;
@@ -174,11 +195,12 @@ async function doSpawn(v, project, config, ctx) {
   if (underPane && v.session && underPane.session !== v.session) return fail(400, 'invalid', 'under pane is in another tmux session');
 
   const dir = reportsDir(project.key, ctx.env);
-  let tags;
-  try {
-    tags = await readTags(ctx);
-  } catch (err) {
-    return tmuxFail(err);
+  if (!tags) {
+    try {
+      tags = await readTags(ctx);
+    } catch (err) {
+      return tmuxFail(err);
+    }
   }
   const who = resolveParent(v, project, tags, ctx);
   if (who.failure) return who.failure;
@@ -186,17 +208,19 @@ async function doSpawn(v, project, config, ctx) {
   // children with it; a parent session name that is not a valid TMUX_SESSION is not used (today's rule: the project's session).
   const parentSession = who.parent ? tags.get(who.parent)?.session : undefined;
   const session = v.session ?? underPane?.session ?? (TMUX_SESSION.test(parentSession ?? '') ? parentSession : sessionNameFor(project));
-  if (!underPane && ![...panes.values()].some((p) => p.session === session)) {
-    return fail(404, 'not_found', `tmux session ${session} not found (start the orchestrator first)`);
-  }
+  // No such session: the project's own is created below with this agent's pane; a session someone else named is not nika's to create.
+  const exists = Boolean(underPane) || [...panes.values()].some((p) => p.session === session);
+  if (!exists && session !== sessionNameFor(project)) return fail(404, 'not_found', `tmux session ${session} not found`);
   const live = liveAgents(ctx, project.key, tags, panes);
   if (live.some((e) => e.name === v.name)) return fail(409, 'conflict', `agent ${v.name} is already running`);
   // the project's cap first, then the parent's own: sub-orchestrators and agents count the same
-  const max = config.limits.maxAgents;
+  const { maxAgents: max, panePlacement, permissionMode: defaultMode } = effectiveAgents(config, project.key);
   const cap = Math.min(3 * max, 24);
   const own = live.filter((e) => e.parent === who.parent).length;
   const name = clean(project.name, 60) ?? 'This project';
-  const more = 'Wait for one to finish, or raise “Agents per orchestrator” in Settings.';
+  const more = config.perProject[project.key]?.maxAgents === undefined
+    ? 'Wait for one to finish, or raise “Agents per orchestrator” in Settings.'
+    : 'Wait for one to finish, or raise “Per orchestrator” on this project’s New agents card.'; // the project's own limit beats Settings'
   if (live.length >= cap) return limitFail('project', live.length, cap, `${name} already runs ${live.length} of ${cap} agents, the most one project can run. Wait for one to finish.`);
   if (own >= max) {
     return limitFail('parent', own, max, who.parent
@@ -204,9 +228,10 @@ async function doSpawn(v, project, config, ctx) {
       : `You already run ${own} of ${max} agents spawned from nika in ${name}. ${more}`);
   }
 
+  // Placement (beside, under the last agent) applies only when the session exists; otherwise the pane is the session's first.
   let target = ['-h', '-t', `=${session}:`];
   if (underPane) target = ['-v', '-t', v.under];
-  else if (config.panePlacement === 'under-last') {
+  else if (exists && panePlacement === 'under-last') {
     const last = await lastPane(dir);
     if (last && panes.get(last)?.session === session) target = ['-v', '-t', last];
   }
@@ -216,7 +241,7 @@ async function doSpawn(v, project, config, ctx) {
   const rc = prefix ? reduceRc(`${reduceRc(prefix, project.key)}-${v.name}`, '', true) : '';
   await ensureDir(dir);
   await writeAtomic(dir, `${v.name}.brief.md`, v.brief);
-  const permissionMode = v.permissionMode ?? config.permissionMode;
+  const permissionMode = v.permissionMode ?? defaultMode;
   const role = v.role === 'orchestrator' ? SUB_ROLE : 'agent';
   // auto-compact (ADR 0014): decided now from this spawn's own model; _run-agent re-checks it and turns it into the env of claude
   const launch = compactLaunch(v.model, config.compaction);
@@ -225,7 +250,10 @@ async function doSpawn(v, project, config, ctx) {
 
   let pane;
   try {
-    const { stdout } = await tmux(ctx, 'split-window', ...target, '-c', tmuxLiteral(project.dir), '-P', '-F', '#{pane_id}', '--', ...ctx.nikaArgv, '_run-agent', project.key, v.name);
+    const wrapper = ['-P', '-F', '#{pane_id}', '--', ...ctx.nikaArgv, '_run-agent', project.key, v.name];
+    const { stdout } = await tmux(ctx, ...(exists
+      ? ['split-window', ...target, '-c', tmuxLiteral(project.dir), ...wrapper]
+      : ['new-session', '-d', '-s', session, '-n', AGENTS_WINDOW, '-c', tmuxLiteral(project.dir), '-x', '200', '-y', '50', ...wrapper]));
     pane = stdout.trim();
   } catch (err) {
     return tmuxFail(err);
@@ -233,6 +261,11 @@ async function doSpawn(v, project, config, ctx) {
   if (!PANE_ID.test(pane)) return fail(502, 'tmux_failed', 'tmux did not return a pane id');
   ctx.started?.set(pane, { key: project.key, name: v.name, sessionId: null, role, parent: who.parent, depth: who.depth, mode: launchMode(permissionMode) });
   await tagPane(ctx, pane, role, `${project.key}/${v.name}`, who.depth, who.parent);
+  const exited = await earlyExit(ctx, pane);
+  if (exited) {
+    ctx.started?.delete(pane);
+    return exited;
+  }
   // The agent is already running: a failure below only costs the title or the under-last placement.
   await writeAtomic(dir, '.last-pane', `${pane}\n`).catch(() => {});
   await tmux(ctx, 'select-pane', '-t', pane, '-T', `[${pane}] ${v.name}`).catch(() => {});
@@ -255,10 +288,10 @@ export async function spawnAgent(req, ctx) {
   if (!Array.isArray(ctx.nikaArgv) || !ctx.nikaArgv.length || !ctx.nikaArgv.every((a) => typeof a === 'string' && a && !a.includes('\0'))) {
     return fail(500, 'internal', 'nikaArgv must be a non-empty array of strings');
   }
-  const { config } = await loadConfig(ctx.env);
+  const { config } = await (ctx.loadConfig ?? loadConfig)(ctx.env); // ctx.loadConfig: tests only, to pin the bypass check below on a config load would never give
   const project = config.projects.find((p) => p.key === parsed.value.project);
   if (!project) return fail(404, 'not_found', 'project is not registered');
-  if (config.permissionMode === 'bypassPermissions') return fail(400, 'invalid', 'bypassPermissions is never allowed');
+  if (effectiveAgents(config, project.key).permissionMode === 'bypassPermissions') return fail(400, 'invalid', 'bypassPermissions is never allowed');
   try {
     return await serial(project.key, () => doSpawn(parsed.value, project, config, ctx));
   } catch (err) {

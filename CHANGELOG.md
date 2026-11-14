@@ -47,6 +47,14 @@ Orchestration (desktop app):
 - Settings: **Agents per project at once** is now **Agents per orchestrator**, with help on how the limits add up. The
   project page's **New agents** card lists the per-orchestrator limit, how many you have spawned from nika and how many
   the project runs, and says so when a limit is reached.
+- **New agents settings per project.** The project page's **New agents** card now sets this project's own **Permission
+  mode**, **Pane** and **Per orchestrator** limit: click a value to open its menu, then pick a value or **Use Settings**. A
+  value the project takes from Settings is marked "from Settings". nika uses them when it starts or resumes the project's
+  orchestrator, when it spawns an agent or sub-orchestrator in the project (the spawn sheet's first permission choice is
+  "Use this project's setting"), and in the project's `rules/orchestration.md` when you apply rules. A project's own
+  limit N also sets its project cap, min(3 × N, 24), and a limit refusal then points at the project's card instead of
+  Settings. `bypassPermissions` is refused for a project too, at the store, the API and spawn; a hand-edited
+  `config.json` with a bad value loses only that value, with a warning.
 - Remove project now says it also forgets the project's saved orchestrator.
 - `rules/orchestration.md` has a new **Sub-orchestrators** section (template version 2): apply rules to a project to get it.
 - Every orchestrator nika starts, resumes or adopts is now tagged for its project (`@nika-agent <key>/orchestrator`,
@@ -67,7 +75,8 @@ Models (desktop app):
 - nika uses these models when it starts or resumes the project's orchestrator, in the Roles table of `rules/orchestration.md`,
   and in the spawn sheet's Roles list (marked "(this project)"). Sessions that are already running keep their model, and the
   rules file changes only when you apply rules, so the toast after saving says so.
-- API: `PUT /api/app/projects/:key/config` takes exactly one of `{ plugins }` or `{ models }`, and `GET` returns both. See
+- API: `PUT /api/app/projects/:key/config` takes exactly one of `{ plugins }`, `{ models }`, `{ permissionMode }`,
+  `{ panePlacement }` or `{ maxAgents }` (`null` for the last three means "Use Settings"), and `GET` returns all five. See
   `docs/contracts/api-app.md`.
 
 Auto-compact (desktop app):
@@ -105,6 +114,74 @@ Context (both tiers):
 Fixes:
 
 - A session whose turn is over but still runs a background shell (Claude's `shell` status) shows as Working, not as needing you, and you can send it messages.
+- **Linux: live sessions no longer show as ended** (issue #14). Claude Code on Linux records a session's start as the
+  `starttime` field of `/proc/<pid>/stat`, which never matched the `ps` date nika compared it with. nika now reads that one
+  field (at most 4 KB, your own processes only) for the sessions in Claude's registry. A different value means the process
+  id was reused, so that session counts as ended.
+- **macOS: live sessions nika missed now show.** A session's start time is compared as a moment, not as text. It matches
+  when it equals the process start read as UTC or as local time, and ISO dates are compared to the second. A start time
+  nika cannot read counts as running while the process runs. An upper-case session id is accepted. Session files nika
+  cannot use are no longer dropped silently: the dashboard shows "N session files skipped (unreadable or not in Claude's
+  format)" as a muted note, and `nika status` prints the same line.
+- Running sessions are never hidden behind "Show N more": the 12-row limit now applies only to the Ended section. The
+  sidebar's Detected list shows 8 repositories, then an "N more" button.
+- No tmux server running is a normal state, no longer reported as "Some sources are unavailable".
+- **Ended and finished are hidden by default.** Ended sessions and Claude's finished or stopped subagents stay out of the
+  dashboard, the project page and the browser dashboard until **Show ended** is on. The project page has its own remembered
+  **Show ended** box (its Ended section no longer opens by itself). A row's subagent summary adds a muted "+N ended" while
+  some are hidden. `nika status` lists no ended agents by default and says how many it hid: `--ended` shows the latest 5
+  per project, `--full` shows all of them. It always lists the projects you added to nika, even with only ended sessions
+  (you can resume them) and added projects with no sessions yet ("name  folder   no sessions yet" with `--since all`, else
+  "no sessions in the last 7d" and so on); a folder you never added shows only while a session runs there, and one line
+  counts the others ("… 3 folders not added to nika, with only ended sessions, hidden"). A `config.json` nika cannot use
+  is named in a note. `--json` is unchanged.
+- The project page's **New agents** card shows the permission mode as a chip with its own colour, icon and short word
+  (Default, Manual, Accept edits, Plan, Auto, Don't ask), like the session header, instead of a sentence.
+- The session window's permission-mode switcher no longer has a "Mode" word in front of it.
+- **Start and spawn without tmux running.** Spawn agent now creates the project's tmux session (first window `agents`) when
+  no tmux server or no project session exists, instead of answering "tmux unavailable" or "start the orchestrator first".
+  Start orchestrator, Resume and Spawn agent check one second after starting that Claude is still running; if it exited
+  right away (for example, it needs a login), the project page says "Claude exited right after it started. Run `claude`
+  once in a terminal in this folder to see why (for example, to log in)." (after a resume: "Run `claude --resume <id>`…")
+  and stays on the project page. "tmux not
+  found" now means only that the tmux program is missing. A dead orchestrator or agent pane kept by tmux's
+  `remain-on-exit` no longer counts as running, toward the agent limits or for the duplicate-name check. When tmux
+  fails for any other reason than "no server running", Spawn agent refuses with tmux's own message instead of skipping
+  the limits.
+- **Rules reach `AGENTS.md` as well as `CLAUDE.md`, and Claude loads them once.** Apply rules adds the
+  `@rules/orchestration.md` line to `AGENTS.md` too (other coding tools read it), with the same preview, hash check and
+  backup as `CLAUDE.md`, and the preview lists both files. Claude Code reads `AGENTS.md` only while a project has no
+  `CLAUDE.md`, so a project with only `AGENTS.md` also gets a new `CLAUDE.md` that is just `@AGENTS.md` (Claude Code's own
+  way to share one file with other tools); `AGENTS.md` is written first. A `CLAUDE.md` that already imports `@AGENTS.md`
+  is left as it is: it gets the rules through the import, and the preview says so. Releases up to 0.3.4 always put the line
+  into `CLAUDE.md`, so a `CLAUDE.md` that imports `@AGENTS.md` may have it already: it keeps it (nika never removes a line)
+  and the preview then says Claude may read the rules twice and that deleting that line by hand fixes it. A symlinked `AGENTS.md`, or a folder or
+  other non-file of that name, is skipped with a note when a `CLAUDE.md` exists and refused when it does not. "Rules
+  outdated" now also means that `CLAUDE.md` or `AGENTS.md` lacks the rules line.
+- **Linux: the window keys work.** Ctrl+Q quits nika, Ctrl+W closes the window, and Ctrl+Plus (or Ctrl+=), Ctrl+Minus
+  and Ctrl+0 zoom, on every page; in Type into pane Ctrl+W still goes to Claude. The page asks the app through a new
+  app-tier route, `POST /api/app/window`, which sends the shell one `window` line over stdio; the shell ignores any other
+  action. On macOS the app menu keeps these keys (Close Window and Minimize were already there).
+- **Copy and paste in Type into pane.** Ctrl+Shift+C copies the text selected in the terminal; Ctrl+Shift+V, and Ctrl+V on
+  Linux, paste into Claude as one paste instead of "Not sent: … not on the allow-list". Ctrl+C still sends C-c. In the
+  message box Ctrl+Shift+C no longer stops Claude; Ctrl+C is Stop only with nothing selected (with a selection the text
+  field keeps it: a copy on Linux). Copy, cut, paste, select all, undo
+  and redo work in every text field on both platforms. The Keyboard shortcuts window lists the window and copy keys per
+  platform.
+- The hint row under the message box is gone (its key tips are in the Keyboard shortcuts window). "Sent … to %N" is still
+  read to screen readers; the argument hint, the Shell hint and error messages stay where they were.
+- **macOS: a held key repeats** in nika's window instead of opening the accent popup. The app turns the press-and-hold
+  popup off for its own process only, in memory; nothing is written to your preferences. Accents still work with the
+  Option key. New dependency: `objc2-foundation` 0.3.2 (macOS only, already in the lock file through Tauri).
+- **Project page: a Settings drawer on narrow windows.** At 1030 px and narrower the Rules, Project setup and New agents cards no
+  longer stack under the agents: a **Settings** button (gear) at the right of the title row, before Show ended, opens them in
+  a side drawer (Esc, × or a click outside closes it). Choose plugins…, Choose models… and Preview rules open on top of it and give the focus back to
+  their button. Above 1030 px nothing changes. In the drawer, Esc closes an open value menu before the drawer, and a menu that
+  does not fit below its button and does not fit above it in a short window opens below and scrolls into view instead of being cut off.
+- **Tooltips on icon-only controls.** Every control that shows an icon or a symbol and no words now says what it is on hover: the
+  × of each dialog, the − and + of the steppers, the fold button of the agent tree, Copy backup path, the sidebar links and Add
+  project when the sidebar is the narrow rail, the status glyph of a narrow row, and the tmux and claude dots. A test reads every
+  page and fails on a new icon control without a title.
 
 Packaging:
 

@@ -24,6 +24,7 @@ const MODES_AT_ONCE = 4; // captures in flight for GET /modes
 const COMMAND_MAX = 200; // characters of a slash command typed into Claude
 const CONTROL = /[\u0000-\u001f\u007f-\u009f]/; // C0, DEL, C1
 const SIG = /^[0-9a-f]{16}$/;
+const WINDOW_ACTIONS = ['quit', 'close', 'minimize', 'zoom-in', 'zoom-out', 'zoom-reset']; // what the shell can do to its window (contract §3, §5)
 const CAP = { small: 4 * 1024, settings: 16 * 1024, keys: 20 * 1024, spawn: 80 * 1024 };
 // What can answer a permission prompt: Enter confirms the highlighted option, a digit picks an option, a paste may hold either,
 // and Shift-Tab (BTab) can pick "allow for this session".
@@ -91,6 +92,7 @@ async function listTemplates(dir) {
  *                           all of them, no ps and no tmux; throws EINDEX) }; handed to the modules as is
  * @param {object} o.deps    { version, collect() → snapshot, listPanes() → { panes, error }, readHistory, listPlugins, rulesState,
  *                           preview, apply, spawnAgent, startOrchestrator, mirror, keys, picker, listCommands;
+ *                           window(action), the shell relay: writes one `window` line (appio.js);
  *                           appCopy { state(), install(), dismiss() } (src/appcopy.js bound to this install);
  *                           createSessionControl, a test seam for the factory in session-control.js }
  * @returns {(req, res, url, port) => Promise<boolean>} true when it handled the request (every /api/app/* request)
@@ -272,6 +274,15 @@ export function createAppApi({ secret, ctx, deps }) {
     }
   });
 
+  // --- the desktop window (F2): the page asks, the shell acts; the request names an action and nothing else ---
+
+  route('POST', /^\/api\/app\/window$/, CAP.small, async ({ body }) => {
+    const keys = Object.keys(body);
+    if (keys.length !== 1 || keys[0] !== 'action' || !WINDOW_ACTIONS.includes(body.action)) return err(400, 'invalid', `action must be one of ${WINDOW_ACTIONS.join(', ')}`);
+    deps.window(body.action);
+    return { status: 204, body: null };
+  });
+
   route('GET', /^\/api\/app\/projects$/, 0, async () => {
     const { config } = await loadConfig(ctx.env);
     const picks = await orchestrators(config, config.projects);
@@ -382,18 +393,22 @@ export function createAppApi({ secret, ctx, deps }) {
   });
 
   // Per-project config (0.3.4): saved on the project page, one project at a time, so the Settings page cannot overwrite it.
-  // The body is exactly one of { plugins } or { models } (0.4), so the two dialogs never overwrite each other.
+  // The body is exactly one field, so the dialogs and menus never overwrite each other: { plugins }, { models } (0.4),
+  // { permissionMode }, { panePlacement } or { maxAgents } (0.4.0; a value, or null for "use Settings").
   route('GET', /^\/api\/app\/projects\/([^/]+)\/config$/, 0, async ({ params }) => {
     const { project, failure } = await projectOf({ project: param(params[0], PROJECT_KEY) });
     return failure ?? { status: 200, body: await getProjectConfig(project.key, ctx.env) };
   });
 
+  const ONE_FIELD = new Set(['models', 'permissionMode', 'panePlacement', 'maxAgents']);
   route('PUT', /^\/api\/app\/projects\/([^/]+)\/config$/, CAP.settings, async ({ params, body }) => {
     const { project, failure } = await projectOf({ project: param(params[0], PROJECT_KEY) });
     if (failure) return failure;
-    let patch = { models: body.models }; // the store checks the four roles and every id
-    if (Object.keys(body).length !== 1 || !Object.hasOwn(body, 'models')) {
-      if (Object.keys(body).length !== 1 || !Array.isArray(body.plugins) || !body.plugins.every((n) => typeof n === 'string')) return err(400, 'invalid', 'body must be { plugins: [plugin names] } or { models: { orchestrator, reasoner, builder, scout } }');
+    if (body.permissionMode === 'bypassPermissions') return err(400, 'invalid', 'bypassPermissions is never allowed'); // constraint 12: API and store both refuse
+    const only = Object.keys(body).length === 1 ? Object.keys(body)[0] : null;
+    let patch = body; // for the four below: exactly that one key, its value checked by the store
+    if (!ONE_FIELD.has(only)) {
+      if (only !== 'plugins' || !Array.isArray(body.plugins) || !body.plugins.every((n) => typeof n === 'string')) return err(400, 'invalid', 'body must be one of { plugins: [plugin names] }, { models: {...} }, { permissionMode }, { panePlacement } or { maxAgents }');
       // a name is allowed when it is installed now or already saved for this project (so a plugin removed since can still be unticked)
       const known = new Set([...(await deps.listPlugins(ctx.claudeDir)), ...(await getProjectConfig(project.key, ctx.env)).plugins]);
       const unknown = body.plugins.find((n) => !known.has(n));
@@ -575,7 +590,7 @@ export function createAppApi({ secret, ctx, deps }) {
   }
 
   function reply(res, r) {
-    if (r.status === 304) return send(res, 304, '', 'application/json; charset=utf-8', r.headers);
+    if (r.status === 304 || r.status === 204) return send(res, r.status, '', 'application/json; charset=utf-8', r.headers);
     return send(res, r.status, JSON.stringify(r.body), 'application/json; charset=utf-8', r.headers);
   }
 

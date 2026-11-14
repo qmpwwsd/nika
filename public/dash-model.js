@@ -5,28 +5,37 @@
 export const DETECTED_MAX = 8;
 
 /**
+ * The muted dashboard note for registry files nika could not use (`snapshot.skipped.registry`), or null when none. Not an error:
+ * the list is only short of those sessions. `nika status` prints the same words (src/cli.js).
+ */
+export function skippedText(n) {
+  return Number.isInteger(n) && n > 0 ? `${n} session file${n === 1 ? '' : 's'} skipped (unreadable or not in Claude's format)` : null;
+}
+
+/**
  * What one group draws for its ended agents. `live` and `ended` are counts. `collapsed` = the user folded this section by hand.
  * "Show ended" off: the ended agents are not drawn, and a group with nothing live says so in one line. On: the section, open
- * unless folded by hand. The project view always passes showEnded = true.
+ * unless folded by hand. The dashboard and the project view each pass their own toggle.
  */
 export function endedPlan({ live, ended, showEnded, collapsed = false }) {
   const endedSection = showEnded && ended > 0;
   return { endedSection, open: endedSection && !collapsed, noLiveLine: !showEnded && live === 0 && ended > 0 };
 }
 
-/** Forget what the user opened or folded in the dashboard's Ended sections (`ended:g:<key>` and `!ended:g:<key>`); the project view's stay. */
-export function resetEndedState(open) {
-  for (const id of [...open]) if (/^!?ended:g:/.test(id)) open.delete(id);
+/** Forget what the user opened or folded in one view's Ended sections (`ended:<view>:<key>` and `!ended:<view>:<key>`): `g` the dashboard (default), `pv` the project page. The other view's stay. */
+export function resetEndedState(open, view = 'g') {
+  for (const id of [...open]) if (id.replace(/^!/, '').startsWith(`ended:${view}:`)) open.delete(id);
 }
 
 /**
  * The sidebar: `rows` = the registered projects (with their counts), `empty` = there are none (the page shows its hint),
- * `detected` = repositories that run live agents but are not registered, most urgent first, at most DETECTED_MAX.
+ * `detected` = repositories that run live agents but are not registered, most urgent first, at most DETECTED_MAX unless `showAll`
+ * (the "N more" button); `detectedMore` = how many the cap leaves behind that button.
  * `groups` are the dashboard's groups (`project`, `key`, `root`, `label`, `counts`). `projects` = null means the list has not
  * loaded: no hint and no Detected (without it nika cannot tell which repositories are registered), so nothing is drawn yet.
  */
-export function sidebarModel({ projects, groups }) {
-  if (!projects) return { empty: false, rows: [], detected: [] };
+export function sidebarModel({ projects, groups, showAll = false }) {
+  if (!projects) return { empty: false, rows: [], detected: [], detectedMore: 0 };
   const byProject = new Map(groups.filter((g) => g.project).map((g) => [g.project.key, g]));
   const rows = projects.map((p) => ({ key: p.key, name: p.name, attn: byProject.get(p.key)?.counts.attn ?? 0, live: byProject.get(p.key)?.counts.live ?? 0 }));
   const keys = new Set(projects.map((p) => p.key));
@@ -34,9 +43,9 @@ export function sidebarModel({ projects, groups }) {
   const detected = groups
     .filter((g) => !g.project && !keys.has(g.key) && !dirs.has(g.root) && g.counts.live > 0)
     .map((g) => ({ key: g.key, name: g.label, attn: g.counts.attn, live: g.counts.live }))
-    .sort((a, b) => b.attn - a.attn || b.live - a.live || a.name.localeCompare(b.name))
-    .slice(0, DETECTED_MAX);
-  return { empty: rows.length === 0, rows, detected };
+    .sort((a, b) => b.attn - a.attn || b.live - a.live || a.name.localeCompare(b.name));
+  const shown = showAll ? detected : detected.slice(0, DETECTED_MAX);
+  return { empty: rows.length === 0, rows, detected: shown, detectedMore: detected.length - shown.length };
 }
 
 /**
@@ -208,18 +217,21 @@ export function treeRows(list, { collapsed = new Set(), filtering = false } = {}
   return out;
 }
 
-/** The rows to draw when only `cap` root subtrees may show: `{ rows, more }`, `more` = the agents left out. A subtree is never split. */
-export function capRoots(rows, cap) {
-  let roots = 0;
-  for (const [i, r] of rows.entries()) {
-    if (r.root) roots += 1;
-    if (roots > cap) return { rows: rows.slice(0, i), more: rows.length - i };
-  }
-  return { rows, more: 0 };
-}
-
 /** Does the group nest at all? A group where no row has a parent or children is drawn as 0.3 drew it: no slot, no elbow. */
 export const hasTree = (rows) => rows.some((r) => r.kids > 0 || r.orphan);
+
+/**
+ * The permission mode, pane placement and agent limit nika uses for one project: its own value in `settings.perProject[key]`, else
+ * Settings' (the page's copy of src/store.js effectiveAgents). Before Settings has loaded: the defaults.
+ */
+export function effectiveAgents(settings, key) {
+  const own = settings?.perProject?.[key] ?? {};
+  return {
+    permissionMode: own.permissionMode ?? settings?.permissionMode ?? 'default',
+    panePlacement: own.panePlacement ?? settings?.panePlacement ?? 'beside',
+    maxAgents: own.maxAgents ?? settings?.limits?.maxAgents ?? 3,
+  };
+}
 
 /**
  * The counts behind the spawn sheet and its openers: `{ parent: { running, max }, project: { running, cap } }`. The live set is the

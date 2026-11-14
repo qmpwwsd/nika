@@ -173,6 +173,7 @@ body[data-tier="browser"] .app { grid-template-columns: minmax(0, 1fr); }
 .side-projects li.has-act { display: flex; align-items: center; gap: 2px; }
 .side-projects li.has-act a { flex: 1; min-width: 0; }
 .side-projects li.has-act .btn { flex: none; }
+.side-more .btn { width: 100%; justify-content: flex-start; color: var(--text-muted); }
 .mono-av { flex: none; width: 20px; height: 20px; border-radius: 5px; display: grid; place-items: center; font-size: 10px; font-weight: 700; background: var(--surface-3); color: var(--text-muted); }
 .cnt { display: inline-flex; align-items: center; gap: 4px; font-size: var(--fs-small); font-variant-numeric: tabular-nums; color: var(--text-muted); }
 .cnt[data-s="attn"] { color: var(--attn); font-weight: 700; }
@@ -189,6 +190,8 @@ body[data-tier="browser"] .app { grid-template-columns: minmax(0, 1fr); }
 .bar h1 { margin: 0; font-size: var(--fs-h1); letter-spacing: -0.01em; min-width: 0; overflow-wrap: anywhere; }
 .bar .sub { margin: 0; color: var(--text-muted); }
 .bar-actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.bar-end { display: flex; align-items: center; gap: 8px 12px; }   /* the project page: Settings and Show ended wrap together */
+#proj-settings { display: contents; }   /* the host adds no box, so a hidden button leaves no gap */
 /* Every scroll container is also a containing block (position: relative), so absolutely positioned descendants
    such as .sr-only labels stay inside it. Otherwise they anchor to the page, the page grows as tall as the list and
    WebKit scrolls the whole window (blank band at the bottom). Guarded by test/ui.test.js. */
@@ -205,6 +208,7 @@ body[data-tier="browser"] .app { grid-template-columns: minmax(0, 1fr); }
 .dash-sum [data-s="busy"] { --st-c: var(--busy); }
 .dash-sum [data-s="ended"] { --st-c: var(--ended); }
 .plain-sum { margin: var(--sp-4) var(--sp-4) 0; font-size: var(--fs-h2); font-weight: 600; }
+.skip-note { margin: var(--sp-4) var(--sp-4) 0; font-size: var(--fs-small); color: var(--text-muted); }
 .queue { margin: var(--sp-4); border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface); box-shadow: var(--elev-1); }
 .queue > h2, .grp-head h2 { margin: 0; font-size: var(--fs-h2); }
 .queue > h2 { padding: 10px 14px 8px; display: flex; gap: 8px; align-items: baseline; }
@@ -277,6 +281,7 @@ a.name:hover { text-decoration: underline; }
 .more-row { display: flex; justify-content: center; padding: 8px; border-top: 1px solid var(--line); }
 .subs > summary { cursor: pointer; padding: 2px 0 2px 4px; color: var(--text-muted); width: fit-content; min-height: 24px; }
 .subs > summary:hover { color: var(--text); }
+.subs > summary .sub-hid { font-size: var(--fs-small); }
 .subs ul { list-style: none; margin: 4px 0 6px; padding: 0 0 0 4px; display: grid; gap: 4px; }
 .subs li { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; padding: 4px 0; border-top: 1px dashed var(--line); }
 .sub-desc { flex: 1 1 160px; min-width: 0; overflow-wrap: anywhere; }
@@ -334,9 +339,14 @@ details.ended > summary:hover { color: var(--text); }
 .menu { position: absolute; right: 0; top: calc(100% + 4px); z-index: 30; min-width: 220px; margin: 0; padding: 4px; list-style: none; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-md); box-shadow: var(--elev-2); }
 .menu[data-up="1"] { top: auto; bottom: calc(100% + 4px); }
 .menu button, .menu a { display: flex; width: 100%; align-items: center; gap: 8px; min-height: 30px; padding: 4px 10px; border: 0; border-radius: var(--r-sm); background: none; text-align: left; text-decoration: none; color: var(--text); }
+.menu-vals button { white-space: nowrap; }   /* a value menu (New agents card): "Use Settings" and its chip stay on one line; row menus still wrap long names */
 .menu button:hover, .menu a:hover { background: var(--surface-2); }
 .menu li.grp { border-top: 1px solid var(--line); margin-top: 4px; padding-top: 4px; }   /* a rule above the item that starts a group */
 .menu [aria-disabled="true"] { opacity: 0.5; cursor: not-allowed; }   /* a disabled item still answers with its reason */
+.menu-val { font-weight: 600; padding: 0 6px 0 8px; }   /* a menu button that shows the current value (the project page's New agents card) */
+.menu-val .ic { color: var(--text-muted); }
+.menu-chk { display: inline-flex; width: 16px; height: 16px; flex: none; }   /* the slot of the check icon: every item has one once any item is marked, so the words line up */
+.menu [aria-current="true"] { font-weight: 600; }
 
 /* ---------- project view ---------- */
 #proj-agents > .alert { margin-bottom: 12px; align-items: center; }
@@ -344,6 +354,8 @@ details.ended > summary:hover { color: var(--text); }
 .proj-grid { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: var(--sp-4); padding: var(--sp-4); align-items: start; }
 .proj-grid > section > h2 { margin: 0 0 8px; font-size: var(--fs-h2); }
 .proj-grid .grp { margin: 0; }
+.btn.setup-open { display: none; }   /* the title row's Settings button: only where the cards are in the drawer (the 1030 px query below) */
+#su-body .card + .card { margin-top: 0; }   /* the drawer body is a grid with its own gap */
 .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg); padding: 14px; box-shadow: var(--elev-1); display: grid; gap: 10px; }
 .card + .card { margin-top: var(--sp-3); }
 .card h2 { margin: 0 0 -2px; font-size: var(--fs-h2); }
@@ -356,6 +368,7 @@ details.ended > summary:hover { color: var(--text); }
 .kv dt { color: var(--text-muted); }
 .kv dd { margin: 0; font-weight: 600; }
 .kv dd.mono { overflow-wrap: anywhere; }
+.kv dd .from-set { display: block; margin: 2px 0 0 8px; font-size: var(--fs-small); font-weight: 400; }   /* "from Settings": its own line under the menu button, never broken mid-phrase */
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
 ul.chips { margin: 0; padding: 0; list-style: none; }
 .chip { display: inline-flex; align-items: center; min-height: 24px; padding: 0 8px; border-radius: var(--r-sm); border: 1px solid var(--line); background: var(--surface-2); font-size: var(--fs-small); font-family: var(--mono); overflow-wrap: anywhere; }
@@ -388,6 +401,7 @@ dialog.dlg-rules[open] { display: flex; flex-direction: column; }
 .act[data-a="update"] { color: var(--idle); background: var(--idle-soft); }
 .act[data-a="unchanged"] { color: var(--ended); background: var(--ended-soft); }
 .act[data-a="foreign"] { color: var(--attn); background: var(--attn-soft); }
+.act[data-a="skipped"] { color: var(--accent); background: none; outline: 1px dashed var(--accent); outline-offset: -1px; }
 .file-view { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 .file-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--line); }
 .file-head code { font-weight: 600; }
@@ -458,9 +472,12 @@ dialog.dlg-plugins[open] { display: flex; flex-direction: column; }
 .savebar { position: sticky; bottom: 0; display: flex; align-items: center; gap: 8px; padding: 10px var(--sp-4); background: var(--surface); border-top: 1px solid var(--line); box-shadow: 0 -8px 16px -12px rgb(0 0 0 / 30%); }
 
 /* ---------- window width (the app's minimum window is 720 x 480) ---------- */
-/* the list sits beside the cards only while it is 424 px wide or more: its rows (the 600 px grid) need a 198 px name cell for a sub-orchestrator row */
+/* the list sits beside the cards only while it is 424 px wide or more: its rows (the 600 px grid) need a 198 px name cell for a sub-orchestrator row;
+   below that the cards leave the page for the Settings drawer (0.4.0): project.js keeps them in #su-body, so #proj-setup is empty then as well */
 @media (max-width: 1030px) {
   .proj-grid { grid-template-columns: minmax(0, 1fr); }
+  #proj-setup { display: none; }
+  .btn.setup-open { display: inline-flex; }
 }
 @media (max-width: 900px) {
   .app { --side-w: var(--side-rail); }
@@ -469,6 +486,7 @@ dialog.dlg-plugins[open] { display: flex; flex-direction: column; }
   .nav a, .side-projects a { justify-content: center; padding: 0; position: relative; min-height: 36px; }
   .side-projects .cnt { position: absolute; top: 2px; right: 6px; }
   .side-projects li.has-act .btn { display: none; } /* the rail keeps one "+": the header's opens the same folder picker */
+  .side-more .btn { justify-content: center; padding: 0; font-size: var(--fs-small); } /* "12 more" fits the 60 px rail */
   .side-det { margin-top: 6px; border-top: 1px solid var(--line); }
   .side-projects .cnt:not([data-s="attn"]) { display: none; }
   .brand { justify-content: center; padding: 14px 0; }

@@ -336,6 +336,50 @@ describe('status feed', () => {
   });
 });
 
+describe('window relay (F2): POST /api/app/window writes one `window` line for the shell', () => {
+  const ACTIONS = ['quit', 'close', 'minimize', 'zoom-in', 'zoom-out', 'zoom-reset'];
+  const windowLines = (h) => h.lines().filter((l) => l.type === 'window');
+
+  test('(+) each action answers 204 and writes exactly one {"type":"window","action":…} line to stdout', async () => {
+    const h = harness();
+    await h.up();
+    for (const action of ACTIONS) {
+      const before = windowLines(h).length;
+      const r = await h.call('POST', '/api/app/window', { json: { action } });
+      assert.equal(r.status, 204, action);
+      assert.equal(r.body, '', action);
+      const lines = windowLines(h);
+      assert.equal(lines.length, before + 1, action);
+      assert.deepEqual(lines.at(-1), { type: 'window', action });
+    }
+    assert.ok(h.out().split('\n').includes('{"type":"window","action":"zoom-reset"}'), 'compact JSON, one line');
+    h.noSecret();
+    await h.close();
+  });
+
+  test('(−) an unknown action is 400 and a body that is not JSON is 415: no line is written', async () => {
+    const h = harness();
+    await h.up();
+    assert.equal((await h.call('POST', '/api/app/window', { json: { action: 'maximize' } })).status, 400);
+    assert.equal((await h.call('POST', '/api/app/window', { json: {} })).status, 400);
+    assert.equal((await h.call('POST', '/api/app/window', { body: 'action=quit', headers: { 'content-type': 'text/plain' } })).status, 415);
+    assert.equal((await h.call('POST', '/api/app/window', { json: { action: 'quit' }, headers: { 'x-nika-app': OTHER } })).status, 403);
+    await sleep(30);
+    assert.deepEqual(windowLines(h), []);
+    await h.close();
+  });
+
+  test('(−) a `window` line from the shell is not a command: the server ignores it', async () => {
+    const h = harness();
+    await h.up();
+    h.send(JSON.stringify({ type: 'window', action: 'quit' }));
+    await sleep(30);
+    assert.deepEqual(windowLines(h), []);
+    assert.equal((await h.call('GET', '/api/app/me')).status, 200);
+    await h.close();
+  });
+});
+
 describe('folder picker', () => {
   const mkdir = (name) => {
     const d = path.join(ROOT, `pick-${counter}-${name}`);

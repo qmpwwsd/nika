@@ -254,7 +254,8 @@ export function composerKey(e, s) {
     if (s.choosing && (key === 'ArrowUp' || key === 'ArrowDown')) return { act: 'palette-move', dir: key === 'ArrowDown' ? 1 : -1 };
     return s.empty ? { act: 'arrow', key: ARROW[key] } : none;
   }
-  if ((key === 'c' || key === 'C') && e.ctrlKey && !e.metaKey && !e.altKey) {
+  // Ctrl+Shift+C is the copy key (Type into pane, Linux terminals): left to the browser, never Stop (0.4.0)
+  if ((key === 'c' || key === 'C') && e.ctrlKey && !e.shiftKey && !e.metaKey && !e.altKey) {
     if (s.selection) return none; // a copy
     if (e.repeat) return swallow;
     const q = quickState({ pane: s.pane, status: s.status, prompt: s.promptOpen });

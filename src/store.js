@@ -41,6 +41,15 @@ const oneOf = (list) => (v) => (list.includes(v) ? v : undefined);
 const intIn = (lo, hi) => (v) => (Number.isInteger(v) && v >= lo && v <= hi ? v : undefined);
 const bool = (v) => (typeof v === 'boolean' ? v : undefined);
 
+// The three agent items Settings holds (top level and `limits`) and a project may override in `perProject[key]`: one validator each,
+// so the two places cannot disagree. PERMISSION_MODES has no bypassPermissions (rules constraint 12).
+const AGENT_ITEMS = { permissionMode: oneOf(PERMISSION_MODES), panePlacement: oneOf(PANE_PLACEMENTS), maxAgents: intIn(1, 8) };
+const AGENT_ITEM_HINT = {
+  permissionMode: `permissionMode must be one of ${PERMISSION_MODES.join(', ')}, or null`,
+  panePlacement: `panePlacement must be one of ${PANE_PLACEMENTS.join(', ')}, or null`,
+  maxAgents: 'maxAgents must be a whole number from 1 to 8, or null',
+};
+
 /** A deduplicated list of at most PLUGINS_MAX plugin names, or undefined when v is anything else. */
 function pluginList(v) {
   const ok = Array.isArray(v) && v.length <= PLUGINS_MAX && v.every((p) => typeof p === 'string' && PLUGIN_NAME.test(p));
@@ -48,10 +57,11 @@ function pluginList(v) {
 }
 
 /**
- * perProject: { <PROJECT_KEY>: { plugins?: string[], orchestratorSessionId?: UUID, models?: { <role>: MODEL_ID } } }. A bad key or an
- * entry that is not an object drops that entry; a bad plugin list drops just the list, a bad id just the id, a `models` that is not
- * an object just `models`, an unknown role or a bad model id just that role (each with a warning); other inner keys are dropped.
- * An entry that holds no non-empty plugin list, no id and no model is "none" and is not kept.
+ * perProject: { <PROJECT_KEY>: { plugins?: string[], orchestratorSessionId?: UUID, models?: { <role>: MODEL_ID }, permissionMode?,
+ * panePlacement?, maxAgents? } }. A bad key or an entry that is not an object drops that entry; a bad plugin list drops just the
+ * list, a bad id just the id, a `models` that is not an object just `models`, an unknown role or a bad model id just that role, a
+ * bad permissionMode (also bypassPermissions), panePlacement or maxAgents just that key (each with a warning); other inner keys are
+ * dropped. An entry that holds no non-empty plugin list, no id, no model and none of the three agent items is "none" and is not kept.
  */
 function perProject(v, warn) {
   if (!isPlainObject(v)) return undefined;
@@ -65,7 +75,7 @@ function perProject(v, warn) {
       continue;
     }
     if (hasOwn(entry, 'plugins') && plugins === undefined) warn(`${at}.plugins invalid, dropped`);
-    for (const k of Object.keys(entry)) if (k !== 'plugins' && k !== 'orchestratorSessionId' && k !== 'models') warn(`unknown key ${at}.${clean(k, 40) ?? '?'} dropped`);
+    for (const k of Object.keys(entry)) if (k !== 'plugins' && k !== 'orchestratorSessionId' && k !== 'models' && !hasOwn(AGENT_ITEMS, k)) warn(`unknown key ${at}.${clean(k, 40) ?? '?'} dropped`);
     const id = hasOwn(entry, 'orchestratorSessionId') ? entry.orchestratorSessionId : undefined;
     const idOk = typeof id === 'string' && UUID.test(id);
     if (hasOwn(entry, 'orchestratorSessionId') && !idOk) warn(`${at}.orchestratorSessionId invalid, dropped`);
@@ -81,8 +91,15 @@ function perProject(v, warn) {
       }
     }
     const hasModels = Object.keys(models).length > 0;
-    if (plugins?.length || idOk || hasModels) {
-      out[key] = { ...(plugins?.length ? { plugins } : {}), ...(idOk ? { orchestratorSessionId: id } : {}), ...(hasModels ? { models } : {}) };
+    const items = {};
+    for (const [item, ok] of Object.entries(AGENT_ITEMS)) {
+      if (!hasOwn(entry, item)) continue;
+      const value = ok(entry[item]);
+      if (value === undefined) warn(`${at}.${item} invalid, dropped`);
+      else items[item] = value;
+    }
+    if (plugins?.length || idOk || hasModels || Object.keys(items).length) {
+      out[key] = { ...(plugins?.length ? { plugins } : {}), ...(idOk ? { orchestratorSessionId: id } : {}), ...(hasModels ? { models } : {}), ...items };
     }
   }
   return out;
@@ -110,9 +127,9 @@ function projects(v, warn) {
 const SCHEMA = {
   models: { orchestrator: str(MODEL_ID), reasoner: str(MODEL_ID), builder: str(MODEL_ID), scout: str(MODEL_ID) },
   remoteControl: { enabled: bool, prefix: (v) => (v === '' ? v : str(RC_PREFIX)(v)) },
-  permissionMode: oneOf(PERMISSION_MODES),
-  panePlacement: oneOf(PANE_PLACEMENTS),
-  limits: { maxAgents: intIn(1, 8) },
+  permissionMode: AGENT_ITEMS.permissionMode,
+  panePlacement: AGENT_ITEMS.panePlacement,
+  limits: { maxAgents: AGENT_ITEMS.maxAgents },
   perProject,
   projects,
   rules: { localTemplate: (v) => (v === null ? v : str(TEMPLATE_NAME)(v)) },
@@ -259,10 +276,24 @@ export function effectiveModels(config, key) {
   return Object.fromEntries(ROLES.map((role) => [role, config.perProject?.[key]?.models?.[role] ?? config.models[role]]));
 }
 
-/** `{ plugins, models }` of one project: [] when no plugin is on; `models` always has the four roles, each an id or null. */
+/** The permission mode, pane placement and agent limit nika uses for one project: the project's own value, else Settings'. Pure. */
+export function effectiveAgents(config, key) {
+  const own = config.perProject?.[key];
+  return {
+    permissionMode: own?.permissionMode ?? config.permissionMode,
+    panePlacement: own?.panePlacement ?? config.panePlacement,
+    maxAgents: own?.maxAgents ?? config.limits.maxAgents,
+  };
+}
+
+/**
+ * `{ plugins, models, permissionMode, panePlacement, maxAgents }` of one project: [] when no plugin is on; `models` always has the
+ * four roles, each an id or null; each of the last three is the project's own value or null ("use Settings").
+ */
 const projectConfig = (config, key) => ({
   plugins: config.perProject[key]?.plugins ?? [],
   models: Object.fromEntries(ROLES.map((role) => [role, config.perProject[key]?.models?.[role] ?? null])),
+  ...Object.fromEntries(Object.keys(AGENT_ITEMS).map((item) => [item, config.perProject[key]?.[item] ?? null])),
 });
 
 /** Throws EINVAL on a bad key. */
@@ -278,27 +309,33 @@ function modelPatch(v) {
 }
 
 /**
- * Sets one project's config. The patch is exactly one of `{ plugins: string[] }` or `{ models: { orchestrator, reasoner, builder,
- * scout } }` (each a MODEL_ID, or null for "use the Settings default"), so the two dialogs never overwrite each other. `plugins: []`
- * and four nulls remove their list; the entry goes when nothing is left in it. Runs in the serial queue, so two pages saving
- * different projects cannot overwrite each other. Throws EINVAL (bad key or patch) or ENOENT (not a registered project); returns
- * the project's new `{ plugins, models }`.
+ * Sets one project's config. The patch is exactly one of `{ plugins: string[] }`, `{ models: { orchestrator, reasoner, builder,
+ * scout } }` (each a MODEL_ID, or null for "use the Settings default"), `{ permissionMode }`, `{ panePlacement }` or `{ maxAgents }`
+ * (a value, or null for "use Settings"), so the dialogs never overwrite each other. `plugins: []`, four model nulls and a null item
+ * remove their key; the entry goes when nothing is left in it. bypassPermissions is refused. Runs in the serial queue, so two pages
+ * saving different projects cannot overwrite each other. Throws EINVAL (bad key or patch) or ENOENT (not a registered project);
+ * returns the project's new `{ plugins, models, permissionMode, panePlacement, maxAgents }`.
  */
 export function updateProjectConfig(key, patch, env = process.env) {
   return serial(async () => {
     if (!isProjectKey(key)) throw bad('invalid project key');
-    // own keys only: an inherited or `__proto__` key never counts as `plugins` or `models`
+    // own keys only: an inherited or `__proto__` key never counts as a field
     const field = isPlainObject(patch) && Object.keys(patch).length === 1 ? Object.keys(patch)[0] : null;
-    if (field !== 'plugins' && field !== 'models') throw bad('patch must be { plugins: [...] } or { models: {...} }');
-    const value = field === 'plugins' ? pluginList(patch.plugins) : modelPatch(patch.models);
+    const isItem = field !== null && hasOwn(AGENT_ITEMS, field);
+    if (field !== 'plugins' && field !== 'models' && !isItem) throw bad('patch must be one of { plugins }, { models }, { permissionMode }, { panePlacement } or { maxAgents }');
+    if (field === 'permissionMode' && patch.permissionMode === 'bypassPermissions') throw bad('bypassPermissions is never allowed');
+    let value;
+    if (field === 'plugins') value = pluginList(patch.plugins);
+    else if (field === 'models') value = modelPatch(patch.models);
+    else value = patch[field] === null ? null : AGENT_ITEMS[field](patch[field]); // null = "use Settings"
     if (value === undefined) {
-      throw bad(field === 'plugins' ? `plugins must be a list of at most ${PLUGINS_MAX} plugin names like name@marketplace` : 'models must have orchestrator, reasoner, builder and scout, each a model id or null');
+      throw bad(isItem ? AGENT_ITEM_HINT[field] : field === 'plugins' ? `plugins must be a list of at most ${PLUGINS_MAX} plugin names like name@marketplace` : 'models must have orchestrator, reasoner, builder and scout, each a model id or null');
     }
     const { config } = await loadConfig(env);
     if (!config.projects.some((p) => p.key === key)) throw Object.assign(new Error('project is not registered'), { code: 'ENOENT' });
     const entry = { ...config.perProject[key] };
-    if (Object.keys(value).length) entry[field] = value;
-    else delete entry[field];
+    if (isItem ? value === null : Object.keys(value).length === 0) delete entry[field];
+    else entry[field] = value;
     if (Object.keys(entry).length) config.perProject[key] = entry;
     else delete config.perProject[key];
     await writeConfig(config, env);

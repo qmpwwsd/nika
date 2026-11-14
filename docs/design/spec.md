@@ -74,7 +74,7 @@ Rules for every direction:
 - One window. Dialogs are modal (`<dialog>.showModal()`), never nested; opening one closes any other.
 - The session window is a screen, not a dialog: it keeps the app chrome so the user can jump to any other agent.
 - "Needs you" (attention) always sorts first, everywhere: queue, groups, tray, palette.
-- Ended agents are collapsed by default ("N ended" disclosure) and never count toward the attention badge. Built amendment 2026-11-09 (0.3.1): on the dashboard "Show ended" hides them (off: no "Ended" section, and a group with nothing live says "No live agents."; on: every "Ended (n)" section is open until folded by hand, and the checkbox resets those folds); the project view always shows its open "Ended" section.
+- Ended agents are collapsed by default ("N ended" disclosure) and never count toward the attention badge. Built amendment 2026-11-09 (0.3.1): on the dashboard "Show ended" hides them (off: no "Ended" section, and a group with nothing live says "No live agents."; on: every "Ended (n)" section is open until folded by hand, and the checkbox resets those folds); until 0.4.0 the project view always showed its open "Ended" section (superseded below). **(built amendment 2026-11-13 (0.4.0))** Finished is hidden by default everywhere (owner: "finished must be hidden by default everywhere"). Every view has **one remembered "Show ended" toggle, off by default**, and it hides two things together: ended sessions and Claude's finished or stopped subagents. The dashboard keeps its checkbox in the header bar (`nika.showEnded`); the **project page has its own** in the same style, in its header bar before the actions (`nika.showEndedProject`), and no longer forces its "Ended" section open. The browser tier is the same page code, so it follows the dashboard rule. The session window lists no subagents and has no toggle. A stored value that is not exactly `true`, or storage that is blocked, means off. Under a row, "N subagents · M running" counts only what is shown; running subagents always show; while the rest is hidden a muted "+K ended" follows the count (a row with nothing running and nothing shown draws no subagent line). The CLI follows the same rule: `nika status` prints no ended rows and one muted line, "… N ended hidden (nika status --ended)"; `--ended` lists the latest 5 per project, `--full` lists them all and implies `--ended`; Every project added to nika is listed, also one with no session in the window ("no sessions yet" for `--since all`, else "no sessions in the last 7d" and so on); a folder never added shows only while a session runs there, or with `--ended`. `--json` always carries every agent.
 - The browser tier shows the same dashboard data with every privileged control removed (not disabled) and one info line pointing to the app.
 
 ### 1.3 The three directions
@@ -96,9 +96,9 @@ Rules for every direction:
 └────────────┴──────────────────────────────────────────────────────────┘
 ```
 
-- Shell: left sidebar 232 px (brand, Dashboard, Settings, project list with attention counts, environment footer); collapses to a 60 px icon rail at window width ≤ 900 px. Built amendment 2026-11-09 (0.3.1): with no projects the list shows "No projects yet." and "Add a repo with + to start agents and apply rules here."; below it a "Detected" sub-heading lists up to 8 unregistered repositories with live agents (needs-you count, then live count, then name), each row linking to its group heading on the dashboard plus a small "Add project" button (`aria-label` "Add <name> as a project") that opens the same folder picker; the list is hidden when empty.
+- Shell: left sidebar 232 px (brand, Dashboard, Settings, project list with attention counts, environment footer); collapses to a 60 px icon rail at window width ≤ 900 px. Built amendment 2026-11-09 (0.3.1): with no projects the list shows "No projects yet." and "Add a repo with + to start agents and apply rules here."; below it a "Detected" sub-heading lists up to 8 unregistered repositories with live agents (needs-you count, then live count, then name), each row linking to its group heading on the dashboard plus a small "Add project" button (`aria-label` "Add <name> as a project") that opens the same folder picker; the list is hidden when empty. Built amendment 2026-11-13 (0.4, F1b): past 8 rows the list ends with one ghost button "N more" (`aria-label` "Show N more detected repositories", `data-fk="det-more"`; the 60 px rail uses `--fs-small` and no side padding); it shows the rest in the same order, then leaves, and focus goes to the first row that was behind it. The state is `state.expanded` id `detected`, so it survives redraws.
 - Dashboard: "Waiting on you" queue on top, then one group per project of dense 40 px rows (status · name · model · prompt + branch · last activity · pane · ⋯).
-- Project view: agents on the left, three cards on the right (Rules, Project setup, New agents: defaults and limit). **(built amendment 2026-11-09 (0.3.4))** The Plugins card became **Project setup**; its button opens the Choose plugins dialog (§3.15) instead of leaving for Settings.
+- Project view: agents on the left (a "Show ended" checkbox in the header bar, §1.2), three cards on the right (Rules, Project setup, New agents: mode, pane and limit, each the project's own or Settings'; §3.17). **(built amendment 2026-11-09 (0.3.4))** The Plugins card became **Project setup**; its button opens the Choose plugins dialog (§3.15) instead of leaving for Settings.
 - Spawn: right side sheet (480 px). Rules: large modal with file list + diff + notes.
 - Session: split view, transcript (38 %, min 300 px) | live terminal, composer under the terminal.
 - Strengths: highest density, everything one click away, scales to 50+ agents, closest to 0.1's mental model (groups by repo), keyboard-friendly, least novel.
@@ -484,6 +484,8 @@ Markup (`modeEl`): `span.mode.<cls>[data-confirmed][title]` > icon (`aria-hidden
 | compact | dashboard rows ≥ 860 px (app tier > 1010 px) | icon + label; an unconfirmed tag is hollow and dashed, the word "unconfirmed" goes to `.sr-only` and `title` (keeps the 128 px column) |
 | icon-only | dashboard rows ≤ 860 px (app tier ≤ 1010 px) | icon in the 24 px box, edge and fill as above; label in `.sr-only` + `title` (same rule as the status glyph in §3.3) |
 
+**(built amendment 2026-11-13 (0.4.0))** The **New agents** card shows its Permission mode as the same tag (`modeEl`, full variant), not as a sentence: the short word with the mode's icon and colour. The long descriptions ("Auto: a classifier approves actions without asking you", "Manual: ask every time", "Claude Code default (no flag)") stay in the spawn sheet's select and Settings. `default` is a Settings value, not a mode a pane can be in, so it is not in `MODE_META` (a pane reporting it is still unknown); on the card it is the word **Default** with the existing gear icon and the neutral Manual colour (`m-manual`: Claude Code asks every time by default), so it differs from Manual by icon and word and never by colour alone. Manual, Accept edits, Plan, Auto and Don't ask use their own entries unchanged. The tag is confirmed (a setting has no footer to read). Before Settings loads the value is "–".
+
 #### 2.8.6 Confirmed, unconfirmed, unknown
 
 | State | When | Frame | Tag | Words |
@@ -596,6 +598,7 @@ Messages (exact copy):
 | Kind | Size | Header | Footer |
 |---|---|---|---|
 | Modal (rules) | min(980, vw−32) × min(720, vh−32) | title + close (×) | Cancel · primary |
+| Side sheet (Settings drawer, 0.4.0, §3.20) | 480 × full height, right edge | "Settings" + project name + close | none |
 | Side sheet (spawn) | 480 × full height, right edge | title + project + close | count note · Cancel · Spawn agent (or Spawn sub-orchestrator, §3.17) |
 | Confirm (remove project) | 440 wide | title | Cancel · danger action |
 | Modal (Choose plugins, 0.3.4) | min(560, vw−32) × min(640, vh−32) | title + close (×) | Cancel · Save plugins (§3.15) |
@@ -611,7 +614,7 @@ Grid per line: old no (3.5em) · new no (3.5em) · marker (1.5em) · text. Mono 
 |---|---|
 | create | all lines "+", file action badge "create" (busy colours) |
 | update | hunks, badge "update" (idle colours) |
-| unchanged | no diff body: "Unchanged. Not touched." badge "unchanged" (ended colours) |
+| unchanged | no diff body: "Unchanged. Not touched." badge "unchanged" (ended colours). **(built amendment 2026-11-14 (0.4.0))** An entry may carry a server `note` (plain text, shown with `textContent`, only on `unchanged` and `skipped`, for example `CLAUDE.md`: "Gets the rules through @AGENTS.md."); the detail pane then shows it in place of the default line, and the list row still says "unchanged". A `skipped` entry without a note says "Skipped. Not touched." |
 | foreign | full replace diff, badge "replace" (attn colours) + confirm checkbox |
 | settings.local.json | only the `enabledPlugins` block; header note "N other keys kept (values not shown)" |
 | L | 6 skeleton lines |
@@ -620,7 +623,7 @@ Grid per line: old no (3.5em) · new no (3.5em) · marker (1.5em) · text. Mono 
 ### 3.8 Toast and banner
 
 - Toast: bottom centre, max 440 px, `--text` on `--bg` (inverted), 4.2 s, optional one action button; errors use `--danger` + white and `role="alert"`, info uses `role="status"`. Toasts never steal focus. Every toast action also exists elsewhere (e.g. Apply rules in the project view), so a missed toast never blocks a task.
-- Banner (page-level): icon + bold first sentence + fix + optional [Retry]. Kinds: danger (tmux missing, disconnected), warn (claude missing), info (browser tier read-only).
+- Banner (page-level): icon + bold first sentence + fix + optional [Retry]. Kinds: danger (tmux missing, disconnected), warn (claude missing), info (browser tier read-only). Not banners: a `tmux` source that only says no server is running is `ok` (no panes, nothing wrong), and registry files nika skipped (unreadable or not in Claude's format) show as one muted line, `p.skip-note.muted` (`--fs-small`, `--text-muted`), at the top of the dashboard, with the same text as `nika status`: "N session files skipped (unreadable or not in Claude's format)" ("1 session file skipped …" for one). It is information, not an error: the list is only short of those sessions.
 
 ### 3.9 Terminal mirror
 
@@ -641,7 +644,7 @@ Monospace textarea with a "›" prompt, grows 1 → 8 lines (20 px each), then s
 Its keys are in §4.2; there is no row of key buttons (§3.11). **(built amendment 2026-11-09 (0.3.3))**
 
 Order inside the composer, top to bottom: quick actions and their reason line (§9.4) · model popover (while open) ·
-attention note or prompt panel (§9.5) · message box · mode row ("Mode" + switcher + reason line, §9.3) · hint line.
+attention note or prompt panel (§9.5) · message box · mode row ("Mode" + switcher + reason line, §9.3) · notes row (argument hint, shell hint, problem line).
 
 | State | Look |
 |---|---|
@@ -650,20 +653,14 @@ attention note or prompt panel (§9.5) · message box · mode row ("Mode" + swit
 | multi-line paste | chip "Pasted 14 lines · sends as one paste [Clear]" |
 | X | pane gone / tmux error: disabled, placeholder "Pane is gone" |
 | rate-limited | line under the box in `--idle`: "Too fast: max 20 keys per second. Your text is kept." (`role="alert"`) |
-| echo | right side of the hint line, polite live region: "Sent 23 characters + Enter to %12", "Sent Esc to %12", "Sent Shift-Tab to %12", one line per arrow run ("Sent 3 × Down to %12", "Sent 5 arrow keys to %12") |
+| echo | not shown: a screen-reader-only (`.sr-only`) polite live region in the notes row, so a screen reader still hears: "Sent 23 characters + Enter to %12", "Sent Esc to %12", "Sent Shift-Tab to %12", one line per arrow run ("Sent 3 × Down to %12", "Sent 5 arrow keys to %12") |
 | permission prompt | attention note above: "reviewer-2 asks to run a command. Use ↑ ↓ and Enter to choose, or Esc to refuse." |
 
-Hint line, left side, then the argument hint, the shell hint, the problem line and the echo (right); the row wraps.
-Tips (keycaps as the Keyboard shortcuts window writes them; macOS glyphs run together in one `kbd`):
-
-| macOS | Linux | Shown |
-|---|---|---|
-| `Esc` `⌃C` `⇧Tab` go to Claude | `Esc` `Ctrl+C` `Shift+Tab` go to Claude | always |
-| `↑` `↓` `Enter` too, in an empty box | same | composer wider than 940 px |
-| `⌃⇧Tab` moves focus back | `Ctrl+Shift+Tab` moves focus back | always |
-| `⌘/` all shortcuts | `Ctrl+/` all shortcuts | composer wider than 940 px |
-
-Below 560 px window height every tip hides; the hints, the problem line and the echo stay. The 940 px limit is the width of the composer's content: the four Linux tips need about 800 px, a short echo ("Sent Shift-Tab to %12", 130 px) the rest; at 840 px the echo already wrapped to a second line in the 0.3.3 build check.
+Notes row: the argument hint, the shell hint and the problem line, in that order; the row wraps and takes no height while all three are empty. **(built amendment 2026-11-13 (0.4.0, F7))**
+The hint row with the key tips ("Esc ^C ⇧Tab go to Claude", "⌃⇧Tab moves focus back", "⌘/ all shortcuts") and the visible "Sent … to %12" echo is
+gone (owner decision 2026-11-13): the keys are in the Keyboard shortcuts window (§4.6) and in the message box's accessible name (§4.2), and the
+echo keeps only its screen-reader job. Nothing else in the row changed. The `.hintline` rules and the composer-width and height
+queries that hid the tips went with it.
 
 ### 3.11 Key chips (removed in 0.3.3)
 
@@ -858,7 +855,7 @@ An orchestrator can have sub-orchestrators, and each parent has agents of its ow
 | folded | the row shows `span.tree-hid[aria-hidden]` "+N", with the number of hidden agents that need you beside it (the attention diamond and `--attn`) |
 | orphan | a parent that is not running: the row is a root, keeps its role tag, and shows `span.tree-orphan` "parent ended" (title "This agent's parent session is no longer running.") |
 
-Folding is local to the page (`state.open`, key `!tree:<scope>:<id>`, the "!" pattern of the Ended sections; rebuilt rows get focus back through `data-fk`). The 12-row cap counts root subtrees and never splits one: "Show N more live agents" counts every agent left out.
+Folding is local to the page (`state.open`, key `!tree:<scope>:<id>`, the "!" pattern of the Ended sections; rebuilt rows get focus back through `data-fk`). Live rows are never capped (0.4, F1b: a live session behind a button looks like a missing one). The 12-row cap (`ROW_CAP`) applies to the Ended section only: it draws its first 12 rows, then a ghost button "Show N more ended agents" ("Show 1 more ended agent" for one; `data-fk="more:<scope>"`, state id `cap:<scope>`), and its summary "Ended (n)" counts all of them.
 
 Flat lists: Ended, the "Waiting on you" queue and any filter draw rows without tree markup. A row whose parent is listed gets a chip "under <parent>" (cut at 24 characters, full name in the title) after the project chip. An ended row has no parent (the server gives a parent only to live agents), so it gets no chip. A group where nothing nests (no row has children, none is an orphan) is drawn exactly as in 0.3.
 
@@ -881,11 +878,20 @@ Flat lists: Ended, the "Waiting on you" queue and any filter draw rows without t
 | 409 `depth` (a sub-orchestrator request) | "<parent> can't start a sub-orchestrator. Only the main orchestrator can: nika allows three levels (orchestrator, sub-orchestrators, their agents). Nothing was started." |
 | 404 `not_found` with a parent | "<parent> is no longer running, so nothing was started. Close this and spawn from a session that is running." |
 
+When the project sets its own limit (0.4.0, below) the `parent` tail reads "Wait for one to finish, or raise “Per orchestrator” on this project’s New agents card." instead, because raising the Settings value would change nothing for it; the server's message for the same refusal says the same.
+
 The 409 `limit` copy is chosen by the body's `scope` (`parent` or `project`) and uses its `running` and `max`; a body that does not parse, a 409 `depth` on a plain agent request, a 404 with no parent (or with an `under` pane, which may be the one that is gone) and every other refusal show the server's own message. Sub-orchestrators count toward their parent's limit and the project cap.
 
 **Spawn sheet.** The title and button read "Spawn agent" or "Spawn sub-orchestrator". A `dl.kv.sp-kv` row "Parent" shows "<name> · orchestrator|sub-orchestrator · pane %3", or "None. You start it from nika.". A **Role** fieldset has two radio cards, Agent ("Does one task and reports back.") and Sub-orchestrator ("Plans the work and spawns up to <N> agents of its own. It may run only nika spawn and nika status."). When the parent cannot have a sub-orchestrator (none, or a sub-orchestrator) the radio is `disabled`, its card gets `data-off="true"` (50 % opacity) and `p.help#sp-role-why` (full contrast, the radio's `aria-describedby`) says why: "Sub-orchestrators run under the orchestrator. Use Spawn sub-orchestrator in the header, or the orchestrator's row menu." / "Only the main orchestrator can start sub-orchestrators: nika allows three levels." Switching the role changes the title, the button, the brief help, the name (only while it still holds the last default, `builder-N` or `lead-N`) and the model (only while the select is untouched: Roles › Builder, or › Orchestrator). The remembered model, permission mode and placement are kept per project and role. The footer note counts at open time: "<parent>: 2 of 3 · <project>: 5 of 9 running" (or "Spawned from nika: …"; names cut at 24). The request carries `role` (`agent` or `orchestrator`) and, with a parent, `parent` (its pane); the header's Spawn agent sends no parent. Success toast: "Spawned builder-3 in pane %12", "Spawned builder-3 under planner in pane %12" or "Spawned sub-orchestrator lead-1 under planner in pane %9", with **Open session**. A refusal keeps every field and puts the copy in the sheet's alert, with focus on it.
 
-**Settings and the New agents card.** Settings › Panes and limits: the label "Agents per project at once" is now **Agents per orchestrator**; help: "1 to 8. How many agents each orchestrator can run at once; the agents you spawn from nika share one more such limit. One project runs at most 3 times this number, and never more than 24." The Models section line ends "A project can override them on its page." The project page's **New agents** card lists Permission mode, Pane, **Per orchestrator** "<N> at once", **Spawned from nika** "<r> of <N>" and **This project** "<r> of <cap> running"; the `.limit` note appears at the project cap ("Limit reached: <r> of <cap> agents are running in this project. Spawning is off until one ends.") or when your own bucket is full ("Limit reached: you run <r> of <N> agents spawned from nika. Spawn from an orchestrator's row, or wait for one to end."). Remove project: "nika stops listing this project and forgets its plugin and model choices and its saved orchestrator. No files change and running agents keep running."
+**Settings and the New agents card.** Settings › Panes and limits: the label "Agents per project at once" is now **Agents per orchestrator**; help: "1 to 8. How many agents each orchestrator can run at once; the agents you spawn from nika share one more such limit. One project runs at most 3 times this number, and never more than 24." The Models section line ends "A project can override them on its page." The project page's **New agents** card lists Permission mode, Pane, **Per orchestrator** "<N> at once", **Spawned from nika** "<r> of <N>" and **This project** "<r> of <cap> running"; the `.limit` note appears at the project cap ("Limit reached: <r> of <cap> agents are running in this project. Spawning is off until one ends.") or when your own bucket is full ("Limit reached: you run <r> of <N> agents spawned from nika. Spawn from an orchestrator's row, or wait for one to end."). Remove project: "nika stops listing this project and forgets its plugin, model, permission mode, pane and agent limit choices and its saved orchestrator. No files change and running agents keep running."
+
+**(built amendment 2026-11-13 (0.4.0)) New agents: this project's mode, pane and limit.** The values of **Permission mode**, **Pane** and **Per orchestrator** are menu buttons (the disclosure menu `menuEl`: one open at a time, Esc closes and returns focus). Each can be the project's own or left on Settings; the project's value wins for that item only, and Settings stays the default for every project.
+- *Button.* The current value and a chevron: the mode as its tag (own colour, icon and word, as above), the pane as its words ("Beside", "Under the last agent"), the limit as "<N> at once". While the project has no value of its own a muted "from Settings" follows the button. `aria-label`: "Permission mode for <project>: Auto, from Settings" (", set for this project" when it is the project's own). Before Settings has loaded the rows read "–", "–" and "3 at once" as plain text, with no menu.
+- *Menu.* First "Use Settings (<Settings value>)", then, under a rule, every choice: Default, Manual, Accept edits, Plan, Auto, Don't ask (never Bypass); Beside, Under the last agent; "1 at once" to "8 at once". The current choice has a check icon and `aria-current="true"`; every item keeps a 16 px slot for the check so the words line up. Items are words only; the tag is on the button. `data-fk`: the button `agent-<field>` (`permissionMode`, `panePlacement`, `maxAgents`), the items `agent-<field>:settings` and `agent-<field>:<value>`.
+- *Picking.* Sends the one-field `PUT /api/app/projects/:key/config` (contract §3; "Use Settings" sends `null`), then draws the card again and toasts "<Item> saved for <project>: <value>. Sessions nika starts from now on use it." or "<Item> for <project> now follows Settings: <value>. …", plus " Apply rules to update rules/orchestration.md." while a rules file nika wrote exists (the file lists these three values). A refusal or a lost connection is an error toast with the server's message ("Could not reach the nika server.") and the old value stays. A second pick of the same item while its save is on the way is ignored.
+- *Elsewhere.* "Spawned from nika <r> of <N>", "This project <r> of <cap> running" and the `.limit` note use the project's limit. In the spawn sheet the permission select's first option reads "Use this project's setting: <effective mode>" and the pane choice "<effective pane> (from Settings)" or "(set for this project)". An explicit mode in the sheet or on the CLI still wins.
+- *`menuEl`.* Two optional additions, existing callers unchanged: a fourth argument, the button's content in place of the "⋯" icon (class `btn ghost menu-val`), and a per-item `current` flag (once any item has it, every item gets the check slot).
 
 Test hooks (`data-fk`): tree toggle `tree:<scope>:<id>`, header `spawn-sub:<key>`, row items `spawn-under:` and `spawn-sub:` (§3.16), sheet `sp-parent`, `sp-role-agent`, `sp-role-orch`; ids `sp-role`, `sp-role-why`, `sp-note`, `limit-note`.
 
@@ -990,6 +996,32 @@ inline: "Context" (muted), "312k / 400k ·" (`.hide-narrow`: gone at ≤ 1000 px
 Colour is never alone: the number is always there, `full` also has the warning icon, and the sentence for screen readers carries the level.
 Ids and classes: `sess-ctx`, `.c-ctx`, `.ctx`, `.ctx-l`, `.ctx-t`, `.ctx-v`, `.ctx-bar`; tokens in `public/tokens.css`.
 
+### 3.20 Settings drawer (0.4.0)
+
+On a window 1030 px wide or narrower (§6) the project page shows only the agents. Its three cards, **Rules**, **Project setup** and **New agents**,
+move into a drawer that the **Settings** button opens (owner decision 2026-11-13; renamed and moved to the title row, owner decision 2026-11-14). Above 1030 px nothing changes: agents plus the 320 px column, and no button.
+
+- **Button.** In the title row, at the far right, right before "Show ended": `< Dashboard  <project>  <rules chip>  [gear Settings]  [ ] Show ended`. It leaves the actions row
+  (Start orchestrator, Spawn agent, Spawn sub-orchestrator, ⋯). The gear icon (`#i-gear`) and the word "Settings" (`button.btn.setup-open`, `aria-haspopup="dialog"`,
+  `aria-controls="dlg-setup"`, `data-fk="setup:<project key>"`); the ids and the key keep the old "setup" name. The word is plain text, not a `.lbl` span, so no breakpoint hides it:
+  the visible word is the accessible name (WCAG 2.5.3) and the button needs no `aria-label` or `title`. It is hidden by CSS above 1030 px and never disabled. It is rendered into
+  `#proj-settings`, an empty host (`display: contents`) inside `.bar-end`, the flex group that holds the host and the Show ended box, so the two wrap together: when the row is
+  too narrow the group moves under the title as one unit. The "Rules current/outdated" chip stays next to the project name, so a rules warning shows with the drawer closed.
+- **Drawer.** `<dialog id="dlg-setup" class="sheet">`, the Spawn sheet's look, keys and animation (§3.6): `showModal()`, the scrim, Esc, the × button and a
+  click on the scrim close it. A press that starts inside the drawer and ends on the scrim (dragging a selection out) does not. Header: "Settings" with the project name
+  as a muted line (it tells this drawer from the app's Settings page); the body scrolls and the header stays; it opens at the top. Focus moves to the heading on open and back to the Settings button on close
+  (found again by its `data-fk` if a render replaced the button). A hash change (the "Settings" link in the Project setup card, or a way back) closes it.
+- **One home for the cards.** `setupCards()` stays the only builder. Narrow, the cards live in the drawer body (`#su-body`) and `#proj-setup` is empty and hidden;
+  wide, they live in `#proj-setup` and the body is empty; never both, so no id appears twice. A render while the drawer is open rebuilds the cards inside it, keeps it
+  open and keeps focus on the control that survives (by `data-fk`). The app polls only while no dialog is open, so the counts in New agents refresh when it closes.
+  When the window grows past 1030 px with the drawer open it closes, the cards go back to the column and the project heading takes focus; shrinking moves them into the drawer.
+- **Dialogs from the cards.** Preview rules, Choose plugins…, Choose models… and the confirm dialog open on top of the drawer (`openDialog(dlg, { keep })`); Esc closes the top
+  one only, and focus returns to the button that opened it inside the drawer. Any other pair of dialogs still closes the first.
+- **Menus.** The New agents value menus work inside the drawer. Esc closes an open menu first and the drawer stays. A menu opens above its button when it does not
+  fit below and does fit above inside the drawer body; otherwise it opens below and the body scrolls to show all of it, so it is never cut off (measured at 900 × 700 and 900 × 480).
+- Browser tier: unchanged (the project page, the button and the drawer are app-only).
+- Edge cases: a project that is not registered empties both homes; without `matchMedia` the page counts as wide.
+
 ## 4. Keyboard model
 
 Mod = ⌘ on macOS, Ctrl on Linux. No single-character shortcuts (WCAG 2.1.4), with one exception the owner asked for
@@ -1009,7 +1041,15 @@ Mod = ⌘ on macOS, Ctrl on Linux. No single-character shortcuts (WCAG 2.1.4), w
 | Mod+Enter | Submit the open form (Spawn agent, Save settings) | |
 | ? · Mod+/ | Keyboard shortcuts (§4.6) | `?` only outside text entry and while "Single-key shortcuts" is on |
 | Mod+Shift+H | Show or hide the transcript (session window) | Direction A, **(built amendment 2026-11-09 (0.3.4))**: the key of the **Transcript** toggle (§4.7); wide windows only; direction B's drawer is not built |
+| Mod+Q | Quit nika | **(built amendment 2026-11-13 (0.4.0, F2))** macOS: the app menu. Linux: the page, as Ctrl+Q, through `POST /api/app/window` (`quit`); also while "Type into pane" is on |
+| Mod+W | Close the window | macOS: the app menu. Linux: the page, as Ctrl+W (`close`); not while "Type into pane" is on, where Ctrl+W goes to Claude |
+| Mod+= (Ctrl++ too on Linux) · Mod+- · Mod+0 | Zoom in · zoom out · actual size | macOS: the View menu. Linux: the page (`zoom-in`, `zoom-out`, `zoom-reset`); also while "Type into pane" is on. A held zoom key repeats; a held Ctrl+Q or Ctrl+W acts once |
 | Tab / Shift+Tab | Normal order: skip link → sidebar → main → … | |
+
+The window keys above are the only keys the page adds for the OS's default shortcuts. Everything a text field does natively (copy, cut,
+paste, select all, undo, redo, on both platforms) is never prevented by nika's key handlers: the message box (`composerKey`), the
+dashboard's and the session window's global handlers and the window keys leave Ctrl/Command+C/X/V/A/Z/Y and Ctrl+Shift+Z alone, and Ctrl+C
+in the message box is Stop only when nothing is selected. macOS Command keys are never read by the page.
 
 Shortcuts are listed in the UI next to their targets (`<kbd>` in nav, `title`), and in `aria-keyshortcuts`.
 
@@ -1032,10 +1072,13 @@ empty (owner decision 2026-11-09). One pure function holds the rules: `composerK
 | Ctrl+Shift+Tab | moves focus back, to the Shell toggle | not sent (not on the allow-list) |
 | ↑ ↓ ← → | empty box: sent to the pane in batches (a batch holds ≤ 8 keys and goes out at the 8th key or 120 ms after the first, whichever is first; held repeats dropped while 2 batches wait); text in the box: caret; palette: ↑ ↓ choose | sent as KEY_NAME |
 | Home End PgUp PgDn ⌫ Del | edit the box | sent as KEY_NAME |
-| Ctrl+U/K/A/E/L/R/W | box editing | sent as C-u … C-w |
+| Ctrl+U/K/A/E/L/R | box editing | sent as C-u … C-r |
+| Ctrl+W | Linux: closes the window (§4.1); macOS: left to the browser | sent as C-w (Close is not a window key here) |
+| Ctrl+Shift+C | **(0.4.0)** left to the text field (no engine copies with it there), never Stop; Ctrl+C is Stop only with nothing selected | **(built amendment 2026-11-13 (0.4.0, F2))** copies the text selected in the mirror to the clipboard; sends nothing. "Select text in the terminal first, …" (3 s) when nothing in the mirror is selected |
+| Ctrl+Q, Ctrl+=, Ctrl++, Ctrl+-, Ctrl+0 (Linux) | window keys (§4.1) | window keys (§4.1), not sent to the pane and no "Not sent" message |
 | Ctrl+] | enter passthrough | **leave** passthrough (the only key nika keeps) |
 | ⌘ shortcuts (macOS) | app shortcuts | still app shortcuts (not sent) |
-| paste (Mod+V) | inserted; multi-line → paste chip | sent as one bracketed paste (≤ 16 KB) |
+| paste (Mod+V; on Linux also Ctrl+Shift+V) | inserted; multi-line → paste chip | sent as one bracketed paste (≤ 16 KB). Ctrl+V (Linux) and Ctrl+Shift+V are not cancelled: the browser pastes and the mirror's `paste` handler sends it. WebKitGTK maps Ctrl+V to its Paste command and Ctrl+Shift+V to PasteAsPlainText (`Source/WebKit/UIProcess/gtk/KeyBindingTranslator.cpp`, read 2026-11-13); both fire the DOM `paste` event. Checked by reading the source, not yet on a Linux build: on the owner's 0.4.0 Linux checklist. On macOS Ctrl+V is not on the allow-list (Command+V pastes) |
 | other keys | — | not sent; echo "Not sent: Alt-x is not on the allow-list" |
 
 The box is never a keyboard trap: Tab leaves forward, Ctrl+Shift+Tab backward. Its accessible name says so: "Message
@@ -1056,7 +1099,7 @@ Esc closes the **nearest nika layer**; only when nothing is open does it reach t
 
 ### 4.4 Dialogs
 
-Native `<dialog>.showModal()`: background is inert, Tab cycles inside, Esc fires `cancel`. Initial focus: the element with `autofocus` (first field in spawn, Done on success), else the dialog's `h2` (`tabindex="-1"`). On close, focus returns to the opener; if the opener is gone (row re-rendered), to the screen's `h1`.
+Native `<dialog>.showModal()`: background is inert, Tab cycles inside, Esc fires `cancel` (the Settings drawer lets Esc close an open menu inside it first, §3.20). Initial focus: the element with `autofocus` (first field in spawn, Done on success), else the dialog's `h2` (`tabindex="-1"`). On close, focus returns to the opener; if the opener is gone (row re-rendered), to the screen's `h1`.
 
 ### 4.5 Skip links and landmarks
 
@@ -1105,6 +1148,11 @@ Dashboard (app tier):
 | | Keyboard shortcuts | ? or Mod+/ | Show this list |
 | Dialogs and menus | Run the main action | Mod+Enter | Spawn, save or apply in the open dialog or in Settings |
 | | Close | Esc | Close the open menu or dialog |
+| Window **(0.4.0, F2)** | Quit nika | Mod+Q | Quit the app (your agents keep running in tmux) |
+| | Close window | Mod+W | Close this window |
+| | Zoom in | ⌘= / Ctrl+= or Ctrl++ | Make the window content larger |
+| | Zoom out | Mod+- | Make the window content smaller |
+| | Actual size | Mod+0 | Reset the zoom |
 
 Dashboard (browser tier): Keyboard shortcuts — Mod+/ — Show this list; Close — Esc — Close the open menu. (`?` is app-tier
 only: the browser tier cannot store the setting that turns it off.)
@@ -1116,6 +1164,11 @@ Session window:
 | Window | Back | ⌘[ / Alt+← | Back to the dashboard |
 | | Show or hide transcript | Mod+Shift+H | Give the terminal the full width (wide windows; narrow ones have tabs) |
 | | Keyboard shortcuts | ? or Mod+/ | Show this list |
+| | Quit nika | Mod+Q | Quit the app (your agents keep running in tmux), also while typing into the pane |
+| | Close window | Mod+W | Close this window (while typing into the pane, Ctrl+W goes to Claude) |
+| | Zoom in | ⌘= / Ctrl+= or Ctrl++ | Make the window content larger |
+| | Zoom out | Mod+- | Make the window content smaller |
+| | Actual size | Mod+0 | Reset the zoom |
 | Message box | Send | Enter | Send the text, then Enter, to Claude (empty box: Enter only) |
 | | New line | Shift+Enter | Start a new line in the message box |
 | | Press Esc in Claude | Esc | Stop Claude's turn or close Claude's menu (when nothing in nika is open) |
@@ -1126,13 +1179,15 @@ Session window:
 | | Commands | / | Open the command list (at the start of an empty box) |
 | | Type into the pane | Ctrl+] | Send every key straight to Claude's terminal |
 | Typing into the pane | Stop typing into the pane | Ctrl+] | Keys go to the message box again |
+| | Copy | ⌘C / Ctrl+Shift+C | Copy the text selected in the terminal (Ctrl+C goes to Claude) |
+| | Paste | ⌘V / Ctrl+Shift+V or Ctrl+V | Send the clipboard to Claude as one paste |
 | Mode switcher | Move between modes | ← → Home End | Moves focus; does not switch |
 | | Switch | Enter or Space | Switch to the focused mode |
 | Command list | Move | ↑ ↓ | Move through the commands |
 | | Insert | Enter or Tab | Put the command in the message box |
 | | Close | Esc | Close the list and keep the text |
 
-**(built amendment 2026-11-09 (0.3.3))** Next permission mode, Arrow keys in Claude and Move focus back are new; Interrupt now stops the turn through the Stop route and keeps the selection rule. **(built amendment 2026-11-09 (0.3.4))** Show or hide transcript is new (§4.7).
+**(built amendment 2026-11-13 (0.4.0, F2))** The Window group gains Quit nika, Close window, Zoom in, Zoom out and Actual size (the dashboard gets the same five as a Window group of its own); Typing into the pane gains Copy and Paste. **(built amendment 2026-11-09 (0.3.3))** Next permission mode, Arrow keys in Claude and Move focus back are new; Interrupt now stops the turn through the Stop route and keeps the selection rule. **(built amendment 2026-11-09 (0.3.4))** Show or hide transcript is new (§4.7).
 
 **Settings.** Settings → Appearance gets a checkbox **Single-key shortcuts** (on by default), help text "Press ? to show
 keyboard shortcuts. Turn this off if you use speech input or single-key commands." Stored as `ui.singleKeyShortcuts`
@@ -1265,7 +1320,7 @@ ANSI 0 on the dark surface is deliberately close to the background: programs use
 | Toasts | `role="status"` (info) / `role="alert"` (error) |
 | Banners (tmux missing, offline) | `role="alert"` on first appearance only |
 | Terminal mirror | `role="region"`, `aria-label="Live terminal of builder-1, pane %12"`, `tabindex="0"`, **not** a live region; in passthrough `role="application"` with the exit instruction in its label |
-| Mirror echo ("Sent … to %12") | polite live region |
+| Mirror echo ("Sent … to %12") | polite live region, visually hidden (`.sr-only`), not shown to sighted users since 0.4.0 |
 | Transcript | `ol` of entries; each entry has who + time; folded parts are `<details>` / `<summary>` |
 | Rows | `ul` > `li`; name is a link; status text present (visually hidden when compact) |
 | Counts | glyphs `aria-hidden`, numbers followed by `sr-only` words |
@@ -1278,6 +1333,14 @@ ANSI 0 on the dark surface is deliberately close to the background: programs use
 ### 5.5 Screen-reader text for status
 
 Row: "reviewer-2, Needs you: Asking to run a command, model opus, demo-api, 4 minutes ago, pane %14". Session header: "builder-1, Working, demo-api, sonnet, pane %12" (an orchestrator: "planner, orchestrator, Working, demo-api, …"; the badge's long word is always read, the short one is `aria-hidden`). **(0.4)** The context meter adds one sentence after the model, in both: "…, Fable 5.1, Context 78 % used, 312k of 400k tokens, compacts at 320k, pane %3" (§3.19 has the other forms). Tray: "demo-api — 1 needs you, 1 waiting, 2 working".
+
+### 5.5a Tooltips on icon-only controls (0.4.0)
+
+A control that shows an icon or a symbol and no words, always or only below a breakpoint, carries a `title` equal to its accessible name, so a
+hover says what it is: the dialogs' × buttons, the steppers' − and +, the project tree's fold button, Copy backup path, the sidebar links and
+the Add project button on the 60 px rail, the status glyph on a narrow row (its word is hidden), and the tmux and claude dots on the rail. A
+control that already has a different title (a disabled item's reason) keeps it. A button whose words stay at every width, such as the project page's Settings button (§3.20), is not an icon control and needs none. `test/tooltips.test.js` reads every page in `public/` and fails
+on an icon or symbol control without a title; the controls that page code builds are asserted in the tests that run that code.
 
 ### 5.6 Target size (2.5.8)
 
@@ -1301,15 +1364,15 @@ Window minimum: **720 × 480** (set `minWidth`/`minHeight` in the Tauri window c
 |---|---|---|---|---|
 | ≥ 1280 | sidebar 232 | all 7 columns | agents + 320 px cards column | split 38 % / 62 % |
 | 1031–1279 | sidebar 232 | rows container ≤ 1010 (browser tier ≤ 860): model + pane hidden, status glyph only | as above | split, transcript min 300 |
-| 1000–1030 | sidebar 232 | as above | one column, cards below agents (0.4: beside the cards the list is under 424 px) | split, transcript min 300 |
-| 900–999 | sidebar 232 | as above | one column, cards below agents | **tabs**: Terminal (default) / Transcript |
-| 760–899 | 60 px icon rail, attention counts as corner badges, names in `title` + SR text | group action labels hidden (icon buttons) | one column | tabs; header labels hidden |
-| 720–759 | rail | rows ≤ 600: prompt on a 2nd line; path hidden | one column | tabs; hint line: the two short tips (§3.10) |
+| 1000–1030 | sidebar 232 | as above | agents only; cards in the Settings drawer (§3.20), its button in the title row | split, transcript min 300 |
+| 900–999 | sidebar 232 | as above | agents only; cards in the Settings drawer | **tabs**: Terminal (default) / Transcript |
+| 760–899 | 60 px icon rail, attention counts as corner badges, names in `title` + SR text | group action labels hidden (icon buttons) | agents only; cards in the Settings drawer (the button keeps its word) | tabs; header labels hidden |
+| 720–759 | rail | rows ≤ 600: prompt on a 2nd line; path hidden | agents only; cards in the Settings drawer | tabs |
 
 Session details:
-- The composer (quick actions, message box, mode row, hint line) is always visible; the mirror takes the remaining height (min 120 px). **(built amendment 2026-11-09 (0.3.3))**
+- The composer (quick actions, message box, mode row, notes row) is always visible; the mirror takes the remaining height (min 120 px). **(built amendment 2026-11-09 (0.3.3))**
 - Mirror never wraps or scales: a 92-column pane at 12 px mono is ~670 px; wider panes scroll horizontally inside the mirror. Font never below 11 px.
-- Height < 560 px: the hint line tips hide (the mode row stays); the transcript tab keeps "Load older" sticky at the top. **(built amendment 2026-11-09 (0.3.3))**
+- The transcript tab keeps "Load older" sticky at the top. **(built amendment 2026-11-09 (0.3.3))**
 - Above 1000 px the **Transcript** toggle (§4.7) can hide the transcript column and give the terminal the full width; at 1000 px and below the toggle is not shown and the tabs stay. **(built amendment 2026-11-09 (0.3.4))**
 
 Rules dialog ≤ 900 px: the file list becomes a horizontal strip above the diff. Settings ≤ 900 px: the in-page index hides and field pairs stack. **(built amendment 2026-11-09 (0.3.4))** The Choose plugins dialog is min(560, vw−32) × min(640, vh−32) at every width (so it still fits 720 × 480); only its list scrolls, and a long plugin name wraps instead of widening the row.
@@ -1326,7 +1389,7 @@ B: centred column max 760 px; drawer pushes ≥ 1180 px and overlays below. C: l
 | Long agent name (≤ 40 by `AGENT_NAME`) | ellipsis in rows and tiles; full in the session header |
 | Long branch | chip max 22ch, ellipsis, full in `title` |
 | Long prompt | one line with ellipsis in rows; 2 lines (`line-clamp`) in cards/tiles; full in the session header tooltip and the transcript |
-| 50+ agents | ended folded per project; live rows per project capped at 12 with "Show N more"; Mod+F filter by name, prompt or branch; sidebar shows only attention counts; announcements grouped; C caps lanes at 6 tiles and turns tails off for tiles beyond the first 12 on screen |
+| 50+ agents | ended folded per project; live rows never capped, the Ended section draws 12 rows then "Show N more ended agents"; Mod+F filter by name, prompt or branch; sidebar shows only attention counts; announcements grouped; C caps lanes at 6 tiles and turns tails off for tiles beyond the first 12 on screen |
 | Very long transcript entry | text > 12 lines clamps with "Show all N lines"; tool output in a `<pre>` (max-height 22em, scroll); entries > 32 KB arrive with `truncated: true` → "This entry is over 32 KB; nika shows the first part only."; history pages of 50 with "Load older" (keeps scroll position) |
 | 200-column terminal | rendered at full width with horizontal scroll; header shows "200 × 50"; jump-to-live also scrolls to column 0 |
 | Wide characters (CJK, emoji) | rendered as text; column math must count terminal cells (wide = 2), see Risks |
@@ -1441,7 +1504,7 @@ box (§9.3); the `.bar-end` wrapper is gone and `.bar-tools` holds the two butto
 
 Segmented toolbar: Manual, Accept edits, Plan, Auto (`MODE_TARGETS`). Don't ask is never a segment. **Bypass is never a segment in 0.3** (product spec §6.3: only for panes nika launched with bypass allowed, which arrives in 0.4; the mode route refuses it as a target). A bypass footer in 0.3 shows only as the current-mode tag, with the switcher in its "Bypass current (0.3)" state below. The two Bypass segment rows below are the 0.4 look.
 
-**(built amendment 2026-11-09 (0.3.3))** Placement: under the message box, in `div.mode-row#mode-row` (§3.10 order): a muted "Mode" word (`aria-hidden`; the toolbar has its own label), the toolbar, then `#msw-why`. The row is hidden until the switcher is wired (no pane: no row).
+**(built amendment 2026-11-09 (0.3.3))** Placement: under the message box, in `div.mode-row#mode-row` (§3.10 order): the toolbar (labelled "Permission mode" for screen readers; the visible "Mode" word was removed in 0.4.0, owner 2026-11-13), then `#msw-why`. The row is hidden until the switcher is wired (no pane: no row).
 
 Anatomy: `div.msw[role="toolbar"][aria-label="Permission mode"][aria-describedby="msw-why"]` > `button.<mode cls>[aria-pressed]` (icon + label) ×4 (×5 in 0.4 with Bypass), then `span#msw-why.msw-why` (info icon + reason text) when the switcher can't act. `#msw-why` is not a live region (it flips with every working/waiting change); a result message (below) is announced once through the window's announcer. The switcher is disabled while a `prompt` is open, `mode` is `unknown` or `modeConfirmed` is `false` (`docs/contracts/api-app.md`: the route would answer 409).
 
@@ -1591,7 +1654,7 @@ Shell: a 26 px toggle at the left edge inside the message box: `i-shell` (`$`) +
 | toggle | `--surface`, `--line-strong` edge, `--text-muted`, chip "off" | `--shell` fill, `--on-shell` text, chip "on" |
 | message box | mode edge (§9.1), prompt sign "›" | 2 px `--shell` border instead of the mode edge, prompt sign "!" in `--shell` |
 | placeholder | "Message builder-1…" | "Shell command for Claude's ! mode…" |
-| hint line | — | "Shell on: Enter runs this through Claude's ! mode, then shell turns off." |
+| notes row | — | "Shell on: Enter runs this through Claude's ! mode, then shell turns off." |
 
 Ink is shell's own colour: it is not a mode hue, a status hue or the accent, and it matches the terminal look of the mirror. (Claude's own `!` mode border is pink, which would collide with Needs you.)
 
@@ -1634,7 +1697,7 @@ Anatomy: header row "**Commands**" + muted "6 match /co" on the left, key hints 
 - Order: `rankCommands` (exact name match first, then name prefix, then name substring, then description), ≤ 50.
 - **The first option is active on open and after every keystroke that filters**, so Enter always has a target while the list has one.
 - Empty: "No command matches /xyz. Enter sends the text as typed." Loading: "Loading commands…". Error: "Couldn't load the command list. Enter sends the text as typed."
-- **(built amendment 2026-11-09 (0.3.3))** The hint line has no "/ commands" tip any more (the Commands button and the Keyboard shortcuts window name it). After insert, it shows the argument hint: "Arguments: [model]" (a textarea placeholder can't show it once there is text).
+- **(built amendment 2026-11-09 (0.3.3))** The notes row (once the hint line) has no "/ commands" tip any more (the Commands button and the Keyboard shortcuts window name it). After insert, it shows the argument hint: "Arguments: [model]" (a textarea placeholder can't show it once there is text).
 
 Keyboard (focus never leaves the textarea): ↑ ↓ move the active option (no wrap); Enter or Tab inserts `/<name> ` and closes; Esc closes and keeps the text (an Esc ladder step before "send Escape to the pane"); typing filters and makes the first option active again; a space closes it. Enter on an exact match inserts it like any other option (`/compact` + Enter gives `/compact `; a second Enter sends). With no match (empty list, loading or error), Enter sends the text as typed. Click inserts.
 

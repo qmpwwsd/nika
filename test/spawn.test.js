@@ -8,9 +8,10 @@ import path from 'node:path';
 import { spawnAgent, runAgent, deniedTools } from '../src/spawn.js';
 import { startOrchestrator, sessionNameFor } from '../src/orchestrate.js';
 import { TMUX_SESSION, AGENT_NAME } from '../src/ids.js';
+import { NO_TMUX_SERVER } from '../src/tmuxerr.js';
 import { WINDOW_ENV, PCT_ENV } from '../src/compact.js';
 import { reportsDir } from '../src/paths.js';
-import { addProject } from '../src/store.js';
+import { addProject, updateProjectConfig } from '../src/store.js';
 import { ensureDir, writeAtomic } from '../src/fwrite.js';
 import { collect } from '../src/model.js';
 import { indexReports } from '../src/collect/reports.js';
@@ -27,8 +28,9 @@ after(() => worlds.forEach((w) => w.cleanup()));
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const LIST_ALL = [TMUX, '-u', 'list-panes', '-a', '-F', '#{pane_id}\t#{session_name}\t#{window_index}\t#{pane_title}\t#{pane_current_command}\t#{@nika-role}\t#{@nika-agent}\t#{@nika-depth}\t#{@nika-parent}'];
-const LIST_AGENTS = [TMUX, '-u', 'list-panes', '-a', '-F', '#{pane_id}\t#{@nika-role}\t#{@nika-agent}\t#{@nika-depth}\t#{@nika-parent}\t#{session_name}\t#{window_name}'];
+const LIST_AGENTS = [TMUX, '-u', 'list-panes', '-a', '-F', '#{pane_id}\t#{pane_dead}\t#{@nika-role}\t#{@nika-agent}\t#{@nika-depth}\t#{@nika-parent}\t#{session_name}\t#{window_name}'];
 const OTHER_KEY = '0123456789abcdef'; // the key of some other project
+const CHECK = (pane) => [TMUX, '-u', 'display-message', '-p', '-t', pane, '#{pane_dead}']; // the early-exit check (F4), made once the pane is created and tagged
 const DENY_SETTINGS = '{"permissions":{"deny":["Read(**/.env*)","Edit(**/.env*)","Read(**/*.key)","Edit(**/*.key)"]}}';
 const DENIED = ['Bash(nika:*)', 'Bash(tmux:*)', 'Bash(claude:*)', 'Bash(git add:*)', 'Bash(git commit:*)', 'Bash(git push:*)'];
 const COMPACT_1M = { window: 400000, pct: '84.2106' }; // the default setting on a 1M model such as `sonnet`: W = 400k, 80 %
@@ -61,6 +63,7 @@ describe('spawnAgent: placement and files', () => {
       [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-role', 'agent'],
       [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-agent', `${w.project.key}/builder-1`],
       [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-depth', '1'],
+      CHECK('%20'),
       [TMUX, '-u', 'select-pane', '-t', '%20', '-T', '[%20] builder-1'],
     ]);
     assert.equal(mode(rd(w)), 0o700);
@@ -104,6 +107,24 @@ describe('spawnAgent: placement and files', () => {
     assert.equal(read(w, '.last-pane'), '%21\n');
   });
 
+  test('(+) the project\'s own placement beats Settings\': under-last for a project on beside, beside for a project on under-last; no choice of its own uses Settings', async () => {
+    const spawnTwo = async (w) => {
+      const exec = fakeTmux({ panes: BASE_PANES() });
+      const ctx = w.ctx(exec);
+      await spawnAgent(req(w, { name: 'one' }), ctx);
+      await spawnAgent(req(w, { name: 'two' }), ctx);
+      return exec.of('split-window')[1].slice(1, 4); // the second pane is the one that can go under the first
+    };
+    const a = await world({ panePlacement: 'beside' });
+    await updateProjectConfig(a.project.key, { panePlacement: 'under-last' }, a.env);
+    assert.deepEqual(await spawnTwo(a), ['-v', '-t', '%20']);
+    const b = await world({ panePlacement: 'under-last' });
+    await updateProjectConfig(b.project.key, { panePlacement: 'beside' }, b.env);
+    assert.deepEqual(await spawnTwo(b), ['-h', '-t', '=My-App:']);
+    assert.deepEqual(await spawnTwo(await world({ panePlacement: 'under-last' })), ['-v', '-t', '%20'], 'Settings alone still works');
+    assert.deepEqual(await spawnTwo(await world({ panePlacement: 'beside' })), ['-h', '-t', '=My-App:']);
+  });
+
   test('(−) under-last falls back to beside when .last-pane is dead, in another session, garbage or a symlink', async () => {
     const w = await world({ panePlacement: 'under-last' });
     const panes = [...BASE_PANES(), { id: '%50', session: 'elsewhere', window: 0, windowName: 'x', command: 'zsh' }];
@@ -145,18 +166,18 @@ describe('spawnAgent: placement and files', () => {
     assert.equal(fs.existsSync(rd(w)), false);
   });
 
-  test('(+) explicit session: =other: ; (−) a session that does not exist → 404 telling to start the orchestrator', async () => {
+  test('(+) explicit session: =other: ; (−) a session that does not exist and is not the project\'s → 404, nothing created; the project\'s own is created (F4)', async () => {
     const w = await world();
     const exec = fakeTmux({ panes: [...BASE_PANES(), { id: '%7', session: 'other', window: 0, windowName: 'x', command: 'zsh' }] });
     const ok = await spawnAgent(req(w, { session: 'other' }), w.ctx(exec));
     assert.equal(ok.body.session, 'other');
     assert.equal(exec.of('split-window')[0][3], '=other:');
     const none = await spawnAgent(req(w, { name: 'x', session: 'nope' }), w.ctx(exec));
-    assert.deepEqual([none.status, none.body.error], [404, 'not_found']);
-    assert.match(none.body.message, /orchestrator/);
-    // the default session is the project's orchestrator session; without it there is nowhere to go
-    const alone = await spawnAgent(req(w, { name: 'y' }), w.ctx(fakeTmux({ panes: [{ id: '%7', session: 'other' }] })));
-    assert.equal(alone.status, 404);
+    assert.deepEqual([none.status, none.body.error, none.body.message], [404, 'not_found', 'tmux session nope not found']);
+    // the default session is the project's own; without it the spawn creates it (F4)
+    const alone = fakeTmux({ panes: [{ id: '%7', session: 'other' }] });
+    const made = await spawnAgent(req(w, { name: 'y' }), w.ctx(alone));
+    assert.deepEqual([made.status, made.body.session, alone.of('new-session').length], [200, 'My-App', 1]);
   });
 
   test('(+) settings: default permission mode comes from the settings, the request overrides it', async () => {
@@ -166,6 +187,52 @@ describe('spawnAgent: placement and files', () => {
     await spawnAgent(req(w, { name: 'two', permissionMode: 'plan' }), w.ctx(exec));
     assert.equal(JSON.parse(read(w, 'one.agent.json')).permissionMode, 'acceptEdits');
     assert.equal(JSON.parse(read(w, 'two.agent.json')).permissionMode, 'plan');
+  });
+
+  test('(+) the project\'s own permission mode is the default of a spawn; the request still overrides it; no choice of its own uses Settings; default beats a Settings mode', async () => {
+    const w = await world({ permissionMode: 'acceptEdits', limits: { maxAgents: 8 } });
+    await updateProjectConfig(w.project.key, { permissionMode: 'plan' }, w.env);
+    const exec = fakeTmux({ panes: BASE_PANES() });
+    const ctx = w.ctx(exec);
+    const r1 = await spawnAgent(req(w, { name: 'one' }), ctx);
+    const r2 = await spawnAgent(req(w, { name: 'two', permissionMode: 'dontAsk' }), ctx);
+    assert.equal(JSON.parse(read(w, 'one.agent.json')).permissionMode, 'plan');
+    assert.equal(JSON.parse(read(w, 'two.agent.json')).permissionMode, 'dontAsk', 'an explicit request (the sheet, the CLI) wins');
+    assert.deepEqual([ctx.started.get(r1.body.pane).mode, ctx.started.get(r2.body.pane).mode], ['plan', 'dontAsk']);
+    await updateProjectConfig(w.project.key, { permissionMode: 'default' }, w.env);
+    const r3 = await spawnAgent(req(w, { name: 'three' }), ctx);
+    assert.equal(JSON.parse(read(w, 'three.agent.json')).permissionMode, 'default');
+    assert.equal(ctx.started.get(r3.body.pane).mode, 'manual');
+    await updateProjectConfig(w.project.key, { permissionMode: null }, w.env);
+    await spawnAgent(req(w, { name: 'four' }), ctx);
+    assert.equal(JSON.parse(read(w, 'four.agent.json')).permissionMode, 'acceptEdits', 'back to Settings');
+  });
+
+  test('(−) a project-level bypassPermissions that got past load (a hand-built config) is refused with 400: no tmux call, no agent file', async () => {
+    const w = await world({ permissionMode: 'plan' });
+    const { loadConfig } = await import('../src/store.js');
+    const { config } = await loadConfig(w.env);
+    config.perProject = { [w.project.key]: { permissionMode: 'bypassPermissions' } };
+    const exec = fakeTmux({ panes: BASE_PANES() });
+    const r = await spawnAgent(req(w, { name: 'one' }), { ...w.ctx(exec), loadConfig: async () => ({ config }) });
+    assert.equal(r.status, 400);
+    assert.equal(r.body.error, 'invalid');
+    assert.match(r.body.message, /bypassPermissions/);
+    assert.equal(exec.calls.length, 0, 'tmux is never called');
+    assert.throws(() => read(w, 'one.agent.json'), { code: 'ENOENT' });
+  });
+
+  test('(−) bypassPermissions in a project entry of a tampered config.json is dropped on load: the spawn takes the Settings mode and nothing carries bypass', async () => {
+    const w = await world({ permissionMode: 'plan' });
+    const file = path.join(w.env.NIKA_CONFIG_DIR, 'nika', 'config.json');
+    const cfg = JSON.parse(fs.readFileSync(file, 'utf8'));
+    cfg.perProject = { [w.project.key]: { permissionMode: 'bypassPermissions' } };
+    fs.writeFileSync(file, JSON.stringify(cfg));
+    const exec = fakeTmux({ panes: BASE_PANES() });
+    const r = await spawnAgent(req(w, { name: 'one' }), w.ctx(exec));
+    assert.equal(r.status, 200);
+    assert.equal(JSON.parse(read(w, 'one.agent.json')).permissionMode, 'plan');
+    assert.ok(!JSON.stringify(exec.calls).includes('bypass') && !read(w, 'one.agent.json').includes('bypass'));
   });
 
   test('(+) started records the launch permission mode: request, else settings; `default` (no flag) is manual', async () => {
@@ -299,9 +366,9 @@ describe('spawnAgent: refusals', () => {
     assert.equal(exec.calls.length, 0);
   });
 
-  test('(−) tmux missing → 503 tmux_unavailable: no binary, binary not runnable, or no server running', async () => {
+  test('(−) tmux missing → 503 tmux_unavailable: no binary, or the binary cannot be run (no server running is not an error any more, F4)', async () => {
     const w = await world();
-    for (const [exec, extra] of [[fakeTmux(), { tmuxBin: null }], [fakeTmux({ enoent: true }), {}], [fakeTmux(), {}]]) {
+    for (const [exec, extra] of [[fakeTmux(), { tmuxBin: null }], [fakeTmux({ enoent: true }), {}]]) {
       const r = await spawnAgent(req(w), w.ctx(exec, extra));
       assert.deepEqual([r.status, r.body.error], [503, 'tmux_unavailable']);
     }
@@ -520,6 +587,316 @@ describe('spawnAgent: limits and conflicts', () => {
   });
 });
 
+// --- F4: no tmux server or no project session, and the early-exit check -----------------------------------------------------
+
+describe('spawnAgent: no tmux server or no project session (F4)', () => {
+  const EXITED = 'Claude exited right after it started. Run `claude` once in a terminal in this folder to see why (for example, to log in).';
+  const newSession = (w, name = 'builder-1', session = 'My-App') => [TMUX, '-u', 'new-session', '-d', '-s', session, '-n', 'agents', '-c', w.project.dir, '-x', '200', '-y', '50', '-P', '-F', '#{pane_id}', '--', ...NIKA_ARGV, '_run-agent', w.project.key, name];
+  const OTHER = { id: '%7', session: 'other', window: 0, windowName: 'zsh', command: 'zsh' };
+
+  test('(+) no tmux server: one new-session with the pinned argv creates the project session, the pane is tagged and titled, 200', async () => {
+    const w = await world();
+    const exec = fakeTmux();
+    const ctx = w.ctx(exec);
+    const r = await spawnAgent(req(w), ctx);
+    assert.deepEqual(r, {
+      status: 200,
+      body: { pane: '%20', session: 'My-App', sessionId: null, reports: { dir: rd(w), session: 'builder-1.session', report: 'builder-1.md', rc: 'builder-1.rc', remote: 'builder-1.remote' } },
+    });
+    assert.deepEqual(exec.calls, [
+      LIST_ALL, // no server: both listings fail, which is "no panes", not an error
+      LIST_AGENTS,
+      newSession(w),
+      [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-role', 'agent'],
+      [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-agent', `${w.project.key}/builder-1`],
+      [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-depth', '1'],
+      CHECK('%20'),
+      [TMUX, '-u', 'select-pane', '-t', '%20', '-T', '[%20] builder-1'],
+    ]);
+    assert.deepEqual(ctx.slept, [1000]);
+    assert.equal(exec.of('split-window').length, 0);
+    assert.deepEqual(exec.panes.map((p) => [p.id, p.session, p.windowName, p.role, p.agent, p.depth]), [['%20', 'My-App', 'agents', 'agent', `${w.project.key}/builder-1`, '1']]);
+    assert.deepEqual(ctx.started.get('%20'), { key: w.project.key, name: 'builder-1', sessionId: null, role: 'agent', parent: null, depth: 1, mode: 'manual' });
+    assert.equal(read(w, '.last-pane'), '%20\n');
+    assert.deepEqual(JSON.parse(read(w, 'builder-1.agent.json')), { model: 'sonnet', permissionMode: 'default', rc: '', role: 'agent', parent: null, depth: 1, compact: COMPACT_1M });
+  });
+
+  test('(+) a server runs but has no project session (only the user\'s own): the same new-session, the other session is left alone', async () => {
+    const w = await world();
+    const exec = fakeTmux({ panes: [OTHER] });
+    const r = await spawnAgent(req(w), w.ctx(exec));
+    assert.deepEqual([r.status, r.body.pane, r.body.session], [200, '%20', 'My-App']);
+    assert.deepEqual(exec.of('new-session'), [newSession(w).slice(2)]);
+    assert.deepEqual([exec.of('split-window').length, exec.panes.find((p) => p.id === '%7').session], [0, 'other']);
+    assert.deepEqual(exec.panes.find((p) => p.id === '%20').session, 'My-App');
+  });
+
+  test('(+) the project session exists: unchanged, a split-window beside, no new-session', async () => {
+    const w = await world();
+    const exec = fakeTmux({ panes: BASE_PANES() });
+    const r = await spawnAgent(req(w), w.ctx(exec));
+    assert.deepEqual([r.status, r.body.session], [200, 'My-App']);
+    assert.equal(exec.of('new-session').length, 0);
+    assert.deepEqual(exec.of('split-window')[0].slice(1, 4), ['-h', '-t', '=My-App:']);
+  });
+
+  test('(+) the session just created is the project session for the next spawn: under-last now has a last pane to split under (placement only when the session exists)', async () => {
+    const w = await world({ panePlacement: 'under-last' });
+    const exec = fakeTmux();
+    const ctx = w.ctx(exec);
+    assert.equal((await spawnAgent(req(w, { name: 'one' }), ctx)).status, 200);
+    assert.equal((await spawnAgent(req(w, { name: 'two' }), ctx)).status, 200);
+    assert.deepEqual([exec.of('new-session').length, exec.of('split-window').length], [1, 1]);
+    assert.deepEqual(exec.of('split-window')[0].slice(1, 4), ['-v', '-t', '%20']); // under-last now has a last pane
+  });
+
+  test('(+) under-last with no session yet: placement is ignored (the stale .last-pane of an earlier run changes nothing)', async () => {
+    const w = await world({ panePlacement: 'under-last' });
+    await put(w, '.last-pane', '%1\n');
+    const exec = fakeTmux();
+    assert.equal((await spawnAgent(req(w), w.ctx(exec))).status, 200);
+    assert.deepEqual([exec.of('new-session').length, exec.of('split-window').length], [1, 0]);
+  });
+
+  test('(+) an explicit `session` that is the project\'s own name is created too; any other missing session is still 404, nothing created', async () => {
+    const w = await world();
+    const mine = fakeTmux();
+    assert.equal((await spawnAgent(req(w, { session: 'My-App' }), w.ctx(mine))).status, 200);
+    assert.equal(mine.of('new-session').length, 1);
+    const v = await world();
+    const other = fakeTmux();
+    const r = await spawnAgent(req(v, { session: 'Nope' }), v.ctx(other));
+    assert.deepEqual([r.status, r.body.error], [404, 'not_found']);
+    assert.match(r.body.message, /Nope/);
+    assert.equal(other.of('new-session').length, 0);
+    assert.equal(exists(v, 'builder-1.brief.md'), false);
+  });
+
+  test('(−) the tmux binary is missing (ENOENT): 503 tmux_unavailable, no session created, nothing written', async () => {
+    const w = await world();
+    const exec = fakeTmux({ enoent: true });
+    const r = await spawnAgent(req(w), w.ctx(exec));
+    assert.deepEqual([r.status, r.body.error], [503, 'tmux_unavailable']);
+    assert.match(r.body.message, /tmux not found/);
+    assert.equal(exec.of('new-session').length, 0);
+    assert.equal(fs.existsSync(rd(w)), false);
+  });
+
+  test('(−) new-session failing is a 502 tmux_failed with tmux\'s reason; no pane is recorded, no .last-pane, no check', async () => {
+    const w = await world();
+    const exec = fakeTmux({ failOn: ['new-session'] });
+    const ctx = w.ctx(exec);
+    const r = await spawnAgent(req(w), ctx);
+    assert.deepEqual([r.status, r.body.error, r.body.message], [502, 'tmux_failed', 'tmux failed: new-session failed']);
+    assert.equal(ctx.started.size, 0);
+    assert.equal(exists(w, '.last-pane'), false);
+    assert.deepEqual([exec.of('display-message').length, ctx.slept.length], [0, 0]);
+  });
+
+  test('(−) a tmux failure that is not "no server" while listing the tags is still a 502 tmux_failed (the panes were listed fine)', async () => {
+    const w = await world();
+    const base = fakeTmux({ panes: BASE_PANES() });
+    const exec = async (cmd, args) => {
+      if (args[1] === 'list-panes' && args.some((a) => String(a).endsWith('#{session_name}\t#{window_name}'))) throw Object.assign(new Error('boom'), { stderr: 'boom\n' });
+      return base(cmd, args);
+    };
+    const r = await spawnAgent(req(w), w.ctx(exec));
+    assert.deepEqual([r.status, r.body.error], [502, 'tmux_failed']);
+    assert.equal(base.of('new-session').length + base.of('split-window').length, 0);
+  });
+
+  test('(−) the pane is gone after the wait (claude died at launch): 502 claude_exited with the fixed words; no record, no .last-pane, no title', async () => {
+    const w = await world();
+    for (const panes of [[], [OTHER], BASE_PANES()]) { // no server, a server without the project session, the project session (split-window)
+      const exec = fakeTmux({ panes });
+      const ctx = w.ctx(exec, { sleep: async (ms) => { ctx.slept.push(ms); exec.panes.splice(exec.panes.findIndex((p) => p.id === '%20'), 1); } });
+      const r = await spawnAgent(req(w), ctx);
+      assert.deepEqual([r.status, r.body], [502, { error: 'claude_exited', message: EXITED }], JSON.stringify(panes));
+      assert.deepEqual(ctx.slept, [1000]);
+      assert.equal(exec.of('display-message').length, 1);
+      assert.equal(exec.of('select-pane').length, 0);
+      assert.equal(ctx.started.size, 0);
+      assert.equal(exists(w, '.last-pane'), false);
+    }
+  });
+
+  test('(−) the pane still exists but is dead (remain-on-exit): 502 claude_exited too', async () => {
+    const w = await world();
+    const exec = fakeTmux();
+    const ctx = w.ctx(exec, { sleep: async () => { exec.panes.find((p) => p.id === '%20').dead = '1'; } });
+    const r = await spawnAgent(req(w), ctx);
+    assert.deepEqual([r.status, r.body.error], [502, 'claude_exited']);
+    assert.equal(ctx.started.size, 0);
+    assert.equal(exists(w, '.last-pane'), false);
+  });
+
+  test('(−) a failed check (tmux errors on display-message) means gone: 502 claude_exited', async () => {
+    const w = await world();
+    const r = await spawnAgent(req(w), w.ctx(fakeTmux({ panes: BASE_PANES(), failOn: ['display-message'] })));
+    assert.deepEqual([r.status, r.body.error], [502, 'claude_exited']);
+  });
+
+  test('(−) a refused spawn (duplicate name) starts nothing and waits for nothing', async () => {
+    const w = await world();
+    const exec = fakeTmux({ panes: BASE_PANES() });
+    const ctx = w.ctx(exec);
+    assert.equal((await spawnAgent(req(w), ctx)).status, 200);
+    assert.deepEqual(ctx.slept, [1000]);
+    assert.equal((await spawnAgent(req(w), ctx)).status, 409);
+    assert.deepEqual(ctx.slept, [1000], 'the refusal did not wait');
+  });
+});
+
+// --- F4 fix round 1: a broken listing fails closed, dead panes are not live, a lost race is a clean 502 ---------------------------
+
+describe('spawnAgent: a broken tmux listing, dead panes and a lost race (F4, fix round 1)', () => {
+  const MAIN = (w, over = {}) => ({ id: '%1', session: 'My-App', window: 0, windowName: 'orchestrator', command: 'claude', role: 'orchestrator', agent: `${w.project.key}/orchestrator`, depth: '1', ...over });
+  const agent = (w, id, name, over = {}) => ({ id, session: 'My-App', window: 0, windowName: 'zsh', command: 'node', role: 'agent', agent: `${w.project.key}/${name}`, depth: '1', ...over });
+  /** both listings fail with `stderr` (an exit 1 from tmux); every other sub-command goes to `base` */
+  const listFails = (base, stderr) => async (cmd, args) => {
+    if (args[1] === 'list-panes') throw Object.assign(new Error(`Command failed: tmux ${stderr}`), { code: 1, stderr: `${stderr}\n` });
+    return base(cmd, args);
+  };
+  const NO_SERVER = ['no server running on /tmp/tmux-1/default', 'error connecting to /tmp/tmux-1/default (No such file or directory)', 'error connecting to /tmp/tmux-1/default (Connection refused)'];
+  const BROKEN = ['server exited unexpectedly', 'error connecting to /tmp/tmux-1/default (Permission denied)', 'protocol version mismatch (client 8, server 7)', 'lost server', ''];
+
+  test('(+) NO_TMUX_SERVER matches the three ways tmux says there is no server; (−) nothing else', () => {
+    for (const s of NO_SERVER) assert.equal(NO_TMUX_SERVER.test(s), true, s);
+    for (const s of BROKEN) assert.equal(NO_TMUX_SERVER.test(s), false, s);
+    assert.equal(NO_TMUX_SERVER.test("can't find session: My-App"), false);
+  });
+
+  test('(+) "no server running", "error connecting … (No such file or directory)" and "(Connection refused)" still create the session', async () => {
+    for (const stderr of NO_SERVER) {
+      const w = await world();
+      const base = fakeTmux();
+      const r = await spawnAgent(req(w), w.ctx(listFails(base, stderr)));
+      assert.deepEqual([r.status, r.body.session, base.of('new-session').length], [200, 'My-App', 1], stderr);
+    }
+  });
+
+  test('(−) any other failure of the listing is 502 tmux_failed: no session created, nothing written, nothing started', async () => {
+    for (const stderr of BROKEN) {
+      const w = await world();
+      const base = fakeTmux({ panes: BASE_PANES() });
+      const ctx = w.ctx(listFails(base, stderr));
+      const r = await spawnAgent(req(w), ctx);
+      assert.deepEqual([r.status, r.body.error], [502, 'tmux_failed'], stderr);
+      assert.equal(base.of('new-session').length + base.of('split-window').length, 0, stderr);
+      assert.equal(fs.existsSync(rd(w)), false, stderr);
+      assert.deepEqual([ctx.slept, base.of('display-message').length], [[], 0]);
+    }
+  });
+
+  test('(−) the two listings disagree (only the first fails): 502 tmux_failed, this process\'s started records are kept', async () => {
+    const w = await world();
+    const base = fakeTmux({ panes: BASE_PANES() });
+    const exec = async (cmd, args) => {
+      if (args[1] === 'list-panes' && args.includes('-F') && String(args[args.indexOf('-F') + 1]).includes('#{pane_title}')) throw Object.assign(new Error('transient'), { code: 1, stderr: 'transient\n' });
+      return base(cmd, args);
+    };
+    const started = new Map([['%31', { key: w.project.key, name: 'other', sessionId: null, role: 'agent' }]]);
+    const ctx = w.ctx(exec, { started });
+    const r = await spawnAgent(req(w), ctx);
+    assert.deepEqual([r.status, r.body.error], [502, 'tmux_failed']);
+    assert.deepEqual([...started.keys()], ['%31'], 'liveAgents did not drop the record of a pane it could not see');
+    assert.equal(base.of('new-session').length + base.of('split-window').length, 0);
+  });
+
+  test('(−) the CLI (lenient parent) with a broken listing is not "you": 502, not a depth-1 agent that skips its parent\'s cap', async () => {
+    const w = await world({ limits: { maxAgents: 2 } });
+    const adopted = { session: 'work', windowName: 'main' }; // the orchestrator the user adopted from a tmux session of their own
+    const panes = [MAIN(w, adopted), agent(w, '%11', 'a', { ...adopted, depth: '2', parent: '%1' }), agent(w, '%12', 'b', { ...adopted, depth: '2', parent: '%1' })];
+    const control = fakeTmux({ panes: panes.map((p) => ({ ...p })) });
+    const capped = await spawnAgent(req(w, { parent: '%1' }), w.ctx(control, { lenientParent: true }));
+    assert.deepEqual([capped.status, capped.body.error, capped.body.scope], [409, 'limit', 'parent'], 'control: a working listing refuses the third');
+    const broken = fakeTmux({ panes: panes.map((p) => ({ ...p })), failOn: ['list-panes'] });
+    const r = await spawnAgent(req(w, { parent: '%1' }), w.ctx(broken, { lenientParent: true }));
+    assert.deepEqual([r.status, r.body.error], [502, 'tmux_failed']);
+    assert.equal(broken.of('new-session').length + broken.of('split-window').length, 0);
+  });
+
+  test('(+) remain-on-exit: after a 502 claude_exited the dead pane stays, and a retry with the same name is not a 409', async () => {
+    const w = await world();
+    const exec = fakeTmux({ panes: BASE_PANES() });
+    let die = true;
+    const ctx = w.ctx(exec, { sleep: async () => { if (die) exec.panes.find((p) => p.id === '%20').dead = '1'; } });
+    const first = await spawnAgent(req(w), ctx);
+    assert.deepEqual([first.status, first.body.error], [502, 'claude_exited']);
+    const dead = exec.panes.find((p) => p.id === '%20');
+    assert.deepEqual([dead.dead, dead.role, dead.agent], ['1', 'agent', `${w.project.key}/builder-1`], 'the dead pane is still there, still tagged');
+    die = false;
+    const retry = await spawnAgent(req(w), ctx);
+    assert.deepEqual([retry.status, retry.body.pane], [200, '%21'], JSON.stringify(retry.body));
+  });
+
+  test('(−) a dead tagged agent pane counts toward no cap: per parent and for the project (a live one does)', async () => {
+    const w = await world({ limits: { maxAgents: 1 } });
+    const spawnWith = async (deadFlag, panes) => spawnAgent(req(w, { name: 'fresh' }), w.ctx(fakeTmux({ panes: panes(deadFlag) })));
+    const one = (d) => [...BASE_PANES(), agent(w, '%31', 'old', { dead: d })]; // maxAgents 1: one live agent of "you" is the cap
+    assert.deepEqual([(await spawnWith('0', one)).status, (await spawnWith('0', one)).body.scope], [409, 'parent']);
+    assert.equal((await spawnWith('1', one)).status, 200);
+    const three = (d) => [...BASE_PANES(), ...['x', 'y', 'z'].map((n, i) => agent(w, `%${41 + i}`, n, { parent: `%9${i}`, depth: '2', dead: d }))]; // min(3 × 1, 24) = 3 for the project
+    assert.deepEqual([(await spawnWith('0', three)).status, (await spawnWith('0', three)).body.scope], [409, 'project']);
+    assert.equal((await spawnWith('1', three)).status, 200);
+  });
+
+  test('(−) a pane this server started that died after the check is no longer live: the same name spawns again', async () => {
+    const w = await world();
+    const exec = fakeTmux({ panes: BASE_PANES() });
+    const ctx = w.ctx(exec);
+    const first = await spawnAgent(req(w), ctx);
+    assert.deepEqual([first.status, first.body.pane], [200, '%20']);
+    assert.deepEqual([(await spawnAgent(req(w), ctx)).status], [409], 'alive: a duplicate');
+    exec.panes.find((p) => p.id === '%20').dead = '1'; // claude exits later; remain-on-exit keeps the pane listed
+    const again = await spawnAgent(req(w), ctx);
+    assert.deepEqual([again.status, again.body.pane], [200, '%21'], JSON.stringify(again.body));
+  });
+
+  test('(−) a dead tagged agent pane does not make its name a duplicate', async () => {
+    const w = await world();
+    const live = await spawnAgent(req(w, { name: 'old' }), w.ctx(fakeTmux({ panes: [...BASE_PANES(), agent(w, '%31', 'old')] })));
+    assert.deepEqual([live.status, live.body.error], [409, 'conflict']);
+    const dead = await spawnAgent(req(w, { name: 'old' }), w.ctx(fakeTmux({ panes: [...BASE_PANES(), agent(w, '%31', 'old', { dead: '1' })] })));
+    assert.equal(dead.status, 200);
+  });
+
+  test('(−) a dead orchestrator pane named as the parent is refused the way a gone parent is (404 for the page, "you" for the CLI)', async () => {
+    const w = await world();
+    const outcome = async (panes, parent, extra = {}) => {
+      const exec = fakeTmux({ panes });
+      const r = await spawnAgent(req(w, { parent }), w.ctx(exec, extra));
+      return [r.status, r.body.error, r.status === 200 ? exec.panes.find((p) => p.id === r.body.pane).depth : null, exec.of('split-window').length];
+    };
+    const gone = await outcome(BASE_PANES(), '%99');
+    const dead = await outcome([MAIN(w, { dead: '1' })], '%1');
+    assert.deepEqual(gone, [404, 'not_found', null, 0]);
+    assert.deepEqual(dead, gone, 'page request: the same 404');
+    const goneCli = await outcome(BASE_PANES(), '%99', { lenientParent: true });
+    const deadCli = await outcome([MAIN(w, { dead: '1' })], '%1', { lenientParent: true });
+    assert.deepEqual(goneCli, [200, undefined, '1', 1]);
+    assert.deepEqual(deadCli, goneCli, 'CLI: "you", depth 1, not a child of the dead orchestrator');
+    const live = await outcome([MAIN(w)], '%1', { lenientParent: true });
+    assert.equal(live[2], '2', 'control: a live main orchestrator makes depth 2');
+  });
+
+  test('(−) new-session losing a race ("duplicate session"): 502 tmux_failed, nothing recorded, no .last-pane, no check, no title', async () => {
+    const w = await world();
+    const base = fakeTmux({ panes: [{ id: '%1', session: 'My-App', window: 0, windowName: 'zsh', command: 'zsh' }] }); // another process created the session meanwhile
+    let blind = 2; // the two listings ran before it existed
+    const exec = async (cmd, args) => {
+      if (args[1] === 'list-panes' && blind-- > 0) throw Object.assign(new Error('no server'), { code: 1, stderr: 'no server running on /tmp/tmux-1/default\n' });
+      return base(cmd, args);
+    };
+    const ctx = w.ctx(exec);
+    const r = await spawnAgent(req(w), ctx);
+    assert.deepEqual([r.status, r.body.error, r.body.message], [502, 'tmux_failed', 'tmux failed: duplicate session: My-App']);
+    assert.equal(base.of('new-session').length, 1);
+    assert.deepEqual([ctx.started.size, exists(w, '.last-pane'), base.of('display-message').length, base.of('select-pane').length, ctx.slept], [0, false, 0, 0, []]);
+    assert.equal(base.panes.length, 1, 'no pane was created');
+  });
+});
+
 // --- nesting (0.4): who the parent is, how deep the child sits, and the caps ----------------------------------------------
 
 describe('spawnAgent: nesting and limits (0.4)', () => {
@@ -562,6 +939,7 @@ describe('spawnAgent: nesting and limits (0.4)', () => {
       [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-agent', `${w.project.key}/planner`],
       [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-depth', '2'],
       [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-parent', '%1'],
+      CHECK('%20'),
       [TMUX, '-u', 'select-pane', '-t', '%20', '-T', '[%20] planner'],
     ]);
     assert.deepEqual(JSON.parse(read(w, 'planner.agent.json')), { model: 'sonnet', permissionMode: 'default', rc: '', role: 'sub-orchestrator', parent: '%1', depth: 2, compact: COMPACT_1M });
@@ -626,6 +1004,7 @@ describe('spawnAgent: nesting and limits (0.4)', () => {
       [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-agent', `${w.project.key}/builder-1`],
       [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-depth', '2'],
       [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-parent', '%1'],
+      CHECK('%20'),
       [TMUX, '-u', 'select-pane', '-t', '%20', '-T', '[%20] builder-1'],
     ]);
     assert.equal(exec.panes.find((p) => p.id === '%20').session, 'work');
@@ -642,12 +1021,15 @@ describe('spawnAgent: nesting and limits (0.4)', () => {
     assert.deepEqual(tags(exec, '%21'), ['agent', 'helper', '3', '%20']);
   });
 
-  test('(−) no parent and no project session is still 404, with nothing split, tagged or written (an adopted orchestrator elsewhere changes nothing)', async () => {
+  test('(+) F4: no parent and no project session creates the project session (new-session); an adopted orchestrator elsewhere is left alone and is not the parent', async () => {
     const w = await world();
     const panes = [ADOPTED(w), { id: '%5', session: 'work', window: 1, windowName: 'shell', command: 'zsh' }];
     for (const over of [{}, { parent: '%5' }]) { // no parent at all, and a plain pane with no nika role ("you")
-      const r = await refuse(w, panes, over, 404, 'not_found');
-      assert.match(r.body.message, /tmux session My-App not found/);
+      const exec = fakeTmux({ panes: panes.map((p) => ({ ...p })) });
+      const r = await spawnAgent(req(w, { name: `a${Object.keys(over).length}`, ...over }), w.ctx(exec));
+      assert.deepEqual([r.status, r.body.session, exec.of('new-session').length, exec.of('split-window').length], [200, 'My-App', 1, 0], JSON.stringify(over));
+      assert.deepEqual(tags(exec, '%20').slice(2), ['1', ''], 'depth 1, no parent: the agent is "you"');
+      assert.deepEqual(exec.panes.filter((p) => p.session === 'work').map((p) => p.id), ['%1', '%5']);
     }
   });
 
@@ -659,14 +1041,17 @@ describe('spawnAgent: nesting and limits (0.4)', () => {
     const b = await spawnAgent(req(w, { name: 'below', parent: '%1', under: '%7' }), w.ctx(exec));
     assert.deepEqual([b.status, b.body.session, exec.of('split-window')[1].slice(1, 4)], [200, 'other', ['-v', '-t', '%7']]);
     assert.deepEqual(tags(exec, '%21'), ['agent', 'below', '2', '%1']); // still the adopted orchestrator's child
-    // a session the project does not have is still 404, even though the parent's own session exists
-    await refuse(w, [ADOPTED(w)], { parent: '%1', session: 'My-App' }, 404, 'not_found');
+    // a session that is not the project's and does not exist is still 404, even though the parent's own session exists
+    const none = await refuse(w, [ADOPTED(w)], { parent: '%1', session: 'Nope' }, 404, 'not_found');
+    assert.equal(none.body.message, 'tmux session Nope not found');
   });
 
-  test('(−) a parent session name that is not a valid TMUX_SESSION falls back to the project\'s session (404 when it has no pane, beside it when it has)', async () => {
+  test('(−) a parent session name that is not a valid TMUX_SESSION falls back to the project\'s session (created when it has no pane, F4; beside it when it has)', async () => {
     const w = await world();
     for (const session of ['my work', '-t', 'a:b', '']) {
-      await refuse(w, [ADOPTED(w, { session })], { parent: '%1' }, 404, 'not_found');
+      const fresh = fakeTmux({ panes: [ADOPTED(w, { session })] });
+      const made = await spawnAgent(req(w, { name: `new-${session.length}`, parent: '%1' }), w.ctx(fresh));
+      assert.deepEqual([made.status, made.body.session, fresh.of('new-session').length], [200, 'My-App', 1], JSON.stringify(session));
       const exec = fakeTmux({ panes: [ADOPTED(w, { session }), { id: '%9', session: 'My-App', window: 0, windowName: 'zsh', command: 'zsh' }] });
       const r = await spawnAgent(req(w, { name: `ok-${session.length}`, parent: '%1' }), w.ctx(exec));
       assert.deepEqual([r.status, r.body.session], [200, 'My-App'], JSON.stringify(session));
@@ -840,6 +1225,39 @@ describe('spawnAgent: nesting and limits (0.4)', () => {
     assert.equal((await refuse(w, panes, { name: 'g' }, 409, 'limit')).body.scope, 'project');
   });
 
+  test('(+) the project\'s own limit is the per-parent limit: lower than Settings\' stops sooner (and the message points at the project page), higher lets more through; null goes back to Settings', async () => {
+    const w = await world({ limits: { maxAgents: 3 } });
+    await updateProjectConfig(w.project.key, { maxAgents: 2 }, w.env);
+    const panes = [MAIN(w), ...live(w, ['a', 'b'], { from: 31, parent: '%1' })];
+    const r = await refuse(w, panes, { name: 'c', parent: '%1' }, 409, 'limit');
+    assert.deepEqual([r.body.scope, r.body.running, r.body.max], ['parent', 2, 2]);
+    assert.match(r.body.message, /already runs 2 of 2 agents of its own/);
+    assert.match(r.body.message, /“Per orchestrator” on this project’s New agents card\./, 'raising Settings would not help this project');
+    assert.doesNotMatch(r.body.message, /in Settings/);
+    await updateProjectConfig(w.project.key, { maxAgents: null }, w.env);
+    assert.equal((await spawnAgent(req(w, { name: 'c', parent: '%1' }), w.ctx(fakeTmux({ panes })))).status, 200, 'Settings allows 3');
+    const v = await world({ limits: { maxAgents: 1 } });
+    await updateProjectConfig(v.project.key, { maxAgents: 3 }, v.env);
+    const exec = fakeTmux({ panes: [MAIN(v), ...live(v, ['a', 'b'], { from: 31, parent: '%1' })] });
+    assert.equal((await spawnAgent(req(v, { name: 'c', parent: '%1' }), v.ctx(exec))).status, 200, 'the project allows 3, Settings only 1');
+    const full = await refuse(v, [MAIN(v), ...live(v, ['a', 'b', 'c'], { from: 31, parent: '%1' })], { name: 'd', parent: '%1' }, 409, 'limit');
+    assert.deepEqual([full.body.running, full.body.max], [3, 3]);
+  });
+
+  test('(+) the project\'s own limit sets the project cap min(3 x N, 24) too: N=2 caps at 6 although Settings\' 5 would allow 15, and N=8 reaches 24', async () => {
+    const spread = (w, count, perParent) => Array.from({ length: count }, (_, i) => live(w, [`a${i}`], { from: 100 + i, parent: `%${900 + Math.floor(i / perParent)}` })).flat();
+    const w = await world({ limits: { maxAgents: 5 } });
+    await updateProjectConfig(w.project.key, { maxAgents: 2 }, w.env);
+    const r = await refuse(w, [MAIN(w), ...spread(w, 6, 2)], { name: 'one-more' }, 409, 'limit');
+    assert.deepEqual([r.body.scope, r.body.running, r.body.max], ['project', 6, 6]);
+    const v = await world({ limits: { maxAgents: 2 } });
+    await updateProjectConfig(v.project.key, { maxAgents: 8 }, v.env);
+    const exec = fakeTmux({ panes: [MAIN(v), ...spread(v, 23, 8)] });
+    assert.equal((await spawnAgent(req(v, { name: 'one-more' }), v.ctx(exec))).status, 200, 'Settings\' 2 would have stopped at 6');
+    const capped = await refuse(v, [MAIN(v), ...spread(v, 24, 8)], { name: 'one-more' }, 409, 'limit');
+    assert.deepEqual([capped.body.scope, capped.body.running, capped.body.max], ['project', 24, 24]);
+  });
+
   test('(−) other projects\' agents and non-agent roles (the orchestrator, a plain pane) are not in the live set, for the caps or for the name check', async () => {
     const w = await world({ limits: { maxAgents: 2 } });
     const foreign = live({ project: { key: OTHER_KEY } }, ['builder-1', 'b', 'c', 'd', 'e', 'f', 'g'], { from: 31, parent: '' });
@@ -924,7 +1342,10 @@ describe('tmux format expansion (T6)', () => {
     assert.equal((await startOrchestrator(project.key, w.ctx(fresh))).body.created, true); // new-session
     assert.equal((await startOrchestrator(project.key, w.ctx(present, { findSession: async () => null }))).body.created, true); // new-window (the first start saved a pick; this lookup finds no transcript for it)
     assert.equal((await spawnAgent({ project: project.key, name: 'builder-1', model: 'sonnet', brief: 'Do the thing.' }, w.ctx(fresh))).status, 200); // split-window, select-pane
-    const values = (flag) => [fresh, present].flatMap((e) => e.calls.flatMap((c) => c.map((a, i) => (c[i - 1] === flag ? a : null)).filter((a) => a !== null)));
+    const bare = fakeTmux({ panes: [] });
+    assert.equal((await spawnAgent({ project: project.key, name: 'builder-1', model: 'sonnet', brief: 'Do the thing.' }, w.ctx(bare))).status, 200); // F4: a spawn with no server runs new-session -s -n agents
+    assert.deepEqual([bare.of('new-session')[0].at(bare.of('new-session')[0].indexOf('-n') + 1), bare.of('new-session')[0].at(bare.of('new-session')[0].indexOf('-s') + 1)], ['agents', session]);
+    const values = (flag) => [fresh, present, bare].flatMap((e) => e.calls.flatMap((c) => c.map((a, i) => (c[i - 1] === flag ? a : null)).filter((a) => a !== null)));
     for (const flag of ['-s', '-n', '-T']) {
       const seen = values(flag);
       assert.ok(seen.length > 0, `${flag} was passed`);
@@ -932,7 +1353,7 @@ describe('tmux format expansion (T6)', () => {
     }
     assert.ok(values('-T').includes('[%21] builder-1'));
     const dirs = values('-c');
-    assert.ok(dirs.length >= 3 && dirs.every((d) => d.replaceAll('##', '').includes('#') === false && d.includes('##')), JSON.stringify(dirs));
+    assert.ok(dirs.length >= 4 && dirs.every((d) => d.replaceAll('##', '').includes('#') === false && d.includes('##')), JSON.stringify(dirs));
   });
 });
 

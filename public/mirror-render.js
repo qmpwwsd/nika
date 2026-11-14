@@ -7,6 +7,8 @@
 // Part 2, the only DOM writer: applyMirror (textContent, className and element.style.x only; never HTML parsing).
 // Part 3, pure: planSend / keyForEvent encode composer text and passthrough keystrokes for POST /api/app/pane/:id/keys.
 
+import { windowAction } from './shortcuts.js';
+
 export const LIMITS = { rows: 2000, rowUnits: 4000, spans: 500, text: 1024, paste: 16 * 1024 };
 
 // C0 (tab included: tmux expands tabs), DEL, C1 and the bidi controls; the server drops them too (defence in depth).
@@ -248,18 +250,25 @@ export function arrowEcho(keys, pane) {
 }
 
 /**
- * Passthrough: a keyboard event -> what to do. { kind: 'leave' } for Ctrl+], 'ignore' for meta shortcuts and IME
- * composition (the app and the OS keep them), 'key' with an allow-list name, 'text' with one printable character, or
- * 'skip' with the reason for keys that are not on the allow-list.
+ * Passthrough: a keyboard event -> what to do. { kind: 'leave' } for Ctrl+], 'ignore' for meta shortcuts, IME composition and
+ * the keys the browser or the window keeps (the app and the OS keep them; the event goes on, nothing is sent), 'copy' for
+ * Ctrl+Shift+C, 'key' with an allow-list name, 'text' with one printable character, or 'skip' with the reason for keys that are not
+ * on the allow-list. Ignored besides Meta (F2): Ctrl+Q and the zoom keys off macOS (the window handler on the document runs them),
+ * Ctrl+Shift+V everywhere and Ctrl+V off macOS (the browser pastes; the `paste` handler sends it as one bracketed paste).
+ * Ctrl+C is Claude's C-c, and so is Ctrl+W: Close is not a window key while typing into the pane.
+ * `mac`: the page runs on macOS, where Command owns those keys and Ctrl+V is not a paste.
  */
-export function keyForEvent(e) {
+export function keyForEvent(e, { mac = false } = {}) {
   if (e.ctrlKey && !e.metaKey && !e.altKey && e.key === ']') return { kind: 'leave' };
-  if (e.metaKey || e.isComposing || e.key === 'Process' || e.key === 'Dead') return { kind: 'ignore' };
+  if (e.metaKey || e.isComposing || e.key === 'Process' || e.key === 'Dead' || windowAction(e, { mac, passthrough: true })) return { kind: 'ignore' };
   const label = `${e.ctrlKey ? 'Ctrl-' : ''}${e.altKey ? 'Alt-' : ''}${e.shiftKey && e.key.length > 1 ? 'Shift-' : ''}${e.key}`;
   if (e.altKey) return { kind: 'skip', reason: `Not sent: ${label} is not on the allow-list` };
   if (e.key === 'Tab' && e.shiftKey && !e.ctrlKey) return { kind: 'key', name: 'BTab' };
   if (e.ctrlKey) {
-    const name = e.key.length === 1 ? CTRL[e.key.toLowerCase()] : undefined;
+    const letter = e.key.length === 1 ? e.key.toLowerCase() : '';
+    if (letter === 'c' && e.shiftKey) return { kind: 'copy' };
+    if (letter === 'v' && (e.shiftKey || !mac)) return { kind: 'ignore' };
+    const name = CTRL[letter];
     return name ? { kind: 'key', name } : { kind: 'skip', reason: `Not sent: ${label} is not on the allow-list` };
   }
   if (NAMED[e.key]) return { kind: 'key', name: NAMED[e.key] };

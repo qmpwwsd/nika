@@ -109,9 +109,10 @@ const SUBAGENTS = [ // all on the acme-api orchestrator
   { id: 'c3', agentType: 'Plan', description: 'Check the order of the middleware', model: 'opus', finished: false, ago: 4 },
 ];
 
-// acme-api also sets two models of its own (0.4), so its Project setup card shows the Models block
+// acme-api also sets two models of its own (0.4), so its Project setup card shows the Models block, and its own pane placement
+// (0.4.0), so its New agents card shows one value set for the project beside two from Settings
 const REGISTERED = {
-  'acme-api': { plugins: ['test-runner@demo-plugins', 'lint-helper@demo-plugins'], models: { orchestrator: null, reasoner: null, builder: OPUS, scout: SONNET } },
+  'acme-api': { plugins: ['test-runner@demo-plugins', 'lint-helper@demo-plugins'], models: { orchestrator: null, reasoner: null, builder: OPUS, scout: SONNET }, agents: { panePlacement: 'under-last' } },
   'web-shop': { plugins: ['test-runner@demo-plugins'] },
 };
 const PLUGINS = ['test-runner@demo-plugins', 'lint-helper@demo-plugins', 'api-docs@demo-plugins', 'git-notes@demo-plugins'];
@@ -336,6 +337,7 @@ async function buildWorld(root) {
   for (const [name, r] of Object.entries(REGISTERED)) {
     await updateProjectConfig(projects[name].key, { plugins: r.plugins }, env);
     if (r.models) await updateProjectConfig(projects[name].key, { models: r.models }, env); // one field per call
+    for (const [field, value] of Object.entries(r.agents ?? {})) await updateProjectConfig(projects[name].key, { [field]: value }, env);
   }
 
   // acme-api already has current rules: written by nika's own apply, so the shot shows a real "Rules current"

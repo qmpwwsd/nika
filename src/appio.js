@@ -192,6 +192,7 @@ export function serveApp({ config, env = process.env, stdin, stdout, stderr, exe
         mirror: createMirror({ exec, tmuxBin, now }),
         keys: createKeys({ exec, tmuxBin, now }),
         picker,
+        window: (action) => say({ type: 'window', action }), // the shell acts on its window (contract §5)
         appCopy: { state: () => appCopyState(copyArgs, copyDeps), install: () => installAppCopy(copyArgs, copyDeps), dismiss: () => dismissAppCopy(copyArgs, copyDeps) },
       };
       server = createServer({ config: cfg, exec, token: crypto.randomBytes(24).toString('base64url'), now, version: VERSION, app: createAppApi({ secret, ctx, deps }) });

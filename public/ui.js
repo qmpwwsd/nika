@@ -1,6 +1,6 @@
 // Shared state and widgets for the main page (dashboard, project view, settings). Every data string reaches the
 // page through h() / textContent. Nothing here talks to the server; api.js does.
-import { h } from './dom.js';
+import { h, icon } from './dom.js';
 import { STATUS_ORDER } from './dash-model.js';
 import { isMac } from './shortcuts.js';
 
@@ -20,7 +20,8 @@ export const SHAPE = {
 /** One object for the whole page; the render functions read it, the poll loop and the app-tier modules write it. */
 export const state = {
   since: '7d',
-  showEnded: false,
+  showEnded: false, // the dashboard's "Show ended"
+  showEndedProject: false, // the project page's own "Show ended"
   filter: '',
   data: null, // last /api/agents snapshot
   error: null, // message of the last failed poll, null when the last poll worked
@@ -50,6 +51,8 @@ export function load(key, fallback) {
     return fallback;
   }
 }
+/** A remembered on/off toggle: on only for a stored `true`; anything else (nothing, garbage, blocked storage) is off. */
+export const loadFlag = (key) => load(key, false) === true;
 export function save(key, value) {
   try {
     localStorage.setItem(`nika.${key}`, JSON.stringify(value));
@@ -125,7 +128,8 @@ export const STATUS = {
 export const ORDER = STATUS_ORDER;
 
 export function statusEl(s, { compact = false, pill = false } = {}) {
-  return h('span', { class: `st${pill ? ' pill-st' : ''}`, 'data-s': s },
+  // The word is hidden from sight at narrow widths (rows show only the glyph): the title is what a hover shows (0.4.0).
+  return h('span', { class: `st${pill ? ' pill-st' : ''}`, 'data-s': s, title: STATUS[s].label },
     h('span', { class: 'st-g', 'aria-hidden': 'true' }),
     h('span', { class: compact ? 'sr-only' : 'st-l', text: STATUS[s].label }));
 }
@@ -137,7 +141,7 @@ export function modelEl(a) {
 const RULES = {
   none: { label: 'No rules', hint: 'No rules/orchestration.md yet', glyph: '–' },
   nika: { label: 'Rules current', hint: 'Written by nika from the current template', glyph: '✓' },
-  outdated: { label: 'Rules outdated', hint: 'Written by nika from an older template', glyph: '↻' },
+  outdated: { label: 'Rules outdated', hint: 'An older template, or CLAUDE.md or AGENTS.md lacks the rules line', glyph: '↻' },
   foreign: { label: 'Rules not by nika', hint: 'rules/orchestration.md was not written by nika', glyph: '!' },
 };
 export function rulesEl(s) {
@@ -202,17 +206,22 @@ export function setBusy(btn, busy, label) {
 /* ---------- dialogs: native showModal, focus returns to the opener ---------- */
 const openers = new Map();
 
-export function openDialog(dlg, { focus } = {}) {
+/**
+ * Opens `dlg` as a modal and closes every other open dialog, except `keep`: the dialog this one stacks on (the project page's Setup
+ * drawer, whose cards open the rules, plugins and models dialogs). When `dlg` closes, focus goes back to its opener once `keep` is the
+ * only dialog left open.
+ */
+export function openDialog(dlg, { focus, keep } = {}) {
   const el = document.activeElement;
-  openers.set(dlg, { el, fk: el?.dataset?.fk ?? null });
-  for (const d of $$('dialog[open]')) if (d !== dlg) d.close();
+  openers.set(dlg, { el, fk: el?.dataset?.fk ?? null, under: keep?.open ? keep : null });
+  for (const d of $$('dialog[open]')) if (d !== dlg && d !== keep) d.close();
   if (!dlg.open) dlg.showModal();
   (focus ?? $('[autofocus]', dlg) ?? $('h2', dlg))?.focus();
 }
 
 function restoreFocus(dlg) {
-  if ($('dialog[open]')) return;
   const o = openers.get(dlg);
+  if ($$('dialog[open]').some((d) => d !== dlg && d !== o?.under)) return; // another dialog is still open: it gives the focus back when it closes
   openers.delete(dlg);
   let el = o?.el?.isConnected ? o.el : null;
   const menu = el?.closest('.menu');
@@ -246,23 +255,28 @@ let menuSeq = 0;
  * items: [{ text, run }] or [{ text, href }] (external links open in the system browser through the shell). Optional per item:
  * `fk` (data-fk, for focus keeping and tests), `group: true` (a rule above it) and `reason` (the item is aria-disabled with the
  * reason as its title; a click shows the reason as an error toast and runs nothing, so a disabled item still says why).
+ * `trigger` (optional): the button's content in place of the "⋯" icon, for a menu that shows the current value. `current`
+ * (optional, per item): once any item has it, every item gets a slot for a check icon and the flagged one is marked
+ * `aria-current="true"` with the check. `content` (optional, per item, with `current`): nodes shown in place of `text`, for an
+ * item that shows a chip; its text content should read as `text` does.
  */
-export function menuEl(label, items, fk) {
+export function menuEl(label, items, fk, trigger) {
   const id = `menu-${++menuSeq}`;
+  const marks = items.some((it) => it.current !== undefined);
   return h('div', { class: 'menu-wrap' },
-    h('button', { type: 'button', class: 'btn icon ghost', 'data-menu-btn': true, 'data-fk': fk, 'aria-expanded': 'false', 'aria-controls': id, 'aria-label': label, title: label },
-      h('span', { 'aria-hidden': 'true', text: '⋯' })),
-    h('ul', { class: 'menu', id, hidden: true }, items.map((it) => h('li', { class: it.group ? 'grp' : null }, it.href
+    h('button', { type: 'button', class: trigger ? 'btn ghost menu-val' : 'btn icon ghost', 'data-menu-btn': true, 'data-fk': fk, 'aria-expanded': 'false', 'aria-controls': id, 'aria-label': label, title: label },
+      trigger ?? h('span', { 'aria-hidden': 'true', text: '⋯' })),
+    h('ul', { class: trigger ? 'menu menu-vals' : 'menu', id, hidden: true }, items.map((it) => h('li', { class: it.group ? 'grp' : null }, it.href
       ? h('a', { href: it.href, target: '_blank', rel: 'noopener noreferrer', 'data-fk': it.fk, text: it.text })
       : h('button', {
-        type: 'button', 'data-fk': it.fk, 'aria-disabled': it.reason ? 'true' : null, title: it.reason || null, text: it.text,
+        type: 'button', 'data-fk': it.fk, 'aria-disabled': it.reason ? 'true' : null, 'aria-current': it.current ? 'true' : null, title: it.reason || it.title || null, text: marks ? null : it.text,
         onclick: it.reason ? () => toast(it.reason, { kind: 'error' }) : it.run,
-      })))));
+      }, marks ? [h('span', { class: 'menu-chk', 'aria-hidden': 'true' }, it.current ? icon('check') : null), it.content ?? it.text] : null)))));
 }
 
 export const menuIsOpen = () => Boolean($('.menu:not([hidden])'));
 
-function closeMenu(m, focus = true) {
+export function closeMenu(m, focus = true) {
   m.hidden = true;
   m.removeAttribute('data-up');
   m.previousElementSibling?.setAttribute('aria-expanded', 'false');
@@ -281,8 +295,12 @@ export function initMenus() {
     m.hidden = !open;
     btn.setAttribute('aria-expanded', String(open));
     if (!open) return;
-    // flip above the button when the list would run past the bottom of the window
-    if (window.innerHeight - btn.getBoundingClientRect().bottom < m.offsetHeight + 16) m.dataset.up = '1';
+    // flip above the button when the list would run past the bottom of the window and fits above it (inside a dialog: above the top of its
+    // scrolling body, which would cut it off); else it stays below and the body scrolls to show all of it
+    const r = btn.getBoundingClientRect();
+    const need = m.offsetHeight + 16;
+    if (window.innerHeight - r.bottom < need && r.top - (btn.closest('.dlg-body')?.getBoundingClientRect().top ?? 0) >= need) m.dataset.up = '1';
+    else m.scrollIntoView({ block: 'nearest' });
     $('button, a', m)?.focus();
   });
   document.addEventListener('keydown', (e) => {
