@@ -12,6 +12,8 @@ import { MODE_TARGETS, OPTION, PROMPT_ROWS, bypassWindow, lastNonBlank, modeFrom
 import { RULE_ROW, parseDraft, normDraft, sameDraft, inEnvelope, chunks } from './draft.js';
 
 const EXIT_POLL_MS = 500;
+const LOCK_POLL_MS = 20; // withPaneLock: poll step and the longest wait (5 s) for a running control action
+const LOCK_WAIT_MS = 5000;
 const PROMPT_CHAR = '❯';
 // Claude draws a no-break space after the prompt character (claude-tui.md section 5): for comparing, it is a space.
 const plain = (text) => text.replace(/\xa0/g, ' ');
@@ -174,7 +176,8 @@ function rawOption(rows, n) {
  * vimOf(pane) → boolean: this pane's mode line has shown `-- INSERT --` before (Claude's input is in vim mode);
  * plainOf(pane) → boolean (optional, default false): a probe `i` landed as text on this pane, so its input is not in vim mode;
  * setEdit(pane, 'vim' | 'plain' | 'none') (optional): the draft route reports what it learned about the pane's edit mode.
- * One control action runs per pane at a time (switch, End, command, answer and draft write share one lock). Every method returns { status, body }.
+ * One control action runs per pane at a time (switch, End, command, answer and draft write share one lock). Every method returns { status, body },
+ * except withPaneLock(pane, fn), the same lock for the fit controller (src/fit.js): it waits for a running action and resolves with fn's result.
  * The draft route's timings: draftPollMs (poll step while it waits for a redraw), escGapMs (plain mode: gap between its two Escapes), chunkGapMs.
  */
 export function createSessionControl({
@@ -197,6 +200,25 @@ export function createSessionControl({
     if (passed >= 0 && passed < VIM_ESC_GAP_MS) return true;
     escapedAt.delete(pane);
     return false;
+  }
+
+  /**
+   * Runs `fn()` as the only control action on the pane, like `exclusive`, but WAITS for a running one instead of refusing: the fit
+   * controller (src/fit.js) resizes a window under this lock. Polls every LOCK_POLL_MS through `sleep`; after LOCK_WAIT_MS of waits it
+   * gives up with an Error whose code is EPANEBUSY and fn never runs. While fn runs the pane is in `running`, so every other action
+   * answers 409 busy-switching. Resolves with fn's result; the pane is freed when fn throws too.
+   */
+  async function withPaneLock(pane, fn) {
+    for (let waited = 0; running.has(pane); waited += LOCK_POLL_MS) {
+      if (waited >= LOCK_WAIT_MS) throw Object.assign(new Error('another action is running on this pane'), { code: 'EPANEBUSY' });
+      await sleep(LOCK_POLL_MS);
+    }
+    running.add(pane);
+    try {
+      return await fn();
+    } finally {
+      running.delete(pane);
+    }
   }
 
   /** Runs `action(ctx)` as the only control action on the pane; `ctx.insert` turns true once any capture of the action shows INSERT. */
@@ -809,5 +831,5 @@ export function createSessionControl({
     });
   }
 
-  return { switchMode, endSession, runCommand, answer, stop, writeDraft, acceptSuggestion };
+  return { switchMode, endSession, runCommand, answer, stop, writeDraft, acceptSuggestion, withPaneLock };
 }

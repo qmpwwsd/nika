@@ -17,10 +17,12 @@ import { MODEL_CATALOG } from './models.js';
 import { matches as etagMatches } from './mirror.js';
 import { createSessionControl, promptSig, insertShown, editMode, readDraft, checkDraftBody, checkSuggestionBody } from './session-control.js';
 import { tagPane, pickState, claudePane } from './orchestrate.js';
+import { createFit, checkFitBody, FIT_RATE } from './fit.js';
 
 const ELIGIBILITY_TTL_MS = 1000; // pane list + live-agent snapshot, so a 4 Hz capture does not run collect() 4 times a second
 const TEMPLATES_MAX = 50;
 const MODES_AT_ONCE = 4; // captures in flight for GET /modes
+const FIT_WINDOW_MS = 1000; // the window of the per-pane fit rate limit (FIT_RATE requests)
 const COMMAND_MAX = 200; // characters of a slash command typed into Claude
 const CONTROL = /[\u0000-\u001f\u007f-\u009f]/; // C0, DEL, C1
 const SIG = /^[0-9a-f]{16}$/;
@@ -86,7 +88,8 @@ async function listTemplates(dir) {
 /**
  * @param {object} o
  * @param {string} o.secret  the 43-char secret received on stdin
- * @param {object} o.ctx     { env, exec, tmuxBin, claudeBin, nikaArgv, claudeDir, now, started, findSession(id) → { agent, group } | null
+ * @param {object} o.ctx     { env, exec, tmuxBin, claudeBin, nikaArgv, claudeDir, now, started, fit (added here: the fit controller, which spawn
+ *                           and appio.js use; src/fit.js), findSession(id) → { agent, group } | null
  *                           (src/model.js: one session by id whatever its age, live state included; throws EINDEX when the index is unreadable),
  *                           findSessions(ids) → Map id → { agent, group } (src/model.js: ended sessions by id, ONE transcript-index walk for
  *                           all of them, no ps and no tmux; throws EINDEX) }; handed to the modules as is
@@ -94,7 +97,8 @@ async function listTemplates(dir) {
  *                           preview, apply, spawnAgent, startOrchestrator, mirror, keys, picker, listCommands;
  *                           window(action), the shell relay: writes one `window` line (appio.js);
  *                           appCopy { state(), install(), dismiss() } (src/appcopy.js bound to this install);
- *                           createSessionControl, a test seam for the factory in session-control.js }
+ *                           createSessionControl, a test seam for the factory in session-control.js;
+ *                           createFit, the same for the factory in fit.js }
  * @returns {(req, res, url, port) => Promise<boolean>} true when it handled the request (every /api/app/* request)
  */
 export function createAppApi({ secret, ctx, deps }) {
@@ -194,6 +198,31 @@ export function createAppApi({ secret, ctx, deps }) {
     },
     now: () => ctx.now(),
   });
+
+  // One fit controller for the whole server (0.5, W7, ADR 0017): every tmux change it makes runs in the controller's per-pane lock.
+  // spawnAgent reads it from ctx (a window is released before a split lands in it) and appio.js recovers and releases through it.
+  const fit = (deps.createFit ?? createFit)({ exec: ctx.exec, tmuxBin: ctx.tmuxBin, now: () => ctx.now(), stateDir: stateDir(ctx.env), lock: control.withPaneLock });
+  ctx.fit = fit;
+  const fitHits = new Map(); // `<METHOD> <pane id>` → timestamps of the fit requests inside the last FIT_WINDOW_MS (PUT and DELETE each have their own bucket)
+
+  /**
+   * FIT_RATE requests per method and pane per second, a sliding window like src/keys.js; buckets that went quiet are forgotten on every call.
+   * DELETE has its own bucket: a page that closes right after a burst of heartbeats must still give its window back.
+   */
+  function fitAllowed(method, pane) {
+    const id = `${method} ${pane}`;
+    const t = ctx.now();
+    for (const [k, v] of fitHits) {
+      const recent = v.filter((ts) => ts > t - FIT_WINDOW_MS);
+      if (recent.length) fitHits.set(k, recent);
+      else fitHits.delete(k);
+    }
+    const recent = fitHits.get(id) ?? [];
+    if (recent.length >= FIT_RATE) return false;
+    recent.push(t);
+    fitHits.set(id, recent);
+    return true;
+  }
 
   // --- projects ---
 
@@ -515,6 +544,26 @@ export function createAppApi({ secret, ctx, deps }) {
     if (bad) return bad;
     const { id, failure } = await eligiblePane(params[0]);
     return failure ?? control.writeDraft(id, body);
+  });
+
+  // Fit (0.5, W7): the session window asks for its panel's size, the controller zooms the pane and sizes its tmux window when that is
+  // safe, and gives everything back on DELETE, a lapse or a user change. Order: body 400, pane 404, rate 429 (PUT and DELETE count apart), then the controller. Nothing of
+  // the body, a layout or a window id is logged here or there. App tier only: the browser tier has no such route.
+  route('PUT', /^\/api\/app\/pane\/([^/]+)\/fit$/, CAP.small, async ({ params, body }) => {
+    const checked = checkFitBody(body);
+    if (checked.error) return err(400, 'invalid', checked.error);
+    const { id, failure } = await eligiblePane(params[0]);
+    if (failure) return failure;
+    if (!fitAllowed('PUT', id)) return err(429, 'busy', `at most ${FIT_RATE} fit requests per second per pane`);
+    return fit.hold(id, checked.value);
+  });
+
+  // Not eligibility-gated: the pane may be gone already, and the user's tmux window must still come back.
+  route('DELETE', /^\/api\/app\/pane\/([^/]+)\/fit$/, CAP.small, async ({ params }) => {
+    const id = param(params[0], PANE_ID);
+    if (!id) return err(400, 'invalid', 'invalid pane id');
+    if (!fitAllowed('DELETE', id)) return err(429, 'busy', `at most ${FIT_RATE} fit requests per second per pane`);
+    return fit.release(id);
   });
 
   // Accept Claude's prompt suggestion (0.5, W4): the page's Tab or right arrow. Not the plain keys route: a Tab that lands after the

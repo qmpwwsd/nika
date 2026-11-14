@@ -1921,3 +1921,129 @@ describe('runAgent: the compaction variables in the env of the claude it starts 
     assert.deepEqual(spawn.calls[0].opts.env, { ...withEnv(w), [WINDOW_ENV]: '400000', [PCT_ENV]: '100' });
   });
 });
+
+// --- a window the fit holds is given back before a split lands in it (W7, owner answer Q3) -------------------------------------
+
+describe('spawnAgent: the fit', () => {
+  /**
+   * A fakeTmux that also answers `display-message -p -t <target> -F #{window_id}` (the window the split will land in) and records the
+   * order of window lookups, fit releases and splits in `log`. `fit.held` is what `size()` reports; `fit.releaseWindow` is replaceable.
+   */
+  function fitRig({ panes = BASE_PANES(), window = '@3', held = 1, lookup, release } = {}) {
+    const log = [];
+    const base = fakeTmux({ panes });
+    const exec = async (cmd, args) => {
+      if (args[1] === 'display-message' && args.at(-1) === '#{window_id}') {
+        log.push(['lookup', args.slice(2)]);
+        if (lookup) return lookup(args);
+        return { stdout: `${window}\n`, stderr: '' };
+      }
+      if (args[1] === 'split-window') log.push(['split']);
+      return base(cmd, args);
+    };
+    exec.of = base.of;
+    exec.calls = base.calls;
+    exec.panes = base.panes;
+    const fit = {
+      size: () => held,
+      releaseWindow: async (win) => {
+        log.push(['release', win]);
+        return release ? release(win) : true;
+      },
+    };
+    const stderr = [];
+    return { exec, fit, log, stderr, errOut: { write: (m) => stderr.push(m) } };
+  }
+  const SPLIT_BESIDE = (w) => [TMUX, '-u', 'split-window', '-h', '-t', '=My-App:', '-c', w.project.dir, '-P', '-F', '#{pane_id}', '--', ...NIKA_ARGV, '_run-agent', w.project.key, 'builder-1'];
+
+  test('(+) beside, into a fitted window: the window id is read for the target, released first, then the split with its argv unchanged', async () => {
+    const w = await world();
+    const rig = fitRig();
+    const ctx = w.ctx(rig.exec, { fit: rig.fit });
+    const r = await spawnAgent(req(w), ctx);
+    assert.equal(r.status, 200);
+    assert.deepEqual(rig.log, [['lookup', ['-p', '-t', '=My-App:', '-F', '#{window_id}']], ['release', '@3'], ['split']]);
+    assert.deepEqual(rig.exec.of('split-window').map((a) => [TMUX, '-u', ...a]), [SPLIT_BESIDE(w)], 'the split is the one an unfitted window gets');
+    assert.deepEqual(ctx.started.get('%20').role, 'agent');
+  });
+
+  test('(+) under another pane or under the last agent: the lookup names that pane', async () => {
+    const w = await world({ panePlacement: 'under-last' });
+    const rig = fitRig({ panes: [...BASE_PANES(), { id: '%7', session: 'other', window: 0, windowName: 'x', command: 'zsh' }] });
+    const ctx = w.ctx(rig.exec, { fit: rig.fit });
+    assert.equal((await spawnAgent(req(w, { name: 'one', under: '%7' }), ctx)).status, 200);
+    assert.deepEqual(rig.log.at(-3), ['lookup', ['-p', '-t', '%7', '-F', '#{window_id}']]);
+    const second = fitRig();
+    const ctx2 = w.ctx(second.exec, { fit: second.fit });
+    assert.equal((await spawnAgent(req(w, { name: 'two' }), ctx2)).status, 200); // first: beside (no .last-pane for this exec's panes yet)
+    assert.equal((await spawnAgent(req(w, { name: 'three' }), ctx2)).status, 200);
+    const last = second.log.filter((l) => l[0] === 'lookup').at(-1);
+    assert.deepEqual(last, ['lookup', ['-p', '-t', '%20', '-F', '#{window_id}']]);
+    assert.deepEqual(second.log.slice(-3).map((l) => l[0]), ['lookup', 'release', 'split']);
+  });
+
+  test('(−) nothing is fitted (size 0): no lookup, no release, and the tmux calls are exactly those of a spawn without the fit', async () => {
+    const w = await world();
+    const rig = fitRig({ held: 0 });
+    const plain = fakeTmux({ panes: BASE_PANES() });
+    await spawnAgent(req(w), w.ctx(plain));
+    const w2 = await world();
+    await spawnAgent(req(w2), w2.ctx(rig.exec, { fit: rig.fit }));
+    assert.deepEqual(rig.log, [['split']]);
+    assert.deepEqual(rig.exec.calls.map((c) => c.map((x) => String(x).replace(w2.project.key, 'KEY').replace(w2.project.dir, 'DIR'))), plain.calls.map((c) => c.map((x) => String(x).replace(w.project.key, 'KEY').replace(w.project.dir, 'DIR'))));
+  });
+
+  test('(−) the CLI has no fit on its ctx: nothing is looked up or released', async () => {
+    const w = await world();
+    const rig = fitRig();
+    assert.equal((await spawnAgent(req(w), w.ctx(rig.exec))).status, 200);
+    assert.deepEqual(rig.log, [['split']]);
+  });
+
+  test('(−) the fit holds other windows: the release is asked for the target\'s window only, answers false, and the spawn goes on', async () => {
+    const w = await world();
+    const rig = fitRig({ window: '@9', release: () => false });
+    const r = await spawnAgent(req(w), w.ctx(rig.exec, { fit: rig.fit }));
+    assert.equal(r.status, 200);
+    assert.deepEqual(rig.log.map((l) => l[0]), ['lookup', 'release', 'split']);
+    assert.deepEqual(rig.log[1], ['release', '@9']);
+    assert.deepEqual(rig.stderr, []);
+  });
+
+  test('(−) a release that throws does not stop the spawn; one line is logged, with the step and the code only', async () => {
+    const w = await world();
+    const rig = fitRig({ release: () => { throw Object.assign(new Error('Command failed: tmux -u select-layout -t @3 -- {"w":200,"secret":"zq-layout"}'), { code: 1, stderr: 'zq-stderr\n' }); } });
+    const r = await spawnAgent(req(w), w.ctx(rig.exec, { fit: rig.fit, stderr: rig.errOut }));
+    assert.equal(r.status, 200);
+    assert.deepEqual(rig.log.map((l) => l[0]), ['lookup', 'release', 'split']);
+    assert.deepEqual(rig.stderr, ['nika: fit release before spawn failed (release 1)\n']);
+    assert.equal(rig.stderr.join('').includes('zq-'), false);
+  });
+
+  test('(−) a window lookup that fails (or answers something that is not a window id) releases nothing and does not stop the spawn', async () => {
+    for (const lookup of [() => { throw Object.assign(new Error("can't find pane"), { code: 1, stderr: "can't find pane\n" }); }, () => ({ stdout: '%1; ls\n', stderr: '' }), () => ({ stdout: '', stderr: '' }), () => ({ stdout: '@1\n@2\n', stderr: '' })]) {
+      const w = await world();
+      const rig = fitRig({ lookup });
+      const r = await spawnAgent(req(w), w.ctx(rig.exec, { fit: rig.fit, stderr: rig.errOut }));
+      assert.equal(r.status, 200, String(lookup));
+      assert.deepEqual(rig.log.map((l) => l[0]), ['lookup', 'split'], String(lookup));
+    }
+  });
+
+  test('(−) the project session does not exist yet (a new-session, no split): nothing is looked up or released', async () => {
+    const w = await world();
+    const rig = fitRig({ panes: [] }); // no tmux session at all: rig.exec records every window lookup, release and split
+    assert.equal((await spawnAgent(req(w), w.ctx(rig.exec, { fit: rig.fit }))).status, 200);
+    assert.equal(rig.exec.of('new-session').length, 1);
+    assert.equal(rig.exec.of('split-window').length, 0);
+    assert.deepEqual(rig.log, [], 'neither a lookup nor a release');
+  });
+
+  test('(−) a refused spawn (the name is already running, a bad parent, the cap) releases nothing', async () => {
+    const w = await world();
+    const rig = fitRig({ panes: [...BASE_PANES(), { id: '%30', session: 'My-App', window: 0, windowName: 'x', command: 'node', role: 'agent', agent: `${w.project.key}/builder-1`, depth: '1' }] });
+    const r = await spawnAgent(req(w), w.ctx(rig.exec, { fit: rig.fit }));
+    assert.deepEqual([r.status, r.body.error], [409, 'conflict']);
+    assert.deepEqual(rig.log, []);
+  });
+});

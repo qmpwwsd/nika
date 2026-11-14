@@ -13,7 +13,7 @@ import { randomBytes } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { PANE_ID, WINDOW_ID, FIT_NONCE, CLAUDE_COMMAND } from './ids.js';
-import { ensureDir, writeAtomic } from './fwrite.js';
+import { ensureDir, writeAtomic, removeOwnFile } from './fwrite.js';
 import { openRegular, readAt, isRealDir } from './fsafe.js';
 import { tmuxFailure, NO_TMUX_SERVER } from './tmuxerr.js';
 
@@ -46,6 +46,9 @@ const isNoServer = (e) => NO_TMUX_SERVER.test(String(e?.stderr || e?.message || 
 const invalid = (message) => ({ status: 400, body: { error: 'invalid', message } });
 const NOT_FOUND = { status: 404, body: { error: 'not_found', message: 'pane not found' } };
 const BUSY = { status: 409, body: { error: 'busy', message: 'another fit request for this tmux window is running' } };
+// withPaneLock (session-control.js) gave up waiting for a running End, draft write or other control action on the pane (code EPANEBUSY)
+const PANE_BUSY = { status: 409, body: { error: 'busy', message: 'Claude is busy with another action on this pane. Try again.' } };
+const paneBusy = (e) => e?.code === 'EPANEBUSY';
 
 /** `{ value: { cols, rows, open } }` for exactly `{ cols, rows, open }` in range, else `{ error: <message> }`. The route and the controller share it. */
 export function checkFitBody(body) {
@@ -205,8 +208,7 @@ export function createFit({
   }
   async function unlinkLease(nonce) {
     try {
-      if (!(await isRealDir(dir))) return; // a fit folder swapped for a symlink is not followed
-      await fs.unlink(path.join(dir, leaseName(nonce)));
+      await removeOwnFile(dir, leaseName(nonce)); // rule 11: a fit folder or a file swapped for a link, or shared, is refused, never followed
     } catch (e) {
       if (e?.code !== 'ENOENT') log(`nika: fit lease file unlink failed (${codeOf(e)})`);
     }
@@ -442,6 +444,7 @@ export function createFit({
     lease.lastBeat = now();
     const { fits, target } = plan(lease.panes, C, R, lease.width0, lease.height0);
     const [ew, eh] = expOf(lease);
+    const kept = { cols: lease.cols, rows: lease.rows, state: lease.state, reason: lease.reason, resized: lease.resized };
     Object.assign(lease, { cols: C, rows: R, state: fits ? 'fitted' : 'zoomed', reason: fits ? null : 'panel-smaller' });
     if (target[0] === ew && target[1] === eh) {
       lease.seen = [me.paneW, me.paneH];
@@ -452,6 +455,10 @@ export function createFit({
       await lock(lease.pane, () => tmux(ARGV.size(lease.window, target[0], target[1])));
       return await verify(lease);
     } catch (e) {
+      if (paneBusy(e)) { // the step never ran: the window is as it was, so is the lease (the next request or tick goes on from here)
+        Object.assign(lease, kept);
+        throw e;
+      }
       await releaseNow(lease).catch((x) => fail(lease, 'cleanup', x));
       throw e;
     }
@@ -520,6 +527,7 @@ export function createFit({
       });
     } catch (e) {
       if (e?.tmux) return tmuxFailure(e);
+      if (paneBusy(e)) return PANE_BUSY;
       throw e;
     }
   }
@@ -532,6 +540,7 @@ export function createFit({
       await releaseQueued(lease);
     } catch (e) {
       if (e?.tmux) return tmuxFailure(e);
+      if (paneBusy(e)) return PANE_BUSY; // the lease stays (releaseNow put it back): the page's next request or the watch retries
       throw e;
     }
     return { status: 200, body: { released: true } };

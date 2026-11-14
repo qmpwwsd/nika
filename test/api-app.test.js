@@ -3205,3 +3205,361 @@ describe('POST /api/app/pane/:id/suggestion', () => {
     assert.deepEqual(lines.filter((l) => l.includes(secret)), []);
   });
 });
+
+// --- fit (0.5, W7, ADR 0017): PUT|DELETE /api/app/pane/:id/fit -------------------------------------------------------------
+
+const FIT_OK = (b) => ({ status: 200, body: { fit: { state: 'fitted', reason: null, pane: { cols: b.cols, rows: b.rows }, panes: 3, userZoom: false } } });
+
+/** A fit factory that records what the router builds it with (`opts`) and what the routes call; `answers[name]` (a value or a function) replaces a method's result. */
+function fakeFit(answers = {}) {
+  const f = { calls: [], opts: null, answers };
+  const method = (name, fallback) => async (...args) => {
+    f.calls.push([name, ...args]);
+    const given = f.answers[name];
+    return typeof given === 'function' ? given(...args) : given ?? fallback(...args);
+  };
+  f.factory = (opts) => {
+    f.opts = opts;
+    return {
+      hold: method('hold', (id, b) => FIT_OK(b)),
+      release: method('release', () => ({ status: 200, body: { released: true } })),
+      releaseWindow: method('releaseWindow', () => false),
+      releaseAll: method('releaseAll', () => 0),
+      recover: method('recover', () => ({ released: 0, dropped: 0 })),
+      size: () => 0,
+    };
+  };
+  return f;
+}
+const fitPane = (a, id, opts = {}) => a.call(opts.method ?? 'PUT', `/api/app/pane/${id.replace('%', '%25')}/fit`, opts);
+const FIT_BODY = { cols: 120, rows: 39, open: true };
+const FIT_LIST = [TMUX, '-u', 'list-panes', '-a', '-F', ['#{pane_id}', '#{window_id}', '#{window_panes}', '#{window_zoomed_flag}', '#{pane_active}', '#{window_width}', '#{window_height}', '#{pane_width}', '#{pane_height}', '#{pane_current_command}', '#{@nika-fit}'].join('\t')];
+
+describe('PUT|DELETE /api/app/pane/:id/fit', () => {
+  test('(+) PUT hands the pane and exactly { cols, rows, open } to the controller and relays its status, body and no-store', async () => {
+    const fit = fakeFit();
+    const { a } = await bootScreens({ over: { createFit: fit.factory } });
+    const r = await fitPane(a, '%6', { json: FIT_BODY });
+    assert.deepEqual([r.status, r.body], [200, FIT_OK(FIT_BODY).body]);
+    assert.deepEqual(fit.calls, [['hold', '%6', FIT_BODY]]);
+    assert.equal(r.headers['cache-control'], 'no-store');
+    fit.answers.hold = { status: 200, body: { fit: { state: 'zoomed', reason: 'panel-smaller', pane: { cols: 200, rows: 50 }, panes: 3, userZoom: false } } };
+    a.clock.t += 2000;
+    assert.deepEqual((await fitPane(a, '%6', { json: { cols: 40, rows: 10, open: false } })).body.fit.reason, 'panel-smaller');
+    assert.deepEqual(fit.calls.at(-1), ['hold', '%6', { cols: 40, rows: 10, open: false }]);
+  });
+
+  test('(+) a started pane is eligible for a fit like for any control', async () => {
+    const fit = fakeFit();
+    const { a } = await bootScreens({ over: { createFit: fit.factory } });
+    a.ctx.started.set('%8', { key: w.project.key, name: 'x', sessionId: null, role: 'agent', mode: 'plan' });
+    assert.equal((await fitPane(a, '%8', { json: FIT_BODY })).status, 200);
+    assert.deepEqual(fit.calls, [['hold', '%8', FIT_BODY]]);
+  });
+
+  test('(+) DELETE hands the pane id to release and relays { released }', async () => {
+    const fit = fakeFit();
+    const { a } = await bootScreens({ over: { createFit: fit.factory } });
+    const r = await fitPane(a, '%6', { method: 'DELETE' });
+    assert.deepEqual([r.status, r.body], [200, { released: true }]);
+    assert.deepEqual(fit.calls, [['release', '%6']]);
+    fit.answers.release = { status: 200, body: { released: false } };
+    assert.deepEqual((await fitPane(a, '%6', { method: 'DELETE' })).body, { released: false });
+  });
+
+  test('(+) the router builds the controller from the real exec, tmux binary, clock, the state dir and the session controller\'s pane lock, and puts it on ctx', async () => {
+    const fit = fakeFit();
+    const control = fakeControl();
+    const lock = async (id, fn) => fn();
+    const calls = [];
+    const exec = async (...args) => { calls.push(args); return { stdout: '', stderr: '' }; };
+    const a = await boot({ ctxOver: { exec }, deps: makeDeps({ createFit: fit.factory, createSessionControl: (o) => ({ ...control.factory(o), withPaneLock: lock }) }) });
+    assert.equal(fit.opts.exec, exec);
+    assert.equal(fit.opts.tmuxBin, a.ctx.tmuxBin);
+    assert.equal(fit.opts.stateDir, stateDir(w.env));
+    assert.equal(fit.opts.lock, lock);
+    a.clock.t = 4242;
+    assert.equal(fit.opts.now(), 4242, 'the controller reads the same clock as the router');
+    assert.equal(typeof a.ctx.fit.hold, 'function');
+    assert.equal(a.ctx.fit.size(), 0);
+    assert.deepEqual(calls, [], 'building it runs no tmux call');
+  });
+
+  test('(+) with the real controller behind the router, a PUT goes to tmux with the real exec and tmux binary, and tmux\'s answer decides (a pane tmux does not list: 404)', async () => {
+    const calls = [];
+    const exec = async (...args) => { calls.push(args); return { stdout: '', stderr: '' }; };
+    const { a } = await bootScreens({ ctxOver: undefined, over: {} });
+    const b = await boot({ ctxOver: { exec }, deps: a.deps });
+    const r = await fitPane(b, '%6', { json: FIT_BODY });
+    assert.deepEqual([r.status, r.body.error], [404, 'not_found']);
+    assert.deepEqual(calls, [[TMUX, ['-u', ...FIT_LIST.slice(2)]]]);
+  });
+
+  test('(+) a fit step shares the pane lock with End: it waits for a running End, and a draft write during the step is 409 busy-switching and types nothing', async () => {
+    const fit = fakeFit();
+    const { a, screens, mirror } = await bootScreens({ fake: false, over: { createFit: fit.factory } });
+    screens['%6'] = boxRows({ cols: 80, lines: [''] }).rows;
+    let enter;
+    const entered = new Promise((r) => { enter = r; });
+    let letGo;
+    const gate = new Promise((r) => { letGo = r; });
+    const capture = mirror.capture;
+    mirror.capture = async (...args) => { enter(); await gate; return capture(...args); };
+    const order = [];
+    let release;
+    const held = new Promise((r) => { release = r; });
+    fit.answers.hold = (id, b) => fit.opts.lock(id, async () => {
+      order.push('step');
+      await held;
+      return FIT_OK(b);
+    });
+    release(); // the first step does not stop
+    const end = pane(a, '%6', 'end', { method: 'POST', json: {} });
+    await entered;
+    const put = fitPane(a, '%6', { json: FIT_BODY });
+    await new Promise((r) => setTimeout(r, 120)); // several polls of the waiting lock
+    assert.deepEqual(order, [], 'the fit waits while End holds the pane');
+    letGo();
+    await end;
+    assert.equal((await put).status, 200);
+    assert.deepEqual(order, ['step']);
+    // second step: it holds the pane until the test lets go
+    let letStep;
+    const held2 = new Promise((r) => { letStep = r; });
+    fit.answers.hold = (id, b) => fit.opts.lock(id, async () => {
+      order.push('step2');
+      await held2;
+      return FIT_OK(b);
+    });
+    a.clock.t += 2000;
+    const put2 = fitPane(a, '%6', { json: FIT_BODY });
+    while (!order.includes('step2')) await new Promise((r) => setTimeout(r, 5));
+    const typed = a.deps.calls.filter((c) => c[0] === 'keys').length;
+    const draft = await pane(a, '%6', 'draft', { method: 'PUT', json: { text: 'hi', base: '' } });
+    assert.deepEqual([draft.status, draft.body.error], [409, 'busy-switching']);
+    assert.equal((await pane(a, '%6', 'end', { method: 'POST', json: {} })).body.error, 'busy-switching');
+    assert.equal(a.deps.calls.filter((c) => c[0] === 'keys').length, typed, 'nothing was typed');
+    letStep();
+    assert.equal((await put2).status, 200);
+  });
+
+  test('(+) PUT: 4 per second per pane, the 5th is 429 and reaches no controller; a second later it is served again; another pane has its own count', async () => {
+    const fit = fakeFit();
+    const { a } = await bootScreens({ over: { createFit: fit.factory } });
+    a.ctx.started.set('%8', { key: w.project.key, name: 'x', sessionId: null, role: 'agent', mode: 'plan' });
+    for (let i = 0; i < 4; i += 1) assert.equal((await fitPane(a, '%6', { json: FIT_BODY })).status, 200);
+    assert.equal(fit.calls.length, 4);
+    const fifth = await fitPane(a, '%6', { json: FIT_BODY });
+    assert.deepEqual([fifth.status, fifth.body.error], [429, 'busy']);
+    assert.match(fifth.body.message, /at most 4 fit requests per second per pane/);
+    assert.equal(fit.calls.length, 4, 'the refused request reached nothing');
+    assert.equal((await fitPane(a, '%8', { json: FIT_BODY })).status, 200, 'another pane');
+    a.clock.t += 1001;
+    assert.equal((await fitPane(a, '%6', { json: FIT_BODY })).status, 200);
+    assert.equal(fit.calls.length, 6);
+  });
+
+  test('(+) DELETE has its own bucket: 4 PUTs in one second, then a DELETE is 200 and releases (a page that closes right after a heartbeat gives the window back)', async () => {
+    const fit = fakeFit();
+    const { a } = await bootScreens({ over: { createFit: fit.factory } });
+    for (let i = 0; i < 4; i += 1) assert.equal((await fitPane(a, '%6', { json: FIT_BODY })).status, 200);
+    assert.equal((await fitPane(a, '%6', { json: FIT_BODY })).status, 429, 'the PUT bucket is full');
+    const del = await fitPane(a, '%6', { method: 'DELETE' });
+    assert.deepEqual([del.status, del.body], [200, { released: true }]);
+    assert.deepEqual(fit.calls.at(-1).slice(0, 2), ['release', '%6']);
+    assert.equal(fit.calls.length, 5);
+  });
+
+  test('(+) and a full DELETE bucket does not take PUT slots: 4 DELETEs, then a PUT is 200', async () => {
+    const fit = fakeFit();
+    const { a } = await bootScreens({ over: { createFit: fit.factory } });
+    for (let i = 0; i < 4; i += 1) assert.equal((await fitPane(a, '%6', { method: 'DELETE' })).status, 200);
+    assert.equal((await fitPane(a, '%6', { json: FIT_BODY })).status, 200);
+    assert.deepEqual(fit.calls.map((c) => c[0]), ['release', 'release', 'release', 'release', 'hold']);
+  });
+
+  test('(−) 5 DELETEs in one second: the 5th is 429 busy and reaches no controller (no release, so no tmux call); another pane is served; a second later it is served again', async () => {
+    const fit = fakeFit();
+    const { a } = await bootScreens({ over: { createFit: fit.factory } });
+    for (let i = 0; i < 4; i += 1) assert.equal((await fitPane(a, '%6', { method: 'DELETE' })).status, 200);
+    const fifth = await fitPane(a, '%6', { method: 'DELETE' });
+    assert.deepEqual([fifth.status, fifth.body.error], [429, 'busy']);
+    assert.match(fifth.body.message, /at most 4 fit requests per second per pane/);
+    assert.equal(fit.calls.length, 4, 'the refused DELETE reached nothing');
+    assert.equal((await fitPane(a, '%99', { method: 'DELETE' })).status, 200, 'another pane has its own count');
+    a.clock.t += 1001;
+    assert.equal((await fitPane(a, '%6', { method: 'DELETE' })).status, 200);
+    assert.equal(fit.calls.length, 6);
+  });
+
+  test('(−) the real controller with no lease: five DELETEs in one second answer 200 x4 then 429, and no tmux call runs for any of them', async () => {
+    const calls = [];
+    const exec = async (...args) => { calls.push(args); return { stdout: '', stderr: '' }; };
+    const { a } = await bootScreens({});
+    const b = await boot({ ctxOver: { exec }, deps: a.deps });
+    const statuses = [];
+    for (let i = 0; i < 5; i += 1) statuses.push((await fitPane(b, '%6', { method: 'DELETE' })).status);
+    assert.deepEqual(statuses, [200, 200, 200, 200, 429]);
+    assert.deepEqual(calls, []);
+  });
+
+  test('(−) a bad body is 400 before the pane check (an eligible and an ineligible pane alike), the controller is not called, and the 400 uses no rate slot', async () => {
+    const fit = fakeFit();
+    const { a } = await bootScreens({ over: { createFit: fit.factory } });
+    const bad = [
+      {}, { cols: 120, rows: 39 }, { cols: 120, open: true }, { rows: 39, open: true }, { cols: 120, rows: 39, open: 'true' }, { cols: 120, rows: 39, open: 1 },
+      { cols: 120.5, rows: 39, open: true }, { cols: '120', rows: 39, open: true }, { cols: 120, rows: '39', open: true }, { cols: null, rows: 39, open: true },
+      { cols: 39, rows: 39, open: true }, { cols: 401, rows: 39, open: true }, { cols: 120, rows: 9, open: true }, { cols: 120, rows: 201, open: true },
+      { cols: 120, rows: 39, open: true, extra: 1 }, { cols: 120, rows: 39, open: true, path: '/etc/passwd' },
+    ];
+    for (const json of bad) {
+      for (const id of ['%6', '%5']) {
+        const r = await fitPane(a, id, { json });
+        assert.equal(r.status, 400, `${JSON.stringify(json)} on ${id}`);
+        assert.deepEqual([r.body.error, r.body.message], ['invalid', 'cols must be an integer 40–400, rows 10–200, open a boolean']);
+      }
+    }
+    assert.deepEqual((await a.call('PUT', '/api/app/pane/%256/fit', { body: '[]', headers: { 'content-type': 'application/json' } })).body.error, 'invalid');
+    assert.deepEqual(fit.calls, []);
+    for (let i = 0; i < 4; i += 1) assert.equal((await fitPane(a, '%6', { json: FIT_BODY })).status, 200, 'all four slots are still free');
+  });
+
+  test('(−) the bounds are inclusive: 40 x 10 and 400 x 200 pass', async () => {
+    const fit = fakeFit();
+    const { a } = await bootScreens({ over: { createFit: fit.factory } });
+    for (const json of [{ cols: 40, rows: 10, open: false }, { cols: 400, rows: 200, open: true }]) assert.equal((await fitPane(a, '%6', { json })).status, 200);
+  });
+
+  test('(−) an ineligible pane (zsh, not live, unknown id, a bad id) is 404, the controller is not called, and the 404 uses no rate slot', async () => {
+    const fit = fakeFit();
+    const { a } = await bootScreens({ over: { createFit: fit.factory } });
+    for (let round = 0; round < 3; round += 1) {
+      for (const id of ['%5', '%7', '%8', '%99', 'abc', '..']) assert.equal((await fitPane(a, id, { json: FIT_BODY })).status, 404, id);
+    }
+    assert.deepEqual(fit.calls, []);
+  });
+
+  test('(−) DELETE with a malformed pane id is 400, nothing is released; a well-formed id of a pane that is gone or is no claude is still passed on (not eligibility-gated)', async () => {
+    const fit = fakeFit();
+    const { a } = await bootScreens({ over: { createFit: fit.factory } });
+    for (const id of ['abc', '%x', '5', '%1%2', '%6;ls', 'x'.repeat(30)]) {
+      const r = await a.call('DELETE', `/api/app/pane/${encodeURIComponent(id)}/fit`);
+      assert.deepEqual([r.status, r.body.error], [400, 'invalid'], id);
+    }
+    assert.deepEqual(fit.calls, []);
+    for (const id of ['%5', '%99', '%7']) assert.equal((await fitPane(a, id, { method: 'DELETE' })).status, 200, id);
+    assert.deepEqual(fit.calls.map((c) => c.slice(0, 2)), [['release', '%5'], ['release', '%99'], ['release', '%7']]);
+  });
+
+  test('(−) DELETE for a pane that holds no lease is 200 { released: false } and runs no tmux call (the real controller)', async () => {
+    const calls = [];
+    const exec = async (...args) => { calls.push(args); return { stdout: '', stderr: '' }; };
+    const { a } = await bootScreens({});
+    const b = await boot({ ctxOver: { exec }, deps: a.deps });
+    for (const id of ['%6', '%99', '%5']) {
+      const r = await fitPane(b, id, { method: 'DELETE' });
+      assert.deepEqual([r.status, r.body], [200, { released: false }], id);
+    }
+    assert.deepEqual(calls, []);
+  });
+
+  test('(−) a request for a tmux window another pane\'s request is still working on is 409 busy (the real controller over a scripted tmux)', async () => {
+    const calls = [];
+    let letGo;
+    const gate = new Promise((r) => { letGo = r; });
+    let reached;
+    const waiting = new Promise((r) => { reached = r; });
+    const row = (id, active) => [id, '@1', '2', '0', active, '200', '50', '100', '50', 'claude', ''].join('\t');
+    const exec = async (bin, argv) => {
+      calls.push(argv);
+      if (argv[1] === 'list-panes') return { stdout: `${row('%6', '1')}\n${row('%7', '0')}\n`, stderr: '' };
+      if (argv[1] === 'show-options') { reached(); await gate; return { stdout: '', stderr: '' }; }
+      if (argv[1] === 'display-message') return { stdout: '{"w":200,"h":50}\n', stderr: '' };
+      return { stdout: '', stderr: '' };
+    };
+    const { a } = await bootScreens({});
+    const b = await boot({ ctxOver: { exec }, deps: a.deps });
+    b.ctx.started.set('%7', { key: w.project.key, name: 'x', sessionId: null, role: 'agent', mode: 'plan' });
+    const first = fitPane(b, '%6', { json: FIT_BODY });
+    await waiting;
+    const second = await fitPane(b, '%7', { json: { cols: 130, rows: 40, open: true } });
+    assert.deepEqual([second.status, second.body.error], [409, 'busy']);
+    letGo();
+    await first;
+    assert.ok(calls.every((c) => c[0] === '-u'), 'every call carried -u first');
+  });
+
+  test('(−) the controller\'s 502 tmux_failed, 409 busy and 404 pass through as they are', async () => {
+    const fit = fakeFit();
+    const { a } = await bootScreens({ over: { createFit: fit.factory } });
+    for (const answer of [{ status: 502, body: { error: 'tmux_failed', message: 'x' } }, { status: 409, body: { error: 'busy', message: 'y' } }, { status: 404, body: { error: 'not_found', message: 'pane not found' } }, { status: 503, body: { error: 'tmux_unavailable', message: 'z' } }]) {
+      fit.answers.hold = answer;
+      fit.answers.release = answer;
+      a.clock.t += 2000;
+      const put = await fitPane(a, '%6', { json: FIT_BODY });
+      assert.deepEqual([put.status, put.body], [answer.status, answer.body]);
+      const del = await fitPane(a, '%6', { method: 'DELETE' });
+      assert.deepEqual([del.status, del.body], [answer.status, answer.body]);
+    }
+  });
+
+  test('(−) without the secret 403; text/plain 415; GET and POST 405; a body over 4 KB 413 -- the controller is not called', async () => {
+    const fit = fakeFit();
+    const { a } = await bootScreens({ over: { createFit: fit.factory } });
+    assert.equal((await fitPane(a, '%6', { json: FIT_BODY, headers: { 'x-nika-app': null } })).status, 403);
+    assert.equal((await fitPane(a, '%6', { method: 'DELETE', headers: { 'x-nika-app': null } })).status, 403);
+    assert.equal((await fitPane(a, '%6', { body: JSON.stringify(FIT_BODY), headers: { 'content-type': 'text/plain' } })).status, 415);
+    assert.equal((await fitPane(a, '%6', { method: 'GET' })).status, 405);
+    assert.equal((await fitPane(a, '%6', { method: 'POST', json: FIT_BODY })).status, 405);
+    assert.equal((await fitPane(a, '%6', { json: { ...FIT_BODY, pad: 'p'.repeat(4097) } })).status, 413);
+    assert.deepEqual(fit.calls, []);
+  });
+
+  test('(−) the browser tier has no fit route: PUT and DELETE are 404 there, whatever the headers', async () => {
+    const server = createServer({ config: fx.config, exec: fakeExec(), token: 'tok', now: () => NOW, version: '0.0.0' });
+    await new Promise((res) => server.listen(0, '127.0.0.1', res));
+    servers.push(server);
+    const port = server.address().port;
+    const call = (method) => new Promise((resolve, reject) => {
+      const q = http.request({ host: '127.0.0.1', port, method, path: '/api/app/pane/%256/fit', headers: { host: `127.0.0.1:${port}`, 'x-nika-app': SECRET, 'content-type': 'application/json', 'content-length': '2' } }, (res) => {
+        res.resume();
+        res.on('end', () => resolve(res.statusCode));
+      });
+      q.on('error', reject);
+      q.end('{}');
+    });
+    assert.equal(await call('PUT'), 404);
+    assert.equal(await call('DELETE'), 404);
+  });
+
+  test('(−) the browser tier never loads fit.js: only api-app.js and appio.js import it, only appio.js imports api-app.js, and cli.js reaches appio.js by a dynamic import', () => {
+    const dir = new URL('../src/', import.meta.url);
+    const files = fs.readdirSync(dir, { recursive: true }).filter((f) => f.endsWith('.js'));
+    const read = (f) => fs.readFileSync(new URL(f, dir), 'utf8');
+    const importers = (name) => files.filter((f) => new RegExp(`(from\\s+|import\\()\\s*'(\\./|\\.\\./)${name}\\.js'`).test(read(f)));
+    assert.deepEqual(importers('fit'), ['api-app.js', 'appio.js']);
+    assert.deepEqual(importers('api-app'), ['appio.js']);
+    const cli = read('cli.js');
+    assert.doesNotMatch(cli, /^import .* from '\.\/appio\.js'/m);
+    assert.match(cli, /await import\('\.\/appio\.js'\)/);
+    assert.deepEqual(importers('appio'), ['cli.js']);
+    assert.doesNotMatch(read('spawn.js'), /^import .*fit\.js/m, 'spawn.js (loaded by the CLI) takes the controller from ctx and imports nothing of it');
+  });
+
+  test('(−) nothing of the body reaches a log line, on success and on an internal error', async () => {
+    const lines = [];
+    const saved = { error: console.error, log: console.log, warn: console.warn, info: console.info };
+    for (const name of Object.keys(saved)) console[name] = (...args) => { lines.push(args.map((x) => (x instanceof Error ? `${x.message}\n${x.stack}` : String(x))).join(' ')); };
+    try {
+      for (const answers of [{}, { hold: () => { throw new Error('boom'); } }]) {
+        const fit = fakeFit(answers);
+        const { a } = await bootScreens({ over: { createFit: fit.factory } });
+        await fitPane(a, '%6', { json: { cols: 321, rows: 77, open: true } });
+      }
+    } finally {
+      Object.assign(console, saved);
+    }
+    assert.ok(lines.some((l) => /PUT .*fit failed/.test(l)), 'the internal error was logged (so the check is real)');
+    assert.deepEqual(lines.filter((l) => /\bcols\b|\brows\b|"open"|321|\b77\b/.test(l.split('\n')[0])), []);
+  });
+});

@@ -30,7 +30,7 @@ const hello = (secret = SECRET, extra = {}) => `${JSON.stringify({ type: 'hello'
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** serveApp on PassThrough streams with its own temp config/state dirs. */
-function harness({ tty = false, helloMs = 2000, intervalMs = 60_000, secret = SECRET, appCopy } = {}) {
+function harness({ tty = false, helloMs = 2000, intervalMs = 60_000, secret = SECRET, appCopy, exec = fakeExec(), releaseMs } = {}) {
   counter += 1;
   const base = path.join(ROOT, `h${counter}`);
   fs.mkdirSync(path.join(base, 'cfg'), { recursive: true });
@@ -52,7 +52,7 @@ function harness({ tty = false, helloMs = 2000, intervalMs = 60_000, secret = SE
   stderr.on('data', (c) => { errText += c; });
   // the app copy never looks at the real ~/Applications or the real Homebrew folders here
   const copy = { home: path.join(base, 'home'), brewApps: [], ...appCopy };
-  const done = serveApp({ config: fx.config, env, stdin, stdout, stderr, exec: fakeExec(), now: () => NOW, intervalMs, helloMs, appCopy: copy });
+  const done = serveApp({ config: fx.config, env, stdin, stdout, stderr, exec, now: () => NOW, intervalMs, helloMs, appCopy: copy, ...(releaseMs ? { releaseMs } : {}) });
   const h = {
     env, stdin, secret, base, done,
     lines,
@@ -557,5 +557,197 @@ describe('shutdown and secrecy', () => {
     clearTimeout(killer);
     assert.deepEqual(r, { code: 0, signal: null }, err);
     assert.equal(out.includes(SECRET) || err.includes(SECRET), false);
+  });
+});
+
+// --- the fit (0.5, W7): recovery before ready, release at quit ---------------------------------------------------------------
+
+const NONCE = '0123456789abcdef';
+const FIT_FORMAT = ['#{pane_id}', '#{window_id}', '#{window_panes}', '#{window_zoomed_flag}', '#{pane_active}', '#{window_width}', '#{window_height}', '#{pane_width}', '#{pane_height}', '#{pane_current_command}', '#{@nika-fit}'].join('\t');
+
+/**
+ * A tmux with one single-pane window, @1 (pane %6 running claude, as the synthetic machine has it), that answers the fit's argv shapes
+ * and hands everything else to `base`. `st.gate(name)` may return a promise that holds a call; every fit call is recorded in `st.calls`.
+ */
+function fitTmux(base, { tag = '', w = 100, h = 30 } = {}) {
+  const st = { tag, w, h, calls: [], gate: () => undefined };
+  const exec = async (cmd, args) => {
+    const a = args.slice(1);
+    const name = cmd !== 'tmux' || args[0] !== '-u' ? null
+      : a[0] === 'list-panes' && a[3] === FIT_FORMAT ? 'list'
+        : a[0] === 'show-options' ? 'option'
+          : a[0] === 'display-message' && a[5] === '#{window_layout}' ? 'layout'
+            : a[0] === 'set-option' && a.includes('@nika-fit') ? (a[1] === '-wu' ? 'untag' : 'tag')
+              : a[0] === 'set-option' && a[1] === '-wu' ? 'optUnset'
+                : a[0] === 'resize-window' ? 'size'
+                  : a[0] === 'select-layout' ? 'select'
+                    : null;
+    if (!name) return base(cmd, args);
+    st.calls.push(name);
+    const held = st.gate(name);
+    if (held) await held;
+    switch (name) {
+      case 'list': return { stdout: `%6\t@1\t1\t0\t1\t${st.w}\t${st.h}\t${st.w}\t${st.h}\tclaude\t${st.tag}\n`, stderr: '' };
+      case 'layout': return { stdout: `{"w":${st.w},"h":${st.h}}\n`, stderr: '' };
+      case 'tag': st.tag = a[5]; return { stdout: '', stderr: '' };
+      case 'untag': st.tag = ''; return { stdout: '', stderr: '' };
+      case 'size': st.w = Number(a[4]); st.h = Number(a[6]); return { stdout: '', stderr: '' };
+      case 'select': { const L = JSON.parse(a[4]); st.w = L.w; st.h = L.h; return { stdout: '', stderr: '' }; }
+      default: return { stdout: '', stderr: '' };
+    }
+  };
+  exec.st = st;
+  return exec;
+}
+const fitDirOf = (h) => path.join(h.base, 'state', 'nika', 'fit');
+/** The lease file of a fit that was cut short at 120 x 40 (the window was 100 x 30 before). */
+const leaseFile = (over = {}) => ({
+  v: 1, nonce: NONCE, window: '@1', pane: '%6', panes: 1, zoomed0: 0, active0: '%6', width0: 100, height0: 30, size0: null,
+  layout0: '{"w":100,"h":30}', layout1: '{"w":120,"h":40}', cols: 120, rows: 40, resized: true, userZoom: false, at: 1, ...over,
+});
+function plant(h, content = leaseFile(), name = `fit-${NONCE}.json`) {
+  fs.mkdirSync(fitDirOf(h), { recursive: true, mode: 0o700 });
+  fs.chmodSync(fitDirOf(h), 0o700);
+  fs.writeFileSync(path.join(fitDirOf(h), name), typeof content === 'string' ? content : JSON.stringify(content), { mode: 0o600 });
+}
+const filesOf = (h) => (fs.existsSync(fitDirOf(h)) ? fs.readdirSync(fitDirOf(h)).sort() : []);
+const FIT_PUT = { json: { cols: 120, rows: 40, open: true } };
+
+describe('the fit: recover() at start, releaseAll() at finish (design W7 section 6)', () => {
+  test('(+) start() restores the window a crash left (lease file, tag still ours) and only then says ready; the file is gone', async () => {
+    const tmux = fitTmux(fakeExec(), { tag: NONCE, w: 120, h: 40 });
+    let gate;
+    const gated = new Promise((res) => { gate = res; });
+    tmux.st.gate = (name) => (name === 'size' ? gated : undefined);
+    const h = harness({ exec: tmux });
+    plant(h);
+    h.send(hello());
+    await sleep(150);
+    assert.deepEqual(tmux.st.calls.slice(0, 3), ['list', 'layout', 'size'], 'the restore began');
+    assert.equal(h.lines().some((l) => l.type === 'ready'), false, 'no ready while the restore runs');
+    gate();
+    const ready = await h.waitFor((l) => l.type === 'ready');
+    h.port = ready.port;
+    assert.deepEqual([tmux.st.w, tmux.st.h, tmux.st.tag], [100, 30, ''], 'the window is as before when ready is sent');
+    assert.deepEqual(filesOf(h), []);
+    assert.equal((await h.call('GET', '/api/app/me')).status, 200);
+    await h.close();
+  });
+
+  test('(+) a lease file for a window tmux no longer has (a restarted server) is dropped without a tmux change; ready follows', async () => {
+    const tmux = fitTmux(fakeExec(), { tag: '', w: 100, h: 30 }); // the tag is not ours: this is another window
+    const h = harness({ exec: tmux });
+    plant(h);
+    await h.up();
+    assert.deepEqual(tmux.st.calls, ['list']);
+    assert.deepEqual([tmux.st.w, tmux.st.h], [100, 30]);
+    assert.deepEqual(filesOf(h), []);
+    await h.close();
+  });
+
+  test('(−) a hung tmux cannot hold ready back past the bound; the file stays for the next start', async () => {
+    const tmux = fitTmux(fakeExec(), { tag: NONCE, w: 120, h: 40 });
+    tmux.st.gate = (name) => (name === 'list' ? new Promise(() => {}) : undefined);
+    const h = harness({ exec: tmux, releaseMs: 120 });
+    plant(h);
+    const t0 = Date.now();
+    await h.up();
+    assert.ok(Date.now() - t0 < 2000, `ready came after ${Date.now() - t0} ms`);
+    assert.deepEqual(filesOf(h), [`fit-${NONCE}.json`]);
+    tmux.st.gate = () => undefined;
+    await h.close();
+  });
+
+  test('(+) no fit folder, no tmux call at start', async () => {
+    const tmux = fitTmux(fakeExec());
+    const h = harness({ exec: tmux });
+    await h.up();
+    assert.deepEqual(tmux.st.calls, []);
+    await h.close();
+  });
+
+  test('(−) a lease file that is not a plain valid file does not stop the start: it is unlinked (invalid) or left alone (a link)', async () => {
+    const tmux = fitTmux(fakeExec());
+    const h = harness({ exec: tmux });
+    plant(h, '{not json');
+    const outside = path.join(h.base, 'outside.json');
+    fs.writeFileSync(outside, JSON.stringify(leaseFile()));
+    fs.symlinkSync(outside, path.join(fitDirOf(h), 'fit-aaaaaaaaaaaaaaaa.json'));
+    await h.up();
+    assert.deepEqual(filesOf(h), ['fit-aaaaaaaaaaaaaaaa.json']);
+    assert.ok(fs.existsSync(outside));
+    assert.deepEqual(tmux.st.calls, []);
+    await h.close();
+  });
+
+  test('(+) finish() gives every held window back before the exit code resolves, and the file goes', async () => {
+    const tmux = fitTmux(fakeExec());
+    const h = harness({ exec: tmux });
+    await h.up();
+    const r = await h.call('PUT', '/api/app/pane/%256/fit', FIT_PUT);
+    assert.deepEqual([r.status, r.body.fit.state, r.body.fit.pane], [200, 'fitted', { cols: 120, rows: 40 }], JSON.stringify(r.body));
+    assert.deepEqual([tmux.st.w, tmux.st.h, tmux.st.tag === ''], [120, 40, false]);
+    assert.equal(filesOf(h).length, 1);
+    let gate;
+    const gated = new Promise((res) => { gate = res; });
+    tmux.st.gate = (name) => (name === 'size' ? gated : undefined);
+    let code = null;
+    h.done.then((c) => { code = c; });
+    h.stdin.end();
+    await sleep(150);
+    assert.equal(code, null, 'the exit code waits for the restore');
+    gate();
+    assert.equal(await h.done, 0);
+    assert.deepEqual([tmux.st.w, tmux.st.h, tmux.st.tag], [100, 30, ''], 'the window is back at its size, untagged');
+    assert.deepEqual(filesOf(h), []);
+  });
+
+  test('(+) a quit with no lease runs no tmux call', async () => {
+    const quiet = fitTmux(fakeExec());
+    const q = harness({ exec: quiet });
+    await q.up();
+    await q.close();
+    assert.deepEqual(quiet.st.calls, []);
+  });
+
+  test('(−) a hung tmux cannot hold the exit back past the bound: finish still resolves 0; the file stays for the next start', async () => {
+    const tmux = fitTmux(fakeExec());
+    const h = harness({ exec: tmux, releaseMs: 150 });
+    await h.up();
+    assert.equal((await h.call('PUT', '/api/app/pane/%256/fit', FIT_PUT)).status, 200);
+    tmux.st.gate = (name) => (name === 'list' ? new Promise(() => {}) : undefined);
+    const t0 = Date.now();
+    h.stdin.end();
+    assert.equal(await h.done, 0);
+    assert.ok(Date.now() - t0 < 2000, `exit came after ${Date.now() - t0} ms`);
+    assert.equal(filesOf(h).length, 1, 'the lease file is left for recover() at the next start');
+  });
+
+  test('(−) once finish() has begun the server takes no new request, so a late heartbeat cannot fit a window again', async () => {
+    const tmux = fitTmux(fakeExec());
+    const h = harness({ exec: tmux });
+    await h.up();
+    assert.equal((await h.call('PUT', '/api/app/pane/%256/fit', FIT_PUT)).status, 200);
+    tmux.st.gate = (name) => (name === 'size' ? new Promise((res) => setTimeout(res, 300)) : undefined);
+    h.stdin.end();
+    await sleep(100);
+    await assert.rejects(h.call('PUT', '/api/app/pane/%256/fit', { json: { cols: 130, rows: 45, open: true } }), { code: 'ECONNREFUSED' });
+    assert.equal(await h.done, 0);
+    assert.deepEqual([tmux.st.w, tmux.st.h, tmux.st.tag], [100, 30, '']);
+  });
+
+  test('(+) a start that is cut short while it recovers ends cleanly, with no ready line', async () => {
+    const tmux = fitTmux(fakeExec(), { tag: NONCE, w: 120, h: 40 });
+    let gate;
+    tmux.st.gate = (name) => (name === 'size' ? new Promise((res) => { gate = res; }) : undefined);
+    const h = harness({ exec: tmux });
+    plant(h);
+    h.send(hello());
+    await sleep(100);
+    h.stdin.end();
+    await sleep(50);
+    gate?.();
+    assert.equal(await h.done, 0);
+    assert.equal(h.lines().some((l) => l.type === 'ready'), false);
   });
 });

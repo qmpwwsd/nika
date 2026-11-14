@@ -12,6 +12,7 @@ import { makeExec } from './exec.js';
 import { collect, findSession, findSessions } from './model.js';
 import { createServer } from './server.js';
 import { createAppApi } from './api-app.js';
+import { RELEASE_ALL_MS } from './fit.js';
 import { addProject, keyFor } from './store.js';
 import { listPanes } from './collect/tmux.js';
 import { readHistory } from './collect/history.js';
@@ -123,7 +124,8 @@ export function statusLine(snapshot) {
 /**
  * Runs the app tier until stdin closes. Resolves with the exit code: 0 after stdin closed, 2 when refused (stdin is a TTY,
  * no valid first `hello` within 5 s), 1 when the server cannot listen. The caller exits with it.
- * `exec`, `now`, `intervalMs`, `helloMs` and `appCopy` ({ home, root, platform, exec, brewApps }, for src/appcopy.js) are test seams.
+ * `exec`, `now`, `intervalMs`, `helloMs`, `releaseMs` (the bound of the fit's recovery at start and release at quit) and `appCopy` ({ home,
+ * root, platform, exec, brewApps }, for src/appcopy.js) are test seams.
  * @param {object} o
  * @param {object} o.config  defaultConfig() shape
  * @param {object} o.env
@@ -132,7 +134,7 @@ export function statusLine(snapshot) {
  * @param {import('node:stream').Writable} o.stderr
  * @returns {Promise<number>}
  */
-export function serveApp({ config, env = process.env, stdin, stdout, stderr, exec = makeExec(), now = Date.now, intervalMs = STATUS_MS, helloMs = HELLO_MS, appCopy = {} }) {
+export function serveApp({ config, env = process.env, stdin, stdout, stderr, exec = makeExec(), now = Date.now, intervalMs = STATUS_MS, helloMs = HELLO_MS, appCopy = {}, releaseMs = RELEASE_ALL_MS }) {
   const say = (obj) => stdout.write(`${JSON.stringify(obj)}\n`);
   stdout.on('error', () => {}); // the shell went away: stdin closes next and ends us
   if (stdin.isTTY) {
@@ -143,12 +145,19 @@ export function serveApp({ config, env = process.env, stdin, stdout, stderr, exe
   return new Promise((resolve) => {
     let phase = 'hello'; // hello → running → done
     let server = null;
+    let fit = null; // the fit controller (src/fit.js), built by createAppApi
     let timer = null;
     let onMessage = () => {}; // messages after the hello; set once the server runs
     const helloTimer = setTimeout(() => refuse('no hello in time'), helloMs);
     const stop = () => finish(0);
     process.once('SIGINT', stop);
     process.once('SIGTERM', stop);
+
+    /** Waits for `work`, but at most releaseMs, and never fails: the fit controller logs its own failures and bounds itself too; this bound is the process's. */
+    function bounded(work) {
+      let t;
+      return Promise.race([Promise.resolve(work).catch(() => {}), new Promise((ok) => { t = setTimeout(ok, releaseMs); })]).finally(() => clearTimeout(t));
+    }
 
     function finish(code) {
       if (phase === 'done') return;
@@ -158,8 +167,13 @@ export function serveApp({ config, env = process.env, stdin, stdout, stderr, exe
       process.off('SIGINT', stop);
       process.off('SIGTERM', stop);
       if (!server) return resolve(code);
-      server.close(() => resolve(code));
-      server.closeAllConnections();
+      // The server stops taking requests first (a late heartbeat must not fit a window again), then every window nika holds is given back:
+      // the exit code waits for both, but for the release only up to releaseMs. What a hung tmux leaves is recovered at the next start.
+      const closed = new Promise((ok) => {
+        server.close(ok);
+        server.closeAllConnections();
+      });
+      Promise.all([closed, bounded(fit?.releaseAll())]).then(() => resolve(code));
     }
 
     // fixed messages only: a JSON.parse error message quotes the input, which may hold the secret
@@ -196,6 +210,9 @@ export function serveApp({ config, env = process.env, stdin, stdout, stderr, exe
         appCopy: { state: () => appCopyState(copyArgs, copyDeps), install: () => installAppCopy(copyArgs, copyDeps), dismiss: () => dismissAppCopy(copyArgs, copyDeps) },
       };
       server = createServer({ config: cfg, exec, token: crypto.randomBytes(24).toString('base64url'), now, version: VERSION, app: createAppApi({ secret, ctx, deps }) });
+      fit = ctx.fit;
+      await bounded(fit.recover()); // give back what a crash left (design W7 section 6): before the first request and before `ready`
+      if (phase === 'done') return; // stdin closed while it ran: finish() has closed the server
       try {
         await new Promise((ok, fail) => {
           server.once('error', fail);

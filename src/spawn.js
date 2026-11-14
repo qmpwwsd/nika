@@ -16,7 +16,7 @@ import { listPanes } from './collect/tmux.js';
 import { clean } from './text.js';
 import { NO_TMUX_SERVER } from './tmuxerr.js';
 import { compactLaunch, compactEnv, PCT_ENV } from './compact.js';
-import { PROJECT_KEY, AGENT_NAME, parseAgentTag, MODEL_ID, TMUX_SESSION, PANE_ID, RC_PREFIX, RC_NAME, PERMISSION_MODES } from './ids.js';
+import { PROJECT_KEY, AGENT_NAME, parseAgentTag, MODEL_ID, TMUX_SESSION, PANE_ID, WINDOW_ID, RC_PREFIX, RC_NAME, PERMISSION_MODES } from './ids.js';
 import { fail, binsMissing, tmux, tmuxFail, tagPane, earlyExit, sessionNameFor, reduceRc, permissionFlags, launchMode, tmuxLiteral } from './orchestrate.js';
 
 const BRIEF_MAX = 64 * 1024;
@@ -165,6 +165,28 @@ function resolveParent(v, project, tags, ctx) {
 
 const limitFail = (scope, running, max, message) => ({ status: 409, body: { error: 'limit', message, scope, running, max } });
 
+/**
+ * The app tier's fit (`ctx.fit`, src/fit.js; the CLI has none) may hold the tmux window a split is about to land in: a split would unzoom
+ * it and put the new pane into a window sized for the session window, so the window is given back first (owner answer Q3); the page fits
+ * it again, with the new pane count, on its next heartbeat. Only asked while the fit holds a window at all. The window is the one `target`
+ * names (`=<session>:` or a pane id, both validated), read from tmux; the split's argv is not changed. Best effort: a failure logs the step
+ * and its code only and never stops the spawn.
+ */
+async function releaseFitted(ctx, target) {
+  if (typeof ctx.fit?.size !== 'function' || ctx.fit.size() === 0) return;
+  let step = 'lookup';
+  try {
+    const { stdout } = await tmux(ctx, 'display-message', '-p', '-t', target, '-F', '#{window_id}');
+    const window = String(stdout).trim();
+    if (!WINDOW_ID.test(window)) return;
+    step = 'release';
+    await ctx.fit.releaseWindow(window);
+  } catch (err) {
+    const code = /^[\w-]{1,20}$/.test(String(err?.code)) ? String(err.code) : 'error';
+    (ctx.stderr ?? process.stderr).write(`nika: fit release before spawn failed (${step} ${code})\n`);
+  }
+}
+
 /** `.last-pane` as a pane id, or null when missing, malformed or not a safe file. */
 async function lastPane(dir) {
   const id = await readHead(path.join(dir, '.last-pane'), 32).then((t) => t.trim(), () => null);
@@ -248,6 +270,7 @@ async function doSpawn(v, project, config, ctx) {
   const compact = launch ? { window: launch.window, pct: launch.env[PCT_ENV] } : null;
   await writeAtomic(dir, `${v.name}.agent.json`, `${JSON.stringify({ model: v.model, permissionMode, rc, role, parent: who.parent, depth: who.depth, compact })}\n`);
 
+  if (exists) await releaseFitted(ctx, target.at(-1)); // the -t value: `=<session>:` or a pane id
   let pane;
   try {
     const wrapper = ['-P', '-F', '#{pane_id}', '--', ...ctx.nikaArgv, '_run-agent', project.key, v.name];
@@ -277,7 +300,7 @@ async function doSpawn(v, project, config, ctx) {
 
 /**
  * @param {object} req  POST /api/app/spawn body (contract §3); optional `rc`: "off" or an RC_PREFIX overriding the setting
- * @param {object} ctx  { env, exec, tmuxBin, claudeBin, nikaArgv, started }
+ * @param {object} ctx  { env, exec, tmuxBin, claudeBin, nikaArgv, started, fit? } (`fit`: the app tier's fit controller, src/fit.js; the CLI has none)
  * @returns {Promise<{ status: number, body: object }>} `sessionId` is null: only _run-agent knows it
  */
 export async function spawnAgent(req, ctx) {

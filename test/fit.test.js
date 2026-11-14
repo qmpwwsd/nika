@@ -8,6 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createFit, checkFitBody, LAPSE_MS, WATCH_MS, RELEASE_ALL_MS, LEASE_FILE_MAX, LEASE_FILES_MAX } from '../src/fit.js';
 import { FIT_NONCE, WINDOW_ID } from '../src/ids.js';
+import { createSessionControl } from '../src/session-control.js';
 
 const TMUX = '/opt/x/tmux';
 // spelled out here on purpose: a change of the format in src/fit.js must fail this file
@@ -609,6 +610,18 @@ describe('other lease holders', () => {
 });
 
 describe('release', () => {
+  test('(−) the lease file goes through removeOwnFile: a file with a second link is not unlinked, the restore still ran and the refusal is logged by code (rule 11)', async () => {
+    const r = rig();
+    const before = r.world.snap('@1');
+    await r.put('%2', 220, 60);
+    const nonce = r.tag();
+    fs.linkSync(r.file(nonce), path.join(r.dir, 'alias.json'));
+    assert.deepEqual(await r.fit.release('%2'), { status: 200, body: { released: true } });
+    assert.deepEqual(r.world.snap('@1'), before, 'the window is restored all the same');
+    assert.ok(fs.existsSync(r.file(nonce)), 'the shared file is left in place');
+    assert.deepEqual(r.logs, ['nika: fit lease file unlink failed (ENLINK)']);
+  });
+
   test('(+) the exact restore sequence R0-R9 with the option unset; the window is as before', async () => {
     const r = rig();
     const before = r.world.snap('@1');
@@ -878,6 +891,221 @@ describe('the lock', () => {
     assert.ok(!r.names().includes('tag'), 'no mutation before the lock is granted');
     open();
     assert.equal((await p).body.fit.state, 'fitted');
+  });
+});
+
+/** A controller over rig `r` whose lock refuses while `gate.busy` is true, like the session controller's withPaneLock after 5 s. */
+function busyRig(r) {
+  const gate = { busy: false, refused: 0 };
+  const fit = createFit({
+    exec: r.world.exec, tmuxBin: TMUX, now: () => r.clock.t, stateDir: r.dir, log: (m) => r.logs.push(m),
+    lock: async (id, fn) => {
+      if (gate.busy) {
+        gate.refused += 1;
+        throw Object.assign(new Error('pane is busy'), { code: 'EPANEBUSY' });
+      }
+      return r.world.lock(id, fn);
+    },
+    schedule: (fn) => { r.sched.fn = fn; r.sched.on = true; return () => { r.sched.on = false; }; },
+    sleep: () => new Promise(() => {}),
+  });
+  return { fit, gate };
+}
+const BUSY = { status: 409, body: { error: 'busy', message: 'Claude is busy with another action on this pane. Try again.' } };
+
+describe('the pane lock is busy (EPANEBUSY from withPaneLock, W7-T2 ruling 2)', () => {
+  test('(−) acquire: 409 busy, nothing changed on tmux, no lease, no file, no tag', async () => {
+    const r = rig();
+    const { fit, gate } = busyRig(r);
+    gate.busy = true;
+    const before = r.world.snap('@1');
+    assert.deepEqual(await fit.hold('%2', { cols: 220, rows: 60, open: true }), BUSY);
+    assert.equal(gate.refused, 1);
+    assert.deepEqual(r.world.snap('@1'), before);
+    assert.deepEqual(r.files(), []);
+    assert.equal(fit.size(), 0);
+    assert.ok(!r.names().some((n) => MUTATING.has(n)), 'no mutation ran');
+    gate.busy = false;
+    assert.equal((await fit.hold('%2', { cols: 220, rows: 60, open: true })).body.fit.state, 'fitted', 'the next request fits as if nothing happened');
+  });
+
+  test('(−) renew: 409 busy, the lease and its file stay as they were, a heartbeat at the held size and a watch tick do nothing wrong', async () => {
+    const r = rig();
+    const { fit, gate } = busyRig(r);
+    await fit.hold('%2', { cols: 220, rows: 60, open: true });
+    const nonce = r.tag();
+    const file = fs.readFileSync(r.file(nonce), 'utf8');
+    gate.busy = true;
+    assert.deepEqual(await fit.hold('%2', { cols: 240, rows: 70, open: false }), BUSY);
+    assert.equal(fit.size(), 1, 'the lease is kept');
+    assert.equal(fs.readFileSync(r.file(nonce), 'utf8'), file, 'the file still describes the window as nika left it');
+    const at = r.at();
+    assert.deepEqual(await fit.hold('%2', { cols: 220, rows: 60, open: false }), ans('fitted', null, 220, 60, 3), 'the held size is still the held size');
+    assert.equal(r.at(), at, 'answered from memory');
+    await r.tick();
+    assert.equal(fit.size(), 1, 'the watch does not take the unchanged window for a user change');
+    assert.equal(r.tag(), nonce);
+    gate.busy = false;
+    assert.deepEqual(await fit.hold('%2', { cols: 240, rows: 70, open: false }), ans('fitted', null, 240, 70, 3), 'and the renew goes through once the pane is free');
+  });
+
+  test('(−) release (DELETE): 409 busy, the lease and the fitted window stay; the next request retries and restores', async () => {
+    const r = rig();
+    const { fit, gate } = busyRig(r);
+    const before = r.world.snap('@1');
+    await fit.hold('%2', { cols: 220, rows: 60, open: true });
+    const nonce = r.tag();
+    gate.busy = true;
+    assert.deepEqual(await fit.release('%2'), BUSY);
+    assert.equal(fit.size(), 1);
+    assert.ok(fs.existsSync(r.file(nonce)), 'the file stays for the retry');
+    assert.equal(r.tag(), nonce);
+    assert.equal(r.sched.on, true, 'the watch keeps running');
+    gate.busy = false;
+    assert.deepEqual(await fit.release('%2'), { status: 200, body: { released: true } });
+    assert.deepEqual(r.world.snap('@1'), before);
+    assert.deepEqual(r.files(), []);
+  });
+
+  test('(−) the watch: a release that finds the pane busy keeps the lease, and the next tick retries it', async () => {
+    const r = rig();
+    const { fit, gate } = busyRig(r);
+    const before = r.world.snap('@1');
+    await fit.hold('%2', { cols: 220, rows: 60, open: true });
+    r.world.wins.get('@1').zoomed = false; // the user unzoomed
+    gate.busy = true;
+    await r.tick();
+    assert.equal(fit.size(), 1, 'still held');
+    assert.equal(r.logs.length, 1);
+    assert.match(r.logs[0], /^nika: fit @1 %2 watch failed \(EPANEBUSY\)$/);
+    gate.busy = false;
+    await r.tick();
+    assert.equal(fit.size(), 0);
+    assert.equal(r.tag(), '');
+    assert.equal(r.world.snap('@1').width, before.width);
+  });
+
+  test('(−) a take-over (open:true from another pane) that finds the first pane busy: 409 busy, the first lease is kept', async () => {
+    const r = rig();
+    const { fit, gate } = busyRig(r);
+    await fit.hold('%2', { cols: 220, rows: 60, open: true });
+    gate.busy = true;
+    assert.deepEqual(await fit.hold('%3', { cols: 230, rows: 55, open: true }), BUSY);
+    assert.equal(fit.size(), 1);
+    assert.equal(r.world.wins.get('@1').tag.length, 16);
+  });
+
+  test('(+) a lock that fails for another reason is not a 409: the error still reaches the caller', async () => {
+    const r = rig();
+    const fit = createFit({ exec: r.world.exec, tmuxBin: TMUX, now: () => r.clock.t, stateDir: r.dir, log: () => {}, lock: async () => { throw Object.assign(new Error('x'), { code: 'EBOOM' }); }, schedule: () => () => {} });
+    await assert.rejects(fit.hold('%2', { cols: 220, rows: 60, open: true }), { code: 'EBOOM' });
+  });
+});
+
+describe('withPaneLock (session-control.js, W7-T2 ruling 2)', () => {
+  const idleKeys = () => { const k = { sent: [], send: async (pane, b) => { k.sent.push([pane, b]); return { status: 200, body: {} }; } }; return k; };
+  /** A controller whose captures wait on `gate.p`, so an End or a draft write holds the pane lock until the test lets go. */
+  function lockRig({ sleep } = {}) {
+    const gate = {};
+    gate.p = new Promise((res) => { gate.open = res; });
+    const entered = [];
+    const keys = idleKeys();
+    const slept = { n: 0, ms: 0 };
+    const control = createSessionControl({
+      mirror: { capture: async (pane) => { entered.push(pane); await gate.p; return { status: 503, body: { error: 'tmux_unavailable', message: 'x' } }; } },
+      keys,
+      paneCommand: async () => 'claude',
+      stateOf: async () => 'idle',
+      vimOf: () => false,
+      sleep: sleep ?? (async (ms) => { slept.n += 1; slept.ms += ms; await new Promise((res) => setImmediate(res)); }),
+    });
+    return { control, gate, entered, keys, slept };
+  }
+
+  test('(+) free pane: it runs fn at once and hands back its result; the pane is free again after, and after a throw', async () => {
+    const { control } = lockRig();
+    assert.equal(await control.withPaneLock('%6', async () => 42), 42);
+    await assert.rejects(control.withPaneLock('%6', async () => { throw new Error('inside'); }), /inside/);
+    assert.equal(await control.withPaneLock('%6', () => 'again'), 'again');
+  });
+
+  test('(+) it waits while an End or a draft write holds the pane, then runs; another pane is not held up', async () => {
+    for (const hold of [(c) => c.endSession('%6'), (c) => c.writeDraft('%6', { text: 'hi', base: '' })]) {
+      const { control, gate, entered, slept } = lockRig();
+      const holding = hold(control);
+      await until(() => entered.length === 1);
+      let ran = 0;
+      const waiting = control.withPaneLock('%6', async () => { ran += 1; return 'ran'; });
+      assert.equal(await control.withPaneLock('%7', async () => 'other pane'), 'other pane');
+      await until(() => slept.n >= 3);
+      assert.equal(ran, 0, 'not while the End or the write runs');
+      gate.open();
+      assert.equal(await waiting, 'ran');
+      assert.equal(ran, 1);
+      await holding;
+    }
+  });
+
+  test('(+) two waiters run one after the other, never together', async () => {
+    const { control, gate, entered } = lockRig();
+    const holding = control.endSession('%6');
+    await until(() => entered.length === 1);
+    let inside = 0;
+    let peak = 0;
+    const job = () => control.withPaneLock('%6', async () => {
+      inside += 1;
+      peak = Math.max(peak, inside);
+      await new Promise((res) => setImmediate(res));
+      inside -= 1;
+    });
+    const both = Promise.all([job(), job()]);
+    gate.open();
+    await both;
+    await holding;
+    assert.equal(peak, 1);
+  });
+
+  test('(−) it gives up after 5 s with EPANEBUSY and fn never runs (fake sleep)', async () => {
+    const { control, entered, slept } = lockRig();
+    control.endSession('%6'); // never lets go
+    await until(() => entered.length === 1);
+    let ran = false;
+    await assert.rejects(control.withPaneLock('%6', async () => { ran = true; }), { code: 'EPANEBUSY' });
+    assert.equal(ran, false);
+    assert.ok(slept.ms >= 5000 && slept.ms < 5100, `waited ${slept.ms} ms in ${slept.n} sleeps`);
+  });
+
+  test('(−) hold answers 409 busy when the controller\'s lock gives up, and nothing was changed on tmux', async () => {
+    const r = rig();
+    const { control, entered } = lockRig();
+    control.endSession('%2'); // End holds %2 for good
+    await until(() => entered.length === 1);
+    const fit = createFit({ exec: r.world.exec, tmuxBin: TMUX, now: () => r.clock.t, stateDir: r.dir, log: () => {}, lock: control.withPaneLock, schedule: () => () => {} });
+    assert.deepEqual(await fit.hold('%2', { cols: 220, rows: 60, open: true }), BUSY);
+    assert.ok(!r.names().some((n) => MUTATING.has(n)));
+    assert.equal(r.tag(), '');
+  });
+
+  test('(+) a draft write, End and the other controls during a held fit step answer 409 busy-switching and type nothing', async () => {
+    const { control, keys, entered, gate } = lockRig();
+    let release;
+    const held = new Promise((res) => { release = res; });
+    const step = control.withPaneLock('%6', () => held); // a fit step in progress
+    for (const call of [
+      () => control.writeDraft('%6', { text: 'hi', base: '' }),
+      () => control.endSession('%6'),
+      () => control.runCommand('%6', '/compact'),
+      () => control.switchMode('%6', 'plan'),
+      () => control.answer('%6', { n: 1, sig: '0123456789abcdef' }),
+      () => control.acceptSuggestion('%6', { text: 'go on' }),
+    ]) assert.deepEqual(await call(), { status: 409, body: { error: 'busy-switching' } });
+    assert.deepEqual(keys.sent, []);
+    assert.deepEqual(entered, [], 'not even a capture');
+    release();
+    await step;
+    gate.open();
+    assert.equal((await control.endSession('%6')).body.error, 'tmux_unavailable', 'free again: End runs (its capture fails in this rig)');
+    assert.deepEqual(entered, ['%6']);
   });
 });
 

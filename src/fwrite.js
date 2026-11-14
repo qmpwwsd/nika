@@ -81,6 +81,31 @@ export async function writeAtomic(dir, name, content, { mode = 0o600, project, p
 }
 
 /**
+ * Removes one file of nika's own, `dir/name` (W7, the fit lease files). `dir` passes the same check as a write target (a real,
+ * user-owned folder that group/other cannot write); `name` is a plain basename. The target is looked at with lstat and never
+ * followed: absent → false; a regular, single-link, user-owned file → unlinked, true; anything else (a symlink, a folder, a
+ * FIFO, a second link, a foreign owner) is refused and left where it is.
+ */
+export async function removeOwnFile(dir, name) {
+  if (typeof name !== 'string' || !NAME.test(name) || name === '.' || name === '..') throw refuse('EPATH', 'invalid file name');
+  await checkDir(dir);
+  const target = path.join(dir, name);
+  let st;
+  try {
+    st = await fs.lstat(target);
+  } catch (err) {
+    if (err.code === 'ENOENT') return false;
+    throw err;
+  }
+  if (st.isSymbolicLink()) throw refuse('ESYMLINK', `${target} is a symlink`);
+  if (!st.isFile()) throw refuse('ENOTREG', `${target} is not a regular file`);
+  if (UID !== null && st.uid !== UID) throw refuse('EOWNER', `${target} is not owned by this user`);
+  if (st.nlink !== 1) throw refuse('ENLINK', `${target} has more than one link`);
+  await fs.unlink(target);
+  return true;
+}
+
+/**
  * Post-write check (F6): the directories from `root` down to `target` are still real directories (lstat, no symlink) and
  * `realpath(target)` is inside `root`. A directory swapped for a symlink after the checks and before the rename leaves the
  * file outside the project: it is unlinked and the write refused (`ESYMLINK`). A window remains between this check and
