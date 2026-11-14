@@ -262,16 +262,57 @@ describe('parseDraft: readable text', () => {
     assert.equal(read({ lines }).text, text);
   });
 
-  test('(+) F1 rule 2: a full row and a row that continues its last word join with nothing (a cut word)', () => {
+  test('(+) F1 rule 2: a full row that is one word and a row that continues it join with nothing (a cut word)', () => {
     const x = (n) => 'x'.repeat(n);
     assert.equal(read({ lines: [x(116), x(14)] }).text, x(130)); // a 130-character word alone
     assert.deepEqual(wrap(x(130), W).map((l) => l.length), [116, 14]);
-    const short = `${'a'.repeat(10)} ${'b'.repeat(125)}`; // T2 live: a short word and a 125-character word
+    assert.equal(read({ lines: wrap(x(300), W) }).text, x(300)); // three rows of one word
+  });
+
+  const layout = (d) => {
+    assert.equal(d.state, 'unreadable');
+    assert.equal(d.reason, 'layout');
+    assert.equal(d.text, '');
+    assert.equal(d.sig, null);
+  };
+
+  test('(−) N-3: a full row with a space in it, then a word: Y + Z > 116 draws like a cut word YZ and like two words, so it is unreadable (layout)', () => {
+    const rows = [`${'x'.repeat(55)} ${'y'.repeat(60)}`, 'z'.repeat(60)]; // 116, then 60: Y = 60, Z = 60
+    layout(read({ lines: rows }));
+    // both texts are drawn exactly like this (Claude drops the leading space of the next row): neither can be told from the other
+    assert.deepEqual(wrap(`${'x'.repeat(55)} ${'y'.repeat(60)} ${'z'.repeat(60)}`, W), rows); // two words
+    assert.deepEqual(wrap(`${'x'.repeat(55)} ${'y'.repeat(60)}${'z'.repeat(60)}`, W), rows); // one cut word
+    layout(read({ lines: wrap(`${'x'.repeat(55)} ${'y'.repeat(60)} ${'z'.repeat(60)}`, W) }));
+    layout(read({ lines: wrap(`${'x'.repeat(35)} ${'y'.repeat(60)} ${'z'.repeat(40)}`, 96), cols: 100 })); // at 100 columns (W = 96): 60 + 40 > 96
+    // one word shorter and the pair fits one row: Y + Z = 60 + 56 = 116 <= W, so Z could not have been a part of Y: a soft wrap
+    const fits = `${'x'.repeat(55)} ${'y'.repeat(60)} ${'z'.repeat(56)}`;
+    assert.equal(read({ lines: wrap(fits, W) }).text, fits);
+  });
+
+  test('(−) N-3: the T2 live case, a short word and a 125-character word (rows 116 + 20), is now unreadable: its first row has a space', () => {
+    const short = `${'a'.repeat(10)} ${'b'.repeat(125)}`; // live: rows of 116 and 20
     const lines = wrap(short, W);
     assert.deepEqual(lines.map((l) => l.length), [116, 20]);
-    assert.equal(read({ lines }).text, short); // the space is inside the first row: no second one
+    layout(read({ lines })); // it draws the same rows as `a`x10 + space + `b`x105 + space + `b`x20: two readings
+    assert.deepEqual(wrap(`${'a'.repeat(10)} ${'b'.repeat(105)} ${'b'.repeat(20)}`, W), lines);
     const three = `${'a'.repeat(30)} ${'b'.repeat(260)}`; // the word is cut over three rows
-    assert.equal(read({ lines: wrap(three, W) }).text, three);
+    layout(read({ lines: wrap(three, W) }));
+    layout(read({ lines: wrap(`${'a'.repeat(10)} ${'b'.repeat(105)}`, 96), cols: 100 })); // 100 columns: rows of 96 and 20
+  });
+
+  test('(+) N-3: still readable: Y + Z <= 116 is a soft wrap, a one-word row is a cut word, a wide junction is a cut word', () => {
+    const wide = '\u65e5';
+    const ab = Array(100).fill('ab').join(' ');
+    assert.equal(read({ lines: wrap(ab, W) }).text, ab); // 100 x `ab` at 120 columns: 116 / 113 / 68
+    assert.equal(read({ lines: wrap(ab, 96), cols: 100 }).text, ab); // ... and at 100 columns
+    const joined = `ab ${wide.repeat(70)}`; // live: rows of 115 and 28 cells, a wide character at the end of the first row
+    assert.equal(read({ lines: wrap(joined, W) }).text, joined);
+    assert.equal(read({ lines: wrap('x'.repeat(130), W) }).text, 'x'.repeat(130)); // a whole-row single word, cut
+    const row = `${'a'.repeat(100)} ${'b'.repeat(232)}`; // a 100-cell row, then a 232-character word on its own rows
+    assert.equal(read({ lines: wrap(row, W) }).text, row);
+    // a wide character at the start of the next row: still the cut-word guess (the typed space is lost, a safe 409 later)
+    const wideNext = `${'x'.repeat(5)} ${'y'.repeat(110)} ${wide.repeat(4)}`;
+    assert.equal(read({ lines: wrap(wideNext, W) }).text, `${'x'.repeat(5)} ${'y'.repeat(110)}${wide.repeat(4)}`);
   });
 
   test('(+) F1: a 100-cell row, then a 232-character word: the word moves to its own rows, joined with a space', () => {

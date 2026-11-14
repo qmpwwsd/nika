@@ -133,21 +133,27 @@ function splitRow(body, start) {
 }
 
 /**
- * Joins the box rows (design 1.4). Claude 2.1.325 wraps each hard line like wrap-ansi (`hard: true, trim: false`) at the usable
- * width `w` = cols - 4 (`wrappedRows` is that break model), and then DRAWS every wrapped row without its leading whitespace:
- * the space that a row full to `w` pushes to the start of the next row is not drawn, but it counts for the break (W5-F1 live: 100
- * x `ab` is drawn 116 / 113 / 68, the real second row is a space plus 38 words). Row `a` into row `b` (bodies, after the indent and
- * unpad), with `lost` = 1 when the space Claude dropped from the start of `a` counts toward it, else 0 (width wa = width(a) + lost):
+ * Joins the box rows (design 1.4); null when two rows can be read two ways. Claude 2.1.325 wraps each hard line like wrap-ansi
+ * (`hard: true, trim: false`) at the usable width `w` = cols - 4 (`wrappedRows` is that break model), and then DRAWS every wrapped
+ * row without its leading whitespace: the space that a row full to `w` pushes to the start of the next row is not drawn, but it
+ * counts for the break (W5-F1 live: 100 x `ab` is drawn 116 / 113 / 68, the real second row is a space plus 38 words). Row `a` into
+ * row `b` (bodies, after the indent and unpad), with `lost` = 1 when the space Claude dropped from the start of `a` counts toward it,
+ * else 0 (width wa = width(a) + lost):
  *   - `b` starts with a space, `a` or `b` is blank, or wa > w: a hard line break (a drawn wrap never starts with a space);
  *   - `a` is FULL, that is `b`'s first character would not have fitted behind it (wa + width(it) > w; a wide character leaves a
- *     full row one cell short): a cut word (nothing between) when width(last word of a) + width(first word of b) > w, since only a
- *     word longer than `w` is cut; else a soft wrap, a space, and `lost` = 1 for `b` when the space did not fit on `a` (wa = w);
+ *     full row one cell short). Y = the last word of `a`, Z = the first word of `b`:
+ *       Y + Z <= w: a soft wrap, a space, and `lost` = 1 for `b` when the space did not fit on `a` (wa = w);
+ *       Y + Z > w: a cut word YZ (only a word longer than `w` is cut) draws exactly the same two rows as two words Y and Z (N-3:
+ *       Claude drops the leading space of the next row). A cut word is the reading when `a` has no space (one word fills the row,
+ *       the old T1 guess) or when the junction is a wide character (a wide character is what leaves a row short), else the two
+ *       readings cannot be told apart and the draft is unreadable (null: `layout`; nika never overwrites a draft it cannot read);
  *   - otherwise a space when a, a space and b's first word would not have fitted (wa + 1 + width > w), else a newline.
  * Known residuals, all read back as a different text and so end in a 409 `draft-mismatch`, never in a wrong key: a hard newline
  * where the next word would not have fitted (it reads as a soft wrap, the third rule; design 1.4), the same for a hard line of
- * exactly `w` cells followed by a hard newline (the newline reads as a space); a full row that is one word of
- * exactly `w` followed by a space and a word (a cut word: the space is lost); a double space at a wrap (it reads as one);
- * a full row, a space and a word that does not fit behind it (Claude draws an empty row between; it reads as newlines).
+ * exactly `w` cells followed by a hard newline (the newline reads as a space); a full row that is one word of exactly `w` followed
+ * by a space and a word, and the same at a wide junction (read as a cut word: the space is lost); a double space at a wrap (it
+ * reads as one); a full row, a space and a word that does not fit behind it (Claude draws an empty row between; it reads as
+ * newlines). The page adopts a misread text after the 409, so the next replace writes it back: one character is really changed.
  */
 function joinRows(bodies, w) {
   let text = bodies[0];
@@ -161,8 +167,9 @@ function joinRows(bodies, w) {
     if (a.trim() !== '' && b.trim() !== '' && !b.startsWith(' ') && wa <= w) {
       const next = width(/^\S*/.exec(b)[0]);
       if (wa + cellWidth(b.codePointAt(0)) > w) { // full
-        if (width(/\S*$/.exec(a)[0]) + next > w) sep = '';
-        else { sep = ' '; lost = wa === w ? 1 : 0; }
+        if (width(/\S*$/.exec(a)[0]) + next <= w) { sep = ' '; lost = wa === w ? 1 : 0; }
+        else if (a.includes(' ') && cellWidth([...a].at(-1).codePointAt(0)) < 2 && cellWidth(b.codePointAt(0)) < 2) return null;
+        else sep = '';
       } else if (wa + 1 + next > w) sep = ' ';
     }
     text += sep + b;
@@ -179,7 +186,7 @@ function joinRows(bodies, w) {
  *   text      the draft, rows joined, ghost text and the padding Claude adds to every row removed; '' for empty and unreadable
  *   sig       16 hex of sha256(`${state}\n${mode}\n${text}`); null when unreadable
  *   reason    unreadable only: 'history' | 'layout' | 'tall' | 'pasted' | 'trailing' (checked in this order; layout also means
- *             dim text next to real text, see dimIsTrailing)
+ *             dim text next to real text, see dimIsTrailing, and a wrap that reads two ways, see joinRows)
  *   box       { top, bottom }: the row indexes of the two rule rows
  *   cursorAtEnd   the cursor sits right after the last visible real character of the last box row (padding spaces do not count)
  *   suggestion    dim text of an empty box (not the `Try "..."` example), clean() at most 200; else null
@@ -239,6 +246,7 @@ export function parseDraft(rows, cursor, cols) {
   const empty = bodies.length === 1 && bodies[0].trim() === '';
   const usable = Number.isInteger(cols) && cols > 4 ? cols : width(rowText(rows[bottom]).trimEnd());
   const text = empty ? '' : joinRows(bodies, Math.max(1, usable - 4));
+  if (text === null) return bad('layout'); // two rows that can be read two ways (N-3)
   // A typed literal looks the same as Claude's placeholder: fail closed. Checked on the dim text too (a dim placeholder is ghost).
   if (pastedIn(text) || pastedIn(parts.map((p) => p.dim).join(' '))) return bad('pasted');
 
