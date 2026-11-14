@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import * as mode from '../src/mode.js';
 import {
   MODES, MODE_TARGETS, PROMPT_ROWS, FOOTER, OPTION, rowText, lastNonBlank, modeFromRows, promptFromRows, mentionsBypass, bypassWindow,
-  surveyShown, pillShown, SHELL_FOOTER,
+  surveyShown, pillShown, SHELL_FOOTER, ASK_FOOTER, PLAN_FOOTER, REVIEW_END, isDialogEnd, nudgeFooterAt, footerEnd,
 } from '../src/mode.js';
 import { parseCapture } from '../src/mirror.js';
 import { subagentRows } from './helpers.js';
@@ -605,5 +605,124 @@ describe('pillShown', () => {
     for (const rows of [undefined, null, 5, 'Jump to bottom', {}, [], [null], [undefined], [5], ['Jump to bottom'], [[]], [[null]], [[{}]], [[{ t: 5, s: {} }]], [[{ t: 'Jump to bottom' }]]]) {
       assert.equal(pillShown(rows), false, JSON.stringify(rows));
     }
+  });
+});
+
+// ---- 0.5, W1: Claude's question and plan dialogs (design W1 2.2 and 2.6; spikes S3, W1-T0b) ---------------------------------
+describe('dialog ends', () => {
+  const ASK = {
+    one: 'Enter to select · ↑/↓ to navigate · Esc to cancel',
+    many: 'Enter to select · Tab/Arrow keys to navigate · Esc to cancel',
+    insert: '-- INSERT -- · Enter to select · Tab/Arrow keys to navigate · ctrl+g to edit in Vim',
+    normal: 'Enter to select · Tab/Arrow keys to navigate · ctrl+g to edit in Nvim · Esc to cancel',
+    bare: 'Enter to select · ↑/↓ to navigate',
+  };
+  const PLAN = 'ctrl+g to edit in Vim · <plans>/demo-api.md';
+  const body = (end) => rowsOf('transcript line', '', 'Which project should I open?', '', '❯ 1. acme-api', '  2. Type something.', end);
+
+  test('(+) isDialogEnd: every footer variant of S3 and T0b, the review end and the plan footer; spaces around and no-break spaces do not matter', () => {
+    for (const f of [...Object.values(ASK), PLAN, '2. Cancel', '  2. Cancel', '❯ 2. Cancel', `  ${ASK.many}  `, ASK.many.replace(/ /g, '\u00a0'), `   ${PLAN}`]) {
+      assert.equal(isDialogEnd(f), true, JSON.stringify(f));
+    }
+    assert.equal(ASK_FOOTER.exec(ASK.one)[1], '↑/↓');
+    assert.equal(ASK_FOOTER.exec(ASK.many)[1], 'Tab/Arrow keys');
+    assert.ok(PLAN_FOOTER.test(PLAN) && REVIEW_END.test('2. Cancel'));
+  });
+
+  test('(−) isDialogEnd: Esc to cancel alone (the permission prompt), the trust footer, mode lines, options and junk are not dialog ends', () => {
+    for (const f of ['Esc to cancel', 'Enter to confirm · Esc to cancel', PHRASE.auto, '1. Submit answers', '  2. Cancel please', '3. Cancel', 'Enter to select', 'Enter to select · j/k to navigate',
+      'xx Enter to select · ↑/↓ to navigate', 'ctrl+g to edit in Vim', 'ctrl+g to edit in Vim ·', '', '   ']) {
+      assert.equal(isDialogEnd(f), false, JSON.stringify(f));
+    }
+    for (const v of [undefined, null, 5, {}, []]) assert.equal(isDialogEnd(v), false);
+  });
+
+  test('(+) footerEnd cuts the subagent list under each dialog end: the dialog end is the last row', () => {
+    for (const end of [...Object.values(ASK), PLAN, '  2. Cancel']) {
+      for (const n of [1, 2]) {
+        const rows = [...body(end), ...subagentRows({ agents: n })];
+        assert.equal(lastNonBlank(rows, 1)[0], end, `${end} / ${n}`);
+        assert.equal(modeFromRows(rows), 'unknown', 'a dialog end is not a mode line');
+      }
+    }
+    const texts = [...body(ASK.many), ...subagentRows({ agents: 1 })].map(rowText);
+    assert.equal(texts[footerEnd(texts)], ASK.many);
+  });
+
+  test('(+) bypassWindow reads the dialog rows, with and without a subagent list under them', () => {
+    const rows = rowsOf('transcript line', 'Which mode should I use?', '❯ 1. bypass permissions', '  2. Type something.', '', ASK.many);
+    assert.equal(bypassWindow(rows), true);
+    assert.equal(bypassWindow([...rows, ...subagentRows({ agents: 3 })]), true);
+    assert.equal(bypassWindow(rowsOf('transcript line', 'Which mode should I use?', '❯ 1. plain', '  2. Type something.', '', ASK.many)), false);
+  });
+
+  test('(−) the tree under an unknown row stays: Esc to cancel, the trust footer, an option row and a half-block are not anchors', () => {
+    for (const end of ['Esc to cancel', 'Enter to confirm · Esc to cancel', '  2. No', 'Do you want to proceed?', '1. Submit answers']) {
+      const rows = [...body(end), ...subagentRows({ agents: 2 })];
+      assert.notEqual(lastNonBlank(rows, 1)[0], end, end);
+      assert.equal(lastNonBlank(rows, 1)[0].includes('◯'), true, end);
+    }
+    for (const bad of [subagentRows({ agents: 2, blank: false }), subagentRows({ agents: 2, main: false }), [...subagentRows({ agents: 2 }), rowsOf('junk')[0]]]) {
+      assert.notEqual(lastNonBlank([...body(ASK.many), ...bad], 1)[0], ASK.many);
+    }
+  });
+
+  test('(−) a dialog end changes nothing for a screen that is not one: modes, prompts and the subagent tree under a mode line read as before', () => {
+    const idle = [...rowsOf('transcript line', ...BOX, PHRASE.plan), ...subagentRows({ agents: 2 })];
+    assert.equal(modeFromRows(idle), 'plan');
+    assert.equal(lastNonBlank(idle, 1)[0], PHRASE.plan);
+    assert.equal(promptFromRows(rowsOf('Do you want to proceed?', '❯ 1. Yes', '  2. No', 'Esc to cancel')).options.length, 2);
+  });
+});
+
+describe('the auto-mode nudge (orchestrator ruling 4)', () => {
+  const TITLE = '  Teach auto mode about your environment?';
+  const FOOT = '  Enter to confirm · Esc to cancel';
+  const MODE = '  -- INSERT -- ⏵⏵ auto mode on (shift+tab to cycle)';
+  const nudge = (extra = []) => rowsOf('⏺ All done.', '', '─'.repeat(40), TITLE, '', '  Auto mode works better when it knows your environment.', '', '  ❯ 1. Yes', '    2. Not now', "    3. Don't show again", '', FOOT, '─'.repeat(40), '❯', '─'.repeat(40), MODE, ...extra);
+
+  test('(+) the nudge footer becomes the last row: the box and the mode line under it do not count as the footer', () => {
+    const rows = nudge();
+    assert.equal(lastNonBlank(rows, 1)[0], FOOT);
+    assert.equal(modeFromRows(rows), 'unknown', 'the mode line under the box is not read');
+    assert.equal(promptFromRows(rows), null);
+    assert.equal(lastNonBlank(rows, 3).length, 3);
+    assert.equal(nudgeFooterAt(rows.map(rowText), rows.length - 1), rows.findIndex((r) => rowText(r) === FOOT));
+  });
+
+  test('(+) a subagent list under the nudge\'s mode line is cut first, then the nudge footer is the last row', () => {
+    const rows = nudge(subagentRows({ agents: 2 }));
+    assert.equal(lastNonBlank(rows, 1)[0], FOOT);
+  });
+
+  test('(+) bypassWindow reads the nudge rows', () => {
+    const rows = nudge().map((r) => (rowText(r).includes('2. Not now') ? rowsOf('    2. Allow bypass')[0] : r));
+    assert.equal(bypassWindow(rows), true);
+    assert.equal(bypassWindow(nudge()), false);
+  });
+
+  test('(−) the title without its footer, the footer without its title, or the two too far apart is an ordinary screen', () => {
+    const noFooter = nudge().filter((r) => rowText(r) !== FOOT);
+    const noTitle = nudge().filter((r) => rowText(r) !== TITLE);
+    assert.equal(modeFromRows(noFooter), 'auto');
+    assert.equal(modeFromRows(noTitle), 'auto');
+    const far = rowsOf(TITLE, ...Array.from({ length: 12 }, (_, i) => `  row ${i}`), FOOT, ...BOX, PHRASE.auto);
+    assert.equal(modeFromRows(far), 'auto', 'more than the nudge span of rows between them');
+    assert.equal(nudgeFooterAt(['a', 'b'], 1), -1);
+    assert.equal(nudgeFooterAt([], 5), -1);
+  });
+
+  test('(−) the folder-trust dialog (same footer, another title) is not the nudge: its footer stays the last row and nothing else changes', () => {
+    const trust = rowsOf('Do you trust the files in this folder?', '', '❯ 1. Yes, proceed', '  2. No, exit', '', '  Enter to confirm · Esc to cancel');
+    assert.equal(lastNonBlank(trust, 1)[0], '  Enter to confirm · Esc to cancel');
+    assert.equal(nudgeFooterAt(trust.map(rowText), trust.length - 1), -1);
+    assert.equal(promptFromRows(trust), null);
+  });
+
+  test('(−) an idle screen, a busy one and a permission prompt read exactly as before', () => {
+    const idle = rowsOf('transcript', ...BOX, PHRASE.auto);
+    assert.equal(modeFromRows(idle), 'auto');
+    assert.equal(lastNonBlank(idle, 2)[0], BOX[1]);
+    assert.equal(promptFromRows(rowsOf('Do you want to proceed?', '❯ 1. Yes', '  2. No', 'Esc to cancel')).question, 'Do you want to proceed?');
   });
 });

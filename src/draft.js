@@ -48,7 +48,8 @@ function cellWidth(cp) {
     || (cp >= 0x1f900 && cp <= 0x1f9ff) || (cp >= 0x20000 && cp <= 0x3fffd)) return 2;
   return 1;
 }
-const width = (text) => { let n = 0; for (const ch of text) n += cellWidth(ch.codePointAt(0)); return n; };
+/** Terminal cells of a text (cellWidth per code point); src/dialog.js reads it for its row-width checks. */
+export const width = (text) => { let n = 0; for (const ch of text) n += cellWidth(ch.codePointAt(0)); return n; };
 
 /** The characters of one mirror row with their column, the column their span starts at, their dim / reverse / fg-246 flags and `nb` (it was a no-break space). A no-break space reads as a space. */
 function charsOf(row) {

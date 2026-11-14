@@ -38,21 +38,52 @@ const MAIN_ROW = /^ {2}\u23fa main\s*$/;
 const AGENT_ROW = /^ {2}\u25ef \S+ {2}.* (?:\d+[dhm](?: \d+[hms])*|\d+s)(?: \u00b7 [\u2191\u2193] \d+(?:\.\d+)?[km]? tokens)?\s*$/;
 const MORE_ROW = /^ {2}\u2193 \d+ more\s*$/;
 
+// Claude's question and plan dialogs (0.5, design W1 2.2 and 2.6). Their footers anchor a dialog on the screen. They live here, not in
+// src/dialog.js, because dialog.js imports this file and footerEnd needs them. A footer is matched on its trimmed text, no-break spaces read
+// as spaces. `Esc to cancel` alone (the permission prompt) is NOT a dialog end.
+/** The footer of a question step; group 1 is the navigation hint (up/down arrows for one tab, `Tab/Arrow keys` for several). */
+export const ASK_FOOTER = /^(?:-- INSERT -- \u00b7 )?Enter to select \u00b7 (\u2191\/\u2193|Tab\/Arrow keys) to navigate(?: \u00b7 ctrl\+g to edit in [^\u00b7]+)?(?: \u00b7 Esc to cancel)?$/;
+/** The footer of a plan approval: the editor hint and the plan file's path (the path is never read). */
+export const PLAN_FOOTER = /^ctrl\+g to edit in [^\u00b7]+ \u00b7 .+$/;
+/** The last row of the review step (`2. Cancel`, with or without the pointer). */
+export const REVIEW_END = /^(?:\u276f )?2\. Cancel$/;
+const plain = (text) => (typeof text === 'string' ? text.replace(/\u00a0/g, ' ').trim() : '');
+/** True when the text is the last row of a question step, of the review step or of a plan approval. */
+export const isDialogEnd = (text) => { const t = plain(text); return ASK_FOOTER.test(t) || REVIEW_END.test(t) || PLAN_FOOTER.test(t); };
+
+// The auto-mode nudge (spike W1-T0b 3.10): a dialog that takes digits, whose footer is NOT the last row (the input box and its mode line
+// are drawn under it). Without this the screen reads as an idle one with a plain box. footerEnd makes its footer the last row, so every
+// reader of "the footer" (the mode, the input box, a permission prompt) fails closed on it. Both rows are matched whole, title first.
+const NUDGE_TITLE = /^Teach auto mode about your environment\?$/;
+const NUDGE_FOOTER = /^Enter to confirm \u00b7 Esc to cancel$/;
+const NUDGE_ROWS = 14; // the nudge sits within the last NUDGE_ROWS non-blank rows
+const NUDGE_SPAN = 8; // title to footer: at most this many non-blank rows apart
+/** Index of the nudge's footer row among `texts[0..end]`, else -1: a footer row with the title within NUDGE_SPAN non-blank rows above it. */
+export function nudgeFooterAt(texts, end) {
+  const win = [];
+  for (let x = Math.min(end, texts.length - 1); x >= 0 && win.length < NUDGE_ROWS; x -= 1) if (plain(texts[x]) !== '') win.push(x); // newest first
+  const f = win.findIndex((x) => NUDGE_FOOTER.test(plain(texts[x])));
+  return f >= 0 && win.slice(f + 1, f + 1 + NUDGE_SPAN).some((x) => NUDGE_TITLE.test(plain(texts[x]))) ? win[f] : -1;
+}
+
 /**
  * Index of the last row of `texts` that is not a subagent list hanging under a mode line, else the last row. The list is cut only
  * when it is exactly the captured block (MAIN_ROW after exactly one blank row, then agent rows only, then at most one overflow row)
- * AND the row above the blank row is a mode line: anything else below the footer (junk, a dialog, a changed layout) stays, so the
- * footer reads `unknown` (fail closed). A mode line cannot be forged by a label: labels live in agent rows only.
+ * AND the row above the blank row is a mode line or the last row of a dialog (isDialogEnd): anything else below the footer (junk,
+ * a dialog, a changed layout) stays, so the footer reads `unknown` (fail closed). A mode line cannot be forged by a label: labels
+ * live in agent rows only. The auto-mode nudge (nudgeFooterAt) makes its own footer the last row, what hangs under it is cut.
  */
-function footerEnd(texts) {
+export function footerEnd(texts) {
   let at = texts.length - 1;
   while (at >= 0 && !texts[at].trim()) at -= 1;
   if (at >= 0 && MORE_ROW.test(texts[at])) at -= 1;
   let agents = 0;
   while (at >= 0 && AGENT_ROW.test(texts[at])) { at -= 1; agents += 1; }
   const footer = at - 2;
-  const ok = agents > 0 && at >= 2 && MAIN_ROW.test(texts[at]) && texts[at - 1].trim() === '' && isModeLine(texts[footer]);
-  return ok ? footer : texts.length - 1;
+  const ok = agents > 0 && at >= 2 && MAIN_ROW.test(texts[at]) && texts[at - 1].trim() === '' && (isModeLine(texts[footer]) || isDialogEnd(texts[footer]));
+  const end = ok ? footer : texts.length - 1;
+  const nudge = nudgeFooterAt(texts, end);
+  return nudge >= 0 ? nudge : end;
 }
 
 /**

@@ -2,7 +2,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
-import { parseDraft, boxSquash, squash, SIG, RULE_ROW, HISTORY_LABEL, normDraft, sameDraft, inEnvelope, chunks } from '../src/draft.js';
+import { parseDraft, boxSquash, squash, SIG, RULE_ROW, HISTORY_LABEL, normDraft, sameDraft, inEnvelope, chunks, width } from '../src/draft.js';
 import { rowText } from '../src/mode.js';
 import { readDraft } from '../src/session-control.js';
 import { boxRows, span, subagentRows } from './helpers.js';
@@ -1444,5 +1444,21 @@ describe('boxSquash (0.5, W2): what the box really holds, whitespace removed', (
     assert.equal(squashOf({ lines: ['a  b'] }).squash, squash('a  b'));
     assert.equal(SIG.test('0123456789abcdef'), true);
     for (const bad of ['', '0123456789ABCDEF', '0123456789abcde', '0123456789abcdef0', '0123456789abcdeg', '0123456789abcdef\n']) assert.equal(SIG.test(bad), false, JSON.stringify(bad));
+  });
+});
+
+describe('width (exported for src/dialog.js)', () => {
+  test('(+) counts terminal cells: ASCII and symbols 1, CJK and emoji 2, combining and zero-width marks 0', () => {
+    assert.equal(width('abc'), 3);
+    assert.equal(width('\u276f 1. x'), 6);
+    assert.equal(width('\u65e5\u672c'), 4);
+    assert.equal(width('e\u0301'), 1);
+    assert.equal(width('a\u200bb'), 2);
+    assert.equal(width('\u{1F600}'), 2);
+  });
+
+  test('(−) an empty text is 0 cells; the terminal rule row of a 120-column pane is 120', () => {
+    assert.equal(width(''), 0);
+    assert.equal(width('\u2500'.repeat(120)), 120);
   });
 });
