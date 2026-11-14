@@ -528,7 +528,7 @@ and vim insert mode, made-up text).
 ### 10.11 Not verified
 
 - Plain-mode replace and append were exercised against a fake pane only (the Claude of the checking session was in vim mode).
-- `→` and `Tab` in vim insert mode, and `Tab` and `Enter` on a real suggestion through nika's accept route and Send (the owner checks
+- `→` and `Tab` in vim insert mode, `Tab` in vim normal mode, and `Tab` and `Enter` on a real suggestion through nika's accept route and Send (the owner checks
   them).
 - A very long suggestion (does it wrap or is it cut), a draft that wraps in the middle of a wide character, and `Escape Escape` on
   an empty box (does it open Rewind, and does it save the draft to history).

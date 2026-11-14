@@ -538,13 +538,14 @@ capture's shape). Same pane rule as capture and the same one-lock rule as the ot
    `not-idle`, no `draft` key (a `Tab` could take a suggestion into a box while Claude works).
 4. One fresh capture (never the cache): the only capture before the key. A capture that fails → its status and body. A permission
    prompt on screen → 409 `not-idle`. No plain box (`draft` would be `null`: footer unknown → 409 `mode-unknown`; otherwise, a cursor
-   outside the box included, 409 `input-unreadable`), both without a `draft` key. `state` is `unreadable` → 409 `draft-unreadable`
+   outside the box included, 409 `input-unreadable`), both without a `draft` key (a second cursor check behind the parser, never
+   reached while the parser holds, would answer `draft: null`). `state` is `unreadable` → 409 `draft-unreadable`
    with `reason` and `draft`.
 5. The box must be `empty`, in `prompt` mode, with `draft.suggestion` equal to `text`; anything else (text typed, the suggestion
    changed or gone, a `!` box) → 409 `draft-changed` with `draft` (the page adopts it). Nothing is sent.
 6. Exactly one key, `Tab`, through the keys path (it counts toward the 20 requests per second per pane; a 429 or a tmux error stops
    here and answers that status and body plus the `draft` of one more fresh read, best effort). A Stop or End interrupt that started
-   meanwhile → 409 `not-idle` with `draft`, `Tab` not sent.
+   meanwhile, or whose `Escape` went out less than 40 ms ago → 409 `not-idle` with `draft`, `Tab` not sent.
 7. Read back, up to 4 fresh captures 150 ms apart: the box is readable, `state` `text`, `prompt` mode, and its text equals `text`
    (compared as the draft write compares, `claude-tui.md` §10) → `200 { draft }`. Else → 409 `draft-mismatch` with the `draft` last
    read (`null` when the box is gone). The `Tab` is never repeated.
