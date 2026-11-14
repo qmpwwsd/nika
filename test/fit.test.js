@@ -493,7 +493,8 @@ describe('renew', () => {
     const res = await r.put('%2', 240, 70, false);
     assert.equal(res.body.fit.state, 'blocked');
     assert.equal(res.body.fit.reason, 'user-change');
-    assert.deepEqual(r.names(at), ['list', 'list', 'layout', 'size', 'optUnset', 'select', 'focus', 'untag', 'list']);
+    assert.deepEqual(r.names(at), ['list', 'list', 'layout', 'size', 'optUnset', 'select', 'focus', 'untag', 'list', 'list'], 'the last list is the one the answer is built from');
+    assert.deepEqual(res, ans('blocked', 'user-change', 66, 50, 3));
     assert.deepEqual(r.argv(at)[3], ['resize-window', '-t', '@1', '-x', '200', '-y', '50'], 'the only resize is the restore, not the 240x70 asked for');
     assert.deepEqual(r.world.wins.get('@1').width, 200);
     assert.equal(r.fit.size(), 0);
@@ -1847,7 +1848,7 @@ describe('M4: a lease that is dropped at R0 sets no mark', () => {
     const at = r.at();
     const res = await r.put('%2', 240, 70, false);
     assert.equal(res.body.fit.reason, 'user-change', 'this request still says so');
-    assert.deepEqual(r.names(at), ['list', 'list'], 'R0 found the tag gone and touched nothing');
+    assert.deepEqual(r.names(at), ['list', 'list', 'list'], 'R0 found the tag gone and touched nothing; the last list builds the answer');
     assert.equal(r.fit.size(), 0);
     assert.deepEqual(r.files(), []);
     r.world.after = null;
@@ -1962,4 +1963,110 @@ describe('fix round 2: EPANEBUSY from verify through releaseNow after the renew 
       assert.equal((await fit.hold('%2', { cols: 220, rows: 60, open: false })).body.fit.state, 'blocked', 'off until the page opens the session window again');
     });
   }
+});
+
+describe('fix round 3: a blocked / changed or user-change answer describes the window after the release (T5 finding F2)', () => {
+  const once = (name, fn) => { let armed = true; return (n) => { if (n === name && armed) { armed = false; fn(); } }; };
+  const win = (r) => r.world.wins.get('@1');
+  const userZoomed = (w) => { const x = w.wins.get('@1'); x.zoomed = true; x.active = '%2'; };
+
+  test('(−) acquire, a hook fights the resize: the answer has the restored pane size, not the fitted one, and userZoom false', async () => {
+    const r = rig();
+    r.world.after = once('size', () => { win(r).width = 199; });
+    const res = await r.put('%2', 220, 60);
+    assert.deepEqual(res, ans('blocked', 'changed', 66, 50, 3, false));
+    assert.deepEqual(r.names().slice(-3), ['untag', 'list', 'list'], 'R9, then the listing the answer is built from');
+    assert.equal(r.tag(), '');
+  });
+
+  test('(−) renew, the read-back mismatches after the resize: the same', async () => {
+    const r = rig();
+    await r.put('%2', 220, 60);
+    r.world.after = once('size', () => { win(r).zoomed = false; });
+    assert.deepEqual(await r.put('%2', 240, 70, false), ans('blocked', 'changed', 66, 50, 3, false));
+    assert.equal(r.fit.size(), 0);
+  });
+
+  test('(−) renew, the user changed the window (nika\'s zoom is still on): user-change with the restored pane and userZoom false', async () => {
+    const r = rig();
+    await r.put('%2', 220, 60);
+    win(r).width = 150; // the user resized the window; the zoom on the mirrored pane is still nika\'s
+    assert.deepEqual(await r.put('%2', 240, 70, false), ans('blocked', 'user-change', 66, 50, 3, false));
+    assert.equal(r.fit.size(), 0);
+    assert.equal(win(r).zoomed, false);
+  });
+
+  test('(+) the user had the mirrored pane zoomed: the answer after the release still says userZoom true, with the restored size', async () => {
+    const r = rig(userZoomed);
+    r.world.after = once('size', () => { win(r).width = 199; });
+    assert.deepEqual(await r.put('%2', 220, 60), ans('blocked', 'changed', 200, 50, 3, true));
+    assert.equal(win(r).zoomed, true, 'their zoom is left as it was');
+  });
+
+  test('(−) the user\'s zoom is gone when the window is looked at after the release: userZoom false', async () => {
+    const r = rig(userZoomed);
+    const hook = once('size', () => { win(r).width = 199; });
+    r.world.after = (name) => { hook(name); if (name === 'untag') win(r).zoomed = false; }; // C-b z right after the restore
+    assert.deepEqual(await r.put('%2', 220, 60), ans('blocked', 'changed', 66, 50, 3, false));
+  });
+
+  test('(−) nika\'s zoom that the release could not take off is still not the user\'s: userZoom false', async () => {
+    const r = rig((w) => { w.wins.get('@1').active = '%2'; }); // focus was on %2 already: R6 does not move it, so the window stays zoomed
+    let zooms = 0;
+    r.world.fail = (name) => name === 'zoom' && (zooms += 1) > 1; // A3 works, R2 does not
+    r.world.after = once('size', () => { win(r).width = 199; });
+    assert.deepEqual(await r.put('%2', 220, 60), ans('blocked', 'changed', 200, 50, 3, false));
+    assert.equal(win(r).zoomed, true);
+    assert.ok(r.logs.some((l) => /R2 failed/.test(l)));
+  });
+
+  test('(+) the answer is the window as it is after the release, whatever happened right after it (a split)', async () => {
+    const r = rig();
+    r.world.after = (name) => {
+      if (name === 'size' && win(r).width !== 199 && win(r).width !== 200) win(r).width = 199;
+      if (name === 'untag') win(r).panes.push({ id: '%9', command: 'zsh' });
+    };
+    assert.deepEqual(await r.put('%2', 220, 60), ans('blocked', 'changed', 50, 50, 4, false));
+  });
+
+  describe('when the listing after the release fails, the state nika restored to (the pre-fit snapshot) is used', () => {
+    const failAfterUntag = (r, extra) => {
+      let ended = false;
+      r.world.fail = (name) => ended && name === 'list';
+      r.world.after = (name) => { extra?.(name); if (name === 'untag') ended = true; };
+    };
+
+    test('(−) acquire: pre-fit pane size, the count the lease holds, userZoom false; one log line without ids of the answer', async () => {
+      const r = rig();
+      const hook = once('size', () => { win(r).width = 199; });
+      failAfterUntag(r, (name) => { hook(name); if (name === 'untag') win(r).panes.push({ id: '%9', command: 'zsh' }); }); // the pane count would show 4 if it were read
+      assert.deepEqual(await r.put('%2', 220, 60), ans('blocked', 'changed', 66, 50, 3, false));
+      assert.equal(r.logs.filter((l) => /^nika: fit @1 %2 answer failed \(\w+\)$/.test(l)).length, 1);
+    });
+
+    test('(−) acquire, the user had the pane zoomed: userZoom true from the lease, pre-fit size 200x50', async () => {
+      const r = rig(userZoomed);
+      failAfterUntag(r, once('size', () => { win(r).width = 199; }));
+      assert.deepEqual(await r.put('%2', 220, 60), ans('blocked', 'changed', 200, 50, 3, true));
+    });
+
+    test('(−) renew: the pre-fit size, not the size the last read-back saw', async () => {
+      const r = rig();
+      await r.put('%2', 220, 60); // the last read-back saw 220x60
+      failAfterUntag(r, once('size', () => { win(r).zoomed = false; }));
+      assert.deepEqual(await r.put('%2', 240, 70, false), ans('blocked', 'changed', 66, 50, 3, false));
+    });
+
+    test('(−) the pane is no longer in the window after the release: the snapshot values, not another window\'s row', async () => {
+      const r = rig();
+      const hook = once('size', () => { win(r).width = 199; });
+      r.world.after = (name) => {
+        hook(name);
+        if (name !== 'untag') return;
+        const [from, to] = [win(r), r.world.wins.get('@2')];
+        to.panes.push(from.panes.splice(1, 1)[0]);
+      };
+      assert.deepEqual(await r.put('%2', 220, 60), ans('blocked', 'changed', 66, 50, 3, false));
+    });
+  });
 });

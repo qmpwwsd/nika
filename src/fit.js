@@ -22,7 +22,7 @@ export const WATCH_MS = 1000; // server tick while any lease is held
 export const RELEASE_ALL_MS = 3000; // bound of releaseAll() and recover()
 export const LEASE_FILE_MAX = 16 * 1024;
 export const LEASE_FILES_MAX = 20;
-export const FIT_RATE = 4; // requests per second per pane (PUT and DELETE together); enforced by the route
+export const FIT_RATE = 4; // requests per second per pane for each method (PUT and DELETE have separate buckets); enforced by the route
 const MARKS_MAX = 64;
 const NOTE_MS = 2000; // a PUT open:false this soon after the page's own DELETE is a late heartbeat, not a page that wants the window
 const NOTES_MAX = 64;
@@ -308,6 +308,26 @@ export function createFit({
   const reply = (state, reason, size, panes, userZoom) => ({ status: 200, body: { fit: { state, reason, pane: { cols: size[0], rows: size[1] }, panes, userZoom } } });
   const fromRow = (state, reason, row) => reply(state, reason, [row.paneW, row.paneH], row.panes, row.zoomed === 1 && row.active === 1);
   const answer = (l) => reply(l.state, l.reason, l.seen, l.panes, l.userZoom);
+  /**
+   * The answer of a fit that ended in a release (F2): the pane as the window is after it, not as the fit left it. `userZoom` is the user's own
+   * zoom only: it needs the lease's and the listing's. If the listing fails, the pre-fit snapshot is what nika restored to.
+   */
+  async function restored(lease, reason) {
+    let size = lease.pre;
+    let panes = lease.panes;
+    let zoom = lease.userZoom;
+    try {
+      const row = (await listing()).get(lease.pane);
+      if (row && row.window === lease.window) {
+        size = [row.paneW, row.paneH];
+        panes = row.panes;
+        zoom = lease.userZoom && row.zoomed === 1 && row.active === 1;
+      }
+    } catch (e) {
+      fail(lease, 'answer', e);
+    }
+    return reply('blocked', reason, size, panes, zoom);
+  }
 
   // ---- RELEASE (design 4, R0-R9): idempotent, inside the window queue; → 'released' | 'dropped' -------------------------------
   async function releaseNow(lease, mark) {
@@ -408,7 +428,7 @@ export function createFit({
     const text = layout !== null ? leaseText(lease) : null;
     if (text === null || Buffer.byteLength(text) > LEASE_FILE_MAX) {
       await releaseNow(lease, 'changed');
-      return fromRow('blocked', 'changed', m);
+      return restored(lease, 'changed');
     }
     await writeLease(lease, text); // the file always describes the window as nika left it
     lease.seen = [m.paneW, m.paneH];
@@ -428,7 +448,7 @@ export function createFit({
     const lease = {
       v: 1, nonce: randomBytes(8).toString('hex'), window: w, pane: id, panes: me.panes, zoomed0: me.zoomed, active0: a0, width0: me.winW, height0: me.winH,
       size0: o0, layout0, layout1: layout0, cols: C, rows: R, resized: target[0] !== me.winW || target[1] !== me.winH, userZoom: me.zoomed === 1, at: now(), lastBeat: now(),
-      state: fits ? 'fitted' : 'zoomed', reason: fits ? null : 'panel-smaller', seen: [me.paneW, me.paneH], done: false,
+      state: fits ? 'fitted' : 'zoomed', reason: fits ? null : 'panel-smaller', seen: [me.paneW, me.paneH], pre: [me.paneW, me.paneH], done: false,
     };
     const text = leaseText(lease);
     if (Buffer.byteLength(text) > LEASE_FILE_MAX) return fromRow('blocked', 'changed', me);
@@ -482,7 +502,7 @@ export function createFit({
   async function renew(lease, C, R, snap, me) {
     if (observe(lease, snap)) { // the user changed the window since the last tick: release, never re-assert
       await releaseNow(lease, 'user-change');
-      return fromRow('blocked', 'user-change', me);
+      return restored(lease, 'user-change');
     }
     lease.lastBeat = now();
     const { fits, target } = plan(lease.panes, C, R, lease.width0, lease.height0);
