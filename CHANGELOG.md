@@ -131,9 +131,10 @@ Fixes:
   **Show ended** box (its Ended section no longer opens by itself). A row's subagent summary adds a muted "+N ended" while
   some are hidden. `nika status` lists no ended agents by default and says how many it hid: `--ended` shows the latest 5
   per project, `--full` shows all of them. It always lists the projects you added to nika, even with only ended sessions
-  (you can resume them); a folder you never added shows only while a session runs there, and one line counts the others
-  ("… 3 folders not added to nika, with only ended sessions, hidden"). A `config.json` nika cannot use is named in a note.
-  `--json` is unchanged.
+  (you can resume them) and added projects with no sessions yet ("name  folder   no sessions yet" with `--since all`, else
+  "no sessions in the last 7d" and so on); a folder you never added shows only while a session runs there, and one line
+  counts the others ("… 3 folders not added to nika, with only ended sessions, hidden"). A `config.json` nika cannot use
+  is named in a note. `--json` is unchanged.
 - The project page's **New agents** card shows the permission mode as a chip with its own colour, icon and short word
   (Default, Manual, Accept edits, Plan, Auto, Don't ask), like the session header, instead of a sentence.
 - The session window's permission-mode switcher no longer has a "Mode" word in front of it.

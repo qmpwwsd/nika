@@ -149,14 +149,107 @@ describe('cli', () => {
       assert.match(r.stdout, /^note: config\.json: /m);
     });
 
-    test('(−) with --ended the project list is not read: the same bad config.json gives no note', async () => {
+    test('(+) with --ended the same bad config.json gives the same note (the project list is read in every text view)', async () => {
       const cfg = path.join(fx.root, 'nika-config-bad2');
       fs.mkdirSync(path.join(cfg, 'nika'), { recursive: true });
       fs.writeFileSync(path.join(cfg, 'nika', 'config.json'), '{ not json');
       const r = await run(['status', '--since', 'all', '--ended'], { ...sevenEnded(), NIKA_CONFIG_DIR: cfg });
       assert.equal(r.code, 0, r.stderr);
-      assert.doesNotMatch(r.stdout, /config\.json/);
+      assert.match(r.stdout, /^note: config\.json: /m);
       assert.match(r.stdout, /^plain\s/m);
+    });
+
+    // G9 (0.4.0, owner 2026-11-14): an added project nobody has run a session in is still listed, like the app's sidebar
+    describe('an added project with no sessions yet', () => {
+      const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const mkdir = (name) => {
+        const dir = path.join(fx.root, name);
+        fs.mkdirSync(dir, { recursive: true });
+        return fs.realpathSync(dir);
+      };
+      const addedDirs = async (extra, ...dirs) => {
+        const cfg = path.join(fx.root, `nika-config-${Math.random().toString(16).slice(2)}`);
+        for (const d of dirs) {
+          const r = await run(['projects', 'add', d], { ...extra, NIKA_CONFIG_DIR: cfg });
+          assert.equal(r.code, 0, r.stderr);
+        }
+        return { ...extra, NIKA_CONFIG_DIR: cfg };
+      };
+      const emptyClaude = () => {
+        const dir = path.join(fx.root, `claude-empty-${Math.random().toString(16).slice(2)}`);
+        fs.mkdirSync(path.join(dir, 'projects'), { recursive: true });
+        return { CLAUDE_CONFIG_DIR: dir };
+      };
+
+      test('(+) default view: its block comes after the groups and before the "not added" line', async () => {
+        const dir = mkdir('acme-api');
+        const r = await run(['status', '--since', 'all'], await addedDirs(sevenEnded(), dir));
+        assert.equal(r.code, 0, r.stderr);
+        assert.match(r.stdout, new RegExp(`^acme-api {2}${esc(dir)} {3}no sessions yet\\n\\n… 1 folder not added to nika`, 'm'));
+      });
+
+      test('(+) --ended and --full: after the groups too', async () => {
+        const dir = mkdir('acme-api');
+        for (const flag of ['--ended', '--full']) {
+          const r = await run(['status', '--since', 'all', flag], await addedDirs(sevenEnded(), dir));
+          assert.equal(r.code, 0, r.stderr);
+          assert.match(r.stdout, new RegExp(`^acme-api {2}${esc(dir)} {3}no sessions yet$`, 'm'), flag);
+          assert.ok(r.stdout.indexOf('plain') < r.stdout.indexOf('acme-api'), flag);
+        }
+      });
+
+      test('(+) "No agents in the last 7d." still prints, and the empty projects follow it', async () => {
+        const dir = mkdir('web-shop');
+        const r = await run(['status'], await addedDirs(emptyClaude(), dir));
+        assert.equal(r.code, 0, r.stderr);
+        assert.match(r.stdout, new RegExp(`^No agents in the last 7d\\.\\n\\nweb-shop {2}${esc(dir)} {3}no sessions in the last 7d\\n`));
+      });
+
+      test('(+) --since 24h names the window: "no sessions in the last 24h", never "yet"', async () => {
+        const dir = mkdir('acme-api');
+        for (const flag of [[], ['--ended']]) {
+          const r = await run(['status', '--since', '24h', ...flag], await addedDirs(emptyClaude(), dir));
+          assert.equal(r.code, 0, r.stderr);
+          assert.match(r.stdout, new RegExp(`^acme-api {2}${esc(dir)} {3}no sessions in the last 24h$`, 'm'), flag.join(' '));
+          assert.doesNotMatch(r.stdout, /no sessions yet/, flag.join(' '));
+        }
+      });
+
+      test('(+) --since all says "no sessions yet"', async () => {
+        const dir = mkdir('acme-api');
+        const r = await run(['status', '--since', 'all'], await addedDirs(emptyClaude(), dir));
+        assert.equal(r.code, 0, r.stderr);
+        assert.match(r.stdout, new RegExp(`^acme-api {2}${esc(dir)} {3}no sessions yet$`, 'm'));
+        assert.doesNotMatch(r.stdout, /no sessions in the last/);
+      });
+
+      test('(−) a project that has a group is not printed twice', async () => {
+        const r = await run(['status', '--since', 'all'], await addedDirs(sevenEnded(), fx.plain));
+        assert.equal(r.code, 0, r.stderr);
+        assert.equal(r.stdout.match(/^plain\s/gm).length, 1);
+        assert.doesNotMatch(r.stdout, /no sessions (yet|in the last)/);
+      });
+
+      test('(−) --json is the snapshot only: no empty project in it', async () => {
+        const dir = mkdir('demo-api');
+        const r = await run(['status', '--json', '--since', 'all'], await addedDirs(sevenEnded(), dir));
+        assert.equal(r.code, 0, r.stderr);
+        assert.deepEqual(JSON.parse(r.stdout).groups.map((g) => g.label), ['plain']);
+        assert.doesNotMatch(r.stdout, /no sessions (yet|in the last)|demo-api/);
+      });
+
+      test('(−) a broken config.json: no empty-project line, the note prints, exit 0', async () => {
+        const cfg = path.join(fx.root, 'nika-config-bad3');
+        fs.mkdirSync(path.join(cfg, 'nika'), { recursive: true });
+        fs.writeFileSync(path.join(cfg, 'nika', 'config.json'), '{ not json');
+        for (const args of [['status'], ['status', '--ended']]) {
+          const r = await run(args, { ...emptyClaude(), NIKA_CONFIG_DIR: cfg });
+          assert.equal(r.code, 0, r.stderr);
+          assert.doesNotMatch(r.stdout, /no sessions (yet|in the last)/, args.join(' '));
+          assert.match(r.stdout, /^note: config\.json: /m, args.join(' '));
+          assert.match(r.stdout, /^No agents in the last 7d\.$/m, args.join(' '));
+        }
+      });
     });
 
     test('(+) by default no ended row is printed; the header still counts them and one line says how to see them', async () => {
@@ -281,6 +374,33 @@ describe('renderStatus: folders not added to nika (0.4.0)', async () => {
     const byDir = addedTo([{ key: 'e'.repeat(16), dir: '/work/scratch-1', name: 'scratch-1' }]);
     assert.equal(byDir(snapshot.groups[2]), true);
     assert.equal(byDir(snapshot.groups[3]), false);
+  });
+
+  test('(+) a project with no group prints "<name>  <dir>   no sessions in the last 24h" after the groups and before the "not added" line, once, in config order', () => {
+    const projects = [
+      { key: KEY_A, dir: '/work/acme-api', name: 'acme-api' },                  // has a group, by key
+      { key: 'e'.repeat(16), dir: '/work/scratch-1', name: 'scratch-1' },       // has a group, by folder only
+      { key: 'f'.repeat(16), dir: '/work/demo-api', name: 'demo-api' },         // no group
+      { key: '1'.repeat(16), dir: '/work/gadget-ui', name: 'gadget-ui' },       // no group
+    ];
+    const out = renderStatus(snapshot, { ended: false, full: false }, plainPaint, addedTo(projects), projects);
+    assert.equal(out.match(/no sessions in the last 24h/g).length, 2);
+    assert.match(out, /^demo-api {2}\/work\/demo-api {3}no sessions in the last 24h\n\ngadget-ui {2}\/work\/gadget-ui {3}no sessions in the last 24h\n\n… \d folders? not added to nika/m);
+    assert.doesNotMatch(out, /^(acme-api|scratch-1)\s.*no sessions/m);
+    assert.ok(out.indexOf('web-shop') < out.indexOf('demo-api'));
+  });
+
+  test('(+) with the window "all" the line reads "no sessions yet", and "No agents" keeps printing when no group exists', () => {
+    const projects = [{ key: 'f'.repeat(16), dir: '/work/demo-api', name: 'demo-api' }];
+    const out = renderStatus({ ...snapshot, since: 'all', groups: [] }, { ended: false, full: false }, plainPaint, addedTo(projects), projects);
+    assert.equal(out, 'No agents in the last all.\n\ndemo-api  /work/demo-api   no sessions yet\n');
+  });
+
+  test('(−) the name of an empty project goes through clean()', () => {
+    const projects = [{ key: 'f'.repeat(16), dir: '/work/demo-api', name: 'demo\u001b[31m-api' }];
+    const out = renderStatus(snapshot, { ended: true, full: false }, plainPaint, addedTo(projects), projects);
+    assert.equal(out.includes('\u001b'), false);
+    assert.match(out, /^demo-api\s/m);
   });
 
   test('(−) with --ended nothing is left out and no line says so', () => {

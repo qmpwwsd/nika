@@ -148,10 +148,12 @@ export function addedTo(projects) {
   return (g) => keys.has(g.key) || dirs.has(g.root);
 }
 
-export function renderStatus(snapshot, { ended: withEnded, full }, paint, isAdded = () => true) {
+export function renderStatus(snapshot, { ended: withEnded, full }, paint, isAdded = () => true, projects = []) {
   const now = snapshot.generatedAt;
   const lines = [];
-  if (snapshot.groups.length === 0) lines.push(`No agents in the last ${snapshot.since}.`);
+  // an added project no group matches (the same key-or-folder test as isAdded): listed like the app's sidebar does
+  const empty = projects.filter((q) => !snapshot.groups.some(addedTo([q])));
+  if (snapshot.groups.length === 0) lines.push(`No agents in the last ${snapshot.since}.`, ...(empty.length ? [''] : []));
   const groups = withEnded ? snapshot.groups : snapshot.groups.filter((g) => isAdded(g) || g.agents.some((a) => a.live));
   for (const g of groups) {
     const c = g.counts;
@@ -168,6 +170,11 @@ export function renderStatus(snapshot, { ended: withEnded, full }, paint, isAdde
     if (!withEnded && ended.length) lines.push(paint.ended(`  … ${ended.length} ended hidden (nika status --ended)`));
     else if (shown.length < ended.length) lines.push(paint.ended(`  … ${ended.length - shown.length} more ended (nika status --full)`));
     lines.push('');
+  }
+  // "yet" is true only for the window "all"; a shorter window may hide older sessions, so it names the window
+  const none = snapshot.since === 'all' ? 'no sessions yet' : `no sessions in the last ${snapshot.since}`;
+  for (const p of empty) {
+    lines.push(`${paint.bold(clean(p.name, 120) ?? '')}  ${tilde(p.dir)}   ${none}`, '');
   }
   const left = snapshot.groups.length - groups.length;
   if (left) lines.push(paint.ended(`… ${left} folder${left === 1 ? '' : 's'} not added to nika, with only ended sessions, hidden (nika status --ended)`));
@@ -700,12 +707,12 @@ const COMMANDS = {
       cx.out.write(`${toJson(snapshot)}\n`);
       return 0;
     }
-    // nika's project list decides which folders the default view keeps; --ended shows every folder, so it is not read then
-    const added = o.ended ? null : await loadConfig(cx.env);
+    // nika's project list decides which folders the default view keeps and which empty projects are listed (every text view)
+    const added = await loadConfig(cx.env);
     const paint = painter(cx.out, cx.env);
-    cx.out.write(renderStatus(snapshot, o, paint, added ? addedTo(added.config.projects) : undefined));
+    cx.out.write(renderStatus(snapshot, o, paint, addedTo(added.config.projects), added.config.projects));
     // config.json warnings (an unusable file leaves no project "added", a dropped key may drop one): said here, like nika doctor
-    for (const w of added?.warnings ?? []) cx.out.write(`${paint.ended(`note: config.json: ${clean(w, 200)}`)}\n`);
+    for (const w of added.warnings) cx.out.write(`${paint.ended(`note: config.json: ${clean(w, 200)}`)}\n`);
     return 0;
   },
   serve: async (rest, cx, io) => {
