@@ -2,6 +2,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { cellWidth } from '../public/mirror-render.js';
 
 export const SID = {
   busy: '11111111-1111-4111-8111-111111111111',
@@ -150,4 +151,54 @@ export function fakeExec({ psLines, tmuxLines, tmuxError } = {}) {
   };
   exec.calls = calls;
   return exec;
+}
+
+// ---- Claude's input box (src/draft.js tests; W5) -------------------------------------------------------------------
+// Synthetic screens only: acme-api / web-shop text, never a real capture. Symbols are escapes.
+const BOX_STYLE = { b: false, fg: null, bg: null, u: false, i: false, d: false };
+const NBSP = '\u00a0';
+
+/** One span as the mirror delivers it; `s` overrides the plain style (e.g. { d: true }, { fg: 246 }, { r: true }). */
+export const span = (t, s = {}) => ({ t, s: { ...BOX_STYLE, ...s } });
+
+// Terminal cells of a string, by public/mirror-render.js (an independent copy of the rule draft.js uses): the oracle for the cursor.
+const cells = (text) => [...text].reduce((n, ch) => n + cellWidth(ch.codePointAt(0)), 0);
+
+/**
+ * A screen around Claude's input box, in the shape the mirror delivers it: [hint row], top rule, the box rows, bottom rule,
+ * a status-line row, the mode line. Returns { rows, cursor, cols } (feed `parseDraft(s.rows, s.cursor, s.cols)`).
+ *   cols    pane width (rule width); default 120
+ *   lines   the VISUAL rows of the box, as Claude draws them: a string or a span list per row. Row 0 gets the prompt glyph
+ *           and a no-break space, the others two spaces. An empty string is an empty (or blank) row
+ *   mode    'prompt' (glyph U+276F, rules fg 244) or 'bash' (glyph '!', rules fg 211, mode line `! for shell mode`)
+ *   insert  put `-- INSERT --` (fg 246) at the start of the mode line (vim INSERT)
+ *   label   a label drawn into the top rule: `--- <label> ---` (a session name, or `History 3/3`)
+ *   ghost   dim text appended to the last box row (the placeholder or a prompt suggestion)
+ *   hint    a transient hint row ABOVE the top rule (e.g. `Esc again to clear`)
+ *   footer  replaces the mode line text after the optional `-- INSERT --`
+ *   cursor  undefined: the cursor sits right after the last row's real text (spans that are not dim and not fg 246);
+ *           null: no cursor; { x, y, dx }: absolute column / row, and dx an offset from the default column
+ */
+export function boxRows({ cols = 120, lines = [''], mode = 'prompt', insert = false, label = null, cursor, ghost = null, hint = null, footer } = {}) {
+  const bash = mode === 'bash';
+  const dashes = (n) => '\u2500'.repeat(n);
+  const rule = (text) => [span(text, { fg: bash ? 211 : 244 })];
+  const top = label === null
+    ? rule(dashes(cols))
+    : [span(dashes(3), { fg: bash ? 211 : 244 }), span(` ${label} `, { d: true }), span(dashes(Math.max(2, cols - label.length - 5)), { fg: bash ? 211 : 244 })];
+  const items = lines.map((l) => (typeof l === 'string' ? (l ? [span(l)] : []) : l));
+  if (ghost !== null) items[items.length - 1] = [...items.at(-1), span(ghost, { d: true })];
+  const glyph = bash ? '!' : '\u276f';
+  const box = items.map((spans, i) => [span(i === 0 ? glyph + NBSP : '  '), ...spans]);
+  const above = hint === null ? [] : [[span(`  ${hint}`, { fg: 246 })]];
+  const text = footer ?? (bash ? '! for shell mode' : '\u23f5\u23f5 auto mode on (shift+tab to cycle)');
+  const modeLine = [span('  '), ...(insert ? [span('-- INSERT --', { fg: 246 }), span(' ')] : []), span(text, { fg: bash ? 211 : 220 })];
+  const rows = [...above, top, ...box, rule(dashes(cols)), [span('  acme-api  master')], modeLine];
+  const real = items.at(-1).filter((sp) => !sp.s.d && sp.s.fg !== 246).map((sp) => sp.t).join('');
+  const where = cursor === null ? null : {
+    x: cursor?.x ?? 2 + cells(real) + (cursor?.dx ?? 0),
+    y: cursor?.y ?? above.length + box.length, // the last box row: top rule at above.length, box rows follow
+    visible: true,
+  };
+  return { rows, cursor: where, cols };
 }

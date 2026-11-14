@@ -7,12 +7,9 @@
 import { createHash } from 'node:crypto';
 import { CLAUDE_COMMAND } from './ids.js';
 import { MODE_TARGETS, OPTION, PROMPT_ROWS, bypassWindow, lastNonBlank, modeFromRows, promptFromRows, rowText } from './mode.js';
+import { RULE_ROW } from './draft.js';
 
 const EXIT_POLL_MS = 500;
-// A rule row of Claude's input box (trimmed): two or more box-drawing dashes, plain, or labelled with the session name
-// (`-n <name>` or /rename), which Claude draws into the upper rule as `─── <name> ─` (claude-tui.md section 5). The label is
-// 1 to 80 characters, has no dash, no control character and no space at either end. The box is what lies between the last two.
-const RULE_ROW = /^─{2,}(?: [^─\p{Cc}\s](?:[^─\p{Cc}]{0,78}[^─\p{Cc}\s])? ─+)?$/u;
 const PROMPT_CHAR = '❯';
 // Claude draws a no-break space after the prompt character (claude-tui.md section 5): for comparing, it is a space.
 const plain = (text) => text.replace(/\xa0/g, ' ');

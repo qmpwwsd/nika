@@ -1,0 +1,643 @@
+import { test, describe } from 'node:test';
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import fs from 'node:fs';
+import { parseDraft, RULE_ROW, HISTORY_LABEL, normDraft, sameDraft, inEnvelope, chunks } from '../src/draft.js';
+import { boxRows, span } from './helpers.js';
+
+// Synthetic screens only (acme-api, web-shop). The layout follows docs/contracts/claude-tui.md and spike S9 (Claude Code 2.1.321):
+// top rule, `glyph + no-break space + text`, two-space continuation rows, bottom rule, status line, mode line.
+const NB = '\u00a0';
+const PROMPT = '\u276f';
+const W = 116; // usable text width at 120 columns: cols - 4
+
+/** boxRows(...) read with parseDraft the way the capture route will (rows, cursor, cols). */
+const read = (opts) => {
+  const s = boxRows(opts);
+  return parseDraft(s.rows, s.cursor, s.cols);
+};
+const sigOf = (state, mode, text) => createHash('sha256').update(`${state}\n${mode}\n${text}`).digest('hex').slice(0, 16);
+const WORDS = 'alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november oscar papa quebec romeo sierra tango uniform victor whiskey xray yankee zulu'.split(' ');
+/** n characters of words, ending on a letter. */
+function sentence(n) {
+  let s = '';
+  for (let i = 0; s.length < n; i += 1) s += (s ? ' ' : '') + WORDS[i % WORDS.length];
+  s = s.slice(0, n);
+  return s.endsWith(' ') ? `${s.slice(0, -1)}x` : s;
+}
+/** Greedy word wrap as Claude draws it: the break space is dropped; a row holds `width` characters at most. */
+function wrap(text, width) {
+  const rows = [];
+  let cur = '';
+  for (const word of text.split(' ')) {
+    if (cur === '') cur = word;
+    else if (cur.length + 1 + word.length <= width) cur += ` ${word}`;
+    else { rows.push(cur); cur = word; }
+  }
+  rows.push(cur);
+  return rows;
+}
+const rule = (n = 40) => [span('\u2500'.repeat(n), { fg: 244 })];
+const modeLine = [span('  \u23f5\u23f5 auto mode on (shift+tab to cycle)', { fg: 220 })];
+
+describe('parseDraft: readable text', () => {
+  test('(+) one line: the whole Draft shape, no `reason`, sig is 16 hex of sha256(state, mode, text)', () => {
+    const d = read({ lines: ['fix the retry loop in acme-api'] });
+    assert.deepEqual(d, {
+      state: 'text',
+      mode: 'prompt',
+      text: 'fix the retry loop in acme-api',
+      sig: sigOf('text', 'prompt', 'fix the retry loop in acme-api'),
+      box: { top: 0, bottom: 2 },
+      cursorAtEnd: true,
+      suggestion: null,
+    });
+    assert.match(d.sig, /^[0-9a-f]{16}$/);
+    assert.equal('reason' in d, false);
+    assert.equal('edit' in d, false); // `edit` comes from api-app.js, never from the parser
+  });
+
+  test('(+) the width comes from `cols`, or from the rule row when `cols` is left out', () => {
+    const text = sentence(212);
+    const s = boxRows({ lines: wrap(text, W) });
+    assert.equal(parseDraft(s.rows, s.cursor, 120).text, text);
+    assert.equal(parseDraft(s.rows, s.cursor).text, text);
+    assert.equal(parseDraft(s.rows, s.cursor, undefined).text, text);
+  });
+
+  test('(+) a wrapped 212-character draft at 120 columns joins its rows with a space', () => {
+    const text = sentence(212);
+    assert.equal(text.length, 212);
+    const lines = wrap(text, W);
+    assert.equal(lines.length, 2);
+    assert.ok(lines.every((l) => l.length <= W));
+    const d = read({ lines });
+    assert.equal(d.state, 'text');
+    assert.equal(d.text, text);
+    assert.equal(d.cursorAtEnd, true);
+  });
+
+  test('(+) 100 short words: a row of exactly 116 characters that holds spaces still joins with a space', () => {
+    const text = Array(100).fill('ab').join(' ');
+    const lines = wrap(text, W);
+    assert.equal(lines[0].length, W); // 39 words, no spare column
+    assert.equal(read({ lines }).text, text);
+  });
+
+  test('(+) 300 `x` cut at 116 join without a space', () => {
+    const x = (n) => 'x'.repeat(n);
+    const d = read({ lines: [x(116), x(116), x(68)] });
+    assert.equal(d.text, x(300));
+  });
+
+  test('(+) the width follows the pane: 40 columns wrap at 36', () => {
+    const text = sentence(100);
+    const d = read({ cols: 40, lines: wrap(text, 36) });
+    assert.equal(d.text, text);
+  });
+
+  test('(+) a break space that stays at the end of a row (a capture with -N) is not doubled', () => {
+    const a = `${'a'.repeat(19)} ${'b'.repeat(15)} `; // 36 characters with the break space
+    const d = read({ cols: 40, lines: [a, 'ccccc dd'] });
+    assert.equal(d.text, `${'a'.repeat(19)} ${'b'.repeat(15)} ccccc dd`);
+  });
+
+  test('(+) three hard lines join with newlines', () => {
+    const d = read({ lines: ['first line', 'second line', 'third line'] });
+    assert.equal(d.text, 'first line\nsecond line\nthird line');
+    assert.equal(d.cursorAtEnd, true);
+  });
+
+  test('(+) a blank middle line (indent only, or a row the capture shows empty) is an empty line', () => {
+    assert.equal(read({ lines: ['first', '', 'third'] }).text, 'first\n\nthird');
+    const s = boxRows({ lines: ['first', 'x', 'third'] });
+    s.rows[2] = []; // tmux trimmed the row
+    assert.equal(parseDraft(s.rows, s.cursor, s.cols).text, 'first\n\nthird');
+    assert.equal(read({ lines: ['first', ''] }).text, 'first\n'); // a trailing blank line
+    assert.equal(read({ lines: ['', 'second'] }).text, '\nsecond'); // a leading one
+  });
+
+  test('(+) leading spaces, double spaces and trailing spaces are kept', () => {
+    assert.equal(read({ lines: ['  indented  and  double'] }).text, '  indented  and  double');
+    const d = read({ lines: ['abc   '] }); // a capture that keeps trailing spaces
+    assert.equal(d.text, 'abc   ');
+    assert.equal(d.state, 'text');
+    assert.equal(d.cursorAtEnd, true);
+  });
+
+  test('(+) unicode: accents, a check mark, wide East Asian characters and an emoji', () => {
+    const text = 'h\u00e9llo \u2713 \u65e5\u672c\u8a9e \u{1F600}';
+    const d = read({ lines: [text] });
+    assert.equal(d.text, text);
+    assert.equal(d.cursorAtEnd, true); // the cursor column counts 2 cells per wide character
+  });
+
+  test('(+) a no-break space inside the text reads as a space; the separator after the glyph may be a plain space', () => {
+    const s = boxRows({ lines: [`a${NB}b`] });
+    assert.equal(parseDraft(s.rows, s.cursor, s.cols).text, 'a b');
+    s.rows[1] = [span(`${PROMPT} a b`)];
+    assert.equal(parseDraft(s.rows, s.cursor, s.cols).text, 'a b');
+  });
+
+  test('(+) the glyph may sit after up to two spaces; the cursor column shifts with it', () => {
+    const s = boxRows({ lines: ['x'] });
+    s.rows[1] = [span(`  ${PROMPT}${NB}x`)];
+    const d = parseDraft(s.rows, { x: 5, y: 1, visible: true }, s.cols);
+    assert.equal(d.text, 'x');
+    assert.equal(d.cursorAtEnd, true);
+  });
+
+  test('(+) a hint row above the top rule (Esc again to clear, paste again to expand) is outside the box', () => {
+    const d = read({ lines: ['hello'], hint: 'Esc again to clear' });
+    assert.equal(d.text, 'hello');
+    assert.deepEqual(d.box, { top: 1, bottom: 3 });
+    assert.equal(d.cursorAtEnd, true);
+  });
+
+  test('(+) a session name drawn into the top rule is still the box; vim INSERT in the mode line changes nothing', () => {
+    const d = read({ lines: ['hello'], label: 'acme-api', insert: true });
+    assert.equal(d.state, 'text');
+    assert.equal(d.text, 'hello');
+    assert.equal(read({ lines: ['hello'], label: 'History' }).state, 'text'); // not `History n/m`
+    assert.equal(read({ lines: ['hello'], label: 'History 3/x' }).state, 'text');
+  });
+
+  test('(+) the output above the box and any rule row in it are ignored: the box is between the last two rules', () => {
+    const s = boxRows({ lines: ['hello'] });
+    const rows = [[span('build ok in web-shop')], rule(), [span('log line')], ...s.rows];
+    const d = parseDraft(rows, { ...s.cursor, y: s.cursor.y + 3 }, s.cols);
+    assert.equal(d.text, 'hello');
+    assert.deepEqual(d.box, { top: 3, bottom: 5 });
+  });
+
+  test('(−) a hard newline whose next first word would not fit reads as a soft wrap (accepted ambiguity, design 1.4)', () => {
+    const d = read({ lines: ['a'.repeat(110), 'b'.repeat(8)] });
+    assert.equal(d.text, `${'a'.repeat(110)} ${'b'.repeat(8)}`);
+  });
+
+  test('(−) the parser does not change the rows it reads', () => {
+    const s = boxRows({ lines: ['hello', 'world'], ghost: ' ghost' });
+    const before = structuredClone(s.rows);
+    parseDraft(s.rows, s.cursor, s.cols);
+    assert.deepEqual(s.rows, before);
+  });
+});
+
+describe('parseDraft: empty box and ghost text', () => {
+  const EMPTY_AT = (suggestion, text = '') => ({
+    state: 'empty', mode: 'prompt', text, sig: sigOf('empty', 'prompt', text), box: { top: 0, bottom: 2 }, cursorAtEnd: true, suggestion,
+  });
+
+  test('(+) the glyph and a no-break space alone is empty', () => {
+    assert.deepEqual(read({ lines: [''] }), EMPTY_AT(null));
+  });
+
+  test('(+) the glyph alone at the end of the row, and a row of spaces, are empty too', () => {
+    const s = boxRows({ lines: [''] });
+    s.rows[1] = [span(PROMPT)];
+    assert.equal(parseDraft(s.rows, s.cursor, s.cols).state, 'empty');
+    assert.equal(read({ lines: ['   '] }).state, 'empty');
+    assert.equal(read({ lines: ['   '] }).text, '');
+  });
+
+  test('(+) the dim `Try "..."` placeholder is empty and is not a suggestion', () => {
+    assert.deepEqual(read({ lines: [''], ghost: 'Try "fix typecheck errors"' }), EMPTY_AT(null));
+  });
+
+  test('(+) a dim one-word suggestion is empty and is returned as `suggestion`', () => {
+    assert.deepEqual(read({ lines: [''], ghost: 'yes' }), EMPTY_AT('yes'));
+    const d = read({ lines: [''], ghost: '  run the tests in\tacme-api  ' });
+    assert.equal(d.suggestion, 'run the tests in acme-api'); // clean(): spaces collapsed
+    assert.equal(read({ lines: [''], ghost: 'z'.repeat(300) }).suggestion.length, 200);
+  });
+
+  test('(+) a first character in reverse video over a dim rest is the placeholder under the cursor: empty', () => {
+    const d = read({ lines: [[span('y', { r: true }), span('es', { d: true })]], cursor: { x: 2 } });
+    assert.equal(d.state, 'empty');
+    assert.equal(d.text, '');
+    assert.equal(d.suggestion, 'yes');
+    const t = read({ lines: [[span('T', { r: true }), span('ry "fix lint errors"', { d: true })]], cursor: { x: 2 } });
+    assert.equal(t.state, 'empty');
+    assert.equal(t.suggestion, null);
+  });
+
+  test('(+) a suggestion longer than one row wraps onto a ghost-only row: still empty, whole text as the suggestion', () => {
+    const d = read({ lines: [[span('add a test for the retry loop and', { d: true })], [span('check the backoff', { d: true })]] });
+    assert.equal(d.state, 'empty');
+    assert.equal(d.text, '');
+    assert.equal(d.suggestion, 'add a test for the retry loop and check the backoff');
+  });
+
+  test('(+) ghost text after real text is dropped from `text`; there is no suggestion for a box that holds text', () => {
+    const d = read({ lines: ['hello'], ghost: ' world' });
+    assert.equal(d.state, 'text');
+    assert.equal(d.text, 'hello');
+    assert.equal(d.suggestion, null);
+    assert.equal(d.cursorAtEnd, true);
+  });
+
+  test('(−) text that merely looks like the placeholder but is not dim is a draft', () => {
+    const d = read({ lines: ['Try "edit foo"'] });
+    assert.equal(d.state, 'text');
+    assert.equal(d.text, 'Try "edit foo"');
+    assert.equal(d.suggestion, null);
+  });
+
+  test('(−) a reverse-video character with real text after it is real text, not ghost', () => {
+    const d = read({ lines: [[span('a', { r: true }), span('bc')]] });
+    assert.equal(d.state, 'text');
+    assert.equal(d.text, 'abc');
+    const only = read({ lines: [[span('T', { r: true })]] });
+    assert.equal(only.text, 'T'); // nothing dim after it
+  });
+
+  test('(−) a bold, coloured or underlined run is real text', () => {
+    const d = read({ lines: [[span('see ', { b: true }), span('web-shop', { fg: 39, u: true })]] });
+    assert.equal(d.text, 'see web-shop');
+  });
+});
+
+describe('parseDraft: bash mode', () => {
+  test('(+) `! ls -la` with fg-211 rules is bash mode, text without the `!`', () => {
+    const s = boxRows({ mode: 'bash', lines: ['ls -la'] });
+    assert.equal(s.rows[0][0].s.fg, 211);
+    const d = parseDraft(s.rows, s.cursor, s.cols);
+    assert.equal(d.mode, 'bash');
+    assert.equal(d.state, 'text');
+    assert.equal(d.text, 'ls -la');
+    assert.equal(d.sig, sigOf('text', 'bash', 'ls -la'));
+    assert.equal(d.cursorAtEnd, true);
+    assert.equal(read({ mode: 'bash', lines: ['ls -la'], insert: true }).text, 'ls -la');
+  });
+
+  test('(+) the bash placeholder (dim) is an empty bash box', () => {
+    const d = read({ mode: 'bash', lines: [''], ghost: 'Try "npm test"' });
+    assert.equal(d.state, 'empty');
+    assert.equal(d.mode, 'bash');
+    assert.equal(d.suggestion, null);
+  });
+
+  test('(+) sig differs by mode for the same text', () => {
+    assert.notEqual(read({ lines: ['ls'] }).sig, read({ mode: 'bash', lines: ['ls'] }).sig);
+  });
+
+  test('(+) a bash box with an ordinary permission-mode footer is read too', () => {
+    const d = read({ mode: 'bash', lines: ['ls'], footer: '\u23f5\u23f5 auto mode on' });
+    assert.equal(d.mode, 'bash');
+    assert.equal(d.text, 'ls');
+  });
+
+  test('(−) the shell-mode footer does not make a `❯` box readable, and a bash box with an unknown footer is not either', () => {
+    assert.equal(read({ lines: ['ls'], footer: '! for shell mode' }), null);
+    assert.equal(read({ mode: 'bash', lines: ['ls'], footer: 'some footer nobody recognises' }), null);
+  });
+});
+
+describe('parseDraft: slash commands and the argument hint', () => {
+  test('(+) `/com` typed in plain text is text', () => {
+    const d = read({ lines: ['/com'] });
+    assert.equal(d.state, 'text');
+    assert.equal(d.text, '/com');
+  });
+
+  test('(+) the command word in fg 153 is real; the fg-246 hint that starts at the cursor column is ghost', () => {
+    const lines = [[span('/compact', { fg: 153 }), span(' '), span('<optional custom summarization instructions>', { fg: 246 })]];
+    const d = read({ lines });
+    assert.equal(d.state, 'text');
+    assert.equal(d.text, '/compact ');
+    assert.equal(d.cursorAtEnd, true);
+    assert.equal(d.suggestion, null);
+  });
+
+  test('(+) the column of the hint counts wide characters as two cells', () => {
+    const lines = [[span('\u65e5\u672c\u8a9e '), span('<hint>', { fg: 246 })]];
+    const d = read({ lines });
+    assert.equal(d.text, '\u65e5\u672c\u8a9e ');
+    assert.equal(d.cursorAtEnd, true);
+  });
+
+  test('(−) the same hint one column left of the cursor is real text (the rule is "at or after")', () => {
+    const lines = [[span('/compact', { fg: 153 }), span(' '), span('<optional>', { fg: 246 })]];
+    const d = read({ lines, cursor: { dx: 1 } });
+    assert.equal(d.text, '/compact <optional>');
+    assert.equal(d.cursorAtEnd, false);
+  });
+
+  test('(−) an fg-246 run is real text when the cursor is on another row, missing, or the run is not on the cursor row', () => {
+    const lines = [[span('note '), span('<x>', { fg: 246 })]];
+    assert.equal(read({ lines, cursor: null }).text, 'note <x>');
+    assert.equal(read({ lines, cursor: { y: 0 } }).text, 'note <x>');
+    const two = read({ lines: ['first', [span('note '), span('<x>', { fg: 246 })]], cursor: { y: 1, x: 7 } });
+    assert.equal(two.text, 'first\nnote <x>');
+  });
+
+  test('(−) a dim-less fg-246 run before the cursor is real text', () => {
+    const d = read({ lines: [[span('see ', { fg: 246 }), span('web-shop')]], cursor: { x: 14 } });
+    assert.equal(d.text, 'see web-shop');
+  });
+});
+
+describe('parseDraft: cursor and sig', () => {
+  test('(+) cursorAtEnd is true at the end (plain, vim INSERT), false one column left (vim NORMAL), false mid-text', () => {
+    assert.equal(read({ lines: ['hello world'] }).cursorAtEnd, true);
+    assert.equal(boxRows({ lines: ['hello world'] }).cursor.x, 13); // S9: 13,34 for 11 characters
+    assert.equal(read({ lines: ['hello world'], insert: true }).cursorAtEnd, true);
+    const normal = read({ lines: ['hello world'], cursor: { dx: -1 } });
+    assert.equal(normal.cursorAtEnd, false);
+    assert.equal(normal.state, 'text');
+    assert.equal(read({ lines: ['hello world'], cursor: { dx: -6 } }).cursorAtEnd, false);
+    assert.equal(read({ lines: ['hello world'], cursor: { x: 2 } }).cursorAtEnd, false);
+  });
+
+  test('(−) cursorAtEnd is false when the cursor is on another row, or is missing or not made of integers', () => {
+    assert.equal(read({ lines: ['a', 'b'], cursor: { y: 1 } }).cursorAtEnd, false); // first row of two
+    assert.equal(read({ lines: ['hello'], cursor: null }).cursorAtEnd, false);
+    const s = boxRows({ lines: ['hello'] });
+    assert.equal(parseDraft(s.rows, { x: 'a', y: 1 }, s.cols).cursorAtEnd, false);
+    assert.equal(parseDraft(s.rows, undefined, s.cols).state, 'text');
+  });
+
+  test('(+) an empty box has the cursor at column 2: at the end', () => {
+    assert.equal(read({ lines: [''] }).cursorAtEnd, true);
+    assert.equal(read({ lines: [''], ghost: 'yes' }).cursorAtEnd, true);
+  });
+
+  test('(+) sig is stable across a redraw with other SGR styles and another cursor, and differs by text', () => {
+    const plain = read({ lines: ['fix the build'] });
+    const styled = read({ lines: [[span('fix ', { fg: 153 }), span('the build', { b: true })]], cursor: { dx: -3 } });
+    assert.equal(styled.text, plain.text);
+    assert.equal(styled.sig, plain.sig);
+    assert.notEqual(read({ lines: ['fix the builds'] }).sig, plain.sig);
+    assert.notEqual(read({ lines: ['fix the build '] }).sig, plain.sig); // raw text, not normalised
+  });
+});
+
+describe('parseDraft: unreadable', () => {
+  const unreadable = (reason, mode = 'prompt', bottom = 2) => ({
+    state: 'unreadable', mode, text: '', sig: null, reason, box: { top: 0, bottom }, cursorAtEnd: false, suggestion: null,
+  });
+
+  test('(−) a `History n/m` rule (prompt-history recall) is unreadable: history, the whole shape', () => {
+    assert.deepEqual(read({ lines: ['an old prompt for acme-api'], label: 'History 3/3' }), unreadable('history'));
+    assert.deepEqual(read({ lines: ['ls'], label: 'History 17/17', mode: 'bash' }), unreadable('history', 'bash'));
+  });
+
+  test('(−) 14 and 15 box rows are unreadable (tall); 13 rows are readable', () => {
+    const rows = (n) => Array.from({ length: n }, (_, i) => `line ${i + 1}`);
+    assert.equal(read({ lines: rows(13) }).state, 'text');
+    assert.equal(read({ lines: rows(13) }).text, rows(13).join('\n'));
+    const d14 = read({ lines: rows(14) });
+    assert.equal(d14.state, 'unreadable');
+    assert.equal(d14.reason, 'tall');
+    assert.equal(d14.box.bottom - d14.box.top - 1, 14);
+    assert.equal(read({ lines: rows(15) }).reason, 'tall');
+  });
+
+  test('(−) `[Pasted text #N]` and `[Pasted text #N +K lines]`, alone or inside text, are unreadable: pasted', () => {
+    assert.deepEqual(read({ lines: ['[Pasted text #4 +3 lines]'] }), unreadable('pasted'));
+    assert.equal(read({ lines: ['[Pasted text #10]'] }).reason, 'pasted');
+    assert.equal(read({ lines: ['look at [Pasted text #4 +3 lines] and fix it'] }).reason, 'pasted');
+    assert.equal(read({ lines: ['first', 'then [Pasted text #2] here'] }).reason, 'pasted');
+    assert.equal(read({ lines: ['[Pasted text #1 +10 lines]'], ghost: ' x' }).state, 'unreadable');
+  });
+
+  test('(−) text that only resembles the placeholder is a draft', () => {
+    assert.equal(read({ lines: ['[Pasted text]'] }).state, 'text');
+    assert.equal(read({ lines: ['Pasted text #4'] }).state, 'text');
+    assert.equal(read({ lines: ['[Pasted text #x]'] }).state, 'text');
+  });
+
+  test('(−) a cursor past the end of the text (invisible trailing spaces) is unreadable: trailing', () => {
+    assert.deepEqual(read({ lines: ['abc'], cursor: { dx: 3 } }), unreadable('trailing'));
+    assert.equal(read({ lines: ['abc'], cursor: { dx: 1 } }).reason, 'trailing'); // one column is enough
+    assert.equal(read({ lines: [''], cursor: { x: 5 } }).reason, 'trailing'); // spaces typed into an empty box
+    assert.equal(read({ lines: ['abc'], cursor: { dx: 0 } }).state, 'text'); // exactly at the end is fine
+  });
+
+  test('(−) a row with one leading space, or no indent, under the first row is unreadable: layout', () => {
+    const s = boxRows({ lines: ['first', 'second'] });
+    s.rows[2] = [span(' second')];
+    assert.deepEqual(parseDraft(s.rows, s.cursor, s.cols), unreadable('layout', 'prompt', 3)); // two box rows: the bottom rule is row 3
+    s.rows[2] = [span('second')];
+    assert.equal(parseDraft(s.rows, s.cursor, s.cols).reason, 'layout');
+  });
+
+  test('(−) the reasons keep their order: history, layout, tall, pasted, trailing', () => {
+    const many = Array.from({ length: 14 }, () => '[Pasted text #1]');
+    assert.equal(read({ lines: many, label: 'History 1/2' }).reason, 'history');
+    const s = boxRows({ lines: ['[Pasted text #1]', 'x'] });
+    s.rows[2] = [span('x')];
+    assert.equal(parseDraft(s.rows, s.cursor, s.cols).reason, 'layout');
+    assert.equal(read({ lines: many }).reason, 'tall');
+    assert.equal(read({ lines: ['[Pasted text #1]'], cursor: { dx: 4 } }).reason, 'pasted');
+  });
+});
+
+describe('parseDraft: no plain box (null)', () => {
+  test('(−) an unknown footer (a dialog, a menu) is null, even with a box-shaped middle', () => {
+    assert.equal(read({ lines: ['hello'], footer: 'some footer nobody recognises' }), null);
+    assert.equal(read({ lines: ['hello'], footer: '' }), null);
+  });
+
+  test('(−) a permission prompt with `❯ 1. Yes` between two rules is null; only its footer stops it from reading as a draft', () => {
+    const prompt = [rule(), [span(`${PROMPT} 1. Yes`)], [span('  2. No')], rule(), [span('  Esc to cancel')]];
+    assert.equal(parseDraft(prompt, { x: 9, y: 1, visible: true }, 40), null);
+    const withFooter = [...prompt.slice(0, 4), modeLine];
+    const d = parseDraft(withFooter, { x: 7, y: 2, visible: true }, 40);
+    assert.equal(d.text, '1. Yes\n2. No'); // the control: the rows alone would read as a draft
+  });
+
+  test('(−) fewer than two rule rows, or nothing between the last two, is null', () => {
+    assert.equal(parseDraft([[span('hello')], modeLine], null, 40), null);
+    assert.equal(parseDraft([rule(), [span(`${PROMPT}${NB}hello`)], modeLine], null, 40), null);
+    assert.equal(parseDraft([rule(), rule(), modeLine], null, 40), null);
+    assert.equal(parseDraft([[span('hello')], rule(), [span('x')], modeLine], null, 40), null);
+  });
+
+  test('(−) a first row that is not a prompt row is null: a history search filter, text, a glyph glued to text, three leading spaces', () => {
+    const first = (row) => {
+      const s = boxRows({ lines: ['x'] });
+      s.rows[1] = row;
+      return parseDraft(s.rows, s.cursor, s.cols);
+    };
+    assert.equal(first([span('\u2315 Filter history\u2026')]), null);
+    assert.equal(first([span('plain text')]), null);
+    assert.equal(first([span(`${PROMPT}x`)]), null);
+    assert.equal(first([span('!x')]), null);
+    assert.equal(first([span(`   ${PROMPT}${NB}x`)]), null);
+    assert.equal(first([]), null);
+    assert.notEqual(first([span(`${PROMPT}${NB}x`)]), null);
+  });
+
+  test('(−) rows that are not an array of rows are null', () => {
+    assert.equal(parseDraft(null, null, 120), null);
+    assert.equal(parseDraft(undefined), null);
+    assert.equal(parseDraft('rows', null, 120), null);
+    assert.equal(parseDraft({}, null, 120), null);
+    assert.equal(parseDraft([], null, 120), null);
+  });
+});
+
+describe('RULE_ROW and HISTORY_LABEL', () => {
+  const dashes = (n) => '\u2500'.repeat(n);
+
+  test('(+) a plain rule and a rule with a session name or a history label are rule rows', () => {
+    assert.ok(RULE_ROW.test(dashes(40)));
+    assert.ok(RULE_ROW.test(dashes(2)));
+    assert.ok(RULE_ROW.test(`${dashes(19)} acme-api ${dashes(1)}`));
+    assert.ok(RULE_ROW.test(`${dashes(3)} History 3/3 ${dashes(104)}`));
+    assert.ok(RULE_ROW.test(`${dashes(3)} two words here ${dashes(10)}`));
+  });
+
+  test('(−) one dash, text without a label shape, a label with a dash, controls or edge spaces are not rule rows', () => {
+    assert.equal(RULE_ROW.test(dashes(1)), false);
+    assert.equal(RULE_ROW.test(`${dashes(5)} no closing`), false);
+    assert.equal(RULE_ROW.test(`${dashes(5)} a${dashes(1)}b ${dashes(5)}`), false);
+    assert.equal(RULE_ROW.test(`${dashes(5)} a\tb ${dashes(5)}`), false);
+    assert.equal(RULE_ROW.test(`${dashes(5)}  spaced ${dashes(5)}`), false);
+    assert.equal(RULE_ROW.test(`${dashes(5)} ${'n'.repeat(81)} ${dashes(5)}`), false);
+    assert.equal(RULE_ROW.test(''), false);
+    assert.equal(RULE_ROW.test(`| ${dashes(10)}`), false);
+  });
+
+  test('(+/−) HISTORY_LABEL matches exactly `History n/m`', () => {
+    assert.ok(HISTORY_LABEL.test('History 3/3'));
+    assert.ok(HISTORY_LABEL.test('History 17/17'));
+    for (const no of ['History', 'History 3', 'History 3/x', 'history 3/3', 'My History 3/3', 'History 3/3 x', ' History 3/3', '']) {
+      assert.equal(HISTORY_LABEL.test(no), false, JSON.stringify(no));
+    }
+  });
+});
+
+describe('normDraft and sameDraft', () => {
+  test('(+) normDraft: tab becomes 4 spaces, no-break space becomes a space, trailing spaces of every line go', () => {
+    assert.equal(normDraft('col1\tcol2'), 'col1    col2');
+    assert.equal(normDraft(`a${NB}b`), 'a b');
+    assert.equal(normDraft('abc   '), 'abc');
+    assert.equal(normDraft('one  \ntwo \n\nthree   '), 'one\ntwo\n\nthree');
+    assert.equal(normDraft('  keep leading  '), '  keep leading');
+    assert.equal(normDraft('x\t'), 'x');
+    assert.equal(normDraft('a\n'), 'a\n'); // a trailing newline is text
+    assert.equal(normDraft(''), '');
+  });
+
+  test('(−) normDraft of a non-string is an empty string', () => {
+    for (const v of [undefined, null, 5, {}, ['a']]) assert.equal(normDraft(v), '');
+  });
+
+  test('(+) sameDraft ignores tab vs 4 spaces, no-break spaces and trailing spaces', () => {
+    assert.ok(sameDraft('a\tb', 'a    b'));
+    assert.ok(sameDraft('abc  ', 'abc'));
+    assert.ok(sameDraft(`a${NB}b`, 'a b'));
+    assert.ok(sameDraft('x\ny  \nz', 'x\ny\nz'));
+    assert.ok(sameDraft('', '   '));
+  });
+
+  test('(−) sameDraft sees a different character, leading space, newline or inner space', () => {
+    assert.equal(sameDraft('abc', 'abd'), false);
+    assert.equal(sameDraft(' abc', 'abc'), false);
+    assert.equal(sameDraft('a b', 'a  b'), false);
+    assert.equal(sameDraft('a\nb', 'a b'), false);
+    assert.equal(sameDraft('a\n', 'a'), false);
+    assert.equal(sameDraft('abc', undefined), false);
+    assert.equal(sameDraft(undefined, undefined), false); // a non-string is never the same as anything
+    assert.equal(sameDraft('', null), false);
+  });
+});
+
+describe('inEnvelope', () => {
+  test('(+) 1024 characters, 12 newlines and 13 estimated rows are inside', () => {
+    assert.deepEqual(inEnvelope('x'.repeat(1024), 120), { ok: true }); // 9 rows
+    assert.deepEqual(inEnvelope('\n'.repeat(12), 120), { ok: true }); // 13 lines, 12 newlines
+    assert.deepEqual(inEnvelope('', 120), { ok: true });
+    assert.deepEqual(inEnvelope('hello', 120), { ok: true });
+    assert.deepEqual(inEnvelope('x'.repeat(13 * 36), 40), { ok: true }); // 13 rows at 36 columns
+  });
+
+  test('(−) 1025 characters, 13 newlines and 14 estimated rows are outside, each with its reason', () => {
+    assert.deepEqual(inEnvelope('x'.repeat(1025), 120), { ok: false, reason: 'chars' });
+    assert.deepEqual(inEnvelope('\n'.repeat(13), 120), { ok: false, reason: 'newlines' });
+    assert.deepEqual(inEnvelope('x'.repeat(13 * 36 + 1), 40), { ok: false, reason: 'rows' });
+    const seven = Array(7).fill('y'.repeat(117)).join('\n'); // 7 lines of 2 rows each = 14 rows, 825 characters
+    assert.deepEqual(inEnvelope(seven, 120), { ok: false, reason: 'rows' });
+    assert.equal(inEnvelope(Array(6).fill('y'.repeat(117)).join('\n'), 120).ok, true); // 12 rows
+  });
+
+  test('(+) the row estimate counts a wide character as two cells and a tab as four', () => {
+    assert.equal(inEnvelope('\u65e5'.repeat(18 * 13 + 1), 40).ok, false); // 2 cells each: 18 per 36-cell row, 14 rows
+    assert.equal(inEnvelope('\u65e5'.repeat(18 * 13), 40).ok, true); // exactly 13 rows
+    assert.equal(inEnvelope('\t'.repeat(9 * 13 + 1), 40).ok, false); // 4 cells per tab
+    assert.equal(inEnvelope('\t'.repeat(9 * 13), 40).ok, true);
+  });
+
+  test('(−) a non-string text or unusable cols is refused', () => {
+    for (const bad of [undefined, null, 5, {}]) assert.deepEqual(inEnvelope(bad, 120), { ok: false, reason: 'invalid' });
+    for (const cols of [undefined, null, 0, 4, -1, 1.5, '120', NaN]) assert.deepEqual(inEnvelope('hi', cols), { ok: false, reason: 'invalid' }, String(cols));
+  });
+});
+
+describe('chunks', () => {
+  const lines = (s) => s.split('\n').length - 1;
+
+  test('(+) short text is one chunk; empty text is none', () => {
+    assert.deepEqual(chunks('hello'), ['hello']);
+    assert.deepEqual(chunks(''), []);
+    assert.deepEqual(chunks('a\nb'), ['a\nb']);
+    assert.deepEqual(chunks('a\n\n'), ['a\n\n']);
+  });
+
+  test('(+) a chunk is cut at 700 characters', () => {
+    assert.deepEqual(chunks('x'.repeat(700)).map((c) => c.length), [700]);
+    assert.deepEqual(chunks('x'.repeat(701)).map((c) => c.length), [700, 1]);
+    assert.deepEqual(chunks('x'.repeat(1024)).map((c) => c.length), [700, 324]);
+    assert.deepEqual(chunks('x'.repeat(1400)).map((c) => c.length), [700, 700]);
+  });
+
+  test('(+) a chunk ends right after its second newline', () => {
+    assert.deepEqual(chunks('a\nb\nc\nd'), ['a\nb\n', 'c\nd']);
+    assert.deepEqual(chunks('a\nb\nc\nd\ne\nf'), ['a\nb\n', 'c\nd\n', 'e\nf']);
+    assert.deepEqual(chunks('a\n\n\nb'), ['a\n\n', '\nb']);
+    assert.deepEqual(chunks('one\ntwo\n'), ['one\ntwo\n']);
+    assert.deepEqual(chunks(`${'x'.repeat(690)}\nabc\ndef`), [`${'x'.repeat(690)}\nabc\n`, 'def']);
+  });
+
+  test('(+) the newline cut and the character cut combine', () => {
+    const text = `${'x'.repeat(650)}\n${'y'.repeat(60)}\nz`;
+    const out = chunks(text);
+    assert.deepEqual(out.map((c) => c.length), [700, 13]);
+    assert.equal(out.join(''), text);
+  });
+
+  test('(+) a surrogate pair is never split', () => {
+    const emoji = '\u{1F600}';
+    assert.deepEqual(chunks(`${'a'.repeat(699)}${emoji}b`), ['a'.repeat(699), `${emoji}b`]);
+    const out = chunks(emoji.repeat(400)); // 800 units
+    assert.ok(out.every((c) => c.length <= 700 && c.length % 2 === 0));
+    assert.equal(out.join(''), emoji.repeat(400));
+  });
+
+  test('(+) the chunks always join back to the text, within 700 characters and 2 newlines each', () => {
+    const text = Array.from({ length: 400 }, (_, i) => (i % 7 === 0 ? '\n' : i % 11 === 0 ? '\u{1F600}' : 'ab')).join('');
+    const out = chunks(text);
+    assert.equal(out.join(''), text);
+    for (const c of out) {
+      assert.ok(c.length <= 700);
+      assert.ok(lines(c) <= 2);
+    }
+  });
+});
+
+describe('source', () => {
+  test('(−) src/draft.js is pure ASCII and imports no I/O', () => {
+    const src = fs.readFileSync(new URL('../src/draft.js', import.meta.url), 'utf8');
+    assert.match(src, /^[\x00-\x7f]*$/);
+    const imports = [...src.matchAll(/^import .* from '([^']+)'/gm)].map((m) => m[1]);
+    assert.deepEqual(imports.sort(), ['./mode.js', './text.js', 'node:crypto']);
+  });
+
+  test('(−) session-control.js has no RULE_ROW of its own: it imports the one from draft.js', () => {
+    const src = fs.readFileSync(new URL('../src/session-control.js', import.meta.url), 'utf8');
+    assert.equal(/^const RULE_ROW\b/m.test(src), false);
+    assert.match(src, /import \{[^}]*\bRULE_ROW\b[^}]*\} from '\.\/draft\.js'/);
+  });
+});
