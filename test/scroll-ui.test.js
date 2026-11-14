@@ -434,6 +434,55 @@ describe('planner: refusals and close', () => {
     assert.equal(r.timers, 0);
   });
 
+  test('(+) fix round 1, M1c: close() keeps the planner busy until the stale request settles, so a new request never overlaps it; the stale answer is dropped', async () => {
+    const r = rig();
+    r.planner.page('up'); // in flight
+    r.planner.close();
+    r.planner.page('down'); // asked after the close
+    assert.equal(r.log.sent.length, 1, 'the old request is still on its way: nothing overlaps it');
+    assert.equal(r.open.length, 1);
+    await r.advance(GAP_MS * 3);
+    assert.equal(r.log.sent.length, 1, 'waiting does not help while it is open');
+    await r.answer({ status: 200, body: { sent: 1, scrolled: true } }); // the stale answer
+    assert.deepEqual(r.log.done, [], 'the stale answer is not told to the page');
+    await r.advance(GAP_MS);
+    assert.deepEqual(r.log.sent, [UP(1), DOWN(1)], 'then what was asked after the close goes');
+    assert.equal(r.open.length, 1);
+    await r.answer();
+    assert.equal(r.log.done.length, 1, 'only the new answer is told');
+  });
+
+  test('(+) fix round 1, M1c: a stale request that is lost (rejected) also frees the planner, and nothing is told to the page', async () => {
+    const r = rig();
+    r.planner.page('up');
+    r.planner.close();
+    r.planner.jump('bottom');
+    await r.advance(GAP_MS * 3);
+    assert.equal(r.log.sent.length, 1, 'still the old one, however long it takes');
+    await r.lose();
+    await r.advance(GAP_MS);
+    assert.deepEqual(r.log.sent, [UP(1), { to: 'bottom' }]);
+    assert.deepEqual(r.log.done, []);
+  });
+
+  test('(−) fix round 1, M1c: a 403 on the stale request is dropped with the rest of its answer; the new request goes next and gets its own answer', async () => {
+    const r = rig();
+    r.planner.page('up');
+    r.planner.close();
+    r.planner.page('down');
+    await r.advance(GAP_MS * 3);
+    assert.equal(r.log.sent.length, 1, 'still the old one, however long it takes');
+    await r.answer({ status: 403, body: null }); // stale
+    await r.advance(GAP_MS);
+    assert.deepEqual(r.log.sent, [UP(1), DOWN(1)]);
+    assert.deepEqual(r.log.done, []);
+    await r.answer({ status: 403, body: null }); // the new request's own 403 stops the planner for good
+    assert.deepEqual(r.log.done, [{ status: 403, body: null }]);
+    r.planner.page('up');
+    await r.advance(GAP_MS * 3);
+    assert.equal(r.log.sent.length, 2);
+  });
+
   test('(+) close() while waiting out the gap cancels the timer', async () => {
     const r = rig();
     r.planner.page('up');
@@ -479,6 +528,12 @@ const MODE_LINE = '  ⏵⏵ auto mode on (shift+tab to cycle)';
 const RULE = '─'.repeat(COLS);
 const THERE = { x: 0, y: 0, visible: true };
 
+/** A history-entry (unreadable) box whose first row is replaced by `text`: the row after the top rule (view() puts two rows above the box). */
+function firstRow(text) {
+  const v = view({ label: 'History 3/3', lines: ['older entry'] });
+  return { ...v, rows: v.rows.map((r, i) => (i === 3 ? [span(text)] : r)) };
+}
+
 /** One list for both gates: [name, capture, the code both must give]. The server reads { rows, cursor, cols, alt }; the page reads what the capture route sends. */
 const SCREENS = [
   ['empty box', view(), null],
@@ -517,6 +572,15 @@ const SCREENS = [
   ['unreadable /cmd: a history entry that is a command', view({ label: 'History 3/3', lines: ['/compact'] }), 'menu-open'],
   ['unreadable /com with a trailing space (the slash menu may be open)', view({ lines: ['/com '] }), 'menu-open'],
   ['unreadable /cmd with trailing spaces', view({ lines: ['/compact   '] }), 'menu-open'],
+  // fix round 1, M5: the shapes of the first box row around rule (b), each from a real unreadable (history) box with its first row edited
+  ['unreadable /cmd, glyph and no-break space', firstRow('❯\u00a0/compact'), 'menu-open'],
+  ['unreadable /cmd, two spaces of indent', firstRow('  ❯\u00a0/compact'), 'menu-open'],
+  ['unreadable /cmd, three spaces of indent: not an input row, so no plain box', firstRow('   ❯\u00a0/compact'), 'screen-unclear'],
+  ['unreadable, a second space before the slash: not "after the glyph and its space"', firstRow('❯\u00a0 /compact'), null],
+  ['unreadable, a plain space after the glyph: not Claude\'s box row, so no plain box', firstRow('❯ /compact'), 'screen-unclear'],
+  ['unreadable, the slash is not the first character', firstRow('❯\u00a0fix /compact'), null],
+  ['unreadable, no slash at all', firstRow('❯\u00a0older entry'), null],
+  ['unreadable ! box whose first row starts with a slash: rule (b) is for the glyph box only', view({ mode: 'bash', label: 'History 3/3', lines: ['/usr/bin/true'] }), null],
 ];
 
 /** What the capture route sends for a capture: the screen's own fields, `prompt` (readScreen) and `draft` (readDraft + edit); then JSON, as on the wire. */

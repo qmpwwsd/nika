@@ -129,7 +129,7 @@ export const scrolledSay = (on) => (on ? "Scrolled up in Claude's view. Jump to 
  *   { dir, pages }.
  * - Any answer but 200 drops the queue, the leftover and the jump (never keys behind a refusal); 403 stops the planner for good.
  * - close() (the pane is gone, the page leaves) drops everything, cancels the timer and ignores an answer still on its way; nothing
- *   more is sent until the next wheel, page or jump.
+ *   more is sent until the next wheel, page or jump, and that waits until the request still on its way has settled (never two at once).
  */
 export function createScrollPlanner(io) {
   const P = { gen: 0, dead: false, acc: 0, dir: null, q: null, jump: null, busy: false, last: null, timer: null };
@@ -165,8 +165,11 @@ export function createScrollPlanner(io) {
   }
 
   function settle(gen, r) {
-    if (gen !== P.gen) return; // closed meanwhile
     P.busy = false;
+    if (gen !== P.gen) { // closed meanwhile: its answer is dropped, and what was asked since goes now
+      pump();
+      return;
+    }
     const answer = r && typeof r === 'object' ? r : { status: 0, body: null };
     if (answer.status === 403) P.dead = true;
     if (answer.status !== 200) drop();
@@ -214,8 +217,7 @@ export function createScrollPlanner(io) {
       pump();
     },
     close() {
-      P.gen += 1;
-      P.busy = false;
+      P.gen += 1; // busy stays up until the request on its way settles, so a new request never overlaps it
       drop();
     },
   };

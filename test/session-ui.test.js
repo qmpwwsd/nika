@@ -4523,12 +4523,54 @@ describe('W3-T3: scroll in the session window (wiring)', () => {
     assert.deepEqual(r.log.said, ["Scrolled up in Claude's view. Jump to live returns to the bottom.", 'Back at the live bottom.']);
   });
 
+  // -- fix round 1
+  test('(−) fix round 1, M1a/b: Jump to live sends nothing while the pane is gone or the connection is lost, but still does everything native (bottom, column 0, Live, focus)', async () => {
+    for (const flag of ['gone', 'fatal']) {
+      const r = wired({ box: { top: 120, height: 1000, client: 400 } });
+      r.scrollCaptured({ alt: true, scrolled: true });
+      r.setFrozen(true);
+      r.ctx.M[flag] = true;
+      r.jumpToLive();
+      await r.clk.advance(1000);
+      assert.deepEqual(calls(r), [], `${flag}: no request`);
+      assert.deepEqual(norm(r.log.problems), [], `${flag}: and so no "nika did not answer."`);
+      assert.equal(r.term.scrollTop, 1000, flag);
+      assert.equal(r.term.scrollLeft, 0, flag);
+      assert.equal(r.ctx.M.frozen, false, flag);
+      assert.deepEqual(r.log.focus, ['composer'], flag);
+    }
+  });
+
+  test('(+) fix round 1, M2: End in the mirror returns to column 0 like the button, still sends { to: "bottom" } and never moves focus; the other keys leave the column alone', () => {
+    const end = wired();
+    assert.equal(end.term.scrollLeft, 5);
+    fire(end, 'keydown', key('End'));
+    assert.equal(end.term.scrollLeft, 0);
+    assert.deepEqual(calls(end), [POST({ to: 'bottom' })]);
+    assert.deepEqual(end.log.focus, []);
+    const ctrlEnd = wired();
+    fire(ctrlEnd, 'keydown', key('End', { ctrlKey: true }));
+    assert.equal(ctrlEnd.term.scrollLeft, 0);
+    for (const k of ['Home', 'PageUp', 'PageDown']) {
+      const r = wired();
+      fire(r, 'keydown', key(k));
+      assert.equal(r.term.scrollLeft, 5, k);
+    }
+  });
+
+  test('(−) fix round 1, M2: End where the browser scrolls first (the mirror is not at its bottom) leaves everything to the browser, column included', () => {
+    const r = wired({ box: { top: 0, height: 1000, client: 400 } });
+    assert.equal(fire(r, 'keydown', key('End')).defaultPrevented, false);
+    assert.equal(r.term.scrollLeft, 5);
+    assert.deepEqual(calls(r), []);
+  });
+
   // -- the hooks, where the design puts them
   test('(+) the hooks sit where the design puts them: S3 handleCapture, S4 setFrozen, S5 jumpToLive, S6 setGone, the 403 branch and wireTerminal', () => {
     assert.match(SRC, /try \{\s*fitCaptured\(\);\s*\} catch \{[^}]*\}\s*try \{\s*scrollCaptured\(r\.body\);\s*\} catch \{[^}]*\}\s*if \(!M\.frozen\) term\.scrollTop = term\.scrollHeight;/);
     assert.match(fnOf('function setFrozen(on)'), /M\.frozen = on;\s*renderNote\(\);/);
     assert.doesNotMatch(fnOf('function setFrozen(on)'), /\.hidden = /, 'renderNote owns both elements now');
-    assert.match(fnOf('function jumpToLive()'), /if \(SC\.scrolled\) SC\.planner\?\.jump\('bottom'\);\s*setFrozen\(false\);/);
+    assert.match(fnOf('function jumpToLive()'), /if \(SC\.scrolled && !M\.gone && !M\.fatal\) SC\.planner\?\.jump\('bottom'\);\s*setFrozen\(false\);/);
     assert.match(fnOf('function setGone()'), /M\.gone = true;[\s\S]*SC\.planner\?\.close\(\);/);
     assert.match(SRC, /if \(r\.status === 403\) \{\s*M\.fatal = true;\s*clearTimeout\(M\.timer\);\s*SC\.planner\?\.close\(\);/);
     assert.match(fnOf('function wireTerminal()'), /wireScroll\(\);/);

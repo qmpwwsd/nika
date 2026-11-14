@@ -1207,7 +1207,7 @@ function jumpToLive() {
   M.etag = null;
   term.scrollTop = term.scrollHeight;
   term.scrollLeft = 0; // a wide pane: back to column 0 as well
-  if (SC.scrolled) SC.planner?.jump('bottom'); // Claude's own view too
+  if (SC.scrolled && !M.gone && !M.fatal) SC.planner?.jump('bottom'); // Claude's own view too (not while the pane is gone or the connection is lost: the route would only refuse)
   setFrozen(false);
   $('composer').focus();
 }
@@ -1377,6 +1377,7 @@ function scrollKey(e) {
   const term = $('term');
   if (routeFor({ dir, top: term.scrollTop, height: term.scrollHeight, client: term.clientHeight }) === 'native') return;
   e.preventDefault();
+  if (what === 'bottom') term.scrollLeft = 0; // End returns to column 0 like the button (it never moves focus: keys act where focus already is)
   if (!scrollOpen()) return;
   if (kind === 'page') SC.planner.page(what);
   else SC.planner.jump(what);
