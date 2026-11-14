@@ -116,7 +116,7 @@
         <form id="set-form" novalidate>
           <div class="set-grid">
             <nav class="set-index" aria-label="Settings sections">
-              <a href="#settings" data-jump="s-appearance">Appearance</a><a href="#settings" data-jump="s-models">Models</a><a href="#settings" data-jump="s-compact">Auto-compact</a><a href="#settings" data-jump="s-rc">Remote Control</a><a href="#settings" data-jump="s-perm">Permission mode</a><a href="#settings" data-jump="s-panes">Panes and limits</a><a href="#settings" data-jump="s-tpl">Rules template</a>
+              <a href="#settings" data-jump="s-appearance">Appearance</a><a href="#settings" data-jump="s-models">Models</a><a href="#settings" data-jump="s-compact">Auto-compact</a><a href="#settings" data-jump="s-rc">Remote Control</a><a href="#settings" data-jump="s-perm">Permission mode</a><a href="#settings" data-jump="s-panes">Panes and limits</a><a href="#settings" data-jump="s-attach">Attachments</a><a href="#settings" data-jump="s-tpl">Rules template</a>
             </nav>
             <div>
               <div class="alert err-sum" data-kind="danger" role="alert" id="set-sum" hidden tabindex="-1"><svg class="ic" aria-hidden="true"><use href="#i-warn"/></svg><p id="set-sum-text"></p></div>
@@ -195,6 +195,13 @@
                 <div class="field"><label for="set-max">Agents per orchestrator</label>
                   <div class="inline"><span class="stepper"><button type="button" class="btn" data-step="-1" aria-label="One fewer" title="One fewer">−</button><input type="number" id="set-max" min="1" max="8" aria-describedby="set-max-help set-max-err"><button type="button" class="btn" data-step="1" aria-label="One more" title="One more">+</button></span></div>
                   <p class="help" id="set-max-help">1 to 8. How many agents each orchestrator can run at once; the agents you spawn from nika share one more such limit. One project runs at most 3 times this number, and never more than 24.</p><p class="err" id="set-max-err" hidden></p></div>
+              </section>
+
+              <section class="set-sec" id="s-attach" aria-labelledby="s-attach-h">
+                <h2 id="s-attach-h">Attachments</h2>
+                <div class="field">
+                  <div class="inline"><label for="set-keep-days">Keep attachments for</label><span class="stepper"><button type="button" class="btn" data-step="-1" data-step-for="set-keep-days" aria-label="1 day less" title="1 day less">−</button><input type="number" id="set-keep-days" min="1" max="30" aria-describedby="set-keep-days-help set-keep-days-err"><button type="button" class="btn" data-step="1" data-step-for="set-keep-days" aria-label="1 day more" title="1 day more">+</button></span><span>days</span></div>
+                  <p class="help" id="set-keep-days-help">nika keeps a copy of each file you attach in its own folder on this computer, never in your project, and deletes it after this many days. A change applies at the next cleanup.</p><p class="err" id="set-keep-days-err" hidden></p></div>
               </section>
 
               <section class="set-sec" id="s-tpl" aria-labelledby="s-tpl-h">

@@ -108,6 +108,7 @@ function formValue() {
     permissionMode: radio('perm'),
     panePlacement: radio('place'),
     limits: { maxAgents: Number($('#set-max').value) },
+    attachments: { keepDays: Number($('#set-keep-days').value) },
     rules: { localTemplate: $('#set-tpl').value || null },
     ui: { theme: radio('theme'), singleKeyShortcuts: $('#set-singlekey').checked },
     compaction: { enabled: $('#set-compact').checked, pct: Number($('#set-compact-pct').value), window: compactWindow() },
@@ -134,6 +135,7 @@ function populate() {
   setRadio('perm', s.permissionMode);
   setRadio('place', s.panePlacement);
   $('#set-max').value = s.limits?.maxAgents ?? 3;
+  $('#set-keep-days').value = s.attachments?.keepDays ?? 7;
   renderTemplates(s.rules?.localTemplate ?? null);
   const c = s.compaction ?? DEFAULT_COMPACT;
   $('#set-compact').checked = c.enabled !== false;
@@ -167,6 +169,11 @@ function validate() {
   const okMax = max.value.trim() !== '' && Number.isInteger(n) && n >= 1 && n <= 8;
   fieldError(max, okMax ? '' : 'Choose a whole number from 1 to 8.');
   if (!okMax) bad.push(max);
+  const keep = $('#set-keep-days');
+  const k = Number(keep.value); // blank is 0, so the range check refuses it
+  const okKeep = Number.isInteger(k) && k >= 1 && k <= 30;
+  fieldError(keep, okKeep ? '' : 'Choose a whole number from 1 to 30.');
+  if (!okKeep) bad.push(keep);
   const okPct = !$('#set-compact').checked || compactPctOk();
   compactError(okPct ? '' : PCT_MSG);
   if (!okPct) bad.push($('#set-compact-pct'));

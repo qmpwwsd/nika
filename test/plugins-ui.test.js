@@ -844,7 +844,7 @@ describe('Settings holds defaults only', () => {
     s.submit();
     await settle();
     const put = s.calls.find((c) => c.method === 'PUT');
-    assert.deepEqual(Object.keys(put.json).sort(), ['compaction', 'limits', 'models', 'panePlacement', 'permissionMode', 'remoteControl', 'rules', 'ui']);
+    assert.deepEqual(Object.keys(put.json).sort(), ['attachments', 'compaction', 'limits', 'models', 'panePlacement', 'permissionMode', 'remoteControl', 'rules', 'ui']);
     assert.equal('plugins' in put.json, false);
     assert.equal('perProject' in put.json, false);
     assert.equal(put.json.limits.maxAgents, 5);
