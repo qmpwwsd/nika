@@ -91,17 +91,20 @@ export function createAttachments({
   const records = new Map(); // id -> { id, pane, key, path, type, size, at, sent }; only what this process issued, oldest dropped past RECORDS_MAX
   const stamps = []; // admission times of the last minute
   let inflight = false;
+  let writing = null; // the key folder the one save in flight writes into: no prune (startup, timer or the save's own) removes it
   let timer = null;
   const note = (err) => log(`nika: attachments: ${codeOf(err)}`);
   const rootDir = () => path.join(stateDir(env), 'attachments');
+  const unmoved = async (p) => (await fs.realpath(p)) === p; // no folder on the way became a link since nika made the path
 
   /**
    * Prune (design 4.4). Only names nika writes, in real user-owned key folders, as regular single-link files, are looked at, and every
-   * removal goes through removeOwnFile, which follows nothing. `keepKey` is the folder a save is about to write into: never rmdir'd.
-   * Never throws; `full` = still over a cap for `need` more bytes (and one more file) after removing everything that may go.
+   * removal goes through removeOwnFile, which follows nothing. The folder in `writing` is never rmdir'd.
+   * Never throws; `full` = still over a cap for `need` more bytes (and one more file) after removing everything that may go;
+   * `failed` = the caps could not be checked (an error at the top level, or a key folder that could not be listed): a save then refuses.
    */
-  async function sweep(need = 0, keepKey = null) {
-    const out = { removed: 0, total: 0, full: false };
+  async function sweep(need = 0) {
+    const out = { removed: 0, total: 0, full: false, failed: false };
     const root = rootDir();
     try {
       try {
@@ -137,6 +140,7 @@ export function createAttachments({
           names = await fs.readdir(dir);
         } catch (err) {
           note(err);
+          out.failed = true; // this folder's files are missing from the total
           continue;
         }
         for (const name of names) {
@@ -159,11 +163,12 @@ export function createAttachments({
           count -= 1;
         }
       }
-      for (const { key, dir } of folders) if (key !== keepKey) await fs.rmdir(dir).catch(() => {}); // rmdir never removes a non-empty folder
+      for (const { key, dir } of folders) if (key !== writing) await fs.rmdir(dir).catch(() => {}); // rmdir never removes a non-empty folder
       out.total = total;
       out.full = over();
     } catch (err) {
       note(err);
+      out.failed = true;
     }
     return out;
   }
@@ -187,7 +192,9 @@ export function createAttachments({
     const file = `${id}.${kind.ext}`;
     const target = path.join(dir, file);
     if (!PATH_OK.test(target)) return fail(409, 'path-unusable');
-    if ((await sweep(buf.length, key)).full) return fail(507, 'storage-full');
+    const swept = await sweep(buf.length);
+    if (swept.failed) return fail(507, 'disk-full'); // the caps could not be checked: refuse rather than write past them
+    if (swept.full) return fail(507, 'storage-full');
     try {
       await writeAtomic(dir, file, buf, { mode: 0o600 }); // unlinks its temp file when it fails
     } catch (err) {
@@ -217,9 +224,11 @@ export function createAttachments({
       if (inflight || stamps.length >= UPLOADS_PER_MIN) return fail(429, 'busy'); // checked and set before any await: two calls cannot both pass
       stamps.push(t);
       inflight = true;
+      writing = key;
       try {
         return await store({ pane, key, name, data });
       } finally {
+        writing = null;
         inflight = false;
       }
     },
@@ -231,7 +240,7 @@ export function createAttachments({
       try {
         const { handle, st } = await openRegular(r.path); // O_NOFOLLOW, regular, owned by the user, one link
         await handle.close(); // the content is never read back
-        if (st.size !== r.size || (await fs.realpath(r.path)) !== r.path) return null; // a folder on the way became a link
+        if (st.size !== r.size || !(await unmoved(r.path))) return null; // a folder on the way became a link
         return { id: r.id, path: r.path, type: r.type, size: r.size };
       } catch (err) {
         note(err);
@@ -244,7 +253,9 @@ export function createAttachments({
       const r = records.get(id);
       if (!r || r.pane !== pane || r.sent) return false;
       try {
-        const removed = await removeOwnFile(path.dirname(r.path), path.basename(r.path));
+        const dir = path.dirname(r.path);
+        if (!(await unmoved(dir))) return false; // removeOwnFile looks at the last folder only
+        const removed = await removeOwnFile(dir, path.basename(r.path));
         records.delete(id);
         return removed;
       } catch (err) {

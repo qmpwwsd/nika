@@ -1,11 +1,13 @@
 // The attachment store (0.5, W2, T38): sniff, upload body check, save, lookup, remove, markSent, prune, start/stop.
-// Temp dirs only, synthetic bytes only (headers are built here). Keep this file ASCII.
+// Temp dirs only, synthetic bytes only (headers are built here). Only the minus of the '(-)' test titles (U+2212, as in the other
+// test files) is not ASCII.
 import { test, describe, after, afterEach, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { stateDir } from '../src/paths.js';
 import { updateSettings } from '../src/store.js';
 import {
@@ -814,5 +816,126 @@ describe('logging (T38)', () => {
     assert.equal((await upload(att, PNG)).status, 409);
     mock.restoreAll();
     assert.deepEqual(writes, ['nika: attachments: EMODE\n']);
+  });
+});
+
+describe('review fixes (W2-T1, round 1)', () => {
+  /** Holds the save at its realpath of the key folder: the folder exists and is empty, the write has not happened. */
+  function pauseAtKeyFolder() {
+    const real = fsp.realpath;
+    let release;
+    let reached;
+    const gate = new Promise((resolve) => { release = resolve; });
+    const at = new Promise((resolve) => { reached = resolve; });
+    mock.method(fsp, 'realpath', async (p, ...rest) => {
+      if (String(p).endsWith(`/${KEY}`)) {
+        reached();
+        await gate;
+      }
+      return real(p, ...rest);
+    });
+    return { at, release };
+  }
+
+  test('(+) M1: the startup prune and the timer prune leave the folder a save is writing into; it is tidied once the save is done', async () => {
+    const { att, env } = make();
+    const { at, release } = pauseAtKeyFolder();
+    const saving = upload(att, PNG);
+    try {
+      await at;
+      assert.deepEqual(leftovers(env), [], 'the folder is there and empty');
+      await att.start(); // the startup prune
+      assert.deepEqual(leftovers(env), [], 'startup prune');
+      await att.prune(); // what the 24 h timer calls
+      assert.deepEqual(leftovers(env), [], 'timer prune');
+    } finally {
+      release();
+    }
+    const r = await saving;
+    att.stop();
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.deepEqual(leftovers(env), [`${r.body.id}.png`]);
+    assert.equal(await att.remove(PANE, r.body.id), true);
+    assert.deepEqual(leftovers(env), [], 'empty again');
+    await att.prune();
+    assert.equal(fs.existsSync(keyDir(env)), false, 'the skip ended with the save');
+  });
+
+  test('(−) M1: a save that fails (wrong type, ENOSPC) does not leave its folder protected', async () => {
+    const { att, env } = make();
+    fs.mkdirSync(keyDir(env), { recursive: true, mode: 0o700 });
+    assert.equal((await upload(att, bytes('MZ', PAYLOAD))).status, 415);
+    const real = fsp.open;
+    mock.method(fsp, 'open', async (p, ...rest) => {
+      const handle = await real(p, ...rest);
+      if (String(p).endsWith('.tmp')) handle.writeFile = async () => { throw Object.assign(new Error('no space'), { code: 'ENOSPC' }); };
+      return handle;
+    });
+    assert.equal((await upload(att, PNG)).status, 507);
+    mock.restoreAll();
+    await att.prune();
+    assert.equal(fs.existsSync(keyDir(env)), false);
+  });
+
+  test('(−) M2: when the caps cannot be checked, a save is refused 507 disk-full and writes nothing (fails closed)', async () => {
+    const { env, clock, logs } = make();
+    const boom = createAttachments({
+      env, now: () => clock.t, log: (l) => logs.push(l),
+      loadKeepDays: async () => { throw Object.assign(new Error(`boom at ${root}`), { code: 'EBOOM' }); },
+    });
+    const r = await upload(boom, PNG);
+    assert.deepEqual([r.status, r.body.error], [507, 'disk-full']);
+    assert.deepEqual(leftovers(env), [], 'nothing was written');
+    assert.ok(logs.includes('nika: attachments: EBOOM') && onlyCodes(logs), logs.join('|'));
+  });
+
+  test('(−) M2: a key folder nika cannot list also refuses the save (its files would be missing from the total); listing again works', async () => {
+    const { att, env, clock } = make();
+    plant(env, clock, { key: KEY2, age: 2 * HOUR });
+    const real = fsp.readdir;
+    mock.method(fsp, 'readdir', async (p, ...rest) => {
+      if (String(p).endsWith(`/${KEY2}`)) throw Object.assign(new Error(`cannot list ${p}`), { code: 'EIO' });
+      return real(p, ...rest);
+    });
+    const r = await upload(att, PNG);
+    assert.deepEqual([r.status, r.body.error], [507, 'disk-full']);
+    assert.deepEqual(leftovers(env), [], 'nothing was written');
+    mock.restoreAll();
+    assert.equal((await upload(att, PNG)).status, 200);
+  });
+
+  test('(+) M2: the public prune keeps its shape when it fails: { removed, total } and nothing else', async () => {
+    const { env, clock } = make();
+    const boom = createAttachments({ env, now: () => clock.t, log: () => {}, loadKeepDays: async () => { throw new Error('x'); } });
+    plant(env, clock, { age: 30 * DAY });
+    assert.deepEqual(await boom.prune(), { removed: 0, total: 0 });
+  });
+
+  test('(−) M3: remove refuses a file whose attachments folder was swapped for a symlink since the save, as lookup does', async () => {
+    const { att, env } = make();
+    const b = await saved(att, PNG);
+    const moved = `${attRoot(env)}-moved`;
+    fs.renameSync(attRoot(env), moved);
+    fs.symlinkSync(moved, attRoot(env));
+    assert.equal(await att.lookup(PANE, b.id), null);
+    assert.equal(await att.remove(PANE, b.id), false);
+    assert.ok(fs.existsSync(path.join(moved, KEY, `${b.id}.png`)), 'the file behind the link is not touched');
+  });
+
+  test('(+) M3: remove still deletes when nothing moved', async () => {
+    const { att, env } = make();
+    const b = await saved(att, PNG);
+    assert.equal(await att.remove(PANE, b.id), true);
+    assert.deepEqual(leftovers(env), []);
+  });
+
+  test('(+) M4: src/attachments.js is ASCII; this file has non-ASCII only in the minus of test titles, and says so', () => {
+    const asciiOnly = (text) => !/[^\x00-\x7f]/.test(text);
+    assert.ok(asciiOnly(fs.readFileSync(new URL('../src/attachments.js', import.meta.url), 'utf8')));
+    const self = fs.readFileSync(fileURLToPath(import.meta.url), 'utf8');
+    const odd = [...new Set([...self].filter((c) => c.charCodeAt(0) > 127))];
+    assert.deepEqual(odd, ['\u2212']);
+    for (const line of self.split('\n').filter((l) => !asciiOnly(l))) assert.match(line, /^\s*(?:test|describe)\(/, line);
+    assert.ok(!/Keep this file ASCII/.test(self.split('\n').slice(0, 4).join('\n')), 'the header must not claim what the titles break');
   });
 });
