@@ -99,6 +99,12 @@ describe('cutAt (design 5): where the mirror stops', () => {
     assert.equal(cutAt(empty({ box: { top: 0, bottom: 2 } }), false), 0);
   });
 
+  test('(−) an empty box that shows a prompt suggestion is not cut: the suggestion is visible nowhere else (M-6, until W4)', () => {
+    assert.equal(cutAt(empty({ suggestion: 'show me the contents of README.md' }), false), null);
+    assert.equal(cutAt(text('sh', { suggestion: 'show me' }), false), null);
+    assert.equal(cutAt(empty({ suggestion: null }), false), 30, '(+) no suggestion: cut');
+  });
+
   test('(−) unreadable, null, missing, malformed or Type into pane on: no cut', () => {
     assert.equal(cutAt(unreadable('pasted'), false), null);
     assert.equal(cutAt(null, false), null);

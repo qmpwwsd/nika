@@ -613,9 +613,8 @@ describe('endSession (+)', () => {
     assert.deepEqual(keysOf(w), ['text:/', 'text:exit', 'Enter']);
   });
 
-  test('(+) an empty box in other shapes: plain space, prompt character alone, whitespace-only non-dim spans', async () => {
+  test('(+) an empty box in other shapes: prompt character alone, whitespace-only non-dim spans', async () => {
     const boxes = [
-      [[sp(`${PROMPT_CHAR} `), sp('Try "x"', true)]],
       [[sp(PROMPT_CHAR)]],
       [[sp(`${PROMPT_CHAR}\xa0`)]],
       [[sp(`${PROMPT_CHAR}\xa0`), sp('Try "x"', true), sp(' ', false)]],
@@ -625,6 +624,12 @@ describe('endSession (+)', () => {
       assert.deepEqual(await w.control().endSession('%2'), { status: 200, body: { ended: true } }, JSON.stringify(box));
       assert.deepEqual(keysOf(w), ['text:/', 'text:exit', 'Enter']);
     }
+  });
+
+  test('(−) a prompt character followed by a plain space is not Claude\'s box (it always draws a no-break space; a status line may start with ❯ ): 409, nothing typed (I-1)', async () => {
+    const w = world({ box: [[sp(`${PROMPT_CHAR} `), sp('Try "x"', true)]] });
+    assert.deepEqual(await w.control().endSession('%2'), code(409, 'input-not-empty'));
+    assert.deepEqual(keysOf(w), []);
   });
 
   test('(+) busy: Escape first, one escWaitMs wait, state and screen read again, then the same sequence', async () => {
@@ -1555,11 +1560,12 @@ describe('Claude\'s own cursor, the separator and a late redraw', () => {
     }
   });
 
-  test('(+) the separator may be a plain space or a no-break space', async () => {
-    for (const sep of [' ', NB]) {
-      const w = world({ afterType: () => { w.box = [[sp(`${PROMPT_CHAR}${sep}`), sp('/exit')]]; } });
-      assert.deepEqual(await w.control().endSession('%2'), { status: 200, body: { ended: true } });
-    }
+  test('(+) the separator is a no-break space; (−) a plain space is not the echo of nika\'s text (I-1): no Enter', async () => {
+    const ok = world({ afterType: () => { ok.box = [[sp(`${PROMPT_CHAR}${NB}`), sp('/exit')]]; } });
+    assert.deepEqual(await ok.control().endSession('%2'), { status: 200, body: { ended: true } });
+    const plain = world({ afterType: () => { plain.box = [[sp(`${PROMPT_CHAR} `), sp('/exit')]]; } });
+    assert.deepEqual(await plain.control().endSession('%2'), code(409, 'not-at-prompt'));
+    assert.ok(!keysOf(plain).includes('Enter'), keysOf(plain).join(','));
   });
 
   test('(+) late redraw: the first cleanup read is empty, the second shows nika\'s text, so C-u is sent', async () => {

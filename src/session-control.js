@@ -65,6 +65,8 @@ export function readDraft(seen) {
   return parseDraft(last < 0 ? rows : rows.map((row, i) => (i === last ? spaced(row) : row)), seen?.cursor, seen?.cols);
 }
 const draftOf = readDraft;
+/** Whether the capture's cursor sits on a row between the two rules of the box that was read: the input is where the box is. */
+const cursorInBox = (seen, draft) => Number.isInteger(seen.cursor?.y) && seen.cursor.y > draft.box.top && seen.cursor.y < draft.box.bottom;
 /** The draft as the screen holds it, in the form the page sends: a `!` box reads `!` + its text (Shell mode). */
 const canonOf = (draft) => (draft.mode === 'bash' ? `!${draft.text}` : draft.text);
 
@@ -81,10 +83,13 @@ function emptyBox(seen) {
   return draft !== null && draft.state === 'empty' && draft.mode === 'prompt';
 }
 
-/** Exactly one box row in prompt mode, readable, holding exactly `text` (trailing spaces and tabs as normDraft sees them). */
+/**
+ * Exactly one box row in prompt mode, readable, holding exactly `text` (trailing spaces and tabs as normDraft sees them) and no ghost
+ * text: End and the commands press Enter after this read, and what Enter does with a ghost completion is untested (M-4).
+ */
 function readsAs(seen, text) {
   const draft = draftOf(seen);
-  return draft !== null && draft.state !== 'unreadable' && draft.mode === 'prompt' && draft.box.bottom - draft.box.top === 2 && sameDraft(draft.text, text);
+  return draft !== null && draft.state !== 'unreadable' && draft.mode === 'prompt' && draft.ghost !== true && draft.box.bottom - draft.box.top === 2 && sameDraft(draft.text, text);
 }
 
 /**
@@ -523,11 +528,13 @@ export function createSessionControl({
    * Draft write (design W5 section 3): makes Claude's input box read `body.text`, a draft the page edited in nika's message box.
    * The only control that changes a user's draft, so every step fails closed and nothing is sent after a refusal. Under the
    * per-pane lock: a fresh capture (no prompt on screen, a readable box, its `sig` equal to `base`, the text inside the
-   * envelope); then either nothing (the box already reads the text), an append (the cursor is at the end of the text in
-   * plain or vim INSERT mode and the new text starts with the old: only the new part is typed), a type (an empty box), or a
-   * replace (clear with Escape, then type). A replace needs the registry state `idle`: Escape interrupts a running turn.
-   * Before EVERY key or chunk a fresh capture must still show the plain box, no prompt and exactly the text the previous step
-   * left (409 `screen-changed` otherwise; T51). Chunks are at most 700 characters and 2 newlines, `chunkGapMs` apart. Last, the
+   * envelope); then either nothing (the box already reads the text), an append (the cursor is at the end of the text, the new
+   * text starts with the old, and the input is in vim INSERT, or in remembered plain mode with a text that does not end in a
+   * newline: only the new part is typed), a type (an empty box), or a replace (clear with Escape, then type). Every plan that
+   * sends a key needs the cursor on a row of the box that was read (else 409 `input-unreadable`: that box may be a status
+   * line). A replace needs the registry state `idle`: Escape interrupts a running turn, and no key goes out while Stop runs.
+   * Before EVERY key or chunk a fresh capture must still show the plain box with the cursor in it, no prompt and exactly the
+   * text the previous step left (409 `screen-changed` otherwise; T51; `trailing` is no exception). Chunks are at most 700 characters and 2 newlines, `chunkGapMs` apart. Last, the
    * box is read back (409 `draft-mismatch` on any difference). Sent: literal text (`send-keys -l`, or a bracketed paste for a
    * chunk with a newline or tab), `Escape` (idle only, vim: once, then `ggdG` and `i`; plain: twice, `escGapMs` apart),
    * `i` (a probe when nothing shows the edit mode), `C-u` (the probe's own `i` in an empty box) and `BSpace` (leaves a `!` box).
@@ -556,9 +563,9 @@ export function createSessionControl({
         if (seen.res) return { res: seen.res };
         const draft = promptOpen(seen.rows) ? null : readDraft(seen);
         if (draft === null) return { res: await reply(409, 'screen-changed', seen) };
-        // text that ends in a space reads as unreadable `trailing`; a chunk boundary can leave exactly that, and only the text check is lost
-        if (draft.state === 'unreadable' && draft.reason === 'trailing' && /[ \t]$/.test(onScreen)) return { seen, draft };
+        // no tolerance for `trailing`: chunks() never ends a chunk in a space or tab, so nika's own text never reads that way (M-3)
         if (draft.state === 'unreadable') return { res: await reply(409, 'draft-mismatch', seen) };
+        if (!cursorInBox(seen, draft)) return { res: await reply(409, 'screen-changed', null) }; // the box that reads is not where the input is: its text is not shown to the page
         if (!accept.some((t) => sameDraft(canonOf(draft), t))) return { res: await reply(409, 'screen-changed', seen) };
         return { seen, draft };
       };
@@ -591,6 +598,8 @@ export function createSessionControl({
       };
       // A key. Null when it went out, else the answer (a failed send stops everything; the draft is read once more, best effort).
       const press = async (keyBody) => {
+        // Stop runs apart from the lock; a key right behind its Escape would be read as Meta+key (M-2)
+        if (interrupting.has(pane)) return refused({ status: 409, body: { error: 'not-idle' } });
         const sent = await keys.send(pane, keyBody);
         return sent.status === 200 ? null : refused({ status: sent.status, body: sent.body });
       };
@@ -672,11 +681,14 @@ export function createSessionControl({
       if (!inEnvelope(text, seen.cols).ok) return invalid('text does not fit the input box');
       onScreen = canonOf(draft);
       if (sameDraft(onScreen, text)) return { status: 200, body: { draft: await view(seen), typed: 0 } };
+      // second layer behind the parser (I-1): a box the cursor is not in may be a user's status line, never Claude's input
+      if (!cursorInBox(seen, draft)) return reply(409, 'input-unreadable', null); // no draft: the page must not adopt what may be a status line
 
       let edit = editMode(seen.rows, (await vimOf(pane)) === true, (await plainOf(pane)) === true);
       if (edit === 'insert') setEdit(pane, 'vim');
       const empty = draft.state === 'empty';
-      const append = !empty && (edit === 'insert' || edit === 'plain') && draft.cursorAtEnd && (draft.mode === 'bash') === text.startsWith('!') && text.startsWith(onScreen);
+      // `plain` is memory: on an empty last row (the text ends in a newline) vim NORMAL draws the same cursor, so only a shown INSERT may append there (M-1)
+      const append = !empty && (edit === 'insert' || (edit === 'plain' && !onScreen.endsWith('\n'))) && draft.cursorAtEnd && (draft.mode === 'bash') === text.startsWith('!') && text.startsWith(onScreen);
       if (!empty && !append && state !== 'idle') return reply(409, 'not-idle', seen); // a replace clears with Escape
       let res;
 

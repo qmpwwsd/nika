@@ -27,6 +27,8 @@ const MAX_NEWLINES = 12;
 const MAX_ROWS = 13;
 const CHUNK_CHARS = 700; // 801 characters or 3 newlines in one burst become `[Pasted text #N]` (S9 Q4)
 const CHUNK_NEWLINES = 2;
+const MAX_RUN = CHUNK_CHARS - 1; // a run of this many spaces and tabs cannot be cut around, see chunks()
+const LONG_RUN = new RegExp(`[ \\t]{${MAX_RUN},}`);
 
 // Terminal cells a code point occupies (wcwidth approximation: combining 0, CJK and emoji 2, else 1). A copy of
 // `cellWidth` in public/mirror-render.js (browser code, not importable here): a deliberate DRY exception. A miscount can
@@ -43,7 +45,7 @@ function cellWidth(cp) {
 }
 const width = (text) => { let n = 0; for (const ch of text) n += cellWidth(ch.codePointAt(0)); return n; };
 
-/** The characters of one mirror row with their column, the column their span starts at, and their dim / reverse / fg-246 flags. A no-break space is a space. */
+/** The characters of one mirror row with their column, the column their span starts at, their dim / reverse / fg-246 flags and `nb` (it was a no-break space). A no-break space reads as a space. */
 function charsOf(row) {
   const out = [];
   let col = 0;
@@ -51,21 +53,25 @@ function charsOf(row) {
     const s = sp?.s ?? {};
     const spanCol = col;
     for (const ch of typeof sp?.t === 'string' ? sp.t : '') {
-      out.push({ ch: ch === '\u00a0' ? ' ' : ch, col, spanCol, dim: s.d === true, rev: s.r === true, hint: s.fg === 246 && s.d !== true });
+      out.push({ ch: ch === '\u00a0' ? ' ' : ch, nb: ch === '\u00a0', col, spanCol, dim: s.d === true, rev: s.r === true, hint: s.fg === 246 && s.d !== true });
       col += cellWidth(ch.codePointAt(0));
     }
   }
   return out;
 }
 
-/** Row 0 of the box: up to 2 spaces, the prompt glyph or `!`, then a space (or the end of the row). { mode, body, start } or null. */
+/**
+ * Row 0 of the box: up to 2 spaces, the prompt glyph or `!`, then Claude's no-break space (U+00A0) or nothing but the padding
+ * (I-1: the raw character decides, before any no-break-space-to-space mapping; a user's status line such as `\u276f main` has a plain
+ * space and is not a box). { mode, body, start } or null.
+ */
 function firstRow(chars) {
   let at = 0;
   while (chars[at]?.ch === ' ') at += 1;
   const mode = at <= 2 ? GLYPHS[chars[at]?.ch] : undefined;
   if (mode === undefined) return null;
-  const sep = chars[at + 1];
-  if (sep !== undefined && sep.ch !== ' ') return null;
+  const rest = chars.slice(at + 1);
+  if (rest.length > 0 && !rest[0].nb && rest.some((c) => c.ch !== ' ')) return null;
   return { mode, body: chars.slice(at + 2), start: at + 2 };
 }
 
@@ -106,7 +112,7 @@ function dimIsTrailing(infos, cur) {
   return withDim[0].body[k].col === cur.x && withDim[0].body.slice(k).every((c) => c.dim);
 }
 
-/** Splits a marked box row into real text and ghost text (the dim text is kept for the suggestion and the pasted check). */
+/** Splits a marked box row into real text and ghost text (the dim text is kept for the suggestion and the pasted check; `ghost` says any ghost cell was dropped). */
 function splitRow(body, start) {
   const real = [];
   const dim = [];
@@ -121,25 +127,43 @@ function splitRow(body, start) {
     text,
     dim: dim.join(''),
     ghostOnly: ghost && text.trim() === '',
+    ghost,
     end: last === undefined ? start : last.col + cellWidth(last.ch.codePointAt(0)), // the column right after the last real character
   };
 }
 
 /**
- * Joins the box rows (design 1.4). Claude wraps at the usable width `w` (cols - 4) and drops the space at a soft break. A
- * row `a` continues into `b` without a newline when: `a` is one word cut at exactly `w` (no space in it), joined as is; or
- * `a`, a space and the first word of `b` reach `w` (`>=`: S9's sample wraps 113 + 1 + 2 = 116, so a row stops one column short
- * of `w`; the live threshold is still to be measured), joined with the dropped space. A blank row always breaks. A hard newline typed where the next word would not fit reads as a soft wrap: known, accepted.
+ * Joins the box rows (design 1.4). Claude 2.1.325 wraps each hard line like wrap-ansi (`hard: true, trim: false`) at the usable
+ * width `w` = cols - 4 (`wrappedRows` is that break model), and then DRAWS every wrapped row without its leading whitespace:
+ * the space that a row full to `w` pushes to the start of the next row is not drawn, but it counts for the break (W5-F1 live: 100
+ * x `ab` is drawn 116 / 113 / 68, the real second row is a space plus 38 words). Row `a` into row `b` (bodies, after the indent and
+ * unpad), with `lost` = 1 when the space Claude dropped from the start of `a` counts toward it, else 0 (width wa = width(a) + lost):
+ *   - `b` starts with a space, `a` or `b` is blank, or wa > w: a hard line break (a drawn wrap never starts with a space);
+ *   - `a` is FULL, that is `b`'s first character would not have fitted behind it (wa + width(it) > w; a wide character leaves a
+ *     full row one cell short): a cut word (nothing between) when width(last word of a) + width(first word of b) > w, since only a
+ *     word longer than `w` is cut; else a soft wrap, a space, and `lost` = 1 for `b` when the space did not fit on `a` (wa = w);
+ *   - otherwise a space when a, a space and b's first word would not have fitted (wa + 1 + width > w), else a newline.
+ * Known residuals, all read back as a different text and so end in a 409 `draft-mismatch`, never in a wrong key: a hard newline
+ * where the next word would not have fitted (it reads as a soft wrap, the third rule; design 1.4), the same for a hard line of
+ * exactly `w` cells followed by a hard newline (the newline reads as a space); a full row that is one word of
+ * exactly `w` followed by a space and a word (a cut word: the space is lost); a double space at a wrap (it reads as one);
+ * a full row, a space and a word that does not fit behind it (Claude draws an empty row between; it reads as newlines).
  */
 function joinRows(bodies, w) {
   let text = bodies[0];
+  let lost = 0;
   for (let i = 1; i < bodies.length; i += 1) {
     const a = bodies[i - 1];
     const b = bodies[i];
+    const wa = width(a) + lost;
     let sep = '\n';
-    if (a.trim() !== '' && b.trim() !== '') {
-      if (width(a) === w && !a.includes(' ') && !b.startsWith(' ')) sep = '';
-      else if (width(a) + 1 + width(/^\S*/.exec(b)[0]) >= w) sep = ' ';
+    lost = 0;
+    if (a.trim() !== '' && b.trim() !== '' && !b.startsWith(' ') && wa <= w) {
+      const next = width(/^\S*/.exec(b)[0]);
+      if (wa + cellWidth(b.codePointAt(0)) > w) { // full
+        if (width(/\S*$/.exec(a)[0]) + next > w) sep = '';
+        else { sep = ' '; lost = wa === w ? 1 : 0; }
+      } else if (wa + 1 + next > w) sep = ' ';
     }
     text += sep + b;
   }
@@ -159,8 +183,11 @@ function joinRows(bodies, w) {
  *   box       { top, bottom }: the row indexes of the two rule rows
  *   cursorAtEnd   the cursor sits right after the last visible real character of the last box row (padding spaces do not count)
  *   suggestion    dim text of an empty box (not the `Try "..."` example), clean() at most 200; else null
+ *   ghost         true when any dim, reverse-video or fg-246 hint cell of the box was dropped as ghost text (a suggestion, the
+ *                 placeholder, a completion, the slash hint); false for plain text, an empty box and every unreadable draft
  * Null: the footer is not a known mode line (a dialog, a menu, a prompt), a permission prompt parses, fewer than two rule rows,
- * nothing between the last two, or the first box row does not start with the prompt glyph or `!` and a space.
+ * nothing between the last two, or the first box row does not start with the prompt glyph or `!` and Claude's no-break space
+ * (U+00A0; a plain space is a status line of the user's, I-1).
  * `rows` must be the capture of the pane from its top row (no scrollback): `cursor.y` is pane-relative. `text` is not cleaned
  * (zero-width characters survive the mirror's filter); it is a textarea value and must never reach an HTML sink.
  */
@@ -180,7 +207,7 @@ export function parseDraft(rows, cursor, cols) {
   if (!footerKnown || promptFromRows(rows) !== null) return null;
 
   const box = { top, bottom };
-  const bad = (reason) => ({ state: 'unreadable', mode: first.mode, text: '', sig: null, reason, box, cursorAtEnd: false, suggestion: null });
+  const bad = (reason) => ({ state: 'unreadable', mode: first.mode, text: '', sig: null, reason, box, cursorAtEnd: false, suggestion: null, ghost: false });
   const label = LABELLED.exec(rowText(rows[top]).trimEnd())?.[1];
   if (label !== undefined && HISTORY_LABEL.test(label)) return bad('history');
 
@@ -229,7 +256,7 @@ export function parseDraft(rows, cursor, cols) {
   }
   const state = empty ? 'empty' : 'text';
   const sig = createHash('sha256').update(`${state}\n${first.mode}\n${text}`).digest('hex').slice(0, 16);
-  return { state, mode: first.mode, text, sig, box, cursorAtEnd, suggestion };
+  return { state, mode: first.mode, text, sig, box, cursorAtEnd, suggestion, ghost: parts.some((p) => p.ghost) };
 }
 
 /** The form two drafts are compared in: a tab is 4 spaces (Claude draws it so), a no-break space is a space, trailing spaces of every line go. */
@@ -241,36 +268,47 @@ export function normDraft(text) {
 export const sameDraft = (a, b) => typeof a === 'string' && typeof b === 'string' && normDraft(a) === normDraft(b);
 
 /**
- * Rows one line needs when Claude wraps it at `w` cells: a word that does not fit the rest of a row (with the space before
- * it) starts a new row, a word longer than `w` is cut at `w`. Deliberately a little pessimistic: a word fits only when it
- * ends before the last column (S9: a row stopped at 113 of 116), so the estimate does not undershoot the box nika will read back.
+ * Rows one hard line needs when Claude wraps it at `w` cells: the same model joinRows reads backwards (wrap-ansi, `hard: true,
+ * trim: false`). A row that is already `w` wide starts a new row before the next word; one space is appended before every word
+ * after the first; a word that does not fit the rest of the row starts a new row; a word longer than `w` starts on the current
+ * row unless starting on the next saves a break (`floor((n - 1) / w) < 1 + floor((n - left - 1) / w)`, `left` the cells still
+ * free), then is cut at `w` cell by cell (a wide character that does not fit goes to the next row).
  */
 function wrappedRows(line, w) {
   let rows = 1;
-  let used = 0;
-  for (const [token] of line.matchAll(/ +|[^ ]+/g)) {
-    const n = width(token);
-    if (token[0] === ' ') {
-      used += n;
-      for (; used > w; used -= w) rows += 1;
-    } else {
-      if (used > 0 && used + n >= w) { rows += 1; used = 0; }
-      const pieces = Math.ceil(n / w); // 1 unless the word is longer than a row
-      rows += pieces - 1;
-      used += n - (pieces - 1) * w;
+  let used = 0; // cells of the current row, with the space after its last word
+  line.split(' ').forEach((word, i) => {
+    if (i > 0) {
+      if (used >= w) { rows += 1; used = 0; }
+      used += 1;
     }
-  }
+    const n = width(word);
+    if (n > w) {
+      if (Math.floor((n - 1) / w) < 1 + Math.floor((n - (w - used) - 1) / w)) { rows += 1; used = 0; }
+      const cells = [...word];
+      cells.forEach((ch, k) => {
+        const c = cellWidth(ch.codePointAt(0));
+        if (used + c > w) { rows += 1; used = 0; }
+        used += c;
+        if (used === w && k < cells.length - 1) { rows += 1; used = 0; }
+      });
+      return;
+    }
+    if (used > 0 && used + n > w && n > 0) { rows += 1; used = 0; }
+    used += n;
+  });
   return rows;
 }
 
 /**
  * Whether nika may sync this text into Claude's box: at most 1024 characters, 12 newlines and 13 estimated rows (the sum over
- * lines of the rows a word wrap at `cols - 4` needs, see wrappedRows; a 14-row box may be a window, so it is unreadable). { ok } or
- * { ok: false, reason: 'chars' | 'newlines' | 'rows' | 'invalid' } (invalid: not a string, or cols not an integer above 4).
+ * lines of the rows a word wrap at `cols - 4` needs, see wrappedRows; a 14-row box may be a window, so it is unreadable), and no
+ * run of 699 or more spaces and tabs in a row (chunks() cannot cut inside it without ending a chunk in a space; reason 'chars').
+ * { ok } or { ok: false, reason: 'chars' | 'newlines' | 'rows' | 'invalid' } (invalid: not a string, or cols not an integer above 4).
  */
 export function inEnvelope(text, cols) {
   if (typeof text !== 'string' || !Number.isInteger(cols) || cols <= 4) return { ok: false, reason: 'invalid' };
-  if (text.length > MAX_CHARS) return { ok: false, reason: 'chars' };
+  if (text.length > MAX_CHARS || LONG_RUN.test(text)) return { ok: false, reason: 'chars' };
   const lines = text.split('\n');
   if (lines.length - 1 > MAX_NEWLINES) return { ok: false, reason: 'newlines' };
   const rows = lines.reduce((n, line) => n + wrappedRows(line.replace(/\t/g, '    '), cols - 4), 0);
@@ -279,14 +317,24 @@ export function inEnvelope(text, cols) {
 
 /**
  * Splits text for typing: a chunk holds at most 700 characters and 2 newlines (it ends right after its second newline), and a
- * surrogate pair is never split. The caller types a chunk with a newline or tab as a bracketed paste, any other with `send-keys -l`.
+ * surrogate pair is never split. A chunk never ends in a space or a tab (M-3: Claude pads every row with spaces, so a draft that
+ * ends in typed spaces reads as `trailing`): when the 700-character cut falls inside a run of spaces and tabs, the cut moves to
+ * before the run and the chunk gets shorter; the run starts the next chunk. Only a cut is moved: the end of the text may end in
+ * spaces. A run of 699 or more spaces and tabs fills a whole chunk (or a chunk and one surrogate pair), so no cut is possible
+ * there: inEnvelope refuses such a text, and chunks() still returns it whole (cut at the limit) rather than lose characters.
+ * The caller types a chunk with a newline or tab as a bracketed paste, any other with `send-keys -l`.
  */
 export function chunks(text) {
   const out = [];
   let cur = '';
   let newlines = 0;
   for (const ch of typeof text === 'string' ? text : '') { // by code point
-    if (cur.length + ch.length > CHUNK_CHARS) { out.push(cur); cur = ''; newlines = 0; }
+    if (cur.length + ch.length > CHUNK_CHARS) {
+      const keep = cur.replace(/[ \t]+$/, '');
+      out.push(keep === '' ? cur : keep);
+      cur = keep === '' ? '' : cur.slice(keep.length); // the run moves to the next chunk; it holds no newline
+      newlines = 0;
+    }
     cur += ch;
     if (ch === '\n') {
       newlines += 1;

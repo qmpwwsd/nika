@@ -124,6 +124,7 @@ function safe(w) {
   w.sent.forEach((s, i) => {
     for (const k of s.body.keys ?? []) assert.ok(!NEVER.includes(k), `never ${k}`);
     if (typeof s.body.text === 'string') assert.ok(s.body.text.length <= 700, 'a -l call stays within 700 characters');
+    for (const piece of [s.body.text, s.body.paste]) if (typeof piece === 'string') assert.ok(!/[ \t]$/.test(piece), `no chunk ends in a space or tab: ${JSON.stringify(piece.slice(-5))}`);
     if (s.body.keys?.includes('Escape')) {
       assert.equal(s.state, 'idle', 'Escape only while the registry says idle');
       const next = w.sent[i + 1];
@@ -285,6 +286,26 @@ describe('writeDraft: append and type (no Escape, so they run while Claude works
     assert.deepEqual(w.sent.map((s) => s.body), [{ text: ' there' }]);
   });
 
+  test('(−) M-1: plain memory and the cursor on an empty last row cannot tell INSERT from vim NORMAL: no append, the replace road (Escapes, no probe), never the suffix as literal keys', async () => {
+    const w = pane({ text: 'hello\n', mem: { vim: false, plain: true } });
+    const d = readDraft(w.screen());
+    assert.deepEqual([d.text, d.cursorAtEnd], ['hello\n', true], 'the fixture: an end cursor on an empty last row');
+    const r = await w.put('hello\nworld');
+    assert.equal(r.status, 200);
+    assert.deepEqual(w.sent.map((s) => s.body), [{ keys: ['Escape'] }, { keys: ['Escape'] }, { paste: 'hello\nworld' }]);
+    safe(w);
+    // the same screen with a vim INSERT footer (insert is shown, not remembered): the append is safe and stays
+    const v = pane({ text: 'hello\n', vim: true });
+    assert.equal((await v.put('hello\nworld')).status, 200);
+    assert.deepEqual(v.sent.map((s) => s.body), [{ text: 'world' }]);
+  });
+
+  test('(+) M-1: plain memory and an end cursor on a row with text still appends', async () => {
+    const w = pane({ text: 'hello\nthere', mem: { vim: false, plain: true } });
+    assert.equal((await w.put('hello\nthere again')).status, 200);
+    assert.deepEqual(w.sent.map((s) => s.body), [{ text: ' again' }]);
+  });
+
   test('(+) an append with a newline goes as a bracketed paste, a tab too', async () => {
     const a = pane({ text: 'hello', vim: true });
     assert.equal((await a.put('hello\nworld')).status, 200);
@@ -314,6 +335,24 @@ describe('writeDraft: append and type (no Escape, so they run while Claude works
       assert.deepEqual([r.status, r.body.typed, r.body.draft.text], [200, 5, 'hello']);
       assert.deepEqual(sentKeys(w), ['text:hello']);
     }
+  });
+
+  test('(+) M-3: a chunk boundary that falls on a space moves before it: no chunk ends in a space, and the write needs no `trailing` tolerance', async () => {
+    const w = pane({ text: '', vim: true });
+    const text = `${'x'.repeat(699)} ${'y'.repeat(60)}`; // the 700th character is a space
+    const r = await w.put(text);
+    assert.deepEqual([r.status, r.body.typed, r.body.draft.text.length], [200, 760, 760]);
+    assert.deepEqual(w.sent.map((s) => s.body.text.length), [699, 61]);
+    safe(w);
+  });
+
+  test('(−) M-3: spaces typed after the text in the terminal between two chunks are `trailing`, a refusal like any unreadable screen: 409 draft-mismatch, no more keys', async () => {
+    const w = pane({ text: '', vim: true });
+    w.afterType = () => { w.override = (p) => boxRows({ lines: visual(p.text), insert: true, cursor: { dx: 2 } }); }; // the cursor two columns past the text
+    const r = await w.put('l1\nl2\nl3\nl4\nl5');
+    assert.deepEqual([r.status, r.body.error], [409, 'draft-mismatch']);
+    assert.deepEqual(sentKeys(w), ['paste:l1\nl2\n']);
+    safe(w);
   });
 
   test('(+) a long text goes in chunks of at most 700 characters, 300 ms apart (fake clock)', async () => {
@@ -706,6 +745,112 @@ describe('writeDraft: the per-pane lock is shared with the other controls', () =
   });
 });
 
+describe('writeDraft: the cursor must be inside the box that was read (second layer behind the parser, I-1)', () => {
+  const NB = '\u00a0';
+  const dashes = () => [span('\u2500'.repeat(COLS), { fg: 244 })];
+  /** Claude's real box with `real` in it, then a user status line that looks like a box: `❯<NB>main` and a row of dashes below it. */
+  const statusBox = (real = 'hello') => {
+    const cap = boxRows({ lines: [real], insert: true });
+    const [top, row, lower, ...rest] = cap.rows;
+    return { ...cap, rows: [top, row, lower, [span(`\u276f${NB}`), span('main')], dashes(), ...rest] }; // the cursor stays in the real box (y = 1)
+  };
+
+  test('(−) a status line that parses as a box while the cursor sits in the real box above: nothing is sent, 409 input-unreadable', async () => {
+    const screen = statusBox();
+    const fake = readDraft(screen);
+    assert.deepEqual([fake.state, fake.text, fake.box], ['text', 'main', { top: 2, bottom: 4 }], 'the fixture: the parser reads the status line as the box');
+    assert.ok(screen.cursor.y < fake.box.top, 'and the cursor is outside it');
+    for (const mem of [{ vim: true, plain: false }, { vim: false, plain: true }]) {
+      for (const next of ['main and more', 'other text', '']) { // append, replace, clear
+        const w = pane({ text: 'hello', mem, override: () => screen });
+        const r = await w.put(next, fake.sig);
+        assert.deepEqual([r.status, r.body.error, r.body.draft], [409, 'input-unreadable', null], JSON.stringify([mem, next]));
+        assert.deepEqual(w.sent, [], 'not one key reached the real input');
+        safe(w);
+      }
+    }
+  });
+
+  test('(−) a write into an empty fake box (a status line over an empty real box) types nothing either', async () => {
+    const screen = statusBox('');
+    const fake = readDraft(screen);
+    const w = pane({ text: '', vim: true, override: () => screen });
+    const r = await w.put('hello', fake.sig);
+    assert.deepEqual([r.status, r.body.error, w.sent], [409, 'input-unreadable', []]);
+  });
+
+  test('(−) the cursor leaves the box between two chunks: the next chunk is not sent, 409 screen-changed', async () => {
+    const w = pane({ text: '', vim: true });
+    w.afterType = (body) => { // after the first paste the screen shows the same text with the cursor on the row above the box
+      w.override = (p) => boxRows({ lines: visual(p.text), insert: true, cursor: { y: 0 } });
+      return body;
+    };
+    const r = await w.put('l1\nl2\nl3\nl4\nl5');
+    assert.deepEqual([r.status, r.body.error, r.body.draft], [409, 'screen-changed', null], 'no draft: the page does not adopt a box the cursor is not in');
+    assert.deepEqual(sentKeys(w), ['paste:l1\nl2\n']);
+    safe(w);
+  });
+
+  test('(+) normal writes are unchanged: empty box, one row, three rows, plain memory', async () => {
+    for (const opts of [{ text: '', vim: true }, { text: 'hello', vim: true }, { text: 'a\nb\nc', vim: true }, { text: 'hello', mem: { vim: false, plain: true } }]) {
+      const w = pane(opts);
+      const r = await w.put(`${opts.text} more`.trim());
+      assert.equal(r.status, 200, JSON.stringify(opts));
+      safe(w);
+    }
+  });
+
+  test('(−) no cursor at all (the capture lost it), or on a rule row of the box: nothing is sent', async () => {
+    // one text row: the top rule is row 0, the text row 1, the lower rule row 2
+    for (const cursor of [null, { y: 0 }, { y: 2 }, { y: 3 }]) {
+      const w = pane({ text: 'hello', vim: true, override: (p) => boxRows({ lines: [p.text], insert: true, cursor }) });
+      const r = await w.put('hello again', readDraft(w.screen()).sig);
+      assert.deepEqual([r.status, r.body.error, w.sent], [409, 'input-unreadable', []], JSON.stringify(cursor));
+    }
+  });
+});
+
+describe('writeDraft: Stop runs apart from the lock (M-2)', () => {
+  // Stop's Escape is held in flight; a chunk right behind an Escape would be read as Meta+key, so nothing may go out meanwhile
+  const stopInFlight = (w) => {
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const inner = w.keys.send;
+    w.keys.send = async (id, body) => { if (body.keys?.includes('Escape')) await gate; return inner(id, body); };
+    return release;
+  };
+
+  test('(−) an append that is due while Stop interrupts the pane sends nothing: 409 not-idle', async () => {
+    const w = pane({ text: 'hello', vim: true, state: 'busy' });
+    const release = stopInFlight(w);
+    const sc = w.control();
+    const stop = sc.stop('%2');
+    await tick();
+    const r = await sc.writeDraft('%2', { text: 'hello again', base: w.sig() });
+    assert.deepEqual([r.status, r.body.error], [409, 'not-idle']);
+    assert.deepEqual(w.sent, [], 'nothing went out behind the Escape');
+    release();
+    await stop;
+    assert.deepEqual(sentKeys(w).slice(0, 1), ['Escape']);
+    assert.ok(!sentKeys(w).includes('text: again'));
+  });
+
+  test('(−) typing into an empty box obeys the same gate; (+) after Stop ended the append goes', async () => {
+    const w = pane({ text: '', vim: true, state: 'busy' });
+    const release = stopInFlight(w);
+    const sc = w.control();
+    const stop = sc.stop('%2');
+    await tick();
+    assert.equal((await sc.writeDraft('%2', { text: 'queued note', base: w.sig() })).body.error, 'not-idle');
+    assert.deepEqual(w.sent, []);
+    release();
+    await stop;
+    w.state = 'busy';
+    const r = await sc.writeDraft('%2', { text: 'queued note', base: w.sig() });
+    assert.deepEqual([r.status, r.body.typed], [200, 11]);
+  });
+});
+
 describe('End and the commands read the box with src/draft.js', () => {
   // the End / command paths are covered in session-control.test.js; here, the cases the parser changed (spike S9 contradictions 2, 3, 5, 8)
   const asEnd = (w) => w.control().endSession('%2');
@@ -748,6 +893,26 @@ describe('End and the commands read the box with src/draft.js', () => {
     const r = await asCommand(w);
     assert.equal(r.status, 200);
     assert.deepEqual(sentKeys(w), ['text:/compact', 'Enter'], 'vim INSERT is shown: the whole command at once');
+  });
+
+  test('(−) M-4: `/exit` followed by a ghost completion is not "what nika typed": End presses no Enter (409 not-at-prompt)', async () => {
+    const w = pane({ text: '', vim: true, override: (p) => boxRows({ lines: [p.text], ghost: p.text === '/exit' ? ' now' : null, insert: true }) });
+    const r = await asEnd(w);
+    assert.deepEqual([r.status, r.body.error], [409, 'not-at-prompt']);
+    assert.ok(!sentKeys(w).includes('Enter'), sentKeys(w).join(','));
+    const c = pane({ text: '', vim: true, override: (p) => boxRows({ lines: [p.text], ghost: p.text === '/compact' ? ' now' : null, insert: true }) });
+    assert.equal((await asCommand(c)).status, 409);
+    assert.ok(!sentKeys(c).includes('Enter'), 'a command is read the same way');
+  });
+
+  test('(+) M-4: without a ghost the same End goes; and the draft route keeps its tolerance for a ghost after typed text', async () => {
+    const w = pane({ text: '', vim: true });
+    assert.equal((await asEnd(w)).status, 200);
+    assert.ok(sentKeys(w).includes('Enter'));
+    const d = pane({ text: 'hel', vim: true, override: (p) => boxRows({ lines: [p.text], ghost: ' there', insert: true }) });
+    const r = await d.put('hello');
+    assert.deepEqual([r.status, r.body.typed, r.body.draft.text], [200, 2, 'hello'], 'a completion ghost does not stop a draft write: it never presses Enter');
+    assert.deepEqual(d.sent.map((s) => s.body), [{ text: 'lo' }]);
   });
 
   test('(−) a box under a footer nobody recognises is a dialog for End: 409 mode-unknown, nothing typed', async () => {

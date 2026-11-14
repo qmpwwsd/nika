@@ -2832,7 +2832,8 @@ describe('capture: draft', () => {
     const d = r.body.draft;
     assert.deepEqual([d.state, d.mode, d.text, d.edit, d.suggestion], ['text', 'prompt', 'hello\nsecond line', 'unknown', null]);
     assert.match(d.sig, /^[0-9a-f]{16}$/);
-    assert.deepEqual(Object.keys(d).sort(), ['box', 'cursorAtEnd', 'edit', 'mode', 'sig', 'state', 'suggestion', 'text']);
+    assert.deepEqual(Object.keys(d).sort(), ['box', 'cursorAtEnd', 'edit', 'ghost', 'mode', 'sig', 'state', 'suggestion', 'text']);
+    assert.equal(d.ghost, false, 'no ghost cell was dropped');
     assert.deepEqual(d.box, { top: 0, bottom: 3 });
     assert.equal(r.body.mode, 'auto', 'the mode and the prompt fields are as before');
   });
@@ -2841,7 +2842,7 @@ describe('capture: draft', () => {
     const { a, screens } = await bootScreens();
     screens['%6'] = box([''], { ghost: 'run the tests' });
     const empty = (await pane(a, '%6', 'capture')).body.draft;
-    assert.deepEqual([empty.state, empty.text, empty.suggestion], ['empty', '', 'run the tests']);
+    assert.deepEqual([empty.state, empty.text, empty.suggestion, empty.ghost], ['empty', '', 'run the tests', true]);
     screens['%6'] = box(['ls -la'], { mode: 'bash' });
     const bash = (await pane(a, '%6', 'capture')).body.draft;
     assert.deepEqual([bash.state, bash.mode, bash.text], ['text', 'bash', 'ls -la']);

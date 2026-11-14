@@ -75,9 +75,12 @@ export function cleanDraft(raw) {
   };
 }
 
-/** The first mirror row to cut (the box's top rule), or null: only a readable draft with Type into pane off hides Claude's input box. */
+/**
+ * The first mirror row to cut (the box's top rule), or null: only a readable draft with Type into pane off hides Claude's input box.
+ * Not while the box shows a prompt suggestion: nothing else on the page shows it (until W4) and Enter on it is untested (M-6).
+ */
 export function cutAt(draft, passOn) {
-  if (passOn === true || !draft || (draft.state !== 'empty' && draft.state !== 'text')) return null;
+  if (passOn === true || !draft || (draft.state !== 'empty' && draft.state !== 'text') || (draft.suggestion ?? null) !== null) return null;
   const top = draft.box?.top;
   return Number.isInteger(top) && top >= 0 ? top : null;
 }
