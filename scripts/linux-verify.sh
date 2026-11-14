@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Linux verification of nika (CI job `linux-verify`, also run locally in Docker: see Dockerfile.test).
 # Runs from the repo root on Linux, in a throwaway HOME / config / state / tmux dir, and prints a PASS/FAIL table.
+# Checks: npm test, ps lstart, the serve --app handshake, the tmux mirror and keys, and the session window's fit (zoom, resize, restore).
 # Exit 0 only when every row is PASS. Needs: node 22, npm, tmux, ps (procps), ss (iproute2), od, timeout.
 #   docker build -f Dockerfile.test -t nika-verify . && docker run --rm nika-verify
 set -euo pipefail
@@ -245,6 +246,81 @@ JS
   tm kill-server 2>/dev/null || true
 }
 
+# ---- e. the session window's fit on this machine's tmux (0.5, W7): zoom, resize, and the exact way back ------------
+# Drives src/fit.js against the private server: a 3-pane window (fitted by a bigger panel, then given back), a single pane
+# (resized smaller, then given back), and the two tmux calls the restore leans on (S10 Q7: tmux 3.2 is the floor).
+check_fit() {
+  local hold=(node -e 'setInterval(()=>{},1e9)') pa p3 p1 w3 w1
+  CUR=fit
+  echo "tmux $(tmux -V)" >"$LOGS/fit.log"
+  # every mirrored pane runs `node`, which nika's pane test takes for claude; the 3-pane window is 100x29: two `sleep` panes on the left, the mirrored one on the right
+  if ! pa="$(tm new-session -d -s fit3 -x 100 -y 29 -P -F '#{pane_id}' -- sleep 300 2>>"$LOGS/fit.log")" \
+    || ! p3="$(tm split-window -d -h -t "$pa" -P -F '#{pane_id}' -- "${hold[@]}" 2>>"$LOGS/fit.log")" \
+    || ! tm split-window -d -v -t "$pa" -- sleep 300 2>>"$LOGS/fit.log" \
+    || ! p1="$(tm new-session -d -s fit1 -x 80 -y 24 -P -F '#{pane_id}' -- "${hold[@]}" 2>>"$LOGS/fit.log")"; then
+    add FAIL "e. fit: start the private server and its panes" "see log"
+    return
+  fi
+  w3="$(tm display-message -p -t "$p3" '#{window_id}')"
+  w1="$(tm display-message -p -t "$p1" '#{window_id}')"
+  mkdir -m 700 "$WORK/fitstate"
+  P3="$p3" W3="$w3" P1="$p1" W1="$w1" SOCK="$SOCK" STATE="$WORK/fitstate" run_js fit <<JS
+import { createFit } from './src/fit.js';
+import { makeExec } from './src/exec.js';
+$JS_REC
+const { P3: p3, W3: w3, P1: p1, W1: w1, SOCK: sock, STATE: state } = process.env;
+const base = makeExec({ timeout: 5000 });
+const exec = (cmd, args, opts) => base(cmd, ['-L', sock, ...args], opts);
+const tmux = async (...a) => (await exec('tmux', ['-u', ...a])).stdout.trim();
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const until = async (fn, ms = 5000) => { for (let t = 0; t < ms; t += 100) { if (await fn()) return true; await sleep(100); } return false; };
+const show = (s) => JSON.stringify(s);
+// tmux 3.8 writes the active and last pane into the layout string (focus history, not geometry); nika strips them before it applies a layout
+const strip = (s) => s.replace(/,"(a|l)":(true|\d+)/g, '');
+const snap = async (w) => ({
+  window: await tmux('display-message', '-p', '-t', w, '-F', '#{window_width}x#{window_height} zoomed=#{window_zoomed_flag} panes=#{window_panes} tag=[#{@nika-fit}]'),
+  layout: strip(await tmux('display-message', '-p', '-t', w, '-F', '#{window_layout}')),
+  option: await tmux('show-options', '-w', '-t', w, 'window-size'),
+  panes: (await tmux('list-panes', '-t', w, '-F', '#{pane_id}=#{pane_width}x#{pane_height}:#{pane_active}')).replace(/\n/g, ' '),
+});
+const diff = (a, b) => Object.keys(a).filter((k) => a[k] !== b[k]).map((k) => k + ': ' + show(a[k]) + ' -> ' + show(b[k])).join('; ').slice(0, 400);
+const sized = async (p) => tmux('display-message', '-p', '-t', p, '-F', '#{pane_width}x#{pane_height}');
+
+const ready = await until(async () => (await tmux('list-panes', '-a', '-F', '#{pane_id} #{pane_current_command}')).split('\n').filter((l) => / node\$/.test(l)).length === 2);
+rec(ready, 'e. fit: panes run node (the pane test accepts it as claude)', ready ? '' : 'timeout');
+const fit = createFit({ exec, tmuxBin: 'tmux', stateDir: state });
+
+// L1: three panes, panel 120x40 bigger than the window -> fitted, pane 120x40; give back -> the window is as it was
+const before3 = await snap(w3);
+const put3 = await fit.hold(p3, { cols: 120, rows: 40, open: true });
+const during3 = await snap(w3);
+rec(put3.status === 200 && put3.body.fit.state === 'fitted' && (await sized(p3)) === '120x40' && during3.window.includes('zoomed=1'),
+  'e. fit L1: 3 panes, panel 120x40 -> fitted, mirrored pane 120x40, window zoomed', show(put3.body) + ' ' + (await sized(p3)) + ' ' + during3.window);
+const del3 = await fit.release(p3);
+const after3 = await snap(w3);
+rec(del3.body.released === true && diff(before3, after3) === '', 'e. fit L1: release gives back layout, size, window-size option, focus and tag exactly', diff(before3, after3) || show(del3.body));
+
+// L3: one pane 80x24, panel 60x15 -> resized to 60x15 (nothing to squeeze); give back -> 80x24
+const before1 = await snap(w1);
+const put1 = await fit.hold(p1, { cols: 60, rows: 15, open: true });
+rec(put1.status === 200 && put1.body.fit.state === 'fitted' && (await sized(p1)) === '60x15', 'e. fit L3: single pane 80x24, panel 60x15 -> fitted, pane 60x15', show(put1.body) + ' ' + (await sized(p1)));
+const del1 = await fit.release(p1);
+const after1 = await snap(w1);
+rec(del1.body.released === true && diff(before1, after1) === '' && after1.window.startsWith('80x24'), 'e. fit L3: release gives back 80x24 and everything else exactly', diff(before1, after1) || show(del1.body));
+
+// L4: the two tmux calls the restore leans on, on this tmux version
+let layout = '';
+let accepted = false;
+try { layout = await tmux('display-message', '-p', '-t', w3, '-F', '#{window_layout}'); await tmux('select-layout', '-t', w3, '--', layout); accepted = true; } catch (e) { layout = String(e.stderr || e.message).trim(); }
+rec(accepted && strip(await tmux('display-message', '-p', '-t', w3, '-F', '#{window_layout}')) === strip(layout), 'e. fit L4: select-layout -t @W -- <window_layout> is accepted and changes nothing', accepted ? '' : layout);
+const unset = await exec('tmux', ['-u', 'show-options', '-w', '-t', w3, 'window-size']).then((r) => r.stdout, (e) => 'error: ' + String(e.stderr || e.message).trim());
+rec(unset === '', 'e. fit L4: show-options -w window-size prints nothing while the option is unset', show(unset));
+
+rec((await fit.releaseAll()) === 0 && fit.size() === 0, 'e. fit: nothing left held after the releases', 'size ' + fit.size());
+JS
+  tm kill-server 2>/dev/null || true
+}
+
 check_cleanup() {
   CUR=cleanup
   local left=()
@@ -252,14 +328,15 @@ check_cleanup() {
   if [[ -S $TMUX_TMPDIR/tmux-$(id -u)/$SOCK ]] || tm has-session 2>/dev/null; then left+=("tmux server"); fi
   if [[ -n "$(jobs -p)" ]]; then left+=("background job"); fi
   if [[ -e $WORK ]]; then left+=("temp dir"); fi
-  if ((${#left[@]} == 0)); then add PASS "e. cleanup: tmux server, child processes and temp dir are gone"
-  else add FAIL "e. cleanup left: ${left[*]}"; fi
+  if ((${#left[@]} == 0)); then add PASS "f. cleanup: tmux server, child processes and temp dir are gone"
+  else add FAIL "f. cleanup left: ${left[*]}"; fi
 }
 
 check_npm_test
 check_ps
 check_handshake
 check_tmux
+check_fit
 check_cleanup
 
 printf '\n%-6s  %-84s  %s\n' RESULT CHECK DETAIL
