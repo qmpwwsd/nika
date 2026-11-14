@@ -42,6 +42,31 @@ Session window (desktop app):
   Claude holds and sends nothing wrongly; the next copy into Claude's input writes that text back, so one space or line break of
   your draft has really changed. Plain-mode input was checked less than vim mode (nika's typing was run against a stand-in
   there, not against Claude itself), and Tab or Enter on a real Claude suggestion through nika has not been tried yet.
+- **The terminal fills its panel.** The session window measures its terminal panel and asks nika to make the pane that size, so
+  the mirror shows the whole pane with no empty space and no sideways scroll. nika zooms the pane inside its tmux window and, when
+  that cannot squeeze anything, sizes the tmux window to the panel. It resizes a window with several panes only when the panel is at
+  least as big as the window; when the panel is smaller, nika zooms the pane, leaves the window at its size and draws the text
+  smaller (never larger than normal, never below 0.4 times). A window with one pane is sized to the panel. The header still says
+  "Live · 120 × 39", the pane's real size.
+- **A "Fit" chip says what nika did to your tmux window**, with its own colour, icon and words: "Fit · fills the panel", "Fit ·
+  zoomed, text scaled", "Fit · off" (hover for why: you zoomed another pane, the window has a `window-size` setting nika does not
+  change, another program marks the window, the window changed while nika was fitting it, or you changed it) and "Fit · another
+  window" (another nika window shows a pane of the same tmux window; the one you opened last fits it).
+- **nika gives your tmux window back exactly as it was.** On closing the session window, 15 seconds after the window goes quiet,
+  when you quit nika, and at the next start after a crash, nika undoes only what it did: the zoom, the window size, the
+  `window-size` setting and, when you have not touched the layout, the layout and the focus. If you unzoom, move, split, kill a
+  pane or resize in tmux while the window is fitted, nika puts the window back within a second and does not fit it again until you
+  open the session window again. A zoom you made yourself is never undone. Spawning an agent into a fitted window puts it back first.
+- Known limits: the fit works on tmux 3.8 so far (3.2 to 3.7 are checked later); a crash leaves the window at nika's size until
+  nika starts again; with `pane-border-status` on, nika does not fit and scales the text instead; the reason a fit is off shows as a
+  tooltip and one spoken announcement only.
+
+Fixes:
+
+- **Background subagents no longer hide the footer.** While Claude runs background subagents it draws their list under the footer
+  line. nika used to read that list as the footer, so the mode showed as unknown and the message box could not mirror Claude's
+  input. nika now sees through the list. It also stops mirroring while Claude's feedback survey is on screen, so a draft that
+  starts with a digit can never answer it.
 
 ## 0.4.0 — 2026-11-13
 

@@ -1885,6 +1885,91 @@ A background push that fails says its line once (a warning for 6 s): "nika did n
 copy your text into Claude's input. It is kept here."; after three failures it stops until the next edit. The Send echo for a copied
 message reads "Sent 23 characters + Enter to %12" ("Sent a shell command (23 characters) + Enter to %12" with Shell on).
 
+### 9.13 Fit: the mirror fills the panel (0.5, W7)
+
+**(built 2026-11-14 (0.5).)** The session window measures its terminal panel in cells and asks the server to make the mirrored
+pane that size. Contract: `api-app.md` (`PUT` and `DELETE /api/app/pane/:id/fit`); the lease and what is safe: ADR 0017 and
+`docs/security.md` T52. Always on, no setting (owner decision 2026-11-14). The logic that has no DOM is `public/fit-ui.js`; the
+wiring is `public/session.js`. App tier only. The window can change the user's tmux window, so it says so: the chip below.
+
+| What the user sees | When |
+|---|---|
+| the pane has the panel's size: the mirror shows it with no scrolling and no scaling | `fitted`: nika sized the tmux window to the panel (a window with several panes is also zoomed on this pane) |
+| the pane is zoomed in its tmux window and keeps its own size; the text is drawn smaller | `zoomed`: the panel is smaller than a window with several panes, and resizing would squeeze them |
+| the pane keeps its real size (text scaled when it is larger than the panel) | `blocked` or `other`: nika changed nothing |
+
+The tmux window is given back when this window closes, 15 s after the page goes quiet, or on the first change the user makes in
+tmux (unzoom, move, split, kill, resize). After such a change nika does not fit again until the session window is opened again.
+
+**Measuring the panel** (`panelSize`)
+
+| Part | Rule |
+|---|---|
+| probe | `#fit-probe` inside `.term`: 100 zeros in the unscaled terminal font (`var(--fs-term)/1.35 var(--mono)`, `white-space: pre`), `aria-hidden`, hidden and off to the left. One cell is the probe's width / 100 wide and its height tall |
+| box | the `.term` client box minus its padding: 12 px left and right, 10 px top and bottom (`PAD_X` 24, `PAD_Y` 20) |
+| size | `cols = floor((width − 24) / cellW)` clamped to 40–400, `rows = floor((height − 20) / cellH)` clamped to 10–200. Nothing is asked while a number is missing or not positive (a hidden tab keeps the last good size). The cut strip of §9.12 is not subtracted |
+| when | a `ResizeObserver` on `.term` (the app's zoom changes the box too) and `document.fonts.ready`; the request follows 250 ms after the last change; an unchanged size is not asked for |
+
+**Text scale** (`scaleFor`). `scale = min(1, panelCols / paneCols, panelRows / paneRows)` from the capture's size, clamped to
+`SCALE_MIN` 0.4 below and **never above 1** (owner decision, Q2: a pane smaller than the panel stays at its real size; the app's own
+zoom, Cmd or Ctrl + and −, makes text larger). It is `--fit-scale` on `.term`, set with `style.setProperty` (the CSP allows no
+style attribute). `.term-rows` uses `font-size: calc(var(--fs-term) * var(--fit-scale, 1))`; `ch` and the row height are em-based, so
+the pane's grid stays exact. Below 0.4 the text stops shrinking and the terminal scrolls, as before. The header keeps the pane's
+real size ("Live · 120 × 39", §9.12).
+
+**The chip.** `#fit-chip` sits in the terminal header after "Live · C × R". It follows the rule of §9.6: colour, icon and words,
+never colour alone. It is hidden until the first 200 answer, and again after the window gives the lease back or a 403. The header
+wraps (`flex-wrap`) when the chip does not fit, so the window never scrolls sideways. A state change is announced once (polite,
+`announce()`) as "Fit: <words>. <title>".
+
+| `state` | Icon | Text / fill / edge | Words | `title` (hover) |
+|---|---|---|---|---|
+| `fitted` | `i-fit` | `--accent` / `--accent-soft` / `--accent-line` | Fit · fills the panel | nika sized the tmux window to this panel and puts it back when this window closes |
+| `zoomed` | `i-zoom` | `--idle` / `--idle-soft` / `--idle-line` | Fit · zoomed, text scaled | Other panes in this tmux window would be squeezed, so nika zoomed the pane and scaled the text |
+| `blocked` | `i-off` | `--text-muted` / none / dashed `--line-strong` | Fit · off | the reason below; "nika is not fitting this tmux window" for a reason the page does not know |
+| `other` | `i-window` | `--fit-other` / `--fit-other-soft` / `--fit-other-line` | Fit · another window | Another nika window shows a pane of this tmux window |
+
+The words of the `blocked` chip are always "Fit · off"; the reason is its `title`, picked from a fixed table (the page never shows
+a string of the server):
+
+| `reason` | `title` |
+|---|---|
+| `user-zoom` | You zoomed another pane in this window; nika leaves it |
+| `size-option` | This tmux window has a window-size setting nika does not change |
+| `foreign-tag` | Another program marks this tmux window |
+| `changed` | The tmux window changed while nika was fitting it, so nika put it back |
+| `user-change` | You changed this tmux window, so nika put it back. Reopen the session window to fit again |
+
+Each state has its own colour (owner decision, Q5), so `other` has its own cerulean pair of tokens in `tokens.css`, used by this chip
+only (light `#0f68a2` on `#ddf2ff`, edge `#3786c3`; dark `#4abce9` on `#0e2a36`, edge `#1c8cb4`): text on its fill 5.17:1 (light)
+and 6.89:1 (dark), edge at least 3.5:1, and an OKLab distance of at least 0.05 to every status and mode hue (asserted by
+`test/session-ui.test.js`). `blocked` keeps the muted grey on a dashed edge, so the four chips differ in icon, words, edge and hue.
+
+**When the page asks** (`createFitPlanner`; one request at a time, the newest size wins)
+
+| Event | Request |
+|---|---|
+| the first capture answers (the pane is live) | `PUT { open: true }`, repeated until one is answered 200; every later request is `open: false`, also after `blocked / user-change` and `blocked / changed` |
+| the panel changes size | `PUT { open: false }` 250 ms after the last change |
+| every 5 s | `PUT { open: false }` with the current size (the beat: the server lets a lease lapse after 15 s without one) |
+| the window is shown again (`visibilitychange`) | one `PUT` at once: timers may have been suspended and the lease may have lapsed |
+| the window closes or leaves the page (`pagehide`) | one `DELETE` with `keepalive: true` |
+| the capture answers 404 (the pane is gone) | one `DELETE`; the beats stop. If the pane comes back, the lease is asked for again with `open: false` |
+| the page returns from the back/forward cache (`pageshow`, `persisted`) | it measures again and sends `PUT { open: true }` |
+| 403 | everything stops for good and the chip is hidden |
+| 404, 409, 429, 502, 503, any other status, no answer | nothing now; the next beat asks again |
+
+**With the rest of the window.** A resize re-wraps Claude's input box, so the server changes the tmux window under the pane's control
+lock: a draft push that meets a fit step gets 409 `busy-switching` and the draft sync pushes again about 300 ms later (§9.12). The
+next capture after a resize carries the new size, rows and `draft.box`, so the cut strip follows. Spawning an agent into a tmux window
+that is fitted gives the window back first; the page fits it again, with the new pane count, on its next beat.
+
+**Known gap.** The sentence that says why a fit is off is only the chip's `title` and one announcement, so a keyboard or touch user
+cannot read it. Parked for the final review: it needs a small disclosure in the header, not a fix inside this section.
+
+Not built: a settings switch, a per-project option, anything on the browser tier, a fit that re-asserts after the user changed the
+window, taking over a pane the user zoomed.
+
 ### 8.8 WebView support
 
 Used features: `<dialog>`, `:focus-visible`, `color-mix()`, `:has()` (B only), container queries (mockups). Tauri uses WKWebView on macOS and WebKitGTK on Linux; `color-mix()` and `:has()` need WebKitGTK ≥ 2.42 (Safari 16.2 level). Provide fallbacks or set a minimum (see Open questions).

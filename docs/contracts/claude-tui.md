@@ -7,16 +7,19 @@ is copied here. When Claude Code changes these texts, nika's parsers fail closed
 updated with the new version.
 
 Sections 1, 5 and 10 were checked again on 2026-11-14 against Claude Code 2.1.321 to 2.1.325 (macOS, tmux 3.8, 120-column
-panes), also in throwaway sessions. Every sample text in them is made up.
+panes), also in throwaway sessions. Every sample text in them is made up. The subagent list under the footer (§1) and the
+feedback survey rows (§10.1) were checked on 2026-11-14 against 2.1.325, at 120 and 60 columns.
 
 ## 1. Footer (mode line)
 
-The mode line is the last non-blank row of the pane while Claude's prompt box is shown. Around the phrase:
+The mode line is the last non-blank row of the pane while Claude's prompt box is shown, **not counting a list of background
+subagents drawn under it** (below). Around the phrase:
 
 - an optional vim-mode prefix: `-- INSERT --` (fg 246). Vim normal mode draws **no** prefix, and plain (non-vim) mode has none
   either, so the two look the same. `-- NORMAL --` was never drawn (checked 2026-11-14, Claude Code 2.1.321 to 2.1.325);
   nika's mode reader still accepts the text, but nothing relies on it;
-- an optional suffix: ` (shift+tab to cycle)`, then ` · ← for agents`;
+- an optional suffix: ` (shift+tab to cycle)`, then ` · ← for agents`; while the parent is busy with background subagents, and
+  after they finish, also ` · /tasks to see subagents` (nika ignores suffixes);
 - a user status line may sit in the rows above it (free content: ignore it).
 
 | Mode | Phrase | Token nika matches (case-insensitive) | Color (xterm-256) |
@@ -44,6 +47,42 @@ The mode line is the last non-blank row of the pane while Claude's prompt box is
   accepts this footer, and only for a box that starts with `!` (§10.1).
 - For a few seconds after a large paste, the mode line is replaced by the hint `paste again to expand` (fg 246). The footer
   reads `unknown` for that time, so no draft is read (§10.1).
+
+### Subagent list under the footer (F2)
+
+While background subagents run, Claude draws a list of them **below** the footer, so the mode line is no longer the last row:
+
+```
+  -- INSERT -- ⏵⏵ auto mode on (shift+tab to cycle)
+(one blank row)
+  ⏺ main
+  ◯ Explore  <label, cut with … when too long>             14s · ↓ 23.3k tokens
+  ◯ Explore  <label>                                        3s · ↑ 300 tokens
+  ↓ 3 more
+```
+
+nika's reader (`footerEnd` in `src/mode.js`, behind `lastNonBlank`, so the mode, the `-- INSERT --` prefix, `! for shell mode` and
+the history hint all follow) leaves the block out **only when every one of these holds**; otherwise nothing is cut and the footer
+reads `unknown` (fail closed):
+
+1. The last non-blank row may be the overflow row `  ↓ <n> more` (two spaces, `↓`, a number, `more`); it is accepted only there.
+2. Above it, one or more agent rows: two spaces, `◯`, one word (the agent type), two spaces, the label, a space, then the
+   elapsed time (`5s`, `1m 11s`, `2h 3m 4s`) and, optionally, ` · ↑ <n> tokens` or ` · ↓ <n> tokens` (`<n>` is digits with at most
+   one dot and an optional `k` or `m`). A row is recognised by this fixed prefix and suffix, never by the label: the label is text
+   the model writes.
+3. Above them, exactly `  ⏺ main`.
+4. Above that, exactly one blank row.
+5. Above that blank row, a mode line (a footer token of the table above, a `bypass` footer, or `! for shell mode`). This last gate
+   means a label can never stand in for a footer, and a permission prompt or a dialog with something shaped like a list below it is
+   left alone (not read, so not guessed).
+
+What was seen live (Claude Code 2.1.325, 120 and 60 columns, made-up tasks): the list appears as soon as a subagent starts, with the
+parent idle or busy, and with text in the input box (the cursor stays in the box); a finished agent leaves the list at once and the
+whole block goes when none is left; at most five agent rows, then `  ↓ <n> more` (later `  ↓ <n-1> more`), never a sixth row; the
+label changes while the agent works; at 60 columns the label and the footer are cut with `…` and no row wraps; `⏺ main` is bold and
+the agent rows are fg 246, but nika reads text only. In a pane of 5 to 11 rows tmux clips Claude's bottom, so footer and list are
+simply not on the screen. Not seen, so read as `unknown`: a different glyph (for example an agent selected with the arrow keys),
+`↑ <n> more`, a wrapped label, and a permission prompt or dialog drawn with the list below it.
 
 ## 2. Permission prompt
 
@@ -319,6 +358,7 @@ shows every row) when any of these holds:
 | Condition | Why |
 |---|---|
 | the mode line is unknown: a permission prompt, a dialog or an unknown footer replaces it (§1), including the transient `paste again to expand` hint | a dialog that draws `❯ 1. Yes` between two `─` rows must never be read as a draft |
+| a feedback survey is on screen (`surveyShown` in `src/mode.js`): any row that is exactly `How is Claude doing this session?` with an optional ` (optional)` (and an optional `●` before it), or the options row `1: … 0: Dismiss`; also a row that starts with `How well is Claude following the instructions`, `How was Claude's recollection` or `Can Anthropic look at your session transcript` | the survey answers to the digits 0–3 (the transcript question to 1–3), so a draft that starts with a digit must never be typed while one shows. The capture's `draft` is null (the sync pauses), the draft write, End and the commands answer 409 `input-unreadable` with nothing typed. Matched on whole rows, so prose that quotes the question does not trigger it. The keys route has no such guard: a digit pressed in the mirror is the user's own key |
 | the footer is `! for shell mode` but the box does not start with `!` (that footer is accepted only for a bash box) | §1 |
 | a permission prompt parses on the screen (§2) | redundant with the footer rule; it is the T51 anchor |
 | fewer than two rule rows, or nothing between the last two | no box |
@@ -527,6 +567,9 @@ and vim insert mode, made-up text).
 
 ### 10.11 Not verified
 
+- The feedback survey was never seen on screen (4 prompts, 8 subagent runs, 2026-11-14): only the first question row and the options
+  row come from an earlier capture (spike S15); the other three question starts are strings of the 2.1.325 binary, with their layout not
+  captured. Whether the survey takes a digit while the input box has focus is not known, so the guard stays for every box.
 - Plain-mode replace and append were exercised against a fake pane only (the Claude of the checking session was in vim mode).
 - `→` and `Tab` in vim insert mode, `Tab` in vim normal mode, and `Tab` and `Enter` on a real suggestion through nika's accept route and Send (the owner checks
   them).

@@ -111,6 +111,24 @@ tmux 3.2 is the floor (`new-session -e`); `nika doctor` warns below it and the `
 the other way: `model.js` `contextOf()` turns the last `usage` of a transcript tail and the same setting into each agent's
 `context`.
 
+## Fit (0.5)
+
+The session window measures its terminal panel and the app tier makes the mirrored pane that size, then puts the tmux window back
+([ADR 0017](adr/0017-fit-lease.md)).
+
+1. `public/fit-ui.js` (pure) turns the panel box into cells, plans the requests (the first `open: true`, a beat every 5 s, a 250 ms
+   debounce, one `DELETE` on `pagehide`), scales the text while the pane is larger than the panel and picks the header chip;
+   `session.js` wires it with a probe, a `ResizeObserver` and `visibilitychange`.
+2. `api-app.js` has two routes, `PUT` and `DELETE /api/app/pane/:id/fit`; they check the body, the pane and the rate, and hand over to
+   `fit.js`.
+3. `fit.js` reads tmux's own listing and decides: zoom a window with several panes, resize only when the panel is at least as big as
+   the window. It takes a lease on the window (memory, `<state>/fit/fit-<nonce>.json`, the window option `@nika-fit`); a 1 s watch, a
+   15 s lapse, `DELETE`, quit and the next start give the window back, and a change by the user ends the lease for good until the
+   session window is opened again. Every change runs under `session-control.js` `withPaneLock`.
+4. `appio.js` runs `recover()` before `ready` and `releaseAll()` at quit; `spawn.js` gives a fitted window back before a split lands in it.
+
+Routes: [`contracts/api-app.md` section 3](contracts/api-app.md). Page: design spec 9.13. Threat: T52 in [security](security.md).
+
 ## Memory bounds (0.3.4)
 
 Every cache that is keyed by path or id has a cap, so a day-long run does not grow with the number of sessions it has seen.
@@ -145,19 +163,20 @@ latency. `--optimize-for-size` saved about 10 MB more but made history requests 
 | `config.js` | Defaults from the environment, port and `--since` parsing, `findTmux`, `findClaude`. |
 | `diff.js` | Unified diff for the rules preview. |
 | `exec.js` | `makeExec()`: `execFile` with a timeout and optional stdin input. |
+| `fit.js` | The fit (0.5, [ADR 0017](adr/0017-fit-lease.md)): `createFit()` zooms the mirrored pane and sizes its tmux window to the session window's panel only when no other pane would be squeezed, keeps one lease per window (memory, a lease file, the window tag `@nika-fit`) and gives back exactly what it changed. Every tmux argv of the fit is built here. App tier only. |
 | `fsafe.js` | Safe reads of agent-writable files (no symlink, no FIFO, owned by you, size cap). |
-| `fwrite.js` | The only writer: atomic, symlink-safe writes and backups. |
+| `fwrite.js` | The only writer: atomic, symlink-safe writes and backups; `removeOwnFile` is the one way nika deletes a file of its own (the fit's lease files). |
 | `ids.js` | Id shapes (pane, project key, agent name, model, command name, session, key names) checked at every boundary. |
 | `keys.js` | Keystrokes and bracketed paste into a tmux pane. |
 | `mirror.js` | `capture-pane` output turned into rows of whitelisted styled spans; a `fresh` capture skips the 250 ms cache for the control actions. |
-| `mode.js` | Pure parsers over mirror rows: the permission mode from the footer and the permission prompt. They fail closed. |
+| `mode.js` | Pure parsers over mirror rows: the permission mode from the footer and the permission prompt. They fail closed. The footer is the last non-blank row without a background-subagent list drawn under it (F2, `claude-tui.md` section 1); `surveyShown` spots Claude's feedback survey. |
 | `model.js` | `collect()`: merges every source into agent records and groups them by project; `findSession(id)` finds one session of any age in the transcript index (the saved orchestrator's lookup); `findSessions(ids)` does the same for several ids in one index walk, with no ps, tmux or registry (the project list's lookup). `contextOf` turns the last usage, nika's compaction setting (read through `loadConfig`, both tiers) and whether nika started the session into the agent's `context` (contract C6). |
 | `models.js` | The static model catalog behind the model dropdowns (`GET /api/app/models`), with each model's context window and `modelWindow(id)`. |
 | `orchestrate.js` | Starts or resumes a project's orchestrator in a tmux session (`launchArgv` builds its claude flags in one place) and finds an adopted orchestrator pane. |
 | `paths.js` | nika's own config and state dirs (XDG). |
 | `rules.js` | Renders, previews, hashes and applies the orchestration rules to a project. |
 | `server.js` | The HTTP server both tiers share: Host check, static files with the CSP, the 0.1 routes, a mount hook for the app tier. |
-| `session-control.js` | The four controls on a live pane: switch the mode, End, run a slash command, answer a prompt. One lock per pane, keys only through `keys.js`, fail closed, never kills. |
+| `session-control.js` | The four controls on a live pane: switch the mode, End, run a slash command, answer a prompt. One lock per pane, keys only through `keys.js`, fail closed, never kills. `withPaneLock` hands the same lock to the fit, which waits for it (at most 5 s). |
 | `spawn.js` | `spawnAgent()` splits a pane, or creates the project's tmux session (window `agents`) when there is no server or no session (resolving the parent and depth from tmux's tags and applying the per-parent and per-project limits, ADR 0013); `runAgent()` is the `_run-agent` wrapper that runs `claude` with the safety flags. |
 | `store.js` | The validated `config.json`, the project registry and each project's saved orchestrator id. |
 | `text.js` | `clean()` and `cleanBlock()`: strip controls and bidi marks from agent-controlled text. |
@@ -191,6 +210,7 @@ latency. `--optimize-for-size` saved about 10 MB more but made history requests 
 | `ui.js` | Shared state and widgets for the main page. |
 | `dom.js` | `h()`: builds DOM with `textContent`, never parses markup; `roleTagEl()` draws the orchestrator badge. |
 | `end-dialog.js` | The End-session dialog, shared by the session window and the dashboard row menu. |
+| `fit-ui.js` | The fit, page side (0.5): `panelSize` (the terminal box in cells, 40–400 × 10–200), `scaleFor` (text scale 0.4 to 1), `chipView` (the four chips and their fixed titles), `createFitPlanner` (the first `open: true`, a 5 s beat, a 250 ms debounce, one `DELETE` on `pagehide`). No DOM, no requests of its own; `session.js` wires it. |
 | `modes.js` | Permission modes in the UI: labels, icons, the switcher's state and the dashboard's mode map and tag. |
 | `ctx.js` | Pure text helpers for token counts, the Auto-compact result line and the context meter (`fmtTokens`, `compactPreview`, `ctxView`). No DOM; `dom.js` `ctxEl` draws the meter. |
 | `models-ui.js` | The model dropdown shared by the session window, Settings and the spawn sheet: groups from the catalog, the Custom ID field and its `MODEL_ID` check. |
@@ -215,6 +235,7 @@ nika's own files follow XDG ([ADR 0008](adr/0008-xdg-config-state.md)). Folders 
 | `${NIKA_CONFIG_DIR or XDG_CONFIG_HOME or ~/.config}/nika/config.json` | Settings, the project registry and each project's own settings (`perProject`: its plugins, models and saved orchestrator). Validated on load; garbage falls back to defaults with a warning. |
 | `…/nika/templates/<name>.md` | Rule templates you imported locally. |
 | `${XDG_STATE_HOME or ~/.local/state}/nika/projects/<key>/reports/` | Per spawned agent: brief, settings, session id, pane, exit code, report. |
+| `${XDG_STATE_HOME or ~/.local/state}/nika/fit/fit-<nonce>.json` | The fit's lease while a window is held (0.5): written before the first tmux change, removed on release, read back at the app tier's start to restore what a crash left. |
 | `${XDG_STATE_HOME or ~/.local/state}/nika/backups/<key>/<ISO>/` | Byte-for-byte copies taken before "apply rules" overwrites a file; the last 10 folders per project are kept. Never inside a repo. |
 
 `<key>` is the first 16 hex characters of `sha256(realpath(project folder))`. A request never carries a path; projects

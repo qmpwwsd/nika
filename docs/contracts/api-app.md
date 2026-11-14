@@ -41,7 +41,7 @@ Id shapes come from `src/ids.js`:
 5. Every response: `Cache-Control: no-store`, the 0.1 security headers, no CORS headers.
 
 Common error body: `{"error": "<code>", "message": "<short text>"}`; codes used below: `forbidden` 403, `not_found` 404,
-`invalid` 400, `unsupported_media` 415, `too_large` 413, `conflict` 409, `busy` 429, `tmux_unavailable` 503 (the tmux binary is
+`invalid` 400, `unsupported_media` 415, `too_large` 413, `conflict` 409, `busy` 429 (the fit routes of 0.5 also answer `busy` 409, see `…/fit`), `tmux_unavailable` 503 (the tmux binary is
 missing; since 0.4 a tmux server that is not running is not an error for Start or spawn: they create the session),
 `claude_unavailable` 503, `tmux_failed` 502 (a tmux call failed unexpectedly), `claude_exited` 502 (0.4: the new pane was gone or dead
 a second after Start, Resume or spawn created it), `limit` 409 (maxAgents reached), `foreign` 409 (rules file not written by nika, apply without
@@ -466,7 +466,8 @@ the other control routes. Checks and steps, in this order (every step fails clos
    control other than `\n` and `\t` (`\r` included), DEL or a C1 control, or more than 12 newlines; `base` neither 16 lowercase hex
    characters nor `""`. This check runs before the pane check.
 2. Ineligible pane (same rule as capture) → `404 not_found`. Another control action running on this pane (mode switch, answer,
-   command, End or another draft write) → 409 `busy-switching` (the page retries after its next capture). Stop takes no lock.
+   command, End, another draft write or a fit step that holds the pane, `…/fit`) → 409 `busy-switching` (the page's draft sync
+   pushes again about 300 ms later; a fit step takes under a second). Stop takes no lock.
 3. Fresh capture (never the cache) and registry state. A capture that fails → its status and body.
 4. A permission prompt on screen → 409 `not-idle` (T51: a draft write never lands in a prompt).
 5. No plain box (`draft` would be `null`, which includes a cursor outside the rows of the box, a box that may be a status line):
@@ -557,6 +558,120 @@ app tier only; the browser tier has no draft and no suggestion (T51).
 Known limit: a suggestion of exactly 200 characters may be cut by `clean()` in the parse; the page then holds the cut text, Claude
 takes the whole suggestion, and the read-back differs, so the answer is 409 `draft-mismatch` although the `Tab` worked. The page
 adopts the screen's `draft` and shows what Claude holds.
+
+### `PUT /api/app/pane/:id/fit` (body ≤ 4 KB, `CAP.small`)
+The session window asks for its terminal panel's size in cells (0.5, W7; ADR 0017, `docs/security.md` T52, the page: spec §9.13).
+The server zooms the mirrored pane and sizes its tmux window to the panel **when that cannot squeeze another pane**, keeps a lease
+on that window, and gives everything back by itself when the page goes quiet or the user changes the window. App tier only.
+```json
+{ "cols": 120, "rows": 39, "open": false }
+```
+The body is exactly these three keys: `cols` an integer 40–400, `rows` an integer 10–200, `open` a boolean (`true` on the first
+requests of a page load, until one is answered 200; it is the one thing that clears an "off until the window is opened again" mark,
+see `user-change` below). Everything else (the tmux window, its size, its layout, its zoom) comes from tmux's own listing, never from the request.
+Order of checks: body → `400 invalid` (message `cols must be an integer 40–400, rows 10–200, open a boolean`), before the pane
+check; ineligible pane (same rule as capture: in the listing, running claude, live or started by nika) → `404 not_found`; the rate
+limit → `429 busy` (`at most 4 fit requests per second per pane`: a sliding second, PUT and DELETE each have their own bucket per
+pane, nothing is executed on a refusal); then the controller (`src/fit.js`).
+
+**200 body**
+```json
+{ "fit": { "state": "fitted", "reason": null, "pane": { "cols": 120, "rows": 39 }, "panes": 3, "userZoom": false } }
+```
+`pane` is the mirrored pane's size as tmux reports it (for `fitted` and `zoomed` the read-back after nika's change), `panes` the
+number of panes in its tmux window, `userZoom` whether the user had the mirrored pane zoomed. `state` and `reason`:
+
+| `state` | `reason` | Meaning | What nika changed |
+|---|---|---|---|
+| `fitted` | `null` | the pane is exactly the panel's size | window resized to the panel when it differs (a window with several panes is also zoomed on this pane, unless the user already had it zoomed) |
+| `zoomed` | `panel-smaller` | the panel is smaller than a window with several panes; resizing would squeeze the other panes | zoom only, window at its own size; the page scales its text |
+| `blocked` | `user-zoom` | the user zoomed another pane of this window | nothing |
+| `blocked` | `size-option` | the window has a window-level `window-size` that is not unset or one of `latest largest smallest manual` (nika could not put it back exactly) | nothing |
+| `blocked` | `foreign-tag` | `@nika-fit` on the window holds a value nika has no lease for (another program, or a stale tag with no usable lease file) | nothing |
+| `blocked` | `changed` | something nika read did not hold (a layout nika may not keep, a lease file over 16 KB, no active pane), or the read-back after its own change differed (a tmux hook fought back) | nothing, or everything put back |
+| `blocked` | `user-change` | the user changed the window (unzoomed, navigated, split, killed a pane, resized) after nika fitted it | everything put back |
+| `other` | `null` | another session window of nika holds this tmux window and this request has `open: false` | nothing |
+
+`user-change` and `changed` (after a read-back mismatch) keep the window **off**: the answer to every later request with
+`open: false` is `blocked` with that reason and nothing is changed, until a request with `open: true` arrives (the session window
+opened again). nika never fits a window again behind the user's back (owner decision 2026-11-14, Q6). The mark is in memory, for
+at most 64 windows. `none` is not a state of this route (the page shows no chip before its first answer and after a `DELETE`).
+
+**What the server decides**, in this order (the first row that matches ends the request):
+
+| # | Condition | Decision |
+|---|---|---|
+| 1 | this pane already holds the lease for its window with the same `cols` and `rows` | the lease is renewed (the beat), no tmux call, the held answer |
+| 2 | the pane is not in tmux's listing, or its command is not claude | `404 not_found` |
+| 3 | a request for **another pane** of the same tmux window is running | `409 busy` (`another fit request for this tmux window is running`) |
+| 4 | the window holds a lease whose tag is gone or differs | the lease is dropped, no tmux call (a restarted tmux server reuses window ids) |
+| 5 | `@nika-fit` holds a nonce nika has no lease for | a lease file of that nonce for this window is used to put the window back (a crash), then on; no usable file, or the tag still there: `blocked / foreign-tag` |
+| 6 | another pane holds the window | `open: false`: `other`; `open: true`: that lease is released (the last opened window wins) and the request goes on |
+| 7 | this pane holds the window with another size | renew: the user changed the window since the last look → released, `blocked / user-change`; otherwise resized as in rows 12–13 and read back |
+| 8 | the window is marked off and `open` is `false` | `blocked` with the mark (`user-change` or `changed`) |
+| 9 | the window-level `window-size` is unknown | `blocked / size-option` |
+| 10 | the window is zoomed on a pane other than this one | `blocked / user-zoom` |
+| 11 | no active pane, or `#{window_layout}` is not printable ASCII of 1–8192 characters without `#`, or the lease file would pass 16 KB | `blocked / changed` |
+| 12 | one pane, or the panel is at least as wide **and** as tall as the window | lease; a window with several panes and no zoom is zoomed on this pane; resized to the panel unless it already is → `fitted` |
+| 13 | several panes and the panel is smaller in either dimension | lease; zoom only → `zoomed / panel-smaller`. A renew that finds a smaller panel resizes the window back to its original size, never below it |
+| 14 | the read-back after rows 12–13 differs from what nika set | released at once → `blocked / changed`, never retried |
+
+A window with several panes is never made smaller than it was: another pane would be squeezed (spike S10). The lease lives in
+three places: server memory, a 0600 file `<state>/fit/fit-<nonce>.json` and the window option `@nika-fit <nonce>` (§8).
+
+**Errors**
+| Status | Code | When |
+|---|---|---|
+| 400 | `invalid` | the body (above); `invalid pane id` from the controller |
+| 403 / 413 / 415 | | the guards of §2 |
+| 404 | `not_found` | the pane is not eligible, or gone between the listing and a step |
+| 409 | `busy` | another request for the same tmux window is running (row 3: retry at the next beat), or the pane's control lock stayed taken for more than 5 s by a running End, draft write, mode switch or command (`Claude is busy with another action on this pane. Try again.`); the lease, if any, is kept |
+| 429 | `busy` | more than 4 PUTs in a second for this pane |
+| 502 / 503 | `tmux_failed` / `tmux_unavailable` | a tmux call failed or tmux is not there; a lease taken is given back best effort |
+| 500 | `internal` | the lease file could not be written (a change already made in tmux is given back first) |
+
+**One lock.** Every tmux change of a fit (tag, zoom, resize, restore) runs under the pane's control lock (the one of mode, End,
+command, answer, draft and suggestion): a resize re-wraps Claude's input box, so a draft write must not read the box across it. A
+fit step **waits** for a running action on the pane, at most 5 s (then `409 busy`, above); while a step holds the pane, every other
+action that takes the lock answers `409 busy-switching`, nothing sent, and the page's draft sync pushes again about 300 ms later.
+Stop and the keys route take no lock. A step is at most six tmux calls (a restore: unzoom, size, option, layout, focus, untag).
+
+**When the server gives the window back by itself** (the watch, one `list-panes` per second while any lease is held; `src/fit.js`
+`observe`):
+
+| Observation | Action |
+|---|---|
+| the window is not in the listing, or `@nika-fit` is not this lease's nonce | the lease is dropped: no tmux call (the window or the server is gone, ids may be reused), the file is removed |
+| the pane is gone, left its window, or is not claude any more | released (no mark) |
+| several panes and the window is not zoomed or the active pane is not this pane; the pane count changed; the window size is not the size nika set | released, mark `user-change` |
+| 15 s without a request for this pane (`LAPSE_MS`: the page is gone without a `DELETE`) | released (no mark) |
+| tmux answers that no server runs | every lease is dropped |
+
+A restore (`DELETE`, the watch, quit, the next start, a spawn) undoes only what nika did, in this order, each step on its own
+(a failing step does not stop the later ones): unzoom, only when nika zoomed, the pane is still the active zoomed one; resize the
+window back to its saved size; the saved window-level `window-size` back (unset again when it was unset); the saved layout, only
+when the layout is still the one nika left, the pane count is unchanged and the window is unzoomed; focus back to the pane that
+had it, only when that pane still exists and the focus still sits on the mirrored pane; the tag off; the lease file removed. One more read at the end logs a
+difference (`nika: fit restore of @n differs after <step>`) and never retries.
+
+### `DELETE /api/app/pane/:id/fit` (no body)
+Gives the window back. The page sends it with `keepalive: true` on `pagehide` and when the pane is gone. `id` must match
+`PANE_ID` (`400 invalid`). It is **not** eligibility-gated: the pane may be gone already and the user's window must still come
+back. The rate limit (`429 busy`) is checked before the controller, in its own bucket of 4 per second per pane, so a close right
+after a burst of beats still works. Answer `200 { "released": true }` when this pane held a lease (the restore ran, or the lease
+was dropped because its window was gone), `200 { "released": false }` when it held none (no tmux call is made) or a release for it
+is already running. `409 busy` when the pane's control lock stayed taken for more than 5 s (the lease is kept; the watch or the
+next request goes on); `502` / `503` when tmux could not be read (the lease is kept too).
+
+**What the page does with an answer** (`public/fit-ui.js`): 200 shows the chip for `state` and `reason` (spec §9.13) and nothing
+else; 403 stops the fit for good and hides the chip; `404`, `409`, `429`, `502`, `503`, any other status and a lost request change
+nothing and wait for the next beat (5 s), so a refusal is never retried faster. After `blocked / user-change` and
+`blocked / changed` the page keeps sending `open: false`; only a page load (or a `pageshow` from the back/forward cache) sends
+`open: true` again.
+
+Logging: nothing of the body, a layout or a nonce goes to a log or the console; errors carry the pane id, the window id, the step
+name and the error code only. Both routes exist on the app tier only (the browser tier has no fit route, no tag read and no lease
+file).
 
 ### `POST /api/app/pane/:id/mode` (body ≤ 4 KB, `CAP.small`)
 ```json
@@ -951,6 +1066,7 @@ the folder-picker flow once (`hooks.addProject()` in `public/app.js`), then the 
 | `${XDG_STATE_HOME \|\| ~/.local/state}/nika/` | 0700 | state dir |
 | `…/nika/projects/<key>/reports/` | 0700 | per agent: `<name>.brief.md` and `<name>.agent.json` (`{model, permissionMode, rc, role, parent, depth, compact}`, re-validated on read) written by `spawn`; `<name>.session` (UUID), `<name>.remote` (RC name or empty), `<name>.pane` (`$TMUX_PANE`, display only: never counted) written by `_run-agent` before claude starts and `<name>.rc` (claude's exit code, as in 0.1) after it exits; `<name>.md` written by the agent; `.last-pane` |
 | `…/nika/backups/<key>/<ISO>/<relPath>` | 0700 / 0600 | byte-for-byte copies taken by `rules apply` before each overwrite (`<ISO>` = `YYYYMMDDTHHMMSSZ`, plus `-<n>` for a second apply in the same second); the newest 10 folders per project are kept: after a successful apply `pruneBackups` removes the older ones, touching only stamp-named real directories owned by the user |
+| `…/nika/fit/fit-<nonce>.json` | 0700 / 0600 | the fit's lease (0.5, W7): exactly the keys `v nonce window pane panes zoomed0 active0 width0 height0 size0 layout0 layout1 cols rows resized userZoom at`, written by `writeAtomic` before the first tmux change and after each resize, removed by `removeOwnFile` on release; `<nonce>` is 16 hex (`FIT_NONCE`); at most 20 files are read back at the app tier's start, each ≤ 16 KB through `fsafe`, every field shape-checked, and a file that does not parse is removed; a symlinked `fit/` folder is not followed |
 
 `config.json` schema and defaults (unknown keys are dropped, wrong types fall back to the default; both produce a
 warning in `loadConfig().warnings`; a tampered or unreadable file never throws):
@@ -1095,6 +1211,23 @@ multi-argument shell-commands (tmux execs them directly, no `sh -c`, T6).
 | send paste | `tmux -u load-buffer -b nika-<16 hex> -` (paste bytes on stdin; argv over ~16 KB fails with "command too long") then `tmux -u paste-buffer -p -d -b nika-<16 hex> -t %n`; on a paste failure `delete-buffer -b nika-<hex>` |
 | send key | `tmux -u send-keys -t %n -- <KEY_NAME>` |
 | focus | `tmux -u switch-client -t %n` / `select-window -t %n` / `select-pane -t %n` (0.1) |
+| fit: read all panes (0.5) | `tmux -u list-panes -a -F #{pane_id}\t#{window_id}\t#{window_panes}\t#{window_zoomed_flag}\t#{pane_active}\t#{window_width}\t#{window_height}\t#{pane_width}\t#{pane_height}\t#{pane_current_command}\t#{@nika-fit}` (one call; the watch's only read; every field parsed strictly, a row that does not parse is dropped, a tag that is not 16 hex reads as foreign) |
+| fit: layout | `tmux -u display-message -p -t @W -F #{window_layout}` (one line; kept only when it is printable ASCII, 1–8192 characters, no `#`) |
+| fit: window-size option | `tmux -u show-options -w -t @W window-size` → empty (unset) or `window-size <latest\|largest\|smallest\|manual>`; anything else is `blocked / size-option` |
+| fit: tag the window | `tmux -u set-option -w -t @W @nika-fit <nonce>` (16 hex from `crypto.randomBytes(8)`; a value, not a format) |
+| fit: zoom or unzoom | `tmux -u resize-pane -Z -t %P` (a toggle on the window: run only after the zoom flag and the active pane were read) |
+| fit: size | `tmux -u resize-window -t @W -x <C> -y <R>` (digits, 1–10000; the panel's 40–400 × 10–200 or the window's saved size) |
+| fit: window-size back | `tmux -u set-option -wu -t @W window-size` (it was unset) or `tmux -u set-option -w -t @W window-size <latest\|largest\|smallest\|manual>` (its saved value) |
+| fit: layout back | `tmux -u select-layout -t @W -- <layout>` (the saved layout with the 3.8 `,"a":…` and `,"l":…` markers removed, so focus does not move; only when the layout is still the one nika left) |
+| fit: focus back | `tmux -u select-pane -t %A` (the pane that was active before the zoom) |
+| fit: untag | `tmux -u set-option -wu -t @W @nika-fit` (only in a release that read the tag back as nika's nonce) |
+| spawn into a fitted window (0.5) | `tmux -u display-message -p -t <=session:\|%n> -F #{window_id}` before the `split-window` of an existing session, only while the fit holds a window; the `-t` value is the split's own target; the answer must match `WINDOW_ID`, then the fit gives that window back (`releaseWindow`). The split's argv is unchanged. Best effort: a failure logs the step and its code and the spawn goes on |
+
+The fit's `@W` is a window id (`WINDOW_ID`, `^@\d{1,6}$`) and `%P`, `%A` are pane ids (`PANE_ID`), all read from tmux's own listing in the
+same call and never from a request; the request supplies only `<C>` and `<R>` as integers checked at the route (and again in
+`src/fit.js`, whose argv builders refuse anything else). `set-option` values are literal, `-x` and `-y` are digits, and every `-F`
+string is a constant, so no `#` reaches a format-expanded argument. `test/fit.test.js` runs the controller against a fake tmux that
+fails on any argv outside this table.
 
 `-c <projectDir>` is always passed through `tmuxLiteral()` (every `#` doubled): tmux format-expands start-directory,
 and `#(cmd)` in a path would run `cmd` (verified on tmux 3.8). Shell-command argv after `--` is not expanded.
@@ -1178,6 +1311,7 @@ checked by the router before `mirror` / `keys` are called; those modules still v
 | `src/collect/plugins.js` | `listPlugins(claudeDir) → string[]` (keys of `plugins` in `<claudeDir>/plugins/installed_plugins.json`, read through `fsafe` ≤ 1 MB; sorted, ≤ 200, each `PLUGIN_NAME`; `[]` when missing or invalid) |
 | `src/mirror.js` | `parseCapture(text, cols) → rows` (pure); `createMirror({ exec, tmuxBin, now }) → { capture(pane, ifNoneMatch) → { status, body, etag } }` |
 | `src/keys.js` | `createKeys({ exec, tmuxBin, now }) → { send(pane, { text, paste, keys }) → { status, body } }` |
+| `src/fit.js` | `createFit({ exec, tmuxBin, now, stateDir, lock, log, schedule, sleep }) → { hold(id, { cols, rows, open }), release(id), releaseWindow(w), releaseAll(), recover(), size() }`: `hold` and `release` return `{ status, body }`, `releaseWindow(@W)` → boolean (for spawn), `releaseAll()` → number (bounded by `RELEASE_ALL_MS`, 3 s), `recover()` → `{ released, dropped }` (same bound), `size()` → leases held; `checkFitBody(body)` → `{ value } \| { error }` is shared with the route; `lock(pane, fn)` is `withPaneLock` of `createSessionControl`. `createAppApi` builds one and sets `ctx.fit`; `appio.js` calls `recover()` before `ready` and `releaseAll()` in `finish()` after the server stopped taking requests; `spawnAgent` reads `ctx.fit` |
 | `src/rules.js` | `async rulesState(project) → { state, settingsIgnored, git }`; `preview(project, ctx) → { status, body }`; `apply(project, { hash, overwriteForeign, gitignore }, ctx) → { status, body }` |
 | `src/diff.js` | `unifiedDiff(oldText, newText, path) → string` |
 | `src/spawn.js` | `spawnAgent(req, ctx) → { status, body }`; `runAgent(key, name, ctx) → exit code`; `deniedTools(role, commands) → string[]` (the `--disallowedTools` of a role) |
