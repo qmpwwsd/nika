@@ -5,7 +5,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   normDraft, sameDraft, inEnvelope, fits, canon, screenCanon, cleanDraft, cutAt, caretAfter, noteView, draftSendPlan, createDraftSync,
-  QUIET_MS, PUSH_MS,
+  suggestionFor, QUIET_MS, PUSH_MS,
 } from '../public/draft-sync.js';
 import { normDraft as srcNorm, sameDraft as srcSame, inEnvelope as srcEnvelope } from '../src/draft.js';
 
@@ -99,10 +99,16 @@ describe('cutAt (design 5): where the mirror stops', () => {
     assert.equal(cutAt(empty({ box: { top: 0, bottom: 2 } }), false), 0);
   });
 
-  test('(−) an empty box that shows a prompt suggestion is not cut: the suggestion is visible nowhere else (M-6, until W4)', () => {
-    assert.equal(cutAt(empty({ suggestion: 'show me the contents of README.md' }), false), null);
-    assert.equal(cutAt(text('sh', { suggestion: 'show me' }), false), null);
-    assert.equal(cutAt(empty({ suggestion: null }), false), 30, '(+) no suggestion: cut');
+  test('(+) an empty box that shows a prompt suggestion is cut like any other: the message box\'s placeholder shows it now (W4 lifts M-6)', () => {
+    assert.equal(cutAt(empty({ suggestion: 'show me the contents of README.md' }), false), 30);
+    assert.equal(cutAt(text('sh', { suggestion: 'show me' }), false), 30);
+    assert.equal(cutAt(empty({ suggestion: null }), false), 30);
+  });
+
+  test('(−) a suggestion does not stop the other no-cut rules: Type into pane on, unreadable, null', () => {
+    assert.equal(cutAt(empty({ suggestion: 'show me' }), true), null);
+    assert.equal(cutAt(unreadable('pasted', { suggestion: 'show me' }), false), null);
+    assert.equal(cutAt(null, false), null);
   });
 
   test('(−) unreadable, null, missing, malformed or Type into pane on: no cut', () => {
@@ -249,8 +255,8 @@ describe('draftSendPlan: the Send table (design 4)', () => {
 /** A fake box, a fake PUT route and a manual clock. `type()` is the user typing in nika; `answer` scripts the route. */
 function rig({ value = '', shell = false } = {}) {
   const st = { t: 5_000_000, timers: [], box: { value, shell } };
-  const log = { puts: [], sets: [], notes: [], problems: [], gone: 0 };
-  const r = { st, log, answer: null };
+  const log = { puts: [], sets: [], notes: [], problems: [], gone: 0, suggests: [] };
+  const r = { st, log, answer: null, suggestAnswer: null };
   r.answer = (body) => ({ status: 200, body: { draft: text(body.text.replace(/^!/, ''), { mode: body.text.startsWith('!') ? 'bash' : 'prompt', sig: sig(100 + log.puts.length) }), typed: body.text.length } });
   const io = {
     now: () => st.t,
@@ -259,6 +265,7 @@ function rig({ value = '', shell = false } = {}) {
     box: () => ({ ...st.box }),
     setBox(v, s) { st.box = { value: v, shell: s }; log.sets.push([v, s]); },
     put: async (body) => { log.puts.push(body); return r.answer(body); },
+    suggest: async (body) => { log.suggests.push(body); return r.suggestAnswer(body); },
     note: (n) => log.notes.push(n),
     problem: (m) => log.problems.push(m),
     gone: () => { log.gone += 1; },
@@ -845,5 +852,256 @@ describe('send: the push before Enter (design 4)', () => {
     r.ds.endSend();
     await r.advance(10_000);
     assert.deepEqual(r.log.puts, []);
+  });
+});
+
+
+describe('suggestionFor (W4): the suggestion the message box shows as its placeholder and Tab accepts', () => {
+  const SUG = 'run the tests in acme-api';
+  const e = (over = {}) => empty({ suggestion: SUG, ...over });
+
+  test('(+) a readable empty prompt draft with a suggestion, an empty box and Shell off gives the suggestion', () => {
+    assert.equal(suggestionFor(e(), { value: '', shell: false }), SUG);
+    assert.equal(suggestionFor(e()), SUG, 'the defaults are an empty box and Shell off');
+    assert.equal(suggestionFor(e({ suggestion: 'x'.repeat(200) }), { value: '' }), 'x'.repeat(200));
+  });
+
+  test('(−) the box holds text, even one space: no suggestion', () => {
+    for (const value of ['a', ' ', '\n', 'run the tests']) assert.equal(suggestionFor(e(), { value, shell: false }), null, JSON.stringify(value));
+  });
+
+  test('(−) Shell on: no suggestion (Shell is Claude\'s ! mode, which has none)', () => {
+    assert.equal(suggestionFor(e(), { value: '', shell: true }), null);
+  });
+
+  test('(−) paused (an unreadable draft) and no box on screen (null) give none, whatever the old suggestion was', () => {
+    assert.equal(suggestionFor(unreadable('pasted', { suggestion: SUG }), { value: '' }), null);
+    assert.equal(suggestionFor(null, { value: '' }), null);
+    assert.equal(suggestionFor(undefined, { value: '' }), null);
+  });
+
+  test('(−) a draft that holds text, a `!` box, no suggestion (the `Try "..."` placeholder is null before it gets here), a non-string or an over-long one', () => {
+    assert.equal(suggestionFor(text('hello', { suggestion: SUG }), { value: '' }), null);
+    assert.equal(suggestionFor(e({ mode: 'bash' }), { value: '' }), null);
+    for (const suggestion of [null, undefined, '', 7, {}, ['x'], 'x'.repeat(201)]) assert.equal(suggestionFor(e({ suggestion }), { value: '' }), null, String(suggestion));
+  });
+});
+
+describe('noteView: the suggestion note', () => {
+  test('(+) its own word, icon and kind; it says which keys accept', () => {
+    const v = noteView({ kind: 'suggest' });
+    assert.equal(v.kind, 'suggest');
+    assert.equal(v.label, 'Suggestion:');
+    assert.equal(v.text, 'Tab or → accepts what Claude suggests.');
+    const others = ['paused', 'long', 'wait'].map((kind) => noteView({ kind, reason: 'tall' }));
+    assert.equal(new Set([v.icon, ...others.map((o) => o.icon)]).size, 4, 'four states, four icons');
+    assert.equal(new Set([v.label, ...others.map((o) => o.label)]).size, 4, 'and four words');
+  });
+});
+
+describe('the suggestion note in the controller (W4)', () => {
+  const SUG = 'run the tests in acme-api';
+  const e = (over = {}) => empty({ suggestion: SUG, ...over });
+
+  test('(+) an empty box over an empty screen that shows a suggestion: the note; typing hides it, clearing brings it back', () => {
+    const r = rig();
+    r.ds.capture(e(), 120);
+    assert.equal(r.lastNote().kind, 'suggest');
+    r.type('x');
+    assert.equal(r.lastNote(), null, 'the box holds text: nothing to accept');
+    r.type('');
+    assert.equal(r.lastNote().kind, 'suggest');
+  });
+
+  test('(−) no note without a suggestion, with Shell on, while paused, and when no box is on screen', () => {
+    const r = rig();
+    r.ds.capture(empty(), 120);
+    assert.equal(r.lastNote(), null);
+    r.ds.capture(e(), 120);
+    assert.equal(r.lastNote().kind, 'suggest');
+    r.ds.capture(unreadable('pasted', { suggestion: SUG }), 120);
+    assert.equal(r.lastNote().kind, 'paused', 'paused replaces it');
+    r.ds.capture(e({ sig: sig(3) }), 120);
+    assert.equal(r.lastNote().kind, 'suggest');
+    r.ds.capture(null, 120);
+    assert.equal(r.lastNote(), null);
+    r.ds.capture(e({ sig: sig(4) }), 120);
+    r.type('', true);
+    assert.notEqual(r.lastNote()?.kind, 'suggest', 'Shell on');
+  });
+
+  test('(+) the note is told once per change, not at every capture', () => {
+    const r = rig();
+    for (let i = 0; i < 5; i += 1) r.ds.capture(e(), 120);
+    assert.equal(r.log.notes.filter((n) => n?.kind === 'suggest').length, 1);
+  });
+});
+
+describe('accept: Tab or the right arrow on the suggestion (W4)', () => {
+  const SUG = 'run the tests in acme-api';
+  const e = (over = {}) => empty({ suggestion: SUG, ...over });
+  const taken = (over = {}) => ({ status: 200, body: { draft: text(SUG, { sig: sig(50), ...over }) } });
+
+  test('(+) posts exactly { text }, then the answer\'s text becomes the box\'s text (a pull: no push follows)', async () => {
+    const r = rig();
+    r.suggestAnswer = () => taken();
+    r.ds.capture(e(), 120);
+    const out = await r.ds.accept(SUG);
+    assert.deepEqual(r.log.suggests, [{ text: SUG }]);
+    assert.deepEqual(out, { ok: true, status: 200, message: '' });
+    assert.deepEqual(r.log.sets, [[SUG, false]]);
+    await r.advance(5000);
+    assert.deepEqual(r.log.puts, [], 'the text came from the terminal: nothing to push back');
+    assert.equal(r.lastNote(), null, 'the suggestion note is gone');
+    assert.deepEqual(r.ds.screen().text, SUG);
+  });
+
+  test('(+) the next capture of the same screen changes nothing', async () => {
+    const r = rig();
+    r.suggestAnswer = () => taken();
+    r.ds.capture(e(), 120);
+    await r.ds.accept(SUG);
+    r.ds.capture(text(SUG, { sig: sig(50) }), 120);
+    await r.advance(5000);
+    assert.equal(r.log.sets.length, 1);
+    assert.deepEqual(r.log.puts, []);
+  });
+
+  test('(+) the capture can show the accepted text before the answer arrives: one pull, no second', async () => {
+    const r = rig();
+    let release;
+    r.suggestAnswer = () => new Promise((res) => { release = () => res(taken()); });
+    r.ds.capture(e(), 120);
+    const p = r.ds.accept(SUG);
+    await r.flush();
+    r.ds.capture(text(SUG, { sig: sig(50) }), 120);
+    assert.deepEqual(r.log.sets, [[SUG, false]], 'pulled by the capture');
+    release();
+    assert.equal((await p).ok, true);
+    assert.equal(r.log.sets.length, 1, 'the answer found the box already in sync');
+    assert.deepEqual(r.log.puts, []);
+  });
+
+  test('(−) the user typed while the request was out: their text stays, and wins against the screen as with any edit', async () => {
+    const r = rig();
+    let release;
+    r.suggestAnswer = () => new Promise((res) => { release = () => res(taken()); });
+    r.ds.capture(e(), 120);
+    const p = r.ds.accept(SUG);
+    await r.flush();
+    r.type('my own words');
+    release();
+    assert.equal((await p).ok, true);
+    assert.deepEqual(r.log.sets, [], 'not overwritten');
+    assert.equal(r.st.box.value, 'my own words');
+  });
+
+  test('(−) no request when the page\'s suggestion is not the one on the screen now, the box has text, Shell is on or the draft is paused', async () => {
+    const r = rig();
+    r.ds.capture(e({ suggestion: 'a newer suggestion' }), 120);
+    assert.equal((await r.ds.accept(SUG)).ok, false);
+    r.type('hello');
+    r.ds.capture(e(), 120);
+    assert.equal((await r.ds.accept(SUG)).ok, false, 'text in the box');
+    r.type('', true);
+    assert.equal((await r.ds.accept(SUG)).ok, false, 'Shell on');
+    r.type('', false);
+    r.ds.capture(unreadable('pasted', { suggestion: SUG }), 120);
+    assert.equal((await r.ds.accept(SUG)).ok, false, 'paused');
+    r.ds.capture(null, 120);
+    assert.equal((await r.ds.accept(SUG)).ok, false, 'no box on screen');
+    assert.deepEqual(r.log.suggests, []);
+  });
+
+  test('(−) no request while a Send runs or after the pane is gone', async () => {
+    const r = rig();
+    r.ds.capture(e(), 120);
+    r.ds.beginSend();
+    assert.equal((await r.ds.accept(SUG)).ok, false);
+    r.ds.endSend();
+    r.ds.stop();
+    assert.equal((await r.ds.accept(SUG)).ok, false);
+    assert.deepEqual(r.log.suggests, []);
+  });
+
+  test('(+) a write of ours that is still landing finishes first; the suggestion is then checked against the screen it left', async () => {
+    const r = rig();
+    r.ds.capture(e(), 120);
+    let release;
+    r.answer = () => new Promise((res) => { release = () => res({ status: 200, body: { draft: e({ sig: sig(60) }) } }); });
+    r.type('abc');
+    await r.advance(PUSH_MS);
+    r.type('');
+    const p = r.ds.accept(SUG);
+    await r.flush();
+    assert.deepEqual(r.log.suggests, [], 'waits for the write');
+    r.suggestAnswer = () => taken();
+    release();
+    await r.flush();
+    await p;
+    assert.deepEqual(r.log.suggests.length, 1);
+  });
+
+  test('(−) 409 draft-changed: the screen\'s new suggestion is adopted (the note and the placeholder follow), nothing is pulled, a fixed line says so', async () => {
+    const r = rig();
+    r.suggestAnswer = () => ({ status: 409, body: { error: 'draft-changed', draft: e({ suggestion: 'a newer suggestion' }) } });
+    r.ds.capture(e(), 120);
+    const out = await r.ds.accept(SUG);
+    assert.deepEqual([out.ok, out.status], [false, 409]);
+    assert.equal(out.message, "Claude's suggestion changed. Nothing was sent.");
+    assert.equal(r.ds.screen().suggestion, 'a newer suggestion');
+    assert.deepEqual(r.log.sets, []);
+  });
+
+  test('(−) 409 draft-mismatch: the terminal wins, the text it holds is pulled', async () => {
+    const r = rig();
+    r.suggestAnswer = () => ({ status: 409, body: { error: 'draft-mismatch', draft: text('something else', { sig: sig(70) }) } });
+    r.ds.capture(e(), 120);
+    const out = await r.ds.accept(SUG);
+    assert.equal(out.ok, false);
+    assert.equal(out.message, "Claude's input did not take the suggestion. nika shows what it holds now.");
+    assert.deepEqual(r.log.sets, [['something else', false]]);
+  });
+
+  test('(−) every refusal has fixed copy (no server word reaches the page), and a 404 says the session is gone', async () => {
+    const want = [
+      [{ status: 409, body: { error: 'not-idle', message: 'SERVER WORDS' } }, "Claude is busy or a prompt is open, so nika can't accept the suggestion now. Nothing was sent."],
+      [{ status: 409, body: { error: 'input-unreadable' } }, "nika can't read Claude's input box right now (a menu may be open). Nothing was sent."],
+      [{ status: 409, body: { error: 'mode-unknown' } }, "nika can't read Claude's input box right now (a menu may be open). Nothing was sent."],
+      [{ status: 409, body: { error: 'busy-switching' } }, 'Another action is running on this session. Try again in a moment.'],
+      [{ status: 409, body: { error: 'draft-unreadable', reason: 'pasted', draft: unreadable('pasted') } }, "Claude's input holds a pasted block nika can't read back. Send or clear it in the terminal."],
+      [{ status: 400, body: { error: 'invalid', message: 'SERVER WORDS' } }, "nika can't accept this suggestion."],
+      [{ status: 429, body: { error: 'busy', message: 'SERVER WORDS' } }, 'Too many keys at once; try again.'],
+      [{ status: 0, body: null }, 'nika did not answer.'],
+      [{ status: 500, body: { error: 'x', message: 'SERVER WORDS' } }, "nika couldn't accept the suggestion."],
+    ];
+    for (const [answer, message] of want) {
+      const r = rig();
+      r.suggestAnswer = () => answer;
+      r.ds.capture(e(), 120);
+      const out = await r.ds.accept(SUG);
+      assert.deepEqual([out.ok, out.message], [false, message], JSON.stringify(answer.body));
+      assert.deepEqual(r.log.sets, []);
+      assert.equal(r.log.gone, 0);
+    }
+    const gone = rig();
+    gone.suggestAnswer = () => ({ status: 404, body: { error: 'not_found' } });
+    gone.ds.capture(e(), 120);
+    const out = await gone.ds.accept(SUG);
+    assert.deepEqual([out.ok, out.message, gone.log.gone], [false, 'The session is gone.', 1]);
+  });
+
+  test('(−) a request that rejects reads as "nika did not answer", and a malformed answer is not trusted', async () => {
+    const r = rig();
+    r.suggestAnswer = () => { throw new Error('network'); };
+    r.ds.capture(e(), 120);
+    assert.deepEqual(await r.ds.accept(SUG), { ok: false, status: 0, message: 'nika did not answer.' });
+    for (const answer of [null, undefined, 'x', { status: 200, body: 'x' }, { status: 200, body: { draft: 'no' } }, { status: 200, body: { draft: text('hi', { sig: 'zz' }) } }]) {
+      const q = rig();
+      q.suggestAnswer = () => answer;
+      q.ds.capture(e(), 120);
+      await q.ds.accept(SUG);
+      assert.deepEqual(q.log.sets, [], JSON.stringify(answer));
+    }
   });
 });

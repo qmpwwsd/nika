@@ -1,10 +1,11 @@
-// Five controls on a live Claude pane (api-app.md section 3): switch the permission mode, End the session, run a slash
-// command, answer a permission prompt, write the draft (0.5). They type into a real agent session, so every path fails
+// Six controls on a live Claude pane (api-app.md section 3): switch the permission mode, End the session, run a slash
+// command, answer a permission prompt, write the draft, accept Claude's prompt suggestion (0.5). They type into a real agent session, so every path fails
 // closed: when the screen or the registry state is not exactly what the step needs, nothing is sent and the answer is a 409.
 // Keys go only through `keys.send` (src/keys.js: fixed argv, KEY_NAME allow-list, rate limit); this module never kills a pane
 // and never signals a process. End and the commands type only into an empty input box and press Enter only after the box reads
 // exactly what nika typed (claude-tui.md section 5), so a user's draft is never sent, extended or cleared by them. The draft
-// route (writeDraft) is the one place that changes a draft, and it never presses Enter. The input box is read by src/draft.js.
+// route (writeDraft) is the one place that changes a draft, and it never presses Enter; acceptSuggestion presses only Tab.
+// The input box is read by src/draft.js.
 import { createHash } from 'node:crypto';
 import { CLAUDE_COMMAND } from './ids.js';
 import { MODE_TARGETS, OPTION, PROMPT_ROWS, bypassWindow, lastNonBlank, modeFromRows, promptFromRows, rowText } from './mode.js';
@@ -26,6 +27,8 @@ const DRAFT_MAX_CHARS = 1024;
 const DRAFT_MAX_NEWLINES = 12;
 const DRAFT_CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/; // C0, DEL, C1, except \t and \n
 const DRAFT_BASE = /^(?:[0-9a-f]{16})?$/;
+const SUGGESTION_MAX = 200; // src/draft.js cuts a suggestion to this
+const SUGGESTION_CONTROL = /[\u0000-\u001f\u007f-\u009f]/; // a suggestion is one clean() line: no control at all
 const VIM_ESC_GAP_MS = 40;
 const VIM_CLEAR_MS = 400; // wait for INSERT to go after Escape, and for the empty INSERT box after `ggdG` + `i`
 const PLAIN_CLEAR_MS = 600; // wait for the empty box after the second Escape
@@ -129,6 +132,16 @@ export function checkDraftBody(body) {
   if (DRAFT_CONTROL.test(text)) return invalid('text must not contain control characters other than newline and tab');
   if (text.split('\n').length - 1 > DRAFT_MAX_NEWLINES) return invalid(`text may hold at most ${DRAFT_MAX_NEWLINES} newlines`);
   if (typeof base !== 'string' || !DRAFT_BASE.test(base)) return invalid('base must be 16 lowercase hex characters, or empty');
+  return null;
+}
+
+/** The body of the suggestion route, exactly `{ text }` (the suggestion the page shows): null when it is valid, else the 400 answer. */
+export function checkSuggestionBody(body) {
+  const names = body !== null && typeof body === 'object' && !Array.isArray(body) ? Object.keys(body) : [];
+  if (names.length !== 1 || names[0] !== 'text') return invalid('body must be { text }');
+  const { text } = body;
+  if (typeof text !== 'string' || text === '' || text.length > SUGGESTION_MAX) return invalid(`text must be a string of 1 to ${SUGGESTION_MAX} characters`);
+  if (SUGGESTION_CONTROL.test(text)) return invalid('text must not contain control characters');
   return null;
 }
 
@@ -525,6 +538,53 @@ export function createSessionControl({
   }
 
   /**
+   * The pieces the two draft controls share (writeDraft, acceptSuggestion), bound to a pane and the action's ctx. Every answer that has a
+   * box carries `draft` (the parse plus `edit`, the pane's memory of how its input is edited).
+   *   view(seen) / reply(status, error, seen, extra) / refused(res)   the draft for an answer; a 409 body; a failed send's own body plus the draft
+   *   intake(seen)    the first reading of a screen: { draft } for a readable box, else { res }: 409 not-idle (a permission prompt is open,
+   *                   T51), mode-unknown (the footer is not a mode line: a dialog), input-unreadable (no plain box) or draft-unreadable { reason }
+   *   check(accept)   the pre-key check: a fresh capture with the plain box, no prompt, the cursor in the box and one of the `accept` texts,
+   *                   else { res } (409 screen-changed | draft-mismatch). { seen, draft } or { res }
+   *   press(keyBody)  one key request; null when it went out, else the answer. Refused (409 not-idle, nothing sent) while Stop's Escape runs,
+   *                   apart from the lock: a key right behind an Escape would be read as Meta+key (M-2)
+   *   idleNow()       null only when the registry says idle right now (a fresh read, skipping its cache) and no interrupt runs, else 409 not-idle:
+   *                   Escape could interrupt a running turn (claude-tui.md section 5), Tab could accept a suggestion into a busy one
+   */
+  function draftTools(pane, ctx) {
+    const view = async (seen) => {
+      const draft = seen ? readDraft(seen) : null;
+      return draft && { ...draft, edit: editMode(seen.rows, (await vimOf(pane)) === true, (await plainOf(pane)) === true) };
+    };
+    const reply = async (status, error, seen, extra = {}) => ({ status, body: { error, ...extra, draft: await view(seen) } });
+    const refused = async (res) => ({ status: res.status, body: { ...res.body, draft: await view(await look(pane, ctx)) } });
+    const intake = async (seen) => {
+      if (promptOpen(seen.rows)) return { res: conflict('not-idle') }; // T51: a draft write never lands in a prompt
+      const draft = readDraft(seen);
+      if (draft === null) return { res: conflict(modeFromRows(seen.rows) === 'unknown' ? 'mode-unknown' : 'input-unreadable') };
+      if (draft.state === 'unreadable') return { res: await reply(409, 'draft-unreadable', seen, { reason: draft.reason }) };
+      return { draft };
+    };
+    const check = async (accept) => {
+      const seen = await look(pane, ctx);
+      if (seen.res) return { res: seen.res };
+      const draft = promptOpen(seen.rows) ? null : readDraft(seen);
+      if (draft === null) return { res: await reply(409, 'screen-changed', seen) };
+      // no tolerance for `trailing`: chunks() never ends a chunk in a space or tab, so nika's own text never reads that way (M-3)
+      if (draft.state === 'unreadable') return { res: await reply(409, 'draft-mismatch', seen) };
+      if (!cursorInBox(seen, draft)) return { res: await reply(409, 'screen-changed', null) }; // the box that reads is not where the input is: its text is not shown to the page
+      if (!accept.some((t) => sameDraft(canonOf(draft), t))) return { res: await reply(409, 'screen-changed', seen) };
+      return { seen, draft };
+    };
+    const press = async (keyBody) => {
+      if (interrupting.has(pane)) return refused({ status: 409, body: { error: 'not-idle' } });
+      const sent = await keys.send(pane, keyBody);
+      return sent.status === 200 ? null : refused({ status: sent.status, body: sent.body }); // a failed send stops everything; the draft is read once more, best effort
+    };
+    const idleNow = async () => (interrupting.has(pane) || (await stateNow(pane, { fresh: true })) !== 'idle' ? conflict('not-idle') : null);
+    return { view, reply, refused, intake, check, press, idleNow };
+  }
+
+  /**
    * Draft write (design W5 section 3): makes Claude's input box read `body.text`, a draft the page edited in nika's message box.
    * The only control that changes a user's draft, so every step fails closed and nothing is sent after a refusal. Under the
    * per-pane lock: a fresh capture (no prompt on screen, a readable box, its `sig` equal to `base`, the text inside the
@@ -548,27 +608,10 @@ export function createSessionControl({
     const { base } = body;
     const text = body.text.replace(/[ \t]+$/, ''); // trailing spaces are invisible on screen and never read back: they are not typed
     return exclusive(pane, async (ctx) => {
-      const view = async (seen) => {
-        const draft = seen ? readDraft(seen) : null;
-        return draft && { ...draft, edit: editMode(seen.rows, (await vimOf(pane)) === true, (await plainOf(pane)) === true) };
-      };
-      const reply = async (status, error, seen, extra = {}) => ({ status, body: { error, ...extra, draft: await view(seen) } });
-      const refused = async (res) => ({ status: res.status, body: { ...res.body, draft: await view(await look(pane, ctx)) } });
+      const { view, reply, refused, check, press, idleNow, intake } = draftTools(pane, ctx);
       let typed = 0;
       let onScreen = ''; // what the box should hold now, in the page's form (a `!` box reads `!` + its text)
 
-      // Pre-key check: a fresh capture that shows the plain box, no prompt, and one of the `accept` texts. { seen, draft } or { res }.
-      const check = async (accept) => {
-        const seen = await look(pane, ctx);
-        if (seen.res) return { res: seen.res };
-        const draft = promptOpen(seen.rows) ? null : readDraft(seen);
-        if (draft === null) return { res: await reply(409, 'screen-changed', seen) };
-        // no tolerance for `trailing`: chunks() never ends a chunk in a space or tab, so nika's own text never reads that way (M-3)
-        if (draft.state === 'unreadable') return { res: await reply(409, 'draft-mismatch', seen) };
-        if (!cursorInBox(seen, draft)) return { res: await reply(409, 'screen-changed', null) }; // the box that reads is not where the input is: its text is not shown to the page
-        if (!accept.some((t) => sameDraft(canonOf(draft), t))) return { res: await reply(409, 'screen-changed', seen) };
-        return { seen, draft };
-      };
       // Waits up to `ms` (steps of draftPollMs, counted by the sleeps, not by a clock): every poll is a pre-key check;
       // `done(seen, draft, waited)` ends it. { seen, draft }, { res } or { timeout, seen }.
       const poll = async (ms, accept, done) => {
@@ -596,17 +639,8 @@ export function createSessionControl({
         onScreen = canonOf(got.draft);
         return null;
       };
-      // A key. Null when it went out, else the answer (a failed send stops everything; the draft is read once more, best effort).
-      const press = async (keyBody) => {
-        // Stop runs apart from the lock; a key right behind its Escape would be read as Meta+key (M-2)
-        if (interrupting.has(pane)) return refused({ status: 409, body: { error: 'not-idle' } });
-        const sent = await keys.send(pane, keyBody);
-        return sent.status === 200 ? null : refused({ status: sent.status, body: sent.body });
-      };
       // A key after its own pre-key check (the capture right before it). Null when it went out, else the answer.
       const send = async (accept, keyBody) => (await check(accept)).res ?? press(keyBody);
-      // Escape goes out only while the registry says idle: it interrupts a running turn (claude-tui.md section 5)
-      const idleNow = async () => (interrupting.has(pane) || (await stateNow(pane, { fresh: true })) !== 'idle' ? conflict('not-idle') : null);
       const isEmpty = (cap, d) => d.state === 'empty';
 
       // vim INSERT: Escape, wait until INSERT is gone and 40 ms passed, `ggdG`, `i`, wait for the empty INSERT box
@@ -673,10 +707,9 @@ export function createSessionControl({
       const seen = await look(pane, ctx);
       if (seen.res) return seen.res;
       const state = await stateNow(pane);
-      if (promptOpen(seen.rows)) return conflict('not-idle'); // T51: a draft write never lands in a prompt
-      const draft = readDraft(seen);
-      if (draft === null) return conflict(modeFromRows(seen.rows) === 'unknown' ? 'mode-unknown' : 'input-unreadable');
-      if (draft.state === 'unreadable') return reply(409, 'draft-unreadable', seen, { reason: draft.reason });
+      const got = await intake(seen);
+      if (got.res) return got.res;
+      const { draft } = got;
       if (draft.sig !== base) return reply(409, 'draft-changed', seen);
       if (!inEnvelope(text, seen.cols).ok) return invalid('text does not fit the input box');
       onScreen = canonOf(draft);
@@ -722,5 +755,42 @@ export function createSessionControl({
     });
   }
 
-  return { switchMode, endSession, runCommand, answer, stop, writeDraft };
+  /**
+   * Accept Claude's prompt suggestion (design W4): the page's Tab or right arrow in an empty message box that shows `body.text`
+   * as its placeholder. Claude draws a suggestion as dim text in an empty input box; Tab takes it into the box. The page's copy can be
+   * stale (the suggestion changed, vanished, a prompt opened), and a Tab sent then would land in the wrong place (T51), so this is not
+   * the plain keys route. Under the per-pane lock: the registry must say idle right now (fresh read) with no interrupt running; then one
+   * fresh capture that must show the plain box in prompt mode, no permission prompt, the cursor inside the box, state `empty` and a
+   * suggestion equal to `body.text` (anything else: 409 not-idle | mode-unknown | input-unreadable | draft-unreadable { reason } |
+   * draft-changed, nothing sent). Then exactly one key, `Tab` (counts toward the per-pane key limit), and a read-back until the box reads
+   * `text` equal to the suggestion: 200 { draft }, else 409 draft-mismatch { draft } (the Tab is never repeated). Never any other key:
+   * no Enter (the page's Send does that), no Escape, no text. Every answer that has a box carries `draft`.
+   */
+  function acceptSuggestion(pane, body) {
+    const bad = checkSuggestionBody(body);
+    if (bad) return Promise.resolve(bad);
+    const { text } = body;
+    return exclusive(pane, async (ctx) => {
+      const { view, reply, intake, press, idleNow } = draftTools(pane, ctx);
+      let res = await idleNow();
+      if (res) return res;
+      const seen = await look(pane, ctx); // the one capture right before the key
+      if (seen.res) return seen.res;
+      const got = await intake(seen);
+      if (got.res) return got.res;
+      const { draft } = got;
+      if (!cursorInBox(seen, draft)) return reply(409, 'input-unreadable', null); // that box may be a status line: nothing of it goes to the page
+      if (draft.state !== 'empty' || draft.mode !== 'prompt' || draft.suggestion !== text) return reply(409, 'draft-changed', seen);
+      if ((res = await press({ keys: ['Tab'] }))) return res;
+      const back = await settled(pane, (rows, cap) => {
+        const d = readDraft(cap);
+        return d !== null && d.state === 'text' && d.mode === 'prompt' && sameDraft(d.text, text);
+      }, ctx);
+      if (back.res) return back.res;
+      if (back.rows) return { status: 200, body: { draft: await view(back.seen) } };
+      return reply(409, 'draft-mismatch', back.lastSeen);
+    });
+  }
+
+  return { switchMode, endSession, runCommand, answer, stop, writeDraft, acceptSuggestion };
 }

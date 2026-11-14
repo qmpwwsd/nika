@@ -9,7 +9,7 @@ import { h, icon, roleTagEl, ctxEl } from './dom.js';
 import { isApp, appFetch, getJSON, applyTheme, windowCommand } from './api.js';
 import { roleTag, savedPick } from './dash-model.js';
 import { toRenderModel, cutCursor, applyMirror, planSend, planPaste, chunkText, keyForEvent, KEY_LABEL, arrowEcho } from './mirror-render.js';
-import { createDraftSync, cleanDraft, cutAt, caretAfter, draftSendPlan } from './draft-sync.js';
+import { createDraftSync, cleanDraft, cutAt, caretAfter, draftSendPlan, suggestionFor } from './draft-sync.js';
 import { MODE_META, MODE_TARGETS, modeKey, modeEl, bypassTag, switcherState, modeNote, switchFailure } from './modes.js';
 import {
   quickState, cleanPrompt, answerOutcome, escOutcome, promptOff, promptNote, commandFailure, commandSaid, problemKind, planShell, sendGate, keysRefusal, stopOutcome, followSession,
@@ -1055,6 +1055,7 @@ function setInputEnabled(on, why) {
   if (!on) { AR.buf = []; clearTimeout(AR.timer); } // arrows not yet sent are dropped with the box
   for (const el of controls) el.disabled = !on;
   $('composer').placeholder = on ? idlePlaceholder() : why;
+  renderSuggestion(); // the state class goes with the box being usable
   document.querySelector('.inbox').classList.toggle('off', !on);
   if (!on) setPass(false, true);
   else if (refocus.composer) $('composer').focus({ preventScroll: true });
@@ -1125,6 +1126,7 @@ function handleCapture(r) {
     drawMirror();
     try {
       DS.capture(M.draft, cols);
+      renderSuggestion(); // the placeholder follows the screen's draft
     } catch {
       // the mirror keeps working without the sync
     }
@@ -1284,6 +1286,7 @@ function grow() {
 function updateChip() {
   renderCmdBtn();
   renderArgHint();
+  renderSuggestion(); // the suggestion shows only while the box is empty
   syncPalette(); // the text may have become (or stopped being) a command query; also closes the list after a send, a clear or an insert
   const v = composer().value;
   const lines = v.split('\n').length;
@@ -1381,6 +1384,7 @@ const DS = createDraftSync({
   box: () => ({ value: composer().value, shell: S.on }),
   setBox: pullIntoBox,
   put: (body) => call(`/api/app/pane/${encodeURIComponent(paneId)}/draft`, { method: 'PUT', json: body }),
+  suggest: (body) => call(`/api/app/pane/${encodeURIComponent(paneId)}/suggestion`, { method: 'POST', json: body }),
   note: renderDraftNote,
   problem: (message) => showProblem(message, 'warn', 6000),
   gone: setGone,
@@ -1389,7 +1393,32 @@ const DS = createDraftSync({
 // ---- Shell mode (spec 9.6): Enter sends Ctrl-U, "!" + the text, Enter; it turns itself off after a successful send -------------
 
 const RSAQUO = String.fromCharCode(0x203a);
-const idlePlaceholder = () => (S.on ? `Shell command for Claude's ! mode${DOTS}` : `Message ${A.name}${DOTS}`);
+const idlePlaceholder = () => (S.on ? `Shell command for Claude's ! mode${DOTS}` : suggestionNow() ?? `Message ${A.name}${DOTS}`);
+
+/** Claude's prompt suggestion while the box is empty, Shell is off and the sync can read the screen's draft (draft-sync.js suggestionFor), else null. */
+function suggestionNow() {
+  return suggestionFor(DS.screen(), { value: composer().value, shell: S.on });
+}
+
+/** The box's placeholder and its "suggest" look: the suggestion in its own colour and italic, with the note under the box saying what accepts it. A disabled box keeps its own text. */
+function renderSuggestion() {
+  const usable = !composer().disabled;
+  const on = usable && suggestionNow() !== null;
+  document.querySelector('.inbox').classList.toggle('suggest', on);
+  if (usable) composer().placeholder = idlePlaceholder();
+}
+
+/** Tab or the right arrow on the suggestion: the guarded route (DS.accept), in the keys chain so arrows typed just before go first. Never a key of its own. */
+async function acceptSuggestion(text) {
+  const r = await enqueueJob(() => DS.accept(text));
+  renderSuggestion();
+  if (r.ok) {
+    clearProblem();
+    say(`Accepted Claude's suggestion: ${text}`);
+  } else {
+    showProblem(r.message, problemKind(r.status), 6000);
+  }
+}
 
 function setShell(on) {
   if (on === S.on) return;
@@ -1399,7 +1428,7 @@ function setShell(on) {
   toggle.querySelector('.onoff').textContent = on ? 'on' : 'off';
   document.querySelector('.inbox').classList.toggle('shell-on', on);
   document.querySelector('.inbox .prompt').textContent = on ? '!' : RSAQUO;
-  if (!composer().disabled) composer().placeholder = idlePlaceholder();
+  renderSuggestion(); // Shell has its own placeholder and no suggestion
   $('shell-hint').hidden = !on;
   if (on) closePalette(); // a "/" in Shell mode is shell text
   renderCmdBtn();
@@ -1668,10 +1697,11 @@ function wireComposer() {
   ta.addEventListener('compositionstart', () => DS.composition(true));
   ta.addEventListener('compositionend', () => DS.composition(false));
   ta.addEventListener('keydown', (e) => {
+    const sug = suggestionNow(); // what the placeholder shows: the text Tab or the right arrow would accept
     const a = composerKey(e, {
       empty: ta.value === '', selection: ta.selectionStart !== ta.selectionEnd, choosing: PL.active >= 0, paletteOpen: PL.open,
       pop: Q.pop, pane: W.pane, status: A.kind, promptOpen: W.promptOpen,
-      buttons: W.pane === 'ok' && hasAnswerButtons(W.prompt), bypass: W.prompt?.bypass === true, switching: SW.busy !== null,
+      buttons: W.pane === 'ok' && hasAnswerButtons(W.prompt), bypass: W.prompt?.bypass === true, switching: SW.busy !== null, suggestion: sug,
     });
     if (a.act === 'none') return;
     e.preventDefault();
@@ -1687,6 +1717,7 @@ function wireComposer() {
     else if (a.act === 'palette-insert') insertActive();
     else if (a.act === 'send') sendComposer();
     else if (a.act === 'key') sendKey(a.key);
+    else if (a.act === 'accept') acceptSuggestion(sug);
     else if (a.act === 'stop') arrows ? chain.then(stop) : stop(); // Stop is not queued, but it never overtakes arrows typed just before
     else if (a.act === 'refuse') showProblem(a.message, a.kind, a.ms);
     else if (a.act === 'focus-back') $('shell-toggle').focus();

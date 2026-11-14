@@ -77,12 +77,23 @@ export function cleanDraft(raw) {
 
 /**
  * The first mirror row to cut (the box's top rule), or null: only a readable draft with Type into pane off hides Claude's input box.
- * Not while the box shows a prompt suggestion: nothing else on the page shows it (until W4) and Enter on it is untested (M-6).
+ * A prompt suggestion in the box is cut with it: the message box shows it as its placeholder (suggestionFor) and Tab accepts it (W4).
  */
 export function cutAt(draft, passOn) {
-  if (passOn === true || !draft || (draft.state !== 'empty' && draft.state !== 'text') || (draft.suggestion ?? null) !== null) return null;
+  if (passOn === true || !draft || (draft.state !== 'empty' && draft.state !== 'text')) return null;
   const top = draft.box?.top;
   return Number.isInteger(top) && top >= 0 ? top : null;
+}
+
+/**
+ * Claude's prompt suggestion as nika's message box shows it (its placeholder) and Tab or the right arrow accepts it (W4), or null.
+ * Only while the box is empty and Shell is off, and the screen's draft is a readable, empty prompt box with a suggestion (the
+ * parser gives null for the `Try "..."` example; a paused draft is unreadable, so it gives none either).
+ */
+export function suggestionFor(draft, { value = '', shell = false } = {}) {
+  if (shell === true || value !== '' || !draft || draft.state !== 'empty' || draft.mode !== 'prompt') return null;
+  const s = draft.suggestion;
+  return typeof s === 'string' && s !== '' && s.length <= 200 ? s : null;
 }
 
 /** Where the caret goes after a pull: text that only grew keeps a caret inside the old text where it was and follows an end caret; anything else, the end. */
@@ -93,7 +104,7 @@ export function caretAfter(before, after, caret) {
 
 // ---- the note under the box (colour + icon + word per state) -------------------------------------------------------------
 
-/** { kind, icon, label, text } for the one note, or null. kind: paused (the screen's draft cannot be read), long (outside the envelope), wait (a replace is refused while Claude works). */
+/** { kind, icon, label, text } for the one note, or null. kind: paused (the screen's draft cannot be read), long (outside the envelope), wait (a replace is refused while Claude works), suggest (Claude offers a prompt suggestion: Tab accepts it). */
 export function noteView(note) {
   if (!note) return null;
   if (note.kind === 'paused') {
@@ -101,6 +112,7 @@ export function noteView(note) {
   }
   if (note.kind === 'long') return { kind: 'long', icon: 'info', label: 'Not mirrored:', text: 'Long text goes to Claude when you send it.' };
   if (note.kind === 'wait') return { kind: 'wait', icon: 'clock', label: 'Waiting for Claude:', text: "Claude is working. Your text goes into its input when it waits." };
+  if (note.kind === 'suggest') return { kind: 'suggest', icon: 'kbd', label: 'Suggestion:', text: 'Tab or \u2192 accepts what Claude suggests.' };
   return null;
 }
 
@@ -109,6 +121,7 @@ export function noteView(note) {
 const ENTER = [{ keys: ['Enter'] }];
 const LONG_REFUSAL = "Claude's input already holds text; it would be sent together with yours. Clear it in the terminal or shorten your message.";
 const pausedLine = (reason) => `Claude's input holds ${reasonText(reason)}. Send or clear it in the terminal.`;
+const STALE_SUGGESTION = "Claude's suggestion changed. Nothing was sent.";
 
 /**
  * What Send does with the box and the screen. `screen` is cleanDraft's answer for the last capture (null: no readable box). Returns
@@ -154,6 +167,23 @@ function sendMessage({ status, code, reason }) {
   return "nika couldn't copy your text into Claude's input. Your text is kept.";
 }
 
+/** The line for an accept that did not take. Fixed copy: only the status and the server's `error` code pick it. */
+function acceptMessage({ status, code, reason }) {
+  if (status === 409) {
+    if (code === 'draft-mismatch') return "Claude's input did not take the suggestion. nika shows what it holds now.";
+    if (code === 'draft-changed') return STALE_SUGGESTION;
+    if (code === 'draft-unreadable') return pausedLine(reason);
+    if (code === 'not-idle') return "Claude is busy or a prompt is open, so nika can't accept the suggestion now. Nothing was sent.";
+    if (code === 'input-unreadable' || code === 'mode-unknown') return "nika can't read Claude's input box right now (a menu may be open). Nothing was sent.";
+    if (code === 'busy-switching') return 'Another action is running on this session. Try again in a moment.';
+  }
+  if (status === 400) return "nika can't accept this suggestion.";
+  if (status === 404) return 'The session is gone.';
+  if (status === 429) return 'Too many keys at once; try again.';
+  if (status === 0) return 'nika did not answer.';
+  return "nika couldn't accept the suggestion.";
+}
+
 // ---- the controller ------------------------------------------------------------------------------------------------------------
 
 const ADOPT = new Set(['draft-changed', 'screen-changed', 'draft-mismatch']); // 409s whose body carries the screen's draft: the terminal wins
@@ -164,7 +194,8 @@ const unreadableDraft = (reason, like) => ({
 
 /**
  * io: now() -> ms; after(fn, ms) -> handle; cancel(handle); box() -> { value, shell }; setBox(value, shell) (a pull: no `input` event);
- * put({ text, base }) -> Promise<{ status, body }> (never rejects); note(view | null); problem(message); gone() (the route said 404).
+ * put({ text, base }) -> Promise<{ status, body }> (never rejects); suggest({ text }) -> Promise<{ status, body }> (the accept route; never rejects);
+ * note(view | null); problem(message); gone() (the route said 404).
  * The page calls capture() with every handled capture, edited() at every edit of the box (typing, the Shell toggle, a palette insert,
  * Clear), composition(on) around an IME composition, reset() when the connection came back, stop() when the pane is gone.
  */
@@ -215,7 +246,7 @@ export function createDraftSync(io) {
       D.fails = 0;
       D.waiting = false;
       D.blocked = false;
-      show(null);
+      show(suggestionFor(d, box) === null ? null : { kind: 'suggest' }); // an empty box over an empty screen that offers a suggestion
       return;
     }
     const text = pushText(want);
@@ -364,6 +395,38 @@ export function createDraftSync(io) {
     endSend() {
       D.sending = false;
       step();
+    },
+    /**
+     * Tab or the right arrow on the suggestion `text` the box shows (W4). The server presses Tab only when a fresh screen still shows exactly
+     * that suggestion, so nothing is sent here when the page's own copy is already stale. Returns { ok, status, message }. The answer's
+     * draft is the screen: a box that is still empty and unedited takes its text like a pull; a box the user typed into meanwhile keeps
+     * its text (nika wins while the user types here). A refusal that carries a draft adopts it, so the terminal's text is pulled by the usual rule.
+     */
+    async accept(text) {
+      if (D.flight) {
+        try { await D.flight; } catch { /* write() already took the answer */ }
+      }
+      if (D.stopped || D.sending || text === '' || suggestionFor(D.screen, io.box()) !== text) return { ok: false, status: null, message: STALE_SUGGESTION }; // nothing was sent: no status
+      let r;
+      try {
+        r = await io.suggest({ text });
+      } catch {
+        r = null;
+      }
+      r = r && typeof r === 'object' ? r : { status: 0, body: null };
+      const body = r.body && typeof r.body === 'object' && !Array.isArray(r.body) ? r.body : {};
+      const d = cleanDraft(body.draft);
+      if (d) D.screen = d;
+      if (r.status === 404) {
+        D.stopped = true;
+        io.gone();
+      }
+      const box = io.box();
+      if (r.status === 200 && d?.state === 'text' && box.value === '' && !box.shell && !D.dirty) pull(d);
+      step();
+      if (r.status === 200) return { ok: true, status: 200, message: '' };
+      const code = r.status === 409 && typeof body.error === 'string' ? body.error : '';
+      return { ok: false, status: r.status, message: acceptMessage({ status: r.status, code, reason: body.reason }) };
     },
     screen: () => D.screen,
   };

@@ -213,11 +213,13 @@ const ARROW = { ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight:
 /**
  * What a key in the message box does (docs/design/spec.md 4.2; 0.3.3). Pure: session.js performs the action.
  * e: the keydown's { key, shiftKey, ctrlKey, altKey, metaKey, repeat, isComposing, keyCode }.
- * s: { empty, selection, choosing, paletteOpen, pop, pane, status, promptOpen, buttons, bypass, switching }.
+ * s: { empty, selection, choosing, paletteOpen, pop, pane, status, promptOpen, buttons, bypass, switching, suggestion }.
+ * `suggestion` is the prompt suggestion the box shows as its placeholder (draft-sync.js suggestionFor), or null.
  * Returns { act } plus, by act: key ('key': 'Escape' | 'BTab'; 'arrow': 'Up' | 'Down' | 'Left' | 'Right'),
  * dir ('palette-move': -1 | 1), message + kind + ms ('refuse'). `act` is one of none (the browser's default), swallow,
- * passthrough, close-pop, close-palette, palette-move, palette-insert, send, key, arrow, stop, refuse, focus-back.
- * It never returns Tab or C-c as a key: Tab moves focus, and Ctrl+C is the Stop route.
+ * passthrough, close-pop, close-palette, palette-move, palette-insert, send, key, arrow, accept, stop, refuse, focus-back.
+ * It never returns Tab or C-c as a key: Tab moves focus (or, on a suggestion, is `accept`: the guarded suggestion route, not a key),
+ * and Ctrl+C is the Stop route.
  */
 export function composerKey(e, s) {
   const none = { act: 'none' };
@@ -225,6 +227,8 @@ export function composerKey(e, s) {
   if (e.isComposing || e.keyCode === 229) return none; // the IME owns the key
   const { key } = e;
   const bare = !e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey;
+  const accepts = s.empty === true && typeof s.suggestion === 'string' && s.suggestion !== ''; // an empty box that shows Claude's suggestion
+  const acceptKey = (ev) => (ev.repeat ? swallow : { act: 'accept' }); // a held key accepts once
   if (key === ']' && e.ctrlKey && !e.metaKey && !e.altKey) return { act: 'passthrough' };
   if (key === 'Escape') {
     if (e.repeat) return swallow;
@@ -247,11 +251,13 @@ export function composerKey(e, s) {
       if (s.switching) return { act: 'refuse', message: SWITCH_WAIT, kind: 'warn', ms: 3000 };
       return { act: 'key', key: 'BTab' };
     }
-    return s.choosing && bare ? { act: 'palette-insert' } : none;
+    if (s.choosing && bare) return { act: 'palette-insert' };
+    return bare && accepts ? acceptKey(e) : none;
   }
   if (Object.hasOwn(ARROW, key)) {
     if (!bare) return none;
     if (s.choosing && (key === 'ArrowUp' || key === 'ArrowDown')) return { act: 'palette-move', dir: key === 'ArrowDown' ? 1 : -1 };
+    if (key === 'ArrowRight' && accepts) return acceptKey(e); // the right arrow accepts it too, instead of going to the pane unguarded
     return s.empty ? { act: 'arrow', key: ARROW[key] } : none;
   }
   // Ctrl+Shift+C is the copy key (Type into pane, Linux terminals): left to the browser, never Stop (0.4.0)

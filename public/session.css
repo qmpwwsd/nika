@@ -186,6 +186,8 @@ body.m-bypass .mode-frame { background: repeating-linear-gradient(135deg, var(--
 .inbox.shell-on .prompt { color: var(--shell); }
 .inbox textarea { flex: 1; min-width: 0; border: 0; padding: 4px 0; min-height: 28px; height: 28px; max-height: 168px; resize: none; background: transparent; font: var(--fs-term)/20px var(--mono); outline: none; }
 .inbox textarea:disabled { color: var(--text-muted); }
+/* Claude's prompt suggestion (W4): the placeholder shows it in the accent colour and italic, and the note under the box (.dnote suggest) says Tab or the right arrow accepts it */
+.inbox.suggest textarea::placeholder { color: var(--accent); font-style: italic; opacity: 1; }
 .paste-chip { flex: none; display: inline-flex; gap: 6px; align-items: center; font-size: var(--fs-small); padding: 2px 4px 2px 8px; border-radius: var(--r-sm); background: var(--accent-soft); color: var(--accent); font-weight: 600; align-self: center; }
 .paste-chip button { min-height: 20px; border: 0; background: none; color: inherit; text-decoration: underline; }
 .mode-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; min-width: 0; }   /* the mode switcher under the message box (spec 9.3) */
@@ -202,6 +204,7 @@ body.m-bypass .mode-frame { background: repeating-linear-gradient(135deg, var(--
 .dnote[data-k="paused"] { color: var(--idle); background: var(--idle-soft); }
 .dnote[data-k="long"] { color: var(--text); background: var(--surface-3); }
 .dnote[data-k="wait"] { color: var(--busy); background: var(--busy-soft); }
+.dnote[data-k="suggest"] { color: var(--accent); background: var(--accent-soft); }
 
 /* command palette (spec 9.7): opens upward from the message box, anchored to its left and right edges; focus never leaves the textarea */
 .btn.ghost { border-color: transparent; background: transparent; }

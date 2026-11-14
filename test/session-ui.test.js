@@ -12,7 +12,7 @@ import { moveActive as moveActiveReal, cleanCommands as cleanCommandsReal, palet
 import { wantsHelp, wantsBack, wantsHistToggle, isTextEntry, backHint, helpHint, histHint, passKeyLabel, wireWindowKeys as wireWindowKeysReal } from '../public/shortcuts.js';
 import { quickState as quickStateReal, sendGate as sendGateReal, keysRefusal as keysRefusalReal, stopOutcome as stopOutcomeReal, commandSaid as commandSaidReal, commandFailure as commandFailureReal, problemKind as problemKindReal, followSession as followSessionReal, planShell as planShellReal, cleanPrompt as cleanPromptReal, hasAnswerButtons as hasAnswerButtonsReal, attnNote as attnNoteReal, answerOutcome as answerOutcomeReal, promptOff as promptOffReal, composerKey as composerKeyReal } from '../public/quick-actions.js';
 import { planSend as planSendReal, arrowEcho as arrowEchoReal, keyForEvent as keyForEventReal, planPaste as planPasteReal, toRenderModel as toRenderModelReal, cutCursor as cutCursorReal } from '../public/mirror-render.js';
-import { draftSendPlan as draftSendPlanReal, cleanDraft as cleanDraftReal, cutAt as cutAtReal, caretAfter as caretAfterReal, noteView as noteViewReal } from '../public/draft-sync.js';
+import { draftSendPlan as draftSendPlanReal, cleanDraft as cleanDraftReal, cutAt as cutAtReal, caretAfter as caretAfterReal, noteView as noteViewReal, suggestionFor as suggestionForReal } from '../public/draft-sync.js';
 import { switchFailure as switchFailureReal, MODE_TARGETS, MODE_META } from '../public/modes.js';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
@@ -694,6 +694,7 @@ describe('command palette wiring (spec 9.7, Task 11)', () => {
       closePalette: () => calls.push('palette'), insertActive: () => calls.push('insert'), setActive: (i) => calls.push(`active ${i}`),
       queueArrow: (k, repeat) => calls.push(`arrow ${k}${repeat ? ' repeat' : ''}`), endArrows: () => { ends += 1; return state.arrows === true; }, chain: state.chain ?? Promise.resolve(), stop: () => calls.push('stop'),
       showProblem: (m, kind, ms) => calls.push(`problem ${m} | ${kind} | ${ms}`),
+      suggestionNow: () => state.suggestion ?? null, acceptSuggestion: (t) => calls.push(`accept ${t}`),
     };
     vm.runInNewContext(`${fnOf('function wireComposer()')}; wireComposer`, ctx)();
     const e = { key: '', shiftKey: false, ctrlKey: false, metaKey: false, altKey: false, isComposing: false, keyCode: 0, repeat: false, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; }, ...event };
@@ -1939,7 +1940,7 @@ describe('0.3.3: arrow keys from an empty message box are batched (spec 4.2)', (
     };
     const api = mk(['function queueArrow(key, repeat)', 'function flushArrows()', 'function echoArrows()', 'function endArrows()', 'function setInputEnabled(on, why)'], {
       AR, enqueue, chain: Promise.resolve(), say: (m) => log.said.push(m), paneId: '%12', arrowEcho: arrowEchoReal, setTimeout: globalThis.setTimeout, clearTimeout: globalThis.clearTimeout,
-      $: () => ({ focus() {} }), refocus: { composer: false }, closePalette() {}, setPass() {}, idlePlaceholder: () => '',
+      $: () => ({ focus() {} }), refocus: { composer: false }, closePalette() {}, setPass() {}, idlePlaceholder: () => '', renderSuggestion() {},
       document: { activeElement: null, querySelector: () => ({ classList: { toggle() {} } }) },
     });
     const norm = (v) => JSON.parse(JSON.stringify(v)); // arrays built inside the vm have another Array.prototype
@@ -2730,12 +2731,12 @@ describe('0.5: drawing the mirror with the cut (design W6, section 5)', () => {
     const log = [];
     const ctx = {
       recovered() {}, noteScreen() {}, $: () => ({ style: {}, scrollTop: 0, scrollHeight: 9 }), M: { frozen: false, scrollTop: 0 }, setLive() {}, MID: ' - ', TIMES: 'x', ETAG: /^[0-9a-f]{1,64}$/,
-      cleanDraft: cleanDraftReal, DS: { capture: (d, cols) => log.push(['capture', d, cols]) }, drawMirror: () => log.push(['draw']),
+      cleanDraft: cleanDraftReal, DS: { capture: (d, cols) => log.push(['capture', d, cols]) }, drawMirror: () => log.push(['draw']), renderSuggestion: () => log.push(['suggest']),
       setGone() {}, serverMessage: () => '', setPaneState() {}, setInputEnabled() {}, showOverlay() {},
     };
     const body = { ...BODY, draft: readable(), etag: 'ab12' };
     vm.runInNewContext(`${fnOf('function handleCapture(r)')}; handleCapture`, ctx)({ status: 200, body });
-    assert.deepEqual(norm(log), [['draw'], ['capture', readable(), 120]].map(norm), 'the rows first: a sync can never delay the mirror');
+    assert.deepEqual(norm(log), [['draw'], ['capture', readable(), 120], ['suggest']].map(norm), 'the rows first: a sync can never delay the mirror; the placeholder follows the sync');
     assert.equal(ctx.M.body, body);
     assert.deepEqual(norm(ctx.M.draft), readable());
   });
@@ -2744,7 +2745,7 @@ describe('0.5: drawing the mirror with the cut (design W6, section 5)', () => {
     const drew = [];
     const ctx = {
       recovered() {}, noteScreen() {}, $: () => ({ style: {}, scrollTop: 0, scrollHeight: 9 }), M: { frozen: false }, setLive() {}, MID: ' - ', TIMES: 'x', ETAG: /^[0-9a-f]{1,64}$/,
-      cleanDraft: cleanDraftReal, DS: { capture: () => { throw new Error('boom'); } }, drawMirror: () => drew.push(1),
+      cleanDraft: cleanDraftReal, DS: { capture: () => { throw new Error('boom'); } }, drawMirror: () => drew.push(1), renderSuggestion() {},
     };
     assert.doesNotThrow(() => vm.runInNewContext(`${fnOf('function handleCapture(r)')}; handleCapture`, ctx)({ status: 200, body: { ...BODY, draft: readable() } }));
     assert.equal(drew.length, 1);
@@ -3012,5 +3013,180 @@ describe('0.5: Send with the synced box (design W5, section 4)', () => {
     assert.match(fnOf('function enqueueJob(run)'), /chain\.then\(run\)/);
     assert.match(fnOf('function enqueueSeq(payloads)'), /enqueueJob\(/);
     assert.match(fnOf('async function pushThenEnter(route)'), /await DS\.send\(route\.text\)[\s\S]*deliver\(\{ keys: \['Enter'\] \}\)/);
+  });
+});
+
+
+describe('W4: Claude\'s prompt suggestion in the message box (wiring)', () => {
+  const SRC = code(JS['session.js']);
+  const fnOf = (head) => {
+    const at = SRC.indexOf(head);
+    assert.ok(at >= 0, head);
+    return SRC.slice(at, SRC.indexOf('\n}\n', at) + 2);
+  };
+  const mk = (names, ctx) => vm.runInNewContext(`${names.map(fnOf).join('\n')}; ({ ${names.map((n) => n.replace(/^(async )?function /, '').replace(/\(.*$/, '')).join(', ')} })`, ctx);
+  const SUG = 'run the tests in acme-api';
+  const BOX = { top: 30, bottom: 32 };
+  const D = (state, over = {}) => ({ state, mode: 'prompt', text: '', sig: '0000000000000001', box: BOX, cursorAtEnd: true, suggestion: null, ...over });
+  const WITH = D('empty', { suggestion: SUG });
+  const PAUSED = { state: 'unreadable', mode: 'prompt', text: '', sig: null, reason: 'pasted', box: BOX, cursorAtEnd: false, suggestion: null };
+
+  // idlePlaceholder and suggestionNow for real: the box's value, Shell and the sync's screen decide
+  const ph = ({ screen = WITH, value = '', shell = false } = {}) => {
+    const api = vm.runInNewContext(`${SRC.slice(SRC.indexOf('const idlePlaceholder'), SRC.indexOf('\n', SRC.indexOf('const idlePlaceholder')))}\n${fnOf('function suggestionNow()')}; ({ idlePlaceholder, suggestionNow })`, {
+      S: { on: shell }, A: { name: 'acme-api' }, DOTS: '...', composer: () => ({ value }), DS: { screen: () => screen }, suggestionFor: suggestionForReal,
+    });
+    return api;
+  };
+
+  test('(+) the placeholder is the suggestion while the box is empty, Shell is off and the draft is a readable empty box with a suggestion', () => {
+    const r = ph();
+    assert.equal(r.idlePlaceholder(), SUG);
+    assert.equal(r.suggestionNow(), SUG);
+  });
+
+  test('(−) the normal text comes back when the box holds text, Shell is on, the sync is paused, there is no box or no suggestion', () => {
+    assert.equal(ph({ value: 'a' }).idlePlaceholder(), 'Message acme-api...');
+    assert.equal(ph({ shell: true }).idlePlaceholder(), "Shell command for Claude's ! mode...", 'Shell has its own text');
+    assert.equal(ph({ screen: PAUSED }).idlePlaceholder(), 'Message acme-api...');
+    assert.equal(ph({ screen: null }).idlePlaceholder(), 'Message acme-api...');
+    assert.equal(ph({ screen: D('empty') }).idlePlaceholder(), 'Message acme-api...');
+    assert.equal(ph({ screen: D('text', { text: 'hello', suggestion: SUG }) }).idlePlaceholder(), 'Message acme-api...');
+  });
+
+  test('(−) the `Try "..."` example Claude draws is no suggestion: the parser gives null, so the placeholder stays the normal one', () => {
+    assert.equal(ph({ screen: D('empty', { suggestion: null }) }).idlePlaceholder(), 'Message acme-api...');
+  });
+
+  // renderSuggestion: the state class and the placeholder
+  const rend = ({ screen = WITH, value = '', shell = false, disabled = false } = {}) => {
+    const cls = new Set();
+    const ta = { value, disabled, placeholder: 'old' };
+    const api = mk(['function renderSuggestion()'], {
+      composer: () => ta, document: { querySelector: () => ({ classList: { toggle: (c, on) => (on ? cls.add(c) : cls.delete(c)) } }) },
+      suggestionNow: () => suggestionForReal(screen, { value: ta.value, shell }), idlePlaceholder: () => (suggestionForReal(screen, { value: ta.value, shell }) ?? 'Message'),
+    });
+    return { ...api, cls, ta };
+  };
+
+  test('(+) renderSuggestion sets the suggestion as the placeholder and the "suggest" state class on the box', () => {
+    const r = rend();
+    r.renderSuggestion();
+    assert.deepEqual([r.ta.placeholder, [...r.cls]], [SUG, ['suggest']]);
+  });
+
+  test('(−) no suggestion: the class is off and the placeholder is the normal one; a disabled box keeps the text its owner gave it', () => {
+    const r = rend({ value: 'x' });
+    r.renderSuggestion();
+    assert.deepEqual([r.ta.placeholder, [...r.cls]], ['Message', []]);
+    const off = rend({ disabled: true });
+    off.renderSuggestion();
+    assert.deepEqual([off.ta.placeholder, [...off.cls]], ['old', []], 'a gone pane\'s "Pane is gone" is not overwritten, and no state class on a disabled box');
+  });
+
+  test('(+) it follows every change: a capture, any change of the box text (updateChip), the Shell toggle, the input being enabled', () => {
+    assert.match(fnOf('function handleCapture(r)'), /DS\.capture\(M\.draft, cols\);[\s\S]*renderSuggestion\(\)/);
+    assert.match(fnOf('function updateChip()'), /renderSuggestion\(\)/);
+    assert.match(fnOf('function setShell(on)'), /renderSuggestion\(\)/);
+    assert.match(fnOf('function setInputEnabled('), /renderSuggestion\(\)/);
+  });
+
+  // the keydown handler: Tab and the right arrow
+  const keydown = (state, event) => {
+    const calls = [];
+    const ta = { value: state.value ?? '', selectionStart: 0, selectionEnd: 0, addEventListener(type, f) { if (type === 'keydown') this.keydown = f; } };
+    const ctx = {
+      composer: () => ta, $: () => ({ addEventListener() {}, focus() {} }), document: { querySelectorAll: () => [] },
+      PL: { open: false, active: -1, shown: [] }, Q: { pop: false }, S: { on: false }, SW: { busy: null }, W: { pane: 'ok', promptOpen: false, prompt: null }, A: { kind: 'idle' },
+      composerKey: composerKeyReal, hasAnswerButtons: hasAnswerButtonsReal, moveActive: moveActiveReal,
+      grow() {}, updateChip() {}, wirePalette() {}, setPass() {}, sendComposer: () => calls.push('send'), sendKey: (k) => calls.push(`key ${k}`),
+      closeModelPop() {}, closePalette() {}, insertActive() {}, setActive() {}, queueArrow: (k) => calls.push(`arrow ${k}`), endArrows: () => { calls.push('ends'); return false; }, chain: Promise.resolve(), stop() {},
+      showProblem() {}, suggestionNow: () => state.suggestion ?? null, acceptSuggestion: (t) => calls.push(`accept ${t}`),
+    };
+    vm.runInNewContext(`${fnOf('function wireComposer()')}; wireComposer`, ctx)();
+    const e = { key: '', shiftKey: false, ctrlKey: false, metaKey: false, altKey: false, isComposing: false, keyCode: 0, repeat: false, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; }, ...event };
+    ta.keydown(e);
+    return { calls, prevented: e.defaultPrevented };
+  };
+
+  test('(+) Tab or the right arrow in an empty box that shows a suggestion accepts that exact text, after the arrows typed before it, and not as a key', () => {
+    for (const key of ['Tab', 'ArrowRight']) assert.deepEqual(keydown({ suggestion: SUG }, { key }), { calls: ['ends', `accept ${SUG}`], prevented: true }, key);
+  });
+
+  test('(−) Tab with text in the box moves focus (the browser default); the right arrow with no suggestion still goes to the pane', () => {
+    assert.deepEqual(keydown({ value: 'abc', suggestion: null }, { key: 'Tab' }), { calls: [], prevented: false });
+    assert.deepEqual(keydown({ suggestion: null }, { key: 'Tab' }), { calls: [], prevented: false });
+    assert.deepEqual(keydown({ suggestion: null }, { key: 'ArrowRight' }), { calls: ['arrow Right'], prevented: true });
+    assert.deepEqual(keydown({ value: 'abc', suggestion: null }, { key: 'ArrowRight' }), { calls: [], prevented: false }, 'the caret key');
+  });
+
+  test('(−) a held Tab accepts once, and Shift+Tab is still BTab, never an accept', () => {
+    assert.deepEqual(keydown({ suggestion: SUG }, { key: 'Tab', repeat: true }).calls, ['ends']);
+    assert.deepEqual(keydown({ suggestion: SUG }, { key: 'Tab', shiftKey: true }).calls, ['ends', 'key BTab']);
+  });
+
+  test('(+) the handler asks for the suggestion once per key and hands composerKey the same value it accepts', () => {
+    const src = fnOf('function wireComposer()');
+    assert.match(src, /const sug = suggestionNow\(\);/);
+    assert.match(src, /suggestion: sug/);
+    assert.match(src, /a\.act === 'accept'\) acceptSuggestion\(sug\)/);
+  });
+
+  // acceptSuggestion: the guarded route through the keys chain
+  const acc = (answer) => {
+    const log = [];
+    const api = mk(['async function acceptSuggestion(text)'], {
+      enqueueJob: async (run) => { log.push('job'); return run(); }, DS: { accept: async (t) => { log.push(`accept ${t}`); return answer; } },
+      renderSuggestion: () => log.push('render'), clearProblem: () => log.push('clear'), say: (m) => log.push(`say ${m}`),
+      showProblem: (m, kind, ms) => log.push(`problem ${m} | ${kind} | ${ms}`), problemKind: problemKindReal,
+    });
+    return { ...api, log };
+  };
+
+  test('(+) acceptSuggestion runs in the keys chain, redraws the placeholder, clears the problem line and says what was taken', async () => {
+    const r = acc({ ok: true, status: 200, message: '' });
+    await r.acceptSuggestion(SUG);
+    assert.deepEqual(r.log, ['job', `accept ${SUG}`, 'render', 'clear', `say Accepted Claude's suggestion: ${SUG}`]);
+  });
+
+  test('(−) a refusal shows its fixed line (warn; error for a gone or unreachable session), says nothing was accepted, and still redraws', async () => {
+    const warn = acc({ ok: false, status: 409, message: "Claude's suggestion changed. Nothing was sent." });
+    await warn.acceptSuggestion(SUG);
+    assert.deepEqual(warn.log, ['job', `accept ${SUG}`, 'render', "problem Claude's suggestion changed. Nothing was sent. | warn | 6000"]);
+    const gone = acc({ ok: false, status: 404, message: 'The session is gone.' });
+    await gone.acceptSuggestion(SUG);
+    assert.equal(gone.log.at(-1), 'problem The session is gone. | error | 6000');
+    const local = acc({ ok: false, status: null, message: 'x' });
+    await local.acceptSuggestion(SUG);
+    assert.match(local.log.at(-1), /\| warn \|/, 'nothing was sent: a warning, not an error');
+  });
+
+  test('(−) the accept path sends no key itself: it goes only through DS.accept (the guarded route), never deliver, sendKey or the keys route', () => {
+    const src = fnOf('async function acceptSuggestion(text)');
+    assert.doesNotMatch(src, /deliver\(|sendKey\(|enqueue\(|enqueueSeq\(|\/keys|keys:/);
+    assert.match(src, /DS\.accept\(text\)/);
+  });
+
+  test('(+) the sync gets a POST to the suggestion route with exactly the body it makes, and nothing else', () => {
+    const at = SRC.indexOf('const DS = createDraftSync({');
+    const src = SRC.slice(at, SRC.indexOf('});', at) + 3);
+    assert.match(src, /suggest: \(body\) => call\(`\/api\/app\/pane\/\$\{encodeURIComponent\(paneId\)\}\/suggestion`, \{ method: 'POST', json: body \}\)/);
+  });
+
+  test('(−) accepting is not an edit of the box by the user: the pull inside DS.accept sets the text, the page never calls DS.edited for it', () => {
+    assert.doesNotMatch(fnOf('async function acceptSuggestion(text)'), /DS\.edited|\.value\s*=/);
+  });
+
+  // CSS: its own look and its own word (the visible-state rule): colour + italic + the note's label
+  const css = strip(CSS);
+  test('(+) the suggestion placeholder has its own look (accent colour, italic) and the note its own colour; neither uses :has() or color-mix()', () => {
+    assert.match(css, /\.inbox\.suggest textarea::placeholder\s*\{[^}]*color:\s*var\(--accent\)[^}]*font-style:\s*italic/);
+    assert.match(css, /\.dnote\[data-k="suggest"\]\s*\{[^}]*color:\s*var\(--accent\)[^}]*background:\s*var\(--accent-soft\)/);
+    assert.doesNotMatch(css, /:has\(|color-mix\(/);
+  });
+
+  test('(+) the note\'s icon exists in the page\'s sprite', () => {
+    assert.match(HTML, /<symbol[^>]*id="i-kbd"/);
+    assert.equal(noteViewReal({ kind: 'suggest' }).icon, 'kbd');
   });
 });

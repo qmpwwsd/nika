@@ -1858,6 +1858,7 @@ function fakeControl(answers = {}) {
       answer: method('answer', (pane, b) => ({ status: 200, body: { answered: b.n } })),
       stop: method('stop', () => ({ status: 200, body: { stopped: true, presses: 1 } })),
       writeDraft: method('writeDraft', () => ({ status: 200, body: { draft: null, typed: 0 } })),
+      acceptSuggestion: method('acceptSuggestion', () => ({ status: 200, body: { draft: null } })),
     };
   };
   return f;
@@ -2925,6 +2926,7 @@ describe('capture: draft', () => {
     });
     assert.equal((await call('GET', '/api/app/pane/%256/capture')).status, 404);
     assert.equal((await call('PUT', '/api/app/pane/%256/draft')).status, 404);
+    assert.equal((await call('POST', '/api/app/pane/%256/suggestion')).status, 404, 'accepting a suggestion presses a key: app tier only');
     const agents = await call('GET', '/api/agents?since=all');
     assert.equal(agents.status, 200);
     assert.doesNotMatch(agents.data, /"draft"|"edit"|"cursorAtEnd"/);
@@ -3037,5 +3039,130 @@ describe('PUT /api/app/pane/:id/draft', () => {
     }
     assert.ok(lines.some((l) => /PUT .*draft failed/.test(l)), 'the internal error was logged (so the check is real)');
     assert.deepEqual(lines.filter((l) => l.includes(secret) || l.includes('abcdef0123456789')), []);
+  });
+});
+
+describe('POST /api/app/pane/:id/suggestion', () => {
+  const body = { text: 'run the tests in acme-api' };
+
+  test('(+) hands the pane and exactly { text } to the controller and relays its answer and status', async () => {
+    const { a, control } = await bootScreens({ ctlAnswers: { acceptSuggestion: { status: 200, body: { draft: { sig: 'x', text: 'run the tests in acme-api' } } } } });
+    const r = await pane(a, '%6', 'suggestion', { method: 'POST', json: body });
+    assert.deepEqual([r.status, r.body], [200, { draft: { sig: 'x', text: 'run the tests in acme-api' } }]);
+    assert.deepEqual(control.calls, [['acceptSuggestion', '%6', body]]);
+    assert.equal(r.headers['cache-control'], 'no-store');
+  });
+
+  test('(+) a started pane is eligible; every 409 the controller gives (with its draft) is relayed as it is', async () => {
+    const answers = [
+      { status: 409, body: { error: 'draft-changed', draft: { state: 'empty', suggestion: 'another one' } } },
+      { status: 409, body: { error: 'not-idle', draft: null } },
+      { status: 409, body: { error: 'draft-mismatch', draft: { state: 'empty' } } },
+      { status: 409, body: { error: 'busy-switching' } },
+      { status: 429, body: { error: 'busy', draft: { state: 'empty' } } },
+    ];
+    for (const answer of answers) {
+      const { a, control } = await bootScreens({ ctlAnswers: { acceptSuggestion: answer } });
+      a.ctx.started.set('%8', { key: w.project.key, name: 'x', sessionId: null, role: 'agent', mode: 'plan' });
+      const r = await pane(a, '%8', 'suggestion', { method: 'POST', json: body });
+      assert.deepEqual([r.status, r.body], [answer.status, answer.body]);
+      assert.deepEqual(control.calls, [['acceptSuggestion', '%8', body]]);
+    }
+  });
+
+  test('(−) a bad body is 400 before the pane check, and the controller is not called', async () => {
+    const { a, control } = await bootScreens();
+    const bad = [{}, { text: '' }, { text: 5 }, { text: 'x'.repeat(201) }, { text: 'a\nb' }, { text: 'a\u0000' }, { text: 'a\u001b[2m' }, { text: 'a', base: '' }, { text: 'a', path: '/etc/passwd' }, [], 'text'];
+    for (const json of bad) {
+      for (const id of ['%6', '%5']) {
+        const r = await pane(a, id, 'suggestion', { method: 'POST', json });
+        assert.equal(r.status, 400, `${JSON.stringify(json).slice(0, 50)} on ${id}`);
+        assert.equal(r.body.error, 'invalid');
+      }
+    }
+    assert.deepEqual(control.calls, []);
+  });
+
+  test('(−) an ineligible pane (zsh, not live, unknown id, bad id) is 404 and the controller is not called', async () => {
+    const { a, control } = await bootScreens();
+    for (const id of ['%5', '%7', '%99', 'abc', '..']) {
+      const r = await a.call('POST', `/api/app/pane/${id.replace('%', '%25')}/suggestion`, { json: body });
+      assert.equal(r.status, 404, id);
+    }
+    assert.deepEqual(control.calls, []);
+  });
+
+  test('(−) without the secret 403; text/plain 415; GET and PUT 405; a body over 4 KB 413 -- the controller is not called', async () => {
+    const { a, control } = await bootScreens();
+    assert.equal((await pane(a, '%6', 'suggestion', { method: 'POST', json: body, headers: { 'x-nika-app': null } })).status, 403);
+    assert.equal((await pane(a, '%6', 'suggestion', { method: 'POST', body: JSON.stringify(body), headers: { 'content-type': 'text/plain' } })).status, 415);
+    assert.equal((await pane(a, '%6', 'suggestion', { method: 'GET' })).status, 405);
+    assert.equal((await pane(a, '%6', 'suggestion', { method: 'PUT', json: body })).status, 405);
+    assert.equal((await pane(a, '%6', 'suggestion', { method: 'POST', json: { text: 'x', pad: 'p'.repeat(5 * 1024) } })).status, 413);
+    assert.deepEqual(control.calls, []);
+  });
+
+  test('(−) a foreign Origin or Sec-Fetch-Site is 403 before any pane work', async () => {
+    const { a, control } = await bootScreens();
+    assert.equal((await pane(a, '%6', 'suggestion', { method: 'POST', json: body, headers: { origin: 'http://evil.example' } })).status, 403);
+    assert.equal((await pane(a, '%6', 'suggestion', { method: 'POST', json: body, headers: { 'sec-fetch-site': 'cross-site' } })).status, 403);
+    assert.deepEqual(control.calls, []);
+  });
+
+  test('(−) an accept while End runs on the same pane is 409 busy-switching (one lock), and the Tab is not sent', async () => {
+    const { a, screens, mirror } = await bootScreens({ fake: false });
+    screens['%6'] = boxRows({ cols: 80, lines: [''], ghost: 'run the tests in acme-api' }).rows;
+    let enter;
+    const entered = new Promise((r) => { enter = r; });
+    let release;
+    const hold = new Promise((r) => { release = r; });
+    const capture = mirror.capture;
+    mirror.capture = async (...args) => { enter(); await hold; return capture(...args); };
+    const end = pane(a, '%6', 'end', { method: 'POST', json: {} });
+    await entered;
+    const put = await pane(a, '%6', 'suggestion', { method: 'POST', json: body });
+    assert.deepEqual([put.status, put.body.error], [409, 'busy-switching']);
+    release();
+    await end;
+    assert.ok(!a.deps.calls.some((c) => c[0] === 'keys' && c[2]?.keys?.includes('Tab')), 'no Tab went out');
+  });
+
+  test('(+) end to end with the real controller: one Tab reaches keys.send, and the answer carries the draft the box now reads', async () => {
+    const { a, mirror } = await bootScreens({ fake: false });
+    const state = { text: '' };
+    let shots = 0;
+    mirror.capture = async () => {
+      shots += 1;
+      return { status: 200, body: { ...boxRows({ cols: 80, lines: [state.text], ghost: state.text === '' ? 'run the tests in acme-api' : null, insert: true }), etag: `e${shots}` }, etag: `e${shots}` };
+    };
+    a.deps.keys.send = async (id, b) => { // Claude takes the suggestion on Tab
+      a.deps.calls.push(['keys', id, b]);
+      if (b.keys?.includes('Tab')) state.text = 'run the tests in acme-api';
+      return { status: 200, body: { sent: { text: 0, paste: 0, keys: 1 } } };
+    };
+    const r = await pane(a, '%6', 'suggestion', { method: 'POST', json: body });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.deepEqual([r.body.draft.state, r.body.draft.text, r.body.draft.suggestion, r.body.draft.edit], ['text', 'run the tests in acme-api', null, 'insert']);
+    assert.deepEqual(a.deps.calls.filter((c) => c[0] === 'keys').map((c) => c[2]), [{ keys: ['Tab'] }]);
+    const stale = await pane(a, '%6', 'suggestion', { method: 'POST', json: { text: 'a suggestion that is gone' } });
+    assert.deepEqual([stale.status, stale.body.error], [409, 'draft-changed']);
+    assert.equal(a.deps.calls.filter((c) => c[0] === 'keys').length, 1, 'the stale accept sent nothing');
+  });
+
+  test('(−) nothing of the suggestion text reaches a log line, on success and on an internal error', async () => {
+    const secret = 'zq-private-suggestion-words';
+    const lines = [];
+    const saved = { error: console.error, log: console.log, warn: console.warn, info: console.info };
+    for (const name of Object.keys(saved)) console[name] = (...args) => { lines.push(args.map((x) => (x instanceof Error ? `${x.message}\n${x.stack}` : String(x))).join(' ')); };
+    try {
+      for (const ctlAnswers of [undefined, { acceptSuggestion: () => { throw new Error('boom'); } }]) {
+        const { a } = await bootScreens({ ctlAnswers });
+        await pane(a, '%6', 'suggestion', { method: 'POST', json: { text: secret } });
+      }
+    } finally {
+      Object.assign(console, saved);
+    }
+    assert.ok(lines.some((l) => /POST .*suggestion failed/.test(l)), 'the internal error was logged (so the check is real)');
+    assert.deepEqual(lines.filter((l) => l.includes(secret)), []);
   });
 });

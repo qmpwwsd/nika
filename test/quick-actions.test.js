@@ -789,6 +789,53 @@ describe('composerKey (0.3.3): what a key in the message box does', () => {
     assert.deepEqual(K('Tab', { shiftKey: true }, { switching: true }), { act: 'refuse', message: 'Wait for the mode switch to finish.', kind: 'warn', ms: 3000 });
   });
 
+  // W4: Claude's prompt suggestion is the message box's placeholder; Tab or the right arrow in the empty box accepts it (guarded route)
+  const SUG = 'run the tests in acme-api';
+  test('(+) a bare Tab in an empty box that shows a suggestion accepts it', () => {
+    assert.deepEqual(K('Tab', {}, { suggestion: SUG }), { act: 'accept' });
+  });
+  test('(+) a bare right arrow in an empty box that shows a suggestion accepts it (it no longer goes to the pane unguarded)', () => {
+    assert.deepEqual(K('ArrowRight', {}, { suggestion: SUG }), { act: 'accept' });
+  });
+  test('(\u2212) a held Tab or right arrow accepts once: the repeat is swallowed', () => {
+    assert.deepEqual(K('Tab', { repeat: true }, { suggestion: SUG }), { act: 'swallow' });
+    assert.deepEqual(K('ArrowRight', { repeat: true }, { suggestion: SUG }), { act: 'swallow' });
+  });
+  test('(\u2212) Tab still moves focus when the box has text or there is no suggestion', () => {
+    assert.deepEqual(K('Tab', {}, { suggestion: SUG, empty: false }), { act: 'none' });
+    for (const suggestion of [null, undefined, '']) assert.deepEqual(K('Tab', {}, { suggestion }), { act: 'none' }, String(suggestion));
+    assert.deepEqual(K('Tab'), { act: 'none' }, 'no suggestion key at all');
+  });
+  test('(\u2212) the right arrow still goes to the pane with no suggestion, and stays the caret key when the box has text', () => {
+    for (const suggestion of [null, undefined, '']) assert.deepEqual(K('ArrowRight', {}, { suggestion }), { act: 'arrow', key: 'Right' }, String(suggestion));
+    assert.deepEqual(K('ArrowRight', {}, { suggestion: SUG, empty: false }), { act: 'none' });
+    assert.deepEqual(K('ArrowRight'), { act: 'arrow', key: 'Right' });
+  });
+  test('(\u2212) the other arrows are untouched by a suggestion', () => {
+    for (const [key, name] of [['ArrowUp', 'Up'], ['ArrowDown', 'Down'], ['ArrowLeft', 'Left']]) assert.deepEqual(K(key, {}, { suggestion: SUG }), { act: 'arrow', key: name }, key);
+  });
+  test('(\u2212) a modifier makes it another key: Shift+Tab is still BTab (never accepts), Ctrl/Alt/Meta+Tab and Shift/Ctrl/Alt/Meta+Right do not accept', () => {
+    assert.deepEqual(K('Tab', { shiftKey: true }, { suggestion: SUG }), { act: 'key', key: 'BTab' });
+    assert.deepEqual(K('Tab', { ctrlKey: true, shiftKey: true }, { suggestion: SUG }), { act: 'focus-back' });
+    for (const m of [{ ctrlKey: true }, { altKey: true }, { metaKey: true }]) {
+      assert.deepEqual(K('Tab', m, { suggestion: SUG }), { act: 'none' }, `Tab ${JSON.stringify(m)}`);
+      assert.deepEqual(K('ArrowRight', m, { suggestion: SUG }), { act: 'none' }, `Right ${JSON.stringify(m)}`);
+    }
+    assert.deepEqual(K('ArrowRight', { shiftKey: true }, { suggestion: SUG }), { act: 'none' });
+  });
+  test('(\u2212) an IME composition owns Tab and the right arrow', () => {
+    assert.deepEqual(K('Tab', { isComposing: true }, { suggestion: SUG }), { act: 'none' });
+    assert.deepEqual(K('ArrowRight', { keyCode: 229 }, { suggestion: SUG }), { act: 'none' });
+  });
+  test('(\u2212) the command palette keeps Tab and the arrows when it has an active option (the box then holds "/..." text, so there is no suggestion)', () => {
+    assert.equal(act(K('Tab', {}, { choosing: true, empty: false, suggestion: null })), 'palette-insert');
+    assert.equal(act(K('Tab', {}, { choosing: true, suggestion: SUG })), 'palette-insert', 'even if both were set, the palette wins');
+  });
+  test('(\u2212) accept is never a key: composerKey returns { act: \'accept\' } with no key name, so session.js cannot turn it into Tab on the keys route', () => {
+    assert.equal(Object.hasOwn(K('Tab', {}, { suggestion: SUG }), 'key'), false);
+    assert.equal(Object.hasOwn(K('ArrowRight', {}, { suggestion: SUG }), 'key'), false);
+  });
+
   test('(+) Ctrl+Shift+Tab moves focus back, also with text and a prompt held', () => {
     assert.equal(act(K('Tab', { ctrlKey: true, shiftKey: true })), 'focus-back');
     assert.equal(act(K('Tab', { ctrlKey: true, shiftKey: true }, { empty: false, promptOpen: true, status: 'attn' })), 'focus-back');

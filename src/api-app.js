@@ -15,7 +15,7 @@ import { mapLimit } from './util.js';
 import { MODE_TARGETS, bypassWindow, modeFromRows, promptFromRows } from './mode.js';
 import { MODEL_CATALOG } from './models.js';
 import { matches as etagMatches } from './mirror.js';
-import { createSessionControl, promptSig, insertShown, editMode, readDraft, checkDraftBody } from './session-control.js';
+import { createSessionControl, promptSig, insertShown, editMode, readDraft, checkDraftBody, checkSuggestionBody } from './session-control.js';
 import { tagPane, pickState, claudePane } from './orchestrate.js';
 
 const ELIGIBILITY_TTL_MS = 1000; // pane list + live-agent snapshot, so a 4 Hz capture does not run collect() 4 times a second
@@ -515,6 +515,16 @@ export function createAppApi({ secret, ctx, deps }) {
     if (bad) return bad;
     const { id, failure } = await eligiblePane(params[0]);
     return failure ?? control.writeDraft(id, body);
+  });
+
+  // Accept Claude's prompt suggestion (0.5, W4): the page's Tab or right arrow. Not the plain keys route: a Tab that lands after the
+  // suggestion vanished or a prompt opened is the same race as T51, so the controller presses it only on a fresh screen that still shows
+  // exactly `text`, and presses nothing else. Nothing of the body is logged here or there.
+  route('POST', /^\/api\/app\/pane\/([^/]+)\/suggestion$/, CAP.small, async ({ params, body }) => {
+    const bad = checkSuggestionBody(body);
+    if (bad) return bad;
+    const { id, failure } = await eligiblePane(params[0]);
+    return failure ?? control.acceptSuggestion(id, body);
   });
 
   route('POST', /^\/api\/app\/pane\/([^/]+)\/answer$/, CAP.small, async ({ params, body }) => {
