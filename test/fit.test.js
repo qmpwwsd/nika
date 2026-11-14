@@ -443,6 +443,7 @@ describe('renew', () => {
     assert.deepEqual(await r.put('%2', 240, 70, false), ans('fitted', null, 240, 70, 3));
     assert.deepEqual(r.argv(at), [
       ['list-panes', '-a', '-F', FMT],
+      ['list-panes', '-a', '-F', FMT], // read again inside the pane lock, which may have waited (N1)
       ['resize-window', '-t', '@1', '-x', '240', '-y', '70'],
       ['list-panes', '-a', '-F', FMT],
       ['display-message', '-p', '-t', '@1', '-F', '#{window_layout}'],
@@ -460,7 +461,7 @@ describe('renew', () => {
     const nonce = r.tag();
     const at = r.at();
     assert.deepEqual(await r.put('%2', 100, 30, false), ans('zoomed', 'panel-smaller', 200, 50, 3));
-    assert.deepEqual(r.argv(at)[1], ['resize-window', '-t', '@1', '-x', '200', '-y', '50']);
+    assert.deepEqual(r.argv(at)[2], ['resize-window', '-t', '@1', '-x', '200', '-y', '50']);
     assert.equal(r.lease(nonce).resized, false);
     await r.tick();
     assert.equal(r.fit.size(), 1, 'the window is at the size nika expects now');
@@ -2068,5 +2069,111 @@ describe('fix round 3: a blocked / changed or user-change answer describes the w
       };
       assert.deepEqual(await r.put('%2', 220, 60), ans('blocked', 'changed', 66, 50, 3, false));
     });
+  });
+});
+
+describe('fix round 4 (N1): a renew resizes only a window that is still as nika holds it, judged inside the pane lock', () => {
+  const win = (r) => r.world.wins.get('@1');
+  /** A fitted window (220x60) held by a gated controller; the next request asks for 240x70 and waits in the lock while `flip` runs. */
+  async function renewDuringWait(flip, open = false) {
+    const r = rig();
+    const { fit, g } = gatedFit(r);
+    await fit.hold('%2', { cols: 220, rows: 60, open: true });
+    g.shut();
+    const at = r.at();
+    const done = fit.hold('%2', { cols: 240, rows: 70, open });
+    await until(() => g.waiting === 1);
+    flip(win(r));
+    g.open();
+    return { r, fit, res: await done, at };
+  }
+  const resizes = (r, at) => r.argv(at).filter((a) => a[0] === 'resize-window').map((a) => a.slice(3).join(' '));
+
+  const FLIPS = {
+    'the user resized the window': (w) => { w.width = 150; },
+    'the user unzoomed': (w) => { w.zoomed = false; },
+    'the user moved focus': (w) => { w.active = '%3'; },
+    'a split': (w) => { w.panes.push({ id: '%9', command: 'zsh' }); },
+  };
+  for (const [what, flip] of Object.entries(FLIPS)) {
+    test(`(−) ${what} during the lock wait: no resize-window to the new panel size, a release, blocked / user-change`, async () => {
+      const { r, fit, res, at } = await renewDuringWait(flip);
+      assert.equal(res.status, 200);
+      assert.equal(res.body.fit.state, 'blocked');
+      assert.equal(res.body.fit.reason, 'user-change');
+      assert.ok(!resizes(r, at).includes('-x 240 -y 70'), JSON.stringify(resizes(r, at)));
+      assert.ok(!r.names(at).includes('tag'), 'never a second acquire');
+      assert.equal(fit.size(), 0);
+      assert.equal(r.tag(), '');
+      assert.deepEqual(r.files(), []);
+      assert.equal(r.sched.on, false);
+      assert.equal((await fit.hold('%2', { cols: 240, rows: 70, open: false })).body.fit.reason, 'user-change', 'off until the page opens the session window again');
+    });
+  }
+
+  test('(−) the user resized the window: the only resize-window is the restore to the original size, and the answer is the restored pane', async () => {
+    const { r, res, at } = await renewDuringWait(FLIPS['the user resized the window']);
+    assert.deepEqual(resizes(r, at), ['-x 200 -y 50']);
+    assert.deepEqual(res, ans('blocked', 'user-change', 66, 50, 3, false));
+    assert.equal(win(r).zoomed, false);
+  });
+
+  test('(−) the tag is gone (the window was reused) during the wait: nothing is touched, no mark, the lease is dropped', async () => {
+    const { r, fit, res, at } = await renewDuringWait((w) => { w.tag = ''; });
+    assert.equal(res.body.fit.reason, 'user-change');
+    assert.ok(!r.names(at).some((n) => MUTATING.has(n)), 'no mutation');
+    assert.equal(fit.size(), 0);
+    assert.deepEqual(r.files(), []);
+    assert.equal((await fit.hold('%2', { cols: 240, rows: 70, open: false })).body.fit.state, 'fitted', 'no mark: the next heartbeat fits');
+  });
+
+  test('(−) the release that follows a user change finds the pane busy: 409, the lease is as it was, the tick restores', async () => {
+    const r = rig();
+    const { fit, gate } = busyRig(r);
+    await fit.hold('%2', { cols: 220, rows: 60, open: true });
+    const nonce = r.tag();
+    const file = fs.readFileSync(r.file(nonce), 'utf8');
+    let lists = 0;
+    r.world.after = (name) => { // the first list is the one the decision rests on; the user resizes after it, and the lock is granted for the second (the re-list) and busy for the release
+      if (name !== 'list') return;
+      lists += 1;
+      if (lists === 1) win(r).width = 150;
+      if (lists === 2) gate.busy = true;
+    };
+    assert.deepEqual(await fit.hold('%2', { cols: 240, rows: 70, open: false }), BUSY);
+    assert.equal(fit.size(), 1, 'the lease is registered again');
+    assert.equal(fs.readFileSync(r.file(nonce), 'utf8'), file);
+    assert.equal(gate.refused, 1);
+    assert.ok(!r.names().includes('size') || r.names().filter((n) => n === 'size').length === 1, 'the renew resize never ran (only nika\'s first fit resized)');
+    gate.busy = false;
+    await r.tick();
+    assert.equal(fit.size(), 0);
+    assert.equal(r.tag(), '');
+    assert.deepEqual([win(r).width, win(r).height], [200, 50]);
+  });
+
+  test('(+) no change during the wait: the renew is one list, one list inside the lock, the resize, then the read-back; only the middle two are locked', async () => {
+    const r = rig();
+    await r.put('%2', 220, 60);
+    const at = r.at();
+    assert.deepEqual(await r.put('%2', 240, 70, false), ans('fitted', null, 240, 70, 3));
+    const calls = r.world.calls.slice(at);
+    assert.deepEqual(calls.map((c) => c.name), ['list', 'list', 'size', 'list', 'layout']);
+    assert.deepEqual(calls.map((c) => c.locked > 0), [false, true, true, false, false]);
+  });
+
+  test('(+) no change during a real wait: the resize happens and the lease continues at the new size', async () => {
+    const { r, fit, res, at } = await renewDuringWait(() => {});
+    assert.deepEqual(res, ans('fitted', null, 240, 70, 3));
+    assert.deepEqual(resizes(r, at), ['-x 240 -y 70']);
+    assert.equal(fit.size(), 1);
+  });
+
+  test('(+) a heartbeat at the held size reads nothing more: still answered from memory', async () => {
+    const r = rig();
+    await r.put('%2', 220, 60);
+    const at = r.at();
+    assert.deepEqual(await r.put('%2', 220, 60, false), ans('fitted', null, 220, 60, 3));
+    assert.equal(r.at(), at);
   });
 });

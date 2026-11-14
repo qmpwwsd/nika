@@ -515,7 +515,20 @@ export function createFit({
     }
     lease.resized = target[0] !== lease.width0 || target[1] !== lease.height0;
     try {
-      await lock(lease.pane, () => tmux(ARGV.size(lease.window, target[0], target[1])));
+      let changed = false;
+      await lock(lease.pane, async () => {
+        // N1: `snap` is older than the lock wait; a window the user changed meanwhile is released, never resized over. Judged against
+        // the size nika holds (`kept`), not the one it is about to set.
+        if (observe({ ...lease, ...kept }, await listing())) {
+          changed = true;
+          return;
+        }
+        await tmux(ARGV.size(lease.window, target[0], target[1]));
+      });
+      if (changed) {
+        await releaseNow(lease, 'user-change');
+        return await restored(lease, 'user-change');
+      }
       return await verify(lease);
     } catch (e) {
       if (paneBusy(e)) { // the step never ran: the window is as it was, so is the lease (the next request or tick goes on from here)
