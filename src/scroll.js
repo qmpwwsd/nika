@@ -7,6 +7,9 @@ import { PANE_ID } from './ids.js';
 import { promptFromRows, rowText } from './mode.js';
 import { readDraft } from './session-control.js';
 
+// The row check for Claude's scrolled-up pill lives in src/mode.js beside surveyShown (the capture parser needs it without this controller).
+export { pillShown } from './mode.js';
+
 /** Scroll requests per pane per second (a sliding window, like src/keys.js). */
 export const SCROLL_RATE = 10;
 /** Most pages one request may move (and so the most keys it sends in its one `keys.send` call). */
@@ -28,35 +31,6 @@ const MESSAGE = {
 const conflict = (error) => ({ status: 409, body: { error } });
 const realSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// Claude's scrolled-up pill (spike S5, Claude Code 2.1.325): `Jump to bottom: fn+<down arrow> to scroll`, or `Jump to bottom (click) <down arrow>`
-// with tmux `mouse on`. Only the words are matched; the style is checked on the span that holds the `J`.
-const PILL = /^\s*Jump to bottom\b/;
-const PILL_WORDS = 'Jump to bottom'.length;
-const PILL_FG = 231;
-const PILL_BG = 237;
-
-/**
- * True when a row of the screen is Claude's pill: its text, trimmed at the start, begins with `Jump to bottom` and the span holding
- * the `J` is fg 231 on bg 237. Any row counts (a dialog may be open while scrolled). Display only: a forged pill changes what the page
- * shows, never whether a key goes out (design W3 section 10.1).
- */
-export function pillShown(rows) {
-  if (!Array.isArray(rows)) return false;
-  return rows.some((row) => {
-    if (!Array.isArray(row)) return false;
-    const hit = PILL.exec(rowText(row));
-    if (hit === null) return false;
-    const at = hit[0].length - PILL_WORDS; // UTF-16 offset of the `J`, spans concatenated as rowText does
-    let start = 0;
-    for (const sp of row) {
-      const len = typeof sp?.t === 'string' ? sp.t.length : 0;
-      if (at < start + len) return sp.s?.fg === PILL_FG && sp.s?.bg === PILL_BG;
-      start += len;
-    }
-    return false;
-  });
-}
-
 /** null when the body is exactly { dir: 'up'|'down', pages: integer 1..8 } or { to: 'top'|'bottom' }, else the 400 answer. */
 export function checkScrollBody(body) {
   const names = body !== null && typeof body === 'object' && !Array.isArray(body) ? Object.keys(body).sort().join() : '';
@@ -71,11 +45,17 @@ export function scrollKeys(body) {
   return body.to !== undefined ? [END_KEY.get(body.to)] : Array(body.pages).fill(DIR_KEY.get(body.dir));
 }
 
+// The first input-box row of an unreadable draft as Claude draws it: up to 2 spaces, the prompt glyph (U+276F), one space (Claude draws a
+// no-break space, mapped to a space first), then the slash.
+const SLASH_FIRST_ROW = /^ {0,2}\u276f \//;
+
 /**
  * The screen checks of design W3 section 2.3 (7 to 10) on one capture `{ rows, cursor, cols, alt }`: null when keys may go, else the 409 code.
  * Claude binds PageUp/PageDown/End-like keys to move the highlight of its select lists, so no key goes while a prompt, a dialog, a survey,
- * a menu or an unknown footer is on screen (readDraft is the reading draft sync trusts: it is null for all of them); the slash menu leaves
- * the footer readable, so a draft that starts with `/` is refused too (it costs only a partly typed command).
+ * a menu or an unknown footer is on screen (readDraft is the reading draft sync trusts: it is null for all of them).
+ * Slash menu, fail closed (it is drawn above the box and leaves the footer readable): menu-open when (a) the draft state is text and its
+ * text starts with `/`, or (b) the draft is unreadable and the first input-box row's text after the `\u276f` glyph and its space starts
+ * with `/` (an unreadable draft has no text, so the row is read). It costs only a partly typed command.
  */
 export function scrollGate(cap) {
   if (cap?.alt !== true) return 'no-view';
@@ -83,6 +63,7 @@ export function scrollGate(cap) {
   const draft = readDraft(cap);
   if (draft === null) return 'screen-unclear';
   if (draft.state === 'text' && draft.text.startsWith('/')) return 'menu-open';
+  if (draft.state === 'unreadable' && SLASH_FIRST_ROW.test(rowText(cap.rows[draft.box.top + 1]).replace(/\u00a0/g, ' '))) return 'menu-open';
   return null;
 }
 
@@ -117,14 +98,15 @@ export function createScroll({ mirror, keys, lock, keyGap, now = Date.now, sleep
     return true;
   }
 
-  /** Under the lock: gap, one fresh capture, the screen gate, one keys.send, a short wait, one fresh capture. */
-  async function run(pane, body) {
+  /** Under the lock, with the keys already fixed: gap, one fresh capture, the screen gate, gap again, one keys.send, a short wait, one fresh capture. */
+  async function run(pane, list) {
     if (keyGap(pane)) return conflict('busy-switching');
     const cap = await mirror.capture(pane, undefined, { fresh: true });
     if (cap.status !== 200) return { status: cap.status, body: cap.body };
     const code = scrollGate(cap.body);
     if (code !== null) return { status: 409, body: { error: code, message: MESSAGE[code] } };
-    const list = scrollKeys(body);
+    // Stop runs outside the lock and may have started during the capture: look once more, right before the keys (no await in between)
+    if (keyGap(pane)) return conflict('busy-switching');
     const sent = await keys.send(pane, { keys: list });
     if (sent.status !== 200) return { status: sent.status, body: sent.body };
     let scrolled = null; // the keys are out whatever happens next, so a failed look afterwards is an unknown, not an error
@@ -143,9 +125,10 @@ export function createScroll({ mirror, keys, lock, keyGap, now = Date.now, sleep
       if (typeof pane !== 'string' || !PANE_ID.test(pane)) return { status: 400, body: { error: 'invalid', message: 'invalid pane id' } };
       const bad = checkScrollBody(body);
       if (bad !== null) return bad;
+      const list = scrollKeys(body); // fixed here, before any await: a body changed later cannot change the keys
       if (!allow(pane)) return { status: 429, body: { error: 'busy', message: `at most ${SCROLL_RATE} scroll requests per second per pane` } };
       try {
-        return await lock(pane, () => run(pane, body));
+        return await lock(pane, () => run(pane, list));
       } catch (err) {
         if (err?.code === 'EPANEBUSY') return conflict('busy-switching');
         throw err;

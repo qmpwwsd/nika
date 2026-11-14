@@ -85,6 +85,35 @@ const SURVEY_OPTIONS = /^\s*1: \S.*\b0: Dismiss\s*$/;
 /** True when a row of the screen is a feedback survey question or its options row (any row: the survey's place was not captured). */
 export const surveyShown = (rows) => Array.isArray(rows) && rows.some((row) => { const t = rowText(row); return SURVEY_QUESTION.test(t) || SURVEY_OPTIONS.test(t); });
 
+// Claude's scrolled-up pill (spike S5, Claude Code 2.1.325): `Jump to bottom: fn+<down arrow> to scroll`, or `Jump to bottom (click) <down arrow>`
+// with tmux `mouse on`. Only the words are matched; the style is checked on the span that holds the `J`.
+const PILL = /^\s*Jump to bottom\b/;
+const PILL_WORDS = 'Jump to bottom'.length;
+const PILL_FG = 231;
+const PILL_BG = 237;
+
+/**
+ * True when a row of the screen is Claude's pill: its text, trimmed at the start, begins with `Jump to bottom` and the span holding
+ * the `J` is fg 231 on bg 237. Any row counts (a dialog may be open while scrolled). Display only: a forged pill changes what the page
+ * shows, never whether a key goes out (design W3 section 10.1). Pure row check; src/scroll.js re-exports it.
+ */
+export function pillShown(rows) {
+  if (!Array.isArray(rows)) return false;
+  return rows.some((row) => {
+    if (!Array.isArray(row)) return false;
+    const hit = PILL.exec(rowText(row));
+    if (hit === null) return false;
+    const at = hit[0].length - PILL_WORDS; // UTF-16 offset of the `J`, spans concatenated as rowText does
+    let start = 0;
+    for (const sp of row) {
+      const len = typeof sp?.t === 'string' ? sp.t.length : 0;
+      if (at < start + len) return sp.s?.fg === PILL_FG && sp.s?.bg === PILL_BG;
+      start += len;
+    }
+    return false;
+  });
+}
+
 /** True when any of the last PROMPT_ROWS non-blank rows (the window a permission prompt sits in, and its `sig` covers) mentions bypass. Shared by the keys guard and the answer route. */
 export const bypassWindow = (rows) => mentionsBypass(lastNonBlank(rows, PROMPT_ROWS).join(' '));
 

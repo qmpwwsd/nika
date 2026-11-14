@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import * as mode from '../src/mode.js';
 import {
   MODES, MODE_TARGETS, PROMPT_ROWS, FOOTER, OPTION, rowText, lastNonBlank, modeFromRows, promptFromRows, mentionsBypass, bypassWindow,
-  surveyShown, SHELL_FOOTER,
+  surveyShown, pillShown, SHELL_FOOTER,
 } from '../src/mode.js';
 import { parseCapture } from '../src/mirror.js';
 import { subagentRows } from './helpers.js';
@@ -553,5 +553,57 @@ describe('surveyShown', () => {
 
   test('(−) malformed input is false, never throws', () => {
     for (const bad of [null, undefined, 'abc', 7, {}, [], [null], [[{}]]]) assert.equal(surveyShown(bad), false, String(bad));
+  });
+});
+
+// Claude's scrolled-up pill (spike S5, Claude Code 2.1.325). Display only: the scroll route never reads it to decide a key.
+describe('pillShown', () => {
+  const sp = (t, s = {}) => span(t, { ...DEF, ...s });
+  const PILL_STYLE = { fg: 231, bg: 237 };
+  /** Claude's pill row: centred, the words in fg 231 on bg 237. */
+  const pill = (words = 'Jump to bottom: fn+\u2193 to scroll') => [sp(' '.repeat(40)), sp(` ${words} `, PILL_STYLE)];
+
+  test('(+) both pill texts of spike S5 match, in any row', () => {
+    assert.equal(pillShown(rowsOf('older output', pill('Jump to bottom: fn+\u2193 to scroll'), '', '  input')), true);
+    assert.equal(pillShown(rowsOf(pill('Jump to bottom (click) \u2193'))), true);
+    assert.equal(pillShown(rowsOf(pill(), 'a', 'b', 'c')), true, 'first row');
+    assert.equal(pillShown(rowsOf('a', 'b', pill())), true, 'last row');
+  });
+
+  test('(+) the pill may start at column 0 and only the span holding the J is checked', () => {
+    assert.equal(pillShown(rowsOf([sp('Jump to bottom', PILL_STYLE)])), true);
+    assert.equal(pillShown(rowsOf([sp('Jump to ', PILL_STYLE), sp('bottom: x')])), true, 'the J is in the styled span');
+    assert.equal(pillShown(rowsOf([sp(' '), sp('J', PILL_STYLE), sp('ump to bottom')])), true);
+    assert.equal(pillShown(rowsOf([sp('  '), sp('Jump to bottom', PILL_STYLE), sp(' ', { fg: 1, bg: 2 })])), true);
+  });
+
+  test('(\u2212) the right words without the right colours are not the pill', () => {
+    const style = (s) => rowsOf([sp(' '), sp(' Jump to bottom: fn+\u2193 to scroll ', s)]);
+    assert.equal(pillShown(style({ fg: 231 })), false, 'no background');
+    assert.equal(pillShown(style({ bg: 237 })), false, 'no foreground');
+    assert.equal(pillShown(style({ fg: 231, bg: 236 })), false);
+    assert.equal(pillShown(style({ fg: 230, bg: 237 })), false);
+    assert.equal(pillShown(style({ fg: [255, 255, 255], bg: 237 })), false, 'rgb is another colour');
+    assert.equal(pillShown(style({ fg: '231', bg: '237' })), false, 'strings are not colours');
+    assert.equal(pillShown(style({})), false);
+    assert.equal(pillShown(rowsOf([sp('J'), sp('ump to bottom', PILL_STYLE)])), false, 'the J is in a plain span');
+  });
+
+  test('(\u2212) the words mid-row, other words, other case and plain text are not the pill', () => {
+    const styled = (t) => rowsOf([sp(t, PILL_STYLE)]);
+    assert.equal(pillShown(styled('see Jump to bottom')), false, 'after other text');
+    assert.equal(pillShown(styled('> Jump to bottom')), false);
+    assert.equal(pillShown(styled('Jump to bottomless')), false, 'a word boundary is required');
+    assert.equal(pillShown(styled('jump to bottom')), false);
+    assert.equal(pillShown(styled('Jump  to bottom')), false);
+    assert.equal(pillShown(styled('Jump to top')), false);
+    assert.equal(pillShown(styled('')), false);
+    assert.equal(pillShown(rowsOf('Jump to bottom: fn+\u2193 to scroll')), false, 'plain text');
+  });
+
+  test('(\u2212) rows that are not rows never throw and never match', () => {
+    for (const rows of [undefined, null, 5, 'Jump to bottom', {}, [], [null], [undefined], [5], ['Jump to bottom'], [[]], [[null]], [[{}]], [[{ t: 5, s: {} }]], [[{ t: 'Jump to bottom' }]]]) {
+      assert.equal(pillShown(rows), false, JSON.stringify(rows));
+    }
   });
 });

@@ -5,7 +5,7 @@
 // and span count whatever the input.
 import { createHash } from 'node:crypto';
 import { PANE_ID } from './ids.js';
-import { pillShown } from './scroll.js';
+import { pillShown } from './mode.js';
 import { tmuxFailure } from './tmuxerr.js';
 
 const MAX_ROWS = 2000;

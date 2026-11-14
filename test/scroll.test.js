@@ -8,7 +8,9 @@ import { SCROLL_RATE, MAX_PAGES, pillShown, checkScrollBody, scrollKeys, scrollG
 import { createKeys } from '../src/keys.js';
 import { createMirror } from '../src/mirror.js';
 import { readDraft } from '../src/session-control.js';
-import { promptFromRows } from '../src/mode.js';
+import { RULE_ROW } from '../src/draft.js';
+import * as modeJs from '../src/mode.js';
+import { promptFromRows, modeFromRows, surveyShown, rowText } from '../src/mode.js';
 import { boxRows, span } from './helpers.js';
 
 const ESC = '\u001b';
@@ -42,37 +44,88 @@ const ALLOWED_SCREENS = [
   ['empty bash box', view({ mode: 'bash' })],
   ['unreadable draft: history entry', view({ label: 'History 3/3', lines: ['older entry'] })],
   ['unreadable draft: pasted text', view({ lines: ['[Pasted text #1 +20 lines]'] })],
+  ['unreadable draft: history entry with a slash later in the row', view({ label: 'History 3/3', lines: ['older /entry'] })],
+  ['unreadable draft: trailing space', view({ lines: ['fix the build '] })],
+  ['unreadable draft: a tall box that does not start with a slash', view({ lines: Array.from({ length: 14 }, (_, i) => `line ${i}`) })],
   ['vim INSERT footer', view({ insert: true, lines: ['x'] })],
   ['a turn is running', view({ above: ['  Working on it', '  ✻ Thinking… (12s · esc to interrupt)'] })],
   ['already scrolled up (pill on screen)', view({ above: ['  older output', pill()], scrolled: true })],
 ];
 
-/** Screens on which nothing may be sent: [name, capture body, code]. */
+/** The rule rows of a screen (indexes), as the draft reader sees them. */
+const ruleRows = (rows) => rows.flatMap((r, i) => (RULE_ROW.test(rowText(r).trimEnd()) ? [i] : []));
+const inBox = (cap) => { const r = ruleRows(cap.rows); return r.length >= 2 && cap.cursor.y > r.at(-2) && cap.cursor.y < r.at(-1); };
+/** What a refused screen must show for the code to be refused for the reason the fixture names (not by accident of another check). */
+const WHY = {
+  prompt: (cap) => assert.notEqual(promptFromRows(cap.rows), null, 'a permission prompt parses'),
+  survey: (cap) => {
+    assert.equal(surveyShown(cap.rows), true);
+    assert.ok(ruleRows(cap.rows).length >= 2 && inBox(cap), 'the box is there');
+    assert.notEqual(modeFromRows(cap.rows), 'unknown', 'the footer is readable: the survey alone refuses');
+  },
+  footer: (cap) => {
+    assert.ok(inBox(cap), 'two rules with the cursor between them: the footer is what is left');
+    assert.equal(surveyShown(cap.rows), false);
+    assert.equal(modeFromRows(cap.rows), 'unknown');
+  },
+  cursor: (cap) => {
+    assert.ok(ruleRows(cap.rows).length >= 2 && !inBox(cap), 'two rules, the cursor outside them');
+    assert.equal(surveyShown(cap.rows), false);
+    assert.notEqual(modeFromRows(cap.rows), 'unknown', 'the footer is readable: the cursor alone refuses');
+  },
+  'no-cursor': (cap) => {
+    assert.equal(cap.cursor, null);
+    assert.ok(ruleRows(cap.rows).length >= 2);
+    assert.notEqual(modeFromRows(cap.rows), 'unknown');
+  },
+  rules: (cap) => assert.ok(ruleRows(cap.rows).length < 2, 'fewer than two rule rows'),
+  'slash-text': (cap) => {
+    const d = readDraft(cap);
+    assert.equal(d.state, 'text');
+    assert.ok(d.text.startsWith('/'));
+  },
+  'slash-unreadable': (cap) => {
+    const d = readDraft(cap);
+    assert.equal(d.state, 'unreadable');
+    assert.equal(d.text, '', 'an unreadable draft has no text: the first box row is what shows the slash');
+    assert.match(rowText(cap.rows[d.box.top + 1]).replace(/\u00a0/g, ' '), /^ {0,2}\u276f \//);
+  },
+};
+
+/** Screens on which nothing may be sent: [name, capture body, code, why (a key of WHY, or null for no-view)]. */
 const REFUSED_SCREENS = [
-  ['alternate screen off', view({ alt: false }), 'no-view'],
-  ['alt missing', (({ alt, ...rest }) => rest)(view()), 'no-view'],
-  ['alt not a boolean', { ...view(), alt: '1' }, 'no-view'],
-  ['alt off and a prompt', { rows: PROMPT.map(row), cursor: { x: 0, y: 0, visible: true }, cols: COLS, alt: false }, 'no-view'],
-  ['permission prompt', { rows: PROMPT.map(row), cursor: { x: 0, y: 0, visible: true }, cols: COLS, alt: true }, 'prompt-open'],
-  ['permission prompt below a plain box', { ...view(), rows: [...view().rows, ...PROMPT.map(row)] }, 'prompt-open'],
-  ['AskUserQuestion footer', view({ footer: 'Enter to select · ↑/↓ to navigate · Esc to cancel' }), 'screen-unclear'],
-  ['ExitPlanMode style dialog', {
-    rows: ['Ready to code?', '', ' Would you like to proceed?', ' ❯ 1. Yes, auto-accept edits', '   2. No, keep planning', '', ' ctrl-g to edit plan'].map(row),
+  ['alternate screen off', view({ alt: false }), 'no-view', null],
+  ['alt missing', (({ alt, ...rest }) => rest)(view()), 'no-view', null],
+  ['alt not a boolean', { ...view(), alt: '1' }, 'no-view', null],
+  ['alt off and a prompt', { rows: PROMPT.map(row), cursor: { x: 0, y: 0, visible: true }, cols: COLS, alt: false }, 'no-view', null],
+  ['permission prompt', { rows: PROMPT.map(row), cursor: { x: 0, y: 0, visible: true }, cols: COLS, alt: true }, 'prompt-open', 'prompt'],
+  ['permission prompt below a plain box', { ...view(), rows: [...view().rows, ...PROMPT.map(row)] }, 'prompt-open', 'prompt'],
+  ['AskUserQuestion footer', view({ footer: 'Enter to select \u00b7 \u2191/\u2193 to navigate \u00b7 Esc to cancel' }), 'screen-unclear', 'footer'],
+  ['ExitPlanMode style dialog: option rows between two rules, unknown footer', {
+    rows: ['Ready to code?', RULE, '\u276f\u00a01. Yes, auto-accept edits', '  2. No, keep planning', RULE, ' ctrl-g to edit plan'].map(row),
+    cursor: { x: 4, y: 2, visible: true }, cols: COLS, alt: true,
+  }, 'screen-unclear', 'footer'],
+  ['numbered dialog with no rule rows at all', {
+    rows: ['Ready to code?', '', ' Would you like to proceed?', ' \u276f 1. Yes, auto-accept edits', '   2. No, keep planning', '', ' ctrl-g to edit plan'].map(row),
     cursor: { x: 0, y: 0, visible: true }, cols: COLS, alt: true,
-  }, 'screen-unclear'],
-  ['feedback survey', view({ above: ['● How is Claude doing this session? (optional)', '  1: Bad    2: Fine    3: Good    0: Dismiss'] }), 'screen-unclear'],
-  ['unknown footer', view({ footer: 'something Claude never drew' }), 'screen-unclear'],
-  ['overlay in place of the mode line', view({ footer: '/model · Esc to close' }), 'screen-unclear'],
-  ['cursor on the status line below the box', (() => { const v = view(); return { ...v, cursor: { x: 2, y: v.rows.length - 2, visible: true } }; })(), 'screen-unclear'],
-  ['cursor on the top rule', (() => { const v = view(); return { ...v, cursor: { x: 2, y: 2, visible: true } }; })(), 'screen-unclear'],
-  ['no cursor', view({ cursor: null }), 'screen-unclear'],
-  ['no rule rows', { rows: ['  Here is the answer.', MODE_LINE].map(row), cursor: { x: 0, y: 0, visible: true }, cols: COLS, alt: true }, 'screen-unclear'],
-  ['one rule row', { rows: ['  Here is the answer.', RULE, '❯ ', MODE_LINE].map(row), cursor: { x: 2, y: 2, visible: true }, cols: COLS, alt: true }, 'screen-unclear'],
-  ['no rows', { rows: [], cursor: { x: 0, y: 0, visible: true }, cols: COLS, alt: true }, 'screen-unclear'],
-  ['slash command being typed', view({ lines: ['/com'] }), 'menu-open'],
-  ['a lone slash', view({ lines: ['/'] }), 'menu-open'],
-  ['multi-line draft that starts with a slash', view({ lines: ['/help', 'more'] }), 'menu-open'],
-  ['bash box whose text starts with a slash (fails closed)', view({ mode: 'bash', lines: ['/usr/bin/true'] }), 'menu-open'],
+  }, 'screen-unclear', 'rules'],
+  ['feedback survey', view({ above: ['\u25cf How is Claude doing this session? (optional)', '  1: Bad    2: Fine    3: Good    0: Dismiss'] }), 'screen-unclear', 'survey'],
+  ['unknown footer', view({ footer: 'something Claude never drew' }), 'screen-unclear', 'footer'],
+  ['overlay in place of the mode line', view({ footer: '/model \u00b7 Esc to close' }), 'screen-unclear', 'footer'],
+  ['cursor on the status line below the box', (() => { const v = view(); return { ...v, cursor: { x: 2, y: v.rows.length - 2, visible: true } }; })(), 'screen-unclear', 'cursor'],
+  ['cursor on the top rule', (() => { const v = view(); return { ...v, cursor: { x: 2, y: 2, visible: true } }; })(), 'screen-unclear', 'cursor'],
+  ['no cursor', view({ cursor: null }), 'screen-unclear', 'no-cursor'],
+  ['no rule rows', { rows: ['  Here is the answer.', MODE_LINE].map(row), cursor: { x: 0, y: 0, visible: true }, cols: COLS, alt: true }, 'screen-unclear', 'rules'],
+  ['one rule row', { rows: ['  Here is the answer.', RULE, '\u276f\u00a0', MODE_LINE].map(row), cursor: { x: 2, y: 2, visible: true }, cols: COLS, alt: true }, 'screen-unclear', 'rules'],
+  ['no rows', { rows: [], cursor: { x: 0, y: 0, visible: true }, cols: COLS, alt: true }, 'screen-unclear', 'rules'],
+  ['slash command being typed', view({ lines: ['/com'] }), 'menu-open', 'slash-text'],
+  ['a lone slash', view({ lines: ['/'] }), 'menu-open', 'slash-text'],
+  ['multi-line draft that starts with a slash', view({ lines: ['/help', 'more'] }), 'menu-open', 'slash-text'],
+  ['bash box whose text starts with a slash (fails closed)', view({ mode: 'bash', lines: ['/usr/bin/true'] }), 'menu-open', 'slash-text'],
+  ['unreadable draft (history entry) that starts with a slash', view({ label: 'History 3/3', lines: ['/compact'] }), 'menu-open', 'slash-unreadable'],
+  ['unreadable draft (trailing space) that starts with a slash', view({ lines: ['/com '] }), 'menu-open', 'slash-unreadable'],
+  ['unreadable draft (pasted text) that starts with a slash', view({ lines: ['/review [Pasted text #1 +20 lines]'] }), 'menu-open', 'slash-unreadable'],
+  ['unreadable draft (tall box) that starts with a slash', view({ lines: ['/start', ...Array.from({ length: 13 }, (_, i) => `line ${i}`)] }), 'menu-open', 'slash-unreadable'],
 ];
 
 // ---- the fake pane ------------------------------------------------------------------------------------------------------
@@ -82,7 +135,8 @@ const busyError = () => Object.assign(new Error('another action is running on th
 
 /**
  * Options: captures (answers in order, the last repeats; an Error is thrown), send (the keys.send answer), busy (the lock gives up),
- * lockThrows, gap (boolean or (pane) => boolean), sleepThrows, tick (false: sleep does not move the clock).
+ * lockThrows, wait (true: the lock waits a tick before it runs fn, as withPaneLock does behind a running action), gap (boolean or
+ * (pane) => boolean), sleepThrows, tick (false: sleep does not move the clock).
  * Records every event in order in `log`, and for every call whether the lock was held.
  */
 function harness(o = {}) {
@@ -111,6 +165,7 @@ function harness(o = {}) {
     h.log.push('lock');
     if (o.busy) throw busyError();
     if (o.lockThrows) throw o.lockThrows;
+    if (o.wait) await new Promise((resolve) => setImmediate(resolve));
     h.held += 1;
     try {
       return await fn();
@@ -223,52 +278,16 @@ describe('checkScrollBody and scrollKeys', () => {
   });
 });
 
-describe('pillShown', () => {
-  const rowsOf = (...rows) => rows.map(row);
-
-  test('(+) both pill texts of spike S5 match, in any row', () => {
-    assert.equal(pillShown(rowsOf('older output', pill('Jump to bottom: fn+↓ to scroll'), '', '  input')), true);
-    assert.equal(pillShown(rowsOf(pill('Jump to bottom (click) ↓'))), true);
-    assert.equal(pillShown(rowsOf(pill(), 'a', 'b', 'c')), true, 'first row');
-    assert.equal(pillShown(rowsOf('a', 'b', pill())), true, 'last row');
+describe('pillShown (re-exported from src/mode.js; its own tests are in test/mode.test.js)', () => {
+  test('(+) src/scroll.js still exports pillShown, and it is the one of src/mode.js (the row check lives beside surveyShown)', () => {
+    assert.equal(typeof modeJs.pillShown, 'function');
+    assert.equal(pillShown, modeJs.pillShown);
   });
 
-  test('(+) the pill may start at column 0 and only the span holding the J is checked', () => {
-    assert.equal(pillShown([[span('Jump to bottom', { fg: 231, bg: 237 })]]), true);
-    assert.equal(pillShown([[span('Jump to ', { fg: 231, bg: 237 }), span('bottom: x')]]), true, 'the J is in the styled span');
-    assert.equal(pillShown([[span(' '), span('J', { fg: 231, bg: 237 }), span('ump to bottom')]]), true);
-    assert.equal(pillShown([[span('  '), span('Jump to bottom', { fg: 231, bg: 237 }), span(' ', { fg: 1, bg: 2 })]]), true);
-  });
-
-  test('(−) the right words without the right colours are not the pill', () => {
-    const style = (s) => [[span(' ', {}), span(' Jump to bottom: fn+↓ to scroll ', s)]];
-    assert.equal(pillShown(style({ fg: 231 })), false, 'no background');
-    assert.equal(pillShown(style({ bg: 237 })), false, 'no foreground');
-    assert.equal(pillShown(style({ fg: 231, bg: 236 })), false);
-    assert.equal(pillShown(style({ fg: 230, bg: 237 })), false);
-    assert.equal(pillShown(style({ fg: [255, 255, 255], bg: 237 })), false, 'rgb is another colour');
-    assert.equal(pillShown(style({ fg: '231', bg: '237' })), false, 'strings are not colours');
-    assert.equal(pillShown(style({})), false);
-    assert.equal(pillShown([[span(' '), span('J', { fg: 231, bg: 237 }), span('ump to bottom', {})]]), true, 'sanity: the J decides');
-    assert.equal(pillShown([[span('J'), span('ump to bottom', { fg: 231, bg: 237 })]]), false, 'the J is in a plain span');
-  });
-
-  test('(−) the words mid-row, other words, other case and plain text are not the pill', () => {
-    const styled = (t) => [[span(t, { fg: 231, bg: 237 })]];
-    assert.equal(pillShown(styled('see Jump to bottom')), false, 'after other text');
-    assert.equal(pillShown(styled('> Jump to bottom')), false);
-    assert.equal(pillShown(styled('Jump to bottomless')), false, 'a word boundary is required');
-    assert.equal(pillShown(styled('jump to bottom')), false);
-    assert.equal(pillShown(styled('Jump  to bottom')), false);
-    assert.equal(pillShown(styled('Jump to top')), false);
-    assert.equal(pillShown(styled('')), false);
-    assert.equal(pillShown(rowsOf('Jump to bottom: fn+↓ to scroll')), false, 'plain text');
-  });
-
-  test('(−) rows that are not rows never throw and never match', () => {
-    for (const rows of [undefined, null, 5, 'Jump to bottom', {}, [], [null], [undefined], [5], ['Jump to bottom'], [[]], [[null]], [[{}]], [[{ t: 5, s: {} }]], [[{ t: 'Jump to bottom' }]]]) {
-      assert.equal(pillShown(rows), false, JSON.stringify(rows));
-    }
+  test('(+) both pill texts of spike S5 match through the scroll.js export; the same words in plain style do not', () => {
+    assert.equal(pillShown([row('older output'), pill('Jump to bottom: fn+\u2193 to scroll'), row('  input')]), true);
+    assert.equal(pillShown([pill('Jump to bottom (click) \u2193')]), true);
+    assert.equal(pillShown([row('Jump to bottom: fn+\u2193 to scroll')]), false);
   });
 });
 
@@ -280,14 +299,25 @@ describe('scrollGate', () => {
     }
   });
 
-  test('(−) every other screen gives its code, and the fixtures reach the check they name', () => {
-    for (const [name, cap, code] of REFUSED_SCREENS) {
+  test('(−) every other screen gives its code, and each fixture is refused for the reason it names', () => {
+    for (const [name, cap, code, why] of REFUSED_SCREENS) {
       assert.equal(scrollGate(cap), code, name);
+      if (why !== null) WHY[why](cap);
       if (code === 'screen-unclear') {
         assert.equal(promptFromRows(cap.rows), null, `${name}: not a permission prompt`);
         assert.equal(readDraft(cap), null, `${name}: no plain box`);
       }
-      if (code === 'menu-open') assert.equal(readDraft(cap).state, 'text', name);
+      assert.equal(why === null, code === 'no-view', `${name}: only no-view needs no screen reason`);
+    }
+  });
+
+  test('(−) a slash menu fails closed: a text draft that starts with a slash, or an unreadable draft whose first box row starts with one after the glyph', () => {
+    for (const lines of [['/'], ['/com'], ['/com '], ['/compact now'], ['/help', 'second row']]) {
+      assert.equal(scrollGate(view({ lines })), 'menu-open', JSON.stringify(lines));
+    }
+    for (const label of ['History 3/3', null]) assert.equal(scrollGate(view({ label, lines: ['/x'] })), 'menu-open', String(label));
+    for (const lines of [['older /entry'], ['run /compact now'], [' /indented'], ['x/'], ['\u2500/x']]) {
+      for (const label of ['History 3/3', null]) assert.equal(scrollGate(view({ label, lines })), null, `${label} ${JSON.stringify(lines)}`);
     }
   });
 
@@ -322,7 +352,7 @@ describe('createScroll: construction', () => {
 });
 
 describe('createScroll.scroll: sending', () => {
-  test('(+) every body shape sends its keys in one keys.send, in the order lock, gap, capture, send, settle, capture', async () => {
+  test('(+) every body shape sends its keys in one keys.send, in the order lock, gap, capture, gap again, send, settle, capture', async () => {
     const cases = [
       [UP(3), ['PPage', 'PPage', 'PPage']], [DOWN(1), ['NPage']], [{ to: 'top' }, ['C-Home']], [{ to: 'bottom' }, ['C-End']],
     ];
@@ -331,7 +361,7 @@ describe('createScroll.scroll: sending', () => {
       const r = await h.run(body);
       assert.deepEqual(r, { status: 200, body: { sent: keys.length, scrolled: true } }, JSON.stringify(body));
       assert.deepEqual(h.sends, [{ pane: PANE, body: { keys }, held: true }]);
-      assert.deepEqual(h.log, ['lock', 'gap', 'capture', 'send', 'sleep 30', 'capture'], JSON.stringify(body));
+      assert.deepEqual(h.log, ['lock', 'gap', 'capture', 'gap', 'send', 'sleep 30', 'capture'], JSON.stringify(body));
       assert.deepEqual(h.locks, [PANE]);
     }
   });
@@ -404,15 +434,22 @@ describe('createScroll.scroll: sending', () => {
     assert.deepEqual(await h.run(UP(1)), { status: 200, body: { sent: 1, scrolled: null } }, 'a failed pause too');
   });
 
-  test('(+) a body that is later changed by the caller does not change what was sent', async () => {
-    const h = harness();
-    const body = UP(2);
-    const p = h.scroller.scroll(PANE, body);
-    body.pages = 8;
-    h.requests += 1;
-    await p;
-    safe(h);
-    assert.ok(h.sends[0].body.keys.length <= 8);
+  test('(+) the keys are fixed when the body is validated: a body the caller changes afterwards changes nothing', async () => {
+    const changes = [
+      (b) => { b.pages = 8; }, (b) => { b.pages = 99; }, (b) => { b.dir = 'left'; }, (b) => { delete b.pages; }, (b) => { b.keys = ['Enter']; },
+      (b) => { b.dir = 'down'; },
+    ];
+    for (const [change, wait] of changes.flatMap((c) => [[c, false], [c, true]])) {
+      const h = harness({ wait });
+      const body = UP(2);
+      const pending = h.scroller.scroll(PANE, body);
+      change(body); // the request is inside the lock, or waiting for it
+      h.requests += 1;
+      const r = await pending;
+      safe(h);
+      assert.deepEqual(h.sends.map((x) => x.body), [{ keys: ['PPage', 'PPage'] }], `${change} wait=${wait}`);
+      assert.deepEqual(r, { status: 200, body: { sent: 2, scrolled: false } }, `${change} wait=${wait}`);
+    }
   });
 });
 
@@ -517,14 +554,34 @@ describe('createScroll.scroll: refusals (nothing is sent)', () => {
     assert.deepEqual(h.log, ['lock', 'gap'], 'the gap is asked after the lock, before any capture');
   });
 
-  test('(−) keyGap is asked about the same pane, once, and a gap that closes lets the next request through', async () => {
+  test('(−) keyGap is asked about the same pane, and a gap that closes lets the next request through', async () => {
     const asked = [];
     let blocked = true;
     const h = harness({ gap: (pane) => { asked.push(pane); return blocked; } });
     assert.equal((await h.run(UP(1), '%7')).status, 409);
+    assert.deepEqual(asked, ['%7'], 'a closed gap stops at the first look');
     blocked = false;
     assert.equal((await h.run(UP(1), '%7')).status, 200);
-    assert.deepEqual(asked, ['%7', '%7']);
+    assert.deepEqual(asked, ['%7', '%7', '%7'], 'two looks for the request that went through: before the capture and before the keys');
+  });
+
+  test('(−) a Stop that starts during the capture: keyGap is asked again right before the keys, 409 busy-switching, nothing sent', async () => {
+    let looks = 0;
+    const h = harness({ captures: [ok(view()), ok(view())], gap: () => { looks += 1; return looks >= 2; } });
+    const r = await h.run(UP(3));
+    assert.deepEqual(r, { status: 409, body: { error: 'busy-switching' } });
+    assert.deepEqual(h.log, ['lock', 'gap', 'capture', 'gap'], 'the second look comes after the capture and the gate, before any send');
+    assert.equal(h.sends.length, 0);
+    assert.equal(h.captures.length, 1, 'no look after keys that were never sent');
+    assert.deepEqual(h.sleeps, []);
+  });
+
+  test('(−) the second look comes after the screen gate: an unsafe screen is still told apart from a busy pane', async () => {
+    const [, prompt] = REFUSED_SCREENS.find(([name]) => name === 'permission prompt');
+    let looks = 0;
+    const h = harness({ captures: [ok(prompt)], gap: () => { looks += 1; return looks >= 2; } });
+    assert.equal((await h.run(UP(1))).body.error, 'prompt-open');
+    assert.equal(looks, 1);
   });
 
   test('(−) keys.send answers pass through with their status and body, and no second capture follows', async () => {

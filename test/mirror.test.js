@@ -1,7 +1,8 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseCapture, createMirror } from '../src/mirror.js';
-import { pillShown } from '../src/scroll.js';
+import fs from 'node:fs';
+import { pillShown } from '../src/mode.js';
 
 const ESC = '\u001b';
 const BEL = '\u0007';
@@ -462,5 +463,13 @@ describe('createMirror', () => {
     assert.equal(a.etag, a.body.etag);
     assert.equal(a.body.rows.length, 1, 'the pill row is kept in the rows as drawn');
     assert.equal(pillShown(a.body.rows), true);
+  });
+});
+
+describe('module layering', () => {
+  test('(+) the capture parser imports only ids, mode and tmuxerr: not the scroll controller, not the session controller', () => {
+    const src = fs.readFileSync(new URL('../src/mirror.js', import.meta.url), 'utf8');
+    const imports = [...src.matchAll(/^import .* from '([^']+)';$/gm)].map((m) => m[1]).sort();
+    assert.deepEqual(imports, ['./ids.js', './mode.js', './tmuxerr.js', 'node:crypto']);
   });
 });
