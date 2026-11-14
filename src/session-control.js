@@ -60,8 +60,12 @@ function inputBox(rows) {
 /**
  * The input box (src/draft.js) of a capture `{ rows, cursor, cols }`: a Draft, or null when the screen has no plain box. The mode
  * line is read with plain spaces (insertShown does the same), so a no-break space inside `-- INSERT --` does not hide the mode.
+ * The live reader (the capture route, the write checks, End and the commands) needs the cursor (N-1): a capture whose cursor has no
+ * integer x and y has no box, because only the cursor says which rules frame the input. tmux always reports one, so this fails closed
+ * only; parseDraft alone, given no cursor, still reads as before.
  */
 export function readDraft(seen) {
+  if (!Number.isInteger(seen?.cursor?.x) || !Number.isInteger(seen?.cursor?.y)) return null;
   const rows = Array.isArray(seen?.rows) ? seen.rows : [];
   const last = rows.findLastIndex((row) => rowText(row).trim() !== '');
   const spaced = (row) => (Array.isArray(row) ? row.map((sp) => (typeof sp?.t === 'string' ? { ...sp, t: plain(sp.t) } : sp)) : row);
@@ -183,6 +187,17 @@ export function createSessionControl({
   const running = new Set(); // panes with a control action in progress
   const interrupting = new Set(); // panes whose Escape sequence is running: Stop and End share it, apart from the control lock
   const answered = new Map(); // pane → { sig, at } of the last successful answer
+  const escapedAt = new Map(); // pane → now() when the last Escape of a Stop or an End went out (N-2): a key right behind it would be Meta+key
+
+  /** True while less than VIM_ESC_GAP_MS has passed since an Escape of Stop or End on the pane (N-2); a clock that went back counts as passed. */
+  function escapeGap(pane) {
+    const at = escapedAt.get(pane);
+    if (at === undefined) return false;
+    const passed = now() - at;
+    if (passed >= 0 && passed < VIM_ESC_GAP_MS) return true;
+    escapedAt.delete(pane);
+    return false;
+  }
 
   /** Runs `action(ctx)` as the only control action on the pane; `ctx.insert` turns true once any capture of the action shows INSERT. */
   async function exclusive(pane, action) {
@@ -400,6 +415,7 @@ export function createSessionControl({
     try {
       const escape = async (n) => {
         const sent = await keys.send(pane, { keys: ['Escape'] });
+        escapedAt.set(pane, now()); // also after a failed send: it may have been delivered
         return sent.status === 200 ? { presses: n } : { failed: sent };
       };
       if (promptOpen(rows)) return await escape(1);
@@ -545,8 +561,9 @@ export function createSessionControl({
    *                   T51), mode-unknown (the footer is not a mode line: a dialog), input-unreadable (no plain box) or draft-unreadable { reason }
    *   check(accept)   the pre-key check: a fresh capture with the plain box, no prompt, the cursor in the box and one of the `accept` texts,
    *                   else { res } (409 screen-changed | draft-mismatch). { seen, draft } or { res }
-   *   press(keyBody)  one key request; null when it went out, else the answer. Refused (409 not-idle, nothing sent) while Stop's Escape runs,
-   *                   apart from the lock: a key right behind an Escape would be read as Meta+key (M-2)
+   *   press(keyBody)  one key request; null when it went out, else the answer. Refused (409 not-idle, nothing sent) while Stop's or End's Escape
+   *                   runs, apart from the lock, and for VIM_ESC_GAP_MS after it went out: a key right behind an Escape would be read as
+   *                   Meta+key (M-2, N-2)
    *   idleNow()       null only when the registry says idle right now (a fresh read, skipping its cache) and no interrupt runs, else 409 not-idle:
    *                   Escape could interrupt a running turn (claude-tui.md section 5), Tab could accept a suggestion into a busy one
    */
@@ -576,7 +593,7 @@ export function createSessionControl({
       return { seen, draft };
     };
     const press = async (keyBody) => {
-      if (interrupting.has(pane)) return refused({ status: 409, body: { error: 'not-idle' } });
+      if (interrupting.has(pane) || escapeGap(pane)) return refused({ status: 409, body: { error: 'not-idle' } });
       const sent = await keys.send(pane, keyBody);
       return sent.status === 200 ? null : refused({ status: sent.status, body: sent.body }); // a failed send stops everything; the draft is read once more, best effort
     };

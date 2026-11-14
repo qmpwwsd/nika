@@ -39,6 +39,77 @@ describe('the twin helpers answer like src/draft.js', () => {
     for (const [t, cols] of cases) assert.deepEqual(inEnvelope(t, cols), srcEnvelope(t, cols), JSON.stringify([typeof t === 'string' ? t.length : t, cols]));
   });
 
+  test('(−) the envelope refuses a run of 699 or more spaces and tabs (reason chars) like the server does, and 698 stays inside', () => {
+    assert.deepEqual(inEnvelope(' '.repeat(698), 120), { ok: true }, '698 spaces');
+    assert.notEqual(inEnvelope('\t'.repeat(698), 120).reason, 'chars', '698 tabs are too many rows (4 cells each), not too long a run');
+    assert.deepEqual(inEnvelope('\t'.repeat(698), 120), srcEnvelope('\t'.repeat(698), 120));
+    for (const unit of [' ', '\t']) {
+      assert.deepEqual(inEnvelope(unit.repeat(699), 120), { ok: false, reason: 'chars' }, `699 x ${JSON.stringify(unit)}`);
+      assert.deepEqual(inEnvelope(`a${unit.repeat(700)}b`, 200), { ok: false, reason: 'chars' });
+    }
+    assert.deepEqual(inEnvelope(' \t'.repeat(350), 200), { ok: false, reason: 'chars' }, 'a mixed run of 700');
+    assert.deepEqual(inEnvelope(`${' '.repeat(400)}x${' '.repeat(400)}`, 200), { ok: true }, 'two runs of 400 with a character between them');
+    assert.deepEqual(inEnvelope(' '.repeat(699), 120), srcEnvelope(' '.repeat(699), 120));
+  });
+
+  test('(+) the row estimate is the server\'s wrap simulation, not a division: a row that cannot hold the next word breaks early', () => {
+    // 59 words of 4 + a space wrap 23 per row at w = 116 under the simulation; a division by the width says fewer rows
+    for (const [t, cols] of [
+      ['abcd '.repeat(23).trim() + ' ' + 'x'.repeat(115), 120], // the long token starts on the next row
+      [['a', 'b', 'c'].map((c) => c.repeat(60)).join(' ').repeat(2), 120],
+      [`${'日'.repeat(57)} 日日日`.repeat(13), 120],
+      ['x'.repeat(231), 120], ['x'.repeat(232), 120], ['x'.repeat(233), 120],
+    ]) assert.deepEqual(inEnvelope(t, cols), srcEnvelope(t, cols), JSON.stringify([t.length, cols]));
+    const three = ['a', 'b', 'c'].map((c) => c.repeat(60)).join(' '); // 182 cells: 2 rows by a division, 3 by the simulation (no two 60-cell words share a 116-cell row)
+    assert.deepEqual(inEnvelope([three, three, three, three].join('\n'), 120), { ok: true }, '12 rows');
+    assert.deepEqual(inEnvelope([three, three, three, three, three].join('\n'), 120), { ok: false, reason: 'rows' }, '15 rows by the simulation, 10 by a division');
+  });
+
+  test('(+) fuzz parity: 6000 seeded texts of words, long tokens, wide characters, runs of spaces and tabs and newlines, at 40 to 200 columns, answer exactly like src/draft.js', () => {
+    let seed = 0x5eed1234; // mulberry32: deterministic, no dependency
+    const rnd = () => {
+      seed = (seed + 0x6d2b79f5) | 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    const int = (lo, hi) => lo + Math.floor(rnd() * (hi - lo + 1));
+    const pick = (list) => list[int(0, list.length - 1)];
+    const word = (n) => Array.from({ length: n }, () => String.fromCharCode(int(97, 122))).join('');
+    const wide = (n) => Array.from({ length: n }, () => String.fromCodePoint(int(0x4e00, 0x4e50))).join('');
+    const emoji = (n) => Array.from({ length: n }, () => String.fromCodePoint(int(0x1f600, 0x1f64f))).join('');
+    const piece = (w) => {
+      const k = rnd();
+      if (k < 0.10) { // rows filled to the exact cell: the boundary the wrap rules turn on (`used >= w`, `used + n > w`)
+        const a = int(1, w - 2);
+        return pick([`${word(a)} ${word(w - 1 - a)}`, `${word(a)} ${word(w - 1 - a)} ${word(int(1, 9))}`, `${word(w)} ${word(int(1, 9))}`, word(w), word(2 * w), `${word(a)} ${wide(Math.floor((w - 1 - a) / 2))}x`]);
+      }
+      if (k < 0.34) return word(int(1, 12));
+      if (k < 0.44) return word(int(20, 260)); // a long token (a path, a hash)
+      if (k < 0.52) return wide(int(1, 70));
+      if (k < 0.56) return emoji(int(1, 30));
+      if (k < 0.70) return ' '.repeat(int(1, 6));
+      if (k < 0.74) return '\t'.repeat(int(1, 4));
+      if (k < 0.755) return pick([' ', '\t']).repeat(int(690, 705)); // around the 699 limit
+      if (k < 0.76) return ' \t'.repeat(int(340, 352));
+      if (k < 0.82) return '\n'.repeat(int(1, 4));
+      return '\n';
+    };
+    const seen = {};
+    for (let i = 0; i < 6000; i += 1) {
+      const target = pick([40, 120, 400, 900, 1100, 1500]);
+      const cols = int(40, 200);
+      let t = '';
+      while (t.length < target && t.length < 1600) t += piece(cols - 4);
+      const want = srcEnvelope(t, cols);
+      const got = inEnvelope(t, cols);
+      assert.deepEqual(got, want, `case ${i}: cols ${cols}, ${t.length} chars, ${JSON.stringify(t.slice(0, 80))}`);
+      const key = want.ok ? 'ok' : want.reason;
+      seen[key] = (seen[key] ?? 0) + 1;
+    }
+    for (const key of ['ok', 'chars', 'newlines', 'rows']) assert.ok((seen[key] ?? 0) >= 100, `the fuzz reaches '${key}' at least 100 times (${JSON.stringify(seen)})`);
+  });
+
   test('(+) fits is the envelope plus "no control character but newline and tab" (the route answers 400 for those)', () => {
     assert.equal(fits('one line', 120), true);
     assert.equal(fits('a\tb\nc', 120), true);
@@ -143,7 +214,7 @@ describe('noteView: the one note under the box', () => {
       tall: 'a draft longer than 14 rows',
       trailing: 'text that ends in spaces',
       history: 'a prompt-history entry',
-      layout: "something nika doesn't recognise",
+      layout: "text nika can't read back exactly",
     };
     for (const [reason, why] of Object.entries(want)) {
       const v = noteView({ kind: 'paused', reason });
@@ -152,7 +223,7 @@ describe('noteView: the one note under the box', () => {
       assert.equal(v.kind, 'paused');
       assert.ok(v.icon);
     }
-    assert.match(noteView({ kind: 'paused', reason: 'from-the-future' }).text, /something nika doesn't recognise/);
+    assert.match(noteView({ kind: 'paused', reason: 'from-the-future' }).text, /Claude's input holds text nika can't read back exactly\. Edit or clear it in the terminal\./);
   });
 
   test('(+) long text and a refused replace each have their own word, icon and kind', () => {

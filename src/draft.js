@@ -193,8 +193,9 @@ function joinRows(bodies, w) {
  *   ghost         true when any dim, reverse-video or fg-246 hint cell of the box was dropped as ghost text (a suggestion, the
  *                 placeholder, a completion, the slash hint); false for plain text, an empty box and every unreadable draft
  * Null: the footer is not a known mode line (a dialog, a menu, a prompt), a permission prompt parses, fewer than two rule rows,
- * nothing between the last two, or the first box row does not start with the prompt glyph or `!` and Claude's no-break space
- * (U+00A0; a plain space is a status line of the user's, I-1).
+ * nothing between the last two, the first box row does not start with the prompt glyph or `!` and Claude's no-break space
+ * (U+00A0; a plain space is a status line of the user's, I-1), or the cursor (integer x and y given) is not on a row strictly
+ * between the two rules (N-1: a status line drawn under Claude's box can look like a box; a missing cursor changes nothing).
  * `rows` must be the capture of the pane from its top row (no scrollback): `cursor.y` is pane-relative. `text` is not cleaned
  * (zero-width characters survive the mirror's filter); it is a textarea value and must never reach an HTML sink.
  */
@@ -206,6 +207,10 @@ export function parseDraft(rows, cursor, cols) {
   const top = rules.at(-2);
   const bottom = rules.at(-1);
   if (bottom - top < 2) return null;
+  // N-1: the input is where the cursor is. A cursor outside the two rules (a rule row included) means these rules frame something
+  // else: a status line a user drew under Claude's own box can start with the glyph and Claude's no-break space, and padding looks
+  // alike. No cursor, or one without integer coordinates, says nothing and changes nothing (the write paths check it themselves).
+  if (Number.isInteger(cursor?.x) && Number.isInteger(cursor?.y) && (cursor.y <= top || cursor.y >= bottom)) return null;
   const first = firstRow(charsOf(rows[top + 1]));
   if (first === null) return null;
   const footerKnown = modeFromRows(rows) !== 'unknown' || (first.mode === 'bash' && SHELL_FOOTER.test(lastNonBlank(rows, 1)[0] ?? ''));

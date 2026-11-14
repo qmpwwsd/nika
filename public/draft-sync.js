@@ -18,7 +18,7 @@ const REASON_TEXT = {
   tall: 'a draft longer than 14 rows',
   trailing: 'text that ends in spaces',
   history: 'a prompt-history entry',
-  layout: "something nika doesn't recognise",
+  layout: "text nika can't read back exactly",
 };
 const reasonText = (reason) => REASON_TEXT[Object.hasOwn(REASON_TEXT, reason) ? reason : 'layout'];
 
@@ -33,14 +33,55 @@ export const sameDraft = (a, b) => typeof a === 'string' && typeof b === 'string
 
 const width = (s) => { let n = 0; for (const ch of s) n += cellWidth(ch.codePointAt(0)); return n; };
 
-/** At most 1024 characters, 12 newlines and 13 estimated rows (a 14-row box may be a window, so it is unreadable). */
+const MAX_CHARS = 1024;
+const MAX_NEWLINES = 12;
+const MAX_ROWS = 13;
+const MAX_RUN = 699; // a run this long of spaces and tabs cannot be cut around when nika types it in chunks of at most 700 characters
+const LONG_RUN = new RegExp(`[ \\t]{${MAX_RUN},}`);
+
+/**
+ * Rows one hard line needs when Claude wraps it at `w` cells: an exact port of `wrappedRows` in src/draft.js (wrap-ansi with
+ * `hard: true, trim: false`; test/draft-sync.test.js fuzzes both against each other). A row that is already `w` wide starts a new row
+ * before the next word; one space is appended before every word after the first; a word that does not fit the rest of the row starts a
+ * new row; a word longer than `w` starts on the current row unless starting on the next saves a break, then is cut at `w` cell by cell.
+ */
+function wrappedRows(line, w) {
+  let rows = 1;
+  let used = 0; // cells of the current row, with the space after its last word
+  line.split(' ').forEach((word, i) => {
+    if (i > 0) {
+      if (used >= w) { rows += 1; used = 0; }
+      used += 1;
+    }
+    const n = width(word);
+    if (n > w) {
+      if (Math.floor((n - 1) / w) < 1 + Math.floor((n - (w - used) - 1) / w)) { rows += 1; used = 0; }
+      const cells = [...word];
+      cells.forEach((ch, k) => {
+        const c = cellWidth(ch.codePointAt(0));
+        if (used + c > w) { rows += 1; used = 0; }
+        used += c;
+        if (used === w && k < cells.length - 1) { rows += 1; used = 0; }
+      });
+      return;
+    }
+    if (used > 0 && used + n > w && n > 0) { rows += 1; used = 0; }
+    used += n;
+  });
+  return rows;
+}
+
+/**
+ * At most 1024 characters, 12 newlines and 13 estimated rows (a 14-row box may be a window, so it is unreadable), and no run of 699
+ * or more spaces and tabs (reason 'chars'). The same answer as `inEnvelope` in src/draft.js, byte for byte (fuzzed in the tests).
+ */
 export function inEnvelope(text, cols) {
   if (typeof text !== 'string' || !Number.isInteger(cols) || cols <= 4) return { ok: false, reason: 'invalid' };
-  if (text.length > 1024) return { ok: false, reason: 'chars' };
+  if (text.length > MAX_CHARS || LONG_RUN.test(text)) return { ok: false, reason: 'chars' };
   const lines = text.split('\n');
-  if (lines.length - 1 > 12) return { ok: false, reason: 'newlines' };
-  const rows = lines.reduce((n, line) => n + Math.max(1, Math.ceil(width(line.replace(/\t/g, '    ')) / (cols - 4))), 0);
-  return rows > 13 ? { ok: false, reason: 'rows' } : { ok: true };
+  if (lines.length - 1 > MAX_NEWLINES) return { ok: false, reason: 'newlines' };
+  const rows = lines.reduce((n, line) => n + wrappedRows(line.replace(/\t/g, '    '), cols - 4), 0);
+  return rows > MAX_ROWS ? { ok: false, reason: 'rows' } : { ok: true };
 }
 
 const BAD_CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/;

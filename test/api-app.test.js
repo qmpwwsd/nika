@@ -1836,7 +1836,7 @@ function screenMirror(screens, { delay = 0 } = {}) {
       if (delay) await new Promise((r) => setTimeout(r, delay));
       m.inflight -= 1;
       if (screens[pane] === null) return { status: 503, body: { error: 'tmux_unavailable', message: 'x' } };
-      return { status: 200, body: { cols: 80, rows: screens[pane] ?? [], cursor: { x: 0, y: 0, visible: true }, etag: 'abc' }, etag: 'abc' };
+      return { status: 200, body: { cols: 80, rows: screens[pane] ?? [], cursor: Object.hasOwn(screens[pane] ?? [], 'cursor') ? screens[pane].cursor : { x: 0, y: 0, visible: true }, etag: 'abc' }, etag: 'abc' }; // an array may carry its own `cursor` (a box fixture's, null included)
     },
   };
   return m;
@@ -2823,7 +2823,11 @@ describe('GET /api/app/models', () => {
 // --- 0.5 draft sync (design W5): the capture's `draft` and `PUT /api/app/pane/:id/draft` ---
 
 describe('capture: draft', () => {
-  const box = (lines, o = {}) => boxRows({ cols: 80, lines, ...o }).rows;
+  /** The rows of a box fixture; they carry the fixture's cursor (the capture reads the draft with it, N-1: the cursor must be in the box). */
+  const box = (lines, o = {}) => {
+    const s = boxRows({ cols: 80, lines, ...o });
+    return Object.assign(s.rows, { cursor: s.cursor });
+  };
 
   test('(+) a plain box: state, mode, text, sig, box rows, cursorAtEnd, suggestion and edit (unknown until something shows the mode)', async () => {
     const { a, screens } = await bootScreens();
@@ -2864,6 +2868,41 @@ describe('capture: draft', () => {
     assert.equal((await pane(a, '%6', 'capture')).body.draft, null);
     screens['%6'] = [];
     assert.equal((await pane(a, '%6', 'capture')).body.draft, null);
+  });
+
+  test('(−) N-1: a status line drawn under Claude\'s lower rule (glyph + no-break space, or glyph + padding only) with the cursor in the real box above: draft null', async () => {
+    const { a, screens } = await bootScreens();
+    const NB = '\u00a0';
+    const dashes = () => [{ t: '\u2500'.repeat(80), s: { fg: 244 } }];
+    for (const row of [[{ t: `\u276f${NB}main`, s: {} }], [{ t: '\u276f', s: {} }, { t: ' '.repeat(79), s: {} }]]) {
+      const real = box(['hello']);
+      const rows = Object.assign(real.slice(), { cursor: real.cursor });
+      rows.splice(3, 0, row, dashes()); // the status row 3 and its rule 4 under Claude's lower rule (row 2)
+      screens['%6'] = rows;
+      const r = await pane(a, '%6', 'capture');
+      assert.equal(r.status, 200);
+      assert.equal(r.body.draft, null, 'the cursor is in the real box above these rules: nothing of the status line goes to the page');
+    }
+  });
+
+  test('(−) N-1 ruling: a capture without a cursor has no box: draft null, the real box included (the pure parser alone reads such rows)', async () => {
+    const { a, screens } = await bootScreens();
+    for (const cursor of [null, undefined, {}, { x: 2 }, { y: 1 }, { x: 'a', y: 1 }]) {
+      screens['%6'] = Object.assign(box(['hello']).slice(), { cursor });
+      const r = await pane(a, '%6', 'capture');
+      assert.equal(r.status, 200, JSON.stringify(cursor));
+      assert.equal(r.body.draft, null, JSON.stringify(cursor));
+    }
+    screens['%6'] = box(['hello']);
+    assert.equal((await pane(a, '%6', 'capture')).body.draft.text, 'hello', 'the control: with its cursor the same box reads');
+  });
+
+  test('(−) N-1: the cursor on a rule row, or past the box, is no draft either', async () => {
+    const { a, screens } = await bootScreens();
+    for (const y of [0, 2, 5]) {
+      screens['%6'] = Object.assign(box(['hello']).slice(), { cursor: { x: 2, y, visible: true } });
+      assert.equal((await pane(a, '%6', 'capture')).body.draft, null, `y ${y}`);
+    }
   });
 
   test('(+) edit follows the pane\'s memory: insert while INSERT shows (and it forgets plain), normal after INSERT was seen, plain after a probe landed as text, unknown after none', async () => {

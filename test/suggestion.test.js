@@ -200,9 +200,25 @@ describe('acceptSuggestion', () => {
     for (const cursor of [null, { y: 0 }, { y: 2 }, { y: 3 }]) {
       const w = pane({ override: () => boxRows({ cols: COLS, lines: [''], ghost: SUG, insert: true, cursor }) });
       const r = await w.accept();
-      assert.deepEqual([...code(r), r.body.draft], [409, 'input-unreadable', null], JSON.stringify(cursor));
+      assert.deepEqual([...code(r), r.body.draft ?? null], [409, 'input-unreadable', null], JSON.stringify(cursor)); // no draft: absent (the parser said null, N-1) or null (the write-side gate)
       assert.deepEqual(w.sent, [], JSON.stringify(cursor));
     }
+  });
+
+  test('(−) N-2: a Tab within 40 ms of Stop\'s Escape is refused: 409 not-idle, nothing more is sent; (+) from 40 ms on it goes', async () => {
+    const w = pane({ state: 'busy', insert: false });
+    const sc = w.control();
+    assert.equal((await sc.stop('%2')).status, 200);
+    assert.deepEqual(w.sent.map((s) => s.body), [{ keys: ['Escape'] }]);
+    w.state = 'idle'; // the turn ended
+    w.t += 10;
+    let r = await sc.acceptSuggestion('%2', { text: SUG });
+    assert.deepEqual(code(r), [409, 'not-idle']);
+    assert.equal(w.sent.length, 1, 'no Tab went out behind the Escape');
+    w.t += 30; // 40 ms
+    r = await sc.acceptSuggestion('%2', { text: SUG });
+    assert.equal(r.status, 200);
+    assert.deepEqual(w.sent.map((s) => s.body), [{ keys: ['Escape'] }, { keys: ['Tab'] }]);
   });
 
   test('(−) Tab did not take (the box stays empty): 409 draft-mismatch with the screen\'s draft, exactly one Tab, no retry', async () => {

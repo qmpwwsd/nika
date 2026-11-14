@@ -1,7 +1,8 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { createSessionControl, promptSig } from '../src/session-control.js';
-import { promptFromRows } from '../src/mode.js';
+import { promptFromRows, rowText } from '../src/mode.js';
+import { RULE_ROW } from '../src/draft.js';
 
 // Synthetic screens only. The phrases follow docs/contracts/claude-tui.md sections 1, 2 and 5; symbols are escapes.
 const DEF = { b: false, fg: null, bg: null, u: false, i: false, d: false };
@@ -78,12 +79,18 @@ function world(opts = {}) {
     const box = shownBox === null ? [] : ['', w.topRule, ...shownBox.map(toRow), RULE, ...w.below];
     return rowsOf('earlier output', ...box, line);
   };
+  /** Where tmux puts the cursor (readDraft needs one, N-1): on the last row between the last two rule rows, at column 2; else the top-left cell. */
+  w.cursorIn = (rows) => {
+    const rules = rows.flatMap((row, i) => (RULE_ROW.test(rowText(row).trimEnd()) ? [i] : []));
+    return { x: 2, y: rules.length >= 2 ? rules.at(-1) - 1 : 0, visible: true };
+  };
   w.mirror = {
     async capture(pane, inm, o) {
       w.captures.push({ pane, o });
       if (pane === '%1' && w.hold) await w.hold;
       if (w.captureFail || w.captureFailOn === w.captures.length || (w.captureFailFrom !== null && w.captures.length >= w.captureFailFrom)) return w.captureFail ?? { status: 404, body: { error: 'not_found', message: 'gone' } };
-      const res = { status: 200, body: { rows: w.rows() } };
+      const rows = w.rows();
+      const res = { status: 200, body: { rows, cursor: w.cursorIn(rows) } };
       if (w.lagLeft > 0) w.lagLeft -= 1;
       if (w.boxStale?.left > 0) w.boxStale.left -= 1;
       if (w.insertLeft > 0) w.insertLeft -= 1;

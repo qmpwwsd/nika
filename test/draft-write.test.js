@@ -4,6 +4,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { createSessionControl, checkDraftBody, readDraft } from '../src/session-control.js';
+import { parseDraft } from '../src/draft.js';
 import { boxRows, span } from './helpers.js';
 
 const COLS = 120;
@@ -755,28 +756,64 @@ describe('writeDraft: the cursor must be inside the box that was read (second la
     return { ...cap, rows: [top, row, lower, [span(`\u276f${NB}`), span('main')], dashes(), ...rest] }; // the cursor stays in the real box (y = 1)
   };
 
-  test('(−) a status line that parses as a box while the cursor sits in the real box above: nothing is sent, 409 input-unreadable', async () => {
+  const noCursor = (screen) => ({ ...screen, cursor: null }); // the same rows with the capture's cursor lost
+  const bare = (screen) => parseDraft(screen.rows, null, screen.cols); // what the pure parser reads from them: no cursor, no gate (readDraft refuses such a capture)
+
+  test('(−) a status line that parses as a box while the cursor sits in the real box above: nothing is sent, 409 input-unreadable (first layer: the parser says null, N-1)', async () => {
     const screen = statusBox();
-    const fake = readDraft(screen);
-    assert.deepEqual([fake.state, fake.text, fake.box], ['text', 'main', { top: 2, bottom: 4 }], 'the fixture: the parser reads the status line as the box');
+    assert.equal(readDraft(screen), null, 'the fixture: with the cursor in the real box above, the status line is not read as a box');
+    const fake = bare(screen);
+    assert.equal(readDraft(noCursor(screen)), null, 'readDraft, the live reader, refuses a capture without a cursor');
+    assert.deepEqual([fake.state, fake.text, fake.box], ['text', 'main', { top: 2, bottom: 4 }], 'without the cursor the parser does read it as the box');
     assert.ok(screen.cursor.y < fake.box.top, 'and the cursor is outside it');
     for (const mem of [{ vim: true, plain: false }, { vim: false, plain: true }]) {
       for (const next of ['main and more', 'other text', '']) { // append, replace, clear
         const w = pane({ text: 'hello', mem, override: () => screen });
         const r = await w.put(next, fake.sig);
-        assert.deepEqual([r.status, r.body.error, r.body.draft], [409, 'input-unreadable', null], JSON.stringify([mem, next]));
+        assert.deepEqual([r.status, r.body.error], [409, 'input-unreadable'], JSON.stringify([mem, next]));
+        assert.ok(!r.body.draft, 'no draft: the page must not adopt a status line');
         assert.deepEqual(w.sent, [], 'not one key reached the real input');
         safe(w);
       }
     }
   });
 
+  test('(−) the same status line when the capture lost its cursor: readDraft has no box (N-1 ruling), 409 input-unreadable, no draft, nothing sent', async () => {
+    const screen = noCursor(statusBox());
+    const fake = bare(screen);
+    assert.equal(fake.text, 'main', 'the pure parser reads the status line as the box (no cursor to say otherwise)');
+    assert.equal(readDraft(screen), null, 'the live reader does not');
+    for (const mem of [{ vim: true, plain: false }, { vim: false, plain: true }]) {
+      for (const next of ['main and more', 'other text', '']) {
+        const w = pane({ text: 'hello', mem, override: () => screen });
+        const r = await w.put(next, fake.sig);
+        assert.deepEqual([r.status, r.body.error], [409, 'input-unreadable'], JSON.stringify([mem, next]));
+        assert.ok(!r.body.draft, 'no draft: the page must not adopt a status line');
+        assert.deepEqual(w.sent, [], 'not one key reached the real input');
+        safe(w);
+      }
+    }
+  });
+
+  test('(−) a capture without integer cursor coordinates has no box for readDraft, even a real one; parseDraft alone reads it as before', () => {
+    const real = boxRows({ lines: ['hello'], insert: true });
+    assert.equal(readDraft(real).text, 'hello');
+    for (const cursor of [null, undefined, {}, { x: 2 }, { y: 1 }, { x: 'a', y: 1 }, { x: 2.5, y: 1.5 }]) {
+      assert.equal(readDraft({ ...real, cursor }), null, JSON.stringify(cursor));
+    }
+    assert.equal(parseDraft(real.rows, null, real.cols).text, 'hello');
+  });
+
   test('(−) a write into an empty fake box (a status line over an empty real box) types nothing either', async () => {
     const screen = statusBox('');
-    const fake = readDraft(screen);
-    const w = pane({ text: '', vim: true, override: () => screen });
-    const r = await w.put('hello', fake.sig);
-    assert.deepEqual([r.status, r.body.error, w.sent], [409, 'input-unreadable', []]);
+    assert.equal(readDraft(screen), null);
+    const fake = bare(screen);
+    for (const shown of [screen, noCursor(screen)]) {
+      const w = pane({ text: '', vim: true, override: () => shown });
+      const r = await w.put('hello', fake.sig);
+      assert.deepEqual([r.status, r.body.error, w.sent], [409, 'input-unreadable', []]);
+      assert.ok(!r.body.draft);
+    }
   });
 
   test('(−) the cursor leaves the box between two chunks: the next chunk is not sent, 409 screen-changed', async () => {
@@ -804,8 +841,9 @@ describe('writeDraft: the cursor must be inside the box that was read (second la
     // one text row: the top rule is row 0, the text row 1, the lower rule row 2
     for (const cursor of [null, { y: 0 }, { y: 2 }, { y: 3 }]) {
       const w = pane({ text: 'hello', vim: true, override: (p) => boxRows({ lines: [p.text], insert: true, cursor }) });
-      const r = await w.put('hello again', readDraft(w.screen()).sig);
+      const r = await w.put('hello again', bare(w.screen()).sig); // the sig a cursor-less read of the same rows has (readDraft refuses such a capture)
       assert.deepEqual([r.status, r.body.error, w.sent], [409, 'input-unreadable', []], JSON.stringify(cursor));
+      assert.ok(!r.body.draft, JSON.stringify(cursor));
     }
   });
 });
@@ -845,9 +883,56 @@ describe('writeDraft: Stop runs apart from the lock (M-2)', () => {
     assert.deepEqual(w.sent, []);
     release();
     await stop;
+    w.t += 40; // the gap behind Stop's Escape (N-2)
     w.state = 'busy';
     const r = await sc.writeDraft('%2', { text: 'queued note', base: w.sig() });
     assert.deepEqual([r.status, r.body.typed], [200, 11]);
+  });
+
+  test('(−) N-2: Stop\'s send is over, but a key within 40 ms of its Escape is still refused: 409 not-idle, nothing sent; (+) from 40 ms on it goes', async () => {
+    const w = pane({ text: 'hello', mem: { vim: false, plain: true }, state: 'busy' });
+    const sc = w.control();
+    assert.equal((await sc.stop('%2')).status, 200);
+    assert.deepEqual(sentKeys(w), ['Escape']);
+    w.armed = false; // Claude's "Esc again" hint is not the subject here
+    const write = () => sc.writeDraft('%2', { text: 'hello again', base: w.sig() });
+    w.t += 10; // the Escape went 10 ms ago
+    let r = await write();
+    assert.deepEqual([r.status, r.body.error], [409, 'not-idle']);
+    assert.deepEqual(sentKeys(w), ['Escape'], 'nothing went out behind the Escape');
+    w.t += 29; // 39 ms
+    r = await write();
+    assert.deepEqual([r.status, r.body.error], [409, 'not-idle']);
+    assert.deepEqual(sentKeys(w), ['Escape']);
+    w.t += 1; // 40 ms
+    r = await write();
+    assert.deepEqual([r.status, r.body.typed], [200, 6]);
+    assert.deepEqual(sentKeys(w), ['Escape', 'text: again']); // (safe() is for writes: Stop itself sends its Escape while the state is busy)
+  });
+
+  test('(+) N-2: the gap is 40 ms and per pane: a key 50 ms after the Escape goes at once, and a pane that never saw an Escape is not held', async () => {
+    const w = pane({ text: 'hello', mem: { vim: false, plain: true }, state: 'busy' });
+    const sc = w.control();
+    await sc.stop('%2');
+    w.armed = false;
+    w.t += 50;
+    const r = await sc.writeDraft('%2', { text: 'hello again', base: w.sig() });
+    assert.deepEqual([r.status, r.body.typed], [200, 6]);
+    // a pane that never saw an Escape: nothing to wait for
+    const other = pane({ text: 'hello', mem: { vim: false, plain: true }, state: 'busy' });
+    assert.equal((await other.control().writeDraft('%2', { text: 'hello again', base: other.sig() })).status, 200);
+  });
+
+  test('(−) N-2: End\'s Escape holds the pane too: a write right behind a refused End is 409 not-idle, nothing sent', async () => {
+    const w = pane({ text: '', mem: { vim: false, plain: true }, state: 'busy' });
+    const sc = w.control({ sleep: async () => {} }); // End\'s wait does not move the clock: the write comes within the gap
+    const end = await sc.endSession('%2');
+    assert.equal(end.status, 409, 'still busy after the Escape: End refuses');
+    assert.ok(sentKeys(w).includes('Escape'), 'End did interrupt');
+    const before = w.sent.length;
+    const r = await sc.writeDraft('%2', { text: 'queued note', base: w.sig() });
+    assert.deepEqual([r.status, r.body.error], [409, 'not-idle']);
+    assert.equal(w.sent.length, before, 'nothing went out behind End\'s Escape');
   });
 });
 
@@ -885,6 +970,49 @@ describe('End and the commands read the box with src/draft.js', () => {
       const w = pane({ override });
       assert.deepEqual(await asEnd(w), code(409, 'input-not-empty'));
       assert.deepEqual(w.sent, []);
+    }
+  });
+
+  test('(−) N-1: a status line drawn under Claude\'s lower rule (glyph + no-break space, or glyph + padding only), the cursor in the real box above: 409, nothing is typed', async () => {
+    const NB = ' ';
+    const rule = () => [span('─'.repeat(COLS), { fg: 244 })];
+    const fakeBox = (row) => (p) => {
+      const cap = boxRows({ cols: COLS, lines: [p.text], insert: true }); // top rule 0, the real row 1 (the cursor), lower rule 2
+      cap.rows.splice(3, 0, row, rule()); // the status row 3 and its rule 4: the last two rules now frame the status line
+      return cap;
+    };
+    for (const row of [[span(`❯${NB}main`)], [span('❯'), span(' '.repeat(COLS - 1))]]) {
+      const shown = fakeBox(row)({ text: '' });
+      assert.equal(readDraft(shown), null, 'the fixture: the parser does not read it');
+      assert.notEqual(parseDraft(shown.rows, null, shown.cols), null, 'and the pure parser, given no cursor, does read the same rows as a box');
+      for (const run of [asEnd, asCommand]) {
+        const w = pane({ text: '', vim: true, override: fakeBox(row) });
+        const r = await run(w);
+        assert.equal(r.status, 409);
+        assert.ok(['input-not-empty', 'input-unreadable'].includes(r.body.error), r.body.error);
+        assert.deepEqual(w.sent, [], 'not one key reached the real input');
+      }
+    }
+  });
+
+  test('(−) N-1 ruling: a capture without a cursor is no box for End and the commands either: 409, nothing is typed (a real empty box included)', async () => {
+    for (const cursor of [null, undefined]) {
+      for (const run of [asEnd, asCommand]) {
+        const w = pane({ text: '', vim: true, override: (p) => ({ ...boxRows({ cols: COLS, lines: [p.text], insert: true }), cursor }) });
+        const r = await run(w);
+        assert.equal(r.status, 409);
+        assert.ok(['input-not-empty', 'input-unreadable'].includes(r.body.error), r.body.error);
+        assert.deepEqual(w.sent, [], 'not one key reached the input');
+      }
+    }
+  });
+
+  test('(+) N-1: the same box with no status line under it is an empty box: End and a command are typed', async () => {
+    for (const run of [asEnd, asCommand]) {
+      const w = pane({ text: '', vim: true });
+      const r = await run(w);
+      assert.ok(w.sent.length > 0, 'something was typed');
+      assert.notEqual(r.body?.error, 'input-unreadable');
     }
   });
 

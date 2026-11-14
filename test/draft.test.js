@@ -544,7 +544,8 @@ describe('parseDraft: dim runs and real text', () => {
     layout(read({ lines: ['hello'], ghost: ' world', cursor: { dx: 1 } }));
     layout(read({ lines: ['hello'], ghost: ' world', cursor: null }));
     layout(read({ lines: [[span('one'), dim(' x')], 'two'] })); // dim on a row that is not the cursor row
-    layout(read({ lines: ['hello'], ghost: ' world', cursor: { y: 0 } }));
+    layout(read({ lines: ['first', 'hello'], ghost: ' world', cursor: { y: 1, x: 2 } })); // the cursor is on another box row than the ghost run
+    assert.equal(read({ lines: ['hello'], ghost: ' world', cursor: { y: 0 } }), null, 'a cursor on the top rule is outside the box (N-1): null, not a draft'); // was layout before the cursor gate
   });
 
   test('(−) two dim runs next to real text are unreadable even when one of them is at the cursor', () => {
@@ -631,7 +632,7 @@ describe('parseDraft: slash commands and the argument hint', () => {
   test('(−) an fg-246 run is real text when the cursor is on another row, missing, or the run is not on the cursor row', () => {
     const lines = [[span('note '), span('<x>', { fg: 246 })]];
     assert.equal(read({ lines, cursor: null }).text, 'note <x>');
-    assert.equal(read({ lines, cursor: { y: 0 } }).text, 'note <x>');
+    assert.equal(read({ lines, cursor: { y: 0 } }), null, 'a cursor on the top rule is outside the box (N-1)');
     const two = read({ lines: ['first', [span('note '), span('<x>', { fg: 246 })]], cursor: { y: 1, x: 7 } });
     assert.equal(two.text, 'first\nnote <x>');
   });
@@ -897,8 +898,59 @@ describe('parseDraft: no plain box (null)', () => {
       };
       assert.equal(parseDraft(status(' '), s.cursor, s.cols), null, `${glyph} ${label}`); // a plain space: a user's status line
       assert.equal(parseDraft(status(' '), null, s.cols), null);
-      assert.equal(parseDraft(status(NB), s.cursor, s.cols).text, label); // the control: with a no-break space the same rows ARE a box
+      // the control: with a no-break space and no cursor to say otherwise, the same rows ARE a box (N-1 below: the cursor says otherwise)
+      assert.equal(parseDraft(status(NB), null, s.cols).text, label);
+      assert.equal(parseDraft(status(NB), s.cursor, s.cols), null, 'the cursor is in the real box above, outside these rules');
     }
+  });
+
+  describe('N-1: the cursor decides on the read side too (a row the cursor is not in is not the input)', () => {
+    // a status line drawn under Claude's lower rule, with its own rule below it: the last two rules now frame the status line
+    const withStatus = (row, o = {}) => {
+      const s = boxRows({ lines: ['hello'], ...o });
+      const rows = s.rows.slice();
+      rows.splice(3, 0, row, rule(s.cols)); // top rule 0, the real box row 1, Claude's lower rule 2, the status row 3, its rule 4, the folder row, the mode line
+      return { s, rows };
+    };
+    const nbStatus = [span(`${PROMPT}${NB}main`)];
+    const padStatus = [span(PROMPT), span(' '.repeat(119))]; // the glyph and nothing but padding
+
+    test('(−) a no-break-space status line under Claude\'s lower rule, the cursor in the real box above: null', () => {
+      const { s, rows } = withStatus(nbStatus);
+      assert.equal(s.cursor.y, 1, 'the fixture cursor is on the real box row');
+      assert.equal(parseDraft(rows, s.cursor, s.cols), null);
+      assert.equal(parseDraft(rows, { ...s.cursor, visible: false }, s.cols), null, 'an invisible cursor still has a row');
+    });
+
+    test('(−) a status line of the glyph and padding only gives the same result', () => {
+      const { s, rows } = withStatus(padStatus);
+      assert.equal(parseDraft(rows, null, s.cols).state, 'empty', 'the control: without a cursor the rows read as an empty box');
+      assert.equal(parseDraft(rows, s.cursor, s.cols), null);
+    });
+
+    test('(−) a cursor on a rule row, above the top rule or below the bottom rule is outside the box: null', () => {
+      const s = boxRows({ lines: ['a', 'b', 'c'] }); // rules at 0 and 4
+      for (const y of [-1, 0, 4, 5, 6, 40]) assert.equal(parseDraft(s.rows, { x: 2, y, visible: true }, s.cols), null, `y ${y}`);
+    });
+
+    test('(+) a normal box with the cursor on any of its rows reads as before', () => {
+      const s = boxRows({ lines: ['a', 'b', 'c'] });
+      const base = parseDraft(s.rows, null, s.cols);
+      assert.equal(base.text, 'a\nb\nc');
+      for (const y of [1, 2, 3]) {
+        const d = parseDraft(s.rows, { x: 3, y, visible: true }, s.cols);
+        assert.equal(d.text, 'a\nb\nc', `row ${y}`);
+        assert.equal(d.state, 'text');
+      }
+    });
+
+    test('(+) no cursor, or one without integer coordinates, changes nothing', () => {
+      const { s, rows } = withStatus(nbStatus);
+      for (const cursor of [null, undefined, {}, { x: 2 }, { y: 9 }, { x: 'a', y: 9 }, { x: 2.5, y: 9.5 }]) {
+        assert.equal(parseDraft(rows, cursor, s.cols).text, 'main', JSON.stringify(cursor));
+        assert.equal(parseDraft(s.rows, cursor, s.cols).text, 'hello', JSON.stringify(cursor));
+      }
+    });
   });
 
   test('(+) I-1: the real box still reads: glyph and a no-break space, text or empty, padded or not, prompt and bash', () => {
