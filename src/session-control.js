@@ -1,13 +1,14 @@
-// Four controls on a live Claude pane (api-app.md section 3): switch the permission mode, End the session, run a slash
-// command, answer a permission prompt. They type into a real agent session, so every path fails closed: when the
-// screen or the registry state is not exactly what the step needs, nothing is sent and the answer is a 409. Keys go only
-// through `keys.send` (src/keys.js: fixed argv, KEY_NAME allow-list, rate limit); this module never kills a pane and
-// never signals a process. Text is typed only into an empty input box and Enter is pressed only after the box reads
-// exactly what nika typed (claude-tui.md section 5), so a user's draft is never sent, extended or cleared.
+// Five controls on a live Claude pane (api-app.md section 3): switch the permission mode, End the session, run a slash
+// command, answer a permission prompt, write the draft (0.5). They type into a real agent session, so every path fails
+// closed: when the screen or the registry state is not exactly what the step needs, nothing is sent and the answer is a 409.
+// Keys go only through `keys.send` (src/keys.js: fixed argv, KEY_NAME allow-list, rate limit); this module never kills a pane
+// and never signals a process. End and the commands type only into an empty input box and press Enter only after the box reads
+// exactly what nika typed (claude-tui.md section 5), so a user's draft is never sent, extended or cleared by them. The draft
+// route (writeDraft) is the one place that changes a draft, and it never presses Enter. The input box is read by src/draft.js.
 import { createHash } from 'node:crypto';
 import { CLAUDE_COMMAND } from './ids.js';
 import { MODE_TARGETS, OPTION, PROMPT_ROWS, bypassWindow, lastNonBlank, modeFromRows, promptFromRows, rowText } from './mode.js';
-import { RULE_ROW } from './draft.js';
+import { RULE_ROW, parseDraft, normDraft, sameDraft, inEnvelope, chunks } from './draft.js';
 
 const EXIT_POLL_MS = 500;
 const PROMPT_CHAR = '❯';
@@ -19,6 +20,16 @@ const BYPASS_RETRY_MS = 1000; // wait before the one retry of a press out of byp
 // The hint row of Claude's history search, which `/` opens in vim normal mode (claude-tui.md section 5, Claude Code 2.1.319).
 // It sits at the bottom of that screen, so only the last rows are read: older output cannot pose as it.
 const HISTORY_HINT = 'Esc i / for slash commands';
+// Draft route (design W5 section 3): the largest text it takes, the control characters it allows, and the timings of the
+// clear sequences (spike S9: after Escape in vim a key needs at least 40 ms, plain mode wants two Escapes at least 60 ms apart).
+const DRAFT_MAX_CHARS = 1024;
+const DRAFT_MAX_NEWLINES = 12;
+const DRAFT_CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/; // C0, DEL, C1, except \t and \n
+const DRAFT_BASE = /^(?:[0-9a-f]{16})?$/;
+const VIM_ESC_GAP_MS = 40;
+const VIM_CLEAR_MS = 400; // wait for INSERT to go after Escape, and for the empty INSERT box after `ggdG` + `i`
+const PLAIN_CLEAR_MS = 600; // wait for the empty box after the second Escape
+const EMPTY = ['', '!']; // an empty box in the page's form: prompt glyph, `!` glyph
 
 const conflict = (error) => ({ status: 409, body: { error } });
 const invalid = (message) => ({ status: 400, body: { error: 'invalid', message } });
@@ -39,55 +50,56 @@ export function promptSig(rows) {
 /** The rows (span lists, styles kept) between the last two rule rows (the input box), or null when the screen has fewer than two. */
 function inputBox(rows) {
   const list = Array.isArray(rows) ? rows : [];
-  const rules = list.flatMap((row, i) => (RULE_ROW.test(rowText(row).trim()) ? [i] : []));
+  const rules = list.flatMap((row, i) => (RULE_ROW.test(rowText(row).trimEnd()) ? [i] : []));
   return rules.length < 2 ? null : list.slice(rules.at(-2) + 1, rules.at(-1));
 }
 
 /**
- * One input row: after the optional indent it starts with the prompt character. Returns whether exactly one space
- * (no-break spaces count as spaces) follows it (`spaced`), the characters after that separator (`body`, each with its
- * dim and reverse-video flag), their visible (non-space) ones (`shown`), whether any of them is dim, and the text after
- * the prompt character with the surrounding spaces trimmed. Null when the row is not an input row.
+ * The input box (src/draft.js) of a capture `{ rows, cursor, cols }`: a Draft, or null when the screen has no plain box. The mode
+ * line is read with plain spaces (insertShown does the same), so a no-break space inside `-- INSERT --` does not hide the mode.
  */
-function inputRow(row) {
-  const chars = [];
-  for (const sp of Array.isArray(row) ? row : []) {
-    const dim = sp?.s?.d === true;
-    const rev = sp?.s?.r === true;
-    for (const ch of typeof sp?.t === 'string' ? sp.t : '') chars.push({ ch: plain(ch), dim, rev });
-  }
-  let at = 0;
-  while (chars[at]?.ch === ' ') at += 1;
-  if (chars[at]?.ch !== PROMPT_CHAR) return null;
-  const rest = chars.slice(at + 1);
-  const spaced = rest.length === 0 || rest[0].ch === ' ';
-  const body = spaced ? rest.slice(1) : rest;
-  const shown = body.filter((c) => c.ch !== ' ');
-  return {
-    spaced,
-    body,
-    shown,
-    anyDim: shown.some((c) => c.dim),
-    text: rest.map((c) => c.ch).join('').replace(/^ +| +$/g, ''),
-  };
+export function readDraft(seen) {
+  const rows = Array.isArray(seen?.rows) ? seen.rows : [];
+  const last = rows.findLastIndex((row) => rowText(row).trim() !== '');
+  const spaced = (row) => (Array.isArray(row) ? row.map((sp) => (typeof sp?.t === 'string' ? { ...sp, t: plain(sp.t) } : sp)) : row);
+  return parseDraft(last < 0 ? rows : rows.map((row, i) => (i === last ? spaced(row) : row)), seen?.cursor, seen?.cols);
+}
+const draftOf = readDraft;
+/** The draft as the screen holds it, in the form the page sends: a `!` box reads `!` + its text (Shell mode). */
+const canonOf = (draft) => (draft.mode === 'bash' ? `!${draft.text}` : draft.text);
+
+/**
+ * Claude's current way of editing the input, from the rows and the pane's memory: `insert` (vim, `-- INSERT --` shown),
+ * `normal` (INSERT seen on this pane before), `plain` (a probe `i` landed as text before), else `unknown`: plain mode and
+ * vim normal mode draw the same screen (spike S9).
+ */
+export const editMode = (rows, vim, plain) => (insertShown(rows) ? 'insert' : vim ? 'normal' : plain ? 'plain' : 'unknown');
+
+/** An empty box in prompt mode (an empty `!` box is not one: End and the commands never type into it). */
+function emptyBox(seen) {
+  const draft = draftOf(seen);
+  return draft !== null && draft.state === 'empty' && draft.mode === 'prompt';
+}
+
+/** Exactly one box row in prompt mode, readable, holding exactly `text` (trailing spaces and tabs as normDraft sees them). */
+function readsAs(seen, text) {
+  const draft = draftOf(seen);
+  return draft !== null && draft.state !== 'unreadable' && draft.mode === 'prompt' && draft.box.bottom - draft.box.top === 2 && sameDraft(draft.text, text);
 }
 
 /**
- * Exactly one row: the prompt character, a separator space, then nothing or whitespace (a reverse-video space is
- * Claude's cursor), or the placeholder: dim text, whose first character may be reverse video (the cursor over it) and
- * then not dim. Any other visible character is a draft (typed text is never dim, whatever it says).
+ * One input row, for isRemnant only (the box itself is read by src/draft.js): after the optional indent it starts with the
+ * prompt character. Returns whether exactly one space (no-break spaces count as spaces) follows it (`spaced`) and the text
+ * after the prompt character with the surrounding spaces trimmed. Null when the row is not an input row.
  */
-function boxIsEmpty(box) {
-  const row = box?.length === 1 ? inputRow(box[0]) : null;
-  if (row === null || !row.spaced) return false;
-  const tail = row.shown[0]?.rev ? row.shown.slice(1) : row.shown;
-  return row.shown.length === 0 || (tail.length > 0 && tail.every((c) => c.dim));
-}
-
-/** Exactly one row: the prompt character, exactly one separator, then exactly `text` in plain (not dim) characters, then only whitespace. */
-function boxReads(box, text) {
-  const row = box?.length === 1 ? inputRow(box[0]) : null;
-  return row !== null && row.spaced && !row.anyDim && row.body.map((c) => c.ch).join('').replace(/ +$/, '') === plain(text).replace(/ +$/, '');
+function inputRow(row) {
+  const chars = [];
+  for (const sp of Array.isArray(row) ? row : []) for (const ch of typeof sp?.t === 'string' ? sp.t : '') chars.push(plain(ch));
+  let at = 0;
+  while (chars[at] === ' ') at += 1;
+  if (chars[at] !== PROMPT_CHAR) return null;
+  const rest = chars.slice(at + 1);
+  return { spaced: rest.length === 0 || rest[0] === ' ', text: rest.join('').replace(/^ +| +$/g, '') };
 }
 
 /**
@@ -102,6 +114,21 @@ function isRemnant(box, typed) {
 }
 
 export const insertShown = (rows) => INSERT_PREFIX.test(plain(lastNonBlank(rows, 1)[0] ?? ''));
+
+/** The body of the draft route, `{ text, base }`: null when it is valid, else the 400 answer. The router and writeDraft both call it. */
+export function checkDraftBody(body) {
+  const names = body !== null && typeof body === 'object' ? Object.keys(body) : [];
+  if (names.length !== 2 || !names.includes('text') || !names.includes('base')) return invalid('body must be { text, base }');
+  const { text, base } = body;
+  if (typeof text !== 'string' || text.length > DRAFT_MAX_CHARS) return invalid(`text must be a string of at most ${DRAFT_MAX_CHARS} characters`);
+  if (DRAFT_CONTROL.test(text)) return invalid('text must not contain control characters other than newline and tab');
+  if (text.split('\n').length - 1 > DRAFT_MAX_NEWLINES) return invalid(`text may hold at most ${DRAFT_MAX_NEWLINES} newlines`);
+  if (typeof base !== 'string' || !DRAFT_BASE.test(base)) return invalid('base must be 16 lowercase hex characters, or empty');
+  return null;
+}
+
+/** `after` is `before` with exactly one `i` added somewhere: what a probe `i` that landed as text leaves in the box. */
+const oneIAdded = (before, after) => after.length === before.length + 1 && [...after].some((ch, k) => ch === 'i' && after.slice(0, k) + after.slice(k + 1) === before);
 
 /**
  * The raw rows of option n (wrapped rows included), or null. promptFromRows cuts a label at 80 characters, so a
@@ -120,15 +147,18 @@ function rawOption(rows, n) {
 }
 
 /**
- * mirror.capture(pane, undefined, { fresh }) → { status, body: { rows } }; keys.send(pane, { text?, keys? }) → { status, body };
+ * mirror.capture(pane, undefined, { fresh }) → { status, body: { rows, cursor, cols } }; keys.send(pane, { text?, paste?, keys? }) → { status, body };
  * paneCommand(pane) → Promise<string|null> (null = pane gone); stateOf(pane) → the live session's registry state or null;
- * vimOf(pane) → boolean: this pane's mode line has shown `-- INSERT --` before (Claude's input is in vim mode).
- * One control action runs per pane at a time (switch, End, command and answer share one lock). Every method returns { status, body }.
+ * vimOf(pane) → boolean: this pane's mode line has shown `-- INSERT --` before (Claude's input is in vim mode);
+ * plainOf(pane) → boolean (optional, default false): a probe `i` landed as text on this pane, so its input is not in vim mode;
+ * setEdit(pane, 'vim' | 'plain' | 'none') (optional): the draft route reports what it learned about the pane's edit mode.
+ * One control action runs per pane at a time (switch, End, command, answer and draft write share one lock). Every method returns { status, body }.
+ * The draft route's timings: draftPollMs (poll step while it waits for a redraw), escGapMs (plain mode: gap between its two Escapes), chunkGapMs.
  */
 export function createSessionControl({
-  mirror, keys, paneCommand, stateOf, vimOf, now = Date.now, sleep = realSleep,
+  mirror, keys, paneCommand, stateOf, vimOf, plainOf = () => false, setEdit = () => {}, now = Date.now, sleep = realSleep,
   pollMs = 300, settleMs = 1800, maxPresses = 6, escWaitMs = 1000, exitWaitMs = 3000, answerHoldMs = 3000,
-  settleTries = 4, settlePollMs = 150,
+  settleTries = 4, settlePollMs = 150, draftPollMs = 20, escGapMs = 60, chunkGapMs = 300,
 }) {
   // Typing without knowing whether the input is in vim normal mode could send stray vim commands, so there is no default.
   if (typeof vimOf !== 'function') throw new TypeError('vimOf must be a function (pane) => boolean');
@@ -147,12 +177,12 @@ export function createSessionControl({
     }
   }
 
-  /** A fresh capture: { rows } or { res } (the failed capture's own status and body). */
+  /** A fresh capture: { rows, cursor, cols } or { res } (the failed capture's own status and body). */
   async function look(pane, ctx) {
     const cap = await mirror.capture(pane, undefined, { fresh: true });
     if (cap.status !== 200) return { res: { status: cap.status, body: cap.body } };
     if (ctx && insertShown(cap.body.rows)) ctx.insert = true;
-    return { rows: cap.body.rows };
+    return { rows: cap.body.rows, cursor: cap.body.cursor, cols: cap.body.cols };
   }
 
   /** Registry state; a lookup that fails reads as no live session, which is never idle. `opts` goes to stateOf (`{ fresh: true }`: skip its cache). */
@@ -166,13 +196,16 @@ export function createSessionControl({
 
   const promptOpen = (rows) => promptFromRows(rows) !== null;
 
-  /** A fresh capture plus the registry state: { rows, state, idle } (idle = state idle and no permission prompt) or { res }. */
+  /** A fresh capture plus the registry state: { rows, cursor, cols, state, idle } (idle = state idle and no permission prompt) or { res }. */
   async function readIdle(pane, ctx) {
     const seen = await look(pane, ctx);
     if (seen.res) return seen;
     const state = await stateNow(pane);
-    return { rows: seen.rows, state, idle: state === 'idle' && !promptOpen(seen.rows) };
+    return { ...seen, state, idle: state === 'idle' && !promptOpen(seen.rows) };
   }
+
+  /** The footer is unreadable and no input box (src/draft.js) explains it: a dialog may be open. A `!` box reads unknown in modeFromRows and is not one. */
+  const unknownScreen = (seen) => modeFromRows(seen.rows) === 'unknown' && draftOf(seen) === null;
 
   /** Step 4 of the mode route: an idle pane's fresh capture, else { res: 409 not-idle }. */
   async function idleLook(pane) {
@@ -216,19 +249,20 @@ export function createSessionControl({
 
   /**
    * After a keystroke Claude redraws its input a few hundred ms later: up to settleTries fresh captures, `sleep(settlePollMs)`
-   * before each, until `matches(rows)`. Returns { rows, last } for the first match, { res, last } when a capture fails,
-   * { last } when none matched (`last` = rows of the last capture that worked).
+   * before each, until `matches(rows, seen)` (`seen` = the whole capture: rows, cursor, cols). Returns { rows, last, seen,
+   * lastSeen } for the first match, { res, last, lastSeen } when a capture fails, { last, lastSeen } when none matched (`last` /
+   * `lastSeen` = rows / capture of the last capture that worked). `tries` and `ms` replace settleTries and settlePollMs.
    */
-  async function settled(pane, matches, ctx) {
-    let last;
-    for (let i = 0; i < Math.max(1, settleTries); i += 1) {
-      await sleep(settlePollMs);
+  async function settled(pane, matches, ctx, tries = settleTries, ms = settlePollMs) {
+    let lastSeen;
+    for (let i = 0; i < Math.max(1, tries); i += 1) {
+      await sleep(ms);
       const seen = await look(pane, ctx);
-      if (seen.res) return { res: seen.res, last };
-      last = seen.rows;
-      if (matches(last)) return { rows: last, last };
+      if (seen.res) return { res: seen.res, last: lastSeen?.rows, lastSeen };
+      lastSeen = seen;
+      if (matches(seen.rows, seen)) return { rows: seen.rows, last: seen.rows, seen, lastSeen };
     }
-    return { last };
+    return { last: lastSeen?.rows, lastSeen };
   }
 
   /**
@@ -244,13 +278,13 @@ export function createSessionControl({
       let seen = await look(pane, ctx);
       if (seen.res) return;
       let box = inputBox(seen.rows);
-      if (box !== null && boxIsEmpty(box)) { // maybe Claude has not redrawn yet: look once more
+      if (box !== null && emptyBox(seen)) { // maybe Claude has not redrawn yet: look once more
         await sleep(settlePollMs);
         seen = await look(pane, ctx);
         if (seen.res) return;
         box = inputBox(seen.rows);
       }
-      if (box === null || box.length === 0 || boxIsEmpty(box) || !isRemnant(box, typed)) return;
+      if (box === null || box.length === 0 || emptyBox(seen) || !isRemnant(box, typed)) return;
       if ((await keys.send(pane, { keys: ['C-u'] })).status !== 200) return;
     }
   }
@@ -263,15 +297,17 @@ export function createSessionControl({
     if (shown.res) return { failed: shown.res };
     if (shown.rows) return null;
     // vim was off: the i landed as text, and it is the only thing nika typed
-    if (boxReads(inputBox(shown.last), 'i')) await keys.send(pane, { keys: ['C-u'] });
+    if (readsAs(shown.lastSeen, 'i')) await keys.send(pane, { keys: ['C-u'] });
     return { res: conflict('mode-unknown') };
   }
 
   /**
-   * Types `text` into Claude's input and presses Enter, for End and runCommand (claude-tui.md section 5). `rows` is the
+   * Types `text` into Claude's input and presses Enter, for End and runCommand (claude-tui.md section 5). `first` is the
    * fresh capture the caller has already checked (idle, footer readable); `ctx.insert` says whether any capture of this
-   * action showed `-- INSERT --`. A box that is not found or does not start with a prompt row is 409 `input-unreadable`;
-   * a box that holds anything but nothing or the placeholder is 409 `input-not-empty`. Returns null when Enter went out, { res } for a 409, or { failed } with the status and
+   * action showed `-- INSERT --`. The box is read by src/draft.js: one that is not found, whose first row is not a prompt
+   * row, whose rule is `History n/m` (an old entry) or whose rows nika does not know (dim text next to real text included) is
+   * 409 `input-unreadable`; one that holds anything but nothing or the placeholder (a `!` box, a pasted block, a tall draft,
+   * trailing spaces) is 409 `input-not-empty` (a `!` box says so in its message). Returns null when Enter went out, { res } for a 409, or { failed } with the status and
    * body of the send or capture that failed. After a 409 `not-at-prompt` or a failed capture nika's own text is removed
    * as far as cleanUp can tell it apart from a draft; it may remain when a send fails, a capture fails or the box holds
    * something else. A stray `i` (vim was off) is removed with one C-u before the 409 `mode-unknown`.
@@ -281,11 +317,14 @@ export function createSessionControl({
    * closed with one Escape before the usual vim road (`i`, INSERT, the whole text). Any other screen: nika's `/` is removed
    * and nothing else is sent.
    */
-  async function typeCommand(pane, rows, text, ctx) {
-    const box = inputBox(rows);
-    // no box, or one that does not start with a prompt row (a menu, another screen): nika cannot tell a draft from nothing, so it types nothing
-    if (inputRow(box?.[0]) === null) return { res: conflict('input-unreadable') };
-    if (!boxIsEmpty(box)) return { res: conflict('input-not-empty') }; // a draft is never sent, extended or cleared
+  async function typeCommand(pane, first, text, ctx) {
+    const rows = first.rows;
+    const draft = draftOf(first);
+    // no box, or one nika cannot read (a menu, another screen, an old entry of the history): it cannot tell a draft from nothing, so it types nothing
+    if (draft === null) return { res: conflict(inputRow(inputBox(rows)?.[0]) === null ? 'input-unreadable' : 'input-not-empty') }; // a prompt character glued to text is a row holding text
+    if (draft.reason === 'history' || draft.reason === 'layout') return { res: conflict('input-unreadable') }; // an old entry shows, or rows nika does not know (dim text next to real text included)
+    if (draft.mode === 'bash') return { res: { status: 409, body: { error: 'input-not-empty', message: "Claude's input is in ! mode" } } };
+    if (draft.state !== 'empty') return { res: conflict('input-not-empty') }; // a draft is never sent, extended or cleared
     let rest = text; // what is still to be typed
     // vim normal mode: the keys would be vim commands. Evidence of vim: the pane's memory, or INSERT seen in this action.
     if ((await vimOf(pane)) || ctx.insert) {
@@ -294,17 +333,17 @@ export function createSessionControl({
     } else if (text.startsWith('/')) {
       const slash = await keys.send(pane, { text: '/' });
       if (slash.status !== 200) return { failed: slash };
-      const probed = await settled(pane, (seen) => boxReads(inputBox(seen), '/') || historyShown(seen), ctx);
+      const probed = await settled(pane, (seen, cap) => readsAs(cap, '/') || historyShown(seen), ctx);
       if (!probed.rows) {
         await cleanUp(pane, '/', ctx);
         return probed.res ? { failed: probed.res } : { res: conflict('not-at-prompt') };
       }
-      if (boxReads(inputBox(probed.rows), '/')) {
+      if (readsAs(probed.seen, '/')) {
         rest = text.slice(1);
       } else { // the history search: close it, then the usual vim road
         const esc = await keys.send(pane, { keys: ['Escape'] });
         if (esc.status !== 200) return { failed: esc };
-        const back = await settled(pane, (seen) => boxIsEmpty(inputBox(seen)), ctx);
+        const back = await settled(pane, (seen, cap) => emptyBox(cap), ctx);
         if (back.res) return { failed: back.res };
         if (!back.rows) return { res: conflict('not-at-prompt') };
         const stopped = insertShown(back.rows) ? null : await enterInsert(pane, ctx);
@@ -318,7 +357,7 @@ export function createSessionControl({
         return { failed: sent };
       }
     }
-    const echoed = await settled(pane, (seen) => boxReads(inputBox(seen), text), ctx);
+    const echoed = await settled(pane, (seen, cap) => readsAs(cap, text), ctx);
     if (!echoed.rows) {
       await cleanUp(pane, text, ctx);
       return echoed.res ? { failed: echoed.res } : { res: conflict('not-at-prompt') };
@@ -412,8 +451,8 @@ export function createSessionControl({
         if (seen.res) return seen.res;
         if (!seen.idle) return conflict('not-idle'); // End never answers a prompt
       }
-      if (modeFromRows(seen.rows) === 'unknown') return conflict('mode-unknown'); // a dialog may be open
-      const typed = await typeCommand(pane, seen.rows, '/exit', ctx);
+      if (unknownScreen(seen)) return conflict('mode-unknown'); // a dialog may be open (a `!` box is read by typeCommand)
+      const typed = await typeCommand(pane, seen, '/exit', ctx);
       if (typed?.res) return typed.res;
       if (typed?.failed) return ended(await isGone(pane), 'keys');
       for (let i = 0; i < steps(exitWaitMs, EXIT_POLL_MS); i += 1) {
@@ -446,8 +485,8 @@ export function createSessionControl({
       const seen = await readIdle(pane, ctx); // no Escape here: Stop is its own button
       if (seen.res) return seen.res;
       if (!seen.idle) return conflict('not-idle');
-      if (modeFromRows(seen.rows) === 'unknown') return conflict('mode-unknown');
-      const typed = await typeCommand(pane, seen.rows, text, ctx);
+      if (unknownScreen(seen)) return conflict('mode-unknown');
+      const typed = await typeCommand(pane, seen, text, ctx);
       if (typed?.res) return typed.res;
       if (typed?.failed) return { status: typed.failed.status, body: typed.failed.body };
       return { status: 200, body: { sent: true } };
@@ -480,5 +519,196 @@ export function createSessionControl({
     });
   }
 
-  return { switchMode, endSession, runCommand, answer, stop };
+  /**
+   * Draft write (design W5 section 3): makes Claude's input box read `body.text`, a draft the page edited in nika's message box.
+   * The only control that changes a user's draft, so every step fails closed and nothing is sent after a refusal. Under the
+   * per-pane lock: a fresh capture (no prompt on screen, a readable box, its `sig` equal to `base`, the text inside the
+   * envelope); then either nothing (the box already reads the text), an append (the cursor is at the end of the text in
+   * plain or vim INSERT mode and the new text starts with the old: only the new part is typed), a type (an empty box), or a
+   * replace (clear with Escape, then type). A replace needs the registry state `idle`: Escape interrupts a running turn.
+   * Before EVERY key or chunk a fresh capture must still show the plain box, no prompt and exactly the text the previous step
+   * left (409 `screen-changed` otherwise; T51). Chunks are at most 700 characters and 2 newlines, `chunkGapMs` apart. Last, the
+   * box is read back (409 `draft-mismatch` on any difference). Sent: literal text (`send-keys -l`, or a bracketed paste for a
+   * chunk with a newline or tab), `Escape` (idle only, vim: once, then `ggdG` and `i`; plain: twice, `escGapMs` apart),
+   * `i` (a probe when nothing shows the edit mode), `C-u` (the probe's own `i` in an empty box) and `BSpace` (leaves a `!` box).
+   * Never `Enter`, `C-c`, `Up`, `Down` or `BTab`, and no key within 40 ms after an `Escape`. Every answer that has a box carries
+   * `draft` (the parse plus `edit`): 200 { draft, typed }, 409 not-idle | mode-unknown | input-unreadable | draft-unreadable { reason } |
+   * draft-changed | screen-changed | draft-mismatch, 400 invalid, or a failed capture or key send's own status and body.
+   */
+  function writeDraft(pane, body) {
+    const bad = checkDraftBody(body);
+    if (bad) return Promise.resolve(bad);
+    const { base } = body;
+    const text = body.text.replace(/[ \t]+$/, ''); // trailing spaces are invisible on screen and never read back: they are not typed
+    return exclusive(pane, async (ctx) => {
+      const view = async (seen) => {
+        const draft = seen ? readDraft(seen) : null;
+        return draft && { ...draft, edit: editMode(seen.rows, (await vimOf(pane)) === true, (await plainOf(pane)) === true) };
+      };
+      const reply = async (status, error, seen, extra = {}) => ({ status, body: { error, ...extra, draft: await view(seen) } });
+      const refused = async (res) => ({ status: res.status, body: { ...res.body, draft: await view(await look(pane, ctx)) } });
+      let typed = 0;
+      let onScreen = ''; // what the box should hold now, in the page's form (a `!` box reads `!` + its text)
+
+      // Pre-key check: a fresh capture that shows the plain box, no prompt, and one of the `accept` texts. { seen, draft } or { res }.
+      const check = async (accept) => {
+        const seen = await look(pane, ctx);
+        if (seen.res) return { res: seen.res };
+        const draft = promptOpen(seen.rows) ? null : readDraft(seen);
+        if (draft === null) return { res: await reply(409, 'screen-changed', seen) };
+        // text that ends in a space reads as unreadable `trailing`; a chunk boundary can leave exactly that, and only the text check is lost
+        if (draft.state === 'unreadable' && draft.reason === 'trailing' && /[ \t]$/.test(onScreen)) return { seen, draft };
+        if (draft.state === 'unreadable') return { res: await reply(409, 'draft-mismatch', seen) };
+        if (!accept.some((t) => sameDraft(canonOf(draft), t))) return { res: await reply(409, 'screen-changed', seen) };
+        return { seen, draft };
+      };
+      // Waits up to `ms` (steps of draftPollMs, counted by the sleeps, not by a clock): every poll is a pre-key check;
+      // `done(seen, draft, waited)` ends it. { seen, draft }, { res } or { timeout, seen }.
+      const poll = async (ms, accept, done) => {
+        let waited = 0;
+        let last;
+        for (let i = 0; i < steps(ms, draftPollMs); i += 1) {
+          await sleep(draftPollMs);
+          waited += draftPollMs;
+          const got = await check(accept);
+          if (got.res) return got;
+          last = got.seen;
+          if (done(got.seen, got.draft, waited)) return got;
+        }
+        return { timeout: true, seen: last };
+      };
+      // poll() until `done`, then the box is what the screen shows. Null when it got there, else the answer: a timeout is
+      // 409 draft-mismatch, and `forget` also drops the pane's memory of its edit mode (the road that was assumed did not work).
+      const reach = async (ms, accept, done, forget = true) => {
+        const got = await poll(ms, accept, done);
+        if (got.res) return got.res;
+        if (got.timeout) {
+          if (forget) setEdit(pane, 'none');
+          return reply(409, 'draft-mismatch', got.seen);
+        }
+        onScreen = canonOf(got.draft);
+        return null;
+      };
+      // A key. Null when it went out, else the answer (a failed send stops everything; the draft is read once more, best effort).
+      const press = async (keyBody) => {
+        const sent = await keys.send(pane, keyBody);
+        return sent.status === 200 ? null : refused({ status: sent.status, body: sent.body });
+      };
+      // A key after its own pre-key check (the capture right before it). Null when it went out, else the answer.
+      const send = async (accept, keyBody) => (await check(accept)).res ?? press(keyBody);
+      // Escape goes out only while the registry says idle: it interrupts a running turn (claude-tui.md section 5)
+      const idleNow = async () => (interrupting.has(pane) || (await stateNow(pane, { fresh: true })) !== 'idle' ? conflict('not-idle') : null);
+      const isEmpty = (cap, d) => d.state === 'empty';
+
+      // vim INSERT: Escape, wait until INSERT is gone and 40 ms passed, `ggdG`, `i`, wait for the empty INSERT box
+      const clearVim = async () => {
+        let res = await idleNow();
+        if (res) return res;
+        if ((res = await send([onScreen], { keys: ['Escape'] }))) return res;
+        const gone = await poll(VIM_CLEAR_MS, [onScreen], (cap, d, waited) => !insertShown(cap.rows) && waited >= VIM_ESC_GAP_MS);
+        if (gone.res) return gone.res;
+        if (gone.timeout) return reply(409, 'mode-unknown', gone.seen);
+        if ((res = await press({ text: 'ggdG' }))) return res; // the last poll was this key's pre-key check
+        // the redraw after ggdG may be late: the old text or the empty box
+        if ((res = await send([onScreen, ...EMPTY], { text: 'i' }))) return res;
+        return reach(VIM_CLEAR_MS, [onScreen, ...EMPTY], (cap, d) => insertShown(cap.rows) && d.state === 'empty');
+      };
+      // plain: Escape, escGapMs, Escape (a second one on an already empty box would open Rewind, so only while text shows)
+      const clearPlain = async () => {
+        let res = await idleNow();
+        if (res) return res;
+        if ((res = await send([onScreen], { keys: ['Escape'] }))) return res;
+        await sleep(Math.max(escGapMs, VIM_ESC_GAP_MS));
+        const second = await check([onScreen, ...EMPTY]);
+        if (second.res) return second.res;
+        if (second.draft.state !== 'empty' && (res = await press({ keys: ['Escape'] }))) return res;
+        // the next key follows the last Escape by at least 40 ms: a key right behind an Escape is read as Alt+key
+        return reach(PLAIN_CLEAR_MS, [onScreen, ...EMPTY], (cap, d, waited) => d.state === 'empty' && waited >= VIM_ESC_GAP_MS);
+      };
+      // Nothing shows which edit mode the input is in: `i` is a vim command in normal mode (INSERT appears) and text otherwise.
+      // Returns 'insert' (vim), 'plain' (the `i` landed in the box and stays there; the caller removes it) or { res }.
+      const probe = async () => {
+        const from = onScreen;
+        const res = await send([onScreen], { text: 'i' });
+        if (res) return { res };
+        const landed = (cap) => { const d = readDraft(cap); return d !== null && d.state !== 'unreadable' && oneIAdded(normDraft(from), normDraft(canonOf(d))); };
+        const after = await settled(pane, (rows, cap) => insertShown(rows) || promptOpen(rows) || landed(cap), ctx);
+        if (after.res) return { res: after.res };
+        const cap = after.seen ?? after.lastSeen;
+        const draft = promptOpen(cap.rows) ? null : readDraft(cap);
+        if (draft === null) return { res: await reply(409, 'screen-changed', cap) };
+        if (draft.state === 'unreadable') return { res: await reply(409, 'draft-mismatch', cap) };
+        if (insertShown(cap.rows) && sameDraft(canonOf(draft), from)) { // vim: INSERT shown, the text did not change
+          setEdit(pane, 'vim');
+          return 'insert';
+        }
+        if (!landed(cap)) return { res: await reply(409, 'screen-changed', cap) };
+        setEdit(pane, 'plain');
+        onScreen = canonOf(draft);
+        return 'plain';
+      };
+      // types `part` in chunks: each one after a pre-key check, chunkGapMs apart
+      const typeIn = async (part) => {
+        const parts = chunks(part);
+        for (let k = 0; k < parts.length; k += 1) {
+          if (k > 0) await sleep(chunkGapMs);
+          const res = await send([onScreen], /[\n\t]/.test(parts[k]) ? { paste: parts[k] } : { text: parts[k] });
+          if (res) return res;
+          onScreen += parts[k];
+          typed += [...parts[k]].length;
+        }
+        return null;
+      };
+
+      // --- the checks, in order (nothing is sent before the plan) ---
+      const seen = await look(pane, ctx);
+      if (seen.res) return seen.res;
+      const state = await stateNow(pane);
+      if (promptOpen(seen.rows)) return conflict('not-idle'); // T51: a draft write never lands in a prompt
+      const draft = readDraft(seen);
+      if (draft === null) return conflict(modeFromRows(seen.rows) === 'unknown' ? 'mode-unknown' : 'input-unreadable');
+      if (draft.state === 'unreadable') return reply(409, 'draft-unreadable', seen, { reason: draft.reason });
+      if (draft.sig !== base) return reply(409, 'draft-changed', seen);
+      if (!inEnvelope(text, seen.cols).ok) return invalid('text does not fit the input box');
+      onScreen = canonOf(draft);
+      if (sameDraft(onScreen, text)) return { status: 200, body: { draft: await view(seen), typed: 0 } };
+
+      let edit = editMode(seen.rows, (await vimOf(pane)) === true, (await plainOf(pane)) === true);
+      if (edit === 'insert') setEdit(pane, 'vim');
+      const empty = draft.state === 'empty';
+      const append = !empty && (edit === 'insert' || edit === 'plain') && draft.cursorAtEnd && (draft.mode === 'bash') === text.startsWith('!') && text.startsWith(onScreen);
+      if (!empty && !append && state !== 'idle') return reply(409, 'not-idle', seen); // a replace clears with Escape
+      let res;
+
+      if (!append) {
+        const was = onScreen; // what the box holds before the probe
+        if (edit === 'normal' || edit === 'unknown') {
+          edit = await probe();
+          if (edit.res) return edit.res;
+        }
+        if (!empty) {
+          if ((res = await (edit === 'insert' ? clearVim() : clearPlain()))) return res;
+        } else if (onScreen !== was) { // the probe's `i` landed as text in an empty box: one C-u removes it (one row)
+          if ((res = await send([onScreen], { keys: ['C-u'] }))) return res;
+          if ((res = await reach(PLAIN_CLEAR_MS, [onScreen, was], isEmpty))) return res;
+        }
+        if (onScreen === '!' && !text.startsWith('!')) { // a `!` box and a text that is not one: BSpace leaves it
+          if ((res = await send([onScreen], { keys: ['BSpace'] }))) return res;
+          if ((res = await reach(PLAIN_CLEAR_MS, ['!', ''], (cap, d) => d.mode === 'prompt' && d.state === 'empty', false))) return res;
+        }
+      }
+      // an empty `!` box already holds the text's own `!`
+      if ((res = await typeIn(append ? text.slice(onScreen.length) : onScreen === '!' ? text.slice(1) : text))) return res;
+
+      const back = await settled(pane, (rows, cap) => {
+        const d = readDraft(cap);
+        return d !== null && d.state !== 'unreadable' && sameDraft(canonOf(d), text);
+      }, ctx);
+      if (back.res) return back.res;
+      if (back.rows) return { status: 200, body: { draft: await view(back.seen), typed } };
+      return reply(409, 'draft-mismatch', back.lastSeen);
+    });
+  }
+
+  return { switchMode, endSession, runCommand, answer, stop, writeDraft };
 }

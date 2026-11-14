@@ -15,7 +15,7 @@ import { mapLimit } from './util.js';
 import { MODE_TARGETS, bypassWindow, modeFromRows, promptFromRows } from './mode.js';
 import { MODEL_CATALOG } from './models.js';
 import { matches as etagMatches } from './mirror.js';
-import { createSessionControl, promptSig, insertShown } from './session-control.js';
+import { createSessionControl, promptSig, insertShown, editMode, readDraft, checkDraftBody } from './session-control.js';
 import { tagPane, pickState, claudePane } from './orchestrate.js';
 
 const ELIGIBILITY_TTL_MS = 1000; // pane list + live-agent snapshot, so a 4 Hz capture does not run collect() 4 times a second
@@ -103,6 +103,7 @@ export function createAppApi({ secret, ctx, deps }) {
   let eligibility = null; // { at, promise }
   const held = new Map(); // pane id → the last mode read from its footer (shown while a prompt or dialog covers the footer)
   const vim = new Map(); // pane id → true once its mode line has shown -- INSERT -- (Claude's input is in vim mode)
+  const plain = new Map(); // pane id → true once a probe `i` landed as text (Claude's input is not in vim mode); the draft route sets and drops it
 
   const guard = (req, port) => {
     const given = req.headers['x-nika-app'];
@@ -128,7 +129,7 @@ export function createAppApi({ secret, ctx, deps }) {
       const e = { panes, error, live, snapshot };
       // a reused pane id starts fresh; a failed tmux list or registry read proves nothing, so one blip keeps the memory
       // (losing vim memory would let End type into a vim normal-mode input without `i` first)
-      if (!error && snapshot) for (const id of [...held.keys(), ...vim.keys()]) if (!isEligible(e, id)) { held.delete(id); vim.delete(id); }
+      if (!error && snapshot) for (const id of [...held.keys(), ...vim.keys(), ...plain.keys()]) if (!isEligible(e, id)) { held.delete(id); vim.delete(id); plain.delete(id); }
       return e;
     })();
     eligibility = { at: t, promise };
@@ -162,7 +163,7 @@ export function createAppApi({ secret, ctx, deps }) {
    */
   function readScreen(id, rows) {
     const footer = modeFromRows(rows);
-    if (insertShown(rows)) vim.set(id, true);
+    if (insertShown(rows)) { vim.set(id, true); plain.delete(id); }
     if (footer !== 'unknown') held.set(id, footer);
     const mode = footer !== 'unknown' ? footer : (held.get(id) ?? ctx.started.get(id)?.mode ?? 'unknown');
     const prompt = promptFromRows(rows);
@@ -186,6 +187,11 @@ export function createAppApi({ secret, ctx, deps }) {
       return (await loadEligibility()).live.get(id) ?? null;
     },
     vimOf: (id) => vim.get(id) === true,
+    plainOf: (id) => plain.get(id) === true,
+    // what the draft route learned about a pane's edit mode: vim (INSERT seen), plain (a probe `i` landed as text) or nothing known
+    setEdit: (id, kind) => {
+      if (kind === 'vim') { vim.set(id, true); plain.delete(id); } else if (kind === 'plain') { plain.set(id, true); vim.delete(id); } else { vim.delete(id); plain.delete(id); }
+    },
     now: () => ctx.now(),
   });
 
@@ -447,11 +453,14 @@ export function createAppApi({ secret, ctx, deps }) {
     const r = await deps.mirror.capture(id);
     if (r.status !== 200) return { status: r.status, body: r.body, headers: {} };
     const screen = readScreen(id, r.body.rows);
-    const etag = crypto.createHash('sha256').update(JSON.stringify([r.etag, screen.mode, screen.modeConfirmed])).digest('hex').slice(0, 32);
+    // the input box (design W5): null while the screen has no plain box; `edit` is the pane's memory, so it is part of the ETag
+    const parsed = readDraft(r.body);
+    const draft = parsed && { ...parsed, edit: editMode(r.body.rows, vim.get(id) === true, plain.get(id) === true) };
+    const etag = crypto.createHash('sha256').update(JSON.stringify([r.etag, screen.mode, screen.modeConfirmed, draft?.edit ?? null])).digest('hex').slice(0, 32);
     const headers = { ETag: `"${etag}"` };
     if (etagMatches(req.headers['if-none-match'], etag)) return { status: 304, body: null, headers };
     // a new object: the mirror's cached body is shared and stays as captured
-    return { status: 200, body: { ...r.body, ...screen, etag }, headers };
+    return { status: 200, body: { ...r.body, ...screen, draft, etag }, headers };
   });
 
   route('GET', /^\/api\/app\/modes$/, 0, async () => {
@@ -497,6 +506,15 @@ export function createAppApi({ secret, ctx, deps }) {
     // nika can read (a bypass footer it does not know), so the held mode (and a started pane's launch mode) must not stand in for it
     if (r.status !== 200 && r.body?.presses > 0) held.set(id, 'unknown');
     return r;
+  });
+
+  // Draft sync (0.5, W5): makes Claude's input box read the page's text. The controller does the work under the pane lock; nothing
+  // of the body is logged here or there.
+  route('PUT', /^\/api\/app\/pane\/([^/]+)\/draft$/, CAP.keys, async ({ params, body }) => {
+    const bad = checkDraftBody(body);
+    if (bad) return bad;
+    const { id, failure } = await eligiblePane(params[0]);
+    return failure ?? control.writeDraft(id, body);
   });
 
   route('POST', /^\/api\/app\/pane\/([^/]+)\/answer$/, CAP.small, async ({ params, body }) => {

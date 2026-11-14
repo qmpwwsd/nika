@@ -727,19 +727,19 @@ describe('endSession (−)', () => {
     }
   });
 
-  test('(−) a non-dim draft that starts like the placeholder (Try "npm test" and tell me) is a draft: 409 input-not-empty, nothing typed', async () => {
+  test('(−) a non-dim draft that starts like the placeholder (Try "npm test" and tell me) is a draft: 409 input-not-empty; dim text next to real text is unreadable (src/draft.js, layout): 409 input-unreadable; nothing typed', async () => {
     const boxes = [
-      [[sp(`${PROMPT_CHAR}${NB}`), sp('Try "npm test" and tell me')]],
-      [[sp(`${PROMPT_CHAR}${NB}`), sp('Try "npm test"', true), sp(' and tell me')]], // dim then plain text
-      [[sp(`${PROMPT_CHAR}${NB}`), sp('Try', true), sp('x')]],
-      [[sp(`${PROMPT_CHAR}${NB}`, true), sp('draft')]],
+      [[[sp(`${PROMPT_CHAR}${NB}`), sp('Try "npm test" and tell me')]], 'input-not-empty'],
+      [[[sp(`${PROMPT_CHAR}${NB}`), sp('Try "npm test"', true), sp(' and tell me')]], 'input-unreadable'], // dim then plain text
+      [[[sp(`${PROMPT_CHAR}${NB}`), sp('Try', true), sp('x')]], 'input-unreadable'],
+      [[[sp(`${PROMPT_CHAR}${NB}`, true), sp('draft')]], 'input-not-empty'],
     ];
-    for (const box of boxes) {
+    for (const [box, error] of boxes) {
       const end = world({ box });
-      assert.deepEqual(await end.control().endSession('%2'), code(409, 'input-not-empty'), JSON.stringify(box));
+      assert.deepEqual(await end.control().endSession('%2'), code(409, error), JSON.stringify(box));
       assert.deepEqual(end.sent, []);
       const cmd = world({ box });
-      assert.deepEqual(await cmd.control().runCommand('%2', '/compact'), code(409, 'input-not-empty'));
+      assert.deepEqual(await cmd.control().runCommand('%2', '/compact'), code(409, error));
       assert.deepEqual(cmd.sent, []);
     }
   });
@@ -1499,27 +1499,27 @@ describe('Claude\'s own cursor, the separator and a late redraw', () => {
     }
   });
 
-  test('(−) a reverse-video first character followed by a non-dim character is a draft: 409 input-not-empty, nothing typed', async () => {
+  test('(−) a reverse-video first character followed by a non-dim character is a draft: 409 input-not-empty (with a dim character in between the row is unreadable: 409 input-unreadable); nothing typed', async () => {
     const boxes = [
-      [[sp(`${PROMPT_CHAR}${NB}`), sp('T', false, rev), sp('ry')]],
-      [[sp(`${PROMPT_CHAR}${NB}`), sp('T', false, rev), sp('r', true), sp('y')]],
-      [[sp(`${PROMPT_CHAR}${NB}`), sp('x', false, rev)]], // a lone reverse character is not a placeholder
-      [[sp(`${PROMPT_CHAR}${NB}`), sp('T', false, rev), sp(' ', false, rev), sp('ry', false)]],
-      [[sp(`${PROMPT_CHAR}${NB}`), sp('a', false, rev), sp('b', false, rev)]], // two reverse characters, none dim
+      [[[sp(`${PROMPT_CHAR}${NB}`), sp('T', false, rev), sp('ry')]], 'input-not-empty'],
+      [[[sp(`${PROMPT_CHAR}${NB}`), sp('T', false, rev), sp('r', true), sp('y')]], 'input-unreadable'],
+      [[[sp(`${PROMPT_CHAR}${NB}`), sp('x', false, rev)]], 'input-not-empty'], // a lone reverse character is not a placeholder
+      [[[sp(`${PROMPT_CHAR}${NB}`), sp('T', false, rev), sp(' ', false, rev), sp('ry', false)]], 'input-not-empty'],
+      [[[sp(`${PROMPT_CHAR}${NB}`), sp('a', false, rev), sp('b', false, rev)]], 'input-not-empty'], // two reverse characters, none dim
     ];
-    for (const box of boxes) {
+    for (const [box, error] of boxes) {
       const end = world({ box });
-      assert.deepEqual(await end.control().endSession('%2'), code(409, 'input-not-empty'), JSON.stringify(box));
+      assert.deepEqual(await end.control().endSession('%2'), code(409, error), JSON.stringify(box));
       assert.deepEqual(end.sent, []);
       const cmd = world({ box });
-      assert.deepEqual(await cmd.control().runCommand('%2', '/compact'), code(409, 'input-not-empty'));
+      assert.deepEqual(await cmd.control().runCommand('%2', '/compact'), code(409, error));
       assert.deepEqual(cmd.sent, []);
     }
   });
 
-  test('(−) a reverse-video cell only counts as the first visible character, never later in the row', async () => {
+  test('(−) a reverse-video cell only counts as the first visible character, never later in the row: dim text next to real text is unreadable, 409 input-unreadable, nothing typed', async () => {
     const w = world({ box: [[sp(`${PROMPT_CHAR}${NB}`), sp('Try', true), sp('x', false, rev)]] });
-    assert.deepEqual(await w.control().endSession('%2'), code(409, 'input-not-empty'));
+    assert.deepEqual(await w.control().endSession('%2'), code(409, 'input-unreadable'));
     assert.deepEqual(w.sent, []);
   });
 

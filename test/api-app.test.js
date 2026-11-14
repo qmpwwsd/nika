@@ -19,7 +19,7 @@ import { configDir, stateDir } from '../src/paths.js';
 import { lastNonBlank, modeFromRows, PROMPT_ROWS } from '../src/mode.js';
 import { MODEL_CATALOG } from '../src/models.js';
 import { makeWorld, fakeTmux, TMUX, CLAUDE } from './tmux-fake.js';
-import { makeFixture, cleanup, fakeExec, SID, NOW } from './helpers.js';
+import { makeFixture, cleanup, fakeExec, SID, NOW, boxRows } from './helpers.js';
 
 const SECRET = 'Zm9vYmFyZm9vYmFyZm9vYmFyZm9vYmFyZm9vYmFyZm9v'.slice(0, 43);
 const REQ_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -1847,7 +1847,7 @@ function fakeControl(answers = {}) {
   const f = { calls: [], opts: null };
   const method = (name, fallback) => async (...args) => {
     f.calls.push([name, ...args]);
-    return answers[name] ?? fallback(...args);
+    return typeof answers[name] === 'function' ? answers[name](...args) : answers[name] ?? fallback(...args);
   };
   f.factory = (opts) => {
     f.opts = opts;
@@ -1857,6 +1857,7 @@ function fakeControl(answers = {}) {
       runCommand: method('runCommand', () => ({ status: 200, body: { sent: true } })),
       answer: method('answer', (pane, b) => ({ status: 200, body: { answered: b.n } })),
       stop: method('stop', () => ({ status: 200, body: { stopped: true, presses: 1 } })),
+      writeDraft: method('writeDraft', () => ({ status: 200, body: { draft: null, typed: 0 } })),
     };
   };
   return f;
@@ -2815,5 +2816,225 @@ describe('GET /api/app/models', () => {
     const a = await boot();
     assert.equal((await a.call('POST', '/api/app/models', { json: {} })).status, 405);
     assert.equal((await a.call('GET', '/api/app/models', { headers: { 'x-nika-app': null } })).status, 403);
+  });
+});
+
+// --- 0.5 draft sync (design W5): the capture's `draft` and `PUT /api/app/pane/:id/draft` ---
+
+describe('capture: draft', () => {
+  const box = (lines, o = {}) => boxRows({ cols: 80, lines, ...o }).rows;
+
+  test('(+) a plain box: state, mode, text, sig, box rows, cursorAtEnd, suggestion and edit (unknown until something shows the mode)', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = box(['hello', 'second line']);
+    const r = await pane(a, '%6', 'capture');
+    assert.equal(r.status, 200);
+    const d = r.body.draft;
+    assert.deepEqual([d.state, d.mode, d.text, d.edit, d.suggestion], ['text', 'prompt', 'hello\nsecond line', 'unknown', null]);
+    assert.match(d.sig, /^[0-9a-f]{16}$/);
+    assert.deepEqual(Object.keys(d).sort(), ['box', 'cursorAtEnd', 'edit', 'mode', 'sig', 'state', 'suggestion', 'text']);
+    assert.deepEqual(d.box, { top: 0, bottom: 3 });
+    assert.equal(r.body.mode, 'auto', 'the mode and the prompt fields are as before');
+  });
+
+  test('(+) an empty box, a `!` box, and an unreadable one (the placeholder: state and reason, no sig)', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = box([''], { ghost: 'run the tests' });
+    const empty = (await pane(a, '%6', 'capture')).body.draft;
+    assert.deepEqual([empty.state, empty.text, empty.suggestion], ['empty', '', 'run the tests']);
+    screens['%6'] = box(['ls -la'], { mode: 'bash' });
+    const bash = (await pane(a, '%6', 'capture')).body.draft;
+    assert.deepEqual([bash.state, bash.mode, bash.text], ['text', 'bash', 'ls -la']);
+    screens['%6'] = box(['[Pasted text #1 +3 lines]']);
+    const pasted = (await pane(a, '%6', 'capture')).body.draft;
+    assert.deepEqual([pasted.state, pasted.reason, pasted.sig, pasted.text], ['unreadable', 'pasted', null, '']);
+  });
+
+  test('(−) null when the screen has no plain box: a permission prompt, no rule rows, a footer nobody recognises', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = rowsOf(PROMPT);
+    const prompt = await pane(a, '%6', 'capture');
+    assert.ok(prompt.body.prompt, 'the prompt is still reported');
+    assert.equal(prompt.body.draft, null);
+    screens['%6'] = rowsOf(['just text', FOOTER.plan]);
+    assert.equal((await pane(a, '%6', 'capture')).body.draft, null);
+    screens['%6'] = boxRows({ cols: 80, lines: ['hello'], footer: 'some footer nobody recognises' }).rows;
+    assert.equal((await pane(a, '%6', 'capture')).body.draft, null);
+    screens['%6'] = [];
+    assert.equal((await pane(a, '%6', 'capture')).body.draft, null);
+  });
+
+  test('(+) edit follows the pane\'s memory: insert while INSERT shows (and it forgets plain), normal after INSERT was seen, plain after a probe landed as text, unknown after none', async () => {
+    const { a, screens, control } = await bootScreens();
+    screens['%6'] = box(['hello']);
+    assert.equal((await pane(a, '%6', 'capture')).body.draft.edit, 'unknown');
+    control.opts.setEdit('%6', 'plain');
+    assert.equal(control.opts.plainOf('%6'), true);
+    assert.equal((await pane(a, '%6', 'capture')).body.draft.edit, 'plain');
+    screens['%6'] = box(['hello'], { insert: true });
+    assert.equal((await pane(a, '%6', 'capture')).body.draft.edit, 'insert');
+    assert.equal(control.opts.plainOf('%6'), false, 'INSERT seen: not plain');
+    assert.equal(control.opts.vimOf('%6'), true);
+    screens['%6'] = box(['hello']);
+    assert.equal((await pane(a, '%6', 'capture')).body.draft.edit, 'normal', 'INSERT was seen before, now none shows');
+    control.opts.setEdit('%6', 'plain');
+    assert.deepEqual([control.opts.vimOf('%6'), control.opts.plainOf('%6')], [false, true], 'a probe that lands as text turns vim off');
+    control.opts.setEdit('%6', 'vim');
+    assert.deepEqual([control.opts.vimOf('%6'), control.opts.plainOf('%6')], [true, false]);
+    control.opts.setEdit('%6', 'none');
+    assert.deepEqual([control.opts.vimOf('%6'), control.opts.plainOf('%6')], [false, false]);
+    assert.equal((await pane(a, '%6', 'capture')).body.draft.edit, 'unknown');
+  });
+
+  test('(+) edit is part of the ETag: the same screen after the memory changed is not a 304', async () => {
+    const { a, screens, control } = await bootScreens();
+    screens['%6'] = box(['hello']);
+    const first = await pane(a, '%6', 'capture');
+    const again = await pane(a, '%6', 'capture', { headers: { 'if-none-match': first.headers.etag } });
+    assert.equal(again.status, 304);
+    control.opts.setEdit('%6', 'plain');
+    const changed = await pane(a, '%6', 'capture', { headers: { 'if-none-match': first.headers.etag } });
+    assert.equal(changed.status, 200);
+    assert.equal(changed.body.draft.edit, 'plain');
+  });
+
+  test('(−) the plain memory is dropped when the pane leaves the eligible set (a reused pane id starts unknown)', async () => {
+    const { a, screens, control } = await bootScreens();
+    screens['%6'] = box(['hello']);
+    await pane(a, '%6', 'capture');
+    control.opts.setEdit('%6', 'plain');
+    await leaveAndReturn(a, '%6');
+    assert.equal(control.opts.plainOf('%6'), false);
+    assert.equal((await pane(a, '%6', 'capture')).body.draft.edit, 'unknown');
+  });
+
+  test('(−) the draft is on the app tier\'s capture only: the browser tier has no capture route and its agent list carries no draft', async () => {
+    const server = createServer({ config: fx.config, exec: fakeExec(), token: 'tok', now: () => NOW, version: '0.0.0' });
+    await new Promise((res) => server.listen(0, '127.0.0.1', res));
+    servers.push(server);
+    const port = server.address().port;
+    const call = (method, p) => new Promise((resolve, reject) => {
+      const q = http.request({ host: '127.0.0.1', port, method, path: p, headers: { host: `127.0.0.1:${port}`, 'x-nika-app': SECRET, ...(method === 'GET' ? {} : { 'content-type': 'application/json', 'content-length': '2' }) } }, (res) => {
+        let data = '';
+        res.on('data', (c) => { data += c; });
+        res.on('end', () => resolve({ status: res.statusCode, data }));
+      });
+      q.on('error', reject);
+      q.end(method === 'GET' ? undefined : '{}');
+    });
+    assert.equal((await call('GET', '/api/app/pane/%256/capture')).status, 404);
+    assert.equal((await call('PUT', '/api/app/pane/%256/draft')).status, 404);
+    const agents = await call('GET', '/api/agents?since=all');
+    assert.equal(agents.status, 200);
+    assert.doesNotMatch(agents.data, /"draft"|"edit"|"cursorAtEnd"/);
+  });
+});
+
+describe('PUT /api/app/pane/:id/draft', () => {
+  const body = { text: 'hello world', base: '0123456789abcdef' };
+
+  test('(+) hands the pane and exactly { text, base } to the controller and relays its answer and status', async () => {
+    const { a, control } = await bootScreens({ ctlAnswers: { writeDraft: { status: 200, body: { draft: { sig: 'x' }, typed: 6 } } } });
+    const r = await pane(a, '%6', 'draft', { method: 'PUT', json: body });
+    assert.deepEqual([r.status, r.body], [200, { draft: { sig: 'x' }, typed: 6 }]);
+    assert.deepEqual(control.calls, [['writeDraft', '%6', body]]);
+    assert.equal(r.headers['cache-control'], 'no-store');
+  });
+
+  test('(+) a started pane is eligible; the controller\'s 409 bodies, draft included, are relayed as they are', async () => {
+    const answer = { status: 409, body: { error: 'draft-changed', draft: { state: 'text', text: 'on screen', sig: '0123456789abcdef' } } };
+    const { a, control } = await bootScreens({ ctlAnswers: { writeDraft: answer } });
+    a.ctx.started.set('%8', { key: w.project.key, name: 'x', sessionId: null, role: 'agent', mode: 'plan' });
+    const r = await pane(a, '%8', 'draft', { method: 'PUT', json: { text: 'x', base: '' } });
+    assert.deepEqual([r.status, r.body], [409, answer.body]);
+    assert.deepEqual(control.calls, [['writeDraft', '%8', { text: 'x', base: '' }]]);
+  });
+
+  test('(−) a bad body is 400 before the pane check, and the controller is not called', async () => {
+    const { a, control } = await bootScreens();
+    const bad = [{}, { text: 'a' }, { text: 'a', base: 'XYZ' }, { text: 5, base: '' }, { text: 'x'.repeat(1025), base: '' }, { text: '\n'.repeat(13), base: '' }, { text: 'a\u0000', base: '' }, { text: 'a\u001b[2m', base: '' }, { text: 'a', base: '', path: '/etc/passwd' }];
+    for (const json of bad) {
+      for (const id of ['%6', '%5']) {
+        const r = await pane(a, id, 'draft', { method: 'PUT', json });
+        assert.equal(r.status, 400, `${JSON.stringify(json).slice(0, 50)} on ${id}`);
+        assert.equal(r.body.error, 'invalid');
+      }
+    }
+    assert.deepEqual(control.calls, []);
+  });
+
+  test('(−) an ineligible pane (zsh, not live, unknown id, bad id) is 404 and the controller is not called', async () => {
+    const { a, control } = await bootScreens();
+    for (const id of ['%5', '%7', '%99', 'abc', '..']) {
+      const r = await a.call('PUT', `/api/app/pane/${id.replace('%', '%25')}/draft`, { json: body });
+      assert.equal(r.status, 404, id);
+    }
+    assert.deepEqual(control.calls, []);
+  });
+
+  test('(−) without the secret 403; text/plain 415; GET and POST 405; a body over 20 KB 413 -- the controller is not called', async () => {
+    const { a, control } = await bootScreens();
+    assert.equal((await pane(a, '%6', 'draft', { method: 'PUT', json: body, headers: { 'x-nika-app': null } })).status, 403);
+    assert.equal((await pane(a, '%6', 'draft', { method: 'PUT', body: JSON.stringify(body), headers: { 'content-type': 'text/plain' } })).status, 415);
+    assert.equal((await pane(a, '%6', 'draft', { method: 'GET' })).status, 405);
+    assert.equal((await pane(a, '%6', 'draft', { method: 'POST', json: body })).status, 405);
+    assert.equal((await pane(a, '%6', 'draft', { method: 'PUT', json: { text: 'x', base: '', pad: 'p'.repeat(21 * 1024) } })).status, 413);
+    assert.deepEqual(control.calls, []);
+  });
+
+  test('(−) a write while End runs on the same pane is 409 busy-switching (one lock for every control), and the write sends nothing', async () => {
+    const { a, screens, mirror } = await bootScreens({ fake: false });
+    screens['%6'] = boxRows({ cols: 80, lines: [''] }).rows;
+    let enter;
+    const entered = new Promise((r) => { enter = r; });
+    let release;
+    const hold = new Promise((r) => { release = r; });
+    const capture = mirror.capture;
+    mirror.capture = async (...args) => { enter(); await hold; return capture(...args); };
+    const end = pane(a, '%6', 'end', { method: 'POST', json: {} });
+    await entered;
+    const put = await pane(a, '%6', 'draft', { method: 'PUT', json: { text: 'hi', base: '' } });
+    assert.deepEqual([put.status, put.body.error], [409, 'busy-switching']);
+    release();
+    await end;
+    assert.ok(!a.deps.calls.some((c) => c[0] === 'keys' && c[2]?.text === 'hi'), 'nothing of the write was typed');
+  });
+
+  test('(+) end to end with the real controller: an append reaches keys.send as one -l call, and the answer carries the read draft', async () => {
+    const { a, mirror } = await bootScreens({ fake: false });
+    const lines = ['hello'];
+    let shots = 0;
+    mirror.capture = async () => { // the cursor sits at the end of the text, as Claude's does
+      shots += 1;
+      return { status: 200, body: { ...boxRows({ cols: 80, lines, insert: true }), etag: `e${shots}` }, etag: `e${shots}` };
+    };
+    // keys.send (the fake dep) changes the screen the way Claude would
+    a.deps.keys.send = async (id, b) => {
+      a.deps.calls.push(['keys', id, b]);
+      lines[0] += b.text;
+      return { status: 200, body: { sent: { text: 1, paste: 0, keys: 0 } } };
+    };
+    const first = (await pane(a, '%6', 'capture')).body.draft;
+    const r = await pane(a, '%6', 'draft', { method: 'PUT', json: { text: 'hello!!', base: first.sig } });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.deepEqual([r.body.typed, r.body.draft.text, r.body.draft.edit], [2, 'hello!!', 'insert']);
+    assert.deepEqual(a.deps.calls.filter((c) => c[0] === 'keys').map((c) => c[2]), [{ text: '!!' }]);
+  });
+
+  test('(−) nothing of the draft, its sig or the base reaches a log line, on success and on an internal error', async () => {
+    const secret = 'zq-private-draft-words';
+    const lines = [];
+    const saved = { error: console.error, log: console.log, warn: console.warn, info: console.info };
+    for (const name of Object.keys(saved)) console[name] = (...args) => { lines.push(args.map((x) => (x instanceof Error ? `${x.message}\n${x.stack}` : String(x))).join(' ')); };
+    try {
+      for (const ctlAnswers of [undefined, { writeDraft: () => { throw new Error('boom'); } }]) {
+        const { a } = await bootScreens({ ctlAnswers });
+        await pane(a, '%6', 'draft', { method: 'PUT', json: { text: secret, base: 'abcdef0123456789' } });
+      }
+    } finally {
+      Object.assign(console, saved);
+    }
+    assert.ok(lines.some((l) => /PUT .*draft failed/.test(l)), 'the internal error was logged (so the check is real)');
+    assert.deepEqual(lines.filter((l) => l.includes(secret) || l.includes('abcdef0123456789')), []);
   });
 });
