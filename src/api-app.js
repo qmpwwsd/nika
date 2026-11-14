@@ -547,8 +547,8 @@ export function createAppApi({ secret, ctx, deps }) {
   });
 
   // Fit (0.5, W7): the session window asks for its panel's size, the controller zooms the pane and sizes its tmux window when that is
-  // safe, and gives everything back on DELETE, a lapse or a user change. Order: body 400, pane 404, rate 429 (PUT and DELETE count apart), then the controller. Nothing of
-  // the body, a layout or a window id is logged here or there. App tier only: the browser tier has no such route.
+  // safe, and gives everything back on DELETE, a lapse or a user change. Order: body 400, pane 404, rate 429 (PUT and DELETE count apart), then the controller. Bodies and
+  // layouts are never logged, here or there; the log carries only window and pane ids, step names and error codes (design 10.3). App tier only: the browser tier has no such route.
   route('PUT', /^\/api\/app\/pane\/([^/]+)\/fit$/, CAP.small, async ({ params, body }) => {
     const checked = checkFitBody(body);
     if (checked.error) return err(400, 'invalid', checked.error);

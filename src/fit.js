@@ -24,6 +24,8 @@ export const LEASE_FILE_MAX = 16 * 1024;
 export const LEASE_FILES_MAX = 20;
 export const FIT_RATE = 4; // requests per second per pane (PUT and DELETE together); enforced by the route
 const MARKS_MAX = 64;
+const NOTE_MS = 2000; // a PUT open:false this soon after the page's own DELETE is a late heartbeat, not a page that wants the window
+const NOTES_MAX = 64;
 
 const SIZE_OPTIONS = new Set(['latest', 'largest', 'smallest', 'manual']);
 const LAYOUT = /^[\x20-\x7e]{1,8192}$/; // tmux's own `#{window_layout}`: printable ASCII; `#` is refused separately
@@ -152,6 +154,7 @@ export function createFit({
   const leases = new Map(); // @W → lease
   const queues = new Map(); // @W → { tail, ops: [{ pane }] }: one acquire, renew or release at a time per window
   const marks = new Map(); // @W → 'user-change' | 'changed': the window stays off until the page sends open:true
+  const notes = new Map(); // @W → time of the page's own DELETE (M1): a late heartbeat of the closed page must not fit the window again
   let finished = 0; // queued operations finished so far: a listing taken across a change is stale
   let cancel = null;
   let ticking = false;
@@ -311,24 +314,13 @@ export function createFit({
     const { window: w, pane: p, nonce } = lease;
     const held = leases.get(w) === lease;
     if (held) unregister(lease); // from here a heartbeat no longer finds it
-    if (mark) setMark(w, mark);
     const gone = async () => {
       await unlinkLease(nonce);
       lease.done = true;
       return 'dropped';
     };
-    let snap;
-    try {
-      snap = await listing(); // R0
-    } catch (e) {
-      if (isNoServer(e)) return gone();
-      if (held) register(lease);
-      throw e;
-    }
-    const win = rowsOf(snap, w);
-    if (win.length === 0 || win[0].tag !== nonce) return gone(); // not our window (any more): touch nothing
-    const zoomedNow = win[0].zoomed === 1;
-    const activeNow = win.find((r) => r.active === 1)?.pane;
+    let dropped = false;
+    let undone = false;
     let step = 'R0';
     const run = async (name, build) => {
       step = name;
@@ -340,18 +332,37 @@ export function createFit({
         return false;
       }
     };
-    // R1: is the layout still the one nika left? Judged on nika's size, before anything is undone.
-    let unchanged = false;
     try {
-      const cur = await readLayout(w);
-      unchanged = cur !== null && strip(cur) === strip(lease.layout1) && win[0].panes === lease.panes;
-    } catch (e) {
-      fail(lease, 'R1', e);
-    }
-    let unzoomed = !zoomedNow;
-    let undone = false;
-    try {
+      // Everything that decides a zoom toggle is read inside the pane lock (review I1): the lock can wait behind a draft write,
+      // and a user's C-b z or focus change in that time must not meet a blind resize-pane -Z built from an older listing.
       await lock(p, async () => {
+        let snap;
+        try {
+          snap = await listing(); // R0
+        } catch (e) {
+          if (isNoServer(e)) {
+            dropped = true;
+            return;
+          }
+          throw e;
+        }
+        const win = rowsOf(snap, w);
+        if (win.length === 0 || win[0].tag !== nonce) { // not our window (any more): touch nothing, and mark nothing (M4)
+          dropped = true;
+          return;
+        }
+        if (mark) setMark(w, mark);
+        const zoomedNow = win[0].zoomed === 1;
+        const activeNow = win.find((r) => r.active === 1)?.pane;
+        // R1: is the layout still the one nika left? Judged on nika's size, before anything is undone.
+        let unchanged = false;
+        try {
+          const cur = await readLayout(w);
+          unchanged = cur !== null && strip(cur) === strip(lease.layout1) && win[0].panes === lease.panes;
+        } catch (e) {
+          fail(lease, 'R1', e);
+        }
+        let unzoomed = !zoomedNow;
         // R2: only a zoom nika made, and only while it still sits on the mirrored pane
         if (lease.zoomed0 === 0 && lease.panes > 1 && zoomedNow && activeNow === p) {
           unzoomed = await run('R2', () => ARGV.zoom(p));
@@ -367,6 +378,7 @@ export function createFit({
       if (held) register(lease);
       throw e;
     }
+    if (dropped) return gone();
     await gone();
     try { // R9: look once, log a difference, never retry
       const after = rowsOf(await listing(), w);
@@ -422,12 +434,43 @@ export function createFit({
     if (Buffer.byteLength(text) > LEASE_FILE_MAX) return fromRow('blocked', 'changed', me);
     await writeLease(lease, text); // A1: before the first tmux change
     register(lease);
+    let entered = false;
+    let refusal = null;
     try {
       await lock(id, async () => {
+        entered = true;
+        // The listing the decision rests on is older than the lock wait (review I1): look again, and touch nothing when the user moved on.
+        const fresh = await listing();
+        const m = claudePane(fresh, id);
+        if (!m || m.window !== w) {
+          refusal = NOT_FOUND;
+          return;
+        }
+        const a = rowsOf(fresh, w).find((r) => r.active === 1)?.pane;
+        const same = m.panes === me.panes && m.zoomed === me.zoomed && a === a0 && m.tag === '' && m.winW === me.winW && m.winH === me.winH
+          && m.paneW === me.paneW && m.paneH === me.paneH;
+        // layout0 and o0 are what a later restore puts back: read after the wait, a user's change in it must not be undone by that restore
+        if (!same || strip((await readLayout(w)) ?? '') !== strip(layout0) || (await readOption(w)) !== o0) {
+          refusal = fromRow('blocked', 'changed', m);
+          return;
+        }
         await tmux(ARGV.tag(w, lease.nonce)); // A2
         if (me.panes > 1 && me.zoomed === 0) await tmux(ARGV.zoom(id)); // A3: only a window nobody has zoomed
         if (lease.resized) await tmux(ARGV.size(w, target[0], target[1])); // A4
       });
+    } catch (e) {
+      if (!entered && paneBusy(e)) { // the lock never ran: nothing was changed, so there is nothing to give back
+        await dropLease(lease);
+        throw e;
+      }
+      await releaseNow(lease).catch((x) => fail(lease, 'cleanup', x));
+      throw e;
+    }
+    if (refusal) { // nothing was changed; no mark either: the next heartbeat looks at the window as it is then
+      await dropLease(lease);
+      return refusal;
+    }
+    try {
       return await verify(lease); // A5
     } catch (e) {
       await releaseNow(lease).catch((x) => fail(lease, 'cleanup', x));
@@ -497,8 +540,15 @@ export function createFit({
       if (!(await look())) return NOT_FOUND;
     }
     if (lease) return renew(lease, C, R, snap, me);
-    if (open) marks.delete(w);
-    else if (marks.has(w)) return fromRow('blocked', marks.get(w), me); // off until the page opens the session window again (owner answer Q6)
+    if (open) {
+      marks.delete(w);
+      notes.delete(w);
+    } else if (marks.has(w)) {
+      return fromRow('blocked', marks.get(w), me); // off until the page opens the session window again (owner answer Q6)
+    } else if (notes.has(w)) {
+      if (now() - notes.get(w) <= NOTE_MS) return fromRow('blocked', 'user-change', me); // M1: the page just closed; this is its last heartbeat in flight
+      notes.delete(w);
+    }
     return acquire(id, C, R, snap, me);
   }
 
@@ -543,6 +593,9 @@ export function createFit({
       if (paneBusy(e)) return PANE_BUSY; // the lease stays (releaseNow put it back): the page's next request or the watch retries
       throw e;
     }
+    notes.delete(lease.window);
+    notes.set(lease.window, now());
+    if (notes.size > NOTES_MAX) notes.delete(notes.keys().next().value);
     return { status: 200, body: { released: true } };
   }
 
@@ -567,7 +620,9 @@ export function createFit({
     const out = { released: 0, dropped: 0 };
     const work = (async () => {
       if (!(await isRealDir(dir))) return;
-      const names = (await fs.readdir(dir)).filter((n) => FILE_NAME.test(n)).sort().slice(0, LEASE_FILES_MAX);
+      const found = (await fs.readdir(dir)).filter((n) => FILE_NAME.test(n)).sort();
+      if (found.length > LEASE_FILES_MAX) log(`nika: fit recover read ${LEASE_FILES_MAX} of ${found.length} lease files`); // counts only, never names (M3)
+      const names = found.slice(0, LEASE_FILES_MAX);
       for (const name of names) {
         const read = await readLeaseFile(name);
         if (read.invalid) out.dropped += 1;

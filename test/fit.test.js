@@ -40,7 +40,7 @@ function makeWorld() {
   const wins = new Map();
   const world = { wins, calls: [], bad: [], locked: 0, lockIds: [], fail: null, block: null, after: null, junk: [], noServer: false, enoent: false };
   const num = (id) => Number(id.slice(1));
-  const paneSize = (w, p) => (w.panes.length === 1 || (w.zoomed && p.id === w.active) ? [w.width, w.height] : [Math.floor(w.width / w.panes.length), w.height]);
+  const paneSize = (w, p) => p.size ?? (w.panes.length === 1 || (w.zoomed && p.id === w.active) ? [w.width, w.height] : [Math.floor(w.width / w.panes.length), w.height]);
   const layoutOf = (w) => w.pinned ?? `{"w":${w.width},"h":${w.height},"s":"${w.arr}","p":[${w.panes.map((p) => `{"i":${num(p.id)}${p.id === w.active ? ',"a":true' : ''}${p.id === w.last ? `,"l":${num(p.id)}` : ''}}`).join(',')}]}`;
   const winOf = (pane) => [...wins.values()].find((w) => w.panes.some((p) => p.id === pane));
   const setActive = (w, id) => { if (w.active !== id) { w.last = w.active; w.active = id; } };
@@ -115,7 +115,7 @@ function makeWorld() {
   world.exec = async (cmd, args) => {
     const a = args.slice(1);
     const name = cmd === TMUX && args[0] === '-u' ? shape(a) : null;
-    world.calls.push({ name, argv: a });
+    world.calls.push({ name, argv: a, locked: world.locked });
     if (!name) {
       world.bad.push(args);
       throw new Error(`unexpected tmux argv: ${args.join(' ')}`);
@@ -240,6 +240,9 @@ describe('acquire', () => {
       ['list-panes', '-a', '-F', FMT],
       ['show-options', '-w', '-t', '@1', 'window-size'],
       ['display-message', '-p', '-t', '@1', '-F', '#{window_layout}'],
+      ['list-panes', '-a', '-F', FMT], // read again inside the pane lock, which may have waited (review I1) ...
+      ['display-message', '-p', '-t', '@1', '-F', '#{window_layout}'], // ... with the layout and window-size that a restore will put back (fix round 2)
+      ['show-options', '-w', '-t', '@1', 'window-size'],
       ['set-option', '-w', '-t', '@1', '@nika-fit', nonce],
       ['resize-pane', '-Z', '-t', '%2'],
       ['resize-window', '-t', '@1', '-x', '220', '-y', '60'],
@@ -269,7 +272,7 @@ describe('acquire', () => {
       const r = rig();
       const res = await r.put('%4', cols, rows);
       assert.deepEqual(res, ans('fitted', null, cols, rows, 1));
-      assert.deepEqual(r.names(), ['list', 'option', 'layout', 'tag', ...want, 'list', 'layout']);
+      assert.deepEqual(r.names(), ['list', 'option', 'layout', 'list', 'layout', 'option', 'tag', ...want, 'list', 'layout']);
       assert.ok(!r.names().includes('zoom'));
       assert.deepEqual([r.world.wins.get('@2').width, r.world.wins.get('@2').height], [cols, rows]);
     }
@@ -279,7 +282,7 @@ describe('acquire', () => {
     const r = rig((w) => { const x = w.wins.get('@1'); x.zoomed = true; x.active = '%2'; });
     const res = await r.put('%2', 220, 60);
     assert.deepEqual(res, ans('fitted', null, 220, 60, 3, true));
-    assert.deepEqual(r.names(), ['list', 'option', 'layout', 'tag', 'size', 'list', 'layout']);
+    assert.deepEqual(r.names(), ['list', 'option', 'layout', 'list', 'layout', 'option', 'tag', 'size', 'list', 'layout']);
     const at = r.at();
     assert.equal((await r.fit.release('%2')).body.released, true);
     assert.deepEqual(r.names(at), ['list', 'layout', 'size', 'optUnset', 'untag', 'list'], 'no unzoom, no layout (it would end the user zoom), no focus');
@@ -291,7 +294,7 @@ describe('acquire', () => {
     const r = rig();
     const res = await r.put('%2', 100, 30);
     assert.deepEqual(res, ans('zoomed', 'panel-smaller', 200, 50, 3));
-    assert.deepEqual(r.names(), ['list', 'option', 'layout', 'tag', 'zoom', 'list', 'layout']);
+    assert.deepEqual(r.names(), ['list', 'option', 'layout', 'list', 'layout', 'option', 'tag', 'zoom', 'list', 'layout']);
     const w = r.world.wins.get('@1');
     assert.deepEqual([w.zoomed, w.width, w.height], [true, 200, 50]);
   });
@@ -527,7 +530,7 @@ describe('other lease holders', () => {
     const at = r.at();
     const res = await r.put('%3', 230, 55);
     assert.deepEqual(res, ans('fitted', null, 230, 55, 3));
-    assert.deepEqual(r.names(at), ['list', ...REL_FULL, 'list', 'option', 'layout', 'tag', 'zoom', 'size', 'list', 'layout']);
+    assert.deepEqual(r.names(at), ['list', ...REL_FULL, 'list', 'option', 'layout', 'list', 'layout', 'option', 'tag', 'zoom', 'size', 'list', 'layout']);
     assert.notEqual(r.tag(), first);
     assert.deepEqual(r.files(), [`fit-${r.tag()}.json`]);
     assert.equal(r.lease(r.tag()).pane, '%3');
@@ -604,7 +607,7 @@ describe('other lease holders', () => {
     const at = r.at();
     const res = await r.put('%2', 250, 70, false);
     assert.equal(res.body.fit.state, 'fitted');
-    assert.deepEqual(r.names(at).slice(0, 4), ['list', 'option', 'layout', 'tag']);
+    assert.deepEqual(r.names(at).slice(0, 7), ['list', 'option', 'layout', 'list', 'layout', 'option', 'tag']);
     assert.ok(!r.files().includes(`fit-${old}.json`));
   });
 });
@@ -1547,4 +1550,416 @@ describe('Q1/Q2 and the argv guard', () => {
     assert.ok(r.world.calls.every((c) => c.name));
     assert.ok(!r.argv().some((a) => a.includes('-Z') && a[0] === 'select-pane'));
   });
+});
+
+// ---- fix round 1 (security review W7-sec) ------------------------------------------------------------------------------------
+
+/** A controller over rig `r` whose pane lock can be held shut: callers wait (`g.waiting`) until `g.open()`, like withPaneLock behind a draft write. */
+function gatedFit(r) {
+  const g = { p: null, waiting: 0 };
+  let open = () => {};
+  g.shut = () => { g.waiting = 0; g.p = new Promise((res) => { open = res; }); };
+  g.open = () => { g.p = null; open(); };
+  const fit = createFit({
+    exec: r.world.exec,
+    tmuxBin: TMUX,
+    now: () => r.clock.t,
+    stateDir: r.dir,
+    log: (m) => r.logs.push(m),
+    lock: async (id, fn) => {
+      const shut = g.p;
+      if (shut) {
+        g.waiting += 1;
+        await shut;
+      }
+      return r.world.lock(id, fn);
+    },
+    schedule: (fn) => { r.sched.fn = fn; r.sched.on = true; return () => { r.sched.on = false; }; },
+    sleep: () => new Promise(() => {}),
+  });
+  return { fit, g };
+}
+
+describe('I1: what decides a zoom toggle is read inside the pane lock, which can wait', () => {
+  test('(−) release: the user unzooms while the lock waits; no resize-pane -Z, and the rest of the restore fits the new state', async () => {
+    const r = rig();
+    const { fit, g } = gatedFit(r);
+    const before = r.world.snap('@1');
+    await fit.hold('%2', { cols: 220, rows: 60, open: true });
+    g.shut();
+    const at = r.at();
+    const done = fit.release('%2');
+    await until(() => g.waiting === 1);
+    r.world.wins.get('@1').zoomed = false; // C-b z while a draft write holds the lock
+    g.open();
+    assert.deepEqual(await done, { status: 200, body: { released: true } });
+    assert.ok(!r.names(at).includes('zoom'), 'no blind toggle');
+    assert.deepEqual(r.names(at), ['list', 'layout', 'size', 'optUnset', 'select', 'focus', 'untag', 'list']);
+    assert.deepEqual(r.world.snap('@1'), before);
+  });
+
+  test('(−) release: the user zooms another pane while the lock waits; their zoom is left alone, the size comes back', async () => {
+    const r = rig();
+    const { fit, g } = gatedFit(r);
+    await fit.hold('%2', { cols: 220, rows: 60, open: true });
+    g.shut();
+    const at = r.at();
+    const done = fit.release('%2');
+    await until(() => g.waiting === 1);
+    r.world.wins.get('@1').active = '%3'; // select-pane -Z -t %3: the zoom moved
+    g.open();
+    assert.equal((await done).body.released, true);
+    assert.deepEqual(r.names(at), ['list', 'layout', 'size', 'optUnset', 'untag', 'list']);
+    const w = r.world.wins.get('@1');
+    assert.deepEqual([w.zoomed, w.active, w.width, w.tag], [true, '%3', 200, '']);
+  });
+
+  test('(−) release: the watch release behind a waiting lock reads the window when it runs, not when it was decided', async () => {
+    const r = rig();
+    const { fit, g } = gatedFit(r);
+    await fit.hold('%2', { cols: 220, rows: 60, open: true });
+    r.clock.t += LAPSE_MS + 1;
+    g.shut();
+    const at = r.at();
+    const tick = r.tick();
+    await until(() => g.waiting === 1);
+    r.world.wins.get('@1').zoomed = false;
+    g.open();
+    await tick;
+    assert.ok(!r.names(at).includes('zoom'));
+    assert.equal(fit.size(), 0);
+  });
+
+  test('(+) release without a flip: R0 and R1 and every mutation run inside the lock, R9 after it; the sequence is as before', async () => {
+    const r = rig();
+    await r.put('%2', 220, 60);
+    const at = r.at();
+    await r.fit.release('%2');
+    const calls = r.world.calls.slice(at);
+    assert.deepEqual(calls.map((c) => c.name), REL_FULL);
+    assert.deepEqual(calls.map((c) => c.locked > 0), [true, true, true, true, true, true, true, true, false]);
+  });
+
+  const FLIPS = {
+    'the user zoomed the active pane (only the zoom differs)': (w) => { w.zoomed = true; },
+    'the user moved focus (only the active pane differs)': (w) => { w.active = '%3'; },
+    'the user zoomed another pane': (w) => { w.zoomed = true; w.active = '%3'; },
+    'a split (only the pane count differs)': (w) => { w.panes.push({ id: '%9', command: 'zsh' }); },
+    'the window was resized': (w) => { w.width = 180; },
+    'the mirrored pane alone changed size': (w) => { w.panes[1].size = [70, 50]; },
+    'a split that leaves the mirrored pane its size (only the count differs)': (w) => { w.panes[1].size = [66, 50]; w.panes.push({ id: '%9', command: 'zsh' }); },
+    'the window was resized and the mirrored pane kept its size (only the window differs)': (w) => { w.width = 180; w.panes[1].size = [66, 50]; },
+  };
+  for (const [what, flip] of Object.entries(FLIPS)) {
+    test(`(−) acquire: ${what} while the lock waits: nothing changed, blocked / changed`, async () => {
+      const r = rig();
+      const { fit, g } = gatedFit(r);
+      g.shut();
+      const at = r.at();
+      const done = fit.hold('%2', { cols: 220, rows: 60, open: true });
+      await until(() => g.waiting === 1);
+      const w = r.world.wins.get('@1');
+      flip(w);
+      const flipped = r.world.snap('@1');
+      g.open();
+      const res = await done;
+      assert.equal(res.status, 200);
+      assert.equal(res.body.fit.state, 'blocked');
+      assert.equal(res.body.fit.reason, 'changed');
+      assert.deepEqual(r.names(at), ['list', 'option', 'layout', 'list'], 'only reads: no tag, no zoom, no resize');
+      assert.deepEqual(r.world.snap('@1'), flipped);
+      assert.equal(fit.size(), 0);
+      assert.deepEqual(r.files(), []);
+      assert.equal(r.sched.on, false);
+      assert.equal(r.tag(), '');
+    });
+  }
+
+  test('(−) acquire: the pane vanishes while the lock waits: 404, nothing changed', async () => {
+    const r = rig();
+    const { fit, g } = gatedFit(r);
+    g.shut();
+    const done = fit.hold('%2', { cols: 220, rows: 60, open: true });
+    await until(() => g.waiting === 1);
+    const w = r.world.wins.get('@1');
+    w.panes = w.panes.filter((p) => p.id !== '%2');
+    g.open();
+    assert.deepEqual(await done, NF);
+    assert.equal(fit.size(), 0);
+    assert.deepEqual(r.files(), []);
+    assert.equal(r.tag(), '');
+  });
+
+  test('(−) acquire: the pane moves to another window while the lock waits: 404, nothing changed', async () => {
+    const r = rig();
+    const { fit, g } = gatedFit(r);
+    g.shut();
+    const done = fit.hold('%2', { cols: 220, rows: 60, open: true });
+    await until(() => g.waiting === 1);
+    const [from, to] = [r.world.wins.get('@1'), r.world.wins.get('@2')];
+    to.panes.push(from.panes.splice(1, 1)[0]); // join-pane / break-pane: %2 now sits in @2
+    const moved = [r.world.snap('@1'), r.world.snap('@2')];
+    g.open();
+    assert.deepEqual(await done, NF);
+    assert.deepEqual([r.world.snap('@1'), r.world.snap('@2')], moved);
+    assert.equal(fit.size(), 0);
+    assert.deepEqual(r.files(), []);
+  });
+
+  test('(−) acquire: a foreign tag appears while the lock waits: blocked / changed, the tag is not overwritten', async () => {
+    const r = rig();
+    const { fit, g } = gatedFit(r);
+    g.shut();
+    const at = r.at();
+    const done = fit.hold('%2', { cols: 220, rows: 60, open: true });
+    await until(() => g.waiting === 1);
+    r.world.wins.get('@1').tag = 'abcdef0123456789'; // another nika (or a user) fitted the window meanwhile
+    g.open();
+    const res = await done;
+    assert.equal(res.body.fit.reason, 'changed');
+    assert.deepEqual(r.names(at), ['list', 'option', 'layout', 'list']);
+    assert.equal(r.tag(), 'abcdef0123456789');
+    assert.equal(fit.size(), 0);
+    assert.deepEqual(r.files(), []);
+  });
+
+  test('(−) acquire: the refusal is not a user-change mark; the next heartbeat looks at the window as it is then', async () => {
+    const r = rig();
+    const { fit, g } = gatedFit(r);
+    g.shut();
+    const done = fit.hold('%2', { cols: 220, rows: 60, open: true });
+    await until(() => g.waiting === 1);
+    r.world.wins.get('@1').zoomed = true;
+    r.world.wins.get('@1').active = '%3';
+    g.open();
+    assert.equal((await done).body.fit.reason, 'changed');
+    assert.equal((await fit.hold('%2', { cols: 220, rows: 60, open: false })).body.fit.reason, 'user-zoom', 'the plain rule for what is there now');
+    r.world.wins.get('@1').zoomed = false;
+    assert.equal((await fit.hold('%2', { cols: 220, rows: 60, open: false })).body.fit.state, 'fitted');
+  });
+
+  test('(+) acquire without a flip: one extra list-panes, layout and window-size read, inside the same single lock, before the tag', async () => {
+    const r = rig();
+    await r.put('%2', 220, 60);
+    const calls = r.world.calls;
+    assert.deepEqual(calls.map((c) => c.name), ['list', 'option', 'layout', 'list', 'layout', 'option', 'tag', 'zoom', 'size', 'list', 'layout']);
+    assert.deepEqual(calls.map((c) => c.locked > 0), [false, false, false, true, true, true, true, true, true, false, false]);
+    assert.deepEqual(r.world.lockIds, ['%2']);
+  });
+});
+
+describe('M1: a heartbeat that arrives after the page closed does not fit the window again', () => {
+  test('(−) a late PUT open:false within 2 s of the DELETE: blocked / user-change, no tmux mutation, no lease', async () => {
+    const r = rig();
+    await r.put('%2', 220, 60);
+    assert.equal((await r.fit.release('%2')).body.released, true);
+    const before = r.world.snap('@1');
+    r.clock.t += 500;
+    const at = r.at();
+    assert.deepEqual(await r.put('%2', 220, 60, false), ans('blocked', 'user-change', 66, 50, 3));
+    assert.deepEqual(r.names(at), ['list']);
+    assert.equal(r.fit.size(), 0);
+    assert.deepEqual(r.world.snap('@1'), before);
+    r.clock.t += 1500; // exactly 2 s after the DELETE: still within
+    assert.equal((await r.put('%2', 230, 60, false)).body.fit.reason, 'user-change');
+  });
+
+  test('(+) open:true within 2 s is the page opening again: it fits, and the note is gone', async () => {
+    const r = rig();
+    await r.put('%2', 220, 60);
+    await r.fit.release('%2');
+    r.clock.t += 500;
+    assert.deepEqual(await r.put('%2', 220, 60, true), ans('fitted', null, 220, 60, 3));
+    // the note stays cleared: a release that is not the page's (spawn) is followed by a heartbeat that fits
+    assert.equal(await r.fit.releaseWindow('@1'), true);
+    r.clock.t += 500;
+    assert.equal((await r.put('%2', 220, 60, false)).body.fit.state, 'fitted');
+  });
+
+  test('(+) open:false after 2 s fits as it always did', async () => {
+    const r = rig();
+    await r.put('%2', 220, 60);
+    await r.fit.release('%2');
+    r.clock.t += 2001;
+    assert.equal((await r.put('%2', 220, 60, false)).body.fit.state, 'fitted');
+  });
+
+  test('(+) the note belongs to the window and to the page\'s DELETE: another window, a lapse, a spawn release and an empty DELETE leave open:false alone', async () => {
+    const r = rig();
+    await r.put('%2', 220, 60);
+    await r.put('%4', 100, 30);
+    await r.fit.release('%2');
+    assert.equal((await r.put('%4', 100, 30, false)).body.fit.state, 'fitted', 'another window');
+    assert.equal(await r.fit.releaseWindow('@2'), true);
+    assert.equal((await r.put('%4', 100, 30, false)).body.fit.state, 'fitted', 'a release that is not the page\'s');
+    r.clock.t += 5000;
+    assert.deepEqual(await r.fit.release('%3'), { status: 200, body: { released: false } });
+    assert.equal((await r.put('%3', 220, 60, false)).body.fit.state, 'fitted', 'a DELETE without a lease notes nothing');
+  });
+
+  test('(−) a DELETE that could not restore (tmux down) notes nothing and keeps the lease', async () => {
+    const r = rig();
+    await r.put('%2', 220, 60);
+    r.world.fail = (name) => name === 'list';
+    assert.equal((await r.fit.release('%2')).status, 502);
+    r.world.fail = null;
+    assert.equal(r.fit.size(), 1);
+    assert.equal((await r.put('%2', 220, 60, false)).body.fit.state, 'fitted', 'the held lease answers a heartbeat');
+  });
+
+  test('(−) the failed DELETE leaves no note: once the window is given back another way, open:false fits', async () => {
+    const r = rig();
+    await r.put('%2', 220, 60);
+    r.world.fail = (name) => name === 'list';
+    assert.equal((await r.fit.release('%2')).status, 502);
+    r.world.fail = null;
+    r.clock.t += 500;
+    assert.equal(await r.fit.releaseWindow('@1'), true);
+    assert.equal((await r.put('%2', 220, 60, false)).body.fit.state, 'fitted');
+  });
+});
+
+describe('M3: recover says when it leaves files unread', () => {
+  test('(−) more than LEASE_FILES_MAX matching files: one log line with the counts and no names', async () => {
+    const r = rig();
+    for (let i = 0; i < 25; i += 1) r.plant(`fit-${String(i).padStart(16, '0')}.json`, '{}');
+    await r.make().recover();
+    assert.deepEqual(r.logs, ['nika: fit recover read 20 of 25 lease files']);
+  });
+
+  test('(+) up to LEASE_FILES_MAX files: no line', async () => {
+    const r = rig();
+    for (let i = 0; i < 20; i += 1) r.plant(`fit-${String(i).padStart(16, '0')}.json`, '{}');
+    await r.make().recover();
+    assert.deepEqual(r.logs, []);
+  });
+});
+
+describe('M4: a lease that is dropped at R0 sets no mark', () => {
+  test('(−) the window was reused (tag gone) between the decision to release and R0: the next open:false is not blocked', async () => {
+    const r = rig();
+    await r.put('%2', 220, 60);
+    r.world.wins.get('@1').zoomed = false; // the renew below sees a user change ...
+    let lists = 0;
+    r.world.after = (name) => { // ... and the window is a new one by the time R0 looks (tmux restarted, id reused)
+      if (name === 'list') { lists += 1; if (lists === 1) r.world.wins.get('@1').tag = ''; }
+    };
+    const at = r.at();
+    const res = await r.put('%2', 240, 70, false);
+    assert.equal(res.body.fit.reason, 'user-change', 'this request still says so');
+    assert.deepEqual(r.names(at), ['list', 'list'], 'R0 found the tag gone and touched nothing');
+    assert.equal(r.fit.size(), 0);
+    assert.deepEqual(r.files(), []);
+    r.world.after = null;
+    assert.equal((await r.put('%2', 240, 70, false)).body.fit.state, 'fitted', 'no mark: the next heartbeat fits');
+  });
+
+  test('(+) a release that does restore still sets the mark', async () => {
+    const r = rig();
+    await r.put('%2', 220, 60);
+    r.world.wins.get('@1').zoomed = false;
+    await r.tick();
+    assert.equal((await r.put('%2', 220, 60, false)).body.fit.reason, 'user-change');
+  });
+});
+
+describe('fix round 2: acquire re-reads what a restore will put back', () => {
+  const FLIPS2 = {
+    'the user resized other panes (only the layout differs)': [(w) => { w.arr = 'tiled'; }, ['list', 'option', 'layout', 'list', 'layout']],
+    'the layout turned into one nika cannot keep': [(w) => { w.pinned = 'x#y'; }, ['list', 'option', 'layout', 'list', 'layout']],
+    'the user set window-size (only the option differs)': [(w) => { w.sizeOpt = 'largest'; }, ['list', 'option', 'layout', 'list', 'layout', 'option']],
+    'the user set a window-size nika cannot restore': [(w) => { w.sizeOpt = 'weird'; }, ['list', 'option', 'layout', 'list', 'layout', 'option']],
+  };
+  for (const [what, [flip, want]] of Object.entries(FLIPS2)) {
+    test(`(−) ${what} while the lock waits: nothing changed, blocked / changed`, async () => {
+      const r = rig();
+      const { fit, g } = gatedFit(r);
+      g.shut();
+      const at = r.at();
+      const done = fit.hold('%2', { cols: 220, rows: 60, open: true });
+      await until(() => g.waiting === 1);
+      flip(r.world.wins.get('@1'));
+      const flipped = r.world.snap('@1');
+      g.open();
+      const res = await done;
+      assert.equal(res.body.fit.state, 'blocked');
+      assert.equal(res.body.fit.reason, 'changed');
+      assert.deepEqual(r.names(at), want, 'only reads: no tag, no zoom, no resize');
+      assert.deepEqual(r.world.snap('@1'), flipped);
+      assert.equal(fit.size(), 0);
+      assert.deepEqual(r.files(), []);
+      assert.equal(r.sched.on, false);
+      assert.equal(r.tag(), '');
+    });
+  }
+
+  test('(+) a difference that is only focus history (markers a / l of the layout, as R1 and R5 strip them) is no change: it fits', async () => {
+    const r = rig();
+    const { fit, g } = gatedFit(r);
+    g.shut();
+    const done = fit.hold('%2', { cols: 220, rows: 60, open: true });
+    await until(() => g.waiting === 1);
+    r.world.wins.get('@1').last = '%3'; // focus went to %3 and came back to %2: the same active pane, another "last"
+    g.open();
+    assert.deepEqual(await done, ans('fitted', null, 220, 60, 3));
+    assert.equal(fit.size(), 1);
+  });
+
+  test('(−) the refusal leaves no mark: once the window is as it is, the next heartbeat fits and a later release restores it', async () => {
+    const r = rig();
+    const { fit, g } = gatedFit(r);
+    g.shut();
+    const done = fit.hold('%2', { cols: 220, rows: 60, open: true });
+    await until(() => g.waiting === 1);
+    r.world.wins.get('@1').arr = 'tiled';
+    g.open();
+    assert.equal((await done).body.fit.reason, 'changed');
+    const kept = r.world.snap('@1');
+    assert.equal((await fit.hold('%2', { cols: 220, rows: 60, open: false })).body.fit.state, 'fitted');
+    assert.equal((await fit.release('%2')).body.released, true);
+    assert.deepEqual(r.world.snap('@1'), kept, "the user's layout change survives: L0 is the layout read after it");
+  });
+});
+
+describe('fix round 2: EPANEBUSY from verify through releaseNow after the renew resize ran (the "kept" fields)', () => {
+  // The resize ran, then the read-back asks for a release and the pane is busy: releaseNow puts the lease back and renew's catch
+  // restores the fields of the previous size. Pinned: that is bookkeeping. The window stays resized, the lease and its (older) file
+  // stay, the answer is 409 busy, and the next watch tick releases through the full guarded restore (fresh reads under the lock).
+  const CASES = {
+    'a hook fought back (the zoom is gone)': [(w) => { w.zoomed = false; }, 0],
+    'the layout became one nika cannot keep': [(w) => { w.pinned = 'x#y'; }, 1], // nika's own zoom is still there: R2 takes it off, once
+  };
+  for (const [what, [hook, zooms]] of Object.entries(CASES)) {
+    test(`(−) ${what}: 409 busy, lease and file stay, the next tick restores through R0-R8 and toggles the zoom only when nika's own zoom is still there`, async () => {
+      const r = rig();
+      const { fit, gate } = busyRig(r);
+      const before = r.world.snap('@1');
+      await fit.hold('%2', { cols: 220, rows: 60, open: true });
+      const nonce = r.tag();
+      const file = fs.readFileSync(r.file(nonce), 'utf8');
+      r.world.after = (name) => { if (name === 'size') { hook(r.world.wins.get('@1')); gate.busy = true; } };
+      assert.deepEqual(await fit.hold('%2', { cols: 240, rows: 70, open: false }), BUSY);
+      r.world.after = null;
+      assert.equal(fit.size(), 1, 'the lease is registered again');
+      assert.equal(r.sched.on, true, 'so the watch keeps looking');
+      assert.equal(fs.readFileSync(r.file(nonce), 'utf8'), file, 'the file still holds the older description (crash recovery stays conservative)');
+      assert.equal(r.tag(), nonce);
+      assert.deepEqual([r.world.wins.get('@1').width, r.world.wins.get('@1').height], [240, 70], 'the resize did happen');
+      const stuck = r.at();
+      await r.tick(); // still busy: nothing runs, nothing is lost
+      assert.equal(fit.size(), 1);
+      assert.ok(!r.names(stuck).some((n) => MUTATING.has(n)));
+      gate.busy = false;
+      const at = r.at();
+      await r.tick();
+      assert.equal(fit.size(), 0, 'released');
+      assert.equal(r.names(at).filter((n) => n === 'zoom').length, zooms, 'a zoom nika made is taken off once (R2, fresh reads); a zoom that is gone is not toggled back');
+      assert.equal(r.world.wins.get('@1').zoomed, false);
+      assert.equal(r.tag(), '');
+      assert.deepEqual([r.world.wins.get('@1').width, r.world.wins.get('@1').height], [before.width, before.height]);
+      assert.equal(r.world.wins.get('@1').sizeOpt, null);
+      assert.deepEqual(r.files(), []);
+      assert.equal((await fit.hold('%2', { cols: 220, rows: 60, open: false })).body.fit.state, 'blocked', 'off until the page opens the session window again');
+    });
+  }
 });
