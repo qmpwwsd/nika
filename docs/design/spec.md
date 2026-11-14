@@ -632,7 +632,7 @@ Grid per line: old no (3.5em) · new no (3.5em) · marker (1.5em) · text. Mono 
 | live | rows rendered from capture; cursor block; header "● Live · 92 × 30" |
 | paused | user scrolled up > 8 px from bottom: header dot turns to an amber square + "Paused"; "Jump to live ↓" button bottom-right; new captures are applied but scroll position is kept |
 | passthrough | 2 px `--accent` inset outline + accent banner "Typing goes to pane %12. Ctrl+] to stop." |
-| input box mirrored (0.5) | with a readable draft and Type into pane off, the rows from Claude's input box down are not drawn; a one-row strip "Input box · mirrored in the message box below" ends the mirror (§9.12) |
+| input box mirrored (0.5) | with a readable draft and Type into pane off, the rows from Claude's input box down are not drawn (Claude's prompt suggestion is a row of that box, so it is cut with it and the message box shows it as its placeholder); a one-row strip "Input box · mirrored in the message box below" ends the mirror (§9.12) |
 | unfocused | cursor becomes a hollow outline |
 | pane gone | overlay "Pane %12 is gone. The agent ended or the pane was closed. The transcript is still readable." composer disabled |
 | tmux error | overlay `role="alert"` "tmux failed: capture-pane exited 1. Retrying every 2 s. [Retry now]" |
@@ -641,7 +641,7 @@ Grid per line: old no (3.5em) · new no (3.5em) · marker (1.5em) · text. Mono 
 
 ### 3.10 Input composer
 
-Monospace textarea with a "›" prompt, grows 1 → 8 lines (20 px each), then scrolls. Placeholder "Message builder-1…".
+Monospace textarea with a "›" prompt, grows 1 → 8 lines (20 px each), then scrolls. Placeholder "Message builder-1…", or Claude's prompt suggestion while it offers one (§9.12).
 Its keys are in §4.2; there is no row of key buttons (§3.11). **(built amendment 2026-11-09 (0.3.3))**
 
 Order inside the composer, top to bottom: quick actions and their reason line (§9.4) · model popover (while open) ·
@@ -1069,9 +1069,9 @@ empty (owner decision 2026-11-09). One pure function holds the rules: `composerK
 | Esc | closes the model popover, then the palette; else sends Escape (a held Esc sends once) | Escape |
 | Ctrl+C | with a selection: the browser's (copy on Linux); while Claude works: Stop (`/stop` route, §9.4); otherwise nothing is sent and the problem line says why for 3 s | C-c |
 | Shift+Tab | sends BTab: Claude's next permission mode (a held key sends once); nothing is sent before the window has read the pane once, or while it is gone or tmux fails (the pane's reason shows for 3 s, such as "Connecting to the pane…"), while a prompt is open (§9.5), or while a mode switch runs ("Wait for the mode switch to finish.") | BTab |
-| Tab | moves focus forward (palette option active: inserts it) | Tab |
+| Tab | moves focus forward (palette option active: inserts it). **(0.5)** In an empty box that shows Claude's suggestion as its placeholder, a bare Tab accepts it instead (§9.12; a held key accepts once). Once it is accepted the box holds text, so Tab moves focus again: the box is not a keyboard trap (WCAG 2.1.2). Ctrl+Shift+Tab always moves back | Tab |
 | Ctrl+Shift+Tab | moves focus back, to the Shell toggle | not sent (not on the allow-list) |
-| ↑ ↓ ← → | empty box: sent to the pane in batches (a batch holds ≤ 8 keys and goes out at the 8th key or 120 ms after the first, whichever is first; held repeats dropped while 2 batches wait); text in the box: caret; palette: ↑ ↓ choose | sent as KEY_NAME |
+| ↑ ↓ ← → | empty box: sent to the pane in batches (a batch holds ≤ 8 keys and goes out at the 8th key or 120 ms after the first, whichever is first; held repeats dropped while 2 batches wait); text in the box: caret; palette: ↑ ↓ choose. **(0.5)** → in an empty box that shows Claude's suggestion accepts it (§9.12) instead of going to the pane as an arrow key | sent as KEY_NAME |
 | Home End PgUp PgDn ⌫ Del | edit the box | sent as KEY_NAME |
 | Ctrl+U/K/A/E/L/R | box editing | sent as C-u … C-r |
 | Ctrl+W | Linux: closes the window (§4.1); macOS: left to the browser | sent as C-w (Close is not a window key here) |
@@ -1638,7 +1638,7 @@ When the capture has `prompt`, the attention note above the message box becomes 
 | 5xx, network error | "nika couldn't reach tmux." | re-enabled |
 
 Rule: the buttons re-enable after any non-200 except `prompt-changed`, `already-answered` and 400.
-- **Send, Shell and the lone Enter wait while a question is open** (built amendment 2026-11-09, task 14b). While a prompt is on screen, or the agent is "Needs you", the message box sends nothing: not a line, a paste, a Shell line or the Enter of an empty box (Enter would confirm the highlighted option). The text stays in the box and the problem line (`role="alert"`) says "Answer the prompt with the buttons above or in the terminal." while the panel shows an answer button, and "Answer the prompt in the terminal, or turn on Type into pane." when it shows none (a layout nika cannot parse), and "Answer this prompt in the terminal." for a prompt the capture marks `bypass` (Type into pane uses the keys route, which refuses Enter, digits and paste there). **(built amendment 2026-11-09 (0.3.3))** Enter and Shift+Tab in the message box send nothing either once nika has seen the prompt, and show the same line (Shift-Tab can pick "allow for this session"). The page knows a prompt only from its last capture (about half a second old: the page reads the pane every 250 ms and the server keeps a capture for 250 ms; older while the window is hidden), so a key pressed in that window can reach a prompt whose window does not mention bypass (security T26); Shift+Tab alone is also held back before the first capture and while the pane is gone or tmux fails, with the pane's reason ("Connecting to the pane…") for 3 s. Esc still goes (the No path), and ↑ ↓ from an empty box move Claude's highlighted option. A keys-route 409 `bypass-prompt` shows "Answer this prompt in the terminal."; a 409 `screen-unclear` (an unreadable footer whose window mentions bypass, such as a slash menu for a command named like that) shows "nika can't tell what Claude is showing; use the terminal." Passthrough is the raw terminal path and is unchanged (it too posts to the keys route, so Enter, Shift-Tab, digits and paste there meet the same guard).
+- **Send, Shell and the lone Enter wait while a question is open** (built amendment 2026-11-09, task 14b). While a prompt is on screen, or the agent is "Needs you", the message box sends nothing: not a line, a paste, a Shell line or the Enter of an empty box (Enter would confirm the highlighted option). The text stays in the box and the problem line (`role="alert"`) says "Answer the prompt with the buttons above or in the terminal." while the panel shows an answer button, and "Answer the prompt in the terminal, or turn on Type into pane." when it shows none (a layout nika cannot parse), and "Answer this prompt in the terminal." for a prompt the capture marks `bypass` (Type into pane uses the keys route, which refuses Enter, digits and paste there). **(built amendment 2026-11-09 (0.3.3))** Enter and Shift+Tab in the message box send nothing either once nika has seen the prompt, and show the same line (Shift-Tab can pick "allow for this session"). The page knows a prompt only from its last capture (about half a second old: the page reads the pane every 250 ms and the server keeps a capture for 250 ms; older while the window is hidden), so a key pressed in that window can reach a prompt whose window does not mention bypass (security T26); Shift+Tab alone is also held back before the first capture and while the pane is gone or tmux fails, with the pane's reason ("Connecting to the pane…") for 3 s. Esc still goes (the No path), and ↑ ↓ from an empty box move Claude's highlighted option. A keys-route 409 `bypass-prompt` shows "Answer this prompt in the terminal."; a 409 `screen-unclear` (an unreadable footer whose window mentions bypass, such as a dialog nika does not parse) shows "nika can't tell what Claude is showing; use the terminal." Passthrough is the raw terminal path and is unchanged (it too posts to the keys route, so Enter, Shift-Tab, digits and paste there meet the same guard).
 - Unknown layout (`prompt: null` while the status is "Needs you"): no buttons; the 0.2 note changes in 0.3 (built amendment, task 14b), because nika now blocks Enter there: "<name> needs you: <reason>. Answer it in the terminal, or turn on Type into pane (⌃] on a Mac, Ctrl+] elsewhere)." The gate now holds for every dialog nika cannot parse, not only bypass ones.
 - Option labels can contain folder paths: shown in the app only, never logged.
 
@@ -1766,8 +1766,9 @@ Esc ladder (§4.3) gains two rungs, in this order: model popover or row menu →
 
 ### 9.12 Draft sync and the input-box cut (0.5, W5 and W6)
 
-**(built 2026-11-14 (0.5).)** The message box and Claude's input box mirror each other. Contract: `api-app.md` (`draft` on the
-capture, `PUT /api/app/pane/:id/draft`); how the screen is read: `claude-tui.md` §10. Always on, no setting (owner decision
+**(built 2026-11-14 (0.5).)** The message box and Claude's input box mirror each other, and Claude's prompt suggestion shows as the
+message box's placeholder (W4, below). Contract: `api-app.md` (`draft` on the capture, `PUT /api/app/pane/:id/draft`,
+`POST /api/app/pane/:id/suggestion`); how the screen is read: `claude-tui.md` §10. Always on, no setting (owner decision
 2026-11-14). The logic that has no DOM is `public/draft-sync.js`; the wiring is `public/session.js`.
 
 **What moves, and when**
@@ -1802,11 +1803,55 @@ unchanged.
 | paused | `i-pause` | `--idle` on `--idle-soft` | **Sync paused:** Claude's input holds <reason>. Edit or clear it in the terminal. | the screen's draft is unreadable; nothing is pulled or pushed, and nika never writes over it |
 | long | `i-info` | `--text` on `--surface-3` | **Not mirrored:** Long text goes to Claude when you send it. | unsent text that does not fit Claude's box, or that the server refused as too long |
 | wait | `i-clock` | `--busy` on `--busy-soft` | **Waiting for Claude:** Claude is working. Your text goes into its input when it waits. | a replace was refused because Claude is busy (409 `not-idle`); the push is tried again every 3 s |
+| suggest | `i-kbd` | `--accent` on `--accent-soft` | **Suggestion:** Tab or → accepts what Claude suggests. | the message box and Claude's input box are in sync, both empty, and Claude's box shows a prompt suggestion (below) |
 
 The reasons: `pasted` "a pasted block nika can't read back"; `tall` "a draft longer than 14 rows"; `trailing` "text that ends in
-spaces"; `history` "a prompt-history entry"; `layout` "something nika doesn't recognise". While paused the message box stays
+spaces"; `history` "a prompt-history entry"; `layout` "text nika can't read back exactly" (a row shape nika does not know, or a wrap that could be read two ways: a word cut at the box width looks the same as two long words with a space between them, and nika does not guess). While paused the message box stays
 editable and Send obeys the table below. The arrow keys of an empty box still go to the pane (0.3.3): `Up` in the terminal
 recalls history, which pauses the sync and says why.
+
+The page decides "fits" with a twin of the server's envelope check (at most 1024 characters, 12 newlines, 13 estimated rows at the
+pane's width, no control character but newline and tab; `public/draft-sync.js` `fits`, asserted equal to `src/draft.js` by
+`test/draft-sync.test.js`), so a text the page pushes is never refused by the server as too long.
+
+**Claude's prompt suggestion (W4).** After a turn Claude can draw a suggestion for the next prompt as dim text in its empty input box
+(`claude-tui.md` §10.10). The message box shows it and takes it with one key.
+
+- *Placeholder.* While the message box is empty, Shell is off and the screen's draft is a readable, empty prompt box with a
+  `suggestion` (`suggestionFor` in `public/draft-sync.js`), the box's placeholder is that suggestion instead of "Message <name>…".
+  Shell on, text in the box (one space counts), a paused draft or no plain box on screen: "Message <name>…" (Shell: "Shell command
+  for Claude's ! mode…"). A disabled box keeps its own placeholder.
+- *Look.* The box gets the class `suggest`: `.inbox.suggest textarea::placeholder` is `--accent`, italic, opacity 1, so the
+  suggestion reads as Claude's text and not as the muted "Message …" hint; and the note kind `suggest` (table above) says in words and
+  an icon what accepts it. Colour is never the only cue. Contrast: the table of §5.1 already holds both pairs, `--accent` on
+  `--surface` (6.04:1 at the lowest) and `--accent` on `--accent-soft` (5.20:1 at the lowest), both above 4.5:1 in every theme.
+- *Accept.* A bare Tab or → in the empty box while a suggestion shows (`composerKey` returns `accept`; Ctrl, Shift, Alt and Meta
+  variants keep their meaning, and a palette option that is active still takes Tab first). A held key accepts once. The page calls
+  `POST /api/app/pane/:id/suggestion { text }` with the suggestion it shows, in the keys chain, so arrows typed just before go
+  first; nika sends no Tab of its own and posts nothing when its own copy is already stale. On 200 the box takes Claude's text with the
+  caret at its end (a box the user typed into meanwhile keeps its text: nika wins while the user types here), the problem line clears
+  and the echo says "Accepted Claude's suggestion: <text>". The note is a polite `role="status"` region, so a screen reader hears
+  "Suggestion: Tab or → accepts what Claude suggests." each time a suggestion appears.
+- *Without a suggestion* Tab keeps moving focus and → keeps going to the pane as an arrow key (empty box) or moving the caret (text).
+- *Send* with an empty message box that shows a suggestion is still `Enter` alone (table below). What Claude submits then is not
+  verified (`claude-tui.md` §10.11).
+- *Failed accept.* The line is fixed copy chosen by the status and the code, never the server's text, in the problem slot:
+
+| Answer | Line |
+|---|---|
+| 409 `draft-mismatch` | "Claude's input did not take the suggestion. nika shows what it holds now." |
+| 409 `draft-changed`, or the page's own copy already stale | "Claude's suggestion changed. Nothing was sent." |
+| 409 `draft-unreadable` | the paused line above ("Claude's input holds <reason>. Send or clear it in the terminal.") |
+| 409 `not-idle` | "Claude is busy or a prompt is open, so nika can't accept the suggestion now. Nothing was sent." |
+| 409 `input-unreadable`, `mode-unknown` | "nika can't read Claude's input box right now (a menu may be open). Nothing was sent." |
+| 409 `busy-switching` | "Another action is running on this session. Try again in a moment." |
+| 400 | "nika can't accept this suggestion." |
+| 404 | "The session is gone." |
+| 429 | "Too many keys at once; try again." |
+| no answer | "nika did not answer." |
+| anything else | "nika couldn't accept the suggestion." |
+
+A refusal that carries a `draft` is adopted like any other 409 of the sync (the terminal wins); the suggestion then follows the screen.
 
 **Send** (after the permission-prompt gate of §9.5; the text is the message box's, Shell adds its `!`):
 

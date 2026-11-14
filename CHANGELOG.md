@@ -16,21 +16,32 @@ Session window (desktop app):
   line, "Input box · mirrored in the message box below". Turn on **Type into pane** to see every row again. When nika cannot
   read the box (a menu or a question is open), the view shows every row, too.
 - **When nika cannot read Claude's input, it stops syncing and says so** ("Sync paused: Claude's input holds …"): a pasted
-  block, a draft longer than 14 rows, text that ends in spaces, an older prompt that you recalled with the up arrow, or
-  something nika does not recognise. It never writes over such an input. Edit or clear it in the terminal, and the sync
-  continues. Send is refused while it is paused, with the same words.
+  block, a draft longer than 14 rows, text that ends in spaces, an older prompt that you recalled with the up arrow, or text
+  nika can't read back exactly (a row it does not know, or a long line that wraps in a way nika cannot tell apart from a
+  different text). It never writes over such an input. Edit or clear it in the terminal, and the sync continues. Send is
+  refused while it is paused, with the same words.
+- **Claude's suggestion shows in the message box.** When Claude offers a suggestion for your next prompt (the grey text in its
+  empty input box), the empty message box shows that text as its placeholder, in the accent colour and italic, with a note
+  under the box: "Suggestion: Tab or → accepts what Claude suggests." Press **Tab** or **→** to take it: nika checks that Claude
+  is waiting and still shows exactly that suggestion, presses Tab in Claude's input once, and the message box fills with the
+  text. If anything changed (the suggestion went away, Claude got busy, a question opened), nothing is pressed and you see why.
+  Without a suggestion, Tab moves focus and → goes to the pane as before. **Send** with an empty box still presses only Enter.
 - **Long messages.** Text that does not fit Claude's box (more than 1024 characters, 12 line breaks or 13 rows) is not mirrored
   ("Not mirrored: Long text goes to Claude when you send it"). Send still pastes it into an empty input, as before. If Claude's
   input already holds other text, Send refuses, so the two are never sent together; clear it in the terminal or shorten your
   message.
 - **While Claude works**, a message that only adds to what is in the box, or fills an empty box, is copied at once. Anything that
   would replace text waits until Claude is idle ("Waiting for Claude: …"), because clearing a box takes an Escape.
+- **A status line that looks like Claude's input box is left alone.** nika reads a box as Claude's input only when the terminal
+  cursor is in it. Otherwise it sees no input box: nothing is mirrored or typed, and End and the commands refuse.
 - **End, Compact, Clear and Model read the input box more carefully.** A box in Claude's `!` mode, a pasted block, a long draft
   or an older prompt that is showing now count as "not empty" or "cannot read", and nothing is typed. End and the commands do
   not press Enter when grey completion text is still in the box.
 - Known limit: at a few rare line breaks (for example a line break typed exactly where Claude would have wrapped the line anyway)
   the text nika reads back from Claude's box can differ from what you typed by one space or line break. nika then shows what
-  Claude holds and sends nothing wrongly. Plain-mode input and a busy session were checked less than vim mode and an idle one.
+  Claude holds and sends nothing wrongly; the next copy into Claude's input writes that text back, so one space or line break of
+  your draft has really changed. Plain-mode input was checked less than vim mode (nika's typing was run against a stand-in
+  there, not against Claude itself), and Tab or Enter on a real Claude suggestion through nika has not been tried yet.
 
 ## 0.4.0 — 2026-11-13
 

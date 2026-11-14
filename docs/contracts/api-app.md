@@ -47,7 +47,7 @@ missing; since 0.4 a tmux server that is not running is not an error for Start o
 a second after Start, Resume or spawn created it), `limit` 409 (maxAgents reached), `foreign` 409 (rules file not written by nika, apply without
 `overwriteForeign`), `refused` 409 (a write-safety check failed; `"code"` carries the fwrite/OS code such as `ESYMLINK`),
 and for session control (0.3) `not-idle`, `mode-unknown`, `mode-unchanged`, `not-in-cycle`, `busy-switching`, `no-prompt`,
-`prompt-changed`, `already-answered`, `input-not-empty`, `input-unreadable`, `not-at-prompt`, `bypass-prompt`, `screen-unclear`, all 409. The 0.3 codes are hyphenated, as the spec names them; the older codes keep their underscores. Draft sync (0.5) adds `draft-unreadable`, `draft-changed`, `screen-changed` and `draft-mismatch`, all 409 (`PUT /api/app/pane/:id/draft`).
+`prompt-changed`, `already-answered`, `input-not-empty`, `input-unreadable`, `not-at-prompt`, `bypass-prompt`, `screen-unclear`, all 409. The 0.3 codes are hyphenated, as the spec names them; the older codes keep their underscores. Draft sync (0.5) adds `draft-unreadable`, `draft-changed`, `screen-changed` and `draft-mismatch`, all 409 (`PUT /api/app/pane/:id/draft`; the first, second and fourth also `POST /api/app/pane/:id/suggestion`).
 
 ## 3. Routes
 
@@ -351,9 +351,10 @@ Only SGR codes 0, 1, 2, 3, 4, 7, 22–24, 27, 30–37, 39, 40–47, 49, 90–97,
   spaces, an optional `-- INSERT --` / `-- NORMAL --` prefix and optional `⏵` / `⏸` glyphs; a token elsewhere in the
   row (a file menu, a help line, a wrapped description) never counts. `manual` only on Claude's positive marker
   (`manual mode`); no recognized phrase → `unknown`, never `manual`; an otherwise unrecognized footer whose first word
-  (after that prefix) is `bypass` or `bypassPermissions` (any case) → `bypassPermissions` (fail loud); so the
-  slash-command menu (rows starting with `/` or `❯ /`) reads `unknown`, and a permission prompt or dialog covering the
-  footer → `unknown`.
+  (after that prefix) is `bypass` or `bypassPermissions` (any case) → `bypassPermissions` (fail loud); so a permission
+  prompt or dialog covering the footer → `unknown`. Claude's slash-command menu does not: checked 2026-11-14 (Claude Code
+  2.1.325), the menu is drawn above the input box's top rule and the mode line stays, so `mode` and `draft` read as usual while it
+  is open (`claude-tui.md` §10.1).
 - `modeConfirmed` (boolean): `true` when `mode` is the footer reading. When the footer reads `unknown` (a permission
   prompt or dialog covers it, or the text is unrecognized), `mode` is the last mode read from this pane's footer (kept
   in memory per pane id, dropped when the pane leaves the eligible set), else, for a pane nika started, the recorded
@@ -379,8 +380,10 @@ Only SGR codes 0, 1, 2, 3, 4, 7, 22–24, 27, 30–37, 39, 40–47, 49, 90–97,
 wrap rule in `claude-tui.md` §10); the page mirrors it into the message box (spec §9.12):
 - `draft` is `null` while the screen has no plain input box: the footer is not a known mode line (a permission prompt, a dialog,
   the transient `paste again to expand` hint), a permission prompt parses, there are
-  fewer than two rule rows or nothing between the last two, or the first box row is not the glyph `❯` or `!` followed by a
-  no-break space (`claude-tui.md` §10.1). The page then shows every row of the mirror and does not sync.
+  fewer than two rule rows or nothing between the last two, the first box row is not the glyph `❯` or `!` followed by a
+  no-break space, or the terminal cursor lies outside the rows of the box (`claude-tui.md` §10.1, §10.5: the box that parsed
+  may be a status line, not the input). The page then shows every row of the mirror and does not sync. A capture with no cursor
+  position at all has no box either (`draft: null`, `claude-tui.md` §10.5).
 - Otherwise it is an object (all fields always present):
 
 | Field | Value |
@@ -389,11 +392,11 @@ wrap rule in `claude-tui.md` §10); the page mirrors it into the message box (sp
 | `mode` | `prompt` (glyph `❯`) or `bash` (glyph `!`: Claude's `!` mode, the page's Shell toggle) |
 | `text` | the draft with its rows joined (§10.4), ghost text and Claude's row padding removed; `''` for `empty` and `unreadable`. Not cleaned of zero-width characters: a textarea value only, never an HTML sink |
 | `sig` | first 16 hex characters of sha256 over `state`, `mode` and `text`; `null` when `unreadable` |
-| `reason` | present only when `unreadable`: `history`, `layout`, `tall`, `pasted` or `trailing` (checked in this order) |
+| `reason` | present only when `unreadable`: `history`, `layout` (also a full row that reads two ways: one cut word, or two long words with a hidden space, §10.4), `tall`, `pasted` or `trailing` (checked in this order) |
 | `box` | `{ top, bottom }`: the row indexes of the two rule rows; the mirror's rows above `top` are the cut of spec §9.12 |
 | `cursorAtEnd` | the cursor sits right after the last real character of the last box row (padding does not count); `false` for `unreadable` |
 | `ghost` | `true` when any dim, reverse-video or hint cell of the box was dropped as ghost text (the placeholder, a completion, the slash command's argument hint); `false` for plain text and for every `unreadable` draft (nothing was read). End and the commands do not press Enter on a box with `ghost: true` |
-| `suggestion` | a string or `null`; set only by the feature that shows it, which is documented with that feature |
+| `suggestion` | a string or `null`: Claude's prompt suggestion, the dim text Claude draws in an empty box after a turn (`claude-tui.md` §10.10), cleaned with `clean()` and cut at 200 characters; `null` when the box holds text, has no dim text, or the dim text is the box's own placeholder (it starts with `Try "`). It is not part of `sig` and not of `text`; the page shows it as the message box's placeholder and accepts it through `POST /api/app/pane/:id/suggestion` below |
 | `edit` | `insert` (`-- INSERT --` shown now), `normal` (INSERT was seen on this pane before), `plain` (a probe `i` landed as text on this pane before) or `unknown`; the pane's memory, shown for display and route-side planning (the route reads the screen again, `claude-tui.md` §10.7). It is part of the ETag |
 
 - The draft comes from the capture the route already took (no extra tmux call). App tier only: `/api/agents` and the browser tier
@@ -429,9 +432,9 @@ the screen:
   permission prompt is on screen (`prompt` non-null) → `409 { "error": "bypass-prompt", "message": "Answer this prompt in
   the terminal" }`, nothing sent;
 - the window mentions bypass, no prompt parses, **and** the footer is unreadable (`mode` would be `unknown`: a dialog nika
-  does not parse, with another hint row, or Claude's slash-command menu, may be open) → `409 { "error": "screen-unclear",
+  does not parse, with another hint row, may be open) → `409 { "error": "screen-unclear",
   "message": "nika can't tell what Claude is showing; use the terminal" }`, nothing sent. This is the unreadable-footer
-  case of the guard, with its own code so the page does not call a slash menu whose command has "bypass" in its name a
+  case of the guard, with its own code so the page does not call a dialog that merely mentions "bypass" a
   bypass prompt;
 - a readable footer, whatever it says, is not a prompt: a session that runs in bypass can still be typed to (and leave it
   with Shift-Tab), and the word in plain output does not block;
@@ -445,7 +448,9 @@ capture runs before the per-pane rate limit (T11).
 
 Send of a synced message box (0.5): when Claude's input box already holds the message box's text (`draft` of the capture, spec
 §9.12), the page's Send is `{ "keys": [ "Enter" ] }` on this route and passes the same guard, unchanged (Enter is a guarded key).
-When the texts differ, the page first calls `PUT /api/app/pane/:id/draft` below and sends that `Enter` only after a 200.
+When the texts differ, the page first calls `PUT /api/app/pane/:id/draft` below and sends that `Enter` only after a 200. An empty
+message box whose Claude input shows a suggestion (`draft.suggestion`) still sends `Enter` alone; what Claude submits then is
+not verified (`claude-tui.md` §10.11).
 
 ### `PUT /api/app/pane/:id/draft` (body ≤ 20 KB, `CAP.keys`)
 Makes Claude's input box hold the page's text, safely (draft sync, 0.5; `docs/security.md` T51). It never presses `Enter`: Send
@@ -464,29 +469,29 @@ the other control routes. Checks and steps, in this order (every step fails clos
    command, End or another draft write) → 409 `busy-switching` (the page retries after its next capture). Stop takes no lock.
 3. Fresh capture (never the cache) and registry state. A capture that fails → its status and body.
 4. A permission prompt on screen → 409 `not-idle` (T51: a draft write never lands in a prompt).
-5. No plain box (`draft` would be `null`): footer unknown → 409 `mode-unknown` (a dialog may be open); otherwise → 409
-   `input-unreadable`.
+5. No plain box (`draft` would be `null`, which includes a cursor outside the rows of the box, a box that may be a status line):
+   footer unknown → 409 `mode-unknown` (a dialog may be open); otherwise → 409 `input-unreadable`, with no `draft` key.
 6. `state` is `unreadable` → 409 `draft-unreadable` with `reason` (nika never writes over a draft it cannot read).
 7. `draft.sig` differs from `base` → 409 `draft-changed` (the terminal changed since the page looked; the page pulls).
 8. The trailing spaces and tabs of `text` are removed (they are invisible in the box and would make it unreadable), then the text
    must be inside the envelope for the pane's width: 1024 characters, 12 newlines, 13 estimated rows (`claude-tui.md` §10.9), no
-   run of 699 or more spaces and tabs; else `400 invalid` ("text does not fit the input box"). The page never sends such a text.
+   run of 699 or more spaces and tabs; else `400 invalid` ("text does not fit the input box"). The page runs an exact twin of this
+   envelope check (browser code cannot import `src/`; `test/draft-sync.test.js` asserts the twin answers like `src/draft.js`) before it
+   calls this route and never sends a text that fails it, so a text the page passes the server passes too.
 9. The screen already reads as `text` (spaces at line ends, tabs and no-break spaces compared as `claude-tui.md` §10 says) →
    `200 { draft, typed: 0 }`, nothing sent.
-10. The cursor is not on a row inside the box that was read → 409 `input-unreadable` with `draft: null` (that box may be a status
-    line).
-11. Plan: **append** (the cursor is at the end, the new text starts with the old text, the mode (`❯` or `!`) agrees, and Claude is in
+10. Plan: **append** (the cursor is at the end, the new text starts with the old text, the mode (`❯` or `!`) agrees, and Claude is in
     insert mode, or in remembered plain mode with an old text that does not end in a newline: only the new part is typed), **type**
     (the box is empty), or **replace** (clear, then type). A replace needs the registry state `idle`, else 409 `not-idle`
     (`Escape` can interrupt a running turn); an append or a type into an empty box may run while Claude works, as typing in the
     terminal would.
-12. Run the plan (`claude-tui.md` §10.8 for the keys and waits, §10.9 for the chunks). A fresh capture is taken before **every**
-    key or chunk and must still show a plain box with the cursor in it, no permission prompt, and exactly the text the previous step
-    left: no box or a prompt, the cursor outside the box, or other text (the user typing in the terminal) → 409 `screen-changed`,
-    nothing more is sent; an unreadable box → 409 `draft-mismatch`; an interrupt (Stop's, or End's, which holds the lock first) running
-    on the pane → 409 `not-idle` with that key not sent. A wait that runs out → 409 `draft-mismatch` (and the pane's vim/plain memory is dropped, so the next write probes), or
+11. Run the plan (`claude-tui.md` §10.8 for the keys and waits, §10.9 for the chunks). A fresh capture is taken before **every**
+    key or chunk and must still show a plain box (so with the cursor in it), no permission prompt, and exactly the text the previous
+    step left: no box (a cursor that left the box counts) or a prompt, or other text (the user typing in the terminal) → 409
+    `screen-changed` (`draft: null` when there is no box), nothing more is sent; an unreadable box → 409 `draft-mismatch`; an interrupt
+    (Stop's, or End's, which holds the lock first) running on the pane → 409 `not-idle` with that key not sent. A wait that runs out → 409 `draft-mismatch` (and the pane's vim/plain memory is dropped, so the next write probes), or
     409 `mode-unknown` when `-- INSERT --` never went after the first `Escape`.
-13. Read back, up to 4 fresh captures 150 ms apart: the box is readable and reads as `text` → `200 { draft, typed }` (`typed` =
+12. Read back, up to 4 fresh captures 150 ms apart: the box is readable and reads as `text` → `200 { draft, typed }` (`typed` =
     characters typed, not counting a `!` that moved to the glyph); any difference → 409 `draft-mismatch`.
 
 A key send that fails (for example 429, or a tmux error) stops the sequence and answers that status and body plus the `draft` of one
@@ -494,23 +499,63 @@ more fresh read (best effort). Every key counts toward the keys route's 20 reque
 
 **`draft` in the answers.** It is the parse the page needs for its next `base` (an object of the capture's shape, with `edit`, or
 `null`); it is the only draft-derived data the server returns, and it is the screen's, never the request's text.
-- Present: the 200s, 409 `draft-unreadable` (with `reason`), `draft-changed`, `screen-changed` (`null` when the cursor was outside
-  the box), `draft-mismatch` (an unreadable draft included, so `draft.state` says so), `input-unreadable` of step 10 (`null`), `mode-unknown`
-  after a wait that ran out, `not-idle` of step 11 or of a refused key while Stop runs, and a failed key send.
+- Present: the 200s, 409 `draft-unreadable` (with `reason`), `draft-changed`, `screen-changed` (`null` when the box is gone or the
+  cursor left it), `draft-mismatch` (an unreadable draft included, so `draft.state` says so), `mode-unknown` after a wait that ran out,
+  `not-idle` of step 10 (a replace while Claude is busy) or of a refused key while Stop or End interrupts, and a failed key send.
 - Absent: 400, 404, 409 `busy-switching`, a failed capture, and `not-idle`, `mode-unknown` and `input-unreadable` of steps 4 and 5
   (nothing was read or nothing is a plain box) and `not-idle` of the registry-state check right before an `Escape`.
 
 The page adopts the `draft` of `draft-changed`, `screen-changed` and `draft-mismatch`: the terminal wins.
 
-**Never sent** by this route: `Enter`, `C-c`, `Up`, `Down`, `C-k`, `BTab`, a digit as a key (a draft that is one digit goes as literal
-text), a second `Escape` on an empty box, any key within 40 ms of an `Escape` (its own, or the `Escape` of a Stop or End), any key while Stop or End interrupts the pane, and an
-`Escape` while the registry state is not `idle`. The keys it does send: literal text and bracketed pastes (`send-keys -l --`, at most
+**Never sent** by this route: `Enter`, `Tab`, `C-c`, `Up`, `Down`, `C-k`, `BTab`, a digit as a key (a draft that is one digit goes as literal
+text), a second `Escape` on an empty box, any key within 40 ms of an `Escape` (its own, or the `Escape` of a Stop or End: a key right behind an `Escape` would be read as
+Meta plus that key), any key while Stop or End interrupts the pane, and an `Escape` while the registry state is not `idle`. The keys it does send: literal text and bracketed pastes (`send-keys -l --`, at most
 700 characters per call, at most 2 newlines per paste, never ending in a space or tab), `Escape` (vim: once, then the text `ggdG` and
 `i`; plain: once, and a second one at least 60 ms later only while text still shows), a probe `i`, one `C-u` to remove that probe's
 own `i` from an empty box, and one `BSpace` to leave `!` mode (`claude-tui.md` §10.8).
 
 Logging: nothing of the body or of a draft (no text, no `sig`, no `base`) goes to a log or the console; errors carry the pane id and
 the code only. The route exists on the app tier only.
+
+### `POST /api/app/pane/:id/suggestion` (body ≤ 4 KB, `CAP.small`)
+Takes Claude's prompt suggestion into Claude's input box: the page's `Tab` (or `→`) in an empty message box that shows the
+suggestion as its placeholder (spec §9.12; the suggestion itself is `draft.suggestion`, `claude-tui.md` §10.10). Draft sync, 0.5
+(W4; `docs/security.md` T51). It is not the plain keys route: a `Tab` that lands after the suggestion went away, or after a
+permission prompt opened, goes where the user did not mean, so nika presses it only on a fresh screen that still shows exactly the
+suggestion the page shows, and presses nothing else.
+```json
+{ "text": "<the suggestion the page shows, 1 to 200 characters, no control character>" }
+```
+The body is exactly the one key `text`. Success: `200 { "draft": { … } }` (the parse of the screen after the `Tab`, with `edit`, the
+capture's shape). Same pane rule as capture and the same one-lock rule as the other control routes. Checks and steps, in this order
+(every step fails closed: nothing is sent after a refusal):
+
+1. Body invalid → `400 invalid`: not exactly `{ text }`; `text` not a string, empty, over 200 characters, or holding any C0
+   control (`\n` and `\t` included), DEL or a C1 control. This check runs before the pane check.
+2. Ineligible pane (same rule as capture) → `404 not_found`. Another control action running on this pane (mode switch, answer,
+   command, End or a draft write) → 409 `busy-switching`. Stop takes no lock.
+3. The registry state, read fresh (skipping its cache), is not `idle`, or Stop's or End's interrupt is running on the pane → 409
+   `not-idle`, no `draft` key (a `Tab` could take a suggestion into a box while Claude works).
+4. One fresh capture (never the cache): the only capture before the key. A capture that fails → its status and body. A permission
+   prompt on screen → 409 `not-idle`. No plain box (`draft` would be `null`: footer unknown → 409 `mode-unknown`; otherwise, a cursor
+   outside the box included, 409 `input-unreadable`), both without a `draft` key. `state` is `unreadable` → 409 `draft-unreadable`
+   with `reason` and `draft`.
+5. The box must be `empty`, in `prompt` mode, with `draft.suggestion` equal to `text`; anything else (text typed, the suggestion
+   changed or gone, a `!` box) → 409 `draft-changed` with `draft` (the page adopts it). Nothing is sent.
+6. Exactly one key, `Tab`, through the keys path (it counts toward the 20 requests per second per pane; a 429 or a tmux error stops
+   here and answers that status and body plus the `draft` of one more fresh read, best effort). A Stop or End interrupt that started
+   meanwhile → 409 `not-idle` with `draft`, `Tab` not sent.
+7. Read back, up to 4 fresh captures 150 ms apart: the box is readable, `state` `text`, `prompt` mode, and its text equals `text`
+   (compared as the draft write compares, `claude-tui.md` §10) → `200 { draft }`. Else → 409 `draft-mismatch` with the `draft` last
+   read (`null` when the box is gone). The `Tab` is never repeated.
+
+Never sent by this route: anything but that one `Tab`. No `Enter` (the page's Send does that, through the keys route), no
+`Escape`, no text. Nothing of the body or of a draft is logged (errors carry the pane id and the code only). The route exists on the
+app tier only; the browser tier has no draft and no suggestion (T51).
+
+Known limit: a suggestion of exactly 200 characters may be cut by `clean()` in the parse; the page then holds the cut text, Claude
+takes the whole suggestion, and the read-back differs, so the answer is 409 `draft-mismatch` although the `Tab` worked. The page
+adopts the screen's `draft` and shows what Claude holds.
 
 ### `POST /api/app/pane/:id/mode` (body ≤ 4 KB, `CAP.small`)
 ```json
@@ -652,8 +697,9 @@ Body `{}`. Steps, in this order:
      whitespace may be plain; anything else (typed text, a `Try "..."` that is not dim, several rows) is a draft, and
      the page says to send or clear it in the terminal.
    - 0.5: the box is read by `src/draft.js` (`claude-tui.md` §10), the reader the capture's `draft` uses, which sharpens the two
-     answers. `input-unreadable` also covers a `History n/m` top rule (an old prompt is showing, the real draft is kept aside)
-     and rows nika does not know, dim text beside real text included. `input-not-empty` also covers a `!` box (message "Claude's
+     answers. `input-unreadable` also covers a `History n/m` top rule (an old prompt is showing, the real draft is kept aside),
+     rows nika does not know (dim text beside real text included) and a box the terminal cursor is not in (N-1: it may be a
+     status line, so there is no box at all). `input-not-empty` also covers a `!` box (message "Claude's
      input is in ! mode"), a pasted block (`[Pasted text #N]`, `[Image #N]`), a box of 14 rows or more and trailing spaces at the
      cursor. An empty box is `❯` and nothing, or `❯` and ghost text (dim, or the grey argument hint after the cursor); the
      reverse-video first character is a tolerance. Enter goes out only when the box reads exactly the typed text on one row,

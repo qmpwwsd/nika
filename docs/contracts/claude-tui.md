@@ -322,9 +322,11 @@ shows every row) when any of these holds:
 | the footer is `! for shell mode` but the box does not start with `!` (that footer is accepted only for a bash box) | §1 |
 | a permission prompt parses on the screen (§2) | redundant with the footer rule; it is the T51 anchor |
 | fewer than two rule rows, or nothing between the last two | no box |
+| the terminal cursor lies outside the rows of the box (not between the two rules) | the input is where the cursor is: a box the cursor is not in may be a user's status line, and no write or Enter may go by it (review finding N-1) |
 | the first box row does not start, after at most 2 spaces, with `❯` or `!` followed by U+00A0 or by nothing but padding | Claude always draws a no-break space after the glyph. A plain space is not Claude's box: a user's status line such as `❯ main` followed by a rule-shaped row would otherwise be taken for it (review finding I-1) |
 
-The slash menu is drawn above the top rule (about 5 rows) and leaves the mode line, so a draft such as `/com` reads as text.
+The slash menu is drawn above the top rule (about 5 rows) and leaves the mode line (checked 2026-11-14, Claude Code 2.1.325, by a
+live look at the open menu), so a draft such as `/com` reads as text and `mode` and `draft` read as usual while the menu is open.
 A box that holds `[Image #N]` or `[Pasted text #N]` is readable but unreadable as a draft (§10.6).
 
 ### 10.2 Rows
@@ -372,22 +374,28 @@ from the start of `a` still counts toward it, else 0, and `wa` = width(`a`) + `l
 | Case | Join |
 |---|---|
 | `b` starts with a space, `a` or `b` is blank, or `wa` > `w` | a newline (a drawn wrap never starts with a space) |
-| `a` is full (`wa` + width of `b`'s first character > `w`) and width(last word of `a`) + width(first word of `b`) > `w` | nothing (a cut word: only a word longer than `w` is cut) |
-| `a` is full otherwise | a space, and `lost` = 1 for `b` when `wa` = `w` |
+| `a` is full (`wa` + width of `b`'s first character > `w`) and width(last word of `a`) + width(first word of `b`) ≤ `w` | a space (a soft wrap), and `lost` = 1 for `b` when `wa` = `w` |
+| `a` is full and the two words together are wider than `w` | a **cut word** (nothing between) when `a` holds no space (one word fills the row) or the junction is a wide character; otherwise the draft is **unreadable** (`layout`, §10.6) |
 | `a` is not full and `wa` + 1 + width(first word of `b`) > `w` | a space (a soft wrap) |
 | otherwise | a newline |
 
-Rows alone cannot always tell a hard newline from a soft wrap, and the text that comes out then differs from what was
-typed. Each of these cases is read wrongly on purpose and ends in a 409 `draft-mismatch` (the page shows the screen's
-text), never in a wrong key:
+The unreadable row is the N-3 finding: a word cut at `w` and two long words with a space between them (whose space Claude
+dropped from the start of the next row) are drawn as exactly the same two rows, and rows alone cannot tell which was typed.
+nika does not guess: it pauses the sync and never writes over the draft. A wide character at the junction is what leaves a row
+short, so there a cut word is the only reading.
+
+Rows alone cannot always tell a hard newline from a soft wrap either, and the text that comes out then differs from what was
+typed. These cases are read as the other thing on purpose and end in a 409 `draft-mismatch`, never in a wrong key:
 
 - a hard newline typed where the next word would not have fitted anyway (it reads as a soft wrap), including a hard line of
   exactly `w` cells followed by a newline;
-- a full row that is one word of exactly `w` followed by a space and a word (the space is lost);
+- a full row that is one word of exactly `w` followed by a space and a word, and the same at a wide junction (read as a cut
+  word: the space is lost);
 - a double space at a wrap (it reads as one);
-- a full row, a space and a word that does not fit behind it (Claude draws an empty row between them; it reads as newlines);
-- a soft wrap between two long words that together are wider than the box, which can read as one cut word, so a space drops out
-  of the text nika shows (narrowed in the parser as a late finding, N-3; the message box still shows exactly what nika would send).
+- a full row, a space and a word that does not fit behind it (Claude draws an empty row between them; it reads as newlines).
+
+The page adopts the screen's text after such a 409, so the next replace writes that text back: one character of the draft is
+really changed (a space, or a line break).
 
 The number of rows a text needs (the 13-row bound of §10.9) uses the same break model.
 
@@ -403,9 +411,17 @@ real character of the last box row.
 | on the last box row, column > `end` | unreadable (`trailing`): spaces typed at the end are invisible, the cursor column shows them |
 | anywhere else, or no cursor | not at the end (a mid-text edit) |
 
-Trailing spaces with the cursor elsewhere cannot be seen; that is accepted. A write also needs the cursor on a row **inside**
-the box that was read (`box.top` < `cursor.y` < `box.bottom`): the input is where the cursor is, and a box the cursor is not in
-may be a status line. Without it a write that would send a key is refused.
+Trailing spaces with the cursor elsewhere cannot be seen; that is accepted. The cursor must also lie on a row **inside** the box
+(`box.top` < `cursor.y` < `box.bottom`): the input is where the cursor is, and a box the cursor is not in may be a status line.
+A capture whose cursor lies outside the parsed box therefore has no box at all (null, §10.1), and End, the commands, the draft
+writer and the suggestion accept all refuse. The writer checks it again before every key. A capture that carries no cursor
+position at all has no box either: the capture-side reader (`readDraft`) returns null. `parseDraft` called without a cursor
+still reads the rows (pure callers and tests).
+
+The cursor stays inside the box while Claude works (checked 2026-11-14, Claude Code 2.1.325, three turns): with the box empty
+the cursor sat at column 2 of the first box row, and with `abc` typed during a turn at column 5, in every sample (8 samples in
+each of two turns and 5 in the third, spinner rows above the box); one frame without a spinner row kept it there too. A busy frame
+with the cursor outside the box was not seen.
 
 ### 10.6 States
 
@@ -413,7 +429,7 @@ may be a status line. Without it a write that would send a key is refused.
 |---|---|
 | `empty` | the joined real text is empty (only ghost text, or nothing) |
 | `text` | otherwise, unless unreadable |
-| `unreadable` | with the first `reason` that applies, in this order: `history` (a `History n/m` top rule), `layout` (a row shape of §10.2, or dim text beside real text), `tall` (14 or more box rows: a 14-row box may be a scrolled window), `pasted` (`[Pasted text #N]`, `[Pasted text #N +K lines]` or `[Image #N]` anywhere in the text or in the dim text, wraps and newlines inside it ignored; a typed literal looks the same, so it fails closed), `trailing` (§10.5) |
+| `unreadable` | with the first `reason` that applies, in this order: `history` (a `History n/m` top rule), `layout` (a row shape of §10.2, dim text beside real text, or a wrap that reads two ways, §10.4), `tall` (14 or more box rows: a 14-row box may be a scrolled window), `pasted` (`[Pasted text #N]`, `[Pasted text #N +K lines]` or `[Image #N]` anywhere in the text or in the dim text, wraps and newlines inside it ignored; a typed literal looks the same, so it fails closed), `trailing` (§10.5) |
 
 An unreadable box is never written over. Its `text` is `''` and it has no `sig`. The `sig` of a readable box is the first 16
 hex characters of sha256 over the state, the mode and the text, so a redraw with other SGR or another cursor keeps it.
@@ -460,7 +476,7 @@ Slash menu: while Claude's slash menu is open, the first `Escape` of a replace o
 `mode-unknown` and nothing is typed; the retry works.
 
 Never sent by the writer: `Enter`, `C-c` (it arms exit and moves the draft to history), `Up` and `Down` (history recall),
-`C-k`, `BTab`, a digit as a key, a second `Escape` on an empty box (Rewind), any key within 40 ms of an `Escape` (its own, or the
+`C-k`, `Tab`, `BTab`, a digit as a key, a second `Escape` on an empty box (Rewind), any key within 40 ms of an `Escape` (its own, or the
 `Escape` of a Stop or End), and any key at all while Stop or End is interrupting the pane. `C-u` is used for one thing only: removing the writer's own probe `i` from an
 empty box.
 
@@ -482,10 +498,37 @@ empty box.
 - Timing (S9): append about 16 ms plus the read-back, vim replace about 130 ms, plain replace about 170 ms, each further chunk
   plus 300 ms.
 
-### 10.10 Not verified
+### 10.10 Prompt suggestion
+
+Claude can show a suggestion for the next prompt in an empty input box (checked 2026-11-14, Claude Code 2.1.321 to 2.1.325, plain
+and vim insert mode, made-up text).
+
+- **Look.** The suggestion is drawn exactly like the `Try "…"` placeholder: dim text (`SGR 2`) right after `❯` and the no-break
+  space, with the cursor staying at column 2, before the ghost. The only differences are the text and the time: the example
+  `Try "…"` shows only until the first prompt of a session is submitted, and a real draft that starts with `Try "` is not dim.
+  nika tells them apart by the text: the draft's `suggestion` is the dim text of an empty box, cut by `clean()` to 200
+  characters, and `null` when it starts with `Try "`. A suggestion that wraps onto a second row is joined; a row that holds only
+  ghost text is not a line of the draft.
+- **When.** It does not appear after trivial turns (two "reply with one word" turns: nothing after 40 s and 45 s). After a turn
+  whose reply invites an answer it appeared 2.4 s after Enter, and after a second turn in another session; in a third check,
+  three turns (one with letters typed during it) produced none. Whether Claude shows one cannot be relied on.
+- **Taking it.** `→` (Right) and `Tab` took the suggestion into the box in plain mode; after that the box holds the text as real
+  text with no SGR, and the cursor is at its end. Not tested live: `→` and `Tab` in vim insert mode, and nika's accept route on
+  a real suggestion (the owner checks it). What `Enter` submits on an empty box that shows a suggestion is not verified either;
+  nika's Send with an empty message box still presses `Enter` alone.
+- **Leaving.** Typing one or two characters, or a paste into the empty box, removes the suggestion; emptying the box again brings
+  it back until a slash command is run (after `/config` it was gone) or a new turn starts.
+- **`Tab` without a suggestion.** On an empty box that shows only the `Try "…"` example (or nothing), `Tab` changes nothing in
+  the box, the footer or the mode; it flashes a hint row above the top rule for about 3 s (`Use opt+t to toggle thinking`
+  replaced a status row). nika never sends `Tab` unless a fresh capture shows the suggestion it is about to take
+  (`api-app.md`, `POST /api/app/pane/:id/suggestion`).
+- **Slash command argument hint.** After `Tab` completes a command word (fg 153) and a space, Claude draws a grey argument hint
+  in fg 246, not dim, after the cursor; typing any character removes it. It is ghost text (§10.3), not a suggestion.
+
+### 10.11 Not verified
 
 - Plain-mode replace and append were exercised against a fake pane only (the Claude of the checking session was in vim mode).
-- A busy pane: whether Claude moves the terminal cursor out of its input box while it works. If it does, an append or a type into
-  an empty box during a turn is refused by the cursor rule (409 `input-unreadable`) until Claude is idle.
-- `→` and `Tab` in vim insert mode, a very long draft that wraps in the middle of a wide character, and `Escape Escape` on an empty
-  box (does it open Rewind, and does it save the draft to history).
+- `→` and `Tab` in vim insert mode, and `Tab` and `Enter` on a real suggestion through nika's accept route and Send (the owner checks
+  them).
+- A very long suggestion (does it wrap or is it cut), a draft that wraps in the middle of a wide character, and `Escape Escape` on
+  an empty box (does it open Rewind, and does it save the draft to history).
