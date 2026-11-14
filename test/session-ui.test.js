@@ -3246,6 +3246,19 @@ describe('W7-T3: the fit chip, the probe and the text scale (markup and styleshe
     assert.match(css, /(^|[\s}])\.term-head\s*\{[^}]*flex-wrap:\s*wrap/);
   });
 
+  // fix round 2, review minor 3: fit-ui.js subtracts the padding of .term from the box; if the stylesheet changes, the pane would be asked for a column or row too many
+  test('(+) the padding fit-ui.js takes off the box is the padding of .term in session.css', () => {
+    const bodies = [...css.matchAll(/(?:^|[\s}])\.term\s*\{([^}]*)\}/g)].map((m) => m[1]);
+    assert.equal(bodies.length, 1, 'one .term rule');
+    const pad = /(?:^|[\s;])padding:\s*(\d+)px\s+(\d+)px\s*;/.exec(bodies[0]);
+    assert.ok(pad, 'padding is "Y px X px" (a different shorthand needs this test taught)');
+    assert.doesNotMatch(bodies[0], /border(?:-width)?:\s*[1-9]/, 'a border on .term would be taken off too');
+    const [padY, padX] = [2 * Number(pad[1]), 2 * Number(pad[2])];
+    // a box of exactly padding + 100 x 50 one-pixel cells holds 100 x 50 cells: one more or less padding in fit-ui.js changes it
+    assert.deepEqual(norm(panelSizeReal({ width: padX + 100, height: padY + 50, cellW: 1, cellH: 1 })), { cols: 100, rows: 50 });
+    assert.deepEqual(norm(panelSizeReal({ width: padX + 99, height: padY + 49, cellW: 1, cellH: 1 })), { cols: 99, rows: 49 });
+  });
+
   test('(+) the probe is hidden, aria-hidden, in .term after the rows, holds 100 zeros, and has the unscaled terminal font', () => {
     const t = tag('fit-probe');
     assert.match(t, /\bclass="fit-probe"/);
@@ -3399,20 +3412,20 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     };
   };
 
-  const NAMES = ['function fitCall(', 'function fitMeasure()', 'function fitScale()', 'function fitResize()', 'function fitCaptured()', 'function renderFit(view)', 'function wireFit()', 'function setGone()'];
+  const NAMES = ['function fitCall(', 'function fitMeasure()', 'function fitScale()', 'function fitResize()', 'function fitCaptured()', 'function renderFit(view)', 'function wireFit()', 'function setGone()', 'function handleCapture(r)'];
   /**
    * The fit functions of session.js with a pane (or none), a terminal box of box.w x box.h CSS px, a glyph cell of cell.w / 100 x cell.h px
    * (the probe is 100 glyphs wide) and the route's replies in order (then FITTED). The box 827 x 562 with an 8 x 18 cell is 100 x 30 cells.
    */
   const rig = ({ pane = '%12', box = { w: 827, h: 562 }, cell = { w: 800, h: 18 }, replies = [], observer = true } = {}) => {
     const clk = fakeClock();
-    const log = { calls: [], said: [], props: [], ro: null, observed: null, events: {}, gone: 0 };
+    const log = { calls: [], said: [], props: [], ro: null, observed: null, events: {}, gone: 0, overlays: [] };
     const term = { clientWidth: box.w, clientHeight: box.h, style: { setProperty: (k, v) => log.props.push([k, v]) } };
     const probe = { getBoundingClientRect: () => ({ width: cell.w, height: cell.h }) };
     const chip = new El('span');
     chip.hidden = true;
     const ctx = {
-      paneId: pane, M: { cols: 0, rows: 0, gone: false, timer: 0 }, FIT: { planner: null, panel: null, scale: 1 },
+      paneId: pane, M: { cols: 0, rows: 0, gone: false, timer: 0, errors: 0, inputOff: false }, FIT: { planner: null, panel: null, scale: 1 },
       $: (id) => ({ term, 'fit-probe': probe, 'fit-chip': chip })[id],
       call: async (path, opts) => { log.calls.push({ path, ...opts }); return replies.length ? replies.shift() : FITTED; },
       announce: (m) => log.said.push(m), h: hReal, icon: iconReal,
@@ -3421,9 +3434,9 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
       ResizeObserver: observer ? class { constructor(cb) { log.ro = cb; } observe(el) { log.observed = el; } } : undefined,
       document: { fonts: { ready: Promise.resolve() } },
       window: { addEventListener: (type, fn) => { log.events[type] = fn; } },
-      DS: { stop() {} }, setLive() {}, setPaneState() {}, setInputEnabled() {}, showOverlay() {},
+      DS: { stop() {} }, setLive() {}, setPaneState() {}, setInputEnabled() {}, showOverlay: (title) => log.overlays.push(title), recovered() {}, serverMessage: () => '',
     };
-    const fns = vm.runInNewContext(`${NAMES.map(fnOf).join('\n')}; ({ fitCall, fitMeasure, fitScale, fitResize, fitCaptured, renderFit, wireFit, setGone })`, ctx);
+    const fns = vm.runInNewContext(`${NAMES.map(fnOf).join('\n')}; ({ fitCall, fitMeasure, fitScale, fitResize, fitCaptured, renderFit, wireFit, setGone, handleCapture })`, ctx);
     return { ...fns, ctx, log, clk, term, chip };
   };
   const calls = (r) => norm(r.log.calls);
@@ -3547,6 +3560,57 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     assert.equal(Object.hasOwn(r.log.calls[1], 'json'), false, 'no body');
     await r.clk.advance(60000);
     assert.equal(r.log.calls.length, 2, 'no heartbeat after the page left');
+  });
+
+  // fix round 2, review minor 4
+  test('(−) a webview without ResizeObserver: wireFit does not throw, watches nothing, and the fit still starts after the first capture', async () => {
+    const r = rig({ observer: false });
+    assert.equal(r.ctx.ResizeObserver, undefined);
+    assert.doesNotThrow(() => r.wireFit());
+    assert.equal(r.log.ro, null);
+    assert.equal(r.log.observed, null);
+    assert.deepEqual(norm(r.ctx.FIT.panel), { cols: 100, rows: 30 }, 'measured once at wire-up');
+    assert.deepEqual(calls(r), []);
+    r.ctx.M.cols = 120;
+    r.ctx.M.rows = 39;
+    r.fitCaptured();
+    await r.clk.advance(0);
+    assert.deepEqual(calls(r), [PUT(100, 30, true)]);
+    await r.clk.advance(5000);
+    assert.deepEqual(calls(r).slice(1), [PUT(100, 30, false)], 'the heartbeat runs without the observer too');
+  });
+
+  // fix round 2, review minor 5: through handleCapture itself, not setGone called by hand
+  test('(+) a capture answered 404 goes through handleCapture to setGone and sends exactly one DELETE; a second 404 and the page leaving send none', async () => {
+    const r = rig();
+    r.wireFit();
+    r.ctx.M.cols = 120;
+    r.ctx.M.rows = 39;
+    r.fitCaptured();
+    await r.clk.advance(0);
+    r.handleCapture({ status: 404, body: { error: 'not-found' } });
+    assert.equal(r.ctx.M.gone, true, 'it really was handleCapture that reached setGone');
+    assert.deepEqual(norm(r.log.overlays), ['Pane %12 is gone'], 'setGone ran whole: the overlay is shown');
+    assert.deepEqual(calls(r), [PUT(100, 30, true), DELETE]);
+    r.handleCapture({ status: 404, body: null });
+    r.log.events.pagehide();
+    await r.clk.advance(60000);
+    assert.deepEqual(calls(r), [PUT(100, 30, true), DELETE], 'exactly one DELETE, and no heartbeat after it');
+    assert.equal(r.clk.pending, 0);
+  });
+
+  test('(−) a capture answered 304, 500 or lost (0) sends no DELETE and keeps the lease', async () => {
+    const r = rig();
+    r.wireFit();
+    r.ctx.M.cols = 120;
+    r.ctx.M.rows = 39;
+    r.fitCaptured();
+    await r.clk.advance(0);
+    r.handleCapture({ status: 304, body: null });
+    r.handleCapture({ status: 500, body: { message: 'x' } });
+    r.handleCapture({ status: 0, body: null });
+    assert.equal(r.ctx.M.gone, false);
+    assert.deepEqual(calls(r), [PUT(100, 30, true)]);
   });
 
   // -- fix round 1: back from the back/forward cache is a new page load

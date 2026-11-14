@@ -91,6 +91,11 @@ export function createFitPlanner(io) {
     clear('debounce');
     clear('beat');
   };
+  const unchip = () => {
+    if (P.key === null) return;
+    P.key = null;
+    io.chip(null);
+  };
   const arm = () => {
     clear('beat');
     P.beat = io.after(() => { P.beat = null; beat(); }, BEAT_MS);
@@ -106,16 +111,18 @@ export function createFitPlanner(io) {
     const want = P.want;
     const gen = P.gen;
     P.busy = true;
-    Promise.resolve(io.send({ cols: want.cols, rows: want.rows, open: !P.opened })).then((r) => settle(gen, want, r), () => settle(gen, want, null));
+    // the executor runs at once, so the request still goes out synchronously; a send that throws is a lost request, not a stuck busy
+    new Promise((resolve) => { resolve(io.send({ cols: want.cols, rows: want.rows, open: !P.opened })); }).then((r) => settle(gen, want, r), () => settle(gen, want, null));
   }
 
   function settle(gen, want, r) {
     if (gen !== P.gen || !P.on) return; // the lease it belonged to is over (closed, stopped or started again)
     P.busy = false;
     const status = r?.status;
-    if (status === 403) {
+    if (status === 403) { // the page has no right to the route: nothing renews the lease any more, so the chip must not claim one
       P.dead = true;
       halt();
+      unchip();
       return;
     }
     if (status !== 200) { // busy, rate limit, tmux failure, a lost request: the next heartbeat asks again
@@ -171,10 +178,7 @@ export function createFitPlanner(io) {
       if (!P.on) return;
       halt();
       io.release();
-      if (P.key !== null) {
-        P.key = null;
-        io.chip(null);
-      }
+      unchip();
     },
   };
 }

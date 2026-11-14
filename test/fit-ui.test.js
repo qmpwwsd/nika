@@ -488,6 +488,61 @@ describe('createFitPlanner: what the answers do (design 8.5, 9; orchestrator rul
     assert.equal(r.clk.pending, 0, 'no timer is left');
   });
 
+  // fix round 2, review minor 1
+  test('(+) a 403 after a fitted answer hides the chip: nothing renews the lease any more, so the header must not say it is fitted', async () => {
+    const r = rig();
+    r.planner.size(100, 30);
+    r.planner.start();
+    await r.answer(OK());
+    assert.deepEqual(r.log.chips.map((v) => v && v.state), ['fitted']);
+    await r.clk.advance(BEAT_MS);
+    await r.answer({ status: 403, body: { error: 'forbidden' } });
+    assert.deepEqual(r.log.chips.map((v) => v && v.state), ['fitted', null]);
+    await r.clk.advance(BEAT_MS * 3);
+    r.planner.close();
+    r.planner.restart();
+    assert.deepEqual(r.log.chips.map((v) => v && v.state), ['fitted', null], 'the chip is told once, and a dead planner never shows it again');
+    assert.equal(r.log.sent.length, 2);
+  });
+
+  test('(−) a 403 as the first answer tells the chip nothing (it was never shown)', async () => {
+    const r = rig();
+    r.planner.size(100, 30);
+    r.planner.start();
+    await r.answer({ status: 403, body: { error: 'forbidden' } });
+    assert.deepEqual(r.log.chips, []);
+  });
+
+  // fix round 2, review minor 2
+  test('(−) a send that throws at once is a lost request: start() does not throw, nothing is stuck busy, the next heartbeat goes out', async () => {
+    const clk = clock();
+    const sent = [];
+    const chips = [];
+    const planner = createFitPlanner({
+      send: (b) => {
+        sent.push(b);
+        if (sent.length === 1) throw new Error('sync boom');
+        return Promise.resolve(OK());
+      },
+      release: () => Promise.resolve({ status: 200, body: null }),
+      after: clk.after,
+      cancel: clk.cancel,
+      chip: (v) => chips.push(v && v.state),
+    });
+    planner.size(100, 30);
+    assert.doesNotThrow(() => planner.start());
+    await flush();
+    planner.size(110, 30); // a resize meanwhile waits like after any refusal
+    await clk.advance(DEBOUNCE_MS);
+    assert.equal(sent.length, 1, 'a lost request is not retried before the heartbeat');
+    await clk.advance(BEAT_MS - DEBOUNCE_MS);
+    assert.equal(sent.length, 2, 'the heartbeat goes out');
+    assert.deepEqual(sent[1], { cols: 110, rows: 30, open: true }, 'nothing was opened by the thrown one: still open: true');
+    assert.deepEqual(chips, ['fitted']);
+    await clk.advance(BEAT_MS);
+    assert.deepEqual(sent.map((b) => b.open), [true, true, false]);
+  });
+
   test('(+) close() sends one release, drops the timers and the waiting size, and hides the chip', async () => {
     const r = rig();
     r.planner.size(100, 30);
