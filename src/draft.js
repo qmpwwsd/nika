@@ -70,6 +70,18 @@ function firstRow(chars) {
 }
 
 /**
+ * Claude pads every row of its screen with real spaces to the pane width (seen live, 2.1.325). The padding is the run of
+ * spaces after the last visible (non-space) character of the row, ghost text included; it is not part of the draft, and it
+ * cannot tell nika how many spaces the user typed (the cursor column does: a cursor past the text is `trailing`). A space
+ * before a ghost run is not padding: `/compact ` keeps the space that Tab typed.
+ */
+function unpad(body) {
+  let n = body.length;
+  while (n > 0 && body[n - 1].ch === ' ') n -= 1;
+  return body.slice(0, n);
+}
+
+/**
  * Marks the characters of a box row that are ghost without being dim: `c.ghost` is 'rev' for the first character in reverse
  * video when everything after it is dim (the cursor drawn over the placeholder; never seen live), 'hint' for an fg-246 run
  * that starts at or after the cursor column on the cursor row (the slash command's argument hint), else null.
@@ -117,8 +129,7 @@ function splitRow(body, start) {
  * Joins the box rows (design 1.4). Claude wraps at the usable width `w` (cols - 4) and drops the space at a soft break. A
  * row `a` continues into `b` without a newline when: `a` is one word cut at exactly `w` (no space in it), joined as is; or
  * `a`, a space and the first word of `b` reach `w` (`>=`: S9's sample wraps 113 + 1 + 2 = 116, so a row stops one column short
- * of `w`; the live threshold is still to be measured), joined with the dropped space unless `a` kept it. A blank row, or a
- * line of only spaces, always breaks. A hard newline typed where the next word would not fit reads as a soft wrap: known, accepted.
+ * of `w`; the live threshold is still to be measured), joined with the dropped space. A blank row always breaks. A hard newline typed where the next word would not fit reads as a soft wrap: known, accepted.
  */
 function joinRows(bodies, w) {
   let text = bodies[0];
@@ -127,9 +138,8 @@ function joinRows(bodies, w) {
     const b = bodies[i];
     let sep = '\n';
     if (a.trim() !== '' && b.trim() !== '') {
-      const t = a.trimEnd();
-      if (width(t) === w && !t.includes(' ') && !b.startsWith(' ')) sep = '';
-      else if (width(t) + 1 + width(/^\S*/.exec(b)[0]) >= w) sep = a.endsWith(' ') ? '' : ' ';
+      if (width(a) === w && !a.includes(' ') && !b.startsWith(' ')) sep = '';
+      else if (width(a) + 1 + width(/^\S*/.exec(b)[0]) >= w) sep = ' ';
     }
     text += sep + b;
   }
@@ -142,12 +152,12 @@ function joinRows(bodies, w) {
  * not a usable number, the width of the lower rule row stands in for it). Returns a Draft:
  *   state     'empty' | 'text' | 'unreadable'
  *   mode      'prompt' | 'bash'   (the glyph: the prompt character, or `!`)
- *   text      the draft, rows joined, ghost text removed; '' for empty and unreadable
+ *   text      the draft, rows joined, ghost text and the padding Claude adds to every row removed; '' for empty and unreadable
  *   sig       16 hex of sha256(`${state}\n${mode}\n${text}`); null when unreadable
  *   reason    unreadable only: 'history' | 'layout' | 'tall' | 'pasted' | 'trailing' (checked in this order; layout also means
  *             dim text next to real text, see dimIsTrailing)
  *   box       { top, bottom }: the row indexes of the two rule rows
- *   cursorAtEnd   the cursor sits right after the last real character of the last box row
+ *   cursorAtEnd   the cursor sits right after the last visible real character of the last box row (padding spaces do not count)
  *   suggestion    dim text of an empty box (not the `Try "..."` example), clean() at most 200; else null
  * Null: the footer is not a known mode line (a dialog, a menu, a prompt), a permission prompt parses, fewer than two rule rows,
  * nothing between the last two, or the first box row does not start with the prompt glyph or `!` and a space.
@@ -187,6 +197,7 @@ export function parseDraft(rows, cursor, cols) {
       else return bad('layout');
       start = 2;
     }
+    body = unpad(body);
     markRow(body, i === top + 1, cur !== null && cur.y === i ? cur : null);
     infos.push({ row: i, body, start });
   }
@@ -207,7 +218,7 @@ export function parseDraft(rows, cursor, cols) {
   let cursorAtEnd = false;
   if (cur !== null && cur.y === bottom - 1) {
     const end = parts.at(-1).end;
-    if (cur.x > end) return bad('trailing'); // trailing spaces are invisible in a capture; the cursor column shows them
+    if (cur.x > end) return bad('trailing'); // spaces the user typed at the end look like Claude's padding; the cursor column shows them
     cursorAtEnd = cur.x === end; // one column left is vim NORMAL on the last character, false like any mid-text cursor
   }
 

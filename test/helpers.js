@@ -178,8 +178,9 @@ const cells = (text) => [...text].reduce((n, ch) => n + cellWidth(ch.codePointAt
  *   footer  replaces the mode line text after the optional `-- INSERT --`
  *   cursor  undefined: the cursor sits right after the last row's real text (spans that are not dim and not fg 246);
  *           null: no cursor; { x, y, dx }: absolute column / row, and dx an offset from the default column
+ *   pad     true: pad EVERY row with plain spaces to `cols`, as Claude draws its screen (seen live on 2.1.325). Default false
  */
-export function boxRows({ cols = 120, lines = [''], mode = 'prompt', insert = false, label = null, cursor, ghost = null, hint = null, footer } = {}) {
+export function boxRows({ cols = 120, lines = [''], mode = 'prompt', insert = false, label = null, cursor, ghost = null, hint = null, footer, pad = false } = {}) {
   const bash = mode === 'bash';
   const dashes = (n) => '\u2500'.repeat(n);
   const rule = (text) => [span(text, { fg: bash ? 211 : 244 })];
@@ -193,7 +194,8 @@ export function boxRows({ cols = 120, lines = [''], mode = 'prompt', insert = fa
   const above = hint === null ? [] : [[span(`  ${hint}`, { fg: 246 })]];
   const text = footer ?? (bash ? '! for shell mode' : '\u23f5\u23f5 auto mode on (shift+tab to cycle)');
   const modeLine = [span('  '), ...(insert ? [span('-- INSERT --', { fg: 246 }), span(' ')] : []), span(text, { fg: bash ? 211 : 220 })];
-  const rows = [...above, top, ...box, rule(dashes(cols)), [span('  acme-api  master')], modeLine];
+  const padded = (row) => { const n = cols - cells(row.map((sp) => sp.t).join('')); return pad && n > 0 ? [...row, span(' '.repeat(n))] : row; };
+  const rows = [...above, top, ...box, rule(dashes(cols)), [span('  acme-api  master')], modeLine].map(padded);
   const real = items.at(-1).filter((sp) => !sp.s.d && sp.s.fg !== 246).map((sp) => sp.t).join('');
   const where = cursor === null ? null : {
     x: cursor?.x ?? 2 + cells(real) + (cursor?.dx ?? 0),

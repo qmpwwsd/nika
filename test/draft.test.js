@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import { parseDraft, RULE_ROW, HISTORY_LABEL, normDraft, sameDraft, inEnvelope, chunks } from '../src/draft.js';
+import { rowText } from '../src/mode.js';
 import { boxRows, span } from './helpers.js';
 
 // Synthetic screens only (acme-api, web-shop). The layout follows docs/contracts/claude-tui.md and spike S9 (Claude Code 2.1.321):
@@ -11,10 +12,16 @@ const NB = '\u00a0';
 const PROMPT = '\u276f';
 const W = 116; // usable text width at 120 columns: cols - 4
 
-/** boxRows(...) read with parseDraft the way the capture route will (rows, cursor, cols). */
+/**
+ * boxRows(...) read with parseDraft the way the capture route will (rows, cursor, cols). Claude pads every row with real spaces
+ * to the pane width (seen live, 2.1.325), so every fixture is read twice, as drawn and padded, and both must give one Draft.
+ */
 const read = (opts) => {
   const s = boxRows(opts);
-  return parseDraft(s.rows, s.cursor, s.cols);
+  const draft = parseDraft(s.rows, s.cursor, s.cols);
+  const p = boxRows({ ...opts, pad: true });
+  assert.deepEqual(parseDraft(p.rows, p.cursor, p.cols), draft, 'the same screen padded with spaces to the width reads the same');
+  return draft;
 };
 const sigOf = (state, mode, text) => createHash('sha256').update(`${state}\n${mode}\n${text}`).digest('hex').slice(0, 16);
 const WORDS = 'alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november oscar papa quebec romeo sierra tango uniform victor whiskey xray yankee zulu'.split(' ');
@@ -96,7 +103,7 @@ describe('parseDraft: readable text', () => {
     assert.equal(d.text, text);
   });
 
-  test('(+) a break space that stays at the end of a row (a capture with -N) is not doubled', () => {
+  test('(+) a space at the end of a row (a break space a capture keeps, or padding) is not text and not doubled', () => {
     const a = `${'a'.repeat(19)} ${'b'.repeat(15)} `; // 36 characters with the break space
     const d = read({ cols: 40, lines: [a, 'ccccc dd'] });
     assert.equal(d.text, `${'a'.repeat(19)} ${'b'.repeat(15)} ccccc dd`);
@@ -117,12 +124,15 @@ describe('parseDraft: readable text', () => {
     assert.equal(read({ lines: ['', 'second'] }).text, '\nsecond'); // a leading one
   });
 
-  test('(+) leading spaces, double spaces and trailing spaces are kept', () => {
+  test('(+) leading and double spaces are kept; trailing spaces are padding, unless the cursor is past them', () => {
     assert.equal(read({ lines: ['  indented  and  double'] }).text, '  indented  and  double');
-    const d = read({ lines: ['abc   '] }); // a capture that keeps trailing spaces
-    assert.equal(d.text, 'abc   ');
-    assert.equal(d.state, 'text');
-    assert.equal(d.cursorAtEnd, true);
+    const padding = read({ lines: ['abc   '], cursor: { x: 5 } }); // the cursor is right after the c: the spaces are Claude's padding
+    assert.equal(padding.text, 'abc');
+    assert.equal(padding.state, 'text');
+    assert.equal(padding.cursorAtEnd, true);
+    const typed = read({ lines: ['abc   '] }); // the cursor is three columns further: the user typed the spaces
+    assert.equal(typed.state, 'unreadable');
+    assert.equal(typed.reason, 'trailing');
   });
 
   test('(+) unicode: accents, a check mark, wide East Asian characters and an emoji', () => {
@@ -244,8 +254,9 @@ describe('parseDraft: empty box and ghost text', () => {
     const s = boxRows({ lines: [''] });
     s.rows[1] = [span(PROMPT)];
     assert.equal(parseDraft(s.rows, s.cursor, s.cols).state, 'empty');
-    assert.equal(read({ lines: ['   '] }).state, 'empty');
-    assert.equal(read({ lines: ['   '] }).text, '');
+    assert.equal(read({ lines: ['   '], cursor: { x: 2 } }).state, 'empty'); // spaces are padding while the cursor stays at column 2
+    assert.equal(read({ lines: ['   '], cursor: { x: 2 } }).text, '');
+    assert.equal(read({ lines: ['   '] }).reason, 'trailing'); // the cursor after three typed spaces
   });
 
   test('(+) the dim `Try "..."` placeholder is empty and is not a suggestion', () => {
@@ -485,7 +496,67 @@ describe('parseDraft: cursor and sig', () => {
     assert.equal(styled.text, plain.text);
     assert.equal(styled.sig, plain.sig);
     assert.notEqual(read({ lines: ['fix the builds'] }).sig, plain.sig);
-    assert.notEqual(read({ lines: ['fix the build '] }).sig, plain.sig); // raw text, not normalised
+    assert.notEqual(read({ lines: ['fix  the build'] }).sig, plain.sig); // raw text, not normalised
+  });
+});
+
+describe('parseDraft: rows padded with spaces to the pane width (seen live, Claude 2.1.325)', () => {
+  test('(+) the padded helper pads every row to the width; the default does not', () => {
+    const plain = boxRows({ lines: ['hello world'] });
+    assert.equal(rowText(plain.rows[1]).length, 13);
+    const padded = boxRows({ lines: ['hello world'], pad: true });
+    for (const row of padded.rows) assert.equal(rowText(row).length, 120);
+    assert.deepEqual(padded.cursor, plain.cursor); // the cursor does not move
+  });
+
+  test('(+) live one-line draft: one span `glyph hello world` plus spaces to 120 columns, cursor 13: text without the padding, cursor at the end', () => {
+    const s = boxRows({ lines: ['hello world'], pad: true });
+    s.rows[1] = [span(`${PROMPT}${NB}hello world${' '.repeat(120 - 13)}`)];
+    assert.equal(rowText(s.rows[1]).length, 120);
+    assert.deepEqual(s.cursor, { x: 13, y: 1, visible: true });
+    const d = parseDraft(s.rows, s.cursor, s.cols);
+    assert.equal(d.state, 'text');
+    assert.equal(d.text, 'hello world');
+    assert.equal(d.cursorAtEnd, true);
+    assert.equal(d.sig, sigOf('text', 'prompt', 'hello world'));
+  });
+
+  test('(+) live empty box: the dim placeholder plus padding to 120 columns is empty, cursor 2 is at the end', () => {
+    const s = boxRows({ lines: [''], ghost: 'Try "fix typecheck errors"', pad: true });
+    assert.equal(rowText(s.rows[1]).length, 120);
+    const d = parseDraft(s.rows, s.cursor, s.cols);
+    assert.equal(d.state, 'empty');
+    assert.equal(d.text, '');
+    assert.equal(d.cursorAtEnd, true);
+    assert.equal(d.suggestion, null);
+    const yes = read({ lines: [''], ghost: 'yes', pad: true });
+    assert.equal(yes.suggestion, 'yes');
+    assert.equal(yes.cursorAtEnd, true);
+  });
+
+  test('(+) padding behind a completion ghost or an argument hint is dropped; the user\'s own space before a hint stays', () => {
+    const completion = read({ lines: ['hello'], ghost: ' world', pad: true });
+    assert.equal(completion.text, 'hello');
+    assert.equal(completion.cursorAtEnd, true);
+    const slash = read({ lines: [[span('/compact', { fg: 153 }), span(' '), span('<optional custom summarization instructions>', { fg: 246 })]], pad: true });
+    assert.equal(slash.text, '/compact ');
+    assert.equal(slash.cursorAtEnd, true);
+  });
+
+  test('(+) padding on every row of a wrapped, multi-line draft with a blank line', () => {
+    const text = sentence(212);
+    assert.equal(read({ lines: wrap(text, W), pad: true }).text, text);
+    assert.equal(read({ lines: ['first', '', 'third'], pad: true }).text, 'first\n\nthird');
+    assert.equal(read({ lines: ['first', ''], pad: true }).text, 'first\n');
+    assert.equal(read({ lines: ['first', ''], pad: true }).cursorAtEnd, true); // the cursor sits on the blank last row
+  });
+
+  test('(−) typed trailing spaces are still seen through the cursor, padded or not: trailing', () => {
+    const d = read({ lines: ['abc'], cursor: { dx: 3 }, pad: true });
+    assert.equal(d.state, 'unreadable');
+    assert.equal(d.reason, 'trailing');
+    assert.equal(read({ lines: [''], cursor: { x: 5 }, pad: true }).reason, 'trailing');
+    assert.equal(read({ lines: ['abc'], cursor: { dx: 0 }, pad: true }).state, 'text');
   });
 });
 
