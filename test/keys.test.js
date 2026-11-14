@@ -52,6 +52,29 @@ describe('createKeys.send: text and named keys', () => {
     }
   });
 
+  test('(+) the scroll keys C-Home and C-End are named keys, sent as one send-keys call each', async () => {
+    assert.ok(KEY_NAME.has('C-Home') && KEY_NAME.has('C-End'));
+    const exec = fakeTmux();
+    const r = await make(exec).send('%3', { keys: ['C-Home', 'C-End'] });
+    assert.deepEqual(r, { status: 200, body: { sent: { text: 0, paste: 0, keys: 2 } } });
+    assert.deepEqual(exec.calls, [
+      ['/opt/x/tmux', '-u', 'send-keys', '-t', '%3', '--', 'C-Home'],
+      ['/opt/x/tmux', '-u', 'send-keys', '-t', '%3', '--', 'C-End'],
+    ]);
+  });
+
+  test('(−) near-misses of the scroll keys and the exit key are refused, nothing is sent', async () => {
+    const exec = fakeTmux();
+    const k = make(exec);
+    for (const key of ['C-d', 'C-Home ', ' C-End', 'C-Home\n', 'c-home', 'C-end', 'C-PPage', 'M-Home', 'S-Home', 'C-Home;C-End', 'C-Home C-End']) {
+      t += 1000;
+      const r = await k.send('%1', { keys: [key] });
+      assert.equal(r.status, 400, JSON.stringify(key));
+      assert.equal(r.body.error, 'invalid');
+    }
+    assert.equal(exec.calls.length, 0);
+  });
+
   test('(+) exactly 8 keys and exactly 1024 characters are allowed; null fields count as absent', async () => {
     const exec = fakeTmux();
     const k = make(exec);

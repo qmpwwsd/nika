@@ -1,6 +1,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseCapture, createMirror } from '../src/mirror.js';
+import { pillShown } from '../src/scroll.js';
 
 const ESC = '\u001b';
 const BEL = '\u0007';
@@ -192,7 +193,7 @@ describe('parseCapture: hostile input (T9)', () => {
 
 describe('createMirror', () => {
   /** Fake tmux: `capture` is the pane text, `info` the display-message line; calls are recorded. */
-  function fakeTmux({ capture = 'hello\n', info = '80\t24\t5\t3\t1', fail } = {}) {
+  function fakeTmux({ capture = 'hello\n', info = '80\t24\t5\t3\t1\t0', fail } = {}) {
     const calls = [];
     const pending = [];
     const exec = (cmd, args) => {
@@ -219,16 +220,17 @@ describe('createMirror', () => {
     assert.deepEqual(r.body.rows, [[span('hi', sty({ b: true }))], [span('there')]]);
     assert.equal(r.body.cols, 80);
     assert.deepEqual(r.body.cursor, { x: 5, y: 3, visible: true });
+    assert.deepEqual([r.body.alt, r.body.scrolled], [false, false]);
     assert.match(r.body.etag, /^[0-9a-f]{32}$/);
     assert.equal(r.etag, r.body.etag);
     assert.deepEqual(exec.calls, [
       ['/opt/x/tmux', '-u', 'capture-pane', '-p', '-e', '-N', '-t', '%12'],
-      ['/opt/x/tmux', '-u', 'display-message', '-p', '-t', '%12', '-F', '#{pane_width}\t#{pane_height}\t#{cursor_x}\t#{cursor_y}\t#{cursor_flag}'],
+      ['/opt/x/tmux', '-u', 'display-message', '-p', '-t', '%12', '-F', '#{pane_width}\t#{pane_height}\t#{cursor_x}\t#{cursor_y}\t#{cursor_flag}\t#{alternate_on}'],
     ]);
   });
 
   test('(+) a hidden cursor is reported as not visible', async () => {
-    const exec = fakeTmux({ info: '100\t30\t0\t0\t0' });
+    const exec = fakeTmux({ info: '100\t30\t0\t0\t0\t0' });
     const p = createMirror({ exec, now: clock }).capture('%1');
     await tick(exec);
     const r = await p;
@@ -347,8 +349,9 @@ describe('createMirror', () => {
     const base = await etagFor({});
     assert.equal(await etagFor({}), base);
     assert.notEqual(await etagFor({ capture: 'hello!\n' }), base);
-    assert.notEqual(await etagFor({ info: '80\t24\t6\t3\t1' }), base);
-    assert.notEqual(await etagFor({ info: '81\t24\t5\t3\t1' }), base);
+    assert.notEqual(await etagFor({ info: '80\t24\t6\t3\t1\t0' }), base);
+    assert.notEqual(await etagFor({ info: '81\t24\t5\t3\t1\t0' }), base);
+    assert.notEqual(await etagFor({ info: '80\t24\t5\t3\t1\t1' }), base, 'only alt flipped');
   });
 
   test('(+) a clock that is not a function falls back to Date.now', async () => {
@@ -417,5 +420,47 @@ describe('createMirror', () => {
     assert.equal(r.status, 200);
     assert.equal(r.body.cols, 80);
     assert.deepEqual(r.body.cursor, { x: 0, y: 0, visible: false });
+    assert.deepEqual([r.body.alt, r.body.scrolled], [false, false], 'no alternate_on field: no full-screen view');
+  });
+
+  // Claude's scrolled-up pill as the real capture delivers it (spike S5): centred, fg 231 on bg 237. Symbols are escapes.
+  const pillRow = (words) => `        ${ESC}[38;5;231m${ESC}[48;5;237m ${words} ${ESC}[39m${ESC}[49m\n`;
+  const PILL = pillRow('Jump to bottom: fn+\u2193 to scroll');
+  const captured = async (opts) => {
+    t += 1000;
+    const exec = fakeTmux(opts);
+    const p = createMirror({ exec, now: clock }).capture('%8');
+    await tick(exec);
+    return p;
+  };
+
+  test('(+) alt is true only for alternate_on = 1', async () => {
+    assert.equal((await captured({ info: '80\t24\t5\t3\t1\t1' })).body.alt, true);
+    for (const info of ['80\t24\t5\t3\t1\t0', '80\t24\t5\t3\t1\t', '80\t24\t5\t3\t1\t2', '80\t24\t5\t3\t1\ttrue', '80\t24\t5\t3\t1']) {
+      assert.equal((await captured({ info })).body.alt, false, JSON.stringify(info));
+    }
+  });
+
+  test('(+) scrolled is true with alt and Claude\'s pill on screen, for both pill texts', async () => {
+    const on = '80\t24\t5\t3\t1\t1';
+    const shown = await captured({ capture: `old output\n${PILL}input\n`, info: on });
+    assert.deepEqual([shown.body.alt, shown.body.scrolled], [true, true]);
+    assert.equal((await captured({ capture: pillRow('Jump to bottom (click) \u2193'), info: on })).body.scrolled, true);
+    assert.equal((await captured({ capture: 'old output\ninput\n', info: on })).body.scrolled, false, 'alt but no pill');
+  });
+
+  test('(−) scrolled is false without alt even when the pill is on screen, and for a pill without its style', async () => {
+    const off = '80\t24\t5\t3\t1\t0';
+    assert.equal((await captured({ capture: PILL, info: off })).body.scrolled, false);
+    assert.equal((await captured({ capture: 'Jump to bottom: fn+\u2193 to scroll\n', info: '80\t24\t5\t3\t1\t1' })).body.scrolled, false, 'plain text');
+  });
+
+  test('(+) the etag changes when only alt flips; the pill row stays in the rows as drawn', async () => {
+    const a = await captured({ capture: PILL, info: '80\t24\t5\t3\t1\t1' });
+    const b = await captured({ capture: PILL, info: '80\t24\t5\t3\t1\t0' });
+    assert.notEqual(a.etag, b.etag);
+    assert.equal(a.etag, a.body.etag);
+    assert.equal(a.body.rows.length, 1, 'the pill row is kept in the rows as drawn');
+    assert.equal(pillShown(a.body.rows), true);
   });
 });

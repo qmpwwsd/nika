@@ -5,6 +5,7 @@
 // and span count whatever the input.
 import { createHash } from 'node:crypto';
 import { PANE_ID } from './ids.js';
+import { pillShown } from './scroll.js';
 import { tmuxFailure } from './tmuxerr.js';
 
 const MAX_ROWS = 2000;
@@ -12,7 +13,7 @@ const MAX_SPANS = 20000; // beyond this, style changes are ignored and text coal
 const MAX_COLS = 1000;
 const MAX_CSI = 128; // parameter + intermediate bytes of one CSI
 const TTL_MS = 250;
-const SIZE_FORMAT = '#{pane_width}\t#{pane_height}\t#{cursor_x}\t#{cursor_y}\t#{cursor_flag}';
+const SIZE_FORMAT = '#{pane_width}\t#{pane_height}\t#{cursor_x}\t#{cursor_y}\t#{cursor_flag}\t#{alternate_on}';
 
 const fresh = () => ({ b: false, d: false, i: false, u: false, r: false, fg: null, bg: null });
 const sameColour = (a, c) => a === c || (Array.isArray(a) && Array.isArray(c) && a.every((v, k) => v === c[k]));
@@ -175,6 +176,7 @@ export function matches(header, etag) {
 /**
  * Pane mirror with a 250 ms cache per pane and one tmux capture in flight per pane (others wait for it).
  * `now` is a () => ms clock. capture(pane, ifNoneMatch, { fresh }) → { status, body, etag }; status 304 has body null.
+ * A 200 body is { cols, rows, cursor, alt, scrolled, etag }; `alt` and `scrolled` (0.5) tell whether Claude's full-screen view is on and scrolled up.
  * `fresh: true` skips the cache and starts its own tmux capture (it refreshes the cache), for the control actions.
  * The caller has already checked that the pane may be mirrored; the pane id is still validated here.
  */
@@ -189,12 +191,16 @@ export function createMirror({ exec, tmuxBin = 'tmux', now = Date.now } = {}) {
         exec(tmuxBin, ['-u', 'capture-pane', '-p', '-e', '-N', '-t', pane]),
         exec(tmuxBin, ['-u', 'display-message', '-p', '-t', pane, '-F', SIZE_FORMAT]),
       ]);
-      const [w, , x, y, flag] = String(info.stdout).split('\n')[0].split('\t');
+      const [w, , x, y, flag, altFlag] = String(info.stdout).split('\n')[0].split('\t');
       const cols = intOf(w) || 80;
       const cursor = { x: intOf(x) ?? 0, y: intOf(y) ?? 0, visible: flag === '1' };
       const rows = parseCapture(String(cap.stdout), cols);
-      const etag = createHash('sha256').update(JSON.stringify([cols, rows, cursor])).digest('hex').slice(0, 32);
-      return { status: 200, body: { cols, rows, cursor, etag }, etag };
+      // alt: Claude draws in tmux's alternate screen (its full-screen view); scrolled: its pill is on screen. Display facts; the scroll route (src/scroll.js) re-checks.
+      const alt = altFlag === '1';
+      const scrolled = alt && pillShown(rows);
+      // scrolled follows from rows and alt, so the hash needs only these
+      const etag = createHash('sha256').update(JSON.stringify([cols, rows, cursor, alt])).digest('hex').slice(0, 32);
+      return { status: 200, body: { cols, rows, cursor, alt, scrolled, etag }, etag };
     } catch (err) {
       return tmuxFailure(err);
     }
