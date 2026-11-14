@@ -30,7 +30,7 @@ const hello = (secret = SECRET, extra = {}) => `${JSON.stringify({ type: 'hello'
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** serveApp on PassThrough streams with its own temp config/state dirs. */
-function harness({ tty = false, helloMs = 2000, intervalMs = 60_000, secret = SECRET, appCopy, exec = fakeExec(), releaseMs } = {}) {
+function harness({ tty = false, helloMs = 2000, intervalMs = 60_000, secret = SECRET, appCopy, exec = fakeExec(), releaseMs, attachments } = {}) {
   counter += 1;
   const base = path.join(ROOT, `h${counter}`);
   fs.mkdirSync(path.join(base, 'cfg'), { recursive: true });
@@ -52,7 +52,7 @@ function harness({ tty = false, helloMs = 2000, intervalMs = 60_000, secret = SE
   stderr.on('data', (c) => { errText += c; });
   // the app copy never looks at the real ~/Applications or the real Homebrew folders here
   const copy = { home: path.join(base, 'home'), brewApps: [], ...appCopy };
-  const done = serveApp({ config: fx.config, env, stdin, stdout, stderr, exec, now: () => NOW, intervalMs, helloMs, appCopy: copy, ...(releaseMs ? { releaseMs } : {}) });
+  const done = serveApp({ config: fx.config, env, stdin, stdout, stderr, exec, now: () => NOW, intervalMs, helloMs, appCopy: copy, ...(releaseMs ? { releaseMs } : {}), ...(attachments ? { attachments } : {}) });
   const h = {
     env, stdin, secret, base, done,
     lines,
@@ -749,5 +749,114 @@ describe('the fit: recover() at start, releaseAll() at finish (design W7 section
     gate?.();
     assert.equal(await h.done, 0);
     assert.equal(h.lines().some((l) => l.type === 'ready'), false);
+  });
+});
+
+describe('the attachment store: started after ready, stopped at finish (0.5, W2)', () => {
+  const KEY = 'a1b2c3d4e5f60718';
+  const DAY = 24 * 60 * 60 * 1000;
+  /** Plants two synthetic attachment files in the harness's own state dir: one older than the default 7 days, one younger. */
+  function plantFiles(h) {
+    const root = path.join(h.env.XDG_STATE_HOME, 'nika', 'attachments');
+    const dir = path.join(root, KEY);
+    fs.mkdirSync(dir, { recursive: true });
+    for (const d of [path.join(h.env.XDG_STATE_HOME, 'nika'), root, dir]) fs.chmodSync(d, 0o700);
+    const old = path.join(dir, '1111111111111111.png');
+    const young = path.join(dir, '2222222222222222.png');
+    for (const [file, age] of [[old, 8 * DAY], [young, 1 * DAY]]) {
+      fs.writeFileSync(file, 'synthetic', { mode: 0o600 });
+      fs.utimesSync(file, (NOW - age) / 1000, (NOW - age) / 1000);
+    }
+    return { old, young, dir };
+  }
+  const gone = async (file, ms = 3000) => {
+    for (let t = 0; t < ms; t += 20) {
+      if (!fs.existsSync(file)) return true;
+      await sleep(20);
+    }
+    return false;
+  };
+  /** A timer seam that records its calls and never fires. */
+  const timerSeam = () => {
+    const seam = { set: [], cleared: [] };
+    seam.setTimer = (fn, ms) => { const handle = { unref() {} }; seam.set.push([ms, handle]); return handle; };
+    seam.clearTimer = (handle) => { seam.cleared.push(handle); };
+    return seam;
+  };
+
+  test('(+) after the ready line the store prunes: a file older than keepDays is removed, a younger one stays', async () => {
+    const h = harness({ attachments: timerSeam() });
+    const { old, young } = plantFiles(h);
+    await sleep(60);
+    assert.deepEqual([fs.existsSync(old), fs.existsSync(young)], [true, true], 'nothing is pruned before the handshake');
+    await h.up();
+    assert.equal(await gone(old), true, 'the old file was pruned');
+    assert.equal(fs.existsSync(young), true);
+    await h.close();
+    h.noSecret();
+  });
+
+  test('(+) one daily timer (24 h) is set after ready, and finish() stops that very timer', async () => {
+    const seam = timerSeam();
+    const h = harness({ attachments: seam });
+    assert.deepEqual(seam.set, [], 'no timer before the hello');
+    await h.up();
+    assert.equal(seam.set.length, 1);
+    assert.equal(seam.set[0][0], DAY);
+    assert.deepEqual(seam.cleared, [], 'running: nothing stopped');
+    assert.equal(await h.close(), 0);
+    assert.equal(seam.cleared.length, 1);
+    assert.equal(seam.cleared[0], seam.set[0][1]);
+  });
+
+  test('(−) a refused start (a bad hello, or no hello in time) never starts the store: no timer, no pruning', async () => {
+    const seam = timerSeam();
+    const bad = harness({ attachments: seam });
+    const { old } = plantFiles(bad);
+    bad.send(hello('x'.repeat(10)));
+    assert.equal(await bad.done, 2);
+    const late = harness({ attachments: seam, helloMs: 80 });
+    assert.equal(await late.done, 2);
+    await sleep(60);
+    assert.deepEqual(seam.set, []);
+    assert.equal(fs.existsSync(old), true);
+  });
+
+  test('(−) stdin closing while the server is still starting leaves no timer running', async () => {
+    const seam = timerSeam();
+    const tmux = fakeExec();
+    const h = harness({ attachments: seam, exec: tmux });
+    h.send(hello());
+    h.stdin.end();
+    assert.equal(await h.done, 0);
+    assert.equal(seam.set.length, seam.cleared.length, 'every timer that was set was cleared');
+    for (const [, handle] of seam.set) assert.ok(seam.cleared.includes(handle));
+  });
+
+  test('(+) the store\'s log goes to stderr as `nika: attachments: <code>` lines only: a state dir whose attachments folder is a symlink is refused and the line has no path', async () => {
+    const h = harness({ attachments: timerSeam() });
+    const target = path.join(h.base, 'elsewhere');
+    fs.mkdirSync(target, { recursive: true });
+    const stateRoot = path.join(h.env.XDG_STATE_HOME, 'nika');
+    fs.mkdirSync(stateRoot, { recursive: true, mode: 0o700 });
+    fs.chmodSync(stateRoot, 0o700);
+    fs.symlinkSync(target, path.join(stateRoot, 'attachments'));
+    await h.up();
+    for (let t = 0; t < 3000 && !/nika: attachments: /.test(h.err()); t += 20) await sleep(20);
+    const lines = h.err().split('\n').filter((l) => l.includes('attachments'));
+    assert.ok(lines.length >= 1, `a log line: ${JSON.stringify(h.err())}`);
+    for (const l of lines) assert.match(l, /^nika: attachments: [A-Z0-9_]{1,20}$/);
+    assert.equal(h.err().includes(h.base), false, 'no path of this machine on stderr');
+    await h.close();
+  });
+
+  test('(+) the app server serves the attachment routes with this store: a delete of an unknown id is { removed: false } and logs nothing; the routes are on the app tier only (no secret: 403)', async () => {
+    const h = harness({ attachments: timerSeam() });
+    await h.up();
+    const r = await h.call('DELETE', '/api/app/pane/%256/attachments/0123456789abcdef');
+    assert.deepEqual([r.status, r.body], [200, { removed: false }]);
+    assert.equal((await h.call('DELETE', '/api/app/pane/%256/attachments/0123456789abcdef', { headers: { 'x-nika-app': OTHER } })).status, 403);
+    assert.equal(h.err().includes('attachments'), false, 'no store error: the store is really wired in');
+    await h.close();
   });
 });

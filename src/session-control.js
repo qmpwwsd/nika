@@ -831,5 +831,8 @@ export function createSessionControl({
     });
   }
 
-  return { switchMode, endSession, runCommand, answer, stop, writeDraft, acceptSuggestion, withPaneLock };
+  /** True while no key may go: a Stop or End interrupt runs, or its Escape went out less than 40 ms ago (N-2). The scroll route (src/scroll.js) checks it inside the lock. */
+  const keyGap = (pane) => interrupting.has(pane) || escapeGap(pane);
+
+  return { switchMode, endSession, runCommand, answer, stop, writeDraft, acceptSuggestion, withPaneLock, keyGap };
 }

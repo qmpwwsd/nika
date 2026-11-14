@@ -2,7 +2,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
-import { parseDraft, RULE_ROW, HISTORY_LABEL, normDraft, sameDraft, inEnvelope, chunks } from '../src/draft.js';
+import { parseDraft, boxSquash, RULE_ROW, HISTORY_LABEL, normDraft, sameDraft, inEnvelope, chunks } from '../src/draft.js';
 import { rowText } from '../src/mode.js';
 import { readDraft } from '../src/session-control.js';
 import { boxRows, span, subagentRows } from './helpers.js';
@@ -1336,5 +1336,95 @@ describe('source', () => {
     const src = fs.readFileSync(new URL('../src/session-control.js', import.meta.url), 'utf8');
     assert.equal(/^const RULE_ROW\b/m.test(src), false);
     assert.match(src, /import \{[^}]*\bRULE_ROW\b[^}]*\} from '\.\/draft\.js'/);
+  });
+});
+
+describe('boxSquash (0.5, W2): what the box really holds, whitespace removed', () => {
+  const dim = (t) => span(t, { d: true });
+  const squashOf = (opts) => { const s = boxRows(opts); return boxSquash(s.rows, s.cursor, s.cols); };
+  const drawn = (opts) => { const s = boxRows(opts); return { s, out: boxSquash(s.rows, s.cursor, s.cols) }; };
+  const SURVEY = ['● How is Claude doing this session? (optional)', '  1: Bad    2: Fine    3: Good    0: Dismiss'];
+
+  test('(+) a text box: the draft is exactly parseDraft\'s and the squash is its text without whitespace', () => {
+    const { s, out } = drawn({ lines: ['look at these'] });
+    assert.deepEqual(out.draft, parseDraft(s.rows, s.cursor, s.cols));
+    assert.equal(out.squash, 'lookatthese');
+    assert.equal(squashOf({ lines: ['a\tb  c'] }).squash, 'abc');
+  });
+
+  test('(+) an empty box and a box that shows only the placeholder or a suggestion: the squash is empty (ghost text never counts)', () => {
+    assert.equal(squashOf({ lines: [''] }).squash, '');
+    assert.equal(squashOf({ lines: [''], ghost: 'Try "fix lint errors"' }).squash, '');
+    assert.equal(squashOf({ lines: [''], ghost: 'run the tests' }).squash, '');
+    const withGhost = squashOf({ lines: ['hello'], ghost: ' world' });
+    assert.equal(withGhost.squash, 'hello', 'a completion ghost after the cursor is not text');
+  });
+
+  test('(+) a [Image #1] box: the squash is returned although the draft is unreadable: pasted', () => {
+    const out = squashOf({ lines: ['look at these[Image #1] /srv/nika/x.pdf'] });
+    assert.equal(out.draft.state, 'unreadable');
+    assert.equal(out.draft.reason, 'pasted');
+    assert.equal(out.squash, 'lookatthese[Image#1]/srv/nika/x.pdf');
+    assert.equal(squashOf({ lines: ['[Image #1] [Image #2]'] }).squash, '[Image#1][Image#2]');
+    assert.equal(squashOf({ lines: ['x [Pasted text #3 +4 lines]'] }).draft.reason, 'pasted');
+  });
+
+  test('(+) a trailing-space box (the cursor past the text) is unreadable: trailing, with its squash', () => {
+    const out = squashOf({ lines: ['abc'], cursor: { dx: 3 } });
+    assert.equal(out.draft.reason, 'trailing');
+    assert.equal(out.squash, 'abc');
+  });
+
+  test('(+) a wrap that reads two ways (layout, N-3) keeps its squash: whitespace is the only thing that is ambiguous', () => {
+    const rows = [`${'x'.repeat(55)} ${'y'.repeat(60)}`, 'z'.repeat(60)]; // the rows of the N-3 case: a space or a cut word
+    const out = squashOf({ lines: rows });
+    assert.equal(out.draft.reason, 'layout');
+    assert.equal(out.squash, `${'x'.repeat(55)}${'y'.repeat(60)}${'z'.repeat(60)}`);
+  });
+
+  test('(+) a wrap anywhere gives the same squash as the unwrapped text', () => {
+    const text = `look at these[Image #5] /srv/nika/attachments/0123456789abcdef/1111111111111111.pdf /srv/nika/attachments/0123456789abcdef/2222222222222222.py`;
+    const flat = squashOf({ lines: [text], cols: 400 }).squash;
+    for (const cols of [40, 60, 100]) {
+      const lines = wrap(text, cols - 4);
+      assert.equal(squashOf({ lines, cols }).squash, flat, `at ${cols} columns`);
+    }
+  });
+
+  test('(+) padded rows (Claude pads every row with spaces) give the same squash', () => {
+    const s = boxRows({ lines: ['alpha bravo'], pad: true });
+    assert.equal(boxSquash(s.rows, s.cursor, s.cols).squash, 'alphabravo');
+  });
+
+  test('(+) parseDraft is unchanged: its answer is boxSquash\'s draft for every screen above, and null where boxSquash is null', () => {
+    const screens = [boxRows({ lines: [''] }), boxRows({ lines: ['hi'] }), boxRows({ lines: ['[Image #1]'] }), boxRows({ lines: ['abc'], cursor: { dx: 2 } }),
+      boxRows({ lines: ['old'], label: 'History 3/3' }), boxRows({ lines: ['one', [dim('hidden')], 'three'] }), boxRows({ lines: Array.from({ length: 15 }, (_, i) => `row ${i}`) })];
+    for (const s of screens) assert.deepEqual(boxSquash(s.rows, s.cursor, s.cols)?.draft ?? null, boxSquash(s.rows, s.cursor, s.cols) === null ? null : parseDraft(s.rows, s.cursor, s.cols));
+  });
+
+  test('(−) null where there is no plain box: a permission prompt, a dialog footer, the survey, a cursor outside the box', () => {
+    const prompt = [[span('Edit file notes.txt')], [span(' Do you want to proceed?')], [span(' ❯ 1. Yes')], [span('   2. No')], [span(' Esc to cancel')]];
+    assert.equal(boxSquash(prompt, { x: 0, y: 0 }, 100), null, 'a permission prompt');
+    const dialog = boxRows({ lines: ['hello'], footer: 'Enter to select · ↑/↓ to navigate' });
+    assert.equal(boxSquash(dialog.rows, dialog.cursor, dialog.cols), null, 'a dialog footer');
+    const s = boxRows({ lines: ['hello'] });
+    const rows = s.rows.slice();
+    rows.splice(rows.length - 2, 0, ...SURVEY.map((t) => [span(t)]));
+    assert.equal(boxSquash(rows, s.cursor, s.cols), null, 'the survey');
+    assert.equal(boxSquash(s.rows, { x: 2, y: 0 }, s.cols), null, 'a cursor above the box');
+    assert.equal(boxSquash(s.rows, { x: 2, y: s.rows.length - 1 }, s.cols), null, 'a cursor in the footer');
+    assert.equal(boxSquash(null, null, 100), null);
+    assert.equal(boxSquash([], null, 100), null);
+  });
+
+  test('(−) null for a History label, a tall box and dim text beside real text: the rows were refused before they were split', () => {
+    const history = boxRows({ lines: ['old prompt'], label: 'History 3/3' });
+    assert.equal(boxSquash(history.rows, history.cursor, history.cols), null);
+    const tall = boxRows({ lines: Array.from({ length: 15 }, (_, i) => `row ${i}`) });
+    assert.equal(boxSquash(tall.rows, tall.cursor, tall.cols), null);
+    for (const lines of [['one', [dim('hidden')], 'three'], [[dim('ab '), span('cd')]], [[span('abc '), dim('HIDDEN '), span('def')]]]) {
+      const s = boxRows({ lines });
+      assert.equal(boxSquash(s.rows, s.cursor, s.cols), null, JSON.stringify(lines));
+    }
   });
 });

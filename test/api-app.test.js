@@ -3563,3 +3563,334 @@ describe('PUT|DELETE /api/app/pane/:id/fit', () => {
     assert.deepEqual(lines.filter((l) => /\bcols\b|\brows\b|"open"|321|\b77\b/.test(l.split('\n')[0])), []);
   });
 });
+
+// --- attachments (0.5, W2, ADR 0016): upload, delete, send ---
+
+const ATT = '0123456789abcdef'; // a synthetic attachment id
+const ATT2 = 'fedcba9876543210';
+const BASE16 = 'aaaaaaaaaaaaaaaa';
+const UPLOAD = { name: 'shot.png', data: Buffer.from('synthetic-bytes').toString('base64') };
+const GROUP_KEY = 'b1b2b3b4b5b6b7b8'; // a project key for a snapshot group (any 16 chars of [a-z0-9])
+
+/** A store that records its calls; `over` replaces a method (a function, or a value to return / an Error to throw). */
+function fakeStore(over = {}) {
+  const f = { calls: [] };
+  const method = (name, fallback) => async (...args) => {
+    f.calls.push([name, ...args]);
+    const given = over[name];
+    if (given instanceof Error) throw given;
+    return typeof given === 'function' ? given(...args) : given !== undefined ? given : fallback(...args);
+  };
+  f.save = method('save', () => ({ status: 200, body: { id: ATT, type: 'png', size: 15 } }));
+  f.remove = method('remove', () => true);
+  f.lookup = method('lookup', () => null);
+  f.markSent = (...args) => { f.calls.push(['markSent', ...args]); };
+  return f;
+}
+
+/** A send factory that records what the router builds it with and what the route calls. */
+function fakeSender(answer) {
+  const f = { calls: [], opts: null };
+  f.factory = (opts) => {
+    f.opts = opts;
+    return { send: async (pane, body) => { f.calls.push([pane, body]); return typeof answer === 'function' ? answer(pane, body) : answer ?? { status: 200, body: { sent: 1, images: 0 } }; } };
+  };
+  return f;
+}
+
+/** Snapshot whose group carries a project key: panes `claims` (pane ids) each have one live agent in it. */
+const keyedSnapshot = (...claims) => ({ groups: [{ key: GROUP_KEY, agents: claims.map((id) => ({ live: true, state: 'idle', pane: { id } })) }] });
+const att = (a, id, suffix, opts) => pane(a, id, suffix, opts);
+const capturingLog = async (fn) => {
+  const lines = [];
+  const saved = { error: console.error, log: console.log, warn: console.warn, info: console.info, write: process.stderr.write };
+  for (const name of ['error', 'log', 'warn', 'info']) console[name] = (...args) => { lines.push(args.map((x) => (x instanceof Error ? `${x.message}\n${x.stack}` : String(x))).join(' ')); };
+  process.stderr.write = (s) => { lines.push(String(s)); return true; };
+  try {
+    await fn();
+  } finally {
+    Object.assign(console, saved);
+    process.stderr.write = saved.write;
+  }
+  return lines;
+};
+
+describe('attachments: upload', () => {
+  test('(+) the store gets the pane, the key of the group that claims it, and the name and data; its answer goes to the page as is', async () => {
+    const store = fakeStore();
+    const { a } = await bootScreens({ over: { attachments: store, collect: async () => keyedSnapshot('%6') } });
+    const r = await att(a, '%6', 'attachments', { method: 'POST', json: UPLOAD });
+    assert.deepEqual([r.status, r.body], [200, { id: ATT, type: 'png', size: 15 }]);
+    assert.deepEqual(store.calls, [['save', { pane: '%6', key: GROUP_KEY, name: UPLOAD.name, data: UPLOAD.data }]]);
+    assert.equal(r.headers['cache-control'], 'no-store');
+  });
+
+  test('(+) a pane nika started has its start key; the store answer 4xx of its own (wrong-type, too-big, rate) goes through', async () => {
+    const store = fakeStore({ save: () => ({ status: 415, body: { error: 'wrong-type', message: 'x' } }) });
+    const { a } = await bootScreens({ over: { attachments: store } });
+    a.ctx.started.set('%8', { key: w.project.key, name: 'x', sessionId: null, role: 'agent' });
+    const r = await att(a, '%8', 'attachments', { method: 'POST', json: UPLOAD });
+    assert.deepEqual([r.status, r.body.error], [415, 'wrong-type']);
+    assert.equal(store.calls[0][1].key, w.project.key);
+    assert.equal(store.calls[0][1].pane, '%8');
+  });
+
+  test('(−) the key is never the request\'s: a body with a key, a path or an extra field is 400 and the store is not called', async () => {
+    const store = fakeStore();
+    const { a } = await bootScreens({ over: { attachments: store, collect: async () => keyedSnapshot('%6') } });
+    for (const json of [{ ...UPLOAD, key: 'ffffffffffffffff' }, { ...UPLOAD, path: '/etc/passwd' }, { name: 'x' }, { data: UPLOAD.data }, { name: 5, data: UPLOAD.data }, { name: 'x', data: 'not base64!' }, { name: 'x', data: 'abc' }, { name: 'n'.repeat(256), data: UPLOAD.data }]) {
+      const r = await att(a, '%6', 'attachments', { method: 'POST', json });
+      assert.deepEqual([r.status, r.body.error], [400, 'invalid'], JSON.stringify(json).slice(0, 60));
+    }
+    for (const body of ['[]', 'null', '"x"', '{bad', '']) {
+      assert.equal((await att(a, '%6', 'attachments', { method: 'POST', body, headers: { 'content-type': 'application/json' } })).status, 400, body);
+    }
+    assert.deepEqual(store.calls, []);
+  });
+
+  test('(−) the body is checked before the pane: a bad body to an unknown pane is 400, a good body to it is 404; the store is not called', async () => {
+    const store = fakeStore();
+    const { a } = await bootScreens({ over: { attachments: store, collect: async () => keyedSnapshot('%6') } });
+    assert.equal((await att(a, '%99', 'attachments', { method: 'POST', json: { name: 'x' } })).status, 400);
+    assert.equal((await att(a, '%99', 'attachments', { method: 'POST', json: UPLOAD })).status, 404);
+    assert.deepEqual(store.calls, []);
+  });
+
+  test('(−) a pane that is not in the tmux list, runs a shell, is not live Claude or was not started is 404; the store is not called', async () => {
+    const store = fakeStore();
+    const { a } = await bootScreens({ over: { attachments: store, collect: async () => keyedSnapshot('%6', '%5') } });
+    for (const id of ['%5', '%8', '%99']) assert.equal((await att(a, id, 'attachments', { method: 'POST', json: UPLOAD })).status, 404, id); // %5 = zsh, %8 = node not claimed, %99 = no pane
+    assert.equal((await a.call('POST', '/api/app/pane/abc/attachments', { json: UPLOAD })).status, 404);
+    assert.deepEqual(store.calls, []);
+  });
+
+  test('(−) no-project: two live agents claim the pane, no group names it, or the key is not a project key; 409 and the store is not called', async () => {
+    const store = fakeStore();
+    const twice = { groups: [{ key: GROUP_KEY, agents: [{ live: true, state: 'idle', pane: { id: '%6' } }] }, { key: 'c1c2c3c4c5c6c7c8', agents: [{ live: true, state: 'idle', pane: { id: '%6' } }] }] };
+    for (const snapshot of [twice, { groups: [{ key: 'BAD KEY', agents: [{ live: true, state: 'idle', pane: { id: '%6' } }] }] }, { groups: [{ agents: [{ live: true, state: 'idle', pane: { id: '%6' } }] }] }]) {
+      const { a } = await bootScreens({ over: { attachments: store, collect: async () => snapshot } });
+      const r = await att(a, '%6', 'attachments', { method: 'POST', json: UPLOAD });
+      assert.deepEqual([r.status, r.body.error], [409, 'no-project'], JSON.stringify(snapshot).slice(0, 80));
+    }
+    const { a } = await bootScreens({ over: { attachments: store } }); // a started pane whose entry carries a key that is not a project key
+    a.ctx.started.set('%8', { key: 'not a key', name: 'x', sessionId: null, role: 'agent' });
+    assert.deepEqual([(await att(a, '%8', 'attachments', { method: 'POST', json: UPLOAD })).body.error], ['no-project']);
+    assert.deepEqual(store.calls, []);
+  });
+
+  test('(−) a body over 12 MiB is 413, one just under it reaches the store; text/plain is 415; GET and PUT are 405; no secret is 403', async () => {
+    const store = fakeStore();
+    const { a } = await bootScreens({ over: { attachments: store, collect: async () => keyedSnapshot('%6') } });
+    assert.equal((await att(a, '%6', 'attachments', { method: 'POST', json: { name: 'x', data: 'A'.repeat(12 * 1024 * 1024) } })).status, 413);
+    assert.equal(store.calls.length, 0);
+    assert.equal((await att(a, '%6', 'attachments', { method: 'POST', json: { name: 'x', data: 'A'.repeat(11 * 1024 * 1024) } })).status, 200);
+    assert.equal((await att(a, '%6', 'attachments', { method: 'POST', body: JSON.stringify(UPLOAD), headers: { 'content-type': 'text/plain' } })).status, 415);
+    assert.equal((await att(a, '%6', 'attachments', { method: 'GET' })).status, 405);
+    assert.equal((await att(a, '%6', 'attachments', { method: 'PUT', json: UPLOAD })).status, 405);
+    assert.equal((await att(a, '%6', 'attachments', { method: 'POST', json: UPLOAD, headers: { 'x-nika-app': null } })).status, 403);
+    assert.equal(store.calls.length, 1, 'only the 11 MiB body got through');
+  });
+
+  test('(−) a store that throws is 500 write-failed; the log has the node code only, and neither the answer nor the log carries the name, the data, a path or an id', async () => {
+    const boom = Object.assign(new Error('EACCES /srv/nika/attachments/secret-name.png'), { code: 'EACCES' });
+    const store = fakeStore({ save: boom });
+    const { a } = await bootScreens({ over: { attachments: store, collect: async () => keyedSnapshot('%6') } });
+    let r;
+    const lines = await capturingLog(async () => { r = await att(a, '%6', 'attachments', { method: 'POST', json: { name: 'secret-name.png', data: UPLOAD.data } }); });
+    assert.deepEqual([r.status, r.body.error], [500, 'write-failed']);
+    assert.equal(/secret-name|srv|EACCES/.test(r.raw), false);
+    assert.deepEqual(lines, ['nika: attachments: EACCES\n']);
+  });
+});
+
+describe('attachments: delete', () => {
+  test('(+) removes by pane and id: { removed: true }; an unknown, another pane\'s or a sent id is { removed: false } (no oracle)', async () => {
+    const store = fakeStore({ remove: (p, id) => p === '%6' && id === ATT });
+    const { a } = await bootScreens({ over: { attachments: store } });
+    assert.deepEqual((await att(a, '%6', `attachments/${ATT}`, { method: 'DELETE' })).body, { removed: true });
+    assert.deepEqual((await att(a, '%6', `attachments/${ATT2}`, { method: 'DELETE' })).body, { removed: false });
+    assert.deepEqual((await att(a, '%7', `attachments/${ATT}`, { method: 'DELETE' })).body, { removed: false });
+    assert.deepEqual(store.calls.map((c) => c.slice(0, 3)), [['remove', '%6', ATT], ['remove', '%6', ATT2], ['remove', '%7', ATT]]);
+  });
+
+  test('(+) not gated by the pane being live Claude: a pane that is gone still gets its file removed', async () => {
+    const store = fakeStore();
+    const { a } = await bootScreens({ over: { attachments: store } });
+    const r = await att(a, '%99', `attachments/${ATT}`, { method: 'DELETE' });
+    assert.deepEqual([r.status, r.body], [200, { removed: true }]);
+    assert.deepEqual(store.calls, [['remove', '%99', ATT]]);
+  });
+
+  test('(−) a bad pane id or attachment id is 400 and the store is not called; POST and GET are 405; no secret is 403', async () => {
+    const store = fakeStore();
+    const { a } = await bootScreens({ over: { attachments: store } });
+    for (const [p, id] of [['%6', 'zz'], ['%6', ATT.toUpperCase().replace(/[0-9]/g, 'A')], ['%6', `${ATT}0`], ['abc', ATT], ['%6;rm', ATT], ['%0x', ATT]]) {
+      const r = await a.call('DELETE', `/api/app/pane/${encodeURIComponent(p)}/attachments/${encodeURIComponent(id)}`);
+      assert.deepEqual([r.status, r.body.error], [400, 'invalid'], `${p} ${id}`);
+    }
+    assert.equal((await att(a, '%6', `attachments/${ATT}`, { method: 'POST', json: {} })).status, 405);
+    assert.equal((await att(a, '%6', `attachments/${ATT}`, { method: 'GET' })).status, 405);
+    assert.equal((await att(a, '%6', `attachments/${ATT}`, { method: 'DELETE', headers: { 'x-nika-app': null } })).status, 403);
+    assert.deepEqual(store.calls, []);
+  });
+
+  test('(−) a store that throws answers { removed: false } with the code logged only', async () => {
+    const store = fakeStore({ remove: Object.assign(new Error('EBUSY /srv/nika/attachments/x'), { code: 'EBUSY' }) });
+    const { a } = await bootScreens({ over: { attachments: store } });
+    let r;
+    const lines = await capturingLog(async () => { r = await att(a, '%6', `attachments/${ATT}`, { method: 'DELETE' }); });
+    assert.deepEqual([r.status, r.body], [200, { removed: false }]);
+    assert.deepEqual(lines, ['nika: attachments: EBUSY\n']);
+  });
+});
+
+describe('attachments: send', () => {
+  const control = fakeControl();
+  const lock = async (id, fn) => fn();
+  const gap = () => false;
+  const overWith = (sender, store = fakeStore(), more = {}) => ({ attachments: store, createAttachSend: sender.factory, createSessionControl: (o) => ({ ...control.factory(o), withPaneLock: lock, keyGap: gap }), ...more });
+
+  test('(+) the router builds the sender with the mirror, the keys, the store, the controller\'s pane lock and keyGap, and the registry and edit-mode readers', async () => {
+    const sender = fakeSender();
+    const store = fakeStore();
+    const { a } = await bootScreens({ fake: false, over: overWith(sender, store) });
+    const o = sender.opts;
+    assert.equal(o.mirror, a.deps.mirror);
+    assert.equal(o.keys, a.deps.keys);
+    assert.equal(o.store, store);
+    assert.equal(o.lock, lock);
+    assert.equal(o.keyGap, gap);
+    for (const name of ['stateOf', 'vimOf', 'plainOf']) assert.equal(typeof o[name], 'function', name);
+    assert.equal(await o.stateOf('%6'), 'idle', 'the registry state of the live agent');
+    assert.equal(await o.stateOf('%7'), null, 'an ended or unknown agent is null, never idle');
+    assert.equal(o.vimOf('%6'), false);
+    assert.equal(o.plainOf('%6'), false);
+    assert.deepEqual(a.deps.calls.filter((c) => c[0] === 'keys'), [], 'building it sends nothing');
+  });
+
+  test('(+) stateOf({ fresh: true }) drops the 1 s snapshot: the state the registry has now is the one it answers', async () => {
+    const sender = fakeSender();
+    let state = 'idle';
+    const { a } = await bootScreens({ fake: false, over: { ...overWith(sender), collect: async () => ({ groups: [{ key: GROUP_KEY, agents: [{ live: true, state, pane: { id: '%6' } }] }] }) } });
+    assert.equal(await sender.opts.stateOf('%6'), 'idle');
+    state = 'busy';
+    assert.equal(await sender.opts.stateOf('%6'), 'idle', 'the cached snapshot (same clock)');
+    assert.equal(await sender.opts.stateOf('%6', { fresh: true }), 'busy', 'a fresh read');
+    assert.equal(a.clock.t, 1_000_000, 'the clock did not move');
+  });
+
+  test('(+) an eligible pane: the sender gets the pane id and exactly { ids, base }; its status and body go to the page', async () => {
+    const sender = fakeSender({ status: 200, body: { sent: 2, images: 1 } });
+    const { a } = await bootScreens({ over: overWith(sender) });
+    const r = await att(a, '%6', 'attach-send', { method: 'POST', json: { ids: [ATT, ATT2], base: BASE16 } });
+    assert.deepEqual([r.status, r.body], [200, { sent: 2, images: 1 }]);
+    assert.deepEqual(sender.calls, [['%6', { ids: [ATT, ATT2], base: BASE16 }]]);
+    assert.equal(r.headers['cache-control'], 'no-store');
+  });
+
+  test('(+) the sender\'s refusals reach the page with their status and body (409 draft-changed with the draft, 429, 500 internal)', async () => {
+    for (const answer of [{ status: 409, body: { error: 'draft-changed', pasted: 0, draft: { state: 'text' } } }, { status: 429, body: { error: 'busy', pasted: 1 } }, { status: 500, body: { error: 'internal', pasted: 2 } }]) {
+      const sender = fakeSender(answer);
+      const { a } = await bootScreens({ over: overWith(sender) });
+      const r = await att(a, '%6', 'attach-send', { method: 'POST', json: { ids: [ATT], base: BASE16 } });
+      assert.deepEqual([r.status, r.body], [answer.status, answer.body]);
+    }
+  });
+
+  test('(−) a bad body is 400 before the pane and the sender: no ids, 7 ids, a duplicate, a bad id, a bad base, an extra key', async () => {
+    const sender = fakeSender();
+    const { a } = await bootScreens({ over: overWith(sender) });
+    const seven = Array.from({ length: 7 }, (_, i) => `${i}`.repeat(16));
+    for (const json of [{ ids: [], base: BASE16 }, { ids: seven, base: BASE16 }, { ids: [ATT, ATT], base: BASE16 }, { ids: ['xyz'], base: BASE16 }, { ids: [ATT], base: 'short' }, { ids: [ATT] }, { base: BASE16 }, { ids: [ATT], base: BASE16, path: '/etc/passwd' }]) {
+      assert.deepEqual([(await att(a, '%99', 'attach-send', { method: 'POST', json })).status, (await att(a, '%6', 'attach-send', { method: 'POST', json })).status], [400, 400], JSON.stringify(json).slice(0, 60));
+    }
+    assert.deepEqual(sender.calls, []);
+  });
+
+  test('(−) a pane that is not live Claude and was not started is 404; the sender is not called', async () => {
+    const sender = fakeSender();
+    const { a } = await bootScreens({ over: overWith(sender) });
+    for (const id of ['%5', '%8', '%99']) assert.equal((await att(a, id, 'attach-send', { method: 'POST', json: { ids: [ATT], base: BASE16 } })).status, 404, id);
+    assert.deepEqual(sender.calls, []);
+  });
+
+  test('(−) no secret 403; text/plain 415; GET and PUT 405; a body over 4 KB 413 -- the sender is not called', async () => {
+    const sender = fakeSender();
+    const { a } = await bootScreens({ over: overWith(sender) });
+    const json = { ids: [ATT], base: BASE16 };
+    assert.equal((await att(a, '%6', 'attach-send', { method: 'POST', json, headers: { 'x-nika-app': null } })).status, 403);
+    assert.equal((await att(a, '%6', 'attach-send', { method: 'POST', body: JSON.stringify(json), headers: { 'content-type': 'text/plain' } })).status, 415);
+    assert.equal((await att(a, '%6', 'attach-send', { method: 'GET' })).status, 405);
+    assert.equal((await att(a, '%6', 'attach-send', { method: 'PUT', json })).status, 405);
+    assert.equal((await att(a, '%6', 'attach-send', { method: 'POST', json: { ...json, pad: 'p'.repeat(4097) } })).status, 413);
+    assert.deepEqual(sender.calls, []);
+  });
+
+  test('(+) with the real sender behind the router: it shares the pane lock with End (an End refuses while it runs; it waits for a running End); nothing is pasted', async () => {
+    const store = fakeStore({ lookup: (p, id) => ({ id, path: `/srv/nika/attachments/${GROUP_KEY}/${id}.pdf`, type: 'pdf', size: 3 }) });
+    const { a, screens, mirror } = await bootScreens({ fake: false, over: { attachments: store } });
+    const fixture = boxRows({ cols: 80, lines: [''] });
+    screens['%6'] = Object.assign(fixture.rows, { cursor: fixture.cursor });
+    const capture = mirror.capture;
+    let enter;
+    let entered = new Promise((r) => { enter = r; });
+    let letGo;
+    let gate = new Promise((r) => { letGo = r; });
+    mirror.capture = async (...args) => { enter(); await gate; return capture(...args); };
+    const body = { ids: [ATT], base: BASE16 };
+    // 1. the send holds the pane: an End and a draft write are refused at once and type nothing
+    const sending = att(a, '%6', 'attach-send', { method: 'POST', json: body });
+    await entered;
+    const typed = a.deps.calls.filter((c) => c[0] === 'keys').length;
+    assert.equal((await pane(a, '%6', 'end', { method: 'POST', json: {} })).body.error, 'busy-switching');
+    assert.equal((await pane(a, '%6', 'draft', { method: 'PUT', json: { text: 'hi', base: '' } })).body.error, 'busy-switching');
+    assert.equal(a.deps.calls.filter((c) => c[0] === 'keys').length, typed, 'nothing was typed');
+    letGo();
+    const done = await sending;
+    assert.deepEqual([done.status, done.body.error, done.body.pasted], [409, 'draft-changed', 0], 'the base was not what the screen reads: nothing is pasted');
+    // 2. an End holds the pane: the send waits for it (the store is not asked meanwhile)
+    store.calls.length = 0;
+    entered = new Promise((r) => { enter = r; });
+    gate = new Promise((r) => { letGo = r; });
+    a.clock.t += 2000;
+    const end = pane(a, '%6', 'end', { method: 'POST', json: {} });
+    await entered;
+    const waiting = att(a, '%6', 'attach-send', { method: 'POST', json: body });
+    await new Promise((r) => setTimeout(r, 120)); // several polls of the waiting lock
+    assert.deepEqual(store.calls, [], 'the send waits while End holds the pane');
+    mirror.capture = capture; // the End goes on; the send runs after it
+    letGo();
+    await end;
+    assert.equal((await waiting).body.pasted, 0);
+    assert.equal(a.deps.calls.filter((c) => c[0] === 'keys' && c[2]?.paste !== undefined).length, 0, 'no paste went out');
+  });
+
+  test('(−) the browser tier has none of the three routes: POST, DELETE and POST are 404 there, whatever the headers', async () => {
+    const server = createServer({ config: fx.config, exec: fakeExec(), token: 'tok', now: () => NOW, version: '0.0.0' });
+    await new Promise((res) => server.listen(0, '127.0.0.1', res));
+    servers.push(server);
+    const port = server.address().port;
+    const call = (method, p) => new Promise((resolve, reject) => {
+      const q = http.request({ host: '127.0.0.1', port, method, path: p, headers: { host: `127.0.0.1:${port}`, 'x-nika-app': SECRET, 'x-nika-token': 'tok', 'content-type': 'application/json', 'content-length': '2' } }, (res) => {
+        res.resume();
+        res.on('end', () => resolve(res.statusCode));
+      });
+      q.on('error', reject);
+      q.end('{}');
+    });
+    assert.equal(await call('POST', '/api/app/pane/%256/attachments'), 404);
+    assert.equal(await call('DELETE', `/api/app/pane/%256/attachments/${ATT}`), 404);
+    assert.equal(await call('POST', '/api/app/pane/%256/attach-send'), 404);
+  });
+
+  test('(−) the browser tier never loads the attachment modules: attach-send.js is imported by api-app.js only; attachments.js by api-app.js, appio.js and attach-send.js; none by server.js, cli.js or the collectors', () => {
+    const dir = new URL('../src/', import.meta.url);
+    const files = fs.readdirSync(dir, { recursive: true }).filter((f) => f.endsWith('.js'));
+    const read = (f) => fs.readFileSync(new URL(f, dir), 'utf8');
+    const importers = (name) => files.filter((f) => new RegExp(`(from\\s+|import\\()\\s*'(\\./|\\.\\./)${name}\\.js'`).test(read(f)));
+    assert.deepEqual(importers('attach-send'), ['api-app.js']);
+    assert.deepEqual(importers('attachments'), ['api-app.js', 'appio.js', 'attach-send.js']);
+    assert.doesNotMatch(read('cli.js'), /attachments|attach-send/);
+    assert.doesNotMatch(read('server.js'), /attachments|attach-send/);
+  });
+});

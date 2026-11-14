@@ -2198,3 +2198,66 @@ describe('fix round 1: a failed send of the probe\'s rest removes the slash (Min
     assert.deepEqual(keysOf(w), ['text:/', 'text:compact']);
   });
 });
+
+describe('keyGap (0.5, W2 and W3): no key while a Stop or End interrupt runs, nor within 40 ms of its Escape (N-2)', () => {
+  test('(+) false on a quiet pane, and the controller exposes it next to withPaneLock', async () => {
+    const ctl = world().control();
+    assert.equal(typeof ctl.keyGap, 'function');
+    assert.equal(ctl.keyGap('%2'), false);
+    assert.equal(ctl.keyGap('%9'), false);
+  });
+
+  test('(+) Stop: true inside the interrupt (while its Escape is being sent), true right after it, true at 39 ms, false at 40 ms and after', async () => {
+    const w = world({ state: 'busy' });
+    const ctl = w.control();
+    const inside = [];
+    w.onKeys = () => inside.push(ctl.keyGap('%2')); // the fake pane calls this from inside keys.send
+    assert.deepEqual(await ctl.stop('%2'), { status: 200, body: { stopped: true, presses: 1 } });
+    assert.deepEqual(inside, [true]);
+    assert.equal(ctl.keyGap('%2'), true, 'its Escape went out just now');
+    w.t += 39;
+    assert.equal(ctl.keyGap('%2'), true);
+    w.t += 1;
+    assert.equal(ctl.keyGap('%2'), false, '40 ms passed');
+    assert.equal(ctl.keyGap('%2'), false, 'and it stays false');
+  });
+
+  test('(+) End that interrupts a busy turn: true while it runs; once it is over the gap is the time since its last Escape', async () => {
+    const w = world({ state: 'busy' });
+    const ctl = w.control();
+    const inside = [];
+    w.onKeys = (b) => { if (b.keys?.[0] === 'Escape') { inside.push(ctl.keyGap('%2')); w.state = 'idle'; } };
+    await ctl.endSession('%2');
+    assert.deepEqual(inside, [true]);
+    assert.equal(ctl.keyGap('%2'), false, 'End waited a second after its Escape (escWaitMs): the gap is long over');
+  });
+
+  test('(−) another pane is not held back, and a Stop that sent no key (idle) leaves no gap', async () => {
+    const w = world({ state: 'busy' });
+    const ctl = w.control();
+    await ctl.stop('%2');
+    assert.equal(ctl.keyGap('%3'), false);
+    const idle = world({ state: 'idle' });
+    const quiet = idle.control();
+    assert.deepEqual(await quiet.stop('%2'), { status: 409, body: { error: 'not-busy' } });
+    assert.equal(quiet.keyGap('%2'), false);
+  });
+
+  test('(−) a clock that went back counts as passed (never a gap that does not end)', async () => {
+    const w = world({ state: 'busy' });
+    const ctl = w.control();
+    await ctl.stop('%2');
+    w.t -= 5000;
+    assert.equal(ctl.keyGap('%2'), false);
+  });
+
+  test('(−) the flag is cleared when the interrupt fails or throws: a failed Escape send still starts the 40 ms gap, then it ends', async () => {
+    const w = world({ state: 'busy' });
+    w.failSend = () => ({ status: 429, body: { error: 'busy', message: 'slow down' } });
+    const ctl = w.control();
+    assert.equal((await ctl.stop('%2')).status, 429);
+    assert.equal(ctl.keyGap('%2'), true, 'the Escape may have been delivered');
+    w.t += 40;
+    assert.equal(ctl.keyGap('%2'), false);
+  });
+});

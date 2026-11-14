@@ -18,6 +18,8 @@ import { matches as etagMatches } from './mirror.js';
 import { createSessionControl, promptSig, insertShown, editMode, readDraft, checkDraftBody, checkSuggestionBody } from './session-control.js';
 import { tagPane, pickState, claudePane } from './orchestrate.js';
 import { createFit, checkFitBody, FIT_RATE } from './fit.js';
+import { ID, UPLOAD_CAP, checkUploadBody } from './attachments.js';
+import { createAttachSend, checkAttachBody, logCode } from './attach-send.js';
 
 const ELIGIBILITY_TTL_MS = 1000; // pane list + live-agent snapshot, so a 4 Hz capture does not run collect() 4 times a second
 const TEMPLATES_MAX = 50;
@@ -98,7 +100,9 @@ async function listTemplates(dir) {
  *                           window(action), the shell relay: writes one `window` line (appio.js);
  *                           appCopy { state(), install(), dismiss() } (src/appcopy.js bound to this install);
  *                           createSessionControl, a test seam for the factory in session-control.js;
- *                           createFit, the same for the factory in fit.js }
+ *                           createFit, the same for the factory in fit.js;
+ *                           attachments, the attachment store (src/attachments.js, built by appio.js: save, lookup, remove, markSent);
+ *                           createAttachSend, the same seam for the factory in attach-send.js }
  * @returns {(req, res, url, port) => Promise<boolean>} true when it handled the request (every /api/app/* request)
  */
 export function createAppApi({ secret, ctx, deps }) {
@@ -174,6 +178,12 @@ export function createAppApi({ secret, ctx, deps }) {
     return { mode, modeConfirmed: footer !== 'unknown' || mode === 'unknown', prompt: prompt && { ...prompt, sig: promptSig(rows), bypass: bypassWindow(rows) } };
   }
 
+  // Registry state of a pane's live agent. `{ fresh: true }`: the caller is about to act on the answer (a second Escape, an Enter), so the 1 s snapshot is dropped first.
+  const registryState = async (id, o) => {
+    if (o?.fresh === true) eligibility = null;
+    return (await loadEligibility()).live.get(id) ?? null;
+  };
+
   // One controller for the whole server: its per-pane lock covers mode, answer, command and End together.
   const control = (deps.createSessionControl ?? createSessionControl)({
     mirror: deps.mirror,
@@ -185,11 +195,7 @@ export function createAppApi({ secret, ctx, deps }) {
       const pane = panes.get(id);
       return pane ? String(pane.command ?? '').trim() : null;
     },
-    // `{ fresh: true }`: the caller is about to act on the answer (a second Escape), so the 1 s snapshot is dropped first
-    stateOf: async (id, o) => {
-      if (o?.fresh === true) eligibility = null;
-      return (await loadEligibility()).live.get(id) ?? null;
-    },
+    stateOf: registryState,
     vimOf: (id) => vim.get(id) === true,
     plainOf: (id) => plain.get(id) === true,
     // what the draft route learned about a pane's edit mode: vim (INSERT seen), plain (a probe `i` landed as text) or nothing known
@@ -222,6 +228,23 @@ export function createAppApi({ secret, ctx, deps }) {
     recent.push(t);
     fitHits.set(id, recent);
     return true;
+  }
+
+  // Attachments (0.5, W2, ADR 0016): the send runs under the controller's pane lock and keys only while no Stop/End interrupt runs (keyGap).
+  const attachSend = (deps.createAttachSend ?? createAttachSend)({
+    mirror: deps.mirror, keys: deps.keys, store: deps.attachments, lock: control.withPaneLock, keyGap: control.keyGap,
+    stateOf: registryState, vimOf: (id) => vim.get(id) === true, plainOf: (id) => plain.get(id) === true,
+  });
+
+  /**
+   * The repository key a pane's attachments are filed under: from nika's own snapshot when exactly one live agent claims the pane,
+   * else the key of a pane nika started; never from the request. null = unknown or ambiguous (two claims), the route answers 409.
+   */
+  async function paneKey(id) {
+    const claims = [];
+    for (const g of (await loadEligibility()).snapshot?.groups ?? []) for (const a of g.agents) if (a.live && a.pane?.id === id) claims.push(g.key);
+    const key = claims.length === 0 ? ctx.started.get(id)?.key : claims.length === 1 ? claims[0] : null;
+    return typeof key === 'string' && PROJECT_KEY.test(key) ? key : null;
   }
 
   // --- projects ---
@@ -564,6 +587,44 @@ export function createAppApi({ secret, ctx, deps }) {
     if (!id) return err(400, 'invalid', 'invalid pane id');
     if (!fitAllowed('DELETE', id)) return err(429, 'busy', `at most ${FIT_RATE} fit requests per second per pane`);
     return fit.release(id);
+  });
+
+  // Attachments (0.5, W2): upload (JSON { name, data }, base64), delete before sending, and the send that pastes the stored paths into Claude's input
+  // and presses Enter. App tier only. Order: body 400, pane 404, project 409, then the store or the sender. No route serves a file back, and
+  // nothing of name, data, path or id is logged: a store error is logged as its code only.
+  route('POST', /^\/api\/app\/pane\/([^/]+)\/attachments$/, UPLOAD_CAP, async ({ params, body }) => {
+    const bad = checkUploadBody(body);
+    if (bad) return bad;
+    const { id, failure } = await eligiblePane(params[0]);
+    if (failure) return failure;
+    const key = await paneKey(id);
+    if (key === null) return err(409, 'no-project', "nika can't tell this session's project");
+    try {
+      return await deps.attachments.save({ pane: id, key, name: body.name, data: body.data });
+    } catch (e) {
+      logCode(e);
+      return err(500, 'write-failed', 'write failed');
+    }
+  });
+
+  // Not eligibility-gated: the pane may be gone, and the file must still go. false for an unknown, another pane's or an already sent id (no oracle).
+  route('DELETE', /^\/api\/app\/pane\/([^/]+)\/attachments\/([^/]+)$/, CAP.small, async ({ params }) => {
+    const id = param(params[0], PANE_ID);
+    const att = param(params[1], ID);
+    if (!id || !att) return err(400, 'invalid', 'invalid pane or attachment id');
+    try {
+      return { status: 200, body: { removed: (await deps.attachments.remove(id, att)) === true } };
+    } catch (e) {
+      logCode(e);
+      return { status: 200, body: { removed: false } };
+    }
+  });
+
+  route('POST', /^\/api\/app\/pane\/([^/]+)\/attach-send$/, CAP.small, async ({ params, body }) => {
+    const bad = checkAttachBody(body);
+    if (bad) return bad;
+    const { id, failure } = await eligiblePane(params[0]);
+    return failure ?? attachSend.send(id, body);
   });
 
   // Accept Claude's prompt suggestion (0.5, W4): the page's Tab or right arrow. Not the plain keys route: a Tab that lands after the

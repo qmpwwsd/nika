@@ -200,7 +200,14 @@ function joinRows(bodies, w) {
  * `rows` must be the capture of the pane from its top row (no scrollback): `cursor.y` is pane-relative. `text` is not cleaned
  * (zero-width characters survive the mirror's filter); it is a textarea value and must never reach an HTML sink.
  */
-export function parseDraft(rows, cursor, cols) {
+export const parseDraft = (rows, cursor, cols) => readBox(rows, cursor, cols)?.draft ?? null;
+
+/**
+ * The box of a screen as `boxSquash` needs it (0.5, W2): `{ draft, parts }` where `draft` is exactly what parseDraft returns and `parts`
+ * are the box rows split into real and ghost text, or null for a draft that was refused before the rows were split (history, tall, a
+ * row nika does not know). null when the screen has no plain box.
+ */
+function readBox(rows, cursor, cols) {
   if (!Array.isArray(rows)) return null;
   if (surveyShown(rows)) return null; // F2: the survey takes the digits 0-3, so no box is offered (sync pauses, nothing is typed)
   const rules = [];
@@ -221,7 +228,8 @@ export function parseDraft(rows, cursor, cols) {
   if (!footerKnown || promptFromRows(rows) !== null) return null;
 
   const box = { top, bottom };
-  const bad = (reason) => ({ state: 'unreadable', mode: first.mode, text: '', sig: null, reason, box, cursorAtEnd: false, suggestion: null, ghost: false });
+  let parts = null; // set once the rows are split; a refusal after that carries them
+  const bad = (reason) => ({ draft: { state: 'unreadable', mode: first.mode, text: '', sig: null, reason, box, cursorAtEnd: false, suggestion: null, ghost: false }, parts });
   const label = LABELLED.exec(rowText(rows[top]).trimEnd())?.[1];
   if (label !== undefined && HISTORY_LABEL.test(label)) return bad('history');
 
@@ -245,7 +253,7 @@ export function parseDraft(rows, cursor, cols) {
   const hasReal = infos.some(({ body }) => body.some((c) => !c.dim && c.ghost === null && c.ch !== ' '));
   if (hasReal && !dimIsTrailing(infos, cur)) return bad('layout');
   if (infos.length >= TALL_ROWS) return bad('tall');
-  const parts = infos.map(({ body, start }) => splitRow(body, start));
+  parts = infos.map(({ body, start }) => splitRow(body, start));
 
   // With no real text, a row that holds only ghost text (a long suggestion that wrapped) is not a line of the draft; with real
   // text it is a line (the cursor sits on a new empty line and the completion ghost starts there).
@@ -271,7 +279,19 @@ export function parseDraft(rows, cursor, cols) {
   }
   const state = empty ? 'empty' : 'text';
   const sig = createHash('sha256').update(`${state}\n${first.mode}\n${text}`).digest('hex').slice(0, 16);
-  return { state, mode: first.mode, text, sig, box, cursorAtEnd, suggestion, ghost: parts.some((p) => p.ghost) };
+  return { draft: { state, mode: first.mode, text, sig, box, cursorAtEnd, suggestion, ghost: parts.some((p) => p.ghost) }, parts };
+}
+
+/**
+ * What the box really holds, for the attachment send (0.5, W2): `{ draft, squash }` where `draft` is parseDraft's and `squash` is the real
+ * text of every box row (ghost text, placeholder and suggestion left out, as parseDraft does) with all whitespace removed. It is returned
+ * for an unreadable draft too, when the rows were split: a box that holds `[Image #1]` is `unreadable: pasted`, and the send must still
+ * read what is in it. null when the screen has no plain box, or the box was refused before its rows were split (history, tall, layout).
+ * Whitespace-blind on purpose: a wrap, Claude's own spacing or a wrap that reads two ways do not matter, content does.
+ */
+export function boxSquash(rows, cursor, cols) {
+  const box = readBox(rows, cursor, cols);
+  return box?.parts ? { draft: box.draft, squash: box.parts.map((p) => p.text).join('').replace(/\s+/g, '') } : null;
 }
 
 /** The form two drafts are compared in: a tab is 4 spaces (Claude draws it so), a no-break space is a space, trailing spaces of every line go. */
