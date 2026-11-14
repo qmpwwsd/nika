@@ -154,6 +154,54 @@ describe('parseDraft: readable text', () => {
     assert.equal(d.cursorAtEnd, true);
   });
 
+  test('(+) I-1: a draft line made of rule dashes is a line of the draft, never the top of the box', () => {
+    const border = '\u2500'.repeat(10);
+    const glyphAfter = read({ lines: ['a', border, '! ls'] }); // a pasted table border, then a line that starts like a prompt row
+    assert.equal(glyphAfter.mode, 'prompt');
+    assert.equal(glyphAfter.state, 'text');
+    assert.equal(glyphAfter.text, `a\n${border}\n! ls`);
+    assert.deepEqual(glyphAfter.box, { top: 0, bottom: 4 });
+    assert.equal(read({ lines: ['a', border, '\u276f y'] }).text, `a\n${border}\n\u276f y`);
+    assert.equal(read({ lines: ['a', border, 'plain'] }).text, `a\n${border}\nplain`); // used to be null: the fake top had no prompt row
+    assert.equal(read({ lines: ['a', border] }).text, `a\n${border}`); // used to be null: nothing between the fake top and the bottom
+  });
+
+  test('(−) I-1: an indented rule row is not a rule row', () => {
+    const s = boxRows({ lines: ['hello'] });
+    s.rows[0] = [span(`  ${'\u2500'.repeat(40)}`, { fg: 244 })]; // the top rule, indented by two spaces
+    assert.equal(parseDraft(s.rows, s.cursor, s.cols), null); // one rule row is left
+  });
+
+  test('(+) I-3: S9 wrap sample (100 x "ab" as rows of 116, 113 and 68) reads back as the original text', () => {
+    const words = Array(100).fill('ab');
+    const lines = [words.slice(0, 39), words.slice(39, 77), words.slice(77)].map((w) => w.join(' '));
+    assert.deepEqual(lines.map((l) => l.length), [116, 113, 68]);
+    const d = read({ lines });
+    assert.equal(d.text, words.join(' '));
+    assert.equal(d.state, 'text');
+  });
+
+  test('(+) I-3: a row plus one space plus the next word that reaches the width is a soft wrap; one column less is a newline', () => {
+    const a = (n) => 'a'.repeat(n);
+    assert.equal(read({ lines: [a(113), 'bb'] }).text, `${a(113)} bb`); // 113 + 1 + 2 = 116 = W
+    assert.equal(read({ lines: [a(112), 'bb'] }).text, `${a(112)}\nbb`); // 115 < W: a hard newline
+    assert.equal(read({ lines: [a(33), 'bb'], cols: 40 }).text, `${a(33)} bb`); // 33 + 1 + 2 = 36 = W at 40 columns
+    assert.equal(read({ lines: [a(32), 'bb'], cols: 40 }).text, `${a(32)}\nbb`);
+  });
+
+  test('(−) the no-space join needs a row of one word: a cut word followed by a row that starts with a space keeps both spaces', () => {
+    const x = 'x'.repeat(116);
+    assert.equal(read({ lines: [x, ' foo'] }).text, `${x}  foo`); // no `!b.startsWith(" ")` guard would read one space
+    assert.equal(read({ lines: [x, 'foo'] }).text, `${x}foo`);
+  });
+
+  test('(+) M-3: without `cols` the width is the lower rule row: a 40-column pane wraps at 36', () => {
+    const text = sentence(100);
+    const s = boxRows({ cols: 40, lines: wrap(text, 36) });
+    assert.equal(parseDraft(s.rows, s.cursor).text, text);
+    assert.equal(parseDraft(s.rows, s.cursor, 3).text, text); // an unusable cols falls back too
+  });
+
   test('(+) a session name drawn into the top rule is still the box; vim INSERT in the mode line changes nothing', () => {
     const d = read({ lines: ['hello'], label: 'acme-api', insert: true });
     assert.equal(d.state, 'text');
@@ -257,6 +305,68 @@ describe('parseDraft: empty box and ghost text', () => {
   });
 });
 
+describe('parseDraft: dim runs and real text', () => {
+  const dim = (t) => span(t, { d: true });
+  const layout = (d) => {
+    assert.equal(d.state, 'unreadable');
+    assert.equal(d.reason, 'layout');
+    assert.equal(d.text, '');
+    assert.equal(d.sig, null);
+  };
+
+  test('(+) (a) a box with no real text: every dim run on every row is ghost', () => {
+    const d = read({ lines: [[dim('first half of a long suggestion')], [dim('second half')]] });
+    assert.equal(d.state, 'empty');
+    assert.equal(d.suggestion, 'first half of a long suggestion second half');
+    assert.equal(read({ lines: [''], ghost: 'Try "fix lint errors"' }).state, 'empty');
+  });
+
+  test('(+) (b) one trailing dim run that starts at the cursor column on the cursor row is a completion ghost', () => {
+    const d = read({ lines: ['hello'], ghost: ' world' });
+    assert.equal(d.state, 'text');
+    assert.equal(d.text, 'hello');
+    assert.equal(d.cursorAtEnd, true);
+    assert.equal(d.suggestion, null);
+    assert.equal(read({ lines: ['one', 'two'], ghost: ' three' }).text, 'one\ntwo');
+    assert.equal(read({ lines: ['hello'], ghost: ' world', insert: true }).text, 'hello');
+    const onBlank = read({ lines: ['hello', [dim('more')]] }); // the cursor sits on a new empty line and the ghost starts there
+    assert.equal(onBlank.text, 'hello\n');
+    assert.equal(onBlank.state, 'text');
+  });
+
+  test('(−) a dim row between two rows of real text is unreadable: layout', () => {
+    layout(read({ lines: ['one', [dim('hidden')], 'three'] }));
+  });
+
+  test('(−) dim text before real text on a row, or in the middle of it, is unreadable: layout', () => {
+    layout(read({ lines: [[dim('ab '), span('cd')]] }));
+    layout(read({ lines: [[span('abc '), dim('HIDDEN '), span('def')]] }));
+    layout(read({ lines: [[span('ab'), dim('XX'), span('cd')]], cursor: { x: 4 } })); // starts at the cursor, but real text follows it
+  });
+
+  test('(−) a trailing dim run that does not start at the cursor column, or there is no cursor, is unreadable: layout', () => {
+    layout(read({ lines: ['hello'], ghost: ' world', cursor: { dx: -1 } })); // vim NORMAL: the cursor is on the last character
+    layout(read({ lines: ['hello'], ghost: ' world', cursor: { dx: 1 } }));
+    layout(read({ lines: ['hello'], ghost: ' world', cursor: null }));
+    layout(read({ lines: [[span('one'), dim(' x')], 'two'] })); // dim on a row that is not the cursor row
+    layout(read({ lines: ['hello'], ghost: ' world', cursor: { y: 0 } }));
+  });
+
+  test('(−) two dim runs next to real text are unreadable even when one of them is at the cursor', () => {
+    layout(read({ lines: [[dim('x'), span('abc'), dim(' tail')]], cursor: { x: 5 } }));
+    layout(read({ lines: [[span('abc'), dim(' one'), span(' '), dim('two')]], cursor: { x: 5 } }));
+  });
+
+  test('(−) M-3: a reverse-video first character is ghost only when every later visible character is dim, on the first row only', () => {
+    const some = read({ lines: [[span('a', { r: true }), span('b'), dim('c')]] }); // `some`, not `every`: a is real text
+    assert.equal(some.text, 'ab');
+    assert.equal(some.state, 'text');
+    const second = read({ lines: ['abc', [span('d', { r: true }), dim('ef')]] }); // not the first row: d is real
+    assert.equal(second.text, 'abc\nd');
+    assert.equal(read({ lines: [[span('a', { r: true }), span('b')]] }).text, 'ab');
+  });
+});
+
 describe('parseDraft: bash mode', () => {
   test('(+) `! ls -la` with fg-211 rules is bash mode, text without the `!`', () => {
     const s = boxRows({ mode: 'bash', lines: ['ls -la'] });
@@ -329,6 +439,13 @@ describe('parseDraft: slash commands and the argument hint', () => {
     assert.equal(read({ lines, cursor: { y: 0 } }).text, 'note <x>');
     const two = read({ lines: ['first', [span('note '), span('<x>', { fg: 246 })]], cursor: { y: 1, x: 7 } });
     assert.equal(two.text, 'first\nnote <x>');
+  });
+
+  test('(−) M-3: a run in any other colour at or after the cursor column is real text, only fg 246 is the hint', () => {
+    const d = read({ lines: [[span('/compact '), span('<optional>', { fg: 39 })]], cursor: { x: 11 } });
+    assert.equal(d.text, '/compact <optional>');
+    const dim = read({ lines: [[span('/compact '), span('<optional>', { fg: 246, d: true })]], cursor: { x: 11 } });
+    assert.equal(dim.text, '/compact '); // dim and fg 246 is ghost by the dim rule
   });
 
   test('(−) a dim-less fg-246 run before the cursor is real text', () => {
@@ -405,6 +522,35 @@ describe('parseDraft: unreadable', () => {
     assert.equal(read({ lines: ['[Pasted text]'] }).state, 'text');
     assert.equal(read({ lines: ['Pasted text #4'] }).state, 'text');
     assert.equal(read({ lines: ['[Pasted text #x]'] }).state, 'text');
+  });
+
+  test('(−) I-2: a placeholder broken by a newline or a wrap is still pasted', () => {
+    assert.equal(read({ lines: ['look [Pasted text #4 +3', 'lines] ok'] }).reason, 'pasted'); // a hard newline inside it
+    assert.equal(read({ lines: ['look [Pasted text #4', '+3 lines] ok'] }).reason, 'pasted');
+    assert.equal(read({ lines: ['[Pasted', 'text #4]'] }).reason, 'pasted');
+    assert.equal(read({ lines: ['[Pasted  text', '#4  +3\n lines]'] }).reason, 'pasted'); // other white space inside it
+    const row0 = `${'a'.repeat(10)} [Pasted text #4 +3`; // 29 wide = W - 7 at 40 columns, the review's probe
+    assert.equal(read({ cols: 40, lines: [row0, 'lines] ok'] }).reason, 'pasted');
+  });
+
+  test('(−) I-2: a dim placeholder is pasted, not an empty box or a completion ghost', () => {
+    assert.equal(read({ lines: [''], ghost: '[Pasted text #1 +10 lines]' }).reason, 'pasted');
+    assert.equal(read({ lines: [[span('[Pasted text #4 +3', { d: true })], [span('lines]', { d: true })]] }).reason, 'pasted');
+    assert.equal(read({ lines: ['hello'], ghost: ' [Pasted text #2]' }).reason, 'pasted');
+  });
+
+  test('(−) M-4: an image placeholder is unreadable too: pasted', () => {
+    assert.equal(read({ lines: ['[Image #1]'] }).reason, 'pasted');
+    assert.equal(read({ lines: ['see [Image #12] above'] }).reason, 'pasted');
+    assert.equal(read({ lines: ['[Image]'] }).state, 'text');
+    assert.equal(read({ lines: ['[Image #x]'] }).state, 'text');
+  });
+
+  test('(−) M-1: a History label with other spacing or a no-break space is still prompt-history recall', () => {
+    assert.equal(read({ lines: ['old'], label: 'History  3/3' }).reason, 'history');
+    assert.equal(read({ lines: ['old'], label: 'History 3 / 3' }).reason, 'history');
+    assert.equal(read({ lines: ['old'], label: 'History\u00a03/3' }).reason, 'history');
+    assert.equal(read({ lines: ['old'], label: 'Histories 3/3' }).state, 'text');
   });
 
   test('(−) a cursor past the end of the text (invisible trailing spaces) is unreadable: trailing', () => {
@@ -503,6 +649,7 @@ describe('RULE_ROW and HISTORY_LABEL', () => {
   test('(+/−) HISTORY_LABEL matches exactly `History n/m`', () => {
     assert.ok(HISTORY_LABEL.test('History 3/3'));
     assert.ok(HISTORY_LABEL.test('History 17/17'));
+    for (const yes of ['History  3/3', 'History 3 / 3', 'History\u00a03/3', 'History\t3/3']) assert.ok(HISTORY_LABEL.test(yes), JSON.stringify(yes));
     for (const no of ['History', 'History 3', 'History 3/x', 'history 3/3', 'My History 3/3', 'History 3/3 x', ' History 3/3', '']) {
       assert.equal(HISTORY_LABEL.test(no), false, JSON.stringify(no));
     }
@@ -568,6 +715,26 @@ describe('inEnvelope', () => {
     assert.equal(inEnvelope('\u65e5'.repeat(18 * 13), 40).ok, true); // exactly 13 rows
     assert.equal(inEnvelope('\t'.repeat(9 * 13 + 1), 40).ok, false); // 4 cells per tab
     assert.equal(inEnvelope('\t'.repeat(9 * 13), 40).ok, true);
+  });
+
+  test('(−) M-2: the row estimate wraps at words, so a line that breaks into more rows than its length suggests is outside', () => {
+    const line = `${'x'.repeat(60)} ${'y'.repeat(60)} ${'z'.repeat(60)}`; // 182 characters: 2 rows by length, 3 by words at 116
+    assert.deepEqual(inEnvelope(Array(5).fill(line).join('\n'), 120), { ok: false, reason: 'rows' }); // 15 rows
+    assert.equal(inEnvelope(Array(4).fill(line).join('\n'), 120).ok, true); // 12 rows
+    assert.equal(inEnvelope(`${'a'.repeat(100)} ${'b'.repeat(100)}`, 120).ok, true);
+  });
+
+  test('(+) M-2: a long word that does not fit the rest of a row starts a new row and is cut at the width', () => {
+    assert.equal(inEnvelope(`short ${'w'.repeat(36 * 12)}`, 40).ok, true); // 1 row for `short`, 12 for the word: 13
+    assert.equal(inEnvelope(`short ${'w'.repeat(36 * 12 + 1)}`, 40).ok, false); // 14
+    assert.equal(inEnvelope('a b c d e', 120).ok, true);
+  });
+
+  test('(−) M-2: a word that would end in the very last column already starts a new row (the estimate is pessimistic, S9 113 of 116)', () => {
+    const edge = `${'a'.repeat(10)} ${'b'.repeat(25)}`; // 11 + 25 = 36 = W at 40 columns
+    const rest = Array(12).fill('c'); // 12 single-row lines
+    assert.deepEqual(inEnvelope([...rest, edge].join('\n'), 40), { ok: false, reason: 'rows' }); // 12 + 2
+    assert.equal(inEnvelope([...rest, `${'a'.repeat(10)} ${'b'.repeat(24)}`].join('\n'), 40).ok, true); // 12 + 1
   });
 
   test('(−) a non-string text or unusable cols is refused', () => {

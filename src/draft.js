@@ -11,12 +11,14 @@ import { lastNonBlank, modeFromRows, promptFromRows, rowText } from './mode.js';
 // 1 to 80 characters, has no dash, no control character and no space at either end. The box is what lies between the last two.
 export const RULE_ROW = /^\u2500{2,}(?: [^\u2500\p{Cc}\s](?:[^\u2500\p{Cc}]{0,78}[^\u2500\p{Cc}\s])? \u2500+)?$/u;
 /** The label of the top rule while the box shows an old prompt (`Up` / `Down` recalls history; the real draft is stashed). */
-export const HISTORY_LABEL = /^History \d+\/\d+$/;
+export const HISTORY_LABEL = /^History\s+\d+\s*\/\s*\d+$/;
 
 const LABELLED = /^\u2500{2,} ([^\u2500]+) \u2500+$/u;
 // Bash mode (`!`) draws `! for shell mode` instead of the permission-mode phrase (spike S9 Q6), so modeFromRows reads `unknown` there.
 const SHELL_FOOTER = /^\s{0,2}(?:-- INSERT --\s*)?! for shell mode/;
-const PASTED = /\[Pasted text #\d+(?: \+\d+ lines)?\]/;
+// Claude's own stand-ins for content it cannot show as text: a paste (`[Pasted text #4 +3 lines]`) and an image (`[Image #1]`).
+const PASTED = /\[(?:Pasted text|Image) #\d+(?: \+\d+ lines)?\]/;
+const pastedIn = (text) => PASTED.test(text.replace(/\s+/g, ' ')); // a wrap or a newline may sit anywhere inside it
 const GLYPHS = { '\u276f': 'prompt', '!': 'bash' };
 const TALL_ROWS = 14; // a box of 14 rows or more may be a scrolled window of a taller draft (S9)
 const SUGGESTION_MAX = 200;
@@ -68,19 +70,37 @@ function firstRow(chars) {
 }
 
 /**
- * Splits the body of one box row into real text and ghost text. Ghost: any dim run (the placeholder, a prompt
- * suggestion); the first character in reverse video when everything after it is dim (the cursor drawn over the
- * placeholder; never seen live); an fg-246 run that starts at or after the cursor column on the cursor row (the slash
- * command's argument hint). Everything else is real, whatever its colour (the command word is fg 153).
+ * Marks the characters of a box row that are ghost without being dim: `c.ghost` is 'rev' for the first character in reverse
+ * video when everything after it is dim (the cursor drawn over the placeholder; never seen live), 'hint' for an fg-246 run
+ * that starts at or after the cursor column on the cursor row (the slash command's argument hint), else null.
  */
-function splitRow(body, start, isFirst, cur) {
+function markRow(body, isFirst, cur) {
   const shown = body.filter((c) => c.ch !== ' ');
   const revFirst = isFirst && shown.length > 1 && shown[0].rev && !shown[0].dim && shown.slice(1).every((c) => c.dim) ? shown[0] : null;
+  for (const c of body) c.ghost = c === revFirst ? 'rev' : cur !== null && c.hint && c.spanCol >= cur.x ? 'hint' : null;
+}
+
+/**
+ * Dim (SGR 2) text is ghost in two places only: (a) a box that holds no real text, where it is the placeholder or a prompt
+ * suggestion; (b) as ONE trailing run on the cursor row that starts exactly at the cursor column (a completion ghost after typed
+ * text). Dim text anywhere else next to real text (a dim row between real rows, dim before real text, dim away from the
+ * cursor) would be invisible to nika but submitted by Enter, so the draft is unreadable (the layout reason). Typed text never carries SGR.
+ */
+function dimIsTrailing(infos, cur) {
+  const withDim = infos.filter(({ body }) => body.some((c) => c.dim));
+  if (withDim.length === 0) return true;
+  if (cur === null || withDim.length > 1 || withDim[0].row !== cur.y) return false;
+  const k = withDim[0].body.findIndex((c) => c.dim);
+  return withDim[0].body[k].col === cur.x && withDim[0].body.slice(k).every((c) => c.dim);
+}
+
+/** Splits a marked box row into real text and ghost text (the dim text is kept for the suggestion and the pasted check). */
+function splitRow(body, start) {
   const real = [];
   const dim = [];
   let ghost = false;
   for (const c of body) {
-    if (c.dim || c === revFirst) { dim.push(c.ch); ghost = true; } else if (cur !== null && c.hint && c.spanCol >= cur.x) ghost = true;
+    if (c.dim || c.ghost === 'rev') { dim.push(c.ch); ghost = true; } else if (c.ghost !== null) ghost = true;
     else real.push(c);
   }
   const text = real.map((c) => c.ch).join('');
@@ -95,8 +115,9 @@ function splitRow(body, start, isFirst, cur) {
 
 /**
  * Joins the box rows (design 1.4). Claude wraps at the usable width `w` (cols - 4) and drops the space at a soft break. A
- * row `a` continues into `b` without a newline when: `a` is one word cut at exactly `w` (no space in it), joined as is; or the
- * first word of `b` would not have fitted on `a` (joined with the dropped space, unless `a` kept it). A blank row, or a
+ * row `a` continues into `b` without a newline when: `a` is one word cut at exactly `w` (no space in it), joined as is; or
+ * `a`, a space and the first word of `b` reach `w` (`>=`: S9's sample wraps 113 + 1 + 2 = 116, so a row stops one column short
+ * of `w`; the live threshold is still to be measured), joined with the dropped space unless `a` kept it. A blank row, or a
  * line of only spaces, always breaks. A hard newline typed where the next word would not fit reads as a soft wrap: known, accepted.
  */
 function joinRows(bodies, w) {
@@ -108,7 +129,7 @@ function joinRows(bodies, w) {
     if (a.trim() !== '' && b.trim() !== '') {
       const t = a.trimEnd();
       if (width(t) === w && !t.includes(' ') && !b.startsWith(' ')) sep = '';
-      else if (width(t) + 1 + width(/^\S*/.exec(b)[0]) > w) sep = a.endsWith(' ') ? '' : ' ';
+      else if (width(t) + 1 + width(/^\S*/.exec(b)[0]) >= w) sep = a.endsWith(' ') ? '' : ' ';
     }
     text += sep + b;
   }
@@ -123,17 +144,20 @@ function joinRows(bodies, w) {
  *   mode      'prompt' | 'bash'   (the glyph: the prompt character, or `!`)
  *   text      the draft, rows joined, ghost text removed; '' for empty and unreadable
  *   sig       16 hex of sha256(`${state}\n${mode}\n${text}`); null when unreadable
- *   reason    unreadable only: 'history' | 'layout' | 'tall' | 'pasted' | 'trailing' (checked in this order)
+ *   reason    unreadable only: 'history' | 'layout' | 'tall' | 'pasted' | 'trailing' (checked in this order; layout also means
+ *             dim text next to real text, see dimIsTrailing)
  *   box       { top, bottom }: the row indexes of the two rule rows
  *   cursorAtEnd   the cursor sits right after the last real character of the last box row
  *   suggestion    dim text of an empty box (not the `Try "..."` example), clean() at most 200; else null
  * Null: the footer is not a known mode line (a dialog, a menu, a prompt), a permission prompt parses, fewer than two rule rows,
  * nothing between the last two, or the first box row does not start with the prompt glyph or `!` and a space.
+ * `rows` must be the capture of the pane from its top row (no scrollback): `cursor.y` is pane-relative. `text` is not cleaned
+ * (zero-width characters survive the mirror's filter); it is a textarea value and must never reach an HTML sink.
  */
 export function parseDraft(rows, cursor, cols) {
   if (!Array.isArray(rows)) return null;
   const rules = [];
-  rows.forEach((row, i) => { if (RULE_ROW.test(rowText(row).trim())) rules.push(i); });
+  rows.forEach((row, i) => { if (RULE_ROW.test(rowText(row).trimEnd())) rules.push(i); }); // column 0: a draft line of dashes has two spaces before it
   if (rules.length < 2) return null;
   const top = rules.at(-2);
   const bottom = rules.at(-1);
@@ -141,15 +165,17 @@ export function parseDraft(rows, cursor, cols) {
   const first = firstRow(charsOf(rows[top + 1]));
   if (first === null) return null;
   const footerKnown = modeFromRows(rows) !== 'unknown' || (first.mode === 'bash' && SHELL_FOOTER.test(lastNonBlank(rows, 1)[0] ?? ''));
+  // The prompt gate cannot fire after the footer gate (a prompt owns the last row, so the footer reads unknown); it stays as the
+  // documented T51 anchor: a draft is never read from a screen that parses as a permission prompt.
   if (!footerKnown || promptFromRows(rows) !== null) return null;
 
   const box = { top, bottom };
   const bad = (reason) => ({ state: 'unreadable', mode: first.mode, text: '', sig: null, reason, box, cursorAtEnd: false, suggestion: null });
-  const label = LABELLED.exec(rowText(rows[top]).trim())?.[1];
+  const label = LABELLED.exec(rowText(rows[top]).trimEnd())?.[1];
   if (label !== undefined && HISTORY_LABEL.test(label)) return bad('history');
 
   const cur = Number.isInteger(cursor?.x) && Number.isInteger(cursor?.y) ? cursor : null;
-  const parts = [];
+  const infos = [];
   for (let i = top + 1; i < bottom; i += 1) {
     let body = first.body;
     let start = first.start;
@@ -161,16 +187,22 @@ export function parseDraft(rows, cursor, cols) {
       else return bad('layout');
       start = 2;
     }
-    parts.push(splitRow(body, start, i === top + 1, cur !== null && cur.y === i ? cur : null));
+    markRow(body, i === top + 1, cur !== null && cur.y === i ? cur : null);
+    infos.push({ row: i, body, start });
   }
-  if (parts.length >= TALL_ROWS) return bad('tall');
+  const hasReal = infos.some(({ body }) => body.some((c) => !c.dim && c.ghost === null && c.ch !== ' '));
+  if (hasReal && !dimIsTrailing(infos, cur)) return bad('layout');
+  if (infos.length >= TALL_ROWS) return bad('tall');
+  const parts = infos.map(({ body, start }) => splitRow(body, start));
 
-  // A row that holds only ghost text (a long suggestion that wrapped) is not a line of the draft.
-  const bodies = parts.filter((p, i) => i === 0 || !p.ghostOnly).map((p) => p.text);
+  // With no real text, a row that holds only ghost text (a long suggestion that wrapped) is not a line of the draft; with real
+  // text it is a line (the cursor sits on a new empty line and the completion ghost starts there).
+  const bodies = parts.filter((p, i) => i === 0 || hasReal || !p.ghostOnly).map((p) => p.text);
   const empty = bodies.length === 1 && bodies[0].trim() === '';
-  const usable = Number.isInteger(cols) && cols > 4 ? cols : width(rowText(rows[bottom]).trim());
+  const usable = Number.isInteger(cols) && cols > 4 ? cols : width(rowText(rows[bottom]).trimEnd());
   const text = empty ? '' : joinRows(bodies, Math.max(1, usable - 4));
-  if (PASTED.test(text)) return bad('pasted'); // a typed literal looks the same: fail closed
+  // A typed literal looks the same as Claude's placeholder: fail closed. Checked on the dim text too (a dim placeholder is ghost).
+  if (pastedIn(text) || pastedIn(parts.map((p) => p.dim).join(' '))) return bad('pasted');
 
   let cursorAtEnd = false;
   if (cur !== null && cur.y === bottom - 1) {
@@ -198,8 +230,31 @@ export function normDraft(text) {
 export const sameDraft = (a, b) => typeof a === 'string' && typeof b === 'string' && normDraft(a) === normDraft(b);
 
 /**
+ * Rows one line needs when Claude wraps it at `w` cells: a word that does not fit the rest of a row (with the space before
+ * it) starts a new row, a word longer than `w` is cut at `w`. Deliberately a little pessimistic: a word fits only when it
+ * ends before the last column (S9: a row stopped at 113 of 116), so the estimate does not undershoot the box nika will read back.
+ */
+function wrappedRows(line, w) {
+  let rows = 1;
+  let used = 0;
+  for (const [token] of line.matchAll(/ +|[^ ]+/g)) {
+    const n = width(token);
+    if (token[0] === ' ') {
+      used += n;
+      for (; used > w; used -= w) rows += 1;
+    } else {
+      if (used > 0 && used + n >= w) { rows += 1; used = 0; }
+      const pieces = Math.ceil(n / w); // 1 unless the word is longer than a row
+      rows += pieces - 1;
+      used += n - (pieces - 1) * w;
+    }
+  }
+  return rows;
+}
+
+/**
  * Whether nika may sync this text into Claude's box: at most 1024 characters, 12 newlines and 13 estimated rows (the sum over
- * lines of ceil(cells / (cols - 4)), at least 1 each; a 14-row box may be a window, so it is unreadable). { ok } or
+ * lines of the rows a word wrap at `cols - 4` needs, see wrappedRows; a 14-row box may be a window, so it is unreadable). { ok } or
  * { ok: false, reason: 'chars' | 'newlines' | 'rows' | 'invalid' } (invalid: not a string, or cols not an integer above 4).
  */
 export function inEnvelope(text, cols) {
@@ -207,7 +262,7 @@ export function inEnvelope(text, cols) {
   if (text.length > MAX_CHARS) return { ok: false, reason: 'chars' };
   const lines = text.split('\n');
   if (lines.length - 1 > MAX_NEWLINES) return { ok: false, reason: 'newlines' };
-  const rows = lines.reduce((n, line) => n + Math.max(1, Math.ceil(width(line.replace(/\t/g, '    ')) / (cols - 4))), 0);
+  const rows = lines.reduce((n, line) => n + wrappedRows(line.replace(/\t/g, '    '), cols - 4), 0);
   return rows > MAX_ROWS ? { ok: false, reason: 'rows' } : { ok: true };
 }
 
