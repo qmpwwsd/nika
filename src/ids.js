@@ -1,6 +1,10 @@
 // Identifier shapes checked at every trust boundary (collectors, API, CLI, store). Reject before use, never clean up.
 export const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 export const PANE_ID = /^%\d{1,6}$/;
+/** tmux `#{window_id}`; taken from tmux's own listing, never from a request (fit, ADR 0017). */
+export const WINDOW_ID = /^@\d{1,6}$/;
+/** Lease id and value of the window tag `@nika-fit`: 16 lowercase hex from nika's CSPRNG. */
+export const FIT_NONCE = /^[0-9a-f]{16}$/;
 /** First 16 hex chars of sha256(realpath of the project dir). */
 export const PROJECT_KEY = /^[a-z0-9]{16}$/;
 export const AGENT_NAME = /^[a-z0-9][a-z0-9-]{0,39}$/;
