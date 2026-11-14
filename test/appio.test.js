@@ -859,4 +859,34 @@ describe('the attachment store: started after ready, stopped at finish (0.5, W2)
     assert.equal(h.err().includes('attachments'), false, 'no store error: the store is really wired in');
     await h.close();
   });
+  test('(+) the routes and the store share one log sink (M7): appio builds it once, from its own stderr, and hands it to the store and to the router', () => {
+    // No behavioral route test is possible here: the real store answers its refusals itself (a symlinked folder is 409 folder-unsafe)
+    // and a route logs only when the store throws, which it does not; api-app.test.js covers the routes with a store that throws.
+    const src = fs.readFileSync(new URL('../src/appio.js', import.meta.url), 'utf8');
+    assert.equal(src.match(/const attachLog = /g).length, 1, 'one sink');
+    assert.match(src, /const attachLog = attachOpts\.log \?\? \(\(line\) => stderr\.write\(`\$\{line\}\\n`\)\);/);
+    assert.match(src, /createAttachments\(\{ env, now, \.\.\.attachOpts, log: attachLog \}\)/);
+    assert.match(src, /^\s+log: attachLog,$/m, 'deps.log of the router');
+    assert.doesNotMatch(src, /process\.stderr/);
+  });
+
+  test('(+) the store\'s own lines still reach the given sink (the `attachments` seam), and stderr gets none of them', async () => {
+    const lines = [];
+    const h = harness({ attachments: { ...timerSeam(), log: (line) => lines.push(line) } });
+    const target = path.join(h.base, 'elsewhere');
+    fs.mkdirSync(target, { recursive: true });
+    const stateRoot = path.join(h.env.XDG_STATE_HOME, 'nika');
+    fs.mkdirSync(stateRoot, { recursive: true, mode: 0o700 });
+    fs.chmodSync(stateRoot, 0o700);
+    fs.symlinkSync(target, path.join(stateRoot, 'attachments'));
+    try {
+      await h.up();
+      for (let t = 0; t < 3000 && lines.length === 0; t += 20) await sleep(20);
+      assert.ok(lines.length >= 1);
+      for (const l of lines) assert.match(l, /^nika: attachments: [A-Z0-9_]{1,20}$/);
+      assert.equal(h.err().includes('attachments'), false);
+    } finally {
+      await h.close();
+    }
+  });
 });

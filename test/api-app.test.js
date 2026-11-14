@@ -3894,3 +3894,39 @@ describe('attachments: send', () => {
     assert.doesNotMatch(read('server.js'), /attachments|attach-send/);
   });
 });
+
+describe('attachments: the log is injected (0.5, W2 fix round 1, M7)', () => {
+  test('(+) a store error in the upload and the delete route goes to deps.log as `nika: attachments: <code>` and nowhere else', async () => {
+    const lines = [];
+    const store = fakeStore({
+      save: Object.assign(new Error('EACCES /srv/nika/attachments/secret-name.png'), { code: 'EACCES' }),
+      remove: Object.assign(new Error('EBUSY /srv/nika/attachments/x'), { code: 'EBUSY' }),
+    });
+    const { a } = await bootScreens({ over: { attachments: store, collect: async () => keyedSnapshot('%6'), log: (line) => lines.push(line) } });
+    const others = await capturingLog(async () => {
+      assert.equal((await att(a, '%6', 'attachments', { method: 'POST', json: { name: 'secret-name.png', data: UPLOAD.data } })).status, 500);
+      assert.deepEqual((await att(a, '%6', `attachments/${ATT}`, { method: 'DELETE' })).body, { removed: false });
+    });
+    assert.deepEqual(lines, ['nika: attachments: EACCES', 'nika: attachments: EBUSY']);
+    assert.deepEqual(others, [], 'process.stderr and the console got nothing');
+  });
+
+  test('(+) the sender is built with that log; without one it writes the line to stderr', async () => {
+    const given = (line) => line;
+    const sender = fakeSender();
+    await bootScreens({ over: { attachments: fakeStore(), createAttachSend: sender.factory, log: given } });
+    assert.equal(sender.opts.log, given);
+    const plainSender = fakeSender();
+    await bootScreens({ over: { attachments: fakeStore(), createAttachSend: plainSender.factory } });
+    const lines = await capturingLog(async () => plainSender.opts.log('nika: attachments: EIO'));
+    assert.deepEqual(lines, ['nika: attachments: EIO\n']);
+  });
+
+  test('(−) the line never carries a message, a path, a name or an id, whatever the error holds', async () => {
+    const lines = [];
+    const store = fakeStore({ save: Object.assign(new Error(`${GROUP_KEY} ${ATT} /srv/secret.png`), { code: 'not a code /srv/secret.png' }) });
+    const { a } = await bootScreens({ over: { attachments: store, collect: async () => keyedSnapshot('%6'), log: (line) => lines.push(line) } });
+    await att(a, '%6', 'attachments', { method: 'POST', json: UPLOAD });
+    assert.deepEqual(lines, ['nika: attachments: ERR']);
+  });
+});

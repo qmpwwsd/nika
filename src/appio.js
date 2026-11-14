@@ -198,7 +198,8 @@ export function serveApp({ config, env = process.env, stdin, stdout, stderr, exe
       };
       const snapshot = () => collect({ config: cfg, exec, now: now(), sinceMs: parseSince(DEFAULT_SINCE), since: DEFAULT_SINCE, cache: collectorCache }).then((r) => r.snapshot);
       const picker = createPicker({ send: say, env });
-      attachments = createAttachments({ env, now, log: (line) => stderr.write(`${line}\n`), ...attachOpts });
+      const attachLog = attachOpts.log ?? ((line) => stderr.write(`${line}\n`)); // the store's lines and the routes' go to the same stderr
+      attachments = createAttachments({ env, now, ...attachOpts, log: attachLog });
       // the copy of the app in ~/Applications (ADR 0011): where it comes from and goes to is fixed by this install, never by a request
       const copyArgs = { root: appCopy.root ?? INSTALL_ROOT, home: appCopy.home ?? os.homedir(), platform: appCopy.platform ?? process.platform, stateDir: stateDir(env) };
       const copyDeps = { exec: appCopy.exec ?? makeExec({ timeout: COPY_MS }), ...(appCopy.brewApps ? { brewApps: appCopy.brewApps } : {}) };
@@ -210,6 +211,7 @@ export function serveApp({ config, env = process.env, stdin, stdout, stderr, exe
         mirror: createMirror({ exec, tmuxBin, now }),
         keys: createKeys({ exec, tmuxBin, now }),
         attachments,
+        log: attachLog,
         picker,
         window: (action) => say({ type: 'window', action }), // the shell acts on its window (contract §5)
         appCopy: { state: () => appCopyState(copyArgs, copyDeps), install: () => installAppCopy(copyArgs, copyDeps), dismiss: () => dismissAppCopy(copyArgs, copyDeps) },

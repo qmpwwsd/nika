@@ -60,18 +60,28 @@ function inputBox(rows) {
 }
 
 /**
- * The input box (src/draft.js) of a capture `{ rows, cursor, cols }`: a Draft, or null when the screen has no plain box. The mode
- * line is read with plain spaces (insertShown does the same), so a no-break space inside `-- INSERT --` does not hide the mode.
- * The live reader (the capture route, the write checks, End and the commands) needs the cursor (N-1): a capture whose cursor has no
- * integer x and y has no box, because only the cursor says which rules frame the input. tmux always reports one, so this fails closed
- * only; parseDraft alone, given no cursor, still reads as before.
+ * A capture `{ rows, cursor, cols }` prepared for src/draft.js: `{ rows, cursor, cols }` again, with the no-break spaces of the last
+ * non-blank row made plain spaces (the mode line is read with plain spaces, insertShown does the same, so a no-break space inside
+ * `-- INSERT --` does not hide the mode). null when the cursor has no integer x and y: only the cursor says which rules frame the
+ * input (N-1), so a capture without one has no box. Everything that reads the box of a live pane starts here (readDraft, and the
+ * attachment send's boxSquash), so both read the same screen the same way.
  */
-export function readDraft(seen) {
+export function boxInput(seen) {
   if (!Number.isInteger(seen?.cursor?.x) || !Number.isInteger(seen?.cursor?.y)) return null;
   const rows = Array.isArray(seen?.rows) ? seen.rows : [];
   const last = rows.findLastIndex((row) => rowText(row).trim() !== '');
   const spaced = (row) => (Array.isArray(row) ? row.map((sp) => (typeof sp?.t === 'string' ? { ...sp, t: plain(sp.t) } : sp)) : row);
-  return parseDraft(last < 0 ? rows : rows.map((row, i) => (i === last ? spaced(row) : row)), seen?.cursor, seen?.cols);
+  return { rows: last < 0 ? rows : rows.map((row, i) => (i === last ? spaced(row) : row)), cursor: seen.cursor, cols: seen?.cols };
+}
+
+/**
+ * The input box (src/draft.js) of a capture `{ rows, cursor, cols }`: a Draft, or null when the screen has no plain box (see boxInput
+ * for the cursor and no-break space rules). The live reader (the capture route, the write checks, End and the commands) needs the
+ * cursor (N-1); tmux always reports one, so this fails closed only; parseDraft alone, given no cursor, still reads as before.
+ */
+export function readDraft(seen) {
+  const input = boxInput(seen);
+  return input === null ? null : parseDraft(input.rows, input.cursor, input.cols);
 }
 const draftOf = readDraft;
 /** Whether the capture's cursor sits on a row between the two rules of the box that was read: the input is where the box is. */

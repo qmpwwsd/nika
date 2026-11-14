@@ -19,7 +19,8 @@ import { createSessionControl, promptSig, insertShown, editMode, readDraft, chec
 import { tagPane, pickState, claudePane } from './orchestrate.js';
 import { createFit, checkFitBody, FIT_RATE } from './fit.js';
 import { ID, UPLOAD_CAP, checkUploadBody } from './attachments.js';
-import { createAttachSend, checkAttachBody, logCode } from './attach-send.js';
+import { createAttachSend, checkAttachBody, logLine } from './attach-send.js';
+import { SIG } from './draft.js';
 
 const ELIGIBILITY_TTL_MS = 1000; // pane list + live-agent snapshot, so a 4 Hz capture does not run collect() 4 times a second
 const TEMPLATES_MAX = 50;
@@ -27,7 +28,6 @@ const MODES_AT_ONCE = 4; // captures in flight for GET /modes
 const FIT_WINDOW_MS = 1000; // the window of the per-pane fit rate limit (FIT_RATE requests)
 const COMMAND_MAX = 200; // characters of a slash command typed into Claude
 const CONTROL = /[\u0000-\u001f\u007f-\u009f]/; // C0, DEL, C1
-const SIG = /^[0-9a-f]{16}$/;
 const WINDOW_ACTIONS = ['quit', 'close', 'minimize', 'zoom-in', 'zoom-out', 'zoom-reset']; // what the shell can do to its window (contract §3, §5)
 const CAP = { small: 4 * 1024, settings: 16 * 1024, keys: 20 * 1024, spawn: 80 * 1024 };
 // What can answer a permission prompt: Enter confirms the highlighted option, a digit picks an option, a paste may hold either,
@@ -102,7 +102,8 @@ async function listTemplates(dir) {
  *                           createSessionControl, a test seam for the factory in session-control.js;
  *                           createFit, the same for the factory in fit.js;
  *                           attachments, the attachment store (src/attachments.js, built by appio.js: save, lookup, remove, markSent);
- *                           createAttachSend, the same seam for the factory in attach-send.js }
+ *                           createAttachSend, the same seam for the factory in attach-send.js;
+ *                           log(line), where the attachment lines (`nika: attachments: <code>`) go: appio's stderr, the same as the store's (default: process.stderr) }
  * @returns {(req, res, url, port) => Promise<boolean>} true when it handled the request (every /api/app/* request)
  */
 export function createAppApi({ secret, ctx, deps }) {
@@ -231,9 +232,10 @@ export function createAppApi({ secret, ctx, deps }) {
   }
 
   // Attachments (0.5, W2, ADR 0016): the send runs under the controller's pane lock and keys only while no Stop/End interrupt runs (keyGap).
+  const attachLog = deps.log ?? ((line) => process.stderr.write(`${line}\n`));
   const attachSend = (deps.createAttachSend ?? createAttachSend)({
     mirror: deps.mirror, keys: deps.keys, store: deps.attachments, lock: control.withPaneLock, keyGap: control.keyGap,
-    stateOf: registryState, vimOf: (id) => vim.get(id) === true, plainOf: (id) => plain.get(id) === true,
+    stateOf: registryState, vimOf: (id) => vim.get(id) === true, plainOf: (id) => plain.get(id) === true, log: attachLog,
   });
 
   /**
@@ -602,7 +604,7 @@ export function createAppApi({ secret, ctx, deps }) {
     try {
       return await deps.attachments.save({ pane: id, key, name: body.name, data: body.data });
     } catch (e) {
-      logCode(e);
+      attachLog(logLine(e));
       return err(500, 'write-failed', 'write failed');
     }
   });
@@ -615,7 +617,7 @@ export function createAppApi({ secret, ctx, deps }) {
     try {
       return { status: 200, body: { removed: (await deps.attachments.remove(id, att)) === true } };
     } catch (e) {
-      logCode(e);
+      attachLog(logLine(e));
       return { status: 200, body: { removed: false } };
     }
   });

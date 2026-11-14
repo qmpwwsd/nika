@@ -1,8 +1,9 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { createSessionControl, promptSig } from '../src/session-control.js';
+import { createSessionControl, promptSig, boxInput, readDraft } from '../src/session-control.js';
 import { promptFromRows, rowText } from '../src/mode.js';
-import { RULE_ROW } from '../src/draft.js';
+import { RULE_ROW, parseDraft, boxSquash } from '../src/draft.js';
+import { boxRows } from './helpers.js';
 
 // Synthetic screens only. The phrases follow docs/contracts/claude-tui.md sections 1, 2 and 5; symbols are escapes.
 const DEF = { b: false, fg: null, bg: null, u: false, i: false, d: false };
@@ -2259,5 +2260,49 @@ describe('keyGap (0.5, W2 and W3): no key while a Stop or End interrupt runs, no
     assert.equal(ctl.keyGap('%2'), true, 'the Escape may have been delivered');
     w.t += 40;
     assert.equal(ctl.keyGap('%2'), false);
+  });
+});
+
+describe('boxInput (0.5, W2 fix round 1): the one preparation of a capture for the box readers', () => {
+  const vimInsert = (nbsp) => { // the mode line with a no-break space where Claude may draw one: inside `-- INSERT --`
+    const s = boxRows({ cols: 80, lines: ['hello'], insert: true, pad: true });
+    s.rows[s.rows.length - 1] = s.rows.at(-1).map((sp2) => (sp2.t === '-- INSERT --' && nbsp ? { ...sp2, t: '-- INSERT\u00a0--' } : sp2));
+    return s;
+  };
+
+  test('(+) rows, cursor and cols come back; the no-break spaces of the LAST non-blank row become plain spaces, no other row changes', () => {
+    const s = vimInsert(true);
+    const out = boxInput(s);
+    assert.equal(out.cursor, s.cursor);
+    assert.equal(out.cols, s.cols);
+    assert.equal(out.rows.length, s.rows.length);
+    assert.equal(rowText(out.rows.at(-1)).includes('\u00a0'), false);
+    assert.match(rowText(out.rows.at(-1)), /-- INSERT --/);
+    for (let i = 0; i < s.rows.length - 1; i += 1) assert.equal(out.rows[i], s.rows[i], `row ${i} is the same object`);
+    assert.equal(rowText(s.rows[1]).includes('\u00a0'), true, 'the prompt row keeps the no-break space Claude draws after the glyph');
+  });
+
+  test('(+) readDraft is parseDraft of the prepared capture, and the attachment send\'s boxSquash reads the same draft from it (same sig)', () => {
+    for (const s of [vimInsert(true), vimInsert(false), boxRows({ cols: 80, lines: ['a b', 'c'], pad: true }), boxRows({ cols: 80, lines: [''] })]) {
+      const input = boxInput(s);
+      assert.deepEqual(readDraft(s), parseDraft(input.rows, input.cursor, input.cols));
+      assert.deepEqual(boxSquash(input.rows, input.cursor, input.cols).draft, readDraft(s));
+    }
+    assert.equal(readDraft(vimInsert(true)).state, 'text');
+  });
+
+  test('(−) no integer cursor x and y: null, so readDraft is null too (N-1)', () => {
+    const s = boxRows({ cols: 80, lines: ['hello'] });
+    for (const cursor of [null, undefined, {}, { x: 1 }, { x: 1.5, y: 2 }, { x: '1', y: '2' }]) {
+      assert.equal(boxInput({ ...s, cursor }), null, JSON.stringify(cursor));
+      assert.equal(readDraft({ ...s, cursor }), null);
+    }
+    assert.equal(boxInput(null), null);
+    assert.equal(boxInput(undefined), null);
+  });
+
+  test('(−) rows that are not an array, or a screen with no non-blank row, do not throw', () => {
+    assert.deepEqual(boxInput({ rows: 'x', cursor: { x: 0, y: 0 }, cols: 80 }).rows, []);
+    assert.deepEqual(boxInput({ rows: [[], []], cursor: { x: 0, y: 0 }, cols: 80 }).rows, [[], []]);
   });
 });

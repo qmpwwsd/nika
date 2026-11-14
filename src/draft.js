@@ -19,6 +19,10 @@ const LABELLED = /^\u2500{2,} ([^\u2500]+) \u2500+$/u;
 // Claude's own stand-ins for content it cannot show as text: a paste (`[Pasted text #4 +3 lines]`) and an image (`[Image #1]`).
 const PASTED = /\[(?:Pasted text|Image) #\d+(?: \+\d+ lines)?\]/;
 const pastedIn = (text) => PASTED.test(text.replace(/\s+/g, ' ')); // a wrap or a newline may sit anywhere inside it
+/** A sig (a draft's or a permission prompt's): 16 lowercase hex characters. One definition for the routes and the attachment send. */
+export const SIG = /^[0-9a-f]{16}$/;
+/** Text with every whitespace removed: what the attachment send compares, blind to wraps and to the spaces Claude adds around a placeholder. */
+export const squash = (s) => s.replace(/\s+/g, '');
 const GLYPHS = { '\u276f': 'prompt', '!': 'bash' };
 const TALL_ROWS = 14; // a box of 14 rows or more may be a scrolled window of a taller draft (S9)
 const SUGGESTION_MAX = 200;
@@ -289,10 +293,12 @@ function readBox(rows, cursor, cols) {
  * for an unreadable draft too, when the rows were split: a box that holds `[Image #1]` is `unreadable: pasted`, and the send must still
  * read what is in it. null when the screen has no plain box, or the box was refused before its rows were split (history, tall, layout).
  * Whitespace-blind on purpose: a wrap, Claude's own spacing or a wrap that reads two ways do not matter, content does.
+ * `ghost` is true when any box row held ghost text (a completion, a suggestion, the slash hint): draft.ghost says so only for a readable
+ * draft, because every unreadable one (`[Image #1]` is one) reads ghost false.
  */
 export function boxSquash(rows, cursor, cols) {
   const box = readBox(rows, cursor, cols);
-  return box?.parts ? { draft: box.draft, squash: box.parts.map((p) => p.text).join('').replace(/\s+/g, '') } : null;
+  return box?.parts ? { draft: box.draft, squash: squash(box.parts.map((p) => p.text).join('')), ghost: box.parts.some((p) => p.ghost) } : null;
 }
 
 /** The form two drafts are compared in: a tab is 4 spaces (Claude draws it so), a no-break space is a space, trailing spaces of every line go. */

@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { createAttachSend, checkAttachBody, errorCode, logCode } from '../src/attach-send.js';
+import { createAttachSend, checkAttachBody, errorCode, logLine } from '../src/attach-send.js';
 import { readDraft } from '../src/session-control.js';
 import { boxRows, span } from './helpers.js';
 
@@ -25,7 +25,7 @@ const SURVEY = ['● How is Claude doing this session? (optional)', '  1: Bad   
 /** A scripted pane + fakes. `o`: cols, insert (vim INSERT shown), vim / plain (nika's memory), spaces ('none' | 'claude'), lag (captures before a paste shows), imageStaysText, drop, text, records, lockBusy. */
 function rig(o = {}) {
   const opt = { cols: 100, insert: false, vim: false, plain: false, spaces: 'none', lag: 0, imageStaysText: false, drop: false, text: '', lockBusy: false, ...o };
-  const pane = { text: opt.text, n: 0, prompt: false, screen: null, mode: 'prompt', state: 'idle', gap: false, cursor: undefined, pending: [], submitted: [], stateThrows: false };
+  const pane = { text: opt.text, n: 0, prompt: false, screen: null, mode: 'prompt', state: 'idle', gap: false, cursor: undefined, pending: [], submitted: [], stateThrows: false, ghost: null };
   const sent = [];
   const captures = [];
   const slept = [];
@@ -38,7 +38,7 @@ function rig(o = {}) {
   const render = () => {
     if (pane.screen) return pane.screen;
     if (pane.prompt) return PROMPT();
-    return boxRows({ cols: opt.cols, lines: pane.text === '' ? [''] : chop(pane.text, opt.cols - 4), mode: pane.mode, insert: opt.insert, ghost: pane.text === '' ? 'Try "fix lint errors"' : null, cursor: pane.cursor, pad: true });
+    return boxRows({ cols: opt.cols, lines: pane.text === '' ? [''] : chop(pane.text, opt.cols - 4), mode: pane.mode, insert: opt.insert, ghost: pane.text === '' ? 'Try "fix lint errors"' : pane.ghost, cursor: pane.cursor, pad: true });
   };
   const mirror = {
     async capture(id, inm, o2) {
@@ -99,7 +99,7 @@ function rig(o = {}) {
     vimOf: () => opt.vim,
     plainOf: () => opt.plain,
     sleep: async (ms) => { slept.push(ms); },
-    log: (e) => log.push(e),
+    log: (line) => log.push(line),
   });
   const base = () => readDraft(render())?.sig ?? BASE;
   return { pane, sent, captures, slept, log, marked, lookups, states, records, send, base, render, locks: () => locks, opt };
@@ -462,30 +462,129 @@ describe('send: it stops when the screen is not what was built (T38, T51)', () =
     rg.pane.onCapture = (n) => { if (n === 2) throw Object.assign(new Error('boom /srv/nika/secret/path'), { code: 'EIO' }); };
     const r = await go(rg, [PNG]);
     assert.deepEqual(r, { status: 500, body: { error: 'internal', message: 'internal error', pasted: 1 } });
-    assert.equal(rg.log.length, 1);
+    assert.deepEqual(rg.log, ['nika: attachments: EIO'], 'the injected log got the code line and nothing of the message');
     assert.equal(rg.sent.some((b) => b.keys), false);
   });
 });
 
+describe('send: prompt mode and ghost text at the end (M1, M2)', () => {
+  const stopped = async (rg, recs, pasted) => {
+    const r = await go(rg, recs);
+    assert.equal(r.status, 409, JSON.stringify(r.body));
+    assert.equal(r.body.error, 'screen-changed');
+    assert.equal(r.body.pasted, pasted);
+    assert.equal(rg.sent.some((b) => b.keys), false, 'no Enter');
+    assert.deepEqual(rg.marked, []);
+    return r;
+  };
+
+  test('(−) M1: a `!` typed into the box after the first paste (the glyph is not in the squash): the next paste is refused and no Enter goes out', async () => {
+    const rg = rig();
+    rg.pane.onSend = (b, n) => { if (n === 1) rg.pane.mode = 'bash'; };
+    await stopped(rg, [PNG, PDF], 1);
+    assert.deepEqual(pastes(rg), [PNG.path]);
+  });
+
+  test('(−) M1: a `!` typed in the last moment, with every paste read back equal: the read before Enter refuses it', async () => {
+    const rg = rig();
+    rg.pane.onSend = (b, n) => { if (n === 1) rg.pane.mode = 'bash'; };
+    await stopped(rg, [PNG], 1);
+    assert.equal(rg.pane.submitted.length, 0);
+  });
+
+  test('(−) M1: the same for a text file (a path that stays text) and for a `!` that shows only on the read before Enter', async () => {
+    const text = rig({ text: 'see' });
+    text.pane.onSend = (b, n) => { if (n === 1) text.pane.mode = 'bash'; };
+    await stopped(text, [PDF], 1);
+    const late = rig();
+    late.pane.onCapture = (n) => { if (n === 3) late.pane.mode = 'bash'; }; // 1 first look, 2 wait, 3 the capture before Enter
+    await stopped(late, [PNG], 1);
+  });
+
+  test('(−) M2: ghost text in the box on the read before Enter (a completion Enter might accept): no Enter, screen-changed { pasted }', async () => {
+    const rg = rig();
+    rg.pane.onCapture = (n) => { if (n === 3) rg.pane.ghost = ' and then more'; };
+    await stopped(rg, [PNG], 1);
+    assert.equal(rg.marked.length, 0);
+  });
+
+  test('(−) M2: ghost text beside a pasted text path (a readable-squash box too)', async () => {
+    const rg = rig({ text: 'see' });
+    rg.pane.onCapture = (n) => { if (n === 3) rg.pane.ghost = ' completion'; };
+    await stopped(rg, [PDF], 1);
+  });
+
+  test('(+) M2: the placeholder `Try "..."` of the empty box before the first paste is not a reason to refuse (it is gone once text is in)', async () => {
+    const rg = rig();
+    assert.equal((await go(rg, [PNG])).status, 200);
+  });
+});
+
+describe('send: boxes with no squash still name their reason (M4)', () => {
+  const unreadable = async (screen, reason) => {
+    const rg = rig();
+    rg.pane.screen = screen;
+    const r = await go(rg, [PNG], BASE);
+    assert.equal(r.status, 409, JSON.stringify(r.body));
+    assert.equal(r.body.error, 'draft-unreadable', JSON.stringify(r.body));
+    assert.equal(r.body.reason, reason);
+    assert.equal(r.body.draft.state, 'unreadable');
+    assert.equal(r.body.draft.reason, reason);
+    assert.equal(typeof r.body.draft.edit, 'string');
+    assert.equal(r.body.pasted, 0);
+    assert.deepEqual(rg.sent, []);
+  };
+
+  test('(−) a History box answers draft-unreadable { reason: "history" }, not input-unreadable', async () => {
+    await unreadable(boxRows({ cols: 100, lines: ['an older draft'], label: 'History 3/3', pad: true }), 'history');
+  });
+
+  test('(−) a box of 14 rows or more (maybe a window of a taller draft) answers reason "tall"', async () => {
+    await unreadable(boxRows({ cols: 100, lines: Array.from({ length: 14 }, (_, i) => `row ${i + 1}`), pad: true }), 'tall');
+  });
+
+  test('(−) a box row Claude does not draw (neither two spaces nor blank) answers reason "layout"', async () => {
+    const s = boxRows({ cols: 100, lines: ['hello', 'world'], pad: true });
+    s.rows[2] = [span('xx world'.padEnd(100))];
+    await unreadable(s, 'layout');
+  });
+
+  test('(−) no box at all still answers mode-unknown / input-unreadable (a dialog, a survey, no cursor)', async () => {
+    const rg = rig();
+    rg.pane.screen = boxRows({ cols: 100, lines: ['hello'], footer: 'Enter to select', pad: true });
+    assert.equal((await go(rg, [PNG], BASE)).body.error, 'mode-unknown');
+  });
+});
+
 describe('the log carries a code, never a message', () => {
-  test('(+) errorCode keeps a node error code, anything else is ERR; logCode writes one fixed-shape line', () => {
+  test('(+) errorCode keeps a node error code, anything else is ERR; logLine is one fixed-shape line', () => {
     assert.equal(errorCode(Object.assign(new Error('/srv/x'), { code: 'EIO' })), 'EIO');
     assert.equal(errorCode(Object.assign(new Error('x'), { code: 'not a code /srv/x' })), 'ERR');
     assert.equal(errorCode(new Error('/srv/x')), 'ERR');
     assert.equal(errorCode(null), 'ERR');
+    assert.equal(logLine(Object.assign(new Error('/srv/nika/secret'), { code: 'EIO' })), 'nika: attachments: EIO');
+  });
+
+  test('(+) the log is injected: an unexpected error reaches the given log as one line and process.stderr gets nothing (M7)', async () => {
     const lines = [];
+    const stderr = [];
     const write = process.stderr.write;
-    process.stderr.write = (s) => { lines.push(String(s)); return true; };
+    process.stderr.write = (s) => { stderr.push(String(s)); return true; };
+    const send = createAttachSend({
+      mirror: { capture: async () => { throw Object.assign(new Error('boom /srv/nika/secret'), { code: 'EACCES' }); } },
+      keys: { send: async () => { throw new Error('never'); } }, store: { lookup: async (p, id) => ({ ...PNG, id }), markSent() {} },
+      lock: async (p, fn) => fn(), keyGap: () => false, stateOf: async () => 'idle', vimOf: () => false, log: (line) => lines.push(line),
+    });
     try {
-      logCode(Object.assign(new Error('/srv/nika/secret'), { code: 'EIO' }));
+      assert.equal((await send.send(PANE, { ids: [PNG.id], base: BASE })).status, 500);
     } finally {
       process.stderr.write = write;
     }
-    assert.deepEqual(lines, ['nika: attachments: EIO\n']);
+    assert.deepEqual(lines, ['nika: attachments: EACCES']);
+    assert.deepEqual(stderr, []);
   });
 
-  test('(−) the default log of the sender writes only the code of an unexpected error', async () => {
-    const rg = rig();
+  test('(−) with no log given, the default writes only the code of an unexpected error, to stderr', async () => {
     const lines = [];
     const write = process.stderr.write;
     process.stderr.write = (s) => { lines.push(String(s)); return true; };
@@ -495,13 +594,11 @@ describe('the log carries a code, never a message', () => {
       lock: async (p, fn) => fn(), keyGap: () => false, stateOf: async () => 'idle', vimOf: () => false,
     });
     try {
-      const r = await send.send(PANE, { ids: [PNG.id], base: BASE });
-      assert.equal(r.status, 500);
+      assert.equal((await send.send(PANE, { ids: [PNG.id], base: BASE })).status, 500);
     } finally {
       process.stderr.write = write;
     }
     assert.deepEqual(lines, ['nika: attachments: EACCES\n']);
-    assert.equal(rg.sent.length, 0);
   });
 });
 
@@ -515,5 +612,16 @@ describe('source', () => {
     assert.deepEqual(bodies, ["paste: image || expect === '' ? r.path : ` ${r.path}`", "keys: ['Enter']"], 'the only two key bodies the module builds');
     const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '').replace(/\s\/\/ .*$/gm, '');
     assert.doesNotMatch(code, /\b(Escape|BSpace|BTab|C-u|send-keys|execFile|child_process)\b/);
+  });
+
+  test('(+) the box is read through the shared preparation and the shared definitions (M5, M6): no copy of readDraft\'s row fix, of squash or of SIG', async () => {
+    const { default: fs } = await import('node:fs');
+    const code = fs.readFileSync(new URL('../src/attach-send.js', import.meta.url), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+    assert.match(code, /import \{[^}]*\bboxInput\b[^}]*\} from '\.\/session-control\.js'/);
+    assert.match(code, /import \{[^}]*\bsquash\b[^}]*\bSIG\b[^}]*\} from '\.\/draft\.js'/);
+    assert.doesNotMatch(code, /xa0|findLastIndex|const squash|const SIG|\\s\+/, 'no private copy of the row fix, squash or SIG');
+    const api = fs.readFileSync(new URL('../src/api-app.js', import.meta.url), 'utf8');
+    assert.doesNotMatch(api, /^const SIG\b/m);
+    assert.match(api, /import \{ SIG \} from '\.\/draft\.js'/);
   });
 });

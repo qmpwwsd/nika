@@ -5,23 +5,22 @@
 // and the answer is a 409 that says how many pastes already went out. It never types literal text, Escape, C-u, BSpace, Tab, BTab,
 // a digit or an arrow, never clears a box it pasted into, and never logs a path, an id, a name or a draft. Keep this file ASCII.
 import { ID, PATH_OK, PER_MESSAGE } from './attachments.js';
-import { boxSquash } from './draft.js';
-import { editMode } from './session-control.js';
-import { modeFromRows, promptFromRows, rowText } from './mode.js';
+import { boxSquash, squash, SIG } from './draft.js';
+import { boxInput, editMode, readDraft } from './session-control.js';
+import { modeFromRows, promptFromRows } from './mode.js';
 
 const LOCK_BUSY = 'EPANEBUSY';
 const POLL_MS = 150; // between the captures that wait for a paste to show
 const IMAGE_WAIT = 10; // 1.5 s: the path is replaced by `[Image #N]` at once (S4); a large PNG needs a read
 const TEXT_WAIT = 4; // 0.6 s: a path that stays text
-const SIG = /^[0-9a-f]{16}$/;
 const IMAGES = new Set(['png', 'jpeg', 'gif', 'webp']);
 const PLACEHOLDER = /^\[Image#\d+\]$/; // what a squashed image placeholder reads as (any N)
-const squash = (s) => s.replace(/\s+/g, '');
 const realSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** A node error code only, never the error object: its message could carry a path. */
 export const errorCode = (err) => (/^[A-Z0-9_]{1,20}$/.test(err?.code) ? err.code : 'ERR');
-export const logCode = (err) => process.stderr.write(`nika: attachments: ${errorCode(err)}\n`);
+/** The one log line an error gets, `nika: attachments: <code>`; the caller writes it where the app tier's other lines go (appio's stderr). */
+export const logLine = (err) => `nika: attachments: ${errorCode(err)}`;
 
 /** The body of the route, exactly `{ ids, base }`: 1 to 6 unique attachment ids and the 16 hex `sig` the page last synced on. null = fine, else the 400. */
 export function checkAttachBody(body) {
@@ -34,27 +33,24 @@ export function checkAttachBody(body) {
 }
 
 /**
- * The box of a capture with its squash: the reading of readDraft (src/session-control.js: a cursor with integer x and y is needed, the
- * mode line is read with plain spaces so a no-break space inside `-- INSERT --` does not hide the mode) plus boxSquash (src/draft.js).
- * { draft, squash } or null.
+ * The box of a capture with its squash: the same preparation readDraft uses (boxInput in src/session-control.js, so the sig always
+ * matches the page's) and boxSquash (src/draft.js). { draft, squash, ghost } or null.
  */
 function readSeen(seen) {
-  if (!Number.isInteger(seen?.cursor?.x) || !Number.isInteger(seen?.cursor?.y)) return null;
-  const rows = Array.isArray(seen.rows) ? seen.rows : [];
-  const last = rows.findLastIndex((row) => rowText(row).trim() !== '');
-  const spaced = (row) => (Array.isArray(row) ? row.map((sp) => (typeof sp?.t === 'string' ? { ...sp, t: sp.t.replace(/\xa0/g, ' ') } : sp)) : row);
-  return boxSquash(last < 0 ? rows : rows.map((row, i) => (i === last ? spaced(row) : row)), seen.cursor, seen.cols);
+  const input = boxInput(seen);
+  return input === null ? null : boxSquash(input.rows, input.cursor, input.cols);
 }
 
 /**
  * mirror.capture(pane, undefined, { fresh }) and keys.send(pane, { paste?, keys? }) as in src/mirror.js and src/keys.js; store = the
  * attachment store (src/attachments.js: lookup, markSent); lock(pane, fn) = the controller's per-pane lock (it rejects with an Error whose
  * code is EPANEBUSY after 5 s); keyGap(pane) = true while a Stop or End interrupt runs or its Escape went out < 40 ms ago;
- * stateOf(pane, { fresh: true }) = the registry state; vimOf / plainOf(pane) = what nika remembers of the pane's edit mode.
+ * stateOf(pane, { fresh: true }) = the registry state; vimOf / plainOf(pane) = what nika remembers of the pane's edit mode;
+ * log(line) = where an internal error's code line goes (default: stderr; the app tier passes appio's).
  * send(pane, { ids, base }) -> { status, body }: 200 { sent, images }; else { error, pasted, ... } with `pasted` = the paste requests that
  * went out before it stopped, and `draft` where the box was readable. A body never carries a path.
  */
-export function createAttachSend({ mirror, keys, store, lock, keyGap, stateOf, vimOf, plainOf = () => false, sleep = realSleep, log = logCode }) {
+export function createAttachSend({ mirror, keys, store, lock, keyGap, stateOf, vimOf, plainOf = () => false, sleep = realSleep, log = (line) => process.stderr.write(`${line}\n`) }) {
   async function attach(pane, { ids, base }, count) {
     const refuse = (error, extra = {}) => ({ status: 409, body: { error, pasted: count.pasted, ...extra } });
     const passed = (res) => ({ status: res.status, body: { ...res.body, pasted: count.pasted } }); // a capture's or a key send's own answer
@@ -69,7 +65,7 @@ export function createAttachSend({ mirror, keys, store, lock, keyGap, stateOf, v
         return null; // a failed registry read is never idle
       }
     };
-    const view = async (box, rows) => ({ ...box.draft, edit: editMode(rows, (await vimOf(pane)) === true, (await plainOf(pane)) === true) });
+    const view = async (draft, rows) => ({ ...draft, edit: editMode(rows, (await vimOf(pane)) === true, (await plainOf(pane)) === true) });
     // The one place a key leaves: never while a Stop or End interrupt runs or within 40 ms of its Escape (N-2).
     const press = async (body) => {
       if (keyGap(pane)) return refuse('not-idle');
@@ -93,10 +89,16 @@ export function createAttachSend({ mirror, keys, store, lock, keyGap, stateOf, v
     if (promptFromRows(seen.rows) !== null) return refuse('not-idle');
     // 4.-9. the box is plain, readable, ours to paste into, and the page synced on exactly this
     const box = readSeen(seen);
-    if (box === null) return refuse(modeFromRows(seen.rows) === 'unknown' ? 'mode-unknown' : 'input-unreadable');
+    const unreadable = async (d) => refuse('draft-unreadable', { reason: d.reason, draft: await view(d, seen.rows) });
+    if (box === null) {
+      // a history, tall or early-layout box has no squash but is a draft nika can name the reason of; anything else is no plain box
+      const d = readDraft(seen);
+      if (d?.state === 'unreadable') return unreadable(d);
+      return refuse(modeFromRows(seen.rows) === 'unknown' ? 'mode-unknown' : 'input-unreadable');
+    }
     const { draft } = box;
-    const withDraft = async (error, extra) => refuse(error, { ...extra, draft: await view(box, seen.rows) });
-    if (draft.state === 'unreadable') return withDraft('draft-unreadable', { reason: draft.reason });
+    const withDraft = async (error, extra) => refuse(error, { ...extra, draft: await view(draft, seen.rows) });
+    if (draft.state === 'unreadable') return unreadable(draft);
     if (draft.mode === 'bash') return withDraft('shell-mode');
     if (draft.sig !== base) return withDraft('draft-changed');
     if (draft.state === 'text' && !draft.cursorAtEnd) return withDraft('cursor-not-at-end'); // vim NORMAL sits one left; a mid-text cursor would split the text
@@ -112,7 +114,8 @@ export function createAttachSend({ mirror, keys, store, lock, keyGap, stateOf, v
         if (seen.res) return seen.res;
       }
       const before = promptFromRows(seen.rows) === null ? readSeen(seen) : null;
-      if (before === null || before.squash !== expect) return refuse('screen-changed'); // a prompt, a menu, a search, or the user typed
+      // a prompt, a menu, a search, the user typed, or a `!` typed into the box (the glyph is not part of the squash): Enter would run a shell line
+      if (before === null || before.draft.mode !== 'prompt' || before.squash !== expect) return refuse('screen-changed');
       const sent = await press({ paste: image || expect === '' ? r.path : ` ${r.path}` });
       if (sent) return sent;
       count.pasted += 1;
@@ -141,7 +144,8 @@ export function createAttachSend({ mirror, keys, store, lock, keyGap, stateOf, v
     const final = await look();
     if (final.res) return final.res;
     const closing = promptFromRows(final.rows) === null ? readSeen(final) : null;
-    if (closing === null || closing.squash !== expect) return refuse('screen-changed');
+    // prompt mode only, and no ghost text: what Enter does with a ghost completion is untested (M-4), as for End and the commands
+    if (closing === null || closing.draft.mode !== 'prompt' || closing.ghost || closing.squash !== expect) return refuse('screen-changed');
     // 14. the one Enter
     const enter = await press({ keys: ['Enter'] });
     if (enter) return enter;
@@ -158,7 +162,7 @@ export function createAttachSend({ mirror, keys, store, lock, keyGap, stateOf, v
         return await lock(pane, () => attach(pane, body, count));
       } catch (err) {
         if (err?.code === LOCK_BUSY) return { status: 409, body: { error: 'busy-switching', pasted: 0 } };
-        log(err); // the code only: an error object could carry a path
+        log(logLine(err)); // the code only: an error object could carry a path
         return { status: 500, body: { error: 'internal', message: 'internal error', pasted: count.pasted } };
       }
     },

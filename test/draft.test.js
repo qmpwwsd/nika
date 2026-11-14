@@ -2,7 +2,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
-import { parseDraft, boxSquash, RULE_ROW, HISTORY_LABEL, normDraft, sameDraft, inEnvelope, chunks } from '../src/draft.js';
+import { parseDraft, boxSquash, squash, SIG, RULE_ROW, HISTORY_LABEL, normDraft, sameDraft, inEnvelope, chunks } from '../src/draft.js';
 import { rowText } from '../src/mode.js';
 import { readDraft } from '../src/session-control.js';
 import { boxRows, span, subagentRows } from './helpers.js';
@@ -1426,5 +1426,23 @@ describe('boxSquash (0.5, W2): what the box really holds, whitespace removed', (
       const s = boxRows({ lines });
       assert.equal(boxSquash(s.rows, s.cursor, s.cols), null, JSON.stringify(lines));
     }
+  });
+
+  test('(+) ghost (M2): true when the box holds ghost text next to real text, also for an unreadable draft; false for plain text', () => {
+    assert.equal(squashOf({ lines: ['look at these'] }).ghost, false);
+    assert.equal(squashOf({ lines: ['look at these'], ghost: ' and more' }).ghost, true, 'a completion after the text');
+    const placeholder = squashOf({ lines: ['[Image #1]'], ghost: ' tail' });
+    assert.equal(placeholder.draft.state, 'unreadable');
+    assert.equal(placeholder.draft.ghost, false, 'draft.ghost reads false for every unreadable draft');
+    assert.equal(placeholder.ghost, true, 'boxSquash still says the ghost text is there');
+    assert.equal(squashOf({ lines: ['[Image #1]'] }).ghost, false);
+  });
+
+  test('(+) squash and SIG are defined once, here (M6): squash removes every whitespace, SIG is 16 lowercase hex characters', () => {
+    assert.equal(squash('a \n\tb\u00a0c'), 'abc');
+    assert.equal(squash(''), '');
+    assert.equal(squashOf({ lines: ['a  b'] }).squash, squash('a  b'));
+    assert.equal(SIG.test('0123456789abcdef'), true);
+    for (const bad of ['', '0123456789ABCDEF', '0123456789abcde', '0123456789abcdef0', '0123456789abcdeg', '0123456789abcdef\n']) assert.equal(SIG.test(bad), false, JSON.stringify(bad));
   });
 });
