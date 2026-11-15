@@ -1,9 +1,10 @@
 // The attachment send (0.5, W2, design-W2 section 5; rules constraints 5, 9, 10, 12; threat T38): puts the stored files of a message
 // into Claude's input box and presses Enter. It pastes only the absolute path of a file nika stored itself (one bracketed paste per
 // file, after the text the page synced), reads the box back after every paste, and presses Enter once, last, after a fresh check.
-// Every step fails closed: whatever the screen or the registry shows that is not exactly what the step needs, nothing more is sent
-// and the answer is a 409 that says how many pastes already went out. It never types literal text, Escape, C-u, BSpace, Tab, BTab,
-// a digit or an arrow, never clears a box it pasted into, and never logs a path, an id, a name or a draft. Keep this file ASCII.
+// It sends while Claude works too (W13, owner decision 2026-11-15): Claude queues the message, so no step reads the registry.
+// Every step fails closed: whatever the screen shows that is not exactly what the step needs, nothing more is sent and the answer
+// is a 409 that says how many pastes already went out. It never types literal text, Escape, C-u, BSpace, Tab, BTab, a digit or an
+// arrow, never clears a box it pasted into, and never logs a path, an id, a name or a draft. Keep this file ASCII.
 import { ID, PATH_OK, PER_MESSAGE } from './attachments.js';
 import { boxSquash, squash, SIG } from './draft.js';
 import { boxInput, editMode, readDraft } from './session-control.js';
@@ -45,25 +46,18 @@ function readSeen(seen) {
  * mirror.capture(pane, undefined, { fresh }) and keys.send(pane, { paste?, keys? }) as in src/mirror.js and src/keys.js; store = the
  * attachment store (src/attachments.js: lookup, markSent); lock(pane, fn) = the controller's per-pane lock (it rejects with an Error whose
  * code is EPANEBUSY after 5 s); keyGap(pane) = true while a Stop or End interrupt runs or its Escape went out < 40 ms ago;
- * stateOf(pane, { fresh: true }) = the registry state; vimOf / plainOf(pane) = what nika remembers of the pane's edit mode;
+ * vimOf / plainOf(pane) = what nika remembers of the pane's edit mode;
  * log(line) = where an internal error's code line goes (default: stderr; the app tier passes appio's).
  * send(pane, { ids, base }) -> { status, body }: 200 { sent, images }; else { error, pasted, ... } with `pasted` = the paste requests that
  * went out before it stopped, and `draft` where the box was readable. A body never carries a path.
  */
-export function createAttachSend({ mirror, keys, store, lock, keyGap, stateOf, vimOf, plainOf = () => false, sleep = realSleep, log = (line) => process.stderr.write(`${line}\n`) }) {
+export function createAttachSend({ mirror, keys, store, lock, keyGap, vimOf, plainOf = () => false, sleep = realSleep, log = (line) => process.stderr.write(`${line}\n`) }) {
   async function attach(pane, { ids, base }, count) {
     const refuse = (error, extra = {}) => ({ status: 409, body: { error, pasted: count.pasted, ...extra } });
     const passed = (res) => ({ status: res.status, body: { ...res.body, pasted: count.pasted } }); // a capture's or a key send's own answer
     const look = async () => {
       const cap = await mirror.capture(pane, undefined, { fresh: true });
       return cap.status === 200 ? { rows: cap.body.rows, cursor: cap.body.cursor, cols: cap.body.cols } : { res: passed(cap) };
-    };
-    const state = async () => {
-      try {
-        return await stateOf(pane, { fresh: true });
-      } catch {
-        return null; // a failed registry read is never idle
-      }
     };
     const view = async (draft, rows) => ({ ...draft, edit: editMode(rows, (await vimOf(pane)) === true, (await plainOf(pane)) === true) });
     // The one place a key leaves: never while a Stop or End interrupt runs or within 40 ms of its Escape (N-2).
@@ -81,8 +75,8 @@ export function createAttachSend({ mirror, keys, store, lock, keyGap, stateOf, v
       if (!PATH_OK.test(r.path) || (!IMAGES.has(r.type) && r.type !== 'pdf' && r.type !== 'text')) return refuse('path-unusable', { id }); // a store bug must not reach tmux
       records.push(r);
     }
-    // 2. nothing runs: no Stop/End interrupt and the registry says idle right now
-    if (keyGap(pane) || (await state()) !== 'idle') return refuse('not-idle');
+    // 2. no Stop/End interrupt runs and none went out < 40 ms ago (a busy Claude is fine: it queues the message)
+    if (keyGap(pane)) return refuse('not-idle');
     // 3. one fresh capture with no permission prompt (T51: a paste never lands in a prompt)
     let seen = await look();
     if (seen.res) return seen.res;
@@ -139,8 +133,8 @@ export function createAttachSend({ mirror, keys, store, lock, keyGap, stateOf, v
       }
     }
 
-    // 13. right before Enter: still idle, a fresh capture reads exactly what was built
-    if (keyGap(pane) || (await state()) !== 'idle') return refuse('not-idle');
+    // 13. right before Enter: no interrupt, a fresh capture reads exactly what was built
+    if (keyGap(pane)) return refuse('not-idle');
     const final = await look();
     if (final.res) return final.res;
     const closing = promptFromRows(final.rows) === null ? readSeen(final) : null;

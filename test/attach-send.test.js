@@ -22,9 +22,9 @@ const chop = (text, width) => { const out = []; for (let i = 0; i < text.length;
 const PROMPT = () => ({ rows: [[span('Read file')], [span(' Do you want to proceed?')], [span(' ❯ 1. Yes')], [span('   2. No')], [span(' Esc to cancel')]], cursor: { x: 0, y: 0, visible: true }, cols: 100 });
 const SURVEY = ['● How is Claude doing this session? (optional)', '  1: Bad    2: Fine    3: Good    0: Dismiss'];
 
-/** A scripted pane + fakes. `o`: cols, insert (vim INSERT shown), vim / plain (nika's memory), spaces ('none' | 'claude'), lag (captures before a paste shows), imageStaysText, drop, text, records, lockBusy. */
+/** A scripted pane + fakes. `o`: cols, insert (vim INSERT shown), vim / plain (nika's memory), spaces ('none' | 'claude'), lag (captures before a paste shows), imageStaysText, drop, text, records, lockBusy, registry (false = the caller passes no stateOf), queued (the empty box shows Claude's queued placeholder). */
 function rig(o = {}) {
-  const opt = { cols: 100, insert: false, vim: false, plain: false, spaces: 'none', lag: 0, imageStaysText: false, drop: false, text: '', lockBusy: false, ...o };
+  const opt = { cols: 100, insert: false, vim: false, plain: false, spaces: 'none', lag: 0, imageStaysText: false, drop: false, text: '', lockBusy: false, registry: true, queued: false, ...o };
   const pane = { text: opt.text, n: 0, prompt: false, screen: null, mode: 'prompt', state: 'idle', gap: false, cursor: undefined, pending: [], submitted: [], stateThrows: false, ghost: null };
   const sent = [];
   const captures = [];
@@ -38,7 +38,7 @@ function rig(o = {}) {
   const render = () => {
     if (pane.screen) return pane.screen;
     if (pane.prompt) return PROMPT();
-    return boxRows({ cols: opt.cols, lines: pane.text === '' ? [''] : chop(pane.text, opt.cols - 4), mode: pane.mode, insert: opt.insert, ghost: pane.text === '' ? 'Try "fix lint errors"' : pane.ghost, cursor: pane.cursor, pad: true });
+    return boxRows({ cols: opt.cols, lines: pane.text === '' ? [''] : chop(pane.text, opt.cols - 4), mode: pane.mode, insert: opt.insert, ghost: pane.text === '' ? (opt.queued ? 'Press up to edit queued messages' : 'Try "fix lint errors"') : pane.ghost, cursor: pane.cursor, pad: true });
   };
   const mirror = {
     async capture(id, inm, o2) {
@@ -91,11 +91,12 @@ function rig(o = {}) {
       return fn();
     },
     keyGap: () => (typeof pane.gap === 'function' ? pane.gap(sent.length) : pane.gap),
-    stateOf: async (id, o2) => {
+    // W13: a trap, not a dependency. createAttachSend ignores it; `states` must stay empty and no registry value may change an answer.
+    ...(opt.registry ? { stateOf: async (id, o2) => {
       states.push(o2);
       if (pane.stateThrows) throw new Error('registry unreadable');
       return typeof pane.state === 'function' ? pane.state(sent.length) : pane.state;
-    },
+    } } : {}),
     vimOf: () => opt.vim,
     plainOf: () => opt.plain,
     sleep: async (ms) => { slept.push(ms); },
@@ -215,12 +216,40 @@ describe('send: the road that works', () => {
     assert.deepEqual(rg.slept, [150, 150, 150]);
   });
 
-  test('(+) every capture is fresh and every registry read skips its cache; a one-file send takes three captures and two registry reads', async () => {
+  test('(+) every capture is fresh; a one-file send takes three captures and reads no registry', async () => {
     const rg = rig();
     await go(rg, [PNG]);
     assert.deepEqual(rg.captures, [{ fresh: true }, { fresh: true }, { fresh: true }]);
-    assert.deepEqual(rg.states, [{ fresh: true }, { fresh: true }]);
+    assert.deepEqual(rg.states, []);
     assert.deepEqual(rg.lookups, [[PANE, PNG.id]]);
+  });
+
+  test('(+) W13: Claude works (registry busy, attention, shell), or the registry is unknown, unreadable or not given: the same pastes and one Enter, 200; the registry is never read', async () => {
+    const sets = [(p) => { p.state = 'busy'; }, (p) => { p.state = 'shell'; }, (p) => { p.state = 'attention'; }, (p) => { p.state = null; }, (p) => { p.state = 'weird'; }, (p) => { p.stateThrows = true; }];
+    for (const set of [...sets, null]) {
+      const rg = rig({ text: 'look', registry: set !== null });
+      set?.(rg.pane);
+      const r = await go(rg, [PNG, PDF]);
+      assert.deepEqual(r, { status: 200, body: { sent: 2, images: 1 } });
+      assert.deepEqual(rg.sent, [{ paste: PNG.path }, { paste: ` ${PDF.path}` }, { keys: ['Enter'] }]);
+      assert.deepEqual(rg.states, []);
+    }
+  });
+
+  test('(+) W13: Claude turns busy (or the registry flips) after the first paste: the send goes on and presses its one Enter', async () => {
+    const rg = rig({ text: 'go' });
+    rg.pane.state = (nSent) => (nSent >= 1 ? 'busy' : 'idle');
+    const r = await go(rg, [PNG, PDF]);
+    assert.equal(r.status, 200);
+    assert.deepEqual(rg.pane.submitted, [`go[Image #1] ${PDF.path}`]);
+  });
+
+  test('(+) W13: an empty box showing Claude\'s queued-messages placeholder is an empty box: no leading space on the first paste, 200', async () => {
+    const rg = rig({ queued: true });
+    rg.pane.state = 'busy';
+    const r = await go(rg, [PNG, TXT]);
+    assert.deepEqual(r, { status: 200, body: { sent: 2, images: 1 } });
+    assert.deepEqual(rg.sent, [{ paste: PNG.path }, { paste: ` ${TXT.path}` }, { keys: ['Enter'] }]);
   });
 });
 
@@ -258,12 +287,14 @@ describe('send: nothing is sent', () => {
     }
   });
 
-  test('(−) not-idle: the registry says busy, has no live session (null), is unreadable, or an interrupt runs (keyGap); no capture is taken for the first two', async () => {
-    for (const set of [(p) => { p.state = 'busy'; }, (p) => { p.state = 'attention'; }, (p) => { p.state = null; }, (p) => { p.stateThrows = true; }, (p) => { p.gap = true; }]) {
+  test('(−) not-idle: a Stop or End interrupt runs or its Escape went out < 40 ms ago (keyGap), whatever the registry says: zero keys, no capture', async () => {
+    for (const state of ['idle', 'busy', null]) {
       const rg = rig();
-      set(rg.pane);
+      rg.pane.gap = true;
+      rg.pane.state = state;
       await refused(rg, [PNG], 'not-idle');
       assert.equal(rg.captures.length, 0);
+      assert.deepEqual(rg.states, []);
     }
   });
 
@@ -364,9 +395,9 @@ describe('send: it stops when the screen is not what was built (T38, T51)', () =
     await stopped(rg, [PNG], 'screen-changed', 1);
   });
 
-  test('(−) Claude turns busy before the Enter: not-idle { pasted: n }, no Enter; nothing is cleared', async () => {
+  test('(−) a Stop or End Escape goes out after the last paste: not-idle { pasted: n }, no Enter; nothing is cleared', async () => {
     const rg = rig({ text: 'go' });
-    rg.pane.state = (nSent) => (nSent >= 2 ? 'busy' : 'idle'); // the read at step 2 sees idle; the read before Enter, after two pastes, sees busy
+    rg.pane.gap = (nSent) => nSent >= 2;
     await stopped(rg, [PNG, PDF], 'not-idle', 2);
     assert.equal(rg.pane.text, `go[Image #1] ${PDF.path}`, 'the box is left as it is');
   });
@@ -573,7 +604,7 @@ describe('the log carries a code, never a message', () => {
     const send = createAttachSend({
       mirror: { capture: async () => { throw Object.assign(new Error('boom /srv/nika/secret'), { code: 'EACCES' }); } },
       keys: { send: async () => { throw new Error('never'); } }, store: { lookup: async (p, id) => ({ ...PNG, id }), markSent() {} },
-      lock: async (p, fn) => fn(), keyGap: () => false, stateOf: async () => 'idle', vimOf: () => false, log: (line) => lines.push(line),
+      lock: async (p, fn) => fn(), keyGap: () => false, vimOf: () => false, log: (line) => lines.push(line),
     });
     try {
       assert.equal((await send.send(PANE, { ids: [PNG.id], base: BASE })).status, 500);
@@ -591,7 +622,7 @@ describe('the log carries a code, never a message', () => {
     const send = createAttachSend({
       mirror: { capture: async () => { throw Object.assign(new Error('boom /srv/nika/secret'), { code: 'EACCES' }); } },
       keys: { send: async () => { throw new Error('never'); } }, store: { lookup: async (p, id) => ({ ...PNG, id }), markSent() {} },
-      lock: async (p, fn) => fn(), keyGap: () => false, stateOf: async () => 'idle', vimOf: () => false,
+      lock: async (p, fn) => fn(), keyGap: () => false, vimOf: () => false,
     });
     try {
       assert.equal((await send.send(PANE, { ids: [PNG.id], base: BASE })).status, 500);
@@ -612,6 +643,7 @@ describe('source', () => {
     assert.deepEqual(bodies, ["paste: image || expect === '' ? r.path : ` ${r.path}`", "keys: ['Enter']"], 'the only two key bodies the module builds');
     const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '').replace(/\s\/\/ .*$/gm, '');
     assert.doesNotMatch(code, /\b(Escape|BSpace|BTab|C-u|send-keys|execFile|child_process)\b/);
+    assert.doesNotMatch(code, /stateOf|\bstate\(/, 'W13: the send reads no registry state');
   });
 
   test('(+) the box is read through the shared preparation and the shared definitions (M5, M6): no copy of readDraft\'s row fix, of squash or of SIG', async () => {
