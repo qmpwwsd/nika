@@ -911,6 +911,13 @@ describe('orchState (what the project\'s first button says)', () => {
     assert.deepEqual(orchState(proj({ sessionId: ID, state: 'gone', name: null, pane: null }), g()), { kind: 'gone', id: ID, name: null, pane: null });
   });
 
+  // 0.5, W12: a pick that is the host session of a background row reads live with the pane (the server's orchestrators()); the row's own tag is main
+  test('(+) a saved orchestrator that is the host of a background row: live, with the host\'s id and the pane; the row is tagged main', () => {
+    const row = live(ID2, { hostId: ID });
+    assert.deepEqual(orchState(proj({ sessionId: ID, state: 'live', name: row.name, pane: '%3' }), g(row)), { kind: 'live', id: ID, name: row.name, pane: '%3' });
+    assert.equal(roleTag(row, ID), 'main');
+  });
+
   test('(+) without a saved orchestrator (null, or an older server that sends no field) the snapshot decides: live with a main orchestrator, else none', () => {
     const a = live(ID);
     assert.deepEqual(orchState(proj(null), g(a)), { kind: 'live', id: ID, name: a.name, pane: '%3' });
@@ -1034,6 +1041,20 @@ describe('otherRunning (who else runs as the orchestrator, so Set and Resume are
     assert.equal(otherRunning({ agents: [live(ID, { role: 'orchestrator' })] }, ID, ID), null, 'itself');
     assert.equal(otherRunning({ agents: [live(ID2, { role: 'orchestrator', live: false })] }, ID2, ID), null, 'ended');
     assert.equal(otherRunning({ agents: [live(ID2, { role: 'agent' }), live(ID3)] }, null, ID), null, 'agent and plain');
+  });
+
+  // 0.5, W12: after /compact one row (the background session) stands for the saved session in the pane (`hostId`)
+  test('(+) a live row that continues the saved session counts as the saved session, tagged or not; for its own menu it is not another one', () => {
+    const row = live(ID2, { hostId: ID3 });
+    assert.deepEqual(otherRunning({ agents: [row] }, ID3, ID), { id: ID2, name: 's-22' });
+    assert.equal(otherRunning({ agents: [row] }, ID3, ID2), null, 'the row\'s own menu');
+    assert.equal(otherRunning({ agents: [row] }, null, ID3), null, 'asked about the host id itself: that is this row');
+  });
+
+  test('(−) a row with no hostId (older server, or an unlinked session) matches nothing by it, with no pick or no id', () => {
+    assert.equal(otherRunning({ agents: [live(ID2, { hostId: null })] }, null, ID), null);
+    assert.equal(otherRunning({ agents: [live(ID2)] }, undefined, undefined), null);
+    assert.equal(otherRunning({ agents: [live(ID2, { hostId: ID3 })] }, ID, ID), null, 'another session\'s host is not the pick');
   });
 
   test('(−) a sub-orchestrator is not another orchestrator: the server never counts it for the 409 orchestrator_running', () => {

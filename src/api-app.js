@@ -274,7 +274,8 @@ export function createAppApi({ secret, ctx, deps }) {
       return out;
     }
     const known = new Map();
-    for (const group of snapshot.groups ?? []) for (const agent of group.agents) known.set(agent.id, { agent, group });
+    // a session that a background session continues (after /compact; `hostId`) has no row of its own: its pick reads as that row
+    for (const group of snapshot.groups ?? []) for (const agent of group.agents) for (const id of [agent.id, agent.hostId]) if (id) known.set(id, { agent, group });
     const missing = [...new Set(picks.map(([, id]) => id).filter((id) => !known.has(id)))];
     let indexed = new Map();
     let unreadable = false;
@@ -409,7 +410,9 @@ export function createAppApi({ secret, ctx, deps }) {
     if (agent.live && agent.role === 'sub-orchestrator') return err(409, 'agent_session', "That session is a sub-orchestrator nika started, so it can't be the orchestrator. Nothing changed.");
     // another main orchestrator that runs: a pane tagged orchestrator (a sub-orchestrator is tagged differently and never counts), or the saved pick while it runs
     const pick = await getOrchestrator(project.key, ctx.env);
-    if (group.agents.some((a) => a.live && a.id !== id && (a.role === 'orchestrator' || a.id === pick))) {
+    // a row that continues `id` (hostId, after /compact) or the pick is that session itself, not another one
+    const same = (a, x) => Boolean(x) && (a.id === x || a.hostId === x); // x may be null (no pick), and so may hostId
+    if (group.agents.some((a) => a.live && !same(a, id) && (a.role === 'orchestrator' || same(a, pick)))) {
       return err(409, 'orchestrator_running', "Another session is running as this project's orchestrator. End it first, then choose another. Nothing changed.");
     }
     // a live session needs a tmux pane that really runs claude: the tags go on that pane

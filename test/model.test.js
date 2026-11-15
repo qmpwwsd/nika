@@ -286,7 +286,7 @@ describe('collect', () => {
 });
 
 describe('collect: key, role, attention (0.2 UI fields)', () => {
-  const AGENT_KEYS = ['attention', 'bridgeUrl', 'children', 'context', 'cwd', 'depth', 'gitBranch', 'id', 'lastActivity', 'lastPrompt', 'live', 'model', 'modelLabel', 'name', 'pane',
+  const AGENT_KEYS = ['attention', 'bridgeUrl', 'children', 'context', 'cwd', 'depth', 'gitBranch', 'hostId', 'id', 'lastActivity', 'lastPrompt', 'live', 'model', 'modelLabel', 'name', 'pane',
     'parent', 'pid', 'report', 'resumeCmd', 'role', 'startedAt', 'state', 'subagents', 'title', 'version', 'worktree'];
   const GROUP_KEYS = ['agents', 'counts', 'key', 'label', 'lastActivity', 'root'];
   const PANES = (role5, role6) => [`%5\twork\t1\t[%5] build-7-1\tzsh\t${role5}`, `%6\twork\t2\tMacBook.local\tclaude\t${role6}`];
@@ -790,5 +790,150 @@ describe('findSessions (several ended sessions by id, one index walk, no ps and 
   test('(−) when nika cannot read its transcript index, "left out" would be a guess: it throws EINDEX', async () => {
     const config = { ...fx.config, claudeDir: path.join(fx.root, 'no-such-claude-dir') };
     await assert.rejects(ofIds([SID.old, NOBODY], { config }), { code: 'EINDEX' });
+  });
+});
+
+// 0.5, W12: after /compact the continued conversation runs as a background job in a child claude (kind "bg", a jobId, no tmux); the claude in the
+// pane stays as the host (its old session id, parkedJobId = the child's jobId). One row, with the child's id and state and the host's pane.
+describe('collect: a background session and the pane that shows it (0.5, W12)', () => {
+  const HOST = 'a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1';
+  const CHILD = 'b2b2b2b2-b2b2-4b2b-8b2b-b2b2b2b2b2b2';
+  const THIRD = 'c3c3c3c3-c3c3-4c3c-8c3c-c3c3c3c3c3c3';
+  const HELPER = 'd4d4d4d4-d4d4-4d4d-8d4d-d4d4d4d4d4d4';
+  const JOB = 'c0ffee01';
+  const MIN = 60_000;
+  const fxw = makeFixture();
+  after(() => cleanup(fxw));
+  const slug = (d) => d.replace(/[^A-Za-z0-9]/g, '-');
+
+  /**
+   * The fixture's sessions plus a host (pid 201, interactive, acme-api, in pane %9 tagged orchestrator) and its background child (pid 202,
+   * busy, no pane). `host` and `child` override their registry fields (null: no file); `extra` is more registry files by pid. A pid in `dead` is
+   * not in the ps table. Returns the rows, the config and the exec.
+   */
+  async function scene({ host = {}, child = {}, extra = {}, dead = [], helper = false, include = [], tmuxLines } = {}) {
+    const sessions = path.join(fxw.claudeDir, 'sessions');
+    for (const pid of [201, 202, 203, 204]) fs.rmSync(path.join(sessions, `${pid}.json`), { force: true });
+    const base = { version: '2.1.319', procStart: PROC_START, startedAt: NOW - 60 * MIN, updatedAt: NOW - MIN, nameSource: 'user', name: 'acme-api', cwd: fxw.repo };
+    const files = {
+      201: host && { pid: 201, sessionId: HOST, kind: 'interactive', parkedJobId: JOB, status: 'idle', tmux: 'work:@4.%9', ...host },
+      202: child && { pid: 202, sessionId: CHILD, kind: 'bg', jobId: JOB, status: 'busy', ...child },
+      ...extra,
+    };
+    for (const [pid, f] of Object.entries(files)) if (f) fs.writeFileSync(path.join(sessions, `${pid}.json`), JSON.stringify({ ...base, ...f }));
+    // the host's transcript is recent: it would be a row of its own if nothing linked it
+    const dir = path.join(fxw.claudeDir, 'projects', slug(fxw.repo));
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, `${HOST}.jsonl`), jsonl([{ type: 'user', cwd: fxw.repo, sessionId: HOST, timestamp: new Date(NOW - 5 * MIN).toISOString(), message: { role: 'user', content: 'synthetic prompt' } }]));
+    const alive = [101, 102, 104, ...Object.keys(files).filter((p) => files[p]).map(Number)].filter((p) => !dead.includes(p));
+    const lines = tmuxLines ?? [
+      '%9\twork\t4\tacme-api\tclaude\torchestrator',
+      '%10\twork\t5\tother\tclaude\t',
+      ...(helper ? ['%11\twork\t6\t[%11] helper\tclaude\tagent\t\t2\t%9'] : []),
+    ];
+    const exec = fakeExec({ psLines: alive.map((p) => `  ${p} ${PROC_START}`), tmuxLines: lines });
+    const s = await collect({ config: fxw.config, exec, now: NOW, sinceMs: 7 * DAY, include });
+    const rows = s.snapshot.groups.flatMap((g) => g.agents);
+    return { s, rows, exec, row: (id) => rows.find((a) => a.id === id) };
+  }
+
+  test('(+) a background child and its host: one row, the child\'s id, state and pid, the host\'s pane and role, hostId = the host', async () => {
+    const { rows, row } = await scene();
+    assert.deepEqual(rows.filter((a) => [HOST, CHILD].includes(a.id)).map((a) => a.id), [CHILD], 'no row for the host session');
+    const a = row(CHILD);
+    assert.equal(a.hostId, HOST);
+    assert.deepEqual([a.live, a.state, a.pid, a.attention], [true, 'busy', 202, null], 'the child\'s own state, not the host\'s idle');
+    assert.deepEqual(a.pane, { id: '%9', session: 'work', title: 'acme-api', command: 'claude' });
+    assert.equal(a.role, 'orchestrator');
+    assert.equal(a.name, 'acme-api');
+    assert.equal(a.context, null, 'the child has no transcript here');
+    assert.ok(rows.filter((x) => x.id !== CHILD).every((x) => x.hostId === null), 'every other row is unlinked: hostId null');
+  });
+
+  test('(+) the host has no row even when `include` names it or its transcript is recent; counts see one session', async () => {
+    const base = await scene({ child: null });
+    const { s, rows } = await scene({ include: [HOST] });
+    assert.equal(rows.some((a) => a.id === HOST), false);
+    assert.equal(s.snapshot.counts.total, base.s.snapshot.counts.total, 'the host row of the unlinked machine became the child row: the same count');
+    assert.equal(base.row(HOST).live, true, 'without the child the host is an ordinary row');
+    assert.equal(base.row(HOST).hostId, null);
+  });
+
+  test('(+) the tree follows the pane: an agent whose @nika-parent is the host\'s pane has the child as parent, and the child lists it', async () => {
+    const { row } = await scene({ helper: true, extra: { 203: { pid: 203, sessionId: HELPER, kind: 'interactive', status: 'busy', name: 'helper', tmux: 'work:@6.%11' } } });
+    assert.deepEqual([row(HELPER).role, row(HELPER).parent, row(HELPER).depth], ['agent', CHILD, 2]);
+    assert.deepEqual(row(CHILD).children, [HELPER]);
+    assert.deepEqual([row(CHILD).parent, row(CHILD).depth], [null, 1]);
+  });
+
+  test('(+) a host with no pane gives the child no pane, and a host that left tmux\'s list gives it none either', async () => {
+    const noTmux = await scene({ host: { tmux: undefined } });
+    assert.equal(noTmux.row(CHILD).hostId, HOST);
+    assert.deepEqual([noTmux.row(CHILD).pane, noTmux.row(CHILD).role], [null, null]);
+    const gone = await scene({ tmuxLines: ['%10\twork\t5\tother\tclaude\t'] });
+    assert.equal(gone.row(CHILD).hostId, HOST);
+    assert.equal(gone.row(CHILD).pane, null);
+  });
+
+  test('(+) findSession finds the row by the child\'s id and by the host\'s id', async () => {
+    const { exec } = await scene();
+    const byChild = await findSession(CHILD, { config: fxw.config, exec, now: NOW });
+    const byHost = await findSession(HOST, { config: fxw.config, exec, now: NOW });
+    assert.equal(byChild.agent.id, CHILD);
+    assert.equal(byHost.agent.id, CHILD);
+    assert.equal(byHost.agent.hostId, HOST);
+    assert.equal(byHost.group.key, keyFor(fxw.repo));
+    assert.equal((await findSession(SID.idle, { config: fxw.config, exec, now: NOW })).agent.hostId, null);
+  });
+
+  test('(−) findSession by the host\'s id with no live child is the host\'s own row; findSessions never links (no registry)', async () => {
+    const { exec } = await scene({ child: null });
+    assert.equal((await findSession(HOST, { config: fxw.config, exec, now: NOW })).agent.id, HOST);
+    await scene();
+    const hit = (await findSessions([HOST], { config: fxw.config, now: NOW })).get(HOST);
+    assert.deepEqual([hit.agent.id, hit.agent.live, hit.agent.hostId], [HOST, false, null]);
+  });
+
+  // each case: what to change, and where the two sessions' panes are afterwards (the child's own pane, the host's)
+  const THIRD_FILE = { pid: 203, sessionId: THIRD, name: 'demo-api' };
+  const NO_LINK = [
+    ['the job ids differ', { host: { parkedJobId: 'c0ffee02' } }, null, '%9'],
+    ['the host parks no job', { host: { parkedJobId: undefined } }, null, '%9'],
+    ['two live background sessions have the same jobId', { extra: { 203: { ...THIRD_FILE, kind: 'bg', jobId: JOB, status: 'idle' } } }, null, '%9'],
+    ['two hosts park the same job', { extra: { 203: { ...THIRD_FILE, kind: 'interactive', parkedJobId: JOB, status: 'idle', tmux: 'work:@5.%10' } } }, null, '%9'],
+    ['the child has its own tmux field', { child: { tmux: 'work:@5.%10' } }, '%10', '%9'],
+    ['the child\'s kind is not bg', { child: { kind: 'interactive' } }, null, '%9'],
+    ['the child has no kind', { child: { kind: undefined } }, null, '%9'],
+    ['the host\'s kind is bg', { host: { kind: 'bg', jobId: 'c0ffee03' } }, null, '%9'],
+    ['the host is not alive', { dead: [201] }, null, null],
+    ['the child is not alive', { dead: [202] }, null, '%9'],
+    ['a jobId with a slash', { host: { parkedJobId: 'job/1' }, child: { jobId: 'job/1' } }, null, '%9'],
+    ['a jobId with a space', { host: { parkedJobId: 'job 1' }, child: { jobId: 'job 1' } }, null, '%9'],
+    ['a jobId of 65 characters', { host: { parkedJobId: 'j'.repeat(65) }, child: { jobId: 'j'.repeat(65) } }, null, '%9'],
+    ['the two sessions are in different projects', { child: { cwd: fxw.plain } }, null, '%9'],
+  ];
+  for (const [why, over, childPane, hostPane] of NO_LINK) {
+    test(`(−) no link when ${why}: two rows as before, hostId null, the child has no pane of the host's`, async () => {
+      const { rows, row } = await scene(over);
+      const host = row(HOST);
+      const child = rows.find((a) => a.id === CHILD);
+      assert.ok(host, 'the host keeps its row (live, or ended from its transcript)');
+      assert.equal(host.live, !over.dead?.includes(201));
+      assert.equal(host.pane?.id ?? null, hostPane);
+      if (over.dead?.includes(202)) {
+        assert.equal(child, undefined, 'a dead child with no transcript has no row');
+      } else {
+        assert.ok(child, 'the child keeps its row');
+        assert.equal(child.pane?.id ?? null, childPane);
+        assert.equal(child.hostId, null);
+      }
+      assert.equal(host.hostId, null);
+    });
+  }
+
+  test('(−) the child\'s own tmux field wins: its row keeps its pane and role, and the host row stays', async () => {
+    const { row } = await scene({ child: { tmux: 'work:@5.%10' }, tmuxLines: ['%9\twork\t4\tacme-api\tclaude\torchestrator', '%10\twork\t5\tchild\tclaude\tagent\t\t2\t%9'] });
+    assert.deepEqual([row(CHILD).pane.id, row(CHILD).role, row(CHILD).hostId], ['%10', 'agent', null]);
+    assert.deepEqual([row(HOST).pane.id, row(HOST).role], ['%9', 'orchestrator']);
   });
 });

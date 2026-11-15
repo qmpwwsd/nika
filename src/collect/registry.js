@@ -10,6 +10,9 @@ const MAX_BYTES = 64 * 1024;
 const MAX_DATE_MS = 8.64e15;
 
 const str = (v) => (typeof v === 'string' && v.length > 0 ? v : null);
+// A background job's id (`jobId`, `parkedJobId`): compared for equality in model.js and nothing else; never a path, an argv element or display text.
+const JOB_ID = /^[A-Za-z0-9_-]{1,64}$/;
+const jobId = (v) => (typeof v === 'string' && JOB_ID.test(v) ? v : null);
 // Timestamps outside the Date range would throw in the UI (review F15).
 const ms = (v) => (Number.isFinite(v) && v > 0 && v < MAX_DATE_MS ? v : null);
 
@@ -27,6 +30,8 @@ function normalise(raw) {
     nameSource: str(raw.nameSource),
     status: str(raw.status),
     kind: str(raw.kind),
+    jobId: jobId(raw.jobId),
+    parkedJobId: jobId(raw.parkedJobId),
     tmuxPane: pane ? pane[1] : null,
     version: str(raw.version),
     startedAt: ms(raw.startedAt),

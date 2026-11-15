@@ -12,14 +12,14 @@ import { createServer } from '../src/server.js';
 import { createAppApi } from '../src/api-app.js';
 import { readHistory } from '../src/collect/history.js';
 import { loadConfig, addProject, removeProject, getOrchestrator, setOrchestrator } from '../src/store.js';
-import { findSession, findSessions } from '../src/model.js';
+import { collect, findSession, findSessions } from '../src/model.js';
 import { startOrchestrator } from '../src/orchestrate.js';
 import { spawnAgent } from '../src/spawn.js';
 import { configDir, stateDir } from '../src/paths.js';
 import { lastNonBlank, modeFromRows, PROMPT_ROWS } from '../src/mode.js';
 import { MODEL_CATALOG } from '../src/models.js';
 import { makeWorld, fakeTmux, TMUX, CLAUDE } from './tmux-fake.js';
-import { makeFixture, cleanup, fakeExec, SID, NOW, boxRows } from './helpers.js';
+import { makeFixture, cleanup, fakeExec, SID, NOW, PROC_START, boxRows } from './helpers.js';
 import { createMirror } from '../src/mirror.js';
 import { readDialogScreen, sigOf as dialogSig } from '../src/dialog.js';
 import { dialogWorld, TAB } from './dialog-fake.js';
@@ -1775,6 +1775,130 @@ describe('orchestrator pick end to end: the real store, model and orchestrate mo
     assert.deepEqual([start.status, start.body.cleared, start.body.created], [200, 'gone', true]);
     assert.notEqual(await m.pick(), '88888888-8888-4888-8888-888888888888');
     assert.equal(await m.pick(), start.body.sessionId, 'the fresh session is the new pick');
+  });
+});
+
+// 0.5, W12: after /compact the orchestrator's conversation continues as a background job in a child claude (kind "bg", a jobId, no tmux); the
+// claude in the pane is its host (the old session id, parkedJobId = the jobId). The saved pick may be either id; the pane belongs to one row.
+describe('a background session that continues the orchestrator\'s conversation after /compact (0.5, W12)', () => {
+  const HOST = 'a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1';
+  const CHILD = 'b2b2b2b2-b2b2-4b2b-8b2b-b2b2b2b2b2b2';
+  const OTHER = 'c3c3c3c3-c3c3-4c3c-8c3c-c3c3c3c3c3c3';
+  const JOB = 'c0ffee01';
+  const worlds = [];
+  const real = (() => { // a registered project is stored as its realpath, and so is a session's cwd: see the machine of the end-to-end tests above
+    const saved = process.env.TMPDIR;
+    process.env.TMPDIR = fs.realpathSync(os.tmpdir());
+    try {
+      return makeFixture();
+    } finally {
+      if (saved === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = saved;
+    }
+  })();
+  after(() => {
+    worlds.forEach((x) => x.cleanup());
+    cleanup(real);
+  });
+
+  /** acme-api with a host (pid 201, state idle, pane %9) and its background child (pid 202, busy); `tagged`: the pane carries nika's orchestrator tag. */
+  async function machine({ tagged = true, child = true, other = false } = {}) {
+    const world = await makeWorld();
+    worlds.push(world);
+    const project = await addProject(real.repo, world.env);
+    const sessions = path.join(real.claudeDir, 'sessions');
+    for (const pid of [201, 202, 203]) fs.rmSync(path.join(sessions, `${pid}.json`), { force: true });
+    const reg = (pid, o) => fs.writeFileSync(path.join(sessions, `${pid}.json`), JSON.stringify({ pid, cwd: real.repo, version: '2.1.319', procStart: PROC_START, startedAt: NOW - 3_600_000, updatedAt: NOW - 60_000, nameSource: 'user', name: 'acme-api', ...o }));
+    reg(201, { sessionId: HOST, kind: 'interactive', status: 'idle', parkedJobId: JOB, tmux: 'work:@3.%9' });
+    if (child) reg(202, { sessionId: CHILD, kind: 'bg', status: 'busy', jobId: JOB });
+    if (other) reg(203, { sessionId: OTHER, kind: 'interactive', status: 'idle', name: 'demo-api', tmux: 'work:@4.%10' });
+    const pids = [201, ...(child ? [202] : []), ...(other ? [203] : [])];
+    const collectExec = fakeExec({
+      psLines: pids.map((p) => `  ${p} ${PROC_START}`),
+      tmuxLines: [`%9\twork\t3\tmain\tclaude\t${tagged ? 'orchestrator' : ''}`, '%10\twork\t4\tmain\tclaude\t'],
+    });
+    const tmuxExec = fakeTmux({ panes: [
+      { id: '%9', session: 'work', window: 3, windowName: 'main', command: 'claude', ...(tagged ? { role: 'orchestrator', agent: `${project.key}/orchestrator`, depth: '1' } : {}) },
+      { id: '%10', session: 'work', window: 4, windowName: 'main', command: 'claude' },
+    ] });
+    const config = real.config;
+    const batches = [];
+    const control = fakeControl();
+    const ctxOver = {
+      exec: tmuxExec,
+      findSession: (id) => findSession(id, { config, exec: collectExec, now: NOW }),
+      findSessions: (ids) => { batches.push([...ids]); return findSessions(ids, { config, now: NOW }); },
+    };
+    const deps = makeDeps({
+      startOrchestrator,
+      collect: async () => (await collect({ config, exec: collectExec, now: NOW, sinceMs: 7 * 86_400_000 })).snapshot,
+      createSessionControl: control.factory,
+    });
+    const a = await boot({ world, ctxOver, deps });
+    deps.state.panes.set('%9', { command: 'claude' });
+    deps.state.panes.set('%10', { command: 'claude' });
+    const listed = async () => (await a.call('GET', '/api/app/projects')).body.projects.find((p) => p.key === project.key).orchestrator;
+    return { world, project, tmuxExec, a, batches, control, listed, url: `/api/app/projects/${project.key}/orchestrator`, pick: () => getOrchestrator(project.key, world.env) };
+  }
+
+  test('(+) a saved pick that is the host\'s id reads live with the pane, and Start answers that pane (created: false) without starting anything', async () => {
+    const m = await machine();
+    await setOrchestrator(m.project.key, HOST, m.world.env);
+    assert.deepEqual(await m.listed(), { sessionId: HOST, state: 'live', name: 'acme-api', pane: '%9' });
+    assert.deepEqual(m.batches, [], 'the snapshot holds it: no transcript-index walk');
+    const before = m.tmuxExec.calls.length;
+    const start = await m.a.call('POST', '/api/app/orchestrator/start', { json: { project: m.project.key } });
+    assert.equal(start.status, 200);
+    assert.deepEqual(start.body, { pane: '%9', session: 'work', sessionId: HOST, created: false });
+    assert.equal(m.tmuxExec.calls.length, before, 'no tmux command: nothing started, no window opened');
+    assert.equal(m.tmuxExec.of('new-window').length + m.tmuxExec.of('new-session').length, 0);
+    assert.equal(m.a.ctx.started.size, 0);
+    assert.equal(await m.pick(), HOST, 'the pick is untouched');
+  });
+
+  test('(+) a saved pick that is the child\'s id reads the same row', async () => {
+    const m = await machine();
+    await setOrchestrator(m.project.key, CHILD, m.world.env);
+    assert.deepEqual(await m.listed(), { sessionId: CHILD, state: 'live', name: 'acme-api', pane: '%9' });
+    const start = await m.a.call('POST', '/api/app/orchestrator/start', { json: { project: m.project.key } });
+    assert.deepEqual(start.body, { pane: '%9', session: 'work', sessionId: CHILD, created: false });
+  });
+
+  test('(+) pane eligibility: only the child claims the pane, so the pane is eligible once and its registry state is the child\'s busy, not the host\'s idle', async () => {
+    const m = await machine();
+    assert.equal(await m.control.opts.stateOf('%9', { fresh: true }), 'busy');
+    assert.equal(await m.control.opts.stateOf('%10'), null, 'a pane no live session claims has no state');
+    assert.equal((await m.a.call('GET', '/api/app/pane/%259/capture')).status, 200, 'eligible: in tmux\'s list, running claude, claimed by one live session');
+    const snapshot = (await m.a.deps.collect());
+    const claims = snapshot.groups.flatMap((g) => g.agents).filter((x) => x.live && x.pane?.id === '%9');
+    assert.deepEqual(claims.map((x) => x.id), [CHILD], 'exactly one row claims the pane (two claims would make the state null)');
+  });
+
+  test('(−) without the child the host is an ordinary row: the pick reads live with the pane and its own state', async () => {
+    const m = await machine({ child: false });
+    await setOrchestrator(m.project.key, HOST, m.world.env);
+    assert.deepEqual(await m.listed(), { sessionId: HOST, state: 'live', name: 'acme-api', pane: '%9' });
+    assert.equal(await m.control.opts.stateOf('%9', { fresh: true }), 'idle');
+  });
+
+  test('(+) PUT orchestrator with the host\'s id re-adopts the running orchestrator (200), not "another session is running"', async () => {
+    const m = await machine();
+    await setOrchestrator(m.project.key, HOST, m.world.env);
+    const put = await m.a.call('PUT', m.url, { json: { sessionId: HOST } });
+    assert.deepEqual([put.status, put.body.orchestrator?.state, put.body.orchestrator?.pane], [200, 'live', '%9']);
+    assert.equal(await m.pick(), HOST);
+  });
+
+  test('(−) with the host as the saved pick and its pane untagged, another live session is still refused (409 orchestrator_running); with no pick it is not', async () => {
+    const m = await machine({ tagged: false, other: true });
+    await setOrchestrator(m.project.key, HOST, m.world.env);
+    const refused = await m.a.call('PUT', m.url, { json: { sessionId: OTHER } });
+    assert.deepEqual([refused.status, refused.body.error], [409, 'orchestrator_running']);
+    assert.equal(await m.pick(), HOST, 'nothing changed');
+    assert.deepEqual(m.tmuxExec.of('set-option'), []);
+    await setOrchestrator(m.project.key, null, m.world.env);
+    const taken = await m.a.call('PUT', m.url, { json: { sessionId: OTHER } });
+    assert.deepEqual([taken.status, taken.body.orchestrator?.pane], [200, '%10'], 'no pick: the child\'s untagged pane is no running orchestrator');
   });
 });
 

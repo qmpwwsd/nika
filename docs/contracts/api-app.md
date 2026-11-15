@@ -108,6 +108,9 @@ It is checked against the transcript index, not the 24 h window: `live` = the se
 `ended` = its transcript exists and it does not run (it can be resumed), `gone` = the id is saved but nika's index has no transcript
 for it, **or the session belongs to another project** (the same membership check as Start and the PUT: a hand-edited config cannot make
 the page show or open another project's session; `name` and `pane` are `null`). The picker's `project` carries the same field.
+A saved id that is the host session of a background row (`hostId`, see Dashboard snapshot additions) reads as that row: `live` with its
+pane, `sessionId` unchanged. Start with such a pick answers `200 { created: false }` with that pane and starts nothing, and the PUT with
+that id is not refused as "another session is running".
 
 Cost: the page polls this route every 3 s, so the whole list is built from ONE snapshot (the cached 24 h one, shared with `/modes`;
 a live session is always in it) and at most ONE transcript-index walk per request, whatever the number of projects: the picks
@@ -238,6 +241,15 @@ and the tags of a pane with no nika role are ignored):
 - `"children": ["<session id>", …]`: the live agents whose parent it is (`[]` for an ended agent or a leaf).
 A self-parent or a loop of parents is cut: every member becomes a root at depth 1. A page that gets a missing field (an older
 server, a 0.3 pane) treats the agent as a root at depth 1.
+
+0.5 (W12) adds, on both tiers, `"hostId": "<session id>" | null`: after `/compact` Claude Code continues the conversation as a background
+job in a child `claude` (registry `kind: "bg"`, a `jobId`, no `tmux`) while the `claude` in the pane keeps its old session id and records
+the job as `parkedJobId`. When exactly one live background session and exactly one live non-background session share that id, both
+resolve to the same project and the child has no `tmux` of its own, the snapshot has ONE row for the pair: the child's (its `id`,
+`state`, `pid`, `attention`, transcript fields), with the host's pane (`pane`, and with it `role`, `parent`, `depth`, `children`), and
+`hostId` = the host's session id. The host has no row. Every other row, and every pair that does not match one to one, has `hostId: null`
+(a page that gets no field, from an older server, reads it as null). `GET /api/app/projects`' `orchestrator` and Start accept either id
+(see `orchestrator` above). The ids are compared for equality only (`^[A-Za-z0-9_-]{1,64}$`), never used as a path, argv element or text.
 
 0.4 adds the context size, on both tiers (C6), so the rows and the session header can show how full a session's context is:
 - `"context": { "tokens": n, "window": n | null, "compactAt": n | null, "pct": n | null, "compaction": "on" | "off" | "none" } | null`.

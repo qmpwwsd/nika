@@ -271,6 +271,37 @@ describe('registry: procStart as an instant, skipped files, session id case (F1b
   });
 });
 
+describe('registry: background job ids (0.5, W12)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nika-reg-job-'));
+  after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const sessions = path.join(dir, 'sessions');
+  fs.mkdirSync(sessions);
+  const ID = (n) => `${String(n).repeat(8)}-${String(n).repeat(4)}-4${String(n).repeat(3)}-8${String(n).repeat(3)}-${String(n).repeat(12)}`;
+  const put = (pid, extra) => fs.writeFileSync(path.join(sessions, `${pid}.json`), JSON.stringify({ pid, sessionId: ID(pid % 10), cwd: '/x', ...extra }));
+  const entry = async (pid) => (await readRegistry(dir)).entries.find((e) => e.pid === pid);
+
+  test('(+) jobId and parkedJobId are kept when they are 1 to 64 letters, digits, "_" or "-"; kind stays', async () => {
+    put(501, { kind: 'bg', jobId: 'a1b2c3d4' });
+    put(502, { kind: 'interactive', parkedJobId: 'Job_7-x' });
+    put(503, { kind: 'bg', jobId: 'j'.repeat(64) });
+    assert.deepEqual([(await entry(501)).kind, (await entry(501)).jobId, (await entry(501)).parkedJobId], ['bg', 'a1b2c3d4', null]);
+    assert.deepEqual([(await entry(502)).kind, (await entry(502)).jobId, (await entry(502)).parkedJobId], ['interactive', null, 'Job_7-x']);
+    assert.equal((await entry(503)).jobId.length, 64);
+  });
+
+  test('(−) a job id with a slash, a space, a dot, a control, no characters, 65 characters or a type that is no string is null (the file is still read)', async () => {
+    const bad = ['a/b', 'a b', '..', 'a.b', 'a\nb', '', 'j'.repeat(65), 7, true, ['abc'], { id: 'abc' }, null];
+    for (const [i, v] of bad.entries()) {
+      put(600 + i, { kind: 'bg', jobId: v, parkedJobId: v });
+      const e = await entry(600 + i);
+      assert.ok(e, `entry ${i} is read`);
+      assert.deepEqual([e.jobId, e.parkedJobId], [null, null], JSON.stringify(v));
+    }
+    put(620, { kind: 'bg' });
+    assert.deepEqual([(await entry(620)).jobId, (await entry(620)).parkedJobId], [null, null], 'absent fields are null');
+  });
+});
+
 describe('transcripts', () => {
   test('(+) indexes top-level <uuid>.jsonl files by session id with mtime', async () => {
     const idx = await indexTranscripts(fx.claudeDir);

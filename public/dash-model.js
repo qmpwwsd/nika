@@ -101,7 +101,9 @@ export function orchState(project, g) {
  * Set and Resume while one runs (409 orchestrator_running), so the row menu is off with the same reason.
  */
 export function otherRunning(g, pickId, id) {
-  const hit = (g?.agents ?? []).filter((a) => a.live === true && a.id !== id && (a.role === 'orchestrator' || (Boolean(pickId) && a.id === pickId)))
+  // a row that continues a session (`hostId`, after /compact) is that session: the server counts it the same way (PUT orchestrator)
+  const same = (a, x) => Boolean(x) && (a.id === x || a.hostId === x);
+  const hit = (g?.agents ?? []).filter((a) => a.live === true && !same(a, id) && (a.role === 'orchestrator' || same(a, pickId)))
     .sort((a, b) => (b.lastActivity ?? 0) - (a.lastActivity ?? 0))[0];
   return hit ? { id: hit.id, name: nameOf(hit.name) } : null;
 }

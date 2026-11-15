@@ -131,6 +131,17 @@ The session window measures its terminal panel and the app tier makes the mirror
 
 Routes: [`contracts/api-app.md` section 3](contracts/api-app.md). Page: design spec 9.13. Threat: T52 in [security](security.md).
 
+## One row per conversation (0.5)
+
+Rows are keyed by session id. After `/compact` Claude Code continues the conversation as a background job in a child `claude`: its
+registry file says `kind: "bg"` with a `jobId` and has no `tmux` field, while the `claude` in the pane keeps its old session id and
+records the job as `parkedJobId`. `collect()` (`model.js` `linkHosts`) joins the two when exactly one live background session and exactly
+one live non-background session share that id and both resolve to the same project: the host gets no row, and the child's row takes the
+host's pane (so its role, tags and place in the tree follow) and carries `hostId` = the host's session id. State, pid and everything else
+stay the child's. Any other shape stays two rows. `findSession(id)` and the saved-orchestrator lookup (`api-app.js` `orchestrators()`,
+Start) accept either id; the pane-eligibility map needs no change, because only the child claims the pane. Threat: T53 in
+[security](security.md).
+
 ## Memory bounds (0.3.4)
 
 Every cache that is keyed by path or id has a cap, so a day-long run does not grow with the number of sessions it has seen.
