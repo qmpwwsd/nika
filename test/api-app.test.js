@@ -4928,7 +4928,7 @@ describe('attachments: send', () => {
   const gap = () => false;
   const overWith = (sender, store = fakeStore(), more = {}) => ({ attachments: store, createAttachSend: sender.factory, createSessionControl: (o) => ({ ...control.factory(o), withPaneLock: lock, keyGap: gap }), ...more });
 
-  test('(+) the router builds the sender with the mirror, the keys, the store, the controller\'s pane lock and keyGap, and the registry and edit-mode readers', async () => {
+  test('(+) the router builds the sender with the mirror, the keys, the store, the controller\'s pane lock and keyGap, and the edit-mode readers; (−) no registry reader (W13: it sends while Claude works)', async () => {
     const sender = fakeSender();
     const store = fakeStore();
     const { a } = await bootScreens({ fake: false, over: overWith(sender, store) });
@@ -4938,23 +4938,11 @@ describe('attachments: send', () => {
     assert.equal(o.store, store);
     assert.equal(o.lock, lock);
     assert.equal(o.keyGap, gap);
-    for (const name of ['stateOf', 'vimOf', 'plainOf']) assert.equal(typeof o[name], 'function', name);
-    assert.equal(await o.stateOf('%6'), 'idle', 'the registry state of the live agent');
-    assert.equal(await o.stateOf('%7'), null, 'an ended or unknown agent is null, never idle');
+    for (const name of ['vimOf', 'plainOf']) assert.equal(typeof o[name], 'function', name);
+    assert.equal('stateOf' in o, false, 'the sender gets no registry reader');
     assert.equal(o.vimOf('%6'), false);
     assert.equal(o.plainOf('%6'), false);
     assert.deepEqual(a.deps.calls.filter((c) => c[0] === 'keys'), [], 'building it sends nothing');
-  });
-
-  test('(+) stateOf({ fresh: true }) drops the 1 s snapshot: the state the registry has now is the one it answers', async () => {
-    const sender = fakeSender();
-    let state = 'idle';
-    const { a } = await bootScreens({ fake: false, over: { ...overWith(sender), collect: async () => ({ groups: [{ key: GROUP_KEY, agents: [{ live: true, state, pane: { id: '%6' } }] }] }) } });
-    assert.equal(await sender.opts.stateOf('%6'), 'idle');
-    state = 'busy';
-    assert.equal(await sender.opts.stateOf('%6'), 'idle', 'the cached snapshot (same clock)');
-    assert.equal(await sender.opts.stateOf('%6', { fresh: true }), 'busy', 'a fresh read');
-    assert.equal(a.clock.t, 1_000_000, 'the clock did not move');
   });
 
   test('(+) an eligible pane: the sender gets the pane id and exactly { ids, base }; its status and body go to the page', async () => {
