@@ -3692,6 +3692,29 @@ describe('POST /api/app/pane/:id/scroll', () => {
     assert.notEqual(off.body.etag, on.body.etag);
   });
 
+  test('(+) scrolled is true for the pill after text on the same row and for the new-message pills (live shapes, Claude Code 2.1.325); false for the divider rule (the real mirror over a scripted tmux)', async () => {
+    const esc = '\u001b';
+    const pillAfter = (left, words) => `${left}${esc}[38;5;231m${esc}[48;5;237m ${words} ${esc}[39m${esc}[49m\n`;
+    const rule = (words) => `${esc}[38;5;246m${'─'.repeat(52)} ${words} ${'─'.repeat(52)}${esc}[39m\n`;
+    const view = { screen: '' };
+    const exec = async (cmd, args) => (args.includes('display-message')
+      ? { stdout: '120\t40\t0\t0\t1\t1\n', stderr: '' }
+      : { stdout: view.screen, stderr: '' });
+    const clock = { t: 1_000_000 };
+    const a = await boot({ deps: makeDeps({ mirror: createMirror({ exec, now: () => clock.t }) }) });
+    for (const [screen, want] of [
+      [`  150\n${pillAfter(`  151${' '.repeat(40)}`, 'Jump to bottom: fn+↓ to scroll')}input\n`, true],
+      [`  12\n${pillAfter(`  13${' '.repeat(41)}`, '1 new message: fn+↓ to scroll')}input\n`, true],
+      [`  12\n${pillAfter(' '.repeat(44), '2 new messages: fn+↓ to scroll')}input\n`, true],
+      [`${rule('1 new message')}  12\n  13\ninput\n`, false],
+    ]) {
+      view.screen = screen;
+      clock.t += 1000;
+      const r = await pane(a, '%6', 'capture');
+      assert.deepEqual([r.status, r.body.alt, r.body.scrolled], [200, true, want], screen.split('\n').find((l) => /message|bottom/.test(l)).replace(/\u001b\[[0-9;]*m/g, ''));
+    }
+  });
+
   test('(−) 400 before 404 before 429: a bad body is 400 on any pane and on a full bucket, an ineligible pane is 404 and takes no rate slot, then the 11th good request is 429', async () => {
     const sc = fakeScroller();
     const { a } = await bootScreens({ over: { createScroll: sc.factory } });

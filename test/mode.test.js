@@ -560,8 +560,11 @@ describe('surveyShown', () => {
 describe('pillShown', () => {
   const sp = (t, s = {}) => span(t, { ...DEF, ...s });
   const PILL_STYLE = { fg: 231, bg: 237 };
-  /** Claude's pill row: centred, the words in fg 231 on bg 237. */
-  const pill = (words = 'Jump to bottom: fn+\u2193 to scroll') => [sp(' '.repeat(40)), sp(` ${words} `, PILL_STYLE)];
+  /** Claude's pill row: what the row holds left of the pill (blank by default), then the words in fg 231 on bg 237 with a pad space each side. */
+  const pill = (words = 'Jump to bottom: fn+\u2193 to scroll', left = ' '.repeat(40)) => [sp(left), sp(` ${words} `, PILL_STYLE)];
+  const JUMP = 'Jump to bottom: fn+\u2193 to scroll';
+  const NEW_ONE = '1 new message: fn+\u2193 to scroll';
+  const NEW_MANY = '2 new messages: fn+\u2193 to scroll';
 
   test('(+) both pill texts of spike S5 match, in any row', () => {
     assert.equal(pillShown(rowsOf('older output', pill('Jump to bottom: fn+\u2193 to scroll'), '', '  input')), true);
@@ -589,11 +592,10 @@ describe('pillShown', () => {
     assert.equal(pillShown(rowsOf([sp('J'), sp('ump to bottom', PILL_STYLE)])), false, 'the J is in a plain span');
   });
 
-  test('(\u2212) the words mid-row, other words, other case and plain text are not the pill', () => {
+  test('(\u2212) other words, other case, no word boundary and plain text are not the pill', () => {
     const styled = (t) => rowsOf([sp(t, PILL_STYLE)]);
-    assert.equal(pillShown(styled('see Jump to bottom')), false, 'after other text');
-    assert.equal(pillShown(styled('> Jump to bottom')), false);
     assert.equal(pillShown(styled('Jump to bottomless')), false, 'a word boundary is required');
+    assert.equal(pillShown(styled('xJump to bottom')), false, 'and before the J');
     assert.equal(pillShown(styled('jump to bottom')), false);
     assert.equal(pillShown(styled('Jump  to bottom')), false);
     assert.equal(pillShown(styled('Jump to top')), false);
@@ -601,8 +603,62 @@ describe('pillShown', () => {
     assert.equal(pillShown(rowsOf('Jump to bottom: fn+\u2193 to scroll')), false, 'plain text');
   });
 
+  // W3-T2b, live (Claude Code 2.1.325, 120 columns): Claude draws the pill over the last transcript row, to the right of whatever that row
+  // holds (`  14` + 40 spaces, then the pill), and the span carries fg 231 on bg 237 from its pad space on. Once new output arrives while
+  // scrolled the words become `1 new message: fn+<down arrow> to scroll`, then `2 new messages: ...`, in the same colours.
+  test('(+) the pill after text on the same row matches, in any row and for the (click) variant', () => {
+    assert.equal(pillShown(rowsOf('older output', pill(JUMP, '  14' + ' '.repeat(40)), '', '  input')), true);
+    assert.equal(pillShown(rowsOf(pill(JUMP, 'a transcript line that ends well before the pill'))), true);
+    assert.equal(pillShown(rowsOf(pill('Jump to bottom (click) ↓', '  151 '))), true);
+    assert.equal(pillShown(rowsOf(pill(JUMP, ''))), true, 'pill alone, at column 0');
+  });
+
+  test('(+) the new-message pill, singular and plural, alone and after text', () => {
+    for (const words of [NEW_ONE, NEW_MANY, '12 new messages: fn+↓ to scroll', '999 new messages: fn+↓ to scroll', '1 new message (click) ↓']) {
+      for (const left of ['', ' '.repeat(40), '  13' + ' '.repeat(41), 'text ']) {
+        assert.equal(pillShown(rowsOf('older output', pill(words, left), '  input')), true, `${left.length} columns left of: ${words}`);
+      }
+    }
+  });
+
+  test('(+) the words twice in a row: it is the occurrence that sits in the styled span that counts', () => {
+    assert.equal(pillShown(rowsOf([sp('Jump to bottom, '), sp(` ${JUMP} `, PILL_STYLE)])), true, 'only the second is styled');
+    assert.equal(pillShown(rowsOf([sp(` ${JUMP} `, PILL_STYLE), sp(' and Jump to bottom')])), true, 'only the first is styled');
+    assert.equal(pillShown(rowsOf([sp('1 new message and 2 new messages '), sp(` ${NEW_MANY} `, PILL_STYLE)])), true);
+    assert.equal(pillShown(rowsOf([sp('Jump to bottom or '), sp(` ${NEW_ONE} `, PILL_STYLE)])), true, 'the two kinds mixed');
+  });
+
+  test('(−) the words twice and no occurrence in the pill colours are not the pill', () => {
+    assert.equal(pillShown(rowsOf('Jump to bottom, Jump to bottom')), false, 'plain');
+    assert.equal(pillShown(rowsOf([sp('Jump to bottom ', { fg: 231 }), sp('Jump to bottom', { bg: 237 })])), false, 'one colour each');
+    assert.equal(pillShown(rowsOf([sp('1 new message ', { fg: 231 }), sp('2 new messages', { fg: 231, bg: 236 })])), false);
+    assert.equal(pillShown(rowsOf([sp('Jump to bottom'), sp(' x ', PILL_STYLE)])), false, 'a styled span after the words does not hold the J');
+  });
+
+  test('(−) the new-message words without the pill colours (transcript text, the divider rule) are not the pill', () => {
+    for (const s of [{ fg: 231 }, { bg: 237 }, { fg: 231, bg: 236 }, { fg: 230, bg: 237 }, { fg: 246 }, {}]) {
+      assert.equal(pillShown(rowsOf([sp('  13 '), sp(` ${NEW_ONE} `, s)])), false, JSON.stringify(s));
+      assert.equal(pillShown(rowsOf([sp('  13 '), sp(` ${NEW_MANY} `, s)])), false, JSON.stringify(s));
+    }
+    // Claude's divider rule at the first unseen message (live: fg 246 over the whole row, no background).
+    assert.equal(pillShown(rowsOf([sp('─'.repeat(52) + ' 1 new message ' + '─'.repeat(52), { fg: 246 })])), false);
+    assert.equal(pillShown(rowsOf([sp('─'.repeat(52) + ' 2 new messages ' + '─'.repeat(51), { fg: 246 })])), false);
+    assert.equal(pillShown(rowsOf(`  ${NEW_ONE}`, `  ${JUMP}`)), false, 'plain text that quotes both');
+  });
+
+  test('(−) counts outside 1 to 999, other words and a pill split across two rows are not the pill', () => {
+    const styled = (t) => rowsOf([sp(t, PILL_STYLE)]);
+    for (const t of ['0 new messages', '1000 new messages', '01 new message', 'new messages', ' new message', 'x1 new message', '1 new messagesx', '1 new  message', '1 New message', 'Jump to']) {
+      assert.equal(pillShown(styled(t)), false, t);
+    }
+    assert.equal(pillShown(rowsOf([sp(' Jump to', PILL_STYLE)], [sp('bottom: fn+↓ to scroll', PILL_STYLE)])), false, 'Jump to / bottom');
+    assert.equal(pillShown(rowsOf([sp(' 1 new', PILL_STYLE)], [sp('message: fn+↓ to scroll', PILL_STYLE)])), false, '1 new / message');
+    assert.equal(pillShown(rowsOf([sp(' Jump to bot', PILL_STYLE)], [sp('tom', PILL_STYLE)])), false, 'split inside a word');
+  });
+
   test('(\u2212) rows that are not rows never throw and never match', () => {
-    for (const rows of [undefined, null, 5, 'Jump to bottom', {}, [], [null], [undefined], [5], ['Jump to bottom'], [[]], [[null]], [[{}]], [[{ t: 5, s: {} }]], [[{ t: 'Jump to bottom' }]]]) {
+    for (const rows of [undefined, null, 5, 'Jump to bottom', {}, [], [null], [undefined], [5], ['Jump to bottom'], [[]], [[null]], [[{}]], [[{ t: 5, s: {} }]], [[{ t: 'Jump to bottom' }]],
+      [[{ s: PILL_STYLE }]], [[{ t: '1 new message' }]], [[{ t: 7, s: PILL_STYLE }]], [[{ t: 'text ' }, { t: ' 1 new message ' }]], [[null, { t: 'Jump to bottom' }]]]) {
       assert.equal(pillShown(rows), false, JSON.stringify(rows));
     }
   });
