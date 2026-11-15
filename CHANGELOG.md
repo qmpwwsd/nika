@@ -98,6 +98,19 @@ Session window (desktop app):
   view" while it is up, and Jump to live returns to the bottom. Scrolling works while Claude works and never interrupts it.
   nika scrolls only when it can see a plain input box: with a permission prompt, a dialog, a menu or a draft that starts with `/`
   it sends nothing and says why. PageUp, PageDown, Home and End scroll Claude's view only while Type into pane is off.
+- **Answer Claude's questions and plan approvals from the session window.** When Claude asks you something (up to eight
+  questions in tabs, then a review) or asks you to approve a plan, the window now shows a form above the message box instead of
+  only "needs you". It shows one question at a time, following Claude's own tabs: pick an option (or several), or type your own
+  answer under **Other** (up to 300 characters, not starting with a digit), then press **Answer**, or **Send answer** on a
+  question that ends the dialog. A review step lists your answers and has **Submit answers**. A plan approval shows Claude's
+  choices as buttons ("Read the plan in the terminal view"; the plan text itself is not shown) and **Reject (Esc)**. **Decline**
+  presses Esc in the pane: Claude stops and waits for you. nika reads the dialog from the screen, exactly or not at all: when it
+  cannot (a narrow pane, a label that wraps, a menu it does not know), the old note stays and you answer in the terminal. Before
+  every key it looks at the screen again, and it never moves between Claude's tabs; if you change the dialog in the terminal
+  meanwhile, it stops, says how many keys it had pressed, and the form stays locked ("Finish it there"). A step that mentions
+  bypass is terminal-only: nika offers only Decline. While a form shows, Send, Stop, the mode switch and the commands wait (Stop's
+  tooltip says "Decline is in the question form"). Esc in the message box still goes to Claude, as in the terminal, and declines
+  the dialog. See `docs/adr/0015-dialogs-from-the-screen.md`.
 - **Long text in the keys route is typed in pieces.** Text of 701 to 1024 characters is sent in chunks of at most 700 characters
   about 300 ms apart, because Claude turns a burst of more than 800 characters into a pasted block and loses part of the text.
 - **One row per conversation after `/compact`.** Claude continues a compacted conversation in the background under a new session
@@ -107,6 +120,12 @@ Session window (desktop app):
 
 Fixes:
 
+- **Send no longer types into Claude's agent list or onto the shells pill.** With the keyboard selection on a row of the agent list
+  or on the `<n> shells` pill, Claude hides its input cursor, and a typed key either left the selection or opened the Background
+  dialog. When nika can read no input box and no mode line (a menu, the agent list), Send now refuses before typing anything: "nika
+  can't read Claude's input box right now (a menu may be open). Nothing was sent. Your text is kept." That covers text, Shell text
+  and the Enter of an empty message box. The Send route's Enter, when the page gives no `sig`, also refuses when the cursor sits
+  below the input box (409 `input-unreadable`).
 - **Background subagents no longer hide the footer.** While Claude runs background subagents it draws their list under the footer
   line. nika used to read that list as the footer, so the mode showed as unknown and the message box could not mirror Claude's
   input. nika now sees through the list. It also stops mirroring while Claude's feedback survey is on screen, so a draft that

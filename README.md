@@ -392,7 +392,19 @@ Why the tree works the way it does: [ADR 0013](docs/adr/0013-nested-orchestratio
 
 ### Session window (0.5)
 
-Desktop app only. The attachments and the scrolling below are not on the browser dashboard.
+Desktop app only. None of this is on the browser dashboard.
+
+- **The message box follows Claude's input.** Type in either and the other shows it (after a short pause in the terminal, a
+  quarter of a second the other way). Text you have not sent is never overwritten; when nika cannot read Claude's input it pauses
+  and says why.
+- **Prompt suggestions.** Claude's grey suggestion for your next prompt shows in the empty message box; **Tab** or **→** takes it.
+- **Long messages.** Text over 1024 characters or 12 line breaks is not mirrored. Send pastes it into an empty input, and refuses
+  when Claude's input already holds other text.
+- **Fit.** The terminal view fills its panel: nika zooms the pane, and sizes its tmux window only when nothing else is squeezed.
+  A chip says what it did, and nika gives your tmux window back as it was.
+- **Question forms.** When Claude asks a question or for a plan approval, a form above the message box answers it one step at a
+  time (options, your own text under Other, the review, the plan's choices, Decline). When nika cannot read the dialog, or it
+  mentions bypass, you answer in the terminal. Why: [ADR 0015](docs/adr/0015-dialogs-from-the-screen.md).
 
 - **Send works while Claude works.** Press Send while Claude is busy, or waits for background agents or shells, and nika puts
   the message into Claude's input and presses Enter, as you would. Claude queues it and takes it at its next step; the message
@@ -418,7 +430,7 @@ Desktop app only. The attachments and the scrolling below are not on the browser
   with that row.
 
 The routes are in [docs/contracts/api-app.md](docs/contracts/api-app.md); the threats, in [docs/security.md](docs/security.md)
-(T38, T39, T54, T55).
+(T37, T38, T39, T54, T55).
 
 ## Development
 

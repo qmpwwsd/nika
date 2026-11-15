@@ -440,6 +440,35 @@ wrap rule in `claude-tui.md` §10); the page mirrors it into the message box (sp
 - The draft comes from the capture the route already took (no extra tmux call). App tier only: `/api/agents` and the browser tier
   never carry it (T51).
 
+0.5 field, Claude's question dialogs and plan approvals (W1, ADR 0015), parsed server-side from the same rows by `src/dialog.js`
+(shapes, patterns and the `unreadable` rules in `claude-tui.md` §13); the page draws a form from it (spec §9.16):
+- `dialog` is `null` when no dialog is on screen, or when a permission `prompt` parses (the two anchors exclude each other). It is a
+  pure function of the rows and the width, which the ETag already covers, so the ETag does not change.
+- `{ "state": "unreadable", "kind": "ask" | "plan" | null, "reason": "cut" | "wide" | "numbers" | "tab" | "layout" | "survey" }`:
+  a dialog shape is on screen but is not read exactly (checked in that order, the first reason decides). `cut`: no top rule above the
+  strip, no strip, a text that ends in `…`, or a plan without its rules; `wide`: a row as wide as the pane (Claude may have cut it), a
+  label that may have been word-wrapped, a wrapped footer, or fewer than 20 columns; `numbers`: option numbers not `1..k+2` without gaps,
+  or above 9; `tab`: not exactly one current tab (two marked, or none); `layout`: any other shape (a duplicate label, a header with `☐`,
+  `☒` or `✔`, a footer that disagrees with the strip, a string over its maximum); `survey`: a feedback survey is on screen. `Exit plan
+  mode?` and the auto-mode nudge are `unreadable` with `kind: null` and `reason: "layout"`: nika recognises them so that every control
+  that needs a plain box fails closed, and never answers them. The page keeps its banner for every `unreadable`.
+- `{ "state": "ready", "kind": "ask", "at": "question", "sig", "bypass", "tabs": [ { "header", "answered" } ], "current", "final",
+  "question", "multi", "other", "options": [ { "n", "label", "description" | null, "checked"? } ] }`: one question, the current tab of
+  Claude's strip. `final` is true for a single tab with a single-select question (the answer ends the dialog); `other` says whether free text
+  is offered (single-select: always; multi-select: only on the last tab); `checked` is Claude's own box and appears for multi-select only.
+  Options are the real ones, `1..k` with `k` at most 7; Claude's free-text row (`k+1`) and `Chat about this` (`k+2`) are not listed.
+- `{ "state": "ready", "kind": "ask", "at": "review", "sig", "bypass", "tabs", "warn", "pairs": [ { "question", "answer" } ] }`: Claude's
+  review step (`warn` is its `You have not answered all questions` row; the review lists the answered questions only).
+- `{ "state": "ready", "kind": "plan", "at": "plan", "sig", "bypass", "options": [ { "n", "label", "text" } ] }`: the plan approval's
+  choices; `text` marks the last option, Claude's free-text one (`Tell Claude what to change`, which nika never answers). The plan text is not
+  in the field.
+- `sig` is the first 16 hex characters of sha256 over the parsed step (the strip headers, the current tab, the question, the labels and
+  descriptions; or every review pair; or the visible plan rows and the choices), never over raw rows: it does not change with the focus, a tick
+  or typed text. `bypass` is true when the step's region, or the prompt window (`bypassWindow`), mentions bypass; the route then answers only
+  Decline. Strings pass through `clean()` (header 40, question 500, label 200, description 500, answer 500 characters; longer is `unreadable`).
+  Labels and answers can hold the user's folder paths: shown in the app only, never logged. App tier only: `/api/agents` and the browser tier
+  never carry it.
+
 ### `GET /api/app/modes`
 `200 { "modes": { "%3": { "mode": "plan", "confirmed": true } } }` — one entry per eligible pane (same rule as
 capture), keyed by `PANE_ID`; `mode` and `confirmed` as capture's `mode` and `modeConfirmed` (the key stays
@@ -668,6 +697,10 @@ step fails closed: nothing is sent after a refusal; no step reads the registry s
    the box's `sig` differs from `base` (an unreadable box has no `sig`) → 409 `draft-changed` with `draft` (the terminal changed since
    the page looked; the page adopts it and nothing was sent). Without `base` a box nika cannot read does not stop the `Enter`: the
    legacy paths (a screen nika cannot parse, Shell) rely on it, and steps 5 to 7 still refuse every known prompt and an unclear screen.
+   One exception: when the screen shows the input box's two rule rows but no readable box (`draft` would be `null`) and the capture's
+   cursor (an integer x and y) lies **below the bottom rule**, Claude's focus is on the `<n> shells` pill or in the agent list, where an
+   `Enter` opens the Background dialog or an agent view (`claude-tui.md` §1) → 409 `input-unreadable`, no `draft` key, nothing sent. A
+   cursor above the top rule (a status line drawn under the real box, `claude-tui.md` §10.5) keeps today's behaviour.
 9. The box is `empty` and shows a prompt suggestion (`draft.suggestion` not null), with or without `base` → 409 `suggestion-shown` with
    `draft`: what `Enter` submits then was never verified (`claude-tui.md` §10.10). Claude's queued placeholder is no suggestion
    (`queued: true`, `suggestion: null`) and passes.
@@ -689,6 +722,12 @@ right after, or no capture worked). `taken` says what the read-back saw:
 The page's Send paths (`public/session.js`): the synced box → `{ base }` of the capture; a push (a draft write that ended in 200) →
 `{ base }` of that write's `draft.sig`; a text nika cannot mirror (keys `{ text }` or `{ paste }`, no `Enter`) and Shell (keys `C-u`, then
 the `!` text) → `{}`. The page makes no request at all when both boxes are empty and nothing is attached.
+
+Those legacy paths type text through the keys route **before** this route's checks run, so the page runs them only while the last
+capture's footer reads (a known mode line, `modeConfirmed`). With no readable box **and** an unknown footer (the agent list has the
+keyboard focus, a menu is open) the page refuses before any request, for text, Shell text and the Enter of an empty box alike: "nika can't
+read Claude's input box right now (a menu may be open). Nothing was sent.", and the text stays in the message box. Attachments already
+refuse such a screen (`attach-send`, 409 `mode-unknown` / `input-unreadable`).
 
 **Never sent** by this route: anything but that one `Enter`. Nothing of the body or of a draft (no `base`, no `sig`, no text) is logged;
 errors carry the pane id and the code only.
@@ -1130,6 +1169,77 @@ Answers a permission prompt with a fresh parse (T26); "Esc = No" stays the keys 
 6. Send the digit as literal text through the keys path (`send-keys -l -- <n>`, counts toward its 20 requests/s per
    pane; no Enter, `claude-tui.md` §2) → `200 { "answered": 1 }`; a failed send → that send's status and body.
 
+### `POST /api/app/pane/:id/dialog` (body ≤ 20 KB, `CAP.keys`)
+Answers Claude's question dialog (`AskUserQuestion`) or plan approval (`ExitPlanMode`), **one step per request**, or declines it (0.5, W1;
+ADR 0015, `docs/security.md` T37). The dialog is read from the screen only (the `dialog` field above); nika follows Claude's own tabs: the
+current question, then (for a form with several) the next one under a new `sig`, then Claude's review. Four body shapes, exact key sets
+(anything else is `400 invalid`, checked before the pane):
+```json
+{ "sig": "<16 hex>", "picks": [2], "text": "my own answer" }
+{ "sig": "<16 hex>", "submit": true }
+{ "sig": "<16 hex>", "choice": 2 }
+{ "sig": "<16 hex>", "cancel": true }
+```
+- `picks` (with `text` optional): the current question. 0 to 7 distinct integers 1 to 7. `text`: 1 to 300 UTF-16 units, well formed, no control,
+  bidi, zero-width, line-separator or other format character (`\p{Cf}`), no leading combining mark, no space at either end, **and not
+  starting with 1 to 9** (the `invalid` message says so). A leading digit is refused as a precaution, because Claude may take it as the option
+  shortcut on an empty text row (a live check found it typed as text). `submit: true` is the review's Submit. `choice` is an integer 1 to 9.
+  `cancel: true` is Decline, for any step.
+- Single-select: exactly one pick or one `text` (not both). Multi-select: at least one pick, or `text`; `text` only on the last tab. `picks`
+  may not name a number beyond the options; `choice` must be a shown option and not the plan's free-text one; the shape must fit the step
+  (`picks` the question, `submit` the review, `choice` the plan). These misfits are `400 invalid`, after the read.
+
+**Read phase** (under the per-pane lock; nothing is sent before it ends; the first match decides):
+1. Body invalid → `400 invalid`. Ineligible pane (same rule as capture) → `404 not_found`. Another control action running on this pane
+   (waits up to 5 s) → 409 `busy-switching`.
+2. A fresh capture (never the cache); a failed capture → its own status and body.
+3. No dialog on screen → 409 `no-dialog`; a screen with no readable footer and no input box, where nika cannot read a dialog that may be open
+   (a wrapped footer, `Exit plan mode?`, the auto-mode nudge) → 409 `dialog-changed`.
+4. The dialog is `unreadable`, the body's shape does not fit its step, or the `sig` differs from the body's → 409 `dialog-changed`.
+5. The same `sig` was answered on this pane in the last 3 s → 409 `already-answered`.
+6. The step mentions bypass, or `text` does (any spelling, NFKC), and this is not a Decline → `400 terminal-only`.
+7. The body does not fit the step (the misfits above) → `400 invalid`.
+
+**Steps** (at most 24 rounds, a backstop that no consistent screen reaches). Each round: a fresh capture whose identity (the parsed step) must
+equal the request's, else nothing more is sent (409 `no-dialog` | `dialog-changed`, `400 terminal-only`); the screen the last key was proven on
+must not have changed in the terminal since (focus → 409 `dialog-focus`; a box, the text or the INSERT marker → 409 `dialog-touched`); the
+one key the screen calls for; a Stop or End interrupt running, or its `Escape` sent less than 40 ms ago → 409 `not-idle`; one
+`keys.send` (a failure → its status and body); then a settle of up to 4 captures 150 ms apart for the state that key should leave (no match →
+409 `not-taken`, or `no-dialog` | `dialog-changed` when the last read shows that, or `text-mismatch` for typed text that does not read back).
+
+| Step | The key the screen calls for | Refused (409, nothing more sent) |
+|---|---|---|
+| question, single-select, a pick | the digit as text (`send-keys -l`), focus on an option row | `dialog-touched`: the tab already shows ☒, or text sits in the text row; `dialog-focus`: the focus is not on an option |
+| question, single-select, `text` | `Down` to the text row, then the text (`-l`), then `Enter` once the row reads back exactly the text | `dialog-touched` (other text there); `dialog-focus`; `text-mode`: the focus is on the row and nothing shows vim INSERT or a known plain pane; `text-mismatch` |
+| question, multi-select, picks | one digit per box that differs (smallest first; a digit toggles and leaves the focus), then `Right` from an option row | `dialog-focus` (the focus is not on an option row) |
+| question, multi-select, `text` (last tab only) | the picks, `Down` to the text row, the text, `Down` to the button row, `Enter` there (it opens the review, it does not submit) | as above |
+| review, `submit` | `Enter`, only with the focus on `1. Submit answers` | `dialog-focus` |
+| plan, `choice` | the digit as text, with the focus not on the free-text option | `dialog-touched` (feedback typed in the free-text option); `dialog-focus` |
+| `cancel` | `Escape`; in vim INSERT the first only leaves INSERT, and a second goes after 40 ms only once a fresh read shows INSERT gone | `dialog-focus` after two |
+
+Free text is typed only when INSERT shows, on a pane nika knows is plain (a probe `i` landed as text, the draft route), or when nika's own
+`Down` just brought the focus onto the row and no INSERT came and vim is not known for the pane (vim enters INSERT on that row at once; plain
+mode and vim NORMAL draw the same screen, so a request that starts on the row with no INSERT is `text-mode`).
+
+**Answers.** `200 { "done": "next" | "review" | "submitted" | "chosen" | "declined", "sent": <keys> }`: `next` (another tab is current),
+`review` (Claude shows its review), `submitted` (a final question or the review), `chosen` (a plan choice), `declined`. Errors: `400`
+`invalid`, `terminal-only`; `404 not_found`; `409` `busy-switching`, `no-dialog`, `dialog-changed`, `already-answered`, `dialog-touched`,
+`dialog-focus`, `text-mode`, `text-mismatch`, `not-taken`, `not-idle`; `429` and `5xx` from `keys.send` or the capture. **Every non-200
+after the first key carries `sent`** (the keys already pressed). Nothing is undone: nika never types to clean up (a half-toggled multi
+question, a moved focus and typed text stay as they are; the same request again resumes, the xor fixes the boxes).
+
+**Never sent:** `Up`, `Left`, `Tab`, `BTab`, `Space`, `C-c`, `C-u`, `C-d`; a digit while the text row has the focus; anything on `Chat about
+this`; `Enter` except as listed; any key after the dialog closed; any key toward another tab. The named-key allow-list is unchanged.
+Nothing of a body, a dialog string or a `sig` is logged. One action per pane at a time (the lock shared with mode, End, commands, answer, draft,
+submit and fit steps); each key counts toward the keys route's 20 requests/s per pane.
+
+**Other controls while a dialog shows** (`promptOpen`: a permission prompt, a question step, the review, a plan approval, `Exit plan mode?`
+or the auto-mode nudge): Stop → 409 `prompt-open` (a screen with no mode line and no input box where nika recognises no dialog → 409 `screen-unclear`), nothing sent; End sends one
+`Escape` first, as for a permission prompt, then the usual re-read (409 `not-idle` if the dialog is still there); the mode switch and the
+commands → 409 `not-idle`; a draft write and a suggestion accept → 409 `not-idle`; `submit` → 409 `prompt-open`; the attachment send → 409
+(its box read finds no plain box); the scroll route → 409 `screen-unclear`; the keys route and the page's passthrough are unchanged (the
+bypass guard of T26); the permission `answer` route is unchanged and sees no prompt.
+
 ### `POST /api/app/pane/:id/command` (body ≤ 4 KB, `CAP.small`)
 ```json
 { "text": "/compact" }
@@ -1169,8 +1279,10 @@ pane rule as the other control routes. It does **not** take the per-pane lock (a
 waiting must not block Stop), but there is one interrupt per pane at a time (End's interrupt shares it). The session window's Stop button and Ctrl+C in its message box (0.3.3) post here. Steps:
 
 1. Ineligible pane → `404 not_found`.
-2. Fresh capture and registry state. A permission prompt on screen → 409 `prompt-open` (Stop never answers a prompt; use
-   the prompt buttons or Esc). The state is not a non-empty string other than `idle` (idle, no live session, two sessions
+2. Fresh capture and registry state. A permission prompt or one of Claude's dialogs on screen (a question, the review, a plan
+   approval, `Exit plan mode?`, the auto-mode nudge) → 409 `prompt-open` (Stop never answers a prompt; use the prompt buttons, or the
+   dialog form's Decline). A screen with no mode line and no input box where nika recognises no dialog, but one may be open (a dialog
+   with a subagent list under it that is not cut, or a plan clipped above its title) → 409 `screen-unclear`, nothing sent. The state is not a non-empty string other than `idle` (idle, no live session, two sessions
    on the pane) → 409 `not-busy`, nothing sent.
 3. Interrupt. Without `-- INSERT --` on screen: one `Escape`. With `-- INSERT --` (Claude's vim insert mode; the first
    `Escape` only leaves it, `claude-tui.md` §5): send `Escape`, take fresh captures (up to 4, 150 ms apart) until
@@ -1184,7 +1296,7 @@ Body `{}`. Steps, in this order:
 
 1. Ineligible pane (same rule as capture) → `404 not_found`. Another control action running on this pane → 409
    `busy-switching`.
-2. Fresh capture and registry state. A `prompt` on screen: send `Escape` once (cancel, the "No" path). A registry state
+2. Fresh capture and registry state. A `prompt` or a dialog on screen (`promptOpen`, the route above): send `Escape` once (cancel, the "No" path; a dialog is declined). A registry state
    that is a non-empty string other than `idle` (busy): interrupt as the stop route above does (in vim insert mode two
    `Escape`s, the second only while the registry still says busy, read uncached; a Stop already interrupting the pane →
    409 `not-idle`, nothing sent). No state at all (no live session on the pane, or two
@@ -1709,6 +1821,7 @@ checked by the router before `mirror` / `keys` are called; those modules still v
 | `src/keys.js` | `createKeys({ exec, tmuxBin, now }) → { send(pane, { text, paste, keys }) → { status, body } }` |
 | `src/attachments.js` | `createAttachments({ env, now, loadKeepDays, setTimer, clearTimer, log }) → { save({ pane, key, name, data }), saveBytes({ pane, key, name, bytes }), lookup(pane, id), remove(pane, id), markSent(ids), prune({ need }), start(), stop() }`: `save`, `saveBytes` resolve `{ status, body }` (`save` is the upload route's, `saveBytes` the file chooser's: the same admission, sniff, caps and write); `lookup` → `{ id, path, type, size }` or `null`; `remove` → boolean; `start()` prunes at once and every 24 h (the timer is unref'd). Pure helpers `sniff(buf, name)` and `checkUploadBody(body)`; constants `UPLOAD_CAP`, `MAX_BYTES`, `PER_MESSAGE`, `ID`, `PATH_OK`. The records of issued ids live in memory only (the 500 newest): after a restart an old id is `attachment-gone` |
 | `src/attach-send.js` | `createAttachSend({ mirror, keys, store, lock, keyGap, vimOf, plainOf, sleep, log }) → { send(pane, { ids, base }) → { status, body } }` and `checkAttachBody(body)` (the 400 shape check shared with the route); `lock` and `keyGap` are the session controller's `withPaneLock` and `keyGap` |
+| `src/dialog.js` | pure: `dialogOnScreen(rows)`, `readDialogScreen(rows, cols) → null \| { unreadable, kind } \| S`, `identityOf(S)`, `sigOf(S)`, `otherAllowed(S)`, `dialogCapture(rows, cols)` (the capture's `dialog` field) and the constants (`TEXT_MAX` 300, `STEPS_MAX` 24, `MULTI_OTHER`, `PLAN_PICK`, `PLAIN_TEXT`). `answerDialog(pane, body)` and `checkDialogBody(body)` live in `src/session-control.js` |
 | `src/scroll.js` | `createScroll({ mirror, keys, lock, keyGap, now, sleep }) → { scroll(pane, body) → { status, body } }`; pure `checkScrollBody(body)`, `scrollKeys(body)` (the fixed table), `scrollGate(capture)` (the 409 code or `null`) and `pillShown(rows)` (re-exported from `src/mode.js`); constants `SCROLL_RATE` (10) and `MAX_PAGES` (8) |
 | `src/fit.js` | `createFit({ exec, tmuxBin, now, stateDir, lock, log, schedule, sleep }) → { hold(id, { cols, rows, open }), release(id), releaseWindow(w), releaseAll(), recover(), size() }`: `hold` and `release` return `{ status, body }`, `releaseWindow(@W)` → boolean (for spawn), `releaseAll()` → number (bounded by `RELEASE_ALL_MS`, 3 s), `recover()` → `{ released, dropped }` (same bound), `size()` → leases held; `checkFitBody(body)` → `{ value } \| { error }` is shared with the route; `lock(pane, fn)` is `withPaneLock` of `createSessionControl`. `createAppApi` builds one and sets `ctx.fit`; `appio.js` calls `recover()` before `ready` and `releaseAll()` in `finish()` after the server stopped taking requests; `spawnAgent` reads `ctx.fit` |
 | `src/rules.js` | `async rulesState(project) → { state, settingsIgnored, git }`; `preview(project, ctx) → { status, body }`; `apply(project, { hash, overwriteForeign, gitignore }, ctx) → { status, body }` |

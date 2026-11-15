@@ -11,7 +11,8 @@ panes), also in throwaway sessions. Every sample text in them is made up. The su
 feedback survey rows (§10.1) were checked on 2026-11-14 against 2.1.325, at 120 and 60 columns. §10.12 (input while Claude works) was
 checked on 2026-11-15 against 2.1.325 (macOS, tmux 3.8, 120-column panes), also with made-up text. §11 (attachments) and §12 (scrolling
 Claude's view) were checked on 2026-11-14 and 2026-11-15 against 2.1.325 (macOS, tmux 3.8, panes of 120 to 130 columns), with synthetic
-files and made-up text.
+files and made-up text. §13 (question dialogs and plan approvals) was checked on 2026-11-14 and 2026-11-15 against 2.1.325 (macOS, tmux
+3.8, panes of 40 to 130 columns), with made-up questions; the agent-list and `<n> shells` pill facts in §1 were checked again the same days.
 
 ## 1. Footer (mode line)
 
@@ -100,14 +101,29 @@ Keyboard selection (Down from the box goes to the footer's `<n> shells` pill, th
 row exactly like a hovered one, but the mode line is replaced by a hint (`↑/↓ to select` on `main`; on an agent
 `Enter to view · x to stop · ctrl+x ctrl+k to stop all agents`), and the cursor is hidden and parked at column 0 of the last row of
 the pane (seen with an idle box and a `<n> shells` pill on the footer). Gate 5 therefore refuses the screen (no mode line above the blank row: nothing is cut, the footer reads `unknown`), and
-the box reader refuses a cursor outside the box. With the pill selected the text looks like a normal idle box with its mode line,
-but the cursor is parked the same way (and `Enter` opens a Background dialog instead of sending). The cursor rule refuses the box
-there, so nothing is typed into it; the mode line still reads, and what `BTab` does with the pill selected was not tried (a mode
-switch re-reads the footer after every press and stops on a footer it does not know).
+the box reader refuses a cursor outside the box.
+
+Facts for the three places the keyboard selection can sit (Claude Code 2.1.325, tmux 3.8, a 120-column pane, made-up text; 0.5 fix round F1/F2):
+
+- **On `main` or an agent row** (the list has the focus): the hint row replaces the mode line (`↑/↓ to select · Enter to view · x to stop · ctrl+x ctrl+k to stop all agents`
+  on an agent row, `↑/↓ to select` alone on `main`), the cursor is hidden and parked at column 0 of the last row of the pane, and the
+  footer reads `unknown`.
+- **On the `<n> shells` pill** (one `Down` from the box): the pill is drawn in reverse video (`ESC[7m1 shell ESC[0m` in a colour capture)
+  and the mode line is still drawn and still reads (`manual mode on · 1 shell`). The cursor is parked at column 0 of the last row,
+  like on the list, so the box reader finds the cursor below the box's bottom rule and the draft is `null`. `BTab` cycled the mode
+  correctly from there (manual, accept edits, plan, auto). `Enter` opens the Background dialog and sends nothing.
+  **A typed key leaves the pill selection**: on 2.1.325 the typed text went to the input box and Claude ran it as an ordinary message.
+- **During a question dialog** (§13) `Down` walks option 1, 2, 3, the free-text row and `Chat about this` and stops there; it never reaches the
+  pill or the list.
+
+nika's rules from these facts. The mode line still reads with the pill selected, so a mode switch is allowed (it re-reads the footer after every
+press and stops on a footer it does not know). A draft write or a submit without a `base` is refused when the cursor sits **below** the input
+box's bottom rule (409 `input-unreadable`, F2, `api-app.md`); a cursor above the top rule keeps its older meaning. The page refuses a Send
+while the footer is unknown and no readable box is on screen, and types nothing (F1, spec §9.12).
 
 Not seen, so read as `unknown`: `↑ <n> more`, a wrapped label, a different glyph or a no-break space after the pointer, and a
-permission prompt drawn with the list below it. Not tried: keyboard selection during a busy turn, with no `<n> shells` pill, or
-with a question or plan dialog open.
+permission prompt drawn with the list below it. Not tried: keyboard selection during a busy turn or with no `<n> shells` pill. A question
+or plan dialog with the list below it was never seen live (§13.5).
 
 **Known limit (fail closed).** A permission prompt, or a dialog whose last row nika does not know, with the subagent list under it
 stays `unknown` (its footer is not the last row, and gate 5 does not hold for it). nika then reads no prompt, so it cannot answer it
@@ -891,3 +907,161 @@ The route is `POST /api/app/pane/:id/scroll` (`api-app.md`); the page side is `d
 - The `Jump to bottom (click) ↓` variant (not reproduced) and a pill drawn in other colours or wrapped over two rows: not seen, so not
   matched.
 - A scroll key during the Rewind dialog or with `/config` open: the route refuses on the unknown footer, never tried raw.
+
+## 13. Question dialogs and plan approvals (0.5, W1)
+
+What Claude Code draws when it asks the user a question (`AskUserQuestion`) or asks to approve a plan (`ExitPlanMode`), how nika reads it
+(`src/dialog.js`), and which keys answer it. Checked 2026-11-14 and 2026-11-15, Claude Code 2.1.325, tmux 3.8, macOS, in throwaway sessions
+with made-up questions (spike S3, then W1-T0, T0b, T0c and the end-to-end check W1-T4 through nika's page). The route is
+`POST /api/app/pane/:id/dialog` and the capture's `dialog` field (`api-app.md`); the page is `docs/design/spec.md` §9.16;
+[ADR 0015](../adr/0015-dialogs-from-the-screen.md).
+
+**The call is not on disk while the dialog shows.** A 4-question dialog stayed open for 96 s and the session's transcript file did not
+change (size and mtime, read at +17, +19, +21 and +60 s). After `Escape` the file grew by 5 lines in one write: the assistant `tool_use`, the
+`tool_result` and the user lines. So the screen is the only source while the dialog is open.
+
+### 13.1 A question step
+
+```
+────────────────────────────────  (rule, as wide as the pane, column 0)
+←  ☐ Project  ☐ Checks  ☐ Mode  ✔ Submit  →            the strip; the current tab's token has a background (fg 16 on bg 153)
+(blank)
+Which project should I open?                          the question (bold)
+(blank)
+❯ 1. acme-api                                          the focused row: ❯ in column 0, a space, the number, a dot, the label
+     Open the acme-api project.                        a description, indent 5 (single-select) or 9 (multi-select), fg 246
+  2. web-shop
+  3. demo-api
+  4. Type something.                                   Claude's free-text row (k+1); multi-select: "[ ] Type something", no period
+     Next                                              multi-select only: the button row, indent 5 (the last tab's reads "Submit")
+────────────────────────────────  (a rule)
+  5. Chat about this                                   indent 2 (k+2)
+(blank)
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel      the footer: the last non-blank row
+```
+
+- The strip, the question and the footer start at column 0. A **single** tab uses the footer `Enter to select · ↑/↓ to navigate · Esc to cancel`
+  and a strip of one token with no arrows and no `Submit`; **several** tabs use `Tab/Arrow keys to navigate` and a strip with `←`, `→` and
+  `✔ Submit`. The footer gains `-- INSERT -- · ` in front while a vim text row has INSERT, and ` · ctrl+g to edit in Vim` (any editor name)
+  when the focus is on the text row or the button row after it, in plain mode too; `· Esc to cancel` is absent while INSERT shows.
+- A tab token is `☐ <header>` (not answered) or `☒ <header>` (answered); tokens sit two spaces apart. The **current** tab is the one drawn
+  with a background (or reverse video); nika reads that, not a colour value. Zero or two marked tokens is `unreadable` (`tab`). At narrow widths
+  Claude cuts the unfocused headers with `…` (`To…`).
+- A multi-select question has `[ ] <label>` / `[✔] <label>` rows; a digit toggles a box and leaves the focus where it is. An answered
+  single-select label ends in ` ✔` (nika removes it). Typing in the multi text row ticks its box by itself.
+- The tmux cursor sits on the focused row, and parks at column 0 of a row (`0,39`) on the button row and on `Chat about this`.
+- Re-entering a tab (`Left` in the terminal) resets the focus to option 1 and keeps ticks and typed text.
+
+### 13.2 The review step
+
+```
+←  ☒ Project  ☒ Checks  ☒ Mode  ✔ Submit  →            the Submit token is the current one: a background, and no brackets in 2.1.325
+Review your answers
+ ⚠ You have not answered all questions                 only while a tab is open
+ ● Which project should I open?     →  acme-api        the question; the answer after →, a wrapped row joins the one above
+ ● Which checks should I run?       →  lint, build
+Ready to submit your answers?
+❯ 1. Submit answers
+  2. Cancel                                            the last non-blank row; there is no footer
+```
+
+- The review lists the **answered** questions only; unanswered ones are omitted and the warning row shows. A multi-select answer reads
+  `<ticked labels in list order>, <the Other text>`. After Submit, Claude's result lines list the answers in the order they were given.
+- `Enter` on the review's `1. Submit answers` submits the dialog. `Enter` on a multi question's button row does **not**: it opens the review.
+
+### 13.3 The plan approval
+
+```
+▔▔▔▔▔▔▔▔▔  ◐ medium · /effort ▔                        a band row above; the effort text is part of it
+  ────────────────────────────────  (rule, indent 2, width cols - 4)
+   Ready to code?                                      indent 3, bold
+(blank)
+   Here is Claude's plan:
+  ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌  (dashed rule)
+   - Reply with the single word done.
+  ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌  (dashed rule; blank rows may follow)
+  ────────────────────────────────  (rule)
+   Claude has written up a plan and is ready to execute. Would you like to proceed?
+(blank)
+   ❯ 1. Yes, and use auto mode                         options at indent 3 (the pointer in column 3)
+     2. Yes, manually approve edits
+     3. Tell Claude what to change                     the free-text option, dim
+        shift+tab to approve with this feedback        indent 8, under the free-text option only
+(blank)
+   ctrl+g to edit in Vim · <plans folder>/<name>.md     the footer (any editor name); the path is never read or shown
+```
+
+- **A digit takes effect at once** (spike W1-T0b L5, digit `2` with the focus on option 1: `User approved Claude's plan`, the mode line became
+  `-- INSERT -- ⏸ manual mode on`, and the model replied). `Enter` after typed text on the free-text option was never run.
+- The plan dialog **never shows the `-- INSERT --` marker**, even with the free-text option focused. The plan text can be longer than the
+  screen and is cut; nika uses the visible plan rows only for the dialog's identity and never shows them.
+
+### 13.4 Shapes nika recognises but never reads
+
+- `Exit plan mode?` (ExitPlanMode with no plan file): two options (`1. Yes, and switch to default (ask each time) for this session`,
+  `2. No`), no footer, the last row of the screen is `2. No`. `Escape` rejects it.
+- `Teach auto mode about your environment?` (the auto-mode nudge): digit options `1. Yes`, `2. Not now`, `3. Don't show again`, a footer
+  `Enter to confirm · Esc to cancel` that is **not** the last non-blank row (an ordinary mode line sits below the box). It appeared once, on the
+  first idle screen after a turn, in an auto-mode pane.
+
+Both take a digit or `Enter` that was meant for something else, so every control that needs a plain box treats them as a dialog on screen
+(`promptOpen`, `api-app.md`), and the `dialog` field says `unreadable` with `kind: null`. They are never answered by nika.
+
+### 13.5 When nika does not read a dialog (`unreadable`, the page keeps its banner)
+
+| Reason | Seen live / rule |
+|---|---|
+| `cut` | No top rule directly above the strip, or no strip (a pane shorter than the dialog: the dialog clips from the top, the option list scrolls, and `↑` / `↓` replace the two leading spaces of the first or last visible option row, which no option pattern matches); a plan without `Ready to code?`, either `╌` rule or the prompt row; a header, label, question or answer that ends in `…` |
+| `wide` | A row (not a rule, not the free-text row's wrapped value, not a plan row) as wide as the pane: Claude may have cut it. A row under an option row whose first word would **not** have fitted behind the option's last character: a wrapped label looks like a description by its indent, so nika cannot tell them apart unless the row's first word would have fitted behind the label (word wrap at `cols - 1` would then have kept it there, so the row is a description: `src/dialog.js:222-225`). A wrapped footer. Fewer than 20 columns. At 40 columns Claude wraps the question, the labels, the descriptions and the footer (2 rows, 3 with INSERT), so the old banner shows |
+| `numbers` | Option numbers not `1..k+2` without gaps, or above 9 (a digit answers without `Enter`, so `k` is at most 7); the free-text row not `k+1`, the chat row not `k+2`; a button row on a single-select question or none on a multi-select one |
+| `tab` | Not exactly one current tab (zero or two marked tokens) |
+| `layout` | The footer says `↑/↓` with several tabs, or `Tab/Arrow keys` with one tab and no `Submit`; a multi-select question or several tabs without `Submit`; a duplicate label, a label equal to the free-text or chat placeholder, a header, label or question holding `☐`, `☒` or `✔`; a string over its maximum (header 40, question 500, label 200, description 500, answer 500); the button row's name disagreeing with the last-tab rule; any other shape |
+| `survey` | Claude's feedback survey is on screen (it takes digits, §10.1) |
+
+- Measured: the widest text row is `cols - 1` in every capture (119 at 120 columns, 39 at 40); only rule rows reach `cols`. 300 typed
+  characters in the text row read back exactly (3 rows joined with one space: the break space of a wrap disappears).
+- At 40 columns the footer wraps, but a wrapped footer is still found (the last one to three non-blank rows joined) so `dialogOnScreen` is
+  true and the capture says `unreadable` / `wide`, not `null`.
+- A subagent list under a question, review or plan dialog is cut when the row above its blank row is the dialog's last row (`isDialogEnd`,
+  §1). Whether Claude draws the list under a dialog at all was **never seen live** (spike L7 did not fit in the budget); the fixtures cover it.
+
+### 13.6 The keys
+
+| Step | Goal | Keys | Verified |
+|---|---|---|---|
+| question, single-select | pick `p` | `p` (a digit as text) | live; one tab: the dialog ends, several: advances to the next tab |
+| question, single-select | Other text `T` | `Down` until the text row, `-l T`, `Enter` | live (plain and vim) |
+| question, multi-select | picks | the digit of each box that differs (it toggles and leaves the focus), then `Right` from an option row | live |
+| question, multi-select, last tab | Other text | the picks, `Down` to the text row, `-l T`, `Down` to the button row, `Enter` | live (T0c; the review `→` line reads `<ticks>, <text>`) |
+| review | submit | `Enter` on `1. Submit answers` | live |
+| plan | choice | a digit | live (option 2) |
+| any | decline | `Escape`; in vim INSERT the first only leaves INSERT, a second (after a gap) closes the dialog | first: S3, T0, T4; the second: T0b (1.2 s apart) |
+
+- `Right` does **nothing** from the text row or from the button row; it works from an option row (so the multi text road uses `Down` and
+  `Enter`, and only the last tab's was verified). `Left` goes to the previous tab and resets the focus to option 1.
+- One `Escape` closes the whole dialog at once (`User declined to answer questions`); the model does not continue. After two declines in one
+  session the model may refuse to ask a third time.
+- vim: the `-- INSERT --` marker shows **only while the text row has the focus**; one `Escape` there leaves INSERT and keeps the dialog and the
+  text. nika's own `Down` onto the text row lets vim enter INSERT at once. Plain mode draws the same text-row footer as vim NORMAL, with no
+  marker, so nika types there only on a pane it knows is plain or right after its own `Down`.
+- A leading digit on an empty free-text row was typed as text in the live check (`4. 2`), not taken as an option; nika still refuses
+  free text that starts with 1 to 9 (a precaution: the route says 400 `invalid`).
+- Down from the first option walks 1, 2, 3, the text row, `Chat about this`, and stays there; with a dialog open it never reaches the
+  `<n> shells` pill.
+
+**Never sent by nika:** `Up`, `Tab`, `BTab`, `Space`, `C-c`, `C-u`, `C-d`, `Left`; a digit while the text row has the focus; anything on
+`Chat about this`; `Enter` except as listed; any key after the dialog closed; any key toward another tab.
+
+### 13.7 The live check through nika's page (W1-T4)
+
+Single-select, a 4-question form tab by tab with a review, multi-select, Other (single and multi, plain and vim), a plan choice, Decline (also
+on a review) and the refusals (`dialog-touched` after text typed in the terminal, `dialog-focus` after the focus moved to `Chat about this`)
+all gave the keys the tables above list, and nothing from "Never sent". At 40 columns the capture said `unreadable` / `wide` and a form already
+shown went read-only; a direct `POST` with any `sig` was 409 `dialog-changed` with no key. The browser tier had no route and no `dialog` key.
+Scrolling with a dialog open: 409 `screen-unclear`, no key. A vim multi text row left in NORMAL: 409 `text-mode`, nothing typed; after the
+user brought the focus back, Claude re-entered INSERT on arrival and the request finished.
+
+**Not verified:** Decline from vim INSERT through nika (two `Escape` presses with `sent: 2`); a digit on the multi-select text row; the 560 px
+layout of the form; the first `Down` onto a single-select text row on a plain pane that nika never saw (the live check always typed after an
+INSERT or a prior probe); `Enter` after text on the plan's free-text option; Stop and End during a long busy turn with a real subagent list
+(only the status line and the shells pill were tried); a taller dialog than the pane at the fit's smallest size (it would read `cut`).

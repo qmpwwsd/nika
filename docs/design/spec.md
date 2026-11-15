@@ -1088,8 +1088,9 @@ focus already is and focus never moves (WCAG 2.1.1, 2.4.3). Ctrl+PgUp and Ctrl+P
 left alone. The message box keeps its own editing keys, and Type into pane on keeps sending the user's own keys.
 
 The box is never a keyboard trap: Tab leaves forward, Ctrl+Shift+Tab backward. Its accessible name says so: "Message
-to builder-1. Enter sends, Shift+Enter adds a line. Escape, Control+C and Shift+Tab go to Claude, and so do the arrow
-keys and Enter when the box is empty. Control+Shift+Tab moves focus back."
+to builder-1. Enter sends, Shift+Enter adds a line. Escape and Control+C go to Claude; so does Shift+Tab when no question
+or prompt is open, and the arrow keys and Enter when the box is empty. Control+Shift+Tab moves focus back." **(0.5, W1 fix round: Shift+Tab
+is held back while a permission prompt or a question form is open, §9.5 and §9.16.)**
 
 Leaving passthrough: Ctrl+], the banner's "Stop" button, clicking outside the mirror, or focus leaving the mirror for any reason. Each change is announced ("Passthrough on: every key goes to pane %12. Press Control and ] to leave." / "Passthrough off"). This is a documented, escapable keyboard mode (WCAG 2.1.2).
 
@@ -1592,7 +1593,7 @@ One toolbar (`#qa`, `role="toolbar"`, `aria-label="Session actions"`) at the top
 - Clear confirm (440 px confirm dialog, §3.6): title "Clear builder-1's conversation?", body "Claude starts a new conversation with empty context.", buttons Cancel (initial focus) · **Clear conversation** (danger).
 - Model popover: disclosure (`aria-expanded`, `aria-controls="model-pop"`), not a menu. Content: label "Model for builder-1", the §6.9 `<select>` (Latest / Aliases / Older optgroups, then "Custom ID…" which reveals a text field; Aliases: best, fable, opus, sonnet, haiku, opusplan, opus[1m], sonnet[1m]), a muted line "Types `/model <id>` and Enter.", footer Cancel · **Switch model** (primary). Opening focuses the select; Esc or Cancel closes and returns focus to the Model button; Tab out of the popover closes it. Custom field error: "Use a model id such as claude-sonnet-5-5, or an alias such as opus or sonnet[1m]." A change never fires on `<select>` change (arrow keys on a closed GTK select would send several `/model`s); only Switch model sends.
 - After any send, the existing echo says what went out ("Sent /compact + Enter to %12"). Rewind says "Opened Rewind in %12: pick a point in the pane" (the menu is in the pane, not in nika). Stop says "Stopped builder-1's turn".
-- Stop failures (**built amendment 2026-11-09, task 14b**), fixed copy in the problem line, never the server's text: 409 `prompt-open`: "Answer the prompt first. Esc = No is in the prompt panel." · 409 `not-busy`: "Nothing to stop: Claude is waiting." · 409 `stopping` (another window is already stopping this pane): "Already stopping the turn." · 409 `mode-unknown`: "Claude's input stayed in vim insert mode; press Esc in the terminal." · 429: "Too many keys at once; try again." · 404: "The session is gone." (and the pane-gone state, §3.9) · 5xx, network error: "nika couldn't reach tmux." · anything else: "nika couldn't stop the turn." A command in flight (Compact waiting on the control lock) does not block Stop; only a Stop already in flight ignores a second click.
+- Stop failures (**built amendment 2026-11-09, task 14b**), fixed copy in the problem line, never the server's text: 409 `prompt-open`: "Answer the prompt first. Esc = No is in the prompt panel." (**0.5, W1:** "Answer the question above first." while a question or plan form shows, §9.16) · 409 `screen-unclear`: "nika can't tell what Claude is showing, so Stop sent nothing. Press Esc in the terminal." · 409 `not-busy`: "Nothing to stop: Claude is waiting." · 409 `stopping` (another window is already stopping this pane): "Already stopping the turn." · 409 `mode-unknown`: "Claude's input stayed in vim insert mode; press Esc in the terminal." · 429: "Too many keys at once; try again." · 404: "The session is gone." (and the pane-gone state, §3.9) · 5xx, network error: "nika couldn't reach tmux." · anything else: "nika couldn't stop the turn." A command in flight (Compact waiting on the control lock) does not block Stop; only a Stop already in flight ignores a second click.
 - Command route failures, in the composer's problem line (`role="alert"`), fixed copy (never the server's text), the button re-enabled: 409 `input-not-empty`: "Claude's input has a draft. Send or clear it in the terminal, then try again." · 409 `input-unreadable`: "nika can't find Claude's input box, so nothing was typed. Close any menu in the terminal (Esc), then try again." (both a warning, **built amendment 2026-11-09 (0.3.4)**: `input-not-empty` is a draft in a box nika found; `input-unreadable` is no box, or one that does not start with a `❯` row, and nothing is typed) · 409 `not-at-prompt`: "Claude's input didn't take the command; nothing was submitted." · 409 `not-idle`: "Compact, Clear, Model and Rewind are ready when Claude waits for you." · 409 `mode-unknown`: "Claude's screen isn't at the prompt; use the terminal." · 409 `busy-switching`: "Another action is running on this session." · 429: "Too many keys at once; try again." · 404: "The session is gone." · 5xx, network error: "nika couldn't reach tmux."
 
 **States.** A disabled row also says why in words: a reason line `p#qa-why.qa-why` (info icon + text, 12 px `--text-muted`, 6 px under the row, referenced by the toolbar's `aria-describedby`), not only the `title`s. One line, the first matching row wins.
@@ -1603,6 +1604,7 @@ One toolbar (`#qa`, `role="toolbar"`, `aria-label="Session actions"`) at the top
 | tmux error (§3.9) | aria-disabled | aria-disabled | aria-disabled | "nika couldn't reach tmux." |
 | no capture yet | aria-disabled | aria-disabled | aria-disabled | "Connecting to the pane…" |
 | Needs you, prompt panel shown (§9.5) | aria-disabled, `title` "Esc = No is in the prompt panel" | aria-disabled | live (the dialog has its prompt-open line, §9.8) | "Answer the prompt first. Esc = No is in the prompt panel." |
+| Needs you, question or plan form shown (§9.16, 0.5) | aria-disabled, `title` "Decline is in the question form" | aria-disabled | live (End declines the dialog first) | "Answer the question above first." |
 | Needs you, unknown layout (`prompt: null`) | aria-disabled, `title` "Answer the prompt first; Esc in the message box cancels it" **(built amendment 2026-11-09 (0.3.3))** | aria-disabled | live | "Answer the prompt first." |
 | Claude working | **live** | aria-disabled | live (Esc first, §9.8) | "Compact, Clear, Model and Rewind are ready when Claude waits for you." |
 | Claude waiting | aria-disabled | live | live | none (Stop being off needs no line) |
@@ -1622,6 +1624,7 @@ Keyboard: one Tab stop, ← → / Home / End, Enter or Space activates.
 When the capture has `prompt`, the attention note above the message box becomes a prompt panel (`#prompt-btns`, `role="group"`, `aria-labelledby` → the question).
 
 - Panel: `--attn-row` fill + 3 px `--attn` left edge (as attention rows). Line 1 reuses the 0.2 attention note (`#attn-note`): the "Needs you" status pill + `#attn-text`, cut to the attention reason (`agent.attention`, e.g. "Asking to run a command") in `--attn`, 600 (`.ask-reason`). nika does not parse the prompt's own title line (no "Bash command: …" line). Line 2: the question, 600.
+- **Kind tag (0.5, W1).** The panel's header starts with a tag `i-warn` + "Permission" (`.dlg-kind[data-k="perm"]`, `--attn`; `public/session.html`), so a permission prompt and a question form (§9.16, tags "Question" and "Plan approval") never look alike.
 - One button per option, full width, in Claude's order: keycap digit (`kbd`, 700) + the label as text, wrapping (labels ≤ 80 chars after `clean()`). Secondary-button look, left-aligned, min height 32. A button posts `{ n, sig }` to `POST /api/app/pane/:id/answer` (`docs/contracts/api-app.md`).
 - **An option whose label contains "bypass" (any case) gets no button** (rule 12; the answer route refuses it): it shows as a plain row, same height, dashed `--line-strong` edge, no fill, the digit in a muted keycap, the label as text, and a second line in `--text-muted`: "Answer this one in the terminal". It is not focusable.
 - **A prompt that mentions bypass anywhere gets no answer button at all** (built amendment 2026-11-09, task 14b; the answer route refuses every option with 400 when the prompt window - the last 15 non-blank rows, tool-call lines above the question included - mentions bypass, NFKC, letters only). The capture's `prompt.bypass` carries that same test (contract §3), and the page hides every answer button when it is `true`; the page's own checks of the question and the labels stay as a second line. Every option is drawn as the plain row above, with "Answer this one in the terminal"; only the Esc button stays. If the route still answers 400, the problem line says "Answer this prompt in the terminal." and the question is locked like an answered one.
@@ -1755,7 +1758,7 @@ Confirm dialog, 440 px (§3.6), opened from the quick-actions row, the dashboard
 
 ### 9.10 Focus order and Esc ladder
 
-Session window Tab order: skip links → back crumb → Open in claude.ai → Keyboard shortcuts → [Terminal / Transcript tabs when narrow] → transcript → [Transcript toggle, wide windows] → Dark/Light → Type into pane → [Leave, in passthrough] → mirror → [Jump to live, Retry now, when shown] → quick actions (1 stop) → [model popover while open] → prompt option buttons → prompt Esc → [attachment chips' remove buttons] → shell toggle → message box → [paste Clear] → Commands → Add attachments → Send → mode switcher (1 stop). Opening the session still focuses the message box (§4.2). In the message box Shift+Tab goes to Claude; Ctrl+Shift+Tab moves focus back to the shell toggle. **(built amendment 2026-11-09 (0.3.3))** The **Transcript** toggle (§4.7) sits between the transcript and Dark/Light, and only on wide windows. **(built amendment 2026-11-09 (0.3.4))**
+Session window Tab order: skip links → back crumb → Open in claude.ai → Keyboard shortcuts → [Terminal / Transcript tabs when narrow] → transcript → [Transcript toggle, wide windows] → Dark/Light → Type into pane → [Leave, in passthrough] → mirror → [Jump to live, Retry now, when shown] → quick actions (1 stop) → [model popover while open] → prompt option buttons → prompt Esc → [question form: options, Other, Send answer / Answer / Submit answers / choice buttons, Decline / Reject (Esc), §9.16] → [attachment chips' remove buttons] → shell toggle → message box → [paste Clear] → Commands → Add attachments → Send → mode switcher (1 stop). Opening the session still focuses the message box (§4.2). In the message box Shift+Tab goes to Claude; Ctrl+Shift+Tab moves focus back to the shell toggle. **(built amendment 2026-11-09 (0.3.3))** The **Transcript** toggle (§4.7) sits between the transcript and Dark/Light, and only on wide windows. **(built amendment 2026-11-09 (0.3.4))**
 
 Esc ladder (§4.3) gains two rungs, in this order: model popover or row menu → **palette** → dialog → B drawer → pane.
 
@@ -1875,7 +1878,8 @@ last saw or just wrote), only while Claude's input still reads that. What "Enter
 | text that does not fit | readable and empty (prompt mode) | as before 0.5: one paste, then `Enter` |
 | text that does not fit | readable with other text | refused: "Claude's input already holds text; it would be sent together with yours. Clear it in the terminal or shorten your message." |
 | text | unreadable | refused: "Claude's input holds <reason>. Send or clear it in the terminal." |
-| text | no plain box | as before 0.5 (the paste or Shell path through the keys route, which types the text), then the guarded `Enter` with no `base` |
+| text | no plain box, footer known | as before 0.5 (the paste or Shell path through the keys route, which types the text), then the guarded `Enter` with no `base` |
+| text, Shell text, or an empty box | no plain box and the footer unknown (a menu, Claude's agent list, the shells pill) **(0.5, F1)** | refused before any key: "nika can't read Claude's input box right now (a menu may be open). Nothing was sent. Your text is kept." The legacy road would type the text before the submit route could refuse, and a typed key there leaves the pill or runs as a message (`claude-tui.md` §1). Shell on with an empty box still does nothing (§9.6) |
 | any, attachments in the tray | readable | the text is copied as above, then `POST /api/app/pane/:id/attach-send` pastes the files and presses its own `Enter` (§9.14) |
 
 nika never clears Claude's draft to make room for a long message (owner decision 2026-11-14). The problem lines of a failed copy are
@@ -2189,6 +2193,105 @@ reuses `.paused-note`, the button is the existing `.jump`.
 **Not built:** a scrollback route (tmux holds no history for Claude), mouse reports, tmux copy mode, line-by-line scrolling, an automatic
 return to the bottom before or after Send, scroll keys in prompts or dialogs, a message-box shortcut, a setting, anything on the browser
 tier.
+
+### 9.16 Question dialogs and plan approvals (0.5, W1)
+
+**(built 2026-11-15 (0.5).)** When Claude asks the user a question (one to eight questions in tabs, then a review) or asks to approve a
+plan, the window draws a form above the message box and the user answers there. Contract: `api-app.md` (the capture's `dialog` field and
+`POST /api/app/pane/:id/dialog`); how Claude draws these dialogs and which keys answer them: `claude-tui.md` §13; the decision: ADR 0015;
+the threat: `security.md` T37. The logic that has no DOM is `public/dialog-form.js` (tested alone); the wiring is `public/session.js`
+(`cleanDialog` in `noteScreen`, `DF.render` after `renderPrompt`, `DF.live()` in the send gate). App tier only: no route and no `dialog`
+field on :3335.
+
+The form reads **exactly or not at all**. A dialog nika cannot read (a cut-off or too-wide screen, a wrapped label, an unknown shape, a
+feedback survey) keeps the old banner ("<name> needs you: <reason>. Answer it in the terminal, or turn on Type into pane."), and the gates
+still count it as a prompt. The form shows **one step at a time** (the current question, the review, or the plan's choices) and follows
+Claude's own tabs; it never moves between them. After an answer the next question appears with a new `sig`.
+
+**Placement.** `div.ask.dlg#dialog-form` (`role="group"`, `aria-labelledby` the question or, for a plan, the kind tag) sits in
+`#composer-box` after the permission panel (`#prompt-btns`). It reuses `.ask` (`--attn-row` fill, 3 px `--attn` left edge) and takes at most
+`min(45vh, 420px)`, scrolling inside itself, so the mirror keeps its height. A shown form stays while every capture has a dialog (it
+leaves on `dialog: null` or a pane that is not `ok`); a `ready` step with another `sig` rebuilds it, and the same `sig` keeps the
+nodes, so typed text and focus survive the 250 ms captures. The attention note and the form never show together.
+
+| Part | What it is |
+|---|---|
+| Header `.ask-h` | state chip (below) · kind tag (`i-dialog` "Question", or `i-m-plan` "Plan approval" in `--m-plan`) · the attention reason (`.ask-reason`) |
+| Tabs `ol.dlg-tabs` (`aria-label="Questions"`, shown for two or more tabs) | one item per tab of Claude's strip, **not buttons**: the header, `i-check` when answered or an empty ring, `.sr-only` "answered" / "not answered", `aria-current="step"` on the current one; plus "Review". Under a 560 px composer (container query) the list is replaced by the line "Question 2 of 4 · Tools" (or "Review") |
+| Question | `fieldset > legend.ask-q` (600, `tabindex="-1"`) |
+| Option rows `label.ch` | a radio (single-select) or a checkbox (multi-select) · `kbd` with Claude's number · the label · the description (`--fs-small`, `--text-muted`). A description over 180 characters is clamped to 3 lines with a **More** / **Less** link (`aria-expanded`). Checked: `--accent-soft` fill, `--accent` edge. A multi-select box starts as Claude shows it |
+| Other | `label.ch` "Other" with a text field (`maxlength="300"`, placeholder "Type your answer", `aria-label` "Other answer"); typing selects it. A counter "n/300" from 250 characters. A first digit shows the warn line "Start with a word: Claude can read a first digit as an option." and Send then moves the focus back to the field instead of sending. Where the capture says `other: false` (a multi-select question that is not on the last tab) the row is a `.pbtn-off` line "Other answers: use the terminal" |
+| Buttons (question) | **Send answer** (`.btn.primary`) when the answer ends the dialog (`final`: one tab, single-select), else **Answer**; **Decline** (`.btn.ghost`, `title` "Presses Esc in the pane: Claude stops and waits for you"). Enter in the Other field is the primary button, never a newline (Shift+Enter and an IME's Enter excepted). The primary is aria-disabled until the choice is valid (one pick, or a typed answer; a multi-select needs at least one pick or text) |
+| Review | heading "Review your answers"; when Claude shows it, a warn row (`i-warn`, `--idle`) "You have not answered all questions"; `dl.dlg-review` with the question (`dt`) and the answer (`dd`) as Claude shows them; **Submit answers** (primary) and **Decline** |
+| Plan | the note "Read the plan in the terminal view." (`i-window`; the plan text is never shown or sent to the page); one `button.pbtn` per choice (`kbd` and Claude's label, verbatim) that answers on click, Enter or Space; the text option ("Tell Claude what to change") is a `.pbtn-off` row "<label>: use the terminal"; **Reject (Esc)** (`.pbtn.esc`, the Decline) |
+
+**States.** Every state has its own colour, icon and word.
+
+| State | When | Chip: colour, icon, word | Controls |
+|---|---|---|---|
+| reading | `unreadable`, no form shown yet, under 2 s (`READING_MS`) | `--ended` on `--ended-soft` · `i-clock` · "Reading" | none; the note "Reading Claude's question…" |
+| unreadable | the same, after 2 s | no form: the banner (above) takes over | |
+| ready | `ready`, `bypass: false` | the existing "Needs you" pill (`--attn`) | live |
+| terminal only | `ready`, `bypass: true` | `--text-muted`, dashed edge, no fill · `i-off` · "Terminal only" | read-only (the options are shown, not offered); only Decline (Reject) is live; the note "This mentions bypass, so nika leaves it to you: answer it in the terminal." |
+| answering | a request is in flight | `--accent` on `--accent-soft` · spinner · "Answering" | everything aria-disabled; the pressed button has `aria-busy` |
+| answered | 200 (or 409 `already-answered`) | `--busy` on `--busy-soft` · `i-check` · "Answered" ("Submitted" and "Declined" in their cases) | locked until a new `sig` or `dialog: null` |
+| failed | any other answer | `--danger` on `--danger-soft` · `i-warn` · "Not answered" | per the table below |
+| kept, unreadable | a form is shown and the next capture is `unreadable` | the chip keeps its state; the note "nika can't read Claude's dialog right now. Wait a moment, or answer in the terminal." | Send aria-disabled; the next readable capture takes the note away |
+
+**Route outcomes.** The problem line (`role="alert"`) shows fixed copy chosen by the status and the `error` code only, never the server's
+text. With `sent > 0` the line gains " nika had pressed <n> key(s) in the pane before it stopped.". After a 200 the echo says "Sent 3 keys to
+%12" and the polite region says "Answered.", "Submitted builder-1's answers.", "Sent your choice to builder-1." or "Declined.".
+
+| Response | Message | Form after |
+|---|---|---|
+| 409 `no-dialog` | "The question is gone." | re-enabled |
+| 409 `dialog-changed` | "The question changed; check the session." | locked until a new `sig` |
+| 409 `dialog-touched` | "This question was changed in the terminal. Finish it there." | locked |
+| 409 `dialog-focus` | "Claude's selection was moved in the terminal. Finish it there." | locked |
+| 409 `text-mode` | "nika can't type your answer: Claude's text field isn't ready for typing. Type it in the terminal." | locked |
+| 409 `text-mismatch` | "Your answer didn't arrive exactly as typed, so nika stopped before sending it. Fix it in the terminal." | locked |
+| 409 `not-taken` | "Claude didn't take the key. Check the session, then try again." | re-enabled |
+| 409 `already-answered` | none (answered in a second window) | locked, chip "Answered" |
+| 409 `busy-switching` | "Another action is running on this session." | re-enabled |
+| 409 `not-idle` | "nika is stopping Claude's turn; try again in a moment." | re-enabled |
+| 400 `terminal-only` | "Answer this in the terminal." | locked |
+| 400 `invalid`, any other 409 or status | "nika couldn't send this answer. Check it and try again." | re-enabled |
+| 429 | "Too many keys at once; try again." | re-enabled |
+| 404 | "The session is gone." | the pane-gone state (§3.9) |
+| 5xx, network error | "nika couldn't reach tmux." | re-enabled |
+
+**Rulings (2026-11-15).** (1) **The form stays locked after 409 `dialog-touched` and `dialog-focus`**: the user changed the dialog in the
+terminal, so the line sends them there to finish it; a new `sig` or `dialog: null` unlocks the form. (2) **Escape in the message box is a
+passthrough**, as in the terminal and as for a permission prompt (Stop's `title` for a prompt of unknown layout says "Esc in the message box cancels it"): it
+declines the dialog without the form's `sig` check (security T37, residual p). The form itself has no Esc handler and presses no key of its
+own; Decline and Reject are the explicit ways, and digits are not shortcuts.
+
+**Other controls while a form shows** (the capture has a dialog, readable or not):
+
+- **Send, Shell and the lone Enter** wait, like for a permission prompt (§9.5): "Answer the prompt with the buttons above or in the terminal."
+  while a readable form is live, "Answer the prompt in the terminal, or turn on Type into pane." for a bypass step or a dialog nika cannot
+  read (the keys route then refuses Enter, digits and paste with "Answer this prompt in the terminal."). The text stays in the box.
+- **Stop** is aria-disabled with the `title` "Decline is in the question form" and the reason line "Answer the question above first."; a 409
+  `prompt-open` that arrives while a form shows says the same line (a permission prompt keeps "Answer the prompt first. Esc = No is in the
+  prompt panel."). Compact, Clear, Model and Rewind stay aria-disabled with that line; End session declines the dialog first, as it answers
+  a permission prompt with Esc (§9.8).
+- **The message box's accessible name** (the composer label) is now "Message to builder-1. Enter sends, Shift+Enter adds a line. Escape and
+  Control+C go to Claude; so does Shift+Tab when no question or prompt is open, and the arrow keys and Enter when the box is empty.
+  Control+Shift+Tab moves focus back." (§4.2). The mode switch, commands, draft writes and suggestion accepts refuse while a dialog is on
+  screen (`api-app.md`).
+
+**Keyboard, focus and announcements.** Tab order: quick actions → permission panel (if shown) → the form (one stop per radio group,
+each checkbox, Other, the primary button, Decline; the tabs list is not focusable) → the Shell toggle → the message box (§9.10). Arrow keys
+and Space are native. The form appearing never moves focus. When the form rebuilds for the next tab or the review while focus was inside it,
+focus goes to the new legend (or the review heading, or the plan note); when the form leaves with focus inside it, focus goes to the message
+box. Announcements (polite, once per step): "builder-1 asks: Which checks should I run? Question 1 of 4, above the message box." · on each
+later tab "Question 2 of 4: <question>" · "Review your answers: 4 answers, above the message box." · "builder-1 asks you to approve a plan.
+Read it in the terminal view; choices above the message box." A step that mentions bypass says the terminal-only note instead of "above the
+message box". The `.dlg[data-inert]` look (60 % opacity, `not-allowed`) shows whenever the form cannot take an answer; option rows are at
+least 32 px high and More / Less is 24 px (WCAG 2.5.8).
+
+**Not built:** "Chat about this"; the plan's text option and the plan text; moving between Claude's tabs; free text in a multi-select
+question on a tab that is not the last; a keyboard shortcut for an option; a Settings switch; anything on the browser tier.
 
 ### 8.8 WebView support
 

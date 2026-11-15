@@ -1,0 +1,82 @@
+# ADR 0015 — Claude's question dialogs and plan approvals, read from the screen and answered one step at a time
+
+Date 2026-11-15 · Status accepted (nika 0.5, W1)
+
+## Context
+When Claude asks the user a question (`AskUserQuestion`: one to eight questions in tabs, a review step, then Submit) or asks to
+approve a plan (`ExitPlanMode`), it draws a full-screen dialog in its pane. Until 0.5 the session window showed only a banner
+("`<name>` needs you ... Answer it in the terminal"). The owner wants to answer these from the window, with the same care as the
+permission-prompt buttons (ADR 0010, rule 12).
+
+The facts that shaped the design:
+
+- **The call is not on disk while the dialog shows** (spike W1-T0, L1). The transcript gets the `tool_use` and its `tool_result` in one
+  write, after the dialog ends. A 4-question dialog was open for 96 s and the file did not change. The plan's first design (read the
+  pending call from the transcript, bind the answer to its call id) cannot work.
+- **The screen shows one question at a time.** Only the current tab's question, labels and descriptions are drawn; the other tabs show
+  their header in the strip. The review step shows every answer. Long text is wrapped or cut at the pane width, and Claude gives
+  no sign of which (`claude-tui.md` §13).
+- **The keys are known.** A digit picks (and, on a single tab, submits) or toggles a box; `Down` moves the focus; `Right` leaves a
+  multi-select tab from an option row; `Enter` on the free-text row, on the multi button row or on the review's `1. Submit answers`
+  moves on; `Escape` declines the whole dialog; the plan approval takes a digit. Typing a leading digit on the free-text row typed as text
+  in the live check, but that is a precaution nika keeps (below).
+- **There are lookalikes.** `Exit plan mode?` (no footer) and the auto-mode nudge (digit options) are digit-taking dialogs nika does not
+  answer.
+
+## Decision
+- **The screen is the only source.** `src/dialog.js` reads the dialog from the rows of a capture, exactly or not at all: a dialog that is
+  cut off, may be cut at the pane's last column, may have a wrapped label, has an option number above 9 or a gap, has no single current
+  tab, any other shape, or a feedback survey on screen is `unreadable`, and the page keeps the old banner. The capture's `dialog` field is
+  `null`, `{ state: "unreadable", kind, reason }` or `{ state: "ready", kind, at, sig, bypass, ... }`.
+- **`sig` binds the parsed step**, never raw rows: 16 hex of sha256 over the strip headers, the current tab, the question, the labels and
+  descriptions; or every review pair; or the visible plan rows and the choices. Focus, ticks, the typed text and the answered marks are
+  not in it, because they change during a request.
+- **One route, one step per request.** `POST /api/app/pane/:id/dialog` takes `{ sig, picks, text? }` (the current question),
+  `{ sig, submit: true }` (the review), `{ sig, choice }` (a plan choice) or `{ sig, cancel: true }` (Decline). nika follows Claude's tabs
+  and never moves between them: after an answer the next question shows with a new `sig`.
+- **Under the pane lock, a fresh capture before every key.** The step identity must equal the request's, the state must be the one the
+  previous key should have left, and nothing a person could change in the terminal (the focus, the boxes, the typed text, the INSERT
+  marker) may differ from the screen the last key was proven on. Else nothing more is sent (409) and the answer says how many keys went out.
+- **Keys.** A digit 1 to 9 as literal text on a numbered option, `Down`, `Right` (from an option row), `Enter` (the free-text row that reads
+  back exactly the typed text, the multi question's button row after its Other text, the review's `1. Submit answers`), free text through
+  `send-keys -l`, and `Escape` for Decline. Never `Up`, `Left`, `Tab`, `BTab`, `Space`, `C-c`, `C-u`, a key on `Chat about this`, or a key
+  after the dialog closed. The named-key allow-list is unchanged.
+- **Free text** is 1 to 300 characters, with no control, bidi, zero-width or other format character, no space at either end, and **no
+  leading digit 1 to 9** (the route says 400 `invalid`). It is typed only in vim INSERT, on a pane nika knows is plain, or right after
+  nika's own `Down` brought the focus onto the text row with no INSERT coming. In a multi-select question it is offered only on the last tab
+  (the text, `Down` to the button row, `Enter` opens the review); elsewhere "Other answers: use the terminal".
+- **The plan choice is a digit** (spike W1-T0b L5). The plan's own text option ("Tell Claude what to change") stays in the terminal, and the
+  plan text is never shown: "Read the plan in the terminal view" (owner).
+- **Bypass means terminal only** (owner, Q1). A step whose region, or typed text, mentions bypass is answered only in the terminal; Decline
+  stays.
+- **Decline is `Escape`.** One closes the whole dialog; in vim INSERT the first only leaves INSERT, and a second goes only after a fresh
+  read shows INSERT gone, 40 ms later.
+- **Other controls while a dialog shows.** Stop is 409 `prompt-open` (a recognised dialog) or `screen-unclear` (a screen nika cannot read),
+  nothing sent. The mode switch, the commands, draft writes, suggestion accepts and the attachment send refuse with nothing sent. End
+  declines it first, like a permission prompt. The keys route and the page's passthrough are unchanged (rule 12 guard).
+- **The form stays locked after 409 `dialog-touched` and `dialog-focus`** (ruling 2026-11-15). The user changed the dialog in the terminal;
+  the problem line sends them there to finish it. A new `sig` or `dialog: null` unlocks the form.
+- **`Escape` in the message box is a passthrough**, as in the terminal and as for a permission prompt: it declines the dialog without the
+  form's `sig` check (ruling 2026-11-15; threat T37, residual p).
+- **App tier only.** No route and no `dialog` field on :3335.
+
+## Alternatives
+- **Read the pending call from the transcript** (the first design). Not on disk while the dialog shows (T0 L1).
+- **A `PreToolUse` hook that reports the call.** Rule 4 forbids reading Claude's `hooks` key, and nika never edits Claude's settings.
+- **The banner only.** The owner chose forms.
+- **One request with every answer** (`{ kind, sig, toolUseId, answers }`). Only the current tab is visible; the form follows Claude's tabs.
+- **`sig` over the last 20 rows.** Rows change with every focus move, tick and typed character, and carry the subagent timers.
+- **Navigating Claude's tabs** (`Left`, skipping). A key toward a tab nika did not read would answer an unseen question.
+- **Cancel through the keys route.** A stray `Escape` on a busy Claude interrupts a turn, and INSERT needs two; `/dialog` checks the `sig`.
+- **`Space` in the allow-list.** Digits toggle, so it is not needed.
+- **"Chat about this"** (owner: not in 0.5) and **free text in multi-select on every tab** (`Right` does nothing from the text or button row;
+  only the last tab's `Down` + `Enter` road was verified).
+
+## Consequences
+- One question at a time. A several-tab form is answered tab by tab and ends on Claude's review; Submit binds to the pairs the user saw.
+- No plan text in nika. A taller dialog than the pane, a narrow pane (the footer wraps) or a long label is `unreadable` and keeps the banner.
+- Residual: an identical dialog asked again between the page's capture and the request is answered as the first would have been, and tmux has
+  no compare-and-send, so a dialog closed in the few ms between the last check and a key can receive that key (`docs/security.md` T37).
+- Under a subagent list, an `AskUserQuestion`, review or plan dialog is read (the list is cut when the row above is a dialog end); a permission
+  prompt or an unknown dialog with the list below stays `unknown`.
+- Not built (YAGNI): "Chat about this", the plan's text option, navigating tabs, plan text, anything on the browser tier.
