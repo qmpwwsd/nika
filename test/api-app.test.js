@@ -4256,7 +4256,7 @@ function fakeFit(answers = {}) {
 }
 const fitPane = (a, id, opts = {}) => a.call(opts.method ?? 'PUT', `/api/app/pane/${id.replace('%', '%25')}/fit`, opts);
 const FIT_BODY = { cols: 120, rows: 39, open: true };
-const FIT_LIST = [TMUX, '-u', 'list-panes', '-a', '-F', ['#{pane_id}', '#{window_id}', '#{window_panes}', '#{window_zoomed_flag}', '#{pane_active}', '#{window_width}', '#{window_height}', '#{pane_width}', '#{pane_height}', '#{pane_current_command}', '#{@nika-fit}'].join('\t')];
+const FIT_LIST = [TMUX, '-u', 'list-panes', '-a', '-F', ['#{pane_id}', '#{window_id}', '#{window_panes}', '#{window_zoomed_flag}', '#{pane_active}', '#{window_width}', '#{window_height}', '#{pane_width}', '#{pane_height}', '#{pane_current_command}', '#{@nika-fit}', '#{@nika-role}'].join('\t')];
 
 describe('PUT|DELETE /api/app/pane/:id/fit', () => {
   test('(+) PUT hands the pane and exactly { cols, rows, open } to the controller and relays its status, body and no-store', async () => {
@@ -4492,7 +4492,7 @@ describe('PUT|DELETE /api/app/pane/:id/fit', () => {
     const gate = new Promise((r) => { letGo = r; });
     let reached;
     const waiting = new Promise((r) => { reached = r; });
-    const row = (id, active) => [id, '@1', '2', '0', active, '200', '50', '100', '50', 'claude', ''].join('\t');
+    const row = (id, active) => [id, '@1', '2', '0', active, '200', '50', '100', '50', 'claude', '', ''].join('\t'); // 12 fields: ..., @nika-fit, @nika-role
     const exec = async (bin, argv) => {
       calls.push(argv);
       if (argv[1] === 'list-panes') return { stdout: `${row('%6', '1')}\n${row('%7', '0')}\n`, stderr: '' };

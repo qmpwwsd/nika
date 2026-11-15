@@ -12,7 +12,7 @@ import { createSessionControl } from '../src/session-control.js';
 
 const TMUX = '/opt/x/tmux';
 // spelled out here on purpose: a change of the format in src/fit.js must fail this file
-const FMT = ['#{pane_id}', '#{window_id}', '#{window_panes}', '#{window_zoomed_flag}', '#{pane_active}', '#{window_width}', '#{window_height}', '#{pane_width}', '#{pane_height}', '#{pane_current_command}', '#{@nika-fit}'].join('\t');
+const FMT = ['#{pane_id}', '#{window_id}', '#{window_panes}', '#{window_zoomed_flag}', '#{pane_active}', '#{window_width}', '#{window_height}', '#{pane_width}', '#{pane_height}', '#{pane_current_command}', '#{@nika-fit}', '#{@nika-role}'].join('\t');
 const WIN = /^@\d{1,6}$/;
 const PANE = /^%\d{1,6}$/;
 const MUTATING = new Set(['tag', 'untag', 'zoom', 'size', 'optUnset', 'optSet', 'select', 'focus']);
@@ -49,7 +49,7 @@ function makeWorld() {
   const win = (id) => { const w = wins.get(id); if (!w) throw tmuxErr(`can't find window: ${id}`); return w; };
 
   world.add = (id, panes, width, height) => {
-    wins.set(id, { id, panes: panes.map(([pid, command]) => ({ id: pid, command })), active: panes[0][0], last: null, zoomed: false, width, height, sizeOpt: null, tag: '', arr: 'even', pinned: undefined });
+    wins.set(id, { id, panes: panes.map(([pid, command, role]) => ({ id: pid, command, role })), active: panes[0][0], last: null, zoomed: false, width, height, sizeOpt: null, tag: '', arr: 'even', pinned: undefined });
   };
   world.layoutOf = layoutOf;
   world.paneSize = paneSize;
@@ -74,7 +74,7 @@ function makeWorld() {
       case 'list': {
         const lines = [];
         for (const w of wins.values()) {
-          for (const p of w.panes) lines.push([p.id, w.id, w.panes.length, w.zoomed ? 1 : 0, p.id === w.active ? 1 : 0, w.width, w.height, ...paneSize(w, p), p.command, w.tag].join('\t'));
+          for (const p of w.panes) lines.push([p.id, w.id, w.panes.length, w.zoomed ? 1 : 0, p.id === w.active ? 1 : 0, w.width, w.height, ...paneSize(w, p), p.command, w.tag, p.role ?? ''].join('\t'));
         }
         return `${[...lines, ...world.junk].join('\n')}\n`;
       }
@@ -419,8 +419,16 @@ describe('acquire: refusals (nothing is changed)', () => {
   });
 
   test('(−) malformed listing rows are dropped; the good rows still work', async () => {
-    const r = rig((w) => { w.junk = ['%x\t@1\t1\t0\t1\t1\t1\t1\t1\tclaude\t', '%9\t@1\t1', '%8\t@1\t0\t0\t1\t80\t24\t80\t24\tclaude\t', '%7\t@1\t1\t2\t1\t80\t24\t80\t24\tclaude\t', '', 'junk'].map((l) => l); });
+    // 12 fields each (the last, the role, empty), so every row fails on its own value: a bad pane id, a short row, zero panes, a zoom flag of 2
+    const r = rig((w) => { w.junk = ['%x\t@1\t1\t0\t1\t1\t1\t1\t1\tclaude\t\t', '%9\t@1\t1', '%8\t@1\t0\t0\t1\t80\t24\t80\t24\tclaude\t\t', '%7\t@1\t1\t2\t1\t80\t24\t80\t24\tclaude\t\t', '', 'junk'].map((l) => l); });
     assert.deepEqual(await r.put('%2', 220, 60), ans('fitted', null, 220, 60, 3));
+  });
+
+  test('(−) a row of the old 11-field format or with a 13th field is dropped, even when every value is good (F2: exactly 12 fields)', async () => {
+    const r = rig((w) => { w.junk = ['%7\t@1\t1\t0\t1\t80\t24\t80\t24\tclaude\t', '%8\t@1\t1\t0\t1\t80\t24\t80\t24\tclaude\t\t\t']; });
+    assert.deepEqual(await r.put('%2', 220, 60), ans('fitted', null, 220, 60, 3));
+    assert.equal((await r.put('%7', 220, 60)).status, 404, 'a pane that only an 11-field row names is not listed');
+    assert.equal((await r.put('%8', 220, 60)).status, 404, 'nor one that only a 13-field row names');
   });
 });
 
@@ -1185,16 +1193,25 @@ describe('the watch', () => {
     assert.equal((await r.put('%2', 220, 60, false)).body.fit.reason, 'user-change');
   });
 
+  // F2 narrowed this test (design-F12 §3.3): a new pane with no nika role (a user's split) is given one watch tick for nika's spawn to tag it
+  // before it counts as a user change, so the first tick waits and the second, WATCH_MS later, releases. A kill of a pane that was not
+  // nika's agent is a user change at once.
   test('(−) a split or a kill (pane count changed), alone or with the unzoom tmux does: released and kept off', async () => {
-    for (const unzoom of [false, true]) {
+    for (const how of ['split', 'split+unzoom', 'kill+unzoom']) {
       const r = rig();
       await r.put('%2', 220, 60);
       const w = r.world.wins.get('@1');
-      w.panes.push({ id: '%9', command: 'zsh' });
-      if (unzoom) w.zoomed = false;
+      if (how === 'kill+unzoom') w.panes = w.panes.filter((p) => p.id !== '%3');
+      else w.panes.push({ id: '%9', command: 'zsh' });
+      if (how !== 'split') w.zoomed = false;
+      if (how !== 'kill+unzoom') {
+        await r.tick();
+        assert.equal(r.fit.size(), 1, `${how}: the untagged new pane gets one tick of grace`);
+        r.clock.t += WATCH_MS;
+      }
       await r.tick();
-      assert.equal(r.fit.size(), 0);
-      assert.equal((await r.put('%2', 220, 60, false)).body.fit.reason, 'user-change');
+      assert.equal(r.fit.size(), 0, how);
+      assert.equal((await r.put('%2', 220, 60, false)).body.fit.reason, 'user-change', how);
     }
   });
 
@@ -2189,7 +2206,7 @@ describe('fix round 4 (N1): a renew resizes only a window that is still as nika 
     'the user resized the window': (w) => { w.width = 150; },
     'the user unzoomed': (w) => { w.zoomed = false; },
     'the user moved focus': (w) => { w.active = '%3'; },
-    'a split': (w) => { w.panes.push({ id: '%9', command: 'zsh' }); },
+    // 'a split' lived here: F2 (design-F12 §3.5) makes a new pane with no nika role a wait, not a user change; see the F2 tests below
   };
   for (const [what, flip] of Object.entries(FLIPS)) {
     test(`(−) ${what} during the lock wait: no resize-window to the new panel size, a release, blocked / user-change`, async () => {
@@ -2271,5 +2288,555 @@ describe('fix round 4 (N1): a renew resizes only a window that is still as nika 
     const at = r.at();
     assert.deepEqual(await r.put('%2', 220, 60, false), ans('fitted', null, 220, 60, 3));
     assert.equal(r.at(), at);
+  });
+});
+
+// ---- F2 (design-F12 §3, §6): nika's own agent panes never turn the fit off -----------------------------------------------------
+
+describe('F2: a split or an exit of nika\'s own agent panes is not a user change (the watch refits at once)', () => {
+  const win = (r) => r.world.wins.get('@1');
+  /** What tmux does for `split-window` (without -Z) in a fitted window: the new pane joins it, the zoom ends and the new pane is active. */
+  function split(r, id = '%9', role = 'agent', over = {}) {
+    const w = win(r);
+    w.panes.push({ id, command: 'node', role, ...over });
+    w.zoomed = false;
+    r.world.setActive(w, id);
+  }
+  /** What tmux does when a pane exits: it leaves the window, the zoom ends. */
+  function exit(r, id) {
+    const w = win(r);
+    w.panes = w.panes.filter((p) => p.id !== id);
+    w.zoomed = false;
+  }
+  const withRole = (id, role) => (w) => { w.wins.get('@1').panes.find((p) => p.id === id).role = role; };
+  const resizes = (r, at) => r.argv(at).filter((a) => a[0] === 'resize-window').map((a) => a.slice(3).join(' '));
+  /** All tmux calls of one tick that refits: its own list, a release without zoom, select or focus (the window is unzoomed, the pane count changed), a list, then an acquire. */
+  const REFIT = ['list', 'list', 'layout', 'size', 'optUnset', 'untag', 'list', 'list', 'option', 'layout', 'list', 'layout', 'option', 'tag', 'zoom', 'size', 'list', 'layout'];
+  /** All tmux calls of one tick that only gives the window back (a user change or a lapse): its own list, then the same release, no acquire. */
+  const GIVE_BACK = ['list', 'list', 'layout', 'size', 'optUnset', 'untag', 'list'];
+  // After a pane exit the mirrored pane is still the active one, so the restore also puts focus back on the pane that was active before nika's zoom.
+  const withFocus = (names) => [...names.slice(0, 5), 'focus', ...names.slice(5)];
+
+  for (const role of ['agent', 'sub-orchestrator']) {
+    test(`(+) a pane tagged ${role} joins the fitted window: one refit (release, then acquire), no mark, the window is fitted again`, async () => {
+      const r = rig();
+      await r.put('%2', 220, 60);
+      const first = r.tag();
+      split(r, '%9', role);
+      const at = r.at();
+      await r.tick();
+      assert.deepEqual(r.names(at), REFIT);
+      const second = r.tag();
+      assert.match(second, /^[0-9a-f]{16}$/);
+      assert.notEqual(second, first, 'a new lease');
+      assert.deepEqual(r.files(), [`fit-${second}.json`], 'the old file is gone');
+      assert.equal(r.fit.size(), 1);
+      assert.deepEqual(resizes(r, at), ['-x 200 -y 50', '-x 220 -y 60'], 'the restore first, then the fit with the size the page asked for');
+      const w = win(r);
+      assert.deepEqual([w.zoomed, w.active, w.width, w.height], [true, '%2', 220, 60]);
+      assert.deepEqual(await r.put('%2', 220, 60, false), ans('fitted', null, 220, 60, 4), 'the next heartbeat is fitted, not blocked');
+      assert.equal(r.lease(second).panes, 4);
+    });
+  }
+
+  test('(+) the page\'s next heartbeat after a refit is answered from the new lease: no tmux call', async () => {
+    const r = rig();
+    await r.put('%2', 220, 60);
+    split(r);
+    await r.tick();
+    const at = r.at();
+    assert.equal((await r.put('%2', 220, 60, false)).body.fit.state, 'fitted');
+    assert.equal(r.at(), at);
+  });
+
+  test('(+) race: the new pane is untagged at the first tick (one tick of grace, no tmux call), tagged at the next → refit', async () => {
+    const r = rig();
+    await r.put('%2', 220, 60);
+    split(r, '%9', '');
+    const nonce = r.tag();
+    let at = r.at();
+    await r.tick();
+    assert.deepEqual(r.names(at), ['list'], 'waiting: only the listing');
+    assert.equal(r.fit.size(), 1);
+    assert.equal(r.tag(), nonce);
+    win(r).panes.find((p) => p.id === '%9').role = 'agent'; // nika's spawn tagged it
+    r.clock.t += WATCH_MS;
+    at = r.at();
+    await r.tick();
+    assert.deepEqual(r.names(at), REFIT);
+    assert.deepEqual(await r.put('%2', 220, 60, false), ans('fitted', null, 220, 60, 4));
+  });
+
+  test('(−) race lost: the new pane is still untagged WATCH_MS later → released with the mark user-change, and it stays off', async () => {
+    const r = rig();
+    await r.put('%2', 220, 60);
+    split(r, '%9', '');
+    await r.tick();
+    r.clock.t += WATCH_MS;
+    const at = r.at();
+    await r.tick();
+    assert.deepEqual(r.names(at), GIVE_BACK, 'the tick\'s list, then the release');
+    assert.equal(r.fit.size(), 0);
+    assert.equal(r.tag(), '');
+    const res = await r.put('%2', 220, 60, false);
+    assert.equal(res.body.fit.state, 'blocked');
+    assert.equal(res.body.fit.reason, 'user-change');
+    assert.equal((await r.put('%2', 220, 60, true)).body.fit.state, 'fitted', 'open:true is Fit again');
+  });
+
+  test('(−) race: 1 ms short of the grace the untagged pane is still waited for; at WATCH_MS it is a user change', async () => {
+    const r = rig();
+    await r.put('%2', 220, 60);
+    split(r, '%9', '');
+    await r.tick(); // waitAt = now
+    r.clock.t += WATCH_MS - 1;
+    const at = r.at();
+    await r.tick();
+    assert.deepEqual(r.names(at), ['list']);
+    assert.equal(r.fit.size(), 1);
+    r.clock.t += 1;
+    await r.tick();
+    assert.equal(r.fit.size(), 0);
+    assert.equal((await r.put('%2', 220, 60, false)).body.fit.reason, 'user-change');
+  });
+
+  test('(+) the grace restarts for a window that was quiet in between (the untagged pane went away again)', async () => {
+    const r = rig();
+    await r.put('%2', 220, 60);
+    split(r, '%9', '');
+    await r.tick(); // waitAt set
+    win(r).panes = win(r).panes.filter((p) => p.id !== '%9');
+    win(r).zoomed = true; // as if it had never been there
+    r.world.setActive(win(r), '%2');
+    r.clock.t += 400;
+    await r.tick(); // unchanged window: waitAt cleared
+    split(r, '%10', '');
+    r.clock.t += 400;
+    await r.tick(); // waitAt = now again
+    r.clock.t += WATCH_MS - 1;
+    await r.tick();
+    assert.equal(r.fit.size(), 1, 'a stale waitAt would have released here');
+  });
+
+  for (const role of ['agent', 'sub-orchestrator']) {
+    test(`(+) a pane that was tagged ${role} when the window was fitted exits (row gone, window unzoomed) → refit, no mark`, async () => {
+      const r = rig(withRole('%3', role));
+      await r.put('%2', 220, 60);
+      exit(r, '%3');
+      const at = r.at();
+      await r.tick();
+      assert.deepEqual(r.names(at), withFocus(REFIT));
+      assert.deepEqual(await r.put('%2', 220, 60, false), ans('fitted', null, 220, 60, 2));
+      assert.equal(r.fit.size(), 1);
+    });
+  }
+
+  for (const role of ['', 'orchestrator', 'Agent']) {
+    test(`(−) a pane that was not nika's agent (role "${role}") exits → released with the mark user-change`, async () => {
+      const r = rig(withRole('%3', role));
+      await r.put('%2', 220, 60);
+      exit(r, '%3');
+      const at = r.at();
+      await r.tick();
+      assert.deepEqual(r.names(at), withFocus(GIVE_BACK));
+      assert.equal(r.fit.size(), 0);
+      assert.equal((await r.put('%2', 220, 60, false)).body.fit.reason, 'user-change');
+    });
+  }
+
+  test('(+) an agent pane exits and another one is added in the same tick → refit', async () => {
+    const r = rig(withRole('%3', 'agent'));
+    await r.put('%2', 220, 60);
+    exit(r, '%3');
+    split(r, '%9', 'agent');
+    const at = r.at();
+    await r.tick();
+    assert.deepEqual(r.names(at), REFIT);
+    assert.deepEqual(await r.put('%2', 220, 60, false), ans('fitted', null, 220, 60, 3));
+  });
+
+  test('(−) a pane is swapped for another one (same count, the zoom untouched) → the set differs, so it is a user change', async () => {
+    const r = rig();
+    await r.put('%2', 220, 60);
+    const w = win(r);
+    w.panes = w.panes.map((p) => (p.id === '%3' ? { id: '%9', command: 'zsh', role: '' } : p));
+    assert.deepEqual([w.zoomed, w.active, w.panes.length], [true, '%2', 3], 'only the set differs: the zoom, the active pane and the count are as nika left them');
+    await r.tick();
+    assert.equal(r.fit.size(), 0);
+    assert.equal((await r.put('%2', 220, 60, false)).body.fit.reason, 'user-change');
+  });
+
+  test('(+) one agent pane is swapped for another one (same count, the zoom untouched) → refit', async () => {
+    const r = rig(withRole('%3', 'agent'));
+    await r.put('%2', 220, 60);
+    const first = r.tag();
+    const w = win(r);
+    w.panes = w.panes.map((p) => (p.id === '%3' ? { id: '%9', command: 'node', role: 'agent' } : p));
+    assert.deepEqual([w.zoomed, w.active, w.panes.length], [true, '%2', 3], 'only the set differs: the zoom, the active pane and the count are as nika left them');
+    await r.tick();
+    assert.equal(r.fit.size(), 1);
+    assert.notEqual(r.tag(), first, 'given back and fitted again');
+    assert.deepEqual(await r.put('%2', 220, 60, false), ans('fitted', null, 220, 60, 3));
+    assert.equal(w.zoomed, true);
+  });
+
+  test('(−) an agent is added while a pane that was not nika\'s exits in the same tick → the user\'s exit decides: mark', async () => {
+    const r = rig();
+    await r.put('%2', 220, 60);
+    exit(r, '%3');
+    split(r, '%9', 'agent');
+    await r.tick();
+    assert.equal(r.fit.size(), 0);
+    assert.equal((await r.put('%2', 220, 60, false)).body.fit.reason, 'user-change');
+  });
+
+  test('(−) the same panes, the window unzoomed (C-b z) or another pane active: still a user change, even with agent panes in the window', async () => {
+    for (const how of ['unzoom', 'navigate']) {
+      const r = rig(withRole('%3', 'agent'));
+      await r.put('%2', 220, 60);
+      if (how === 'unzoom') win(r).zoomed = false;
+      else win(r).active = '%3';
+      await r.tick();
+      assert.equal(r.fit.size(), 0, how);
+      assert.equal((await r.put('%2', 220, 60, false)).body.fit.reason, 'user-change', how);
+    }
+  });
+
+  test('(−) an agent split and a size change in the same tick: the size is someone else\'s → released with the mark, nothing fitted again', async () => {
+    const r = rig();
+    await r.put('%2', 220, 60);
+    split(r);
+    win(r).width = 180;
+    const at = r.at();
+    await r.tick();
+    assert.ok(!r.names(at).includes('tag'), 'no acquire');
+    assert.equal(r.fit.size(), 0);
+    assert.equal(win(r).width, 200, 'the restore sets the original size');
+    assert.equal((await r.put('%2', 220, 60, false)).body.fit.reason, 'user-change');
+  });
+
+  test('(−) two panes are added, one tagged agent and one untagged: past the grace it is a user change, and nothing is fitted again', async () => {
+    const r = rig();
+    await r.put('%2', 220, 60);
+    split(r, '%9', 'agent');
+    split(r, '%10', '');
+    let at = r.at();
+    await r.tick();
+    assert.deepEqual(r.names(at), ['list'], 'the untagged one is waited for');
+    r.clock.t += WATCH_MS;
+    at = r.at();
+    await r.tick();
+    assert.ok(!r.names(at).includes('tag'));
+    assert.equal(r.fit.size(), 0);
+    assert.equal((await r.put('%2', 220, 60, false)).body.fit.reason, 'user-change');
+  });
+
+  test('(−) role values that are not exactly "agent" or "sub-orchestrator" are not nika\'s: waited for once, then a user change', async () => {
+    for (const role of ['Agent', 'AGENT', 'agent ', ' agent', 'sub-orchestrator ', 'orchestrator', 'agents', '']) {
+      const r = rig();
+      await r.put('%2', 220, 60);
+      split(r, '%9', role);
+      const at = r.at();
+      await r.tick();
+      assert.deepEqual(r.names(at), ['list'], JSON.stringify(role));
+      r.clock.t += WATCH_MS;
+      await r.tick();
+      assert.ok(!r.names(at).includes('tag'), JSON.stringify(role));
+      assert.equal(r.fit.size(), 0, JSON.stringify(role));
+      assert.equal((await r.put('%2', 220, 60, false)).body.fit.reason, 'user-change', JSON.stringify(role));
+    }
+  });
+
+  test('(−) a role with a tab in it makes a row of 13 fields: dropped, so the window shows fewer panes than tmux counts → user change at once (fail closed)', async () => {
+    const r = rig();
+    await r.put('%2', 220, 60);
+    split(r, '%9', 'agent'); // a good agent pane next to it: the dropped row must not hide behind it
+    split(r, '%10', 'agent\tx');
+    const at = r.at();
+    await r.tick();
+    assert.deepEqual(r.names(at), GIVE_BACK);
+    assert.ok(!r.names(at).includes('tag'));
+    assert.equal(r.fit.size(), 0);
+    assert.equal((await r.put('%2', 220, 60, false)).body.fit.reason, 'user-change');
+  });
+
+  test('(−) a row of the window that does not parse (the pane count differs) → user change at once, even for an agent pane', async () => {
+    const r = rig();
+    await r.put('%2', 220, 60);
+    split(r, '%9', 'agent'); // a good agent pane next to it: the dropped row must not hide behind it
+    split(r, '%10', 'agent', { size: [0, 0] }); // pane_width 0: the row is dropped
+    const at = r.at();
+    await r.tick();
+    assert.deepEqual(r.names(at), GIVE_BACK);
+    assert.equal(r.fit.size(), 0);
+    assert.equal((await r.put('%2', 220, 60, false)).body.fit.reason, 'user-change');
+  });
+
+  test('(+) known refresh: a pane untagged when the window was fitted that is tagged later counts as nika\'s when it exits', async () => {
+    const r = rig(); // %3 has no role at verify
+    await r.put('%2', 220, 60);
+    win(r).panes.find((p) => p.id === '%3').role = 'agent'; // nika tags it later; the row set does not change
+    r.clock.t += 500;
+    const at = r.at();
+    await r.tick();
+    assert.deepEqual(r.names(at), ['list'], 'an unchanged window: the watch only looks');
+    exit(r, '%3');
+    await r.tick();
+    assert.equal(r.fit.size(), 1, 'refit, not a user change');
+    assert.deepEqual(await r.put('%2', 220, 60, false), ans('fitted', null, 220, 60, 2));
+  });
+
+  test('(−) the control of the refresh: without a tick in between the untagged pane\'s exit is the user\'s', async () => {
+    const r = rig();
+    await r.put('%2', 220, 60);
+    win(r).panes.find((p) => p.id === '%3').role = 'agent';
+    exit(r, '%3');
+    await r.tick();
+    assert.equal(r.fit.size(), 0);
+    assert.equal((await r.put('%2', 220, 60, false)).body.fit.reason, 'user-change');
+  });
+
+  test('(+) a single-pane window: the agent that splits beside the orchestrator is a refit (no zoom to undo, then zoom and size)', async () => {
+    const r = rig();
+    await r.put('%4', 100, 30);
+    const w = r.world.wins.get('@2');
+    w.panes.push({ id: '%9', command: 'node', role: 'agent' });
+    r.world.setActive(w, '%9');
+    await r.tick();
+    assert.equal(r.fit.size(), 1);
+    assert.deepEqual(await r.put('%4', 100, 30, false), ans('fitted', null, 100, 30, 2));
+    assert.deepEqual([w.zoomed, w.active, w.width, w.height], [true, '%4', 100, 30]);
+  });
+
+  test('(+) the last agent exits and the orchestrator stays alone: refit as a single-pane window', async () => {
+    const r = rig((w) => w.add('@3', [['%7', 'claude'], ['%8', 'node', 'agent']], 120, 40));
+    await r.put('%7', 150, 45);
+    const w = r.world.wins.get('@3');
+    w.panes = w.panes.filter((p) => p.id !== '%8');
+    w.zoomed = false;
+    await r.tick();
+    assert.equal(r.fit.size(), 1);
+    assert.deepEqual(await r.put('%7', 150, 45, false), ans('fitted', null, 150, 45, 1));
+    assert.deepEqual([w.width, w.height], [150, 45]);
+  });
+
+  test('(+) a refit uses only the existing argv shapes, and its listing is the 12-field format', async () => {
+    const r = rig(withRole('%3', 'agent'));
+    await r.put('%2', 220, 60);
+    split(r, '%9', 'sub-orchestrator');
+    exit(r, '%3');
+    await r.tick();
+    assert.ok(r.argv().every((a) => shape(a) !== null), 'every argv is one of the section 4 shapes');
+    assert.deepEqual(r.argv().filter((a) => a[0] === 'list-panes').every((a) => a.join(' ') === ['list-panes', '-a', '-F', FMT].join(' ')), true);
+    assert.equal(FMT.split('\t').length, 12);
+    assert.equal(FMT.split('\t')[11], '#{@nika-role}');
+  });
+
+  test('(−) the lease file keys are unchanged: the lease memory (known, waitAt) is never written', async () => {
+    const r = rig(withRole('%3', 'agent'));
+    await r.put('%2', 220, 60);
+    const KEYS = ['v', 'nonce', 'window', 'pane', 'panes', 'zoomed0', 'active0', 'width0', 'height0', 'size0', 'layout0', 'layout1', 'cols', 'rows', 'resized', 'userZoom', 'at'];
+    assert.deepEqual(Object.keys(r.lease(r.tag())), KEYS);
+    split(r, '%9', '');
+    await r.tick(); // waitAt set
+    assert.deepEqual(Object.keys(r.lease(r.tag())), KEYS);
+    win(r).panes.find((p) => p.id === '%9').role = 'agent';
+    r.clock.t += WATCH_MS;
+    await r.tick(); // refit: a new lease, a new file
+    assert.deepEqual(Object.keys(r.lease(r.tag())), KEYS);
+    assert.ok(!fs.readFileSync(r.file(r.tag()), 'utf8').match(/known|waitAt/));
+  });
+
+  describe('the watch\'s limits on a refit', () => {
+    test('(−) a lease whose page is gone (no heartbeat for more than LAPSE_MS) is only released: no acquire, no mark', async () => {
+      const r = rig();
+      await r.put('%2', 220, 60);
+      r.clock.t += LAPSE_MS + 1;
+      split(r);
+      const at = r.at();
+      await r.tick();
+      assert.deepEqual(r.names(at), GIVE_BACK);
+      assert.ok(!r.names(at).includes('tag'));
+      assert.equal(r.fit.size(), 0);
+      assert.equal(r.tag(), '');
+      assert.equal((await r.put('%2', 220, 60, false)).body.fit.state, 'fitted', 'a lapse is not a user change: no mark');
+    });
+
+    test('(−) the same for a pane that is waited for: a lapsed lease is released, not kept waiting', async () => {
+      const r = rig();
+      await r.put('%2', 220, 60);
+      r.clock.t += LAPSE_MS + 1;
+      split(r, '%9', '');
+      await r.tick();
+      assert.equal(r.fit.size(), 0);
+      assert.equal((await r.put('%2', 220, 60, false)).body.fit.state, 'fitted', 'no mark either');
+    });
+
+    test('(+) the new lease keeps the old heartbeat: a page that went away still lapses on time', async () => {
+      const r = rig();
+      await r.put('%2', 220, 60);
+      const t0 = r.clock.t;
+      r.clock.t = t0 + 5000;
+      split(r);
+      await r.tick(); // refit at t0 + 5 s
+      assert.equal(r.fit.size(), 1);
+      r.clock.t = t0 + LAPSE_MS;
+      const at = r.at();
+      await r.tick();
+      assert.deepEqual(r.names(at), ['list'], '15 s after the last heartbeat: not lapsed yet');
+      r.clock.t += 1;
+      await r.tick();
+      assert.equal(r.fit.size(), 0, 'lapsed 15 s + 1 ms after the page\'s last heartbeat, not after the refit');
+      assert.equal(r.tag(), '');
+    });
+
+    test('(−) the refit goes through the decision table: a fresh note of the page\'s own DELETE gives the window back and does not fit it again', async () => {
+      const r = rig();
+      const { fit, g } = gatedFit(r);
+      await fit.hold('%2', { cols: 220, rows: 60, open: true });
+      g.shut();
+      const put = fit.hold('%2', { cols: 240, rows: 70, open: false }); // a renew waiting in the pane lock
+      await until(() => g.waiting === 1);
+      const del = fit.release('%2'); // queued behind it, for the lease the renew is about to replace
+      split(r);
+      g.open();
+      assert.deepEqual((await put).body.fit.state, 'fitted', 'the renew refitted');
+      assert.deepEqual((await del).body, { released: true });
+      assert.equal(fit.size(), 1, 'the DELETE found its lease already replaced; the note is set and the new lease is held');
+      r.clock.t += 500;
+      split(r, '%10');
+      const at = r.at();
+      await r.tick();
+      assert.ok(r.names(at).includes('untag'), 'released');
+      assert.ok(!r.names(at).includes('tag'), 'not acquired again');
+      assert.equal(fit.size(), 0);
+      assert.equal(r.tag(), '');
+      r.clock.t += 2000; // 2.5 s after the DELETE: the note is old, the next heartbeat fits as it always did
+      assert.equal((await fit.hold('%2', { cols: 240, rows: 70, open: false })).body.fit.state, 'fitted');
+    });
+
+    test('(−) a refit that fails in tmux (the zoom of the acquire) logs one line, leaves no lease, file or tag, and the tick does not throw', async () => {
+      const r = rig();
+      await r.put('%2', 220, 60);
+      split(r);
+      r.world.fail = (name) => name === 'zoom';
+      await r.tick();
+      assert.equal(r.fit.size(), 0);
+      assert.deepEqual(r.files(), []);
+      assert.equal(r.tag(), '');
+      assert.equal(win(r).width, 200, 'the window is back at its size');
+      assert.equal(r.logs.filter((l) => /^nika: fit @1 %2 (refit|zoom|cleanup) failed \(\w+\)$/.test(l)).length >= 1, true);
+      r.world.fail = null;
+      assert.equal((await r.put('%2', 220, 60, false)).body.fit.state, 'fitted', 'no mark: the page\'s next heartbeat fits the window');
+    });
+
+    test('(−) a refit that finds the pane busy keeps the lease; the next tick tries again', async () => {
+      const r = rig();
+      const { fit, gate } = busyRig(r);
+      await fit.hold('%2', { cols: 220, rows: 60, open: true });
+      split(r);
+      gate.busy = true;
+      await r.tick();
+      assert.equal(fit.size(), 1, 'registered again');
+      assert.equal(gate.refused, 1);
+      gate.busy = false;
+      const at = r.at();
+      await r.tick();
+      assert.ok(r.names(at).includes('tag'), 'refitted');
+      assert.deepEqual(await fit.hold('%2', { cols: 220, rows: 60, open: false }), ans('fitted', null, 220, 60, 4));
+    });
+  });
+
+  describe('a page request (renew) meets nika\'s own split before the watch does', () => {
+    test('(+) a PUT with a new size and an agent split the watch has not seen: release and acquire in the same request, answered fitted for the new window', async () => {
+      const r = rig();
+      await r.put('%2', 220, 60);
+      split(r);
+      const at = r.at();
+      assert.deepEqual(await r.put('%2', 240, 70, false), ans('fitted', null, 240, 70, 4));
+      assert.deepEqual(resizes(r, at), ['-x 200 -y 50', '-x 240 -y 70']);
+      assert.equal(r.fit.size(), 1);
+      assert.equal(r.lease(r.tag()).panes, 4);
+    });
+
+    test('(+) the same request with open:true', async () => {
+      const r = rig();
+      await r.put('%2', 220, 60);
+      split(r);
+      assert.deepEqual(await r.put('%2', 240, 70, true), ans('fitted', null, 240, 70, 4));
+    });
+
+    test('(+) an untagged new pane: answered from the lease, no resize, waitAt untouched (the watch alone starts the grace)', async () => {
+      const r = rig();
+      await r.put('%2', 220, 60);
+      split(r, '%9', '');
+      const t0 = r.clock.t;
+      const at = r.at();
+      assert.deepEqual(await r.put('%2', 240, 70, false), ans('fitted', null, 220, 60, 3));
+      assert.deepEqual(r.names(at), ['list'], 'one listing, no resize');
+      assert.equal(r.fit.size(), 1);
+      r.clock.t = t0 + 500;
+      await r.tick(); // waitAt = t0 + 500 (had renew set it, it would be t0)
+      r.clock.t = t0 + 1000;
+      const at2 = r.at();
+      await r.tick();
+      assert.deepEqual(r.names(at2), ['list'], 'still inside the grace of the tick that started it');
+      assert.equal(r.fit.size(), 1);
+      r.clock.t = t0 + 1500;
+      await r.tick();
+      assert.equal(r.fit.size(), 0);
+    });
+
+    test('(−) an untagged new pane past the grace that the watch started: the request releases with the mark, no resize', async () => {
+      const r = rig();
+      await r.put('%2', 220, 60);
+      split(r, '%9', '');
+      await r.tick(); // grace starts
+      r.clock.t += WATCH_MS;
+      const res = await r.put('%2', 240, 70, false);
+      assert.equal(res.body.fit.reason, 'user-change');
+      assert.equal(res.body.fit.state, 'blocked');
+      assert.ok(!resizes(r, 0).includes('-x 240 -y 70'));
+      assert.equal(r.fit.size(), 0);
+    });
+  });
+
+  describe('N1: the split lands while the renew waits for the pane lock', () => {
+    async function renewDuringWait(flip) {
+      const r = rig();
+      const { fit, g } = gatedFit(r);
+      await fit.hold('%2', { cols: 220, rows: 60, open: true });
+      g.shut();
+      const at = r.at();
+      const done = fit.hold('%2', { cols: 240, rows: 70, open: false });
+      await until(() => g.waiting === 1);
+      flip(r);
+      g.open();
+      return { r, fit, res: await done, at };
+    }
+
+    test('(+) an agent split: the refit path; the first resize-window is the restore, the window is never resized over the split', async () => {
+      const { r, fit, res, at } = await renewDuringWait((r) => split(r));
+      assert.deepEqual(res, ans('fitted', null, 240, 70, 4));
+      assert.deepEqual(resizes(r, at), ['-x 200 -y 50', '-x 240 -y 70']);
+      assert.equal(fit.size(), 1);
+    });
+
+    test('(+) an untagged new pane: no resize at all, the lease continues at the old size, answered from the lease', async () => {
+      const { r, fit, res, at } = await renewDuringWait((r) => split(r, '%9', ''));
+      assert.deepEqual(res, ans('fitted', null, 220, 60, 3));
+      assert.deepEqual(resizes(r, at), []);
+      assert.ok(!r.names(at).includes('untag'), 'nothing released');
+      assert.equal(fit.size(), 1);
+      assert.deepEqual(await fit.hold('%2', { cols: 220, rows: 60, open: false }), ans('fitted', null, 220, 60, 3), 'the lease still holds the old size');
+    });
+
+    test('(−) an agent split together with a resize by someone else: released with the mark, no resize to the new size', async () => {
+      const { r, fit, res, at } = await renewDuringWait((r) => { split(r); win(r).width = 150; });
+      assert.equal(res.body.fit.reason, 'user-change');
+      assert.ok(!resizes(r, at).includes('-x 240 -y 70'));
+      assert.ok(!r.names(at).includes('tag'));
+      assert.equal(fit.size(), 0);
+    });
   });
 });

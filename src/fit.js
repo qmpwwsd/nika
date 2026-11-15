@@ -7,8 +7,10 @@
 // every stored value comes from tmux's own listing in the same call; the request contributes only `cols`, `rows` and `open`.
 //
 // nika never fights the user: once the window differs from what nika set it releases and stays off (`blocked`) until the
-// session window is opened again (`open: true`). It never toggles a zoom it did not make and never applies a saved layout
-// when the layout, the pane count or a zoom changed.
+// session window is opened again or the user presses Fit again (both `open: true`). It never toggles a zoom it did not make and
+// never applies a saved layout when the layout, the pane count or a zoom changed. The one exception is nika's own doing (F2,
+// design-F12 section 3): a split or an exit of a pane tagged `@nika-role` agent or sub-orchestrator is not the user's, so the
+// window is given back and fitted again at once ("refit"); a new pane with no role yet gets one watch tick to be tagged.
 import { randomBytes } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -31,7 +33,9 @@ const SIZE_OPTIONS = new Set(['latest', 'largest', 'smallest', 'manual']);
 const LAYOUT = /^[\x20-\x7e]{1,8192}$/; // tmux's own `#{window_layout}`: printable ASCII; `#` is refused separately
 const FILE_NAME = /^fit-([0-9a-f]{16})\.json$/;
 const FIT_FORMAT = ['#{pane_id}', '#{window_id}', '#{window_panes}', '#{window_zoomed_flag}', '#{pane_active}', '#{window_width}', '#{window_height}',
-  '#{pane_width}', '#{pane_height}', '#{pane_current_command}', '#{@nika-fit}'].join('\t');
+  '#{pane_width}', '#{pane_height}', '#{pane_current_command}', '#{@nika-fit}', '#{@nika-role}'].join('\t');
+/** The `@nika-role` values of the panes nika's own spawn splits into a window (F2). Never `orchestrator`; any other text is no role. */
+const NIKA_PANES = new Set(['agent', 'sub-orchestrator']);
 const FILE_KEYS = ['v', 'nonce', 'window', 'pane', 'panes', 'zoomed0', 'active0', 'width0', 'height0', 'size0', 'layout0', 'layout1', 'cols', 'rows', 'resized', 'userZoom', 'at'];
 const BODY_MESSAGE = 'cols must be an integer 40–400, rows 10–200, open a boolean';
 
@@ -64,10 +68,11 @@ function parseRows(stdout) {
   const rows = new Map();
   for (const line of String(stdout).split('\n')) {
     const f = line.split('\t');
-    if (f.length !== 11) continue;
+    if (f.length !== 12) continue;
     const row = {
       pane: f[0], window: f[1], panes: digits(f[2], 1, 999), zoomed: bit(f[3]), active: bit(f[4]), winW: digits(f[5], 1, 10000), winH: digits(f[6], 1, 10000),
       paneW: digits(f[7], 1, 10000), paneH: digits(f[8], 1, 10000), command: f[9], tag: f[10] === '' || FIT_NONCE.test(f[10]) ? f[10] : '?',
+      role: f[11], // exact text; compared only with NIKA_PANES
     };
     const numbers = [row.panes, row.zoomed, row.active, row.winW, row.winH, row.paneW, row.paneH];
     if (PANE_ID.test(row.pane) && WINDOW_ID.test(row.window) && numbers.every((v) => v !== null)) rows.set(row.pane, row);
@@ -117,7 +122,7 @@ function parseLease(text, nonce, at) {
   if (!ok) return null;
   const lease = {};
   for (const k of FILE_KEYS) lease[k] = o[k];
-  return { ...lease, lastBeat: at, state: null, reason: null, seen: null, done: false };
+  return { ...lease, lastBeat: at, state: null, reason: null, seen: null, done: false, known: null, waitAt: null };
 }
 const fileOf = (l) => Object.fromEntries(FILE_KEYS.map((k) => [k, l[k]]));
 const leaseText = (l) => JSON.stringify(fileOf(l));
@@ -258,18 +263,54 @@ export function createFit({
     return run;
   }
   const releaseQueued = (lease, mark) => enqueue(lease.window, lease.pane, false, () => (lease.done ? 'dropped' : releaseNow(lease, mark)));
+  /**
+   * F2: nika's own agent panes came or went. Give the window back (no mark) and fit it again at once with the size the page asked for last,
+   * through the same decision table as a page request (a mark, a fresh note of the page's DELETE, a foreign tag or a refusal still wins).
+   * The new lease keeps the old heartbeat: only the page's own request keeps a lease alive, so a page that went away still lapses on time.
+   */
+  const refitQueued = (lease) => enqueue(lease.window, lease.pane, false, async () => {
+    if (lease.done) return 'dropped';
+    const out = await releaseNow(lease);
+    if (out !== 'released') return out;
+    const snap = await listing();
+    const me = claudePane(snap, lease.pane);
+    if (!me || me.window !== lease.window) return out;
+    await decide(lease.pane, lease.cols, lease.rows, false, snap, me);
+    const next = leases.get(lease.window);
+    if (next && next !== lease && next.pane === lease.pane) next.lastBeat = lease.lastBeat;
+    return out;
+  });
 
   // ---- what the watch and a renew look at ---------------------------------------------------------------------------------
-  /** null (all as nika left it), { act: 'drop' } (tag or window gone: ids may be reused, touch nothing) or { act: 'release', mark? }. */
-  function observe(lease, snap) {
+  const USER = { act: 'release', mark: 'user-change' };
+  const AGAIN = Symbol('again'); // renew gave the window back for a refit: decide goes on to acquire
+  /** F2: the panes of the lease's window as nika last saw them: true for a pane whose role is one of NIKA_PANES. Memory only, never in the lease file. */
+  const remember = (lease, snap) => { lease.known = new Map(rowsOf(snap, lease.window).map((r) => [r.pane, NIKA_PANES.has(r.role)])); };
+  /**
+   * null (all as nika left it), { act: 'drop' } (tag or window gone: ids may be reused, touch nothing), { act: 'release', mark? },
+   * { act: 'refit' } (only nika's own agent panes came or went: give the window back and fit it again) or { act: 'wait' } (a new
+   * pane has no role yet: nika's spawn tags it right after the split, so look again at the next tick). `at` is now().
+   */
+  function observe(lease, snap, at) {
     const win = rowsOf(snap, lease.window);
     if (win.length === 0 || win[0].tag !== lease.nonce) return { act: 'drop' };
     const m = snap.get(lease.pane);
     if (!m || m.window !== lease.window || !CLAUDE_COMMAND.test(m.command.trim())) return { act: 'release' };
     const [ew, eh] = expOf(lease);
     const unzoomed = lease.panes > 1 && (m.zoomed !== 1 || m.active !== 1);
-    if (unzoomed || m.panes !== lease.panes || m.winW !== ew || m.winH !== eh) return { act: 'release', mark: 'user-change' };
-    return null;
+    const sameSet = !lease.known || (win.length === lease.known.size && win.every((r) => lease.known.has(r.pane)));
+    if (!unzoomed && m.panes === lease.panes && m.winW === ew && m.winH === eh && sameSet) return null;
+    // Something changed. Only nika's own agent panes coming or going keeps the fit on. A split (without -Z) unzooms the window and
+    // makes the new pane active, and so does a pane that exits: when panes came or went, the zoom and the active pane say nothing about the user.
+    if (m.winW !== ew || m.winH !== eh) return USER; // neither a split nor an exit resizes the window: a size change is someone else's
+    if (!lease.known || win.length !== m.panes) return USER; // nothing to compare with, or a row of the window did not parse (fail closed)
+    const ids = new Set(win.map((r) => r.pane));
+    const added = win.filter((r) => !lease.known.has(r.pane));
+    const removed = [...lease.known.keys()].filter((p) => !ids.has(p));
+    if (added.length === 0 && removed.length === 0) return USER; // the same panes: an unzoom, a focus change or a count that does not add up
+    if (removed.some((p) => lease.known.get(p) !== true)) return USER; // a pane that was not nika's agent went away (a gone pane has no tags to read)
+    if (added.every((r) => NIKA_PANES.has(r.role))) return { act: 'refit' };
+    return lease.waitAt === null || at - lease.waitAt < WATCH_MS ? { act: 'wait' } : USER; // one tick of grace for the spawn to tag its split
   }
   async function dropLease(l) {
     unregister(l);
@@ -293,10 +334,20 @@ export function createFit({
       for (const lease of [...leases.values()]) {
         // a window whose request is still running is left to that request
         if (queues.has(lease.window) || leases.get(lease.window) !== lease) continue;
-        let verdict = observe(lease, snap);
-        if (!verdict && now() - lease.lastBeat > LAPSE_MS) verdict = { act: 'release' };
-        if (!verdict) continue;
+        let verdict = observe(lease, snap, now());
+        // a page that is gone (no heartbeat for LAPSE_MS) is never kept waiting for and never refitted: its window is only given back
+        if (now() - lease.lastBeat > LAPSE_MS && (!verdict || verdict.act === 'wait' || verdict.act === 'refit')) verdict = { act: 'release' };
+        if (!verdict) {
+          remember(lease, snap); // the roles may have been set since the last look
+          lease.waitAt = null;
+          continue;
+        }
+        if (verdict.act === 'wait') {
+          lease.waitAt ??= now();
+          continue;
+        }
         if (verdict.act === 'drop') await dropLease(lease);
+        else if (verdict.act === 'refit') await refitQueued(lease).catch((e) => fail(lease, 'refit', e));
         else await releaseQueued(lease, verdict.mark).catch((e) => fail(lease, 'watch', e));
       }
     } finally {
@@ -433,6 +484,8 @@ export function createFit({
     }
     await writeLease(lease, text); // the file always describes the window as nika left it
     lease.seen = [m.paneW, m.paneH];
+    remember(lease, snap); // F2: the panes of the window as nika left it
+    lease.waitAt = null;
     return answer(lease);
   }
 
@@ -449,7 +502,7 @@ export function createFit({
     const lease = {
       v: 1, nonce: randomBytes(8).toString('hex'), window: w, pane: id, panes: me.panes, zoomed0: me.zoomed, active0: a0, width0: me.winW, height0: me.winH,
       size0: o0, layout0, layout1: layout0, cols: C, rows: R, resized: target[0] !== me.winW || target[1] !== me.winH, userZoom: me.zoomed === 1, at: now(), lastBeat: now(),
-      state: fits ? 'fitted' : 'zoomed', reason: fits ? null : 'panel-smaller', seen: [me.paneW, me.paneH], pre: [me.paneW, me.paneH], done: false,
+      state: fits ? 'fitted' : 'zoomed', reason: fits ? null : 'panel-smaller', seen: [me.paneW, me.paneH], pre: [me.paneW, me.paneH], done: false, known: null, waitAt: null,
     };
     const text = leaseText(lease);
     if (Buffer.byteLength(text) > LEASE_FILE_MAX) return fromRow('blocked', 'changed', me);
@@ -501,7 +554,16 @@ export function createFit({
 
   /** The page asks again with the lease it holds and a new size (design 2.2). */
   async function renew(lease, C, R, snap, me) {
-    if (observe(lease, snap)) { // the user changed the window since the last tick: release, never re-assert
+    const v = observe(lease, snap, now());
+    if (v?.act === 'refit') { // nika's own agent pane came or went before the watch saw it: give the window back, decide() fits it again
+      await releaseNow(lease);
+      return AGAIN;
+    }
+    if (v?.act === 'wait') { // an untagged new pane: no resize this time (only the watch starts and ends the grace)
+      lease.lastBeat = now();
+      return answer(lease);
+    }
+    if (v) { // the user changed the window since the last tick: release, never re-assert
       await releaseNow(lease, 'user-change');
       return restored(lease, 'user-change');
     }
@@ -517,15 +579,28 @@ export function createFit({
     lease.resized = target[0] !== lease.width0 || target[1] !== lease.height0;
     try {
       let changed = false;
+      let refit = false;
+      let waiting = false;
       await lock(lease.pane, async () => {
         // N1: `snap` is older than the lock wait; a window the user changed meanwhile is released, never resized over. Judged against
-        // the size nika holds (`kept`), not the one it is about to set.
-        if (observe({ ...lease, ...kept }, await listing())) {
-          changed = true;
+        // the size nika holds (`kept`), not the one it is about to set. Nika's own agent split or exit (F2) is never resized over either.
+        const v2 = observe({ ...lease, ...kept }, await listing(), now());
+        if (v2) {
+          if (v2.act === 'refit') refit = true;
+          else if (v2.act === 'wait') waiting = true;
+          else changed = true;
           return;
         }
         await tmux(ARGV.size(lease.window, target[0], target[1]));
       });
+      if (waiting) { // an untagged new pane appeared during the wait: nothing was resized, the lease goes on as it was
+        Object.assign(lease, kept);
+        return answer(lease);
+      }
+      if (refit) {
+        await releaseNow(lease);
+        return AGAIN;
+      }
       if (changed) {
         await releaseNow(lease, 'user-change');
         return await restored(lease, 'user-change');
@@ -573,7 +648,12 @@ export function createFit({
       lease = undefined;
       if (!(await look())) return NOT_FOUND;
     }
-    if (lease) return renew(lease, C, R, snap, me);
+    if (lease) {
+      const r = await renew(lease, C, R, snap, me);
+      if (r !== AGAIN) return r;
+      if (!(await look())) return NOT_FOUND;
+      lease = undefined; // nika's own split or exit: falls through to the open / mark / note rows and acquire, in this same request
+    }
     if (open) {
       marks.delete(w);
       notes.delete(w);
