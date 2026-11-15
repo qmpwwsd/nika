@@ -52,6 +52,7 @@
   <symbol id="i-image" viewBox="0 0 16 16"><rect x="2" y="2.5" width="12" height="11" rx="1.5"/><circle cx="5.8" cy="6.2" r="1.1"/><path d="m2.5 12 3.6-3.4 2.6 2.4 2-1.8 3.3 2.8"/></symbol>
   <symbol id="i-file" viewBox="0 0 16 16"><path d="M4 1.8h5.2L12.5 5v8.2a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2.8a1 1 0 0 1 1-1zM9 1.9V5h3.4"/></symbol>
   <symbol id="i-text" viewBox="0 0 16 16"><path d="M4 1.8h5.2L12.5 5v8.2a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2.8a1 1 0 0 1 1-1zM9 1.9V5h3.4M5.5 8h5M5.5 10.5h5"/></symbol>
+  <symbol id="i-check" viewBox="0 0 16 16"><path d="M3.5 8.5l3 3 6-7"/></symbol>
   <symbol id="i-x" viewBox="0 0 16 16"><path d="M4 4l8 8M12 4 4 12"/></symbol>
   <symbol id="i-window" viewBox="0 0 16 16"><rect x="1.8" y="5.2" width="9" height="8" rx="1.3"/><path d="M5.2 5.2V3.6a1.3 1.3 0 0 1 1.3-1.3h6.2a1.3 1.3 0 0 1 1.3 1.3v5.2a1.3 1.3 0 0 1-1.3 1.3h-1.9"/></symbol>
 </svg>
@@ -142,11 +143,12 @@
         </div>
         <div class="attn-note" id="attn-note" hidden><span class="st" data-s="attn"><span class="st-g" aria-hidden="true"></span></span><p id="attn-text"></p></div>
         <div class="ask" id="prompt-btns" role="group" aria-labelledby="ask-q" hidden>
-          <div class="ask-h"><span class="st pill" data-s="attn"><span class="st-g" aria-hidden="true"></span>Needs you</span><span class="ask-reason" id="ask-reason"></span></div>
+          <div class="ask-h"><span class="dlg-kind" data-k="perm"><svg class="ic" aria-hidden="true"><use href="#i-warn"/></svg>Permission</span><span class="st pill" data-s="attn"><span class="st-g" aria-hidden="true"></span>Needs you</span><span class="ask-reason" id="ask-reason"></span></div>
           <p class="ask-q" id="ask-q" tabindex="-1"></p>
           <div class="ask-opts" id="ask-opts"></div>
           <p class="ask-hint">Each button presses its number in the pane. Claude answers at once; no Enter. <span class="ask-lock" id="ask-lock" hidden>Buttons stay off until the question changes.</span></p>
         </div>
+        <div class="ask dlg" id="dialog-form" role="group" aria-labelledby="dlg-q" hidden></div>
         <ul class="att-tray" id="att-tray" aria-label="Attachments" hidden></ul>
         <div class="inbox">
           <button type="button" class="shell" id="shell-toggle" aria-pressed="false" title="Shell mode: send the text as a ! command"><svg class="ic" aria-hidden="true"><use href="#i-shell"/></svg><span>Shell</span><span class="onoff" aria-hidden="true">off</span></button>

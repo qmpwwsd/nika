@@ -27,6 +27,7 @@ const STATIC = new Map([
   ['/fit-ui.js', ['fit-ui.js', 'text/javascript; charset=utf-8']],
   ['/scroll.js', ['scroll.js', 'text/javascript; charset=utf-8']],
   ['/attach.js', ['attach.js', 'text/javascript; charset=utf-8']],
+  ['/dialog-form.js', ['dialog-form.js', 'text/javascript; charset=utf-8']],
   ['/modes.js', ['modes.js', 'text/javascript; charset=utf-8']],
   ['/quick-actions.js', ['quick-actions.js', 'text/javascript; charset=utf-8']],
   ['/models-ui.js', ['models-ui.js', 'text/javascript; charset=utf-8']],

@@ -17,6 +17,7 @@ import { switchFailure as switchFailureReal, MODE_TARGETS, MODE_META } from '../
 import { createFitPlanner as createFitPlannerReal, panelSize as panelSizeReal, scaleFor as scaleForReal, chipView as chipViewReal } from '../public/fit-ui.js';
 import { createScrollPlanner as createScrollPlannerReal, routeFor as routeForReal, wheelRows as wheelRowsReal, scrollGate as scrollGateReal, viewRowsOf as viewRowsOfReal, pageRowsOf as pageRowsOfReal, refusalLine as refusalLineReal, noteView as scrollNoteViewReal, scrolledSay as scrolledSayReal, NOTE_MS as NOTE_MS_REAL } from '../public/scroll.js';
 import { h as hReal, icon as iconReal } from '../public/dom.js';
+import { cleanDialog as cleanDialogReal } from '../public/dialog-form.js';
 import { installDom, El } from './fake-dom.js';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
@@ -25,7 +26,7 @@ const HTML = read('session.html');
 const JS = {
   'session.js': read('session.js'), 'mirror-render.js': read('mirror-render.js'), 'modes.js': read('modes.js'),
   'quick-actions.js': read('quick-actions.js'), 'models-ui.js': read('models-ui.js'), 'end-dialog.js': read('end-dialog.js'),
-  'palette.js': read('palette.js'), 'shortcuts.js': read('shortcuts.js'), 'draft-sync.js': read('draft-sync.js'), 'fit-ui.js': read('fit-ui.js'), 'scroll.js': read('scroll.js'),
+  'palette.js': read('palette.js'), 'shortcuts.js': read('shortcuts.js'), 'draft-sync.js': read('draft-sync.js'), 'fit-ui.js': read('fit-ui.js'), 'scroll.js': read('scroll.js'), 'dialog-form.js': read('dialog-form.js'),
 };
 const TOKENS = read('tokens.css');
 const CSS = read('session.css');
@@ -146,7 +147,7 @@ describe('session.html under the strict CSP', () => {
 describe('contracts with the other UI modules', () => {
   test('(+) session.js imports only names the shared modules export, from sibling files', () => {
     const imports = [...JS['session.js'].matchAll(/import \{([^}]+)\} from '([^']+)'/g)];
-    assert.deepEqual(imports.map((m) => m[2]), ['./dom.js', './api.js', './dash-model.js', './mirror-render.js', './draft-sync.js', './modes.js', './quick-actions.js', './models-ui.js', './end-dialog.js', './palette.js', './shortcuts.js', './fit-ui.js', './scroll.js', './attach.js']);
+    assert.deepEqual(imports.map((m) => m[2]), ['./dom.js', './api.js', './dash-model.js', './mirror-render.js', './draft-sync.js', './modes.js', './quick-actions.js', './models-ui.js', './end-dialog.js', './palette.js', './shortcuts.js', './fit-ui.js', './scroll.js', './attach.js', './dialog-form.js']);
     for (const [, names, from] of imports) {
       const exported = read(from.slice(2));
       for (const n of names.split(',').map((x) => x.trim())) assert.match(exported, new RegExp(`export (async )?(function|const|let) ${n}\\b`), `${from} exports ${n}`);
@@ -584,7 +585,7 @@ describe('quick actions, prompt buttons, End dialog and Shell (spec 9.4-9.8)', (
     assert.match(wire, /buttons: W\.pane === 'ok' && hasAnswerButtons\(W\.prompt\), bypass: W\.prompt\?\.bypass === true/);
     assert.doesNotMatch(wire, /sendGate/, 'wireComposer holds no gate of its own: composerKey does');
     assert.doesNotMatch(src, /renderGatedKeys/);
-    assert.match(fn(src, 'async function sendComposer()'), /sendGate\(\{ promptOpen: W\.promptOpen, status: A\.kind, buttons: W\.pane === 'ok' && hasAnswerButtons\(W\.prompt\), bypass: W\.prompt\?\.bypass === true \}\)/, 'the wording reads the panel and the capture\'s bypass mark; whether it is held does not');
+    assert.match(fn(src, 'async function sendComposer()'), /sendGate\(\{ promptOpen: W\.promptOpen, status: A\.kind, buttons: \(W\.pane === 'ok' && hasAnswerButtons\(W\.prompt\)\) \|\| DF\?\.live\(\) === true, bypass: W\.prompt\?\.bypass === true \}\)/, 'the wording reads the panel and the capture\'s bypass mark; whether it is held does not');
     assert.doesNotMatch(src, /(switcherState|quickState)\(\{[^}]*prompt: W\.prompt\b/, 'no gate reads the cleaned prompt');
     assert.match(fn(src, 'function renderPrompt()'), /W\.prompt/, 'the panel does');
   });
@@ -1281,7 +1282,7 @@ describe('Task 14b: wiring of the page rules', () => {
     const log = { problems: [], sent: [], said: [], shellOff: 0 };
     const ta = { value, disabled: false };
     const ctx = {
-      sending: false, composer: () => ta, S: { on: shell }, W: { promptOpen, prompt, pane }, A: { kind }, sendGate: sendGateReal, hasAnswerButtons: hasAnswerButtonsReal, planShell: planShellReal, planSend: planSendReal,
+      sending: false, composer: () => ta, DF: null, S: { on: shell }, W: { promptOpen, prompt, pane }, A: { kind }, sendGate: sendGateReal, hasAnswerButtons: hasAnswerButtonsReal, planShell: planShellReal, planSend: planSendReal,
       showProblem: (m, k) => log.problems.push([m, k]), enqueueSeq: async (p) => { log.sent.push(p); return { ok: true }; }, $: () => el(), say: (m) => log.said.push(m),
       paneId: '%12', setShell: () => { log.shellOff += 1; }, grow() {}, updateChip() {},
       DS: { screen: () => null, beginSend() {}, endSend() {}, sent() {} }, draftSendPlan: draftSendPlanReal, M: { cols: 120 }, ATT: { pending: () => false },
@@ -1432,7 +1433,7 @@ describe('Task 14b: wiring of the page rules', () => {
   const attnRig = ({ mac = false, kind = 'attn', prompt = null, pane = 'ok' } = {}) => {
     const note = { hidden: true };
     const text = { textContent: '' };
-    const ctx = { $: (id) => (id === 'attn-note' ? note : text), W: { pane, prompt }, A: { kind, name: 'builder-1', attention: 'Asking to run a command' }, attnNote: attnNoteReal, passKeyLabel, MAC: mac };
+    const ctx = { $: (id) => (id === 'attn-note' ? note : text), DF: null, W: { pane, prompt }, A: { kind, name: 'builder-1', attention: 'Asking to run a command' }, attnNote: attnNoteReal, passKeyLabel, MAC: mac };
     mk(['function renderAttn()'], ctx).renderAttn();
     return { note, text };
   };
@@ -2100,7 +2101,7 @@ describe('0.3.3: the hint line, the mode row and the message box name (markup, s
     assert.doesNotMatch(css, /hintline|\.tip\b/);
     assert.doesNotMatch(SRC, /renderTips|hintTips|hintline/);
     assert.doesNotMatch(code(JS['shortcuts.js']), /hintTips/);
-    assert.doesNotMatch(css, /@container composer/, 'the 940 px query only served the tips');
+    assert.doesNotMatch(css, /@container composer \(max-width:\s*940px\)/, 'the 940 px query only served the tips'); // 0.5 (W1) adds a 560 px composer query for the dialog form, so only the old width is pinned
   });
 
   test('(+) F7: #echo stays a polite live region and is visually hidden by the page\'s screen-reader-only class', () => {
@@ -2914,7 +2915,7 @@ describe('0.5: Send with the synced box (design W5, section 4)', () => {
     const log = { order: [], problems: [], said: [], payloads: [], pushed: [], shellOff: 0 };
     const ta = { value, disabled: false };
     const ctx = {
-      sending: false, composer: () => ta, S: { on: shell }, W: { promptOpen, prompt: null, pane: 'ok' }, A: { kind: 'idle' }, M: { cols: 120 },
+      sending: false, composer: () => ta, DF: null, S: { on: shell }, W: { promptOpen, prompt: null, pane: 'ok' }, A: { kind: 'idle' }, M: { cols: 120 },
       sendGate: sendGateReal, hasAnswerButtons: hasAnswerButtonsReal, planShell: planShellReal, planSend: planSendReal, draftSendPlan: draftSendPlanReal,
       showProblem: (m, k) => log.problems.push([m, k]), $: () => ({ setAttribute() {}, removeAttribute() {} }), say: (m) => log.said.push(m), paneId: '%12',
       setShell: () => { log.shellOff += 1; }, grow() {}, updateChip() {},
@@ -4677,5 +4678,297 @@ describe('W3-T3: scroll in the session window (wiring)', () => {
     assert.deepEqual([...src.matchAll(/\/api\/[^`'"]*/g)].map((m) => m[0]), ['/api/app/pane/${encodeURIComponent(paneId)}/scroll']);
     assert.match(src, /method: 'POST', json: body/);
     assert.doesNotMatch(src, /PPage|NPage|C-Home|C-End|keys:/);
+  });
+});
+
+describe('W1-T3: question dialogs and plan approvals in the session window (hooks P1-P6, markup, stylesheet)', () => {
+  const SRC = code(JS['session.js']);
+  const fnOf = (head) => {
+    const at = SRC.indexOf(head);
+    assert.ok(at >= 0, head);
+    return SRC.slice(at, SRC.indexOf('\n}\n', at) + 2);
+  };
+  const mk = (names, ctx) => vm.runInNewContext(`${names.map(fnOf).join('\n')}; ({ ${names.map((n) => n.replace(/^(async )?function /, '').replace(/\(.*$/, '')).join(', ')} })`, ctx);
+  const norm = (v) => JSON.parse(JSON.stringify(v));
+  const SIG = 'a1b2c3d4e5f60718';
+  const RAW = {
+    state: 'ready', kind: 'ask', at: 'question', sig: SIG, bypass: false, tabs: [{ header: 'Tools', answered: false }], current: 0, final: true, question: 'Which database should I use?',
+    multi: false, other: true, options: [{ n: 1, label: 'sqlite', description: null }, { n: 2, label: 'postgres', description: null }],
+  };
+  const el = (over = {}) => ({ attrs: {}, setAttribute(k, v) { this.attrs[k] = String(v); }, removeAttribute(k) { delete this.attrs[k]; }, ...over });
+
+  // -- the static list
+
+  test('(+) /dialog-form.js is served: next to /attach.js on the static list, as JavaScript, and the file exists (else session.js\'s import 404s and the whole window breaks)', () => {
+    const server = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'src', 'server.js'), 'utf8');
+    assert.match(server, /\['\/dialog-form\.js', \['dialog-form\.js', 'text\/javascript; charset=utf-8'\]\]/);
+    assert.ok(server.indexOf("'/attach.js'") < server.indexOf("'/dialog-form.js'"));
+    assert.ok(fs.existsSync(path.join(PUBLIC, 'dialog-form.js')));
+  });
+
+  // -- P1 and the declaration
+
+  test('(+) P1: session.js imports createDialogForm and cleanDialog from ./dialog-form.js, after the attachments, and builds nothing at import', () => {
+    assert.match(JS['session.js'], /import \{ createDialogForm, cleanDialog \} from '\.\/dialog-form\.js';/);
+    assert.ok(JS['session.js'].indexOf("from './attach.js'") < JS['session.js'].indexOf("from './dialog-form.js'"));
+    assert.match(SRC, /^let DF = null;/m, 'the form is built in boot, beside the quick actions');
+  });
+
+  test('(−) the hooks are exactly P2 to P6: past its declaration, DF is named in renderMode, renderAttn, sendComposer and boot, and nowhere else', () => {
+    const body = SRC.replace(/^let DF = null;.*$/m, '');
+    const places = [...body.matchAll(/\bDF\b/g)].map((m) => [...body.slice(0, m.index).matchAll(/\n(?:async )?function (\w+)\(/g)].at(-1)?.[1]);
+    assert.deepEqual(places, ['renderMode', 'renderAttn', 'sendComposer', 'boot']);
+  });
+
+  // -- P2: noteScreen
+
+  const screenRig = () => {
+    const log = { renders: 0 };
+    const W = { pane: 'connecting', got: false, mode: 'unknown', confirmed: true, prompt: null, promptOpen: false, dialog: null, last: null, struck: new Set(), strikeAt: null };
+    const ctx = {
+      W, SW: { busy: null }, A: { name: 'builder-1' }, modeKey: (m) => m ?? 'unknown', cleanPrompt: cleanPromptReal, cleanDialog: cleanDialogReal,
+      modeNote: () => ({ last: null, msg: '' }), announceMode() {}, renderMode: () => { log.renders += 1; },
+    };
+    return { W, log, note: mk(['function noteScreen(body)'], ctx).noteScreen };
+  };
+
+  test('(+) P2: a capture with a ready dialog sets W.dialog and counts as a prompt for every gate, with no permission panel', () => {
+    const r = screenRig();
+    r.note({ mode: 'default', prompt: null, dialog: RAW });
+    assert.equal(r.W.dialog.state, 'ready');
+    assert.equal(r.W.dialog.sig, SIG);
+    assert.equal(r.W.promptOpen, true);
+    assert.equal(r.W.prompt, null);
+    assert.equal(r.log.renders, 1);
+  });
+
+  test('(+) P2: an unreadable dialog counts as a prompt too (the banner shows and Send stays gated)', () => {
+    const r = screenRig();
+    r.note({ mode: 'default', prompt: null, dialog: { state: 'unreadable', kind: 'ask', reason: 'wide' } });
+    assert.equal(r.W.dialog.state, 'unreadable');
+    assert.equal(r.W.promptOpen, true);
+  });
+
+  test('(−) P2: no dialog and no prompt is not a prompt; a permission prompt alone still is, and carries no dialog', () => {
+    const r = screenRig();
+    r.note({ mode: 'default', prompt: null, dialog: null });
+    assert.equal(r.W.dialog, null);
+    assert.equal(r.W.promptOpen, false);
+    r.note({ mode: 'default', prompt: { question: 'Proceed?', sig: SIG, options: [{ n: 1, label: 'Yes' }] } });
+    assert.equal(r.W.dialog, null, 'an older server has no dialog field at all');
+    assert.equal(r.W.promptOpen, true);
+    assert.notEqual(r.W.prompt, null);
+  });
+
+  test('(−) P2: a dialog field that is not the contract fails closed (unreadable), never to a form and never to "no dialog"', () => {
+    for (const bad of ['dialog', 7, [], { state: 'ready', sig: 'x' }, { state: 'ready', kind: 'ask', at: 'question', sig: SIG, options: 'x' }]) {
+      const r = screenRig();
+      r.note({ mode: 'default', prompt: null, dialog: bad });
+      assert.equal(r.W.dialog.state, 'unreadable', JSON.stringify(bad));
+      assert.equal(r.W.promptOpen, true, JSON.stringify(bad));
+    }
+  });
+
+  // -- P3: renderMode
+
+  test('(+) P3: renderMode draws the form after the prompt panel, with the pane, the dialog, the name and the attention reason', () => {
+    const order = [];
+    let args = null;
+    const stub = (n) => () => { order.push(n); };
+    const ctx = {
+      paneId: '%12', SW: { parts: [{}], busy: null }, W: { pane: 'ok', dialog: 'D', mode: 'default', confirmed: true, msg: null, promptOpen: true },
+      A: { kind: 'attn', name: 'builder-1', attention: 'Claude has a question' }, switcherState: () => ({ reason: '' }),
+      renderTag: stub('tag'), renderSegments: stub('segments'), renderWhy: stub('why'), renderQuick: stub('quick'), renderAttn: stub('attn'), renderPrompt: stub('prompt'),
+      DF: { render: (a) => { order.push('form'); args = a; } },
+    };
+    mk(['function renderMode()'], ctx).renderMode();
+    assert.deepEqual(order, ['tag', 'segments', 'why', 'quick', 'attn', 'prompt', 'form']);
+    assert.deepEqual(norm(args), { pane: 'ok', dialog: 'D', name: 'builder-1', attention: 'Claude has a question' });
+  });
+
+  test('(−) P3: before the form exists (no pane, or boot not done) renderMode draws no form and does not fail', () => {
+    const ctx = {
+      paneId: '%12', SW: { parts: [{}], busy: null }, W: { pane: 'ok', mode: 'default', confirmed: true, msg: null }, A: { kind: 'idle', name: 'x', attention: '' }, switcherState: () => ({ reason: '' }),
+      renderTag() {}, renderSegments() {}, renderWhy() {}, renderQuick() {}, renderAttn() {}, renderPrompt() {}, DF: null,
+    };
+    assert.doesNotThrow(() => mk(['function renderMode()'], ctx).renderMode());
+  });
+
+  // -- P4: renderAttn
+
+  const attnRig = ({ form, prompt = null, pane = 'ok', kind = 'attn' }) => {
+    const note = { hidden: true };
+    const ctx = {
+      $: (id) => (id === 'attn-note' ? note : { textContent: '' }), DF: form === undefined ? null : form, W: { pane, prompt }, A: { kind, name: 'builder-1', attention: 'Claude has a question' },
+      attnNote: attnNoteReal, passKeyLabel, MAC: false,
+    };
+    mk(['function renderAttn()'], ctx).renderAttn();
+    return note;
+  };
+
+  test('(+) P4: the attention note is hidden while the dialog form shows', () => {
+    assert.equal(attnRig({ form: { shown: () => true } }).hidden, true);
+  });
+
+  test('(−) P4: with no form shown (reading is over, unreadable, or no DF) the note shows for a Needs-you agent, as before', () => {
+    assert.equal(attnRig({ form: { shown: () => false } }).hidden, false);
+    assert.equal(attnRig({ form: null }).hidden, false);
+    assert.equal(attnRig({ form: { shown: () => true }, kind: 'idle' }).hidden, true, 'and never for an agent that is not asking');
+    assert.equal(attnRig({ form: { shown: () => true }, pane: 'tmux' }).hidden, false, 'a form of a pane that is not ok does not hide the note');
+  });
+
+  // -- P5: the Send gate
+
+  const GATE = 'Answer the prompt with the buttons above or in the terminal.';
+  const NO_BUTTONS = 'Answer the prompt in the terminal, or turn on Type into pane.';
+  const sendRig = ({ form = null, prompt = null, att = { pending: () => false } } = {}) => {
+    const log = { problems: [], sent: [], atts: [] };
+    const ta = { value: 'hello', disabled: false };
+    const ctx = {
+      sending: false, composer: () => ta, DF: form, S: { on: false }, W: { promptOpen: true, prompt, pane: 'ok' }, A: { kind: 'attn' }, M: { cols: 120 },
+      sendGate: sendGateReal, hasAnswerButtons: hasAnswerButtonsReal, planShell: planShellReal, planSend: planSendReal, draftSendPlan: draftSendPlanReal,
+      showProblem: (m, k) => log.problems.push([m, k]), $: () => el(), say() {}, paneId: '%12', setShell() {}, grow() {}, updateChip() {},
+      DS: { screen: () => null, beginSend() {}, endSend() {}, sent() {} }, enqueueSeq: async (p) => { log.sent.push(norm(p)); return { ok: true }; }, enqueueJob: (run) => run(),
+      ATT: { pending: att.pending, send: (v) => { log.atts.push(v); } },
+    };
+    return { log, ta, send: mk(['async function sendComposer()', 'function clearBox(value)'], ctx).sendComposer };
+  };
+
+  test('(+) P5: with a dialog form on screen, Send names the buttons above, as an error, and sends nothing; the text stays', async () => {
+    const r = sendRig({ form: { live: () => true } });
+    await r.send();
+    assert.deepEqual(r.log.problems, [[GATE, 'error']]);
+    assert.deepEqual(r.log.sent, []);
+    assert.equal(r.ta.value, 'hello');
+  });
+
+  test('(−) P5: the gate still blocks Send while a dialog shows whatever the form is: unreadable (no form), terminal only, no DF', async () => {
+    for (const form of [null, { live: () => false }]) {
+      const r = sendRig({ form });
+      await r.send();
+      assert.deepEqual(r.log.problems, [[NO_BUTTONS, 'error']], JSON.stringify(form));
+      assert.deepEqual(r.log.sent, []);
+    }
+  });
+
+  test('(−) P5: attachments do not get past it: with chips pending and a dialog open, ATT.send is not called', async () => {
+    const r = sendRig({ form: { live: () => true }, att: { pending: () => true } });
+    await r.send();
+    assert.deepEqual(r.log.atts, []);
+    assert.deepEqual(r.log.sent, []);
+  });
+
+  test('(+) P5: without a dialog or prompt the gate is open as before (the hook changes only the wording)', async () => {
+    const log = { sent: [] };
+    const ta = { value: 'hello', disabled: false };
+    const ctx = {
+      sending: false, composer: () => ta, DF: null, S: { on: false }, W: { promptOpen: false, prompt: null, pane: 'ok' }, A: { kind: 'idle' }, M: { cols: 120 },
+      sendGate: sendGateReal, hasAnswerButtons: hasAnswerButtonsReal, planShell: planShellReal, planSend: planSendReal, draftSendPlan: draftSendPlanReal,
+      showProblem() {}, $: () => el(), say() {}, paneId: '%12', setShell() {}, grow() {}, updateChip() {},
+      DS: { screen: () => null, beginSend() {}, endSend() {}, sent() {} }, enqueueSeq: async (p) => { log.sent.push(norm(p)); return { ok: true }; }, enqueueJob: (run) => run(), ATT: { pending: () => false },
+    };
+    await mk(['async function sendComposer()', 'function clearBox(value)'], ctx).sendComposer();
+    assert.equal(log.sent.length, 1);
+  });
+
+  test('(−) scroll keys stay refused while a dialog shows: the capture has no readable input box, so the page\'s gate answers "a dialog or menu is open"', () => {
+    const body = { alt: true, prompt: null, dialog: RAW, rows: [], cols: 120 };
+    assert.equal(scrollGateReal(body, null), 'screen-unclear');
+    assert.equal(scrollGateReal({ ...body, dialog: null }, null), 'screen-unclear', 'the draft, not the dialog field, decides: the server sends no draft under a dialog');
+    assert.match(fnOf('function scrollOpen()'), /scrollGate\(M\.body, M\.draft\)/);
+  });
+
+  // -- P6: boot
+
+  test('(+) P6: boot builds the form right after the switcher, the quick actions and the fit are wired, with the io the module asks for and the one route tail built here', () => {
+    const boot = fnOf('function boot()');
+    assert.match(boot, /wireSwitcher\(\);\s*wireQuick\(\);\s*wireFit\(\);\s*DF = createDialogForm\(\{ root: \$\('dialog-form'\), paneId, call, path: \(tail\) => `\/api\/app\/pane\/\$\{encodeURIComponent\(paneId\)\}\/\$\{tail\}`, announce, say, showProblem, clearProblem, setGone, composer, refresh: renderAttn \}\);/);
+    assert.ok(boot.indexOf('DF = createDialogForm') > boot.indexOf('if (paneId) {'), 'only with a pane');
+  });
+
+  // -- markup
+
+  const tagOf = (id) => new RegExp(`<[a-z]+\\b[^>]*\\bid="${id}"[^>]*>`).exec(HTML)?.[0] ?? '';
+
+  test('(+) #dialog-form is a hidden group in the composer, after the permission panel and before the attachment tray and the message box', () => {
+    const t = tagOf('dialog-form');
+    assert.match(t, /^<div class="ask dlg"/);
+    assert.match(t, /role="group"/);
+    assert.match(t, /aria-labelledby="dlg-q"/);
+    assert.match(t, /\bhidden\b/);
+    assert.doesNotMatch(t, /\sstyle=|aria-live|role="(status|alert|log)"/);
+    const at = (needle) => HTML.indexOf(needle);
+    assert.ok(at('id="prompt-btns"') < at('id="dialog-form"') && at('id="dialog-form"') < at('id="att-tray"') && at('id="att-tray"') < at('<div class="inbox">'));
+    assert.ok(at('id="dialog-form"') > at('id="composer-box"'), 'inside the composer');
+    assert.ok(at('id="dialog-form"') < at('id="shell-toggle"'), 'tab order: the form comes before the Shell toggle and the message box');
+  });
+
+  test('(+) the sprite has i-check, and every icon dialog-form.js draws is in it', () => {
+    const symbols = new Set([...HTML.matchAll(/<symbol id="i-([a-z-]+)"/g)].map((m) => m[1]));
+    assert.ok(symbols.has('check'));
+    const used = [...code(JS['dialog-form.js']).matchAll(/icon\('([a-z-]+)'\)|icon: '([a-z-]+)'|icon\(kind === 'plan' \? '([a-z-]+)' : '([a-z-]+)'\)/g)].flatMap((m) => m.slice(1).filter(Boolean));
+    assert.ok(used.length >= 8, 'the scan found the icons');
+    assert.deepEqual([...new Set(used)].filter((n) => !symbols.has(n)), []);
+  });
+
+  test('(+) the permission panel header gains the kind tag: the warning icon and the word Permission, in the attention colour', () => {
+    const header = /<div class="ask-h">[\s\S]*?<\/div>/.exec(HTML.slice(HTML.indexOf('id="prompt-btns"')))[0];
+    assert.match(header, /<span class="dlg-kind" data-k="perm"><svg class="ic" aria-hidden="true"><use href="#i-warn"\/><\/svg>Permission<\/span>/);
+    assert.match(header, /Needs you/);
+    assert.match(header, /id="ask-reason"/);
+    assert.match(strip(CSS), /\.dlg-kind\[data-k="perm"\]\s*\{[^}]*color:\s*var\(--attn\)/);
+  });
+
+  // -- stylesheet
+
+  const START = CSS.indexOf('/* question dialogs (0.5, W1)');
+  const BLOCK = strip(CSS.slice(START));
+
+  test('(+) the form rules are appended at the end of session.css', () => {
+    assert.ok(START > 0);
+    assert.ok(START > CSS.indexOf('.att-drop'), 'after the attachment rules');
+  });
+
+  test('(+) the form scrolls inside itself, so the mirror keeps its height: max-height min(45vh, 420px)', () => {
+    assert.match(BLOCK, /\.ask\.dlg\s*\{[^}]*max-height:\s*min\(45vh,\s*420px\)[^}]*overflow-y:\s*auto/);
+  });
+
+  test('(+) every state has its own colour pair: reading ended, answering accent, answered busy, failed danger, terminal only a dashed edge with no fill', () => {
+    const rule = (s) => new RegExp(`\\.dlg-chip\\[data-s="${s}"\\]\\s*\\{([^}]*)\\}`).exec(BLOCK)?.[1] ?? '';
+    assert.match(rule('reading'), /color:\s*var\(--ended\)[^}]*background:\s*var\(--ended-soft\)/);
+    assert.match(rule('answering'), /color:\s*var\(--accent\)[^}]*background:\s*var\(--accent-soft\)/);
+    assert.match(rule('answered'), /color:\s*var\(--busy\)[^}]*background:\s*var\(--busy-soft\)/);
+    assert.match(rule('failed'), /color:\s*var\(--danger\)[^}]*background:\s*var\(--danger-soft\)/);
+    assert.match(rule('terminal'), /color:\s*var\(--text-muted\)[^}]*background:\s*transparent[^}]*border:\s*1px dashed var\(--line-strong\)/);
+    assert.match(BLOCK, /\.dlg-kind\[data-k="plan"\]\s*\{[^}]*color:\s*var\(--m-plan\)/);
+  });
+
+  test('(+) a ticked row has the accent fill and edge; the narrow composer swaps the tabs for the step text', () => {
+    assert.match(BLOCK, /\.ch\[data-on="true"\]\s*\{[^}]*background:\s*var\(--accent-soft\)[^}]*border-color:\s*var\(--accent\)/);
+    assert.match(BLOCK, /@container composer \(max-width:\s*560px\)\s*\{[^@]*\.dlg-tabs\s*\{[^}]*display:\s*none[^}]*\}[^@]*\.dlg-step\s*\{[^}]*display:\s*block/);
+    assert.match(BLOCK, /\.dlg-step\s*\{[^}]*display:\s*none/, 'hidden where the tabs show');
+  });
+
+  test('(+) the option rows share the permission buttons\' metrics (32 px, line-strong edge, surface fill) and a description is clamped to 3 lines', () => {
+    assert.match(BLOCK, /\.ch\s*\{[^}]*min-height:\s*32px[^}]*border:\s*1px solid var\(--line-strong\)[^}]*background:\s*var\(--surface\)/);
+    assert.match(BLOCK, /\.dlg-desc\.clamp\s*\{[^}]*-webkit-line-clamp:\s*3/);
+    assert.match(BLOCK, /\.dlg-warn\s*\{[^}]*background:\s*var\(--idle-soft\)[^}]*color:\s*var\(--idle\)/);
+  });
+
+  test('(+) the spinner stops for reduced motion', () => {
+    assert.match(BLOCK, /@media \(prefers-reduced-motion: reduce\)\s*\{[^@]*\.dlg-chip \.spin\s*\{[^}]*animation:\s*none/);
+  });
+
+  test('(+) the scrolling form is a containing block (position set), as the stylesheet-wide guard demands', () => {
+    assert.match(BLOCK, /\.ask\.dlg\s*\{[^}]*position:\s*relative/);
+  });
+
+  test('(−) tokens only: every var() in the block is a token of tokens.css (no local custom property), and there is no colour literal', () => {
+    const defined = new Set([...TOKENS.matchAll(/(--[a-z0-9-]+)\s*:/g)].map((m) => m[1]));
+    assert.deepEqual([...BLOCK.matchAll(/(--[a-z0-9-]+)\s*:/g)].map((m) => m[1]), [], 'the block declares no custom property');
+    const used = [...BLOCK.matchAll(/var\((--[a-z0-9-]+)/g)].map((m) => m[1]);
+    assert.ok(used.length > 40, 'the scan found the variables');
+    assert.deepEqual([...new Set(used)].filter((n) => !defined.has(n)), []);
+    assert.doesNotMatch(BLOCK, /#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\(|color-mix\(|:has\(|@import|url\(/);
   });
 });

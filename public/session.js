@@ -23,6 +23,7 @@ import { isMac, isTextEntry, wantsHelp, wantsBack, wantsHistToggle, backHint, he
 import { panelSize, scaleFor, createFitPlanner } from './fit-ui.js';
 import { createScrollPlanner, routeFor, wheelRows, scrollGate, viewRowsOf, pageRowsOf, refusalLine, noteView, scrolledSay, NOTE_MS } from './scroll.js';
 import { createAttachTray } from './attach.js';
+import { createDialogForm, cleanDialog } from './dialog-form.js';
 
 const PROJECT_KEY = /^[a-z0-9]{16}$/;
 const CLAUDE_SESSION = /^session_[A-Za-z0-9]{1,64}$/;
@@ -292,8 +293,10 @@ function startAgentPoll() {
 // the Shift-Tab cycle does not hold, struck at strikeAt. SW: the switch in flight (its target) and the four segments.
 // prompt: the capture's prompt as cleanPrompt allows it, for drawing the buttons only. promptOpen: the capture has a prompt at all
 // (even an off-contract one), for every gate: the switcher, the quick actions, the message box keys (composerKey) and the End note.
-const W = { pane: 'connecting', got: false, mode: 'unknown', confirmed: true, prompt: null, promptOpen: false, last: null, msg: null, struck: new Set(), strikeAt: null, tagSig: '', whySig: '' };
+// dialog: the capture's question dialog or plan approval as cleanDialog allows it (0.5): the form draws from it, a dialog also counts as promptOpen.
+const W = { pane: 'connecting', got: false, mode: 'unknown', confirmed: true, prompt: null, promptOpen: false, dialog: null, last: null, msg: null, struck: new Set(), strikeAt: null, tagSig: '', whySig: '' };
 const SW = { busy: null, pressed: null, parts: [] };
+let DF = null; // the question dialog form (dialog-form.js), built in boot() with the pane
 
 function renderTag() {
   const key = W.pane === 'ok' ? modeKey(W.mode) : '';
@@ -372,6 +375,7 @@ function renderMode() {
   renderQuick();
   renderAttn();
   renderPrompt();
+  DF?.render({ pane: W.pane, dialog: W.dialog, name: A.name, attention: A.attention });
 }
 
 /** What a capture says about the mode and the prompt. The tag follows every capture; only a change is announced. */
@@ -381,7 +385,8 @@ function noteScreen(body) {
   W.mode = modeKey(body.mode);
   W.confirmed = body.modeConfirmed === true;
   W.prompt = cleanPrompt(body.prompt); // null for anything but the contract shape: no panel, no buttons
-  W.promptOpen = Boolean(body.prompt); // but an off-contract prompt still counts as a prompt for the gates
+  W.dialog = cleanDialog(body.dialog); // null only when the capture has none; anything off the contract is { state: 'unreadable' }
+  W.promptOpen = Boolean(body.prompt) || W.dialog !== null; // an off-contract prompt or dialog still counts as a prompt for the gates
   if (W.struck.size && W.confirmed && W.mode !== 'unknown' && W.mode !== W.strikeAt) W.struck.clear();
   if (!SW.busy) { // a switch announces its end result once, when the route answers
     const n = modeNote(A.name, W.last, { mode: W.mode, confirmed: W.confirmed });
@@ -719,7 +724,7 @@ function wireQuick() {
 /** The attention note (0.2) for a 'Needs you' agent whose layout has no prompt panel; the panel replaces it. */
 function renderAttn() {
   const note = $('attn-note');
-  const panel = W.pane === 'ok' && W.prompt !== null;
+  const panel = W.pane === 'ok' && (W.prompt !== null || DF?.shown() === true);
   note.hidden = A.kind !== 'attn' || panel;
   if (!note.hidden) $('attn-text').textContent = attnNote(A.name, A.attention, passKeyLabel(MAC));
 }
@@ -1504,7 +1509,7 @@ let sending = false;
 async function sendComposer() {
   const ta = composer();
   if (sending || ta.disabled) return;
-  const gate = sendGate({ promptOpen: W.promptOpen, status: A.kind, buttons: W.pane === 'ok' && hasAnswerButtons(W.prompt), bypass: W.prompt?.bypass === true }); // Enter would confirm the prompt's highlighted option: answer with the buttons
+  const gate = sendGate({ promptOpen: W.promptOpen, status: A.kind, buttons: (W.pane === 'ok' && hasAnswerButtons(W.prompt)) || DF?.live() === true, bypass: W.prompt?.bypass === true }); // Enter would confirm the prompt's highlighted option: answer with the buttons
   if (!gate.ok) {
     showProblem(gate.message, 'error'); // nothing is sent and the text stays in the box
     return;
@@ -2199,6 +2204,7 @@ function boot() {
     wireSwitcher();
     wireQuick();
     wireFit();
+    DF = createDialogForm({ root: $('dialog-form'), paneId, call, path: (tail) => `/api/app/pane/${encodeURIComponent(paneId)}/${tail}`, announce, say, showProblem, clearProblem, setGone, composer, refresh: renderAttn });
     $('pb-pane').textContent = paneId;
     $('term').setAttribute('aria-label', `Live terminal of ${A.name}, pane ${paneId}`);
     showOverlay(`Connecting to pane ${paneId}${DOTS}`, '');
