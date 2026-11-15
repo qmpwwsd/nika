@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import { createSessionControl, checkSuggestionBody, readDraft } from '../src/session-control.js';
 import { createKeys } from '../src/keys.js';
 import { boxRows, span } from './helpers.js';
+import { dialogWorld, TAB } from './dialog-fake.js';
 
 const COLS = 120;
 const SUG = 'run the tests in acme-api';
@@ -157,6 +158,18 @@ describe('acceptSuggestion', () => {
     const w = pane({ prompt: true });
     assert.deepEqual(code(await w.accept()), [409, 'not-idle']);
     assert.deepEqual(w.sent, []);
+  });
+
+  test('(−) a question, review, plan, "Exit plan mode?" or nudge dialog on screen: 409 not-idle, nothing sent (Tab would move the focus)', async () => {
+    const shapes = {
+      ask: { phase: 'ask' }, multi: { phase: 'ask', tabs: [TAB.tools] }, review: { phase: 'review', tabs: [TAB.project, TAB.tools] },
+      plan: { phase: 'plan' }, exit: { phase: 'exit' }, nudge: { phase: 'nudge' },
+    };
+    for (const [name, opts] of Object.entries(shapes)) {
+      const w = pane({ override: () => dialogWorld(opts).screen() });
+      assert.deepEqual(code(await w.accept()), [409, 'not-idle'], name);
+      assert.deepEqual(w.sent, [], name);
+    }
   });
 
   test('(−) a busy turn, a waiting state, and no registry state at all: 409 not-idle, nothing sent', async () => {

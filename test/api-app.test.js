@@ -21,6 +21,8 @@ import { MODEL_CATALOG } from '../src/models.js';
 import { makeWorld, fakeTmux, TMUX, CLAUDE } from './tmux-fake.js';
 import { makeFixture, cleanup, fakeExec, SID, NOW, boxRows } from './helpers.js';
 import { createMirror } from '../src/mirror.js';
+import { readDialogScreen, sigOf as dialogSig } from '../src/dialog.js';
+import { dialogWorld, TAB } from './dialog-fake.js';
 
 const SECRET = 'Zm9vYmFyZm9vYmFyZm9vYmFyZm9vYmFyZm9vYmFyZm9v'.slice(0, 43);
 const REQ_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -1837,7 +1839,7 @@ function screenMirror(screens, { delay = 0 } = {}) {
       if (delay) await new Promise((r) => setTimeout(r, delay));
       m.inflight -= 1;
       if (screens[pane] === null) return { status: 503, body: { error: 'tmux_unavailable', message: 'x' } };
-      return { status: 200, body: { cols: 80, rows: screens[pane] ?? [], cursor: Object.hasOwn(screens[pane] ?? [], 'cursor') ? screens[pane].cursor : { x: 0, y: 0, visible: true }, etag: 'abc' }, etag: 'abc' }; // an array may carry its own `cursor` (a box fixture's, null included)
+      return { status: 200, body: { cols: screens[pane]?.cols ?? 80, rows: screens[pane] ?? [], cursor: Object.hasOwn(screens[pane] ?? [], 'cursor') ? screens[pane].cursor : { x: 0, y: 0, visible: true }, etag: 'abc' }, etag: 'abc' }; // an array may carry its own `cursor` (a box fixture's, null included)
     },
   };
   return m;
@@ -1860,6 +1862,7 @@ function fakeControl(answers = {}) {
       stop: method('stop', () => ({ status: 200, body: { stopped: true, presses: 1 } })),
       writeDraft: method('writeDraft', () => ({ status: 200, body: { draft: null, typed: 0 } })),
       acceptSuggestion: method('acceptSuggestion', () => ({ status: 200, body: { draft: null } })),
+      answerDialog: method('answerDialog', () => ({ status: 200, body: { done: 'next', sent: 1 } })),
       withPaneLock: async (id, fn) => fn(), // the lock and the interrupt gap the scroll controller is built with (src/scroll.js insists on both)
       keyGap: () => false,
     };
@@ -3206,6 +3209,308 @@ describe('POST /api/app/pane/:id/suggestion', () => {
     }
     assert.ok(lines.some((l) => /POST .*suggestion failed/.test(l)), 'the internal error was logged (so the check is real)');
     assert.deepEqual(lines.filter((l) => l.includes(secret)), []);
+  });
+});
+
+// --- Claude's question and plan dialogs (0.5, W1, ADR 0015): the capture's `dialog` field and POST /api/app/pane/:id/dialog ----------
+
+/** The rows of a synthetic dialog as the screen mirror serves them (the array carries the pane width the dialog was drawn for). */
+const dialogRows = (opts = {}) => {
+  const s = dialogWorld(opts).screen();
+  return Object.assign(s.rows, { cursor: s.cursor, cols: s.cols });
+};
+const SIG16 = /^[0-9a-f]{16}$/;
+const DSIG = '0123456789abcdef';
+
+describe('capture: the dialog field', () => {
+  test('(+) a question on screen: ready, with the tabs, the options and a 16-hex sig; prompt stays null', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = dialogRows({ tabs: [TAB.project, TAB.mode] });
+    const r = await pane(a, '%6', 'capture');
+    assert.equal(r.status, 200);
+    const d = r.body.dialog;
+    assert.equal(r.body.prompt, null);
+    assert.deepEqual([d.state, d.kind, d.at, d.current, d.final, d.multi, d.other, d.bypass], ['ready', 'ask', 'question', 0, false, false, true, false]);
+    assert.match(d.sig, SIG16);
+    assert.deepEqual(d.options.map((o) => o.label), ['acme-api', 'web-shop', 'demo-api']);
+    assert.deepEqual(d.tabs.map((t) => t.header), ['Project', 'Mode']);
+    assert.equal(d.sig, dialogSig(readDialogScreen(screens['%6'], 120)), 'the sig is the one the controller computes');
+    assert.equal(r.body.cols, 120, 'the width the dialog was read with');
+  });
+
+  test('(+) a multi-select question carries the checkbox marks; a review its answers; a plan its choices', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = dialogRows({ tabs: [TAB.tools] });
+    const multi = (await pane(a, '%6', 'capture')).body.dialog;
+    assert.deepEqual([multi.multi, multi.final, multi.other], [true, false, true]);
+    assert.deepEqual(multi.options.map((o) => o.checked), [false, false, false]);
+    screens['%6'] = dialogRows({ tabs: [TAB.project, TAB.tools], phase: 'review' });
+    const review = (await pane(a, '%6', 'capture')).body.dialog;
+    assert.deepEqual([review.state, review.kind, review.at], ['ready', 'ask', 'review']);
+    assert.ok(Array.isArray(review.pairs) && Array.isArray(review.tabs));
+    screens['%6'] = dialogRows({ phase: 'plan' });
+    const plan = (await pane(a, '%6', 'capture')).body.dialog;
+    assert.deepEqual([plan.state, plan.kind, plan.at], ['ready', 'plan', 'plan']);
+    assert.ok(plan.options.length >= 2);
+  });
+
+  test('(+) the sig changes with the tab, the answer marks and the plan text, and not with the focus', async () => {
+    const { a, screens } = await bootScreens();
+    const sigs = new Set();
+    for (const opts of [{ tabs: [TAB.project, TAB.mode] }, { tabs: [TAB.project, TAB.mode], i: 1 }, { tabs: [TAB.project, TAB.mode], focus: 2 }, { tabs: [TAB.project, TAB.mode], phase: 'review' }, { phase: 'plan' }]) {
+      screens['%6'] = dialogRows(opts);
+      sigs.add((await pane(a, '%6', 'capture')).body.dialog.sig);
+    }
+    assert.equal(sigs.size, 4, 'five screens, one pair that differs only by the focus');
+  });
+
+  test('(−) no dialog: a plain screen, a permission prompt (prompt wins) and an empty screen read null', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = rowsOf(['hello', FOOTER.plan]);
+    assert.equal((await pane(a, '%6', 'capture')).body.dialog, null);
+    screens['%6'] = rowsOf(PROMPT);
+    const p = await pane(a, '%6', 'capture');
+    assert.equal(p.body.dialog, null);
+    assert.ok(p.body.prompt, 'the permission prompt is still read');
+    screens['%6'] = rowsOf([]);
+    assert.equal((await pane(a, '%6', 'capture')).body.dialog, null);
+  });
+
+  test('(−) a dialog nika cannot read exactly is reported as unreadable with a reason, never as ready (a narrow pane, the nudge, "Exit plan mode?")', async () => {
+    const { a, screens } = await bootScreens();
+    for (const opts of [{ cols: 40 }, { phase: 'nudge' }, { phase: 'exit' }]) {
+      screens['%6'] = dialogRows(opts);
+      const d = (await pane(a, '%6', 'capture')).body.dialog;
+      assert.equal(d.state, 'unreadable', JSON.stringify(opts));
+      assert.ok(typeof d.reason === 'string' && d.reason.length > 0);
+      assert.equal(d.sig, undefined, 'there is nothing to answer, so no sig');
+    }
+  });
+
+  test('(−) a dialog that mentions bypass is ready with bypass true (the page then shows it as terminal-only)', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = dialogRows({ tabs: [{ header: 'Mode', question: 'Which mode?', options: [['bypass permissions', 'Skip every check.'], ['safe', 'Run every step.']] }] });
+    const d = (await pane(a, '%6', 'capture')).body.dialog;
+    assert.deepEqual([d.state, d.bypass], ['ready', true]);
+  });
+
+  test('(−) the dialog is on the app tier\'s capture only: the browser tier has no capture route and its agent list carries no dialog', async () => {
+    const server = createServer({ config: fx.config, exec: fakeExec(), token: 'tok', now: () => NOW, version: '0.0.0' });
+    await new Promise((res) => server.listen(0, '127.0.0.1', res));
+    servers.push(server);
+    const port = server.address().port;
+    const call = (method, p) => new Promise((resolve, reject) => {
+      const q = http.request({ host: '127.0.0.1', port, method, path: p, headers: { host: `127.0.0.1:${port}`, 'x-nika-app': SECRET, ...(method === 'GET' ? {} : { 'content-type': 'application/json', 'content-length': '2' }) } }, (res) => {
+        let data = '';
+        res.on('data', (c) => { data += c; });
+        res.on('end', () => resolve({ status: res.statusCode, data }));
+      });
+      q.on('error', reject);
+      q.end(method === 'GET' ? undefined : '{}');
+    });
+    assert.equal((await call('GET', '/api/app/pane/%256/capture')).status, 404);
+    assert.equal((await call('POST', '/api/app/pane/%256/dialog')).status, 404, 'answering a dialog presses keys: app tier only');
+    const agents = await call('GET', '/api/agents?since=all');
+    assert.equal(agents.status, 200);
+    assert.doesNotMatch(agents.data, /"dialog"|"pairs"/);
+  });
+});
+
+describe('POST /api/app/pane/:id/dialog', () => {
+  const body = { picks: [2], sig: DSIG };
+
+  test('(+) hands the pane and exactly the body to the controller and relays its answer and status (every shape)', async () => {
+    const shapes = [{ picks: [2], sig: DSIG }, { picks: [], text: 'acme-api', sig: DSIG }, { sig: DSIG, submit: true }, { sig: DSIG, choice: 1 }, { sig: DSIG, cancel: true }];
+    for (const json of shapes) {
+      const { a, control } = await bootScreens({ ctlAnswers: { answerDialog: { status: 200, body: { done: 'next', sent: 1 } } } });
+      const r = await pane(a, '%6', 'dialog', { method: 'POST', json });
+      assert.deepEqual([r.status, r.body], [200, { done: 'next', sent: 1 }]);
+      assert.deepEqual(control.calls, [['answerDialog', '%6', json]]);
+      assert.equal(r.headers['cache-control'], 'no-store');
+    }
+  });
+
+  test('(+) a started pane is eligible; every 400 and 409 the controller gives (with `sent`) is relayed as it is', async () => {
+    const answers = [
+      { status: 409, body: { error: 'dialog-changed' } },
+      { status: 409, body: { error: 'no-dialog', sent: 2 } },
+      { status: 409, body: { error: 'not-taken', sent: 1 } },
+      { status: 409, body: { error: 'text-mismatch', sent: 3 } },
+      { status: 409, body: { error: 'already-answered' } },
+      { status: 409, body: { error: 'busy-switching' } },
+      { status: 400, body: { error: 'terminal-only', message: 'answer this in the terminal' } },
+      { status: 429, body: { error: 'busy', sent: 1 } },
+    ];
+    for (const answer of answers) {
+      const { a, control } = await bootScreens({ ctlAnswers: { answerDialog: answer } });
+      a.ctx.started.set('%8', { key: w.project.key, name: 'x', sessionId: null, role: 'agent', mode: 'plan' });
+      const r = await pane(a, '%8', 'dialog', { method: 'POST', json: body });
+      assert.deepEqual([r.status, r.body], [answer.status, answer.body]);
+      assert.deepEqual(control.calls, [['answerDialog', '%8', body]]);
+    }
+  });
+
+  test('(−) a bad body is 400 before the pane check, and the controller is not called', async () => {
+    const { a, control } = await bootScreens();
+    const bad = [
+      {}, { sig: DSIG }, { picks: [1] }, { picks: [1], sig: 'xyz' }, { picks: [1], sig: DSIG.toUpperCase() }, { picks: [1], sig: `${DSIG}0` },
+      { picks: [1], sig: DSIG, extra: 1 }, { picks: [1], sig: DSIG, path: '/etc/passwd' }, { picks: [1], sig: DSIG, submit: true },
+      { sig: DSIG, submit: false }, { sig: DSIG, submit: 1 }, { sig: DSIG, submit: true, cancel: true }, { sig: DSIG, cancel: 'yes' }, { sig: DSIG, cancel: true, choice: 1 },
+      { sig: DSIG, choice: 0 }, { sig: DSIG, choice: 10 }, { sig: DSIG, choice: '1' }, { sig: DSIG, choice: 1.5 },
+      { picks: [0], sig: DSIG }, { picks: [8], sig: DSIG }, { picks: [1, 1], sig: DSIG }, { picks: [1.5], sig: DSIG }, { picks: ['1'], sig: DSIG }, { picks: '1', sig: DSIG },
+      { picks: [1, 2, 3, 4, 5, 6, 7, 1], sig: DSIG }, { picks: [null], sig: DSIG }, { picks: { 0: 1, length: 1 }, sig: DSIG },
+      { picks: [1], text: '', sig: DSIG }, { picks: [1], text: 5, sig: DSIG }, { picks: [], text: 'a\nb', sig: DSIG }, { picks: [], text: 'a'.repeat(301), sig: DSIG },
+      { picks: [], text: ' a', sig: DSIG }, { picks: [], text: 'a ', sig: DSIG }, { picks: [], text: 'a\u001b[2mb', sig: DSIG }, { picks: [], text: 'a\u0000', sig: DSIG },
+      { picks: [], text: 'a\u202eb', sig: DSIG }, { picks: [], text: 'a\u200bb', sig: DSIG }, { picks: [], text: 'a\ud800b', sig: DSIG }, { picks: [], text: null, sig: DSIG },
+      [], 'sig',
+    ];
+    for (const json of bad) {
+      for (const id of ['%6', '%5']) {
+        const r = await pane(a, id, 'dialog', { method: 'POST', json });
+        assert.equal(r.status, 400, `${JSON.stringify(json).slice(0, 60)} on ${id}`);
+      }
+      if (!Array.isArray(json) && typeof json === 'object') assert.equal((await pane(a, '%6', 'dialog', { method: 'POST', json })).body.error, 'invalid');
+    }
+    const proto = await pane(a, '%6', 'dialog', { method: 'POST', body: `{"__proto__":{"picks":[1]},"sig":"${DSIG}"}`, headers: { 'content-type': 'application/json' } });
+    assert.equal(proto.status, 400, '__proto__ is refused');
+    assert.deepEqual(control.calls, []);
+  });
+
+  test('(−) the longest text the validator takes (300 characters) and picks up to 7 reach the controller', async () => {
+    const { a, control } = await bootScreens();
+    const json = { picks: [1, 2, 3, 4, 5, 6, 7], text: 'a'.repeat(299) + 'é', sig: DSIG };
+    assert.equal((await pane(a, '%6', 'dialog', { method: 'POST', json })).status, 200);
+    assert.deepEqual(control.calls, [['answerDialog', '%6', json]]);
+  });
+
+  test('(−) an ineligible pane (zsh, not live, unknown id, bad id) is 404 and the controller is not called', async () => {
+    const { a, control } = await bootScreens();
+    for (const id of ['%5', '%7', '%99', 'abc', '..']) {
+      const r = await a.call('POST', `/api/app/pane/${id.replace('%', '%25')}/dialog`, { json: body });
+      assert.equal(r.status, 404, id);
+    }
+    assert.deepEqual(control.calls, []);
+  });
+
+  test('(−) without the secret 403; text/plain 415; GET and PUT 405; a body over 20 KB 413 -- the controller is not called', async () => {
+    const { a, control } = await bootScreens();
+    assert.equal((await pane(a, '%6', 'dialog', { method: 'POST', json: body, headers: { 'x-nika-app': null } })).status, 403);
+    assert.equal((await pane(a, '%6', 'dialog', { method: 'POST', body: JSON.stringify(body), headers: { 'content-type': 'text/plain' } })).status, 415);
+    assert.equal((await pane(a, '%6', 'dialog', { method: 'GET' })).status, 405);
+    assert.equal((await pane(a, '%6', 'dialog', { method: 'PUT', json: body })).status, 405);
+    assert.equal((await pane(a, '%6', 'dialog', { method: 'POST', json: { ...body, pad: 'p'.repeat(21 * 1024) } })).status, 413);
+    assert.deepEqual(control.calls, []);
+  });
+
+  test('(−) a foreign Origin or Sec-Fetch-Site is 403 before any pane work', async () => {
+    const { a, control } = await bootScreens();
+    assert.equal((await pane(a, '%6', 'dialog', { method: 'POST', json: body, headers: { origin: 'http://evil.example' } })).status, 403);
+    assert.equal((await pane(a, '%6', 'dialog', { method: 'POST', json: body, headers: { 'sec-fetch-site': 'cross-site' } })).status, 403);
+    assert.deepEqual(control.calls, []);
+  });
+
+  test('(−) an answer while End runs on the same pane is 409 busy-switching (one lock), and no digit is sent', async () => {
+    const { a, screens, mirror } = await bootScreens({ fake: false });
+    screens['%6'] = dialogRows();
+    let enter;
+    const entered = new Promise((r) => { enter = r; });
+    let release;
+    const hold = new Promise((r) => { release = r; });
+    const capture = mirror.capture;
+    mirror.capture = async (...args) => { enter(); await hold; return capture(...args); };
+    const end = pane(a, '%6', 'end', { method: 'POST', json: {} });
+    await entered;
+    const put = await pane(a, '%6', 'dialog', { method: 'POST', json: { picks: [1], sig: DSIG } });
+    assert.deepEqual([put.status, put.body.error], [409, 'busy-switching']);
+    release();
+    await end;
+    assert.ok(!a.deps.calls.some((c) => c[0] === 'keys' && c[2]?.text === '1'), 'no digit went out');
+  });
+
+  /** The real controller on a synthetic Claude: GET capture gives the sig, POST dialog answers one step, the screen changes the way Claude's does. */
+  async function live(opts) {
+    const world = dialogWorld(opts);
+    const { a, mirror } = await bootScreens({ fake: false });
+    let shots = 0;
+    mirror.capture = async () => {
+      shots += 1;
+      const r = await world.mirror.capture('%6');
+      return { ...r, body: { ...r.body, etag: `e${shots}` }, etag: `e${shots}` };
+    };
+    a.deps.keys.send = async (id, b) => { a.deps.calls.push(['keys', id, b]); return world.keys.send(id, b); };
+    const sig = async () => (await pane(a, '%6', 'capture')).body.dialog;
+    const post = (json) => pane(a, '%6', 'dialog', { method: 'POST', json });
+    return { a, world, sig, post };
+  }
+
+  test('(+) end to end with the real controller: one step per request, a fresh sig each time, Submit last; the dialog is then gone', async () => {
+    const { world, sig, post, a } = await live({ tabs: [TAB.project, TAB.mode] });
+    const first = await sig();
+    assert.deepEqual([first.state, first.current], ['ready', 0]);
+    let r = await post({ picks: [2], sig: first.sig });
+    assert.deepEqual([r.status, r.body], [200, { done: 'next', sent: 1 }]);
+    const second = await sig();
+    assert.deepEqual([second.state, second.current], ['ready', 1]);
+    assert.notEqual(second.sig, first.sig);
+    r = await post({ picks: [1], sig: second.sig });
+    assert.deepEqual([r.status, r.body.done], [200, 'review']);
+    const review = await sig();
+    assert.equal(review.at, 'review');
+    r = await post({ submit: true, sig: review.sig });
+    assert.deepEqual([r.status, r.body.done], [200, 'submitted']);
+    assert.equal(await sig(), null);
+    assert.deepEqual(world.keysLog(), ['text:2', 'text:1', 'Enter']);
+    assert.deepEqual(world.leaks(), []);
+    const late = await post({ submit: true, sig: review.sig });
+    assert.deepEqual([late.status, late.body.error], [409, 'no-dialog']);
+    assert.equal(a.deps.calls.filter((c) => c[0] === 'keys').length, 3, 'the late request sent nothing');
+  });
+
+  test('(+) end to end: Other text, a plan choice and a Decline each take their keys and nothing else', async () => {
+    const other = await live({});
+    const s = await other.sig();
+    const r = await other.post({ picks: [], text: 'acme-api staging', sig: s.sig });
+    assert.deepEqual([r.status, r.body.done], [200, 'submitted']);
+    assert.deepEqual(other.world.keysLog(), ['Down', 'Down', 'Down', 'text:acme-api staging', 'Enter']);
+    const plan = await live({ phase: 'plan' });
+    const ps = await plan.sig();
+    assert.equal((await plan.post({ sig: ps.sig, choice: 1 })).body.done, 'chosen');
+    assert.deepEqual(plan.world.keysLog(), ['text:1']);
+    const decline = await live({ phase: 'plan' });
+    const ds = await decline.sig();
+    assert.equal((await decline.post({ sig: ds.sig, cancel: true })).body.done, 'declined');
+    assert.deepEqual(decline.world.keysLog(), ['Escape']);
+  });
+
+  test('(−) end to end: a stale sig is 409 dialog-changed and a dialog that mentions bypass is 400 terminal-only -- nothing is sent', async () => {
+    const stale = await live({ tabs: [TAB.project, TAB.mode] });
+    const s = await stale.sig();
+    assert.equal((await stale.post({ picks: [1], sig: s.sig })).status, 200);
+    const old = await stale.post({ picks: [1], sig: s.sig });
+    assert.deepEqual([old.status, old.body.error], [409, 'dialog-changed']);
+    assert.deepEqual(stale.world.keysLog(), ['text:1'], 'only the first answer went out');
+    const bypass = await live({ tabs: [{ header: 'Mode', question: 'Which mode?', options: [['bypass permissions', 'Skip every check.'], ['safe', 'Run every step.']] }] });
+    const b = await bypass.sig();
+    const r = await bypass.post({ picks: [1], sig: b.sig });
+    assert.deepEqual([r.status, r.body.error], [400, 'terminal-only']);
+    assert.deepEqual(bypass.world.keysLog(), []);
+  });
+
+  test('(−) nothing of the answer text, the picks or the sig reaches a log line, on success and on an internal error', async () => {
+    const secret = 'zq-private-dialog-words';
+    const lines = [];
+    const saved = { error: console.error, log: console.log, warn: console.warn, info: console.info };
+    for (const name of Object.keys(saved)) console[name] = (...args) => { lines.push(args.map((x) => (x instanceof Error ? `${x.message}\n${x.stack}` : String(x))).join(' ')); };
+    try {
+      for (const ctlAnswers of [undefined, { answerDialog: () => { throw new Error('boom'); } }]) {
+        const { a } = await bootScreens({ ctlAnswers });
+        await pane(a, '%6', 'dialog', { method: 'POST', json: { picks: [], text: secret, sig: DSIG } });
+      }
+    } finally {
+      Object.assign(console, saved);
+    }
+    assert.ok(lines.some((l) => /POST .*dialog failed/.test(l)), 'the internal error was logged (so the check is real)');
+    assert.deepEqual(lines.filter((l) => l.includes(secret) || l.includes(DSIG)), []);
   });
 });
 

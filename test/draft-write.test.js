@@ -6,12 +6,20 @@ import assert from 'node:assert/strict';
 import { createSessionControl, checkDraftBody, readDraft } from '../src/session-control.js';
 import { parseDraft } from '../src/draft.js';
 import { boxRows, span } from './helpers.js';
+import { dialogWorld, TAB } from './dialog-fake.js';
 
 const COLS = 120;
 const W = COLS - 4;
 const NEVER = ['Enter', 'C-c', 'Up', 'Down', 'BTab', 'C-k'];
 const PROMPT = ['Bash command', '  run the thing', '', 'Do you want to proceed?', '❯ 1. Yes', '  2. No', 'Esc to cancel'];
 const tick = () => new Promise((r) => setImmediate(r));
+
+// Claude's question and plan dialogs (0.5, W1): the input box under them is not a draft box, so nothing is typed (promptOpen)
+const DIALOGS = {
+  ask: { phase: 'ask' }, multi: { phase: 'ask', tabs: [TAB.tools] }, review: { phase: 'review', tabs: [TAB.project, TAB.tools] },
+  plan: { phase: 'plan' }, exit: { phase: 'exit' }, nudge: { phase: 'nudge' },
+};
+const dialogScreen = (name) => () => dialogWorld(DIALOGS[name]).screen();
 
 /** A live screen: `capture-pane -p -e -N` keeps the spaces Claude draws after the text, so every row is as wide as the pane (live check, Claude 2.1.325). */
 const padded = (cap) => ({
@@ -204,6 +212,15 @@ describe('writeDraft: the answers that send nothing', () => {
     assert.deepEqual(await w.control().writeDraft('%2', { text: 'bye', base: '' }), code(409, 'not-idle'));
     assert.deepEqual(w.sent, []);
     assert.equal(w.n, 1);
+  });
+
+  test('(−) a question, review, plan, "Exit plan mode?" or nudge dialog on screen: 409 not-idle, one capture, nothing sent', async () => {
+    for (const name of Object.keys(DIALOGS)) {
+      const w = pane({ text: 'hello', override: dialogScreen(name) });
+      assert.deepEqual(await w.control().writeDraft('%2', { text: 'bye', base: '' }), code(409, 'not-idle'), name);
+      assert.deepEqual(w.sent, [], name);
+      assert.equal(w.n, 1, name);
+    }
   });
 
   test('(−) a footer nobody recognises (a dialog may be open): 409 mode-unknown; no input box: 409 input-unreadable', async () => {
@@ -605,6 +622,15 @@ describe('writeDraft: what changes on screen while it writes (T51 and the user i
     const r = await w.put('bye');
     assert.equal(r.body.error, 'screen-changed');
     assert.deepEqual(sentKeys(w), ['Escape']);
+    safe(w);
+  });
+
+  test('(−) T51: a question dialog opens before the second chunk: 409 screen-changed, the rest is never sent, no Enter ever', async () => {
+    const w = pane({ text: '', vim: true, before: (n, p) => { if (n === 3) p.override = dialogScreen('ask'); } });
+    const r = await w.put(three);
+    assert.equal(r.status, 409);
+    assert.equal(r.body.error, 'screen-changed');
+    assert.deepEqual(sentKeys(w), ['paste:l1\nl2\n']);
     safe(w);
   });
 

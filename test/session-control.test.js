@@ -4,6 +4,7 @@ import { createSessionControl, promptSig, boxInput, readDraft } from '../src/ses
 import { promptFromRows, rowText } from '../src/mode.js';
 import { RULE_ROW, parseDraft, boxSquash } from '../src/draft.js';
 import { boxRows } from './helpers.js';
+import { dialogWorld, TAB } from './dialog-fake.js';
 
 // Synthetic screens only. The phrases follow docs/contracts/claude-tui.md sections 1, 2 and 5; symbols are escapes.
 const DEF = { b: false, fg: null, bg: null, u: false, i: false, d: false };
@@ -2304,5 +2305,77 @@ describe('boxInput (0.5, W2 fix round 1): the one preparation of a capture for t
   test('(−) rows that are not an array, or a screen with no non-blank row, do not throw', () => {
     assert.deepEqual(boxInput({ rows: 'x', cursor: { x: 0, y: 0 }, cols: 80 }).rows, []);
     assert.deepEqual(boxInput({ rows: [[], []], cursor: { x: 0, y: 0 }, cols: 80 }).rows, [[], []]);
+  });
+});
+
+// Claude's question and plan dialogs on screen (0.5, W1, design section 5): every control that is not the dialog route treats them like a
+// permission prompt. Nothing is sent to a dialog except by answerDialog (test/dialog-answer.test.js); End answers it with one Escape.
+describe('a question or plan dialog on screen (promptOpen)', () => {
+  const SHAPES = {
+    ask: { phase: 'ask' },
+    multi: { phase: 'ask', tabs: [TAB.tools] },
+    review: { phase: 'review', tabs: [TAB.project, TAB.tools] },
+    plan: { phase: 'plan' },
+    exit: { phase: 'exit' }, // "Exit plan mode?": T1 cannot read it, it is still not a plain box
+    nudge: { phase: 'nudge' }, // the auto-mode nudge
+  };
+  /** A world whose screen is the dialog until `w.dialog` is set to null. */
+  function withDialog(shape, opts = {}) {
+    const w = world({ state: 'attn', ...opts });
+    const base = w.rows;
+    w.dialog = dialogWorld(typeof shape === 'string' ? SHAPES[shape] : shape).screen().rows;
+    w.rows = () => w.dialog ?? base();
+    return w;
+  }
+
+  test('(−) Stop: 409 prompt-open for every dialog shape (nothing sent), where a plain busy pane is stopped', async () => {
+    for (const name of Object.keys(SHAPES)) {
+      const w = withDialog(name);
+      assert.deepEqual(await w.control().stop('%2'), code(409, 'prompt-open'), name);
+      assert.deepEqual(keysOf(w), [], name);
+    }
+    const busy = world({ state: 'busy' });
+    assert.deepEqual((await busy.control().stop('%2')).body, { stopped: true, presses: 1 });
+  });
+
+  test('(−) mode switch and commands: 409 not-idle even when the registry says idle (the screen decides), nothing sent', async () => {
+    for (const name of Object.keys(SHAPES)) {
+      const w = withDialog(name, { state: 'idle' });
+      assert.deepEqual(await w.control().switchMode('%2', 'plan'), code(409, 'not-idle'), name);
+      assert.deepEqual(await w.control().runCommand('%2', '/model'), code(409, 'not-idle'), name);
+      assert.deepEqual(keysOf(w), [], name);
+    }
+  });
+
+  test('(−) a permission prompt answer and a dialog: /answer finds no prompt on a dialog screen (409 no-prompt), nothing sent', async () => {
+    const w = withDialog('ask');
+    assert.deepEqual(await w.control().answer('%2', { n: 1, sig: '0123456789abcdef' }), code(409, 'no-prompt'));
+    assert.deepEqual(keysOf(w), []);
+  });
+
+  test('(+) End on a dialog: exactly one Escape declines it, then the usual /exit sequence runs', async () => {
+    for (const name of ['ask', 'review', 'plan']) {
+      const w = withDialog(name);
+      w.onKeys = (b) => { if (b.keys?.[0] === 'Escape') { w.dialog = null; w.state = 'idle'; } };
+      const r = await w.control().endSession('%2');
+      assert.deepEqual(r, { status: 200, body: { ended: true } }, name);
+      assert.deepEqual(keysOf(w), ['Escape', 'text:/', 'text:exit', 'Enter'], name);
+    }
+  });
+
+  test('(−) End on a dialog that the Escape does not close (vim INSERT leaves INSERT only): 409 not-idle, no /exit typed', async () => {
+    const w = withDialog({ vim: true, focus: 4 }); // the text row of the question, INSERT shown
+    assert.ok(w.dialog.some((row) => row.some((c) => /-- INSERT --/.test(c.t))), 'the fake shows the INSERT marker');
+    const r = await w.control().endSession('%2');
+    assert.deepEqual(r, code(409, 'not-idle'));
+    assert.deepEqual(keysOf(w), ['Escape'], 'one Escape and nothing after it');
+  });
+
+  test('(−) End on a dialog nika cannot read ("Exit plan mode?", the nudge): one Escape, then nothing typed if it stays', async () => {
+    for (const name of ['exit', 'nudge']) {
+      const w = withDialog(name);
+      assert.deepEqual(await w.control().endSession('%2'), code(409, 'not-idle'), name);
+      assert.deepEqual(keysOf(w), ['Escape'], name);
+    }
   });
 });

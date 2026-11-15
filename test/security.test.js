@@ -2,6 +2,7 @@
 import { test, describe, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import http from 'node:http';
 import path from 'node:path';
 import { execFileSync, execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -12,6 +13,7 @@ import { readTranscript, createTranscriptCache } from '../src/collect/transcript
 import { readReport } from '../src/actions.js';
 import { collect } from '../src/model.js';
 import { mapLimit } from '../src/util.js';
+import { createServer } from '../src/server.js';
 
 const fx = makeFixture();
 after(() => cleanup(fx));
@@ -198,5 +200,52 @@ describe('F5 bounded concurrency', () => {
 
   test('(−) mapLimit on an empty list resolves to an empty list', async () => {
     assert.deepEqual(await mapLimit([], 4, async () => 1), []);
+  });
+});
+
+// T37 (0.5, W1, ADR 0015): answering Claude's question and plan dialogs types keys, so it exists on the app tier only. The browser tier on :3335 has
+// neither the capture route (which carries the dialog) nor the answer route, and its agent list carries nothing of a dialog.
+describe('T37 the dialog is on the app tier only', () => {
+  const servers = [];
+  after(async () => { for (const server of servers) await new Promise((r) => { server.closeAllConnections(); server.close(r); }); });
+
+  /** A browser-tier server (no `app`) and a caller that sends the headers an app request would, so a 404 is the route missing and not the guard. */
+  async function browserTier() {
+    const server = createServer({ config: fx.config, exec: fakeExec(), token: 'tok', now: () => NOW, version: '0.0.0' });
+    await new Promise((res) => server.listen(0, '127.0.0.1', res));
+    servers.push(server);
+    const { port } = server.address();
+    return (method, p, body) => new Promise((resolve, reject) => {
+      const headers = { host: `127.0.0.1:${port}`, 'x-nika-app': 'irrelevant', 'x-nika-token': 'tok', ...(body === undefined ? {} : { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) }) };
+      const req = http.request({ host: '127.0.0.1', port, method, path: p, headers }, (res) => {
+        let data = '';
+        res.on('data', (c) => { data += c; });
+        res.on('end', () => resolve({ status: res.statusCode, data }));
+      });
+      req.on('error', reject);
+      req.end(body);
+    });
+  }
+
+  test('(−) POST /api/app/pane/:id/dialog and the capture that carries the dialog are 404 on the browser tier; no key can be sent through it', async () => {
+    const call = await browserTier();
+    const answer = JSON.stringify({ picks: [1], sig: '0123456789abcdef' });
+    assert.equal((await call('POST', '/api/app/pane/%256/dialog', answer)).status, 404);
+    assert.equal((await call('GET', '/api/app/pane/%256/capture')).status, 404);
+    assert.equal((await call('POST', '/api/app/pane/%256/keys', '{}')).status, 404);
+  });
+
+  test('(−) the browser tier agent list has no dialog, tab or plan data, and still answers', async () => {
+    const call = await browserTier();
+    const agents = await call('GET', '/api/agents?since=all');
+    assert.equal(agents.status, 200);
+    assert.doesNotMatch(agents.data, /"dialog"|"pairs"|"picks"|"checked"/);
+  });
+
+  test('(−) the browser tier modules do not import the dialog reader or the controller that answers it', () => {
+    const src = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'src');
+    for (const file of ['server.js', 'actions.js', 'model.js']) {
+      assert.doesNotMatch(fs.readFileSync(path.join(src, file), 'utf8'), /from '\.\/(dialog|session-control)\.js'/, file);
+    }
   });
 });

@@ -15,7 +15,8 @@ import { mapLimit } from './util.js';
 import { MODE_TARGETS, bypassWindow, modeFromRows, promptFromRows } from './mode.js';
 import { MODEL_CATALOG } from './models.js';
 import { matches as etagMatches } from './mirror.js';
-import { createSessionControl, promptSig, insertShown, editMode, readDraft, checkDraftBody, checkSuggestionBody } from './session-control.js';
+import { createSessionControl, promptSig, insertShown, editMode, readDraft, checkDraftBody, checkSuggestionBody, checkDialogBody } from './session-control.js';
+import { dialogCapture } from './dialog.js';
 import { tagPane, pickState, claudePane } from './orchestrate.js';
 import { createFit, checkFitBody, FIT_RATE } from './fit.js';
 import { createScroll, checkScrollBody } from './scroll.js';
@@ -514,11 +515,13 @@ export function createAppApi({ secret, ctx, deps }) {
     // the input box (design W5): null while the screen has no plain box; `edit` is the pane's memory, so it is part of the ETag
     const parsed = readDraft(r.body);
     const draft = parsed && { ...parsed, edit: editMode(r.body.rows, vim.get(id) === true, plain.get(id) === true) };
+    // the dialog on screen (design W1 3): read from the rows and the width only, so r.etag already covers it; null while a permission prompt parses
+    const dialog = screen.prompt ? null : dialogCapture(r.body.rows, r.body.cols);
     const etag = crypto.createHash('sha256').update(JSON.stringify([r.etag, screen.mode, screen.modeConfirmed, draft?.edit ?? null])).digest('hex').slice(0, 32);
     const headers = { ETag: `"${etag}"` };
     if (etagMatches(req.headers['if-none-match'], etag)) return { status: 304, body: null, headers };
     // a new object: the mirror's cached body is shared and stays as captured
-    return { status: 200, body: { ...r.body, ...screen, draft, etag }, headers };
+    return { status: 200, body: { ...r.body, ...screen, draft, dialog, etag }, headers };
   });
 
   route('GET', /^\/api\/app\/modes$/, 0, async () => {
@@ -650,6 +653,15 @@ export function createAppApi({ secret, ctx, deps }) {
     if (bad) return bad;
     const { id, failure } = await eligiblePane(params[0]);
     return failure ?? control.acceptSuggestion(id, body);
+  });
+
+  // Answer Claude's question or plan dialog, one step per request, or decline it (0.5, W1). CAP.keys: a body is small, but the cap is the same
+  // as the keys route's. checkDialogBody runs before the pane is looked up; nothing of the body (text, picks, sig) is logged here or in the controller.
+  route('POST', /^\/api\/app\/pane\/([^/]+)\/dialog$/, CAP.keys, async ({ params, body }) => {
+    const bad = checkDialogBody(body);
+    if (bad) return bad;
+    const { id, failure } = await eligiblePane(params[0]);
+    return failure ?? control.answerDialog(id, body);
   });
 
   route('POST', /^\/api\/app\/pane\/([^/]+)\/answer$/, CAP.small, async ({ params, body }) => {
