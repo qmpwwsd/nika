@@ -136,6 +136,22 @@ function showProblem(msg, kind = 'warn', ms = 0) {
 }
 const clearProblem = () => showProblem('');
 
+/**
+ * The notes row (#notes) holds four visible parts (the argument hint, the shell hint, the draft note, the problem line) and, screen-reader-only, the echo
+ * and the attachment help. It is a grid item of the composer, so even an empty row would cost one gap. While none of the four shows the row is `quiet`
+ * (session.css: out of the grid, 1px and clipped, still rendered), so it takes no height and no gap and the echo is still announced.
+ */
+function syncNotes() {
+  const quiet = $('arg-hint').hidden && $('shell-hint').hidden && $('draft-note').hidden && $('problem').textContent === '';
+  $('notes').classList.toggle('quiet', quiet);
+}
+
+/** Syncs the row now and after every change inside it (a part shown or hidden, the problem line filled or cleared): one place, no call at each toggle. */
+function watchNotes() {
+  new MutationObserver(syncNotes).observe($('notes'), { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['hidden'] });
+  syncNotes();
+}
+
 const notices = [];
 function showNotice(msg) {
   notices.push(msg);
@@ -2345,6 +2361,7 @@ function boot() {
   syncKbdHint();
   syncHistHint();
   syncPassKeys();
+  watchNotes();
   if (!appMode) {
     $('kbd-open').hidden = true;
     showEmpty('The session window is part of the nika app. This page was opened in a browser, which only shows the read-only dashboard.');

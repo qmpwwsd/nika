@@ -155,10 +155,12 @@ export function createAppApi({ secret, ctx, deps }) {
 
   // the registry's `tmuxPane` is agent-writable, and tmux can reuse a pane id after a restart: a pane qualifies, through
   // the registry or because nika started it, only while it really runs claude, so neither a forged entry nor a stale id
-  // can route typed text into a shell pane (a started `_run-agent` pane shows as `node`)
+  // can route typed text into a shell pane (a started `_run-agent` pane shows as `node`). A dead pane (tmux's remain-on-exit keeps
+  // it, with its tags and a command that still reads as claude) never qualifies (0.5): nothing receives keys there, and its
+  // screen is a stale picture; src/collect/tmux.js drops a row whose pane_dead is not exactly 0 or 1
   const isEligible = (e, id) => {
     const pane = e.panes.get(id);
-    return Boolean(pane) && CLAUDE_COMMAND.test(String(pane.command ?? '').trim()) && (e.live.has(id) || ctx.started.has(id));
+    return Boolean(pane) && pane.dead !== true && CLAUDE_COMMAND.test(String(pane.command ?? '').trim()) && (e.live.has(id) || ctx.started.has(id));
   };
 
   async function eligiblePane(raw) {

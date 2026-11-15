@@ -157,6 +157,16 @@ Fixes:
   it. A long message is typed in pieces, and nika looks again before each later piece; if something opens in between, it stops
   there and keeps your text in the message box. nika also never attaches `.env` files or key and certificate files
   (`*.key`, `*.pem`): paste, drop and the file chooser refuse them by name ("nika doesn't attach .env, key or certificate files.").
+- **A pane whose Claude has ended gets no keys and no capture.** With tmux's `remain-on-exit`, the pane of a session that ended stays on
+  screen, and tmux still names its command after Claude, so nika took it for a live session. The session window, the mode, End and the
+  other pane routes now refuse such a pane ("pane not found"), and the mode list leaves it out. A tmux listing row whose dead-pane
+  field is not exactly 0 or 1 is dropped instead of being read as running. (`docs/security.md`, residual risk j, is closed.)
+- **Start no longer opens a second orchestrator when tmux's pane list cannot be read.** Start used to treat every failed listing as "no
+  tmux server, no orchestrator". Now only tmux's "no server running" answer means that; any other failure ends Start with "tmux failed:
+  …" and nothing is started, the way Spawn already behaved.
+- **No empty gap under the message box.** The row under the message box (argument hint, Shell hint, sync note, problem line) kept a
+  gap of its own even when none of them showed. It now takes no height at all until one of them appears, and the screen-reader
+  announcements that live in it still work.
 - **The fit works when tmux shows pane titles.** With `pane-border-status` set to `top` or `bottom`, tmux takes one row of every
   pane for the border line, so nika's read-back saw a pane one row shorter than its window, took it for a change by someone else,
   and drew the text smaller instead of fitting. nika now accepts a pane of the window's height or one row less (the width and the

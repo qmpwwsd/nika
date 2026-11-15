@@ -424,7 +424,9 @@ state itself comes from the snapshot's `subagents` (below), read again on every 
 `id` `PANE_ID`, must appear in the current `tmux list-panes -a`, be either a live Claude session's pane
 (registry `tmux` field) or a pane nika started (`orchestrator/start`, `spawn`), **and** its `pane_current_command` must
 look like claude (`CLAUDE_COMMAND`: `claude`, `node`, a version string) at that moment, for a started pane too (tmux can
-reuse a pane id after a restart). Else 404. Cached 250 ms per pane,
+reuse a pane id after a restart), **and** the pane must not be dead (0.5: `#{pane_dead}` is `0`; with `remain-on-exit` tmux keeps a
+pane whose process ended and still names its command after the pane's argv, so it would otherwise pass). Else 404. A listing row
+whose `pane_dead` is neither `0` nor `1` is dropped, so that pane is not in the listing at all. Cached 250 ms per pane,
 one capture in flight per pane (others wait for it), `ETag` = hash of the mirror's rows hash **and** the `mode` and `modeConfirmed` the
 response shows (so a held mode that changed over unchanged rows is never hidden behind a 304); `If-None-Match` → 304.
 ```json
@@ -832,7 +834,7 @@ The body is exactly these three keys: `cols` an integer 40–400, `rows` an inte
 requests of a page load, until one is answered 200; it is the one thing that clears an "off until the window is opened again" mark,
 see `user-change` below). Everything else (the tmux window, its size, its layout, its zoom) comes from tmux's own listing, never from the request.
 Order of checks: body → `400 invalid` (message `cols must be an integer 40–400, rows 10–200, open a boolean`), before the pane
-check; ineligible pane (same rule as capture: in the listing, running claude, live or started by nika) → `404 not_found`; the rate
+check; ineligible pane (same rule as capture: in the listing, running claude, not dead, live or started by nika) → `404 not_found`; the rate
 limit → `429 busy` (`at most 4 fit requests per second per pane`: a sliding second, PUT and DELETE each have their own bucket per
 pane, nothing is executed on a refusal); then the controller (`src/fit.js`).
 
@@ -1520,7 +1522,7 @@ Start resumed a session, the body also carries `"resume": "<session id>"` and th
 that sentence when `resume` is a session id, else the plain one. The
 pane is tagged before the wait, so a second Start during it finds this orchestrator instead of opening another window; that second Start
 answers `200 created: false` with a pane that may still fail the check a moment later. A tmux error or timeout on the check counts as gone (as for
-spawn). A pane that is dead (remain-on-exit) is never taken for the orchestrator. The page shows the
+spawn). A pane that is dead (remain-on-exit) is never taken for the orchestrator, and neither is a pane whose `pane_dead` is not exactly `0`. **A listing that fails (0.5).** Start reads the tmux panes of every session before it opens anything (§8, find orchestrator pane). Only tmux's "no server running" answer (`NO_TMUX_SERVER` in `src/tmuxerr.js`, as spawn reads it) means there is no orchestrator; any other failure of that listing (a permission error, a protocol mismatch, a server that exited) is `502 tmux_failed` (`503 tmux_unavailable` when the tmux program is missing) with no window, no session, no keys and nothing saved, because an orchestrator that runs could not be seen and a second one must not open on top of it. The page shows the
 sentence as an error toast and stays on the project page; it never opens the session window after an error. The page words
 `tmux_unavailable` as "tmux not found. Install tmux 3.2 or newer, then try again.", `tmux_failed` as "tmux failed: <reason>" and `claude_exited` as the message
 above, by code, in the Start and Resume toast and in the spawn sheet's alert; any other code keeps the server's message.
@@ -1622,7 +1624,7 @@ agents whose registry status is neither busy, shell nor idle (e.g. waiting on a 
 `keyFor(repo root)`, never a path. Pane eligibility (§3 capture/keys): a registry pane qualifies only while its
 `pane_current_command` is claude-like (`CLAUDE_COMMAND` in `src/ids.js`), because `tmuxPane` is agent-writable; a pane
 nika started qualifies only while its command is claude-like too, because tmux can reuse a pane id after a restart
-(a spawned agent's pane runs `_run-agent` as `node`). This is a safety net for the user, not a boundary against agents: a same-user agent able to forge the registry can already
+(a spawned agent's pane runs `_run-agent` as `node`); and since 0.5 neither kind qualifies while its pane is dead (`#{pane_dead}`). This is a safety net for the user, not a boundary against agents: a same-user agent able to forge the registry can already
 run `tmux send-keys` itself; `node` stays accepted because npm-installed Claude Code runs as `node`. The secret never
 appears in argv, env, logs, files or HTML; the shell injects it into the page with an `initialization_script` guarded
 by `location.origin`, and `public/api.js` copies it to a module constant and deletes the global (ADR 0002).
@@ -1782,7 +1784,7 @@ multi-argument shell-commands (tmux execs them directly, no `sh -c`, T6).
 
 | Purpose | argv |
 |---|---|
-| list panes | `tmux -u list-panes -a -F #{pane_id}\t#{session_name}\t#{window_index}\t#{pane_title}\t#{pane_current_command}\t#{@nika-role}\t#{@nika-agent}\t#{@nika-depth}\t#{@nika-parent}` (0.1; the tags 0.2 and 0.4; each tag is read strictly, a value that does not parse is absent, and the tags of a pane with no nika role are ignored) |
+| list panes | `tmux -u list-panes -a -F #{pane_id}\t#{session_name}\t#{window_index}\t#{pane_title}\t#{pane_current_command}\t#{@nika-role}\t#{@nika-agent}\t#{@nika-depth}\t#{@nika-parent}\t#{pane_dead}` (0.1; the tags 0.2 and 0.4; each tag is read strictly, a value that does not parse is absent, and the tags of a pane with no nika role are ignored; `pane_dead` last, 0.5: `0` running, `1` dead and kept by `remain-on-exit` (the pane stays in the listing, marked dead, and the eligibility check refuses it), anything else drops the row) |
 | session exists | `tmux -u has-session -t =<session>` |
 | create session + orchestrator | `tmux -u new-session -d -s <session> -n orchestrator -c <projectDir> -x 200 -y 50 -P -F #{pane_id} [-e CLAUDE_CODE_AUTO_COMPACT_WINDOW=<W> [-e CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=<PCT>]] -- <claudeBin> <orchestrator flags>` |
 | remove the pair from the session environment (0.4) | `tmux -u set-environment -t =<session> -u CLAUDE_CODE_AUTO_COMPACT_WINDOW`, then the same for `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`: only after a `new-session` that carried `-e`, only for a name it sent; best effort (a failure is ignored) |
@@ -1793,7 +1795,7 @@ multi-argument shell-commands (tmux execs them directly, no `sh -c`, T6).
 | adopt a live session as orchestrator (0.4) | `tmux -u set-option -p -t %n @nika-role orchestrator`, then `@nika-agent <PROJECT_KEY>/orchestrator`, then `@nika-depth 1` (`PUT …/orchestrator`; the depth is a constant 1, 2 or 3, never request data) |
 | resume the orchestrator (0.4) | the orchestrator argv above (the same `-e` pairs) with `--resume <UUID>` instead of `--session-id <UUID>`; the UUID is the stored pick |
 | tags of a spawn | `tmux -u list-panes -a -F #{pane_id}\t#{pane_dead}\t#{@nika-role}\t#{@nika-agent}\t#{@nika-depth}\t#{@nika-parent}\t#{session_name}\t#{window_name}` (one fresh listing per spawn; the names are last because they are free text; a pane with `pane_dead` `1`, one that remain-on-exit keeps after claude exited, is skipped, so it is never live, never counts toward a cap or the duplicate-name check and is never a parent: a dead parent reads like a gone one) → (1) the requested parent's role and depth (`POST /spawn`, "Nesting"), and (2) the live set: the panes with `@nika-role` = `agent` or `sub-orchestrator` whose `@nika-agent` is `<key>/<name>` for the project's key, for the duplicate-name check and the two caps. A tag is parsed strictly (exactly one `/`, `PROJECT_KEY` before it, `AGENT_NAME` after it; a depth is exactly `1`, `2` or `3`; a parent is a `PANE_ID`); anything else is agent-writable noise and is ignored, never trusted |
-| find orchestrator pane | `tmux -u list-panes -a -F #{pane_id}\t#{pane_current_command}\t#{pane_dead}\t#{@nika-role}\t#{@nika-agent}\t#{session_name}\t#{window_name}` (`-a` = every session, 0.4; a failing listing, e.g. no server, means none; a pane with `pane_dead` `1` is skipped: remain-on-exit keeps it with its tags and a claude-like command) → the pane with `@nika-role` = `orchestrator` whose command is claude (`claude`, `node` or a version string) and which is the project's main one: tagged `<key>/orchestrator` in any session, or a 0.3 pane with no `@nika-agent` tag in the project's session, window named exactly `orchestrator`. One in the window named `orchestrator` of the project's session wins, else a tagged pane in any other window or session; agent and sub-orchestrator panes, and a tag of another project, never match |
+| find orchestrator pane | `tmux -u list-panes -a -F #{pane_id}\t#{pane_current_command}\t#{pane_dead}\t#{@nika-role}\t#{@nika-agent}\t#{session_name}\t#{window_name}` (`-a` = every session, 0.4; only tmux's "no server running" answer (`NO_TMUX_SERVER`) means none, any other listing failure is `502 tmux_failed` and nothing is started (0.5); a pane whose `pane_dead` is not exactly `0` is skipped: `1` is remain-on-exit keeping a dead pane with its tags and a claude-like command, and any other value is unreadable) → the pane with `@nika-role` = `orchestrator` whose command is claude (`claude`, `node` or a version string) and which is the project's main one: tagged `<key>/orchestrator` in any session, or a 0.3 pane with no `@nika-agent` tag in the project's session, window named exactly `orchestrator`. One in the window named `orchestrator` of the project's session wins, else a tagged pane in any other window or session; agent and sub-orchestrator panes, and a tag of another project, never match |
 | spawn beside | `tmux -u split-window -h -t =<session>: -c <projectDir> -P -F #{pane_id} -- <nikaBin…> _run-agent <key> <name>` |
 | spawn under last | `tmux -u split-window -v -t <lastPane> -c <projectDir> -P -F #{pane_id} -- <nikaBin…> _run-agent <key> <name>` |
 | pane title | `tmux -u select-pane -t %n -T [%n] <name>` |

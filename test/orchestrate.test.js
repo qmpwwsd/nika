@@ -488,6 +488,76 @@ describe('startOrchestrator: an orchestrator adopted in another tmux session (th
   });
 });
 
+describe('startOrchestrator: a listing nika cannot read, and a pane_dead it cannot parse (0.5, W11)', () => {
+  const sessionWith = (command, extra = {}) => fakeTmux({ panes: [{ id: '%3', session: 'My-App', window: 1, windowName: 'orchestrator', command, role: 'orchestrator', ...extra }] });
+
+  // 0.5 (W11): Start fails closed like spawn. Only "no server running" means "no orchestrator"; a listing that failed for any other reason
+  // proves nothing about who runs, so Start must not open a second orchestrator on top of one it could not see.
+  const brokenListing = (stderr, panes = []) => {
+    const inner = fakeTmux({ panes });
+    const exec = async (cmd, args) => {
+      if (args[1] === 'list-panes' && args.includes('-a')) {
+        exec.calls.push([cmd, ...args]);
+        throw Object.assign(new Error(stderr), { code: 1, stderr: `${stderr}\n` });
+      }
+      return inner(cmd, args);
+    };
+    exec.calls = inner.calls;
+    exec.of = (sub) => inner.calls.filter((c) => c[2] === sub).map((c) => c.slice(2));
+    exec.panes = inner.panes;
+    return exec;
+  };
+  const MADE = ['new-session', 'new-window', 'split-window', 'send-keys', 'set-option'];
+  const RUNNING = [{ id: '%3', session: 'My-App', window: 1, windowName: 'orchestrator', command: 'claude', role: 'orchestrator' }];
+
+  test('(−) a listing that fails for any reason but "no server" is 502 tmux_failed: no window, no session, no keys, nothing saved', async () => {
+    for (const stderr of ['list-panes failed', 'protocol version mismatch (client 8, server 7)', 'error connecting to /tmp/tmux-501/default (Permission denied)', 'server exited unexpectedly', 'lost server', 'unknown option -- F']) {
+      for (const panes of [RUNNING, []]) { // an orchestrator the listing could not show, and a project with no pane at all
+        const w = await world();
+        const exec = brokenListing(stderr, panes);
+        const ctx = w.ctx(exec);
+        const r = await startOrchestrator(w.project.key, ctx);
+        assert.equal(r.status, 502, `${stderr} / ${panes.length}`);
+        assert.equal(r.body.error, 'tmux_failed', stderr);
+        assert.match(r.body.message, /^tmux failed: /);
+        for (const sub of MADE) assert.deepEqual(exec.of(sub), [], `${stderr}: ${sub}`);
+        assert.equal(ctx.started.size, 0);
+        assert.equal(await getOrchestrator(w.project.key, w.env), null, 'no pick saved');
+      }
+    }
+  });
+
+  test('(+) "no server running" and the two "error connecting" forms of it still mean no orchestrator: a new session starts, as today', async () => {
+    for (const stderr of ['no server running on /tmp/tmux-501/default', 'error connecting to /tmp/tmux-501/default (No such file or directory)', 'error connecting to /tmp/tmux-501/default (Connection refused)']) {
+      const w = await world();
+      const exec = brokenListing(stderr);
+      const r = await startOrchestrator(w.project.key, w.ctx(exec));
+      assert.equal(r.status, 200, `${stderr}: ${JSON.stringify(r.body)}`);
+      assert.equal(r.body.created, true, stderr);
+      assert.equal(exec.of('new-session').length, 1, stderr);
+    }
+  });
+
+  test('(−) a pane_dead that is not exactly 0 or 1 makes the row unusable, like a dead pane: it is not the orchestrator (Start opens a new window)', async () => {
+    for (const dead of ['', '2', 'x', ' 0', '01']) {
+      const w = await world();
+      const exec = sessionWith('claude', { dead, agent: `${w.project.key}/orchestrator` });
+      const r = await startOrchestrator(w.project.key, w.ctx(exec));
+      assert.equal(r.status, 200, JSON.stringify(dead));
+      assert.equal(r.body.created, true, JSON.stringify(dead));
+      assert.equal(exec.of('new-window').length, 1, JSON.stringify(dead));
+    }
+  });
+
+  test('(+) pane_dead 0 is a running orchestrator: Start answers its pane and creates nothing', async () => {
+    const w = await world();
+    const exec = sessionWith('claude', { dead: '0' });
+    const r = await startOrchestrator(w.project.key, w.ctx(exec));
+    assert.deepEqual(r, { status: 200, body: { pane: '%3', session: 'My-App', sessionId: null, created: false } });
+    assert.equal(exec.of('new-window').length + exec.of('new-session').length, 0);
+  });
+});
+
 describe('launchArgv: the one place that builds the orchestrator\'s claude arguments', () => {
   const project = { key: '0123456789abcdef', name: 'My App' };
   const cfg = (over = {}) => ({ models: { orchestrator: 'claude-fable-5-1' }, permissionMode: 'default', panePlacement: 'beside', limits: { maxAgents: 3 }, remoteControl: { enabled: false, prefix: '' }, ...over });

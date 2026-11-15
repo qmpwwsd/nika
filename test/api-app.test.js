@@ -5439,3 +5439,92 @@ describe('attachments: the log is injected (0.5, W2 fix round 1, M7)', () => {
     assert.deepEqual(lines, ['nika: attachments: ERR']);
   });
 });
+
+// --- a dead pane is not eligible (0.5, W11; docs/security.md residual j) ------------------------------------------------------
+// tmux's remain-on-exit keeps a pane whose process ended, with its tags, and names its command after the pane's argv, so it still "looks
+// like claude". #{pane_dead} is the only thing that tells it apart: the pane list carries it (src/collect/tmux.js) and the check reads it.
+
+describe('a dead pane (remain-on-exit) gets no keys and no capture', () => {
+  // every route that goes through the eligibility check, each with a body that passes its own validation, so a 404 can only be the pane check
+  const GATED = [
+    ['GET', 'capture'], ['POST', 'keys', { text: 'hi' }], ['POST', 'mode', { target: 'plan' }], ['PUT', 'draft', { text: 'hello world', base: DSIG }],
+    ['POST', 'submit', { base: DSIG }], ['PUT', 'fit', FIT_BODY], ['POST', 'scroll', SCROLL_UP3], ['POST', 'attachments', UPLOAD],
+    ['POST', 'attachments/pick', { room: 1 }], ['POST', 'attach-send', { ids: [ATT], base: BASE16 }], ['POST', 'suggestion', { text: 'run the tests' }],
+    ['POST', 'dialog', { picks: [2], sig: DSIG }], ['POST', 'answer', { n: 1, sig: DSIG }], ['POST', 'command', { text: '/compact' }],
+    ['POST', 'end', {}], ['POST', 'stop', {}],
+  ];
+  const request = (a, id, [method, suffix, json]) => pane(a, id, suffix, { method, ...(json === undefined ? {} : { json }) });
+  const setPane = (a, id, entry) => {
+    a.deps.state.panes.set(id, entry);
+    a.clock.t += 2000; // past the eligibility cache
+  };
+
+  test('(−) a live Claude session whose pane is dead is 404 not_found on every eligibility-gated route, and nothing reaches the mirror, the keys, the controller, the fit or the attachments', async () => {
+    const fit = fakeFit();
+    const { a, mirror, control } = await bootScreens({ over: { createFit: fit.factory } });
+    setPane(a, '%6', { command: 'claude', dead: true });
+    for (const route of GATED) {
+      const r = await request(a, '%6', route);
+      assert.equal(r.status, 404, `${route[0]} ${route[1]}`);
+      assert.equal(r.body.error, 'not_found', `${route[0]} ${route[1]}`);
+    }
+    assert.deepEqual(mirror.seen, [], 'no capture');
+    assert.deepEqual(control.calls, [], 'no controller action');
+    assert.deepEqual(fit.calls, []);
+    assert.equal(a.deps.calls.some((c) => ['keys', 'capture'].includes(c[0])), false);
+  });
+
+  test('(−) a pane nika started that is dead is just as ineligible (the started record does not qualify it)', async () => {
+    const { a, mirror, control } = await bootScreens();
+    a.ctx.started.set('%8', { key: w.project.key, name: 'x', sessionId: null, role: 'agent' });
+    setPane(a, '%8', { command: 'node', dead: true });
+    for (const route of GATED.slice(0, 4)) assert.equal((await request(a, '%8', route)).status, 404, `${route[0]} ${route[1]}`);
+    assert.deepEqual(mirror.seen, []);
+    assert.deepEqual(control.calls, []);
+    assert.equal(a.ctx.started.has('%8'), true, 'the pane still exists, so its record stays');
+  });
+
+  test('(−) GET /modes leaves a dead pane out and does not capture it', async () => {
+    const { a, screens, mirror } = await bootScreens();
+    screens['%6'] = rowsOf(['t', FOOTER.plan]);
+    setPane(a, '%6', { command: 'claude', dead: true });
+    const r = await a.call('GET', '/api/app/modes');
+    assert.deepEqual(r.body, { modes: {} });
+    assert.deepEqual(mirror.seen, []);
+  });
+
+  test('(+) a live pane is unchanged: pane_dead false, or no field at all, is eligible for capture, keys, mode and /modes', async () => {
+    for (const entry of [{ command: 'claude', dead: false }, { command: 'claude' }]) {
+      const { a, screens, mirror } = await bootScreens();
+      screens['%6'] = rowsOf(['t', FOOTER.plan]);
+      setPane(a, '%6', entry);
+      assert.equal((await request(a, '%6', ['GET', 'capture'])).status, 200, JSON.stringify(entry));
+      assert.equal((await request(a, '%6', ['POST', 'keys', { text: 'hi' }])).status, 200, JSON.stringify(entry));
+      assert.equal((await request(a, '%6', ['POST', 'mode', { target: 'plan' }])).status, 200, JSON.stringify(entry));
+      assert.deepEqual(Object.keys((await a.call('GET', '/api/app/modes')).body.modes), ['%6'], JSON.stringify(entry));
+      assert.ok(mirror.seen.includes('%6'));
+    }
+  });
+
+  test('(+) a pane that was dead and is listed alive again (tmux reused the id) is eligible again at the next listing', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = rowsOf(['t', FOOTER.plan]);
+    setPane(a, '%6', { command: 'claude', dead: true });
+    assert.equal((await request(a, '%6', ['GET', 'capture'])).status, 404);
+    setPane(a, '%6', { command: 'claude', dead: false });
+    assert.equal((await request(a, '%6', ['GET', 'capture'])).status, 200);
+  });
+
+  test('(−) the memory kept for a pane (held mode, vim, plain) is dropped when the pane dies, so a reused id starts unknown', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = rowsOf(['t', FOOTER.plan]);
+    assert.equal((await request(a, '%6', ['GET', 'capture'])).body.mode, 'plan');
+    setPane(a, '%6', { command: 'claude', dead: true });
+    assert.equal((await request(a, '%6', ['GET', 'capture'])).status, 404);
+    screens['%6'] = rowsOf(PROMPT); // a prompt covers the footer: only a remembered mode could still say "plan"
+    setPane(a, '%6', { command: 'claude', dead: false });
+    const again = await request(a, '%6', ['GET', 'capture']);
+    assert.equal(again.status, 200);
+    assert.equal(again.body.mode, 'unknown');
+  });
+});

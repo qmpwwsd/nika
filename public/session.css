@@ -16,7 +16,9 @@ a { color: var(--accent); }
 code, kbd, pre, .mono { font-family: var(--mono); }
 kbd { font-size: var(--fs-cap); padding: 0 4px; border: 1px solid var(--line-strong); border-radius: var(--r-sm); background: var(--surface); }
 :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
-.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+/* .notes.quiet (W11): the notes row while none of its four visible parts shows. Absolute, so it takes no grid cell and no composer gap; 1px and clipped,
+   but still rendered (never display:none), so the echo (a live region) and the attachment help in it stay in the accessibility tree. session.js toggles it. */
+.notes.quiet, .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 .sprite { position: absolute; width: 0; height: 0; overflow: hidden; }
 .skip { position: absolute; left: 8px; top: -80px; z-index: 50; padding: 8px 12px; background: var(--surface); color: var(--accent); border-radius: var(--r-md); }
 .skip:focus { top: 8px; }
@@ -200,7 +202,7 @@ body.m-bypass .mode-frame { background: repeating-linear-gradient(135deg, var(--
 .paste-chip button { min-height: 20px; border: 0; background: none; color: inherit; text-decoration: underline; }
 .mode-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; min-width: 0; }   /* the mode switcher under the message box (spec 9.3) */
 .mode-row .msw-why { flex: 1 1 14em; min-width: 0; }
-.notes { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: var(--fs-small); color: var(--text-muted); }   /* argument hint, shell hint, problem line; the echo in here is screen-reader-only */
+.notes { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: var(--fs-small); color: var(--text-muted); }   /* argument hint, shell hint, draft note, problem line; the echo in here is screen-reader-only; .notes.quiet (top of this file) collapses the row */
 .problem { color: var(--idle); font-weight: 600; overflow-wrap: anywhere; }
 .problem.error { color: var(--danger); }
 .problem:empty { display: none; }

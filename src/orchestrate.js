@@ -5,6 +5,8 @@ import crypto from 'node:crypto';
 import { loadConfig, setOrchestrator, effectiveModels, effectiveAgents } from './store.js';
 import { compactLaunch, WINDOW_ENV, PCT_ENV } from './compact.js';
 import { clean } from './text.js';
+import { paneDead } from './collect/tmux.js';
+import { NO_TMUX_SERVER } from './tmuxerr.js';
 import { PROJECT_KEY, UUID, PANE_ID, TMUX_SESSION, RC_PREFIX, RC_NAME, CLAUDE_COMMAND } from './ids.js';
 
 /** `{ status, body }` with the common error body of contract §2. */
@@ -172,20 +174,24 @@ const PANE_LIST = '#{pane_id}\t#{pane_current_command}\t#{pane_dead}\t#{@nika-ro
  * sub-orchestrator or an agent never does). It is either tagged `<key>/orchestrator` for this project (the 0.4 tag, set on start, resume
  * and adopt) in any session, or it is a 0.3 pane with no `@nika-agent` tag in the project's own `session`, window `orchestrator`. That one,
  * or a tagged pane in the `orchestrator` window of `session`, wins over an adopted one. A tag of another project or another name never matches.
+ * Fails closed like spawn (0.5): only tmux's "no server running" answer means there is none; any other listing failure (tmux missing
+ * included) is thrown for the caller's tmuxFail (502 tmux_failed, 503 when tmux is not installed), so a listing nika could not read never
+ * lets Start open a second orchestrator.
  */
 async function findOrchestratorPane(ctx, session, key) {
   let stdout;
   try {
     ({ stdout } = await tmux(ctx, 'list-panes', '-a', '-F', PANE_LIST));
   } catch (err) {
-    if (err?.code === 'ENOENT') throw err;
-    return null; // no tmux server running: no orchestrator
+    if (NO_TMUX_SERVER.test(String(err?.stderr || err?.message || ''))) return null; // no tmux server running: no orchestrator
+    throw err;
   }
   let adopted = null;
   for (const line of String(stdout).split('\n')) {
     const [id, command = '', dead = '', role = '', tag = '', where = '', ...window] = line.split('\t');
-    // a dead pane (remain-on-exit) still names its command claude (tmux falls back to the pane's argv): it is not an orchestrator
-    if (!PANE_ID.test(id ?? '') || dead.trim() === '1' || role.trim() !== 'orchestrator' || !CLAUDE_COMMAND.test(command.trim())) continue;
+    // a dead pane (remain-on-exit) still names its command claude (tmux falls back to the pane's argv): it is not an orchestrator; and a
+    // pane_dead that is not exactly 0 or 1 (paneDead, the listing's own rule) is unusable too
+    if (!PANE_ID.test(id ?? '') || paneDead(dead) !== false || role.trim() !== 'orchestrator' || !CLAUDE_COMMAND.test(command.trim())) continue;
     const inOrchestratorWindow = where === session && window.join('\t').trim() === 'orchestrator';
     if (tag !== `${key}/orchestrator` && !(tag === '' && inOrchestratorWindow)) continue;
     if (inOrchestratorWindow) return { id, session: where };

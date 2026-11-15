@@ -10,7 +10,7 @@ import { readRegistry, processTable, isAlive, parseStarttime, procStarts } from 
 import { indexTranscripts, readTranscript, createTranscriptCache } from '../src/collect/transcripts.js';
 import { readSubagents, subagentDir, subagentTranscripts } from '../src/collect/subagents.js';
 import { SUBAGENT_ID, TOOL_USE_ID } from '../src/ids.js';
-import { listPanes, parsePaneLines } from '../src/collect/tmux.js';
+import { listPanes, parsePaneLines, paneDead } from '../src/collect/tmux.js';
 import { discoverReportDirs, indexReports } from '../src/collect/reports.js';
 import { resolveProject } from '../src/collect/projects.js';
 import { defaultConfig } from '../src/config.js';
@@ -646,12 +646,12 @@ describe('tmux', () => {
     assert.equal(panes.get('%4').command, 'zsh');
   });
 
-  test('(+) listPanes asks tmux for the nika tags after the title and command: role, agent, depth, parent', async () => {
+  test('(+) listPanes asks tmux for the nika tags after the title and command (role, agent, depth, parent), and for pane_dead last', async () => {
     const exec = fakeExec();
     await listPanes(exec);
     const format = exec.calls[0].at(-1);
-    assert.ok(format.endsWith('\t#{@nika-role}\t#{@nika-agent}\t#{@nika-depth}\t#{@nika-parent}'));
-    assert.equal(format.split('\t').length, 9);
+    assert.ok(format.endsWith('\t#{@nika-role}\t#{@nika-agent}\t#{@nika-depth}\t#{@nika-parent}\t#{pane_dead}'));
+    assert.equal(format.split('\t').length, 10);
   });
 
   const KEY = '0123456789abcdef';
@@ -679,6 +679,37 @@ describe('tmux', () => {
     assert.deepEqual([p.role, p.agent, p.depth, p.parent], [null, null, null, null]);
     const q = parsePaneLines(TAGS('admin', `${KEY}/a`, '2', '%3')).get('%5');
     assert.deepEqual([q.role, q.agent, q.depth, q.parent], [null, null, null, null]);
+  });
+
+  // 0.5 (W11): a pane whose process ended stays listed under tmux's remain-on-exit, keeps its tags, and tmux still names its command after the
+  // pane's argv (so it "looks like claude"). #{pane_dead} is the only thing that tells it apart; the eligibility check of the app tier reads it.
+  const DEAD = (value) => `%5\twork\t1\t[%5] x\tclaude\torchestrator\t${KEY}/orchestrator\t1\t\t${value}\n`;
+
+  test('(+) pane_dead: 0 is a running pane, 1 a dead one; a dead pane stays in the map with its command, name and tags', () => {
+    const live = parsePaneLines(DEAD('0')).get('%5');
+    assert.equal(live.dead, false);
+    const dead = parsePaneLines(DEAD('1')).get('%5');
+    assert.equal(dead.dead, true);
+    assert.deepEqual([dead.command, dead.name, dead.role, dead.agent, dead.depth], ['claude', 'x', 'orchestrator', `${KEY}/orchestrator`, 1], 'spawn and the dashboard still see the pane');
+  });
+
+  test('(+) a line that stops before the pane_dead field (an older line shape) still parses, as running', () => {
+    const p = parsePaneLines('%5\twork\t1\t[%5] x\tclaude\tagent\n%6\twork\t2\tt\tzsh\n').get('%5');
+    assert.equal(p.dead, false);
+    assert.equal(parsePaneLines('%6\twork\t2\tt\tzsh\n').get('%6').dead, false);
+  });
+
+  test('(−) a pane_dead that is not exactly 0 or 1 drops the row (never read as running); its neighbours stay', () => {
+    for (const value of ['', '2', '-1', 'x', '01', '0 ', ' 1', '1\r', 'true', 'dead', '\uff11', '#{pane_dead}']) {
+      const panes = parsePaneLines(`${DEAD(value)}%6\twork\t2\tt\tclaude\tagent\t\t\t\t0\n`);
+      assert.equal(panes.has('%5'), false, JSON.stringify(value));
+      assert.equal(panes.get('%6').dead, false, `${JSON.stringify(value)}: the next row`);
+    }
+  });
+
+  test('(+) paneDead is the one parse rule (Start\'s orchestrator listing uses it too): "0" false, "1" true, anything else null', () => {
+    assert.deepEqual(['0', '1'].map(paneDead), [false, true]);
+    for (const value of ['', '2', ' 0', '1 ', 'x', undefined, null, 0, 1, true]) assert.equal(paneDead(value), null, String(JSON.stringify(value)));
   });
 
   test('(+) listPanes calls tmux -u list-panes -a with a fixed format', async () => {

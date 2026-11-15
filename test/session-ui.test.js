@@ -237,7 +237,7 @@ describe('permission mode: tag, frame, edge and switcher (spec 2.8, 9.1-9.3)', (
     assert.deepEqual(order, [...order].sort((a, b) => a - b));
     assert.match(tagOf('mode-row'), /\bclass="mode-row"/);
     assert.match(tagOf('mode-row'), /\bhidden\b/);
-    const row = new RegExp('<div class="mode-row" id="mode-row"[^>]*>([\\s\\S]*?)</div>\\s*<div class="notes" id="notes"').exec(HTML)?.[1] ?? '';
+    const row = new RegExp('<div class="mode-row" id="mode-row"[^>]*>([\\s\\S]*?)</div>\\s*<div class="notes quiet" id="notes"').exec(HTML)?.[1] ?? '';
     assert.ok(row.includes('id="mode-switch"') && row.includes('id="msw-why"'), 'both inside #mode-row');
     assert.doesNotMatch(row, /mode-lbl|>\s*Mode\s*</, 'no visible "Mode" word (owner, 2026-11-13): the toolbar names itself');
   });
@@ -696,7 +696,7 @@ describe('command palette wiring (spec 9.7, Task 11)', () => {
 
   test('(−) F7: the markup has no tip and no hint line; the notes row holds a hidden argument hint, the shell hint, the problem line and the echo', () => {
     assert.doesNotMatch(HTML, /class="tip"|class="tip more"|hintline/);
-    assert.match(HTML, /<div class="notes" id="notes">/);
+    assert.match(HTML, /<div class="notes quiet" id="notes">/);
     assert.match(tag('arg-hint'), /\bhidden\b/);
     assert.ok(HTML.indexOf('id="notes"') < HTML.indexOf('id="arg-hint"'));
     const order = ['id="arg-hint"', 'id="shell-hint"', 'id="problem"', 'id="echo"'].map((n) => HTML.indexOf(n));
@@ -2337,6 +2337,94 @@ describe('0.3.3: the hint line, the mode row and the message box name (markup, s
     for (const id of ['problem', 'shell-hint', 'arg-hint']) assert.match(HTML, new RegExp(`id="${id}"`), id);
     assert.match(HTML, /id="problem" role="alert"/);
     assert.match(css, /\.notes \{[^}]*display:\s*flex[^}]*flex-wrap:\s*wrap/);
+  });
+
+  // -- 0.5 (W11): the notes row takes no height and no gap while none of its four visible parts shows. #notes is a grid item of the composer (gap 6px),
+  // so even an empty row would cost one gap. While it is quiet it is the page's screen-reader-only box: position:absolute leaves the grid (no cell,
+  // no gap), the clip leaves no pixels, and the echo (a polite live region) and the attachment help stay in the accessibility tree, which display:none
+  // would not do. session.js toggles the class from what the four parts show (no :has(), no inline style: the page's CSS rules).
+  const notesRig = () => {
+    const notes = { quiet: null, toggles: 0, classList: { toggle(name, on) { assert.equal(name, 'quiet'); notes.toggles += 1; notes.quiet = on; return on; } } };
+    const nodes = { 'arg-hint': { hidden: true }, 'shell-hint': { hidden: true }, 'draft-note': { hidden: true }, problem: { textContent: '' }, echo: { textContent: '' }, notes };
+    return { nodes, notes, $: (id) => { assert.ok(Object.hasOwn(nodes, id), id); return nodes[id]; } };
+  };
+
+  test('(+) W11: the notes row starts quiet in the markup, so the first paint has no gap before the script runs', () => {
+    assert.match(HTML, /<div class="notes quiet" id="notes">/);
+    assert.doesNotMatch(HTML, /id="notes"[^>]*\bhidden\b/, 'the row is never display:none or hidden: the echo lives in it');
+  });
+
+  test('(+) W11: .notes.quiet is a screen-reader-only box (absolute, 1px, clipped), never display:none or visibility:hidden; .notes itself still wraps its parts in a flex row', () => {
+    const rule = /([^{}]*\.notes\.quiet[^{}]*)\{([^}]*)\}/.exec(css);
+    assert.ok(rule, 'a rule for .notes.quiet');
+    for (const re of [/position:\s*absolute/, /width:\s*1px/, /height:\s*1px/, /overflow:\s*hidden/, /clip:\s*rect\(0 0 0 0\)/]) assert.match(rule[2], re, String(re));
+    assert.doesNotMatch(rule[2], /display:\s*none|visibility:\s*hidden|clip-path|opacity/, 'a node that is not rendered is not announced');
+    assert.match(css, /\.notes \{[^}]*display:\s*flex[^}]*flex-wrap:\s*wrap/);
+    assert.doesNotMatch(css, /\.notes\[hidden\]|\.notes:empty/, 'no second way of hiding the row');
+  });
+
+  test('(+) W11: syncNotes keeps the row quiet while the argument hint, the shell hint, the draft note and the problem line are all absent, whatever the echo says', () => {
+    const rig = notesRig();
+    const { syncNotes } = mk(['function syncNotes()'], { $: rig.$ });
+    syncNotes();
+    assert.equal(rig.notes.quiet, true);
+    rig.nodes.echo.textContent = 'Sent Enter to %5'; // the echo is read by screen readers while the row is collapsed; it must not open the row
+    syncNotes();
+    assert.equal(rig.notes.quiet, true);
+  });
+
+  test('(+) W11: each of the four parts shows the row again, and the row goes quiet once the part is gone', () => {
+    for (const [id, show, hide] of [
+      ['arg-hint', (n) => { n.hidden = false; }, (n) => { n.hidden = true; }],
+      ['shell-hint', (n) => { n.hidden = false; }, (n) => { n.hidden = true; }],
+      ['draft-note', (n) => { n.hidden = false; }, (n) => { n.hidden = true; }],
+      ['problem', (n) => { n.textContent = 'Claude is busy'; }, (n) => { n.textContent = ''; }],
+    ]) {
+      const rig = notesRig();
+      const { syncNotes } = mk(['function syncNotes()'], { $: rig.$ });
+      show(rig.nodes[id]);
+      syncNotes();
+      assert.equal(rig.notes.quiet, false, `${id} shows`);
+      hide(rig.nodes[id]);
+      syncNotes();
+      assert.equal(rig.notes.quiet, true, `${id} gone`);
+    }
+  });
+
+  test('(−) W11: one part still showing keeps the row open when the others go away', () => {
+    const rig = notesRig();
+    const { syncNotes } = mk(['function syncNotes()'], { $: rig.$ });
+    rig.nodes['shell-hint'].hidden = false;
+    rig.nodes.problem.textContent = 'x';
+    syncNotes();
+    rig.nodes.problem.textContent = '';
+    syncNotes();
+    assert.equal(rig.notes.quiet, false, 'the shell hint is still up');
+  });
+
+  test('(+) W11: watchNotes watches the row and its parts (children, text, the hidden attribute: not class, so its own toggle cannot loop), syncs once at once and again on every change', () => {
+    const rig = notesRig();
+    const made = [];
+    class FakeObserver { constructor(cb) { this.cb = cb; made.push(this); } observe(target, opts) { this.target = target; this.opts = opts; } }
+    const { watchNotes } = mk(['function syncNotes()', 'function watchNotes()'], { $: rig.$, MutationObserver: FakeObserver });
+    watchNotes();
+    assert.equal(made.length, 1);
+    assert.equal(made[0].target, rig.notes);
+    assert.deepEqual(JSON.parse(JSON.stringify(made[0].opts)), { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['hidden'] });
+    assert.equal(rig.notes.quiet, true, 'synced when wired');
+    rig.nodes['arg-hint'].hidden = false;
+    made[0].cb([]);
+    assert.equal(rig.notes.quiet, false);
+    rig.nodes['arg-hint'].hidden = true;
+    made[0].cb([]);
+    assert.equal(rig.notes.quiet, true);
+  });
+
+  test('(+) W11: boot wires the watcher, and the problem line keeps its alert role and the echo its live region inside the quiet row', () => {
+    assert.match(code(JS['session.js']), /\bwatchNotes\(\);/);
+    assert.match(HTML, /id="problem" role="alert"/);
+    assert.match(/<[a-z]+\b[^>]*\bid="echo"[^>]*>/.exec(HTML)?.[0] ?? '', /\baria-live="polite"/);
+    assert.ok(HTML.indexOf('id="notes"') < HTML.indexOf('id="echo"') && HTML.indexOf('id="echo"') < HTML.indexOf('id="att-help"'));
   });
 
   test('(−) the 760 px block no longer hides the tips or the switcher\'s words', () => {
@@ -5617,7 +5705,7 @@ describe('W8-T3: the subagent list and the read-only subagent view (design W8, 4
 
   // -- boot (4.4: 2 to 6)
 
-  const BOOT_SPIES = ['setBackHref', 'setBack', 'syncKbdHint', 'syncHistHint', 'syncPassKeys', 'showUrlNotice', 'wireTabs', 'wireHistory', 'wireHist', 'wireTerminal', 'wireComposer', 'wireSubs', 'wireSwitcher', 'wireQuick', 'wireFit', 'loadSettings', 'startAgentPoll', 'startHistoryPoll', 'kickMirror', 'refreshHistory', 'refreshAgent', 'wireWindowKeys', 'createDialogForm'];
+  const BOOT_SPIES = ['setBackHref', 'setBack', 'syncKbdHint', 'syncHistHint', 'syncPassKeys', 'watchNotes', 'showUrlNotice', 'wireTabs', 'wireHistory', 'wireHist', 'wireTerminal', 'wireComposer', 'wireSubs', 'wireSwitcher', 'wireQuick', 'wireFit', 'loadSettings', 'startAgentPoll', 'startHistoryPoll', 'kickMirror', 'refreshHistory', 'refreshAgent', 'wireWindowKeys', 'createDialogForm'];
   const bootRig = ({ sub = false, bad = false, session = S, pane = null, project = KEY, app = true, search = '' } = {}) => {
     const p = page();
     const log = { calls: [], doc: [] };
@@ -5654,7 +5742,7 @@ describe('W8-T3: the subagent list and the read-only subagent view (design W8, 4
     assert.equal(r.p.$('sess-h').textContent, 'Subagent');
     assert.equal(r.ctx.document.title, 'Subagent \u00b7 nika');
     assert.equal(r.p.$('sess-st').hidden, true, 'no state badge until a poll names the state');
-    for (const name of ['wireHistory', 'wireWindowKeys', 'loadSettings', 'startAgentPoll', 'startHistoryPoll', 'setBackHref', 'setBack']) assert.ok(r.log.calls.includes(name), name);
+    for (const name of ['wireHistory', 'wireWindowKeys', 'loadSettings', 'startAgentPoll', 'startHistoryPoll', 'setBackHref', 'setBack', 'watchNotes']) assert.ok(r.log.calls.includes(name), name);
     assert.ok(r.log.doc.includes('keydown') && r.log.doc.includes('visibilitychange'));
     assert.equal(r.p.$('kbd-open').listeners.click?.length, 1);
   });
@@ -5681,7 +5769,7 @@ describe('W8-T3: the subagent list and the read-only subagent view (design W8, 4
     assert.equal(r.p.$('empty-text').textContent, 'This link has no valid subagent id. Open the subagent again from its session.');
     assert.equal(r.p.$('empty').hidden, false);
     assert.equal(r.p.$('split').hidden, true);
-    assert.deepEqual(r.log.calls.filter((n) => !['setBackHref', 'setBack', 'syncKbdHint', 'syncHistHint', 'syncPassKeys'].includes(n)), []);
+    assert.deepEqual(r.log.calls.filter((n) => !['setBackHref', 'setBack', 'syncKbdHint', 'syncHistHint', 'syncPassKeys', 'watchNotes'].includes(n)), []);
   });
 
   test('(−) 4.4: a subagent link with no valid session id shows the empty state with its words and wires nothing (a pane id does not stand in for it)', () => {
@@ -5689,7 +5777,7 @@ describe('W8-T3: the subagent list and the read-only subagent view (design W8, 4
     r.boot();
     assert.equal(r.p.$('empty-text').textContent, 'This link has no valid session id. Open the subagent again from its session.');
     assert.equal(r.p.$('split').hidden, true);
-    assert.deepEqual(r.log.calls.filter((n) => !['setBackHref', 'setBack', 'syncKbdHint', 'syncHistHint', 'syncPassKeys'].includes(n)), []);
+    assert.deepEqual(r.log.calls.filter((n) => !['setBackHref', 'setBack', 'syncKbdHint', 'syncHistHint', 'syncPassKeys', 'watchNotes'].includes(n)), []);
   });
 
   test('(−) the browser tier keeps its message for a subagent link too, and the shortcuts button is hidden there', () => {
@@ -5704,6 +5792,7 @@ describe('W8-T3: the subagent list and the read-only subagent view (design W8, 4
     const withPane = bootRig({ pane: '%12', search: `?session=${S}&pane=%2512` });
     withPane.boot();
     for (const name of MIRROR.filter((n) => n !== 'kickMirror')) assert.ok(withPane.log.calls.includes(name), name);
+    assert.ok(withPane.log.calls.includes('watchNotes'), 'the notes row is watched in a session window too');
     assert.ok(withPane.log.calls.includes('kickMirror'));
     assert.equal(withPane.ctx.document.body.classList.contains('sub-view'), false);
     assert.equal(withPane.p.$('sess-st').hidden, false, 'the status slot is the session window\'s');
