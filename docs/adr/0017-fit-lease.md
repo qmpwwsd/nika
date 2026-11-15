@@ -102,8 +102,9 @@ values must not be steerable from a request, a tag or a file.
   tmux 3.8: the whole restore was done 1009 to 1045 ms after the change); every `resize-window` sends SIGWINCH to every pane of the window, and with `focus-events on`
   zoom and restore flip the active pane (`ESC[I` / `ESC[O` to panes that asked for focus reports). A tmux hook that rewrites the
   layout makes nika release and stay off. `docs/security.md` T52 and residual risk m list them.
-- `pane-border-status` (a pane smaller than its window) makes the read-back differ, so such a window is never fitted; the text is
-  scaled instead.
+- `pane-border-status top|bottom` makes tmux reserve one row for the border line on every pane, a zoomed or only pane included
+  (tmux 3.8 `layout_fix_panes`), so the read-back accepts a pane height of the window's or one row less (width and window size stay
+  exact); anything further off is still a mismatch (`blocked / changed`), and the page keeps asking for the panel's rows.
 - The page and the control lock now depend on each other: the draft sync must re-push after a 409 `busy-switching` (it does, about
   300 ms later).
 - Rules 3, 4, 11 and 12 gain the fit: new tmux argv shapes (and the spawn read of the window id), new reads, the lease files and

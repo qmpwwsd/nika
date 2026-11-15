@@ -38,9 +38,11 @@ function shape(a) {
 
 function makeWorld() {
   const wins = new Map();
-  const world = { wins, calls: [], bad: [], locked: 0, lockIds: [], fail: null, block: null, after: null, junk: [], noServer: false, enoent: false };
+  // `border`: rows tmux takes from every pane for `pane-border-status top|bottom` (0 = off). tmux 3.8 reserves them on a zoomed pane and
+  // on the only pane of a window too (layout_fix_panes has no check on either), so a pane that fills a window of height H is H-border tall.
+  const world = { wins, calls: [], bad: [], locked: 0, lockIds: [], fail: null, block: null, after: null, junk: [], noServer: false, enoent: false, border: 0 };
   const num = (id) => Number(id.slice(1));
-  const paneSize = (w, p) => p.size ?? (w.panes.length === 1 || (w.zoomed && p.id === w.active) ? [w.width, w.height] : [Math.floor(w.width / w.panes.length), w.height]);
+  const paneSize = (w, p) => p.size ?? (w.panes.length === 1 || (w.zoomed && p.id === w.active) ? [w.width, w.height - world.border] : [Math.floor(w.width / w.panes.length), w.height - world.border]);
   const layoutOf = (w) => w.pinned ?? `{"w":${w.width},"h":${w.height},"s":"${w.arr}","p":[${w.panes.map((p) => `{"i":${num(p.id)}${p.id === w.active ? ',"a":true' : ''}${p.id === w.last ? `,"l":${num(p.id)}` : ''}}`).join(',')}]}`;
   const winOf = (pane) => [...wins.values()].find((w) => w.panes.some((p) => p.id === pane));
   const setActive = (w, id) => { if (w.active !== id) { w.last = w.active; w.active = id; } };
@@ -1477,6 +1479,59 @@ describe('releaseAll and recover', () => {
   });
 });
 
+// Owner's tmux has `pane-border-status top`: tmux reserves one row for the border line on every pane, a zoomed pane and the only pane
+// of a window included, so a pane that fills a window of height H reads back H-1 tall (owner screenshot 2026-11-15: window 171x46,
+// panes 41x45, 64x45, 64x45). The read-back accepts that one row; the window size and the pane width stay exact.
+describe('pane-border-status: the read-back accepts a pane one row shorter than the window', () => {
+  const RELEASE = ['untag', 'select', 'focus', 'optUnset', 'optSet'];
+
+  test('(+) 3-pane window, panel smaller (zoom only): the pane reads back W0 x (H0-1): zoomed / panel-smaller, lease held, no release argv', async () => {
+    const r = rig((w) => { w.border = 1; });
+    assert.deepEqual(await r.put('%2', 100, 30), ans('zoomed', 'panel-smaller', 200, 49, 3));
+    assert.deepEqual(r.names(), ['list', 'option', 'layout', 'list', 'layout', 'option', 'tag', 'zoom', 'list', 'layout']);
+    assert.ok(!r.names().some((n) => RELEASE.includes(n)), 'no release argv');
+    assert.equal(r.fit.size(), 1);
+    assert.match(r.tag(), FIT_NONCE);
+    assert.equal(r.files().length, 1);
+    const w = r.world.wins.get('@1');
+    assert.deepEqual([w.zoomed, w.width, w.height], [true, 200, 50]);
+  });
+
+  test('(+) 3-pane window, panel at least as big (zoom + resize): the pane reads back C x (R-1): fitted', async () => {
+    const r = rig((w) => { w.border = 1; });
+    assert.deepEqual(await r.put('%2', 220, 60), ans('fitted', null, 220, 59, 3));
+    assert.deepEqual(r.names(), ['list', 'option', 'layout', 'list', 'layout', 'option', 'tag', 'zoom', 'size', 'list', 'layout']);
+    assert.ok(!r.names().some((n) => RELEASE.includes(n)), 'no release argv');
+    assert.equal(r.fit.size(), 1);
+    const w = r.world.wins.get('@1');
+    assert.deepEqual([w.zoomed, w.width, w.height], [true, 220, 60]);
+  });
+
+  test('(+) 1-pane window resized to C x R: the pane reads back C x (R-1): fitted', async () => {
+    const r = rig((w) => { w.border = 1; });
+    assert.deepEqual(await r.put('%4', 100, 30), ans('fitted', null, 100, 29, 1));
+    assert.deepEqual(r.names(), ['list', 'option', 'layout', 'list', 'layout', 'option', 'tag', 'size', 'list', 'layout']);
+    assert.ok(!r.names().some((n) => RELEASE.includes(n)), 'no release argv');
+    assert.equal(r.fit.size(), 1);
+    assert.deepEqual([r.world.wins.get('@2').width, r.world.wins.get('@2').height], [100, 30]);
+  });
+
+  test('(+) a renew resize whose pane reads back C\' x (R\'-1) stays held: no release, and the watch keeps it', async () => {
+    const r = rig((w) => { w.border = 1; });
+    await r.put('%2', 220, 60);
+    const nonce = r.tag();
+    const at = r.at();
+    assert.deepEqual(await r.put('%2', 240, 70, false), ans('fitted', null, 240, 69, 3));
+    assert.deepEqual(r.names(at), ['list', 'list', 'size', 'list', 'layout']);
+    assert.ok(!r.names(at).some((n) => RELEASE.includes(n)), 'no release argv');
+    assert.equal(r.fit.size(), 1);
+    assert.equal(r.tag(), nonce, 'the same lease');
+    await r.tick(); // the watch compares the window, not the pane
+    assert.equal(r.fit.size(), 1);
+    assert.equal(r.tag(), nonce);
+  });
+});
+
 describe('read-back mismatch (a user hook fights nika)', () => {
   test('(−) a hook that undoes the zoom: one release, blocked / changed, no second acquire, off until open:true', async () => {
     const r = rig();
@@ -1505,6 +1560,47 @@ describe('read-back mismatch (a user hook fights nika)', () => {
     r.world.after = (name) => { if (name === 'size') r.world.wins.get('@1').width = 199; };
     assert.equal((await r.put('%2', 220, 60)).body.fit.reason, 'changed');
     assert.equal(r.fit.size(), 0);
+  });
+
+  test('(−) a pane two rows shorter than the window (H-2) is no border line: one release, blocked / changed, off until open:true', async () => {
+    for (const [cols, rows] of [[100, 30], [220, 60]]) { // zoom only, then zoom + resize
+      const r = rig((w) => { w.border = 2; });
+      const before = r.world.snap('@1');
+      const res = await r.put('%2', cols, rows);
+      assert.equal(res.body.fit.state, 'blocked', `${cols}x${rows}`);
+      assert.equal(res.body.fit.reason, 'changed', `${cols}x${rows}`);
+      const n = r.names();
+      assert.equal(n.filter((x) => x === 'tag').length, 1);
+      assert.equal(n.filter((x) => x === 'untag').length, 1, 'released once');
+      assert.equal(n.filter((x) => x === 'zoom').length, 2, 'the zoom of the acquire and the one unzoom of the restore, nothing more');
+      assert.equal(r.fit.size(), 0);
+      assert.deepEqual(r.files(), []);
+      const w = r.world.wins.get('@1');
+      assert.deepEqual([w.width, w.height, w.zoomed, w.tag, w.sizeOpt], [before.width, before.height, false, '', null]);
+      const off = r.at();
+      assert.equal((await r.put('%2', cols, rows, false)).body.fit.reason, 'changed');
+      assert.deepEqual(r.names(off), ['list'], 'the heartbeat does not retry');
+    }
+  });
+
+  test('(−) a pane one column narrower than the window (W-1, with H-1) is a mismatch: one release, blocked / changed', async () => {
+    for (const [cols, rows, hook] of [[100, 30, 'zoom'], [220, 60, 'size']]) { // a hook narrows the pane after the last change of the acquire
+      const r = rig((w) => { w.border = 1; });
+      const [W, H] = hook === 'zoom' ? [200, 50] : [cols, rows];
+      r.world.after = (name) => { if (name === hook) r.world.wins.get('@1').panes.find((p) => p.id === '%2').size = [W - 1, H - 1]; };
+      const res = await r.put('%2', cols, rows);
+      assert.equal(res.body.fit.state, 'blocked', `${cols}x${rows}`);
+      assert.equal(res.body.fit.reason, 'changed', `${cols}x${rows}`);
+      const n = r.names();
+      assert.equal(n.filter((x) => x === 'untag').length, 1, 'released once');
+      assert.equal(r.fit.size(), 0);
+      assert.deepEqual(r.files(), []);
+      assert.equal(r.tag(), '');
+      r.world.after = null;
+      const off = r.at();
+      assert.equal((await r.put('%2', cols, rows, false)).body.fit.reason, 'changed');
+      assert.deepEqual(r.names(off), ['list'], 'the heartbeat does not retry');
+    }
   });
 
   test('(−) a pane that vanishes between the request and the read-back: 404 and the lease is released', async () => {

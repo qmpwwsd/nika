@@ -421,8 +421,9 @@ export function createFit({
       return NOT_FOUND;
     }
     const [ew, eh] = expOf(lease);
+    // The pane height may be eh or eh-1: tmux reserves one row for `pane-border-status top|bottom` even on a zoomed or only pane.
     const ok = m.tag === lease.nonce && m.panes === lease.panes && (lease.panes === 1 || (m.zoomed === 1 && m.active === 1))
-      && m.winW === ew && m.winH === eh && m.paneW === ew && m.paneH === eh;
+      && m.winW === ew && m.winH === eh && m.paneW === ew && (m.paneH === eh || m.paneH === eh - 1);
     const layout = ok ? await readLayout(lease.window) : null;
     if (layout !== null) lease.layout1 = layout;
     const text = layout !== null ? leaseText(lease) : null;

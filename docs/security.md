@@ -165,8 +165,10 @@ Accepted, with the reason.
      `window-resized` or `pane-focus-in` run on every step.
   4. *A hook that rewrites the layout or size fights nika.* The read-back after each change sees it, nika releases once, and the
      window stays off (`blocked / changed`) until the session window is opened again. It never loops.
-  5. *`pane-border-status` or anything that makes a pane smaller than its window.* The read-back compares the pane with the
-     window size, so such a window ends `blocked / changed`: the page scales its text instead of fitting. Safe, but no fit.
+  5. *`pane-border-status` or anything that makes a pane smaller than its window.* tmux takes one row for a `top` or `bottom`
+     border line on every pane, a zoomed or only pane included, so the read-back accepts the window's height or one row less (the
+     width and the window size stay exact). A pane smaller by more than that ends `blocked / changed` and the page scales its text.
+     A hook that shrinks the pane by exactly one row also reads as fitted (harmless: one row).
   6. *Spawn and the heartbeat.* Between `releaseWindow` and the `split-window` (one tmux call wide) a beat of another pane of the
      same window can lease it again. The split then lands in a nika-sized window; the watch sees the pane count change within a
      second and releases it as a user change (off until the session window is opened again).

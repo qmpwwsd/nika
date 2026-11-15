@@ -72,7 +72,7 @@ Session window (desktop app):
 - Known limits: the fit was tried on tmux 3.8, and the `linux-verify` check on CI runs it on the Linux runner's tmux (3.6a on
   ubuntu-latest: a 3-pane and a single-pane window fitted and given back exactly, `select-layout --` accepted, `window-size`
   unset reads empty); tmux 3.2, the lowest supported, and every version other than 3.6a and 3.8 are not checked yet; a crash leaves the window at nika's size until
-  nika starts again; with `pane-border-status` on, nika does not fit and scales the text instead; the reason a fit is off shows as a
+  nika starts again; with `pane-border-status` on, the mirrored pane has one row fewer than the panel; the reason a fit is off shows as a
   tooltip and one spoken announcement only.
 
 - **Attach images, PDFs and text files to a message.** Paste a file into the message box, drop it on the box, or click the
