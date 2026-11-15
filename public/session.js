@@ -4,11 +4,13 @@
 // Claude's input box out while the message box carries it (W6). The terminal panel is measured in cells and the mirrored pane is asked to
 // fit it, or the text is scaled down when it cannot (fit-ui.js, design W7).
 // URL: session.html?session=<UUID>&pane=<%n>&project=<key>   (pane is sent as %25n, i.e. encodeURIComponent('%n')).
+// Also the read-only view of one of Claude's own subagents (0.5, design W8): session.html?session=<UUID>&agent=<id>&project=<key>. It shows
+// the subagent's transcript only (no pane, no input; the pane parameter is ignored) and a session window lists its subagents (renderSubs).
 // Rules: every string from the server is rendered with textContent (h() from dom.js, applyMirror from mirror-render.js);
 // no innerHTML, no inline handlers, element.style only for numbers this file computes. Contracts: docs/contracts/api-app.md.
-import { h, icon, roleTagEl, ctxEl } from './dom.js';
+import { h, icon, roleTagEl, ctxEl, subStateEl, subagentItemEl } from './dom.js';
 import { isApp, appFetch, getJSON, applyTheme, windowCommand } from './api.js';
-import { roleTag, savedPick } from './dash-model.js';
+import { roleTag, savedPick, subagentView, subagentHref, SUBAGENT_ID } from './dash-model.js';
 import { toRenderModel, cutCursor, applyMirror, planSend, planPaste, chunkText, keyForEvent, KEY_LABEL, arrowEcho } from './mirror-render.js';
 import { createDraftSync, cleanDraft, cutAt, caretAfter, draftSendPlan, suggestionFor, submitResult, submitMessage } from './draft-sync.js';
 import { MODE_META, MODE_TARGETS, modeKey, modeEl, bypassTag, switcherState, modeNote, switchFailure } from './modes.js';
@@ -83,8 +85,11 @@ function showUrlNotice() {
   if (asked.length === 1 && URL_NOTICES.has(asked[0])) toast(URL_NOTICES.get(asked[0]));
 }
 
+const agentId = param('agent', SUBAGENT_ID); // the read-only subagent view (design W8): a valid `agent` parameter
+const SUB = agentId !== null;
+const BAD_AGENT = !SUB && new URLSearchParams(location.search).has('agent'); // an `agent` that is not an id: the empty state, never a guess
 let sessionId = param('session', SESSION_ID); // follows the pane to its new session after /clear (followSession)
-const paneId = param('pane', PANE_ID);
+const paneId = SUB ? null : param('pane', PANE_ID); // a subagent has no pane of its own: the parameter is ignored and nothing below can reach a pane route
 const projectKey = param('project', PROJECT_KEY);
 
 /** appFetch that never throws: { status, body }; status 0 = network failure. */
@@ -160,8 +165,10 @@ function claudeUrl(raw) {
 
 // ---- header and agent poll ---------------------------------------------------------------------------------------
 
-// A is what the agent poll said: name, status kind, the attention reason (why a 'Needs you' agent waits), the model id and label.
-const A = { name: 'the agent', kind: null, attention: '', modelId: '', projectLooked: false, pickId: null, pickAsked: false };
+// A is what the agent poll said: name, status kind, the attention reason (why a 'Needs you' agent waits), the model id and label, and
+// the session's subagents as the last poll listed them (subs: the transcript link names the one it opens). In the subagent view `kind`
+// follows the subagent: busy = running, idle = finished (still polled: Claude wakes a subagent again), ended = stopped (its session is gone).
+const A = { name: 'the agent', kind: null, attention: '', modelId: '', projectLooked: false, pickId: null, pickAsked: false, subs: [] };
 
 /** The role badge next to the title (design 0.4 section 1.1, the same markup as the rows): orchestrator, sub-orchestrator or, for a session that ended, saved. */
 function renderRole(agent) {
@@ -195,7 +202,47 @@ function renderContext(agent) {
   el.hidden = false;
 }
 
+// The subagent list of a session window (design W8, 4.3): `show` is the "Show ended" box (own choice, nika.showEndedSession; only the
+// stored word "true" is on), `sig` what is drawn, `last` the agent the last poll gave (the box redraws from it without waiting).
+const SUBS = { show: storeGet('showEndedSession') === 'true', sig: '', last: null };
+
+/** The list of Claude's own subagents at the top of the Transcript column. Redrawn only when what it shows changes; the disclosure's open state is the reader's. */
+function renderSubs(agent) {
+  SUBS.last = agent;
+  A.subs = Array.isArray(agent.subagents) ? agent.subagents : [];
+  const v = subagentView(agent.subagents, SUBS.show);
+  $('sess-subs').hidden = !v;
+  if (!v) {
+    SUBS.sig = '';
+    return;
+  }
+  const sig = JSON.stringify([agent.id, A.name, SUBS.show, v.summary, v.hint, v.shown.map((s) => [s.id, s.state, s.description, s.type, s.modelLabel])]);
+  if (sig === SUBS.sig) return;
+  SUBS.sig = sig;
+  $('subs-sum').replaceChildren(...(v.hint ? [v.summary, ' ', h('span', { class: 'muted sub-hid', text: v.hint })] : [v.summary]));
+  const list = $('subs-list');
+  const focused = list.contains(document.activeElement) ? document.activeElement.getAttribute('data-fk') : null; // keep the reader's place across the redraw
+  list.setAttribute('aria-label', `Subagents of ${A.name}`);
+  list.replaceChildren(...v.shown.map((s) => subagentItemEl(s, { href: subagentHref({ session: agent.id, agent: s.id, project: projectKey }), fk: `sub:${s.id}` })));
+  if (focused) [...list.querySelectorAll('a')].find((a) => a.getAttribute('data-fk') === focused)?.focus({ preventScroll: true });
+}
+
+/** At boot: the box starts from the stored choice, and a change is remembered and drawn at once. */
+function wireSubs() {
+  const box = $('subs-ended');
+  box.checked = SUBS.show;
+  box.addEventListener('change', () => {
+    SUBS.show = box.checked;
+    storeSet('showEndedSession', String(SUBS.show));
+    if (SUBS.last) renderSubs(SUBS.last);
+  });
+}
+
 function applyAgent(agent, group) {
+  if (SUB) {
+    applySubagent(agent); // the polled session is the parent of the subagent this window shows (it has no pane: nothing to follow after /clear)
+    return;
+  }
   const untitled = !agent.name || (sessionId && agent.name === sessionId.slice(0, 8));
   A.name = untitled ? 'untitled session' : String(agent.name);
   const h1 = $('sess-h');
@@ -233,6 +280,7 @@ function applyAgent(agent, group) {
   }
   renderAttn();
   renderPrompt();
+  renderSubs(agent);
   $('composer-label').textContent = `Message to ${A.name}. Enter sends, Shift+Enter adds a line. Escape and Control+C go to Claude; so does Shift+Tab when no question or prompt is open, and the arrow keys and Enter when the box is empty. Control+Shift+Tab moves focus back.`;
   if (!$('composer').disabled) $('composer').placeholder = idlePlaceholder();
   $('pb-pane').textContent = paneId ?? '';
@@ -275,6 +323,73 @@ async function refreshAgent() {
     const p = await call('/api/app/projects');
     const name = p.body?.projects?.find((x) => x.key === projectKey)?.name;
     if (typeof name === 'string') $('proj').textContent = name;
+  }
+}
+
+// ---- the read-only subagent view (design W8, 4.4) ----------------------------------------------------------------------
+
+/** The one place the Back address is set: boot sets the dashboard or the project, the subagent view then sets the parent's window. */
+function setBackHref(target) {
+  $('back').href = target;
+}
+
+/** Subagent mode, at boot: the header says "Subagent" until a poll names it, and the parts that belong to a message box and a pane are out. */
+function readOnlyView() {
+  document.body.classList.add('sub-view');
+  document.querySelector('.skip-2').hidden = true; // "Skip to message input": there is no message box
+  $('sess-st').hidden = true; // no state badge until a poll names the state
+  $('sess-h').textContent = 'Subagent';
+  document.title = `Subagent${MID}nika`;
+}
+
+/** What the subagent is called: its description, else its type, else "Subagent" and the start of its id. A blank text counts as none. */
+function subTitle(s) {
+  for (const v of [s?.description, s?.type]) {
+    if (typeof v === 'string' && v.trim()) return v;
+  }
+  return `Subagent ${agentId.slice(0, 8)}`;
+}
+
+/** Back goes up to the session that runs the subagent: its window, with its pane while it is live, and the project when this address had one. */
+function subBack(parent) {
+  const pane = parent.live === true && typeof parent.pane?.id === 'string' && PANE_ID.test(parent.pane.id) ? parent.pane.id : null;
+  const q = [`session=${sessionId}`, pane && `pane=${encodeURIComponent(pane)}`, projectKey && `project=${projectKey}`].filter(Boolean);
+  setBackHref(`session.html?${q.join('&')}`);
+  const name = typeof parent.name === 'string' && parent.name && parent.name !== sessionId.slice(0, 8) ? parent.name : 'untitled session';
+  $('proj').textContent = name;
+  setBack(name);
+}
+
+/** Subagent mode: the agent poll's answer, the parent session (the poll hands over nothing when the snapshot does not list it). */
+function applySubagent(parent) {
+  if (parent) subBack(parent);
+  const s = (Array.isArray(parent?.subagents) ? parent.subagents : []).find((x) => x?.id === agentId) ?? null;
+  const badge = s ? subStateEl(s.state, { pill: true }) : null;
+  $('sess-st').hidden = !badge;
+  $('sess-st').replaceChildren(...(badge ? [badge] : []));
+  if (!badge) {
+    A.kind = null; // unknown subagent or state: the polls go on and the header keeps what it had
+    return;
+  }
+  const title = subTitle(s);
+  A.name = title;
+  $('sess-h').textContent = title;
+  $('sess-h').title = title;
+  document.title = `${title}${MID}nika`;
+  const role = roleTagEl('subagent');
+  $('sess-role').replaceChildren(...(role ? [role] : []));
+  $('sess-role').hidden = !role;
+  $('sess-subtype').textContent = typeof s.type === 'string' ? s.type : '';
+  $('sess-subtype').hidden = !$('sess-subtype').textContent;
+  $('sess-model').textContent = typeof s.modelLabel === 'string' ? s.modelLabel : '';
+  $('sess-model').hidden = !$('sess-model').textContent;
+  const kind = ({ running: 'busy', finished: 'idle', stopped: 'ended' })[s.state]; // finished is still polled: Claude removes it again when the subagent wakes up
+  if (kind !== A.kind) {
+    if (A.kind !== null) {
+      announce(kind === 'busy' ? `${title} is running again` : `${title} ${s.state}`);
+      if (kind !== 'busy') refreshHistory(); // one last read at the live edge, before an 'ended' kind stops the poll
+    }
+    A.kind = kind;
   }
 }
 
@@ -833,6 +948,7 @@ function cleanEntries(list) {
       text: e.text.slice(0, 40000),
       tool: typeof e.tool === 'string' ? e.tool.slice(0, 100) : '',
       truncated: e.truncated === true,
+      subagent: e.kind === 'tool_use' && typeof e.subagent === 'string' && SUBAGENT_ID.test(e.subagent) ? e.subagent : '', // the subagent a call started, when the server linked it
     }));
 }
 
@@ -863,14 +979,40 @@ function foldBlock(e) {
   return det;
 }
 
+/** The link from a tool call to its subagent's transcript (design W8, 4.5): only in a session window, only for an id of the right shape. */
+function subLinkEl(e) {
+  if (SUB || !e.subagent) return null;
+  const href = subagentHref({ session: sessionId, agent: e.subagent, project: projectKey });
+  if (!href) return null;
+  const known = A.subs.find((x) => x?.id === e.subagent);
+  const attrs = { class: 'hx-sub', href, text: 'Open subagent transcript' };
+  if (typeof known?.description === 'string' && known.description) attrs['aria-label'] = `Open the transcript of subagent ${known.description}`;
+  return h('a', attrs);
+}
+
+/** A call already on screen whose subagent got its meta since (the server links it at a later read): the link joins it, once. */
+function linkLate(entries) {
+  for (const e of entries) {
+    if (!e.subagent) continue;
+    const it = H.items.find((x) => x.e.id === e.id);
+    if (!it || it.e.subagent) continue;
+    const link = subLinkEl(e);
+    if (!link) continue;
+    it.el.append(link);
+    it.e.subagent = e.subagent;
+  }
+}
+
 function entryEl(e) {
   const when = Date.parse(e.at);
   const time = Number.isFinite(when)
     ? h('time', { class: 'hx-at', datetime: new Date(when).toISOString(), title: new Date(when).toLocaleString(), text: new Date(when).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) })
     : null;
-  const who = e.kind === 'tool_result' ? 'Tool' : e.role === 'user' ? 'You' : 'Claude';
+  const who = e.kind === 'tool_result' ? 'Tool' : e.role === 'user' ? (SUB ? 'Parent' : 'You') : 'Claude';
   const li = h('li', { class: 'hx', 'data-role': e.role, 'data-kind': e.kind }, h('div', { class: 'hx-meta' }, h('span', { class: 'hx-who', text: who }), time));
   li.append(...(e.kind === 'text' ? textBlock(e) : [foldBlock(e)]));
+  const link = subLinkEl(e);
+  if (link) li.append(link);
   if (e.truncated) li.append(h('p', { class: 'hx-trunc', text: 'This entry is over 32 KB; nika shows the first part only.' }));
   return li;
 }
@@ -924,7 +1066,7 @@ function updateHistoryChrome() {
   const n = H.items.length;
   $('hist-count').textContent = `${n} ${n === 1 ? 'entry' : 'entries'}`;
   const start = $('hx-list').parentNode.querySelector('.hx-start');
-  if (H.older === null && n > 0 && !start) $('hx-list').before(h('p', { class: 'hx-start', text: 'Start of the session' }));
+  if (H.older === null && n > 0 && !start) $('hx-list').before(h('p', { class: 'hx-start', text: SUB ? "Start of the subagent's transcript" : 'Start of the session' }));
   if (H.older !== null && start) start.remove();
 }
 
@@ -937,7 +1079,7 @@ function historyNote(msg) {
 const fetchHistory = (before) => {
   const qs = new URLSearchParams({ limit: '50' });
   if (before !== null) qs.set('before', String(before));
-  return call(`/api/app/session/${sessionId}/history?${qs}`);
+  return call(SUB ? `/api/app/session/${sessionId}/subagents/${agentId}/history?${qs}` : `/api/app/session/${sessionId}/history?${qs}`);
 };
 
 function resetHistory(entries, before) {
@@ -959,7 +1101,7 @@ async function loadNewest() {
     historyNote(r.body?.entries?.length ? '' : 'No messages in this transcript yet.');
     resetHistory(cleanEntries(r.body?.entries), nextBefore(r.body?.nextBefore));
   } else if (r.status === 404) {
-    historyNote('No transcript found for this session yet. nika keeps looking.');
+    historyNote(SUB ? 'No transcript for this subagent yet. nika keeps looking.' : 'No transcript found for this session yet. nika keeps looking.');
   } else {
     historyNote(serverMessage(r, 'The transcript could not be read. nika keeps trying.'));
   }
@@ -978,6 +1120,8 @@ async function refreshHistory() {
     if (r.status !== 200) return;
     const entries = cleanEntries(r.body?.entries);
     if (!entries.length) return;
+    const late = entries.filter((e) => e.subagent);
+    if (late.length) linkLate(late); // a call on screen that has its subagent now
     if (H.items.length && !entries.some((e) => H.ids.has(e.id))) {
       resetHistory(entries, nextBefore(r.body?.nextBefore)); // more than one page arrived since the last poll
       return;
@@ -2161,7 +2305,7 @@ function syncPassKeys() {
 }
 
 function openKbd(opener) {
-  openShortcuts({ window: 'session', tier: 'app', mac: MAC, singleKey: UI.singleKey, opener });
+  openShortcuts({ window: SUB ? 'subagent' : 'session', tier: 'app', mac: MAC, singleKey: UI.singleKey, opener });
 }
 
 /** Document-level, so it also runs for the message box and the buttons; the mirror in passthrough stops its own keys first. */
@@ -2196,7 +2340,7 @@ function showEmpty(text) {
 
 function boot() {
   const appMode = typeof isApp === 'function' ? isApp() : Boolean(isApp);
-  $('back').href = projectKey ? `/#project/${projectKey}` : '/#dashboard';
+  setBackHref(projectKey ? `/#project/${projectKey}` : '/#dashboard');
   setBack('Dashboard');
   syncKbdHint();
   syncHistHint();
@@ -2206,6 +2350,14 @@ function boot() {
     showEmpty('The session window is part of the nika app. This page was opened in a browser, which only shows the read-only dashboard.');
     return;
   }
+  if (BAD_AGENT) {
+    showEmpty('This link has no valid subagent id. Open the subagent again from its session.');
+    return;
+  }
+  if (SUB && !sessionId) {
+    showEmpty('This link has no valid session id. Open the subagent again from its session.');
+    return;
+  }
   if (!sessionId && !paneId) {
     showEmpty('This link has no valid session id or pane id. Open the agent again from the dashboard.');
     return;
@@ -2213,16 +2365,20 @@ function boot() {
   const bad = [];
   const q = new URLSearchParams(location.search);
   if (q.has('session') && !sessionId) bad.push('session id');
-  if (q.has('pane') && !paneId) bad.push('pane id');
+  if (q.has('pane') && !paneId && !SUB) bad.push('pane id'); // a subagent window has no pane: the parameter is ignored, nothing said
   if (bad.length) showNotice(`The link had an invalid ${bad.join(' and ')}; it was ignored.`);
   showUrlNotice();
 
-  wireTabs();
+  if (SUB) readOnlyView();
+  else wireTabs();
   wireHistory();
-  wireHist();
-  wireTerminal();
-  wireComposer();
-  ATT.wire();
+  if (!SUB) {
+    wireHist();
+    wireTerminal();
+    wireComposer();
+    ATT.wire();
+    wireSubs();
+  }
   document.addEventListener('keydown', onPageKey);
   wireWindowKeys({ mac: MAC, passthrough: () => P.on, send: windowCommand }); // Ctrl+Q, Ctrl+W (not while typing into the pane) and zoom off macOS
   $('kbd-open').addEventListener('click', () => openKbd($('kbd-open')));
@@ -2259,7 +2415,7 @@ function boot() {
     split.classList.add('no-term');
     split.dataset.tab = 'hist';
     $('pane-tabs').hidden = true;
-    showNotice('This session is not in tmux, so nika can show its transcript but cannot mirror or type into it.');
+    showNotice(SUB ? 'Read-only. A subagent runs inside its parent session: nika shows its transcript, with no pane to mirror and no input.' : 'This session is not in tmux, so nika can show its transcript but cannot mirror or type into it.');
   }
 }
 

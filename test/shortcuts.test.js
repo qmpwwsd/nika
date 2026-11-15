@@ -304,6 +304,48 @@ describe('shortcutsFor: the session window', () => {
   });
 });
 
+describe('shortcutsFor: the read-only subagent view (0.5, W8, design 4.4)', () => {
+  const EXPECT = [
+    ['Window', [
+      ['Back', `Alt+${LEFT}`, 'Back to the session that runs it'],
+      ['Keyboard shortcuts', '? or Ctrl+/', 'Show this list'],
+      ['Quit nika', 'Ctrl+Q', 'Quit the app (your agents keep running in tmux)'],
+      ['Close window', 'Ctrl+W', 'Close this window'],
+      ['Zoom in', 'Ctrl+= or Ctrl++', 'Make the window content larger'],
+      ['Zoom out', 'Ctrl+-', 'Make the window content smaller'],
+      ['Actual size', 'Ctrl+0', 'Reset the zoom'],
+    ]],
+  ];
+
+  test('(+) one Window group: Back, Keyboard shortcuts, Quit, Close, Zoom in, Zoom out, Actual size (Linux labels)', () => {
+    assert.deepEqual(table(shortcutsFor({ window: 'subagent', tier: 'app', mac: false })), EXPECT);
+  });
+
+  test('(+) macOS shows its own glyphs for Back and the window keys', () => {
+    const by = Object.fromEntries(shortcutsFor({ window: 'subagent', tier: 'app', mac: true }).flatMap((g) => g.rows).map((r) => [r.name, cell(r)]));
+    assert.equal(by.Back, `${CMD}+[`);
+    assert.equal(by['Keyboard shortcuts'], `? or ${CMD}+/`);
+    assert.deepEqual([by['Quit nika'], by['Close window'], by['Zoom in'], by['Zoom out'], by['Actual size']], [`${CMD}+Q`, `${CMD}+W`, `${CMD}+=`, `${CMD}+-`, `${CMD}+0`]);
+  });
+
+  test('(−) nothing of the live session is listed: no Message box, Terminal, Mode switcher, Command list or Typing rows, no transcript toggle', () => {
+    const all = shortcutsFor({ window: 'subagent', tier: 'app', mac: false });
+    assert.deepEqual(all.map((g) => g.group), ['Window']);
+    const names = all.flatMap((g) => g.rows).map((r) => r.name);
+    for (const gone of ['Send', 'New line', 'Interrupt', 'Next permission mode', 'Type into the pane', 'Copy', 'Paste', 'Show or hide transcript', 'Switch', 'Insert']) assert.ok(!names.includes(gone), gone);
+  });
+
+  test('(−) the browser tier gets no subagent rows, and the other windows get no subagent rows', () => {
+    assert.deepEqual(shortcutsFor({ window: 'subagent', tier: 'browser', mac: false }), []);
+    for (const win of ['dashboard', 'session']) {
+      for (const tier of ['app', 'browser']) {
+        const back = shortcutsFor({ window: win, tier, mac: false }).flatMap((g) => g.rows).filter((r) => r.description === 'Back to the session that runs it');
+        assert.deepEqual(back, [], `${win} ${tier}`);
+      }
+    }
+  });
+});
+
 describe('shortcutsFor: filtering and shape', () => {
   test('(−) an unknown window or tier is an empty list, never a throw', () => {
     assert.deepEqual(shortcutsFor({ window: 'nope', tier: 'app', mac: false }), []);
@@ -319,9 +361,9 @@ describe('shortcutsFor: filtering and shape', () => {
   });
 
   test('(+) every row is complete data: both platforms, at least one key, a description', () => {
-    assert.equal(SHORTCUTS.length, 42, '15 dashboard rows (13 app, 2 browser) and 27 session rows');
+    assert.equal(SHORTCUTS.length, 49, '15 dashboard rows (13 app, 2 browser), 27 session rows and 7 subagent rows');
     for (const r of SHORTCUTS) {
-      assert.ok(['dashboard', 'session'].includes(r.window), r.name);
+      assert.ok(['dashboard', 'session', 'subagent'].includes(r.window), r.name);
       assert.ok(['app', 'browser', 'both'].includes(r.tier), r.name);
       for (const p of ['mac', 'other']) {
         assert.ok(r.keys[p].length > 0 && r.keys[p].every((c) => c.length > 0 && c.every((k) => typeof k === 'string' && k)), `${r.name} ${p}`);
@@ -775,6 +817,23 @@ describe('openShortcuts', () => {
     assert.equal(dlg.open, false);
     assert.deepEqual(page.location.assigned, ['/#settings']);
     assert.equal(page.location.hash, '');
+  });
+
+  test('(+) 0.5, W8: the read-only subagent view is named in the muted line, lists its one group and has the app footer', () => {
+    const { ids } = open({ window: 'subagent' });
+    assert.equal(ids['kbd-sub'].textContent, 'Subagent window');
+    assert.deepEqual(tagged(ids['kbd-body'], 'section').map((s) => tagged(s, 'h3')[0].textContent), ['Window']);
+    const names = tagged(ids['kbd-body'], 'tr').map((tr) => tagged(tr, 'td')[0]?.textContent).filter(Boolean);
+    assert.deepEqual(names, ['Back', 'Keyboard shortcuts', 'Quit nika', 'Close window', 'Zoom in', 'Zoom out', 'Actual size']);
+    assert.deepEqual(tagged(ids['kbd-foot'], 'button').map((b) => b.textContent), ['Change in Settings', 'Close']);
+  });
+
+  test('(+) 0.5, W8: Change in Settings in the subagent view opens Settings in the same window, like the session window (it is the same page)', () => {
+    const { ids, dlg } = open({ window: 'subagent' });
+    button(ids['kbd-foot'], 'Change in Settings').fire('click');
+    assert.equal(dlg.open, false);
+    assert.deepEqual(page.location.assigned, ['/#settings']);
+    assert.equal(page.location.hash, '', 'not a hash change on session.html');
   });
 
   test('(−) opening while it is already open does nothing (no second showModal, no rebuild)', () => {

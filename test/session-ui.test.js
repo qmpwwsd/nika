@@ -16,9 +16,11 @@ import { draftSendPlan as draftSendPlanReal, cleanDraft as cleanDraftReal, cutAt
 import { switchFailure as switchFailureReal, MODE_TARGETS, MODE_META } from '../public/modes.js';
 import { createFitPlanner as createFitPlannerReal, panelSize as panelSizeReal, scaleFor as scaleForReal, chipView as chipViewReal } from '../public/fit-ui.js';
 import { createScrollPlanner as createScrollPlannerReal, routeFor as routeForReal, wheelRows as wheelRowsReal, scrollGate as scrollGateReal, viewRowsOf as viewRowsOfReal, pageRowsOf as pageRowsOfReal, refusalLine as refusalLineReal, noteView as scrollNoteViewReal, scrolledSay as scrolledSayReal, NOTE_MS as NOTE_MS_REAL } from '../public/scroll.js';
-import { h as hReal, icon as iconReal } from '../public/dom.js';
+import { h as hReal, icon as iconReal, roleTagEl as roleTagElReal, subStateEl as subStateElReal, subagentItemEl as subagentItemElReal } from '../public/dom.js';
+import { subagentView as subagentViewReal, subagentHref as subagentHrefReal, SUBAGENT_ID as SUBAGENT_ID_REAL } from '../public/dash-model.js';
+import { SESSION_ID as SESSION_ID_REAL, PANE_ID as PANE_ID_REAL } from '../public/quick-actions.js';
 import { cleanDialog as cleanDialogReal } from '../public/dialog-form.js';
-import { installDom, El } from './fake-dom.js';
+import { installDom, El, withClass, focus as focusState } from './fake-dom.js';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const read = (f) => fs.readFileSync(path.join(PUBLIC, f), 'utf8');
@@ -5479,5 +5481,916 @@ describe('W1-T3: question dialogs and plan approvals in the session window (hook
     assert.ok(used.length > 40, 'the scan found the variables');
     assert.deepEqual([...new Set(used)].filter((n) => !defined.has(n)), []);
     assert.doesNotMatch(BLOCK, /#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\(|color-mix\(|:has\(|@import|url\(/);
+  });
+});
+
+// ---- 0.5, W8-T3: the session window's list of Claude's subagents, the read-only subagent view, the link from the parent's transcript ----
+
+describe('W8-T3: the subagent list and the read-only subagent view (design W8, 4.3 to 4.10)', () => {
+  const SRC = code(JS['session.js']);
+  const css = strip(CSS);
+  const fnOf = (head) => {
+    const at = SRC.indexOf(head);
+    assert.ok(at >= 0, head);
+    return SRC.slice(at, SRC.indexOf('\n}\n', at) + 2);
+  };
+  const lineOf = (re) => {
+    const m = re.exec(SRC);
+    assert.ok(m, String(re));
+    return m[0];
+  };
+  const constOf = (name) => lineOf(new RegExp(`const ${name} = [^\\n]*`));
+  const mk = (names, ctx, pre = '') => vm.runInNewContext(`${pre}\n${names.map(fnOf).join('\n')}; ({ ${names.map((n) => n.replace(/^(async )?function /, '').replace(/\(.*$/, '')).join(', ')} })`, ctx);
+  const norm = (v) => JSON.parse(JSON.stringify(v));
+  const settle = () => new Promise((resolve) => { setImmediate(resolve); });
+  const tagOf = (id) => new RegExp(`<[a-z]+\\b[^>]*\\bid="${id}"[^>]*>`).exec(HTML)?.[0] ?? '';
+
+  // synthetic ids only: the repeated-digit UUIDs of the other tests, a 17-hex subagent id like Claude's, an easy second one
+  const S = '11111111-1111-4111-8111-111111111111';
+  const KEY = '0123456789abcdef';
+  const AG = 'a0000000000000001';
+  const AG2 = 'aaa111';
+  const OLD_S = '22222222-2222-4222-8222-222222222222';
+  const SA = (over = {}) => ({ id: AG, type: 'Explore', description: 'List project files', model: 'claude-haiku-5-5', modelLabel: 'Haiku 5.5', state: 'running', lastActivity: 1700000000000, ...over });
+  const PARENT = (over = {}) => ({ id: S, name: 'acme-api refactor', live: true, pane: { id: '%12' }, subagents: [SA()], ...over });
+
+  let restoreDom;
+  before(() => { restoreDom = installDom(); });
+  after(() => restoreDom());
+
+  /** A fake page: any id gives a div that knows `hidden`, a class list, dataset and the like (fake-dom.js El). */
+  const node = (id, over = {}) => {
+    const n = new El('div');
+    const set = new Set();
+    n.id = id;
+    n.title = '';
+    n.classList = { add: (c) => { set.add(c); }, remove: (c) => { set.delete(c); }, contains: (c) => set.has(c), toggle(c, force) { const on = force === undefined ? !set.has(c) : Boolean(force); if (on) set.add(c); else set.delete(c); return on; } };
+    return Object.assign(n, over);
+  };
+  const page = () => {
+    const els = new Map();
+    return { els, $: (id) => { if (!els.has(id)) els.set(id, node(id)); return els.get(id); } };
+  };
+
+  // -- markup and stylesheet (4.3, 4.10)
+
+  test('(+) 4.3: #sess-subs is a closed, hidden disclosure at the top of the Transcript column: between the head and the scrolling list, with the summary, the Show ended box and the list', () => {
+    const col = /<section class="hist" id="sess-hist"[\s\S]*?<\/section>/.exec(HTML)?.[0] ?? '';
+    assert.ok(col);
+    const order = ['class="hist-head"', 'id="sess-subs"', 'id="hist-scroll"'].map((n) => col.indexOf(n));
+    assert.ok(order.every((i) => i > 0));
+    assert.deepEqual(order, [...order].sort((a, b) => a - b));
+    assert.match(tagOf('sess-subs'), /^<details class="subs" id="sess-subs" hidden>$/, 'a closed details (no open attribute), hidden until a poll lists subagents');
+    const body = /<details class="subs" id="sess-subs" hidden>([\s\S]*?)<\/details>/.exec(HTML)?.[1] ?? '';
+    assert.match(body, /^\s*<summary id="subs-sum"><\/summary>/);
+    assert.match(body, /<label class="subs-ended"><input type="checkbox" id="subs-ended"> Show ended<\/label>/);
+    assert.match(body, /<ul class="subs-list" id="subs-list"><\/ul>/);
+    assert.ok(body.indexOf('id="subs-ended"') < body.indexOf('id="subs-list"'), 'the box comes before the list');
+  });
+
+  test('(+) 4.4: the header has #sess-subtype (hidden, dropped on narrow windows) in the meta row; the context meter, pane, branch and claude.ai link start hidden, so the subagent view never shows them', () => {
+    const meta = /<span class="sess-meta">([\s\S]*?)<\/span>\s*<span class="sp">/.exec(HTML)?.[1] ?? '';
+    assert.match(meta, /id="sess-subtype"/);
+    assert.match(tagOf('sess-subtype'), /\bclass="hide-narrow"/);
+    assert.match(tagOf('sess-subtype'), /\bhidden\b/);
+    for (const id of ['sess-ctx', 'meta-pane', 'sess-branch', 'claude-link', 'sess-model']) assert.match(tagOf(id), /\bhidden\b/, id);
+  });
+
+  test('(+) 4.3, 4.9, 4.10: the session list styles: pinned strip, 32 px summary, 24 px box, a list that scrolls inside itself, the transcript link like Show all', () => {
+    assert.match(css, /#sess-subs\s*\{[^}]*flex:\s*none[^}]*border-bottom:\s*1px solid var\(--line\)[^}]*padding:\s*4px 8px 4px 14px/);
+    assert.match(css, /#sess-subs > summary\s*\{[^}]*cursor:\s*pointer[^}]*min-height:\s*32px[^}]*color:\s*var\(--text-muted\)/);
+    assert.match(css, /#sess-subs > summary:hover\s*\{[^}]*color:\s*var\(--text\)/);
+    assert.match(css, /\.subs-ended\s*\{[^}]*min-height:\s*24px/);
+    assert.match(css, /\.subs-list\s*\{[^}]*max-height:\s*40vh[^}]*overflow:\s*auto/);
+    assert.match(css, /\.hx-sub\s*\{[^}]*color:\s*var\(--accent\)[^}]*text-decoration:\s*underline[^}]*min-height:\s*24px[^}]*justify-self:\s*start[^}]*margin-top:\s*4px/);
+  });
+
+  test('(−) the new rules use tokens only: every var() is a token of tokens.css, no colour literal, no custom property of its own', () => {
+    const at = css.indexOf('#sess-subs');
+    assert.ok(at >= 0);
+    const block = css.slice(at);
+    const defined = new Set([...TOKENS.matchAll(/(--[a-z0-9-]+)\s*:/g)].map((m) => m[1]));
+    const used = [...block.matchAll(/var\((--[a-z0-9-]+)/g)].map((m) => m[1]);
+    assert.ok(used.length >= 6, 'the scan found the variables');
+    assert.deepEqual([...new Set(used)].filter((n) => !defined.has(n)), []);
+    assert.doesNotMatch(block, /#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\(|color-mix\(|:has\(|@import|url\(/);
+    assert.deepEqual([...block.matchAll(/(--[a-z0-9-]+)\s*:/g)].map((m) => m[1]), []);
+  });
+
+  test('(+) the page uses the shared pieces of dash-model.js and dom.js, not copies: the names are imported, and no local copy of the id shape or the badge is declared', () => {
+    const imports = JS['session.js'];
+    assert.match(imports, /import \{[^}]*\bsubStateEl\b[^}]*\} from '\.\/dom\.js';/);
+    assert.match(imports, /import \{[^}]*\bsubagentItemEl\b[^}]*\} from '\.\/dom\.js';/);
+    for (const name of ['subagentView', 'subagentHref', 'SUBAGENT_ID']) assert.match(imports, new RegExp(`import \\{[^}]*\\b${name}\\b[^}]*\\} from '\\./dash-model\\.js';`), name);
+    assert.doesNotMatch(SRC, /\[A-Za-z0-9_-\]\{1,64\}/, 'the id shape lives in dash-model.js only');
+    assert.doesNotMatch(SRC, /Did not finish|Finished its task/, 'the badge words live in dash-model.js only');
+  });
+
+  // -- the address (4.4 boot, steps 1 to 4)
+
+  const top = (search) => vm.runInNewContext([
+    fnOf('function param(name, shape)'),
+    lineOf(/^const agentId = [^\n]*$/m), lineOf(/^const SUB = [^\n]*$/m), lineOf(/^const BAD_AGENT = [^\n]*$/m),
+    lineOf(/^let sessionId = [^\n]*$/m), lineOf(/^const paneId = [^\n]*$/m), lineOf(/^const projectKey = [^\n]*$/m),
+    '({ agentId, SUB, BAD_AGENT, sessionId, paneId, projectKey })',
+  ].join('\n'), { location: { search }, URLSearchParams, SESSION_ID: SESSION_ID_REAL, PANE_ID: PANE_ID_REAL, SUBAGENT_ID: SUBAGENT_ID_REAL, PROJECT_KEY: /^[a-z0-9]{16}$/ });
+
+  test('(+) the address: a valid agent id makes the subagent view; the pane in the address is ignored (no pane id at all), the session and project are kept', () => {
+    assert.deepEqual(norm(top(`?session=${S}&agent=${AG}&project=${KEY}`)), { agentId: AG, SUB: true, BAD_AGENT: false, sessionId: S, paneId: null, projectKey: KEY });
+    assert.deepEqual(norm(top(`?session=${S}&agent=${AG}&pane=%2512&project=${KEY}`)), { agentId: AG, SUB: true, BAD_AGENT: false, sessionId: S, paneId: null, projectKey: KEY });
+    assert.equal(top(`?session=${S}&agent=${AG}&pane=%12`).paneId, null, 'the bare form of the pane parameter is ignored too');
+  });
+
+  test('(−) without an agent the window is the session window it was: the pane is read, no subagent mode', () => {
+    assert.deepEqual(norm(top(`?session=${S}&pane=%2512&project=${KEY}`)), { agentId: null, SUB: false, BAD_AGENT: false, sessionId: S, paneId: '%12', projectKey: KEY });
+    assert.equal(top('').BAD_AGENT, false);
+  });
+
+  test('(−) an agent that is not an id is not a subagent view: it is flagged, and the pane (if any) is still read as before', () => {
+    for (const bad of ['', '..%2Fx', 'a.b', 'a%2Fb', 'a b', 'x'.repeat(65), '%00']) {
+      const t = top(`?session=${S}&agent=${bad}&pane=%2512`);
+      assert.equal(t.SUB, false, bad);
+      assert.equal(t.BAD_AGENT, true, bad);
+      assert.equal(t.agentId, null, bad);
+    }
+  });
+
+  // -- boot (4.4: 2 to 6)
+
+  const BOOT_SPIES = ['setBackHref', 'setBack', 'syncKbdHint', 'syncHistHint', 'syncPassKeys', 'showUrlNotice', 'wireTabs', 'wireHistory', 'wireHist', 'wireTerminal', 'wireComposer', 'wireSubs', 'wireSwitcher', 'wireQuick', 'wireFit', 'loadSettings', 'startAgentPoll', 'startHistoryPoll', 'kickMirror', 'refreshHistory', 'refreshAgent', 'wireWindowKeys', 'createDialogForm'];
+  const bootRig = ({ sub = false, bad = false, session = S, pane = null, project = KEY, app = true, search = '' } = {}) => {
+    const p = page();
+    const log = { calls: [], doc: [] };
+    const spy = (name) => (...args) => { log.calls.push(name); return args; };
+    const ctx = {
+      isApp: () => app, $: p.$, SUB: sub, BAD_AGENT: bad, agentId: sub ? AG : null, sessionId: session, paneId: pane, projectKey: project, location: { search }, URLSearchParams,
+      MAC: false, P: { on: false }, windowCommand() {}, notices: [], MID: ' \u00b7 ', ATT: { wire: spy('ATT.wire') }, FIT: { planner: null }, DF: null, A: { name: 'the agent' },
+      composer: () => ({ focus() {} }), onPageKey() {}, openKbd() {}, announce() {}, setGone() {}, call() {}, say() {}, showProblem() {}, clearProblem() {}, renderAttn() {}, showOverlay() {}, DOTS: '...',
+      document: { body: node('body'), title: '', querySelector: (sel) => (sel === '.skip-2' ? p.$('skip-2') : null), addEventListener: (type) => log.doc.push(type) },
+      ...Object.fromEntries(BOOT_SPIES.map((n) => [n, spy(n)])),
+    };
+    const { boot } = mk(['function showEmpty(text)', 'function showNotice(msg)', 'function readOnlyView()', 'function boot()'], ctx);
+    return { boot, p, log, ctx };
+  };
+  const MIRROR = ['wireTabs', 'wireHist', 'wireTerminal', 'wireComposer', 'ATT.wire', 'wireSubs', 'wireSwitcher', 'wireQuick', 'wireFit', 'createDialogForm', 'kickMirror'];
+
+  test('(+) 4.4: boot in subagent mode: no terminal column, the Transcript alone, no tabs, no "Skip to message input", the read-only notice, the body class', () => {
+    const r = bootRig({ sub: true, search: `?session=${S}&agent=${AG}&project=${KEY}` });
+    r.boot();
+    assert.equal(r.p.$('split').classList.contains('no-term'), true);
+    assert.equal(r.p.$('split').dataset.tab, 'hist');
+    assert.equal(r.p.$('pane-tabs').hidden, true);
+    assert.equal(r.p.$('skip-2').hidden, true);
+    assert.equal(r.p.$('notice').textContent, 'Read-only. A subagent runs inside its parent session: nika shows its transcript, with no pane to mirror and no input.');
+    assert.equal(r.p.$('notice').hidden, false);
+    assert.equal(r.ctx.document.body.classList.contains('sub-view'), true);
+    assert.equal(r.p.els.has('empty-text'), false, 'no empty state was shown: the split stays');
+    assert.equal(r.p.$('split').hidden, false);
+  });
+
+  test('(+) 4.4: boot in subagent mode starts as a "Subagent" with no badge, wires the history, the page keys, the window keys, the shortcuts button, the settings and both polls', () => {
+    const r = bootRig({ sub: true, search: `?session=${S}&agent=${AG}` });
+    r.boot();
+    assert.equal(r.p.$('sess-h').textContent, 'Subagent');
+    assert.equal(r.ctx.document.title, 'Subagent \u00b7 nika');
+    assert.equal(r.p.$('sess-st').hidden, true, 'no state badge until a poll names the state');
+    for (const name of ['wireHistory', 'wireWindowKeys', 'loadSettings', 'startAgentPoll', 'startHistoryPoll', 'setBackHref', 'setBack']) assert.ok(r.log.calls.includes(name), name);
+    assert.ok(r.log.doc.includes('keydown') && r.log.doc.includes('visibilitychange'));
+    assert.equal(r.p.$('kbd-open').listeners.click?.length, 1);
+  });
+
+  test('(−) 4.4: boot in subagent mode wires none of the pane parts: no terminal, composer, attachments, switcher, quick actions, fit, dialog form, tabs, transcript toggle, subagent list or mirror poll', () => {
+    const r = bootRig({ sub: true, search: `?session=${S}&agent=${AG}&pane=%2512` });
+    r.boot();
+    assert.deepEqual(r.log.calls.filter((n) => MIRROR.includes(n)), []);
+  });
+
+  test('(−) 4.4: an address with a pane and a subagent shows no pane notice and asks for no capture: the pane is not in play', () => {
+    const r = bootRig({ sub: true, pane: null, search: `?session=${S}&agent=${AG}&pane=%2512` });
+    r.boot();
+    assert.equal(r.p.$('notice').textContent.includes('invalid pane id'), false);
+    assert.equal(r.p.$('notice').textContent.includes('not in tmux'), false);
+    assert.ok(!r.log.calls.includes('kickMirror'));
+    assert.ok(!r.log.calls.includes('createDialogForm'));
+    assert.equal(r.ctx.DF, null);
+  });
+
+  test('(−) 4.4: an invalid agent id shows the empty state with its words and wires nothing', () => {
+    const r = bootRig({ bad: true, search: `?session=${S}&agent=..%2Fx` });
+    r.boot();
+    assert.equal(r.p.$('empty-text').textContent, 'This link has no valid subagent id. Open the subagent again from its session.');
+    assert.equal(r.p.$('empty').hidden, false);
+    assert.equal(r.p.$('split').hidden, true);
+    assert.deepEqual(r.log.calls.filter((n) => !['setBackHref', 'setBack', 'syncKbdHint', 'syncHistHint', 'syncPassKeys'].includes(n)), []);
+  });
+
+  test('(−) 4.4: a subagent link with no valid session id shows the empty state with its words and wires nothing (a pane id does not stand in for it)', () => {
+    const r = bootRig({ sub: true, session: null, search: `?agent=${AG}&pane=%2512` });
+    r.boot();
+    assert.equal(r.p.$('empty-text').textContent, 'This link has no valid session id. Open the subagent again from its session.');
+    assert.equal(r.p.$('split').hidden, true);
+    assert.deepEqual(r.log.calls.filter((n) => !['setBackHref', 'setBack', 'syncKbdHint', 'syncHistHint', 'syncPassKeys'].includes(n)), []);
+  });
+
+  test('(−) the browser tier keeps its message for a subagent link too, and the shortcuts button is hidden there', () => {
+    const r = bootRig({ sub: true, app: false, search: `?session=${S}&agent=${AG}` });
+    r.boot();
+    assert.match(r.p.$('empty-text').textContent, /part of the nika app/);
+    assert.equal(r.p.$('kbd-open').hidden, true);
+    assert.ok(!r.log.calls.includes('startHistoryPoll'));
+  });
+
+  test('(+) a session window (no agent) boots as before: tabs, toggle, terminal, composer, attachments, the subagent list, the mirror; the notice for a pane-less window is unchanged', () => {
+    const withPane = bootRig({ pane: '%12', search: `?session=${S}&pane=%2512` });
+    withPane.boot();
+    for (const name of MIRROR.filter((n) => n !== 'kickMirror')) assert.ok(withPane.log.calls.includes(name), name);
+    assert.ok(withPane.log.calls.includes('kickMirror'));
+    assert.equal(withPane.ctx.document.body.classList.contains('sub-view'), false);
+    assert.equal(withPane.p.$('sess-st').hidden, false, 'the status slot is the session window\'s');
+    const paneless = bootRig({ search: `?session=${S}` });
+    paneless.boot();
+    assert.equal(paneless.p.$('notice').textContent, 'This session is not in tmux, so nika can show its transcript but cannot mirror or type into it.');
+    assert.equal(paneless.p.$('split').classList.contains('no-term'), true);
+    assert.ok(paneless.log.calls.includes('wireSubs'), 'the list is part of every window that has a transcript');
+    assert.ok(!paneless.log.calls.includes('kickMirror'));
+  });
+
+  test('(−) a window with a bad session id says so as before', () => {
+    const r = bootRig({ session: null, pane: '%12', search: '?session=nope&pane=%2512' });
+    r.boot();
+    assert.match(r.p.$('notice').textContent, /^The link had an invalid session id; it was ignored\./);
+  });
+
+  test('(+) 4.4: the Back link is set through one helper, so the stylesheet-free count of href assignments stays two (the back link and the claude.ai link)', () => {
+    assert.equal([...SRC.matchAll(/\.href = /g)].length, 2);
+    assert.match(fnOf('function setBackHref('), /\$\('back'\)\.href = /);
+    assert.doesNotMatch(fnOf('function boot()'), /\.href = /);
+  });
+
+  // -- the header of the subagent view (4.4: the agent poll)
+
+  const subRig = ({ kind = null, session = S, project = KEY, agent = AG } = {}) => {
+    const p = page();
+    for (const id of ['sess-ctx', 'meta-pane', 'sess-branch', 'claude-link', 'sess-model', 'sess-subtype', 'sess-role', 'sess-st']) p.$(id).hidden = true; // as the markup has them
+    const log = { said: [], history: 0, back: [], hrefs: [] };
+    const ctx = {
+      $: p.$, A: { name: 'the agent', kind, subs: [] }, agentId: agent, sessionId: session, projectKey: project, MID: ' · ', document: { title: '' },
+      roleTagEl: roleTagElReal, subStateEl: subStateElReal, PANE_ID: PANE_ID_REAL,
+      announce: (m) => log.said.push(m), refreshHistory: () => { log.history += 1; }, setBack: (l) => log.back.push(l), setBackHref: (u) => log.hrefs.push(u),
+    };
+    const api = mk(['function subTitle(s)', 'function subBack(parent)', 'function applySubagent(parent)'], ctx);
+    const hit = (parent = PARENT()) => parent; // the poll hands the parent session over
+    return { ...api, p, log, ctx, hit };
+  };
+  const withState = (state, over = {}) => PARENT({ subagents: [SA({ state, ...over })] });
+
+  test('(+) 4.4: the title is the description, else the type, else "Subagent" and the first 8 characters of the id; the tab title follows', () => {
+    for (const [over, want] of [[{}, 'List project files'], [{ description: '' }, 'Explore'], [{ description: null, type: null }, 'Subagent a0000000'], [{ description: '   ', type: '' }, 'Subagent a0000000']]) {
+      const r = subRig();
+      r.applySubagent(r.hit(PARENT({ subagents: [SA(over)] })));
+      assert.equal(r.p.$('sess-h').textContent, want, JSON.stringify(over));
+      assert.equal(r.p.$('sess-h').title, want);
+      assert.equal(r.ctx.document.title, `${want} · nika`);
+      assert.equal(r.ctx.A.name, want);
+    }
+  });
+
+  test('(+) 4.4: the header shows the subagent role tag, the state pill (colour, glyph and word), the type and the model; the other header parts stay hidden', () => {
+    const r = subRig();
+    r.applySubagent(r.hit());
+    const role = r.p.$('sess-role');
+    assert.equal(role.hidden, false);
+    assert.equal(role.kids[0].className, 'tag sa');
+    assert.equal(role.kids[0].textContent.includes('subagent'), true);
+    const pill = r.p.$('sess-st').kids[0];
+    assert.equal(r.p.$('sess-st').hidden, false);
+    assert.equal(pill.className, 'sst pill');
+    assert.equal(pill.attrs['data-ss'], 'running');
+    assert.equal(pill.accName, 'Running', 'the word is the name; the glyph is aria-hidden');
+    assert.equal(r.p.$('sess-subtype').textContent, 'Explore');
+    assert.equal(r.p.$('sess-subtype').hidden, false);
+    assert.equal(r.p.$('sess-model').textContent, 'Haiku 5.5');
+    assert.equal(r.p.$('sess-model').hidden, false);
+    for (const id of ['sess-ctx', 'meta-pane', 'sess-branch', 'claude-link']) assert.equal(r.p.$(id).hidden, true, `${id} stays hidden`);
+  });
+
+  test('(+) 4.4: each state has its own pill word: Running, Finished, Stopped; a subagent with no type or model hides those two slots', () => {
+    for (const [state, word] of [['running', 'Running'], ['finished', 'Finished'], ['stopped', 'Stopped']]) {
+      const r = subRig();
+      r.applySubagent(r.hit(withState(state, { type: '', modelLabel: '' })));
+      assert.equal(r.p.$('sess-st').kids[0].attrs['data-ss'], state);
+      assert.equal(r.p.$('sess-st').kids[0].accName, word);
+      assert.equal(r.p.$('sess-subtype').hidden, true);
+      assert.equal(r.p.$('sess-model').hidden, true);
+    }
+  });
+
+  test('(+) 4.4: Back goes to the parent\'s session window with its pane while it runs, and the project when the address had one; its label is the parent\'s name', () => {
+    const r = subRig();
+    r.applySubagent(r.hit());
+    assert.deepEqual(r.log.hrefs, [`session.html?session=${S}&pane=%2512&project=${KEY}`]);
+    assert.equal(r.p.$('proj').textContent, 'acme-api refactor');
+    assert.deepEqual(r.log.back, ['acme-api refactor']);
+  });
+
+  test('(−) 4.4: an ended parent has no pane to open: Back carries the session only; no project in the address means none in Back; a malformed pane id is left out', () => {
+    const ended = subRig();
+    ended.applySubagent(ended.hit(PARENT({ live: false, pane: null })));
+    assert.deepEqual(ended.log.hrefs, [`session.html?session=${S}&project=${KEY}`]);
+    const noProject = subRig({ project: null });
+    noProject.applySubagent(noProject.hit());
+    assert.deepEqual(noProject.log.hrefs, [`session.html?session=${S}&pane=%2512`]);
+    const odd = subRig();
+    odd.applySubagent(odd.hit(PARENT({ pane: { id: '%12; rm' } })));
+    assert.deepEqual(odd.log.hrefs, [`session.html?session=${S}&project=${KEY}`]);
+    const stale = subRig();
+    stale.applySubagent(stale.hit(PARENT({ live: false, pane: { id: '%12' } })));
+    assert.deepEqual(stale.log.hrefs, [`session.html?session=${S}&project=${KEY}`], 'a pane id of a session that is not live is not passed on');
+  });
+
+  test('(−) 4.4: a parent with no name (or only its id\'s start as name) is "untitled session", as in the session window\'s own header', () => {
+    for (const name of ['', null, S.slice(0, 8)]) {
+      const r = subRig();
+      r.applySubagent(r.hit(PARENT({ name })));
+      assert.equal(r.p.$('proj').textContent, 'untitled session', String(name));
+      assert.deepEqual(r.log.back, ['untitled session']);
+    }
+  });
+
+  test('(−) 4.6: a subagent the parent does not list (or a state nobody knows) hides the badge, keeps polling (kind null) and leaves the header as it was; Back still goes up', () => {
+    const r = subRig({ kind: 'busy' });
+    r.applySubagent(r.hit(PARENT({ subagents: [SA({ id: AG2 })] })));
+    assert.equal(r.p.$('sess-st').hidden, true);
+    assert.equal(r.ctx.A.kind, null);
+    assert.equal(r.p.$('sess-h').textContent, '', 'the title was not touched');
+    assert.equal(r.log.hrefs.length, 1, 'the parent is known, so Back goes to it');
+    const odd = subRig();
+    odd.applySubagent(odd.hit(withState('weird')));
+    assert.equal(odd.p.$('sess-st').hidden, true);
+    assert.equal(odd.ctx.A.kind, null);
+    assert.deepEqual(odd.log.said, []);
+  });
+
+  test('(−) 4.6: no parent in the snapshot (or an older server with no subagents field) is not an error: nothing is drawn and nothing thrown', () => {
+    const r = subRig();
+    assert.doesNotThrow(() => r.applySubagent(null));
+    assert.deepEqual(r.log.hrefs, [], 'with no parent there is no Back change');
+    for (const subagents of [undefined, 'nope', [null, 5, 'x', []]]) assert.doesNotThrow(() => r.applySubagent(r.hit(PARENT({ subagents }))), String(subagents));
+    assert.equal(r.p.$('sess-st').hidden, true);
+    assert.equal(r.log.hrefs.length, 3, 'a parent that lists nothing usable still gets its Back link');
+    assert.equal(r.ctx.A.kind, null);
+  });
+
+  test('(+) 4.4: the state decides the poll kind: running is busy, finished is idle (still polled), stopped is ended', () => {
+    for (const [state, kind] of [['running', 'busy'], ['finished', 'idle'], ['stopped', 'ended']]) {
+      const r = subRig();
+      r.applySubagent(r.hit(withState(state)));
+      assert.equal(r.ctx.A.kind, kind, state);
+    }
+  });
+
+  test('(+) 4.4 and the ruling: the first answer says nothing; running to finished says "finished" and reads the live edge once; finished to running says "is running again" and reads nothing extra', () => {
+    const r = subRig();
+    r.applySubagent(r.hit(withState('running')));
+    assert.deepEqual([r.log.said, r.log.history], [[], 0], 'the first poll is silent');
+    r.applySubagent(r.hit(withState('running')));
+    assert.deepEqual([r.log.said, r.log.history], [[], 0], 'the same state is silent');
+    r.applySubagent(r.hit(withState('finished')));
+    assert.deepEqual(r.log.said, ['List project files finished']);
+    assert.equal(r.log.history, 1);
+    r.applySubagent(r.hit(withState('finished')));
+    assert.deepEqual([r.log.said.length, r.log.history], [1, 1], 'no repeat while it stays finished');
+    r.applySubagent(r.hit(withState('running')));
+    assert.deepEqual(r.log.said, ['List project files finished', 'List project files is running again']);
+    assert.equal(r.log.history, 1, 'running again needs no extra read: the ordinary polls carry on');
+    assert.equal(r.p.$('sess-st').kids[0].attrs['data-ss'], 'running', 'the badge went back to running');
+  });
+
+  test('(+) 4.4: running to stopped says "stopped" and reads the live edge once; finished to stopped (the parent went away) the same', () => {
+    const a = subRig();
+    a.applySubagent(a.hit(withState('running')));
+    a.applySubagent(a.hit(withState('stopped')));
+    assert.deepEqual(a.log.said, ['List project files stopped']);
+    assert.equal(a.log.history, 1);
+    const b = subRig();
+    b.applySubagent(b.hit(withState('finished')));
+    b.applySubagent(b.hit(withState('stopped')));
+    assert.deepEqual(b.log.said, ['List project files stopped']);
+    assert.equal(b.log.history, 1);
+  });
+
+  // the polls in play: the real refreshHistory next to the real applySubagent, with a counting fake of the history route
+  const pollRig = () => {
+    const log = { fetches: 0 };
+    const A = { name: 'the agent', kind: null, subs: [] };
+    const base = subRig();
+    const ctx = {
+      ...base.ctx, A, H: { items: [], ids: new Set(), older: null, liveEdge: true, loaded: true, busy: false }, document: { hidden: false, title: '' },
+      fetchHistory: async () => { log.fetches += 1; return { status: 200, body: { entries: [] } }; }, cleanEntries: (l) => l,
+    };
+    delete ctx.refreshHistory;
+    const api = vm.runInNewContext([fnOf('async function refreshHistory()'), ...['function subTitle(s)', 'function subBack(parent)', 'function applySubagent(parent)'].map(fnOf), '({ refreshHistory, applySubagent })'].join('\n'), ctx);
+    return { ...api, log, A, hit: base.hit };
+  };
+
+  test('(+) the ruling: after "finished" the history poll goes on (Claude removes finished again when a subagent wakes up); the change to finished itself read the live edge once', async () => {
+    const r = pollRig();
+    r.applySubagent(r.hit(withState('running')));
+    await settle();
+    r.applySubagent(r.hit(withState('finished')));
+    await settle();
+    assert.equal(r.log.fetches, 1, 'the one read the change asks for');
+    await r.refreshHistory();
+    await r.refreshHistory();
+    assert.equal(r.log.fetches, 3, 'the ordinary polls still read while it is finished');
+  });
+
+  test('(−) the poll stops on "stopped" (the parent is gone) after the one last read the change asks for; running and unknown keep reading', async () => {
+    const r = pollRig();
+    r.applySubagent(r.hit(withState('running')));
+    await settle();
+    r.applySubagent(r.hit(withState('stopped')));
+    await settle();
+    assert.equal(r.log.fetches, 1, 'the last read at the live edge');
+    await r.refreshHistory();
+    await r.refreshHistory();
+    assert.equal(r.log.fetches, 1, 'nothing more once it is stopped');
+    const busy = pollRig();
+    busy.applySubagent(busy.hit(withState('running')));
+    await busy.refreshHistory();
+    assert.equal(busy.log.fetches, 1);
+    const unknown = pollRig();
+    assert.equal(unknown.A.kind, null);
+    await unknown.refreshHistory();
+    assert.equal(unknown.log.fetches, 1, 'before the first answer the poll reads');
+  });
+
+  // -- the agent poll in the subagent view: the session window's own poll, whose hit applyAgent hands to the subagent view
+
+  const agentPollRig = ({ groups, fail = false, session = S, pane = null } = {}) => {
+    const log = { applied: [], followed: [], paths: [] };
+    const ctx = {
+      sessionId: session, paneId: pane, projectKey: KEY, A: { projectLooked: false }, $: page().$,
+      getJSON: async (path) => { log.paths.push(path); if (fail) throw new Error('down'); return { groups }; },
+      call: async (path) => { log.paths.push(path); return { status: 200, body: { projects: [] } }; },
+      followSession: (arg) => { const next = followSessionReal(arg); log.followed.push(next); return next; }, followPane() {}, announce() {},
+      applyAgent: (a, g) => log.applied.push([a.id, g.label]),
+    };
+    const { refreshAgent } = mk(['async function refreshAgent()'], ctx);
+    return { refreshAgent, log };
+  };
+  const GROUPS = [{ label: 'acme-api', agents: [{ id: '22222222-2222-4222-8222-222222222222', name: 'other', live: true }, PARENT()] }];
+
+  test('(+) 4.4: the agent poll of the subagent view (no pane) finds the parent by its session id and hands it to applyAgent; followSession has no pane to follow, so nothing is followed', async () => {
+    const r = agentPollRig({ groups: GROUPS });
+    await r.refreshAgent();
+    assert.deepEqual(r.log.applied, [[S, 'acme-api']]);
+    assert.deepEqual(r.log.followed, [null]);
+    assert.deepEqual(r.log.paths, ['/api/agents?since=all'], 'one read of the public snapshot, nothing else');
+  });
+
+  test('(+) 4.4: in the subagent view applyAgent hands the parent to applySubagent and returns before anything of the session header, the mode, the prompt or the composer is touched', () => {
+    const fn = fnOf('function applyAgent(');
+    assert.match(fn, /^function applyAgent\(agent, group\) \{\n  if \(SUB\) \{\n    applySubagent\(agent\);[^\n]*\n    return;\n  \}\n/);
+    assert.equal(fn.split('applySubagent(').length, 2, 'one call');
+    const seen = [];
+    const run = vm.runInNewContext(`${fn}; applyAgent`, { SUB: true, applySubagent: (a) => seen.push(a.id) });
+    run({ id: S }, { label: 'x' });
+    assert.deepEqual(seen, [S]);
+  });
+
+  test('(−) 4.6: a snapshot that does not list the parent hands nothing over (the header keeps what it had); a failed poll or a snapshot without groups touches nothing', async () => {
+    const none = agentPollRig({ groups: [{ label: 'x', agents: [] }] });
+    await none.refreshAgent();
+    assert.deepEqual(none.log.applied, []);
+    const down = agentPollRig({ groups: GROUPS, fail: true });
+    await down.refreshAgent();
+    assert.deepEqual(down.log.applied, []);
+    const odd = agentPollRig({ groups: 'nope' });
+    await odd.refreshAgent();
+    assert.deepEqual(odd.log.applied, []);
+  });
+
+  test('(+) the session window\'s own poll is unchanged: applyAgent with the hit, and the pane followed after /clear', async () => {
+    const live = [{ id: OLD_S, name: 'old', live: false, pane: { id: '%12' } }, PARENT({ id: S })];
+    const r = agentPollRig({ groups: [{ label: 'acme-api', agents: live }], session: OLD_S, pane: '%12' });
+    await r.refreshAgent();
+    assert.deepEqual(r.log.followed, [S], 'the pane\'s live session replaced the old one');
+    assert.deepEqual(r.log.applied, [[S, 'acme-api']]);
+  });
+
+  test('(−) 4.4: in the subagent view nothing the page requests is a pane route: the snapshot, the history and the settings only', async () => {
+    const paths = [];
+    const ctx = {
+      SUB: true, sessionId: S, agentId: AG, paneId: null, URLSearchParams, DOTS: '...', historyNote() {}, resetHistory() {}, cleanEntries: (l) => l, nextBefore: () => null, serverMessage: () => 'x',
+      call: async (path) => { paths.push(path); return { status: 200, body: { entries: [], ui: {} } }; },
+      getJSON: async (path) => { paths.push(path); return { groups: GROUPS }; }, applyTheme() {}, syncKbdHint() {}, UI: { singleKey: true },
+      followSession: () => null, applyAgent() {}, A: { projectLooked: true },
+    };
+    const api = vm.runInNewContext([
+      lineOf(/const fetchHistory = [\s\S]*?\n};/), fnOf('async function loadNewest()'), fnOf('async function refreshAgent()'), fnOf('async function loadSettings()'),
+      '({ fetchHistory, loadNewest, refreshAgent, loadSettings })',
+    ].join('\n'), ctx);
+    await api.loadNewest();
+    await api.fetchHistory(1200);
+    await api.refreshAgent();
+    await api.loadSettings();
+    assert.ok(paths.length >= 4);
+    assert.deepEqual(paths.filter((p) => p.includes('/pane/')), []);
+    for (const p of paths) assert.match(p, /^\/api\/(app\/(session\/[0-9a-f-]+\/subagents\/[A-Za-z0-9_-]+\/history\?|settings$)|agents\?since=all$)/, p);
+  });
+
+  // -- the transcript of the subagent view (4.4: fetchHistory, "Parent", the start marker, 4.6 notes)
+
+  const histRig = ({ sub }) => {
+    const paths = [];
+    const ctx = { SUB: sub, sessionId: S, agentId: AG, URLSearchParams, call: async (path) => { paths.push(path); return { status: 200, body: { entries: [] } }; } };
+    const { fetchHistory } = vm.runInNewContext(`${lineOf(/const fetchHistory = [\s\S]*?\n};/)}; ({ fetchHistory })`, ctx);
+    return { fetchHistory, paths };
+  };
+
+  test('(+) 4.4: the subagent view reads /api/app/session/<S>/subagents/<a>/history with limit 50 and, for older pages, before; the session window reads its own history route as before', async () => {
+    const sub = histRig({ sub: true });
+    await sub.fetchHistory(null);
+    await sub.fetchHistory(1200);
+    assert.deepEqual(sub.paths, [`/api/app/session/${S}/subagents/${AG}/history?limit=50`, `/api/app/session/${S}/subagents/${AG}/history?limit=50&before=1200`]);
+    const plain = histRig({ sub: false });
+    await plain.fetchHistory(null);
+    await plain.fetchHistory(0);
+    assert.deepEqual(plain.paths, [`/api/app/session/${S}/history?limit=50`, `/api/app/session/${S}/history?limit=50&before=0`]);
+  });
+
+  const noteRig = ({ sub, status, body = null }) => {
+    const notes = [];
+    const ctx = {
+      SUB: sub, historyNote: (m) => notes.push(m), resetHistory() {}, cleanEntries: (l) => l, nextBefore: () => null, serverMessage: (r, fallback) => (typeof r.body?.message === 'string' ? r.body.message : fallback),
+      fetchHistory: async () => ({ status, body }),
+    };
+    return { notes, run: () => mk(['async function loadNewest()'], ctx).loadNewest() };
+  };
+
+  test('(+) 4.6: the subagent view\'s notes: an empty transcript, a transcript not there yet (404, nika keeps looking), a failure with or without the server\'s words', async () => {
+    const empty = noteRig({ sub: true, status: 200, body: { entries: [] } });
+    await empty.run();
+    assert.deepEqual(empty.notes, ['No messages in this transcript yet.']);
+    const missing = noteRig({ sub: true, status: 404 });
+    await missing.run();
+    assert.deepEqual(missing.notes, ['No transcript for this subagent yet. nika keeps looking.']);
+    const failing = noteRig({ sub: true, status: 500 });
+    await failing.run();
+    assert.deepEqual(failing.notes, ['The transcript could not be read. nika keeps trying.']);
+    const said = noteRig({ sub: true, status: 503, body: { message: 'tmux is busy' } });
+    await said.run();
+    assert.deepEqual(said.notes, ['tmux is busy']);
+  });
+
+  test('(−) 4.6: the session window keeps its own 404 note', async () => {
+    const missing = noteRig({ sub: false, status: 404 });
+    await missing.run();
+    assert.deepEqual(missing.notes, ['No transcript found for this session yet. nika keeps looking.']);
+  });
+
+  const startRig = ({ sub }) => {
+    const starts = [];
+    const els = { 'load-older': { setAttribute() {}, removeAttribute() {}, textContent: '', get ownerDocument() { return null; } }, older: {}, newer: {}, 'hist-count': {}, 'hx-list': { parentNode: { querySelector: () => null }, before: (p) => starts.push(p.textContent) } };
+    const ctx = { SUB: sub, $: (id) => els[id], H: { items: [{ e: {} }], older: null, liveEdge: true }, h: hReal, scroller: () => ({ focus() {} }), document: { activeElement: null } };
+    return { starts, run: () => mk(['function updateHistoryChrome()'], ctx).updateHistoryChrome() };
+  };
+
+  test('(+) 4.4: the start marker reads "Start of the subagent\'s transcript" in the subagent view and "Start of the session" in the session window', () => {
+    const sub = startRig({ sub: true });
+    sub.run();
+    assert.deepEqual(sub.starts, ["Start of the subagent's transcript"]);
+    const plain = startRig({ sub: false });
+    plain.run();
+    assert.deepEqual(plain.starts, ['Start of the session']);
+  });
+
+  // -- entries: who, the link (4.5)
+
+  const entryRig = ({ sub = false, subs = [], project = KEY } = {}) => {
+    const ctx = {
+      SUB: sub, sessionId: S, projectKey: project, A: { subs }, h: hReal, subagentHref: subagentHrefReal, SUBAGENT_ID: SUBAGENT_ID_REAL, H: { items: [], ids: new Set() },
+      Date, ENTRY_ID: vm.runInNewContext(constOf('ENTRY_ID') + '; ENTRY_ID'), KINDS: vm.runInNewContext(constOf('KINDS') + '; KINDS'),
+    };
+    const api = mk(['function cleanEntries(list)', 'function textBlock(e)', 'function foldBlock(e)', 'function subLinkEl(e)', 'function entryEl(e)', 'function linkLate(entries)'], ctx, `${constOf('DOTS')}\n${constOf('clip')}`);
+    return { ...api, ctx };
+  };
+  const RAW = (over = {}) => ({ id: '100:0', at: '2026-11-15T10:00:00.000Z', role: 'assistant', kind: 'tool_use', tool: 'Agent', text: '{"description":"List project files"}', truncated: false, ...over });
+  const linkOf = (li) => li.all(withClass('hx-sub'))[0] ?? null;
+
+  test('(+) 4.5: a tool call with a subagent id gets "Open subagent transcript" after its fold: an a.hx-sub whose href is the subagent view of this session, the project kept', () => {
+    const r = entryRig();
+    const [e] = r.cleanEntries([RAW({ subagent: AG })]);
+    const li = r.entryEl(e);
+    const a = linkOf(li);
+    assert.ok(a);
+    assert.equal(a.tag, 'a');
+    assert.equal(a.attrs.href, `session.html?session=${S}&agent=${AG}&project=${KEY}`);
+    assert.equal(a.textContent, 'Open subagent transcript');
+    assert.equal(a.attrs['aria-label'], undefined, 'the fold summary above already names the call when the page does not know the subagent');
+    const kinds = li.kids.map((k) => k.tag + (k.className ? `.${k.className}` : ''));
+    assert.ok(kinds.indexOf('a.hx-sub') > kinds.findIndex((k) => k.startsWith('details')), 'after the fold');
+  });
+
+  test('(+) 4.5, 4.9: when the last poll lists that subagent the link says which one (aria-label with its description); a project-less window leaves &project out', () => {
+    const r = entryRig({ subs: [SA(), SA({ id: AG2, description: 'Other work' })], project: null });
+    const a = linkOf(r.entryEl(r.cleanEntries([RAW({ subagent: AG2 })])[0]));
+    assert.equal(a.attrs['aria-label'], 'Open the transcript of subagent Other work');
+    assert.equal(a.attrs.href, `session.html?session=${S}&agent=${AG2}`);
+    const noText = entryRig({ subs: [SA({ description: '' })] });
+    assert.equal(linkOf(noText.entryEl(noText.cleanEntries([RAW({ subagent: AG })])[0])).attrs['aria-label'], undefined, 'no description, no label');
+  });
+
+  test('(−) 4.5: no link for a bad subagent id, for an entry that is not a tool call, for an entry with no id at all', () => {
+    const r = entryRig();
+    for (const bad of ['../x', 'a b', 'a.b', 'x'.repeat(65), '', 5, null, {}, [AG]]) {
+      const [e] = r.cleanEntries([RAW({ subagent: bad })]);
+      assert.equal(e.subagent, '', String(bad));
+      assert.equal(linkOf(r.entryEl(e)), null, String(bad));
+    }
+    for (const kind of ['text', 'thinking', 'tool_result']) {
+      const [e] = r.cleanEntries([RAW({ kind, subagent: AG })]);
+      assert.equal(e.subagent, '', kind);
+      assert.equal(linkOf(r.entryEl(e)), null, kind);
+    }
+    assert.equal(linkOf(r.entryEl(r.cleanEntries([RAW()])[0])), null, 'a call the server did not link');
+  });
+
+  test('(−) 4.5: the subagent view draws no link, even for an entry that carries an id (nested subagents are not built)', () => {
+    const r = entryRig({ sub: true });
+    const [e] = r.cleanEntries([RAW({ subagent: AG })]);
+    assert.equal(linkOf(r.entryEl(e)), null);
+  });
+
+  test('(+) 4.5: the late link: a call already on screen without a link gets it when a later read carries the id, once, and the entry remembers it', () => {
+    const r = entryRig();
+    const [e] = r.cleanEntries([RAW()]);
+    const li = r.entryEl(e);
+    r.ctx.H.items.push({ e, el: li });
+    const before = li.kids.length;
+    r.linkLate(r.cleanEntries([RAW({ subagent: AG })]));
+    assert.equal(li.kids.length, before + 1);
+    assert.equal(linkOf(li).attrs.href, `session.html?session=${S}&agent=${AG}&project=${KEY}`);
+    assert.equal(e.subagent, AG);
+    r.linkLate(r.cleanEntries([RAW({ subagent: AG })]));
+    assert.equal(li.kids.length, before + 1, 'not twice');
+    assert.equal(li.all(withClass('hx-sub')).length, 1);
+  });
+
+  test('(−) 4.5: the late link ignores an entry that is not on screen, an entry with no id, an entry that already has its link, and the subagent view', () => {
+    const r = entryRig();
+    const [e] = r.cleanEntries([RAW()]);
+    const li = r.entryEl(e);
+    r.ctx.H.items.push({ e, el: li });
+    const before = li.kids.length;
+    r.linkLate(r.cleanEntries([RAW({ id: '999:0', subagent: AG })]));
+    r.linkLate(r.cleanEntries([RAW()]));
+    assert.equal(li.kids.length, before);
+    const linked = entryRig();
+    const [e2] = linked.cleanEntries([RAW({ subagent: AG })]);
+    const li2 = linked.entryEl(e2);
+    linked.ctx.H.items.push({ e: e2, el: li2 });
+    const n = li2.kids.length;
+    linked.linkLate(linked.cleanEntries([RAW({ subagent: AG2 })]));
+    assert.equal(li2.kids.length, n, 'the link it has is kept');
+    assert.equal(linkOf(li2).attrs.href.includes(AG2), false);
+    const sub = entryRig({ sub: true });
+    const [e3] = sub.cleanEntries([RAW()]);
+    const li3 = sub.entryEl(e3);
+    sub.ctx.H.items.push({ e: e3, el: li3 });
+    sub.linkLate(sub.cleanEntries([RAW({ subagent: AG })]));
+    assert.equal(linkOf(li3), null);
+  });
+
+  test('(+) 4.4: user text reads "Parent" in the subagent view; the tool result stays "Tool" and Claude "Claude"', () => {
+    const r = entryRig({ sub: true });
+    const who = (over) => r.entryEl(r.cleanEntries([RAW({ kind: 'text', ...over })])[0]).all(withClass('hx-who'))[0].textContent;
+    assert.equal(who({ role: 'user' }), 'Parent');
+    assert.equal(who({ role: 'assistant' }), 'Claude');
+    assert.equal(who({ role: 'user', kind: 'tool_result' }), 'Tool');
+  });
+
+  test('(−) 4.4: the session window still says "You" for the user\'s text', () => {
+    const r = entryRig({ sub: false });
+    const who = (over) => r.entryEl(r.cleanEntries([RAW({ kind: 'text', ...over })])[0]).all(withClass('hx-who'))[0].textContent;
+    assert.equal(who({ role: 'user' }), 'You');
+    assert.equal(who({ role: 'assistant' }), 'Claude');
+  });
+
+  // the live-edge read next to the late link: the real refreshHistory, with a spy where the late link goes
+  const lateRig = ({ shown, polled }) => {
+    const log = { late: [], fetches: 0 };
+    const sc = { scrollTop: 600, scrollHeight: 1000, clientHeight: 400 };
+    const ctx = {
+      H: { items: shown.map((e) => ({ e, el: { remove() {} } })), ids: new Set(shown.map((e) => e.id)), older: null, liveEdge: true, loaded: true, busy: false }, A: { kind: 'busy' }, document: { hidden: false },
+      fetchHistory: async () => { log.fetches += 1; return { status: 200, body: { entries: polled, nextBefore: null } }; }, cleanEntries: (l) => l, nextBefore: () => null,
+      linkLate: (entries) => log.late.push(entries.map((e) => [e.id, e.subagent])), scroller: () => sc, resetHistory() { throw new Error('no reset'); }, MAX_ENTRIES: 500,
+      mount: () => 0, trim() {}, updateHistoryChrome() {}, keyOf: (id) => { const [off, block] = id.split(':').map(Number); return off * 100000 + block; },
+    };
+    const api = vm.runInNewContext(`${constOf('nearBottom')}\n${fnOf('async function refreshHistory()')}; ({ refreshHistory })`, ctx);
+    return { ...api, log };
+  };
+  const E = (id, over = {}) => ({ id, at: '', role: 'assistant', kind: 'tool_use', text: 'x', tool: 'Agent', truncated: false, subagent: '', ...over });
+
+  test('(+) 4.5: a read of the live edge that carries an id for a call already on screen hands it to the late link, even when nothing else is new', async () => {
+    const r = lateRig({ shown: [E('100:0')], polled: [E('100:0', { subagent: AG })] });
+    await r.refreshHistory();
+    assert.deepEqual(r.log.late, [[['100:0', AG]]]);
+  });
+
+  test('(−) 4.5: a read with no ids calls no late link (a server that sends none, and the fake page of memory.test.js, lose nothing)', async () => {
+    const none = lateRig({ shown: [E('100:0')], polled: [E('100:0'), E('200:0')] });
+    await none.refreshHistory();
+    assert.deepEqual(none.log.late, []);
+  });
+
+  // -- the list in the session window (4.3)
+
+  const subsLine = () => lineOf(/^const SUBS = [^\n]*$/m); // read per test, so a missing declaration fails the tests that need it
+  const subsRig = ({ store = new Map(), broken = false, name = 'acme-api', active = null } = {}) => {
+    const p = page();
+    const root = p.$('sess-subs');
+    root.hidden = true;
+    const sum = p.$('subs-sum');
+    const box = p.$('subs-ended');
+    const list = p.$('subs-list');
+    const log = { redraws: 0 };
+    const replace = list.replaceChildren.bind(list);
+    list.replaceChildren = (...nodes) => { log.redraws += 1; replace(...nodes); };
+    list.contains = (n) => n !== null && list.all((x) => x === n).length > 0;
+    list.querySelectorAll = () => list.all((n) => n.tag === 'a');
+    const doc = { activeElement: active };
+    const localStorage = {
+      getItem(k) { if (broken) throw new Error('blocked'); return store.has(k) ? store.get(k) : null; },
+      setItem(k, v) { if (broken) throw new Error('blocked'); store.set(k, String(v)); },
+    };
+    const ctx = { $: p.$, h: hReal, subagentView: subagentViewReal, subagentHref: subagentHrefReal, subagentItemEl: subagentItemElReal, projectKey: KEY, A: { name, subs: [] }, document: doc, localStorage };
+    const api = mk(['function storeGet(key)', 'function storeSet(key, value)', 'function renderSubs(agent)', 'function wireSubs()'], ctx, subsLine());
+    return { ...api, p, root, sum, box, list, log, store, doc, ctx };
+  };
+  const AGENT = (subagents) => ({ id: S, name: 'acme-api', subagents });
+  const lis = (list) => list.kids.filter((k) => k.tag === 'li');
+  const hintOf = (sum) => sum.all(withClass('sub-hid'))[0]?.textContent ?? null;
+
+  test('(−) 4.3: nothing to list (none, not an array, only garbage) leaves #sess-subs hidden', () => {
+    for (const subagents of [undefined, null, [], 'x', 5, [null, 7, 'a']]) {
+      const r = subsRig();
+      r.renderSubs(AGENT(subagents));
+      assert.equal(r.root.hidden, true, JSON.stringify(subagents));
+    }
+  });
+
+  test('(+) 4.3: running ones show, the rest wait for Show ended: summary "1 subagent · 1 running", the hint "+2 ended", one line with the badge, the link and the model', () => {
+    const r = subsRig();
+    r.renderSubs(AGENT([SA(), SA({ id: AG2, state: 'finished' }), SA({ id: 'a3', state: 'stopped' })]));
+    assert.equal(r.root.hidden, false);
+    assert.equal(r.sum.textContent, '1 subagent · 1 running +2 ended');
+    assert.equal(hintOf(r.sum), '+2 ended');
+    assert.equal(lis(r.list).length, 1);
+    assert.equal(r.list.attrs['aria-label'], 'Subagents of acme-api');
+    const li = lis(r.list)[0];
+    assert.equal(li.attrs['data-ss'], 'running');
+    const a = li.all((n) => n.tag === 'a')[0];
+    assert.equal(a.attrs.href, `session.html?session=${S}&agent=${AG}&project=${KEY}`);
+    assert.equal(a.textContent, 'List project files');
+    assert.equal(a.attrs.title, 'Open its transcript (read-only)');
+    assert.equal(li.all(withClass('sst'))[0].accName, 'Running');
+    assert.equal(li.all(withClass('model'))[0].textContent, 'Haiku 5.5');
+  });
+
+  test('(−) 4.3: the session list draws no time on a line (it would change at every poll); the rows of the dashboard do', () => {
+    const r = subsRig();
+    r.renderSubs(AGENT([SA({ lastActivity: 1700000000000 })]));
+    const li = lis(r.list)[0];
+    assert.deepEqual(li.all((n) => n.tag === 'time'), []);
+    assert.equal(li.kids.length, 4, 'badge, link, type, model');
+  });
+
+  test('(+) 4.3: the Show ended box lists them all and says so: "3 subagents · 1 running", no hint; the choice is remembered as nika.showEndedSession', () => {
+    const r = subsRig();
+    r.wireSubs();
+    r.renderSubs(AGENT([SA(), SA({ id: AG2, state: 'finished' }), SA({ id: 'a3', state: 'stopped' })]));
+    r.box.checked = true;
+    r.box.fire('change');
+    assert.equal(r.sum.textContent, '3 subagents · 1 running');
+    assert.equal(hintOf(r.sum), null);
+    assert.equal(lis(r.list).length, 3);
+    assert.deepEqual(lis(r.list).map((li) => li.attrs['data-ss']), ['running', 'finished', 'stopped'], 'the server\'s order');
+    assert.equal(r.store.get('nika.showEndedSession'), 'true');
+    r.box.checked = false;
+    r.box.fire('change');
+    assert.equal(r.store.get('nika.showEndedSession'), 'false');
+    assert.equal(lis(r.list).length, 1);
+  });
+
+  test('(+) 4.3, 4.6: all ended with the box off: "No subagents running +3 ended", the list shell stays (the box is in the body), no lines; ticking the box lists them', () => {
+    const r = subsRig();
+    r.wireSubs();
+    r.renderSubs(AGENT([SA({ state: 'finished' }), SA({ id: AG2, state: 'finished' }), SA({ id: 'a3', state: 'stopped' })]));
+    assert.equal(r.root.hidden, false);
+    assert.equal(r.sum.textContent, 'No subagents running +3 ended');
+    assert.equal(lis(r.list).length, 0);
+    r.box.checked = true;
+    r.box.fire('change');
+    assert.equal(lis(r.list).length, 3);
+    assert.equal(r.sum.textContent, '3 subagents');
+  });
+
+  test('(+) 4.3: the box starts from the stored choice: only the string "true" is on', () => {
+    const on = subsRig({ store: new Map([['nika.showEndedSession', 'true']]) });
+    on.wireSubs();
+    assert.equal(on.box.checked, true);
+    on.renderSubs(AGENT([SA({ state: 'finished' })]));
+    assert.equal(lis(on.list).length, 1);
+  });
+
+  test('(−) 4.3: anything else in storage is off; storage that throws is off and a change does not throw', () => {
+    for (const value of ['True', '1', '', 'yes', 'false', ' true', 'true ', '{"a":1}']) {
+      const r = subsRig({ store: new Map([['nika.showEndedSession', value]]) });
+      r.wireSubs();
+      assert.equal(r.box.checked, false, JSON.stringify(value));
+      r.renderSubs(AGENT([SA({ state: 'finished' })]));
+      assert.equal(lis(r.list).length, 0);
+    }
+    const broken = subsRig({ broken: true });
+    broken.wireSubs();
+    broken.renderSubs(AGENT([SA({ state: 'finished' })]));
+    assert.equal(broken.box.checked, false);
+    broken.box.checked = true;
+    assert.doesNotThrow(() => broken.box.fire('change'));
+    assert.equal(lis(broken.list).length, 1, 'the choice still applies for this window');
+  });
+
+  test('(+) 4.3: a redraw only when the signature changes: the same answer twice draws once; a new state, a new name or the box draws again', () => {
+    const r = subsRig();
+    r.wireSubs();
+    r.renderSubs(AGENT([SA()]));
+    r.renderSubs(AGENT([SA()]));
+    r.renderSubs(AGENT([SA({ lastActivity: 1700000099999 })]));
+    assert.equal(r.log.redraws, 1, 'the activity time is not part of the list');
+    r.renderSubs(AGENT([SA({ state: 'finished' })]));
+    assert.equal(r.log.redraws, 2);
+    r.ctx.A.name = 'renamed';
+    r.renderSubs(AGENT([SA({ state: 'finished' })]));
+    assert.equal(r.log.redraws, 3, 'the list is labelled with the session name');
+    assert.equal(r.list.attrs['aria-label'], 'Subagents of renamed');
+  });
+
+  test('(+) 4.3, 4.8: the disclosure itself is never opened or closed by the page, and a redraw keeps focus on the link that had it', () => {
+    const r = subsRig();
+    r.renderSubs(AGENT([SA(), SA({ id: AG2, description: 'Other work' })]));
+    r.root.open = true; // the reader opened it
+    const had = r.list.all((n) => n.tag === 'a')[1];
+    assert.equal(had.attrs['data-fk'], `sub:${AG2}`);
+    r.doc.activeElement = had;
+    focusState.el = null;
+    r.renderSubs(AGENT([SA({ lastActivity: 1 }), SA({ id: AG2, description: 'Other work', modelLabel: 'Sonnet 5.5' })]));
+    const now = r.list.all((n) => n.tag === 'a')[1];
+    assert.notEqual(now, had, 'the list was rebuilt');
+    assert.equal(focusState.el, now, 'and focus went to the new link for the same subagent');
+    assert.equal(r.root.open, true, 'still open');
+    r.renderSubs(AGENT([]));
+    assert.equal(r.root.hidden, true);
+    assert.equal(r.root.open, true, 'hiding does not close it either');
+  });
+
+  test('(−) 4.3: a redraw does not move focus when it was elsewhere', () => {
+    const r = subsRig({ active: { id: 'composer' } });
+    r.renderSubs(AGENT([SA()]));
+    focusState.el = null;
+    r.renderSubs(AGENT([SA({ state: 'finished' })]));
+    assert.equal(focusState.el, null);
+  });
+
+  test('(−) 4.3, constraint 6: a description with markup is text, and a subagent id that is not an id gets no link', () => {
+    const r = subsRig();
+    r.renderSubs(AGENT([SA({ description: '<img src=x onerror=alert(1)>' }), SA({ id: '../x', description: 'bad id' })]));
+    const [one, two] = lis(r.list);
+    const a = one.all((n) => n.tag === 'a')[0];
+    assert.equal(a.textContent, '<img src=x onerror=alert(1)>');
+    assert.equal(a.kids.length, 0, 'text, not elements');
+    assert.deepEqual(two.all((n) => n.tag === 'a'), []);
+    assert.equal(two.all(withClass('sub-desc'))[0].tag, 'span');
+  });
+
+  test('(+) the list is part of the polled header: applyAgent hands the agent to renderSubs, and wireSubs is a normal-mode step of boot', () => {
+    assert.match(fnOf('function applyAgent('), /renderSubs\(agent\);/);
+    assert.equal((SRC.match(/wireSubs\(\)/g) ?? []).length, 2, 'declared once, called once');
+  });
+
+  // -- the Keyboard shortcuts window (4.4)
+
+  const kbdRig = (sub) => {
+    const asked = [];
+    const ctx = { SUB: sub, MAC: false, UI: { singleKey: true }, openShortcuts: (o) => asked.push(o) };
+    mk(['function openKbd(opener)'], ctx).openKbd('the-opener');
+    return asked[0];
+  };
+
+  test('(+) 4.4: ? opens the subagent table in the subagent view and the session table in the session window', () => {
+    assert.equal(kbdRig(true).window, 'subagent');
+    assert.equal(kbdRig(false).window, 'session');
+    assert.equal(kbdRig(true).tier, 'app');
   });
 });

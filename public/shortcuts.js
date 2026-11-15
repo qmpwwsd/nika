@@ -74,6 +74,11 @@ export const SHORTCUTS = [
   row('session', 'app', 'Command list', 'Move', alts(UP, DOWN), 'Move through the commands', ' '),
   row('session', 'app', 'Command list', 'Insert', alts('Enter', 'Tab'), 'Put the command in the message box'),
   row('session', 'app', 'Command list', 'Close', one('Esc'), 'Close the list and keep the text'),
+
+  // the read-only subagent view (0.5, W8): the session window's page with no pane and no input, so only the window keys apply
+  row('subagent', 'app', 'Window', 'Back', BACK, 'Back to the session that runs it'),
+  row('subagent', 'app', 'Window', 'Keyboard shortcuts', HELP, 'Show this list'),
+  ...windowRows('subagent', { quit: QUIT, close: 'Close this window' }),
 ];
 
 /**
@@ -229,13 +234,14 @@ export function openShortcuts({ window: win, tier, mac, singleKey, opener }) {
   const back = closeMenus(opener);
   let leaving = false; // "Change in Settings" navigates; the new screen takes the focus
   const close = h('button', { type: 'button', class: 'btn', text: 'Close', onclick: () => dlg.close() });
+  const onSessionPage = win === 'session' || win === 'subagent'; // both are session.html: Settings is another page
   const toSettings = () => {
     leaving = true;
     dlg.close();
-    if (win === 'session') location.assign('/#settings');
+    if (onSessionPage) location.assign('/#settings');
     else location.hash = '#settings';
   };
-  $('kbd-sub').textContent = win === 'session' ? 'Session window' : 'Dashboard';
+  $('kbd-sub').textContent = win === 'session' ? 'Session window' : win === 'subagent' ? 'Subagent window' : 'Dashboard';
   $('kbd-body').replaceChildren(...shortcutsFor({ window: win, tier, mac }).map(section));
   $('kbd-foot').replaceChildren(...(tier === 'app'
     ? [h('span', { class: 'muted', text: `Single-key shortcuts: ${singleKey ? 'On' : 'Off'}` }), h('button', { type: 'button', class: 'btn link', text: 'Change in Settings', onclick: toSettings }), h('span', { class: 'sp' }), close]

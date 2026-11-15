@@ -65,6 +65,7 @@
   <span id="sess-mode" hidden></span>
   <span class="sess-meta">
     <span class="model" id="sess-model" hidden></span>
+    <span class="hide-narrow" id="sess-subtype" hidden></span>
     <span class="ctx" id="sess-ctx" hidden></span>
     <span class="hide-narrow" id="meta-pane" hidden>pane <span class="mono" id="sess-pane"></span></span>
     <span class="hide-narrow mono" id="sess-branch" hidden></span>
@@ -87,6 +88,13 @@
   <div class="split" id="split" data-tab="term">
     <section class="hist" id="sess-hist" aria-labelledby="hist-h">
       <div class="hist-head"><h2 id="hist-h">Transcript</h2><span class="sp"></span><span class="help" id="hist-count"></span></div>
+      <details class="subs" id="sess-subs" hidden>
+        <summary id="subs-sum"></summary>
+        <div class="subs-body">
+          <label class="subs-ended"><input type="checkbox" id="subs-ended"> Show ended</label>
+          <ul class="subs-list" id="subs-list"></ul>
+        </div>
+      </details>
       <div class="hist-scroll" id="hist-scroll" tabindex="0" role="region" aria-label="Transcript, oldest first">
         <div class="older" id="older" hidden><button type="button" class="btn" id="load-older">Load older entries</button></div>
         <p class="hx-note" id="hist-note" hidden></p>

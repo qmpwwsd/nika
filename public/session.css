@@ -396,3 +396,14 @@ body.m-bypass .mode-frame { background: repeating-linear-gradient(135deg, var(--
 @media (prefers-reduced-motion: reduce) {
   .dlg-chip .spin { animation: none; border-right-color: currentColor; border-style: dotted; }
 }
+
+/* 0.5 (W8): the list of Claude's own subagents above the transcript, and the link from a tool call to a subagent's transcript. The badge and line rules are in tokens.css. */
+#sess-subs { flex: none; border-bottom: 1px solid var(--line); padding: 4px 8px 4px 14px; }
+#sess-subs > summary { cursor: pointer; display: flex; align-items: center; gap: 6px; min-height: 32px; color: var(--text-muted); }
+#sess-subs > summary:hover { color: var(--text); }
+#sess-subs .sub-hid { font-size: var(--fs-small); }
+.subs-body { display: grid; gap: 4px; padding: 0 0 4px 4px; }
+.subs-ended { display: inline-flex; align-items: center; gap: 6px; width: fit-content; min-height: 24px; color: var(--text-muted); font-size: var(--fs-small); cursor: pointer; }
+.subs-list { position: relative; max-height: 40vh; overflow: auto; }
+.subs-list .model { font-size: var(--fs-small); }
+.hx-sub { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; min-height: 24px; display: inline-flex; align-items: center; justify-self: start; margin-top: 4px; font-size: var(--fs-small); }
