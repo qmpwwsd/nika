@@ -15,7 +15,7 @@ import { loadConfig, addProject, removeProject, getOrchestrator, setOrchestrator
 import { collect, findSession, findSessions } from '../src/model.js';
 import { startOrchestrator } from '../src/orchestrate.js';
 import { spawnAgent } from '../src/spawn.js';
-import { configDir, stateDir } from '../src/paths.js';
+import { configDir, stateDir, reportsDir } from '../src/paths.js';
 import { lastNonBlank, modeFromRows, promptFromRows, surveyShown, PROMPT_ROWS } from '../src/mode.js';
 import { MODEL_CATALOG } from '../src/models.js';
 import { makeWorld, fakeTmux, TMUX, CLAUDE } from './tmux-fake.js';
@@ -1346,6 +1346,28 @@ describe('spawn and orchestrator', () => {
         assert.deepEqual([res.status, res.body.error], [400, 'invalid'], JSON.stringify(extra));
       }
       assert.equal(r.exec.of('split-window').length, 0);
+    });
+
+    // 0.5 (W9): the route passes the body on; spawnAgent's parse runs before anything else, so a bad kind starts nothing
+    test('(−) a kind that is not a word of the list, and a kind with role orchestrator, are 400 invalid from the route: no tmux call, nothing written', async () => {
+      const r = await rigSpawn();
+      for (const extra of [{ kind: 'boss' }, { kind: 'Coder' }, { kind: '' }, { kind: null }, { kind: 5 }, { kind: ['coder'] }, { kind: 'coder ' }]) {
+        const res = await r.post({ name: 'bad', ...extra });
+        assert.deepEqual([res.status, res.body], [400, { error: 'invalid', message: 'invalid kind: use coder, reviewer, tester, designer, scout, writer or agent' }], JSON.stringify(extra));
+      }
+      const orch = await r.post({ name: 'planner', role: 'orchestrator', parent: '%1', kind: 'coder' });
+      assert.deepEqual([orch.status, orch.body], [400, { error: 'invalid', message: 'kind is for agents: a sub-orchestrator always shows sub-orchestrator' }]);
+      assert.deepEqual(r.exec.calls, [], 'not even a listing');
+      assert.equal(fs.existsSync(reportsDir(r.world.project.key, r.world.env)), false);
+    });
+
+    test('(+) a kind through the route tags the pane and comes back in the body; without one the model decides', async () => {
+      const r = await rigSpawn();
+      const asked = await r.post({ name: 'reviewer-1', kind: 'reviewer' });
+      assert.deepEqual([asked.status, asked.body.kind], [200, 'reviewer'], asked.raw);
+      const derived = await r.post({ name: 'builder-1', model: 'claude-sonnet-5-5' });
+      assert.deepEqual([derived.status, derived.body.kind], [200, 'coder'], derived.raw);
+      assert.deepEqual(r.exec.panes.filter((p) => p.id !== '%1').map((p) => p.kind), ['reviewer', 'coder']);
     });
   });
 

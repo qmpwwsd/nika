@@ -1,12 +1,16 @@
 // tmux panes on the default server. A pane name is taken only from the spawn convention title "[%<id>] <name>".
 import { PANE_ID, parseAgentTag } from '../ids.js';
+import { isKind } from '../labels.js';
 
 // The pane options nika sets on a pane it started or adopted, after the title and command, empty when unset: `@nika-role`
-// (orchestrator | sub-orchestrator | agent), `@nika-agent` (<project key>/<name>), `@nika-depth` (1 to 3), `@nika-parent` (a pane id).
+// (orchestrator | sub-orchestrator | agent), `@nika-agent` (<project key>/<name>), `@nika-depth` (1 to 3), `@nika-parent` (a pane id)
+// and `@nika-kind` (one of KINDS, only on an agent).
 // Each is read strictly: a value that does not parse is absent, never cleaned up.
-// `#{pane_dead}` is last (0.5): `1` for a pane whose process ended and that tmux keeps (`remain-on-exit`) with its tags and a command that still
+// `#{pane_dead}` follows (0.5): `1` for a pane whose process ended and that tmux keeps (`remain-on-exit`) with its tags and a command that still
 // reads as claude (tmux falls back to the pane's argv). The app tier's eligibility check refuses such a pane.
-const FORMAT = '#{pane_id}\t#{session_name}\t#{window_index}\t#{pane_title}\t#{pane_current_command}\t#{@nika-role}\t#{@nika-agent}\t#{@nika-depth}\t#{@nika-parent}\t#{pane_dead}';
+// `@nika-kind` is last (0.5, W9): one of the seven words of KINDS beside role `agent`, else absent. It is free text, so it comes last and a tab in a
+// forged value cannot shift another field.
+const FORMAT = '#{pane_id}\t#{session_name}\t#{window_index}\t#{pane_title}\t#{pane_current_command}\t#{@nika-role}\t#{@nika-agent}\t#{@nika-depth}\t#{@nika-parent}\t#{pane_dead}\t#{@nika-kind}';
 const ROLES = new Set(['orchestrator', 'sub-orchestrator', 'agent']);
 const SPAWN_TITLE = /^\[%\d+\]\s+(.+)$/;
 
@@ -23,7 +27,7 @@ export const paneDead = (value) => (value === '0' ? false : value === '1' ? true
 export function parsePaneLines(stdout) {
   const panes = new Map();
   for (const line of stdout.split('\n')) {
-    const [id, session, windowIndex, title = '', command = '', role = '', agent = '', depth = '', parent = '', deadField] = line.split('\t');
+    const [id, session, windowIndex, title = '', command = '', role = '', agent = '', depth = '', parent = '', deadField, ...kindParts] = line.split('\t');
     if (!/^%\d+$/.test(id ?? '')) continue;
     const dead = deadField === undefined ? false : paneDead(deadField);
     if (dead === null) continue;
@@ -32,6 +36,7 @@ export function parsePaneLines(stdout) {
     panes.set(id, {
       id, session: session ?? null, windowIndex: windowIndex ?? null, title, command, dead, name: m ? m[1].trim() : null, role: nika ? role : null,
       agent: nika && parseAgentTag(agent) ? agent : null, depth: nika && /^[123]$/.test(depth) ? Number(depth) : null, parent: nika && PANE_ID.test(parent) ? parent : null,
+      kind: nika && role === 'agent' && isKind(kindParts.join('\t')) ? kindParts.join('\t') : null, // an exact word, only beside role agent; a value with a tab is not one
     });
   }
   return panes;

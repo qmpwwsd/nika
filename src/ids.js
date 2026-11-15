@@ -43,3 +43,5 @@ export const CLAUDE_COMMAND = /^(?:claude|node|\d+\.\d+\.\d+[\w.+-]*)$/;
 /** `default` = no `--permission-mode` flag; `bypassPermissions` is never accepted (T4). */
 export const PERMISSION_MODES = ['default', 'manual', 'acceptEdits', 'plan', 'auto', 'dontAsk'];
 export const PANE_PLACEMENTS = ['beside', 'under-last'];
+/** The labels a spawned agent can carry (0.5, W9), in the order the spawn sheet lists them. The page keeps a copy in public/dash-model.js and a test compares the two. */
+export const KINDS = ['coder', 'reviewer', 'tester', 'designer', 'scout', 'writer', 'agent'];

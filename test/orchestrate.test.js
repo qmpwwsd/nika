@@ -3,7 +3,8 @@ import { test, describe, after, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { startOrchestrator, earlyExit, launchArgv, compactArgs, inProject, pickState, claudePane, sessionNameFor, reduceRc, tmuxLiteral } from '../src/orchestrate.js';
+import { startOrchestrator, earlyExit, launchArgv, compactArgs, inProject, pickState, claudePane, sessionNameFor, reduceRc, tmuxLiteral, tagPane } from '../src/orchestrate.js';
+import { KINDS } from '../src/ids.js';
 import { configDir } from '../src/paths.js';
 import { addProject, getOrchestrator, setOrchestrator, loadConfig, updateProjectConfig } from '../src/store.js';
 import { fakeTmux, makeWorld, TMUX, CLAUDE } from './tmux-fake.js';
@@ -1315,5 +1316,83 @@ describe('startOrchestrator: the compaction pair does not stay in the project se
     const live = fakeTmux();
     await startOrchestrator(v.project.key, v.ctx(live, { findSession: sessionLookup({ live: true, pane: PICK_PANE }, v.project.key) }));
     assert.deepEqual(live.calls, []);
+  });
+});
+
+describe('tagPane: the kind tag (0.5, W9)', () => {
+  const KEY = '0123456789abcdef';
+  const SET = (pane, name, value) => [TMUX, '-u', 'set-option', '-p', '-t', pane, name, value];
+  /** A recording tmux: every call is kept; `failOn` names the option whose set-option call rejects. */
+  const recorder = (failOn) => {
+    const calls = [];
+    const exec = async (cmd, args) => {
+      calls.push([cmd, ...args]);
+      if (failOn && args.includes(failOn)) throw Object.assign(new Error('set-option failed'), { code: 1, stderr: 'set-option failed\n' });
+      return { stdout: '', stderr: '' };
+    };
+    return { calls, ctx: { tmuxBin: TMUX, exec } };
+  };
+  const kindCalls = (calls) => calls.filter((c) => c.includes('@nika-kind'));
+
+  test('(+) an agent pane gets @nika-kind <word> as the last call, after @nika-parent, with the argv of the design byte for byte', async () => {
+    const { calls, ctx } = recorder();
+    await tagPane(ctx, '%7', 'agent', `${KEY}/builder-1`, 3, '%2', 'tester');
+    assert.deepEqual(calls, [
+      SET('%7', '@nika-role', 'agent'),
+      SET('%7', '@nika-agent', `${KEY}/builder-1`),
+      SET('%7', '@nika-depth', '3'),
+      SET('%7', '@nika-parent', '%2'),
+      SET('%7', '@nika-kind', 'tester'),
+    ]);
+  });
+
+  test('(+) an agent pane with no parent: role, agent, depth, kind; @nika-role stays the first call', async () => {
+    const { calls, ctx } = recorder();
+    await tagPane(ctx, '%7', 'agent', `${KEY}/builder-1`, 1, undefined, 'coder');
+    assert.deepEqual(calls.map((c) => c[6]), ['@nika-role', '@nika-agent', '@nika-depth', '@nika-kind']);
+    assert.deepEqual(calls.at(-1), SET('%7', '@nika-kind', 'coder'));
+  });
+
+  test('(+) each of the seven words is set as itself', async () => {
+    for (const kind of KINDS) {
+      const { calls, ctx } = recorder();
+      await tagPane(ctx, '%9', 'agent', `${KEY}/a`, 1, undefined, kind);
+      assert.deepEqual(kindCalls(calls), [SET('%9', '@nika-kind', kind)], kind);
+    }
+  });
+
+  test('(−) no @nika-kind call for an orchestrator or a sub-orchestrator, whatever kind is passed', async () => {
+    for (const role of ['orchestrator', 'sub-orchestrator']) {
+      const { calls, ctx } = recorder();
+      await tagPane(ctx, '%7', role, `${KEY}/x`, 2, '%1', 'coder');
+      assert.deepEqual(kindCalls(calls), [], role);
+      assert.equal(calls[0][6], '@nika-role');
+    }
+  });
+
+  test('(−) no @nika-kind call when the kind is not a word of the list: another word, case, padding, empty, null, undefined, not a string', async () => {
+    for (const kind of ['boss', 'Coder', 'coder ', ' coder', '', 'sub-orchestrator', null, undefined, 5, ['coder'], { toString: () => 'coder' }, 'coder\n', '$(id)', '%5']) {
+      const { calls, ctx } = recorder();
+      await tagPane(ctx, '%7', 'agent', `${KEY}/a`, 1, undefined, kind);
+      assert.deepEqual(kindCalls(calls), [], JSON.stringify(kind));
+      assert.equal(calls.length, 3, `the other tags are set as before: ${JSON.stringify(kind)}`);
+    }
+  });
+
+  test('(−) a failing kind call does not throw and the earlier tags stand; a failing earlier call does not stop the kind', async () => {
+    const failKind = recorder('@nika-kind');
+    await assert.doesNotReject(tagPane(failKind.ctx, '%7', 'agent', `${KEY}/a`, 1, undefined, 'coder'));
+    assert.equal(failKind.calls.length, 4);
+    const failRole = recorder('@nika-role');
+    await assert.doesNotReject(tagPane(failRole.ctx, '%7', 'agent', `${KEY}/a`, 1, undefined, 'coder'));
+    assert.deepEqual(kindCalls(failRole.calls), [SET('%7', '@nika-kind', 'coder')]);
+  });
+
+  test('(−) the orchestrator start never sets a kind: fresh start, tags are role, agent and depth only', async () => {
+    const w = await world();
+    const exec = fakeTmux();
+    assert.equal((await startOrchestrator(w.project.key, w.ctx(exec))).status, 200);
+    const names = exec.of('set-option').map((c) => c[4]);
+    assert.deepEqual(names, ['@nika-role', '@nika-agent', '@nika-depth']);
   });
 });

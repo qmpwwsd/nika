@@ -54,10 +54,10 @@ describe('collect', () => {
     assert.equal(a.subagents[0].modelLabel, 'Sonnet (latest)');
   });
 
-  test('(+) a snapshot subagent has exactly the seven fields of the contract: no toolUseId, no path, no transcript text (0.5, W8)', async () => {
+  test('(+) a snapshot subagent has exactly the eight fields of the contract (the seven of W8 and the label of W9): no toolUseId, no path, no transcript text', async () => {
     const a = byId(await snap(), SID.busy);
     assert.ok(a.subagents.length >= 2);
-    for (const s of a.subagents) assert.deepEqual(Object.keys(s).sort(), ['description', 'id', 'lastActivity', 'model', 'modelLabel', 'state', 'type']);
+    for (const s of a.subagents) assert.deepEqual(Object.keys(s).sort(), ['description', 'id', 'label', 'lastActivity', 'model', 'modelLabel', 'state', 'type']);
   });
 
   test('(+) a meta that names a toolUseId and only a pickedEffortModel (Claude Code 2.1.325) gets its model label; the tool-use id stays out of the whole snapshot', async () => {
@@ -73,7 +73,7 @@ describe('collect', () => {
       assert.equal(sub.modelLabel, modelLabel('claude-haiku-5-5'));
       assert.notEqual(sub.modelLabel, null);
       assert.equal(sub.state, 'finished');
-      assert.deepEqual(Object.keys(sub).sort(), ['description', 'id', 'lastActivity', 'model', 'modelLabel', 'state', 'type']);
+      assert.deepEqual(Object.keys(sub).sort(), ['description', 'id', 'label', 'lastActivity', 'model', 'modelLabel', 'state', 'type']);
       assert.equal(JSON.stringify(s).includes('toolu_01111111'), false);
       assert.equal(JSON.stringify(s).includes('toolUseId'), false);
     } finally {
@@ -327,7 +327,7 @@ describe('collect', () => {
 });
 
 describe('collect: key, role, attention (0.2 UI fields)', () => {
-  const AGENT_KEYS = ['attention', 'bridgeUrl', 'children', 'context', 'cwd', 'depth', 'gitBranch', 'hostId', 'id', 'lastActivity', 'lastPrompt', 'live', 'model', 'modelLabel', 'name', 'pane',
+  const AGENT_KEYS = ['attention', 'bridgeUrl', 'children', 'context', 'cwd', 'depth', 'gitBranch', 'hostId', 'id', 'label', 'lastActivity', 'lastPrompt', 'live', 'model', 'modelLabel', 'name', 'pane',
     'parent', 'pid', 'report', 'resumeCmd', 'role', 'startedAt', 'state', 'subagents', 'title', 'version', 'worktree'];
   const GROUP_KEYS = ['agents', 'counts', 'key', 'label', 'lastActivity', 'root'];
   const PANES = (role5, role6) => [`%5\twork\t1\t[%5] build-7-1\tzsh\t${role5}`, `%6\twork\t2\tMacBook.local\tclaude\t${role6}`];
@@ -464,6 +464,83 @@ describe('collect: key, role, attention (0.2 UI fields)', () => {
     } finally {
       cleanup(fx2);
     }
+  });
+});
+
+describe('collect: label (0.5, W9)', () => {
+  const K = '0123456789abcdef';
+  // the busy session sits in pane %5, the idle one in %6 (fixture); a listing line is id, session, window, title, command, role, agent, depth, parent, pane_dead, kind
+  const line = (pane, role, kind, tag = `${K}/x`) => `${pane}\twork\t1\t[${pane}] n\tnode\t${role}\t${role ? tag : ''}\t1\t\t0\t${kind}`;
+  const labels = async (l5, l6) => {
+    const s = await snap(7 * DAY, fakeExec({ tmuxLines: [l5, l6] }));
+    return [byId(s, SID.busy).label, byId(s, SID.idle).label];
+  };
+
+  test('(+) an agent pane shows its kind tag; an agent pane without one (spawned before 0.5, or the tag call failed) shows agent', async () => {
+    assert.deepEqual(await labels(line('%5', 'agent', 'coder'), line('%6', 'agent', '')), ['coder', 'agent']);
+    assert.deepEqual(await labels(line('%5', 'agent', 'reviewer'), line('%6', 'agent', 'writer')), ['reviewer', 'writer']);
+  });
+
+  test('(+) a sub-orchestrator pane shows sub-orchestrator, with a kind tag or without one', async () => {
+    assert.deepEqual(await labels(line('%5', 'sub-orchestrator', ''), line('%6', 'sub-orchestrator', 'coder')), ['sub-orchestrator', 'sub-orchestrator']);
+  });
+
+  test('(+) the main orchestrator, a pane nika did not tag, a session with no pane, and an ended session have no label', async () => {
+    const s = await snap(7 * DAY, fakeExec({ tmuxLines: [line('%5', 'orchestrator', 'coder'), '%6\twork\t2\tMacBook.local\tclaude'] }));
+    assert.equal(byId(s, SID.busy).label, null, 'orchestrator');
+    assert.equal(byId(s, SID.idle).label, null, 'untagged pane');
+    assert.equal(byId(s, SID.ended).label, null, 'ended');
+    const none = await snap(7 * DAY, fakeExec({ tmuxError: 'ENOENT' }));
+    assert.equal(byId(none, SID.busy).label, null, 'no tmux: no pane');
+    assert.equal(byId(await snap(), SID.busy).label, null, 'default fixture: panes without tags');
+  });
+
+  test('(−) a kind tag on a pane with no @nika-role is no label', async () => {
+    assert.deepEqual(await labels(line('%5', '', 'coder'), line('%6', 'admin', 'coder')), [null, null]);
+  });
+
+  test('(−) a kind tag that is not a word of the list never becomes a label: the agent shows agent', async () => {
+    for (const kind of ['boss', 'Coder', 'coder ', 'sub-orchestrator', 'orchestrator', 'coder\tx']) {
+      assert.deepEqual(await labels(line('%5', 'agent', kind), line('%6', 'agent', '')), ['agent', 'agent'], JSON.stringify(kind));
+    }
+  });
+
+  test('(+) a snapshot subagent\'s label: Explore is scout, general-purpose is agent (the fixture), a custom type is its own name, no type is agent', async () => {
+    const a = byId(await snap(), SID.busy);
+    assert.deepEqual(a.subagents.map((x) => [x.id, x.type, x.label]), [['bbb222', 'general-purpose', 'agent'], ['aaa111', 'Explore', 'scout']]);
+    const fx2 = makeFixture();
+    try {
+      const dirs = fs.readdirSync(path.join(fx2.claudeDir, 'projects')).map((n) => path.join(fx2.claudeDir, 'projects', n, SID.busy, 'subagents')).filter((d) => fs.existsSync(d));
+      assert.equal(dirs.length, 1);
+      const meta = (id, body) => fs.writeFileSync(path.join(dirs[0], `agent-${id}.meta.json`), JSON.stringify({ description: 'Check it', finished: true, ...body }));
+      meta('c000000000000001', { agentType: 'security-reviewer' });
+      meta('c000000000000002', { agentType: 'plugin:crew-code-reviewer' });
+      meta('c000000000000003', { agentType: 'a-very-long-agent-type-name-of-thirty' });
+      meta('c000000000000004', {});
+      meta('c000000000000005', { agentType: '\u001b[31mred\u001b[0m' });
+      const s = await collect({ config: fx2.config, exec: fakeExec(), now: NOW, sinceMs: 7 * DAY });
+      const by = Object.fromEntries(byId(s, SID.busy).subagents.map((x) => [x.id, x]));
+      assert.equal(by.c000000000000001.label, 'security-reviewer');
+      assert.equal(by.c000000000000001.type, 'security-reviewer', 'type stays beside the label');
+      assert.equal(by.c000000000000002.label, 'crew-code-reviewer');
+      assert.equal(by.c000000000000002.type, 'plugin:crew-code-reviewer', 'the full type stays for the title');
+      assert.equal(Array.from(by.c000000000000003.label).length, 24);
+      assert.equal(by.c000000000000004.label, 'agent');
+      assert.equal(by.c000000000000004.type, null);
+      assert.equal(by.c000000000000005.label, 'red');
+      for (const x of Object.values(by)) assert.deepEqual(Object.keys(x).sort(), ['description', 'id', 'label', 'lastActivity', 'model', 'modelLabel', 'state', 'type']);
+    } finally {
+      cleanup(fx2);
+    }
+  });
+
+  test('(−) the snapshot never carries the raw kind tag: only label (no `kind` key on an agent or its pane)', async () => {
+    const s = await snap(7 * DAY, fakeExec({ tmuxLines: [line('%5', 'agent', 'coder'), line('%6', 'agent', 'tester')] }));
+    for (const a of [byId(s, SID.busy), byId(s, SID.idle)]) {
+      assert.equal(Object.hasOwn(a, 'kind'), false);
+      assert.equal(Object.hasOwn(a.pane, 'kind'), false);
+    }
+    assert.equal(JSON.stringify(s.snapshot).includes('nika-kind'), false);
   });
 });
 

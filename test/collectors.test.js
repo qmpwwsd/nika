@@ -9,7 +9,7 @@ import { makeFixture, cleanup, fakeExec, SID, NOW, PROC_START, jsonl } from './h
 import { readRegistry, processTable, isAlive, parseStarttime, procStarts } from '../src/collect/registry.js';
 import { indexTranscripts, readTranscript, createTranscriptCache } from '../src/collect/transcripts.js';
 import { readSubagents, subagentDir, subagentTranscripts } from '../src/collect/subagents.js';
-import { SUBAGENT_ID, TOOL_USE_ID } from '../src/ids.js';
+import { SUBAGENT_ID, TOOL_USE_ID, KINDS } from '../src/ids.js';
 import { listPanes, parsePaneLines, paneDead } from '../src/collect/tmux.js';
 import { discoverReportDirs, indexReports } from '../src/collect/reports.js';
 import { resolveProject } from '../src/collect/projects.js';
@@ -646,12 +646,12 @@ describe('tmux', () => {
     assert.equal(panes.get('%4').command, 'zsh');
   });
 
-  test('(+) listPanes asks tmux for the nika tags after the title and command (role, agent, depth, parent), and for pane_dead last', async () => {
+  test('(+) listPanes asks tmux for the nika tags after the title and command (role, agent, depth, parent), then pane_dead, and the kind (0.5, W9) last', async () => {
     const exec = fakeExec();
     await listPanes(exec);
     const format = exec.calls[0].at(-1);
-    assert.ok(format.endsWith('\t#{@nika-role}\t#{@nika-agent}\t#{@nika-depth}\t#{@nika-parent}\t#{pane_dead}'));
-    assert.equal(format.split('\t').length, 10);
+    assert.ok(format.endsWith('\t#{@nika-role}\t#{@nika-agent}\t#{@nika-depth}\t#{@nika-parent}\t#{pane_dead}\t#{@nika-kind}'));
+    assert.equal(format.split('\t').length, 11);
   });
 
   const KEY = '0123456789abcdef';
@@ -710,6 +710,47 @@ describe('tmux', () => {
   test('(+) paneDead is the one parse rule (Start\'s orchestrator listing uses it too): "0" false, "1" true, anything else null', () => {
     assert.deepEqual(['0', '1'].map(paneDead), [false, true]);
     for (const value of ['', '2', ' 0', '1 ', 'x', undefined, null, 0, 1, true]) assert.equal(paneDead(value), null, String(JSON.stringify(value)));
+  });
+
+  // 0.5 (W9): `@nika-kind` is the last field (free text, so a tab in a forged value cannot shift another field) and is read only beside role agent
+  const KINDLINE = (role, kind, dead = '0') => `%5\twork\t1\t[%5] x\tnode\t${role}\t${KEY}/a\t1\t\t${dead}\t${kind}\n`;
+
+  test('(+) @nika-kind is read for a pane tagged agent, for each of the seven words', () => {
+    for (const kind of KINDS) assert.equal(parsePaneLines(KINDLINE('agent', kind)).get('%5').kind, kind, kind);
+  });
+
+  test('(+) a tagged agent pane without a kind has kind null; the kind does not disturb the other fields', () => {
+    const p = parsePaneLines(KINDLINE('agent', 'reviewer')).get('%5');
+    assert.deepEqual([p.role, p.agent, p.depth, p.parent, p.dead, p.name, p.command, p.kind], ['agent', `${KEY}/a`, 1, null, false, 'x', 'node', 'reviewer']);
+    assert.equal(parsePaneLines(KINDLINE('agent', '')).get('%5').kind, null);
+  });
+
+  test('(−) kind is null beside a role other than agent: an orchestrator, a sub-orchestrator, no role, an unknown role', () => {
+    for (const role of ['orchestrator', 'sub-orchestrator', '', 'admin', 'Agent']) assert.equal(parsePaneLines(KINDLINE(role, 'coder')).get('%5').kind, null, JSON.stringify(role));
+  });
+
+  test('(−) kind is null for anything but an exact word of the list: case, padding, other labels, an empty value', () => {
+    for (const kind of ['Coder', 'CODER', 'coder ', ' coder', '\tcoder', 'boss', 'sub-orchestrator', 'orchestrator', '', 'coder,tester', 'coder\r', '#{@nika-kind}', 'codеr']) {
+      assert.equal(parsePaneLines(KINDLINE('agent', kind)).get('%5').kind, null, JSON.stringify(kind));
+    }
+  });
+
+  test('(−) a line without the kind field (an older shape) has kind null and still parses', () => {
+    const p = parsePaneLines(`%5\twork\t1\t[%5] x\tnode\tagent\t${KEY}/a\t1\t\t0\n`).get('%5');
+    assert.deepEqual([p.role, p.agent, p.kind, p.dead], ['agent', `${KEY}/a`, null, false]);
+    assert.equal(parsePaneLines('%5\twork\t1\tt\tzsh\tagent\n').get('%5').kind, null);
+  });
+
+  test('(−) a kind value with a tab is not a word; the other fields still parse and pane_dead is still read', () => {
+    for (const kind of ['coder\tx', 'coder\t', '\t', 'coder\t0', 'x\tcoder']) {
+      const p = parsePaneLines(KINDLINE('agent', kind, '1')).get('%5');
+      assert.equal(p.kind, null, JSON.stringify(kind));
+      assert.deepEqual([p.role, p.agent, p.depth, p.dead], ['agent', `${KEY}/a`, 1, true], JSON.stringify(kind));
+    }
+  });
+
+  test('(−) a row with a valid kind but a pane_dead that is not 0 or 1 is still dropped: the kind never rescues it', () => {
+    for (const value of ['2', '', 'x', ' 1']) assert.equal(parsePaneLines(KINDLINE('agent', 'coder', value)).has('%5'), false, JSON.stringify(value));
   });
 
   test('(+) listPanes calls tmux -u list-panes -a with a fixed format', async () => {

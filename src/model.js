@@ -9,6 +9,7 @@ import { allReportDirs, indexReports } from './collect/reports.js';
 import { resolveProject } from './collect/projects.js';
 import { mapLimit } from './util.js';
 import { clean } from './text.js';
+import { subagentLabel } from './labels.js';
 import { UUID } from './ids.js';
 import { MODEL_CATALOG, modelWindow } from './models.js';
 import { compactLaunch } from './compact.js';
@@ -264,6 +265,7 @@ export async function collect({ config, exec, now = Date.now(), sinceMs, since =
       .map((s) => ({
         id: s.id,
         type: clean(s.type, 80),
+        label: subagentLabel(s.type), // Claude's own subagent type -> a kind or its cleaned name (0.5, W9); `type` stays for the title
         description: clean(s.description, PROMPT_MAX),
         model: clean(s.model, 80),
         modelLabel: modelLabel(s.model),
@@ -284,6 +286,8 @@ export async function collect({ config, exec, now = Date.now(), sinceMs, since =
         live: isLive,
         state,
         role: paneInfo?.role ?? null,
+        // what kind of agent the row is (0.5, W9): a spawned agent's kind tag (or `agent` when it has none), a sub-orchestrator's role; nothing for anything else
+        label: paneInfo?.role === 'sub-orchestrator' ? 'sub-orchestrator' : paneInfo?.role === 'agent' ? (paneInfo.kind ?? 'agent') : null,
         parent: null, // linkTree() fills these three for a live agent
         depth: null,
         children: [],

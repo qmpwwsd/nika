@@ -7,6 +7,7 @@ import { compactLaunch, WINDOW_ENV, PCT_ENV } from './compact.js';
 import { clean } from './text.js';
 import { paneDead } from './collect/tmux.js';
 import { NO_TMUX_SERVER } from './tmuxerr.js';
+import { isKind } from './labels.js';
 import { PROJECT_KEY, UUID, PANE_ID, TMUX_SESSION, RC_PREFIX, RC_NAME, CLAUDE_COMMAND } from './ids.js';
 
 /** `{ status, body }` with the common error body of contract §2. */
@@ -26,15 +27,17 @@ export const tmux = (ctx, ...args) => ctx.exec(ctx.tmuxBin, ['-u', ...args]);
  * Marks a pane nika created: `@nika-role` = orchestrator | sub-orchestrator | agent, so the main orchestrator is never confused
  * with the agents split into its window; `@nika-agent` = `<project key>/<name>` (an orchestrator's name is the constant
  * `orchestrator`), so maxAgents, the caps and the duplicate-name check count tmux's own record instead of agent-writable files (F5);
- * `depth` (1, 2 or 3, a constant) sets `@nika-depth` and `parent` (a pane id) `@nika-parent`, the tree of a nested spawn. Every value
- * is a constant, a validated name or a pane id: none has a `#` (set-option values are not format-expanded either way). Best effort:
+ * `depth` (1, 2 or 3, a constant) sets `@nika-depth` and `parent` (a pane id) `@nika-parent`, the tree of a nested spawn. `kind` (0.5, W9) sets
+ * `@nika-kind`, last, only on an agent pane and only when it is one of the seven words of KINDS (checked again here, so no other text reaches tmux).
+ * Every value is a constant, a validated name or a pane id: none has a `#` (set-option values are not format-expanded either way). Best effort:
  * the pane already runs, an untagged one is just not counted and never reused.
  */
-export async function tagPane(ctx, pane, role, agentTag, depth, parent) {
+export async function tagPane(ctx, pane, role, agentTag, depth, parent, kind) {
   await tmux(ctx, 'set-option', '-p', '-t', pane, '@nika-role', role).catch(() => {});
   if (agentTag) await tmux(ctx, 'set-option', '-p', '-t', pane, '@nika-agent', agentTag).catch(() => {});
   if ([1, 2, 3].includes(depth)) await tmux(ctx, 'set-option', '-p', '-t', pane, '@nika-depth', String(depth)).catch(() => {});
   if (typeof parent === 'string' && PANE_ID.test(parent)) await tmux(ctx, 'set-option', '-p', '-t', pane, '@nika-parent', parent).catch(() => {});
+  if (role === 'agent' && isKind(kind)) await tmux(ctx, 'set-option', '-p', '-t', pane, '@nika-kind', kind).catch(() => {});
 }
 
 /** Maps a failed tmux call to an error response. */

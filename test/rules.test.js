@@ -100,13 +100,13 @@ describe('built-in template', () => {
     assert.match(text, /At most 3 spawned agents/);
   });
 
-  test('(+) template version 2 adds a Sub-orchestrators section: when to use one, the spawn command, the three levels, the limit from the settings', async () => {
-    assert.equal(TEMPLATE_VERSION, 2);
+  test('(+) the template (version 3 since the labels of 0.5) has a Sub-orchestrators section: when to use one, the spawn command, the three levels, the limit from the settings', async () => {
+    assert.equal(TEMPLATE_VERSION, 3);
     const w = await world();
     await updateSettings({ limits: { maxAgents: 4 } }, w.env);
     await go(w, await prev(w));
     const text = get(w, 'rules/orchestration.md');
-    assert.ok(text.startsWith('<!-- nika:orchestration v2 sha256:'));
+    assert.ok(text.startsWith('<!-- nika:orchestration v3 sha256:'));
     const section = /^## Sub-orchestrators\n([\s\S]*?)(?=^## )/m.exec(text)?.[1] ?? '';
     assert.match(section, /nika spawn <name> <model> <brief> --role orchestrator/);
     assert.match(section, /three levels/);
@@ -114,6 +114,43 @@ describe('built-in template', () => {
     assert.match(section, /at most 4 agents of its own/i);
     assert.match(section, /`nika spawn` and `nika status`/);
     assert.match(text, /At most 4 spawned agents are live at a time under each orchestrator/);
+  });
+
+  test('(+) template version 3 tells the orchestrator to pass --kind: the command, the seven kinds with their meanings, the default from the model, no kind for a sub-orchestrator', async () => {
+    const w = await world();
+    await go(w, await prev(w));
+    const text = get(w, 'rules/orchestration.md');
+    const spawning = /^## Spawning agents with nika\n([\s\S]*?)(?=^## )/m.exec(text)?.[1] ?? '';
+    assert.match(spawning, /^nika spawn <name> <model> <brief> --kind <kind>$/m);
+    assert.ok(spawning.includes('`<kind>` says what the agent does; nika shows it as a label on the agent\'s row.'));
+    for (const v of ['`coder` (writes and changes code)', '`reviewer` (reviews code or designs)', '`tester` (writes and runs tests)', '`designer` (designs and plans)',
+      '`scout` (finds files and\nfacts, read-only)', '`writer` (writes docs and reports)', '`agent` (none of these)']) assert.ok(spawning.includes(v), v);
+    assert.match(spawning, /Always pass it\. Without it nika picks one from the\nmodel: the Builder model gives `coder`, the Reasoner model `designer`, the Scout model `scout`, any other model `agent`\./);
+    const sub = /^## Sub-orchestrators\n([\s\S]*?)(?=^## )/m.exec(text)?.[1] ?? '';
+    assert.match(sub, /^- A sub-orchestrator takes no `--kind`: its row always shows sub-orchestrator\.$/m);
+    assert.match(sub, /nika spawn <name> <model> <brief> --role orchestrator\n/, 'the sub-orchestrator command itself carries no --kind');
+    assert.ok(sub.indexOf('takes no `--kind`') > sub.indexOf('Only the main orchestrator'), 'the bullet follows the first bullet');
+    assert.ok(sub.indexOf('takes no `--kind`') < sub.indexOf('A sub-orchestrator may run only'), 'and comes before the second');
+  });
+
+  test('(−) the kind is for the orchestrator to fill in: the template has no placeholder for it, and its backticked kind words are exactly the seven', async () => {
+    const src = fs.readFileSync(new URL('../templates/orchestration.md', import.meta.url), 'utf8');
+    const used = new Set([...src.matchAll(/`(coder|reviewer|tester|designer|scout|writer|agent)`/g)].map((m) => m[1]));
+    assert.deepEqual([...used].sort(), ['agent', 'coder', 'designer', 'reviewer', 'scout', 'tester', 'writer']);
+    assert.equal(/\{\{\s*kind/.test(src), false, 'the kind is for the orchestrator to fill in, not a placeholder nika fills');
+  });
+
+  test('(−) a file written by template version 2 reads as outdated, not current: applying it offers the --kind text', async () => {
+    const w = await world();
+    put(w, 'rules/orchestration.md', rulesMarker('# v2 rules\n', 2));
+    assert.equal((await rulesState(w.project)).state, 'outdated');
+    const body = await prev(w);
+    const rules = entry(body, 'rules/orchestration.md');
+    assert.equal(rules.action, 'update');
+    assert.notEqual(rules.foreign, true);
+    await go(w, body);
+    assert.match(get(w, 'rules/orchestration.md'), /--kind <kind>/);
+    assert.equal((await rulesState(w.project)).state, 'nika');
   });
 
   test('(−) a file written by template version 1 reads as outdated, not current: applying it offers the new section', async () => {
@@ -292,7 +329,7 @@ describe('preview', () => {
     assert.deepEqual(body.files.map((f) => [f.path, f.action]), [['rules/orchestration.md', 'create'], ['CLAUDE.md', 'create'], ['.claude/settings.local.json', 'unchanged']]);
     const rules = entry(body, 'rules/orchestration.md');
     assert.equal(rules.foreign, false);
-    assert.match(rules.diff, /^--- a\/rules\/orchestration\.md\n\+\+\+ b\/rules\/orchestration\.md\n@@ -0,0 \+1,\d+ @@\n\+<!-- nika:orchestration v2 sha256:[0-9a-f]{64} -->\n/);
+    assert.match(rules.diff, /^--- a\/rules\/orchestration\.md\n\+\+\+ b\/rules\/orchestration\.md\n@@ -0,0 \+1,\d+ @@\n\+<!-- nika:orchestration v3 sha256:[0-9a-f]{64} -->\n/);
     assert.equal(entry(body, 'CLAUDE.md').diff, `--- a/CLAUDE.md\n+++ b/CLAUDE.md\n@@ -0,0 +1 @@\n+${IMPORT}\n`);
     assert.equal(entry(body, '.claude/settings.local.json').diff, '');
     assert.ok(body.warnings.some((x) => /not a git repository/.test(x)));

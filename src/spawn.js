@@ -8,7 +8,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn as nodeSpawn } from 'node:child_process';
-import { loadConfig, effectiveAgents } from './store.js';
+import { loadConfig, effectiveAgents, effectiveModels } from './store.js';
 import { reportsDir } from './paths.js';
 import { ensureDir, writeAtomic } from './fwrite.js';
 import { openRegular, readAt, readHead } from './fsafe.js';
@@ -16,6 +16,7 @@ import { listPanes } from './collect/tmux.js';
 import { clean } from './text.js';
 import { NO_TMUX_SERVER } from './tmuxerr.js';
 import { compactLaunch, compactEnv, PCT_ENV } from './compact.js';
+import { isKind, kindFromModel } from './labels.js';
 import { PROJECT_KEY, AGENT_NAME, parseAgentTag, MODEL_ID, TMUX_SESSION, PANE_ID, WINDOW_ID, RC_PREFIX, RC_NAME, PERMISSION_MODES } from './ids.js';
 import { fail, binsMissing, tmux, tmuxFail, tagPane, earlyExit, sessionNameFor, reduceRc, permissionFlags, launchMode, tmuxLiteral } from './orchestrate.js';
 
@@ -24,7 +25,8 @@ const AGENT_JSON_MAX = 4096;
 const GUARD_TEMPLATE = new URL('../templates/guard-prompt.txt', import.meta.url);
 const GUARD_ORCHESTRATOR = new URL('../templates/guard-orchestrator.txt', import.meta.url);
 // tmux's record of nika's panes: pane id, whether the pane is dead (remain-on-exit keeps it, tags and all), the tags tagPane sets
-// (`@nika-role`, `@nika-agent` = `<project key>/<name>`, `@nika-depth`, `@nika-parent`), then the session and window names (free text, so last)
+// (`@nika-role`, `@nika-agent` = `<project key>/<name>`, `@nika-depth`, `@nika-parent`), then the session and window names (free text, so last);
+// `@nika-kind` (0.5, W9) is a label only and no cap, check or tree reads it, so this listing does not ask for it
 const AGENT_LIST = '#{pane_id}\t#{pane_dead}\t#{@nika-role}\t#{@nika-agent}\t#{@nika-depth}\t#{@nika-parent}\t#{session_name}\t#{window_name}';
 const DENIED_TOOLS = ['Bash(nika:*)', 'Bash(tmux:*)', 'Bash(claude:*)', 'Bash(git add:*)', 'Bash(git commit:*)', 'Bash(git push:*)'];
 // A sub-orchestrator may run `nika spawn` and `nika status` and nothing else of nika (advisory, like every list here: rules constraint 12)
@@ -56,7 +58,7 @@ const invalid = (message) => ({ failure: fail(400, 'invalid', message) });
 /** Request fields → { value } or { failure }. Nothing from the request reaches a path or a shell. */
 function parseRequest(req) {
   if (!isPlainObject(req)) return invalid('request must be an object');
-  const { project, name, model, brief, permissionMode, under, session, rc, role = 'agent', parent } = req;
+  const { project, name, model, brief, permissionMode, under, session, rc, role = 'agent', kind, parent } = req;
   if (typeof project !== 'string' || !PROJECT_KEY.test(project)) return invalid('invalid project key');
   if (typeof name !== 'string' || !AGENT_NAME.test(name)) return invalid('invalid agent name');
   if (name === 'orchestrator') return invalid('orchestrator is reserved'); // the main orchestrator's tag is `<key>/orchestrator`: keep the two forms apart
@@ -70,8 +72,11 @@ function parseRequest(req) {
   if (session !== undefined && (typeof session !== 'string' || !TMUX_SESSION.test(session))) return invalid('invalid session name');
   if (rc !== undefined && rc !== 'off' && (typeof rc !== 'string' || !RC_PREFIX.test(rc))) return invalid('invalid rc');
   if (role !== 'agent' && role !== 'orchestrator') return invalid('invalid role');
+  // the label of an agent's row (0.5, W9): one of the seven words of KINDS, never for a sub-orchestrator (its role tag is its label)
+  if (kind !== undefined && !isKind(kind)) return invalid('invalid kind: use coder, reviewer, tester, designer, scout, writer or agent');
+  if (kind !== undefined && role === 'orchestrator') return invalid('kind is for agents: a sub-orchestrator always shows sub-orchestrator');
   if (parent !== undefined && (typeof parent !== 'string' || !PANE_ID.test(parent))) return invalid('invalid parent pane');
-  return { value: { project, name, model, brief, permissionMode, under, session, rc, role, parent } };
+  return { value: { project, name, model, brief, permissionMode, under, session, rc, role, kind, parent } };
 }
 
 // Spawns of one project run one at a time, so the caps count the pane the previous spawn just created (a CLI process and the app
@@ -265,6 +270,9 @@ async function doSpawn(v, project, config, ctx) {
   await writeAtomic(dir, `${v.name}.brief.md`, v.brief);
   const permissionMode = v.permissionMode ?? defaultMode;
   const role = v.role === 'orchestrator' ? SUB_ROLE : 'agent';
+  // the label (0.5, W9): the request's kind, else the one this spawn's own model names among the project's role models; a sub-orchestrator has none.
+  // It only labels the row: it is not stored in agent.json and never reaches claude.
+  const kind = role === 'agent' ? (v.kind ?? kindFromModel(v.model, effectiveModels(config, project.key))) : null;
   // auto-compact (ADR 0014): decided now from this spawn's own model; _run-agent re-checks it and turns it into the env of claude
   const launch = compactLaunch(v.model, config.compaction);
   const compact = launch ? { window: launch.window, pct: launch.env[PCT_ENV] } : null;
@@ -283,7 +291,7 @@ async function doSpawn(v, project, config, ctx) {
   }
   if (!PANE_ID.test(pane)) return fail(502, 'tmux_failed', 'tmux did not return a pane id');
   ctx.started?.set(pane, { key: project.key, name: v.name, sessionId: null, role, parent: who.parent, depth: who.depth, mode: launchMode(permissionMode) });
-  await tagPane(ctx, pane, role, `${project.key}/${v.name}`, who.depth, who.parent);
+  await tagPane(ctx, pane, role, `${project.key}/${v.name}`, who.depth, who.parent, kind);
   const exited = await earlyExit(ctx, pane);
   if (exited) {
     ctx.started?.delete(pane);
@@ -294,7 +302,7 @@ async function doSpawn(v, project, config, ctx) {
   await tmux(ctx, 'select-pane', '-t', pane, '-T', `[${pane}] ${v.name}`).catch(() => {});
   return {
     status: 200,
-    body: { pane, session, sessionId: null, reports: { dir, session: `${v.name}.session`, report: `${v.name}.md`, rc: `${v.name}.rc`, remote: `${v.name}.remote` } },
+    body: { pane, session, sessionId: null, kind, reports: { dir, session: `${v.name}.session`, report: `${v.name}.md`, rc: `${v.name}.rc`, remote: `${v.name}.remote` } },
   };
 }
 

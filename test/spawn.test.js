@@ -14,6 +14,7 @@ import { reportsDir } from '../src/paths.js';
 import { addProject, updateProjectConfig } from '../src/store.js';
 import { ensureDir, writeAtomic } from '../src/fwrite.js';
 import { collect } from '../src/model.js';
+import { listPanes } from '../src/collect/tmux.js';
 import { indexReports } from '../src/collect/reports.js';
 import { fakeTmux, makeWorld, TMUX, CLAUDE, NIKA_ARGV } from './tmux-fake.js';
 import { makeFixture, cleanup, fakeExec, SID, NOW } from './helpers.js';
@@ -27,7 +28,7 @@ const world = async (settings) => {
 after(() => worlds.forEach((w) => w.cleanup()));
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-const LIST_ALL = [TMUX, '-u', 'list-panes', '-a', '-F', '#{pane_id}\t#{session_name}\t#{window_index}\t#{pane_title}\t#{pane_current_command}\t#{@nika-role}\t#{@nika-agent}\t#{@nika-depth}\t#{@nika-parent}\t#{pane_dead}'];
+const LIST_ALL = [TMUX, '-u', 'list-panes', '-a', '-F', '#{pane_id}\t#{session_name}\t#{window_index}\t#{pane_title}\t#{pane_current_command}\t#{@nika-role}\t#{@nika-agent}\t#{@nika-depth}\t#{@nika-parent}\t#{pane_dead}\t#{@nika-kind}'];
 const LIST_AGENTS = [TMUX, '-u', 'list-panes', '-a', '-F', '#{pane_id}\t#{pane_dead}\t#{@nika-role}\t#{@nika-agent}\t#{@nika-depth}\t#{@nika-parent}\t#{session_name}\t#{window_name}'];
 const OTHER_KEY = '0123456789abcdef'; // the key of some other project
 const CHECK = (pane) => [TMUX, '-u', 'display-message', '-p', '-t', pane, '#{pane_dead}']; // the early-exit check (F4), made once the pane is created and tagged
@@ -54,7 +55,7 @@ describe('spawnAgent: placement and files', () => {
     const r = await spawnAgent(req(w), ctx);
     assert.deepEqual(r, {
       status: 200,
-      body: { pane: '%20', session: 'My-App', sessionId: null, reports: { dir: rd(w), session: 'builder-1.session', report: 'builder-1.md', rc: 'builder-1.rc', remote: 'builder-1.remote' } },
+      body: { pane: '%20', session: 'My-App', sessionId: null, kind: 'agent', reports: { dir: rd(w), session: 'builder-1.session', report: 'builder-1.md', rc: 'builder-1.rc', remote: 'builder-1.remote' } },
     });
     assert.deepEqual(exec.calls, [
       LIST_ALL,
@@ -63,6 +64,7 @@ describe('spawnAgent: placement and files', () => {
       [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-role', 'agent'],
       [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-agent', `${w.project.key}/builder-1`],
       [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-depth', '1'],
+      [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-kind', 'agent'],
       CHECK('%20'),
       [TMUX, '-u', 'select-pane', '-t', '%20', '-T', '[%20] builder-1'],
     ]);
@@ -601,7 +603,7 @@ describe('spawnAgent: no tmux server or no project session (F4)', () => {
     const r = await spawnAgent(req(w), ctx);
     assert.deepEqual(r, {
       status: 200,
-      body: { pane: '%20', session: 'My-App', sessionId: null, reports: { dir: rd(w), session: 'builder-1.session', report: 'builder-1.md', rc: 'builder-1.rc', remote: 'builder-1.remote' } },
+      body: { pane: '%20', session: 'My-App', sessionId: null, kind: 'agent', reports: { dir: rd(w), session: 'builder-1.session', report: 'builder-1.md', rc: 'builder-1.rc', remote: 'builder-1.remote' } },
     });
     assert.deepEqual(exec.calls, [
       LIST_ALL, // no server: both listings fail, which is "no panes", not an error
@@ -610,6 +612,7 @@ describe('spawnAgent: no tmux server or no project session (F4)', () => {
       [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-role', 'agent'],
       [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-agent', `${w.project.key}/builder-1`],
       [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-depth', '1'],
+      [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-kind', 'agent'],
       CHECK('%20'),
       [TMUX, '-u', 'select-pane', '-t', '%20', '-T', '[%20] builder-1'],
     ]);
@@ -958,7 +961,7 @@ describe('spawnAgent: nesting and limits (0.4)', () => {
     assert.deepEqual(JSON.parse(read(w, 'under-sub.agent.json')), { model: 'sonnet', permissionMode: 'default', rc: '', role: 'agent', parent: '%2', depth: 3, compact: COMPACT_1M });
     assert.deepEqual(exec.of('set-option').filter((c) => c[3] === '%21'), [
       ['set-option', '-p', '-t', '%21', '@nika-role', 'agent'], ['set-option', '-p', '-t', '%21', '@nika-agent', `${w.project.key}/under-sub`],
-      ['set-option', '-p', '-t', '%21', '@nika-depth', '3'], ['set-option', '-p', '-t', '%21', '@nika-parent', '%2'],
+      ['set-option', '-p', '-t', '%21', '@nika-depth', '3'], ['set-option', '-p', '-t', '%21', '@nika-parent', '%2'], ['set-option', '-p', '-t', '%21', '@nika-kind', 'agent'],
     ]);
   });
 
@@ -1004,6 +1007,7 @@ describe('spawnAgent: nesting and limits (0.4)', () => {
       [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-agent', `${w.project.key}/builder-1`],
       [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-depth', '2'],
       [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-parent', '%1'],
+      [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-kind', 'agent'],
       CHECK('%20'),
       [TMUX, '-u', 'select-pane', '-t', '%20', '-T', '[%20] builder-1'],
     ]);
@@ -2045,5 +2049,167 @@ describe('spawnAgent: the fit', () => {
     const r = await spawnAgent(req(w), w.ctx(rig.exec, { fit: rig.fit }));
     assert.deepEqual([r.status, r.body.error], [409, 'conflict']);
     assert.deepEqual(rig.log, []);
+  });
+});
+
+describe('spawnAgent: the kind label (0.5, W9)', () => {
+  const MAIN = (w) => ({ id: '%1', session: 'My-App', window: 0, windowName: 'orchestrator', command: 'claude', role: 'orchestrator', agent: `${w.project.key}/orchestrator`, depth: '1' });
+  const KIND_CALL = (pane, kind) => [TMUX, '-u', 'set-option', '-p', '-t', pane, '@nika-kind', kind];
+  const kindCalls = (exec) => exec.of('set-option').filter((c) => c[4] === '@nika-kind').map((c) => c[5]);
+  const MSG_KIND = 'invalid kind: use coder, reviewer, tester, designer, scout, writer or agent';
+  const MSG_ORCH = 'kind is for agents: a sub-orchestrator always shows sub-orchestrator';
+  const paneOf = (exec, id) => exec.panes.find((p) => p.id === id);
+  /** Spawns once in a fresh world (Settings `settings`, then `after(w)`), returns { r, exec, w }. */
+  async function spawnOnce(over = {}, { settings, after: setup, panes } = {}) {
+    const w = await world(settings);
+    await setup?.(w);
+    const exec = fakeTmux({ panes: panes?.(w) ?? BASE_PANES() });
+    const r = await spawnAgent(req(w, over), w.ctx(exec));
+    return { r, exec, w };
+  }
+
+  test('(+) kind reviewer under the main orchestrator: @nika-kind reviewer is the last tag call, after @nika-parent; the body carries it; the listing reads it back', async () => {
+    const w = await world();
+    const exec = fakeTmux({ panes: [MAIN(w)] });
+    const r = await spawnAgent(req(w, { kind: 'reviewer', parent: '%1' }), w.ctx(exec));
+    assert.equal(r.status, 200);
+    assert.equal(r.body.kind, 'reviewer');
+    assert.deepEqual(exec.calls, [
+      LIST_ALL,
+      LIST_AGENTS,
+      [TMUX, '-u', 'split-window', '-h', '-t', '=My-App:', '-c', w.project.dir, '-P', '-F', '#{pane_id}', '--', ...NIKA_ARGV, '_run-agent', w.project.key, 'builder-1'],
+      [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-role', 'agent'],
+      [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-agent', `${w.project.key}/builder-1`],
+      [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-depth', '2'],
+      [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-parent', '%1'],
+      KIND_CALL('%20', 'reviewer'),
+      CHECK('%20'),
+      [TMUX, '-u', 'select-pane', '-t', '%20', '-T', '[%20] builder-1'],
+    ]);
+    const { panes } = await listPanes(exec, TMUX);
+    assert.deepEqual([panes.get('%20').role, panes.get('%20').kind], ['agent', 'reviewer']);
+    assert.equal(panes.get('%1').kind, null, 'the orchestrator pane has none');
+  });
+
+  test('(+) each of the seven words can be asked for', async () => {
+    for (const kind of ['coder', 'reviewer', 'tester', 'designer', 'scout', 'writer', 'agent']) {
+      const { r, exec } = await spawnOnce({ kind });
+      assert.equal(r.status, 200, kind);
+      assert.equal(r.body.kind, kind);
+      assert.deepEqual(kindCalls(exec), [kind]);
+      assert.equal(paneOf(exec, '%20').kind, kind);
+    }
+  });
+
+  test('(+) a kind asked for beats the model: the Builder model with kind writer is writer; kind agent on the Builder model is agent', async () => {
+    assert.equal((await spawnOnce({ model: 'claude-sonnet-5-5', kind: 'writer' })).r.body.kind, 'writer');
+    const { r, exec } = await spawnOnce({ model: 'claude-sonnet-5-5', kind: 'agent' });
+    assert.equal(r.body.kind, 'agent');
+    assert.deepEqual(kindCalls(exec), ['agent']);
+  });
+
+  test('(+) without kind the model decides at spawn: the Builder model is coder, the Reasoner designer, the Scout scout, anything else agent', async () => {
+    const table = [['claude-sonnet-5-5', 'coder'], ['claude-opus-5-5', 'designer'], ['claude-haiku-5-5', 'scout'], ['claude-fable-5-1', 'agent'], ['claude-sonnet-4-1', 'agent']];
+    for (const [model, kind] of table) {
+      const { r, exec } = await spawnOnce({ model });
+      assert.equal(r.status, 200, model);
+      assert.equal(r.body.kind, kind, model);
+      assert.deepEqual(kindCalls(exec), [kind], model);
+      assert.equal(paneOf(exec, '%20').kind, kind, model);
+    }
+  });
+
+  test('(−) without kind an alias or a 1M id is not a role\'s model (exact match, no alias resolution): agent', async () => {
+    for (const model of ['sonnet', 'opus', 'haiku', 'claude-sonnet-5-5[1m]', 'sonnet[1m]']) {
+      const { r, exec } = await spawnOnce({ model });
+      assert.deepEqual([r.status, r.body.kind, kindCalls(exec)], [200, 'agent', ['agent']], model);
+    }
+  });
+
+  test('(+) the project\'s own role models beat Settings\': its Builder id is coder and Settings\' is no longer', async () => {
+    const own = (w) => updateProjectConfig(w.project.key, { models: { orchestrator: null, reasoner: null, builder: 'claude-sonnet-4-1', scout: null } }, w.env);
+    assert.equal((await spawnOnce({ model: 'claude-sonnet-4-1' }, { after: own })).r.body.kind, 'coder');
+    assert.equal((await spawnOnce({ model: 'claude-sonnet-5-5' }, { after: own })).r.body.kind, 'agent', 'Settings\' builder id is overridden for this project');
+    assert.equal((await spawnOnce({ model: 'claude-haiku-5-5' }, { after: own })).r.body.kind, 'scout', 'a role the project leaves alone still follows Settings');
+  });
+
+  test('(+) Settings\' role models decide when the project sets none', async () => {
+    assert.equal((await spawnOnce({ model: 'claude-opus-4-1' }, { settings: { models: { builder: 'claude-opus-4-1' } } })).r.body.kind, 'coder');
+  });
+
+  test('(−) two roles on one id that name different kinds: agent', async () => {
+    const { r, exec } = await spawnOnce({ model: 'claude-sonnet-5-5' }, { settings: { models: { scout: 'claude-sonnet-5-5' } } });
+    assert.deepEqual([r.body.kind, kindCalls(exec)], ['agent', ['agent']]);
+  });
+
+  test('(+) a sub-orchestrator gets no @nika-kind call at all, and its body kind is null', async () => {
+    const w = await world();
+    const exec = fakeTmux({ panes: [MAIN(w)] });
+    const r = await spawnAgent(req(w, { name: 'planner', role: 'orchestrator', parent: '%1', model: 'claude-sonnet-5-5' }), w.ctx(exec));
+    assert.equal(r.status, 200);
+    assert.equal(r.body.kind, null);
+    assert.deepEqual(kindCalls(exec), []);
+    assert.deepEqual(exec.of('set-option').map((c) => c[4]), ['@nika-role', '@nika-agent', '@nika-depth', '@nika-parent']);
+    assert.equal(paneOf(exec, '%20').kind ?? '', '');
+  });
+
+  test('(−) a kind that is not a word of the list is 400 invalid with the exact message; nothing is written and tmux is never called', async () => {
+    for (const kind of ['Coder', 'CODER', 'boss', '', null, 5, ['coder'], 'coder ', ' coder', 'sub-orchestrator', 'orchestrator', {}, true, 'coder\n']) {
+      const w = await world();
+      const exec = fakeTmux({ panes: BASE_PANES() });
+      const r = await spawnAgent(req(w, { kind }), w.ctx(exec));
+      assert.deepEqual(r, { status: 400, body: { error: 'invalid', message: MSG_KIND } }, JSON.stringify(kind));
+      assert.deepEqual(exec.calls, [], JSON.stringify(kind));
+      assert.equal(fs.existsSync(rd(w)), false, `${JSON.stringify(kind)}: no report folder, brief or agent.json`);
+    }
+  });
+
+  test('(−) a kind with role orchestrator is 400 with its own message; nothing is created', async () => {
+    for (const kind of ['coder', 'agent', 'reviewer']) {
+      const w = await world();
+      const exec = fakeTmux({ panes: [MAIN(w)] });
+      const r = await spawnAgent(req(w, { name: 'planner', role: 'orchestrator', parent: '%1', kind }), w.ctx(exec));
+      assert.deepEqual(r, { status: 400, body: { error: 'invalid', message: MSG_ORCH } }, kind);
+      assert.deepEqual(exec.calls, []);
+      assert.equal(fs.existsSync(rd(w)), false);
+    }
+  });
+
+  test('(−) the kind check runs before anything else of the request: an invalid kind beside an invalid project key still reads as the first failing check in parse order', async () => {
+    const w = await world();
+    const exec = fakeTmux({ panes: BASE_PANES() });
+    const bad = await spawnAgent({ ...req(w, { kind: 'boss' }), project: 'nope' }, w.ctx(exec));
+    assert.equal(bad.body.message, 'invalid project key', 'project is checked first, as before');
+    const unregistered = await spawnAgent(req(w, { kind: 'boss', project: '0123456789abcdef' }), w.ctx(exec));
+    assert.equal(unregistered.status, 400, 'a bad kind is refused before the project is looked up');
+    assert.equal(unregistered.body.message, MSG_KIND);
+    assert.deepEqual(exec.calls, []);
+  });
+
+  test('(−) the kind never reaches claude: agent.json keeps its seven keys, no file holds it, claude\'s argv and env do not carry it', async () => {
+    const { w, run } = await prepared({ kind: 'reviewer' });
+    assert.deepEqual(Object.keys(JSON.parse(read(w, 'builder-1.agent.json'))).sort(), ['compact', 'depth', 'model', 'parent', 'permissionMode', 'rc', 'role']);
+    assert.deepEqual(fs.readdirSync(rd(w)).sort(), ['.last-pane', 'builder-1.agent.json', 'builder-1.brief.md']);
+    for (const f of fs.readdirSync(rd(w))) assert.equal(read(w, f).includes('reviewer'), false, f);
+    const { spawn } = await run();
+    assert.equal(JSON.stringify(spawn.calls[0].args).includes('reviewer'), false);
+    assert.equal(Object.keys(spawn.calls[0].opts.env).some((k) => /kind/i.test(k)), false);
+  });
+
+  test('(−) an agent.json with a kind key is refused by _run-agent (exit 3): the file nika wrote has none', async () => {
+    const { w, run } = await prepared();
+    const good = JSON.parse(read(w, 'builder-1.agent.json'));
+    await put(w, 'builder-1.agent.json', `${JSON.stringify({ ...good, kind: 'coder' })}\n`);
+    const { code, spawn, stderr } = await run();
+    assert.equal(code, 3);
+    assert.equal(spawn.calls.length, 0);
+    assert.match(stderr.lines.join(''), /unexpected fields/);
+  });
+
+  test('(−) the started record of the process is unchanged by the kind (the snapshot reads the tag)', async () => {
+    const w = await world();
+    const ctx = w.ctx(fakeTmux({ panes: BASE_PANES() }));
+    await spawnAgent(req(w, { kind: 'tester' }), ctx);
+    assert.deepEqual(ctx.started.get('%20'), { key: w.project.key, name: 'builder-1', sessionId: null, role: 'agent', parent: null, depth: 1, mode: 'manual' });
   });
 });

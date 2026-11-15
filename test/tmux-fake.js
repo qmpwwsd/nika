@@ -45,7 +45,7 @@ export function fakeTmux({ panes = [], enoent = false, failOn = [], nextId = 20 
   };
   const after = (args, flag) => args[args.indexOf(flag) + 1];
   // the format variables nika uses; like tmux, an unset @option expands to an empty string
-  const fields = { pane_id: 'id', session_name: 'session', window_index: 'window', window_name: 'windowName', pane_title: 'title', pane_current_command: 'command', '@nika-role': 'role', '@nika-agent': 'agent', '@nika-depth': 'depth', '@nika-parent': 'parent', pane_dead: 'dead' };
+  const fields = { pane_id: 'id', session_name: 'session', window_index: 'window', window_name: 'windowName', pane_title: 'title', pane_current_command: 'command', '@nika-role': 'role', '@nika-agent': 'agent', '@nika-depth': 'depth', '@nika-parent': 'parent', pane_dead: 'dead', '@nika-kind': 'kind' };
   const expand = (format, p) => format.replace(/#\{([^}]+)\}/g, (m, k) => {
     if (!Object.hasOwn(fields, k)) throw new Error(`unexpected format variable ${k}`);
     return String(p[fields[k]] ?? '');
@@ -100,14 +100,15 @@ export function fakeTmux({ panes = [], enoent = false, failOn = [], nextId = 20 
         if (!host) throw tmuxError(`can't find pane: ${target}`);
         return { stdout: create(host.session, host.windowName, 'node'), stderr: '' };
       }
-      case 'set-option': { // only `-p -t %n @nika-role <orchestrator|sub-orchestrator|agent>`, `@nika-agent <key>/<name>`, `@nika-depth <1|2|3>` and `@nika-parent <%n>`, the pane options nika sets
+      case 'set-option': { // only `-p -t %n @nika-role <orchestrator|sub-orchestrator|agent>`, `@nika-agent <key>/<name>`, `@nika-depth <1|2|3>`, `@nika-parent <%n>` and `@nika-kind <one of the seven kinds>`, the pane options nika sets
         const [flag, t, pane, key, value] = rest;
         const target = state.find((p) => p.id === pane);
-        const field = { '@nika-role': 'role', '@nika-agent': 'agent', '@nika-depth': 'depth', '@nika-parent': 'parent' }[key];
+        const field = { '@nika-role': 'role', '@nika-agent': 'agent', '@nika-depth': 'depth', '@nika-parent': 'parent', '@nika-kind': 'kind' }[key];
         const valid = key === '@nika-role' ? ['orchestrator', 'sub-orchestrator', 'agent'].includes(value)
           : key === '@nika-depth' ? ['1', '2', '3'].includes(value)
             : key === '@nika-parent' ? /^%\d{1,6}$/.test(value)
-              : key === '@nika-agent' && /^[a-z0-9]{16}\/[a-z0-9][a-z0-9-]{0,39}$/.test(value);
+              : key === '@nika-kind' ? ['coder', 'reviewer', 'tester', 'designer', 'scout', 'writer', 'agent'].includes(value)
+                : key === '@nika-agent' && /^[a-z0-9]{16}\/[a-z0-9][a-z0-9-]{0,39}$/.test(value);
         if (flag !== '-p' || t !== '-t' || !valid || rest.length !== 5) throw new Error(`unexpected set-option ${rest.join(' ')}`);
         if (!target) throw tmuxError("can't find pane");
         target[field] = value;
