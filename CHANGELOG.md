@@ -25,13 +25,23 @@ Session window (desktop app):
   under the box: "Suggestion: Tab or → accepts what Claude suggests." Press **Tab** or **→** to take it: nika checks that Claude
   is waiting and still shows exactly that suggestion, presses Tab in Claude's input once, and the message box fills with the
   text. If anything changed (the suggestion went away, Claude got busy, a question opened), nothing is pressed and you see why.
-  Without a suggestion, Tab moves focus and → goes to the pane as before. **Send** with an empty box still presses only Enter.
+  Without a suggestion, Tab moves focus and → goes to the pane as before. **Send** with an empty message box and an empty input sends nothing, because what Enter submits on a suggestion has not been verified.
 - **Long messages.** Text that does not fit Claude's box (more than 1024 characters, 12 line breaks or 13 rows) is not mirrored
   ("Not mirrored: Long text goes to Claude when you send it"). Send still pastes it into an empty input, as before. If Claude's
   input already holds other text, Send refuses, so the two are never sent together; clear it in the terminal or shorten your
   message.
-- **While Claude works**, a message that only adds to what is in the box, or fills an empty box, is copied at once. Anything that
-  would replace text waits until Claude is idle ("Waiting for Claude: …"), because clearing a box takes an Escape.
+- **Send works while Claude works.** Press Send while Claude is busy, or while it waits for background agents or shells, and nika
+  puts the message into Claude's input and presses Enter, as you would in the terminal. Claude queues the message and takes it at
+  its next step; until then the message box shows "Queued: Claude takes your message at its next step". A message queued in the
+  middle of a turn can steer that turn, and Stop sends a queued message at once (the Stop button's tooltip says so). Attachments are sent the
+  same way. Before every Enter nika takes a fresh look at Claude's screen: when a permission prompt, a question or another dialog
+  is open, it presses nothing and says so ("A prompt opened in Claude, so nika did not press Enter. Answer it, then send again.
+  Your text is kept."), and Send over an empty message box and an empty input sends nothing.
+- **nika no longer presses Esc to change Claude's input while Claude works.** To replace the text in Claude's input it now uses End
+  and Ctrl+U, which never interrupt a turn; it uses Esc only when Claude is idle and the cursor sits on an earlier line of the box.
+  When Claude works and the cursor in its input is not on the last line, the message box waits instead and says so ("Cursor: …":
+  move the cursor to the end in the terminal, or wait). Three new notes, each with its own colour, icon and word, replace "Waiting
+  for Claude": "On hold:" (a prompt is open or Stop is running), "Cursor:" and "Queued:".
 - **A status line that looks like Claude's input box is left alone.** nika reads a box as Claude's input only when the terminal
   cursor is in it. Otherwise it sees no input box: nothing is mirrored or typed, and End and the commands refuse.
 - **End, Compact, Clear and Model read the input box more carefully.** A box in Claude's `!` mode, a pasted block, a long draft
@@ -70,8 +80,13 @@ Fixes:
 - **Background subagents no longer hide the footer.** While Claude runs background subagents it draws their list under the footer
   line. nika used to read that list as the footer, so the mode showed as unknown and the message box could not mirror Claude's
   input. nika now sees through the list. It also stops mirroring while Claude's feedback survey is on screen, so a draft that
-  starts with a digit can never answer it. A permission prompt or a dialog drawn with the list below it still reads as unknown, so
-  nika cannot answer it: answer it in the terminal.
+  starts with a digit can never answer it. A permission prompt (or a dialog nika does not know) drawn with the list below it still
+  reads as unknown, so nika cannot answer it: answer it in the terminal.
+- **The mode no longer flips to "Auto unconfirmed" while the mouse rests on Claude's agent list.** Claude draws a pointer in front of
+  the list row under the mouse, and nika used to read that row as the footer, so the mode chip switched to unconfirmed and the
+  message box stopped mirroring for as long as the mouse stayed there. nika now reads the list with the pointer on one row. A row
+  picked with the arrow keys still reads as unknown on purpose (Claude replaces the mode line with a hint then), so nothing is
+  typed there.
 
 ## 0.4.0 — 2026-11-13
 

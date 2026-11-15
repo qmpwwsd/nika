@@ -8,7 +8,8 @@ updated with the new version.
 
 Sections 1, 5 and 10 were checked again on 2026-11-14 against Claude Code 2.1.321 to 2.1.325 (macOS, tmux 3.8, 120-column
 panes), also in throwaway sessions. Every sample text in them is made up. The subagent list under the footer (§1) and the
-feedback survey rows (§10.1) were checked on 2026-11-14 against 2.1.325, at 120 and 60 columns.
+feedback survey rows (§10.1) were checked on 2026-11-14 against 2.1.325, at 120 and 60 columns. §10.12 (input while Claude works) was
+checked on 2026-11-15 against 2.1.325 (macOS, tmux 3.8, 120-column panes), also with made-up text.
 
 ## 1. Footer (mode line)
 
@@ -73,9 +74,11 @@ reads `unknown` (fail closed):
 3. Above them, exactly `  ⏺ main` (two spaces, or the hover pointer, below). Across `main` and the agent rows at most one row
    starts with the pointer; two or more leave the block uncut.
 4. Above that, exactly one blank row.
-5. Above that blank row, a mode line (a footer token of the table above, a `bypass` footer, or `! for shell mode`). This last gate
-   means a label can never stand in for a footer, and a permission prompt or a dialog with something shaped like a list below it is
-   left alone (not read, so not guessed).
+5. Above that blank row, a mode line (a footer token of the table above, a `bypass` footer, or `! for shell mode`) **or the last row
+   of one of Claude's question, review or plan dialogs** (`isDialogEnd` in `src/mode.js`: the question footer `Enter to select · …
+   to navigate`, the review step's `2. Cancel`, the plan approval's `ctrl+g to edit in … · …`). This last gate means a label can never
+   stand in for a footer, and a permission prompt (its closing hint `Esc to cancel` alone is not a dialog end) or any other screen with
+   something shaped like a list below it is left alone (not cut, so not read, so not guessed).
 
 What was seen live (Claude Code 2.1.325, 120 and 60 columns, made-up tasks): the list appears as soon as a subagent starts, with the
 parent idle or busy, and with text in the input box (the cursor stays in the box); a finished agent leaves the list at once and the
@@ -104,10 +107,14 @@ Not seen, so read as `unknown`: `↑ <n> more`, a wrapped label, a different gly
 permission prompt drawn with the list below it. Not tried: keyboard selection during a busy turn, with no `<n> shells` pill, or
 with a question or plan dialog open.
 
-**Known limit (fail closed).** A permission prompt or a dialog with the subagent list under it stays `unknown` (its footer is not the
-last row, and gate 5 does not hold for it). nika then reads no prompt, so it cannot answer it from the page, and the mode
-switch, End and the commands stop on the unrecognized footer without typing; the user answers it in the terminal. This is the intended direction: the
-alternative, reading a prompt with something below it, is the guess the reader refuses to make.
+**Known limit (fail closed).** A permission prompt, or a dialog whose last row nika does not know, with the subagent list under it
+stays `unknown` (its footer is not the last row, and gate 5 does not hold for it). nika then reads no prompt, so it cannot answer it
+from the page, and the mode switch, End and the commands stop on the unrecognized footer without typing; the user answers it in the
+terminal. This is the intended direction: the alternative, reading a prompt with something below it, is the guess the reader refuses
+to make. A question step, the review step or a plan approval with the list under it is the exception: `treeEnd` cuts the list when
+the row above the blank row is the dialog's last row (gate 5, `isDialogEnd`), so the dialog's own footer is the last row and the dialog
+readers see it as they would without the list. That case is covered by fixtures only (`test/mode.test.js`); it was never seen live
+(§10.11). The auto-mode nudge is anchored on its own exact rows (`nudgeFooterAt`), and what hangs under it is cut the same way.
 
 ## 2. Permission prompt
 
@@ -337,6 +344,10 @@ same menu. Removed and hidden commands are left out.
   is allowed and the quick actions stay off. Session control already treats any non-idle state as busy (Stop, End and the mode
   switch), so it needs no special case.
 - `waiting` and any value nika does not know stay as they are: `state` is the cleaned status and `attention` is set (needs you).
+- A message sent with `Enter` is taken at once, not queued, in the two states where the turn is over but background work still runs
+  (checked 2026-11-15, Claude Code 2.1.325, §10.12): `shell`, and `busy` while the screen says `Waiting for 1 background agent to
+  finish` (the subagent list under the footer, §1). During a running turn (`busy`, the footer ends in `esc to interrupt`) Claude queues
+  the message and takes it at its next step. nika's Send presses `Enter` in every registry state and does not tell these apart.
 
 ## 9. Registry procStart
 
@@ -519,11 +530,17 @@ mode and in insert mode it is text and the box shows one more `i`. The writer wa
 
 ### 10.8 Replacing a draft (what the writer sends)
 
-A replace needs the registry state `idle` (an `Escape` can interrupt a running turn). Appending to a draft, or typing into an
-empty box, sends no `Escape` and may run while Claude works.
+A replace chooses one of two roads on its first capture (0.5, W13). The **C-u road** applies whenever the terminal cursor is on the
+box's last row, in any registry state: it sends `End` (only when the cursor is not at the end of the text) and `C-u`, which never
+interrupt a turn (§10.12), so it runs while Claude works too. The **Escape road** (the last three rows of the table) applies only when
+the cursor is on an earlier row of the box **and** the registry state, read fresh, is `idle`: an `Escape` with text in the box
+interrupts a running turn (§10.12). With the cursor on an earlier row while Claude is not idle there is no safe key (`End` stops at
+the end of that visual row; `Up` and `Down` recall history or open the task manager), so the write sends nothing, not even the probe
+(409 `cursor-not-at-end`). Appending to a draft, or typing into an empty box, sends no `Escape` and may run while Claude works.
 
 | Edit mode | Keys, in order | Waits |
 |---|---|---|
+| any, the cursor on the box's last row (C-u road) | the probe `i` first when the mode is `normal` or `unknown` (then the vim or plain row below only decides what the probe saw); `End` once, only when the cursor is not at the end of the text; then `C-u`, one per request, at least 60 ms after the key before it, at most `2 × inner rows + 2` presses | after `End`, until the cursor is at the end of the text (at most 400 ms); after each `C-u`, until the text is strictly shorter, or the same text sits in one row less (the press that removes only a newline), polling every 20 ms (at most 400 ms, else 409 `clear-stopped`); the loop ends when the box is empty |
 | `insert` | `Escape`, the text `ggdG`, the text `i` | after `Escape`, until `-- INSERT --` is gone **and** 40 ms have passed (polling every 20 ms, at most 400 ms; else 409 `mode-unknown`); after `i`, until the box is empty and `-- INSERT --` is back (at most 400 ms) |
 | `normal` or `unknown` | the probe `i` first; then as `insert` when INSERT showed, or as `plain` when the `i` landed as text | the probe wait above |
 | `plain` | `Escape`, a gap of at least 60 ms, a second `Escape` **only while text still shows** | until the box is empty and 40 ms have passed since the last `Escape` (at most 600 ms) |
@@ -537,13 +554,22 @@ sequence emptied any draft in about 168 ms median, 177 ms at most. All 60 timed 
 correctly. A draft of 51 lines in vim failed (the mode line was off the screen, so the wait for `-- INSERT --` to go returned at
 once): the 14-row bound exists for that.
 
+Evidence for the C-u road (W13, checked 2026-11-15, Claude Code 2.1.325, tmux 3.8, on a busy pane running a foreground command; the
+registry stayed `busy` and no `Interrupted` row appeared in any run): a one-row draft, three hard lines (`C-u` ×5, the 2N − 1 rule),
+a wrapped draft of two visual rows (the first `C-u` left a `trailing` break space, which the road tolerates), vim INSERT and vim NORMAL
+(left with one `Escape` while text was in the box, the cursor one column short of the end) were all replaced and read back. The keys
+were `i`, `End`, `C-u` and the text, 70 to 80 ms apart (the probe's settle took longer). `End` from the start of the last visual row
+of a wrapped line reached the end of the text (it does so from that row only). With the cursor on the first visual row of a wrapped
+line the write answered 409 `cursor-not-at-end` and sent no key.
+
 Slash menu: while Claude's slash menu is open, the first `Escape` of a replace only closes the menu. The write answers 409
 `mode-unknown` and nothing is typed; the retry works.
 
 Never sent by the writer: `Enter`, `C-c` (it arms exit and moves the draft to history), `Up` and `Down` (history recall),
-`C-k`, `Tab`, `BTab`, a digit as a key, a second `Escape` on an empty box (Rewind), any key within 40 ms of an `Escape` (its own, or the
-`Escape` of a Stop or End), and any key at all while Stop or End is interrupting the pane. `C-u` is used for one thing only: removing the writer's own probe `i` from an
-empty box.
+`DC` (it joins the next line), `C-k`, `Tab`, `BTab`, a digit as a key, a second `Escape` on an empty box (Rewind), an `Escape` while
+the registry state is not `idle` (the C-u road sends none), any key within 40 ms of an `Escape` (its own, or the `Escape` of a Stop or
+End), and any key at all while Stop or End is interrupting the pane. `C-u` is used for two things only: the C-u road, and removing the
+writer's own probe `i` from an empty box. `End` is used only on the C-u road.
 
 ### 10.9 Typing
 
@@ -579,8 +605,8 @@ and vim insert mode, made-up text).
   three turns (one with letters typed during it) produced none. Whether Claude shows one cannot be relied on.
 - **Taking it.** `→` (Right) and `Tab` took the suggestion into the box in plain mode; after that the box holds the text as real
   text with no SGR, and the cursor is at its end. Not tested live: `→` and `Tab` in vim insert mode, and nika's accept route on
-  a real suggestion (the owner checks it). What `Enter` submits on an empty box that shows a suggestion is not verified either;
-  nika's Send with an empty message box still presses `Enter` alone.
+  a real suggestion (the owner checks it). What `Enter` submits on an empty box that shows a suggestion is not verified either; nika's submit route
+  refuses such a box (409 `suggestion-shown`, `api-app.md`) and the page's Send with both boxes empty sends nothing (W13).
 - **Leaving.** Typing one or two characters, or a paste into the empty box, removes the suggestion; emptying the box again brings
   it back until a slash command is run (after `/config` it was gone) or a new turn starts.
 - **`Tab` without a suggestion.** On an empty box that shows only the `Try "…"` example (or nothing), `Tab` changes nothing in
@@ -597,10 +623,119 @@ and vim insert mode, made-up text).
   `How was Claude's recollection`, `Can Anthropic look at your session transcript`) are strings of the 2.1.325 binary only: how and
   where they are drawn, and whether their options row has the same shape, was never captured (§10.1 matches the start of the row, so a
   different layout may go unnoticed). Whether the survey takes a digit while the input box has focus is not known, so the guard stays for every box.
-- A permission prompt or a dialog drawn with the background-subagent list below it (§1): never seen, so it reads `unknown` and nika
-  cannot answer it (the user does, in the terminal).
+- A permission prompt, or a dialog nika does not know, drawn with the background-subagent list below it (§1): never seen, so it reads
+  `unknown` and nika cannot answer it (the user does, in the terminal). A question, review or plan dialog with the list below it is cut
+  by `treeEnd` and read (§1, gate 5), but only fixtures cover that; it was not seen live either.
 - Plain-mode replace and append were exercised against a fake pane only (the Claude of the checking session was in vim mode).
 - `→` and `Tab` in vim insert mode, `Tab` in vim normal mode, and `Tab` and `Enter` on a real suggestion through nika's accept route and Send (the owner checks
   them).
 - A very long suggestion (does it wrap or is it cut), a draft that wraps in the middle of a wide character, and `Escape Escape` on
   an empty box (does it open Rewind, and does it save the draft to history).
+- While Claude works (W13, §10.12): `C-u` on a box that holds an `[Image #N]` placeholder (such a box is unreadable and nika never
+  writes over it); `C-u` inside a `!` box (the idle facts of §10.8 are assumed: `BSpace` leaves `!` mode); `Up` on the queued placeholder
+  (Claude says it edits the queued messages; never pressed); what `Escape` does in the "Waiting for a background agent" state (never
+  sent); `Down` on an empty box, which Claude's footer hints opens the background-task manager (never pressed).
+
+### 10.12 Input while Claude works (0.5, W13)
+
+How Claude's input box answers keys while a turn runs, and what a sent message does. Checked 2026-11-15, Claude Code 2.1.325, tmux 3.8,
+macOS, panes of 120 columns, in throwaway sessions with made-up text; a turn was kept running with a foreground command of about 25
+seconds, background work with a longer one. The registry state is `busy` unless a row says otherwise. The writer's C-u road (§10.8) and
+the page's Send while Claude works (`api-app.md`, `POST /api/app/pane/:id/submit`; `docs/security.md` T54) rest on these rows.
+
+**Keys into the box while a turn runs**
+
+| Key | Box and mode | Result | Interrupts the turn? |
+|---|---|---|---|
+| `C-u` | text `alpha beta gamma`, cursor at the end, plain or vim INSERT | the text is gone, the box shows `❯` (redraw 5 to 32 ms) | no |
+| `C-u` | empty box | nothing changes | no |
+| `C-u` ×5 | three hard lines (`line one`, `line two`, `line three`), cursor at the end | after each press the box reads `line one` / `line two` / (empty row), then `line one` / `line two`, then `line one` / (empty row), then `line one`, then nothing: a line takes two presses (its text, then the newline before it), so N lines take 2N − 1 | no |
+| `C-u` ×2 | one hard line wrapped onto two visual rows | the last visual row goes first; the break space of the wrap stays and reads as `trailing` (§10.5), then the box is empty | no |
+| `End`, `C-u` | text `abc def ghi`, cursor at column 8 | `End` moves to the end (13), `C-u` empties the box | no |
+| `Escape` | text `escape probe text` in the plain box | `⎿ Interrupted · What should Claude do instead?` within 100 ms, registry `idle`, the text is kept | **yes** |
+| `Escape` | text in vim INSERT | `-- INSERT --` is gone after 55 ms, registry still `busy` | no |
+
+- After a `C-u`, Claude draws a hint row above the top rule, right-aligned: `Ctrl+Y to paste deleted text`. It lies outside the box by
+  construction (§10.1: the box is between the last two rule rows).
+- While the box holds text, the footer loses its ` · esc to interrupt` hint (`⏵⏵ auto mode on (shift+tab to cycle)`); with the box
+  empty it is shown. At idle, one `Escape` on text only shows `Esc again to clear` for about 800 ms (right-aligned above the top rule).
+- So `C-u` never interrupts, in either edit mode, and `Escape` interrupts whenever the plain box holds text. nika's writer clears with
+  `End` and `C-u` whenever it can and sends `Escape` only at idle (§10.8).
+
+**`End` and the cursor**
+
+- `End` goes to the end of the **visual row**, not of the text. One row: column 8 → 13, the end of the text. A cursor on the first of
+  two visual rows of a wrapped line: `End` goes to column 2 of the next row (its start), not to the end of the text. A cursor on the
+  first of two hard lines: `End` goes to the end of that line. `C-End` and `C-e` go no further than `End`.
+- Only a cursor on the **last** row of the box reaches the end of the text with one `End` (it also works from the start of the last
+  visual row of a wrapped line). Idle, from an earlier row, `End` then `C-u` ×4 leaves the rows after the cursor in the box.
+  That is why the writer's C-u road needs the cursor on the box's last row and refuses (409 `cursor-not-at-end`) otherwise while
+  Claude works.
+- `DC` at the end of a hard line joins the next line (plain and vim INSERT, idle and busy: `row one text` and `row two text` become
+  `row one textrow two text`). nika never sends it.
+
+**vim while a turn runs**
+
+- INSERT with two lines of text: one `Escape` leaves INSERT (gone after 55 ms), the registry stays `busy`; `ggdG` and `i` as text then
+  give an empty box with INSERT back at 159 ms. A second `Escape` in NORMAL was not sent: in plain terms it is the interrupt key.
+- NORMAL with the text `normal probe`: the cursor sits on the last character (column 13, the end is 14). The probe `i` gives INSERT
+  with the text unchanged and the cursor still at 13; `End` moves it to 14; `C-u` empties the box. No interrupt, registry `busy`.
+- The vim footer while busy in manual mode reads `-- INSERT -- ⏸ manual mode on`, with no `esc to interrupt` hint.
+
+**`Enter` while a turn runs: Claude queues the message**
+
+```
+before   ❯ Queued note: reply with the word blue when you see this.            (the box, registry busy)
+Enter
++60 ms   ❯ Press up to edit queued messages                                      (the box: the glyph fg 246, the words dim)
+         ⏵⏵ auto mode on (shift+tab to cycle) · esc to interrupt
+above the spinner, in the same turn:
+         ❯ What color is this image? Answer in one word.[Image #2]             (grey, fg 246)
+           ctrl+x ctrl+s to send now
+```
+
+- The box shows the dim placeholder `Press up to edit queued messages` in place of the text, so nika reads an **empty** box with
+  `queued: true` (§10.3: dim text is ghost; `api-app.md`, `draft.queued`). The same dim row shape is what Claude draws for a prompt
+  suggestion (§10.10), so the reader tells them apart by the exact text and never offers the placeholder as a suggestion.
+- The queued text shows grey above the spinner (`❯ <text>`), with `ctrl+x ctrl+s to send now` under it.
+- Delivery: at the next tool boundary inside the same turn (the transcript records a queued-command attachment; Claude answered the
+  queued message in that turn), or, when the turn ends without a tool boundary, as the next user message (two queued messages became
+  one turn answering both). A queued message can therefore steer a turn that is already running.
+- `Enter` on an empty box while busy does nothing. `C-u` on text typed while messages are queued leaves the box on the dim
+  placeholder again.
+- A tip row seen while busy: `Send messages to Claude while it works to steer Claude in real-time`.
+
+**Attachments while a turn runs**
+
+- With text in the box, a bracketed paste of an image file's absolute path turns into `[Image #N]` after 43 to 49 ms (`N` counts per
+  session). The same paste of a text file's path stays text. `Enter` then queues the message with the image: the queued prompt carries
+  the image block, and Claude answered about the image in that turn.
+- vim INSERT, busy: text and an image path read `[Image #1]`; the vim clear (`Escape`, `ggdG`, `i`) emptied the box with no interrupt.
+
+**The turn is over, background work still runs**
+
+| Situation | Registry | Rows | `Enter` with text |
+|---|---|---|---|
+| a background shell is running | `shell` | `✻ Cooked for 2s · … · 1 shell still running`; footer `⏵⏵ auto mode on · 1 shell · ↓ to manage` | submits at once (registry `busy` for about 0.8 s, then `shell` again); Claude answered the message |
+| a background subagent runs after the main turn | `busy` | `✻ Waiting for 1 background agent to finish`; footer `… · 1 shell · ↓ to manage`; under the footer the subagent list (§1) | submits at once; Claude answered at once |
+| the subagent has finished, the shell still runs | `shell` | `⏺ Agent "<label>" finished · 43s`; footer `… · /tasks to see subagents · ↓ to manage` | not tried |
+
+`↓ to manage` in the footer is Claude's own hint that `Down` on an empty box opens the background-task manager; nika never sends `Down`.
+
+**Stop with a queued message**
+
+```
+queued   ❯ Queued before a Stop: reply with the word olive.     /   ctrl+x ctrl+s to send now
+Escape   (empty box)
++150 ms  ⎿ Interrupted · What should Claude do instead?          the queued line stays, a spinner row ("Drizzling…"), registry still busy
++1.5 s   ⏺ olive                                                  registry idle
+```
+
+The interrupted step ends and the queued message goes to Claude at once as a new turn. It is **not** put back into the input box.
+
+**`!` and long pastes while a turn runs**
+
+- `!echo hello` typed gives the box `!` and the text with a pink rule and the footer `! for shell mode`; `Enter` queues it (`! echo hello`
+  and `ctrl+x ctrl+s to send now`), and the command runs after the turn (`⎿ hello`). nika sends it like any other message.
+- A paste of more than 800 characters reads `❯ [Pasted text #N]`; `Enter` queues it, and the footer shows `paste again to expand` for a
+  moment. nika never writes over such a box (§10.6, `pasted`).
