@@ -1,9 +1,9 @@
 // writeDraft (design W5 sections 3, 7, 8, 9): the controller that types a draft into Claude's input box. A fake pane
 // models the box (plain and vim input, the `!` glyph, the Escape rules of spike S9) and records every key with the fake
 // clock and the registry state at that moment; `safe()` then asserts, for every case, what must never go out. Synthetic text only.
-import { test, describe } from 'node:test';
+import { test, describe, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { createSessionControl, checkDraftBody, readDraft } from '../src/session-control.js';
+import { createSessionControl, checkDraftBody, checkSubmitBody, readDraft } from '../src/session-control.js';
 import { parseDraft } from '../src/draft.js';
 import { boxRows, span } from './helpers.js';
 import { dialogWorld, TAB } from './dialog-fake.js';
@@ -12,7 +12,15 @@ const COLS = 120;
 const W = COLS - 4;
 const NEVER = ['Enter', 'C-c', 'Up', 'Down', 'BTab', 'C-k'];
 const PROMPT = ['Bash command', '  run the thing', '', 'Do you want to proceed?', '❯ 1. Yes', '  2. No', 'Esc to cancel'];
+const BYPASS_PROMPT = ['Bash command', '  run the thing', '', 'Do you want to proceed?', '❯ 1. Yes', '  2. Yes, and bypass permissions for this session', '  3. No', 'Esc to cancel'];
 const tick = () => new Promise((r) => setImmediate(r));
+
+// 0.5, W13: the Escape recorder. Every fake pane of a test is listed here; a draft write or a submit that sends an Escape while the fake registry
+// does not say idle fails the test (a pane built for Stop or End, which interrupt on purpose, says `stopSends`). Only the C-u road works while Claude works.
+const made = [];
+afterEach(() => {
+  for (const p of made.splice(0)) assert.deepEqual(p.badEscapes, [], 'no Escape went out while the registry was not idle (it would interrupt the turn)');
+});
 
 // Claude's question and plan dialogs (0.5, W1): the input box under them is not a draft box, so nothing is typed (promptOpen)
 const DIALOGS = {
@@ -52,14 +60,26 @@ function pane(opts = {}) {
     text: '', glyph: 'prompt', vim: false, vimMode: 'insert', mem: { vim: false, plain: false }, armed: false,
     state: 'idle', freshState: null, lag: 0, escLag: 0, swallow: (s) => s, before: null, afterType: null, failSend: null, override: null,
     prompt: false, history: false, t: 1_000_000, n: 0, sent: [], slept: [], edits: [], stateArgs: [], rewinds: 0, hold: null,
+    // 0.5, W13: where the cursor sits ({ row, col } in the box, null = after the text), vim NORMAL's cursor one column left of the end (`left`),
+    // the break space a C-u leaves behind a wrapped row (`breakSpace`: the cursor then sits one column past the text), Claude's queued-messages
+    // placeholder (`queuedMsgs`), keys that do nothing (`swallowCu`, `swallowEnd`, `swallowEnter`), C-u that removes only `cuStep` characters, the
+    // Enters that were taken (`submitted`) and the Escapes that went out while the registry did not say idle (`badEscapes`)
+    cursorAt: null, left: 0, breakSpace: false, trail: false, queuedMsgs: false, ghost: null, swallowCu: false, swallowEnd: false, swallowEnter: false,
+    cuStep: 0, submitted: [], badEscapes: [], stopSends: false,
     ...opts,
   };
+  made.push(w);
   w.screen = () => {
     if (w.override) return w.override(w);
     if (w.prompt) return { rows: PROMPT.map((t) => (t ? [span(t)] : [])), cursor: { x: 0, y: 0, visible: true }, cols: COLS };
+    let cursor;
+    if (w.cursorAt && w.text !== '') cursor = { x: 2 + w.cursorAt.col, y: (w.armed ? 1 : 0) + 1 + w.cursorAt.row };
+    else if (w.trail) cursor = { dx: 1 };
+    else if (w.left && w.text !== '') cursor = { dx: -w.left };
     const cap = boxRows({
       cols: COLS, lines: w.text === '' ? [''] : visual(w.text), mode: w.glyph, insert: w.vim && (w.vimMode === 'insert' || w.lag > 0),
-      label: w.history ? 'History 3/3' : null, hint: w.armed ? 'Esc again to clear' : null,
+      label: w.history ? 'History 3/3' : null, hint: w.armed ? 'Esc again to clear' : null, cursor,
+      ghost: w.ghost ?? (w.queuedMsgs && w.text === '' ? 'Press up to edit queued messages' : null),
     });
     return w.padded ? padded(cap) : cap;
   };
@@ -76,6 +96,7 @@ function pane(opts = {}) {
   };
   const typeText = (s) => {
     const part = w.swallow(s);
+    if (w.text === '') w.cursorAt = null;
     if (w.vim && w.vimMode === 'normal') { // vim commands, not text
       if (part === 'ggdG') w.text = '';
       else if (part === 'i') w.vimMode = 'insert';
@@ -98,11 +119,40 @@ function pane(opts = {}) {
     } else if (k === 'BSpace') {
       if (w.text === '' && w.glyph === 'bash') w.glyph = 'prompt';
       else w.text = w.text.slice(0, -1);
-    } else if (k === 'C-u') w.text = '';
+    } else if (k === 'C-u') killRow();
+    else if (k === 'End') toEnd();
+    else if (k === 'Enter') submit();
+  };
+  // C-u kills from the cursor (at the text end here) to the start of its VISUAL row; at a row start it removes the newline before it (spike W13 section 1)
+  const killRow = () => {
+    if (w.swallowCu || w.text === '' || w.cursorAt) return;
+    const last = visual(w.text).at(-1);
+    if (last === '') { w.text = w.text.slice(0, -1); w.trail = false; return; }
+    const cut = w.cuStep > 0 ? Math.min(w.cuStep, last.length) : last.length;
+    const soft = w.text.length > last.length && w.text[w.text.length - last.length - 1] !== '\n';
+    w.text = w.text.slice(0, w.text.length - cut);
+    w.trail = soft && w.breakSpace && cut === last.length;
+    w.left = 0;
+  };
+  // End goes to the end of the cursor's VISUAL row: the text end only from the last row (spike W13 section 2)
+  const toEnd = () => {
+    if (w.swallowEnd) return;
+    const rows = visual(w.text);
+    if (w.cursorAt === null) w.left = 0;
+    else w.cursorAt = w.cursorAt.row >= rows.length - 1 ? null : { row: w.cursorAt.row, col: rows[w.cursorAt.row].length };
+  };
+  // Enter submits the box; while Claude works (any registry state but idle) it queues the message and shows the placeholder
+  const submit = () => {
+    if (w.swallowEnter) return;
+    w.submitted.push(w.text);
+    Object.assign(w, { text: '', glyph: 'prompt', cursorAt: null, trail: false, left: 0, armed: false });
+    if ((w.freshState ?? w.state) !== 'idle') w.queuedMsgs = true;
+    w.afterEnter?.(w);
   };
   w.keys = {
     async send(id, body) {
       w.sent.push({ body, t: w.t, state: w.freshState ?? w.state });
+      if (body.keys?.includes('Escape') && (w.freshState ?? w.state) !== 'idle' && !w.stopSends) w.badEscapes.push(w.sent.length);
       const failed = w.failSend?.(body, w.sent.length);
       if (failed) return failed;
       for (const k of body.keys ?? []) press(k);
@@ -144,6 +194,9 @@ function safe(w) {
 }
 const sentKeys = (w) => w.sent.map((s) => (s.body.keys ? s.body.keys.join('+') : s.body.paste !== undefined ? `paste:${s.body.paste}` : `text:${s.body.text}`));
 const code = (status, error) => ({ status, body: { error } });
+const PLAIN = { mem: { vim: false, plain: true } };
+// 0.5, W13: a replace clears with Escape only when the cursor is on an EARLIER row of the box (End would stop at the end of that row) and the registry says idle
+const earlier = { text: 'one\ntwo', cursorAt: { row: 0, col: 1 } };
 
 describe('checkDraftBody', () => {
   const ok = { text: 'hello', base: '' };
@@ -263,20 +316,20 @@ describe('writeDraft: the answers that send nothing', () => {
     }
   });
 
-  test('(−) a replace while Claude works (or has no live session) is 409 not-idle with the draft; nothing is sent, so no Escape', async () => {
+  test('(−) a replace on an earlier row while Claude works (or has no live session) is 409 cursor-not-at-end with the draft; nothing is sent, so no Escape (W13: the last row clears with C-u instead)', async () => {
     for (const state of ['busy', 'waiting', null]) {
-      const w = pane({ text: 'hello', vim: true, state });
+      const w = pane({ ...earlier, vim: true, state });
       const r = await w.put('bye');
       assert.equal(r.status, 409, String(state));
-      assert.equal(r.body.error, 'not-idle');
-      assert.equal(r.body.draft.text, 'hello');
+      assert.equal(r.body.error, 'cursor-not-at-end');
+      assert.equal(r.body.draft.text, 'one\ntwo');
       assert.deepEqual(w.sent, []);
     }
   });
 
   test('(−) idle in the cached read but busy in the fresh read right before the Escape: 409 not-idle, no Escape (vim and plain)', async () => {
     for (const opts of [{ vim: true }, { mem: { vim: false, plain: true } }]) {
-      const w = pane({ text: 'hello', freshState: 'busy', ...opts });
+      const w = pane({ ...earlier, freshState: 'busy', ...opts });
       const r = await w.put('bye');
       assert.deepEqual([r.status, r.body.error], [409, 'not-idle']);
       assert.deepEqual(w.stateArgs.at(-1), { fresh: true }, 'the registry cache is skipped before an Escape');
@@ -304,13 +357,13 @@ describe('writeDraft: append and type (no Escape, so they run while Claude works
     assert.deepEqual(w.sent.map((s) => s.body), [{ text: ' there' }]);
   });
 
-  test('(−) M-1: plain memory and the cursor on an empty last row cannot tell INSERT from vim NORMAL: no append, the replace road (Escapes, no probe), never the suffix as literal keys', async () => {
+  test('(−) M-1: plain memory and the cursor on an empty last row cannot tell INSERT from vim NORMAL: no append, the replace road (C-u, no probe), never the suffix as literal keys', async () => {
     const w = pane({ text: 'hello\n', mem: { vim: false, plain: true } });
     const d = readDraft(w.screen());
     assert.deepEqual([d.text, d.cursorAtEnd], ['hello\n', true], 'the fixture: an end cursor on an empty last row');
     const r = await w.put('hello\nworld');
     assert.equal(r.status, 200);
-    assert.deepEqual(w.sent.map((s) => s.body), [{ keys: ['Escape'] }, { keys: ['Escape'] }, { paste: 'hello\nworld' }]);
+    assert.deepEqual(w.sent.map((s) => s.body), [{ keys: ['C-u'] }, { keys: ['C-u'] }, { paste: 'hello\nworld' }], 'W13: the C-u road (the newline goes on its own press), still no probe and never the suffix alone');
     safe(w);
     // the same screen with a vim INSERT footer (insert is shown, not remembered): the append is safe and stays
     const v = pane({ text: 'hello\n', vim: true });
@@ -392,12 +445,14 @@ describe('writeDraft: append and type (no Escape, so they run while Claude works
     safe(w);
   });
 
-  test('(+) append that is not a prefix, or a cursor that is not at the end, is a replace (needs idle): 409 not-idle while busy', async () => {
+  test('(+) append that is not a prefix, or a cursor that is not at the end, is a replace: while busy it clears with C-u (End first when the cursor is not at the end), never with Escape', async () => {
     const w = pane({ text: 'hello', vim: true, state: 'busy' });
-    assert.equal((await w.put('help')).body.error, 'not-idle');
-    const mid = pane({ text: 'hello', vim: true, state: 'busy', override: (p) => boxRows({ lines: [p.text], cursor: { dx: -2 }, insert: true }) });
-    assert.equal((await mid.put('hello world')).body.error, 'not-idle');
-    assert.deepEqual([...w.sent, ...mid.sent], []);
+    assert.equal((await w.put('help')).status, 200);
+    assert.deepEqual(sentKeys(w), ['C-u', 'text:help']);
+    const mid = pane({ text: 'hello', vim: true, state: 'busy', cursorAt: { row: 0, col: 3 } });
+    assert.equal((await mid.put('hello world')).status, 200);
+    assert.deepEqual(sentKeys(mid), ['End', 'C-u', 'text:hello world']);
+    for (const x of [w, mid]) safe(x);
   });
 });
 
@@ -458,7 +513,7 @@ describe('writeDraft: live screens pad every row with spaces (Claude 2.1.325, ca
 
 describe('writeDraft: replace', () => {
   test('(+) plain mode whose first Escape already clears the box: no second Escape (it would open Rewind on an empty box)', async () => {
-    const w = pane({ text: 'hello', mem: { vim: false, plain: true }, oneEscape: true });
+    const w = pane({ ...earlier, ...PLAIN, oneEscape: true });
     const r = await w.put('bye');
     assert.deepEqual([r.status, r.body.draft.text], [200, 'bye']);
     assert.deepEqual(sentKeys(w), ['Escape', 'text:bye']);
@@ -472,18 +527,19 @@ describe('writeDraft: replace', () => {
     assert.deepEqual(sentKeys(w), ['text:hello']);
   });
 
-  test('(−) the edit mode is unknown (plain and vim normal look the same): a text that extends the box is not typed as an append -- busy: 409 not-idle; idle: the probe goes first', async () => {
+  test('(−) the edit mode is unknown (plain and vim normal look the same): a text that extends the box is not typed as an append -- the probe goes first, busy or idle (W13: the C-u road follows)', async () => {
     const busy = pane({ text: 'hello', state: 'busy' });
-    assert.equal((await busy.put('hello world')).body.error, 'not-idle');
-    assert.deepEqual(busy.sent, []);
+    assert.equal((await busy.put('hello world')).status, 200);
+    assert.deepEqual(sentKeys(busy), ['text:i', 'C-u', 'text:hello world']);
     const idle = pane({ text: 'hello', vim: true, vimMode: 'normal' });
     assert.equal((await idle.put('hello world')).status, 200);
-    assert.deepEqual(sentKeys(idle).slice(0, 2), ['text:i', 'Escape'], 'vim normal mode would take the suffix as vim commands');
+    assert.deepEqual(sentKeys(idle).slice(0, 2), ['text:i', 'C-u'], 'vim normal mode would take the suffix as vim commands');
+    safe(busy);
     safe(idle);
   });
 
   test('(+) vim INSERT: Escape, wait until INSERT is gone and 40 ms passed, ggdG, i, the text', async () => {
-    const w = pane({ text: 'hello', vim: true, escLag: 2 });
+    const w = pane({ ...earlier, vim: true, escLag: 2 });
     const r = await w.put('bye');
     assert.equal(r.status, 200);
     assert.deepEqual([r.body.typed, r.body.draft.text, r.body.draft.edit], [3, 'bye', 'insert']);
@@ -496,7 +552,7 @@ describe('writeDraft: replace', () => {
   });
 
   test('(+) plain memory: Escape, at least 60 ms, Escape, the empty box, the text', async () => {
-    const w = pane({ text: 'hello', mem: { vim: false, plain: true } });
+    const w = pane({ ...earlier, ...PLAIN });
     const r = await w.put('bye');
     assert.deepEqual([r.status, r.body.draft.text, r.body.draft.edit], [200, 'bye', 'plain']);
     assert.deepEqual(sentKeys(w), ['Escape', 'Escape', 'text:bye']);
@@ -505,7 +561,7 @@ describe('writeDraft: replace', () => {
   });
 
   test('(+) clearing to nothing (text empty) in plain memory: two Escapes, no text', async () => {
-    const w = pane({ text: 'hello', mem: { vim: false, plain: true } });
+    const w = pane({ ...earlier, ...PLAIN });
     const r = await w.put('');
     assert.deepEqual([r.status, r.body.typed, r.body.draft.state], [200, 0, 'empty']);
     assert.deepEqual(sentKeys(w), ['Escape', 'Escape']);
@@ -513,7 +569,7 @@ describe('writeDraft: replace', () => {
   });
 
   test('(+) nothing shows the mode, vim normal: the probe i shows INSERT, the vim road follows, the memory becomes vim', async () => {
-    const w = pane({ text: 'hello', vim: true, vimMode: 'normal' });
+    const w = pane({ ...earlier, vim: true, vimMode: 'normal' });
     const r = await w.put('bye');
     assert.deepEqual([r.status, r.body.draft.text], [200, 'bye']);
     assert.deepEqual(sentKeys(w), ['text:i', 'Escape', 'text:ggdG', 'text:i', 'text:bye']);
@@ -523,7 +579,7 @@ describe('writeDraft: replace', () => {
   });
 
   test('(+) nothing shows the mode, plain: the probe i lands as text, the memory becomes plain, the two Escapes wipe it', async () => {
-    const w = pane({ text: 'hello' });
+    const w = pane({ ...earlier });
     const r = await w.put('bye');
     assert.deepEqual([r.status, r.body.draft.text], [200, 'bye']);
     assert.deepEqual(sentKeys(w), ['text:i', 'Escape', 'Escape', 'text:bye']);
@@ -533,7 +589,7 @@ describe('writeDraft: replace', () => {
   });
 
   test('(+) the memory says vim normal but vim is off (an i lands as text): the probe flips it to plain', async () => {
-    const w = pane({ text: 'hello', mem: { vim: true, plain: false } });
+    const w = pane({ ...earlier, mem: { vim: true, plain: false } });
     const r = await w.put('bye');
     assert.equal(r.status, 200);
     assert.deepEqual(w.edits, ['plain']);
@@ -581,16 +637,19 @@ describe('writeDraft: replace', () => {
   });
 
   test('(+) a `!` draft replaced by a prompt text: two Escapes, BSpace to leave the `!` box, the text', async () => {
-    const w = pane({ text: 'ls -la', glyph: 'bash', mem: { vim: false, plain: true } });
+    const w = pane({ text: 'ls\n-la', cursorAt: { row: 0, col: 1 }, glyph: 'bash', mem: { vim: false, plain: true } });
     const r = await w.put('hello');
     assert.deepEqual([r.status, r.body.draft.mode, r.body.draft.text], [200, 'prompt', 'hello']);
     assert.deepEqual(sentKeys(w), ['Escape', 'Escape', 'BSpace', 'text:hello']);
     safe(w);
   });
 
-  test('(−) a `!` draft is not appended to as a prompt one: a text without the ! is a replace', async () => {
+  test('(−) a `!` draft is not appended to as a prompt one: a text without the ! is a replace (W13: C-u, BSpace, the whole text, also while busy)', async () => {
     const w = pane({ text: 'ls', glyph: 'bash', vim: true, state: 'busy' });
-    assert.equal((await w.put('ls -la')).body.error, 'not-idle');
+    const r = await w.put('ls -la');
+    assert.deepEqual([r.status, r.body.draft.mode, r.body.draft.text], [200, 'prompt', 'ls -la']);
+    assert.deepEqual(sentKeys(w), ['C-u', 'BSpace', 'text:ls -la']);
+    safe(w);
   });
 });
 
@@ -618,7 +677,7 @@ describe('writeDraft: what changes on screen while it writes (T51 and the user i
   });
 
   test('(−) T51: a prompt appears while the vim clear waits for INSERT to go: no ggdG, no i, no text typed into it', async () => {
-    const w = pane({ text: 'hello', vim: true, escLag: 3, before: (n, p) => { if (n === 4) p.prompt = true; } });
+    const w = pane({ ...earlier, vim: true, escLag: 3, before: (n, p) => { if (n === 4) p.prompt = true; } });
     const r = await w.put('bye');
     assert.equal(r.body.error, 'screen-changed');
     assert.deepEqual(sentKeys(w), ['Escape']);
@@ -683,13 +742,13 @@ describe('writeDraft: what changes on screen while it writes (T51 and the user i
   });
 
   test('(−) a clear that does not clear: vim 409 draft-mismatch after the 400 ms wait, plain after the 600 ms wait; both forget the pane\'s edit mode', async () => {
-    const vim = pane({ text: 'hello', vim: true });
+    const vim = pane({ ...earlier, vim: true });
     const keep = vim.keys.send;
-    vim.keys.send = async (id, body) => { const r = await keep(id, body); if (body.text === 'ggdG') vim.text = 'hello'; return r; }; // ggdG does nothing
+    vim.keys.send = async (id, body) => { const r = await keep(id, body); if (body.text === 'ggdG') vim.text = 'one\ntwo'; return r; }; // ggdG does nothing
     const rv = await vim.put('bye');
     assert.deepEqual([rv.status, rv.body.error], [409, 'draft-mismatch']);
     assert.deepEqual(vim.edits, ['vim', 'none'], 'INSERT was seen, then the road failed');
-    const plain = pane({ text: 'hello', mem: { vim: false, plain: true } });
+    const plain = pane({ ...earlier, ...PLAIN });
     plain.keys.send = async (id, body) => { plain.sent.push({ body, t: plain.t, state: 'idle' }); return { status: 200, body: {} }; }; // Escape does nothing
     const rp = await plain.put('bye');
     assert.deepEqual([rp.status, rp.body.error], [409, 'draft-mismatch']);
@@ -698,7 +757,7 @@ describe('writeDraft: what changes on screen while it writes (T51 and the user i
   });
 
   test('(−) INSERT never goes away after the Escape: 409 mode-unknown, no ggdG', async () => {
-    const w = pane({ text: 'hello', vim: true, escLag: 100 });
+    const w = pane({ ...earlier, vim: true, escLag: 100 });
     const r = await w.put('bye');
     assert.deepEqual([r.status, r.body.error], [409, 'mode-unknown']);
     assert.deepEqual(sentKeys(w), ['Escape']);
@@ -721,7 +780,7 @@ describe('writeDraft: what changes on screen while it writes (T51 and the user i
   });
 
   test('(−) a 429 on the third key stops the sequence; the answer is the 429 plus the screen\'s draft', async () => {
-    const w = pane({ text: 'hello', vim: true, failSend: (b, n) => (n === 3 ? { status: 429, body: { error: 'busy', message: 'slow down' } } : null) });
+    const w = pane({ ...earlier, vim: true, failSend: (b, n) => (n === 3 ? { status: 429, body: { error: 'busy', message: 'slow down' } } : null) });
     const r = await w.put('bye');
     assert.equal(r.status, 429);
     assert.equal(r.body.error, 'busy');
@@ -885,7 +944,7 @@ describe('writeDraft: Stop runs apart from the lock (M-2)', () => {
   };
 
   test('(−) an append that is due while Stop interrupts the pane sends nothing: 409 not-idle', async () => {
-    const w = pane({ text: 'hello', vim: true, state: 'busy' });
+    const w = pane({ text: 'hello', vim: true, state: 'busy', stopSends: true });
     const release = stopInFlight(w);
     const sc = w.control();
     const stop = sc.stop('%2');
@@ -900,7 +959,7 @@ describe('writeDraft: Stop runs apart from the lock (M-2)', () => {
   });
 
   test('(−) typing into an empty box obeys the same gate; (+) after Stop ended the append goes', async () => {
-    const w = pane({ text: '', vim: true, state: 'busy' });
+    const w = pane({ text: '', vim: true, state: 'busy', stopSends: true });
     const release = stopInFlight(w);
     const sc = w.control();
     const stop = sc.stop('%2');
@@ -916,7 +975,7 @@ describe('writeDraft: Stop runs apart from the lock (M-2)', () => {
   });
 
   test('(−) N-2: Stop\'s send is over, but a key within 40 ms of its Escape is still refused: 409 not-idle, nothing sent; (+) from 40 ms on it goes', async () => {
-    const w = pane({ text: 'hello', mem: { vim: false, plain: true }, state: 'busy' });
+    const w = pane({ text: 'hello', mem: { vim: false, plain: true }, state: 'busy', stopSends: true });
     const sc = w.control();
     assert.equal((await sc.stop('%2')).status, 200);
     assert.deepEqual(sentKeys(w), ['Escape']);
@@ -937,7 +996,7 @@ describe('writeDraft: Stop runs apart from the lock (M-2)', () => {
   });
 
   test('(+) N-2: the gap is 40 ms and per pane: a key 50 ms after the Escape goes at once, and a pane that never saw an Escape is not held', async () => {
-    const w = pane({ text: 'hello', mem: { vim: false, plain: true }, state: 'busy' });
+    const w = pane({ text: 'hello', mem: { vim: false, plain: true }, state: 'busy', stopSends: true });
     const sc = w.control();
     await sc.stop('%2');
     w.armed = false;
@@ -945,12 +1004,12 @@ describe('writeDraft: Stop runs apart from the lock (M-2)', () => {
     const r = await sc.writeDraft('%2', { text: 'hello again', base: w.sig() });
     assert.deepEqual([r.status, r.body.typed], [200, 6]);
     // a pane that never saw an Escape: nothing to wait for
-    const other = pane({ text: 'hello', mem: { vim: false, plain: true }, state: 'busy' });
+    const other = pane({ text: 'hello', mem: { vim: false, plain: true }, state: 'busy', stopSends: true });
     assert.equal((await other.control().writeDraft('%2', { text: 'hello again', base: other.sig() })).status, 200);
   });
 
   test('(−) N-2: End\'s Escape holds the pane too: a write right behind a refused End is 409 not-idle, nothing sent', async () => {
-    const w = pane({ text: '', mem: { vim: false, plain: true }, state: 'busy' });
+    const w = pane({ text: '', mem: { vim: false, plain: true }, state: 'busy', stopSends: true });
     const sc = w.control({ sleep: async () => {} }); // End\'s wait does not move the clock: the write comes within the gap
     const end = await sc.endSession('%2');
     assert.equal(end.status, 409, 'still busy after the Escape: End refuses');
@@ -1073,5 +1132,521 @@ describe('End and the commands read the box with src/draft.js', () => {
     const w = pane({ override: () => boxRows({ lines: ['x'], footer: 'some footer nobody recognises' }) });
     assert.deepEqual(await asEnd(w), code(409, 'mode-unknown'));
     assert.deepEqual(w.sent, []);
+  });
+});
+
+// --- 0.5, W13: clear Claude's input without Escape (the C-u road) -----------------------------------------------------------------------
+
+/** Keys that must never go out on the busy road: Escape interrupts a turn, Enter submits, the arrows touch the history and the task manager, DC joins lines. */
+const BUSY_NEVER = [...NEVER, 'Escape', 'DC'];
+const busySafe = (w) => {
+  safe(w);
+  w.sent.forEach((s) => { for (const k of s.body.keys ?? []) assert.ok(!BUSY_NEVER.includes(k), `never ${k} on the C-u road`); });
+};
+/** Time between consecutive requests of the C-u road (fake clock). */
+const gaps = (w) => w.sent.slice(1).map((s, i) => s.t - w.sent[i].t);
+/** Stop's Escape is held in flight (it runs apart from the lock). */
+const holdStop = (w) => {
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const inner = w.keys.send;
+  w.keys.send = async (id, body) => { if (body.keys?.includes('Escape')) await gate; return inner(id, body); };
+  return release;
+};
+
+describe('writeDraft: the C-u road (0.5, W13) -- the cursor on the last row, in any registry state', () => {
+  test('(+) a replace clears with one C-u and types, in every registry state and in plain and vim INSERT: no Escape, no Enter', async () => {
+    for (const [name, o] of [['plain', PLAIN], ['vim INSERT', { vim: true }]]) {
+      for (const state of ['busy', 'shell', 'waiting', null, 'idle']) {
+        const w = pane({ text: 'old text', state, ...o });
+        const r = await w.put('new text');
+        assert.deepEqual([r.status, r.body.typed, r.body.draft.text], [200, 8, 'new text'], `${name} ${state}`);
+        assert.deepEqual(sentKeys(w), ['C-u', 'text:new text'], `${name} ${state}`);
+        busySafe(w);
+      }
+    }
+  });
+
+  test('(+) the road is chosen by where the cursor is, not by the registry: idle with the cursor on the last row clears with C-u too (Q1)', async () => {
+    const w = pane({ text: 'hello', mem: { vim: false, plain: true }, state: 'idle' });
+    assert.equal((await w.put('bye')).status, 200);
+    assert.deepEqual(sentKeys(w), ['C-u', 'text:bye']);
+    assert.deepEqual(w.stateArgs.filter(Boolean), [], 'no fresh registry read: nothing on this road depends on idle');
+  });
+
+  test('(+) vim NORMAL while busy: the probe i shows INSERT (no interrupt), End moves from one column left of the end to the end, C-u, then the text', async () => {
+    for (const mem of [{ vim: true, plain: false }, { vim: false, plain: false }]) {
+      const w = pane({ text: 'normal probe', vim: true, vimMode: 'normal', left: 1, state: 'busy', mem });
+      const r = await w.put('fresh');
+      assert.deepEqual([r.status, r.body.draft.text, r.body.draft.edit], [200, 'fresh', 'insert']);
+      assert.deepEqual(sentKeys(w), ['text:i', 'End', 'C-u', 'text:fresh']);
+      assert.deepEqual(w.edits, ['vim']);
+      busySafe(w);
+    }
+  });
+
+  test('(+) plain mode with nothing known, busy: the probe i lands as text, then C-u wipes it with the old text -- no Escape', async () => {
+    const w = pane({ text: 'hello', state: 'busy' });
+    const r = await w.put('bye');
+    assert.deepEqual([r.status, r.body.draft.text], [200, 'bye']);
+    assert.deepEqual(sentKeys(w), ['text:i', 'C-u', 'text:bye']);
+    assert.deepEqual(w.edits, ['plain']);
+    busySafe(w);
+  });
+
+  test('(+) the cursor in the middle of the last row: End first (it reaches the text end from the last row), then C-u', async () => {
+    const w = pane({ text: 'hello world', vim: true, state: 'busy', cursorAt: { row: 0, col: 5 } });
+    const r = await w.put('bye');
+    assert.deepEqual([r.status, r.body.draft.text], [200, 'bye']);
+    assert.deepEqual(sentKeys(w), ['End', 'C-u', 'text:bye']);
+    busySafe(w);
+  });
+
+  test('(+) three hard lines take five C-u (2N-1, the newline goes on its own press); every key is its own request, at least 60 ms after the one before', async () => {
+    const w = pane({ text: 'line one\nline two\nline three', vim: true, state: 'busy' });
+    const r = await w.put('x');
+    assert.deepEqual([r.status, r.body.draft.text], [200, 'x']);
+    assert.deepEqual(sentKeys(w), ['C-u', 'C-u', 'C-u', 'C-u', 'C-u', 'text:x']);
+    assert.ok(gaps(w).every((g) => g >= 60), `gaps ${gaps(w)}`);
+    busySafe(w);
+  });
+
+  test('(+) a wrapped line takes one C-u per visual row; the break space Claude keeps is a `trailing` intermediate state, not a refusal', async () => {
+    const w = pane({ text: 'x'.repeat(200), vim: true, state: 'busy', breakSpace: true });
+    const seen = [];
+    w.afterType = (b, p) => { const d = readDraft(p.screen()); seen.push(d.state === 'unreadable' ? d.reason : d.state); };
+    const r = await w.put('ok');
+    assert.deepEqual([r.status, r.body.draft.text], [200, 'ok']);
+    assert.deepEqual(sentKeys(w), ['C-u', 'C-u', 'text:ok']);
+    assert.deepEqual(seen, ['trailing', 'empty', 'text'], 'the fixture: the first C-u leaves the cursor one column past the text');
+    busySafe(w);
+  });
+
+  test('(+) the box shows Claude\'s queued placeholder after the last C-u: that is an empty box, the text goes; an empty queued box is typed into at once', async () => {
+    const w = pane({ text: 'abc', vim: true, state: 'busy', queuedMsgs: true });
+    const r = await w.put('xyz');
+    assert.deepEqual([r.status, r.body.draft.text, r.body.draft.queued], [200, 'xyz', false]);
+    assert.deepEqual(sentKeys(w), ['C-u', 'text:xyz']);
+    const empty = pane({ text: '', vim: true, state: 'busy', queuedMsgs: true });
+    assert.equal(readDraft(empty.screen()).queued, true, 'the fixture');
+    assert.equal((await empty.put('next')).status, 200);
+    assert.deepEqual(sentKeys(empty), ['text:next']);
+    busySafe(w);
+    busySafe(empty);
+  });
+
+  test('(+) a `!` draft replaced by a prompt text while busy: C-u, BSpace to leave the `!` box, the text; a text that starts with ! keeps the glyph', async () => {
+    const w = pane({ text: 'ls -la', glyph: 'bash', vim: true, state: 'busy' });
+    const r = await w.put('hello');
+    assert.deepEqual([r.status, r.body.draft.mode, r.body.draft.text], [200, 'prompt', 'hello']);
+    assert.deepEqual(sentKeys(w), ['C-u', 'BSpace', 'text:hello']);
+    busySafe(w);
+    const keep = pane({ text: 'ls -la', glyph: 'bash', vim: true, state: 'busy' });
+    assert.deepEqual([(await keep.put('!pwd')).status, keep.text, keep.glyph], [200, 'pwd', 'bash']);
+    assert.deepEqual(sentKeys(keep), ['C-u', 'text:pwd']);
+  });
+
+  test('(+) a replace that needs no clear still works as before: the same text sends nothing, an append sends only the new part', async () => {
+    const same = pane({ text: 'hello', vim: true, state: 'busy' });
+    assert.deepEqual([(await same.put('hello')).body.typed, same.sent], [0, []]);
+    const more = pane({ text: 'hello', vim: true, state: 'busy' });
+    assert.equal((await more.put('hello again')).status, 200);
+    assert.deepEqual(sentKeys(more), ['text: again']);
+  });
+
+  test('(+) the pre-key check runs before EVERY key: a fresh capture sits right before each C-u and the first text', async () => {
+    const w = pane({ text: 'a\nb\nc', vim: true, state: 'busy' });
+    const order = [];
+    const cap = w.mirror.capture;
+    w.mirror.capture = async (...a) => { order.push('capture'); return cap(...a); };
+    const send = w.keys.send;
+    w.keys.send = async (id, b) => { order.push(b.keys ? b.keys[0] : 'text'); return send(id, b); };
+    assert.equal((await w.put('z')).status, 200);
+    const at = order.map((o, i) => (o === 'capture' ? -1 : i)).filter((i) => i >= 0);
+    assert.ok(at.length >= 6, order.join());
+    for (const i of at) assert.equal(order[i - 1], 'capture', `a capture right before key ${i}: ${order.join()}`);
+  });
+
+  test('(−) the cursor on an EARLIER row while Claude works (or has no state): 409 cursor-not-at-end with the draft, ZERO keys -- not even the probe i, whatever the edit mode', async () => {
+    for (const [name, o] of [['plain', PLAIN], ['vim INSERT', { vim: true }], ['unknown', {}], ['vim NORMAL', { vim: true, vimMode: 'normal' }]]) {
+      for (const state of ['busy', 'shell', 'waiting', null]) {
+        const w = pane({ ...earlier, state, ...o });
+        const r = await w.put('bye');
+        assert.deepEqual([r.status, r.body.error, r.body.draft.text], [409, 'cursor-not-at-end', 'one\ntwo'], `${name} ${state}`);
+        assert.deepEqual(w.sent, [], `${name} ${state}`);
+      }
+    }
+  });
+
+  test('(+) the cursor on an earlier row at idle: the W5 Escape road, unchanged (plain: two Escapes 60 ms apart; vim INSERT: Escape, ggdG, i)', async () => {
+    const plain = pane({ ...earlier, ...PLAIN });
+    assert.deepEqual([(await plain.put('bye')).status, plain.text], [200, 'bye']);
+    assert.deepEqual(sentKeys(plain), ['Escape', 'Escape', 'text:bye']);
+    assert.ok(plain.sent[1].t - plain.sent[0].t >= 60);
+    const vim = pane({ ...earlier, vim: true });
+    assert.deepEqual([(await vim.put('bye')).status, vim.text], [200, 'bye']);
+    assert.deepEqual(sentKeys(vim), ['Escape', 'text:ggdG', 'text:i', 'text:bye']);
+    safe(plain);
+    safe(vim);
+  });
+
+  test('(−) the Escape road reads the registry again before its second Escape: a turn that started in between is never interrupted (409 not-idle, one Escape only)', async () => {
+    const w = pane({ ...earlier, ...PLAIN });
+    w.afterType = (b, p) => { if (b.keys?.includes('Escape')) p.freshState = 'busy'; };
+    const r = await w.put('bye');
+    assert.deepEqual([r.status, r.body.error], [409, 'not-idle']);
+    assert.deepEqual(sentKeys(w), ['Escape']);
+  });
+
+  test('(+) a live (padded) screen: the C-u road with several rows while busy works as on an unpadded one', async () => {
+    const w = pane({ text: 'line one\nline two\nline three', vim: true, state: 'busy', padded: true });
+    const r = await w.put('x');
+    assert.deepEqual([r.status, r.body.draft.text], [200, 'x']);
+    assert.deepEqual(sentKeys(w), ['C-u', 'C-u', 'C-u', 'C-u', 'C-u', 'text:x']);
+    busySafe(w);
+  });
+
+  test('(−) the user types in the terminal before the first C-u: not a prefix of what was read, 409 screen-changed with the screen\'s draft, no key', async () => {
+    const w = pane({ text: 'hello world', vim: true, state: 'busy', before: (n, p) => { if (n === 2) p.text += 'X'; } });
+    const r = await w.put('bye');
+    assert.deepEqual([r.status, r.body.error, r.body.draft.text], [409, 'screen-changed', 'hello worldX']);
+    assert.deepEqual(w.sent, []);
+  });
+
+  test('(−) the user types right after a C-u: the text on screen is no prefix of the text before the press, 409 screen-changed, nothing more is pressed', async () => {
+    const w = pane({ text: 'a\nb\nc', vim: true, state: 'busy' });
+    w.afterType = (b, p) => { if (b.keys?.includes('C-u')) p.text = 'Z'; };
+    const r = await w.put('bye');
+    assert.deepEqual([r.status, r.body.error, r.body.draft.text], [409, 'screen-changed', 'Z']);
+    assert.deepEqual(sentKeys(w), ['C-u']);
+    busySafe(w);
+  });
+
+  test('(−) C-u gets no redraw within 400 ms: 409 clear-stopped with the draft (kept as it is), no second C-u, no text', async () => {
+    const w = pane({ text: 'hello', vim: true, state: 'busy', swallowCu: true });
+    const r = await w.put('bye');
+    assert.deepEqual([r.status, r.body.error, r.body.draft.text], [409, 'clear-stopped', 'hello']);
+    assert.deepEqual(sentKeys(w), ['C-u']);
+    assert.ok(w.slept.filter((ms) => ms === 20).length >= 20, '400 ms of polling every 20 ms');
+    busySafe(w);
+  });
+
+  test('(−) End does not reach the end of the text within 400 ms: 409 clear-stopped, only End was pressed', async () => {
+    const w = pane({ text: 'hello world', vim: true, state: 'busy', cursorAt: { row: 0, col: 5 }, swallowEnd: true });
+    const r = await w.put('bye');
+    assert.deepEqual([r.status, r.body.error, r.body.draft.text], [409, 'clear-stopped', 'hello world']);
+    assert.deepEqual(sentKeys(w), ['End']);
+  });
+
+  test('(−) more presses than 2 x the box rows + 2 and the box not empty: 409 clear-stopped after exactly that many C-u (a C-u that removes one character each time)', async () => {
+    const one = pane({ text: 'abcdefghijkl', vim: true, state: 'busy', cuStep: 1 });
+    const r = await one.put('x');
+    assert.deepEqual([r.status, r.body.error, r.body.draft.text], [409, 'clear-stopped', 'abcdefgh']);
+    assert.equal(sentKeys(one).length, 4, '1 row: 2 x 1 + 2');
+    const two = pane({ text: 'abcdefghijkl\nmnopqrstuvwx', vim: true, state: 'busy', cuStep: 1 });
+    assert.equal((await two.put('x')).body.error, 'clear-stopped');
+    assert.equal(sentKeys(two).length, 6, '2 rows: 2 x 2 + 2');
+    busySafe(one);
+  });
+
+  test('(−) T51 on this road: a permission prompt, a dialog or an unknown footer appears before the next C-u: 409 screen-changed, no key goes into it', async () => {
+    const hooks = [
+      (p) => { p.prompt = true; },
+      (p) => { p.override = dialogScreen('ask'); },
+      (p) => { p.override = () => boxRows({ lines: ['a'], footer: 'some footer nobody recognises' }); },
+    ];
+    for (const hook of hooks) {
+      const w = pane({ text: 'a\nb\nc', vim: true, state: 'busy', before: (n, p) => { if (n === 4) hook(p); } });
+      const r = await w.put('bye');
+      assert.deepEqual([r.status, r.body.error], [409, 'screen-changed']);
+      assert.deepEqual(sentKeys(w), ['C-u'], 'the capture right before the second key already showed it');
+      busySafe(w);
+    }
+  });
+
+  test('(−) the box turns unreadable mid-clear (a placeholder, a history entry, the cursor outside the box): 409 screen-changed, nothing more is pressed', async () => {
+    const hooks = [
+      (p) => { p.override = () => boxRows({ lines: ['[Pasted text #1 +3 lines]'] }); },
+      (p) => { p.history = true; },
+      (p) => { p.override = (x) => boxRows({ lines: visual(x.text), insert: true, cursor: { x: 0, y: 0 } }); },
+    ];
+    for (const hook of hooks) {
+      const w = pane({ text: 'a\nb\nc', vim: true, state: 'busy', before: (n, p) => { if (n === 4) hook(p); } });
+      const r = await w.put('bye');
+      assert.deepEqual([r.status, r.body.error], [409, 'screen-changed']);
+      assert.deepEqual(sentKeys(w), ['C-u']);
+    }
+  });
+
+  test('(−) Stop or End interrupts the pane (or its Escape went out < 40 ms ago): 409 not-idle, nothing is pressed', async () => {
+    const w = pane({ text: 'hello', ...PLAIN, state: 'busy', stopSends: true });
+    const release = holdStop(w);
+    const sc = w.control();
+    const stop = sc.stop('%2');
+    await tick();
+    const r = await sc.writeDraft('%2', { text: 'bye', base: w.sig() });
+    assert.deepEqual([r.status, r.body.error], [409, 'not-idle']);
+    assert.deepEqual(w.sent, []);
+    release();
+    await stop;
+    const gap = await sc.writeDraft('%2', { text: 'bye', base: w.sig() });
+    assert.deepEqual([gap.status, gap.body.error], [409, 'not-idle'], 'still inside the 40 ms behind Stop\'s Escape');
+    assert.deepEqual(sentKeys(w), ['Escape']);
+  });
+
+  test('(−) a failed key send in the middle (429): the sequence stops, the answer is that status plus the screen\'s draft', async () => {
+    const w = pane({ text: 'a\nb\nc', vim: true, state: 'busy', failSend: (b, n) => (n === 2 ? { status: 429, body: { error: 'busy', message: 'slow down' } } : null) });
+    const r = await w.put('bye');
+    assert.deepEqual([r.status, r.body.error], [429, 'busy']);
+    assert.equal(typeof r.body.draft.sig, 'string');
+    assert.deepEqual(sentKeys(w), ['C-u', 'C-u']);
+  });
+
+  test('(−) the recorder on the fake keys is real: an Escape that goes out while the registry is busy is caught (and cleared here so the hook passes)', async () => {
+    const w = pane({ text: 'hello', vim: true, state: 'busy' });
+    await w.keys.send('%2', { keys: ['Escape'] });
+    assert.equal(w.badEscapes.length, 1);
+    w.badEscapes.length = 0;
+    const idle = pane({ text: 'hello', vim: true, state: 'idle' });
+    await idle.keys.send('%2', { keys: ['Escape'] });
+    assert.deepEqual(idle.badEscapes, []);
+  });
+});
+
+// --- 0.5, W13: the guarded Send Enter (submit) ------------------------------------------------------------------------------------------
+
+/** What a submit may send: exactly one Enter, or nothing. */
+const enterOnly = (w) => assert.ok(sentKeys(w).length === 0 || (sentKeys(w).length === 1 && sentKeys(w)[0] === 'Enter'), `at most one Enter: ${sentKeys(w)}`);
+const sub = (w, body = { base: w.sig() }) => w.control().submit('%2', body);
+/** The screen with Claude's footer but no input box (a user's own layout, or the box scrolled away). */
+const noBox = () => { const s = boxRows({ lines: ['x'] }); return { ...s, rows: [s.rows[0], ...s.rows.slice(-2)] }; };
+
+describe('checkSubmitBody', () => {
+  test('(+) exactly { base? }: nothing, or a base of 16 lowercase hex (or empty: the same shape as the draft PUT)', () => {
+    for (const body of [{}, { base: '0123456789abcdef' }, { base: '' }]) assert.equal(checkSubmitBody(body), null, JSON.stringify(body));
+  });
+
+  test('(−) any other key, a bad base, an array, null, a string: 400 invalid', () => {
+    const bad = [
+      null, undefined, 'x', 5, [], [{}], { text: 'hello' }, { base: '', text: 'x' }, { base: '0123456789abcdef', keys: ['Enter'] }, { Base: '' },
+      { base: 5 }, { base: null }, { base: 'ABCDEF0123456789' }, { base: '0123456789abcde' }, { base: '0123456789abcdef0' }, { base: '0123456789abcdeg' },
+    ];
+    for (const body of bad) {
+      const r = checkSubmitBody(body);
+      assert.equal(r?.status, 400, JSON.stringify(body));
+      assert.equal(r.body.error, 'invalid');
+    }
+  });
+});
+
+describe('submit: the Enter of Send (0.5, W13)', () => {
+  test('(+) idle, base = the screen\'s sig: exactly one Enter, the box empties: 200 taken true with the empty draft', async () => {
+    const w = pane({ text: 'hello', vim: true });
+    const r = await sub(w);
+    assert.equal(r.status, 200);
+    assert.deepEqual([r.body.taken, r.body.draft.state, r.body.draft.queued], [true, 'empty', false]);
+    assert.deepEqual(sentKeys(w), ['Enter']);
+    assert.deepEqual(w.submitted, ['hello']);
+    assert.deepEqual(w.slept, [50], 'one poll, 50 ms after the Enter');
+  });
+
+  test('(+) while Claude works (busy, shell, waiting, no state): the same one Enter; the box shows the queued placeholder, which is an empty box: taken true, draft.queued true', async () => {
+    for (const state of ['busy', 'shell', 'waiting', null]) {
+      const w = pane({ text: 'queue this', vim: true, state });
+      const r = await sub(w);
+      assert.deepEqual([r.status, r.body.taken, r.body.draft.state, r.body.draft.queued], [200, true, 'empty', true], String(state));
+      assert.deepEqual(sentKeys(w), ['Enter'], String(state));
+    }
+  });
+
+  test('(+) a `!` command and a multi-line text go the same way', async () => {
+    for (const o of [{ text: 'ls -la', glyph: 'bash' }, { text: 'one\ntwo' }]) {
+      const w = pane({ vim: true, state: 'busy', ...o });
+      assert.equal((await sub(w)).body.taken, true);
+      assert.deepEqual(sentKeys(w), ['Enter']);
+    }
+  });
+
+  test('(+) both empty (base = the empty box\'s sig): the Enter is pressed (it does nothing in Claude), taken true', async () => {
+    const w = pane({ text: '', vim: true });
+    assert.deepEqual([(await sub(w)).body.taken, sentKeys(w)], [true, ['Enter']]);
+  });
+
+  test('(+) Q4: no base ({}), the box readable: the Enter is pressed and the emptied box says taken true', async () => {
+    const w = pane({ text: 'typed by keys', vim: true });
+    const r = await sub(w, {});
+    assert.deepEqual([r.status, r.body.taken], [200, true]);
+    assert.deepEqual(sentKeys(w), ['Enter']);
+  });
+
+  test('(+) Q4: no base, no box nika can read but a known footer: the Enter is pressed, taken null (nothing can be said), no more key', async () => {
+    const w = pane({ text: 'x', vim: true, override: noBox });
+    const r = await sub(w, {});
+    assert.deepEqual([r.status, r.body.taken, r.body.draft], [200, null, null]);
+    assert.deepEqual(sentKeys(w), ['Enter']);
+    assert.ok(w.slept.filter((ms) => ms === 50).length >= 20, 'polled for the full second');
+  });
+
+  test('(+) the Enter did not take (the box still reads the text for a full second): taken false, the Enter is never repeated', async () => {
+    const w = pane({ text: 'hello', vim: true, swallowEnter: true });
+    const r = await sub(w);
+    assert.deepEqual([r.status, r.body.taken, r.body.draft.text], [200, false, 'hello']);
+    assert.deepEqual(sentKeys(w), ['Enter']);
+    assert.ok(w.slept.filter((ms) => ms === 50).length >= 20 && w.slept.every((ms) => ms === 50), '20 polls of 50 ms');
+  });
+
+  test('(+) a prompt opens right after the Enter and the box is gone: taken null, nothing more is pressed', async () => {
+    const w = pane({ text: 'hello', vim: true, state: 'busy', afterEnter: (p) => { p.prompt = true; } });
+    const r = await sub(w);
+    assert.deepEqual([r.status, r.body.taken, r.body.draft], [200, null, null]);
+    assert.deepEqual(sentKeys(w), ['Enter']);
+  });
+
+  test('(+) another text on screen after the Enter (the user typed again): taken null', async () => {
+    const w = pane({ text: 'hello', vim: true, swallowEnter: true, afterEnter: null });
+    w.before = (n, p) => { if (n === 4) p.text = 'something else'; };
+    const r = await sub(w);
+    assert.deepEqual([r.status, r.body.taken], [200, null]);
+  });
+
+  test('(−) a permission prompt: 409 prompt-open, ZERO keys, one capture, also at idle', async () => {
+    for (const state of ['idle', 'busy']) {
+      const w = pane({ text: 'hello', vim: true, state, prompt: true });
+      const r = await sub(w, { base: 'a'.repeat(16) });
+      assert.deepEqual([r.status, r.body.error], [409, 'prompt-open'], state);
+      assert.deepEqual(w.sent, [], state);
+      assert.equal(w.n, 1);
+    }
+  });
+
+  test('(−) a question, review, plan, "Exit plan mode?" or nudge dialog: 409 prompt-open, ZERO keys (an Enter would confirm the highlighted option)', async () => {
+    for (const name of Object.keys(DIALOGS)) {
+      for (const body of [{ base: 'a'.repeat(16) }, {}]) {
+        const w = pane({ text: '', vim: true, state: 'busy', override: dialogScreen(name) });
+        const r = await sub(w, body);
+        assert.deepEqual([r.status, r.body.error], [409, 'prompt-open'], name);
+        assert.deepEqual(w.sent, [], name);
+      }
+    }
+  });
+
+  test('(−) a prompt that mentions bypass, or a screen with an unreadable footer that mentions it: 409 bypass-prompt, ZERO keys (T26)', async () => {
+    const prompt = pane({ text: 'hello', vim: true, state: 'busy', override: () => ({ rows: BYPASS_PROMPT.map((t) => [span(t)]), cursor: { x: 0, y: 0, visible: true }, cols: COLS }) });
+    assert.deepEqual([(await sub(prompt, {})).body.error, prompt.sent], ['bypass-prompt', []]);
+    const footer = pane({ text: 'hello', vim: true, override: () => boxRows({ lines: ['hello'], footer: 'a dialog about bypass permissions nobody recognises' }) });
+    assert.deepEqual([(await sub(footer, {})).body.error, footer.sent], ['bypass-prompt', []]);
+  });
+
+  test('(−) the screen shows no footer nika knows and no box: 409 screen-unclear, ZERO keys', async () => {
+    const w = pane({ text: 'hello', vim: true, override: () => boxRows({ lines: [''], footer: 'some footer nobody recognises' }) });
+    for (const body of [{}, { base: 'a'.repeat(16) }]) {
+      const r = await sub(w, body);
+      assert.deepEqual([r.status, r.body.error], [409, 'screen-unclear']);
+    }
+    assert.deepEqual(w.sent, []);
+  });
+
+  test('(−) base given and the box changed (another sig, or an empty base): 409 draft-changed with the screen\'s draft, ZERO keys', async () => {
+    for (const base of ['0123456789abcdef', '']) {
+      const w = pane({ text: 'hello', vim: true });
+      const r = await sub(w, { base });
+      assert.deepEqual([r.status, r.body.error, r.body.draft.text, r.body.draft.sig], [409, 'draft-changed', 'hello', w.sig()], base);
+      assert.deepEqual(w.sent, []);
+    }
+  });
+
+  test('(−) base given and the box is a placeholder nika cannot read (sig null): 409 draft-changed, ZERO keys', async () => {
+    const w = pane({ text: 'hello', vim: true });
+    const base = w.sig();
+    w.text = '[Pasted text #1 +3 lines]';
+    const r = await sub(w, { base });
+    assert.deepEqual([r.status, r.body.error, r.body.draft.state], [409, 'draft-changed', 'unreadable']);
+    assert.deepEqual(w.sent, []);
+  });
+
+  test('(−) base given and no recognised box (or the cursor is not in it, or the capture lost its cursor): 409 input-unreadable, ZERO keys', async () => {
+    const lost = () => ({ ...boxRows({ lines: ['hello'], insert: true }), cursor: null });
+    const outside = () => boxRows({ lines: ['hello'], insert: true, cursor: { x: 0, y: 0 } });
+    for (const override of [noBox, lost, outside]) {
+      const w = pane({ text: 'hello', vim: true, override });
+      const r = await sub(w, { base: 'a'.repeat(16) });
+      assert.deepEqual([r.status, r.body.error], [409, 'input-unreadable']);
+      assert.deepEqual(w.sent, []);
+    }
+  });
+
+  test('(−) Stop or End interrupts the pane: 409 not-idle, ZERO keys, not even a capture; within 40 ms of Stop\'s Escape the same; from 40 ms on the Enter goes', async () => {
+    const w = pane({ text: 'hello', ...PLAIN, state: 'busy', stopSends: true });
+    const release = holdStop(w);
+    const sc = w.control();
+    const stop = sc.stop('%2');
+    await tick();
+    const captures = w.n;
+    const r = await sc.submit('%2', { base: w.sig() });
+    assert.deepEqual([r.status, r.body.error], [409, 'not-idle']);
+    assert.equal(w.n, captures, 'refused before any capture');
+    assert.deepEqual(w.sent, []);
+    release();
+    await stop;
+    w.armed = false;
+    w.t += 10;
+    assert.equal((await sc.submit('%2', { base: w.sig() })).body.error, 'not-idle');
+    w.t += 30;
+    const ok = await sc.submit('%2', { base: w.sig() });
+    assert.deepEqual([ok.status, ok.body.taken], [200, true]);
+    assert.deepEqual(sentKeys(w), ['Escape', 'Enter']);
+  });
+
+  test('(−) another control action holds the pane (End, a command, a draft write): 409 busy-switching, ZERO keys; the lock is free again afterwards', async () => {
+    const w = pane({ text: 'hello', vim: true });
+    let release;
+    w.hold = new Promise((r) => { release = r; });
+    const sc = w.control();
+    const write = sc.writeDraft('%2', { text: 'hello again', base: w.sig() }); // a draft write never presses Enter
+    await tick();
+    assert.deepEqual(await sc.submit('%2', {}), code(409, 'busy-switching'));
+    w.hold = null;
+    release();
+    assert.equal((await write).status, 200);
+    assert.ok(!sentKeys(w).includes('Enter'), 'the refused submit pressed nothing');
+    const after = await sc.submit('%2', {});
+    assert.deepEqual([after.status, after.body.taken], [200, true], 'the lock is free again');
+  });
+
+  test('(−) a bad body is 400 before any capture or key', async () => {
+    const w = pane({ text: 'hello', vim: true });
+    for (const body of [{ text: 'x' }, { base: 5 }, { base: '', keys: ['Enter'] }, null, []]) {
+      const r = await sub(w, body);
+      assert.deepEqual([r.status, r.body.error], [400, 'invalid']);
+    }
+    assert.deepEqual([w.n, w.sent], [0, []]);
+  });
+
+  test('(−) the Enter send fails (429, tmux): its own status and body plus the screen\'s draft, no read-back wait, no second Enter', async () => {
+    for (const failed of [{ status: 429, body: { error: 'busy', message: 'slow down' } }, { status: 502, body: { error: 'tmux_failed', message: 'x' } }]) {
+      const w = pane({ text: 'hello', vim: true, failSend: () => failed });
+      const r = await sub(w);
+      assert.deepEqual([r.status, r.body.error], [failed.status, failed.body.error]);
+      assert.equal(r.body.draft.text, 'hello');
+      assert.equal(w.sent.length, 1);
+      assert.deepEqual(w.slept, []);
+    }
+  });
+
+  test('(−) a failed capture before the Enter: its own status and body, ZERO keys', async () => {
+    const w = pane({ text: 'hello', vim: true });
+    w.mirror.capture = async () => ({ status: 404, body: { error: 'not_found', message: 'gone' } });
+    const r = await sub(w);
+    assert.deepEqual([r.status, r.body.error], [404, 'not_found']);
+    assert.deepEqual(w.sent, []);
+  });
+
+  test('(−) the Enter is the only key the whole suite of submits ever sent (never Escape, Tab, a digit, text, a paste)', async () => {
+    for (const o of [{ text: 'hello' }, { text: '' }, { text: 'a\nb', state: 'busy' }, { text: 'ls', glyph: 'bash', state: 'shell' }]) {
+      const w = pane({ vim: true, ...o });
+      await sub(w);
+      await sub(w, {});
+      for (const s of w.sent) assert.deepEqual(s.body, { keys: ['Enter'] });
+    }
   });
 });

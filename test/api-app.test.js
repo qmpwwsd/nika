@@ -2079,6 +2079,7 @@ function fakeControl(answers = {}) {
       answer: method('answer', (pane, b) => ({ status: 200, body: { answered: b.n } })),
       stop: method('stop', () => ({ status: 200, body: { stopped: true, presses: 1 } })),
       writeDraft: method('writeDraft', () => ({ status: 200, body: { draft: null, typed: 0 } })),
+      submit: method('submit', () => ({ status: 200, body: { taken: true, draft: null } })),
       acceptSuggestion: method('acceptSuggestion', () => ({ status: 200, body: { draft: null } })),
       answerDialog: method('answerDialog', () => ({ status: 200, body: { done: 'next', sent: 1 } })),
       withPaneLock: async (id, fn) => fn(), // the lock and the interrupt gap the scroll controller is built with (src/scroll.js insists on both)
@@ -3203,6 +3204,7 @@ describe('capture: draft', () => {
     assert.equal((await call('GET', '/api/app/pane/%256/capture')).status, 404);
     assert.equal((await call('PUT', '/api/app/pane/%256/draft')).status, 404);
     assert.equal((await call('POST', '/api/app/pane/%256/suggestion')).status, 404, 'accepting a suggestion presses a key: app tier only');
+    assert.equal((await call('POST', '/api/app/pane/%256/submit')).status, 404, 'Send\'s Enter presses a key: app tier only');
     const agents = await call('GET', '/api/agents?since=all');
     assert.equal(agents.status, 200);
     assert.doesNotMatch(agents.data, /"draft"|"edit"|"cursorAtEnd"/);
@@ -3439,6 +3441,137 @@ describe('POST /api/app/pane/:id/suggestion', () => {
       Object.assign(console, saved);
     }
     assert.ok(lines.some((l) => /POST .*suggestion failed/.test(l)), 'the internal error was logged (so the check is real)');
+    assert.deepEqual(lines.filter((l) => l.includes(secret)), []);
+  });
+});
+
+describe('POST /api/app/pane/:id/submit (0.5, W13)', () => {
+  const body = { base: '0123456789abcdef' };
+
+  test('(+) hands the pane and exactly { base } (or {}) to the controller and relays its answer and status', async () => {
+    for (const json of [body, {}, { base: '' }]) {
+      const { a, control } = await bootScreens({ ctlAnswers: { submit: { status: 200, body: { taken: true, draft: { state: 'empty', queued: true } } } } });
+      const r = await pane(a, '%6', 'submit', { method: 'POST', json });
+      assert.deepEqual([r.status, r.body], [200, { taken: true, draft: { state: 'empty', queued: true } }]);
+      assert.deepEqual(control.calls, [['submit', '%6', json]]);
+      assert.equal(r.headers['cache-control'], 'no-store');
+    }
+  });
+
+  test('(+) a started pane is eligible; every 409 the controller gives (draft included) and a 429 are relayed as they are', async () => {
+    const answers = [
+      { status: 409, body: { error: 'prompt-open' } },
+      { status: 409, body: { error: 'bypass-prompt' } },
+      { status: 409, body: { error: 'screen-unclear' } },
+      { status: 409, body: { error: 'draft-changed', draft: { state: 'text', text: 'on screen', sig: '0123456789abcdef' } } },
+      { status: 409, body: { error: 'not-idle' } },
+      { status: 409, body: { error: 'busy-switching' } },
+      { status: 429, body: { error: 'busy', draft: { state: 'text' } } },
+      { status: 200, body: { taken: false, draft: { state: 'text' } } },
+    ];
+    for (const answer of answers) {
+      const { a, control } = await bootScreens({ ctlAnswers: { submit: answer } });
+      a.ctx.started.set('%8', { key: w.project.key, name: 'x', sessionId: null, role: 'agent', mode: 'plan' });
+      const r = await pane(a, '%8', 'submit', { method: 'POST', json: body });
+      assert.deepEqual([r.status, r.body], [answer.status, answer.body]);
+      assert.deepEqual(control.calls, [['submit', '%8', body]]);
+    }
+  });
+
+  test('(−) a bad body is 400 before the pane check, and the controller is not called', async () => {
+    const { a, control } = await bootScreens();
+    const bad = [{ text: 'hello' }, { base: 'XYZ' }, { base: 5 }, { base: null }, { base: '0123456789abcde' }, { base: 'ABCDEF0123456789' }, { base: '', keys: ['Enter'] }, { base: 'a'.repeat(16), path: '/etc/passwd' }, [], 'base'];
+    for (const json of bad) {
+      for (const id of ['%6', '%5']) {
+        const r = await pane(a, id, 'submit', { method: 'POST', json });
+        assert.equal(r.status, 400, `${JSON.stringify(json).slice(0, 50)} on ${id}`);
+        assert.equal(r.body.error, 'invalid');
+      }
+    }
+    assert.deepEqual(control.calls, []);
+  });
+
+  test('(−) an ineligible pane (zsh, not live, unknown id, bad id) is 404 and the controller is not called', async () => {
+    const { a, control } = await bootScreens();
+    for (const id of ['%5', '%7', '%99', 'abc', '..']) {
+      const r = await a.call('POST', `/api/app/pane/${id.replace('%', '%25')}/submit`, { json: body });
+      assert.equal(r.status, 404, id);
+    }
+    assert.deepEqual(control.calls, []);
+  });
+
+  test('(−) without the secret 403; text/plain 415; GET and PUT 405; a body over 1 KB 413 -- the controller is not called', async () => {
+    const { a, control } = await bootScreens();
+    assert.equal((await pane(a, '%6', 'submit', { method: 'POST', json: body, headers: { 'x-nika-app': null } })).status, 403);
+    assert.equal((await pane(a, '%6', 'submit', { method: 'POST', body: JSON.stringify(body), headers: { 'content-type': 'text/plain' } })).status, 415);
+    assert.equal((await pane(a, '%6', 'submit', { method: 'GET' })).status, 405);
+    assert.equal((await pane(a, '%6', 'submit', { method: 'PUT', json: body })).status, 405);
+    assert.equal((await pane(a, '%6', 'submit', { method: 'POST', json: { base: '', pad: 'p'.repeat(1100) } })).status, 413);
+    assert.deepEqual(control.calls, []);
+  });
+
+  test('(−) a foreign Origin or Sec-Fetch-Site is 403 before any pane work', async () => {
+    const { a, control } = await bootScreens();
+    assert.equal((await pane(a, '%6', 'submit', { method: 'POST', json: body, headers: { origin: 'http://evil.example' } })).status, 403);
+    assert.equal((await pane(a, '%6', 'submit', { method: 'POST', json: body, headers: { 'sec-fetch-site': 'cross-site' } })).status, 403);
+    assert.deepEqual(control.calls, []);
+  });
+
+  test('(−) a submit while End runs on the same pane is 409 busy-switching (one lock), and no Enter of the submit is sent', async () => {
+    const { a, screens, mirror } = await bootScreens({ fake: false });
+    screens['%6'] = boxRows({ cols: 80, lines: ['hello'] }).rows;
+    let enter;
+    const entered = new Promise((r) => { enter = r; });
+    let release;
+    const hold = new Promise((r) => { release = r; });
+    const capture = mirror.capture;
+    mirror.capture = async (...args) => { enter(); await hold; return capture(...args); };
+    const end = pane(a, '%6', 'end', { method: 'POST', json: {} });
+    await entered;
+    const sub = await pane(a, '%6', 'submit', { method: 'POST', json: {} });
+    assert.deepEqual([sub.status, sub.body.error], [409, 'busy-switching']);
+    release();
+    await end;
+    assert.equal(a.deps.calls.filter((c) => c[0] === 'keys').length, 0, 'End found a draft in the box and typed nothing; the submit pressed nothing');
+  });
+
+  test('(+) end to end with the real controller: one Enter reaches keys.send, in a busy state too, and the answer says the box was taken', async () => {
+    const { a, mirror } = await bootScreens({ fake: false });
+    const state = { text: 'ship it', queued: false };
+    let shots = 0;
+    mirror.capture = async () => {
+      shots += 1;
+      return { status: 200, body: { ...boxRows({ cols: 80, lines: [state.text], insert: true, ghost: state.text === '' && state.queued ? 'Press up to edit queued messages' : null }), etag: `e${shots}` }, etag: `e${shots}` };
+    };
+    a.deps.keys.send = async (id, b) => { // Claude queues the message: the box empties and shows its placeholder
+      a.deps.calls.push(['keys', id, b]);
+      if (b.keys?.includes('Enter')) { state.text = ''; state.queued = true; }
+      return { status: 200, body: { sent: { text: 0, paste: 0, keys: 1 } } };
+    };
+    const first = (await pane(a, '%6', 'capture')).body.draft;
+    const r = await pane(a, '%6', 'submit', { method: 'POST', json: { base: first.sig } });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.deepEqual([r.body.taken, r.body.draft.state, r.body.draft.queued], [true, 'empty', true]);
+    assert.deepEqual(a.deps.calls.filter((c) => c[0] === 'keys').map((c) => c[2]), [{ keys: ['Enter'] }]);
+    const stale = await pane(a, '%6', 'submit', { method: 'POST', json: { base: first.sig } });
+    assert.deepEqual([stale.status, stale.body.error], [409, 'draft-changed']);
+    assert.equal(a.deps.calls.filter((c) => c[0] === 'keys').length, 1, 'the stale submit sent nothing');
+  });
+
+  test('(−) nothing of the base reaches a log line, on success and on an internal error', async () => {
+    const secret = 'abcdef0123456789';
+    const lines = [];
+    const saved = { error: console.error, log: console.log, warn: console.warn, info: console.info };
+    for (const name of Object.keys(saved)) console[name] = (...args) => { lines.push(args.map((x) => (x instanceof Error ? `${x.message}\n${x.stack}` : String(x))).join(' ')); };
+    try {
+      for (const ctlAnswers of [undefined, { submit: () => { throw new Error('boom'); } }]) {
+        const { a } = await bootScreens({ ctlAnswers });
+        await pane(a, '%6', 'submit', { method: 'POST', json: { base: secret } });
+      }
+    } finally {
+      Object.assign(console, saved);
+    }
+    assert.ok(lines.some((l) => /POST .*submit failed/.test(l)), 'the internal error was logged (so the check is real)');
     assert.deepEqual(lines.filter((l) => l.includes(secret)), []);
   });
 });

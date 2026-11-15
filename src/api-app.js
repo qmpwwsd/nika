@@ -15,7 +15,7 @@ import { mapLimit } from './util.js';
 import { MODE_TARGETS, bypassWindow, modeFromRows, promptFromRows } from './mode.js';
 import { MODEL_CATALOG } from './models.js';
 import { matches as etagMatches } from './mirror.js';
-import { createSessionControl, promptSig, insertShown, editMode, readDraft, checkDraftBody, checkSuggestionBody, checkDialogBody } from './session-control.js';
+import { createSessionControl, promptSig, insertShown, editMode, readDraft, checkDraftBody, checkSubmitBody, checkSuggestionBody, checkDialogBody } from './session-control.js';
 import { dialogCapture } from './dialog.js';
 import { tagPane, pickState, claudePane, inProject } from './orchestrate.js';
 import { createFit, checkFitBody, FIT_RATE } from './fit.js';
@@ -31,7 +31,7 @@ const FIT_WINDOW_MS = 1000; // the window of the per-pane fit rate limit (FIT_RA
 const COMMAND_MAX = 200; // characters of a slash command typed into Claude
 const CONTROL = /[\u0000-\u001f\u007f-\u009f]/; // C0, DEL, C1
 const WINDOW_ACTIONS = ['quit', 'close', 'minimize', 'zoom-in', 'zoom-out', 'zoom-reset']; // what the shell can do to its window (contract §3, §5)
-const CAP = { small: 4 * 1024, settings: 16 * 1024, keys: 20 * 1024, spawn: 80 * 1024 };
+const CAP = { small: 4 * 1024, submit: 1024, settings: 16 * 1024, keys: 20 * 1024, spawn: 80 * 1024 };
 // What can answer a permission prompt: Enter confirms the highlighted option, a digit picks an option, a paste may hold either,
 // and Shift-Tab (BTab) can pick "allow for this session".
 const answersPrompt = (b) => (Array.isArray(b.keys) && (b.keys.includes('Enter') || b.keys.includes('BTab'))) || (typeof b.text === 'string' && /[0-9]/.test(b.text)) || (b.paste !== undefined && b.paste !== null);
@@ -591,6 +591,15 @@ export function createAppApi({ secret, ctx, deps }) {
     if (bad) return bad;
     const { id, failure } = await eligiblePane(params[0]);
     return failure ?? control.writeDraft(id, body);
+  });
+
+  // Send's Enter (0.5, W13): the one Enter of the page's Send, never the keys route. The controller presses it under the pane lock, only on a fresh screen
+  // with no prompt and no dialog (and, with `base`, the box the page synced), in any registry state, and sends no other key. Nothing of the body is logged.
+  route('POST', /^\/api\/app\/pane\/([^/]+)\/submit$/, CAP.submit, async ({ params, body }) => {
+    const bad = checkSubmitBody(body);
+    if (bad) return bad;
+    const { id, failure } = await eligiblePane(params[0]);
+    return failure ?? control.submit(id, body);
   });
 
   // Fit (0.5, W7): the session window asks for its panel's size, the controller zooms the pane and sizes its tmux window when that is

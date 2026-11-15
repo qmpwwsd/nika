@@ -1,17 +1,18 @@
-// Seven controls on a live Claude pane (api-app.md section 3): switch the permission mode, End the session, run a slash
+// Eight controls on a live Claude pane (api-app.md section 3): switch the permission mode, End the session, run a slash
 // command, answer a permission prompt, write the draft, accept Claude's prompt suggestion (0.5), answer Claude's question and plan
-// dialogs (0.5, W1, answerDialog). They type into a real agent session, so every path fails
+// dialogs (0.5, W1, answerDialog), and press Send's Enter (0.5, W13, submit). They type into a real agent session, so every path fails
 // closed: when the screen or the registry state is not exactly what the step needs, nothing is sent and the answer is a 409.
 // Keys go only through `keys.send` (src/keys.js: fixed argv, KEY_NAME allow-list, rate limit); this module never kills a pane
 // and never signals a process. End and the commands type only into an empty input box and press Enter only after the box reads
 // exactly what nika typed (claude-tui.md section 5), so a user's draft is never sent, extended or cleared by them. The draft
-// route (writeDraft) is the one place that changes a draft, and it never presses Enter; acceptSuggestion presses only Tab.
+// route (writeDraft) is the one place that changes a draft, and it never presses Enter; acceptSuggestion presses only Tab; submit
+// presses only Enter, the one Enter of the page's Send.
 // The input box is read by src/draft.js.
 import { createHash } from 'node:crypto';
 import { CLAUDE_COMMAND } from './ids.js';
 import { clean } from './text.js';
 import { MODE_TARGETS, OPTION, PROMPT_ROWS, bypassWindow, lastNonBlank, mentionsBypass, modeFromRows, promptFromRows, rowText } from './mode.js';
-import { RULE_ROW, SIG, parseDraft, normDraft, sameDraft, inEnvelope, chunks, CHUNK_GAP_MS } from './draft.js';
+import { RULE_ROW, SIG, parseDraft, boxSquash, normDraft, sameDraft, inEnvelope, chunks, CHUNK_GAP_MS } from './draft.js';
 import { TEXT_MAX, STEPS_MAX, PLAIN_TEXT, PLAN_PICK, dialogOnScreen, readDialogScreen, identityOf, sigOf, otherAllowed } from './dialog.js';
 
 const EXIT_POLL_MS = 500;
@@ -38,6 +39,13 @@ const VIM_ESC_GAP_MS = 40;
 const VIM_CLEAR_MS = 400; // wait for INSERT to go after Escape, and for the empty INSERT box after `ggdG` + `i`
 const PLAIN_CLEAR_MS = 600; // wait for the empty box after the second Escape
 const EMPTY = ['', '!']; // an empty box in the page's form: prompt glyph, `!` glyph
+// The C-u road (design W13 section 1): End and C-u never interrupt a turn (spike W13), so they clear the box while Claude works. One key per
+// request, at least KEY_GAP_MS apart (20 requests a second per pane is the keys limit), each waiting up to CLEAR_WAIT_MS for the redraw.
+const KEY_GAP_MS = 60;
+const CLEAR_WAIT_MS = 400;
+// Submit (design W13 section 2): after the Enter, the box is read every SUBMIT_POLL_MS for SUBMIT_READ_MS to see whether Claude took it.
+const SUBMIT_POLL_MS = 50;
+const SUBMIT_READ_MS = 1000;
 
 const conflict = (error) => ({ status: 409, body: { error } });
 const invalid = (message) => ({ status: 400, body: { error: 'invalid', message } });
@@ -87,6 +95,11 @@ export function readDraft(seen) {
   return input === null ? null : parseDraft(input.rows, input.cursor, input.cols);
 }
 const draftOf = readDraft;
+/** The box of a capture with its whitespace-blind text (src/draft.js boxSquash, the attachment send's reader): { draft, squash, ghost } or null. */
+function boxOf(seen) {
+  const input = boxInput(seen);
+  return input === null ? null : boxSquash(input.rows, input.cursor, input.cols);
+}
 /** Whether the capture's cursor sits on a row between the two rules of the box that was read: the input is where the box is. */
 const cursorInBox = (seen, draft) => Number.isInteger(seen.cursor?.y) && seen.cursor.y > draft.box.top && seen.cursor.y < draft.box.bottom;
 /** The draft as the screen holds it, in the form the page sends: a `!` box reads `!` + its text (Shell mode). */
@@ -151,6 +164,14 @@ export function checkDraftBody(body) {
   if (DRAFT_CONTROL.test(text)) return invalid('text must not contain control characters other than newline and tab');
   if (text.split('\n').length - 1 > DRAFT_MAX_NEWLINES) return invalid(`text may hold at most ${DRAFT_MAX_NEWLINES} newlines`);
   if (typeof base !== 'string' || !DRAFT_BASE.test(base)) return invalid('base must be 16 lowercase hex characters, or empty');
+  return null;
+}
+
+/** The body of the submit route, `{ base? }` (the sig the page last saw, the same shape as the draft route's `base`): null when it is valid, else the 400 answer. */
+export function checkSubmitBody(body) {
+  const names = body !== null && typeof body === 'object' && !Array.isArray(body) ? Object.keys(body) : null;
+  if (names === null || names.some((n) => n !== 'base')) return invalid('body must be { base? }');
+  if (names.length === 1 && !(typeof body.base === 'string' && DRAFT_BASE.test(body.base))) return invalid('base must be 16 lowercase hex characters, or empty');
   return null;
 }
 
@@ -698,17 +719,25 @@ export function createSessionControl({
    * per-pane lock: a fresh capture (no prompt on screen, a readable box, its `sig` equal to `base`, the text inside the
    * envelope); then either nothing (the box already reads the text), an append (the cursor is at the end of the text, the new
    * text starts with the old, and the input is in vim INSERT, or in remembered plain mode with a text that does not end in a
-   * newline: only the new part is typed), a type (an empty box), or a replace (clear with Escape, then type). Every plan that
+   * newline: only the new part is typed), a type (an empty box), or a replace (clear, then type). Every plan that
    * sends a key needs the cursor on a row of the box that was read (else 409 `input-unreadable`: that box may be a status
-   * line). A replace needs the registry state `idle`: Escape interrupts a running turn, and no key goes out while Stop runs.
+   * line). The road of a replace is chosen once, on the first capture (0.5, W13): the cursor on the box's LAST row, in any registry
+   * state, is the C-u road (End when the cursor is not at the text end, then C-u, one key per request, KEY_GAP_MS apart: neither key
+   * interrupts a turn, so this works while Claude works); the cursor on an EARLIER row needs the registry state `idle` (read fresh
+   * before the first Escape) and clears with Escape as in W5, else 409 `cursor-not-at-end` and nothing is sent. No key goes out
+   * while Stop or End interrupts.
    * Before EVERY key or chunk a fresh capture must still show the plain box with the cursor in it, no prompt and exactly the
-   * text the previous step left (409 `screen-changed` otherwise; T51; `trailing` is no exception). Chunks are at most 700 characters and 2 newlines, `chunkGapMs` apart. Last, the
+   * text the previous step left (409 `screen-changed` otherwise; T51; `trailing` is no exception). On the C-u road the text may only
+   * shrink: it must be the start of the text before the last press, whitespace aside (`trailing` is an intermediate state there,
+   * the break space a wrapped row keeps), and every press must change the box within CLEAR_WAIT_MS (else 409 `clear-stopped`), at most
+   * twice the box's rows plus two C-u presses. Chunks are at most 700 characters and 2 newlines, `chunkGapMs` apart. Last, the
    * box is read back (409 `draft-mismatch` on any difference). Sent: literal text (`send-keys -l`, or a bracketed paste for a
-   * chunk with a newline or tab), `Escape` (idle only, vim: once, then `ggdG` and `i`; plain: twice, `escGapMs` apart),
-   * `i` (a probe when nothing shows the edit mode), `C-u` (the probe's own `i` in an empty box) and `BSpace` (leaves a `!` box).
-   * Never `Enter`, `C-c`, `Up`, `Down` or `BTab`, and no key within 40 ms after an `Escape`. Every answer that has a box carries
-   * `draft` (the parse plus `edit`): 200 { draft, typed }, 409 not-idle | mode-unknown | input-unreadable | draft-unreadable { reason } |
-   * draft-changed | screen-changed | draft-mismatch, 400 invalid, or a failed capture or key send's own status and body.
+   * chunk with a newline or tab), `End` and `C-u` (the C-u road), `Escape` (idle only, earlier row; vim: once, then `ggdG` and `i`;
+   * plain: twice, `escGapMs` apart), `i` (a probe when nothing shows the edit mode), `C-u` (the probe's own `i` in an empty box) and
+   * `BSpace` (leaves a `!` box). Never `Enter`, `C-c`, `Up`, `Down`, `DC`, `C-k` or `BTab`, and no key within 40 ms after an `Escape`.
+   * Every answer that has a box carries `draft` (the parse plus `edit`): 200 { draft, typed }, 409 not-idle | mode-unknown |
+   * input-unreadable | draft-unreadable { reason } | draft-changed | screen-changed | draft-mismatch | cursor-not-at-end |
+   * clear-stopped, 400 invalid, or a failed capture or key send's own status and body.
    */
   function writeDraft(pane, body) {
     const bad = checkDraftBody(body);
@@ -772,7 +801,8 @@ export function createSessionControl({
         await sleep(Math.max(escGapMs, VIM_ESC_GAP_MS));
         const second = await check([onScreen, ...EMPTY]);
         if (second.res) return second.res;
-        if (second.draft.state !== 'empty' && (res = await press({ keys: ['Escape'] }))) return res;
+        // the registry is read again: a turn that started since the first Escape would be interrupted by this one (W13: Escape only while idle)
+        if (second.draft.state !== 'empty' && ((res = await idleNow()) || (res = await press({ keys: ['Escape'] })))) return res;
         // the next key follows the last Escape by at least 40 ms: a key right behind an Escape is read as Alt+key
         return reach(PLAIN_CLEAR_MS, [onScreen, ...EMPTY], (cap, d, waited) => d.state === 'empty' && waited >= VIM_ESC_GAP_MS);
       };
@@ -797,6 +827,76 @@ export function createSessionControl({
         setEdit(pane, 'plain');
         onScreen = canonOf(draft);
         return 'plain';
+      };
+      // The C-u road (design W13 1.2): empties the box with End (once, only when the cursor is not at the text end) and C-u, none of which
+      // interrupts a turn. Each key is its own request after a pause that makes it KEY_GAP_MS since the key before and a fresh pre-key check; a
+      // check passes when the plain box is on screen with the cursor in it, no prompt or dialog, and its text (whitespace aside) is the start of the
+      // text before the last press; `trailing` passes too (a wrapped row keeps its break space). A press counts as taken once the box
+      // (text, height or cursor) changes; 400 ms without that is 409 clear-stopped. Null when the box is empty (Claude's queued placeholder is empty
+      // too), else the answer. `onScreen` is the box when it returns.
+      const clearUp = async () => {
+        const limit = 2 * (draft.box.bottom - draft.box.top - 1) + 2;
+        const shape = (cap, box) => `${box.squash}|${box.draft.box.bottom - box.draft.box.top}|${cap.cursor.x},${cap.cursor.y}`;
+        const first = await check([onScreen]); // exactly the text the previous step left
+        if (first.res) return first.res;
+        let at = boxOf(first.seen);
+        let got = { seen: first.seen, draft: first.draft, shape: shape(first.seen, at) };
+        let lastKey = null;
+        let res;
+        const fire = async (key) => {
+          const refused = await press({ keys: [key] });
+          lastKey = now();
+          return refused;
+        };
+        const pause = async () => {
+          const wait = lastKey === null ? 0 : KEY_GAP_MS - (now() - lastKey);
+          if (wait > 0) await sleep(wait);
+        };
+        const peek = async () => {
+          const seen = await look(pane, ctx);
+          if (seen.res) return { res: seen.res };
+          const box = promptOpen(seen.rows) ? null : boxOf(seen);
+          if (box === null || (box.draft.state === 'unreadable' && box.draft.reason !== 'trailing')) return { res: await reply(409, 'screen-changed', seen) };
+          if (!cursorInBox(seen, box.draft)) return { res: await reply(409, 'screen-changed', null) }; // not where the input is: nothing of it goes to the page
+          if (!at.squash.startsWith(box.squash)) return { res: await reply(409, 'screen-changed', seen) }; // someone typed: the terminal wins
+          return { seen, draft: box.draft, shape: shape(seen, box), box };
+        };
+        // polls every draftPollMs, at most CLEAR_WAIT_MS, until `done(got)`; the baseline for the prefix check moves to the box that was seen
+        const redraw = async (done) => {
+          let last = got.seen;
+          for (let i = 0; i < steps(CLEAR_WAIT_MS, draftPollMs); i += 1) {
+            await sleep(draftPollMs);
+            const next = await peek();
+            if (next.res) return next;
+            last = next.seen;
+            if (done(next)) { at = next.box; return next; }
+          }
+          return { res: await reply(409, 'clear-stopped', last) };
+        };
+        for (let pressed = 0, ended = false; ; ) { // `got` is the pre-key check of the next key
+          if (got.draft.state === 'empty') {
+            await pause(); // the text that follows is a key too
+            onScreen = canonOf(got.draft);
+            return null;
+          }
+          if (pressed === 0 && !ended && !got.draft.cursorAtEnd) {
+            ended = true;
+            if ((res = await fire('End'))) return res;
+            got = await redraw((next) => next.draft.cursorAtEnd);
+          } else {
+            if (pressed >= limit) return reply(409, 'clear-stopped', got.seen);
+            const before = got.shape;
+            if ((res = await fire('C-u'))) return res;
+            pressed += 1;
+            got = await redraw((next) => next.draft.state === 'empty' || next.shape !== before);
+          }
+          if (got.res) return got.res;
+          if (got.draft.state !== 'empty') {
+            await pause();
+            got = await peek(); // the pre-key check right before the next key
+            if (got.res) return got.res;
+          }
+        }
       };
       // types `part` in chunks: each one after a pre-key check, chunkGapMs apart
       const typeIn = async (part) => {
@@ -830,7 +930,10 @@ export function createSessionControl({
       const empty = draft.state === 'empty';
       // `plain` is memory: on an empty last row (the text ends in a newline) vim NORMAL draws the same cursor, so only a shown INSERT may append there (M-1)
       const append = !empty && (edit === 'insert' || (edit === 'plain' && !onScreen.endsWith('\n'))) && draft.cursorAtEnd && (draft.mode === 'bash') === text.startsWith('!') && text.startsWith(onScreen);
-      if (!empty && !append && state !== 'idle') return reply(409, 'not-idle', seen); // a replace clears with Escape
+      // A replace is cleared by one of two roads, chosen here and not again (design W13 1.1): the cursor on the box's last row (End reaches the
+      // text end from there only) is the C-u road, in any registry state; on an earlier row only Escape clears, and Escape interrupts a running turn.
+      const lastRow = seen.cursor.y === draft.box.bottom - 1;
+      if (!empty && !append && !lastRow && state !== 'idle') return reply(409, 'cursor-not-at-end', seen);
       let res;
 
       if (!append) {
@@ -840,7 +943,7 @@ export function createSessionControl({
           if (edit.res) return edit.res;
         }
         if (!empty) {
-          if ((res = await (edit === 'insert' ? clearVim() : clearPlain()))) return res;
+          if ((res = await (lastRow ? clearUp() : edit === 'insert' ? clearVim() : clearPlain()))) return res;
         } else if (onScreen !== was) { // the probe's `i` landed as text in an empty box: one C-u removes it (one row)
           if ((res = await send([onScreen], { keys: ['C-u'] }))) return res;
           if ((res = await reach(PLAIN_CLEAR_MS, [onScreen, was], isEmpty))) return res;
@@ -897,6 +1000,52 @@ export function createSessionControl({
       if (back.res) return back.res;
       if (back.rows) return { status: 200, body: { draft: await view(back.seen) } };
       return reply(409, 'draft-mismatch', back.lastSeen);
+    });
+  }
+
+  /**
+   * Send's Enter (design W13 section 2.2): the one Enter of the page's Send, never the keys route. `body` is checkSubmitBody's, `{ base? }`:
+   * `base` is the draft sig the page last synced on. Under the per-pane lock (409 busy-switching), in this order and with nothing sent before the
+   * last check: no Stop/End interrupt and no Escape of one < 40 ms ago (409 not-idle); one fresh capture (its own failure passes through); a
+   * bypass window with a permission prompt or an unreadable footer (409 bypass-prompt, as the keys route, T26); a permission prompt or a dialog
+   * (409 prompt-open: an Enter would confirm its highlighted option); an unreadable footer and no input box (409 screen-unclear); with a `base`,
+   * a plain box with the cursor in it (409 input-unreadable) whose `sig` is `base` (409 draft-changed { draft }; an unreadable box has no sig,
+   * and `''` matches nothing). Then exactly one `Enter`, in any registry state (Claude queues a message sent while it works), and no other key
+   * ever. Read-back every SUBMIT_POLL_MS for SUBMIT_READ_MS: 200 { taken: true, draft } at the first poll that shows a plain box in state `empty`
+   * (the queued placeholder included); taken false when `base` was given and every poll still showed that sig (the Enter did not take; it is never
+   * repeated); taken null otherwise (no `base`, a prompt opened, the box vanished or changed). A failed Enter send answers its own status and body.
+   */
+  function submit(pane, body) {
+    const bad = checkSubmitBody(body);
+    if (bad) return Promise.resolve(bad);
+    const { base } = body;
+    return exclusive(pane, async (ctx) => {
+      const { view, reply, press } = draftTools(pane, ctx);
+      if (interrupting.has(pane) || escapeGap(pane)) return conflict('not-idle');
+      const seen = await look(pane, ctx);
+      if (seen.res) return seen.res;
+      if (bypassWindow(seen.rows) && (promptFromRows(seen.rows) !== null || modeFromRows(seen.rows) === 'unknown')) return conflict('bypass-prompt');
+      if (promptOpen(seen.rows)) return conflict('prompt-open');
+      if (unknownScreen(seen)) return conflict('screen-unclear');
+      if (base !== undefined) {
+        const draft = readDraft(seen);
+        if (draft === null || !cursorInBox(seen, draft)) return conflict('input-unreadable');
+        if (draft.sig !== base) return reply(409, 'draft-changed', seen);
+      }
+      const sent = await press({ keys: ['Enter'] });
+      if (sent) return sent;
+      let last = null;
+      let other = false; // a poll that did not show the text of `base` any more (or never could be compared)
+      for (let i = 0; i < steps(SUBMIT_READ_MS, SUBMIT_POLL_MS); i += 1) {
+        await sleep(SUBMIT_POLL_MS);
+        const cap = await look(pane, ctx);
+        if (cap.res) { other = true; continue; } // the Enter is out: a failed read proves nothing either way
+        last = cap;
+        const draft = promptOpen(cap.rows) ? null : readDraft(cap);
+        if (draft?.state === 'empty') return { status: 200, body: { taken: true, draft: await view(cap) } };
+        if (base === undefined || draft === null || draft.sig !== base) other = true;
+      }
+      return { status: 200, body: { taken: base !== undefined && !other ? false : null, draft: await view(last) } };
     });
   }
 
@@ -1070,5 +1219,5 @@ export function createSessionControl({
   /** True while no key may go: a Stop or End interrupt runs, or its Escape went out less than 40 ms ago (N-2). The scroll route (src/scroll.js) checks it inside the lock. */
   const keyGap = (pane) => interrupting.has(pane) || escapeGap(pane);
 
-  return { switchMode, endSession, runCommand, answer, stop, writeDraft, acceptSuggestion, answerDialog, withPaneLock, keyGap };
+  return { switchMode, endSession, runCommand, answer, stop, writeDraft, submit, acceptSuggestion, answerDialog, withPaneLock, keyGap };
 }
