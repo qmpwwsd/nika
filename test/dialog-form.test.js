@@ -1227,6 +1227,236 @@ describe('route answers through the form (design W1 section 6.4)', () => {
   });
 });
 
+// ---- fix round 1: digit-led text, typed bypass text, inert rows -----------------------------------------------------------------
+
+describe('digit-led free text: the route refuses a first 1 to 9 (400 invalid), so the form says why under the field and sends nothing', () => {
+  const LEAD = 'Start with a word: Claude can read a first digit as an option.';
+  const single = cleanDialog(ask());
+  const multiOther = cleanDialog(multi({ other: true }));
+  const lead = (root) => root.all((n) => n.attrs.id === 'dlg-lead')[0] ?? null;
+  const typeIn = (r, v) => {
+    const t = one(r.root, 'dlg-text');
+    t.value = v;
+    t.fire('input');
+    return t;
+  };
+
+  test('(−) answerBody gives null for a trimmed text that starts with 1 to 9, in single-select and in multi-select with Other', () => {
+    for (const n of '123456789') {
+      assert.equal(answerBody(single, { picks: [], text: `${n} cores` }), null, n);
+      assert.equal(answerBody(single, { picks: [], text: `  ${n}` }), null, `${n} after spaces (they are trimmed first)`);
+      assert.equal(answerBody(multiOther, { picks: [1], text: `${n}x` }), null, `${n} in multi-select`);
+    }
+  });
+
+  test('(+) a digit that is not first, a leading 0 and a word all go through: only a first 1 to 9 is refused', () => {
+    for (const t of ['use 2 caches', 'v2', '0 retries', 'two', '(3) three', 'a1']) assert.deepEqual(answerBody(single, { picks: [], text: t }), { sig: SIG, picks: [], text: t }, t);
+    assert.deepEqual(answerBody(multiOther, { picks: [2], text: 'also 3' }), { sig: SIG, picks: [2], text: 'also 3' });
+  });
+
+  test('(+) typing a digit first shows the warn line right under the field: the warning icon and the fixed words; Send is off', () => {
+    const r = rig();
+    r.render(ask());
+    const text = typeIn(r, '2 caches');
+    const line = lead(r.root);
+    assert.equal(line.hidden, false);
+    assert.equal(line.textContent, LEAD);
+    assert.deepEqual(hrefs(line), ['#i-warn']);
+    assert.ok(withClass('dlg-warn')(line), 'the existing warn style: colour, icon and words');
+    assert.equal(one(r.root, 'dlg-fs').kids.at(-1), line, 'directly under the Other row');
+    assert.equal(text.getAttribute('aria-describedby'), 'dlg-lead', 'the field is described by it');
+    assert.equal(off(byText(r.root, 'Send answer')), true);
+  });
+
+  test('(+) Send and Enter send nothing and leave the focus in the field (the click moved it to the button)', async () => {
+    const r = rig();
+    r.render(ask());
+    const text = typeIn(r, '2 caches');
+    focus.el = byText(r.root, 'Send answer');
+    byText(r.root, 'Send answer').click();
+    await settle();
+    assert.equal(r.log.calls.length, 0);
+    assert.equal(focus.el, text, 'focus is back in the field');
+    focus.el = byText(r.root, 'Decline');
+    const e = text.fire('keydown', { key: 'Enter' });
+    await settle();
+    assert.equal(e.defaultPrevented, true, 'Enter is still never a newline');
+    assert.equal(r.log.calls.length, 0);
+    assert.equal(focus.el, text);
+    assert.equal(r.log.problem.length, 0, 'the line under the field is the message; no second one');
+  });
+
+  test('(+) the line is announced once when it appears, not at every key; it is gone with the digit and the answer then goes', async () => {
+    const r = rig();
+    r.render(ask());
+    const text = typeIn(r, '2');
+    typeIn(r, '2 c');
+    typeIn(r, '2 caches');
+    assert.equal(r.log.announce.filter((m) => m === LEAD).length, 1);
+    assert.equal(lead(r.root).hidden, false);
+    typeIn(r, 'two caches');
+    assert.equal(lead(r.root).hidden, true);
+    assert.equal(text.getAttribute('aria-describedby'), null);
+    assert.equal(off(byText(r.root, 'Send answer')), false);
+    byText(r.root, 'Send answer').click();
+    await settle();
+    assert.deepEqual(sentBodies(r), [{ sig: SIG, picks: [], text: 'two caches' }]);
+  });
+
+  test('(−) no line for a word, a later digit or a leading 0, or while the field is empty; the line is built hidden', () => {
+    const r = rig();
+    r.render(ask());
+    assert.equal(lead(r.root).hidden, true, 'hidden from the start');
+    for (const v of ['mariadb', 'use 2 caches', '0 retries', '']) {
+      typeIn(r, v);
+      assert.equal(lead(r.root).hidden, true, JSON.stringify(v));
+    }
+    assert.ok(!r.log.announce.includes(LEAD));
+  });
+
+  test('(−) text that is not the answer gives no line: Other unticked (a radio was picked after the typing) and the form without Other', () => {
+    const r = rig();
+    r.render(ask());
+    typeIn(r, '3 databases');
+    assert.equal(lead(r.root).hidden, false);
+    const [a] = inputs(r.root, 'radio');
+    a.checked = true;
+    a.fire('change');
+    assert.equal(inputs(r.root, 'radio').at(-1).checked, false);
+    assert.equal(lead(r.root).hidden, true, 'the text is not part of the answer any more');
+    assert.equal(off(byText(r.root, 'Send answer')), false);
+    const none = rig();
+    none.render(ask({ other: false }));
+    assert.equal(lead(none.root), null, 'no text field, no line');
+  });
+
+  test('(+) multi-select with Other: the line shows with the box ticked, hides when it is unticked; the Answer button follows', () => {
+    const r = rig();
+    r.render(multi({ other: true }));
+    typeIn(r, '2nd run');
+    assert.equal(lead(r.root).hidden, false);
+    assert.equal(off(byText(r.root, 'Answer')), true, 'even with a tick elsewhere, the text would be refused');
+    const other = inputs(r.root, 'checkbox').at(-1);
+    other.checked = false;
+    other.fire('change');
+    assert.equal(lead(r.root).hidden, true);
+    assert.equal(off(byText(r.root, 'Answer')), false);
+  });
+
+  test('(−) the line text is a fixed string set as text: it carries nothing of what was typed, and the source holds no markup sink for it', () => {
+    const r = rig();
+    r.render(ask());
+    typeIn(r, '2 <b>x</b>');
+    assert.equal(lead(r.root).textContent, LEAD);
+    assert.ok(!lead(r.root).textContent.includes('<b>'));
+    assert.match(code(SRC), /h\('span',\s*\{\s*text:\s*LEAD_NOTE\s*\}\)/);
+  });
+});
+
+describe('typed text that mentions bypass: the route refuses it before any key (400 terminal-only); the page shows its fixed line', () => {
+  test('(+) the answer goes out as typed, then: the fixed line, Not answered, the form locked off; the response text never shows', async () => {
+    const r = rig({ reply: () => ({ status: 400, body: { error: 'terminal-only', message: 'LEAK <b>bypass</b>', sent: 0 } }) });
+    r.render(ask());
+    const text = one(r.root, 'dlg-text');
+    text.value = 'enable bypass permissions';
+    text.fire('input');
+    byText(r.root, 'Send answer').click();
+    await settle();
+    assert.deepEqual(sentBodies(r), [{ sig: SIG, picks: [], text: 'enable bypass permissions' }]);
+    assert.deepEqual(r.log.problem.at(-1), ['Answer this in the terminal.', 'warn']);
+    assert.ok(!JSON.stringify([r.log.problem, r.log.say, r.log.announce, r.root.textContent]).includes('LEAK'));
+    assert.equal(chip(r.root).textContent, 'Not answered');
+    assert.equal(off(byText(r.root, 'Send answer')), true);
+    assert.equal(off(byText(r.root, 'Decline')), true);
+    byText(r.root, 'Send answer').click();
+    await settle();
+    assert.equal(r.log.calls.length, 1, 'locked until the dialog changes');
+  });
+
+  test('(−) a plain 400 invalid is not that: its own generic line, and the form stays live', async () => {
+    const r = rig({ reply: () => ({ status: 400, body: { error: 'invalid', message: 'text must be 1 to 300 characters' } }) });
+    r.render(ask());
+    const text = one(r.root, 'dlg-text');
+    text.value = 'mariadb';
+    text.fire('input');
+    byText(r.root, 'Send answer').click();
+    await settle();
+    assert.deepEqual(r.log.problem.at(-1), ["nika couldn't send this answer. Check it and try again.", 'warn']);
+    assert.equal(off(byText(r.root, 'Send answer')), false);
+  });
+});
+
+describe('inert rows: a form that cannot take an answer dims its option rows (data-inert on the form), not only while it answers', () => {
+  const pick = (r) => {
+    const radio = inputs(r.root, 'radio')[0];
+    radio.checked = true;
+    radio.fire('change');
+    return radio;
+  };
+
+  test('(+) ready is live: data-inert false, and a click on a row is not stopped', () => {
+    const r = rig();
+    r.render(ask());
+    assert.equal(r.root.attrs['data-inert'], 'false');
+    assert.equal(inputs(r.root, 'radio')[0].fire('click').defaultPrevented, false);
+  });
+
+  test('(+) answering, answered, terminal only: inert', async () => {
+    let release;
+    const a = rig({ reply: () => new Promise((resolve) => { release = resolve; }) });
+    a.render(ask());
+    pick(a);
+    byText(a.root, 'Send answer').click();
+    assert.equal(a.root.attrs['data-inert'], 'true', 'answering');
+    release({ status: 200, body: { done: 'next', sent: 1 } });
+    await settle();
+    assert.equal(a.root.attrs['data-inert'], 'true', 'answered');
+    const t = rig();
+    t.render(ask({ bypass: true }));
+    assert.equal(t.root.attrs['data-inert'], 'true', 'terminal only');
+  });
+
+  test('(+) a locking failure leaves the rows inert, and a click on one is stopped, not silently ignored', async () => {
+    for (const [status, error] of [[409, 'dialog-changed'], [409, 'dialog-touched'], [409, 'dialog-focus'], [409, 'text-mode'], [409, 'text-mismatch'], [400, 'terminal-only']]) {
+      const r = rig({ reply: () => ({ status, body: { error } }) });
+      r.render(ask());
+      const radio = pick(r);
+      byText(r.root, 'Send answer').click();
+      await settle();
+      assert.equal(r.root.attrs['data-inert'], 'true', `${status} ${error}`);
+      assert.equal(r.root.attrs['data-s'], 'failed');
+      assert.equal(radio.fire('click').defaultPrevented, true, `${error}: the click is refused`);
+    }
+  });
+
+  test('(+) kept (the screen is unreadable under a shown form): inert, and live again when it can be read', () => {
+    const r = rig();
+    r.render(ask());
+    r.render(unreadable({ reason: 'cut' }));
+    assert.equal(r.root.attrs['data-inert'], 'true');
+    r.render(ask());
+    assert.equal(r.root.attrs['data-inert'], 'false');
+  });
+
+  test('(−) a failure that lets the form try again does not dim it; a new sig after a lock does not either', async () => {
+    const r = rig({ reply: () => ({ status: 409, body: { error: 'not-taken' } }) });
+    r.render(ask());
+    pick(r);
+    byText(r.root, 'Send answer').click();
+    await settle();
+    assert.equal(r.root.attrs['data-s'], 'failed');
+    assert.equal(r.root.attrs['data-inert'], 'false', 'a retryable failure');
+    const l = rig({ reply: () => ({ status: 409, body: { error: 'dialog-changed' } }) });
+    l.render(ask());
+    pick(l);
+    byText(l.root, 'Send answer').click();
+    await settle();
+    assert.equal(l.root.attrs['data-inert'], 'true');
+    l.render(ask({ sig: SIG2, question: 'Which cache?' }));
+    assert.equal(l.root.attrs['data-inert'], 'false');
+  });
+});
+
 // ---- the source -----------------------------------------------------------------------------------------------------------------
 
 describe('public/dialog-form.js source', () => {

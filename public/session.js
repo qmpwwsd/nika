@@ -1939,7 +1939,7 @@ function wireComposer() {
     const a = composerKey(e, {
       empty: ta.value === '', selection: ta.selectionStart !== ta.selectionEnd, choosing: PL.active >= 0, paletteOpen: PL.open,
       pop: Q.pop, pane: W.pane, status: A.kind, promptOpen: W.promptOpen,
-      buttons: W.pane === 'ok' && hasAnswerButtons(W.prompt), bypass: W.prompt?.bypass === true, switching: SW.busy !== null, suggestion: sug,
+      buttons: (W.pane === 'ok' && hasAnswerButtons(W.prompt)) || DF?.live() === true, bypass: W.prompt?.bypass === true, switching: SW.busy !== null, suggestion: sug,
     });
     if (a.act === 'none') return;
     e.preventDefault();

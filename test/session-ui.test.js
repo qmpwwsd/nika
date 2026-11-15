@@ -582,7 +582,7 @@ describe('quick actions, prompt buttons, End dialog and Shell (spec 9.4-9.8)', (
     const wire = fn(src, 'function wireComposer()');
     assert.match(wire, /composerKey\(e, \{/);
     assert.match(wire, /status: A\.kind, promptOpen: W\.promptOpen,/, 'the message box keys read the same gate inputs as Send');
-    assert.match(wire, /buttons: W\.pane === 'ok' && hasAnswerButtons\(W\.prompt\), bypass: W\.prompt\?\.bypass === true/);
+    assert.match(wire, /buttons: \(W\.pane === 'ok' && hasAnswerButtons\(W\.prompt\)\) \|\| DF\?\.live\(\) === true, bypass: W\.prompt\?\.bypass === true/, 'the same wording input as Send (P5): a live dialog form counts as buttons');
     assert.doesNotMatch(wire, /sendGate/, 'wireComposer holds no gate of its own: composerKey does');
     assert.doesNotMatch(src, /renderGatedKeys/);
     assert.match(fn(src, 'async function sendComposer()'), /sendGate\(\{ promptOpen: W\.promptOpen, status: A\.kind, buttons: \(W\.pane === 'ok' && hasAnswerButtons\(W\.prompt\)\) \|\| DF\?\.live\(\) === true, bypass: W\.prompt\?\.bypass === true \}\)/, 'the wording reads the panel and the capture\'s bypass mark; whether it is held does not');
@@ -692,7 +692,7 @@ describe('command palette wiring (spec 9.7, Task 11)', () => {
     const ctx = {
       composer: () => ta, $: (id) => ({ addEventListener() {}, focus() { calls.push(`focus ${id}`); } }), document: { querySelectorAll: () => [] },
       PL: state.PL ?? { open: false, active: -1, shown: [] }, Q: { pop: state.pop === true }, S: { on: false }, SW: { busy: state.switching ? 'plan' : null },
-      W: { pane: state.pane ?? 'ok', promptOpen: state.promptOpen === true, prompt: null }, A: { kind: state.status ?? 'idle' },
+      W: { pane: state.pane ?? 'ok', promptOpen: state.promptOpen === true, prompt: null }, A: { kind: state.status ?? 'idle' }, DF: state.form ?? null,
       composerKey: composerKeyReal, hasAnswerButtons: hasAnswerButtonsReal, moveActive: moveActiveReal,
       grow() {}, updateChip() {}, wirePalette() {}, setPass: () => calls.push('pass'),
       sendComposer: () => calls.push('send'), sendKey: (k) => calls.push(`key ${k}`), closeModelPop: (r) => calls.push(`model ${r}`),
@@ -734,6 +734,24 @@ describe('command palette wiring (spec 9.7, Task 11)', () => {
   test('(−) Shift+Enter is a new line, not the palette\'s; Shift+Tab with the list open goes to Claude as BTab (0.3.3), not into the list', () => {
     assert.deepEqual(press(OPEN(0), { key: 'Enter', shiftKey: true }), { calls: [], prevented: false });
     assert.deepEqual(press(OPEN(0), { key: 'Tab', shiftKey: true }), { calls: ['key BTab'], prevented: true });
+  });
+
+  test('(+) Shift+Tab in the box while a dialog form is live names the buttons above, as Send does (P5), and sends no key', () => {
+    const gate = 'Answer the prompt with the buttons above or in the terminal.';
+    const r = press({ promptOpen: true, status: 'attn', form: { live: () => true } }, { key: 'Tab', shiftKey: true });
+    assert.deepEqual(r, { calls: [`problem ${gate} | error | 0`], prevented: true });
+  });
+
+  test('(−) Shift+Tab while a dialog is open but no form is live (unreadable, terminal only, no form built) says the terminal wording, never BTab', () => {
+    const wording = 'Answer the prompt in the terminal, or turn on Type into pane.';
+    for (const form of [null, { live: () => false }]) {
+      const r = press({ promptOpen: true, status: 'attn', form }, { key: 'Tab', shiftKey: true });
+      assert.deepEqual(r, { calls: [`problem ${wording} | error | 0`], prevented: true }, JSON.stringify(form));
+    }
+  });
+
+  test('(−) with no dialog open, a live-looking form changes nothing: Shift+Tab is BTab as before', () => {
+    assert.deepEqual(press({ promptOpen: false, status: 'idle', form: { live: () => true } }, { key: 'Tab', shiftKey: true }), { calls: ['key BTab'], prevented: true });
   });
 
   test('(−) keys during IME composition are left alone', () => {
@@ -3139,7 +3157,7 @@ describe('W4: Claude\'s prompt suggestion in the message box (wiring)', () => {
     const ta = { value: state.value ?? '', selectionStart: 0, selectionEnd: 0, addEventListener(type, f) { if (type === 'keydown') this.keydown = f; } };
     const ctx = {
       composer: () => ta, $: () => ({ addEventListener() {}, focus() {} }), document: { querySelectorAll: () => [] },
-      PL: { open: false, active: -1, shown: [] }, Q: { pop: false }, S: { on: false }, SW: { busy: null }, W: { pane: 'ok', promptOpen: false, prompt: null }, A: { kind: 'idle' },
+      PL: { open: false, active: -1, shown: [] }, Q: { pop: false }, S: { on: false }, SW: { busy: null }, W: { pane: 'ok', promptOpen: false, prompt: null }, A: { kind: 'idle' }, DF: null,
       composerKey: composerKeyReal, hasAnswerButtons: hasAnswerButtonsReal, moveActive: moveActiveReal,
       grow() {}, updateChip() {}, wirePalette() {}, setPass() {}, sendComposer: () => calls.push('send'), sendKey: (k) => calls.push(`key ${k}`),
       closeModelPop() {}, closePalette() {}, insertActive() {}, setActive() {}, queueArrow: (k) => calls.push(`arrow ${k}`), endArrows: () => { calls.push('ends'); return false; }, chain: Promise.resolve(), stop() {},
@@ -4714,10 +4732,11 @@ describe('W1-T3: question dialogs and plan approvals in the session window (hook
     assert.match(SRC, /^let DF = null;/m, 'the form is built in boot, beside the quick actions');
   });
 
-  test('(−) the hooks are exactly P2 to P6: past its declaration, DF is named in renderMode, renderAttn, sendComposer and boot, and nowhere else', () => {
+  test('(−) the hooks are exactly P2 to P6 and the Shift+Tab wording line: past its declaration, DF is named in renderMode, renderAttn, sendComposer, wireComposer (that one line) and boot, and nowhere else', () => {
     const body = SRC.replace(/^let DF = null;.*$/m, '');
     const places = [...body.matchAll(/\bDF\b/g)].map((m) => [...body.slice(0, m.index).matchAll(/\n(?:async )?function (\w+)\(/g)].at(-1)?.[1]);
-    assert.deepEqual(places, ['renderMode', 'renderAttn', 'sendComposer', 'boot']);
+    assert.deepEqual(places, ['renderMode', 'renderAttn', 'sendComposer', 'wireComposer', 'boot']);
+    assert.equal((fnOf('function wireComposer()').match(/\bDF\b/g) ?? []).length, 1, 'wireComposer: the one wording line');
   });
 
   // -- P2: noteScreen
@@ -4933,9 +4952,9 @@ describe('W1-T3: question dialogs and plan approvals in the session window (hook
     assert.match(BLOCK, /\.ask\.dlg\s*\{[^}]*max-height:\s*min\(45vh,\s*420px\)[^}]*overflow-y:\s*auto/);
   });
 
-  test('(+) every state has its own colour pair: reading ended, answering accent, answered busy, failed danger, terminal only a dashed edge with no fill', () => {
+  test('(+) every state has its own colour pair: reading ended (the base chip rule), answering accent, answered busy, failed danger, terminal only a dashed edge with no fill', () => {
     const rule = (s) => new RegExp(`\\.dlg-chip\\[data-s="${s}"\\]\\s*\\{([^}]*)\\}`).exec(BLOCK)?.[1] ?? '';
-    assert.match(rule('reading'), /color:\s*var\(--ended\)[^}]*background:\s*var\(--ended-soft\)/);
+    assert.match(/\.dlg-chip\s*\{([^}]*)\}/.exec(BLOCK)?.[1] ?? '', /color:\s*var\(--ended\)[^}]*background:\s*var\(--ended-soft\)/, 'the base rule is the Reading chip');
     assert.match(rule('answering'), /color:\s*var\(--accent\)[^}]*background:\s*var\(--accent-soft\)/);
     assert.match(rule('answered'), /color:\s*var\(--busy\)[^}]*background:\s*var\(--busy-soft\)/);
     assert.match(rule('failed'), /color:\s*var\(--danger\)[^}]*background:\s*var\(--danger-soft\)/);
@@ -4957,6 +4976,47 @@ describe('W1-T3: question dialogs and plan approvals in the session window (hook
 
   test('(+) the spinner stops for reduced motion', () => {
     assert.match(BLOCK, /@media \(prefers-reduced-motion: reduce\)\s*\{[^@]*\.dlg-chip \.spin\s*\{[^}]*animation:\s*none/);
+  });
+
+  test('(−) no rule repeats another: the Reading chip has no rule of its own (the base chip is that look), every other state differs from it, no selector is written twice', () => {
+    assert.doesNotMatch(BLOCK, /\.dlg-chip\[data-s="reading"\]/);
+    const base = /\.dlg-chip\s*\{([^}]*)\}/.exec(BLOCK)[1];
+    for (const state of ['terminal', 'answering', 'answered', 'failed']) {
+      const own = new RegExp(`\\.dlg-chip\\[data-s="${state}"\\]\\s*\\{([^}]*)\\}`).exec(BLOCK)[1];
+      assert.match(own, /color:\s*var\(--(?!ended\b)/, `${state} has its own colour, not the base one`);
+      assert.notEqual(own.trim(), base.trim());
+    }
+    const top = strip(BLOCK).replace(/@[a-z-]+[^{]*\{(?:[^{}]*\{[^{}]*\})*[^{}]*\}/g, ''); // the @container and @media blocks restate selectors on purpose
+    const sels = [...top.matchAll(/(?:^|\})\s*([^{}]+)\{/g)].map((m) => m[1].trim());
+    assert.ok(sels.length > 40, 'the scan found the selectors');
+    assert.deepEqual(sels.filter((x, i) => sels.indexOf(x) !== i), [], 'no selector is written twice');
+  });
+
+  test('(+) the link button is the shared one: no .btn.link rule in session.css, the More button keeps only its own size, and tokens.css still draws a link button', () => {
+    assert.doesNotMatch(strip(CSS), /\.btn\.link/);
+    assert.match(BLOCK, /\.dlg-more\s*\{[^}]*justify-self:\s*start[^}]*min-height:\s*24px[^}]*padding:\s*0 4px[^}]*font-size:\s*var\(--fs-small\)/);
+    assert.doesNotMatch(/\.dlg-more\s*\{([^}]*)\}/.exec(BLOCK)[1], /background|color:|text-decoration/, 'colour and underline come from tokens.css');
+    const link = /\.btn\.link\s*\{([^}]*)\}/.exec(strip(TOKENS))?.[1] ?? '';
+    assert.match(link, /border-color:\s*transparent[^}]*background:\s*transparent[^}]*color:\s*var\(--accent\)[^}]*text-decoration:\s*underline/);
+    assert.match(strip(TOKENS), /\.btn\.link:hover\s*\{[^}]*background:\s*var\(--surface-3\)/);
+    assert.match(JS['dialog-form.js'], /class: 'btn link dlg-more'/, 'the More button carries all three classes');
+  });
+
+  test('(+) an inert form dims its option rows from data-inert, which paint() sets: answering, answered, terminal only, kept and locked all look the same', () => {
+    assert.match(BLOCK, /\.dlg\[data-inert="true"\] \.ch\s*\{[^}]*opacity:\s*0\.6[^}]*cursor:\s*not-allowed/);
+    assert.match(BLOCK, /\.dlg\[data-inert="true"\] \.ch:not\(\[data-on="true"\]\):hover\s*\{[^}]*background:\s*var\(--surface\)/, 'no hover tint on a row that ignores the click');
+    assert.match(code(JS['dialog-form.js']), /root\.setAttribute\('data-inert', String\(!live\)\)/);
+  });
+
+  test('(−) the dimming no longer hangs on the chip state (a locked failure and a kept form have none of their own), and a live row keeps its hover', () => {
+    assert.doesNotMatch(BLOCK, /\.dlg\[data-s="(answering|answered|terminal)"\] \.ch/);
+    assert.match(BLOCK, /\.ch:hover\s*\{[^}]*background:\s*var\(--surface-2\)/);
+  });
+
+  test('(+) the warn line under the text field uses the existing warn style, with the warning icon and its fixed words', () => {
+    assert.match(BLOCK, /\.dlg-warn\s*\{[^}]*background:\s*var\(--idle-soft\)[^}]*color:\s*var\(--idle\)[^}]*font-weight:\s*600/);
+    assert.doesNotMatch(BLOCK, /dlg-lead/, 'no second style for it');
+    assert.match(code(JS['dialog-form.js']), /h\('p', \{ class: 'dlg-warn', id: 'dlg-lead', hidden: true \}, icon\('warn'\), h\('span', \{ text: LEAD_NOTE \}\)\)/);
   });
 
   test('(+) the scrolling form is a containing block (position set), as the stylesheet-wide guard demands', () => {

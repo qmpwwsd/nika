@@ -37,6 +37,7 @@ const NOISE = new RegExp(`[${range([...CONTROLS, [0x200e, 0x200f], [0x202a, 0x20
 const TERMINAL_NOTE = 'This mentions bypass, so nika leaves it to you: answer it in the terminal.';
 const KEPT_NOTE = "nika can't read Claude's dialog right now. Wait a moment, or answer in the terminal.";
 const DECLINE_TITLE = 'Presses Esc in the pane: Claude stops and waits for you';
+const LEAD_NOTE = 'Start with a word: Claude can read a first digit as an option.';
 const GENERIC = "nika couldn't send this answer. Check it and try again.";
 const L409 = {
   'no-dialog': ['The question is gone.', false],
@@ -173,8 +174,10 @@ export const wellFormed = (s) => dropLone(s) === s;
 export const typable = (s) => dropLone(s).replace(CTRL_G, '');
 
 // The route's rule for typed text (design W1 4.1 and the route): 1 to TEXT_MAX UTF-16 units (String.length counts those), none of REFUSED, no lone
-// surrogate. The edges are trimmed before this runs, so the route's "no space at either end" holds too.
-const validText = (t) => t.length >= 1 && t.length <= TEXT_MAX && !CTRL.test(t) && wellFormed(t);
+// surrogate, and no first 1 to 9 (Claude can read it as an option number; the route answers 400 invalid). The edges are trimmed before this runs,
+// so the route's "no space at either end" holds too.
+const DIGIT_LEAD = /^[1-9]/;
+const validText = (t) => t.length >= 1 && t.length <= TEXT_MAX && !CTRL.test(t) && wellFormed(t) && !DIGIT_LEAD.test(t);
 
 /**
  * The one request body for what the form holds, or null when there is nothing valid to send (design W1 4.1). `a` is { picks, text } for a question,
@@ -288,6 +291,7 @@ export function createDialogForm(io) {
     if (f.reason.textContent !== attention) f.reason.textContent = attention;
     const idle = !f.busy && !f.locked && !f.kept;
     const live = idle && !f.terminal;
+    root.setAttribute('data-inert', String(!live)); // the option rows dim whenever the form cannot take an answer, not only while one is on its way
     f.terminalNote.hidden = !f.terminal;
     f.keptNote.hidden = !f.kept;
     const p = f.parts;
@@ -342,10 +346,20 @@ export function createDialogForm(io) {
     const d = f.dialog;
     const boxes = []; // { n, input, row }
     let other = null; // { input, txt, row, count }
+    let lead = null; // the warn line under the text field (only with Other)
     const read = () => ({ picks: boxes.filter((b) => b.input.checked).map((b) => b.n), text: other?.input.checked ? other.txt.value : '' });
+    const leading = () => other?.input.checked === true && DIGIT_LEAD.test(other.txt.value.trim()); // text that would be sent starts with a digit
     const sync = () => {
       for (const b of boxes) b.row.setAttribute('data-on', String(b.input.checked));
       other?.row.setAttribute('data-on', String(other.input.checked));
+      if (lead !== null && lead.hidden === leading()) { // the line follows the text; a screen reader hears it once, when it appears
+        lead.hidden = !lead.hidden;
+        if (lead.hidden) other.txt.removeAttribute('aria-describedby');
+        else {
+          other.txt.setAttribute('aria-describedby', 'dlg-lead');
+          io.announce(LEAD_NOTE);
+        }
+      }
       paint();
     };
     const guard = (e) => { if (!interactive(f)) e.preventDefault(); };
@@ -396,6 +410,7 @@ export function createDialogForm(io) {
       });
       const row = h('div', { class: 'ch dlg-other', 'data-on': 'false' }, h('label', { class: 'dlg-ol' }, input, h('span', { class: 'ch-t', text: 'Other' })), txt, count);
       other = { input, txt, row, count };
+      lead = h('p', { class: 'dlg-warn', id: 'dlg-lead', hidden: true }, icon('warn'), h('span', { text: LEAD_NOTE }));
       texts.push(txt);
       otherRow = row;
     } else {
@@ -405,11 +420,13 @@ export function createDialogForm(io) {
     const primary = h('button', { type: 'button', class: 'btn primary dlg-send', onclick: () => send() }, d.final ? 'Send answer' : 'Answer');
     const decline = declineEl(f, 'btn ghost dlg-decline', 'Decline');
     function send() {
-      if (F === f) act(f, answerBody(f.dialog, read()), primary);
+      if (F !== f) return;
+      if (leading()) other.txt.focus({ preventScroll: true }); // the line is already under the field; a click on Send moved the focus away from it
+      else act(f, answerBody(f.dialog, read()), primary);
     }
     const nodes = [];
     if (d.tabs.length >= 2) nodes.push(tabsEl(d), h('p', { class: 'dlg-step', text: stepText(d) }));
-    nodes.push(h('fieldset', { class: 'dlg-fs' }, legend, ...rows, otherRow), h('div', { class: 'dlg-btns' }, primary, decline));
+    nodes.push(h('fieldset', { class: 'dlg-fs' }, legend, ...rows, otherRow, lead), h('div', { class: 'dlg-btns' }, primary, decline));
     return {
       nodes, heading: legend, inputs: [...boxes.map((b) => b.input), ...(other ? [other.input, other.txt] : [])], texts, choices: [], primary, decline,
       canSend: () => answerBody(f.dialog, read()) !== null,
