@@ -491,6 +491,45 @@ describe('answerDialog: refusals before the first key (nothing is sent)', () => 
     for (const w of [single, zero, wide, multi]) safe(w);
   });
 
+  // The format characters an eye cannot see (\p{Cf}) and a combining mark (\p{M}) used to pass in front of a digit, so the digit was the
+  // second character typed (W1-T2 re-review, I1 residual). U+FEFF is trim()'s own, the rest are not.
+  const HIDDEN = { 'U+2060 word joiner': '\u2060', 'U+00AD soft hyphen': '\u00ad', 'U+180E Mongolian vowel separator': '\u180e', 'U+FEFF zero width no-break space': '\ufeff', 'U+0301 combining acute accent': '\u0301' };
+
+  test('(−) I1 residual: an invisible format character or a combining mark before a digit is 400 invalid before any capture or key', async () => {
+    for (const [name, c] of Object.entries(HIDDEN)) {
+      for (const text of [`${c}2`, `${c}2 apples`, `${c}apples`]) {
+        const single = dialogWorld({ focus: 4, mem: PLAIN });
+        const multi = dialogWorld({ tabs: [TAB.tools], focus: 4, mem: PLAIN });
+        assert.deepEqual(code(await single.answer({ picks: [], text })), [400, 'invalid'], `${name}: ${JSON.stringify(text)}`);
+        assert.deepEqual(code(await multi.answer({ picks: [], text })), [400, 'invalid'], `${name}: ${JSON.stringify(text)}`);
+        assert.deepEqual([...single.log, ...multi.log], [], `${name}: not one key`);
+        assert.equal(single.captures + multi.captures, 0, `${name}: refused before the first read`);
+      }
+    }
+    const toggle = dialogWorld({ tabs: [TAB.tools] }); // a pick next to the hidden digit
+    assert.deepEqual(code(await toggle.answer({ picks: [1], text: '\u20603' })), [400, 'invalid']);
+    assert.deepEqual(toggle.log, []);
+  });
+
+  test('(−) I1 residual: a format character anywhere in the text is refused, not only at the front', async () => {
+    for (const c of ['\u2060', '\u00ad', '\u180e', '\ufeff']) {
+      for (const text of [`apples${c}`, `ap${c}ples 2`, `apples ${c}2`]) {
+        const w = dialogWorld({ focus: 4, mem: PLAIN });
+        assert.deepEqual(code(await w.answer({ picks: [], text })), [400, 'invalid'], JSON.stringify(text));
+        assert.deepEqual(w.log, [], JSON.stringify(text));
+      }
+    }
+  });
+
+  test('(+) I1 residual: a combining mark later in the text is typed (the accent of an e), as is an emoji with no format character', async () => {
+    const accent = dialogWorld({ focus: 4, mem: PLAIN });
+    ok(await accent.answer({ picks: [], text: 'cafe\u0301 2' }), 'submitted', 2);
+    assert.deepEqual(accent.keysLog(), ['text:cafe\u0301 2', 'Enter']);
+    const plain = dialogWorld({ focus: 4, mem: PLAIN });
+    ok(await plain.answer({ picks: [], text: 'ok \ud83d\ude00 2' }), 'submitted', 2);
+    for (const w of [accent, plain]) safe(w);
+  });
+
   test('(−) M2: free text that mentions bypass is 400 terminal-only before any key (no Down, nothing typed), however it is spelled', async () => {
     for (const text of ['no bypass please', 'ByPaSs', 'b.y.p.a.s.s mode', '\uff42\uff59\uff50\uff41\uff53\uff53 it', 'bypassing the rules']) {
       const single = dialogWorld();

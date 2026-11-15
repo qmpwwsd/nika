@@ -167,7 +167,9 @@ export function checkSuggestionBody(body) {
 // Dialog route (design W1 4.1): free text may hold no control, bidi or zero-width character (they are not seen on screen, so the read-back could
 // not prove them) and no lone surrogate (tmux would type U+FFFD). It may not start with 1-9 either: on an EMPTY text row Claude may take that
 // digit as the option shortcut (not seen live, W1-T4), which would answer a different option and leave the rest of the text in the input box.
-const DIALOG_TEXT_REFUSED = /[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/;
+// Any other invisible format character (\p{Cf}: U+00AD, U+2060, U+180E, U+FEFF ...) is refused anywhere, and a combining mark may not lead, so
+// neither can sit in front of that digit (W1-T2 re-review, I1 residual).
+const DIALOG_TEXT_REFUSED = /[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]|\p{Cf}|^\p{M}/u;
 const DIALOG_PICKS_MAX = 7; // a digit answers without Enter, so options are numbered 1-9 and two of them are the text and chat rows
 const DIALOG_SHAPES = new Map([['picks,sig', 'picks'], ['picks,sig,text', 'picks'], ['sig,submit', 'submit'], ['choice,sig', 'choice'], ['cancel,sig', 'cancel']]);
 const DIALOG_BODY = 'body must be { sig, picks, text? }, { sig, submit: true }, { sig, choice } or { sig, cancel: true }';
@@ -581,12 +583,14 @@ export function createSessionControl({
    * sends nothing but Escape. Only a busy pane with no prompt on screen is interrupted (a prompt is answered, never Stopped).
    * A screen nika cannot read at all (no mode line and no input box: a busy turn keeps both) may hold a dialog that src/dialog.js
    * parks as unreadable ("Exit plan mode?" or a wrapped ask footer with a subagent list under it, a plan clipped above its title):
-   * an Escape there would decline it, so that is 409 prompt-open too (W1-T2 review I2).
+   * an Escape there would decline it, so that is a 409 too, `screen-unclear` (W1-T2 review I2; kept apart from `prompt-open` so the page
+   * does not say a prompt is open when none is).
    */
   async function stop(pane) {
     const seen = await look(pane);
     if (seen.res) return seen.res;
-    if (promptOpen(seen.rows) || unknownScreen(seen)) return conflict('prompt-open');
+    if (promptOpen(seen.rows)) return conflict('prompt-open');
+    if (unknownScreen(seen)) return conflict('screen-unclear');
     const state = await stateNow(pane);
     if (!isBusy(state)) return conflict('not-busy');
     const stopped = await interrupt(pane, seen.rows, state, undefined, 'stopping');

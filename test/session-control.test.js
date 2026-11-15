@@ -2356,16 +2356,31 @@ describe('a question or plan dialog on screen (promptOpen)', () => {
     },
   };
 
-  test('(−) I2: Stop is 409 prompt-open on the parked shapes, busy or attn, and not one key goes out (an Escape would decline the dialog)', async () => {
+  test('(−) I2: Stop is 409 screen-unclear (not prompt-open: no prompt is recognised) on the parked shapes, busy or attn, and not one key goes out (an Escape would decline the dialog)', async () => {
     for (const [name, make] of Object.entries(PARKED)) {
       for (const state of ['busy', 'attn']) {
         const rows = make();
         assert.equal(dialogOnScreen(rows), false, `${name}: premise, nika's recogniser sees no dialog here`);
+        assert.equal(promptFromRows(rows), null, `${name}: premise, nor a permission prompt`);
         const w = withDialog(rows, { state });
-        assert.deepEqual(await w.control().stop('%2'), code(409, 'prompt-open'), `${name} / ${state}`);
+        assert.deepEqual(await w.control().stop('%2'), code(409, 'screen-unclear'), `${name} / ${state}`);
         assert.deepEqual(keysOf(w), [], `${name} / ${state}`);
         assert.equal(w.stateCalls, 0, `${name} / ${state}: refused before the registry is asked`);
       }
+    }
+  });
+
+  test('(+) fix 2: a prompt or a dialog nika recognises stays 409 prompt-open, never screen-unclear (the page then says "answer the prompt")', async () => {
+    for (const state of ['busy', 'idle']) {
+      const w = world({ prompt: true, state });
+      assert.deepEqual(await w.control().stop('%2'), code(409, 'prompt-open'), state);
+      assert.deepEqual(w.sent, []);
+    }
+    for (const name of Object.keys(SHAPES)) {
+      const w = withDialog(name);
+      assert.equal(dialogOnScreen(w.rows()), true, `${name}: premise`);
+      assert.deepEqual(await w.control().stop('%2'), code(409, 'prompt-open'), name);
+      assert.deepEqual(keysOf(w), [], name);
     }
   });
 

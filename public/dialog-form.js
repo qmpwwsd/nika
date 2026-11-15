@@ -30,6 +30,8 @@ const INVISIBLE = [[0x61c, 0x61c], [0x200b, 0x200f], [0x2028, 0x2029], [0x202a, 
 const REFUSED = [...CONTROLS, ...INVISIBLE]; // the route refuses all of these in typed text (they are not seen on screen, so its read-back could not prove them)
 const CTRL = new RegExp(`[${range(REFUSED)}]`);
 const CTRL_G = new RegExp(`[${range(REFUSED)}]`, 'g');
+const FORMAT = /\p{Cf}/u; // the other invisible format characters (U+00AD, U+2060, U+180E, U+FEFF ...): the route refuses them anywhere
+const FORMAT_G = /\p{Cf}/gu;
 const NOISE = new RegExp(`[${range([...CONTROLS, [0x200e, 0x200f], [0x202a, 0x202e], [0x2066, 0x2069]])}]`, 'g'); // plus the bidi marks, for what is shown
 
 // ---- the copy: fixed lines, picked by status and code only ------------------------------------------------------------------------
@@ -171,13 +173,16 @@ function dropLone(s) {
 export const wellFormed = (s) => dropLone(s) === s;
 
 /** What the Other box may hold: the text without what the route refuses (controls, zero-width and bidi marks, U+2028/9, lone surrogates). */
-export const typable = (s) => dropLone(s).replace(CTRL_G, '');
+export const typable = (s) => dropLone(s).replace(CTRL_G, '').replace(FORMAT_G, '');
+
+/** The text the route would see: spaces and combining marks dropped at the front (a mark before a digit hides it), spaces at the end. */
+const edges = (s) => s.replace(/^[\s\p{M}]+/u, '').trimEnd();
 
 // The route's rule for typed text (design W1 4.1 and the route): 1 to TEXT_MAX UTF-16 units (String.length counts those), none of REFUSED, no lone
 // surrogate, and no first 1 to 9 (Claude can read it as an option number; the route answers 400 invalid). The edges are trimmed before this runs,
 // so the route's "no space at either end" holds too.
 const DIGIT_LEAD = /^[1-9]/;
-const validText = (t) => t.length >= 1 && t.length <= TEXT_MAX && !CTRL.test(t) && wellFormed(t) && !DIGIT_LEAD.test(t);
+const validText = (t) => t.length >= 1 && t.length <= TEXT_MAX && !CTRL.test(t) && !FORMAT.test(t) && wellFormed(t) && !/^\p{M}/u.test(t) && !DIGIT_LEAD.test(t);
 
 /**
  * The one request body for what the form holds, or null when there is nothing valid to send (design W1 4.1). `a` is { picks, text } for a question,
@@ -192,7 +197,7 @@ export function answerBody(d, a) {
   if (d.at !== 'question' || !Array.isArray(a.picks)) return null;
   const picks = [...new Set(a.picks)].sort((x, y) => x - y);
   if (!picks.every((n) => d.options.some((o) => o.n === n))) return null;
-  const t = typeof a.text === 'string' ? a.text.trim() : '';
+  const t = typeof a.text === 'string' ? edges(a.text) : '';
   if (t !== '' && (!d.other || !validText(t))) return null;
   if (d.multi) return picks.length || t ? { sig: d.sig, picks, ...(t ? { text: t } : {}) } : null;
   if (picks.length === 1 && t === '') return { sig: d.sig, picks };
@@ -348,7 +353,7 @@ export function createDialogForm(io) {
     let other = null; // { input, txt, row, count }
     let lead = null; // the warn line under the text field (only with Other)
     const read = () => ({ picks: boxes.filter((b) => b.input.checked).map((b) => b.n), text: other?.input.checked ? other.txt.value : '' });
-    const leading = () => other?.input.checked === true && DIGIT_LEAD.test(other.txt.value.trim()); // text that would be sent starts with a digit
+    const leading = () => other?.input.checked === true && DIGIT_LEAD.test(edges(other.txt.value)); // text that would be sent starts with a digit
     const sync = () => {
       for (const b of boxes) b.row.setAttribute('data-on', String(b.input.checked));
       other?.row.setAttribute('data-on', String(other.input.checked));

@@ -188,6 +188,7 @@ export const commandSaid = (text, pane) => (text === '/rewind' ? `Opened Rewind 
 
 const STOP_409 = {
   'prompt-open': WHY.promptShown,
+  'screen-unclear': "nika can't tell what Claude is showing, so Stop sent nothing. Press Esc in the terminal.", // no mode line and no input box: a dialog may be open
   'not-busy': 'Nothing to stop: Claude is waiting.',
   'mode-unknown': "Claude's input stayed in vim insert mode; press Esc in the terminal.",
   stopping: 'Already stopping the turn.', // another window is in the middle of the same stop

@@ -1353,6 +1353,76 @@ describe('digit-led free text: the route refuses a first 1 to 9 (400 invalid), s
   });
 });
 
+describe('invisible characters before a digit: the route refuses format characters and a leading combining mark, so the form removes them and the digit warning works on the cleaned text', () => {
+  const LEAD = 'Start with a word: Claude can read a first digit as an option.';
+  const FORMATS = { 'U+2060 word joiner': '⁠', 'U+00AD soft hyphen': '­', 'U+180E Mongolian vowel separator': '᠎', 'U+FEFF zero width no-break space': '﻿' };
+  const MARK = '́'; // a combining acute accent
+  const single = cleanDialog(ask());
+  const lead = (root) => root.all((n) => n.attrs.id === 'dlg-lead')[0] ?? null;
+  const typeIn = (r, v) => {
+    const t = one(r.root, 'dlg-text');
+    t.value = v;
+    t.fire('input');
+    return t;
+  };
+
+  test('(+) typable removes every format character (the route refuses them anywhere) and keeps a combining mark and a whole emoji', () => {
+    for (const [name, c] of Object.entries(FORMATS)) assert.equal(typable(`a${c}b${c}`), 'ab', name);
+    assert.equal(typable(`cafe${MARK} ok 😀`), `cafe${MARK} ok 😀`, 'a mark after a letter is an accent, not noise');
+  });
+
+  test('(−) answerBody gives null for a format character anywhere, and for a digit hidden behind a leading combining mark', () => {
+    for (const [name, c] of Object.entries(FORMATS)) {
+      // U+FEFF is white space to trim(), so at an edge it is cut (not refused); the digit behind it is then first and refused
+      for (const text of [`${c}2 cores`, `ap${c}ples`, `ap${c}ples 2`]) assert.equal(answerBody(single, { picks: [], text }), null, `${name}: ${JSON.stringify(text)}`);
+      if (c !== '\ufeff') assert.equal(answerBody(single, { picks: [], text: `apples${c}` }), null, `${name}: at the end`);
+    }
+    for (const text of [`${MARK}2 cores`, ` ${MARK} 2 cores`, `${MARK}${MARK}7`]) assert.equal(answerBody(single, { picks: [], text }), null, JSON.stringify(text));
+  });
+
+  test('(+) a leading combining mark is dropped when the text is trimmed: the word goes out clean, with a mark inside it kept', () => {
+    assert.deepEqual(answerBody(single, { picks: [], text: `${MARK}mine` }), { sig: SIG, picks: [], text: 'mine' });
+    assert.deepEqual(answerBody(single, { picks: [], text: ` ${MARK}${MARK} cafe${MARK}  ` }), { sig: SIG, picks: [], text: `cafe${MARK}` });
+    assert.equal(answerBody(single, { picks: [], text: `${MARK}` }), null, 'only a mark is nothing to send');
+  });
+
+  test('(+) typing a format character before a digit: the field holds the cleaned text and the warn line shows (Send is off)', () => {
+    for (const [name, c] of Object.entries(FORMATS)) {
+      const r = rig();
+      r.render(ask());
+      const text = typeIn(r, `${c}2 caches`);
+      assert.equal(text.value, '2 caches', `${name}: removed as the user types`);
+      assert.equal(lead(r.root).hidden, false, name);
+      assert.equal(lead(r.root).textContent, LEAD, name);
+      assert.equal(off(byText(r.root, 'Send answer')), true, name);
+    }
+  });
+
+  test('(+) typing a combining mark before a digit: the warn line shows on the text without the mark, and nothing is sent', async () => {
+    const r = rig();
+    r.render(ask());
+    typeIn(r, `${MARK}2 caches`);
+    assert.equal(lead(r.root).hidden, false);
+    assert.equal(off(byText(r.root, 'Send answer')), true);
+    byText(r.root, 'Send answer').click();
+    await settle();
+    assert.equal(r.log.calls.length, 0, 'the body would start with a digit, so there is none');
+  });
+
+  test('(−) no warn line for a word behind a hidden character or a mark, and the word goes out clean', async () => {
+    for (const c of [...Object.values(FORMATS), MARK]) {
+      const r = rig();
+      r.render(ask());
+      typeIn(r, `${c}two caches`);
+      assert.equal(lead(r.root).hidden, true, JSON.stringify(c));
+      assert.equal(off(byText(r.root, 'Send answer')), false, JSON.stringify(c));
+      byText(r.root, 'Send answer').click();
+      await settle();
+      assert.deepEqual(sentBodies(r), [{ sig: SIG, picks: [], text: 'two caches' }], JSON.stringify(c));
+    }
+  });
+});
+
 describe('typed text that mentions bypass: the route refuses it before any key (400 terminal-only); the page shows its fixed line', () => {
   test('(+) the answer goes out as typed, then: the fixed line, Not answered, the form locked off; the response text never shows', async () => {
     const r = rig({ reply: () => ({ status: 400, body: { error: 'terminal-only', message: 'LEAK <b>bypass</b>', sent: 0 } }) });

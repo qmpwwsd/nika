@@ -603,6 +603,18 @@ describe('stopOutcome: the stop route\'s answers (contract section 3, fixed copy
     for (const code of ['prompt-open', 'not-busy', 'mode-unknown']) assert.equal(s(409, code).ok, false, code);
   });
 
+  test('(+) 409 screen-unclear (no mode line and no input box on screen): its own line, which says nothing was sent and names Esc in the terminal', () => {
+    const line = "nika can't tell what Claude is showing, so Stop sent nothing. Press Esc in the terminal.";
+    assert.deepEqual(s(409, 'screen-unclear'), { ok: false, say: '', message: line });
+    assert.equal(stopOutcome({ status: 409, code: 'screen-unclear', message: '<b>x</b>' }).message, line, 'the response text is never read');
+    assert.notEqual(line, s(409, 'prompt-open').message, 'a prompt is not the same line (no prompt is open here)');
+  });
+
+  test('(−) screen-unclear with another status is not the Stop line', () => {
+    for (const status of [200, 400, 403, 404, 429, 500, 0]) assert.notEqual(s(status, 'screen-unclear').message, "nika can't tell what Claude is showing, so Stop sent nothing. Press Esc in the terminal.", String(status));
+    assert.equal(s(200, 'screen-unclear').ok, true, 'a 200 stays a success whatever the code says');
+  });
+
   test('(+) 404 is the gone line (session.js also goes to the pane-gone state), 429, 5xx and network errors keep the shared lines', () => {
     assert.equal(s(404, 'not_found').message, 'The session is gone.');
     assert.equal(s(429).message, 'Too many keys at once; try again.');
