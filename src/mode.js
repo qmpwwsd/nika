@@ -51,29 +51,46 @@ const plain = (text) => (typeof text === 'string' ? text.replace(/\u00a0/g, ' ')
 /** True when the text is the last row of a question step, of the review step or of a plan approval. */
 export const isDialogEnd = (text) => { const t = plain(text); return ASK_FOOTER.test(t) || REVIEW_END.test(t) || PLAN_FOOTER.test(t); };
 
+// A rule row of Claude's input box (trimmed): two or more box-drawing dashes, plain, or labelled with the session name
+// (`-n <name>` or /rename), which Claude draws into the upper rule as `--- <name> -` (claude-tui.md section 5). The label is
+// 1 to 80 characters, has no dash, no control character and no space at either end. The box is what lies between the last two.
+export const RULE_ROW = /^\u2500{2,}(?: [^\u2500\p{Cc}\s](?:[^\u2500\p{Cc}]{0,78}[^\u2500\p{Cc}\s])? \u2500+)?$/u;
+
 // The auto-mode nudge (spike W1-T0b 3.10): a dialog that takes digits, whose footer is NOT the last row (the input box and its mode line
 // are drawn under it). Without this the screen reads as an idle one with a plain box. footerEnd makes its footer the last row, so every
 // reader of "the footer" (the mode, the input box, a permission prompt) fails closed on it. Both rows are matched whole, title first.
 const NUDGE_TITLE = /^Teach auto mode about your environment\?$/;
 const NUDGE_FOOTER = /^Enter to confirm \u00b7 Esc to cancel$/;
-const NUDGE_ROWS = 14; // the nudge sits within the last NUDGE_ROWS non-blank rows
 const NUDGE_SPAN = 8; // title to footer: at most this many non-blank rows apart
-/** Index of the nudge's footer row among `texts[0..end]`, else -1: a footer row with the title within NUDGE_SPAN non-blank rows above it. */
-export function nudgeFooterAt(texts, end) {
-  const win = [];
-  for (let x = Math.min(end, texts.length - 1); x >= 0 && win.length < NUDGE_ROWS; x -= 1) if (plain(texts[x]) !== '') win.push(x); // newest first
-  const f = win.findIndex((x) => NUDGE_FOOTER.test(plain(texts[x])));
-  return f >= 0 && win.slice(f + 1, f + 1 + NUDGE_SPAN).some((x) => NUDGE_TITLE.test(plain(texts[x]))) ? win[f] : -1;
+// A user status line (free content, claude-tui.md section 1) may sit between the box's lower rule and the mode line.
+// shortcut: at most STATUS_ROWS such rows are skipped; a taller status line leaves a real nudge unrecognised. Upgrade when one is seen.
+const STATUS_ROWS = 3;
+const skipBlank = (texts, x) => { let at = x; while (at >= 0 && plain(texts[at]) === '') at -= 1; return at; }; // the non-blank row at or above x, else -1
+const isRule = (texts, x) => typeof texts[x] === 'string' && RULE_ROW.test(texts[x].trimEnd()); // column 0 only: a draft line of dashes has two spaces before it
+/**
+ * Index of the nudge's footer row, else -1. The anchor is exact: from the screen's last row (`end`, default the row footerEnd finds
+ * after its subagent cut), which must be a mode line, walk up over a status line if any (at most STATUS_ROWS rows) and the input box
+ * (RULE_ROW, the box rows, RULE_ROW); the next non-blank
+ * row above is the footer, with the title within NUDGE_SPAN non-blank rows above it. The two rows anywhere else (quoted in a message,
+ * in a Bash preview, above a prompt or another dialog) are no nudge, so nothing is cut.
+ */
+export function nudgeFooterAt(texts, end = treeEnd(texts)) {
+  let x = skipBlank(texts, Math.min(end, texts.length - 1));
+  if (x < 0 || !isModeLine(texts[x])) return -1;
+  x = skipBlank(texts, x - 1);
+  for (let free = 0; x >= 0 && !isRule(texts, x) && free < STATUS_ROWS; free += 1) x = skipBlank(texts, x - 1); // the status line, if any
+  if (!isRule(texts, x)) return -1;
+  do x -= 1; while (x >= 0 && !isRule(texts, x)); // the box rows, up to the top rule
+  if (x < 0) return -1;
+  const foot = skipBlank(texts, x - 1);
+  if (foot < 0 || !NUDGE_FOOTER.test(plain(texts[foot]))) return -1;
+  let t = skipBlank(texts, foot - 1);
+  for (let seen = 0; t >= 0 && seen < NUDGE_SPAN; seen += 1, t = skipBlank(texts, t - 1)) if (NUDGE_TITLE.test(plain(texts[t]))) return foot;
+  return -1;
 }
 
-/**
- * Index of the last row of `texts` that is not a subagent list hanging under a mode line, else the last row. The list is cut only
- * when it is exactly the captured block (MAIN_ROW after exactly one blank row, then agent rows only, then at most one overflow row)
- * AND the row above the blank row is a mode line or the last row of a dialog (isDialogEnd): anything else below the footer (junk,
- * a dialog, a changed layout) stays, so the footer reads `unknown` (fail closed). A mode line cannot be forged by a label: labels
- * live in agent rows only. The auto-mode nudge (nudgeFooterAt) makes its own footer the last row, what hangs under it is cut.
- */
-export function footerEnd(texts) {
+/** Index of the last row of `texts` that is not a subagent list hanging under a mode line or a dialog end, else the last row (see footerEnd). */
+function treeEnd(texts) {
   let at = texts.length - 1;
   while (at >= 0 && !texts[at].trim()) at -= 1;
   if (at >= 0 && MORE_ROW.test(texts[at])) at -= 1;
@@ -81,7 +98,18 @@ export function footerEnd(texts) {
   while (at >= 0 && AGENT_ROW.test(texts[at])) { at -= 1; agents += 1; }
   const footer = at - 2;
   const ok = agents > 0 && at >= 2 && MAIN_ROW.test(texts[at]) && texts[at - 1].trim() === '' && (isModeLine(texts[footer]) || isDialogEnd(texts[footer]));
-  const end = ok ? footer : texts.length - 1;
+  return ok ? footer : texts.length - 1;
+}
+
+/**
+ * Index of the last row of `texts` that is not a subagent list hanging under a mode line, else the last row. The list is cut only
+ * when it is exactly the captured block (MAIN_ROW after exactly one blank row, then agent rows only, then at most one overflow row)
+ * AND the row above the blank row is a mode line or the last row of a dialog (isDialogEnd): anything else below the footer (junk,
+ * a dialog, a changed layout) stays, so the footer reads `unknown` (fail closed). A mode line cannot be forged by a label: labels
+ * live in agent rows only. The auto-mode nudge (nudgeFooterAt, an exact anchor) makes its own footer the last row, what hangs under it is cut.
+ */
+export function footerEnd(texts) {
+  const end = treeEnd(texts);
   const nudge = nudgeFooterAt(texts, end);
   return nudge >= 0 ? nudge : end;
 }
@@ -146,7 +174,14 @@ export function pillShown(rows) {
 }
 
 /** True when any of the last PROMPT_ROWS non-blank rows (the window a permission prompt sits in, and its `sig` covers) mentions bypass. Shared by the keys guard and the answer route. */
-export const bypassWindow = (rows) => mentionsBypass(lastNonBlank(rows, PROMPT_ROWS).join(' '));
+export function bypassWindow(rows) {
+  if (!Array.isArray(rows)) return false;
+  const texts = rows.map(rowText);
+  const window = (end) => texts.slice(0, end + 1).filter((t) => t.trim()).slice(-PROMPT_ROWS).join(' ');
+  // The window above the nudge's footer (what lastNonBlank reads) AND the one above the subagent cut alone: a cut may add rows to what is
+  // read, never take any away (a quoted nudge pair must not hide a bypass option, W1-T1 review I1).
+  return mentionsBypass(window(footerEnd(texts))) || mentionsBypass(window(treeEnd(texts)));
+}
 
 /** Mode shown by the mode line, the last non-blank row only; a phrase anywhere else never counts. */
 export function modeFromRows(rows) {

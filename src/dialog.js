@@ -78,7 +78,7 @@ function shapeOf(rows) {
   if (last === undefined) return null;
   const T = (x) => texts[x].trim();
   const base = { texts, nb };
-  if (nudgeFooterAt(raw, end) === last) return { ...base, kind: 'nudge', foot: [last] };
+  if (nudgeFooterAt(raw) === last) return { ...base, kind: 'nudge', foot: [last] };
   if (nb.length >= 3 && /^(?:\u276f )?2\. No$/.test(T(last)) && /^(?:\u276f )?1\. Yes\b/.test(T(nb.at(-2))) && nb.slice(-6, -2).some((x) => T(x) === EXIT_TITLE)) {
     return { ...base, kind: 'exit', foot: [last] };
   }
@@ -182,7 +182,11 @@ function readQuestion(c) {
   const { texts, bad, s, stop, tabs, strip, cols } = c;
   let x = s + 1;
   const q = [];
-  while (x < stop && !ASK_OPTION.test(texts[x])) { if (texts[x].trim()) q.push(texts[x].trim()); x += 1; }
+  while (x < stop && !ASK_OPTION.test(texts[x])) {
+    if (texts[x].trim()) q.push(texts[x].trim());
+    if (RULE_ROW.test(texts[x]) || STRIP_START.test(texts[x])) bad.add('layout'); // a rule or a strip inside the question could be taken for the real one
+    x += 1;
+  }
   if (x >= stop) { bad.add('numbers'); return null; }
   if (q.length === 0) bad.add('layout');
   const items = []; // the numbered rows down to the separator; indented rows belong to the numbered row above them
@@ -250,9 +254,9 @@ function readQuestion(c) {
   if (multi && (button === 'Submit') !== (current === tabs.length - 1)) bad.add('layout'); // Submit is the last tab's button, Next any other's
   if ((multi || tabs.length > 1) && strip.submit === null) bad.add('layout');
   const exempt = new Set([tail.x, ...tail.extra.filter((e) => BUTTON_ROW.exec(texts[e]) === null)]); // a text row's wrapped value reaches the pane's edge legitimately
-  return {
-    question: take(bad, q.join(' '), QUESTION_MAX), multi, options, textRow, chat: chat.n, button, focus: marks.length === 1 ? marks[0] : null, exempt,
-  };
+  const question = take(bad, q.join(' '), QUESTION_MAX);
+  if (GLYPH.test(question)) bad.add('layout');
+  return { question, multi, options, textRow, chat: chat.n, button, focus: marks.length === 1 ? marks[0] : null, exempt };
 }
 
 /** The review step: `Review your answers`, the optional warning, the answered pairs, the question and the two options. */
@@ -318,6 +322,10 @@ function readAsk(shape, rows, cols) {
   if (review) {
     if (marked.length > 0 || strip.submit === null || !strip.submit.marked) bad.add('tab'); // the Submit token is the current one
     body = readReview(ctx);
+    if (body !== null) {
+      const done = tabs.filter((t) => t.answered).length; // the review lists the answered questions only, and warns while a tab is still open
+      if (body.pairs.length !== done || body.warn !== (done < tabs.length)) bad.add('layout');
+    }
     if (body !== null) S = { kind: 'ask', at: 'review', tabs, warn: body.warn, pairs: body.pairs, focus: body.focus, insert: false, bypass };
   } else {
     if (marked.length !== 1 || strip.submit?.marked === true) bad.add('tab');
@@ -421,14 +429,14 @@ export function readDialogScreen(rows, cols) {
 /**
  * The step's identity as canonical JSON: the parsed content a key of one request must not change (design W1 2.4). It holds the strip's
  * headers, the current tab, the question and the options' labels and descriptions; or every review pair; or the visible plan rows and the
- * options. Focus, ticks, the answered marks and the typed text are not in it (they change during a request).
+ * options (label and whether it is the text option). Focus, ticks, the answered marks and the typed text are not in it (they change during a request).
  */
 export function identityOf(S) {
   const id = S.at === 'question'
     ? ['question', S.tabs.map((t) => t.header), S.i, S.question, S.multi, S.options.map((o) => [o.label, o.description])]
     : S.at === 'review'
       ? ['review', S.tabs.map((t) => t.header), S.warn, S.pairs.map((p) => [p.question, p.answer])]
-      : ['plan', S.planRows, S.options.map((o) => o.label)];
+      : ['plan', S.planRows, S.options.map((o) => [o.label, o.text])];
   return JSON.stringify([S.kind, id]);
 }
 

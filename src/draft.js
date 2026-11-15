@@ -4,12 +4,10 @@
 // Keep this file ASCII: write every symbol as an escape.
 import { createHash } from 'node:crypto';
 import { clean } from './text.js';
-import { SHELL_FOOTER, lastNonBlank, modeFromRows, promptFromRows, rowText, surveyShown } from './mode.js';
+import { RULE_ROW, SHELL_FOOTER, lastNonBlank, modeFromRows, promptFromRows, rowText, surveyShown } from './mode.js';
 
-// A rule row of Claude's input box (trimmed): two or more box-drawing dashes, plain, or labelled with the session name
-// (`-n <name>` or /rename), which Claude draws into the upper rule as `--- <name> -` (claude-tui.md section 5). The label is
-// 1 to 80 characters, has no dash, no control character and no space at either end. The box is what lies between the last two.
-export const RULE_ROW = /^\u2500{2,}(?: [^\u2500\p{Cc}\s](?:[^\u2500\p{Cc}]{0,78}[^\u2500\p{Cc}\s])? \u2500+)?$/u;
+// RULE_ROW (a rule row of Claude's input box) lives in src/mode.js, where the auto-mode nudge's exact anchor needs it; it is re-exported here.
+export { RULE_ROW };
 /** The label of the top rule while the box shows an old prompt (`Up` / `Down` recalls history; the real draft is stashed). */
 export const HISTORY_LABEL = /^History\s+\d+\s*\/\s*\d+$/;
 

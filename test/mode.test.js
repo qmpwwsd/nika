@@ -679,7 +679,10 @@ describe('the auto-mode nudge (orchestrator ruling 4)', () => {
   const TITLE = '  Teach auto mode about your environment?';
   const FOOT = '  Enter to confirm · Esc to cancel';
   const MODE = '  -- INSERT -- ⏵⏵ auto mode on (shift+tab to cycle)';
-  const nudge = (extra = []) => rowsOf('⏺ All done.', '', '─'.repeat(40), TITLE, '', '  Auto mode works better when it knows your environment.', '', '  ❯ 1. Yes', '    2. Not now', "    3. Don't show again", '', FOOT, '─'.repeat(40), '❯', '─'.repeat(40), MODE, ...extra);
+  const RULE = '─'.repeat(40);
+  /** `box`: the input-box rows between the two rules; `status`: a user status line between the lower rule and the mode line. */
+  const nudge = (extra = [], { box = ['❯'], status = [], mode = MODE } = {}) => rowsOf('⏺ All done.', '', RULE, TITLE, '', '  Auto mode works better when it knows your environment.', '', '  ❯ 1. Yes', '    2. Not now', "    3. Don't show again", '', FOOT, RULE, ...box, RULE, ...status, mode, ...extra);
+  const footIndex = (rows) => rows.findIndex((r) => rowText(r) === FOOT);
 
   test('(+) the nudge footer becomes the last row: the box and the mode line under it do not count as the footer', () => {
     const rows = nudge();
@@ -701,13 +704,84 @@ describe('the auto-mode nudge (orchestrator ruling 4)', () => {
     assert.equal(bypassWindow(nudge()), false);
   });
 
+  test('(+) a real nudge above a tall input box (a queued multi-line draft) is still the nudge: 1, 6, 10, 12 and 20 box rows (review I2)', () => {
+    for (const n of [1, 6, 10, 12, 20]) {
+      const rows = nudge([], { box: ['❯', ...Array.from({ length: n - 1 }, (_, i) => `  draft line ${i + 2}`)] });
+      assert.equal(nudgeFooterAt(rows.map(rowText), rows.length - 1), footIndex(rows), `${n} box rows`);
+      assert.equal(lastNonBlank(rows, 1)[0], FOOT, `${n} box rows`);
+      assert.equal(modeFromRows(rows), 'unknown', `${n} box rows: not an idle screen`);
+    }
+  });
+
+  test('(+) a user status line (up to 3 rows) between the box and the mode line does not hide the nudge; 4 rows is the documented limit', () => {
+    for (const n of [1, 2, 3]) {
+      const rows = nudge([], { status: Array.from({ length: n }, (_, i) => `  acme-api  master ${i}`) });
+      assert.equal(nudgeFooterAt(rows.map(rowText), rows.length - 1), footIndex(rows), `${n} status rows`);
+      assert.equal(modeFromRows(rows), 'unknown');
+    }
+    const four = nudge([], { status: ['  a', '  b', '  c', '  d'] });
+    assert.equal(nudgeFooterAt(four.map(rowText), four.length - 1), -1);
+  });
+
+  test('(−) the two nudge rows quoted inside a permission prompt\'s Bash preview cannot hide its bypass option: the prompt and the bypass window are read as before (review I1, probe 1)', () => {
+    const rows = rowsOf('Bash command', '', "  echo 'quoted dialog'", '  Teach auto mode about your environment?', '  Enter to confirm · Esc to cancel', '',
+      'Do you want to proceed?', '❯ 1. Yes', '  2. Yes, and switch to bypass permissions', '  3. No', 'Esc to cancel');
+    assert.equal(nudgeFooterAt(rows.map(rowText), rows.length - 1), -1);
+    assert.equal(lastNonBlank(rows, 1)[0], 'Esc to cancel');
+    assert.notEqual(promptFromRows(rows), null);
+    assert.equal(bypassWindow(rows), true);
+  });
+
+  test('(−) the two nudge rows quoted in a message above a short question dialog with a bypass option do not hide it (review I1, probe 2)', () => {
+    const ASK = 'Enter to select · ↑/↓ to navigate · Esc to cancel';
+    const rows = rowsOf('⏺ The dialog reads:', TITLE, FOOT, '', RULE, 'Which mode should I use?', '', '❯ 1. bypass permissions', '    Skip every check.', '  2. Type something.', RULE, '  3. Chat about this', '', ASK);
+    assert.equal(nudgeFooterAt(rows.map(rowText), rows.length - 1), -1);
+    assert.equal(lastNonBlank(rows, 1)[0], ASK);
+    assert.equal(bypassWindow(rows), true);
+    assert.equal(modeFromRows(rows), 'unknown');
+  });
+
+  test('(−) a cut never shrinks the bypass window: a real nudge whose rows under the footer mention bypass is read as bypass', () => {
+    const rows = nudge([], { mode: '  -- INSERT -- ⏵⏵ bypass permissions on (shift+tab to cycle)' });
+    assert.equal(nudgeFooterAt(rows.map(rowText), rows.length - 1), footIndex(rows), 'still the nudge');
+    assert.equal(mentionsBypass(lastNonBlank(rows, 15).join(' ')), false, 'the window above the footer has no bypass');
+    assert.equal(bypassWindow(rows), true, 'the uncut bottom does');
+    assert.equal(bypassWindow(nudge()), false);
+  });
+
+  test('(−) the pair quoted in a message, not directly above the box, cuts nothing: the mode, the box and the prompt read as on any idle screen (End, commands and draft keep working)', () => {
+    const rows = rowsOf('⏺ I saw this dialog:', TITLE, FOOT, '⏺ Anyway, all done.', '', RULE, '❯', RULE, MODE);
+    assert.equal(nudgeFooterAt(rows.map(rowText), rows.length - 1), -1);
+    assert.equal(lastNonBlank(rows, 1)[0], MODE);
+    assert.equal(modeFromRows(rows), 'auto');
+    assert.equal(promptFromRows(rows), null);
+    assert.equal(bypassWindow(rows), false);
+  });
+
+  test('(−) the pair is a nudge only above the input box that ends the screen: a changed layout cuts nothing', () => {
+    const at = (rows) => nudgeFooterAt(rows.map(rowText), rows.length - 1);
+    assert.equal(at(rowsOf(TITLE, FOOT, RULE, '❯', RULE, MODE)), 1, 'the base layout');
+    assert.equal(at(rowsOf(TITLE, FOOT, RULE, '❯', RULE, 'junk')), -1, 'the last row is not a mode line');
+    assert.equal(at(rowsOf(TITLE, FOOT, RULE, '❯', RULE, MODE, 'junk')), -1, 'a row under the mode line');
+    assert.equal(at(rowsOf(TITLE, FOOT, '❯', RULE, MODE)), -1, 'no upper rule');
+    assert.equal(at(rowsOf(TITLE, FOOT, RULE, '❯', MODE)), -1, 'no lower rule');
+    assert.equal(at(rowsOf(TITLE, FOOT, 'a row between', RULE, '❯', RULE, MODE)), -1, 'another row between the footer and the box');
+    assert.equal(at(rowsOf(TITLE, 'a row between', FOOT, RULE, '❯', RULE, MODE)), 2, 'a row between the title and the footer is within the span');
+    assert.equal(at(rowsOf(FOOT, RULE, '❯', RULE, MODE)), -1, 'no title');
+    assert.equal(at(rowsOf(TITLE, FOOT, '', '', RULE, '❯', '', RULE, MODE)), 1, 'blank rows around the box');
+    assert.equal(at(rowsOf(TITLE, FOOT, '  ' + RULE, '❯', '  ' + RULE, MODE)), -1, 'an indented rule is not the box\'s rule');
+  });
+
   test('(−) the title without its footer, the footer without its title, or the two too far apart is an ordinary screen', () => {
     const noFooter = nudge().filter((r) => rowText(r) !== FOOT);
     const noTitle = nudge().filter((r) => rowText(r) !== TITLE);
     assert.equal(modeFromRows(noFooter), 'auto');
     assert.equal(modeFromRows(noTitle), 'auto');
-    const far = rowsOf(TITLE, ...Array.from({ length: 12 }, (_, i) => `  row ${i}`), FOOT, ...BOX, PHRASE.auto);
+    const far = rowsOf(TITLE, ...Array.from({ length: 12 }, (_, i) => `  row ${i}`), FOOT, RULE, '❯', RULE, MODE);
     assert.equal(modeFromRows(far), 'auto', 'more than the nudge span of rows between them');
+    assert.equal(nudgeFooterAt(far.map(rowText), far.length - 1), -1);
+    const near = rowsOf(TITLE, ...Array.from({ length: 7 }, (_, i) => `  row ${i}`), FOOT, RULE, '❯', RULE, MODE);
+    assert.equal(nudgeFooterAt(near.map(rowText), near.length - 1), 8, 'within the span: 7 rows between them');
     assert.equal(nudgeFooterAt(['a', 'b'], 1), -1);
     assert.equal(nudgeFooterAt([], 5), -1);
   });

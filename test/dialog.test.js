@@ -154,8 +154,8 @@ const exitParts = (focus = 1) => ({
   two: [`    ${ptr(focus === 2)} 2. No`],
 });
 
-/** "Teach auto mode about your environment?" (T0b 3.10): digit options, the footer is NOT the last row. Returns a capture { rows, cursor, cols }. */
-function nudgeScreen(cols = COLS) {
+/** "Teach auto mode about your environment?" (T0b 3.10): digit options, the footer is NOT the last row; `box` input-box rows under it. Returns a capture { rows, cursor, cols }. */
+function nudgeScreen(cols = COLS, box = 1) {
   const rows = rowsFrom({
     above: ['⏺ All done.', ''],
     top: [[span('─'.repeat(cols), ACC)]],
@@ -167,7 +167,7 @@ function nudgeScreen(cols = COLS) {
     gap3: [''],
     footer: [[span('  Enter to confirm · Esc to cancel', { fg: 246, i: true })]],
     rule1: [[span('─'.repeat(cols), DIM)]],
-    box: ['❯'],
+    box: ['❯', ...Array.from({ length: box - 1 }, (_, i) => `  draft line ${i + 2}`)],
     rule2: [[span('─'.repeat(cols), DIM)]],
     mode: ['  -- INSERT -- ⏵⏵ auto mode on (shift+tab to cycle)'],
   });
@@ -345,7 +345,7 @@ describe('readDialogScreen: a question step', () => {
     const plain = read(ask());
     assert.deepEqual(read(ask({}, { pad: true })), plain);
     assert.deepEqual(read(ask({}, { trail: 3 })), plain);
-    const nb = ask().map((r) => r.map((sp) => (sp.t === 'Which project should I open?' ? { ...sp, t: 'Which project should I open?' } : sp)));
+    const nb = ask().map((r) => r.map((sp) => (sp.t === 'Which project should I open?' ? { ...sp, t: 'Which\u00a0project should I open?' } : sp)));
     assert.deepEqual(read(nb), plain);
   });
 
@@ -423,7 +423,7 @@ describe('readDialogScreen: the review step', () => {
   });
 
   test('(+) bypass in an answer sets bypass', () => {
-    assert.equal(read(rowsFrom(reviewParts({ pairs: [{ q: 'Which mode?', a: 'bypass permissions' }] }))).bypass, true);
+    assert.equal(read(rowsFrom(reviewParts({ pairs: [{ q: 'Which mode?', a: 'bypass permissions' }, { q: 'Which checks should I run?', a: 'lint' }] }))).bypass, true);
   });
 });
 
@@ -463,6 +463,10 @@ describe('readDialogScreen: the plan approval', () => {
   test('(+) a trailing blank row inside the plan rows and the pane height do not change the plan rows', () => {
     const a = read(rowsFrom(planParts({ prose: ['- one', '', '- two'] })));
     assert.deepEqual(a.planRows, ['- one', '', '- two']);
+    const plain = read(rowsFrom(planParts())).planRows;
+    assert.deepEqual(read(rowsFrom(planParts({ blanks: 19 }))).planRows, plain, 'a taller pane: more filler rows before the rule');
+    assert.deepEqual(read(rowsFrom(planParts({ blanks: 1 }))).planRows, plain, 'a shorter pane');
+    assert.deepEqual(read(rowsFrom(planParts(), { trail: 3 })).planRows, plain, 'blank rows under the footer');
   });
 
   test('(+) bypass in the choice area sets bypass', () => {
@@ -505,6 +509,40 @@ describe('the two dialogs nika recognises but never reads (orchestrator ruling 4
   test('(+) the nudge with a subagent list under its mode line is still the nudge', () => {
     const s = nudgeScreen();
     assert.equal(dialogOnScreen([...s.rows, ...subagentRows({ agents: 2 })]), true);
+  });
+
+  test('(+) the nudge above a tall input box (1, 6, 10, 12 and 20 rows) is a dialog on screen: no mode, no draft, no form (review I2)', () => {
+    for (const box of [1, 6, 10, 12, 20]) {
+      const s = nudgeScreen(COLS, box);
+      assert.equal(dialogOnScreen(s.rows), true, `box ${box}`);
+      assert.deepEqual(read(s.rows), { unreadable: 'layout', kind: null }, `box ${box}`);
+      assert.equal(modeFromRows(s.rows), 'unknown', `box ${box}`);
+      assert.equal(lastNonBlank(s.rows, 1)[0].trim(), 'Enter to confirm · Esc to cancel', `box ${box}`);
+      assert.equal(readDraft(s), null, `box ${box}`);
+    }
+  });
+
+  test('(−) the two nudge rows quoted above a short question dialog with a bypass option do not hide it: the dialog is read and bypass is set (review I1, probe 2)', () => {
+    const quoted = ['⏺ The dialog reads:', '  Teach auto mode about your environment?', '  Enter to confirm · Esc to cancel', ''];
+    const rows = ask({ tabs: ['Mode'], options: [{ label: 'bypass permissions', desc: 'Skip every check.' }, { label: 'default', desc: 'Ask each time.' }], above: quoted });
+    assert.equal(dialogOnScreen(rows), true);
+    assert.equal(bypassWindow(rows), true);
+    const S = read(rows);
+    assert.equal(S.kind, 'ask');
+    assert.equal(S.bypass, true);
+    assert.equal(dialogCapture(rows, COLS).bypass, true);
+    assert.equal(modeFromRows(rows), 'unknown');
+  });
+
+  test('(−) the nudge rows quoted in a message above an idle input box change nothing: the draft, the mode and the prompt read as on any idle screen (review I1)', () => {
+    const idle = boxRows({ cols: COLS, lines: ['hello'] });
+    const quoted = [[span('⏺ I saw this dialog:')], [span('  Teach auto mode about your environment?')], [span('  Enter to confirm · Esc to cancel')], [span('⏺ Anyway, done.')], []];
+    const seen = { ...idle, rows: [...quoted, ...idle.rows], cursor: { ...idle.cursor, y: idle.cursor.y + quoted.length } };
+    assert.equal(dialogOnScreen(seen.rows), false);
+    assert.equal(modeFromRows(seen.rows), 'auto');
+    assert.equal(promptFromRows(seen.rows), null);
+    assert.equal(readDraft(seen).text, 'hello');
+    assert.equal(bypassWindow(seen.rows), false);
   });
 
   test('(−) the same box without the nudge rows is an idle screen: a plain box, a mode, no dialog', () => {
@@ -602,14 +640,24 @@ describe('identity and sig (design W1 2.4)', () => {
     const changed = [
       ask({ current: 1 }), ask({ question: 'Which project should I close?' }), ask({ options: [{ ...OPTS[0], label: 'acme-api2' }, OPTS[1], OPTS[2]] }),
       ask({ options: [{ ...OPTS[0], desc: 'Open it.' }, OPTS[1], OPTS[2]] }), ask({ tabs: ['Project', 'Other'] }), ask({ options: OPTS.slice(0, 2) }),
+      ask({ multi: true }),
     ];
+    assert.equal(read(changed.at(-1)).multi, true, 'the last fixture only flips multi');
     const seen = new Set([base]);
     for (const rows of changed) seen.add(sig(rows));
     assert.equal(seen.size, changed.length + 1);
-    const rv = [rowsFrom(reviewParts()), rowsFrom(reviewParts({ warn: true })), rowsFrom(reviewParts({ pairs: [{ q: 'Which project should I open?', a: 'acme-api' }, { q: 'Which checks should I run?', a: 'lint' }] }))];
+    const rv = [rowsFrom(reviewParts()), rowsFrom(reviewParts({ warn: true, answered: [0], pairs: [{ q: 'Which project should I open?', a: 'web-shop' }] })), rowsFrom(reviewParts({ pairs: [{ q: 'Which project should I open?', a: 'acme-api' }, { q: 'Which checks should I run?', a: 'lint' }] }))];
     assert.equal(new Set(rv.map((r) => sig(r))).size, 3);
     const pl = [rowsFrom(planParts()), rowsFrom(planParts({ prose: ['- Do it.'] })), rowsFrom(planParts({ labels: ['Yes', 'No'] }))];
     assert.equal(new Set(pl.map((r) => sig(r))).size, 3);
+  });
+
+  test('(+) the plan sig changes when the last option flips between a plain option and the text option: same label, with and without its hint row (review M2)', () => {
+    const withHint = read(rowsFrom(planParts({ hint: true })));
+    const without = read(rowsFrom(planParts({ hint: false })));
+    assert.deepEqual([withHint.options[2].label, without.options[2].label], [PLAN_TEXT_LABEL, PLAN_TEXT_LABEL]);
+    assert.deepEqual([withHint.options[2].text, without.options[2].text], [true, false]);
+    assert.notEqual(sigOf(withHint), sigOf(without));
   });
 
   test('(+) the sig is 16 hex over the kind and the identity; a question, a review and a plan never share one', () => {
@@ -621,10 +669,14 @@ describe('identity and sig (design W1 2.4)', () => {
     assert.deepEqual(JSON.parse(identityOf(all[0]))[1].slice(0, 3), ['question', ['Project', 'Tools'], 0]);
   });
 
-  test('(−) the sig does not depend on the pane height, padding, a subagent list or a no-break space', () => {
+  test('(−) the sig does not depend on the pane height (more rows above), padding, trailing blank rows, a subagent list or a no-break space', () => {
     const base = sig(ask());
+    assert.equal(sig(ask({ above: [...Array(30).fill('⏺ older text'), ''] })), base);
     assert.equal(sig(ask({}, { pad: true, trail: 4 })), base);
     assert.equal(sig(ask({}, { tree: 3 })), base);
+    const nb = ask().map((r) => r.map((sp) => (sp.t.includes('Which') || sp.t.includes('acme') ? { ...sp, t: sp.t.replace(/ /g, '\u00a0') } : sp)));
+    assert.equal(nb.some((r) => r.some((sp) => sp.t.includes('\u00a0'))), true, 'the fixture holds no-break spaces');
+    assert.equal(sig(nb), base);
   });
 });
 
@@ -779,6 +831,18 @@ describe('unreadable: every rule of design 2.3 has a fixture', () => {
     assert.equal(reason(ask({ tabs: ['Project', 'A ☒ B'] })), 'layout', 'a glyph token one space after another cannot be a second tab');
   });
 
+  test('(−) layout: a status glyph in the question (review M1)', () => {
+    for (const q of ['Pick ☐ or ☒ ?', 'Which ✔ project?', 'Which project☒?']) assert.equal(reason(ask({ question: q })), 'layout', q);
+    assert.equal(read(ask({ question: 'Which project should I open?' })).question, 'Which project should I open?');
+  });
+
+  test('(−) layout: a rule row or a strip-like row among the question rows could be taken for the real ones (review M4)', () => {
+    assert.equal(reason(ask({ question: ['Which project should I open?', '─'.repeat(30)] })), 'layout', 'a rule row');
+    assert.equal(reason(ask({ question: ['Which project should I open?', '── notes ──'] })), 'layout', 'a labelled rule row');
+    assert.equal(reason(ask({ question: ['Which project should I open?', ' ☐ Notes  ☐ More'] })), 'layout', 'a strip-like row');
+    assert.equal(reason(ask({ question: ['Which project should I open?', 'It has a dash - in it.'] })), undefined, 'ordinary rows still read');
+  });
+
   test('(−) layout: the footer and the strip disagree, or a multi / several-tab strip has no Submit', () => {
     assert.equal(reason(ask({ nav: '↑/↓' })), 'layout', 'up/down hint with two tabs');
     assert.equal(reason(ask({ tabs: ['Project'], nav: 'Tab/Arrow keys' })), 'layout', 'one tab, no Submit, Tab hint');
@@ -809,6 +873,16 @@ describe('unreadable: every rule of design 2.3 has a fixture', () => {
   test('(−) layout: the button label does not match the tab (Submit belongs to the last tab, Next to any other)', () => {
     assert.equal(reason(ask({ tabs: ['Tools', 'Project'], multi: true, options: CHECKS, button: 'Submit' })), 'layout');
     assert.equal(reason(ask({ tabs: ['Project', 'Tools'], current: 1, multi: true, options: CHECKS, button: 'Next' })), 'layout');
+  });
+
+  test('(−) layout: the review disagrees with its strip: a pair count other than the answered tabs, a warning with every tab answered, none with a tab open (review M4)', () => {
+    const one = [{ q: 'Which project should I open?', a: 'web-shop' }];
+    assert.equal(reason(rowsFrom(reviewParts({ answered: [0, 1], pairs: one }))), 'layout', 'two answered tabs, one pair');
+    assert.equal(reason(rowsFrom(reviewParts({ answered: [0], warn: true }))), 'layout', 'one answered tab, two pairs');
+    assert.equal(reason(rowsFrom(reviewParts({ answered: [0, 1], warn: true }))), 'layout', 'a warning with every tab answered');
+    assert.equal(reason(rowsFrom(reviewParts({ answered: [0], pairs: one }))), 'layout', 'a tab still open and no warning');
+    assert.equal(read(rowsFrom(reviewParts({ answered: [0], warn: true, pairs: one }))).at, 'review', 'consistent: read');
+    assert.equal(read(rowsFrom(reviewParts())).at, 'review', 'consistent: read');
   });
 
   test('(−) layout: the review lacks its heading, the question, or has a pair without an answer, or a stray row', () => {
@@ -884,7 +958,7 @@ describe('dialogCapture (design W1 3)', () => {
   });
 
   test('(+) the review and the plan shapes', () => {
-    const r = dialogCapture(rowsFrom(reviewParts({ warn: true })), COLS);
+    const r = dialogCapture(rowsFrom(reviewParts({ warn: true, answered: [0], pairs: [{ q: 'Which project should I open?', a: 'web-shop' }] })), COLS);
     assert.deepEqual(Object.keys(r), ['state', 'kind', 'at', 'sig', 'bypass', 'tabs', 'warn', 'pairs']);
     assert.equal(r.warn, true);
     const p = dialogCapture(rowsFrom(planParts()), COLS);
@@ -908,9 +982,9 @@ describe('dialogCapture (design W1 3)', () => {
   });
 
   test('(−) every string in a ready capture is clean: no control characters, bounded', () => {
-    const c = dialogCapture(ask({ question: 'Which\u0007 project\u009b?', options: [{ label: 'acme​-api', desc: 'Open\u001b[31m it.' }, OPTS[1]] }), COLS);
+    const c = dialogCapture(ask({ question: 'Which\u0007 project\u009b?', options: [{ label: 'acme\u200b-api', desc: 'Open\u001b[31m it.' }, OPTS[1]] }), COLS);
     const all = JSON.stringify(c);
-    assert.equal(/[\u0000-\u001f\u007f-\u009f​]/.test(all), false);
+    assert.equal(/[\u0000-\u001f\u007f-\u009f\u200b]/.test(all), false);
     assert.equal(c.options[0].label, 'acme -api');
   });
 });
