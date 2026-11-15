@@ -188,7 +188,8 @@ const submitBase = (s) => (typeof s?.sig === 'string' && SIG.test(s.sig) ? { bas
  * What Send does with the box and the screen. `screen` is cleanDraft's answer for the last capture (null: no readable box). Returns
  *   { act: 'none' }   nothing to send: the box is empty and Claude's input (a readable screen) is empty too. An Enter there could only act
  *                     on Claude's suggestion, which nika never verified, so no request goes out. The attachment tray treats it as "no text".
- *   { act: 'enter', submit, summary }   Enter alone (the screen already equals the box, or the box is empty and Claude's input holds something or cannot be read); `submit` is the body
+ *   { act: 'enter', submit, summary, textSummary? }   Enter alone (the screen already equals the box, or the box is empty and Claude's input holds
+ *                                       something or cannot be read); `textSummary` (only when the box has text) names that text for the echo; `submit` is the body
  *                                       of the guarded submit route: { base } with the screen's sig, or {} when it has none
  *   { act: 'push', text, summary }   copy the box into Claude's input first; the Enter follows with the sig of that write
  *   { act: 'legacy' }   today's paste / Shell path (no readable box, or a long text onto an empty prompt)
@@ -206,12 +207,12 @@ export function draftSendPlan({ value, shell = false, screen = null, cols = 0 } 
   if (!screen) return { act: 'legacy' };
   if (screen.state === 'unreadable') return { act: 'refuse', message: pausedLine(screen.reason) };
   const want = canon(v, shell);
-  if (sameDraft(screenCanon(screen).replace(/\n+$/, ''), want)) return { act: 'enter', ok: true, submit: submitBase(screen), summary: 'Enter' };
   const text = pushText(want);
-  if (fits(text, cols)) {
-    const n = text.length - (shell ? 1 : 0);
-    return { act: 'push', ok: true, text, summary: shell ? `a shell command (${n} characters) + Enter` : `${n} characters + Enter` };
-  }
+  const n = text.length - (shell ? 1 : 0);
+  const textSummary = shell ? `a shell command (${n} characters) + Enter` : `${n} characters + Enter`;
+  // `textSummary`: what the message was, for the echo of a message Claude queued (an Enter alone says only "Enter")
+  if (sameDraft(screenCanon(screen).replace(/\n+$/, ''), want)) return { act: 'enter', ok: true, submit: submitBase(screen), summary: 'Enter', textSummary };
+  if (fits(text, cols)) return { act: 'push', ok: true, text, summary: textSummary, textSummary };
   if (screen.state === 'empty' && screen.mode === 'prompt') return { act: 'legacy' };
   return { act: 'refuse', message: LONG_REFUSAL };
 }
@@ -305,7 +306,7 @@ export function createDraftSync(io) {
   // box holds text the screen does not. editedAt / sentAt: when the box was last edited / the last write left. retryAt: no push before.
   const D = {
     seenSig: null, screen: null, cols: 0, dirty: false, editedAt: -Infinity, sentAt: 0, flight: null, timer: null, composing: false,
-    sending: false, stopped: false, retryAt: 0, fails: 0, held: null, blocked: false, shown: '', // held: null | 'hold' | 'cursor' (the last write was refused)
+    sending: false, stopped: false, retryAt: 0, fails: 0, told: false, held: null, blocked: false, shown: '', // held: null | 'hold' | 'cursor' (the last write was refused); told: the problem line already showed in this run of failures
   };
   const now = () => io.now();
 
@@ -330,6 +331,7 @@ export function createDraftSync(io) {
     D.dirty = false;
     D.seenSig = d.sig;
     D.fails = 0;
+    D.told = false;
     D.held = null;
     io.setBox(d.text, d.mode === 'bash');
   }
@@ -345,6 +347,7 @@ export function createDraftSync(io) {
       D.dirty = false;
       D.seenSig = d.sig;
       D.fails = 0;
+      D.told = false;
       D.held = null;
       D.blocked = false;
       // an empty box over an empty screen: Claude's suggestion (Tab accepts it), or our message that Claude holds in its queue
@@ -386,11 +389,17 @@ export function createDraftSync(io) {
     return settle(r && typeof r === 'object' ? r : { status: 0, body: null });
   }
 
-  /** A write that failed for good reasons of its own: another try after `wait`; the problem line shows at the `at`-th failure in a row, and after three nothing is pushed until the next edit. */
+  /**
+   * A write that failed for good reasons of its own: another try after `wait`; after three nothing is pushed until the next edit. The problem
+   * line shows once per run of failures, at the first one that is the `at`-th or later: a mix of kinds (a clear that stopped, then a 500) can
+   * never give up without it.
+   */
   function fail(status, wait = status === 0 ? 2000 : 3000, at = 1) {
     D.fails += 1;
     D.retryAt = now() + wait;
-    if (D.fails === at) io.problem(status === 0 ? 'nika did not answer. Your text is kept.' : "nika couldn't copy your text into Claude's input. It is kept here.");
+    if (D.told || D.fails < at) return;
+    D.told = true;
+    io.problem(status === 0 ? 'nika did not answer. Your text is kept.' : "nika couldn't copy your text into Claude's input. It is kept here.");
   }
 
   function settle(r) {
@@ -400,11 +409,12 @@ export function createDraftSync(io) {
     const d = cleanDraft(body.draft);
     const out = { ok: r.status === 200, status: r.status, code, reason: body.reason, sig: r.status === 200 && d?.sig ? d.sig : null };
     if (d) D.screen = d; // every answer that carries a draft says where the screen is
+    D.held = code === 'not-idle' ? 'hold' : code === 'cursor-not-at-end' ? 'cursor' : null; // the note names the last refusal: a later answer of another kind ends it
     if (r.status === 200) {
       if (d?.sig) D.seenSig = d.sig;
       D.dirty = typedSince;
       D.fails = 0;
-      D.held = null;
+      D.told = false;
       D.blocked = false;
       D.retryAt = 0;
     } else if (ADOPT.has(code) && d) {
@@ -419,10 +429,8 @@ export function createDraftSync(io) {
     } else if (code === 'busy-switching') {
       D.retryAt = now() + 300;
     } else if (code === 'not-idle') { // a prompt is open or Stop runs
-      D.held = 'hold';
       D.retryAt = now() + 3000;
     } else if (code === 'cursor-not-at-end') { // Claude works and its cursor is on an earlier row: only the idle road can write; the answer's draft is already in D.screen
-      D.held = 'cursor';
       D.retryAt = now() + 3000;
     } else if (code === 'clear-stopped') { // nika's own clear stopped half-way: the screen holds a partial text, which is never adopted
       fail(r.status, 1000, 3);
@@ -447,6 +455,7 @@ export function createDraftSync(io) {
     D.editedAt = now();
     D.retryAt = 0;
     D.fails = 0;
+    D.told = false;
     D.held = null;
     D.blocked = false;
     step();
@@ -471,6 +480,7 @@ export function createDraftSync(io) {
       D.screen = null;
       D.stopped = false;
       D.fails = 0;
+      D.told = false;
       D.retryAt = 0;
       show(null);
     },

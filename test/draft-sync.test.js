@@ -276,6 +276,24 @@ describe('draftSendPlan: the Send table (design 4)', () => {
     assert.equal(Object.hasOwn(p, 'payloads'), false, 'no keys-route body: Send never posts Enter there (W13)');
   });
 
+  test('(+) fix round 1: a plan with text carries `textSummary` (what the echo of a queued message names); a lone Enter and a refusal do not', () => {
+    assert.equal(plan({}).textSummary, '12 characters + Enter', 'enter: summary stays "Enter", the text is named apart');
+    assert.equal(plan({}).summary, 'Enter');
+    const pushed = plan({ screen: empty() });
+    assert.equal(pushed.act, 'push');
+    assert.equal(pushed.textSummary, '12 characters + Enter');
+    assert.equal(pushed.summary, pushed.textSummary);
+    const shellEnter = plan({ value: 'ls -la', shell: true, screen: text('ls -la', { mode: 'bash' }) });
+    assert.equal(shellEnter.act, 'enter');
+    assert.equal(shellEnter.textSummary, 'a shell command (6 characters) + Enter');
+    const shellPush = plan({ value: 'ls -la', shell: true, screen: empty() });
+    assert.equal(shellPush.act, 'push');
+    assert.equal(shellPush.textSummary, 'a shell command (6 characters) + Enter');
+    for (const p of [plan({ value: '', screen: text('typed in the terminal') }), plan({ value: '', screen: null }), plan({ value: '', screen: empty() }), plan({ screen: null }), plan({ screen: unreadable('pasted') })]) {
+      assert.equal(Object.hasOwn(p, 'textSummary'), false, p.act);
+    }
+  });
+
   test('(+) row 1: equal up to trailing spaces, a tab or a trailing newline', () => {
     assert.equal(plan({ value: 'fix the typo   ' }).act, 'enter');
     assert.equal(plan({ value: 'fix the typo\n' }).act, 'enter');
@@ -1324,6 +1342,71 @@ describe('W13: the writes Claude refuses while it works (hold, cursor, clear-sto
     await r.advance(PUSH_MS);
     assert.equal(r.log.puts.length, 4, 'an edit starts again');
   });
+
+  test('(+) fix round 1: clear-stopped twice, then a 500 as the third failure: the problem line shows at that third failure and the sync gives up (never silently)', async () => {
+    const r = await setup(409, { error: 'clear-stopped', draft: text('half', { sig: sig(7) }) });
+    await r.advance(1000);
+    assert.equal(r.log.puts.length, 2);
+    assert.deepEqual(r.log.problems, [], 'two clears that stopped: still trying');
+    r.answer = () => ({ status: 500, body: null });
+    await r.advance(1000);
+    assert.equal(r.log.puts.length, 3);
+    assert.deepEqual(r.log.problems, ["nika couldn't copy your text into Claude's input. It is kept here."]);
+    await r.advance(30_000);
+    assert.equal(r.log.puts.length, 3, 'given up');
+    assert.equal(r.log.problems.length, 1, 'said once');
+  });
+
+  test('(+) fix round 1: a 500 first and clear-stopped after it: the problem line shows once, at the first failure, and is not repeated', async () => {
+    const r = await setup(500, null);
+    assert.equal(r.log.problems.length, 1);
+    r.answer = () => ({ status: 409, body: { error: 'clear-stopped', draft: text('half', { sig: sig(7) }) } });
+    await r.advance(3000);
+    assert.equal(r.log.puts.length, 2);
+    await r.advance(1000);
+    assert.equal(r.log.puts.length, 3);
+    await r.advance(30_000);
+    assert.equal(r.log.puts.length, 3, 'given up');
+    assert.equal(r.log.problems.length, 1, 'said once for the whole run');
+  });
+
+  test('(+) fix round 1: a success ends the run of failures, so the next run says its problem again', async () => {
+    const r = await setup(500, null);
+    assert.equal(r.log.problems.length, 1);
+    ok(r);
+    await r.advance(3000);
+    assert.equal(r.lastNote(), null);
+    r.answer = () => ({ status: 500, body: null });
+    r.type('abcd');
+    await r.advance(PUSH_MS);
+    assert.equal(r.log.problems.length, 2, 'a new run of failures speaks again');
+  });
+
+  test('(−) fix round 1: a later answer of another kind ends a stale "On hold" or "Cursor" note', async () => {
+    for (const [first, second, firstKind] of [
+      [{ error: 'not-idle' }, { error: 'clear-stopped', draft: text('half', { sig: sig(7) }) }, 'hold'],
+      [{ error: 'cursor-not-at-end', draft: text('older', { sig: sig(7) }) }, { error: 'clear-stopped', draft: text('half', { sig: sig(8) }) }, 'cursor'],
+      [{ error: 'not-idle' }, { error: 'input-unreadable' }, 'hold'],
+      [{ error: 'cursor-not-at-end', draft: text('older', { sig: sig(7) }) }, { error: 'busy-switching' }, 'cursor'],
+    ]) {
+      const r = await setup(409, first);
+      assert.equal(r.lastNote().kind, firstKind, 'the first refusal is named');
+      r.answer = () => ({ status: 409, body: second });
+      await r.advance(3000);
+      assert.ok(r.log.puts.length >= 2, 'the retry ran');
+      assert.equal(r.lastNote(), null, `${second.error} after ${first.error}: no stale ${firstKind} note`);
+    }
+  });
+
+  test('(−) fix round 1: a 500 or no answer at all (status 0) after a hold ends the note as well', async () => {
+    for (const status of [500, 0]) {
+      const r = await setup(409, { error: 'not-idle' });
+      assert.equal(r.lastNote().kind, 'hold');
+      r.answer = () => ({ status, body: null });
+      await r.advance(3000);
+      assert.equal(r.lastNote(), null, `${status}`);
+    }
+  });
 });
 
 describe('W13: the Queued note', () => {
@@ -1416,6 +1499,32 @@ describe('W13: after the Enter (submitted, sent)', () => {
     r.ds.sent();
     r.ds.endSend();
     r.ds.capture(text('hello', { sig: sig(5) }), 120); // the very next capture shows the same text
+    await r.advance(PUSH_MS);
+    assert.deepEqual(r.log.sets, [['hello', false]]);
+  });
+
+  test('(+) fix round 1: an attachment send reports submitted(200, no draft) before the box is cleared: no step or composition end pulls the sent text back', async () => {
+    const r = sentRig();
+    r.ds.beginSend();
+    r.ds.endSend();
+    r.ds.submitted({ status: 200, body: { draft: null } });
+    clearBox(r);
+    r.ds.sent();
+    r.ds.composition(true);
+    r.ds.composition(false);
+    await r.advance(10_000);
+    assert.deepEqual(r.log.sets, [], 'the stale screen (the text, from before the Enter) is gone');
+    assert.deepEqual(r.log.puts, []);
+    assert.equal(r.ds.screen(), null);
+  });
+
+  test('(−) fix round 1: without that call the stale screen pulls the sent text back at the first step (why attach.js tells the sync)', async () => {
+    const r = sentRig();
+    r.ds.beginSend();
+    r.ds.endSend();
+    clearBox(r);
+    r.ds.sent();
+    r.ds.composition(false);
     await r.advance(PUSH_MS);
     assert.deepEqual(r.log.sets, [['hello', false]]);
   });

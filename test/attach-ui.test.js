@@ -86,7 +86,7 @@ function rig(opts = {}) {
     for (const fn of docListeners[type] ?? []) fn(e);
     return e;
   };
-  const log = { calls: [], say: [], announce: [], problem: [], notice: [], gone: 0, ds: [], clear: [], focus: 0, jobs: 0, sleeps: [] };
+  const log = { calls: [], say: [], announce: [], problem: [], notice: [], gone: 0, ds: [], clear: [], order: [], focus: 0, jobs: 0, sleeps: [] };
   const state = { screen: opts.screen === undefined ? screenOf() : opts.screen, shell: false, pushed: null, sentReply: null, n: 0, pickStart: null, polls: [], gate: null };
   const reply = opts.reply ?? ((p, o) => {
     if (isUpload(p, o)) {
@@ -119,6 +119,7 @@ function rig(opts = {}) {
       },
       beginSend: () => log.ds.push(['begin']),
       endSend: () => log.ds.push(['end']),
+      submitted: (r) => { log.ds.push(['submitted', r.status, r.body?.draft ?? null]); log.order.push('submitted'); },
     },
     enqueueJob: (run) => { log.jobs += 1; return Promise.resolve().then(run); },
     say: (m) => log.say.push(m),
@@ -129,7 +130,7 @@ function rig(opts = {}) {
     setGone: () => { log.gone += 1; },
     box: () => ({ value: '', shell: state.shell }),
     cols: () => 120,
-    clearBox: (v) => log.clear.push(v),
+    clearBox: (v) => { log.clear.push(v); log.order.push('clearBox'); },
     focusBox: () => { log.focus += 1; },
     read: opts.read ?? (async () => 'QUJD'),
     sleep: async (ms) => { log.sleeps.push(ms); },
@@ -1245,7 +1246,7 @@ describe('Send with attachments: the table of section 6', () => {
     const r = rig();
     await r.add(file('a.png'), file('b.pdf'), file('c.md'));
     await r.att.send('look at these');
-    assert.deepEqual(r.log.ds, [['begin'], ['send', 'look at these'], ['end']]);
+    assert.deepEqual(r.log.ds, [['begin'], ['send', 'look at these'], ['end'], ['submitted', 200, null]]);
     const [send] = sends(r);
     assert.equal(send.path, '/api/app/pane/%257/attach-send');
     assert.deepEqual(send.json, { ids: [uploadId(1), uploadId(2), uploadId(3)], base: SIG2 });
@@ -1256,7 +1257,7 @@ describe('Send with attachments: the table of section 6', () => {
     const r = rig({ screen: screenOf({ state: 'text', text: 'look at these', sig: SIG2 }) });
     await r.add(file('a.png'));
     await r.att.send('look at these');
-    assert.deepEqual(r.log.ds, [['begin'], ['end']], 'no push');
+    assert.deepEqual(r.log.ds, [['begin'], ['end'], ['submitted', 200, null]], 'no push');
     assert.deepEqual(sends(r)[0].json, { ids: [uploadId(1)], base: SIG2 });
   });
 
@@ -1264,7 +1265,7 @@ describe('Send with attachments: the table of section 6', () => {
     const r = rig();
     await r.add(file('a.png'));
     await r.att.send('');
-    assert.deepEqual(r.log.ds, [['begin'], ['end']]);
+    assert.deepEqual(r.log.ds, [['begin'], ['end'], ['submitted', 200, null]]);
     assert.deepEqual(sends(r)[0].json, { ids: [uploadId(1)], base: SIG });
   });
 
@@ -1273,9 +1274,36 @@ describe('Send with attachments: the table of section 6', () => {
       const r = rig({ screen });
       await r.add(file('a.png'));
       await r.att.send('');
-      assert.deepEqual(r.log.ds, [['begin'], ['end']]);
+      assert.deepEqual(r.log.ds, [['begin'], ['end'], ['submitted', 200, null]]);
       assert.deepEqual(sends(r)[0].json, { ids: [uploadId(1)], base: SIG });
       assert.deepEqual(r.log.ds.filter(([k]) => k === 'send'), [], 'no text is pushed');
+    }
+  });
+
+  test('(+) fix round 1: after an attachment send the sync learns the box is empty (submitted 200, no draft) before the page clears its box, so no step pulls the sent text back', async () => {
+    for (const [text, screen] of [['look at these', undefined], ['', undefined], ['look at these', screenOf({ state: 'text', text: 'look at these', sig: SIG2 })]]) {
+      const r = rig(screen ? { screen } : {});
+      await r.add(file('a.png'));
+      await r.att.send(text);
+      assert.deepEqual(r.log.order, ['submitted', 'clearBox'], 'submitted first, then clearBox');
+      assert.equal(r.log.ds.filter(([k]) => k === 'submitted').length, 1);
+      assert.ok(r.log.ds.findIndex(([k]) => k === 'submitted') > r.log.ds.findIndex(([k]) => k === 'end'), 'after the sync is released');
+    }
+  });
+
+  test('(−) fix round 1: no answer of 200 means the sync is not told the box is empty (refused, failed, gone chips)', async () => {
+    for (const reply of [
+      { status: 409, body: { error: 'screen-changed', pasted: 1 } },
+      { status: 409, body: { error: 'draft-changed', pasted: 0 } },
+      { status: 500, body: null },
+      { status: 0, body: null },
+    ]) {
+      const r = rig();
+      await r.add(file('a.png'));
+      r.state.sentReply = reply;
+      await r.att.send('look at these');
+      assert.deepEqual(r.log.ds.filter(([k]) => k === 'submitted'), [], `${reply.status}: no submitted`);
+      assert.deepEqual(r.log.clear, [], `${reply.status}: the box is kept`);
     }
   });
 

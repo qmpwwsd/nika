@@ -378,12 +378,17 @@ describe('quick actions, prompt buttons, End dialog and Shell (spec 9.4-9.8)', (
   });
 
   test('(−) W13: no script or rule file names an Enter key for the keys route: Send presses Enter only through the submit route (the passthrough maps raw keys in mirror-render.js)', () => {
+    const SEND_KEY_ENTER = /sendKey\(\s*['"`]Enter['"`]\s*\)/;
+    const KEYS_WITH_ENTER = /keys:\s*\[[^\]]*['"`]Enter['"`]/;
     for (const f of ['session.js', 'quick-actions.js', 'draft-sync.js']) {
       const src = code(JS[f]);
-      assert.doesNotMatch(src, /sendKey\('Enter'\)/, f);
-      assert.doesNotMatch(src, /keys: \[[^\]]*'Enter'/, f);
+      assert.doesNotMatch(src, SEND_KEY_ENTER, f);
+      assert.doesNotMatch(src, KEYS_WITH_ENTER, f);
     }
-    assert.doesNotMatch(code(JS['mirror-render.js']), /keys: \['Enter'\]/);
+    assert.doesNotMatch(code(JS['mirror-render.js']), KEYS_WITH_ENTER);
+    for (const bad of [`sendKey('Enter')`, `sendKey("Enter")`, 'sendKey(`Enter`)', `keys: ['Enter']`, `keys: ["Enter"]`, `keys: ['a', "Enter"]`, `{ keys:["Enter"] }`]) {
+      assert.ok(SEND_KEY_ENTER.test(bad) || KEYS_WITH_ENTER.test(bad), `the scan catches ${bad}`);
+    }
   });
 
   test('(+) the model popover is a hidden disclosure with a labelled select, a custom field and Cancel / Switch model', () => {
@@ -1483,6 +1488,24 @@ describe('Task 14b: wiring of the page rules', () => {
     assert.deepEqual(out, { ok: false, message: 'Too many keys at once; try again. Your text is kept.' });
     assert.equal(no.log.paths.length, 4, 'four tries, then it gives up');
     assert.deepEqual(no.log.problems.at(-1), ['Too many keys at once; try again. Your text is kept.', 'warn', 3000]);
+  });
+
+  test('(−) fix round 1: only a 429 is sent again: no answer (status 0), a 5xx and every other refusal is exactly one POST, no wait, because the Enter may already have been pressed', async () => {
+    for (const [status, body] of [[0, null], [500, null], [502, { error: 'bad-gateway' }], [503, null], [504, null], [400, { error: 'bad-request' }], [403, null], [404, { error: 'not_found' }], [409, { error: 'not-idle' }], [409, { error: 'draft-changed' }]]) {
+      const r = submitRig([{ status, body }]);
+      const out = jsonClone(await r.submitEnter('0123456789abcdef'));
+      assert.equal(out.ok, false, `${status}`);
+      assert.equal(r.log.paths.length, 1, `${status}: one POST, never repeated`);
+      assert.deepEqual(r.log.sleeps, [], `${status}: no wait for a second try`);
+      assert.equal(r.log.problems.length, 1, `${status}: the fixed line shows once`);
+    }
+    const net = submitRig([{ status: 0, body: null }]);
+    assert.equal(jsonClone(await net.submitEnter()).message, "nika did not answer, so it is not known whether Enter was pressed. Check Claude's input in the terminal. Your text is kept.");
+    const bad = submitRig([{ status: 502, body: null }]);
+    assert.equal(jsonClone(await bad.submitEnter()).message, "nika couldn't press Enter in Claude's input. Check the terminal. Your text is kept.");
+    const late = submitRig([{ status: 429, body: { error: 'busy' } }, { status: 0, body: null }, { status: 200, body: { taken: true, draft: null } }]);
+    assert.equal(jsonClone(await late.submitEnter()).ok, false, 'a 429 then no answer: the retry stops at the answer that is not a 429');
+    assert.equal(late.log.paths.length, 2);
   });
 
   test('(−) W13: a refusal shows its fixed line as an error and keeps the text; the server\'s own words never show; 404 is the gone state; taken false is not a success', async () => {
@@ -2866,7 +2889,7 @@ describe('0.5: drawing the mirror with the cut (design W6, section 5)', () => {
     const log = [];
     const ctx = {
       recovered() {}, noteScreen() {}, $: () => ({ style: {}, scrollTop: 0, scrollHeight: 9 }), M: { frozen: false, scrollTop: 0 }, setLive() {}, MID: ' - ', TIMES: 'x', ETAG: /^[0-9a-f]{1,64}$/,
-      cleanDraft: cleanDraftReal, DS: { capture: (d, cols) => log.push(['capture', d, cols]) }, drawMirror: () => log.push(['draw']), renderSuggestion: () => log.push(['suggest']), ATT: { sending: () => false },
+      cleanDraft: cleanDraftReal, Q: { queued: false }, renderQuick() {}, DS: { capture: (d, cols) => log.push(['capture', d, cols]) }, drawMirror: () => log.push(['draw']), renderSuggestion: () => log.push(['suggest']), ATT: { sending: () => false },
       setGone() {}, serverMessage: () => '', setPaneState() {}, setInputEnabled() {}, showOverlay() {},
     };
     const body = { ...BODY, draft: readable(), etag: 'ab12' };
@@ -2901,7 +2924,7 @@ describe('0.5: drawing the mirror with the cut (design W6, section 5)', () => {
     const log = [];
     const ctx = {
       recovered() {}, noteScreen() {}, $: () => ({ style: {}, scrollTop: 0, scrollHeight: 9 }), M: { frozen: false, scrollTop: 0 }, setLive() {}, MID: ' - ', TIMES: 'x', ETAG: /^[0-9a-f]{1,64}$/,
-      cleanDraft: cleanDraftReal, DS: { capture: (d, cols) => log.push(['capture', d, cols]) }, drawMirror: () => log.push(['draw']), renderSuggestion: () => log.push(['suggest']), ATT: { sending: () => true },
+      cleanDraft: cleanDraftReal, Q: { queued: false }, renderQuick() {}, DS: { capture: (d, cols) => log.push(['capture', d, cols]) }, drawMirror: () => log.push(['draw']), renderSuggestion: () => log.push(['suggest']), ATT: { sending: () => true },
       setGone() {}, serverMessage: () => '', setPaneState() {}, setInputEnabled() {}, showOverlay() {},
     };
     const body = { ...BODY, draft: readable(), etag: 'ab12' };
@@ -2910,11 +2933,33 @@ describe('0.5: drawing the mirror with the cut (design W6, section 5)', () => {
     assert.equal(ctx.M.body, body, 'the body is still kept');
   });
 
+  test('(−) fix round 1: Stop\'s title still follows the capture when the sync or the placeholder throws, or attachments are being sent', () => {
+    for (const [label, over] of [
+      ['DS.capture throws', { DS: { capture: () => { throw new Error('boom'); } } }],
+      ['renderSuggestion throws', { renderSuggestion: () => { throw new Error('boom'); } }],
+      ['attachments are being sent', { ATT: { sending: () => true } }],
+    ]) {
+      const renders = [];
+      const ctx = {
+        recovered() {}, noteScreen() {}, $: () => ({ style: {}, scrollTop: 0, scrollHeight: 9 }), M: { frozen: false, scrollTop: 0 }, setLive() {}, MID: ' - ', TIMES: 'x', ETAG: /^[0-9a-f]{1,64}$/,
+        cleanDraft: cleanDraftReal, DS: { capture() {} }, drawMirror() {}, renderSuggestion() {}, ATT: { sending: () => false }, Q: { queued: false }, renderQuick: () => renders.push(ctx.Q.queued),
+        setGone() {}, serverMessage: () => '', setPaneState() {}, setInputEnabled() {}, showOverlay() {}, ...over,
+      };
+      const capture = vm.runInNewContext(`${fnOf('function handleCapture(r)')}; handleCapture`, ctx);
+      assert.doesNotThrow(() => capture({ status: 200, body: { ...BODY, draft: readable('empty', { queued: true }), etag: 'ab12' } }), label);
+      assert.equal(ctx.Q.queued, true, label);
+      assert.deepEqual(renders, [true], label);
+      capture({ status: 200, body: { ...BODY, draft: readable('empty'), etag: 'ab13' } });
+      assert.equal(ctx.Q.queued, false, label);
+      assert.deepEqual(renders, [true, false], label);
+    }
+  });
+
   test('(−) a sync that throws never takes the mirror down: the rows are drawn and the error is not thrown', () => {
     const drew = [];
     const ctx = {
       recovered() {}, noteScreen() {}, $: () => ({ style: {}, scrollTop: 0, scrollHeight: 9 }), M: { frozen: false }, setLive() {}, MID: ' - ', TIMES: 'x', ETAG: /^[0-9a-f]{1,64}$/,
-      cleanDraft: cleanDraftReal, DS: { capture: () => { throw new Error('boom'); } }, drawMirror: () => drew.push(1), renderSuggestion() {}, ATT: { sending: () => false },
+      cleanDraft: cleanDraftReal, Q: { queued: false }, renderQuick() {}, DS: { capture: () => { throw new Error('boom'); } }, drawMirror: () => drew.push(1), renderSuggestion() {}, ATT: { sending: () => false },
     };
     assert.doesNotThrow(() => vm.runInNewContext(`${fnOf('function handleCapture(r)')}; handleCapture`, ctx)({ status: 200, body: { ...BODY, draft: readable() } }));
     assert.equal(drew.length, 1);
@@ -3270,6 +3315,33 @@ describe('0.5: Send with the synced box (design W5, section 4)', () => {
     assert.deepEqual(lone.log.said, ['Sent Enter to %12'], 'a lone Enter queues nothing of nika\'s');
   });
 
+  test('(+) fix round 1: while Claude works, the echo names the message in every route that carries text (enter, push, legacy, Shell) and never just "Enter"', async () => {
+    const cases = [
+      ['enter: the screen already holds the text', { value: 'fix the typo', screen: D('text', 'fix the typo') }, 'Queued for Claude: 12 characters + Enter'],
+      ['push', { value: 'next step please', screen: D('empty') }, 'Queued for Claude: 16 characters + Enter'],
+      ['legacy: no readable box', { value: 'hello', screen: null }, 'Queued for Claude: 5 characters + Enter'],
+      ['Shell, push', { value: 'ls -la', shell: true, screen: D('empty') }, 'Queued for Claude: a shell command (6 characters) + Enter'],
+      ['Shell, enter', { value: 'ls -la', shell: true, screen: D('text', 'ls -la', { mode: 'bash' }) }, 'Queued for Claude: a shell command (6 characters) + Enter'],
+    ];
+    for (const [label, opts, line] of cases) {
+      const r = rig({ ...opts, kind: 'busy' });
+      await r.send();
+      assert.deepEqual(r.log.said, [line], label);
+      assert.deepEqual(r.log.problems, [], label);
+    }
+  });
+
+  test('(−) fix round 1: a lone Enter while Claude works says "Sent Enter", an idle Claude says "Sent", and neither claims a queue', async () => {
+    for (const kind of ['busy', undefined]) {
+      const r = rig({ value: '   ', screen: D('text', 'typed in the terminal'), ...(kind ? { kind } : {}) });
+      await r.send();
+      assert.deepEqual(r.log.said, ['Sent Enter to %12'], `${kind}`);
+    }
+    const idle = rig({ value: 'fix the typo', screen: D('text', 'fix the typo') });
+    await idle.send();
+    assert.deepEqual(idle.log.said, ['Sent Enter to %12'], 'idle, enter route: the Enter is what went out');
+  });
+
   test('(−) W13: a refused Enter keeps the text, Shell and the box, shows its fixed line as an error, tells the sync the answer, and never says "sent"', async () => {
     const lines = {
       'prompt-open': 'A prompt opened in Claude, so nika did not press Enter. Answer it, then send again. Your text is kept.',
@@ -3310,8 +3382,17 @@ describe('0.5: Send with the synced box (design W5, section 4)', () => {
         for (const screen of screens) {
           const r = rig({ value, screen, shell });
           await r.send();
-          assert.equal(JSON.stringify(r.log.keys).includes('Enter'), false, `${shell} ${value.slice(0, 5)} ${screen?.state}`);
-          assert.ok(r.log.posts.length <= 1 && r.log.posts.every(([tail]) => tail === 'submit'));
+          const label = `${shell} ${JSON.stringify(value.slice(0, 5))} ${screen?.state ?? null}`;
+          assert.equal(JSON.stringify(r.log.keys).includes('Enter'), false, label);
+          const refused = r.log.problems.length > 0; // a fixed refusal line: nothing goes
+          const nothingToSend = value === '' && (shell || screen?.state === 'empty'); // an empty Shell box, or an empty message over an empty Claude input: no request, no line
+          if (refused || nothingToSend) {
+            assert.equal(r.log.posts.length, 0, label);
+          } else {
+            assert.equal(r.log.posts.length, 1, `${label}: exactly one submit`);
+          }
+          assert.ok(r.log.posts.every(([tail]) => tail === 'submit'), label);
+          if (nothingToSend) assert.deepEqual(r.log.problems, [], `${label}: nothing to send is silent`);
         }
       }
     }
@@ -3367,6 +3448,16 @@ describe('W4: Claude\'s prompt suggestion in the message box (wiring)', () => {
     assert.equal(ph({ screen: null }).idlePlaceholder(), 'Message acme-api...');
     assert.equal(ph({ screen: D('empty') }).idlePlaceholder(), 'Message acme-api...');
     assert.equal(ph({ screen: D('text', { text: 'hello', suggestion: SUG }) }).idlePlaceholder(), 'Message acme-api...');
+  });
+
+  test('(−) fix round 1: while Claude holds a queued message the placeholder stays the normal one: no suggestion text, no Tab to accept (the queued text is not a suggestion)', () => {
+    const queued = ph({ screen: D('empty', { suggestion: SUG, queued: true }) });
+    assert.equal(queued.idlePlaceholder(), 'Message acme-api...');
+    assert.equal(queued.suggestionNow(), null);
+    const queuedNoSuggestion = ph({ screen: D('empty', { queued: true }) });
+    assert.equal(queuedNoSuggestion.idlePlaceholder(), 'Message acme-api...');
+    assert.equal(queuedNoSuggestion.suggestionNow(), null);
+    assert.equal(ph({ screen: D('empty', { suggestion: SUG, queued: false }) }).idlePlaceholder(), SUG, 'the same screen without the queue still shows the suggestion');
   });
 
   test('(−) the `Try "..."` example Claude draws is no suggestion: the parser gives null, so the placeholder stays the normal one', () => {
@@ -4149,7 +4240,7 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     const ctx = {
       recovered() {}, noteScreen() {}, $: (id) => (id === 'term' ? term : { style: {} }), M: { frozen, scrollTop: 0, cols: 0, rows: 0 },
       setLive: (state, text) => order.push(`${state}: ${text}`), MID: ' - ', TIMES: 'x', ETAG: /^[0-9a-f]{1,64}$/,
-      cleanDraft: cleanDraftReal, DS: { capture() {} }, drawMirror: () => order.push('draw'), renderSuggestion() {},
+      cleanDraft: cleanDraftReal, Q: { queued: false }, renderQuick() {}, DS: { capture() {} }, drawMirror: () => order.push('draw'), renderSuggestion() {},
       FIT: { planner: { start: () => order.push('start'), ...planner }, panel: { cols: 100, rows: 30 }, scale: 1 },
       scaleFor: scaleForReal, setGone() {}, serverMessage: () => '', setPaneState() {}, setInputEnabled() {}, showOverlay() {},
     };

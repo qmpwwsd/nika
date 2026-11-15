@@ -1138,13 +1138,13 @@ function handleCapture(r) {
     try {
       if (!ATT.sending()) DS.capture(M.draft, cols); // the box holds placeholders for a moment while attachments go in: no paused note then
       renderSuggestion(); // the placeholder follows the screen's draft
-      const queued = M.draft?.queued === true;
-      if (queued !== Q.queued) { // Stop's title says what Stop does with a message Claude holds in its queue
-        Q.queued = queued;
-        renderQuick();
-      }
     } catch {
       // the mirror keeps working without the sync
+    }
+    const queued = M.draft?.queued === true; // outside the try: Stop's title follows the last capture even when the sync threw
+    if (queued !== Q.queued) { // it says what Stop does with a message Claude holds in its queue
+      Q.queued = queued;
+      renderQuick();
     }
     setLive(M.frozen ? 'paused' : 'live', `${M.frozen ? 'Paused' : 'Live'}${MID}${cols} ${TIMES} ${M.rows}`); // the pane's real size, not the panel's
     try {
@@ -1549,7 +1549,7 @@ async function sendComposer() {
   sending = false;
   $('send').removeAttribute('aria-busy');
   if (r.ok) { // else the text stays in the box, and Shell stays on so a retry still goes as a command
-    say(r.taken === true && A.kind === 'busy' && value.trim() !== '' ? `Queued for Claude: ${plan.summary}` : `Sent ${plan.summary} to ${paneId}`); // Claude takes a message sent while it works at its next step (a lone Enter queues nothing of ours)
+    say(r.taken === true && A.kind === 'busy' && value.trim() !== '' ? `Queued for Claude: ${route.textSummary ?? plan.summary}` : `Sent ${plan.summary} to ${paneId}`); // Claude takes a message sent while it works at its next step; the echo names the text, not the Enter (a lone Enter queues nothing of ours)
     if (S.on) setShell(false); // like Claude's own ! mode: the next message is a message
     clearBox(value);
   }

@@ -171,7 +171,7 @@ const wait = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
  * io: paneId; path(tail) -> the pane's route for 'attachments', 'attachments/<id>', 'attachments/pick', 'attachments/pick/<reqId>' or 'attach-send'
  * (session.js owns every /api/app string);
  * call(path, { method, json }) -> { status, body } (never rejects); appFetch(path, { method, keepalive }) (the pagehide delete);
- * ds = the draft sync (screen, send, beginSend, endSend); enqueueJob(run) -> Promise (the keys chain); say, announce, showProblem(msg, kind, ms),
+ * ds = the draft sync (screen, send, submitted, beginSend, endSend); enqueueJob(run) -> Promise (the keys chain); say, announce, showProblem(msg, kind, ms),
  * clearProblem, showNotice, setGone; box() -> { value, shell }; cols(); clearBox(value) (clears the message
  * box when it still holds `value`); focusBox(). Optional: read(file) -> base64 (default: FileReader), sleep(ms).
  * Returns { wire, enable, pending, sending, send }.
@@ -452,6 +452,7 @@ export function createAttachTray(io) {
     }
     if (out.blocked) return refuse(out.blocked);
     if (out.status === 200) {
+      io.ds.submitted({ status: 200, body: { draft: null } }); // the screen the sync holds is from before the Enter: no step may pull the sent text back before the next capture
       io.clearBox(value);
       chips.length = 0;
       el('att-tray').replaceChildren();
