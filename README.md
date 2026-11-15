@@ -80,6 +80,12 @@ set). You change them in Settings and on each project's page, not by hand; a key
 `<key>` is the project's key (the first 16 hex characters of the SHA-256 of its real folder path). The older
 `limits.maxAgents` now reads as **Agents per orchestrator**.
 
+0.5 adds one key:
+
+| Key | Meaning |
+|---|---|
+| `attachments.keepDays` | `{ keepDays }`: how many days a file attached in the session window stays in nika's state folder, 1 to 30. Default 7. Settings, **Attachments** |
+
 ## What nika reads
 
 | Source | Used for |
@@ -93,6 +99,7 @@ set). You change them in Settings and on each project's page, not by hand; a key
 | `<scratchpad>/reports/<name>.session\|.md\|.rc` | agent role name, `STATUS:` line, report text |
 | nika's own `config.json` | the project list, each project's own settings and the auto-compact setting (the context column needs it); never a Claude settings file |
 | `<cwd>/.git`, `commondir` | repository root for grouping |
+| files you attach (app tier only) | the files you paste, drop or pick in the session window's attach chooser: read once, checked by their bytes, copied into nika's own `attachments` folder (see Session window (0.5)) |
 
 It never reads `*.key` files, credentials or `.env` files. The browser tier never writes anything; what the app tier and the CLI write is listed in [docs/architecture.md](docs/architecture.md#where-writes-happen).
 
@@ -382,6 +389,36 @@ shows the tree and the context column, read-only.
   tooltip always says where it compacts. The numbers come from the last reply in the transcript (token counts only, no text).
 
 Why the tree works the way it does: [ADR 0013](docs/adr/0013-nested-orchestration.md).
+
+### Session window (0.5)
+
+Desktop app only. The attachments and the scrolling below are not on the browser dashboard.
+
+- **Send works while Claude works.** Press Send while Claude is busy, or waits for background agents or shells, and nika puts
+  the message into Claude's input and presses Enter, as you would. Claude queues it and takes it at its next step; the message
+  box says "Queued" until then. When a permission prompt or another dialog is open, nika presses nothing and says so.
+- **Attachments.** Paste images, PDFs or text files into the message box, drop them on it, or click the paperclip (**Add
+  attachments**) to pick them in a file chooser. Up to 6 files per message and 8 MB each. A chip shows each file; remove
+  one before you send. Nothing goes to Claude until Send: then nika pastes each file's path into Claude's input after your
+  text and presses Enter, the way you would paste a file path in the terminal. Claude shows an image as `[Image #N]`; a PDF or
+  text file it reads with its Read tool, which asks first because the file is outside your project. That prompt shows in the
+  prompt panel and only you answer it (under your own allow rules there may be no prompt).
+- **Where attachments are kept.** In nika's own state folder, `attachments/<repository key>/` (under `XDG_STATE_HOME`,
+  default `~/.local/state/nika`), never in your project, with folders at 0700 and files at 0600, and never served back to
+  the page. A file goes when you remove its chip, when you close the window without sending it, and after **Keep
+  attachments for N days** (Settings, **Attachments**: 1 to 30, default 7). The store holds at most 256 MiB and 500 files;
+  when it is full, the next upload is refused. nika writes nothing into your project for an attachment.
+  The thinking behind it: [ADR 0016](docs/adr/0016-attachments-json-upload-state-dir.md).
+- **Scrolling.** The mouse wheel, the trackpad and PageUp, PageDown, Home and End (with **Type into pane** off) scroll Claude's
+  own view, one page at a time. A note says "Scrolled up in Claude's view" while it is up, and **Jump to live** brings you
+  back to the bottom. It works while Claude works and never interrupts it; with a permission prompt, a dialog, a menu or a
+  `/` command open, nika scrolls nothing and says why. Why: [ADR 0018](docs/adr/0018-scroll-with-claude-keys.md).
+- **One row per conversation.** After `/compact` Claude continues a conversation in the background under a new session id;
+  nika shows one row for it, with the tmux pane that shows it, and keeps a spawned agent's report and a saved orchestrator
+  with that row.
+
+The routes are in [docs/contracts/api-app.md](docs/contracts/api-app.md); the threats, in [docs/security.md](docs/security.md)
+(T38, T39, T54, T55).
 
 ## Development
 

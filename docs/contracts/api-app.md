@@ -21,7 +21,7 @@ Id shapes come from `src/ids.js`:
 | `PLUGIN_NAME` | `^[A-Za-z0-9._-]{1,100}@[A-Za-z0-9._-]{1,100}$` |
 | `RC_PREFIX` | `^[a-z0-9][a-z0-9-]{0,19}$` |
 | `RC_NAME` | `^[a-z0-9][a-z0-9-]{0,63}$` — full Remote Control name, never truncated to the prefix length |
-| `KEY_NAME` | set: `Enter Escape Tab BTab Up Down Left Right Home End PPage NPage BSpace DC C-c C-u C-k C-a C-e C-l C-r C-w` |
+| `KEY_NAME` | set: `Enter Escape Tab BTab Up Down Left Right Home End PPage NPage BSpace DC C-c C-u C-k C-a C-e C-l C-r C-w C-Home C-End` (0.5, W3: the last two are the scroll route's keys; `keys.send` checks every key against this set, so the keys route accepts them too, but nika's pages post them only to `…/scroll`) |
 | `PERMISSION_MODES` | `default manual acceptEdits plan auto dontAsk` — `default` passes no `--permission-mode` flag (Claude Code's own default); `bypassPermissions` is refused everywhere |
 | `PANE_PLACEMENTS` | `beside under-last` |
 
@@ -47,7 +47,7 @@ missing; since 0.4 a tmux server that is not running is not an error for Start o
 a second after Start, Resume or spawn created it), `limit` 409 (maxAgents reached), `foreign` 409 (rules file not written by nika, apply without
 `overwriteForeign`), `refused` 409 (a write-safety check failed; `"code"` carries the fwrite/OS code such as `ESYMLINK`),
 and for session control (0.3) `not-idle`, `mode-unknown`, `mode-unchanged`, `not-in-cycle`, `busy-switching`, `no-prompt`,
-`prompt-changed`, `already-answered`, `input-not-empty`, `input-unreadable`, `not-at-prompt`, `bypass-prompt`, `screen-unclear`, all 409. The 0.3 codes are hyphenated, as the spec names them; the older codes keep their underscores. Draft sync (0.5) adds `draft-unreadable`, `draft-changed`, `screen-changed` and `draft-mismatch`, all 409 (`PUT /api/app/pane/:id/draft`; the first, second and fourth also `POST /api/app/pane/:id/suggestion`). Sending while Claude works (0.5, W13) adds `cursor-not-at-end` and `clear-stopped` (`PUT /api/app/pane/:id/draft`) and `prompt-open` and `suggestion-shown` (`POST /api/app/pane/:id/submit`; that route also answers `not-idle`, `bypass-prompt`, `screen-unclear`, `input-unreadable`, `draft-changed` and `busy-switching`), all 409.
+`prompt-changed`, `already-answered`, `input-not-empty`, `input-unreadable`, `not-at-prompt`, `bypass-prompt`, `screen-unclear`, all 409. The 0.3 codes are hyphenated, as the spec names them; the older codes keep their underscores. Draft sync (0.5) adds `draft-unreadable`, `draft-changed`, `screen-changed` and `draft-mismatch`, all 409 (`PUT /api/app/pane/:id/draft`; the first, second and fourth also `POST /api/app/pane/:id/suggestion`). Sending while Claude works (0.5, W13) adds `cursor-not-at-end` and `clear-stopped` (`PUT /api/app/pane/:id/draft`) and `prompt-open` and `suggestion-shown` (`POST /api/app/pane/:id/submit`; that route also answers `not-idle`, `bypass-prompt`, `screen-unclear`, `input-unreadable`, `draft-changed` and `busy-switching`), all 409. Attachments (0.5, W2) add, on the upload and the file chooser, `empty` 400, `too-big` 413 (more than 8 MiB decoded; the dispatcher's own `too_large` 413 is a body over the route's cap), `wrong-type` 415, `folder-unsafe`, `path-unusable` and `no-project` 409, `busy` 429, `storage-full` and `disk-full` 507 and `write-failed` 500; and, on `POST /api/app/pane/:id/attach-send`, `attachment-gone`, `path-unusable`, `not-idle`, `mode-unknown`, `input-unreadable`, `draft-unreadable`, `shell-mode`, `draft-changed`, `cursor-not-at-end`, `vim-normal`, `screen-changed`, `not-taken` and `busy-switching`, all 409, and `internal` 500. Scrolling (0.5, W3) adds `no-view`, `prompt-open`, `screen-unclear`, `menu-open` and `busy-switching`, all 409 (`POST /api/app/pane/:id/scroll`).
 
 ## 3. Routes
 
@@ -183,6 +183,12 @@ A fraction, 19, 96, a string, an unknown window (`300000`, `"400000"`, `"auto"`)
 every claude nika starts from then on: the orchestrator (fresh or resumed) and spawned agents and sub-orchestrators (§8). Running
 sessions and sessions the user starts are untouched.
 
+**`attachments` (0.5, W2)** — `{ "keepDays": integer 1–30 }`, default `{ 7 }`: how many days a file attached in the session window stays in
+nika's state folder (§6). A group like the others (a one-key patch keeps the rest). A fraction, 0, 31 or a string is `400 invalid` naming
+the field (`attachments.keepDays`); an unknown inner key is `400` too. `src/attachments.js` reads the value at every prune (at start, every 24 h
+and before each save), so a change applies at the next prune and never shortens the life of a file already pruned. The Settings page
+shows it as the section "Attachments", field "Keep attachments for N days".
+
 ### `GET|PUT /api/app/projects/:key/config` (PUT body ≤ 16 KB, `CAP.settings`)
 One project's own settings, saved on its page (0.3.4; models 0.4; permission mode, pane and agent limit 0.4.0). `:key` must match `^[a-z0-9]{16}$`, else `400 invalid`; a key
 that is not a registered project is `404 not_found`.
@@ -256,7 +262,9 @@ resolve to the same project and the child has no `tmux` of its own, the snapshot
 `state`, `pid`, `attention`, transcript fields), with the host's pane (`pane`, and with it `role`, `parent`, `depth`, `children`), and
 `hostId` = the host's session id. The host has no row. Both registry entries must carry a `cwd` (two entries without one are not "the same
 project"). The row's `report` is the child's own, else the host's (a spawned agent's `<name>.session` holds the id claude was launched
-with, which after `/compact` is the host's). Every other row, and every pair that does not match one to one, has `hostId: null`
+with, which after `/compact` is the host's). `report.sessionId` is the session id the report is filed under: the row's own id when the
+report is its own, the host's id when it was taken from the host, `null` when the row has no report; the page opens
+`GET /api/report/<report.sessionId>` (a merged row's own id has no report file). Every other row, and every pair that does not match one to one, has `hostId: null`
 (a page that gets no field, from an older server, reads it as null). `GET /api/app/projects`' `orchestrator` and Start accept either id
 (see `orchestrator` above). The ids are compared for equality only (`^[A-Za-z0-9_-]{1,64}$`), never used as a path, argv element or text.
 
@@ -356,7 +364,7 @@ one capture in flight per pane (others wait for it), `ETag` = hash of the mirror
 response shows (so a held mode that changed over unchanged rows is never hidden behind a 304); `If-None-Match` → 304.
 ```json
 { "cols": 120, "rows": [ [ { "t": "text", "s": { "b": true, "fg": 4, "bg": null, "u": false, "i": false, "d": false } } ] ],
-  "cursor": { "x": 0, "y": 0, "visible": true }, "etag": "<hex>",
+  "cursor": { "x": 0, "y": 0, "visible": true }, "alt": true, "scrolled": false, "etag": "<hex>",
   "mode": "plan", "modeConfirmed": true,
   "prompt": { "question": "Do you want to proceed?", "options": [ { "n": 1, "label": "Yes" }, { "n": 2, "label": "No" } ],
               "sig": "<16 hex>", "bypass": false },
@@ -396,6 +404,14 @@ Only SGR codes 0, 1, 2, 3, 4, 7, 22–24, 27, 30–37, 39, 40–47, 49, 90–97,
   question) mentions bypass (NFKC, letters only, any case). When `true` the page draws no answer button at all (every
   option as text with "Answer this one in the terminal"; Esc stays), because the answer route refuses every option
   with 400 then. An option whose label contains `bypass` (any case) also gets no button when `bypass` is `false` (rule 12). Labels can hold the user's folder paths: shown in the app only, never logged.
+
+0.5 fields, scroll state (W3, ADR 0018), read from the capture the route already took:
+- `alt` (boolean): Claude draws in tmux's alternate screen, its full-screen view. It comes from `#{alternate_on}` in the same
+  `display-message` as the size and cursor (§8: no extra tmux call). `false` for any value but `1`.
+- `scrolled` (boolean): `alt` is true and a row on screen holds Claude's own scroll pill, `Jump to bottom` or `N new message(s)` (N 1 to
+  999), anywhere in the row, drawn in the pill's colours (foreground 231 on background 237; `pillShown` in `src/mode.js`). It is display only: it
+  decides the page's "Scrolled up" note and whether Jump to live also presses `C-End`, never whether a scroll key goes out (`POST …/scroll`
+  sends `NPage` either way). `alt` is part of the mirror's ETag hash; `scrolled` follows from the rows and `alt`.
 
 0.5 field, Claude's input box (`draft`), parsed server-side from the same rows by `src/draft.js` (reading rules, row shapes and the
 wrap rule in `claude-tui.md` §10); the page mirrors it into the message box (spec §9.12):
@@ -442,6 +458,15 @@ the paste (no `-r`), as a terminal paste would. Every validation failure, includ
 `KEY_NAME`, sent after the text or paste. Same pane rule as capture. 20 requests/s per pane → **429**. Response
 `200 { "sent": { "text": 12, "paste": 0, "keys": 1 } }` (counts of characters / keys sent). Stop is no longer this route:
 it is `POST /api/app/pane/:id/stop` below (a bare `Escape` does not interrupt Claude while its input is in vim insert mode).
+
+Chunks (0.5, W13). A `text` of more than 700 characters is typed in chunks (`chunks()` in `src/draft.js`: at most 700 characters each),
+one `send-keys -l --` per chunk, `CHUNK_GAP_MS` = 300 ms apart, and the request answers after the last one. Claude reads a burst of 801 or
+more characters as a paste (`[Pasted text #N]`) and at 1023 or 1024 keeps only the last one or two (live check L8, `claude-tui.md`
+§10.12), so one `send-keys` of up to 1024 characters would lose text. A text of 700 characters or fewer is one call, as before; the cut
+adds and drops no character (trailing spaces move to the next chunk). A chunk that fails stops everything: no later chunk, no `paste` and
+no named key follows, the answer is the tmux failure, and the chunks already typed stay in Claude's input. The route holds no pane
+lock, so for a text of 701 to 1024 characters the time between the guard's capture (if any) and the last chunk grows from a few
+milliseconds to about 300 ms (`docs/security.md` T7, T26).
 
 Bypass-prompt guard (0.3, T26). `Enter` confirms the highlighted option of a permission prompt, a digit picks one, and
 `BTab` (Shift-Tab) can pick "allow for this session", so a request whose `keys` contains `Enter` or `BTab`, whose `text`
@@ -671,13 +696,9 @@ errors carry the pane id and the code only.
 Known limit: the few milliseconds between the capture of step 4 and tmux delivering the `Enter` (the same window as T26 and T51): a
 prompt drawn inside it takes the `Enter`.
 
-**Attachments (`POST /api/app/pane/:id/attach-send`, W2)** presses its own single `Enter` after its own last check, not through this
-route. W13 removed its registry-state checks (the pane need not be `idle` any more): it works while Claude works, and the message is
-queued with the attachments. Every other check stays: no Stop or End interrupt running or within 40 ms of its `Escape` (409 `not-idle`), a
-fresh capture with no permission prompt (409 `not-idle`), a plain readable box in prompt mode with the cursor in it and the `sig` the page
-synced on, before every paste and before the `Enter`. `not-idle` therefore means "a permission prompt is open or Stop or End is
-running", never "Claude is working"; a dialog or an unreadable footer is 409 `mode-unknown` or `screen-changed`. The page no longer
-refuses attachments while Claude works.
+**Attachments** do not use this route: `POST /api/app/pane/:id/attach-send` (below) pastes the stored files and presses its own single
+`Enter`, under the same W13 rule (no step reads the registry state, so it works while Claude works and the message is queued with its
+files).
 
 ### `PUT /api/app/pane/:id/fit` (body ≤ 4 KB, `CAP.small`)
 The session window asks for its terminal panel's size in cells (0.5, W7; ADR 0017, `docs/security.md` T52, the page: spec §9.13).
@@ -836,6 +857,164 @@ nothing and wait for the next beat (5 s), so a refusal is never retried faster. 
 Logging: nothing of the body, a layout or a nonce goes to a log or the console; errors carry the pane id, the window id, the step
 name and the error code only. Both routes exist on the app tier only (the browser tier has no fit route, no tag read and no lease
 file).
+
+### `POST /api/app/pane/:id/scroll` (body ≤ 4 KB, `CAP.small`)
+Scrolls Claude's own full-screen view (0.5, W3; ADR 0018, `docs/security.md` T39, the page: spec §9.15). The request names a direction
+and a count, or an end; it never names a key. App tier only: the browser tier has no such route (404).
+```json
+{ "dir": "up", "pages": 2 }
+```
+```json
+{ "to": "bottom" }
+```
+The body is exactly `{ dir: "up" | "down", pages: 1..8 }` or `{ to: "top" | "bottom" }`; anything else (an extra key, a fraction, 0, 9,
+a string for `pages`, an array) is `400 invalid` (message `body must be { dir: up|down, pages: 1-8 } or { to: top|bottom }`). A fixed table
+in `src/scroll.js` turns it into the keys, sent in **one** `keys.send` call:
+
+| Body | Keys |
+|---|---|
+| `{ dir: "up", pages: n }` | `PPage` × n |
+| `{ dir: "down", pages: n }` | `NPage` × n |
+| `{ to: "top" }` | `C-Home` |
+| `{ to: "bottom" }` | `C-End` |
+
+A page is what Claude's `PPage` moves: about half of its transcript area (15 to 17 rows in the live checks, `claude-tui.md` §12). These
+four keys are the only output of the route. It **never** sends `Escape`, `Enter`, `Tab`, `BTab`, `Space`, `C-c`, `C-d`, `C-u`, `Up`,
+`Down`, plain `Home` or `End`, a digit, text, a paste, a mouse report or a tmux copy-mode command.
+
+Checks, in this order (the first that fails answers; nothing is sent after a refusal):
+1. Body invalid → `400 invalid`. This runs before the pane check.
+2. Ineligible pane (same rule as capture) → `404 not_found`.
+3. More than 10 scroll requests in the last second for this pane (`SCROLL_RATE`, a sliding window) → `429 busy` (`at most 10 scroll requests
+   per second per pane`), before the lock and before any capture.
+4. The pane's control lock (the one End, mode, command, answer, draft, suggestion, submit, the fit steps and attach-send share; waits at most
+   5 s) → else `409 busy-switching`, body `{ "error": "busy-switching" }`.
+5. A Stop or End interrupt is running on the pane, or sent its `Escape` less than 40 ms ago (`keyGap`) → `409 busy-switching`. A key right
+   behind an `Escape` would be read as Meta plus that key and the interrupt could be lost. Stop takes no lock; the check is made again right
+   before the keys.
+6. One fresh capture (never the cache). A capture that fails → its status and body.
+7. The screen gate, in this order. A 409 carries `{ error, message }`:
+
+| `error` | When | `message` |
+|---|---|---|
+| `no-view` | `alt` is not true: Claude's full-screen layout is off, so there is nothing to scroll | `Claude's full-screen view is off, so there is nothing to scroll.` |
+| `prompt-open` | a permission prompt parses (`prompt` not null): Claude binds the page keys to the highlight of its select lists | `A permission prompt is open. Answer it first.` |
+| `screen-unclear` | `draft` is `null`: no plain input box (a dialog, a survey, an overlay, an unknown footer, a cursor outside the box, the transient `paste again to expand` hint) | `Claude's input box is not on screen (a dialog, a menu or a survey may be open).` |
+| `menu-open` | the draft is text that starts with `/`, or an unreadable draft whose first box row starts with `❯ /`: Claude's slash menu is drawn above the box and leaves the footer readable, so the gate fails closed | `A slash command is being typed. Finish or clear it first.` |
+
+8. The keys, one `keys.send`. Its non-200 answer (`429 busy`: the keys route's 20 requests per second per pane is shared; a tmux failure)
+   passes through with its status and body.
+9. After 30 ms, one fresh capture, which also refreshes the 250 ms cache the page reads next.
+
+Success: `200 { "sent": n, "scrolled": true | false | null }`. `sent` is the number of keys sent (1 to 8). `scrolled` is the capture's
+`scrolled` after the keys, `null` when that capture failed (the keys are out whatever happens next).
+
+What the gate deliberately **allows**: a busy Claude (a turn, a tool, a `!` command: scroll keys never interrupt, and reading older output
+while Claude works is the main use), a draft of any length in the box, an unreadable draft (`history`, `pasted`, `tall`, `layout`,
+`trailing`: still the plain box, and these keys never edit it), vim insert or normal mode, and Type into pane on (for the wheel only: the
+page keeps sending the user's own `PPage`, `NPage`, `Home` and `End` through the keys route). `NPage` is sent even when `scrolled` is
+`false` (a no-op at the bottom), so a pill nika fails to recognise never strands the user. Nothing of a request is logged.
+
+### `POST /api/app/pane/:id/attachments` (body ≤ 12 MiB, `UPLOAD_CAP`)
+Stores one file for the next Send (0.5, W2; ADR 0016, `docs/security.md` T38). It is the way in for a pasted or dropped file; the
+paperclip's file chooser stores through the same store (below). App tier only; the browser tier has no such route (404). Nothing reaches
+Claude before Send, and no route serves a file back.
+```json
+{ "name": "notes.md", "data": "<standard base64>" }
+```
+The body is exactly these two keys: `name` a string of at most 255 UTF-16 units (used only to pick the extension of a text file; it never
+reaches the disk, a log or an answer), `data` standard base64 (length a multiple of 4, alphabet `A-Za-z0-9+/`, at most two `=`). Anything
+else is `400 invalid`. A body over 12 MiB is `413 too_large` and a content type other than JSON `415 unsupported_media`, both from the
+dispatcher. Checks, in this order:
+1. Body shape → `400 invalid`.
+2. Ineligible pane (same rule as capture) → `404 not_found`.
+3. The pane's repository key, from nika's own snapshot (exactly one live agent claims the pane, else the key of a pane nika started; never
+   from the request) → none, or two claims → `409 no-project` (`nika can't tell this session's project`).
+4. Admission: one save at a time (the chooser's reads count too) and at most 30 a minute for the whole server → `429 busy`.
+5. The decoded size: more than 8 MiB (`MAX_BYTES`) → `413 too-big`.
+6. The type, from the bytes (never the name or the page's file type): PNG, JPEG, GIF (87a or 89a), WebP, PDF, or strict UTF-8 text with no
+   C0 control other than tab, LF and CR and no DEL or C1 code point (stored as `text`). No bytes → `400 empty`; anything else →
+   `415 wrong-type`.
+7. The folders: `<state>/attachments/` and `<key>/` are created 0700 and resolved; not real folders you own → `409 folder-unsafe`; no space
+   left → `507 disk-full`.
+8. The full path must match `^/[A-Za-z0-9._/+-]{1,200}$` (it will be pasted into Claude as one token) → else `409 path-unusable`.
+9. Pruning and the caps (§6): over 256 MiB or 500 files even after everything that may go has gone, or only files younger than 1 h left to
+   evict → `507 storage-full`; the caps could not be checked → `507 disk-full`.
+10. The write (`writeAtomic`, 0600, the id 16 random hex): no space left → `507 disk-full`; any other failure → `500 write-failed`. An
+    exception anywhere in the store is logged as `nika: attachments: <code>` (never a path, name or id) and answered `500 write-failed`.
+
+Success: `200 { "id": "<16 hex>", "type": "png" | "jpeg" | "gif" | "webp" | "pdf" | "text", "size": n }` (`size` in bytes). The id is the
+only handle: Send and Delete name a file by it, never by a path. The server remembers the ids it issued in memory only (the 500 newest);
+after the app restarts an old id is unknown (`attachment-gone` at the send, `removed: false` at the delete). Every answer is
+`{ error, message }` for a refusal, where `message` is the code in words and the page never shows it.
+
+The page allows 6 files of at most 8 MB per message and uploads one at a time; the server enforces the 6 only at the send.
+
+### `DELETE /api/app/pane/:id/attachments/:attId` (no body)
+Removes an unsent file now: the chip's ×, a closed window (`pagehide`, with `keepalive: true`), a chip removed while it uploaded. `id` must
+match `PANE_ID` and `attId` `^[0-9a-f]{16}$`, else `400 invalid` (`invalid pane or attachment id`; `DELETE …/attachments/pick` lands here too).
+It is **not** eligibility-gated (the pane may be gone and the file must still go). Answer `200 { "removed": true | false }`; `false` for an
+id that is unknown, belongs to another pane, was already sent, whose file is already gone, or whose removal was refused (a linked folder or a
+second link), all alike, so the route is no oracle. A store error is logged as its code and answers `200 { "removed": false }`. A file
+that was never removed is pruned after `attachments.keepDays`.
+
+### `POST /api/app/pane/:id/attach-send` (body ≤ 4 KB, `CAP.small`)
+Puts the stored files of a message into Claude's input and presses `Enter` (0.5, W2; ADR 0016, `docs/security.md` T38, T51, T54). It
+sends while Claude works too (W13, ADR 0019, owner decision 2026-11-15): Claude queues the message with its files, so **no step reads the
+registry state**. App tier only.
+```json
+{ "ids": [ "<16 hex>", "<16 hex>" ], "base": "<16 hex>" }
+```
+The body is exactly these two keys: `ids` 1 to 6 different attachment ids (`PER_MESSAGE`), `base` the `sig` of the draft the page has just put
+into Claude's input (the answer of a draft write) or last saw (the capture), also for an empty message (the `sig` of an empty box). Anything
+else is `400 invalid` (`body must be { ids: 1 to 6 different attachment ids, base: 16 lowercase hex characters }`), before the pane check.
+Ineligible pane → `404 not_found`. The send itself runs under the pane's control lock (a wait of more than 5 s → `409 busy-switching`, `pasted`
+0) and fails closed: whatever the screen shows that is not exactly what a step needs, nothing more is sent and the answer is a 409 whose body
+is `{ "error": "<code>", "pasted": n, … }`, `pasted` being the number of paste requests that already went out (0 to 6). The page uses it to say
+whether anything is in Claude's input. Steps, in this order:
+1. Every id is looked up: an id this server did not issue for this pane, an already sent one, a file that changed or is gone, or a folder that
+   became a link → `409 attachment-gone` with `id`; a stored path that no longer matches the upload's path rule or a type nika does not
+   paste → `409 path-unusable` with `id`.
+2. A Stop or End interrupt is running, or sent its `Escape` less than 40 ms ago → `409 not-idle` (the same check runs again before every
+   paste and before the `Enter`).
+3. One fresh capture (never the cache); a failed capture passes through with `pasted`. A permission prompt on screen → `409 not-idle`
+   (T51: a paste never lands in a prompt). `not-idle` therefore means a prompt is open or Stop or End is running, never "Claude is working".
+4. The box must be a plain, readable, ours-to-paste-into input box:
+   - no readable box: an unreadable draft whose reason nika can name (`history`, `tall`, `layout`, `pasted`, `trailing`) → `409 draft-unreadable`
+     with `reason` and `draft`; an unknown footer (a question, review or plan dialog, the auto-mode nudge, a survey, an overlay) →
+     `409 mode-unknown`; a footer that reads but no recognised box or a cursor outside it → `409 input-unreadable`;
+   - a readable box with an unreadable draft → `409 draft-unreadable` with `reason` and `draft`; mode `bash` (Shell) → `409 shell-mode` with
+     `draft`; its `sig` differs from `base` → `409 draft-changed` with `draft`; text whose cursor is not at its end (vim normal mode sits one
+     to the left) → `409 cursor-not-at-end` with `draft`; an empty box while vim normal mode is the pane's edit mode → `409 vim-normal` with `draft`.
+5. One paste per file, in the order of `ids`, each after a fresh look at the screen that must still read exactly what the sequence has built
+   so far (spaces and line breaks ignored), in prompt mode, with no prompt (else `409 screen-changed`). The paste is the stored path as one
+   bracketed paste (`keys.send { paste }`): an image path alone; any other file's path alone into an empty box and otherwise with one leading
+   space. Then nika reads the box back every 150 ms: for an image up to 10 times (a large PNG needs a read), for a PDF or text file up to 4. An
+   image must read as the text so far followed by `[Image #N]` (any N); another file as the text so far followed by its path. Nothing new after
+   that → `409 not-taken` with `id` when the box is unchanged or still shows the path as text; any other difference or a prompt →
+   `409 screen-changed`.
+6. Right before the `Enter`: no interrupt (`not-idle`), one more fresh capture that shows no prompt, a plain box in prompt mode with **no ghost
+   text** and exactly what was built → else `409 screen-changed`.
+7. Exactly one `Enter`, then the files are marked sent (they can no longer be looked up or deleted; pruning still ages them out).
+
+Success: `200 { "sent": n, "images": k }` (files pasted, and how many of them were images). A key request that fails (`429 busy`, a tmux
+error) answers that status and body plus `pasted`. An unexpected error is `500 { "error": "internal", "message": "internal error", "pasted": n }`
+and is logged as `nika: attachments: <code>` only.
+
+**Never sent** by this route: literal text, `Escape`, `C-u`, `BSpace`, `Tab`, `BTab`, a digit or an arrow. It **never clears** a box it pasted
+into (it cannot read the pasted files back to be sure of what it would remove): after a refusal with `pasted` above 0 the page keeps the text
+and the chips, says how many files went in and why it stopped, and tells the user to send or clear Claude's input in the terminal (Esc twice)
+before sending again. A permission prompt that Claude opens after the `Enter`, for example "Do you want to read this file?", is the user's: it
+shows in the existing prompt panel and nothing answers it.
+
+**What the page does** (`public/attach.js`, `sendComposer` in `public/session.js`): chips for the files (six at most, 8 MB each, one upload
+at a time, a 429 retried once after a second); Send needs every chip `ready` and refuses Shell, an unreadable Claude input and a message too
+long for draft sync ("Send the text first, then the attachments"); it pushes the text with the normal draft write (a push that does not land
+sends nothing), takes the `sig` of the screen, posts `{ ids, base }`, and on 200 clears the box and the chips and echoes
+`Sent N attachment(s)[ and your message] to %7`. After a send that held a PDF or text file the page shows one notice per page load:
+Claude may ask to read the file, which is in nika's attachments folder outside the project (`claude-tui.md` §11). On a refusal it keeps
+everything and shows a fixed line for the code (a code the page does not know shows a generic one); a 404 marks the session gone; an
+`attachment-gone` also marks that chip `Gone`.
 
 ### `POST /api/app/pane/:id/attachments/pick` and `GET /api/app/pane/:id/attachments/pick/:reqId` (0.5, W2)
 The attachment button's file chooser. The page opens **no file input of its own** (the webview's freezes the app on macOS: wry runs a modal
@@ -1281,6 +1460,7 @@ the folder-picker flow once (`hooks.addProject()` in `public/app.js`), then the 
 | `…/nika/projects/<key>/reports/` | 0700 | per agent: `<name>.brief.md` and `<name>.agent.json` (`{model, permissionMode, rc, role, parent, depth, compact}`, re-validated on read) written by `spawn`; `<name>.session` (UUID), `<name>.remote` (RC name or empty), `<name>.pane` (`$TMUX_PANE`, display only: never counted) written by `_run-agent` before claude starts and `<name>.rc` (claude's exit code, as in 0.1) after it exits; `<name>.md` written by the agent; `.last-pane` |
 | `…/nika/backups/<key>/<ISO>/<relPath>` | 0700 / 0600 | byte-for-byte copies taken by `rules apply` before each overwrite (`<ISO>` = `YYYYMMDDTHHMMSSZ`, plus `-<n>` for a second apply in the same second); the newest 10 folders per project are kept: after a successful apply `pruneBackups` removes the older ones, touching only stamp-named real directories owned by the user |
 | `…/nika/fit/fit-<nonce>.json` | 0700 / 0600 | the fit's lease (0.5, W7): exactly the keys `v nonce window pane panes zoomed0 active0 width0 height0 size0 layout0 layout1 cols rows resized userZoom at`, written by `writeAtomic` before the first tmux change and after each resize, removed by `removeOwnFile` on release; `<nonce>` is 16 hex (`FIT_NONCE`); at most 20 files are read back at the app tier's start (when more match, `nika: fit recover read 20 of N lease files` is logged, counts only and never names; the rest stay on disk), each ≤ 16 KB through `fsafe`, every field shape-checked, and a file that does not parse is removed; a symlinked `fit/` folder is not followed |
+| `…/nika/attachments/<key>/<id>.<ext>` | 0700 / 0600 | the files of the session window's attachments (0.5, W2; ADR 0016): `<key>` is the pane's `PROJECT_KEY` from nika's own snapshot, `<id>` 16 random hex, `<ext>` `png` `jpg` `gif` `webp` `pdf` or, for a text file, an extension from a fixed list (`txt` when the name's is not on it); the user's file name is never stored. Written by `writeAtomic` (0600) after the bytes were sniffed (type from the magic bytes, never from the name), removed by `removeOwnFile`. The root and each key folder must be real folders you own (`ensureDir`; a link or a foreign owner is `409 folder-unsafe`). The whole path must match `^/[A-Za-z0-9._/+-]{1,200}$` (`409 path-unusable` otherwise: it is pasted into Claude as one token). Pruned at start, every 24 h and before each save: a file older than `attachments.keepDays`, a left-over temp file older than 1 h, then the oldest first while the store holds more than 256 MiB or 500 files in all (a file younger than 1 h is never evicted: the next save refuses with `507 storage-full` instead), and an empty key folder; only names nika writes, in real folders you own, as regular single-link files you own. Unsent files also go at once on `DELETE …/attachments/:id` |
 
 `config.json` schema and defaults (unknown keys are dropped, wrong types fall back to the default; both produce a
 warning in `loadConfig().warnings`; a tampered or unreadable file never throws):
@@ -1295,13 +1475,15 @@ warning in `loadConfig().warnings`; a tampered or unreadable file never throws):
   "projects": [ { "key": "<PROJECT_KEY>", "dir": "<abs realpath>", "name": "<basename>", "addedAt": "<ISO>" } ],
   "rules": { "localTemplate": null },
   "ui": { "theme": "system", "singleKeyShortcuts": true },
-  "compaction": { "enabled": true, "pct": 80, "window": 400000 }
+  "compaction": { "enabled": true, "pct": 80, "window": 400000 },
+  "attachments": { "keepDays": 7 }
 }
 ```
 `ui.theme` ∈ `system light dark` (default `system` = follow `prefers-color-scheme`). `ui.singleKeyShortcuts` boolean
 (default `true`; a missing or non-boolean value reads as the default): whether `?` opens Keyboard shortcuts (design spec
 §4.6). Mod+/ always does. `compaction` (0.4): `enabled` boolean, `pct` an integer 20–95, `window` one of `200000`,
 `400000`, `1000000`, `"model"`; a bad leaf falls back to its default with a warning (`compaction.pct invalid, default used`).
+`attachments.keepDays` (0.5, W2) an integer 1–30, default 7 (`attachments.keepDays invalid, default used`).
 Field rules: `models.*` `MODEL_ID`; `remoteControl.prefix` `""` (= project name) or `RC_PREFIX`; `permissionMode` ∈
 `PERMISSION_MODES`; `panePlacement` ∈ `PANE_PLACEMENTS`; `limits.maxAgents` 1–8 (there is no turn limit: Claude Code
 has no `--max-turns` for interactive sessions); `perProject` keys are `PROJECT_KEY`s and each entry holds `plugins` (≤ 200 names, deduplicated), `orchestratorSessionId` (a
@@ -1419,9 +1601,9 @@ multi-argument shell-commands (tmux execs them directly, no `sh -c`, T6).
 | spawn beside | `tmux -u split-window -h -t =<session>: -c <projectDir> -P -F #{pane_id} -- <nikaBin…> _run-agent <key> <name>` |
 | spawn under last | `tmux -u split-window -v -t <lastPane> -c <projectDir> -P -F #{pane_id} -- <nikaBin…> _run-agent <key> <name>` |
 | pane title | `tmux -u select-pane -t %n -T [%n] <name>` |
-| capture | `tmux -u capture-pane -p -e -N -t %n` (plus `-S -<rows>` when more than the visible screen is requested; never more than 2000 rows) |
-| pane size + cursor | `tmux -u display-message -p -t %n -F #{pane_width}\t#{pane_height}\t#{cursor_x}\t#{cursor_y}\t#{cursor_flag}` |
-| send text | `tmux -u send-keys -t %n -l -- <text>` |
+| capture | `tmux -u capture-pane -p -e -N -t %n` (the visible rows only: nika reads no tmux scrollback of a pane, W3, ADR 0018) |
+| pane size + cursor | `tmux -u display-message -p -t %n -F #{pane_width}\t#{pane_height}\t#{cursor_x}\t#{cursor_y}\t#{cursor_flag}\t#{alternate_on}` (0.5, W3: the sixth field is the capture's `alt`; run together with the capture, in the same `Promise.all`) |
+| send text | `tmux -u send-keys -t %n -l -- <text>` (0.5: one call per chunk of at most 700 characters, 300 ms apart; the draft write and the keys route both chunk) |
 | send paste | `tmux -u load-buffer -b nika-<16 hex> -` (paste bytes on stdin; argv over ~16 KB fails with "command too long") then `tmux -u paste-buffer -p -d -b nika-<16 hex> -t %n`; on a paste failure `delete-buffer -b nika-<hex>` |
 | send key | `tmux -u send-keys -t %n -- <KEY_NAME>` |
 | focus | `tmux -u switch-client -t %n` / `select-window -t %n` / `select-pane -t %n` (0.1) |
@@ -1525,6 +1707,9 @@ checked by the router before `mirror` / `keys` are called; those modules still v
 | `src/collect/plugins.js` | `listPlugins(claudeDir) → string[]` (keys of `plugins` in `<claudeDir>/plugins/installed_plugins.json`, read through `fsafe` ≤ 1 MB; sorted, ≤ 200, each `PLUGIN_NAME`; `[]` when missing or invalid) |
 | `src/mirror.js` | `parseCapture(text, cols) → rows` (pure); `createMirror({ exec, tmuxBin, now }) → { capture(pane, ifNoneMatch) → { status, body, etag } }` |
 | `src/keys.js` | `createKeys({ exec, tmuxBin, now }) → { send(pane, { text, paste, keys }) → { status, body } }` |
+| `src/attachments.js` | `createAttachments({ env, now, loadKeepDays, setTimer, clearTimer, log }) → { save({ pane, key, name, data }), saveBytes({ pane, key, name, bytes }), lookup(pane, id), remove(pane, id), markSent(ids), prune({ need }), start(), stop() }`: `save`, `saveBytes` resolve `{ status, body }` (`save` is the upload route's, `saveBytes` the file chooser's: the same admission, sniff, caps and write); `lookup` → `{ id, path, type, size }` or `null`; `remove` → boolean; `start()` prunes at once and every 24 h (the timer is unref'd). Pure helpers `sniff(buf, name)` and `checkUploadBody(body)`; constants `UPLOAD_CAP`, `MAX_BYTES`, `PER_MESSAGE`, `ID`, `PATH_OK`. The records of issued ids live in memory only (the 500 newest): after a restart an old id is `attachment-gone` |
+| `src/attach-send.js` | `createAttachSend({ mirror, keys, store, lock, keyGap, vimOf, plainOf, sleep, log }) → { send(pane, { ids, base }) → { status, body } }` and `checkAttachBody(body)` (the 400 shape check shared with the route); `lock` and `keyGap` are the session controller's `withPaneLock` and `keyGap` |
+| `src/scroll.js` | `createScroll({ mirror, keys, lock, keyGap, now, sleep }) → { scroll(pane, body) → { status, body } }`; pure `checkScrollBody(body)`, `scrollKeys(body)` (the fixed table), `scrollGate(capture)` (the 409 code or `null`) and `pillShown(rows)` (re-exported from `src/mode.js`); constants `SCROLL_RATE` (10) and `MAX_PAGES` (8) |
 | `src/fit.js` | `createFit({ exec, tmuxBin, now, stateDir, lock, log, schedule, sleep }) → { hold(id, { cols, rows, open }), release(id), releaseWindow(w), releaseAll(), recover(), size() }`: `hold` and `release` return `{ status, body }`, `releaseWindow(@W)` → boolean (for spawn), `releaseAll()` → number (bounded by `RELEASE_ALL_MS`, 3 s), `recover()` → `{ released, dropped }` (same bound), `size()` → leases held; `checkFitBody(body)` → `{ value } \| { error }` is shared with the route; `lock(pane, fn)` is `withPaneLock` of `createSessionControl`. `createAppApi` builds one and sets `ctx.fit`; `appio.js` calls `recover()` before `ready` and `releaseAll()` in `finish()` after the server stopped taking requests; `spawnAgent` reads `ctx.fit` |
 | `src/rules.js` | `async rulesState(project) → { state, settingsIgnored, git }`; `preview(project, ctx) → { status, body }`; `apply(project, { hash, overwriteForeign, gitignore }, ctx) → { status, body }` |
 | `src/diff.js` | `unifiedDiff(oldText, newText, path) → string` |

@@ -9,7 +9,9 @@ updated with the new version.
 Sections 1, 5 and 10 were checked again on 2026-11-14 against Claude Code 2.1.321 to 2.1.325 (macOS, tmux 3.8, 120-column
 panes), also in throwaway sessions. Every sample text in them is made up. The subagent list under the footer (§1) and the
 feedback survey rows (§10.1) were checked on 2026-11-14 against 2.1.325, at 120 and 60 columns. §10.12 (input while Claude works) was
-checked on 2026-11-15 against 2.1.325 (macOS, tmux 3.8, 120-column panes), also with made-up text.
+checked on 2026-11-15 against 2.1.325 (macOS, tmux 3.8, 120-column panes), also with made-up text. §11 (attachments) and §12 (scrolling
+Claude's view) were checked on 2026-11-14 and 2026-11-15 against 2.1.325 (macOS, tmux 3.8, panes of 120 to 130 columns), with synthetic
+files and made-up text.
 
 ## 1. Footer (mode line)
 
@@ -739,3 +741,153 @@ The interrupted step ends and the queued message goes to Claude at once as a new
   and `ctrl+x ctrl+s to send now`), and the command runs after the turn (`⎿ hello`). nika sends it like any other message.
 - A paste of more than 800 characters reads `❯ [Pasted text #N]`; `Enter` queues it, and the footer shows `paste again to expand` for a
   moment. nika never writes over such a box (§10.6, `pasted`).
+
+## 11. Attachments (0.5, W2)
+
+What Claude Code does with a file path pasted into its input box, and what the box shows. Checked 2026-11-14 and 2026-11-15, Claude Code
+2.1.325, tmux 3.8, macOS, in throwaway sessions with synthetic files (spike S4, then the live checks of the attachment send). The page
+side is `docs/design/spec.md` §9.14 and the route is `POST /api/app/pane/:id/attach-send` (`api-app.md`). The attachment send
+(`src/attach-send.js`, [ADR 0016](../adr/0016-attachments-json-upload-state-dir.md)) rests on these rows.
+
+**A pasted path (bracketed paste of one absolute path)**
+
+| File | What the box shows | What Claude does |
+|---|---|---|
+| PNG, JPEG, GIF, WebP | the path is replaced at once (within 50 ms) by `[Image #N]`; `N` counts per session and keeps counting across clears | no Read call and no prompt: the image travels in the user message itself (the transcript holds it as base64 and records `imagePasteIds`) |
+| PDF | the path stays as text, wrapped at the pane width (it may break in the middle of the path) | calls its Read tool on the path |
+| text file (`.txt`, `.py`) | the path stays as text, same | calls its Read tool on the path |
+
+- Placeholder spans carry no SGR attributes, so a reader that ignores styling sees them as plain text: `[Image #1]`.
+- Consecutive placeholders get a space between them (`[Image #1] [Image #2]`). After typed text, a pasted image path gets **no** space added
+  (`look at these[Image #5]`), so nika pastes an image path alone and a non-image path with one leading space after text.
+- A large image is converted, not refused: a 7.9 MB PNG still gave `[Image #N]` within 656 ms of the send. Whether Claude accepts the
+  message with that image on submit was not tested (the one turn tried used a small PNG).
+- vim INSERT: the box takes both kinds. vim NORMAL with an empty box: a paste is inserted as text or placeholder (no history search
+  opens). nika still refuses to paste in NORMAL when it remembers the mode (409 `vim-normal`).
+- The box with attachments reads as `unreadable` / `pasted` for the draft reader (§10.6), which is why nika pastes them only at Send.
+
+**The Read permission prompt (PDF and text files)**
+
+```
+ Read file                                                                                  1 of 2
+ ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ Read(<path of the file>)
+ ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. Yes, allow reading from <folder> during this session
+   3. No
+ Esc to cancel · Tab to amend
+```
+
+- `N of M` is how queued prompts are shown, one prompt per file; their order can change between runs (parallel tool calls). A long path
+  wraps over two rows. The prompt is the permission prompt nika already reads (§2): the page shows it in the prompt panel and the user
+  answers it. nika sends no digit for the user.
+- Option 2 grants that **folder** for the session only (for a folder under `/tmp` it names both the link and its real path).
+- Option 3 ("No") cuts the whole turn: all pending Reads end as errors ("User rejected tool use"), the second pending prompt never
+  shows, and Claude does not retry by itself. A digit selects at once; no `Enter` is needed.
+- A path outside the working directory prompts wherever it is (a scratchpad folder and `/tmp` behaved the same, and a sibling file in
+  the same folder prompted the same way). A file inside the working directory did not prompt. Under the owner's own allow rules none
+  of the folders prompted at all. nika therefore cannot assume that a prompt will or will not come; the page says so in one
+  fixed line after a send that held a PDF or text file (`public/attach.js`, `READ_NOTICE`).
+- A file placed inside the project avoids the question. nika never does that (rule 11: it writes only the rules files into a project).
+
+**The text Claude takes from a send**
+
+- With text in the box, a bracketed paste of an image path then `Enter` gave a message whose text kept the literal `[Image #N]` and
+  whose content held the image block. A second meta entry in the transcript keeps the original path. A model answer to the image
+  question ("What colour is the circle in this image?") came back correct (Blue).
+- While a turn runs the same send is queued like any message (§10.12, Attachments while a turn runs).
+
+**A long text typed with `send-keys -l --`** (checked with the attachment send's sibling, the keys route)
+
+| Length | Result |
+|---|---|
+| 512, 700, 800 characters in one request | arrive intact |
+| 801 and 900 characters | collapse to `[Pasted text #N]` (Claude takes a burst of more than 800 characters as a paste) |
+| 1023 and 1024 characters | only the last 1 or 2 characters are kept |
+
+So nika types at most 700 characters or 2 newlines at a time and waits about 300 ms between chunks (`src/draft.js` `CHUNK_CHARS`,
+`CHUNK_NEWLINES`, `CHUNK_GAP_MS`; the keys route chunks a text of 701 to 1024 characters the same way). 1023 and 1024 printable
+characters sent that way arrived as two chunks about 330 ms apart and read back exactly.
+
+**Not verified**
+
+- A message with a large image (several MB) submitted to a model (only the paste and the box were checked).
+- A folder under nika's real state folder: the checks used synthetic folders, so by the rule above it prompts unless the user's own
+  allow rules cover it.
+- `Tab` in the Read prompt ("amend"): nika never sends it.
+
+## 12. Scrolling Claude's view (0.5, W3)
+
+How Claude Code's full-screen view scrolls, and which keys move it. Checked 2026-11-14 and 2026-11-15, Claude Code 2.1.325, tmux 3.8,
+macOS, panes of 120 columns and 40 rows, plain and vim editor modes, with made-up text (spike S5, then the live checks of the scroll route).
+The route is `POST /api/app/pane/:id/scroll` (`api-app.md`); the page side is `docs/design/spec.md` §9.15 and
+[ADR 0018](../adr/0018-scroll-with-claude-keys.md).
+
+**tmux has nothing to scroll**
+
+- `#{alternate_on}` is `1` and `#{history_size}` is `0` in every state sampled: the trust dialog, idle, an open dialog, during and after
+  a 300-line answer, while a local shell command ran. Claude draws its whole interface in tmux's alternate screen, so older output
+  exists only in Claude's own view. `capture-pane -S -400` and `-S -` return the same visible 40 rows as a plain capture.
+- Claude enables mouse tracking (`#{mouse_any_flag}` is `1`). An SGR wheel report scrolls one row per event, but nika does not send
+  them: with Claude's mouse mode off the bytes become input, and a stray report can click the pill or a row.
+
+**The keys**
+
+| Key | Scrolls Claude's view? | Other effect |
+|---|---|---|
+| `PPage` | up about one half screen | the pill appears |
+| `NPage` | down about one half screen; at the bottom a no-op | the pill goes at the bottom |
+| `C-Home` | to the very top | the pill |
+| `C-End` | **to the bottom** (the "return to live" key) | the pill goes |
+| `End`, `Home`, `Down`, `S-Down`, `C-Down`, `M-Down`, `C-b`, `C-f` | no | none visible |
+| `Up` | no | recalls the previous prompt into the box (the draft is stashed; `Down` brings it back with the cursor at column 0) |
+| `C-u` | no | with the cursor at the end it deletes the draft |
+| `C-d` | no | prints `Press Ctrl-D again to exit`; a second press within about a second quits Claude. Never sent |
+
+- A page is about half of the transcript area: 15 to 17 rows of a 33-row area in the first checks, 16 to 17 rows with the box
+  starting at row 36 in the live check of the route. Two neighbouring pages overlap by about half. The page side takes half of the rows
+  above the input box (`floor(box.top / 2)`, at least 4) as the size of a page.
+- The four scroll keys do not change the draft, the sig or the cursor: checked with a one-line draft, a three-line draft with the
+  cursor on the last line, a `!` box, a history entry (`History 4/4`) and a pasted draft (`[Pasted text #5 +13 lines]`), in plain mode and in
+  vim INSERT and NORMAL (the vim run had no transcript, so only "no effect on the box" is shown).
+- Latency from `send-keys` to a changed capture: median 15 ms, at most 18 ms. The scroll route's answer comes in about 50 to 80 ms.
+- Claude returns to the bottom by itself when a message is submitted (first sample 258 ms after `Enter`: bottom, no pill).
+- Scroll while a turn streams works and does not interrupt it: the view stays where it is while output grows, and the turn finishes.
+- On a resize Claude keeps the top row of the view (the top number stayed the same from 120x40 to 100x30 and back); the next page is half of
+  the new transcript area.
+
+**The pill (the scrolled-up marker)**
+
+- Claude draws it over the last transcript row while its view is not at the bottom: ` Jump to bottom: fn+↓ to scroll ` in fg 231 on bg 237,
+  centred. With tmux `mouse on` Claude's text may read ` Jump to bottom (click) ↓ `; that variant did not appear in the checks (mouse on or off).
+- After new output arrives while the view is up, the pill reads `N new message(s): fn+↓ to scroll` (`1 new message: …`), same colours.
+- In a dense transcript the pill starts after the last transcript row's own text (`151      Jump to bottom: …`), so nika matches the
+  text `Jump to bottom` or `N new message(s)` (N 1 to 999) **anywhere in a row**, with the span that holds its first character in fg 231
+  on bg 237 (`pillShown` in `src/mode.js`); a pill alone on its row matches too. Any row of the screen counts, because a dialog may be
+  open while the view is up. The page's `scrolled` only decides the "Scrolled up in Claude's view" note and whether Jump to live also
+  presses `C-End`; it never gates a key, and a forged pill changes only what the page shows.
+- A stale cached capture (the 250 ms cache) can show the pre-scroll view for one tick right after a scroll; at the page's 100 ms cadence
+  no stale view was seen, and a flip would last one tick.
+
+**Screens where the keys must not go**
+
+| Screen | What the keys do | nika answers |
+|---|---|---|
+| a permission prompt | `PPage` and `C-Home` move the prompt rows off the screen (the dialog scrolls with the view); `NPage` and `C-End` bring it back; the highlight stays on option 1 and never moves | 409 `prompt-open` |
+| a question dialog | the scroll keys scroll too (pill shows, dialog kept, `C-End` returns) | 409 `screen-unclear` (the dialog's footer is not a plain box, so the draft reader returns null) |
+| the slash menu (`/co` typed) | the transcript scrolls under the menu; the highlight never moves | 409 `menu-open` (the draft starts with `/`) |
+| the `@` menu | menu rows and styles unchanged | 200 |
+| `/model`, `?`, `Ctrl+R`, `Ctrl+O` | a dialog or overlay is open | 409 `screen-unclear` |
+| the "paste again to expand" footer, for about 8 s after a long paste | the box is unreadable | 409 `screen-unclear`; after that the state is `unreadable` / `pasted` and all four keys go |
+| a Stop or End interrupt running, or its `Escape` sent less than 40 ms ago | a key right after `Escape` can be read as Meta plus that key, and the interrupt would be lost; two `Escape` presses within a second also opened Claude's Rewind dialog on an empty box | 409 `busy-switching` (`keyGap`) |
+
+**Not verified**
+
+- Vim NORMAL with a transcript on screen (only the box was checked there).
+- A user's own `keybindings.json`: nika never reads it (rule 4), and a rebound `PPage`, `NPage`, `C-Home` or `C-End` would change what the
+  route does. The meanings above are Claude Code 2.1.325 with default keybindings.
+- The `Jump to bottom (click) ↓` variant (not reproduced) and a pill drawn in other colours or wrapped over two rows: not seen, so not
+  matched.
+- A scroll key during the Rewind dialog or with `/config` open: the route refuses on the unknown footer, never tried raw.

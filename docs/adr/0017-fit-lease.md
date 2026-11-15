@@ -109,8 +109,8 @@ values must not be steerable from a request, a tag or a file.
 - Rules 3, 4, 11 and 12 gain the fit: new tmux argv shapes (and the spawn read of the window id), new reads, the lease files and
   `removeOwnFile`. `src/ids.js` holds `WINDOW_ID` and `FIT_NONCE`.
 - Verified live on tmux 3.8 (spike S10 and the release's live checks) and, through the fit group of `scripts/linux-verify.sh`, by
-  the `linux-verify` CI job on the Linux runner's tmux (ubuntu-latest ships tmux 3.4): a 3-pane window and a single pane fitted and
+  the `linux-verify` CI job on the Linux runner's tmux (ubuntu-latest ships tmux 3.6a): a 3-pane window and a single pane fitted and
   given back exactly, `select-layout -- <layout>` accepted, and `show-options -w window-size` empty while unset. The floor is 3.2;
-  tmux 3.2 to 3.3 and 3.5 to 3.7 are not verified (the older layout string without markers is exercised only by 3.4).
+  tmux 3.2 to 3.5 and 3.7 are not verified (the older layout string without markers was exercised only by 3.4, which CI no longer runs).
 - Not built: the take-over of a user's zoom, re-asserting after a user change, reading `#{window_manual_width}` (3.8 only), any fit on
   the browser tier.

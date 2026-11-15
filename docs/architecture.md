@@ -131,6 +131,64 @@ The session window measures its terminal panel and the app tier makes the mirror
 
 Routes: [`contracts/api-app.md` section 3](contracts/api-app.md). Page: design spec 9.13. Threat: T52 in [security](security.md).
 
+## Send while Claude works (0.5, W13)
+
+Send used to need the registry state `idle`: a replace of Claude's input cleared it with `Escape`, which interrupts a running turn, and
+background agents keep the registry at `busy` or `shell` almost all the time. Now Send works the way the terminal does: the text goes into
+Claude's input and `Enter` is pressed, and Claude queues the message and takes it at its next step ([ADR 0019](adr/0019-send-while-working.md)).
+
+1. `session-control.js` `writeDraft` clears without `Escape`: with the cursor on the box's last row it sends `End` (only when the cursor is
+   not at the end of the text) and `C-u`, one key per request, at least 60 ms apart, in any registry state. Before every key a fresh capture
+   must still show the plain box with the cursor in it, no prompt or dialog, and a text that is the start of the text before the press.
+   With the cursor on an earlier row and Claude not idle nothing is sent (409 `cursor-not-at-end`); only at idle does the old `Escape` road run.
+2. `submit` (`POST /api/app/pane/:id/submit`) presses Send's one `Enter`, in any registry state, only on a fresh screen that shows no
+   permission prompt, no dialog and (with `base`) exactly the box the page synced; it reads the box back for a second and answers `taken`.
+   The page's Send never posts `Enter` to the keys route any more.
+3. `draft.js` reads Claude's queued-messages placeholder as an empty box with `queued: true` (not a suggestion); `draft-sync.js` shows the
+   `Queued` note, and the new `On hold` and `Cursor` notes for the two refusals above.
+4. `attach-send.js` no longer reads the registry either (below).
+
+Contract: `contracts/api-app.md` (`submit`, `draft`). Page: design spec 9.12. Threat: T54 in [security](security.md).
+
+## Attachments (0.5, W2)
+
+The message box takes images, PDFs and text files ([ADR 0016](adr/0016-attachments-json-upload-state-dir.md)). Nothing reaches Claude before
+Send.
+
+1. `public/attach.js` keeps the chips. A file comes in by paste, by drop on the message box, or from the paperclip. The paperclip opens
+   no file input (the webview's freezes the app on macOS): `POST …/attachments/pick { room }` makes the server ask the shell for its native
+   dialog (`pick-files` / `files` over stdio, the slot Add project's folder chooser uses), and `appio.js` `createPicker` opens each picked
+   path itself through `fsafe` (`O_NOFOLLOW`, a regular file you own, at most 8 MiB from the fstat) and stores the bytes. A pasted or
+   dropped file is uploaded as JSON (`POST …/attachments { name, data }`, base64).
+2. `attachments.js` `save` / `saveBytes` admit one save at a time (30 a minute), check the bytes (type from the magic, never the name), make
+   the folders, check the path and the caps (256 MiB, 500 files), and write `<state>/attachments/<key>/<id>.<ext>` with `writeAtomic`. `<key>`
+   comes from nika's own snapshot (`api-app.js` `paneKey`), never the request. Pruning runs at start, every 24 h and before each save;
+   only names nika writes are removed, through `removeOwnFile`.
+3. Send names the chips by id. The page first copies the text into Claude's input (the draft write), then `POST …/attach-send`:
+   `attach-send.js` looks each id up (an id this process issued for this pane, the file re-opened with `O_NOFOLLOW`), then, under the pane lock,
+   pastes the path of each file as a bracketed paste, reads the box back after every paste, and presses one `Enter` after a last fresh check.
+   Any difference stops it with a 409 and the count of pastes that went in; it never clears a box it pasted into.
+4. Claude shows a pasted image path as `[Image #N]` and reads any other file with its Read tool, which asks for a path outside the project:
+   that prompt shows in the existing prompt panel and only the user answers it (`claude-tui.md` section 11).
+5. The shell turns its own drag-and-drop handler off (`disable_drag_drop_handler`), so a dropped file reaches the page as an HTML5 drop.
+
+Contract: `contracts/api-app.md`. Page: design spec 9.14. Threats: T38 and T55 in [security](security.md).
+
+## Scrolling (0.5, W3)
+
+The wheel, the trackpad and the page keys over the terminal mirror scroll Claude's own full-screen view ([ADR 0018](adr/0018-scroll-with-claude-keys.md)).
+Claude draws in tmux's alternate screen, so tmux holds no history to read: nika sends Claude's own keys.
+
+1. `mirror.js` reads `#{alternate_on}` with the size and cursor (`alt`), and `mode.js` `pillShown` sets `scrolled` from the pill Claude draws
+   while its view is up. Both travel in every capture and only change what the page shows.
+2. `public/scroll.js` turns wheel travel into whole pages (half of Claude's transcript area), after the mirror's own overflow has scrolled
+   first, and plans the requests (one in flight, 100 ms apart, 8 pages at most). `session.js` wires the wheel and the keys.
+3. `POST /api/app/pane/:id/scroll` takes a direction and a count, or an end, never a key; `scroll.js` maps them to `PPage`, `NPage`,
+   `C-Home` or `C-End` and sends them in one `keys.send` call, under the pane lock, only when no Stop or End interrupt runs (`keyGap`) and a fresh
+   capture shows the alternate screen, no permission prompt, a plain input box and a draft that does not start with `/`.
+
+Contract: `contracts/api-app.md`. Page: design spec 9.15. Threat: T39 in [security](security.md).
+
 ## One row per conversation (0.5)
 
 Rows are keyed by session id. After `/compact` Claude Code continues the conversation as a background job in a child `claude`: its
@@ -139,8 +197,13 @@ records the job as `parkedJobId`. `collect()` (`model.js` `linkHosts`) joins the
 one live non-background session share that id and both resolve to the same project: the host gets no row, and the child's row takes the
 host's pane (so its role, tags and place in the tree follow) and carries `hostId` = the host's session id. State, pid and everything else
 stay the child's. Any other shape stays two rows. `findSession(id)` and the saved-orchestrator lookup (`api-app.js` `orchestrators()`,
-Start) accept either id; the pane-eligibility map needs no change, because only the child claims the pane. Threat: T53 in
-[security](security.md).
+Start) accept either id; the pane-eligibility map needs no change, because only the child claims the pane. Both registry entries must
+carry a `cwd`: two entries without one are not "the same project". The row's `report` is the child's own, else the host's (a spawned
+agent's `<name>.session` holds the id claude was launched with, which after `/compact` is the host's), and `report.sessionId` is the id
+the report is filed under, which the page opens as `/api/report/<report.sessionId>`. The saved orchestrator moves with the
+conversation: `GET /api/app/projects` writes the child's id with `setOrchestrator` when the saved pick is the host id of a live, linked
+row of the same project (read again just before the write, best effort), and the pick dropdown (`project.js` `pickItems`) treats a row
+whose `hostId` equals the pick as the pick. Threat: T53 in [security](security.md).
 
 ## Memory bounds (0.3.4)
 
@@ -167,30 +230,33 @@ latency. `--optimize-for-size` saved about 10 MB more but made history requests 
 | File | Does |
 |---|---|
 | `actions.js` | The browser tier's only side effects: focus a tmux pane, read an indexed report. |
-| `api-app.js` | Router and guard for `/api/app/*`. Validates, picks the module, sends its `{ status, body }`. Keeps the per-pane held mode and vim memory and builds the session controller. |
+| `api-app.js` | Router and guard for `/api/app/*`. Validates, picks the module, sends its `{ status, body }`. Keeps the per-pane held mode and vim memory and builds the session controller, the scroller and the attachment sender (`paneKey` gives the attachment routes a pane's repository key from nika's own snapshot, never from the request). |
+| `attach-send.js` | The attachment send (0.5, [ADR 0016](adr/0016-attachments-json-upload-state-dir.md)): `createAttachSend()` pastes the stored paths of a message into Claude's input and presses one `Enter`, under the pane lock, re-reading the screen before every paste and fail-closed at every difference. It reads no registry state, so it sends while Claude works (W13). |
+| `attachments.js` | The attachment store (0.5): `createAttachments()` checks an upload's bytes (type from the magic, never the name), writes `<state>/attachments/<key>/<id>.<ext>` through `fwrite.js`, looks files up for a send, removes them and prunes by age (`attachments.keepDays`), count and size. Records of issued ids live in memory. App tier only. |
 | `appcopy.js` | The macOS copy of `nika.app` in `~/Applications` (ADR 0011): state, install, dismiss and the refresh after an upgrade. Fixed target, source only from this install, built in a temp folder and swapped in with rename. |
-| `appio.js` | The app-tier process: stdio handshake, private server, status feed, folder picker relay. |
+| `appio.js` | The app-tier process: stdio handshake, private server, status feed, and the picker relay for both choosers (`createPicker`: one dialog slot for Add project's folder chooser and the attachment button's file chooser; for files it opens each picked path itself through `fsafe` and hands the bytes to the attachment store). It starts the attachment store after `ready` and stops it at the end. |
 | `cli.js` | The `nika` command: `serve`, `open`, `app` (`app install`), `status`, `projects`, `rules`, `spawn`, `orchestrate`, `doctor`, `_run-agent`. |
 | `commands-builtin.js` | The curated built-in slash commands for the palette, from `claude-tui.md` section 4. Nothing is read from disk. |
 | `compact.js` | Auto-compact (ADR 0014): `compactLaunch(model, setting)` turns the Settings choice into the two launch variables for one model, and `compactEnv` validates them. Pure. |
 | `config.js` | Defaults from the environment, port and `--since` parsing, `findTmux`, `findClaude`. |
 | `diff.js` | Unified diff for the rules preview. |
-| `draft.js` | Claude's input box (the draft), pure: `parseDraft` reads it from the mirror rows and fails closed (`null` for no plain box, `unreadable` with a reason for one that must not be written over); `inEnvelope` (≤ 1024 characters, 12 newlines, 13 rows), `chunks` (what is typed, what is pasted), `normDraft` / `sameDraft`. |
+| `draft.js` | Claude's input box (the draft), pure: `parseDraft` reads it from the mirror rows and fails closed (`null` for no plain box, `unreadable` with a reason for one that must not be written over); `inEnvelope` (≤ 1024 characters, 12 newlines, 13 rows), `chunks` (what is typed, what is pasted; `CHUNK_GAP_MS` 300 ms between typed chunks), `normDraft` / `sameDraft`, `boxSquash` (the box with its whitespace removed, which the attachment send compares against), and the `queued` flag (Claude's "Press up to edit queued messages" placeholder, W13). |
 | `exec.js` | `makeExec()`: `execFile` with a timeout and optional stdin input. |
 | `fit.js` | The fit (0.5, [ADR 0017](adr/0017-fit-lease.md)): `createFit()` zooms the mirrored pane and sizes its tmux window to the session window's panel only when no other pane would be squeezed, keeps one lease per window (memory, a lease file, the window tag `@nika-fit`) and gives back exactly what it changed. Every tmux argv of the fit is built here. App tier only. |
 | `fsafe.js` | Safe reads of agent-writable files (no symlink, no FIFO, owned by you, size cap). |
-| `fwrite.js` | The only writer: atomic, symlink-safe writes and backups; `removeOwnFile` is the one way nika deletes a file of its own (the fit's lease files). |
-| `ids.js` | Id shapes (pane, project key, agent name, model, command name, session, key names) checked at every boundary. |
-| `keys.js` | Keystrokes and bracketed paste into a tmux pane. |
-| `mirror.js` | `capture-pane` output turned into rows of whitelisted styled spans; a `fresh` capture skips the 250 ms cache for the control actions. |
-| `mode.js` | Pure parsers over mirror rows: the permission mode from the footer and the permission prompt. They fail closed. The footer is the last non-blank row without a background-subagent list drawn under it (F2, `claude-tui.md` section 1); `surveyShown` spots Claude's feedback survey. |
+| `fwrite.js` | The only writer: atomic, symlink-safe writes and backups; `removeOwnFile` is the one way nika deletes a file of its own (the fit's lease files and the attachments). |
+| `ids.js` | Id shapes (pane, project key, agent name, model, command name, session, key names, with `C-Home` and `C-End` for the scroll route) checked at every boundary. |
+| `keys.js` | Keystrokes and bracketed paste into a tmux pane. A text of more than 700 characters is typed in chunks 300 ms apart, because Claude reads a burst of 801 or more as a paste. |
+| `mirror.js` | `capture-pane` output turned into rows of whitelisted styled spans; a `fresh` capture skips the 250 ms cache for the control actions. It reads `#{alternate_on}` in the same `display-message` as the size and cursor (`alt`) and sets `scrolled` from Claude's scroll pill (0.5, W3). |
+| `mode.js` | Pure parsers over mirror rows: the permission mode from the footer and the permission prompt. They fail closed. The footer is the last non-blank row without a background-subagent list drawn under it (F2, `claude-tui.md` section 1); `surveyShown` spots Claude's feedback survey; `pillShown` spots the pill Claude draws while its view is scrolled up (W3). |
 | `model.js` | `collect()`: merges every source into agent records and groups them by project; `findSession(id)` finds one session of any age in the transcript index (the saved orchestrator's lookup); `findSessions(ids)` does the same for several ids in one index walk, with no ps, tmux or registry (the project list's lookup). `contextOf` turns the last usage, nika's compaction setting (read through `loadConfig`, both tiers) and whether nika started the session into the agent's `context` (contract C6). |
 | `models.js` | The static model catalog behind the model dropdowns (`GET /api/app/models`), with each model's context window and `modelWindow(id)`. |
 | `orchestrate.js` | Starts or resumes a project's orchestrator in a tmux session (`launchArgv` builds its claude flags in one place) and finds an adopted orchestrator pane. |
 | `paths.js` | nika's own config and state dirs (XDG). |
 | `rules.js` | Renders, previews, hashes and applies the orchestration rules to a project. |
 | `server.js` | The HTTP server both tiers share: Host check, static files with the CSP, the 0.1 routes, a mount hook for the app tier. |
-| `session-control.js` | The four controls on a live pane: switch the mode, End, run a slash command, answer a prompt. One lock per pane, keys only through `keys.js`, fail closed, never kills. `withPaneLock` hands the same lock to the fit, which waits for it (at most 5 s). |
+| `scroll.js` | The scroll route's logic (0.5, [ADR 0018](adr/0018-scroll-with-claude-keys.md)): `createScroll()` maps a direction and a count, or an end, to `PPage`, `NPage`, `C-Home` or `C-End` from a fixed table, and sends them only after the screen gate (alternate screen, no prompt, a plain box, no `/` draft) under the pane lock. |
+| `session-control.js` | The controls on a live pane: switch the mode, End, run a slash command, answer a prompt; and, since 0.5, the draft write (`writeDraft`: type, append, or replace by `End` and `C-u` in any registry state when the cursor is on the last row, by `Escape` only at idle), `submit` (Send's one guarded `Enter`, [ADR 0019](adr/0019-send-while-working.md)) and the suggestion accept. One lock per pane, keys only through `keys.js`, fail closed, never kills. `withPaneLock` hands the same lock to the fit, scroll and the attachment send, which wait for it (at most 5 s); `keyGap` tells them whether a Stop or End interrupt runs or sent its `Escape` less than 40 ms ago. |
 | `spawn.js` | `spawnAgent()` splits a pane, or creates the project's tmux session (window `agents`) when there is no server or no session (resolving the parent and depth from tmux's tags and applying the per-parent and per-project limits, ADR 0013); `runAgent()` is the `_run-agent` wrapper that runs `claude` with the safety flags. |
 | `store.js` | The validated `config.json`, the project registry and each project's saved orchestrator id. |
 | `text.js` | `clean()` and `cleanBlock()`: strip controls and bidi marks from agent-controlled text. |
@@ -217,12 +283,13 @@ latency. `--optimize-for-size` saved about 10 MB more but made history requests 
 |---|---|
 | `index.html`, `session.html` | The main page and the session window. |
 | `tokens.css`, `app.css`, `session.css` | Design tokens and styles (light, dark, system). |
+| `attach.js` | The attachment tray, page side (0.5): the pure rules (`formatSize`, `uploadView`, `pickView`, `sendView`: every line is fixed copy chosen by status and code) and `createAttachTray` (chips, the paperclip's chooser, paste and drop, Send). It makes no request of its own; `session.js` hands it the routes. |
 | `api.js` | The only client of the app tier: takes the secret once and sends `X-Nika-App`. In the browser tier it refuses to run. |
 | `app-copy.js` | The Add to Applications banner: which banner `appCopy` shows and its fixed copy. Pure; the two POSTs live in `project.js`. |
 | `dash-model.js` | The Show ended rule of the dashboard and the project page (`endedPlan`, `resetEndedState`, per view; ended sessions and finished subagents stay hidden until it is on), the sidebar's Projects and Detected lists (`sidebarModel`) and the orchestrator's state and badge (`orchState`, `savedPick`, `otherRunning`, `roleTag`, `ROLE_TAGS`). Pure, both tiers. |
 | `app.js` | Main page: shell, dashboard (in the app tier: mode tags, the row menu's End and the Add to Applications banner), router, the poll loop and the Keyboard shortcuts keys. Runs in both tiers. |
 | `ui.js` | Shared state and widgets for the main page. |
-| `draft-sync.js` | The draft sync, page side (0.5), no DOM and no request of its own: `createDraftSync` pulls a changed screen into the message box after 1.5 s of quiet and pushes a local edit 250 ms after the last key; `draftSendPlan` decides what Send does (Enter alone, copy then Enter, the old paste, refuse); twins of `src/draft.js` checked by test. |
+| `draft-sync.js` | The draft sync, page side (0.5), no DOM and no request of its own: `createDraftSync` pulls a changed screen into the message box after 1.5 s of quiet and pushes a local edit 250 ms after the last key; `draftSendPlan` decides what Send does (Enter alone, copy then Enter, the old paste, refuse; no plan carries an `Enter` key, Send's `Enter` always goes through the submit route); the note under the box (paused, long, hold, cursor, queued, suggest) and the fixed copy of the failed copy and the failed `Enter` (`sendMessage`, `submitMessage`, `submitResult`); twins of `src/draft.js` checked by test. |
 | `dom.js` | `h()`: builds DOM with `textContent`, never parses markup; `roleTagEl()` draws the orchestrator badge. |
 | `end-dialog.js` | The End-session dialog, shared by the session window and the dashboard row menu. |
 | `fit-ui.js` | The fit, page side (0.5): `panelSize` (the terminal box in cells, 40–400 × 10–200), `scaleFor` (text scale 0.4 to 1), `chipView` (the four chips and their fixed titles), `createFitPlanner` (the first `open: true`, a 5 s beat, a 250 ms debounce, one `DELETE` on `pagehide`). No DOM, no requests of its own; `session.js` wires it. |
@@ -235,6 +302,7 @@ latency. `--optimize-for-size` saved about 10 MB more but made history requests 
 | `quick-actions.js` | The quick actions', prompt buttons', End dialog's and Shell mode's rules and fixed copy. No DOM, no requests. |
 | `settings.js` | App tier only: the settings screen (defaults for every project; the Save and Discard bar shows only after a real change). |
 | `session.js` | App tier only: the session window (history, live mirror, composer, mode switcher, quick actions, prompt buttons, Shell mode, command palette). |
+| `scroll.js` | Scrolling Claude's view, page side (0.5): `wheelRows`, `routeFor` (the mirror's own overflow first), `pageRowsOf`, `scrollGate` (the page twin of the server's gate), `refusalLine`, `noteView` and `createScrollPlanner` (whole pages, one request in flight, 100 ms apart, 8 pages at most). No DOM, no requests of its own; `session.js` wires it. |
 | `shortcuts.js` | The Keyboard shortcuts window and the key rules around it (`?`, Mod+/, Back). Static copy, both tiers. |
 | `mirror-render.js` | Pane-mirror helpers: render model, cursor, key handling. Re-validates every value. |
 
@@ -251,6 +319,7 @@ nika's own files follow XDG ([ADR 0008](adr/0008-xdg-config-state.md)). Folders 
 | `…/nika/templates/<name>.md` | Rule templates you imported locally. |
 | `${XDG_STATE_HOME or ~/.local/state}/nika/projects/<key>/reports/` | Per spawned agent: brief, settings, session id, pane, exit code, report. |
 | `${XDG_STATE_HOME or ~/.local/state}/nika/fit/fit-<nonce>.json` | The fit's lease while a window is held (0.5): written before the first tmux change, removed on release, read back at the app tier's start to restore what a crash left. |
+| `${XDG_STATE_HOME or ~/.local/state}/nika/attachments/<key>/<id>.<ext>` | The files attached in the session window (0.5, 0600 in 0700 folders), until the user removes them, the window closes with them unsent, or they expire (`attachments.keepDays` in `config.json`, 1 to 30, default 7) or the store passes 256 MiB or 500 files. Never served back. |
 | `${XDG_STATE_HOME or ~/.local/state}/nika/backups/<key>/<ISO>/` | Byte-for-byte copies taken before "apply rules" overwrites a file; the last 10 folders per project are kept. Never inside a repo. |
 
 `<key>` is the first 16 hex characters of `sha256(realpath(project folder))`. A request never carries a path; projects

@@ -69,11 +69,41 @@ Session window (desktop app):
   fit it again until you open the session window again (a resize you make while the window is fitted is also undone: nika puts the
   window back to its old size). A zoom you made yourself is never undone. Spawning an agent into a fitted window puts it back
   first. The restore is exact except for tmux's last-pane order: which pane `last-pane` jumps back to is not restored.
-- Known limits: the fit was tried on tmux 3.8, and the `linux-verify` check on CI runs it on the Linux runner's tmux (3.4 on
+- Known limits: the fit was tried on tmux 3.8, and the `linux-verify` check on CI runs it on the Linux runner's tmux (3.6a on
   ubuntu-latest: a 3-pane and a single-pane window fitted and given back exactly, `select-layout --` accepted, `window-size`
-  unset reads empty); tmux 3.2, the lowest supported, and the other versions up to 3.7 are not checked yet; a crash leaves the window at nika's size until
+  unset reads empty); tmux 3.2, the lowest supported, and every version other than 3.6a and 3.8 are not checked yet; a crash leaves the window at nika's size until
   nika starts again; with `pane-border-status` on, nika does not fit and scales the text instead; the reason a fit is off shows as a
   tooltip and one spoken announcement only.
+
+- **Attach images, PDFs and text files to a message.** Paste a file into the message box, drop it on the box, or click the
+  paperclip ("Add attachments"; it opens nika's own file chooser, not the webview's, which froze the app on macOS). Up to 6 files
+  per message, up to 8 MB each: PNG, JPEG, GIF and WebP images, PDFs, and UTF-8 text. nika checks the bytes, not the file name.
+  A chip shows each file; remove it before you send and the copy goes at once. Nothing reaches Claude until Send: then nika
+  pastes the stored path of each file into Claude's input after your text, checks the screen after every paste, and presses Enter
+  once. Claude shows an image as `[Image #N]` and sends the image itself. A PDF or text file is read by Claude with its Read tool,
+  which asks first (the folder is outside the project): the prompt shows in the prompt panel, only you answer it, and after a send
+  nika adds one line to say so. Under your own allow rules there may be no prompt. If anything on the screen differs from what
+  nika expected, it stops, says how many files went in, and leaves your text and chips; it never clears a box it pasted into.
+  Attachments go while Claude works, too (the message is queued like any other).
+- **Where attachments live.** nika copies each file into its own state folder, `attachments/<repository key>/`, with folders at
+  0700 and files at 0600, never into your project and never served back. The copy goes when you remove the chip, when you close
+  the window with the file unsent, and after N days (Settings, Attachments, "Keep attachments for N days": 1 to 30, default 7).
+  The store holds at most 256 MiB and 500 files; the oldest go first (never one younger than an hour), and a full store refuses
+  the next upload. A state path with a space cannot be pasted as one word, so attachments refuse with a line that names
+  `XDG_STATE_HOME`. While a file is decoded, memory rises: on macOS six 7.8 MB uploads took the app's server from about 25 MB
+  to about 160 MB right after (RSS 70 to 206 MB), 65 MB a minute later and 36 MB after five (RSS 100 MB).
+- **Scroll Claude's view from the session window.** The mouse wheel, the trackpad and PageUp, PageDown, Home and End scroll
+  Claude's own full-screen view: tmux keeps no history of it, so nika sends Claude's page keys (Page Up, Page Down, Ctrl+Home
+  and Ctrl+End), one page at a time (about half the transcript), up to 8 pages in one go. A note says "Scrolled up in Claude's
+  view" while it is up, and Jump to live returns to the bottom. Scrolling works while Claude works and never interrupts it.
+  nika scrolls only when it can see a plain input box: with a permission prompt, a dialog, a menu or a draft that starts with `/`
+  it sends nothing and says why. PageUp, PageDown, Home and End scroll Claude's view only while Type into pane is off.
+- **Long text in the keys route is typed in pieces.** Text of 701 to 1024 characters is sent in chunks of at most 700 characters
+  about 300 ms apart, because Claude turns a burst of more than 800 characters into a pasted block and loses part of the text.
+- **One row per conversation after `/compact`.** Claude continues a compacted conversation in the background under a new session
+  id. nika used to show two rows. It now shows one, with the tmux pane that shows it; a spawned agent keeps its report on that
+  row (opened under the id it is filed under); and when the saved orchestrator of a project is the old id of a conversation that
+  continues under a new one, nika saves the new id, so Start orchestrator resumes the right session.
 
 Fixes:
 

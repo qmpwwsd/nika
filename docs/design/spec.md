@@ -1064,7 +1064,7 @@ empty (owner decision 2026-11-09). One pure function holds the rules: `composerK
 | Key | In the message box (default) | In passthrough (mirror focused, "Type into pane" on) |
 |---|---|---|
 | printable text | edits the box | sent to the pane, batched every 120 ms |
-| Enter | send text + Enter (empty box: Enter alone); a held Enter sends once; not while a prompt is open (§9.5) | Enter |
+| Enter | send text + Enter (empty box: Enter alone); a held Enter sends once; not while a prompt is open (§9.5). **(0.5, W13)** Also while Claude works: Claude queues the message (§9.12) | Enter |
 | Shift+Enter | new line | Enter (no distinction in a terminal) |
 | Esc | closes the model popover, then the palette; else sends Escape (a held Esc sends once) | Escape |
 | Ctrl+C | with a selection: the browser's (copy on Linux); while Claude works: Stop (`/stop` route, §9.4); otherwise nothing is sent and the problem line says why for 3 s | C-c |
@@ -1072,7 +1072,7 @@ empty (owner decision 2026-11-09). One pure function holds the rules: `composerK
 | Tab | moves focus forward (palette option active: inserts it). **(0.5)** In an empty box that shows Claude's suggestion as its placeholder, a bare Tab accepts it instead (§9.12; a held key accepts once). Once it is accepted the box holds text, so Tab moves focus again: the box is not a keyboard trap (WCAG 2.1.2). Ctrl+Shift+Tab always moves back | Tab |
 | Ctrl+Shift+Tab | moves focus back, to the Shell toggle | not sent (not on the allow-list) |
 | ↑ ↓ ← → | empty box: sent to the pane in batches (a batch holds ≤ 8 keys and goes out at the 8th key or 120 ms after the first, whichever is first; held repeats dropped while 2 batches wait); text in the box: caret; palette: ↑ ↓ choose. **(0.5)** → in an empty box that shows Claude's suggestion accepts it (§9.12) instead of going to the pane as an arrow key | sent as KEY_NAME |
-| Home End PgUp PgDn ⌫ Del | edit the box | sent as KEY_NAME |
+| Home End PgUp PgDn ⌫ Del | edit the box. **(0.5, W3)** The terminal mirror, focused with Type into pane off, scrolls Claude's view with PgUp, PgDn, Home and End instead (below, §9.15) | sent as KEY_NAME |
 | Ctrl+U/K/A/E/L/R | box editing | sent as C-u … C-r |
 | Ctrl+W | Linux: closes the window (§4.1); macOS: left to the browser | sent as C-w (Close is not a window key here) |
 | Ctrl+Shift+C | **(0.4.0)** left to the text field (no engine copies with it there), never Stop; Ctrl+C is Stop only with nothing selected | **(built amendment 2026-11-13 (0.4.0, F2))** copies the text selected in the mirror to the clipboard; sends nothing. "Select text in the terminal first, …" (3 s) when nothing in the mirror is selected |
@@ -1081,6 +1081,11 @@ empty (owner decision 2026-11-09). One pure function holds the rules: `composerK
 | ⌘ shortcuts (macOS) | app shortcuts | still app shortcuts (not sent) |
 | paste (Mod+V; on Linux also Ctrl+Shift+V) | inserted; multi-line → paste chip | sent as one bracketed paste (≤ 16 KB). Ctrl+V (Linux) and Ctrl+Shift+V are not cancelled: the browser pastes and the mirror's `paste` handler sends it. WebKitGTK maps Ctrl+V to its Paste command and Ctrl+Shift+V to PasteAsPlainText (`Source/WebKit/UIProcess/gtk/KeyBindingTranslator.cpp`, read 2026-11-13); both fire the DOM `paste` event. Checked by reading the source, not yet on a Linux build: on the owner's 0.4.0 Linux checklist. On macOS Ctrl+V is not on the allow-list (Command+V pastes) |
 | other keys | — | not sent; echo "Not sent: Alt-x is not on the allow-list" |
+
+**Terminal mirror focused, Type into pane off (0.5, W3, §9.15).** PgUp and PgDn scroll Claude's own view one page, Home and Ctrl+Home go to
+its top, End and Ctrl+End back to the live bottom; the mouse wheel and the trackpad over the mirror do the same. The keys act only where
+focus already is and focus never moves (WCAG 2.1.1, 2.4.3). Ctrl+PgUp and Ctrl+PgDn stay with the app, and a key with Alt, Meta or Shift is
+left alone. The message box keeps its own editing keys, and Type into pane on keeps sending the user's own keys.
 
 The box is never a keyboard trap: Tab leaves forward, Ctrl+Shift+Tab backward. Its accessible name says so: "Message
 to builder-1. Enter sends, Shift+Enter adds a line. Escape, Control+C and Shift+Tab go to Claude, and so do the arrow
@@ -1750,7 +1755,7 @@ Confirm dialog, 440 px (§3.6), opened from the quick-actions row, the dashboard
 
 ### 9.10 Focus order and Esc ladder
 
-Session window Tab order: skip links → back crumb → Open in claude.ai → Keyboard shortcuts → [Terminal / Transcript tabs when narrow] → transcript → [Transcript toggle, wide windows] → Dark/Light → Type into pane → [Leave, in passthrough] → mirror → [Jump to live, Retry now, when shown] → quick actions (1 stop) → [model popover while open] → prompt option buttons → prompt Esc → shell toggle → message box → [paste Clear] → Commands → Send → mode switcher (1 stop). Opening the session still focuses the message box (§4.2). In the message box Shift+Tab goes to Claude; Ctrl+Shift+Tab moves focus back to the shell toggle. **(built amendment 2026-11-09 (0.3.3))** The **Transcript** toggle (§4.7) sits between the transcript and Dark/Light, and only on wide windows. **(built amendment 2026-11-09 (0.3.4))**
+Session window Tab order: skip links → back crumb → Open in claude.ai → Keyboard shortcuts → [Terminal / Transcript tabs when narrow] → transcript → [Transcript toggle, wide windows] → Dark/Light → Type into pane → [Leave, in passthrough] → mirror → [Jump to live, Retry now, when shown] → quick actions (1 stop) → [model popover while open] → prompt option buttons → prompt Esc → [attachment chips' remove buttons] → shell toggle → message box → [paste Clear] → Commands → Add attachments → Send → mode switcher (1 stop). Opening the session still focuses the message box (§4.2). In the message box Shift+Tab goes to Claude; Ctrl+Shift+Tab moves focus back to the shell toggle. **(built amendment 2026-11-09 (0.3.3))** The **Transcript** toggle (§4.7) sits between the transcript and Dark/Light, and only on wide windows. **(built amendment 2026-11-09 (0.3.4))**
 
 Esc ladder (§4.3) gains two rungs, in this order: model popover or row menu → **palette** → dialog → B drawer → pane.
 
@@ -1768,15 +1773,17 @@ Esc ladder (§4.3) gains two rungs, in this order: model popover or row menu →
 
 **(built 2026-11-14 (0.5).)** The message box and Claude's input box mirror each other, and Claude's prompt suggestion shows as the
 message box's placeholder (W4, below). Contract: `api-app.md` (`draft` on the capture, `PUT /api/app/pane/:id/draft`,
-`POST /api/app/pane/:id/suggestion`); how the screen is read: `claude-tui.md` §10. Always on, no setting (owner decision
-2026-11-14). The logic that has no DOM is `public/draft-sync.js`; the wiring is `public/session.js`.
+`POST /api/app/pane/:id/suggestion`, and since W13 `POST /api/app/pane/:id/submit`); how the screen is read: `claude-tui.md` §10. Always on, no
+setting (owner decision 2026-11-14). The logic that has no DOM is `public/draft-sync.js`; the wiring is `public/session.js`. **(built
+2026-11-15 (0.5, W13).)** Send works while Claude works, the way the terminal does: the text goes into Claude's input and `Enter` is
+pressed, and Claude queues the message and takes it at its next step (owner decision "Send now, like the terminal"; ADR 0019).
 
 **What moves, and when**
 
 | Direction | Rule |
 |---|---|
 | terminal → message box (a pull) | the screen's draft changed and the user has not typed here for 1.5 s, and nothing unsent is in the box. The caret stays where it was when the text only grew, else it goes to the end. Focus never moves. A pull does not count as an edit |
-| message box → terminal (a push) | 250 ms after the last edit, one request in flight at a time, only text that fits (at most 1024 characters, 12 newlines, 13 rows); spaces and tabs at the very end are not pushed |
+| message box → terminal (a push) | 250 ms after the last edit, one request in flight at a time, only text that fits (at most 1024 characters, 12 newlines, 13 rows); spaces and tabs at the very end are not pushed. While Claude works, replacing the text in Claude's input clears it with `End` and `C-u` (never `Escape`, which would interrupt the turn) when the cursor sits on the box's last row; with the cursor on an earlier row nothing is sent (the `Cursor` note below) |
 | first readable capture of a window | pulls only into an empty box; text already in the box is kept and never wiped (it goes to Claude with the next edit or with Send) |
 | typing in an IME composition | no pull and no push until the composition ends |
 | both change | the box wins while the user types here; a terminal change that comes first (the push answers 409) wins, the box then shows the screen's text |
@@ -1802,7 +1809,9 @@ unchanged.
 |---|---|---|---|---|
 | paused | `i-pause` | `--idle` on `--idle-soft` | **Sync paused:** Claude's input holds <reason>. Edit or clear it in the terminal. | the screen's draft is unreadable; nothing is pulled or pushed, and nika never writes over it |
 | long | `i-info` | `--text` on `--surface-3` | **Not mirrored:** Long text goes to Claude when you send it. | unsent text that does not fit Claude's box, or that the server refused as too long |
-| wait | `i-clock` | `--busy` on `--busy-soft` | **Waiting for Claude:** Claude is working. Your text goes into its input when it waits. | a replace was refused because Claude is busy (409 `not-idle`); the push is tried again every 3 s |
+| hold | `i-dialog` | `--attn` on `--attn-soft` | **On hold:** A prompt is open or Stop is running. Your text goes into Claude's input when that is over. | the last write was refused with 409 `not-idle` (a permission prompt or dialog is open, or a Stop or End interrupt runs); tried again every 3 s |
+| cursor | `i-window` | `--fit-other` on `--fit-other-soft` | **Cursor:** Claude is working and the cursor in its input is not at the end. Move it to the end in the terminal, or wait: your text goes in when Claude waits. | the last write was refused with 409 `cursor-not-at-end`: Claude is not idle, its cursor is on an earlier row of its box, and only `Escape` could clear that (it would interrupt the turn); tried again every 3 s |
+| queued | `i-send` | `--busy` on `--busy-soft` | **Queued:** Claude takes your message at its next step. | both boxes are empty and in sync and Claude's box shows its queued-messages placeholder (`draft.queued`, `api-app.md`): Claude holds a message nika sent while it works. Never together with the suggest note (Claude's queued placeholder is no suggestion) |
 | suggest | `i-kbd` | `--accent` on `--accent-soft` | **Suggestion:** Tab or → accepts what Claude suggests. | the message box and Claude's input box are in sync, both empty, and Claude's box shows a prompt suggestion (below) |
 
 The reasons: `pasted` "a pasted block nika can't read back"; `tall` "a draft longer than 14 rows"; `trailing` "text that ends in
@@ -1853,17 +1862,21 @@ pane's width, no control character but newline and tab; `public/draft-sync.js` `
 
 A refusal that carries a `draft` is adopted like any other 409 of the sync (the terminal wins); the suggestion then follows the screen.
 
-**Send** (after the permission-prompt gate of §9.5; the text is the message box's, Shell adds its `!`):
+**Send** (after the permission-prompt gate of §9.5; the text is the message box's, Shell adds its `!`). Claude working does not gate Send:
+Claude queues the message. Every Send ends in one `Enter` through `POST /api/app/pane/:id/submit` (W13), never the keys route: the server
+presses it only on a fresh screen that shows neither a permission prompt nor a dialog and, with `base` (the `sig` of Claude's input the page
+last saw or just wrote), only while Claude's input still reads that. What "Enter" means in the table is that guarded Enter:
 
 | Message box | Claude's input box | What Send does |
 |---|---|---|
 | any | readable, same text | `Enter` alone |
 | empty | anything | `Enter` alone (Shell on with an empty box does nothing, §9.6) |
-| text that fits | readable, different | copies the text into Claude's input first (`PUT …/draft`), then `Enter`; a copy that fails sends no `Enter` and shows its line, and the text stays |
+| text that fits | readable, different | copies the text into Claude's input first (`PUT …/draft`), then `Enter` against the `sig` of that write; a copy that fails sends no `Enter` and shows its line, and the text stays |
 | text that does not fit | readable and empty (prompt mode) | as before 0.5: one paste, then `Enter` |
 | text that does not fit | readable with other text | refused: "Claude's input already holds text; it would be sent together with yours. Clear it in the terminal or shorten your message." |
 | text | unreadable | refused: "Claude's input holds <reason>. Send or clear it in the terminal." |
-| text | no plain box | as before 0.5 (the paste or Shell path) |
+| text | no plain box | as before 0.5 (the paste or Shell path through the keys route, which types the text), then the guarded `Enter` with no `base` |
+| any, attachments in the tray | readable | the text is copied as above, then `POST /api/app/pane/:id/attach-send` pastes the files and presses its own `Enter` (§9.14) |
 
 nika never clears Claude's draft to make room for a long message (owner decision 2026-11-14). The problem lines of a failed copy are
 fixed copy chosen by the status and code, never the server's text, in the `role="alert"` slot, with the text kept:
@@ -1872,7 +1885,9 @@ fixed copy chosen by the status and code, never the server's text, in the `role=
 |---|---|
 | 409 `draft-changed`, `screen-changed`, `draft-mismatch` | "Claude's input changed while nika was copying your text. nika shows what it holds now. Nothing was sent." |
 | 409 `draft-unreadable` | the paused line above, with "Send or clear it in the terminal." |
-| 409 `not-idle` | "Claude is busy or a prompt is open, so nika can't change its input now. Nothing was sent. Your text is kept." |
+| 409 `not-idle` | "A prompt is open in Claude or Stop is running, so nika can't change its input now. Nothing was sent. Your text is kept." |
+| 409 `cursor-not-at-end` | "Claude is working and the cursor in its input is not at the end. Move it to the end in the terminal, or send when Claude waits. Nothing was sent. Your text is kept." |
+| 409 `clear-stopped` | "Claude's input did not clear in time. Nothing was sent. Your text is kept; send again." |
 | 409 `input-unreadable`, `mode-unknown` | "nika can't read Claude's input box right now (a menu may be open). Nothing was sent. Your text is kept." |
 | 409 `busy-switching` | "Another action is running on this session. Try again in a moment. Your text is kept." |
 | 400 | "This text can't be copied into Claude's input as it is. Your text is kept." |
@@ -1884,6 +1899,30 @@ fixed copy chosen by the status and code, never the server's text, in the `role=
 A background push that fails says its line once (a warning for 6 s): "nika did not answer. Your text is kept." or "nika couldn't
 copy your text into Claude's input. It is kept here."; after three failures it stops until the next edit. The Send echo for a copied
 message reads "Sent 23 characters + Enter to %12" ("Sent a shell command (23 characters) + Enter to %12" with Shell on).
+
+**When the Enter does not go (W13).** The lines are fixed copy chosen by the status and the code of the `submit` answer, in the
+`role="alert"` slot, with the text kept:
+
+| Answer | Line |
+|---|---|
+| 409 `prompt-open` | "A prompt opened in Claude, so nika did not press Enter. Answer it, then send again. Your text is kept." |
+| 409 `bypass-prompt` | "Answer this prompt in the terminal." |
+| 409 `not-idle` | "Stop is running, so nika did not press Enter. Send again in a moment. Your text is kept." |
+| 409 `draft-changed` | "Claude's input changed before Enter. nika shows what it holds now. Nothing was sent." |
+| 409 `screen-unclear` | "nika can't tell what Claude is showing, so it did not press Enter. Use the terminal. Your text is kept." |
+| 409 `suggestion-shown` | "Claude's input is empty and shows a suggestion, so nika did not press Enter. Nothing was sent." |
+| 409 `input-unreadable`, `mode-unknown` | "nika can't read Claude's input box right now (a menu may be open). Nothing was sent. Your text is kept." |
+| 409 `busy-switching` | "Another action is running on this session. Try again in a moment. Your text is kept." |
+| 200 with `taken: false` | "nika pressed Enter, but Claude's input still shows your text (a menu may have taken the Enter). Check the terminal. Your text is kept." |
+| 404 | "The session is gone." |
+| 429 | "Too many keys at once; try again. Your text is kept." |
+| no answer | "nika did not answer, so it is not known whether Enter was pressed. Check Claude's input in the terminal. Your text is kept." |
+| anything else | "nika couldn't press Enter in Claude's input. Check the terminal. Your text is kept." |
+
+A 200 with `taken: true` or `null` clears the message box (a `null` pulls back from the screen anything still in Claude's input; nothing is
+lost). The echo of a message that Claude queued while it works reads "Queued for Claude: 23 characters + Enter" (a screen reader hears
+it; the visible cue is the `Queued` note). While Claude holds a queued message, the Stop button's title reads "Stop ends Claude's current
+step. Your queued message then goes to Claude at once." (`public/quick-actions.js`, only while `draft.queued`).
 
 ### 9.13 Fit: the mirror fills the panel (0.5, W7)
 
@@ -1970,6 +2009,186 @@ cannot read it. Parked for the final review: it needs a small disclosure in the 
 
 Not built: a settings switch, a per-project option, anything on the browser tier, a fit that re-asserts after the user changed the
 window, taking over a pane the user zoomed.
+
+### 9.14 Attachments (0.5, W2)
+
+**(built 2026-11-14 (0.5); the file chooser 2026-11-15.)** The message box takes images, PDFs and text files. They go with the next
+Send, and nothing reaches Claude before it. Contract: `api-app.md` (`POST …/attachments`, `DELETE …/attachments/:id`,
+`POST …/attachments/pick`, `POST …/attach-send`); how Claude shows them: `claude-tui.md` §11; ADR 0016. The logic that has no DOM is
+`public/attach.js`; the wiring is `public/session.js` (`sendComposer`). App tier only. Always on; the one setting is how long nika
+keeps its copies (Settings, section "Attachments", "Keep attachments for N days", 1 to 30, default 7).
+
+**Ways in**
+
+| Way | Rule |
+|---|---|
+| **Add attachments** (the paperclip, right of Commands) | The page opens no file input of its own: the webview's freezes the app on macOS. It asks the server, which asks the desktop shell for its native dialog. While the dialog is open the button is busy (dashed `--busy` edge, a spinner in place of the clip, the name "Choosing files…", and the line "Choose files in the system dialog…" beside the tray: colour, icon and words). The page asks again every 300 ms; the picked files come back already stored, as ready chips (or failed ones with the reason). The room asked for is 6 minus the chips; a full tray says "Up to 6 attachments per message." and asks nothing |
+| paste in the message box | files on the clipboard (a screenshot, a copied file) are added and the paste is cancelled; text alone pastes as before |
+| drop on the message box | the box gets a dashed `--accent` edge and the words "Drop to attach"; a drop anywhere else is cancelled, so the window never opens the file; with a Send out or input off there is no drop look and the drop effect is "none" |
+
+Per message: 6 files, 8 MB each. A bigger file becomes a failed chip ("Too big · max 8 MB") and is never read or uploaded. Over six:
+"Up to 6 attachments per message." (warning, 4 s). While a Send is out or input is off: "Wait until the attachments have gone, then add
+more." (warning, 4 s). Uploads go one at a time; a 429 is tried once more after 1 s.
+
+**The chip** (`li.att`, text by `textContent` only): icon, name (ellipsis at 200 px, the full name in `title`), meta, remove button (24 × 24,
+"Remove <name>"). Colour never travels alone.
+
+| State | Icon | Meta | Look | Announced (polite) |
+|---|---|---|---|---|
+| uploading | spinner | "Uploading…" | `--surface-2` fill, `--line` edge, `aria-busy` | — |
+| ready | `i-image`, `i-file` (PDF) or `i-text` | the size: "820 B", "14 KB", "1.2 MB" | `--surface-2` fill, `--line` edge | "Attached <name>, <size>." |
+| failed | `i-warn` in `--danger` | the reason (below) | `--danger-line` edge, no fill | "<name> can't be attached: <reason>." |
+| Gone (after a send said the file is no longer on disk) | `i-warn` | "Gone" | as failed | — |
+| any, while a Send is out | as before | as before | the tray is `aria-busy`, the remove buttons `aria-disabled` | — |
+
+Removing: the × on a ready chip deletes the file at once; on an uploading chip it marks the file to be deleted when the upload answers;
+a failed chip just goes. Focus moves to the next chip's remove button, else the previous one, else the message box. Announced "Removed
+<name>." Closing the window deletes the files of ready chips (`pagehide`, `keepalive`).
+
+**Why a file failed** (fixed copy picked by status and code; the server's words never show):
+
+| Cause | Chip says | Problem line (alert slot, 8 s) |
+|---|---|---|
+| over 8 MB (page check or 413) | "Too big · max 8 MB" | — |
+| not PNG, JPEG, GIF, WebP, PDF or UTF-8 text (415) | "Not supported" | "<name>: use PNG, JPEG, GIF, WebP, PDF or UTF-8 text." |
+| empty (400) | "Empty file" | — |
+| 409 `no-project` | "Try again" | "nika can't tell this session's project yet. Try again in a moment." |
+| 409 `path-unusable` | "Can't store" | "nika's attachments folder has a path Claude can't take (a space or a special character). Set XDG_STATE_HOME to a plain path." |
+| 409 `folder-unsafe` | "Can't store" | "nika's attachments folder isn't safe to write to (a link, or another owner). Nothing was saved." |
+| 507 `storage-full` | "Storage full" | "nika's attachment storage is full (256 MB). Older attachments go after a day or two; try again later." |
+| 507 `disk-full` | "Disk full" | "The disk is full. Nothing was saved." |
+| a picked file nika may not read (a link, a folder, another owner's file) | "Can't read" | "<name>: nika can't read this file (a link, a folder, or a file with another owner)." |
+| 429 after the retry, a server error, no answer | "Upload failed" | — |
+| 404 | "Upload failed" | "The session is gone." |
+
+The chooser has three lines of its own: "A file chooser is already open. Finish or cancel it first." (429, warning 4 s), "The file chooser
+closed. Nothing was added." and "nika couldn't open the file chooser. Nothing was added.".
+
+**Send.** Enter or the Send button with ready chips sends the text and the files together; an empty message box with ready chips sends the
+files alone. Before anything goes, and with the text and chips kept, Send is refused with a line in the alert slot when: Shell is on ("Turn
+Shell off to send attachments: a ! command can't carry them."), a chip still uploads ("Wait until the attachments have finished
+uploading."), a chip failed ("Remove the attachments that failed, then send."), the text does not fit draft sync ("This message is too
+long to go with attachments. Send the text first, then the attachments."), or Claude's input cannot be read ("nika can't read Claude's
+input box right now (a menu may be open). Nothing was sent. Your text is kept." or, for an unreadable draft, "Claude's input holds
+something nika can't read back. Send or clear it in the terminal, then try again."). Otherwise: the text is copied into Claude's input
+first (the draft write of §9.12; a copy that fails sends nothing), then `attach-send` pastes the paths and presses `Enter`. The draft
+sync holds still until the send is over. Sending works while Claude works: Claude queues the message with its files (W13).
+
+On 200 the message box and the chips clear, and the echo reads "Sent 2 attachments and your message to %7" ("Sent 1 attachment to %7"
+with no text). After a send that held a PDF or text file the page shows one notice per page load: "Claude may ask to read the attached
+file: it is in nika's attachments folder, outside the project. Answer in the prompt panel." ("files … they are" for several). Claude's
+Read prompt then shows in the prompt panel (§9.5); nika never answers it.
+
+When a send does not go, the text and chips stay and the line is fixed copy picked by the code:
+
+| Code | Line |
+|---|---|
+| `not-idle` | "A prompt is open in Claude or Stop is running. Nothing was sent; your text and attachments are kept." |
+| `mode-unknown`, `input-unreadable` | "nika can't read Claude's input box right now (a menu may be open). Nothing was sent. Your text is kept." |
+| `draft-unreadable` | "Claude's input holds something nika can't read back. Send or clear it in the terminal, then try again." |
+| `draft-changed` | "Claude's input changed while nika was getting ready. Nothing was sent; try again." |
+| `shell-mode` | "Claude's input is in ! mode. Press Backspace in the terminal to leave it, then send again." |
+| `cursor-not-at-end`, `vim-normal` | "Claude's input is in vim normal mode or its cursor isn't at the end. Press i (or End) in the terminal, then send again." |
+| `screen-changed` with nothing pasted | "Claude's screen changed, so nothing was sent." |
+| `busy-switching` | "Another action is running on this session. Try again in a moment." |
+| `path-unusable` | the folder line above |
+| `attachment-gone` | "<name> is no longer on disk. Remove it and add it again." and that chip turns "Gone" |
+| 429 | "Too many keys at once; try again." |
+| 404 | "The session is gone." |
+| no answer | "nika did not answer, so it is not known whether anything was sent. Check Claude's input in the terminal. Your text and attachments are kept here." |
+| anything else | "nika couldn't send the attachments. Nothing was sent; your text and attachments are kept." |
+
+When some files were already pasted (`pasted` above 0) the line says so, because nika never clears Claude's input: "nika put 1 of 2
+attachments into Claude's input, then stopped without pressing Enter: <reason>. Send or clear Claude's input in the terminal (Esc twice),
+then send again. Your text and attachments are kept here." The reason is "Claude's screen changed (a prompt, a menu or a search may be
+open; Esc closes a search)" for `screen-changed`, "Claude didn't take <name>" for `not-taken`, "a prompt opened or Stop ran" for
+`not-idle`, "too many keys at once" for a 429 and "nika could not finish" for anything else.
+
+**Keyboard and screen readers.** Tab order: prompt buttons, the chips' remove buttons, Shell, the message box, [paste Clear], Commands,
+**Add attachments**, Send. Paste (Cmd or Ctrl+V) is the keyboard road for an image on the clipboard, the button for files. The drop zone is
+pointer-only and `aria-hidden`; everything it does is reachable by the button. The button's description (`#att-help`, screen-reader
+only): "Images (PNG, JPEG, GIF, WebP), PDF or text files: up to 6 per message, 8 MB each. You can also paste or drop them on the message
+box." Targets: the button 28 px (as Commands), the remove buttons 24 × 24 px (WCAG 2.5.8).
+
+**Not built:** thumbnails or previews, a Retry button on a failed chip (remove it and add the file again), attachments with Shell on or
+for text that does not fit draft sync, SVG, HEIC, TIFF and archives, attachments on the browser tier.
+
+### 9.15 Scrolling Claude's view (0.5, W3)
+
+**(built 2026-11-14 (0.5).)** The wheel, the trackpad and the page keys over the terminal mirror move Claude's own full-screen view, so
+the user can read older output without the terminal. Contract: `api-app.md` (`POST /api/app/pane/:id/scroll`, `alt` and `scrolled` on the
+capture); how the screen is read: `claude-tui.md` §12; ADR 0018. The logic that has no DOM is `public/scroll.js`; the wiring is
+`public/session.js`. Always on, no setting.
+
+**Where input is taken**
+
+| Input | Over or focus | Goes to |
+|---|---|---|
+| wheel or trackpad, vertical | the pointer over the mirror (focus stays where it is) | native first, then Claude (below) |
+| wheel with Ctrl or Meta (pinch zoom, app gestures) | anywhere | the browser or app, untouched |
+| wheel, horizontal or with Shift | the mirror | native: the mirror's sideways overflow |
+| wheel | the transcript column, the message box, anything else | native, untouched |
+| PgUp, PgDn, Home, End, Ctrl+Home, Ctrl+End (no Alt, Meta or Shift; Ctrl+PgUp and Ctrl+PgDn belong to the app) | the mirror focused, Type into pane off | native first, then Claude |
+| the same keys | the message box | the box's own editing (§4.2) |
+| the same keys | Type into pane on | the keys route, raw, as the user's own keys |
+
+**Native first, then Claude.** The mirror's own overflow scrolls before Claude's view does (the browser's nested-scroll rule): up is native
+while the mirror is not at its top, down while it is not at its bottom; then the request goes to Claude. With the W7 fit the pane fills the
+panel, so this is rarely in play. The page calls `preventDefault()` only when Claude takes the input (no overscroll bounce).
+
+**What a request is.** `public/scroll.js` turns wheel travel into whole Claude pages: a page is half of Claude's transcript area (the row of
+the input box's top rule divided by two, at least 4 rows); the first page goes at half a page of travel, so the average is one page per
+page of travel; a change of direction drops the rest; at most 8 pages in a request and never a backlog (trackpad momentum cannot run
+away). One request in flight, at least 100 ms apart. PgUp and PgDn are one page; Home and Ctrl+Home are `{ to: 'top' }`, End and Ctrl+End
+`{ to: 'bottom' }`. A request that does not answer in 10 s is cut off and counts as lost. The page does not ask when it can tell the
+server would refuse (its twin of the gate, on the last capture): then it shows the line below, and when the pane is not in its full-screen
+view or not read yet, nothing at all.
+
+**The corner of the mirror.** One note element (`#paused-note`), bottom left, with its own colour, icon and words, plus the existing
+**Jump to live** button (bottom right):
+
+| nika's mirror (its own overflow) | Claude's view | Note | Jump to live |
+|---|---|---|---|
+| at the bottom | at the bottom | none | hidden |
+| scrolled up (Paused) | at the bottom | `i-pause`, "Paused while you scroll", `--idle` on `--idle-soft` | shown: native bottom |
+| at the bottom | scrolled up | `i-up`, "Scrolled up in Claude's view", `--accent` on `--accent-soft` | shown: native bottom, then `{ to: 'bottom' }` |
+| scrolled up | scrolled up | the "Scrolled up" note (it says more) | shown: both |
+
+Claude's view counts as scrolled when the capture's `scrolled` is true (Claude's own pill is on screen); after a request the route's
+answer sets it at once. Jump to live returns the mirror to the bottom and column 0, sends `{ to: 'bottom' }` when Claude is scrolled, and
+moves focus to the message box. The End key in the mirror, once the mirror itself is at its bottom, sends `{ to: 'bottom' }` and resets the
+column without moving focus. The header stays "Live · C × R" when only Claude is scrolled:
+the mirror is still the live screen. Claude's pill row stays in the mirror (an honest copy of the screen). Contrast: both note pairs are in §5.1.
+
+**Announcements** (polite, only on a change of `scrolled`): "Scrolled up in Claude's view. Jump to live returns to the bottom." and "Back
+at the live bottom."
+
+**When it does not go.** A refusal drops the queue (never keys behind a refusal) and shows one fixed line, at most once per 3 s, in the
+problem slot (warning, 3 s). The server's words never show:
+
+| Answer or page gate | Line |
+|---|---|
+| `prompt-open` | "A prompt is open, so nika doesn't send scroll keys. Answer it first, or scroll in the terminal." |
+| `screen-unclear` | "A dialog or menu is open in Claude, so nika doesn't send scroll keys. Close it first, or scroll in the terminal." |
+| `menu-open` | "Claude's / menu may be open, so nika doesn't send scroll keys. Finish or clear the command first." |
+| `no-view` | "Claude isn't in its full-screen view here, so there is nothing for nika to scroll. The transcript shows the whole conversation." |
+| `busy-switching` | "Another action is running on this session. Scroll again in a moment." |
+| 429, 404, 403 | none (the next request goes after the window; the gone-pane and lost-connection overlays speak) |
+| no answer | "nika did not answer." |
+| anything else | "nika couldn't scroll Claude's view." |
+
+A scroll is allowed while Claude works (a scroll key never interrupts a turn), with a draft in Claude's box, in vim modes, and over
+an unreadable draft. W5 draft sync, the W6 cut, the W7 fit, Send and Stop are unchanged while Claude is scrolled up; Claude returns to the
+bottom by itself when a message is submitted.
+
+**Keyboard and screen readers.** The mirror is a focusable region (`tabindex="0"`) whose keys are listed in `aria-keyshortcuts`
+("PageUp PageDown Home End") and in the Keyboard shortcuts window (two session rows). Focus never moves on a wheel; keys act only where
+focus already is (WCAG 2.1.1, 2.4.3). Jump to live stays in the Tab order after the mirror (§9.10). No new tokens or components: the note
+reuses `.paused-note`, the button is the existing `.jump`.
+
+**Not built:** a scrollback route (tmux holds no history for Claude), mouse reports, tmux copy mode, line-by-line scrolling, an automatic
+return to the bottom before or after Send, scroll keys in prompts or dialogs, a message-box shortcut, a setting, anything on the browser
+tier.
 
 ### 8.8 WebView support
 

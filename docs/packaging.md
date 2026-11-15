@@ -166,7 +166,7 @@ Two scripts prove the Linux side. Both refuse to run on macOS and exit non-zero 
   `send-keys -l -- '-x text'` arrives literally, a multi-line paste through `load-buffer -` and `paste-buffer -p -d`
   arrives bracketed, and no tmux buffer is left behind;
 - the session window's fit (0.5, group e), driving `src/fit.js` through `makeExec` on the same private socket with no client
-  attached, on whatever tmux is installed (the CI job installs it with apt on ubuntu-latest, tmux 3.4 at the time of writing; the
+  attached, on whatever tmux is installed (the CI job installs it with apt on ubuntu-latest, tmux 3.6a at the time of writing; the
   Docker image has Debian's; the script writes `tmux -V` into its log): L1, a 3-pane
   window and a panel bigger than the window, is fitted (the mirrored pane gets the panel's size, the window is zoomed) and
   given back, and the layout, size, `window-size` option, focus and tag are then exactly as before; L3, a single pane
