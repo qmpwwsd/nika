@@ -4,6 +4,7 @@ import { createSessionControl, promptSig, boxInput, readDraft } from '../src/ses
 import { promptFromRows, rowText } from '../src/mode.js';
 import { RULE_ROW, parseDraft, boxSquash } from '../src/draft.js';
 import { boxRows } from './helpers.js';
+import { dialogOnScreen } from '../src/dialog.js';
 import { dialogWorld, TAB } from './dialog-fake.js';
 
 // Synthetic screens only. The phrases follow docs/contracts/claude-tui.md sections 1, 2 and 5; symbols are escapes.
@@ -2323,7 +2324,7 @@ describe('a question or plan dialog on screen (promptOpen)', () => {
   function withDialog(shape, opts = {}) {
     const w = world({ state: 'attn', ...opts });
     const base = w.rows;
-    w.dialog = dialogWorld(typeof shape === 'string' ? SHAPES[shape] : shape).screen().rows;
+    w.dialog = Array.isArray(shape) ? shape : dialogWorld(typeof shape === 'string' ? SHAPES[shape] : shape).screen().rows;
     w.rows = () => w.dialog ?? base();
     return w;
   }
@@ -2336,6 +2337,63 @@ describe('a question or plan dialog on screen (promptOpen)', () => {
     }
     const busy = world({ state: 'busy' });
     assert.deepEqual((await busy.control().stop('%2')).body, { stopped: true, presses: 1 });
+  });
+
+  // The three shapes src/dialog.js parks (W1-T1 review M3): dialogOnScreen is false for them, because the footer is not the last row or the
+  // title is clipped away, yet a dialog is open and an Escape would decline it. They have no mode line and no input box.
+  const TREE = [[], [sp('  \u23fa main')], [sp('  \u25ef Explore  scan the repo 5s')]]; // a subagent list under the last row
+  const PARKED = {
+    'Exit plan mode? with an agent list': () => [...dialogWorld({ phase: 'exit' }).screen().rows, ...TREE],
+    'a wrapped ask footer with an agent list': () => {
+      const rows = dialogWorld({ phase: 'ask' }).screen().rows;
+      const foot = rowText(rows.at(-1));
+      const at = foot.indexOf('navigate');
+      return [...rows.slice(0, -1), [sp(foot.slice(0, at).trimEnd())], [sp(foot.slice(at))], ...TREE];
+    },
+    'a plan clipped above Ready to code?': () => {
+      const rows = dialogWorld({ phase: 'plan' }).screen().rows;
+      return rows.slice(rows.findIndex((row) => rowText(row).trim() === 'Ready to code?') + 1);
+    },
+  };
+
+  test('(−) I2: Stop is 409 prompt-open on the parked shapes, busy or attn, and not one key goes out (an Escape would decline the dialog)', async () => {
+    for (const [name, make] of Object.entries(PARKED)) {
+      for (const state of ['busy', 'attn']) {
+        const rows = make();
+        assert.equal(dialogOnScreen(rows), false, `${name}: premise, nika's recogniser sees no dialog here`);
+        const w = withDialog(rows, { state });
+        assert.deepEqual(await w.control().stop('%2'), code(409, 'prompt-open'), `${name} / ${state}`);
+        assert.deepEqual(keysOf(w), [], `${name} / ${state}`);
+        assert.equal(w.stateCalls, 0, `${name} / ${state}: refused before the registry is asked`);
+      }
+    }
+  });
+
+  test('(+) I2: a busy turn keeps its box and mode line, so Stop still interrupts it: with a subagent list under the mode line, with vim INSERT, in any mode', async () => {
+    const tree = world({ state: 'busy' });
+    const base = tree.rows;
+    tree.rows = () => [...base(), ...TREE];
+    assert.deepEqual(await tree.control().stop('%2'), { status: 200, body: { stopped: true, presses: 1 } });
+    assert.deepEqual(keysOf(tree), ['Escape']);
+    const insert = world({ state: 'busy', vim: true, vimMode: 'insert' });
+    assert.deepEqual(await insert.control().stop('%2'), { status: 200, body: { stopped: true, presses: 2 } });
+    for (const mode of ['manual', 'acceptEdits', 'plan', 'auto', 'bypassPermissions']) {
+      const w = world({ state: 'busy', mode });
+      assert.deepEqual(await w.control().stop('%2'), { status: 200, body: { stopped: true, presses: 1 } }, mode);
+    }
+  });
+
+  test('(−) I2: End on the parked shapes sends at most its usual Escape and types nothing: busy or attn gives one Escape then 409 not-idle, idle gives 409 mode-unknown with no key', async () => {
+    for (const [name, make] of Object.entries(PARKED)) {
+      for (const state of ['busy', 'attn']) {
+        const w = withDialog(make(), { state });
+        assert.deepEqual(await w.control().endSession('%2'), code(409, 'not-idle'), `${name} / ${state}`);
+        assert.deepEqual(keysOf(w), ['Escape'], `${name} / ${state}`);
+      }
+      const idle = withDialog(make(), { state: 'idle' });
+      assert.deepEqual(await idle.control().endSession('%2'), code(409, 'mode-unknown'), name);
+      assert.deepEqual(keysOf(idle), [], name);
+    }
   });
 
   test('(−) mode switch and commands: 409 not-idle even when the registry says idle (the screen decides), nothing sent', async () => {

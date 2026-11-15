@@ -10,7 +10,7 @@
 import { createHash } from 'node:crypto';
 import { CLAUDE_COMMAND } from './ids.js';
 import { clean } from './text.js';
-import { MODE_TARGETS, OPTION, PROMPT_ROWS, bypassWindow, lastNonBlank, modeFromRows, promptFromRows, rowText } from './mode.js';
+import { MODE_TARGETS, OPTION, PROMPT_ROWS, bypassWindow, lastNonBlank, mentionsBypass, modeFromRows, promptFromRows, rowText } from './mode.js';
 import { RULE_ROW, SIG, parseDraft, normDraft, sameDraft, inEnvelope, chunks, CHUNK_GAP_MS } from './draft.js';
 import { TEXT_MAX, STEPS_MAX, PLAIN_TEXT, PLAN_PICK, dialogOnScreen, readDialogScreen, identityOf, sigOf, otherAllowed } from './dialog.js';
 
@@ -165,7 +165,8 @@ export function checkSuggestionBody(body) {
 }
 
 // Dialog route (design W1 4.1): free text may hold no control, bidi or zero-width character (they are not seen on screen, so the read-back could
-// not prove them) and no lone surrogate (tmux would type U+FFFD).
+// not prove them) and no lone surrogate (tmux would type U+FFFD). It may not start with 1-9 either: on an EMPTY text row Claude may take that
+// digit as the option shortcut (not seen live, W1-T4), which would answer a different option and leave the rest of the text in the input box.
 const DIALOG_TEXT_REFUSED = /[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/;
 const DIALOG_PICKS_MAX = 7; // a digit answers without Enter, so options are numbered 1-9 and two of them are the text and chat rows
 const DIALOG_SHAPES = new Map([['picks,sig', 'picks'], ['picks,sig,text', 'picks'], ['sig,submit', 'submit'], ['choice,sig', 'choice'], ['cancel,sig', 'cancel']]);
@@ -182,8 +183,8 @@ export function checkDialogBody(body) {
   const { picks, text } = body;
   const listed = Array.isArray(picks) && picks.length <= DIALOG_PICKS_MAX && Array.from(picks, (p) => whole(p, 1, DIALOG_PICKS_MAX)).every(Boolean) && new Set(picks).size === picks.length;
   if (!listed) return invalid(`picks must be at most ${DIALOG_PICKS_MAX} distinct integers from 1 to ${DIALOG_PICKS_MAX}`);
-  if (text !== undefined && !(typeof text === 'string' && text.length >= 1 && text.length <= TEXT_MAX && text.isWellFormed() && !DIALOG_TEXT_REFUSED.test(text) && text === text.trim() && clean(text) !== null)) {
-    return invalid(`text must be 1 to ${TEXT_MAX} characters without control characters, and must not start or end with a space`);
+  if (text !== undefined && !(typeof text === 'string' && text.length >= 1 && text.length <= TEXT_MAX && text.isWellFormed() && !DIALOG_TEXT_REFUSED.test(text) && text === text.trim() && !/^[1-9]/.test(text) && clean(text) !== null)) {
+    return invalid(`text must be 1 to ${TEXT_MAX} characters without control characters, and must not start with a digit from 1 to 9 or start or end with a space`);
   }
   return null;
 }
@@ -578,11 +579,14 @@ export function createSessionControl({
   /**
    * Stop (api-app.md section 3). It does not take the per-pane lock: it must work while a switch or a command waits, and it
    * sends nothing but Escape. Only a busy pane with no prompt on screen is interrupted (a prompt is answered, never Stopped).
+   * A screen nika cannot read at all (no mode line and no input box: a busy turn keeps both) may hold a dialog that src/dialog.js
+   * parks as unreadable ("Exit plan mode?" or a wrapped ask footer with a subagent list under it, a plan clipped above its title):
+   * an Escape there would decline it, so that is 409 prompt-open too (W1-T2 review I2).
    */
   async function stop(pane) {
     const seen = await look(pane);
     if (seen.res) return seen.res;
-    if (promptOpen(seen.rows)) return conflict('prompt-open');
+    if (promptOpen(seen.rows) || unknownScreen(seen)) return conflict('prompt-open');
     const state = await stateNow(pane);
     if (!isBusy(state)) return conflict('not-busy');
     const stopped = await interrupt(pane, seen.rows, state, undefined, 'stopping');
@@ -905,11 +909,15 @@ export function createSessionControl({
    * text and text only on the last tab, a pick beyond the options, the plan's text option). Then at most STEPS_MAX rounds of: a FRESH capture
    * whose step identity must equal the request's (else nothing more is sent, 409 no-dialog | dialog-changed | terminal-only), the one key the
    * screen calls for, `settled` on the state that key should leave (no match: 409 not-taken, or no-dialog | dialog-changed when the last read
-   * shows that; typed text that does not read back: 409 text-mismatch). Every non-200 after a key carries `sent`.
+   * shows that; typed text that does not read back: 409 text-mismatch). The screen a key was proven on (`settled`) is kept: the next fresh
+   * read must show the same focus, boxes, text and INSERT marker, else nothing more is sent (409 dialog-focus | dialog-touched). Free text
+   * that starts with 1-9 is 400 invalid and text that mentions bypass is 400 terminal-only, both before any key. Every non-200 after a key
+   * carries `sent`.
    *
    * Keys, each one keys.send: a digit as literal text (only on a numbered option with the focus on one of them), `Down`, `Right` (from an
    * option row), `Enter` (the text row that reads back exactly the typed text, the multi question's button row after its Other text, the
-   * review's `1. Submit answers`), the free text as one `send-keys -l` (vim INSERT, a pane known to be plain, or one not known to be vim),
+   * review's `1. Submit answers`), the free text as one `send-keys -l` (vim INSERT shown, a pane known to be plain, or the focus brought to
+   * the text row by nika's own Down with no INSERT coming; a request that starts on the text row with no INSERT is 409 text-mode),
    * `Escape` for a Decline only (a second one only after a fresh read shows vim INSERT gone). Never Up, Left, Tab, BTab, Space, C-c or C-u,
    * a key on `Chat about this`, or any key after the dialog closed; nika never moves between Claude's tabs. Nothing of a body, a dialog
    * string or a sig is logged. 200 { done: 'next' | 'review' | 'submitted' | 'chosen' | 'declined', sent }.
@@ -945,7 +953,8 @@ export function createSessionControl({
       if (!fits || sigOf(S0) !== want.sig) return refuse('dialog-changed');
       const held = answered.get(pane);
       if (held?.sig === want.sig && now() - held.at < answerHoldMs) return refuse('already-answered');
-      if (!want.cancel && (S0.bypass || (S0.at === 'plan' && PLAN_PICK !== 'digit'))) return terminalOnly();
+      // bypass on the dialog, or in the free text itself (typed first and refused after it would leave the text in Claude's field): terminal only
+      if (!want.cancel && (S0.bypass || (want.text !== undefined && mentionsBypass(want.text)) || (S0.at === 'plan' && PLAN_PICK !== 'digit'))) return terminalOnly();
       const unfit = bodyMisfit(S0, want, target);
       if (unfit) return invalid(unfit);
       const id0 = identityOf(S0);
@@ -962,6 +971,12 @@ export function createSessionControl({
         return S2.at === 'question' && S2.i === S.i + 1 && S2.tabs[S.i].answered && 'next';
       };
 
+      // What a person can change in the terminal between two of our reads: the focus, the boxes, the typed text, the INSERT marker.
+      const mutable = (S) => JSON.stringify([S.insert, S.options?.map((o) => [o.checked, o.ticked]), S.textRow]);
+      const shifted = (A, B) => (A.focus !== B.focus ? 'dialog-focus' : mutable(A) !== mutable(B) ? 'dialog-touched' : null);
+      let settledS = null; // the screen the last key was proven on (the settle read): the next fresh read must still be this one
+      let arrived = false; // the last key was nika's own Down and it put the focus on the text row with no INSERT shown (M4)
+
       /** The one key the screen calls for: { send, hit(S2) -> false | true (go on) | a done name, miss? } or { error } (a 409 code). */
       const decide = async (S) => {
         if (want.cancel) {
@@ -972,6 +987,7 @@ export function createSessionControl({
         }
         if (S.at === 'review') return S.focus === 1 ? { send: { keys: ['Enter'] }, hit: (S2) => gone(S2, 'ask') && 'submitted' } : { error: 'dialog-focus' };
         if (S.at === 'plan') {
+          if (S.textRow?.value != null) return { error: 'dialog-touched' }; // feedback typed in the text option would be lost by a digit
           const focused = S.options.find((o) => o.n === S.focus);
           return focused === undefined || focused.text ? { error: 'dialog-focus' } : { send: { text: String(want.choice) }, hit: (S2) => gone(S2, 'plan') && 'chosen' };
         }
@@ -987,7 +1003,10 @@ export function createSessionControl({
         };
         const type = async () => {
           const vim = (await vimOf(pane)) === true || ctx.insert; // INSERT shown in any read of this request is proof of vim
-          if (!(S.insert || (await plainOf(pane)) === true || (PLAIN_TEXT && !vim))) return { error: 'text-mode' };
+          // Plain mode and vim NORMAL draw the same screen (T0b 3.4, T0c), so on a pane not known to be plain the text goes only when INSERT shows
+          // or when nika's own Down just brought the focus here and no INSERT came (vim enters INSERT on this row at once, T0b): a request that
+          // starts on the text row with no INSERT is text-mode.
+          if (!(S.insert || (await plainOf(pane)) === true || (PLAIN_TEXT && arrived && !vim))) return { error: 'text-mode' };
           return { send: { text: want.text }, hit: (S2) => same(S2) && S2.textRow.value === target, miss: 'text-mismatch' };
         };
         const enter = { send: { keys: ['Enter'] }, hit: (S2) => moved(S, S2) };
@@ -1017,6 +1036,8 @@ export function createSessionControl({
         const S = view(seen);
         const code = drift(seen, S);
         if (code) return refuse(code);
+        const changed = settledS === null ? null : shifted(settledS, S); // changed in the terminal since the key took: nothing more is sent
+        if (changed) return refuse(changed);
         if (S.bypass && !want.cancel) return terminalOnly();
         const act = await decide(S);
         if (act.error) return refuse(act.error);
@@ -1034,6 +1055,8 @@ export function createSessionControl({
           holdAnswer(pane, want.sig);
           return out(200, { done: verdict });
         }
+        settledS = view(got.seen); // verdict true: the step is still this one and readable (hit checked it)
+        arrived = act.send.keys?.[0] === 'Down' && settledS.at === 'question' && settledS.focus === settledS.options.length + 1 && !settledS.insert;
         if (escape) await sleep(VIM_ESC_GAP_MS);
       }
       return refuse('not-taken'); // STEPS_MAX rounds and still not done

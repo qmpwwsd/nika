@@ -8,6 +8,7 @@ import { STEPS_MAX, TEXT_MAX } from '../src/dialog.js';
 import { dialogWorld, TAB } from './dialog-fake.js';
 
 const SIG = '0123456789abcdef';
+const PLAIN = { vim: false, plain: true }; // nika's memory of a pane whose input is not vim: it may type when it starts on the text row
 const code = (r) => [r.status, r.body.error];
 const ok = (r, done, sent) => assert.deepEqual(r, { status: 200, body: { done, sent } });
 const words = (n) => Array.from({ length: n }, (_, i) => `w${String(i + 1).padStart(3, '0')}`).join(' ');
@@ -39,6 +40,7 @@ describe('checkDialogBody', () => {
     const good = [
       { sig: SIG, picks: [1] }, { sig: SIG, picks: [] , text: 'x' }, { sig: SIG, picks: [1, 2, 3, 4, 5, 6, 7] }, { sig: SIG, picks: [3, 1], text: 'my custom check' },
       { sig: SIG, picks: [], text: 'x'.repeat(TEXT_MAX) }, { sig: SIG, picks: [], text: 'café → ok  inner  spaces' }, { sig: SIG, submit: true },
+      { sig: SIG, picks: [], text: 'apples 2' }, { sig: SIG, picks: [], text: 'a1' }, { sig: SIG, picks: [], text: '0 apples' }, { sig: SIG, picks: [], text: '\uff12 apples' },
       { sig: SIG, choice: 1 }, { sig: SIG, choice: 9 }, { sig: SIG, cancel: true },
     ];
     for (const b of good) assert.equal(checkDialogBody(b), null, JSON.stringify(b));
@@ -53,6 +55,7 @@ describe('checkDialogBody', () => {
       { sig: SIG, picks: [1], text: '' }, { sig: SIG, picks: [1], text: 5 }, { sig: SIG, picks: [], text: 'x'.repeat(TEXT_MAX + 1) },
       { sig: SIG, picks: [], text: 'a\nb' }, { sig: SIG, picks: [], text: 'a\tb' }, { sig: SIG, picks: [], text: 'a\u0000b' }, { sig: SIG, picks: [], text: 'a\u007fb' },
       { sig: SIG, picks: [], text: 'a\u0085b' }, { sig: SIG, picks: [], text: 'a\u001b[2mb' }, { sig: SIG, picks: [], text: 'a\u200bb' }, { sig: SIG, picks: [], text: 'a\u202eb' },
+      { sig: SIG, picks: [], text: '2' }, { sig: SIG, picks: [], text: '2 apples' }, { sig: SIG, picks: [], text: '1' }, { sig: SIG, picks: [], text: '9x' }, { sig: SIG, picks: [3], text: '7 up' },
       { sig: SIG, picks: [], text: ' a' }, { sig: SIG, picks: [], text: 'a ' }, { sig: SIG, picks: [], text: 'a\ud800' }, { sig: SIG, picks: [], text: ' ' },
       { sig: SIG, submit: false }, { sig: SIG, submit: 1 }, { sig: SIG, choice: 0 }, { sig: SIG, choice: 10 }, { sig: SIG, choice: 1.5 }, { sig: SIG, choice: '1' },
       { sig: SIG, cancel: false }, { sig: SIG, cancel: 'yes' },
@@ -119,13 +122,13 @@ describe('answerDialog: a single-select question', () => {
   });
 
   test('(+) text with inner double spaces: the screen collapses them, the read-back compares collapsed text', async () => {
-    const w = dialogWorld({ focus: 4 });
+    const w = dialogWorld({ focus: 4, mem: PLAIN });
     ok(await w.answer({ picks: [], text: 'two  spaces here' }), 'submitted', 2);
     safe(w);
   });
 
   test('(+) resumable: the focus already on the text row types and enters; the text already typed only enters; the xor needs nothing more', async () => {
-    const onText = dialogWorld({ focus: 4 });
+    const onText = dialogWorld({ focus: 4, mem: PLAIN });
     ok(await onText.answer({ picks: [], text: 'beta' }), 'submitted', 2);
     assert.deepEqual(onText.keysLog(), ['text:beta', 'Enter']);
     const typed = dialogWorld({ focus: 4 });
@@ -331,6 +334,26 @@ describe('answerDialog: the plan approval', () => {
     assert.deepEqual(code(await w.answer({ choice: 1, sig })), [409, 'dialog-changed']);
     assert.deepEqual(w.log, []);
   });
+
+  test('(−) M3: feedback already typed in the plan\'s text option: a choice is 409 dialog-touched whatever the focus, nothing sent (a digit would lose it)', async () => {
+    const feedback = (pf) => dialogWorld({ phase: 'plan', pf, plan: { labels: ['Yes, and use auto mode', 'Yes, manually approve edits'], prose: ['- Reply with the single word done.', '- Stop.'], text: 'please also add tests' } });
+    for (const pf of [1, 2, 3]) {
+      const w = feedback(pf);
+      assert.equal(w.read().textRow.value, 'please also add tests');
+      assert.deepEqual(code(await w.answer({ choice: 1 })), [409, 'dialog-touched'], `focus ${pf}`);
+      assert.deepEqual(code(await w.answer({ choice: 2 })), [409, 'dialog-touched'], `focus ${pf}`);
+      assert.deepEqual(w.log, [], `focus ${pf}`);
+    }
+  });
+
+  test('(+) M3: the same plan with the text option empty takes a choice; a Decline is allowed with feedback typed', async () => {
+    const empty = dialogWorld({ phase: 'plan', pf: 2 });
+    assert.equal(empty.read().textRow.value, null);
+    ok(await empty.answer({ choice: 1 }), 'chosen', 1);
+    const typed = dialogWorld({ phase: 'plan', pf: 3, plan: { labels: ['Yes, and use auto mode', 'Yes, manually approve edits'], prose: ['- Stop.'], text: 'please also add tests' } });
+    ok(await typed.answer({ cancel: true }), 'declined', 1);
+    assert.deepEqual(typed.keysLog(), ['Escape']);
+  });
 });
 
 describe('answerDialog: Decline', () => {
@@ -441,6 +464,58 @@ describe('answerDialog: refusals before the first key (nothing is sent)', () => 
     assert.deepEqual(review.log, []);
   });
 
+  test('(−) I1: free text that starts with 1-9 is 400 invalid before any capture or key, on a single-select Other and on the last multi tab', async () => {
+    for (const text of ['2', '2 apples', '9', '1x', '7 up']) {
+      const single = dialogWorld({ focus: 4, mem: PLAIN });
+      const multi = dialogWorld({ tabs: [TAB.tools], focus: 4, mem: PLAIN });
+      assert.deepEqual(code(await single.answer({ picks: [], text })), [400, 'invalid'], text);
+      assert.deepEqual(code(await multi.answer({ picks: [], text })), [400, 'invalid'], text);
+      assert.deepEqual([...single.log, ...multi.log], [], `${text}: not one key`);
+      assert.equal(single.captures + multi.captures, 0, `${text}: refused before the first read`);
+    }
+    const toggle = dialogWorld({ tabs: [TAB.tools] }); // a pick next to the digit text
+    assert.deepEqual(code(await toggle.answer({ picks: [1], text: '3' })), [400, 'invalid']);
+    assert.deepEqual(toggle.log, []);
+  });
+
+  test('(+) I1: a digit later in the text, a zero, or a full-width digit is typed as text', async () => {
+    const single = dialogWorld({ focus: 4, mem: PLAIN });
+    ok(await single.answer({ picks: [], text: 'apples 2' }), 'submitted', 2);
+    assert.deepEqual(single.keysLog(), ['text:apples 2', 'Enter']);
+    const zero = dialogWorld({ focus: 4, mem: PLAIN });
+    ok(await zero.answer({ picks: [], text: '0 apples' }), 'submitted', 2);
+    const wide = dialogWorld({ focus: 4, mem: PLAIN });
+    ok(await wide.answer({ picks: [], text: '\uff12 apples' }), 'submitted', 2);
+    const multi = dialogWorld({ tabs: [TAB.tools], focus: 4, mem: PLAIN });
+    ok(await multi.answer({ picks: [], text: 'run 3 times' }), 'review', 3);
+    for (const w of [single, zero, wide, multi]) safe(w);
+  });
+
+  test('(−) M2: free text that mentions bypass is 400 terminal-only before any key (no Down, nothing typed), however it is spelled', async () => {
+    for (const text of ['no bypass please', 'ByPaSs', 'b.y.p.a.s.s mode', '\uff42\uff59\uff50\uff41\uff53\uff53 it', 'bypassing the rules']) {
+      const single = dialogWorld();
+      const multi = dialogWorld({ tabs: [TAB.tools] });
+      for (const w of [single, multi]) {
+        const r = await w.answer({ picks: [], text });
+        assert.deepEqual([r.status, r.body.error], [400, 'terminal-only'], text);
+        assert.equal(r.body.sent, undefined);
+        assert.deepEqual(w.log, [], `${text}: not one key`);
+      }
+    }
+    const withPick = dialogWorld({ tabs: [TAB.tools] });
+    assert.deepEqual(code(await withPick.answer({ picks: [1], text: 'bypass' })), [400, 'terminal-only']);
+    assert.deepEqual(withPick.log, []);
+  });
+
+  test('(+) M2: text that only looks near it ("by the pass", "bypas") is typed; a Decline never carries text', async () => {
+    for (const text of ['by the pass', 'bypas']) {
+      const w = dialogWorld();
+      ok(await w.answer({ picks: [], text }), 'submitted', 5);
+      assert.deepEqual(w.keysLog(), ['Down', 'Down', 'Down', `text:${text}`, 'Enter']);
+      safe(w);
+    }
+  });
+
   test('(−) a dialog nika cannot read exactly: a narrow pane, a survey, "Exit plan mode?", the auto-mode nudge, an unknown overlay: 409 dialog-changed', async () => {
     const shapes = {
       narrow: (w) => { w.cols = 40; },
@@ -532,20 +607,47 @@ describe('answerDialog: refusals before the first key (nothing is sent)', () => 
     assert.deepEqual(normal.log, []);
   });
 
-  test('(−) the pane is vim (INSERT was seen during this request) and the user pressed Escape on the text row: 409 text-mode after the Down, nothing typed, no Enter', async () => {
+  test('(−) the pane is vim (INSERT was seen during this request) and the user pressed Escape on the text row: 409 dialog-touched after the Down (M1: INSERT is gone since the key took), nothing typed, no Enter', async () => {
     const w = dialogWorld({ vim: true, focus: 3 });
     w.before = (n) => { if (n === 4) w.vimMode = 'normal'; }; // reads: 1 first, 2 before the Down, 3 after it (INSERT shows), 4 before the text
     const r = await w.answer({ picks: [], text: 'beta' });
-    assert.deepEqual(r, { status: 409, body: { error: 'text-mode', sent: 1 } });
+    assert.deepEqual(r, { status: 409, body: { error: 'dialog-touched', sent: 1 } });
     assert.deepEqual(w.keysLog(), ['Down']);
     safe(w);
   });
 
-  test('(−) vim never seen by nika and NORMAL on the text row: the letters would be vim commands, they do not read back: 409 text-mismatch, and no Enter', async () => {
-    const w = dialogWorld({ vim: true, focus: 4, vimMode: 'normal' });
-    const r = await w.answer({ picks: [], text: 'beta' });
-    assert.deepEqual(r, { status: 409, body: { error: 'text-mismatch', sent: 1 } });
-    assert.deepEqual(w.keysLog(), ['text:beta']);
+  test('(−) M4: a request that starts on the text row with no INSERT, on a pane not known to be plain (a plain pane and vim NORMAL draw the same screen): 409 text-mode, nothing sent, no `sent` field', async () => {
+    for (const opts of [{ vim: true, vimMode: 'normal' }, { vim: false }, { vim: true, vimMode: 'normal', mem: { vim: false, plain: false } }]) {
+      const w = dialogWorld({ focus: 4, ...opts });
+      assert.equal(w.read().insert, false);
+      assert.deepEqual(await w.answer({ picks: [], text: 'beta' }), { status: 409, body: { error: 'text-mode' } }, JSON.stringify(opts));
+      assert.deepEqual(w.log, []);
+    }
+    const multi = dialogWorld({ tabs: [TAB.tools], focus: 4 }); // the multi question's Other row: the same
+    assert.deepEqual(code(await multi.answer({ picks: [], text: 'beta' })), [409, 'text-mode']);
+    assert.deepEqual(multi.log, []);
+  });
+
+  test('(+) M4: the same start types when INSERT shows (vim), when the pane is known to be plain, or when nika\'s own Down brought the focus here with no INSERT coming', async () => {
+    const insert = dialogWorld({ focus: 4, vim: true });
+    assert.equal(insert.read().insert, true);
+    ok(await insert.answer({ picks: [], text: 'beta' }), 'submitted', 2);
+    const known = dialogWorld({ focus: 4, mem: PLAIN });
+    ok(await known.answer({ picks: [], text: 'beta' }), 'submitted', 2);
+    const arrived = dialogWorld({ focus: 3 }); // a plain pane nika has never seen: the Down lands on the text row and no INSERT follows
+    ok(await arrived.answer({ picks: [], text: 'beta' }), 'submitted', 3);
+    assert.deepEqual(arrived.keysLog(), ['Down', 'text:beta', 'Enter']);
+    const multi = dialogWorld({ tabs: [TAB.tools], focus: 3 });
+    ok(await multi.answer({ picks: [], text: 'beta' }), 'review', 4);
+    assert.deepEqual(multi.keysLog(), ['Down', 'text:beta', 'Down', 'Enter']);
+    for (const w of [insert, known, arrived, multi]) safe(w);
+  });
+
+  test('(−) M4: the Down arrived on the text row with no INSERT, but vim is known for this pane (vim enters INSERT on that row at once): 409 text-mode after the Down, nothing typed', async () => {
+    const w = dialogWorld({ focus: 3, mem: { vim: true, plain: false } }); // the fake draws a plain screen: no INSERT on arrival
+    assert.deepEqual(await w.answer({ picks: [], text: 'beta' }), { status: 409, body: { error: 'text-mode', sent: 1 } });
+    assert.deepEqual(w.keysLog(), ['Down']);
+    safe(w);
   });
 
   test('(−) another action holds the pane: 409 busy-switching and nothing sent', async () => {
@@ -666,6 +768,52 @@ describe('answerDialog: the screen changes while a request runs (it stops at onc
     assert.deepEqual(code(await w.answer({ picks: [1] })), [409, 'no-dialog']);
     assert.deepEqual(w.log, []);
   });
+
+  test('(−) M1: the focus is moved in the terminal after a key took: 409 dialog-focus and the next key is not re-derived from the new screen', async () => {
+    for (const to of [1, 2, 5]) { // another option, the same option the Down left, the chat row
+      const w = dialogWorld({ focus: 2 });
+      w.before = (n) => { if (n === 4) w.focus = to; }; // reads: 1 first, 2 before the Down, 3 settle (focus 3), 4 before the next key
+      const r = await w.answer({ picks: [], text: 'beta' });
+      assert.deepEqual(r, { status: 409, body: { error: 'dialog-focus', sent: 1 } }, String(to));
+      assert.deepEqual(w.keysLog(), ['Down'], `focus ${to}: not a second Down from the new place`);
+      safe(w);
+    }
+  });
+
+  test('(−) M1: a box is changed in the terminal after a key took: 409 dialog-touched, no toggle that would override it', async () => {
+    const w = dialogWorld({ tabs: [TAB.tools] });
+    w.before = (n) => { if (n === 4) w.tabs[0].checked = [1, 3]; }; // wanted [1, 2]: toggle 1 took ([1]); the terminal then adds 3
+    const r = await w.answer({ picks: [1, 2] });
+    assert.deepEqual(r, { status: 409, body: { error: 'dialog-touched', sent: 1 } });
+    assert.deepEqual(w.keysLog(), ['text:1']);
+    assert.deepEqual(w.tabs[0].checked, [1, 3], 'left as the person made it');
+  });
+
+  test('(−) M1: text appears in the Other row after the Down took (the terminal): 409 dialog-touched, nothing typed over it', async () => {
+    const w = dialogWorld({ focus: 3 });
+    w.before = (n) => { if (n === 4) w.tabs[0].text = 'typed there'; };
+    const r = await w.answer({ picks: [], text: 'beta' });
+    assert.deepEqual(r, { status: 409, body: { error: 'dialog-touched', sent: 1 } });
+    assert.deepEqual(w.keysLog(), ['Down']);
+  });
+
+  test('(−) M1: the first Decline Escape left INSERT, then it is back (the person pressed i): 409 dialog-touched after one Escape, no second one', async () => {
+    const w = dialogWorld({ vim: true, focus: 4 });
+    w.before = (n) => { if (n === 4) w.vimMode = 'insert'; }; // reads: 1 first, 2 before the Escape, 3 settle (INSERT gone), 4 before the next key
+    const r = await w.answer({ cancel: true });
+    assert.deepEqual(r, { status: 409, body: { error: 'dialog-touched', sent: 1 } });
+    assert.deepEqual(w.keysLog(), ['Escape']);
+  });
+
+  test('(+) M1: a late redraw within settleTries is not a change: every read after it equals the one the key was proven on', async () => {
+    const multi = dialogWorld({ tabs: [TAB.tools], lag: 2 });
+    ok(await multi.answer({ picks: [1, 2] }), 'review', 3);
+    assert.deepEqual(multi.keysLog(), ['text:1', 'text:2', 'Right']);
+    const other = dialogWorld({ lag: 2 });
+    ok(await other.answer({ picks: [], text: 'beta' }), 'submitted', 5);
+    safe(multi);
+    safe(other);
+  });
 });
 
 describe('answerDialog: keys that are not taken, failed sends and the loop guard', () => {
@@ -700,7 +848,7 @@ describe('answerDialog: keys that are not taken, failed sends and the loop guard
   });
 
   test('(−) typed text that arrives changed: 409 text-mismatch, and the Enter is never pressed', async () => {
-    const w = dialogWorld({ focus: 4 });
+    const w = dialogWorld({ focus: 4, mem: PLAIN });
     w.mangle = (t) => t.replace('e', '3');
     assert.deepEqual(await w.answer({ picks: [], text: 'beta' }), { status: 409, body: { error: 'text-mismatch', sent: 1 } });
     assert.deepEqual(w.keysLog(), ['text:beta']);
@@ -708,7 +856,7 @@ describe('answerDialog: keys that are not taken, failed sends and the loop guard
   });
 
   test('(−) typed text that does not show at all: 409 text-mismatch', async () => {
-    const w = dialogWorld({ focus: 4 });
+    const w = dialogWorld({ focus: 4, mem: PLAIN });
     w.drop = () => true;
     assert.deepEqual(code(await w.answer({ picks: [], text: 'beta' })), [409, 'text-mismatch']);
   });
@@ -731,14 +879,61 @@ describe('answerDialog: keys that are not taken, failed sends and the loop guard
     assert.deepEqual(await w.answer({ picks: [1] }), { status: 502, body: { error: 'tmux_failed', message: 'x', sent: 1 } });
   });
 
-  test('(−) STEPS_MAX: a toggle that takes and is undone again and again stops after 24 keys with 409 not-taken', async () => {
+  test('(−) M1: a toggle takes and is undone in the terminal before the next read: 409 dialog-touched after that one key, no 24 rounds of toggling against the terminal', async () => {
     const w = dialogWorld({ tabs: [TAB.tools] });
     // captures: 1 first read; then per round a read before the key (even) and the settle read after it (odd)
     w.before = (n) => { w.tabs[0].checked = n % 2 === 0 || n === 1 ? [] : [1]; };
     const r = await w.answer({ picks: [1] });
-    assert.deepEqual(r, { status: 409, body: { error: 'not-taken', sent: STEPS_MAX } });
-    assert.equal(w.log.length, STEPS_MAX);
-    assert.equal(STEPS_MAX, 24);
+    assert.deepEqual(r, { status: 409, body: { error: 'dialog-touched', sent: 1 } });
+    assert.deepEqual(w.keysLog(), ['text:1']);
+    assert.equal(STEPS_MAX, 24, 'the loop guard stays a backstop');
+  });
+});
+
+describe('answerDialog: a Stop or End interrupt still running (M6)', () => {
+  /**
+   * A busy vim pane (INSERT shown, nothing to answer yet): `start(w)` is Stop or End. Its Escape goes out and it waits for INSERT to go; that
+   * capture (the 2nd) is held, so the interrupt is in flight while a dialog appears and a request for it runs.
+   */
+  async function inFlight(start) {
+    const w = dialogWorld({ phase: 'idle', vim: true, state: 'busy' });
+    let open;
+    const gate = new Promise((r) => { open = r; });
+    w.before = (n, world) => { world.hold = n === 2 ? gate : null; };
+    const running = start(w);
+    for (let i = 0; i < 5; i += 1) await new Promise((r) => setImmediate(r));
+    assert.equal(w.captures, 2, 'the interrupt is waiting for its second capture');
+    assert.deepEqual(w.keysLog(), ['Escape']);
+    w.phase = 'ask'; // Claude raises a question while the Escape is still being waited for
+    w.vim = false;
+    return { w, running, release: () => { w.state = 'idle'; open(); } };
+  }
+
+  test('(−) Stop in flight (it holds no lock, only the interrupt flag): the dialog request is 409 not-idle and not one key goes out', async () => {
+    const { w, running, release } = await inFlight((world) => world.ctl.stop('%2'));
+    assert.deepEqual(await w.answer({ picks: [1] }), { status: 409, body: { error: 'not-idle' } });
+    assert.deepEqual(w.keysLog(), ['Escape'], 'only the interrupt\'s own Escape');
+    release();
+    assert.equal((await running).status, 200);
+    assert.deepEqual(w.keysLog(), ['Escape']);
+  });
+
+  test('(−) End in flight (it holds the pane lock): the dialog request is 409 busy-switching and not one key goes out', async () => {
+    const { w, running, release } = await inFlight((world) => world.ctl.endSession('%2'));
+    assert.deepEqual(await w.answer({ picks: [1] }), { status: 409, body: { error: 'busy-switching' } });
+    assert.deepEqual(w.keysLog(), ['Escape']);
+    release();
+    assert.deepEqual(code(await running), [409, 'not-idle'], 'End then sees a dialog and types nothing');
+    assert.deepEqual(w.keysLog(), ['Escape']);
+  });
+
+  test('(+) the interrupt has finished: the same request goes (after the 40 ms gap)', async () => {
+    const { w, running, release } = await inFlight((world) => world.ctl.stop('%2'));
+    release();
+    await running;
+    w.t += 40;
+    ok(await w.answer({ picks: [1] }), 'submitted', 1);
+    assert.deepEqual(w.keysLog(), ['Escape', 'text:1']);
   });
 });
 
