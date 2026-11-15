@@ -22,6 +22,7 @@ import { paletteQuery, cleanCommands, paletteView, commandsButton, shouldFetch, 
 import { isMac, isTextEntry, wantsHelp, wantsBack, wantsHistToggle, backHint, helpHint, histHint, passKeyLabel, openShortcuts, wireWindowKeys } from './shortcuts.js';
 import { panelSize, scaleFor, createFitPlanner } from './fit-ui.js';
 import { createScrollPlanner, routeFor, wheelRows, scrollGate, viewRowsOf, pageRowsOf, refusalLine, noteView, scrolledSay, NOTE_MS } from './scroll.js';
+import { createAttachTray } from './attach.js';
 
 const PROJECT_KEY = /^[a-z0-9]{16}$/;
 const CLAUDE_SESSION = /^session_[A-Za-z0-9]{1,64}$/;
@@ -1060,6 +1061,7 @@ function setInputEnabled(on, why) {
   $('composer').placeholder = on ? idlePlaceholder() : why;
   renderSuggestion(); // the state class goes with the box being usable
   document.querySelector('.inbox').classList.toggle('off', !on);
+  ATT.enable(on);
   if (!on) setPass(false, true);
   else if (refocus.composer) $('composer').focus({ preventScroll: true });
   if (on) refocus.composer = false;
@@ -1129,7 +1131,7 @@ function handleCapture(r) {
     M.draft = cleanDraft(r.body.draft);
     drawMirror();
     try {
-      DS.capture(M.draft, cols);
+      if (!ATT.sending()) DS.capture(M.draft, cols); // the box holds placeholders for a moment while attachments go in: no paused note then
       renderSuggestion(); // the placeholder follows the screen's draft
     } catch {
       // the mirror keeps working without the sync
@@ -1507,6 +1509,7 @@ async function sendComposer() {
     showProblem(gate.message, 'error'); // nothing is sent and the text stays in the box
     return;
   }
+  if (ATT.pending()) return ATT.send(composer().value); // chips under the box: the text and the files go together (attach.js)
   const value = ta.value;
   // the box is mirrored in Claude's input box: when the screen already holds this text only Enter goes out, else the text is copied over first (design W5, section 4)
   const route = draftSendPlan({ value, shell: S.on, screen: DS.screen(), cols: M.cols });
@@ -1529,14 +1532,19 @@ async function sendComposer() {
   if (r.ok) { // else the text stays in the box, and Shell stays on so a retry still goes as a command
     say(`Sent ${plan.summary} to ${paneId}`);
     if (S.on) setShell(false); // like Claude's own ! mode: the next message is a message
-    if (ta.value === value) {
-      ta.value = '';
-      grow();
-      updateChip();
-      DS.sent(); // nothing of it is unsent any more
-    }
+    clearBox(value);
   }
   DS.endSend();
+}
+
+/** The message box after its text went to Claude: emptied only when it still holds what was sent (the user may have typed on); the sync forgets the unsent text. */
+function clearBox(value) {
+  const ta = composer();
+  if (ta.value !== value) return;
+  ta.value = '';
+  grow();
+  updateChip();
+  DS.sent(); // nothing of it is unsent any more
 }
 
 /** A synced Send: the text is copied into Claude's input (a non-200 sends no Enter), then Enter. One job in the keys chain, so arrows queued before it go first. */
@@ -1591,6 +1599,28 @@ const DS = createDraftSync({
   note: renderDraftNote,
   problem: (message) => showProblem(message, 'warn', 6000),
   gone: setGone,
+});
+
+// ---- attachments (0.5, design W2): chips under the message box; the logic and the copy: attach.js ----------------------------
+
+const ATT = createAttachTray({
+  paneId,
+  path: (tail) => `/api/app/pane/${encodeURIComponent(paneId)}/${tail}`,
+  call,
+  appFetch,
+  ds: DS,
+  enqueueJob,
+  say,
+  announce,
+  showProblem,
+  clearProblem,
+  showNotice,
+  setGone,
+  box: () => ({ value: composer().value, shell: S.on }),
+  working: () => A.kind === 'busy',
+  cols: () => M.cols,
+  clearBox,
+  focusBox: () => composer().focus(),
 });
 
 // ---- Shell mode (spec 9.6): Enter sends Ctrl-U, "!" + the text, Enter; it turns itself off after a successful send -------------
@@ -2142,6 +2172,7 @@ function boot() {
   wireHist();
   wireTerminal();
   wireComposer();
+  ATT.wire();
   document.addEventListener('keydown', onPageKey);
   wireWindowKeys({ mac: MAC, passthrough: () => P.on, send: windowCommand }); // Ctrl+Q, Ctrl+W (not while typing into the pane) and zoom off macOS
   $('kbd-open').addEventListener('click', () => openKbd($('kbd-open')));

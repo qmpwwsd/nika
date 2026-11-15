@@ -48,6 +48,11 @@
   <symbol id="i-fit" viewBox="0 0 16 16"><path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4"/></symbol>
   <symbol id="i-zoom" viewBox="0 0 16 16"><circle cx="6.8" cy="6.8" r="4.6"/><path d="M10.2 10.2 14 14M6.8 4.9v3.8M4.9 6.8h3.8"/></symbol>
   <symbol id="i-off" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.2"/><path d="M3.6 3.6l8.8 8.8"/></symbol>
+  <symbol id="i-attach" viewBox="0 0 16 16"><path d="M14.3 7.4 8.2 13.5a4 4 0 0 1-5.7-5.7l6.1-6.1a2.7 2.7 0 0 1 3.8 3.8L6.3 11.6a1.3 1.3 0 0 1-1.9-1.9l5.7-5.6"/></symbol>
+  <symbol id="i-image" viewBox="0 0 16 16"><rect x="2" y="2.5" width="12" height="11" rx="1.5"/><circle cx="5.8" cy="6.2" r="1.1"/><path d="m2.5 12 3.6-3.4 2.6 2.4 2-1.8 3.3 2.8"/></symbol>
+  <symbol id="i-file" viewBox="0 0 16 16"><path d="M4 1.8h5.2L12.5 5v8.2a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2.8a1 1 0 0 1 1-1zM9 1.9V5h3.4"/></symbol>
+  <symbol id="i-text" viewBox="0 0 16 16"><path d="M4 1.8h5.2L12.5 5v8.2a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2.8a1 1 0 0 1 1-1zM9 1.9V5h3.4M5.5 8h5M5.5 10.5h5"/></symbol>
+  <symbol id="i-x" viewBox="0 0 16 16"><path d="M4 4l8 8M12 4 4 12"/></symbol>
   <symbol id="i-window" viewBox="0 0 16 16"><rect x="1.8" y="5.2" width="9" height="8" rx="1.3"/><path d="M5.2 5.2V3.6a1.3 1.3 0 0 1 1.3-1.3h6.2a1.3 1.3 0 0 1 1.3 1.3v5.2a1.3 1.3 0 0 1-1.3 1.3h-1.9"/></symbol>
 </svg>
 
@@ -142,6 +147,7 @@
           <div class="ask-opts" id="ask-opts"></div>
           <p class="ask-hint">Each button presses its number in the pane. Claude answers at once; no Enter. <span class="ask-lock" id="ask-lock" hidden>Buttons stay off until the question changes.</span></p>
         </div>
+        <ul class="att-tray" id="att-tray" aria-label="Attachments" hidden></ul>
         <div class="inbox">
           <button type="button" class="shell" id="shell-toggle" aria-pressed="false" title="Shell mode: send the text as a ! command"><svg class="ic" aria-hidden="true"><use href="#i-shell"/></svg><span>Shell</span><span class="onoff" aria-hidden="true">off</span></button>
           <span class="prompt" aria-hidden="true">&rsaquo;</span>
@@ -149,6 +155,9 @@
           <textarea id="composer" rows="1" spellcheck="false" autocomplete="off" autocapitalize="off" aria-controls="palette" aria-describedby="draft-note" placeholder="Message the agent&hellip;"></textarea>
           <span class="paste-chip" id="paste-chip" hidden><span id="paste-n"></span><button type="button" id="paste-clear">Clear</button></span>
           <button type="button" class="btn ghost icon" id="cmd-btn" aria-label="Commands (/)" title="Commands (/)" aria-disabled="false"><svg class="ic" aria-hidden="true"><use href="#i-cmd"/></svg></button>
+          <button type="button" class="btn ghost icon" id="att-btn" aria-label="Add attachments" title="Add attachments" aria-describedby="att-help"><svg class="ic" aria-hidden="true"><use href="#i-attach"/></svg></button>
+          <input type="file" id="att-input" multiple hidden accept="image/png,image/jpeg,image/gif,image/webp,application/pdf,text/*,.md,.json,.yaml,.yml,.toml,.csv,.log,.py,.js,.ts,.rs,.go,.sh,.sql,.diff,.patch">
+          <span class="att-drop" id="att-drop" aria-hidden="true" hidden>Drop to attach</span>
           <button type="button" class="btn primary icon" id="send" aria-label="Send (Enter)" title="Send (Enter)"><svg class="ic" aria-hidden="true"><use href="#i-send"/></svg></button>
           <div class="pal" id="pal" hidden>
             <div class="pal-h"><span><b>Commands</b> <span class="muted" id="pal-count"></span></span><span class="pal-k"><kbd>&uarr;</kbd><kbd>&darr;</kbd> choose <kbd>Enter</kbd> insert <kbd>Esc</kbd> close</span></div>
@@ -166,6 +175,7 @@
           <span class="dnote" id="draft-note" role="status" hidden></span>
           <span class="problem" id="problem" role="alert"></span>
           <span class="sr-only" id="echo" aria-live="polite"></span>
+          <span class="sr-only" id="att-help">Images (PNG, JPEG, GIF, WebP), PDF or text files: up to 6 per message, 8 MB each. You can also paste or drop them on the message box.</span>
         </div>
       </div>
     </section>

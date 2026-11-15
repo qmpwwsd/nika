@@ -266,6 +266,9 @@ fn make_window(app: &AppHandle, url: WebviewUrl, port: Option<u16>, init: Option
         .min_inner_size(720.0, 480.0)
         .center()
         .visible(visible)
+        // Tauri's own drag-and-drop handler is off, so a file dropped on the message box reaches the page as an HTML5 drop. nika registers
+        // no Tauri drag-drop listener; the page cancels a drop anywhere else, and a file: navigation is denied below.
+        .disable_drag_drop_handler()
         .on_navigation(move |url| match nav::classify(url, port) {
             Nav::Allow => true,
             Nav::Retry => {

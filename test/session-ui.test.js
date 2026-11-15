@@ -146,7 +146,7 @@ describe('session.html under the strict CSP', () => {
 describe('contracts with the other UI modules', () => {
   test('(+) session.js imports only names the shared modules export, from sibling files', () => {
     const imports = [...JS['session.js'].matchAll(/import \{([^}]+)\} from '([^']+)'/g)];
-    assert.deepEqual(imports.map((m) => m[2]), ['./dom.js', './api.js', './dash-model.js', './mirror-render.js', './draft-sync.js', './modes.js', './quick-actions.js', './models-ui.js', './end-dialog.js', './palette.js', './shortcuts.js', './fit-ui.js', './scroll.js']);
+    assert.deepEqual(imports.map((m) => m[2]), ['./dom.js', './api.js', './dash-model.js', './mirror-render.js', './draft-sync.js', './modes.js', './quick-actions.js', './models-ui.js', './end-dialog.js', './palette.js', './shortcuts.js', './fit-ui.js', './scroll.js', './attach.js']);
     for (const [, names, from] of imports) {
       const exported = read(from.slice(2));
       for (const n of names.split(',').map((x) => x.trim())) assert.match(exported, new RegExp(`export (async )?(function|const|let) ${n}\\b`), `${from} exports ${n}`);
@@ -1284,9 +1284,9 @@ describe('Task 14b: wiring of the page rules', () => {
       sending: false, composer: () => ta, S: { on: shell }, W: { promptOpen, prompt, pane }, A: { kind }, sendGate: sendGateReal, hasAnswerButtons: hasAnswerButtonsReal, planShell: planShellReal, planSend: planSendReal,
       showProblem: (m, k) => log.problems.push([m, k]), enqueueSeq: async (p) => { log.sent.push(p); return { ok: true }; }, $: () => el(), say: (m) => log.said.push(m),
       paneId: '%12', setShell: () => { log.shellOff += 1; }, grow() {}, updateChip() {},
-      DS: { screen: () => null, beginSend() {}, endSend() {}, sent() {} }, draftSendPlan: draftSendPlanReal, M: { cols: 120 },
+      DS: { screen: () => null, beginSend() {}, endSend() {}, sent() {} }, draftSendPlan: draftSendPlanReal, M: { cols: 120 }, ATT: { pending: () => false },
     };
-    return { log, ta, send: mk(['async function sendComposer()'], ctx).sendComposer };
+    return { log, ta, send: mk(['async function sendComposer()', 'function clearBox(value)'], ctx).sendComposer };
   };
   const GATE = 'Answer the prompt with the buttons above or in the terminal.';
   const NO_BUTTONS = 'Answer the prompt in the terminal, or turn on Type into pane.';
@@ -1944,7 +1944,7 @@ describe('0.3.3: arrow keys from an empty message box are batched (spec 4.2)', (
     };
     const api = mk(['function queueArrow(key, repeat)', 'function flushArrows()', 'function echoArrows()', 'function endArrows()', 'function setInputEnabled(on, why)'], {
       AR, enqueue, chain: Promise.resolve(), say: (m) => log.said.push(m), paneId: '%12', arrowEcho: arrowEchoReal, setTimeout: globalThis.setTimeout, clearTimeout: globalThis.clearTimeout,
-      $: () => ({ focus() {} }), refocus: { composer: false }, closePalette() {}, setPass() {}, idlePlaceholder: () => '', renderSuggestion() {},
+      $: () => ({ focus() {} }), refocus: { composer: false }, closePalette() {}, setPass() {}, idlePlaceholder: () => '', renderSuggestion() {}, ATT: { enable() {} },
       document: { activeElement: null, querySelector: () => ({ classList: { toggle() {} } }) },
     });
     const norm = (v) => JSON.parse(JSON.stringify(v)); // arrays built inside the vm have another Array.prototype
@@ -2735,7 +2735,7 @@ describe('0.5: drawing the mirror with the cut (design W6, section 5)', () => {
     const log = [];
     const ctx = {
       recovered() {}, noteScreen() {}, $: () => ({ style: {}, scrollTop: 0, scrollHeight: 9 }), M: { frozen: false, scrollTop: 0 }, setLive() {}, MID: ' - ', TIMES: 'x', ETAG: /^[0-9a-f]{1,64}$/,
-      cleanDraft: cleanDraftReal, DS: { capture: (d, cols) => log.push(['capture', d, cols]) }, drawMirror: () => log.push(['draw']), renderSuggestion: () => log.push(['suggest']),
+      cleanDraft: cleanDraftReal, DS: { capture: (d, cols) => log.push(['capture', d, cols]) }, drawMirror: () => log.push(['draw']), renderSuggestion: () => log.push(['suggest']), ATT: { sending: () => false },
       setGone() {}, serverMessage: () => '', setPaneState() {}, setInputEnabled() {}, showOverlay() {},
     };
     const body = { ...BODY, draft: readable(), etag: 'ab12' };
@@ -2749,7 +2749,7 @@ describe('0.5: drawing the mirror with the cut (design W6, section 5)', () => {
     const drew = [];
     const ctx = {
       recovered() {}, noteScreen() {}, $: () => ({ style: {}, scrollTop: 0, scrollHeight: 9 }), M: { frozen: false }, setLive() {}, MID: ' - ', TIMES: 'x', ETAG: /^[0-9a-f]{1,64}$/,
-      cleanDraft: cleanDraftReal, DS: { capture: () => { throw new Error('boom'); } }, drawMirror: () => drew.push(1), renderSuggestion() {},
+      cleanDraft: cleanDraftReal, DS: { capture: () => { throw new Error('boom'); } }, drawMirror: () => drew.push(1), renderSuggestion() {}, ATT: { sending: () => false },
     };
     assert.doesNotThrow(() => vm.runInNewContext(`${fnOf('function handleCapture(r)')}; handleCapture`, ctx)({ status: 200, body: { ...BODY, draft: readable() } }));
     assert.equal(drew.length, 1);
@@ -2913,8 +2913,9 @@ describe('0.5: Send with the synced box (design W5, section 4)', () => {
       enqueueJob: (run) => run(),
       enqueueSeq: async (p) => { log.order.push('keys'); log.payloads.push(norm(p)); return { ok: true }; },
       deliver: async (p) => { log.order.push('keys'); log.payloads.push([norm(p)]); return { ok: true }; },
+      ATT: { pending: () => false },
     };
-    return { log, ta, send: mk(['async function sendComposer()', 'async function pushThenEnter(route)'], ctx).sendComposer };
+    return { log, ta, send: mk(['async function sendComposer()', 'async function pushThenEnter(route)', 'function clearBox(value)'], ctx).sendComposer };
   };
   const ENTER = [[{ keys: ['Enter'] }]];
 
