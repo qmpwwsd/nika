@@ -80,6 +80,7 @@ export function createAttachSend({ mirror, keys, store, lock, keyGap, vimOf, pla
     // 3. one fresh capture with no permission prompt (T51: a paste never lands in a prompt)
     let seen = await look();
     if (seen.res) return seen.res;
+    // permission prompts only: a W1 dialog (question, review, plan, exit, nudge) is refused by the box read below (unknown footer, readBox); pinned by a test
     if (promptFromRows(seen.rows) !== null) return refuse('not-idle');
     // 4.-9. the box is plain, readable, ours to paste into, and the page synced on exactly this
     const box = readSeen(seen);

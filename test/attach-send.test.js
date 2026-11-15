@@ -2,6 +2,8 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { createAttachSend, checkAttachBody, errorCode, logLine } from '../src/attach-send.js';
 import { readDraft } from '../src/session-control.js';
+import { dialogOnScreen } from '../src/dialog.js';
+import { promptFromRows } from '../src/mode.js';
 import { boxRows, span } from './helpers.js';
 
 // The attachment send (0.5, W2, design-W2 section 5, T38, T51). Synthetic screens and files only: a scripted Claude pane (a box that
@@ -20,12 +22,34 @@ const PANE = '%7';
 const BASE = '0000000000000000';
 const chop = (text, width) => { const out = []; for (let i = 0; i < text.length; i += width) out.push(text.slice(i, i + width)); return out.length ? out : ['']; };
 const PROMPT = () => ({ rows: [[span('Read file')], [span(' Do you want to proceed?')], [span(' ❯ 1. Yes')], [span('   2. No')], [span(' Esc to cancel')]], cursor: { x: 0, y: 0, visible: true }, cols: 100 });
+// A turn that runs (spike W13 section 5): a queued grey `❯ <text>` row, `ctrl+x ctrl+s to send now`, the spinner row, then the box whose mode line ends in `· esc to interrupt`.
+const BUSY_ABOVE = () => [[span('⏺ Working on it')], [span('❯ queued earlier', { fg: 246 })], [span('  ctrl+x ctrl+s to send now')], [span('✢ Drizzling… (12s · esc to interrupt)')], []];
+const BUSY_FOOTER = { auto: '⏵⏵ auto mode on (shift+tab to cycle) · esc to interrupt', unknown: '? for shortcuts · esc to interrupt' };
+// The five W1 dialogs (shapes of test/dialog.test.js, synthetic), as a capture { rows, cursor, cols }. The nudge keeps an input box and a mode line under the dialog.
+const DIM = { fg: 246 };
+const ACC = { fg: 153 };
+const dline = (t) => (Array.isArray(t) ? t : t === '' ? [] : [span(t)]);
+const dcap = (rows, cursor = { x: 2, y: 0, visible: true }) => ({ rows: rows.map(dline), cursor, cols: 100 });
+const RULE = (style) => [span('─'.repeat(100), style)];
+const DIALOGS = {
+  nudge: () => {
+    const rows = [['⏺ All done.', ''], [RULE(ACC)], [[span('  Teach auto mode about your environment?', { b: true })]], [''], ['  Auto mode works better when it knows your environment.'], [''],
+      ['  ❯ 1. Yes', '    2. Not now', "    3. Don't show again"], [''], [[span('  Enter to confirm · Esc to cancel', { fg: 246, i: true })]], [RULE(DIM)], ['❯'], [RULE(DIM)],
+      ['  -- INSERT -- ⏵⏵ auto mode on (shift+tab to cycle)']].flat(1);
+    return dcap(rows, { x: 2, y: rows.indexOf('❯'), visible: true });
+  },
+  ask: () => dcap([['⏺ I have a question first.', ''], [RULE(DIM)], [' ☐ Project  ☐ Tools  ✔ Submit'], [''], ['Which project should I open?'], [''], ['❯ 1. acme-api', '  2. web-shop', '  3. Type something.'], [''], ['Enter to select · Tab/Arrow keys to navigate · Esc to cancel']].flat(1)),
+  plan: () => dcap([['⏺ plan', ''], [[span(`  ${'─'.repeat(96)}`, ACC)]], ['   Ready to code?'], [''], ["   Here is Claude's plan:"], ['   - do it'], [[span(`  ${'─'.repeat(96)}`, ACC)]],
+    ['   Claude has written up a plan and is ready to execute. Would you like to proceed?'], [''], ['   ❯ 1. Yes, and use auto mode', '     2. Yes, manually approve edits', '     3. Tell Claude what to change'], [''], ['   ctrl+g to edit in Vim · <plans>/demo-api.md']].flat(1)),
+  exit: () => dcap([['⏺ Done planning.', ''], [`  ${'─'.repeat(96)}`], ['   Exit plan mode?'], [''], ['    Claude wants to exit plan mode'], [''], ['    ❯ 1. Yes, and switch to default (ask each time) for this session'], ['      2. No']].flat(1)),
+  review: () => dcap([['⏺ Reviewing.', ''], [RULE(DIM)], ['Review your answers'], [''], [' ● Which project should I open?'], ['   → web-shop'], [''], ['Ready to submit your answers?'], [''], ['❯ 1. Submit answers'], ['  2. Cancel']].flat(1)),
+};
 const SURVEY = ['● How is Claude doing this session? (optional)', '  1: Bad    2: Fine    3: Good    0: Dismiss'];
 
-/** A scripted pane + fakes. `o`: cols, insert (vim INSERT shown), vim / plain (nika's memory), spaces ('none' | 'claude'), lag (captures before a paste shows), imageStaysText, drop, text, records, lockBusy, registry (false = the caller passes no stateOf), queued (the empty box shows Claude's queued placeholder). */
+/** A scripted pane + fakes. `o`: cols, insert (vim INSERT shown), vim / plain (nika's memory), spaces ('none' | 'claude'), lag (captures before a paste shows), imageStaysText, drop, text, records, lockBusy, registry (false = the caller passes no stateOf), queued (the empty box shows Claude's queued placeholder), busy (false | 'auto' | 'unknown': a running turn's rows above the box and `· esc to interrupt` in its mode line; the footer is a known mode line or not; `pane.busy` changes it mid-send). */
 function rig(o = {}) {
-  const opt = { cols: 100, insert: false, vim: false, plain: false, spaces: 'none', lag: 0, imageStaysText: false, drop: false, text: '', lockBusy: false, registry: true, queued: false, ...o };
-  const pane = { text: opt.text, n: 0, prompt: false, screen: null, mode: 'prompt', state: 'idle', gap: false, cursor: undefined, pending: [], submitted: [], stateThrows: false, ghost: null };
+  const opt = { cols: 100, insert: false, vim: false, plain: false, spaces: 'none', lag: 0, imageStaysText: false, drop: false, text: '', lockBusy: false, registry: true, queued: false, busy: false, ...o };
+  const pane = { text: opt.text, n: 0, prompt: false, screen: null, mode: 'prompt', state: 'idle', gap: false, cursor: undefined, pending: [], submitted: [], stateThrows: false, ghost: null, busy: opt.busy };
   const sent = [];
   const captures = [];
   const slept = [];
@@ -38,7 +62,10 @@ function rig(o = {}) {
   const render = () => {
     if (pane.screen) return pane.screen;
     if (pane.prompt) return PROMPT();
-    return boxRows({ cols: opt.cols, lines: pane.text === '' ? [''] : chop(pane.text, opt.cols - 4), mode: pane.mode, insert: opt.insert, ghost: pane.text === '' ? (opt.queued ? 'Press up to edit queued messages' : 'Try "fix lint errors"') : pane.ghost, cursor: pane.cursor, pad: true });
+    const box = boxRows({ cols: opt.cols, lines: pane.text === '' ? [''] : chop(pane.text, opt.cols - 4), mode: pane.mode, insert: opt.insert, ghost: pane.text === '' ? (opt.queued ? 'Press up to edit queued messages' : 'Try "fix lint errors"') : pane.ghost, cursor: pane.cursor, footer: pane.busy ? BUSY_FOOTER[pane.busy] : undefined, pad: true });
+    if (!pane.busy) return box;
+    const above = BUSY_ABOVE();
+    return { ...box, rows: [...above, ...box.rows], cursor: box.cursor && { ...box.cursor, y: box.cursor.y + above.length } };
   };
   const mirror = {
     async capture(id, inm, o2) {
@@ -236,9 +263,20 @@ describe('send: the road that works', () => {
     }
   });
 
-  test('(+) W13: Claude turns busy (or the registry flips) after the first paste: the send goes on and presses its one Enter', async () => {
+  test('(+) W13: a real busy screen (queued `❯` row, `ctrl+x ctrl+s to send now`, spinner row, `· esc to interrupt` mode line), typed text or the queued placeholder: the pastes and one Enter, 200', async () => {
+    for (const o of [{ text: 'look' }, { queued: true }]) {
+      const rg = rig({ ...o, busy: 'auto' });
+      const r = await go(rg, [PNG, PDF]);
+      assert.deepEqual(r, { status: 200, body: { sent: 2, images: 1 } }, JSON.stringify(o));
+      assert.deepEqual(rg.sent, [{ paste: PNG.path }, { paste: ` ${PDF.path}` }, { keys: ['Enter'] }]);
+      assert.deepEqual(rg.pane.submitted, [`${o.text ?? ''}[Image #1] ${PDF.path}`]);
+      assert.deepEqual(rg.states, []);
+    }
+  });
+
+  test('(+) W13: a turn starts between the pastes (the screen turns busy): the send goes on and presses its one Enter', async () => {
     const rg = rig({ text: 'go' });
-    rg.pane.state = (nSent) => (nSent >= 1 ? 'busy' : 'idle');
+    rg.pane.onSend = (b, n) => { if (n === 1) rg.pane.busy = 'auto'; };
     const r = await go(rg, [PNG, PDF]);
     assert.equal(r.status, 200);
     assert.deepEqual(rg.pane.submitted, [`go[Image #1] ${PDF.path}`]);
@@ -302,6 +340,13 @@ describe('send: nothing is sent', () => {
     const rg = rig();
     rg.pane.prompt = true;
     await refused(rg, [PNG], 'not-idle', { base: BASE });
+  });
+
+  test('(−) W13: a busy screen whose mode line is not one nika knows (`? for shortcuts · esc to interrupt`): mode-unknown, zero keys', async () => {
+    for (const o of [{ text: 'look' }, { queued: true }]) {
+      const rg = rig({ ...o, busy: 'unknown' });
+      await refused(rg, [PNG], 'mode-unknown', { base: BASE });
+    }
   });
 
   test('(−) mode-unknown for a dialog footer, input-unreadable for a screen with a known footer and no box, for the survey and for no cursor', async () => {
@@ -395,11 +440,22 @@ describe('send: it stops when the screen is not what was built (T38, T51)', () =
     await stopped(rg, [PNG], 'screen-changed', 1);
   });
 
-  test('(−) a Stop or End Escape goes out after the last paste: not-idle { pasted: n }, no Enter; nothing is cleared', async () => {
-    const rg = rig({ text: 'go' });
-    rg.pane.gap = (nSent) => nSent >= 2;
-    await stopped(rg, [PNG, PDF], 'not-idle', 2);
-    assert.equal(rg.pane.text, `go[Image #1] ${PDF.path}`, 'the box is left as it is');
+  // W13: no registry check stands in front of these any more. promptFromRows does not see a W1 dialog; the box reader's unknown-footer gate
+  // (readBox) refuses it, and this table pins that gate for every shape, on a busy pane, at the three looks that precede a key.
+  test('(−) W13: each W1 dialog (nudge, ask, plan, exit, review) on screen at the first look, between the pastes or right before the Enter: 409, no Enter, no paste after it appeared', async () => {
+    for (const [name, make] of Object.entries(DIALOGS)) {
+      assert.equal(dialogOnScreen(make().rows), true, `${name}: a real dialog shape`);
+      assert.equal(promptFromRows(make().rows), null, `${name}: the permission-prompt check does not see it`);
+      // captures of a two-file send: 1 first look, 2 read-back, 3 look before paste 2, 4 read-back, 5 the look before Enter
+      for (const [at, error, pasted] of [[1, 'mode-unknown', 0], [3, 'screen-changed', 1], [5, 'screen-changed', 2]]) {
+        const rg = rig({ busy: 'auto' });
+        rg.pane.onCapture = (n) => { if (n === at) rg.pane.screen = make(); };
+        const r = await stopped(rg, [PNG, PDF], error, pasted);
+        assert.equal(r.body.pasted, pasted, `${name} at capture ${at}`);
+        assert.deepEqual(pastes(rg), [PNG.path, ` ${PDF.path}`].slice(0, pasted), `${name} at capture ${at}: no paste after the dialog appeared`);
+        assert.equal(rg.sent.length, pasted, `${name} at capture ${at}: no key but those pastes`);
+      }
+    }
   });
 
   test('(−) a Stop or End Escape goes out between the pastes, or right before the Enter: not-idle, no further key', async () => {
@@ -407,9 +463,10 @@ describe('send: it stops when the screen is not what was built (T38, T51)', () =
     before2.pane.gap = (nSent) => nSent >= 1;
     await stopped(before2, [PNG, PDF], 'not-idle', 1);
     assert.deepEqual(pastes(before2), [PNG.path]);
-    const beforeEnter = rig();
-    beforeEnter.pane.gap = (nSent) => nSent >= 1;
-    await stopped(beforeEnter, [PNG], 'not-idle', 1);
+    const beforeEnter = rig({ text: 'go' });
+    beforeEnter.pane.gap = (nSent) => nSent >= 2;
+    await stopped(beforeEnter, [PNG, PDF], 'not-idle', 2);
+    assert.equal(beforeEnter.pane.text, `go[Image #1] ${PDF.path}`, 'the box is left as it is');
   });
 
   test('(−) an image path that stays text after 1.5 s: not-taken { pasted: 1, id } after ten polls; the path is not cleared', async () => {
