@@ -35,6 +35,26 @@ describe('quickState: the spec 9.4 states table, first matching row wins', () =>
     for (const n of FOUR) assert.equal(st[n].title, 'Available when Claude is waiting for you', n);
   });
 
+  const STOP_QUEUED = "Stop ends Claude's current step. Your queued message then goes to Claude at once.";
+
+  test('(+) W13: working with a message of ours in Claude\'s queue, Stop is live and its title says what Stop does with it', () => {
+    const st = quickState({ status: 'busy', queued: true });
+    assert.equal(st.stop.off, false);
+    assert.equal(st.stop.title, STOP_QUEUED);
+    assert.equal(st.end.title, 'Claude exits and the pane closes', 'only Stop\'s title changes');
+    assert.equal(st.reason, 'Compact, Clear, Model and Rewind are ready when Claude waits for you.');
+  });
+
+  test('(−) W13: the queued title appears only while queued: not by default, not for queued false or any other value, and never outside a working Claude', () => {
+    const STOP = 'Stops this turn (Esc in the pane; twice in vim insert mode). Keeps the work, also stops running subagents';
+    assert.equal(quickState({ status: 'busy' }).stop.title, STOP);
+    for (const queued of [false, undefined, null, 'true', 1, {}]) assert.equal(quickState({ status: 'busy', queued }).stop.title, STOP, String(queued));
+    for (const c of [{ status: 'idle' }, { status: 'attn' }, { status: 'ended' }, { status: null }, { status: 'busy', prompt: PROMPT }, { pane: 'gone', status: 'busy' }, { pane: 'tmux', status: 'busy' }]) {
+      assert.notEqual(quickState({ ...c, queued: true }).stop.title, STOP_QUEUED, JSON.stringify(c));
+      assert.equal(quickState({ ...c, queued: true }).stop.off, true, JSON.stringify(c));
+    }
+  });
+
   test('(+) Rewind follows the same gate as Compact, Clear and Model: it does not read nika\'s own message box any more', () => {
     for (const composerEmpty of [true, false]) {
       const st = quickState({ status: 'idle', composerEmpty }); // an old caller may still pass it; it changes nothing
@@ -403,14 +423,22 @@ describe('endNote (the muted line of the End dialog)', () => {
   });
 });
 
-describe('planShell (spec 9.6 sends: C-u, then ! + text, then Enter)', () => {
-  test('(+) a command becomes the three payloads in order, every key on the server allow-list', () => {
+describe('planShell (spec 9.6 sends: C-u, then ! + text; the Enter is the submit route\'s, W13)', () => {
+  test('(+) a command becomes the two payloads in order, every key on the server allow-list; the summary still names the Enter', () => {
     const p = planShell('git status --short');
     assert.equal(p.ok, true);
     assert.equal(p.empty, undefined);
-    assert.deepEqual(p.payloads, [{ keys: ['C-u'] }, { text: '!git status --short' }, { keys: ['Enter'] }]);
+    assert.deepEqual(p.payloads, [{ keys: ['C-u'] }, { text: '!git status --short' }]);
     for (const k of p.payloads.flatMap((x) => x.keys ?? [])) assert.ok(KEY_NAME.has(k), k);
-    assert.match(p.summary, /shell command/);
+    assert.match(p.summary, /shell command .* \+ Enter$/);
+  });
+
+  test('(−) W13: no payload carries an Enter key, for any command (Send presses Enter only through the submit route)', () => {
+    for (const v of ['ls', 'git status --short', 'echo "a  b"', 'x'.repeat(1023)]) {
+      const p = planShell(v);
+      assert.equal(p.ok, true, v.slice(0, 12));
+      assert.equal(JSON.stringify(p.payloads).includes('Enter'), false, v.slice(0, 12));
+    }
   });
 
   test('(+) trailing newlines are trimmed and the command itself is untouched (inner spaces stay)', () => {

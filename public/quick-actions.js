@@ -17,6 +17,7 @@ const WHY = {
 
 const TITLE = {
   stop: 'Stops this turn (Esc in the pane; twice in vim insert mode). Keeps the work, also stops running subagents',
+  stopQueued: "Stop ends Claude's current step. Your queued message then goes to Claude at once.", // only while Claude holds a message of ours in its queue (W13)
   stopIdle: 'Nothing to stop: Claude is waiting',
   stopPrompt: 'Esc = No is in the prompt panel',
   stopAttn: 'Answer the prompt first; Esc in the message box cancels it',
@@ -34,9 +35,10 @@ const TITLE = {
  * Which quick actions are live and why the others are not (spec 9.4, the first matching row wins). Inputs: `pane` ('ok' | 'gone' |
  * 'tmux' | 'connecting'), `status` (the agent's 'attn' | 'idle' | 'busy' | 'ended', null while unknown: the route then decides and
  * answers 409 not-idle), `prompt` (the capture's prompt or null), `switching` (a mode switch or a quick action from this window is
- * in flight). Output: for each button { off (aria-disabled), title }, and `reason` ('' = no reason line).
+ * in flight), `queued` (the capture's draft says Claude holds a message of ours in its queue: Stop's title then says what Stop does with
+ * it, W13; only a working Claude has anything to stop). Output: for each button { off (aria-disabled), title }, and `reason` ('' = no reason line).
  */
-export function quickState({ pane = 'ok', status = null, prompt = null, switching = false } = {}) {
+export function quickState({ pane = 'ok', status = null, prompt = null, switching = false, queued = false } = {}) {
   const b = (off, title) => ({ off, title });
   const gated = (live, title) => b(!live, live ? title : TITLE.idleOnly); // live only while Claude waits
   if (pane !== 'ok') {
@@ -52,7 +54,7 @@ export function quickState({ pane = 'ok', status = null, prompt = null, switchin
   });
   if (prompt) return allOff(TITLE.stopPrompt, WHY.promptShown);
   if (status === 'attn') return allOff(TITLE.stopAttn, WHY.prompt);
-  if (status === 'busy') return { ...allOff(TITLE.stopIdle, WHY.working), stop: b(false, TITLE.stop) };
+  if (status === 'busy') return { ...allOff(TITLE.stopIdle, WHY.working), stop: b(false, queued === true ? TITLE.stopQueued : TITLE.stop) };
   if (status === 'ended') return { ...allOff(TITLE.stopIdle, WHY.working), end: b(true, TITLE.endEnded) }; // nothing to end: the route could only say not-idle
   const live = !switching; // idle, or not known yet: the route checks
   return {
@@ -104,6 +106,7 @@ export function cleanPrompt(raw) {
 /**
  * Does Send (text, paste, the lone Enter of an empty box) or Shell go out? Not while a permission prompt is open or the agent needs
  * you: Enter would confirm the highlighted option and a digit would pick one. The terminal (passthrough) is the raw way and is not gated here.
+ * Working does not gate Send: Claude queues the message (W13). The server's submit route refuses a prompt that opened after the page looked.
  */
 export function sendGate({ promptOpen = false, status = null, buttons = false, bypass = false } = {}) {
   if (!promptOpen && status !== 'attn') return { ok: true };
@@ -310,8 +313,9 @@ const CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
 
 /**
  * What Enter does while Shell is on (spec 9.6), in the shape of planSend: `{ ok: true, empty: true }` (nothing is sent, no lone
- * "!"), `{ ok: false, message }` (the text is kept) or `{ ok: true, payloads, summary }` with the three keys-route bodies in
- * order: Ctrl-U, "!" + the command, Enter. The command is one line: the route refuses control characters in `text`.
+ * "!"), `{ ok: false, message }` (the text is kept) or `{ ok: true, payloads, summary }` with the two keys-route bodies in
+ * order: Ctrl-U, "!" + the command. The Enter is not among them: Send presses it through the submit route (W13). The command is one
+ * line: the route refuses control characters in `text`.
  */
 export function planShell(value) {
   const v = String(value ?? '').replace(/\r\n?/g, '\n').replace(/\n+$/, '');
@@ -319,7 +323,7 @@ export function planShell(value) {
   if (v.includes('\n')) return { ok: false, message: 'Shell mode sends one line. Remove the line breaks or turn Shell off. Your text is kept.' };
   if (CONTROL.test(v)) return { ok: false, message: 'Shell mode cannot send control characters. Your text is kept.' };
   if (v.length + 1 > TEXT_MAX) return { ok: false, message: `A shell command can be at most ${TEXT_MAX - 1} characters. Shorten it. Your text is kept.` };
-  return { ok: true, payloads: [{ keys: ['C-u'] }, { text: `!${v}` }, { keys: ['Enter'] }], summary: `a shell command (${v.length} characters) + Enter` };
+  return { ok: true, payloads: [{ keys: ['C-u'] }, { text: `!${v}` }], summary: `a shell command (${v.length} characters) + Enter` };
 }
 
 /** The shapes session.js validates its URL with (the one copy; session.js imports them). */

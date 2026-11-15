@@ -87,7 +87,7 @@ function rig(opts = {}) {
     return e;
   };
   const log = { calls: [], say: [], announce: [], problem: [], notice: [], gone: 0, ds: [], clear: [], focus: 0, jobs: 0, sleeps: [] };
-  const state = { screen: opts.screen === undefined ? screenOf() : opts.screen, working: false, shell: false, pushed: null, sentReply: null, n: 0, pickStart: null, polls: [], gate: null };
+  const state = { screen: opts.screen === undefined ? screenOf() : opts.screen, shell: false, pushed: null, sentReply: null, n: 0, pickStart: null, polls: [], gate: null };
   const reply = opts.reply ?? ((p, o) => {
     if (isUpload(p, o)) {
       state.n += 1;
@@ -115,7 +115,7 @@ function rig(opts = {}) {
         log.ds.push(['send', text]);
         if (state.pushed) return state.pushed;
         state.screen = screenOf({ state: 'text', text, sig: SIG2 }); // the answer of the push carries the screen's new draft
-        return { ok: true };
+        return { ok: true, sig: SIG2 };
       },
       beginSend: () => log.ds.push(['begin']),
       endSend: () => log.ds.push(['end']),
@@ -128,7 +128,6 @@ function rig(opts = {}) {
     showNotice: (m) => log.notice.push(m),
     setGone: () => { log.gone += 1; },
     box: () => ({ value: '', shell: state.shell }),
-    working: () => state.working,
     cols: () => 120,
     clearBox: (v) => log.clear.push(v),
     focusBox: () => { log.focus += 1; },
@@ -226,7 +225,7 @@ describe('sendView: section 8.6, send rows', () => {
   const s = (status, error, extra = {}, c = ctx) => sendView({ status, body: { error, pasted: 0, ...extra } }, c);
 
   test('(+) nothing pasted: one fixed line per code', () => {
-    assert.equal(s(409, 'not-idle').line, 'Attachments go when Claude is waiting. Nothing was sent; your text and attachments are kept.');
+    assert.equal(s(409, 'not-idle').line, 'A prompt is open in Claude or Stop is running. Nothing was sent; your text and attachments are kept.');
     for (const c of ['mode-unknown', 'input-unreadable']) assert.equal(s(409, c).line, "nika can't read Claude's input box right now (a menu may be open). Nothing was sent. Your text is kept.");
     assert.equal(s(409, 'draft-unreadable', { reason: 'pasted' }).line, "Claude's input holds something nika can't read back. Send or clear it in the terminal, then try again.");
     assert.equal(s(409, 'draft-changed').line, "Claude's input changed while nika was getting ready. Nothing was sent; try again.");
@@ -253,7 +252,7 @@ describe('sendView: section 8.6, send rows', () => {
     const tail = " Send or clear Claude's input in the terminal (Esc twice), then send again. Your text and attachments are kept here.";
     assert.equal(s(409, 'screen-changed', { pasted: 1 }).line, `nika put 1 of 3 attachments into Claude's input, then stopped without pressing Enter: Claude's screen changed (a prompt, a menu or a search may be open; Esc closes a search).${tail}`);
     assert.equal(s(409, 'not-taken', { pasted: 2, id: 'aaaaaaaaaaaaaaaa' }).line, `nika put 2 of 3 attachments into Claude's input, then stopped without pressing Enter: Claude didn't take plan.pdf.${tail}`);
-    assert.equal(s(409, 'not-idle', { pasted: 3 }).line, `nika put 3 of 3 attachments into Claude's input, then stopped without pressing Enter: Claude started working.${tail}`);
+    assert.equal(s(409, 'not-idle', { pasted: 3 }).line, `nika put 3 of 3 attachments into Claude's input, then stopped without pressing Enter: a prompt opened or Stop ran.${tail}`);
     assert.ok(s(409, 'not-taken', { pasted: 1, id: 'cccccccccccccccc' }).line.includes("Claude didn't take the file."));
     assert.match(s(409, 'screen-changed', { pasted: 1 }, { total: 1, nameOf: () => null }).line, /^nika put 1 of 1 attachment into/);
   });
@@ -1187,15 +1186,21 @@ describe('Send with attachments: the table of section 6', () => {
     assert.equal(r.log.jobs, 0);
   });
 
-  test('(−) Claude is working (owner Q1): refused, text and chips stay', async () => {
+  test('(+) W13: Claude working does not stop the send: the tray asks nothing about it (its io has no `working`), and the attach-send goes out with the sig of the push', async () => {
     const r = rig();
-    await r.add(file('a.md'));
-    r.state.working = true;
-    await r.att.send('hi');
-    assert.equal(r.log.problem.at(-1)[0], 'Attachments go when Claude is waiting. Wait for this turn to end, or press Stop. Your text and attachments are kept.');
-    assert.equal(r.chips().length, 1);
-    assert.deepEqual(r.log.clear, []);
-    assert.deepEqual(r.log.ds, []);
+    assert.equal('working' in r.io, false, 'the io the page hands in has no Claude-is-busy question any more');
+    await r.add(file('a.png'));
+    await r.att.send('look at this');
+    const sends = r.log.calls.filter((c) => c.method === 'POST' && /\/attach-send$/.test(c.path));
+    assert.equal(sends.length, 1);
+    assert.equal(sends[0].json.base, SIG2);
+    assert.equal(r.chips().length, 0, 'sent: the tray is empty');
+    assert.deepEqual(r.log.clear, ['look at this']);
+  });
+
+  test('(−) W13: the old refusal is gone from the page: no `working` in attach.js, no "when Claude is waiting" line', () => {
+    assert.doesNotMatch(code(SRC), /\bworking\b/);
+    assert.doesNotMatch(SRC, /Attachments go when Claude is waiting|Wait for this turn to end/);
   });
 
   test('(−) the sync plan refuses (Claude\'s input holds a pasted block): its own message, nothing sent', async () => {
@@ -1261,6 +1266,17 @@ describe('Send with attachments: the table of section 6', () => {
     await r.att.send('');
     assert.deepEqual(r.log.ds, [['begin'], ['end']]);
     assert.deepEqual(sends(r)[0].json, { ids: [uploadId(1)], base: SIG });
+  });
+
+  test('(+) W13: the empty-over-empty case is "nothing to send" for a plain Send, but attachments are something to send: an empty Claude input (with a suggestion or Claude\'s queue) still takes them', async () => {
+    for (const screen of [screenOf({ suggestion: 'run the tests in acme-api' }), screenOf({ queued: true })]) {
+      const r = rig({ screen });
+      await r.add(file('a.png'));
+      await r.att.send('');
+      assert.deepEqual(r.log.ds, [['begin'], ['end']]);
+      assert.deepEqual(sends(r)[0].json, { ids: [uploadId(1)], base: SIG });
+      assert.deepEqual(r.log.ds.filter(([k]) => k === 'send'), [], 'no text is pushed');
+    }
   });
 
   test('(−) the push does not land: its message, no attach-send, chips and text kept, the sync released', async () => {
@@ -1353,7 +1369,7 @@ describe('Send with attachments: the table of section 6', () => {
 
   test('(−) every refusal keeps the text and the chips, shows its line, and releases the sync', async () => {
     const cases = [
-      [409, { error: 'not-idle', pasted: 0 }, 'Attachments go when Claude is waiting. Nothing was sent; your text and attachments are kept.'],
+      [409, { error: 'not-idle', pasted: 0 }, 'A prompt is open in Claude or Stop is running. Nothing was sent; your text and attachments are kept.'],
       [409, { error: 'draft-changed', pasted: 0, draft: {} }, "Claude's input changed while nika was getting ready. Nothing was sent; try again."],
       [409, { error: 'screen-changed', pasted: 0 }, "Claude's screen changed, so nothing was sent."],
       [409, { error: 'busy-switching', pasted: 0 }, 'Another action is running on this session. Try again in a moment.'],
@@ -1581,8 +1597,8 @@ describe('the hooks in session.js (H6)', () => {
     const att = src.indexOf('const ATT = createAttachTray(');
     assert.ok(ds >= 0 && att > ds);
     const call = src.slice(att, src.indexOf('});', att) + 3);
-    for (const k of ['paneId', 'path:', 'call', 'appFetch', 'ds: DS', 'enqueueJob', 'say', 'announce', 'showProblem', 'clearProblem', 'showNotice', 'setGone', 'box:', 'working:', 'cols:', 'clearBox', 'focusBox']) assert.ok(call.includes(k), k);
-    assert.match(call, /working: \(\) => A\.kind === 'busy'/);
+    for (const k of ['paneId', 'path:', 'call', 'appFetch', 'ds: DS', 'enqueueJob', 'say', 'announce', 'showProblem', 'clearProblem', 'showNotice', 'setGone', 'box:', 'cols:', 'clearBox', 'focusBox']) assert.ok(call.includes(k), k);
+    assert.doesNotMatch(call, /working|A\.kind/, 'W13: the tray is not told whether Claude works; attachments go while it does (Claude queues them)');
   });
 
   test('(+) sendComposer hands the send to the tray right after the prompt gate', () => {
@@ -1595,7 +1611,7 @@ describe('the hooks in session.js (H6)', () => {
 
   test('(+) the success block of a send is one function both roads use', () => {
     assert.match(src, /function clearBox\(value\)/);
-    const f = src.slice(src.indexOf('async function sendComposer()'), src.indexOf('async function pushThenEnter'));
+    const f = src.slice(src.indexOf('async function sendComposer()'), src.indexOf('async function pushThenSubmit'));
     assert.match(f, /clearBox\(value\)/);
   });
 

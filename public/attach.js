@@ -54,7 +54,7 @@ const UPLOAD_507 = {
   'disk-full': { short: 'Disk full', line: 'The disk is full. Nothing was saved.' },
 };
 const SEND_LINES = {
-  'not-idle': 'Attachments go when Claude is waiting. Nothing was sent; your text and attachments are kept.',
+  'not-idle': 'A prompt is open in Claude or Stop is running. Nothing was sent; your text and attachments are kept.',
   'mode-unknown': CANT_READ,
   'input-unreadable': CANT_READ,
   'draft-unreadable': DRAFT_UNREADABLE,
@@ -71,14 +71,13 @@ const NO_ANSWER = "nika did not answer, so it is not known whether anything was 
 const TOO_MANY_KEYS = 'Too many keys at once; try again.';
 const STOP_REASONS = {
   'screen-changed': "Claude's screen changed (a prompt, a menu or a search may be open; Esc closes a search)",
-  'not-idle': 'Claude started working',
+  'not-idle': 'a prompt opened or Stop ran',
 };
 const LOCKED = 'Wait until the attachments have gone, then add more.';
 const REFUSE = {
   shell: "Turn Shell off to send attachments: a ! command can't carry them.",
   uploading: 'Wait until the attachments have finished uploading.',
   failed: 'Remove the attachments that failed, then send.',
-  working: 'Attachments go when Claude is waiting. Wait for this turn to end, or press Stop. Your text and attachments are kept.',
   long: 'This message is too long to go with attachments. Send the text first, then the attachments.',
 };
 const READ_NOTICE = [
@@ -173,7 +172,7 @@ const wait = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
  * (session.js owns every /api/app string);
  * call(path, { method, json }) -> { status, body } (never rejects); appFetch(path, { method, keepalive }) (the pagehide delete);
  * ds = the draft sync (screen, send, beginSend, endSend); enqueueJob(run) -> Promise (the keys chain); say, announce, showProblem(msg, kind, ms),
- * clearProblem, showNotice, setGone; box() -> { value, shell }; working() -> Claude is busy; cols(); clearBox(value) (clears the message
+ * clearProblem, showNotice, setGone; box() -> { value, shell }; cols(); clearBox(value) (clears the message
  * box when it still holds `value`); focusBox(). Optional: read(file) -> base64 (default: FileReader), sleep(ms).
  * Returns { wire, enable, pending, sending, send }.
  */
@@ -418,7 +417,6 @@ export function createAttachTray(io) {
     if (io.box().shell) return refuse(REFUSE.shell);
     if (chips.some((c) => c.state === 'uploading')) return refuse(REFUSE.uploading);
     if (chips.some((c) => c.state === 'failed')) return refuse(REFUSE.failed);
-    if (io.working()) return refuse(REFUSE.working);
     const screen = io.ds.screen();
     const plan = draftSendPlan({ value, shell: false, screen, cols: io.cols() });
     if (plan.act === 'refuse') return refuse(plan.message);

@@ -12,7 +12,7 @@ import { moveActive as moveActiveReal, cleanCommands as cleanCommandsReal, palet
 import { wantsHelp, wantsBack, wantsHistToggle, isTextEntry, backHint, helpHint, histHint, passKeyLabel, wireWindowKeys as wireWindowKeysReal } from '../public/shortcuts.js';
 import { quickState as quickStateReal, sendGate as sendGateReal, keysRefusal as keysRefusalReal, stopOutcome as stopOutcomeReal, commandSaid as commandSaidReal, commandFailure as commandFailureReal, problemKind as problemKindReal, followSession as followSessionReal, planShell as planShellReal, cleanPrompt as cleanPromptReal, hasAnswerButtons as hasAnswerButtonsReal, attnNote as attnNoteReal, answerOutcome as answerOutcomeReal, promptOff as promptOffReal, composerKey as composerKeyReal } from '../public/quick-actions.js';
 import { planSend as planSendReal, arrowEcho as arrowEchoReal, keyForEvent as keyForEventReal, planPaste as planPasteReal, toRenderModel as toRenderModelReal, cutCursor as cutCursorReal } from '../public/mirror-render.js';
-import { draftSendPlan as draftSendPlanReal, cleanDraft as cleanDraftReal, cutAt as cutAtReal, caretAfter as caretAfterReal, noteView as noteViewReal, suggestionFor as suggestionForReal } from '../public/draft-sync.js';
+import { draftSendPlan as draftSendPlanReal, cleanDraft as cleanDraftReal, cutAt as cutAtReal, caretAfter as caretAfterReal, noteView as noteViewReal, suggestionFor as suggestionForReal, submitResult as submitResultReal } from '../public/draft-sync.js';
 import { switchFailure as switchFailureReal, MODE_TARGETS, MODE_META } from '../public/modes.js';
 import { createFitPlanner as createFitPlannerReal, panelSize as panelSizeReal, scaleFor as scaleForReal, chipView as chipViewReal } from '../public/fit-ui.js';
 import { createScrollPlanner as createScrollPlannerReal, routeFor as routeForReal, wheelRows as wheelRowsReal, scrollGate as scrollGateReal, viewRowsOf as viewRowsOfReal, pageRowsOf as pageRowsOfReal, refusalLine as refusalLineReal, noteView as scrollNoteViewReal, scrolledSay as scrolledSayReal, NOTE_MS as NOTE_MS_REAL } from '../public/scroll.js';
@@ -55,6 +55,23 @@ const SINKS = [
   ['import' + 'Scripts / document.domain', /importScripts|document\.domain/],
 ];
 const findSinks = (src) => SINKS.filter(([, re]) => re.test(code(src))).map(([name]) => name);
+
+// ---- the Send chain (W13): sendComposer and the functions it ends in, run for real against a fake keys route and a fake submit route ----
+const SEND_FUNCS = [
+  'async function sendComposer()', 'async function pushThenSubmit(route)', 'async function typeThenSubmit(payloads)', 'async function submitEnter(base)',
+  'async function deliverAll(payloads)', 'function clearBox(value)',
+];
+const TAKEN = { status: 200, body: { taken: true, draft: null } };
+const jsonClone = (v) => JSON.parse(JSON.stringify(v)); // objects built inside the vm have another Object.prototype
+/** The log of what went out: `keys` (bodies the keys route got), `posts` ([route tail, body] of the submit route), `order` (their order, with the sync's calls added by the rig). `sent` is both. */
+const sendLog = () => ({ keys: [], posts: [], order: [], get sent() { return [...this.keys, ...this.posts]; } });
+/** The context members the chain needs besides the page's own state. `submit(tail, body)` answers the submit route (default: taken). */
+const sendIo = (log, submit = () => TAKEN) => ({
+  enqueueJob: (run) => run(),
+  deliver: async (payload) => { log.order.push('keys'); log.keys.push(jsonClone(payload)); return { ok: true }; },
+  postRetry: async (tail, body) => { log.order.push(tail); log.posts.push([tail, jsonClone(body)]); return submit(tail, body); },
+  submitResult: submitResultReal, clearProblem() {}, setGone() {},
+});
 
 describe('forbidden sinks', () => {
   for (const [file, src] of Object.entries(JS)) {
@@ -356,8 +373,17 @@ describe('quick actions, prompt buttons, End dialog and Shell (spec 9.4-9.8)', (
       for (const m of src.matchAll(/sendKey\('([^']+)'\)/g)) used.add(m[1]);
       for (const m of src.matchAll(/keys: \[([^\]]*)\]/g)) for (const k of m[1].matchAll(/'([^']+)'/g)) used.add(k[1]);
     }
-    for (const k of ['Escape', 'C-u', 'Enter']) assert.ok(used.has(k), `${k} is sent somewhere`);
+    for (const k of ['Escape', 'C-u']) assert.ok(used.has(k), `${k} is sent somewhere`);
     for (const k of used) assert.ok(KEY_NAME.has(k), k);
+  });
+
+  test('(−) W13: no script or rule file names an Enter key for the keys route: Send presses Enter only through the submit route (the passthrough maps raw keys in mirror-render.js)', () => {
+    for (const f of ['session.js', 'quick-actions.js', 'draft-sync.js']) {
+      const src = code(JS[f]);
+      assert.doesNotMatch(src, /sendKey\('Enter'\)/, f);
+      assert.doesNotMatch(src, /keys: \[[^\]]*'Enter'/, f);
+    }
+    assert.doesNotMatch(code(JS['mirror-render.js']), /keys: \['Enter'\]/);
   });
 
   test('(+) the model popover is a hidden disclosure with a labelled select, a custom field and Cancel / Switch model', () => {
@@ -1297,15 +1323,16 @@ describe('Task 14b: wiring of the page rules', () => {
   // -- B1: Send and Shell wait while a prompt is open
   const RAW_PROMPT = { question: 'Do you want to proceed?', sig: '0123456789abcdef', options: [{ n: 1, label: 'Yes' }, { n: 2, label: 'No' }] };
   const composerRig = ({ value = 'hello', promptOpen = false, kind = 'idle', shell = false, prompt = promptOpen ? cleanPromptReal(RAW_PROMPT) : null, pane = 'ok' } = {}) => {
-    const log = { problems: [], sent: [], said: [], shellOff: 0 };
+    const log = Object.assign(sendLog(), { problems: [], said: [], shellOff: 0 });
     const ta = { value, disabled: false };
     const ctx = {
       sending: false, composer: () => ta, DF: null, S: { on: shell }, W: { promptOpen, prompt, pane }, A: { kind }, sendGate: sendGateReal, hasAnswerButtons: hasAnswerButtonsReal, planShell: planShellReal, planSend: planSendReal,
-      showProblem: (m, k) => log.problems.push([m, k]), enqueueSeq: async (p) => { log.sent.push(p); return { ok: true }; }, $: () => el(), say: (m) => log.said.push(m),
+      showProblem: (m, k) => log.problems.push([m, k]), $: () => el(), say: (m) => log.said.push(m),
       paneId: '%12', setShell: () => { log.shellOff += 1; }, grow() {}, updateChip() {},
-      DS: { screen: () => null, beginSend() {}, endSend() {}, sent() {} }, draftSendPlan: draftSendPlanReal, M: { cols: 120 }, ATT: { pending: () => false },
+      DS: { screen: () => null, beginSend() {}, endSend() {}, sent() {}, submitted() {} }, draftSendPlan: draftSendPlanReal, M: { cols: 120, gone: false }, ATT: { pending: () => false },
+      ...sendIo(log),
     };
-    return { log, ta, send: mk(['async function sendComposer()', 'function clearBox(value)'], ctx).sendComposer };
+    return { log, ta, send: mk(SEND_FUNCS, ctx).sendComposer };
   };
   const GATE = 'Answer the prompt with the buttons above or in the terminal.';
   const NO_BUTTONS = 'Answer the prompt in the terminal, or turn on Type into pane.';
@@ -1345,7 +1372,7 @@ describe('Task 14b: wiring of the page rules', () => {
     assert.equal(attnRig({ kind: kindOf(SHELL_AGENT) }).note.hidden, true, 'no needs-you note');
     const r = composerRig({ value: 'hello', kind: kindOf(SHELL_AGENT) });
     await r.send();
-    assert.equal(r.log.sent.length, 1, 'the line goes out');
+    assert.deepEqual([r.log.keys, r.log.posts], [[{ text: 'hello' }], [['submit', {}]]], 'the line goes out: the text, then the guarded Enter');
     assert.deepEqual(r.log.problems, []);
     assert.equal(r.ta.value, '', 'the box is emptied after a send');
   });
@@ -1376,19 +1403,19 @@ describe('Task 14b: wiring of the page rules', () => {
     }
   });
 
-  test('(−) B1: with no prompt everything goes out as before: a line, an empty box (Enter), Shell (three bodies, then Shell off)', async () => {
+  test('(−) B1: with no prompt everything goes out: a line (the text, then the guarded Enter), an empty box (the Enter alone), Shell (C-u and the command, then the Enter, then Shell off)', async () => {
     const line = composerRig({ value: 'hello' });
     await line.send();
-    assert.equal(line.log.sent.length, 1);
-    assert.equal(line.log.sent[0].length, 1, 'one body');
+    assert.deepEqual([line.log.keys, line.log.posts], [[{ text: 'hello' }], [['submit', {}]]]);
     assert.equal(line.log.problems.length, 0);
     assert.equal(line.ta.value, '', 'the box is emptied after a send');
     const empty = composerRig({ value: '' });
     await empty.send();
-    assert.equal(empty.log.sent.length, 1);
+    assert.deepEqual([empty.log.keys, empty.log.posts], [[], [['submit', {}]]]);
     const shell = composerRig({ value: 'ls', shell: true });
     await shell.send();
-    assert.deepEqual(norm(shell.log.sent[0]), [{ keys: ['C-u'] }, { text: '!ls' }, { keys: ['Enter'] }]);
+    assert.deepEqual(shell.log.keys, [{ keys: ['C-u'] }, { text: '!ls' }]);
+    assert.deepEqual(shell.log.posts, [['submit', {}]]);
     assert.equal(shell.log.shellOff, 1);
   });
 
@@ -1402,7 +1429,7 @@ describe('Task 14b: wiring of the page rules', () => {
       M: { gone: false }, paneId: '%12', call: async () => response, showProblem: (m, k, ms) => log.problems.push([m, k, ms]), clearProblem() {}, setGone: () => { log.gone += 1; },
       sleep: async () => {}, RATE_MSG: 'Too fast.', keysRefusal: keysRefusalReal, serverMessage: (r, fb) => (typeof r.body?.message === 'string' ? r.body.message : fb),
     };
-    return { log, deliver: mk(['async function deliver(payload)'], ctx).deliver };
+    return { log, deliver: mk(['async function postRetry(tail, payload)', 'async function deliver(payload)'], ctx).deliver };
   };
 
   test('(+) B1: the keys route\'s 409 bypass-prompt shows the fixed line, never the server\'s text', async () => {
@@ -1420,6 +1447,65 @@ describe('Task 14b: wiring of the page rules', () => {
     assert.equal(gone.log.gone, 1);
     const other = await deliverRig({ status: 409, body: { error: 'something-else', message: 'The pane is busy.' } }).deliver({ text: 'x' });
     assert.equal(other.message, 'The pane is busy.', 'only bypass-prompt has fixed copy; the rest is unchanged');
+  });
+
+  /** postRetry and submitEnter for real. `answers`: what the route gives, in order (the last repeats). */
+  const submitRig = (answers, { gone = false } = {}) => {
+    const log = { paths: [], bodies: [], problems: [], cleared: 0, gone: 0, sleeps: [], submitted: [] };
+    const queue = [...answers];
+    const ctx = {
+      M: { gone }, paneId: '%12', call: async (path, o) => { log.paths.push(path); log.bodies.push(jsonClone(o.json)); return queue.length > 1 ? queue.shift() : queue[0]; },
+      showProblem: (m, k, ms) => log.problems.push([m, k, ms]), clearProblem: () => { log.cleared += 1; }, setGone: () => { log.gone += 1; },
+      sleep: async (ms) => { log.sleeps.push(ms); }, RATE_MSG: 'Too fast.', submitResult: submitResultReal, DS: { submitted: (r) => log.submitted.push(jsonClone(r)) },
+    };
+    return { log, submitEnter: mk(['async function postRetry(tail, payload)', 'async function submitEnter(base)'], ctx).submitEnter };
+  };
+
+  test('(+) W13: the Enter goes to the submit route of this pane, with `base` only when there is one, and the answer is told to the sync', async () => {
+    const r = submitRig([{ status: 200, body: { taken: true, draft: null } }]);
+    assert.deepEqual(jsonClone(await r.submitEnter('0123456789abcdef')), { ok: true, taken: true });
+    assert.deepEqual(jsonClone(await r.submitEnter()), { ok: true, taken: true });
+    assert.deepEqual(r.log.paths, ['/api/app/pane/%2512/submit', '/api/app/pane/%2512/submit']);
+    assert.deepEqual(r.log.bodies, [{ base: '0123456789abcdef' }, {}], '`{}` for no base: `base: ""` would answer draft-changed');
+    assert.equal(r.log.submitted.length, 2);
+    assert.equal(r.log.cleared, 2);
+    assert.deepEqual(r.log.problems, []);
+  });
+
+  test('(−) W13: a 429 waits and sends again (nothing was sent); the line at the end is the fixed one', async () => {
+    const ok = submitRig([{ status: 429, body: { error: 'busy' } }, { status: 429, body: { error: 'busy' } }, { status: 200, body: { taken: null, draft: null } }]);
+    assert.deepEqual(jsonClone(await ok.submitEnter()), { ok: true, taken: null });
+    assert.equal(ok.log.paths.length, 3);
+    assert.deepEqual(ok.log.sleeps, [700, 1400]);
+    assert.deepEqual(ok.log.problems.slice(0, 2), [['Too fast.', 'warn', undefined], ['Too fast.', 'warn', undefined]]);
+    const no = submitRig([{ status: 429, body: { error: 'busy' } }]);
+    const out = jsonClone(await no.submitEnter());
+    assert.deepEqual(out, { ok: false, message: 'Too many keys at once; try again. Your text is kept.' });
+    assert.equal(no.log.paths.length, 4, 'four tries, then it gives up');
+    assert.deepEqual(no.log.problems.at(-1), ['Too many keys at once; try again. Your text is kept.', 'warn', 3000]);
+  });
+
+  test('(−) W13: a refusal shows its fixed line as an error and keeps the text; the server\'s own words never show; 404 is the gone state; taken false is not a success', async () => {
+    const prompt = submitRig([{ status: 409, body: { error: 'prompt-open', message: 'Evil <b>server</b> text' } }]);
+    const out = jsonClone(await prompt.submitEnter('0123456789abcdef'));
+    assert.deepEqual(out, { ok: false, message: 'A prompt opened in Claude, so nika did not press Enter. Answer it, then send again. Your text is kept.' });
+    assert.deepEqual(prompt.log.problems, [[out.message, 'error', 0]]);
+    assert.equal(prompt.log.cleared, 0);
+    const gone = submitRig([{ status: 404, body: { error: 'not_found' } }]);
+    await gone.submitEnter();
+    assert.equal(gone.log.gone, 1);
+    const eaten = submitRig([{ status: 200, body: { taken: false, draft: null } }]);
+    const eatenOut = jsonClone(await eaten.submitEnter('0123456789abcdef'));
+    assert.equal(eatenOut.ok, false);
+    assert.match(eatenOut.message, /^nika pressed Enter, but Claude's input still shows your text/);
+    assert.equal(eaten.log.cleared, 0);
+    assert.equal(eaten.log.submitted.length, 1, 'the screen the answer shows is still told to the sync');
+  });
+
+  test('(−) W13: a pane that is gone sends nothing', async () => {
+    const r = submitRig([TAKEN], { gone: true });
+    assert.deepEqual(jsonClone(await r.submitEnter()), { ok: false, message: 'The pane is gone.' });
+    assert.deepEqual(r.log.paths, []);
   });
 
   test('(+) B1: a prompt that mentions bypass is drawn with no answer button at all, only the Esc button; a plain prompt keeps its buttons', () => {
@@ -1615,6 +1701,24 @@ describe('Task 14b: wiring of the page rules', () => {
     assert.equal(cmd.stop.attrs['aria-busy'], undefined);
     const quiet = run({ stopping: false, busy: null });
     assert.equal(quiet.compact.attrs['aria-disabled'], 'false');
+  });
+
+  test('(+) W13: Stop\'s title says what Stop does with a queued message only while Q.queued, and only for a working Claude', () => {
+    const run = ({ queued, kind }) => {
+      const b = Object.fromEntries(['stop', 'compact', 'clear', 'model', 'rewind', 'end'].map((id) => [id, { attrs: {}, title: '', classList: { toggle() {} }, setAttribute(k, v) { this.attrs[k] = String(v); }, removeAttribute(k) { delete this.attrs[k]; } }]));
+      const why = { hidden: true, replaceChildren() {} };
+      const ctx = {
+        Q: { ready: true, b, busy: null, stopping: false, whySig: null, pop: false, queued }, W: { pane: 'ok', promptOpen: false }, A: { kind }, SW: { busy: null },
+        quickState: quickStateReal, $: () => why, icon: () => ({}), h: () => ({}), closeModelPop() {},
+      };
+      mk(['function renderQuick()'], ctx).renderQuick();
+      return b.stop.title;
+    };
+    const QUEUED = "Stop ends Claude's current step. Your queued message then goes to Claude at once.";
+    assert.equal(run({ queued: true, kind: 'busy' }), QUEUED);
+    assert.notEqual(run({ queued: false, kind: 'busy' }), QUEUED);
+    assert.notEqual(run({ queued: true, kind: 'idle' }), QUEUED, 'nothing to stop, nothing to explain');
+    assert.match(fnOf('function renderQuick()'), /quickState\(\{[^}]*queued: Q\.queued/);
   });
 
   test('(+) B2: the Stop button runs stop(); Esc = No and the message box\'s Esc stay on the keys route; Ctrl+C in the box is Stop, never a C-c key', () => {
@@ -2651,15 +2755,23 @@ describe('0.5: the cut and the draft note (markup and stylesheet)', () => {
     assert.match(tag('composer'), /\baria-describedby="draft-note"/);
   });
 
-  test('(+) the sprite draws the two new note icons', () => {
-    for (const n of ['i-pause', 'i-clock', 'i-kbd', 'i-info']) assert.match(HTML, new RegExp(`<symbol id="${n}"`), n);
+  test('(+) the sprite draws every note icon: paused, long, hold, cursor, queued and suggest each have their own, and the page draws no other', () => {
+    const icons = ['paused', 'long', 'hold', 'cursor', 'queued', 'suggest'].map((k) => noteViewReal({ kind: k, reason: 'tall' }).icon);
+    assert.deepEqual(icons, ['pause', 'info', 'dialog', 'window', 'send', 'kbd']);
+    assert.equal(new Set(icons).size, 6);
+    for (const n of icons) assert.match(HTML, new RegExp(`<symbol id="i-${n}"`), n);
   });
 
-  test('(+) the strip is muted terminal ink on its own row; each note kind has its own colour (paused, long, wait) and a bold word', () => {
+  test('(+) the strip is muted terminal ink on its own row; each note kind has its own colour (paused, long, hold, cursor, queued, suggest) and a bold word', () => {
     assert.match(css, /\.tl\.cut\s*\{[^}]*display:\s*flex[^}]*color:\s*var\(--a8\)/);
-    for (const k of ['paused', 'long', 'wait']) assert.match(css, new RegExp(`\\.dnote\\[data-k="${k}"\\]\\s*\\{[^}]*color:\\s*var\\(--[a-z-]+\\)`), k);
-    const colours = ['paused', 'long', 'wait'].map((k) => new RegExp(`\\.dnote\\[data-k="${k}"\\]\\s*\\{[^}]*color:\\s*(var\\(--[a-z-]+\\))`).exec(css)[1]);
-    assert.equal(new Set(colours).size, 3, `three kinds, three colours: ${colours}`);
+    const KINDS = ['paused', 'long', 'hold', 'cursor', 'queued', 'suggest'];
+    for (const k of KINDS) assert.match(css, new RegExp(`\\.dnote\\[data-k="${k}"\\]\\s*\\{[^}]*color:\\s*var\\(--[a-z-]+\\)`), k);
+    const colours = KINDS.map((k) => new RegExp(`\\.dnote\\[data-k="${k}"\\]\\s*\\{[^}]*color:\\s*(var\\(--[a-z-]+\\))`).exec(css)[1]);
+    assert.equal(new Set(colours).size, 6, `six kinds, six colours: ${colours}`);
+    assert.doesNotMatch(css, /\.dnote\[data-k="wait"\]/, 'the old wait rule is gone');
+    for (const [k, fg, bg] of [['hold', '--attn', '--attn-soft'], ['cursor', '--fit-other', '--fit-other-soft'], ['queued', '--busy', '--busy-soft']]) {
+      assert.match(css, new RegExp(`\\.dnote\\[data-k="${k}"\\]\\s*\\{[^}]*color:\\s*var\\(${fg}\\)[^}]*background:\\s*var\\(${bg}\\)`), `${k}: ${fg} on ${bg}`);
+    }
     assert.match(css, /\.dnote\s*\{[^}]*display:\s*inline-flex/);
     assert.match(css, /\.dnote b\s*\{[^}]*font-weight:\s*(600|700)/);
   });
@@ -2680,7 +2792,7 @@ describe('0.5: drawing the mirror with the cut (design W6, section 5)', () => {
   const row = (t) => [{ t, s: {} }];
   const BODY = { cols: 120, rows: Array.from({ length: 12 }, (_, i) => row(`row ${i}`)), cursor: { x: 2, y: 10, visible: true } };
   const BOX = { top: 8, bottom: 11 };
-  const readable = (state = 'text') => ({ state, mode: 'prompt', text: state === 'text' ? 'hello' : '', sig: '0000000000000001', box: BOX, cursorAtEnd: true, suggestion: null });
+  const readable = (state = 'text', over = {}) => ({ state, mode: 'prompt', text: state === 'text' ? 'hello' : '', sig: '0000000000000001', box: BOX, cursorAtEnd: true, suggestion: null, queued: false, ...over });
   const unreadable = { state: 'unreadable', mode: 'prompt', text: '', sig: null, reason: 'pasted', box: BOX, cursorAtEnd: false, suggestion: null };
 
   const draw = ({ body = BODY, draft, pass = false }) => {
@@ -2764,6 +2876,27 @@ describe('0.5: drawing the mirror with the cut (design W6, section 5)', () => {
     assert.deepEqual(norm(ctx.M.draft), readable());
   });
 
+  test('(+) W13: Stop\'s title follows the capture: Q.queued is set from the cleaned draft and the quick actions are drawn again only when it changes', () => {
+    const renders = [];
+    const ctx = {
+      recovered() {}, noteScreen() {}, $: () => ({ style: {}, scrollTop: 0, scrollHeight: 9 }), M: { frozen: false, scrollTop: 0 }, setLive() {}, MID: ' - ', TIMES: 'x', ETAG: /^[0-9a-f]{1,64}$/,
+      cleanDraft: cleanDraftReal, DS: { capture() {} }, drawMirror() {}, renderSuggestion() {}, ATT: { sending: () => false }, Q: { queued: false }, renderQuick: () => renders.push(ctx.Q.queued),
+      setGone() {}, serverMessage: () => '', setPaneState() {}, setInputEnabled() {}, showOverlay() {},
+    };
+    const capture = vm.runInNewContext(`${fnOf('function handleCapture(r)')}; handleCapture`, ctx);
+    const answer = (draft) => capture({ status: 200, body: { ...BODY, draft, etag: 'ab12' } });
+    answer(readable('empty'));
+    assert.deepEqual(renders, [], 'nothing changed');
+    answer(readable('empty', { queued: true }));
+    answer(readable('empty', { queued: true }));
+    assert.deepEqual(renders, [true], 'drawn once when Claude took our message into its queue');
+    answer(readable('empty'));
+    assert.deepEqual(renders, [true, false], 'and once when the queue is gone');
+    answer(null);
+    answer(readable('text', { queued: true }));
+    assert.equal(ctx.Q.queued, true, 'the cleaned draft decides, as the server sent it');
+  });
+
   test('(−) handleCapture while attachments are being sent: no sync capture (the box holds placeholders), but the mirror is drawn and the placeholder follows', () => {
     const log = [];
     const ctx = {
@@ -2814,6 +2947,17 @@ describe('0.5: the note, the pull and the edits (wiring)', () => {
     assert.deepEqual(norm(r.el.kids[0]), { icon: 'pause' });
     assert.equal(r.el.kids[1].text, 'Sync paused:');
     assert.equal(r.el.kids[2].text, " Claude's input holds a pasted block nika can't read back. Edit or clear it in the terminal.");
+  });
+
+  test('(+) W13: hold, cursor and queued are drawn with their own data-k, icon and bold word (the colour follows data-k in session.css)', () => {
+    for (const [kind, icon, word] of [['hold', 'dialog', 'On hold:'], ['cursor', 'window', 'Cursor:'], ['queued', 'send', 'Queued:']]) {
+      const r = noteRig();
+      r.renderDraftNote(noteViewReal({ kind }));
+      assert.equal(r.el.hidden, false, kind);
+      assert.equal(r.el.attrs['data-k'], kind);
+      assert.deepEqual(norm(r.el.kids[0]), { icon }, kind);
+      assert.equal(r.el.kids[1].text, word, kind);
+    }
   });
 
   test('(−) no note hides the line, empties it and drops the kind (the live region has nothing left to read)', () => {
@@ -2924,44 +3068,58 @@ describe('0.5: Send with the synced box (design W5, section 4)', () => {
   };
   const mk = (names, ctx) => vm.runInNewContext(`${names.map(fnOf).join('\n')}; ({ ${names.map((n) => n.replace(/^(async )?function /, '').replace(/\(.*$/, '')).join(', ')} })`, ctx);
   const BOX = { top: 30, bottom: 32 };
-  const D = (state, text = '', over = {}) => ({ state, mode: 'prompt', text, sig: '0000000000000001', box: BOX, cursorAtEnd: true, suggestion: null, ...over });
-  const UNREADABLE = { state: 'unreadable', mode: 'prompt', text: '', sig: null, reason: 'pasted', box: BOX, cursorAtEnd: false, suggestion: null };
+  const D = (state, text = '', over = {}) => ({ state, mode: 'prompt', text, sig: '0000000000000001', box: BOX, cursorAtEnd: true, suggestion: null, queued: false, ...over });
+  const UNREADABLE = { state: 'unreadable', mode: 'prompt', text: '', sig: null, reason: 'pasted', box: BOX, cursorAtEnd: false, suggestion: null, queued: false };
   const GATE = 'Answer the prompt with the buttons above or in the terminal.';
 
-  /** sendComposer for real, with the real plans (draftSendPlan, planSend, planShell, sendGate) and a fake sync. `pushAnswer`: what DS.send answers. */
-  const rig = ({ value, screen, shell = false, promptOpen = false, pushAnswer = { ok: true }, att = { pending: () => false } } = {}) => {
-    const log = { order: [], problems: [], said: [], payloads: [], pushed: [], shellOff: 0 };
+  const PUSHED = '00000000000000aa'; // the sig of the box as DS.send's write left it
+  const SIG1 = '0000000000000001';
+
+  /**
+   * sendComposer for real, with the real plans (draftSendPlan, planSend, planShell, sendGate, submitResult), a fake sync and fake routes.
+   * `pushAnswer`: what DS.send answers; `submit(tail, body)`: what the submit route answers (default: taken); `kind`: the agent's status.
+   */
+  const rig = ({ value, screen, shell = false, promptOpen = false, pushAnswer = { ok: true, sig: PUSHED }, submit, kind = 'idle', att = { pending: () => false } } = {}) => {
+    const log = Object.assign(sendLog(), { problems: [], said: [], pushed: [], told: [], shellOff: 0 });
     const ta = { value, disabled: false };
     const ctx = {
-      sending: false, composer: () => ta, DF: null, S: { on: shell }, W: { promptOpen, prompt: null, pane: 'ok' }, A: { kind: 'idle' }, M: { cols: 120 },
+      sending: false, composer: () => ta, DF: null, S: { on: shell }, W: { promptOpen, prompt: null, pane: 'ok' }, A: { kind }, M: { cols: 120, gone: false },
       sendGate: sendGateReal, hasAnswerButtons: hasAnswerButtonsReal, planShell: planShellReal, planSend: planSendReal, draftSendPlan: draftSendPlanReal,
       showProblem: (m, k) => log.problems.push([m, k]), $: () => ({ setAttribute() {}, removeAttribute() {} }), say: (m) => log.said.push(m), paneId: '%12',
       setShell: () => { log.shellOff += 1; }, grow() {}, updateChip() {},
       DS: {
         screen: () => screen,
         beginSend: () => log.order.push('begin'), endSend: () => log.order.push('end'), sent: () => log.order.push('sent'),
+        submitted: (r) => { log.order.push('submitted'); log.told.push(jsonClone(r)); },
         send: async (text) => { log.order.push('push'); log.pushed.push(text); return pushAnswer; },
       },
-      enqueueJob: (run) => run(),
-      enqueueSeq: async (p) => { log.order.push('keys'); log.payloads.push(norm(p)); return { ok: true }; },
-      deliver: async (p) => { log.order.push('keys'); log.payloads.push([norm(p)]); return { ok: true }; },
       ATT: att,
+      ...sendIo(log, submit),
     };
-    return { log, ta, send: mk(['async function sendComposer()', 'async function pushThenEnter(route)', 'function clearBox(value)'], ctx).sendComposer };
+    return { log, ta, send: mk(SEND_FUNCS, ctx).sendComposer };
   };
-  const ENTER = [[{ keys: ['Enter'] }]];
+  const SUBMIT = (base) => [['submit', base === undefined ? {} : { base }]];
 
-  test('(+) 0.5 attachments pending: sendComposer hands the box text to ATT.send and sends nothing itself (no sequence, no push, no begin/end, the box is left to ATT)', async () => {
+  test('(+) 0.5 attachments pending: sendComposer hands the box text to ATT.send and sends nothing itself (no keys, no submit, no push, no begin/end, the box is left to ATT)', async () => {
     const handed = [];
     const att = { pending: () => true, send: (v) => { handed.push(v); return Promise.resolve(); } };
     const r = rig({ value: 'see the files', screen: D('text', ''), att });
     await r.send();
     assert.deepEqual(handed, ['see the files']);
     assert.deepEqual(r.log.order, [], 'no keys job, no DS.send, no beginSend');
-    assert.deepEqual(r.log.payloads, []);
+    assert.deepEqual(r.log.sent, []);
     assert.deepEqual(r.log.pushed, []);
     assert.deepEqual(r.log.said, []);
     assert.equal(r.ta.value, 'see the files');
+  });
+
+  test('(+) W13: attachments send while Claude works: the status is no gate, ATT.send gets the text', async () => {
+    const handed = [];
+    const att = { pending: () => true, send: (v) => { handed.push(v); return Promise.resolve(); } };
+    const r = rig({ value: 'see the files', screen: D('empty'), kind: 'busy', att });
+    await r.send();
+    assert.deepEqual(handed, ['see the files']);
+    assert.deepEqual(r.log.problems, []);
   });
 
   test('(−) 0.5 attachments pending behind an open permission prompt: the gate answers first and ATT.send is not called', async () => {
@@ -2974,66 +3132,88 @@ describe('0.5: Send with the synced box (design W5, section 4)', () => {
     assert.deepEqual(r.log.order, []);
   });
 
-  test('(+) row 1: the screen equals the box: Enter alone, no push, no text, then the box is cleared and the sync told', async () => {
+  test('(+) row 1: the screen equals the box: the guarded Enter alone with the screen\'s sig, no push, no text, then the box is cleared and the sync told', async () => {
     const r = rig({ value: 'fix the typo', screen: D('text', 'fix the typo') });
     await r.send();
-    assert.deepEqual(r.log.payloads, ENTER);
+    assert.deepEqual(r.log.posts, SUBMIT(SIG1));
+    assert.deepEqual(r.log.keys, []);
     assert.deepEqual(r.log.pushed, []);
-    assert.deepEqual(r.log.order, ['begin', 'keys', 'sent', 'end']);
+    assert.deepEqual(r.log.order, ['begin', 'submit', 'submitted', 'sent', 'end']);
     assert.deepEqual(r.log.said, ['Sent Enter to %12']);
     assert.equal(r.ta.value, '');
   });
 
-  test('(+) row 1, Shell: the screen equals "!" + the box: Enter alone with no C-u and no text; Shell turns itself off after', async () => {
+  test('(+) row 1, Shell: the screen equals "!" + the box: the Enter alone with no C-u and no text; Shell turns itself off after', async () => {
     const r = rig({ value: 'ls -la', shell: true, screen: D('text', 'ls -la', { mode: 'bash' }) });
     await r.send();
-    assert.deepEqual(r.log.payloads, ENTER);
+    assert.deepEqual(r.log.posts, SUBMIT(SIG1));
+    assert.deepEqual(r.log.keys, []);
     assert.equal(r.log.shellOff, 1);
   });
 
-  test('(+) row 2: an empty box sends Enter, whatever the screen holds', async () => {
-    for (const screen of [D('empty'), D('text', 'typed in the terminal'), UNREADABLE, null]) {
+  test('(+) row 2: an empty box over Claude\'s input that holds text, cannot be read or is not shown sends the Enter alone: with the screen\'s sig when it has one, none otherwise', async () => {
+    for (const [screen, base] of [[D('text', 'typed in the terminal'), SIG1], [UNREADABLE, undefined], [null, undefined]]) {
       const r = rig({ value: '', screen });
       await r.send();
-      assert.deepEqual(r.log.payloads, ENTER);
+      assert.deepEqual(r.log.posts, SUBMIT(base));
+      assert.deepEqual(r.log.keys, []);
       assert.deepEqual(r.log.pushed, []);
     }
   });
 
-  test('(+) row 3: text the screen does not hold is pushed first and Enter follows; nothing else goes out', async () => {
+  test('(−) row 2: an empty box over an empty Claude input is nothing to send: no request of any kind, no begin, no echo, no problem line', async () => {
+    for (const screen of [D('empty'), D('empty', '', { suggestion: 'run the tests in acme-api' }), D('empty', '', { queued: true })]) {
+      for (const kind of ['idle', 'busy']) {
+        const r = rig({ value: '  \n', screen, kind });
+        await r.send();
+        assert.deepEqual(r.log.order, [], `${kind} ${JSON.stringify(screen.suggestion)}`);
+        assert.deepEqual([r.log.keys, r.log.posts, r.log.pushed, r.log.said, r.log.problems], [[], [], [], [], []]);
+      }
+    }
+  });
+
+  test('(+) row 3: text the screen does not hold is pushed first and the guarded Enter follows with the sig of that push; nothing else goes out', async () => {
     const r = rig({ value: 'fix the typo in acme-api', screen: D('text', 'fix the') });
     await r.send();
     assert.deepEqual(r.log.pushed, ['fix the typo in acme-api']);
-    assert.deepEqual(r.log.payloads, ENTER);
-    assert.deepEqual(r.log.order, ['begin', 'push', 'keys', 'sent', 'end'], 'the push comes before the Enter');
+    assert.deepEqual(r.log.posts, SUBMIT(PUSHED));
+    assert.deepEqual(r.log.keys, []);
+    assert.deepEqual(r.log.order, ['begin', 'push', 'submit', 'submitted', 'sent', 'end'], 'the push comes before the Enter');
     assert.deepEqual(r.log.said, ['Sent 24 characters + Enter to %12']);
     assert.equal(r.ta.value, '');
   });
 
-  test('(+) row 3, Shell: "!" + the text is pushed, then Enter', async () => {
+  test('(+) row 3, Shell: "!" + the text is pushed, then the Enter', async () => {
     const r = rig({ value: 'ls -la', shell: true, screen: D('empty') });
     await r.send();
     assert.deepEqual(r.log.pushed, ['!ls -la']);
-    assert.deepEqual(r.log.payloads, ENTER);
+    assert.deepEqual(r.log.posts, SUBMIT(PUSHED));
+  });
+
+  test('(−) row 3: a push whose answer has no sig sends the Enter with no base, never an empty or made-up one', async () => {
+    const r = rig({ value: 'mine', screen: D('empty'), pushAnswer: { ok: true, sig: null } });
+    await r.send();
+    assert.deepEqual(r.log.posts, SUBMIT());
   });
 
   test('(−) row 3: a push that does not land sends no Enter, shows its line, keeps the text and Shell, and lets the sync go on', async () => {
     const message = "Claude's input changed while nika was copying your text. nika shows what it holds now. Nothing was sent.";
     const r = rig({ value: 'mine', shell: true, screen: D('text', 'theirs'), pushAnswer: { ok: false, message } });
     await r.send();
-    assert.deepEqual(r.log.payloads, []);
+    assert.deepEqual(r.log.sent, []);
     assert.deepEqual(r.log.problems, [[message, 'error']]);
     assert.equal(r.ta.value, 'mine');
     assert.equal(r.log.shellOff, 0);
     assert.deepEqual(r.log.order, ['begin', 'push', 'end'], 'the sync is released and was not told "sent"');
   });
 
-  test('(+) row 4: a long text onto an empty prompt goes as today\'s paste + Enter', async () => {
+  test('(+) row 4: a long text onto an empty prompt goes as today\'s paste (keys route, no Enter), then the guarded Enter with no base', async () => {
     const r = rig({ value: 'y'.repeat(2000), screen: D('empty') });
     await r.send();
-    assert.equal(r.log.payloads.length, 1);
-    assert.equal(Object.hasOwn(r.log.payloads[0][0], 'paste') || Object.hasOwn(r.log.payloads[0][0], 'text'), true);
+    assert.deepEqual(r.log.keys, [{ paste: 'y'.repeat(2000) }]);
+    assert.deepEqual(r.log.posts, SUBMIT());
     assert.deepEqual(r.log.pushed, []);
+    assert.deepEqual(r.log.order, ['begin', 'keys', 'submit', 'submitted', 'sent', 'end']);
   });
 
   test('(−) row 5 and 6: refusals send nothing, show the fixed line as an error, keep the text, and never begin a send', async () => {
@@ -3044,19 +3224,21 @@ describe('0.5: Send with the synced box (design W5, section 4)', () => {
     await paused.send();
     assert.deepEqual(paused.log.problems, [["Claude's input holds a pasted block nika can't read back. Send or clear it in the terminal.", 'error']]);
     for (const r of [long, paused]) {
-      assert.deepEqual(r.log.payloads, []);
+      assert.deepEqual(r.log.sent, []);
       assert.deepEqual(r.log.order, []);
       assert.equal(r.ta.value.length > 0, true);
     }
   });
 
-  test('(+) row 7: no readable box is today\'s path, including Shell\'s C-u, text, Enter', async () => {
+  test('(+) row 7: no readable box is today\'s path, including Shell\'s C-u and command: typed by the keys route, then the guarded Enter with no base', async () => {
     const line = rig({ value: 'hello', screen: null });
     await line.send();
-    assert.deepEqual(line.log.payloads, [[{ text: 'hello', keys: ['Enter'] }]]);
+    assert.deepEqual(line.log.keys, [{ text: 'hello' }]);
+    assert.deepEqual(line.log.posts, SUBMIT());
     const shell = rig({ value: 'ls', shell: true, screen: null });
     await shell.send();
-    assert.deepEqual(shell.log.payloads, [[{ keys: ['C-u'] }, { text: '!ls' }, { keys: ['Enter'] }]]);
+    assert.deepEqual(shell.log.keys, [{ keys: ['C-u'] }, { text: '!ls' }]);
+    assert.deepEqual(shell.log.posts, SUBMIT());
   });
 
   test('(−) a permission prompt still gates every row first: nothing is pushed or sent, and no send begins', async () => {
@@ -3064,15 +3246,88 @@ describe('0.5: Send with the synced box (design W5, section 4)', () => {
     await r.send();
     assert.deepEqual(r.log.problems, [[GATE === r.log.problems[0][0] ? GATE : r.log.problems[0][0], 'error']]);
     assert.deepEqual(r.log.order, []);
-    assert.deepEqual(r.log.payloads, []);
+    assert.deepEqual(r.log.sent, []);
   });
 
-  test('(+) the push and its Enter are one job in the keys chain, so arrows queued before it go first', () => {
+  test('(+) W13: Claude working does not gate Send: the text goes (pushed, then the Enter), and the echo says it is queued', async () => {
+    const r = rig({ value: 'next step please', screen: D('empty'), kind: 'busy' });
+    await r.send();
+    assert.deepEqual(r.log.posts, SUBMIT(PUSHED));
+    assert.deepEqual(r.log.problems, []);
+    assert.deepEqual(r.log.said, ['Queued for Claude: 16 characters + Enter']);
+    assert.equal(r.ta.value, '');
+  });
+
+  test('(−) W13: the "Queued" echo needs a working Claude, a taken Enter and a message: idle, taken null, taken false and a lone Enter say what they did', async () => {
+    const idle = rig({ value: 'next step please', screen: D('empty') });
+    await idle.send();
+    assert.deepEqual(idle.log.said, ['Sent 16 characters + Enter to %12']);
+    const unknown = rig({ value: 'next step please', screen: D('empty'), kind: 'busy', submit: () => ({ status: 200, body: { taken: null, draft: null } }) });
+    await unknown.send();
+    assert.deepEqual(unknown.log.said, ['Sent 16 characters + Enter to %12'], 'not proven: not claimed');
+    const lone = rig({ value: '', screen: D('text', 'typed in the terminal'), kind: 'busy' });
+    await lone.send();
+    assert.deepEqual(lone.log.said, ['Sent Enter to %12'], 'a lone Enter queues nothing of nika\'s');
+  });
+
+  test('(−) W13: a refused Enter keeps the text, Shell and the box, shows its fixed line as an error, tells the sync the answer, and never says "sent"', async () => {
+    const lines = {
+      'prompt-open': 'A prompt opened in Claude, so nika did not press Enter. Answer it, then send again. Your text is kept.',
+      'not-idle': 'Stop is running, so nika did not press Enter. Send again in a moment. Your text is kept.',
+      'draft-changed': "Claude's input changed before Enter. nika shows what it holds now. Nothing was sent.",
+      'screen-unclear': "nika can't tell what Claude is showing, so it did not press Enter. Use the terminal. Your text is kept.",
+      'suggestion-shown': "Claude's input is empty and shows a suggestion, so nika did not press Enter. Nothing was sent.",
+      'input-unreadable': "nika can't read Claude's input box right now (a menu may be open). Nothing was sent. Your text is kept.",
+      'bypass-prompt': 'Answer this prompt in the terminal.',
+    };
+    for (const [code, line] of Object.entries(lines)) {
+      const r = rig({ value: 'fix the typo', shell: true, screen: D('text', 'fix the typo', { mode: 'bash' }), submit: () => ({ status: 409, body: { error: code, message: 'Evil <b>server</b> text' } }) });
+      await r.send();
+      assert.deepEqual(r.log.problems, [[line, 'error']], code);
+      assert.equal(r.ta.value, 'fix the typo', code);
+      assert.equal(r.log.shellOff, 0, code);
+      assert.equal(r.log.order.includes('sent'), false, code);
+      assert.equal(r.log.order.includes('submitted'), true, code);
+      assert.deepEqual(r.log.said, [], code);
+      assert.equal(r.log.order.at(-1), 'end', code);
+    }
+  });
+
+  test('(−) W13: taken false (the Enter did not take) keeps the text, shows the "menu may have taken the Enter" line, and does not say sent', async () => {
+    const r = rig({ value: 'fix the typo', screen: D('text', 'fix the typo'), submit: () => ({ status: 200, body: { taken: false, draft: null } }) });
+    await r.send();
+    assert.equal(r.ta.value, 'fix the typo');
+    assert.equal(r.log.problems.length, 1);
+    assert.match(r.log.problems[0][0], /^nika pressed Enter, but Claude's input still shows your text/);
+    assert.equal(r.log.order.includes('sent'), false);
+    assert.deepEqual(r.log.said, []);
+  });
+
+  test('(−) W13: no Send path posts an Enter to the keys route: every route, with and without Shell, with a screen or without, ends in exactly one submit', async () => {
+    const screens = [D('text', 'hello'), D('text', 'other'), D('empty'), UNREADABLE, null];
+    for (const shell of [false, true]) {
+      for (const value of ['', 'hello', 'a\nb', 'y'.repeat(2000)]) {
+        for (const screen of screens) {
+          const r = rig({ value, screen, shell });
+          await r.send();
+          assert.equal(JSON.stringify(r.log.keys).includes('Enter'), false, `${shell} ${value.slice(0, 5)} ${screen?.state}`);
+          assert.ok(r.log.posts.length <= 1 && r.log.posts.every(([tail]) => tail === 'submit'));
+        }
+      }
+    }
+  });
+
+  test('(+) the push or the typing and the Enter are one job in the keys chain, so arrows queued before it go first; the Enter is only ever the submit route\'s', () => {
     const src = fnOf('async function sendComposer()');
-    assert.match(src, /route\.act === 'push' \? enqueueJob\(\(\) => pushThenEnter\(route\)\)/);
+    assert.match(src, /enqueueJob\(route\.act === 'push' \? \(\) => pushThenSubmit\(route\) : route\.act === 'enter' \? \(\) => submitEnter\(route\.submit\.base\) : \(\) => typeThenSubmit\(plan\.payloads\)\)/);
     assert.match(fnOf('function enqueueJob(run)'), /chain\.then\(run\)/);
-    assert.match(fnOf('function enqueueSeq(payloads)'), /enqueueJob\(/);
-    assert.match(fnOf('async function pushThenEnter(route)'), /await DS\.send\(route\.text\)[\s\S]*deliver\(\{ keys: \['Enter'\] \}\)/);
+    assert.match(fnOf('function enqueueSeq(payloads)'), /enqueueJob\(\(\) => deliverAll\(payloads\)\)/);
+    assert.match(fnOf('async function pushThenSubmit(route)'), /await DS\.send\(route\.text\)[\s\S]*submitEnter\(p\.sig\)/);
+    assert.match(fnOf('async function typeThenSubmit(payloads)'), /await deliverAll\(payloads\)[\s\S]*submitEnter\(\)/);
+    const submit = fnOf('async function submitEnter(base)');
+    assert.match(submit, /postRetry\('submit'/);
+    assert.doesNotMatch(submit, /deliver\(|\/keys|keys:/);
+    for (const f of [src, fnOf('async function pushThenSubmit(route)'), fnOf('async function typeThenSubmit(payloads)'), submit]) assert.doesNotMatch(f, /'Enter'|"Enter"|keys:/);
   });
 });
 
@@ -3420,10 +3675,12 @@ describe('W7-T3 fix round 1: the "other" chip has its own hue (tokens.css --fit-
     assert.match(rule('zoomed'), /(^|[\s;])color:\s*var\(--idle\)/);
   });
 
-  test('(−) the new tokens are used by the other chip only, and tokens.css stays ASCII with no color-mix() or :has()', () => {
+  test('(−) the new tokens are used by the other chip and the Cursor note (W13) only, and tokens.css stays ASCII with no color-mix() or :has()', () => {
     const users = ['session.css', 'app.css', 'tokens.css'].flatMap((f) => (read(f).match(/var\(--fit-other[a-z-]*\)/g) ?? []).map((u) => `${f} ${u}`));
     assert.deepEqual(users.filter((u) => !u.startsWith('session.css')), []);
-    assert.equal(users.length, 3);
+    assert.equal(users.length, 5);
+    const rules = read('session.css').split('\n').filter((l) => /var\(--fit-other/.test(l)).map((l) => l.slice(0, l.indexOf(' {')));
+    assert.deepEqual(rules, ['.fit[data-k="other"]', '.dnote[data-k="cursor"]']);
     const tokens = TOKENS.replace(/\/\*[\s\S]*?\*\//g, '');
     assert.doesNotMatch(tokens, /color-mix\(|:has\(/);
     assert.equal([...TOKENS].every((ch) => ch.codePointAt(0) < 128), true);
@@ -4841,16 +5098,17 @@ describe('W1-T3: question dialogs and plan approvals in the session window (hook
   const GATE = 'Answer the prompt with the buttons above or in the terminal.';
   const NO_BUTTONS = 'Answer the prompt in the terminal, or turn on Type into pane.';
   const sendRig = ({ form = null, prompt = null, att = { pending: () => false } } = {}) => {
-    const log = { problems: [], sent: [], atts: [] };
+    const log = Object.assign(sendLog(), { problems: [], atts: [] });
     const ta = { value: 'hello', disabled: false };
     const ctx = {
-      sending: false, composer: () => ta, DF: form, S: { on: false }, W: { promptOpen: true, prompt, pane: 'ok' }, A: { kind: 'attn' }, M: { cols: 120 },
+      sending: false, composer: () => ta, DF: form, S: { on: false }, W: { promptOpen: true, prompt, pane: 'ok' }, A: { kind: 'attn' }, M: { cols: 120, gone: false },
       sendGate: sendGateReal, hasAnswerButtons: hasAnswerButtonsReal, planShell: planShellReal, planSend: planSendReal, draftSendPlan: draftSendPlanReal,
       showProblem: (m, k) => log.problems.push([m, k]), $: () => el(), say() {}, paneId: '%12', setShell() {}, grow() {}, updateChip() {},
-      DS: { screen: () => null, beginSend() {}, endSend() {}, sent() {} }, enqueueSeq: async (p) => { log.sent.push(norm(p)); return { ok: true }; }, enqueueJob: (run) => run(),
+      DS: { screen: () => null, beginSend() {}, endSend() {}, sent() {}, submitted() {} },
       ATT: { pending: att.pending, send: (v) => { log.atts.push(v); } },
+      ...sendIo(log),
     };
-    return { log, ta, send: mk(['async function sendComposer()', 'function clearBox(value)'], ctx).sendComposer };
+    return { log, ta, send: mk(SEND_FUNCS, ctx).sendComposer };
   };
 
   test('(+) P5: with a dialog form on screen, Send names the buttons above, as an error, and sends nothing; the text stays', async () => {
@@ -4878,16 +5136,17 @@ describe('W1-T3: question dialogs and plan approvals in the session window (hook
   });
 
   test('(+) P5: without a dialog or prompt the gate is open as before (the hook changes only the wording)', async () => {
-    const log = { sent: [] };
+    const log = sendLog();
     const ta = { value: 'hello', disabled: false };
     const ctx = {
-      sending: false, composer: () => ta, DF: null, S: { on: false }, W: { promptOpen: false, prompt: null, pane: 'ok' }, A: { kind: 'idle' }, M: { cols: 120 },
+      sending: false, composer: () => ta, DF: null, S: { on: false }, W: { promptOpen: false, prompt: null, pane: 'ok' }, A: { kind: 'idle' }, M: { cols: 120, gone: false },
       sendGate: sendGateReal, hasAnswerButtons: hasAnswerButtonsReal, planShell: planShellReal, planSend: planSendReal, draftSendPlan: draftSendPlanReal,
       showProblem() {}, $: () => el(), say() {}, paneId: '%12', setShell() {}, grow() {}, updateChip() {},
-      DS: { screen: () => null, beginSend() {}, endSend() {}, sent() {} }, enqueueSeq: async (p) => { log.sent.push(norm(p)); return { ok: true }; }, enqueueJob: (run) => run(), ATT: { pending: () => false },
+      DS: { screen: () => null, beginSend() {}, endSend() {}, sent() {}, submitted() {} }, ATT: { pending: () => false },
+      ...sendIo(log),
     };
-    await mk(['async function sendComposer()', 'function clearBox(value)'], ctx).sendComposer();
-    assert.equal(log.sent.length, 1);
+    await mk(SEND_FUNCS, ctx).sendComposer();
+    assert.equal(log.sent.length, 2, 'the text, then the guarded Enter');
   });
 
   test('(−) scroll keys stay refused while a dialog shows: the capture has no readable input box, so the page\'s gate answers "a dialog or menu is open"', () => {

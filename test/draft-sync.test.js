@@ -5,15 +5,15 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   normDraft, sameDraft, inEnvelope, fits, canon, screenCanon, cleanDraft, cutAt, caretAfter, noteView, draftSendPlan, createDraftSync,
-  suggestionFor, QUIET_MS, PUSH_MS,
+  suggestionFor, submitResult, QUIET_MS, PUSH_MS,
 } from '../public/draft-sync.js';
 import { normDraft as srcNorm, sameDraft as srcSame, inEnvelope as srcEnvelope } from '../src/draft.js';
 
 const sig = (n) => String(n).padStart(16, '0'); // 16 lowercase hex, like the server's
 const BOX = { top: 30, bottom: 32 };
-const text = (t, over = {}) => ({ state: 'text', mode: 'prompt', text: t, sig: sig(1), box: BOX, cursorAtEnd: true, suggestion: null, ...over });
-const empty = (over = {}) => ({ state: 'empty', mode: 'prompt', text: '', sig: sig(9), box: BOX, cursorAtEnd: true, suggestion: null, ...over });
-const unreadable = (reason, over = {}) => ({ state: 'unreadable', mode: 'prompt', text: '', sig: null, reason, box: BOX, cursorAtEnd: false, suggestion: null, ...over });
+const text = (t, over = {}) => ({ state: 'text', mode: 'prompt', text: t, sig: sig(1), box: BOX, cursorAtEnd: true, suggestion: null, queued: false, ...over });
+const empty = (over = {}) => ({ state: 'empty', mode: 'prompt', text: '', sig: sig(9), box: BOX, cursorAtEnd: true, suggestion: null, queued: false, ...over });
+const unreadable = (reason, over = {}) => ({ state: 'unreadable', mode: 'prompt', text: '', sig: null, reason, box: BOX, cursorAtEnd: false, suggestion: null, queued: false, ...over });
 
 describe('the twin helpers answer like src/draft.js', () => {
   const SAMPLES = ['', 'a', 'a b', 'a  ', 'a\t', '\ta', 'a ', 'a b  \nc d ', 'x\n\n y ', 'héllo ✓ ', '日本語  ', ' \n '];
@@ -151,6 +151,16 @@ describe('cleanDraft: the capture body is data', () => {
     assert.equal(cleanDraft(empty({ suggestion: 7 })).suggestion, null);
   });
 
+  test('(+) queued (Claude holds our message, W13) survives only as the boolean true: anything else, and every older answer, is false', () => {
+    assert.equal(cleanDraft(empty({ queued: true })).queued, true);
+    assert.equal(cleanDraft(empty({ queued: false })).queued, false);
+    for (const queued of ['true', 1, 'yes', {}, [], null, undefined]) assert.equal(cleanDraft(empty({ queued })).queued, false, String(queued));
+    const old = empty();
+    delete old.queued;
+    assert.equal(cleanDraft(old).queued, false, 'an older server sends none');
+    assert.equal(cleanDraft(unreadable('pasted', { queued: true })).queued, false, 'a paused draft is never queued');
+  });
+
   test('(−) anything that is not exactly the shape is null (fail closed: no cut, no sync)', () => {
     const bad = [
       undefined, null, 'draft', 7, [], text('a', { state: 'maybe' }), text('a', { mode: 'vim' }), text(5), text('x'.repeat(4097)),
@@ -226,30 +236,44 @@ describe('noteView: the one note under the box', () => {
     assert.match(noteView({ kind: 'paused', reason: 'from-the-future' }).text, /Claude's input holds text nika can't read back exactly\. Edit or clear it in the terminal\./);
   });
 
-  test('(+) long text and a refused replace each have their own word, icon and kind', () => {
+  test('(+) long text has its own word, icon and kind', () => {
     const long = noteView({ kind: 'long' });
-    const wait = noteView({ kind: 'wait' });
-    assert.equal(long.text, 'Long text goes to Claude when you send it.');
-    assert.match(wait.text, /Claude is working/);
-    assert.equal(new Set([noteView({ kind: 'paused', reason: 'tall' }).icon, long.icon, wait.icon]).size, 3, 'three states, three icons');
-    assert.equal(new Set([noteView({ kind: 'paused', reason: 'tall' }).label, long.label, wait.label]).size, 3, 'and three words');
+    assert.deepEqual(long, { kind: 'long', icon: 'info', label: 'Not mirrored:', text: 'Long text goes to Claude when you send it.' });
   });
 
-  test('(−) no note and unknown kinds give null', () => {
+  test('(+) W13: hold, cursor and queued say what they mean in the approved words, each with its own kind, icon and label', () => {
+    assert.deepEqual(noteView({ kind: 'hold' }), {
+      kind: 'hold', icon: 'dialog', label: 'On hold:',
+      text: "A prompt is open or Stop is running. Your text goes into Claude's input when that is over.",
+    });
+    assert.deepEqual(noteView({ kind: 'cursor' }), {
+      kind: 'cursor', icon: 'window', label: 'Cursor:',
+      text: 'Claude is working and the cursor in its input is not at the end. Move it to the end in the terminal, or wait: your text goes in when Claude waits.',
+    });
+    assert.deepEqual(noteView({ kind: 'queued' }), { kind: 'queued', icon: 'send', label: 'Queued:', text: 'Claude takes your message at its next step.' });
+  });
+
+  test('(+) W13: all six notes differ in kind, icon and label (every state its own colour key, icon and word)', () => {
+    const all = [{ kind: 'paused', reason: 'tall' }, { kind: 'long' }, { kind: 'hold' }, { kind: 'cursor' }, { kind: 'queued' }, { kind: 'suggest' }].map(noteView);
+    for (const key of ['kind', 'icon', 'label']) assert.equal(new Set(all.map((v) => v[key])).size, 6, key);
+  });
+
+  test('(−) no note and unknown kinds give null; the old `wait` kind is gone', () => {
     assert.equal(noteView(null), null);
     assert.equal(noteView({ kind: 'party' }), null);
+    assert.equal(noteView({ kind: 'wait' }), null);
   });
 });
 
 describe('draftSendPlan: the Send table (design 4)', () => {
   const plan = (over) => draftSendPlan({ value: 'fix the typo', shell: false, screen: text('fix the typo'), cols: 120, ...over });
-  const ENTER = [{ keys: ['Enter'] }];
 
-  test('(+) row 1: the screen already equals the box: Enter alone', () => {
+  test('(+) row 1: the screen already equals the box: Enter alone, through the submit route with the screen\'s sig as base', () => {
     const p = plan({});
     assert.equal(p.act, 'enter');
-    assert.deepEqual(p.payloads, ENTER);
+    assert.deepEqual(p.submit, { base: sig(1) });
     assert.equal(p.summary, 'Enter');
+    assert.equal(Object.hasOwn(p, 'payloads'), false, 'no keys-route body: Send never posts Enter there (W13)');
   });
 
   test('(+) row 1: equal up to trailing spaces, a tab or a trailing newline', () => {
@@ -261,16 +285,34 @@ describe('draftSendPlan: the Send table (design 4)', () => {
   test('(+) row 1, Shell: a bash screen equal to "!" + the box is Enter alone, with no C-u first', () => {
     const p = plan({ value: 'ls -la', shell: true, screen: text('ls -la', { mode: 'bash' }) });
     assert.equal(p.act, 'enter');
-    assert.deepEqual(p.payloads, ENTER);
+    assert.deepEqual(p.submit, { base: sig(1) });
   });
 
-  test('(+) row 2: nika\'s box is empty: Enter, whatever the screen holds (readable, unreadable or none)', () => {
-    for (const screen of [empty(), text('typed in the terminal'), unreadable('pasted'), null]) {
+  test('(+) row 2: nika\'s box is empty and Claude\'s input holds text, cannot be read or is not shown: Enter; the base is the sig of a readable screen, none otherwise', () => {
+    for (const [screen, submit] of [[text('typed in the terminal'), { base: sig(1) }], [unreadable('pasted'), {}], [null, {}], [undefined, {}]]) {
       const p = plan({ value: '', screen });
       assert.equal(p.act, 'enter');
-      assert.deepEqual(p.payloads, ENTER);
+      assert.deepEqual(p.submit, submit);
     }
-    assert.equal(plan({ value: '  \n ', screen: empty() }).act, 'enter');
+    assert.equal(plan({ value: '  \n ', screen: text('typed in the terminal') }).act, 'enter');
+  });
+
+  test('(−) row 2: both boxes empty (a readable empty screen, with or without a suggestion or Claude\'s queue) is nothing to send: no Enter, no request', () => {
+    for (const screen of [empty(), empty({ suggestion: 'run the tests in acme-api' }), empty({ queued: true }), empty({ mode: 'bash' })]) {
+      for (const value of ['', '  \n ', undefined, null]) assert.deepEqual(plan({ value, screen }), { act: 'none' }, JSON.stringify(value));
+    }
+  });
+
+  test('(−) row 2: only an empty box over an empty screen is nothing: Shell keeps its own row, and text in either box still sends', () => {
+    assert.equal(plan({ value: '', shell: true, screen: empty() }).act, 'legacy');
+    assert.equal(plan({ value: 'a', screen: empty() }).act, 'push');
+    assert.equal(plan({ value: '', screen: text('x') }).act, 'enter');
+  });
+
+  test('(−) W13: a sig that is not 16 lowercase hex never becomes a base (the route would answer 400)', () => {
+    for (const bad of ['', 'xyz', sig(1).toUpperCase().replace(/0/g, 'G'), undefined, 7]) {
+      assert.deepEqual(plan({ value: '', screen: text('typed in the terminal', { sig: bad }) }).submit, {}, String(bad));
+    }
   });
 
   test('(−) row 2, Shell: an empty box with Shell on sends nothing (today: no lone "!")', () => {
@@ -281,7 +323,7 @@ describe('draftSendPlan: the Send table (design 4)', () => {
     const p = plan({ value: 'fix the typo in acme-api ', screen: text('fix the') });
     assert.equal(p.act, 'push');
     assert.equal(p.text, 'fix the typo in acme-api', 'the trailing space stays out of Claude\'s box');
-    assert.deepEqual(p.payloads, ENTER);
+    assert.equal(Object.hasOwn(p, 'payloads') || Object.hasOwn(p, 'submit'), false, 'the Enter follows with the sig of the push (DS.send), not a sig known now');
     assert.equal(p.summary, '24 characters + Enter');
     assert.equal(plan({ value: 'a\nb', screen: empty() }).act, 'push', 'several lines in the envelope are pushed too, not pasted');
   });
@@ -725,9 +767,9 @@ describe('push answers (design 3.1, 3.2, 7)', () => {
     assert.equal(r.log.puts.length, 2);
   });
 
-  test('(+) 409 not-idle: the "Claude is working" note, a retry in 3 s, and it goes through then', async () => {
+  test('(+) 409 not-idle: the "On hold" note (a prompt is open or Stop runs), a retry in 3 s, and it goes through then', async () => {
     const r = await setup(409, { error: 'not-idle' });
-    assert.equal(r.lastNote().kind, 'wait');
+    assert.equal(r.lastNote().kind, 'hold');
     r.answer = (body) => ({ status: 200, body: { draft: text(body.text, { sig: sig(60) }) } });
     await r.advance(2900);
     assert.equal(r.log.puts.length, 1);
@@ -840,8 +882,15 @@ describe('send: the push before Enter (design 4)', () => {
     const r = ready();
     r.ds.beginSend();
     const out = await r.ds.send('fix the typo');
-    assert.deepEqual(out, { ok: true });
+    assert.deepEqual(out, { ok: true, sig: sig(101) }, 'the sig of the box as the write left it: the base of the Enter that follows');
     assert.deepEqual(r.log.puts, [{ text: 'fix the typo', base: sig(4) }]);
+  });
+
+  test('(−) a 200 whose draft has no readable sig gives the Enter no base (null), never a made-up one', async () => {
+    const r = ready();
+    r.answer = () => ({ status: 200, body: { draft: null } });
+    r.ds.beginSend();
+    assert.deepEqual(await r.ds.send('abc'), { ok: true, sig: null });
   });
 
   test('(−) the terminal moved on while the user typed: the Send pushes on the sig of the last sync, not the newest screen, so the route can refuse (design 4, 7)', async () => {
@@ -868,7 +917,7 @@ describe('send: the push before Enter (design 4)', () => {
     await r.flush();
     assert.equal(r.log.puts.length, 1, 'waits for the first write');
     release();
-    assert.deepEqual(await sent, { ok: true });
+    assert.deepEqual(await sent, { ok: true, sig: sig(51) });
     assert.deepEqual(r.log.puts[1], { text: 'abcd', base: sig(50) });
   });
 
@@ -887,6 +936,7 @@ describe('send: the push before Enter (design 4)', () => {
     const lines = {};
     for (const [status, error, extra] of [
       [409, 'not-idle'], [409, 'input-unreadable'], [409, 'mode-unknown'], [409, 'busy-switching'], [409, 'draft-unreadable', { reason: 'tall' }],
+      [409, 'cursor-not-at-end'], [409, 'clear-stopped'],
       [400, 'invalid'], [404, 'not_found'], [429, 'rate_limited'], [0, null], [500, 'tmux'],
     ]) {
       const r = ready();
@@ -898,7 +948,21 @@ describe('send: the push before Enter (design 4)', () => {
       assert.match(out.message, /Nothing was sent|Your text is kept|session is gone|Send or clear it in the terminal/, `${status} ${error}`);
       lines[`${status} ${error}`] = out.message;
     }
-    assert.equal(new Set(Object.values(lines)).size, 9, `distinct lines (404 and 0 differ, the two unreadable ones share): ${JSON.stringify(lines)}`);
+    assert.equal(new Set(Object.values(lines)).size, 11, `distinct lines (404 and 0 differ, the two unreadable ones share): ${JSON.stringify(lines)}`);
+  });
+
+  test('(+) W13: the three new push refusals use the approved words', async () => {
+    const want = {
+      'not-idle': "A prompt is open in Claude or Stop is running, so nika can't change its input now. Nothing was sent. Your text is kept.",
+      'cursor-not-at-end': 'Claude is working and the cursor in its input is not at the end. Move it to the end in the terminal, or send when Claude waits. Nothing was sent. Your text is kept.',
+      'clear-stopped': "Claude's input did not clear in time. Nothing was sent. Your text is kept; send again.",
+    };
+    for (const [code, message] of Object.entries(want)) {
+      const r = ready();
+      r.answer = () => ({ status: 409, body: { error: code, message: 'Evil <b>server</b> text', draft: text('half', { sig: sig(8) }) } });
+      r.ds.beginSend();
+      assert.deepEqual(await r.ds.send('abc'), { ok: false, message }, code);
+    }
   });
 
   test('(−) while a Send runs, captures neither pull nor push; endSend() lets the page sync again', async () => {
@@ -964,9 +1028,9 @@ describe('noteView: the suggestion note', () => {
     assert.equal(v.kind, 'suggest');
     assert.equal(v.label, 'Suggestion:');
     assert.equal(v.text, 'Tab or → accepts what Claude suggests.');
-    const others = ['paused', 'long', 'wait'].map((kind) => noteView({ kind, reason: 'tall' }));
-    assert.equal(new Set([v.icon, ...others.map((o) => o.icon)]).size, 4, 'four states, four icons');
-    assert.equal(new Set([v.label, ...others.map((o) => o.label)]).size, 4, 'and four words');
+    const others = ['paused', 'long', 'hold', 'cursor', 'queued'].map((kind) => noteView({ kind, reason: 'tall' }));
+    assert.equal(new Set([v.icon, ...others.map((o) => o.icon)]).size, 6, 'six states, six icons');
+    assert.equal(new Set([v.label, ...others.map((o) => o.label)]).size, 6, 'and six words');
   });
 });
 
@@ -1136,7 +1200,7 @@ describe('accept: Tab or the right arrow on the suggestion (W4)', () => {
 
   test('(−) every refusal has fixed copy (no server word reaches the page), and a 404 says the session is gone', async () => {
     const want = [
-      [{ status: 409, body: { error: 'not-idle', message: 'SERVER WORDS' } }, "Claude is busy or a prompt is open, so nika can't accept the suggestion now. Nothing was sent."],
+      [{ status: 409, body: { error: 'not-idle', message: 'SERVER WORDS' } }, "Claude is working or a prompt is open, so nika can't accept the suggestion now. Nothing was sent."],
       [{ status: 409, body: { error: 'input-unreadable' } }, "nika can't read Claude's input box right now (a menu may be open). Nothing was sent."],
       [{ status: 409, body: { error: 'mode-unknown' } }, "nika can't read Claude's input box right now (a menu may be open). Nothing was sent."],
       [{ status: 409, body: { error: 'busy-switching' } }, 'Another action is running on this session. Try again in a moment.'],
@@ -1174,5 +1238,256 @@ describe('accept: Tab or the right arrow on the suggestion (W4)', () => {
       await q.ds.accept(SUG);
       assert.deepEqual(q.log.sets, [], JSON.stringify(answer));
     }
+  });
+});
+
+// ---- W13: send while Claude works ------------------------------------------------------------------------------------------
+
+describe('W13: Claude\'s queued placeholder is no suggestion', () => {
+  test('(−) a queued draft gives no suggestion even if one rides along; the normal suggestion is still offered', () => {
+    assert.equal(suggestionFor(empty({ suggestion: 'run the tests', queued: true }), { value: '' }), null);
+    assert.equal(suggestionFor(empty({ suggestion: 'run the tests', queued: false }), { value: '' }), 'run the tests');
+  });
+});
+
+describe('W13: the writes Claude refuses while it works (hold, cursor, clear-stopped)', () => {
+  const setup = async (status, body) => {
+    const r = rig();
+    r.ds.capture(empty(), 120);
+    r.answer = () => ({ status, body });
+    r.type('abc');
+    await r.advance(PUSH_MS);
+    return r;
+  };
+  const ok = (r) => { r.answer = (body) => ({ status: 200, body: { draft: text(body.text, { sig: sig(60) }) } }); };
+
+  test('(+) 409 cursor-not-at-end: the "Cursor" note, the text stays, nothing is pulled, one retry after 3 s that goes through', async () => {
+    const r = await setup(409, { error: 'cursor-not-at-end', draft: text('older text in claude', { sig: sig(7) }) });
+    assert.equal(r.lastNote().kind, 'cursor');
+    assert.deepEqual(r.log.sets, [], 'the box keeps its text, the terminal\'s text is not adopted');
+    assert.deepEqual(r.log.problems, [], 'a note, not a problem line');
+    ok(r);
+    await r.advance(2900);
+    assert.equal(r.log.puts.length, 1);
+    await r.advance(200);
+    assert.equal(r.log.puts.length, 2);
+    assert.equal(r.lastNote(), null, 'the note ends with the write');
+  });
+
+  test('(+) hold and cursor replace each other with the last refusal, and an edit clears either', async () => {
+    const r = await setup(409, { error: 'not-idle' });
+    assert.equal(r.lastNote().kind, 'hold');
+    r.answer = () => ({ status: 409, body: { error: 'cursor-not-at-end', draft: text('older text in claude', { sig: sig(7) }) } });
+    await r.advance(3000);
+    assert.equal(r.lastNote().kind, 'cursor');
+    r.answer = () => ({ status: 409, body: { error: 'not-idle' } });
+    r.type('abcd');
+    assert.equal(r.lastNote(), null, 'typing is a new attempt');
+    await r.advance(PUSH_MS);
+    assert.equal(r.lastNote().kind, 'hold');
+  });
+
+  test('(−) hold and cursor show only while the box holds unsent text', async () => {
+    const r = await setup(409, { error: 'cursor-not-at-end', draft: text('older text in claude', { sig: sig(7) }) });
+    assert.equal(r.lastNote().kind, 'cursor');
+    r.type('');
+    r.ds.capture(empty({ sig: sig(8) }), 120);
+    assert.equal(r.lastNote(), null);
+  });
+
+  test('(−) 409 clear-stopped never adopts the partial text: the box keeps its text, the next try writes against the partial screen, a 200 settles it', async () => {
+    const r = await setup(409, { error: 'clear-stopped', draft: text('a half-cleared te', { sig: sig(7) }) });
+    assert.deepEqual(r.log.sets, [], 'nika\'s own partial clear is not the terminal\'s text');
+    assert.deepEqual(r.log.problems, []);
+    assert.equal(r.lastNote(), null);
+    ok(r);
+    await r.advance(900);
+    assert.equal(r.log.puts.length, 1);
+    await r.advance(200);
+    assert.deepEqual(r.log.puts[1], { text: 'abc', base: sig(7) }, 'retried after 1 s on the partial screen\'s sig');
+    assert.deepEqual(r.log.sets, []);
+  });
+
+  test('(−) clear-stopped counts toward the failures: the problem line shows at the third, then nothing more is pushed until the next edit', async () => {
+    const r = await setup(409, { error: 'clear-stopped', draft: text('half', { sig: sig(7) }) });
+    await r.advance(1000);
+    assert.equal(r.log.puts.length, 2);
+    assert.deepEqual(r.log.problems, []);
+    await r.advance(1000);
+    assert.equal(r.log.puts.length, 3);
+    assert.deepEqual(r.log.problems, ["nika couldn't copy your text into Claude's input. It is kept here."]);
+    await r.advance(30_000);
+    assert.equal(r.log.puts.length, 3, 'given up');
+    assert.deepEqual(r.log.sets, []);
+    ok(r);
+    r.type('abcd');
+    await r.advance(PUSH_MS);
+    assert.equal(r.log.puts.length, 4, 'an edit starts again');
+  });
+});
+
+describe('W13: the Queued note', () => {
+  const q = (over = {}) => empty({ queued: true, ...over });
+
+  test('(+) both boxes empty and in sync, the screen shows Claude\'s queued placeholder: the "Queued" note, told once', () => {
+    const r = rig();
+    for (let i = 0; i < 4; i += 1) r.ds.capture(q(), 120);
+    assert.equal(r.lastNote().kind, 'queued');
+    assert.equal(r.log.notes.filter((n) => n?.kind === 'queued').length, 1);
+    r.ds.capture(empty(), 120);
+    assert.equal(r.lastNote(), null, 'Claude took the message: the placeholder is gone');
+  });
+
+  test('(−) not while nika\'s box holds text, Shell is on, the screen holds text or is paused, or no box is on screen', () => {
+    const r = rig();
+    r.ds.capture(q(), 120);
+    assert.equal(r.lastNote().kind, 'queued');
+    r.type('next message');
+    assert.notEqual(r.lastNote()?.kind, 'queued', 'a draft in the box');
+    r.type('');
+    assert.equal(r.lastNote().kind, 'queued');
+    r.type('', true);
+    assert.notEqual(r.lastNote()?.kind, 'queued', 'Shell on');
+    r.type('', false);
+    r.ds.capture(text('typed over there', { sig: sig(3), queued: true }), 120);
+    assert.notEqual(r.lastNote()?.kind, 'queued', 'queued is only ever an empty box');
+    r.ds.capture(unreadable('pasted'), 120);
+    assert.equal(r.lastNote().kind, 'paused');
+    r.ds.capture(null, 120);
+    assert.equal(r.lastNote(), null);
+  });
+
+  test('(−) queued is never offered as a suggestion, so the suggestion note stays away', () => {
+    const r = rig();
+    r.ds.capture(q({ suggestion: 'run the tests in acme-api' }), 120);
+    assert.equal(r.lastNote().kind, 'queued');
+    assert.equal(suggestionFor(r.ds.screen(), { value: '' }), null);
+  });
+});
+
+describe('W13: after the Enter (submitted, sent)', () => {
+  const sentRig = (value = 'hello') => {
+    const r = rig({ value });
+    r.ds.capture(text(value, { sig: sig(5) }), 120);
+    assert.deepEqual(r.log.sets, []);
+    return r;
+  };
+  const clearBox = (r) => { r.st.box = { value: '', shell: false }; };
+
+  test('(+) taken: the answer\'s empty screen replaces the one from before the Enter, so the sent text is not pulled back', async () => {
+    const r = sentRig();
+    r.ds.beginSend();
+    r.ds.submitted({ status: 200, body: { taken: true, draft: empty({ sig: sig(9) }) } });
+    clearBox(r);
+    r.ds.sent();
+    r.ds.endSend();
+    await r.advance(10_000);
+    assert.deepEqual(r.log.sets, []);
+    assert.equal(r.ds.screen().sig, sig(9));
+  });
+
+  test('(+) taken with Claude\'s queue: the screen is the queued placeholder and the Queued note shows after the Send', async () => {
+    const r = sentRig();
+    r.ds.beginSend();
+    r.ds.submitted({ status: 200, body: { taken: true, draft: empty({ queued: true }) } });
+    clearBox(r);
+    r.ds.sent();
+    r.ds.endSend();
+    assert.equal(r.lastNote().kind, 'queued');
+  });
+
+  test('(+) taken null (not proven) and the screen still holds the text: the sync forgets what it matched, so the text comes back into the box', async () => {
+    const r = sentRig();
+    r.ds.beginSend();
+    r.ds.submitted({ status: 200, body: { taken: null, draft: text('hello', { sig: sig(5) }) } });
+    clearBox(r);
+    r.ds.sent();
+    r.ds.endSend();
+    await r.advance(PUSH_MS);
+    assert.deepEqual(r.log.sets, [['hello', false]], 'nothing is lost: the text Claude still holds is shown again');
+    assert.deepEqual(r.log.puts, [], 'and it is not pushed over itself');
+  });
+
+  test('(−) without the forget, the same screen would stay hidden: sent() is what makes the next capture win', async () => {
+    const r = sentRig();
+    r.ds.beginSend();
+    r.ds.submitted({ status: 200, body: { draft: text('hello', { sig: sig(5) }) } });
+    clearBox(r);
+    r.ds.sent();
+    r.ds.endSend();
+    r.ds.capture(text('hello', { sig: sig(5) }), 120); // the very next capture shows the same text
+    await r.advance(PUSH_MS);
+    assert.deepEqual(r.log.sets, [['hello', false]]);
+  });
+
+  test('(+) a refusal that carries a draft (draft-changed) is where the screen is; the next step pulls that text, the terminal wins', async () => {
+    const r = sentRig();
+    r.ds.beginSend();
+    r.ds.submitted({ status: 409, body: { error: 'draft-changed', draft: text('typed over there', { sig: sig(7) }) } });
+    r.ds.endSend();
+    await r.advance(PUSH_MS);
+    assert.deepEqual(r.log.sets, [['typed over there', false]]);
+  });
+
+  test('(−) a refusal with no draft (prompt-open, not-idle) leaves the screen as it was; garbage is not trusted; a 200 with no readable box says there is none', () => {
+    const r = sentRig();
+    const before = r.ds.screen();
+    r.ds.submitted({ status: 409, body: { error: 'prompt-open' } });
+    r.ds.submitted({ status: 409, body: { error: 'x', draft: { state: 'maybe' } } });
+    r.ds.submitted({ status: 429, body: null });
+    r.ds.submitted(undefined);
+    r.ds.submitted({ status: 0, body: null });
+    assert.equal(r.ds.screen(), before);
+    r.ds.submitted({ status: 200, body: { taken: null, draft: null } });
+    assert.equal(r.ds.screen(), null);
+  });
+});
+
+describe('W13: submitResult and submitMessage (the submit route\'s answers, fixed copy)', () => {
+  test('(+) 200 taken true or null is ok; Claude queues, and a box that could not be compared is not a failure', () => {
+    assert.deepEqual(submitResult({ status: 200, body: { taken: true, draft: null } }), { ok: true, taken: true });
+    assert.deepEqual(submitResult({ status: 200, body: { taken: null, draft: null } }), { ok: true, taken: null });
+    for (const taken of [undefined, 'true', 1, {}]) assert.deepEqual(submitResult({ status: 200, body: { taken } }), { ok: true, taken: null }, String(taken));
+    assert.deepEqual(submitResult({ status: 200, body: 'x' }), { ok: true, taken: null });
+  });
+
+  test('(−) 200 taken false keeps the text: not ok, with the approved words', () => {
+    assert.deepEqual(submitResult({ status: 200, body: { taken: false } }), {
+      ok: false,
+      message: "nika pressed Enter, but Claude's input still shows your text (a menu may have taken the Enter). Check the terminal. Your text is kept.",
+    });
+  });
+
+  test('(−) each 409 has its approved line; the server\'s own words never reach the page', () => {
+    const want = {
+      'prompt-open': 'A prompt opened in Claude, so nika did not press Enter. Answer it, then send again. Your text is kept.',
+      'not-idle': 'Stop is running, so nika did not press Enter. Send again in a moment. Your text is kept.',
+      'draft-changed': "Claude's input changed before Enter. nika shows what it holds now. Nothing was sent.",
+      'screen-unclear': "nika can't tell what Claude is showing, so it did not press Enter. Use the terminal. Your text is kept.",
+      'suggestion-shown': "Claude's input is empty and shows a suggestion, so nika did not press Enter. Nothing was sent.",
+      'input-unreadable': "nika can't read Claude's input box right now (a menu may be open). Nothing was sent. Your text is kept.",
+      'mode-unknown': "nika can't read Claude's input box right now (a menu may be open). Nothing was sent. Your text is kept.",
+      'bypass-prompt': 'Answer this prompt in the terminal.',
+      'busy-switching': 'Another action is running on this session. Try again in a moment. Your text is kept.',
+    };
+    for (const [code, message] of Object.entries(want)) {
+      assert.deepEqual(submitResult({ status: 409, body: { error: code, message: 'Evil <b>server</b> text' } }), { ok: false, message }, code);
+    }
+  });
+
+  test('(−) the other failures: 404, 429, no answer, 400, 500 and an unknown 409 code each read as a fixed line', () => {
+    const lines = [
+      [404, 'The session is gone.'],
+      [429, 'Too many keys at once; try again. Your text is kept.'],
+      [0, "nika did not answer, so it is not known whether Enter was pressed. Check Claude's input in the terminal. Your text is kept."],
+      [400, "nika couldn't press Enter in Claude's input. Check the terminal. Your text is kept."],
+      [500, "nika couldn't press Enter in Claude's input. Check the terminal. Your text is kept."],
+    ];
+    for (const [status, message] of lines) assert.equal(submitResult({ status, body: { error: 'x', message: 'Evil' } }).message, message, String(status));
+    assert.equal(submitResult({ status: 409, body: { error: 'from-the-future', message: 'Evil' } }).message, "nika couldn't press Enter in Claude's input. Check the terminal. Your text is kept.");
+    assert.equal(submitResult({ status: 409, body: null }).ok, false);
+    assert.equal(submitResult(undefined).ok, false);
+    assert.equal(submitResult({ status: 200, body: { taken: true } }).message, undefined);
+    assert.doesNotMatch(JSON.stringify(lines.map(([, m]) => m)), /Evil/);
   });
 });

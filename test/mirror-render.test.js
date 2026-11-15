@@ -254,22 +254,30 @@ describe('applyMirror', () => {
 // ---- input encoding ---------------------------------------------------------------------------------------------
 
 describe('planSend', () => {
-  test('(+) empty or blank composer sends just Enter', () => {
-    for (const v of ['', '   ', '\n', null, undefined]) assert.deepEqual(planSend(v).payload, { keys: ['Enter'] });
+  test('(+) empty or blank composer has nothing to type: no body at all, the summary is just Enter', () => {
+    for (const v of ['', '   ', '\n', null, undefined]) {
+      const p = planSend(v);
+      assert.deepEqual(p.payloads, []);
+      assert.equal(p.summary, 'Enter');
+    }
   });
 
-  test('(+) one plain line goes as text + Enter; trailing newlines are dropped', () => {
-    assert.deepEqual(planSend('hello world').payload, { text: 'hello world', keys: ['Enter'] });
-    assert.deepEqual(planSend('hello\n\n').payload, { text: 'hello', keys: ['Enter'] });
-    assert.deepEqual(planSend('x'.repeat(1024)).payload.text.length, 1024);
-    assert.match(planSend('abc').summary, /3 characters/);
+  test('(+) one plain line goes as text; trailing newlines are dropped; the summary still names the Enter', () => {
+    assert.deepEqual(planSend('hello world').payloads, [{ text: 'hello world' }]);
+    assert.deepEqual(planSend('hello\n\n').payloads, [{ text: 'hello' }]);
+    assert.deepEqual(planSend('x'.repeat(1024)).payloads[0].text.length, 1024);
+    assert.match(planSend('abc').summary, /3 characters \+ Enter/);
   });
 
-  test('(+) several lines, a line over 1024 chars or a line with a tab go as a paste + Enter', () => {
-    assert.deepEqual(planSend('a\nb\r\nc').payload, { paste: 'a\nb\nc', keys: ['Enter'] });
-    assert.equal(planSend('x'.repeat(1025)).payload.paste.length, 1025);
-    assert.deepEqual(planSend('a\tb').payload, { paste: 'a\tb', keys: ['Enter'] });
+  test('(+) several lines, a line over 1024 chars or a line with a tab go as a paste', () => {
+    assert.deepEqual(planSend('a\nb\r\nc').payloads, [{ paste: 'a\nb\nc' }]);
+    assert.equal(planSend('x'.repeat(1025)).payloads[0].paste.length, 1025);
+    assert.deepEqual(planSend('a\tb').payloads, [{ paste: 'a\tb' }]);
     assert.match(planSend('a\nb').summary, /2 lines/);
+  });
+
+  test('(−) W13: no body carries an Enter key (Send presses Enter only through the submit route), whatever the text', () => {
+    for (const v of ['', 'hello', 'a\nb', 'x'.repeat(2000), 'a\tb']) assert.equal(JSON.stringify(planSend(v).payloads).includes('Enter'), false, v.slice(0, 10));
   });
 
   test('(+) a paste of exactly 16 KB passes, counted in UTF-8 bytes', () => {
@@ -281,14 +289,15 @@ describe('planSend', () => {
     for (const v of ['y'.repeat(16 * 1024 + 1), 'é'.repeat(8 * 1024 + 1), `${'line\n'.repeat(4000)}`]) {
       const p = planSend(v);
       assert.equal(p.ok, false);
-      assert.equal(p.payload, undefined);
+      assert.equal(p.payloads, undefined);
       assert.match(p.message, /16 KB/);
     }
   });
 
   test('(−) text and paste are never both set', () => {
     for (const v of ['a', 'a\nb', 'x'.repeat(2000)]) {
-      const p = planSend(v).payload;
+      const [p, ...rest] = planSend(v).payloads;
+      assert.equal(rest.length, 0);
       assert.ok(!('text' in p && 'paste' in p));
     }
   });

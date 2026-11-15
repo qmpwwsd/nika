@@ -205,13 +205,15 @@ body.m-bypass .mode-frame { background: repeating-linear-gradient(135deg, var(--
 .problem.error { color: var(--danger); }
 .problem:empty { display: none; }
 .shell-hint, .arg-hint { color: var(--text); font-weight: 600; }
-/* the draft sync note (W5): one line under the box. Each state has its own colour, icon and word: paused (amber), not mirrored (ink), waiting (green) */
+/* the draft sync note (W5, W13): one line under the box. Each state has its own colour, icon and word: paused (amber), not mirrored (ink), on hold (attention pink), cursor (blue), queued (green), suggestion (accent) */
 .dnote { display: inline-flex; align-items: flex-start; gap: 6px; padding: 1px 8px 1px 6px; border-radius: var(--r-sm); color: var(--text); background: var(--surface-3); overflow-wrap: anywhere; }
 .dnote .ic { margin-top: 3px; }
 .dnote b { font-weight: 600; }
 .dnote[data-k="paused"] { color: var(--idle); background: var(--idle-soft); }
 .dnote[data-k="long"] { color: var(--text); background: var(--surface-3); }
-.dnote[data-k="wait"] { color: var(--busy); background: var(--busy-soft); }
+.dnote[data-k="hold"] { color: var(--attn); background: var(--attn-soft); }
+.dnote[data-k="cursor"] { color: var(--fit-other); background: var(--fit-other-soft); }
+.dnote[data-k="queued"] { color: var(--busy); background: var(--busy-soft); }
 .dnote[data-k="suggest"] { color: var(--accent); background: var(--accent-soft); }
 
 /* command palette (spec 9.7): opens upward from the message box, anchored to its left and right edges; focus never leaves the textarea */

@@ -195,22 +195,22 @@ export function applyMirror(container, model, cursor) {
 const utf8Bytes = (s) => new TextEncoder().encode(s).length;
 
 /**
- * Composer text -> request body for POST /pane/:id/keys, or a refusal. Empty -> just Enter. One plain line of at most
- * 1024 chars -> { text, keys: ['Enter'] }. Anything else (several lines, longer, or with a control such as a tab) ->
- * { paste, keys: ['Enter'] }, at most 16 KB of UTF-8.
+ * Composer text -> request bodies for POST /pane/:id/keys, or a refusal. Empty -> no body (just the Enter). One plain line of at most
+ * 1024 chars -> [{ text }]. Anything else (several lines, longer, or with a control such as a tab) -> [{ paste }], at most 16 KB of
+ * UTF-8. The Enter is not in them: Send presses it through the submit route (W13), never the keys route.
  */
 export function planSend(value) {
   const v = String(value ?? '').replace(/\r\n?/g, '\n').replace(/\n+$/, '');
-  if (v.trim() === '') return { ok: true, payload: { keys: ['Enter'] }, summary: 'Enter' };
+  if (v.trim() === '') return { ok: true, payloads: [], summary: 'Enter' };
   if (!v.includes('\n') && v.length <= LIMITS.text && !CONTROL.test(v)) {
-    return { ok: true, payload: { text: v, keys: ['Enter'] }, summary: `${v.length} characters + Enter` };
+    return { ok: true, payloads: [{ text: v }], summary: `${v.length} characters + Enter` };
   }
   const bytes = utf8Bytes(v);
   if (bytes > LIMITS.paste) {
     return { ok: false, message: `This is ${Math.ceil(bytes / 1024)} KB. A paste can be at most 16 KB. Shorten it or send it in parts. Your text is kept.` };
   }
   const lines = v.split('\n').length;
-  return { ok: true, payload: { paste: v, keys: ['Enter'] }, summary: lines > 1 ? `a paste of ${lines} lines + Enter` : `a paste of ${v.length} characters + Enter` };
+  return { ok: true, payloads: [{ paste: v }], summary: lines > 1 ? `a paste of ${lines} lines + Enter` : `a paste of ${v.length} characters + Enter` };
 }
 
 /** Pasted text in passthrough mode (no Enter). null when there is nothing to send, { ok: false, message } when too big. */

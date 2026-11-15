@@ -102,17 +102,18 @@ const pushText = (text) => text.replace(/[ \t\u00a0]+$/, '');
 /** The capture's `draft` as the page may use it, or null (older server, malformed: no cut, no sync). Copies the fields; nothing else is kept. */
 export function cleanDraft(raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
-  const { state, mode, text, sig, reason, box, cursorAtEnd, suggestion } = raw;
+  const { state, mode, text, sig, reason, box, cursorAtEnd, suggestion, queued } = raw;
   if (!STATES.has(state) || !MODES.has(mode) || typeof text !== 'string' || text.length > TEXT_MAX) return null;
   if (!box || !Number.isInteger(box.top) || !Number.isInteger(box.bottom) || box.top < 0 || box.bottom <= box.top) return null;
   const at = { top: box.top, bottom: box.bottom };
   if (state === 'unreadable') {
-    return { state, mode, text: '', sig: null, reason: Object.hasOwn(REASON_TEXT, reason) ? reason : 'layout', box: at, cursorAtEnd: false, suggestion: null };
+    return { state, mode, text: '', sig: null, reason: Object.hasOwn(REASON_TEXT, reason) ? reason : 'layout', box: at, cursorAtEnd: false, suggestion: null, queued: false };
   }
   if (typeof sig !== 'string' || !SIG.test(sig)) return null;
   return {
     state, mode, text, sig, box: at, cursorAtEnd: cursorAtEnd === true,
     suggestion: typeof suggestion === 'string' && suggestion.length <= 200 ? suggestion : null,
+    queued: queued === true, // Claude shows "Press up to edit queued messages" in an empty box (W13); never a suggestion
   };
 }
 
@@ -129,10 +130,11 @@ export function cutAt(draft, passOn) {
 /**
  * Claude's prompt suggestion as nika's message box shows it (its placeholder) and Tab or the right arrow accepts it (W4), or null.
  * Only while the box is empty and Shell is off, and the screen's draft is a readable, empty prompt box with a suggestion (the
- * parser gives null for the `Try "..."` example; a paused draft is unreadable, so it gives none either).
+ * parser gives null for the `Try "..."` example; a paused draft is unreadable, so it gives none either). Claude's queued-messages
+ * placeholder is no suggestion (W13): the parser gives null for it, and `queued` is checked here as well.
  */
 export function suggestionFor(draft, { value = '', shell = false } = {}) {
-  if (shell === true || value !== '' || !draft || draft.state !== 'empty' || draft.mode !== 'prompt') return null;
+  if (shell === true || value !== '' || !draft || draft.state !== 'empty' || draft.mode !== 'prompt' || draft.queued === true) return null;
   const s = draft.suggestion;
   return typeof s === 'string' && s !== '' && s.length <= 200 ? s : null;
 }
@@ -145,44 +147,70 @@ export function caretAfter(before, after, caret) {
 
 // ---- the note under the box (colour + icon + word per state) -------------------------------------------------------------
 
-/** { kind, icon, label, text } for the one note, or null. kind: paused (the screen's draft cannot be read), long (outside the envelope), wait (a replace is refused while Claude works), suggest (Claude offers a prompt suggestion: Tab accepts it). */
+/**
+ * { kind, icon, label, text } for the one note, or null. kind: paused (the screen's draft cannot be read), long (outside the envelope),
+ * hold (a write is refused: a prompt is open or Stop runs), cursor (a write is refused: Claude works and its cursor is not at the end of the
+ * input), queued (Claude holds our message and takes it at its next step), suggest (Claude offers a prompt suggestion: Tab accepts it).
+ * Every kind has its own colour (session.css), icon and word.
+ */
 export function noteView(note) {
   if (!note) return null;
   if (note.kind === 'paused') {
     return { kind: 'paused', icon: 'pause', label: 'Sync paused:', text: `Claude's input holds ${reasonText(note.reason)}. Edit or clear it in the terminal.` };
   }
   if (note.kind === 'long') return { kind: 'long', icon: 'info', label: 'Not mirrored:', text: 'Long text goes to Claude when you send it.' };
-  if (note.kind === 'wait') return { kind: 'wait', icon: 'clock', label: 'Waiting for Claude:', text: "Claude is working. Your text goes into its input when it waits." };
+  if (note.kind === 'hold') {
+    return { kind: 'hold', icon: 'dialog', label: 'On hold:', text: "A prompt is open or Stop is running. Your text goes into Claude's input when that is over." };
+  }
+  if (note.kind === 'cursor') {
+    return {
+      kind: 'cursor', icon: 'window', label: 'Cursor:',
+      text: 'Claude is working and the cursor in its input is not at the end. Move it to the end in the terminal, or wait: your text goes in when Claude waits.',
+    };
+  }
+  if (note.kind === 'queued') return { kind: 'queued', icon: 'send', label: 'Queued:', text: 'Claude takes your message at its next step.' };
   if (note.kind === 'suggest') return { kind: 'suggest', icon: 'kbd', label: 'Suggestion:', text: 'Tab or \u2192 accepts what Claude suggests.' };
   return null;
 }
 
 // ---- Send (design 4) ---------------------------------------------------------------------------------------------------------
 
-const ENTER = [{ keys: ['Enter'] }];
 const LONG_REFUSAL = "Claude's input already holds text; it would be sent together with yours. Clear it in the terminal or shorten your message.";
 const pausedLine = (reason) => `Claude's input holds ${reasonText(reason)}. Send or clear it in the terminal.`;
 const STALE_SUGGESTION = "Claude's suggestion changed. Nothing was sent.";
+const CANT_READ = "nika can't read Claude's input box right now (a menu may be open). Nothing was sent. Your text is kept.";
+const BUSY_SWITCHING = 'Another action is running on this session. Try again in a moment. Your text is kept.';
+
+/** The body of Send's Enter against the screen `s`: its sig as `base` (the route presses Enter only while the box still reads so), or none. */
+const submitBase = (s) => (typeof s?.sig === 'string' && SIG.test(s.sig) ? { base: s.sig } : {});
 
 /**
  * What Send does with the box and the screen. `screen` is cleanDraft's answer for the last capture (null: no readable box). Returns
- *   { act: 'enter', payloads, summary }   Enter alone (the screen already equals the box, or the box is empty)
- *   { act: 'push', text, payloads, summary }   copy the box into Claude's input first, then Enter
+ *   { act: 'none' }   nothing to send: the box is empty and Claude's input (a readable screen) is empty too. An Enter there could only act
+ *                     on Claude's suggestion, which nika never verified, so no request goes out. The attachment tray treats it as "no text".
+ *   { act: 'enter', submit, summary }   Enter alone (the screen already equals the box, or the box is empty and Claude's input holds something or cannot be read); `submit` is the body
+ *                                       of the guarded submit route: { base } with the screen's sig, or {} when it has none
+ *   { act: 'push', text, summary }   copy the box into Claude's input first; the Enter follows with the sig of that write
  *   { act: 'legacy' }   today's paste / Shell path (no readable box, or a long text onto an empty prompt)
  *   { act: 'refuse', message }
- * The sendGate (a permission prompt) runs before this.
+ * No plan carries an Enter key: the page's Send presses Enter only through the submit route (W13). The sendGate (a permission prompt)
+ * runs before this; Claude working does not gate Send: Claude queues the message, and the route refuses a prompt that opened after the
+ * page looked.
  */
 export function draftSendPlan({ value, shell = false, screen = null, cols = 0 } = {}) {
   const v = String(value ?? '').replace(/\r\n?/g, '\n').replace(/\n+$/, '');
-  if (v.trim() === '') return shell ? { act: 'legacy' } : { act: 'enter', ok: true, payloads: ENTER, summary: 'Enter' };
+  if (v.trim() === '') {
+    if (shell) return { act: 'legacy' };
+    return screen?.state === 'empty' ? { act: 'none' } : { act: 'enter', ok: true, submit: submitBase(screen), summary: 'Enter' };
+  }
   if (!screen) return { act: 'legacy' };
   if (screen.state === 'unreadable') return { act: 'refuse', message: pausedLine(screen.reason) };
   const want = canon(v, shell);
-  if (sameDraft(screenCanon(screen).replace(/\n+$/, ''), want)) return { act: 'enter', ok: true, payloads: ENTER, summary: 'Enter' };
+  if (sameDraft(screenCanon(screen).replace(/\n+$/, ''), want)) return { act: 'enter', ok: true, submit: submitBase(screen), summary: 'Enter' };
   const text = pushText(want);
   if (fits(text, cols)) {
     const n = text.length - (shell ? 1 : 0);
-    return { act: 'push', ok: true, text, payloads: ENTER, summary: shell ? `a shell command (${n} characters) + Enter` : `${n} characters + Enter` };
+    return { act: 'push', ok: true, text, summary: shell ? `a shell command (${n} characters) + Enter` : `${n} characters + Enter` };
   }
   if (screen.state === 'empty' && screen.mode === 'prompt') return { act: 'legacy' };
   return { act: 'refuse', message: LONG_REFUSAL };
@@ -195,11 +223,13 @@ function sendMessage({ status, code, reason }) {
       return "Claude's input changed while nika was copying your text. nika shows what it holds now. Nothing was sent.";
     }
     if (code === 'draft-unreadable') return pausedLine(reason);
-    if (code === 'not-idle') return "Claude is busy or a prompt is open, so nika can't change its input now. Nothing was sent. Your text is kept.";
-    if (code === 'input-unreadable' || code === 'mode-unknown') {
-      return "nika can't read Claude's input box right now (a menu may be open). Nothing was sent. Your text is kept.";
+    if (code === 'not-idle') return "A prompt is open in Claude or Stop is running, so nika can't change its input now. Nothing was sent. Your text is kept.";
+    if (code === 'cursor-not-at-end') {
+      return 'Claude is working and the cursor in its input is not at the end. Move it to the end in the terminal, or send when Claude waits. Nothing was sent. Your text is kept.';
     }
-    if (code === 'busy-switching') return 'Another action is running on this session. Try again in a moment. Your text is kept.';
+    if (code === 'clear-stopped') return "Claude's input did not clear in time. Nothing was sent. Your text is kept; send again.";
+    if (code === 'input-unreadable' || code === 'mode-unknown') return CANT_READ;
+    if (code === 'busy-switching') return BUSY_SWITCHING;
   }
   if (status === 400) return "This text can't be copied into Claude's input as it is. Your text is kept.";
   if (status === 404) return 'The session is gone.';
@@ -208,13 +238,43 @@ function sendMessage({ status, code, reason }) {
   return "nika couldn't copy your text into Claude's input. Your text is kept.";
 }
 
+const NOT_TAKEN = "nika pressed Enter, but Claude's input still shows your text (a menu may have taken the Enter). Check the terminal. Your text is kept.";
+
+/** The line for a Send whose Enter did not go (the submit route, W13). Fixed copy: only the status and the server's `error` code pick it. */
+export function submitMessage({ status, code } = {}) {
+  if (status === 409) {
+    if (code === 'prompt-open') return 'A prompt opened in Claude, so nika did not press Enter. Answer it, then send again. Your text is kept.';
+    if (code === 'bypass-prompt') return 'Answer this prompt in the terminal.';
+    if (code === 'not-idle') return 'Stop is running, so nika did not press Enter. Send again in a moment. Your text is kept.';
+    if (code === 'draft-changed') return "Claude's input changed before Enter. nika shows what it holds now. Nothing was sent.";
+    if (code === 'screen-unclear') return "nika can't tell what Claude is showing, so it did not press Enter. Use the terminal. Your text is kept.";
+    if (code === 'suggestion-shown') return "Claude's input is empty and shows a suggestion, so nika did not press Enter. Nothing was sent.";
+    if (code === 'input-unreadable' || code === 'mode-unknown') return CANT_READ;
+    if (code === 'busy-switching') return BUSY_SWITCHING;
+  }
+  if (status === 404) return 'The session is gone.';
+  if (status === 429) return 'Too many keys at once; try again. Your text is kept.';
+  if (status === 0) return "nika did not answer, so it is not known whether Enter was pressed. Check Claude's input in the terminal. Your text is kept.";
+  return "nika couldn't press Enter in Claude's input. Check the terminal. Your text is kept.";
+}
+
+/**
+ * The submit route's answer as Send uses it: { ok: true, taken } (200: `taken` true, or null when the box could not be compared; Claude
+ * queues the message while it works) or { ok: false, message } (any refusal, and a 200 whose `taken` is false: the Enter did not take, the text stays).
+ */
+export function submitResult({ status, body } = {}) {
+  const b = body && typeof body === 'object' && !Array.isArray(body) ? body : {};
+  if (status === 200) return b.taken === false ? { ok: false, message: NOT_TAKEN } : { ok: true, taken: b.taken === true ? true : null };
+  return { ok: false, message: submitMessage({ status, code: status === 409 && typeof b.error === 'string' ? b.error : '' }) };
+}
+
 /** The line for an accept that did not take. Fixed copy: only the status and the server's `error` code pick it. */
 function acceptMessage({ status, code, reason }) {
   if (status === 409) {
     if (code === 'draft-mismatch') return "Claude's input did not take the suggestion. nika shows what it holds now.";
     if (code === 'draft-changed') return STALE_SUGGESTION;
     if (code === 'draft-unreadable') return pausedLine(reason);
-    if (code === 'not-idle') return "Claude is busy or a prompt is open, so nika can't accept the suggestion now. Nothing was sent.";
+    if (code === 'not-idle') return "Claude is working or a prompt is open, so nika can't accept the suggestion now. Nothing was sent.";
     if (code === 'input-unreadable' || code === 'mode-unknown') return "nika can't read Claude's input box right now (a menu may be open). Nothing was sent.";
     if (code === 'busy-switching') return 'Another action is running on this session. Try again in a moment.';
   }
@@ -230,7 +290,7 @@ function acceptMessage({ status, code, reason }) {
 const ADOPT = new Set(['draft-changed', 'screen-changed', 'draft-mismatch']); // 409s whose body carries the screen's draft: the terminal wins
 const unreadableDraft = (reason, like) => ({
   state: 'unreadable', mode: like?.mode ?? 'prompt', text: '', sig: null, reason: Object.hasOwn(REASON_TEXT, reason) ? reason : 'layout',
-  box: like?.box ?? { top: 0, bottom: 2 }, cursorAtEnd: false, suggestion: null,
+  box: like?.box ?? { top: 0, bottom: 2 }, cursorAtEnd: false, suggestion: null, queued: false,
 });
 
 /**
@@ -245,7 +305,7 @@ export function createDraftSync(io) {
   // box holds text the screen does not. editedAt / sentAt: when the box was last edited / the last write left. retryAt: no push before.
   const D = {
     seenSig: null, screen: null, cols: 0, dirty: false, editedAt: -Infinity, sentAt: 0, flight: null, timer: null, composing: false,
-    sending: false, stopped: false, retryAt: 0, fails: 0, waiting: false, blocked: false, shown: '',
+    sending: false, stopped: false, retryAt: 0, fails: 0, held: null, blocked: false, shown: '', // held: null | 'hold' | 'cursor' (the last write was refused)
   };
   const now = () => io.now();
 
@@ -270,7 +330,7 @@ export function createDraftSync(io) {
     D.dirty = false;
     D.seenSig = d.sig;
     D.fails = 0;
-    D.waiting = false;
+    D.held = null;
     io.setBox(d.text, d.mode === 'bash');
   }
 
@@ -285,15 +345,16 @@ export function createDraftSync(io) {
       D.dirty = false;
       D.seenSig = d.sig;
       D.fails = 0;
-      D.waiting = false;
+      D.held = null;
       D.blocked = false;
-      show(suggestionFor(d, box) === null ? null : { kind: 'suggest' }); // an empty box over an empty screen that offers a suggestion
+      // an empty box over an empty screen: Claude's suggestion (Tab accepts it), or our message that Claude holds in its queue
+      show(suggestionFor(d, box) !== null ? { kind: 'suggest' } : d.state === 'empty' && d.queued === true ? { kind: 'queued' } : null);
       return;
     }
     const text = pushText(want);
     const long = !fits(text, D.cols);
     if (D.dirty && (long || D.blocked)) show({ kind: 'long' });
-    else if (D.dirty && D.waiting) show({ kind: 'wait' });
+    else if (D.dirty && D.held !== null) show({ kind: D.held });
     else show(null);
     if (D.flight || D.composing || D.sending || D.stopped) return; // our own write is landing, an IME is open, a Send runs: its end runs step again
     if (D.seenSig === null) { // the first readable capture of this connection: an empty box takes the screen; text already there is never wiped
@@ -325,10 +386,11 @@ export function createDraftSync(io) {
     return settle(r && typeof r === 'object' ? r : { status: 0, body: null });
   }
 
-  function fail(status) {
+  /** A write that failed for good reasons of its own: another try after `wait`; the problem line shows at the `at`-th failure in a row, and after three nothing is pushed until the next edit. */
+  function fail(status, wait = status === 0 ? 2000 : 3000, at = 1) {
     D.fails += 1;
-    D.retryAt = now() + (status === 0 ? 2000 : 3000);
-    if (D.fails === 1) io.problem(status === 0 ? 'nika did not answer. Your text is kept.' : "nika couldn't copy your text into Claude's input. It is kept here.");
+    D.retryAt = now() + wait;
+    if (D.fails === at) io.problem(status === 0 ? 'nika did not answer. Your text is kept.' : "nika couldn't copy your text into Claude's input. It is kept here.");
   }
 
   function settle(r) {
@@ -336,13 +398,13 @@ export function createDraftSync(io) {
     const code = r.status === 409 && typeof body.error === 'string' ? body.error : '';
     const typedSince = D.editedAt >= D.sentAt; // the user kept typing after the request left
     const d = cleanDraft(body.draft);
-    const out = { ok: r.status === 200, status: r.status, code, reason: body.reason };
+    const out = { ok: r.status === 200, status: r.status, code, reason: body.reason, sig: r.status === 200 && d?.sig ? d.sig : null };
     if (d) D.screen = d; // every answer that carries a draft says where the screen is
     if (r.status === 200) {
       if (d?.sig) D.seenSig = d.sig;
       D.dirty = typedSince;
       D.fails = 0;
-      D.waiting = false;
+      D.held = null;
       D.blocked = false;
       D.retryAt = 0;
     } else if (ADOPT.has(code) && d) {
@@ -356,9 +418,14 @@ export function createDraftSync(io) {
       D.retryAt = now() + 1000;
     } else if (code === 'busy-switching') {
       D.retryAt = now() + 300;
-    } else if (code === 'not-idle') {
-      D.waiting = true;
+    } else if (code === 'not-idle') { // a prompt is open or Stop runs
+      D.held = 'hold';
       D.retryAt = now() + 3000;
+    } else if (code === 'cursor-not-at-end') { // Claude works and its cursor is on an earlier row: only the idle road can write; the answer's draft is already in D.screen
+      D.held = 'cursor';
+      D.retryAt = now() + 3000;
+    } else if (code === 'clear-stopped') { // nika's own clear stopped half-way: the screen holds a partial text, which is never adopted
+      fail(r.status, 1000, 3);
     } else if (code === 'input-unreadable' || code === 'mode-unknown' || ADOPT.has(code)) {
       D.retryAt = now() + 1000;
     } else if (r.status === 400) {
@@ -380,7 +447,7 @@ export function createDraftSync(io) {
     D.editedAt = now();
     D.retryAt = 0;
     D.fails = 0;
-    D.waiting = false;
+    D.held = null;
     D.blocked = false;
     step();
   }
@@ -422,15 +489,28 @@ export function createDraftSync(io) {
         try { await D.flight; } catch { /* write() already took the answer */ }
       }
       if (!D.screen || D.screen.state === 'unreadable') {
-        return { ok: false, message: D.screen ? pausedLine(D.screen.reason) : "nika can't read Claude's input box right now (a menu may be open). Nothing was sent. Your text is kept." };
+        return { ok: false, message: D.screen ? pausedLine(D.screen.reason) : CANT_READ };
       }
       const out = await write(text, D.seenSig ?? D.screen.sig);
-      return out.ok ? { ok: true } : { ok: false, message: sendMessage(out) };
+      return out.ok ? { ok: true, sig: out.sig } : { ok: false, message: sendMessage(out) };
     },
-    /** The text went to Claude and the box was cleared: nothing of it is unsent any more. */
+    /**
+     * Send's Enter was answered (the submit route): its `draft` is where the screen is now, so a step between the Enter and the next
+     * capture never works from the screen as it was before. A 200 always says (null: no readable box any more); a refusal only when it
+     * carries one (draft-changed: the next step pulls that text into the box, the terminal wins).
+     */
+    submitted({ status, body } = {}) {
+      const d = cleanDraft(body?.draft);
+      if (status === 200 || d) D.screen = d;
+    },
+    /**
+     * The text went to Claude and the box was cleared: nothing of it is unsent any more. The sync forgets the screen it last matched
+     * (seenSig ''), so the next capture wins: if Claude's input still holds the text (the Enter did not take), it is pulled back into the box.
+     */
     sent() {
       D.dirty = false;
-      D.waiting = false;
+      D.held = null;
+      D.seenSig = '';
       cancelTimer();
     },
     endSend() {

@@ -10,7 +10,7 @@ import { h, icon, roleTagEl, ctxEl } from './dom.js';
 import { isApp, appFetch, getJSON, applyTheme, windowCommand } from './api.js';
 import { roleTag, savedPick } from './dash-model.js';
 import { toRenderModel, cutCursor, applyMirror, planSend, planPaste, chunkText, keyForEvent, KEY_LABEL, arrowEcho } from './mirror-render.js';
-import { createDraftSync, cleanDraft, cutAt, caretAfter, draftSendPlan, suggestionFor } from './draft-sync.js';
+import { createDraftSync, cleanDraft, cutAt, caretAfter, draftSendPlan, suggestionFor, submitResult } from './draft-sync.js';
 import { MODE_META, MODE_TARGETS, modeKey, modeEl, bypassTag, switcherState, modeNote, switchFailure } from './modes.js';
 import {
   quickState, cleanPrompt, answerOutcome, escOutcome, promptOff, promptNote, commandFailure, commandSaid, problemKind, planShell, sendGate, keysRefusal, stopOutcome, followSession,
@@ -500,7 +500,7 @@ function roveKeys(bar, buttons) {
 // control lock, so Stop must work while a command waits), the model popover (pop: open?, catalog:
 // null until GET /api/app/models answered), the reason line shown (whySig). PA: the prompt panel's question (sig), a request in
 // flight (pending) and the question that was answered (lock: its sig; the buttons stay off until a capture shows another one).
-const Q = { ready: false, b: {}, busy: null, stopping: false, pop: false, catalog: null, loading: false, whySig: null, nameSig: null };
+const Q = { ready: false, b: {}, busy: null, stopping: false, pop: false, catalog: null, loading: false, whySig: null, nameSig: null, queued: false }; // queued: the capture says Claude holds a message of ours (Stop's title says what Stop does with it)
 const PA = { sig: null, pending: false, lock: null, esc: null, btns: [] };
 const S = { on: false }; // Shell mode
 // PL: the command palette (spec 9.7). open: is the list on screen; list: null until GET /api/app/commands answered; failed: the first load
@@ -521,7 +521,7 @@ function renderModelName(name) {
 
 function renderQuick() {
   if (!Q.ready) return;
-  const st = quickState({ pane: W.pane, status: A.kind, prompt: W.promptOpen, switching: SW.busy !== null || Q.busy !== null || Q.stopping });
+  const st = quickState({ pane: W.pane, status: A.kind, prompt: W.promptOpen, switching: SW.busy !== null || Q.busy !== null || Q.stopping, queued: Q.queued });
   for (const id of Object.keys(Q.b)) {
     const b = Q.b[id];
     b.setAttribute('aria-disabled', String(st[id].off));
@@ -1138,6 +1138,11 @@ function handleCapture(r) {
     try {
       if (!ATT.sending()) DS.capture(M.draft, cols); // the box holds placeholders for a moment while attachments go in: no paused note then
       renderSuggestion(); // the placeholder follows the screen's draft
+      const queued = M.draft?.queued === true;
+      if (queued !== Q.queued) { // Stop's title says what Stop does with a message Claude holds in its queue
+        Q.queued = queued;
+        renderQuick();
+      }
     } catch {
       // the mirror keeps working without the sync
     }
@@ -1411,15 +1416,21 @@ function wireScroll() {
 const RATE_MSG = 'Too fast: nika sends up to 20 requests a second. Your text is kept.';
 let chain = Promise.resolve(); // sends go out in the order they were made, one at a time
 
-async function deliver(payload) {
-  if (M.gone || !paneId) return { ok: false, message: 'The pane is gone.' };
+/** One POST to a pane route (`keys` or `submit`); a 429 waits a moment and sends again (nothing was sent). */
+async function postRetry(tail, payload) {
   let r;
   for (let attempt = 0; attempt < 4; attempt += 1) {
-    r = await call(`/api/app/pane/${encodeURIComponent(paneId)}/keys`, { method: 'POST', json: payload });
+    r = await call(`/api/app/pane/${encodeURIComponent(paneId)}/${tail}`, { method: 'POST', json: payload });
     if (r.status !== 429) break;
     showProblem(RATE_MSG, 'warn'); // busy: wait a moment and send again (nothing was sent)
     await sleep(700 * (attempt + 1));
   }
+  return r;
+}
+
+async function deliver(payload) {
+  if (M.gone || !paneId) return { ok: false, message: 'The pane is gone.' };
+  const r = await postRetry('keys', payload);
   if (r.status === 200) {
     clearProblem();
     return { ok: true };
@@ -1439,14 +1450,15 @@ function enqueueJob(run) {
   chain = job.catch(() => {});
   return job;
 }
+async function deliverAll(payloads) {
+  for (const payload of payloads) {
+    const r = await deliver(payload);
+    if (!r.ok) return r;
+  }
+  return { ok: true };
+}
 function enqueueSeq(payloads) {
-  return enqueueJob(async () => {
-    for (const payload of payloads) {
-      const r = await deliver(payload);
-      if (!r.ok) return r;
-    }
-    return { ok: true };
-  });
+  return enqueueJob(() => deliverAll(payloads));
 }
 const enqueue = (payload) => enqueueSeq([payload]);
 
@@ -1522,6 +1534,7 @@ async function sendComposer() {
     showProblem(route.message, 'error'); // nothing is sent and the text stays in the box
     return;
   }
+  if (route.act === 'none') return; // an empty box over an empty Claude input: no request (an Enter there could only take Claude's suggestion)
   const plan = route.act !== 'legacy' ? route : S.on ? planShell(value) : planSend(value);
   if (plan.empty) return; // Shell on and nothing to run: no lone "!"
   if (!plan.ok) {
@@ -1531,11 +1544,12 @@ async function sendComposer() {
   sending = true;
   DS.beginSend(); // the background sync holds still until this send is over
   $('send').setAttribute('aria-busy', 'true');
-  const r = await (route.act === 'push' ? enqueueJob(() => pushThenEnter(route)) : enqueueSeq(plan.payloads ?? [plan.payload]));
+  // every Send ends in the one guarded Enter (submitEnter); the text before it is pushed into Claude's input (a synced box) or typed by the keys route (no readable box)
+  const r = await enqueueJob(route.act === 'push' ? () => pushThenSubmit(route) : route.act === 'enter' ? () => submitEnter(route.submit.base) : () => typeThenSubmit(plan.payloads));
   sending = false;
   $('send').removeAttribute('aria-busy');
   if (r.ok) { // else the text stays in the box, and Shell stays on so a retry still goes as a command
-    say(`Sent ${plan.summary} to ${paneId}`);
+    say(r.taken === true && A.kind === 'busy' && value.trim() !== '' ? `Queued for Claude: ${plan.summary}` : `Sent ${plan.summary} to ${paneId}`); // Claude takes a message sent while it works at its next step (a lone Enter queues nothing of ours)
     if (S.on) setShell(false); // like Claude's own ! mode: the next message is a message
     clearBox(value);
   }
@@ -1552,14 +1566,39 @@ function clearBox(value) {
   DS.sent(); // nothing of it is unsent any more
 }
 
-/** A synced Send: the text is copied into Claude's input (a non-200 sends no Enter), then Enter. One job in the keys chain, so arrows queued before it go first. */
-async function pushThenEnter(route) {
+/** A synced Send: the text is copied into Claude's input (a non-200 sends no Enter), then the guarded Enter against the sig of that write. One job in the keys chain, so arrows queued before it go first. */
+async function pushThenSubmit(route) {
   const p = await DS.send(route.text);
   if (!p.ok) {
     showProblem(p.message, 'error');
     return p;
   }
-  return deliver({ keys: ['Enter'] });
+  return submitEnter(p.sig);
+}
+
+/** A Send without a readable box: the text goes through the keys route (Shell: Ctrl-U and "!" + the command; no Enter), then the guarded Enter with no base. */
+async function typeThenSubmit(payloads) {
+  const r = await deliverAll(payloads);
+  return r.ok ? submitEnter() : r;
+}
+
+/**
+ * Send's one Enter, through the submit route and never the keys route (W13; docs/contracts/api-app.md): the server presses it only on a fresh
+ * screen with no prompt or dialog and, with `base` (the draft sig the page last saw), only while Claude's input still reads so. Claude queues
+ * it while it works. Returns { ok, taken, message }: not ok keeps the text in the box. The fixed copy is draft-sync.js (submitResult).
+ */
+async function submitEnter(base) {
+  if (M.gone || !paneId) return { ok: false, message: 'The pane is gone.' };
+  const r = await postRetry('submit', base ? { base } : {});
+  DS.submitted(r); // the answer's draft is the screen after the Enter
+  const out = submitResult(r);
+  if (out.ok) {
+    clearProblem();
+    return out;
+  }
+  if (r.status === 404) setGone();
+  showProblem(out.message, r.status === 429 ? 'warn' : 'error', r.status === 429 ? 3000 : 0);
+  return out;
 }
 
 // ---- draft sync (W5): the message box and Claude's input box mirror each other; the rules and the copy: draft-sync.js ----------
@@ -1622,7 +1661,6 @@ const ATT = createAttachTray({
   showNotice,
   setGone,
   box: () => ({ value: composer().value, shell: S.on }),
-  working: () => A.kind === 'busy',
   cols: () => M.cols,
   clearBox,
   focusBox: () => composer().focus(),
