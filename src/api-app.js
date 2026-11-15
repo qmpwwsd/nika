@@ -241,7 +241,7 @@ export function createAppApi({ secret, ctx, deps }) {
   const attachLog = deps.log ?? ((line) => process.stderr.write(`${line}\n`));
   const attachSend = (deps.createAttachSend ?? createAttachSend)({
     mirror: deps.mirror, keys: deps.keys, store: deps.attachments, lock: control.withPaneLock, keyGap: control.keyGap,
-    stateOf: registryState, vimOf: (id) => vim.get(id) === true, plainOf: (id) => plain.get(id) === true, log: attachLog,
+    vimOf: (id) => vim.get(id) === true, plainOf: (id) => plain.get(id) === true, log: attachLog,
   });
 
   /**
