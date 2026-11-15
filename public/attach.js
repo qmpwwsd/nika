@@ -34,6 +34,9 @@ const PICK_STATUS = {
 const TOO_BIG = `Too big ${MID} max 8 MB`;
 const FAILED = 'Upload failed';
 const SESSION_GONE = 'The session is gone.';
+const ADD_LABEL = 'Add attachments';
+const CHOOSING_LABEL = `Choosing files${DOTS}`; // the paperclip's name while the shell's dialog is open
+const CHOOSING_LINE = `Choose files in the system dialog${DOTS}`; // the word beside the tray for the same state (the Add project toast's wording)
 const CHOOSER_OPEN = 'A file chooser is already open. Finish or cancel it first.';
 const CHOOSER_GONE = 'The file chooser closed. Nothing was added.';
 const CHOOSER_FAILED = "nika couldn't open the file chooser. Nothing was added.";
@@ -183,6 +186,7 @@ export function createAttachTray(io) {
   let sending = false;
   let queued = false; // pump is running
   let picking = false; // the shell's file dialog is open for this page
+  let note = null; // the line beside the tray that says so (made in wire)
   let noticed = false; // the Read notice shows once per page
   let over = 0; // drag enter minus leave: the box is "dropping" while a file is over it or one of its children
 
@@ -313,12 +317,23 @@ export function createAttachTray(io) {
 
   // ---- the button: the shell's own file dialog (W2-T6) -------------------------------------------------------------------------------------
 
-  /** Disabled while input is off or a dialog is open (the dialog is the only thing in flight, and it says so with aria-busy). */
+  /** Disabled while input is off or a dialog is open. */
   function syncButton() {
+    el('att-btn').disabled = !enabled || picking;
+  }
+
+  /**
+   * The state "a file dialog is open" (owner rule: colour, icon and word): aria-busy gives the paperclip its busy colour and progress cursor
+   * (session.css, never the dimmed off look), the clip becomes the spinner, the button is named "Choosing files", and a line beside the tray says it.
+   */
+  function chooserLook(on) {
     const btn = el('att-btn');
-    btn.disabled = !enabled || picking;
-    if (picking) btn.setAttribute('aria-busy', 'true');
+    if (on) btn.setAttribute('aria-busy', 'true');
     else btn.removeAttribute('aria-busy');
+    btn.setAttribute('aria-label', on ? CHOOSING_LABEL : ADD_LABEL);
+    btn.replaceChildren(on ? h('span', { class: 'spin', 'aria-hidden': 'true' }) : icon('attach'));
+    note.textContent = on ? CHOOSING_LINE : '';
+    note.hidden = !on;
   }
 
   /** Starts the dialog and waits for it. Resolves the entries it returned, or null (cancelled, or a refusal that has already been said). */
@@ -383,12 +398,14 @@ export function createAttachTray(io) {
     if (room < 1) return io.showProblem(`Up to ${MAX_FILES} attachments per message.`, 'warn', 4000);
     picking = true;
     syncButton();
+    chooserLook(true);
     try {
       const files = await choose(room);
       if (files) addPicked(files);
     } finally {
       picking = false;
       syncButton();
+      chooserLook(false);
       el('att-btn').focus();
     }
   }
@@ -468,6 +485,8 @@ export function createAttachTray(io) {
 
   function wire() {
     el('att-btn').addEventListener('click', pick);
+    note = h('p', { class: 'att-pick', role: 'status', hidden: true });
+    el('att-tray').after(note);
     el('composer').addEventListener('paste', (e) => { // a pasted screenshot or file; text alone is the browser's own paste
       const files = e.clipboardData?.files;
       if (!files || files.length === 0) return;

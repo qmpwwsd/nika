@@ -458,6 +458,57 @@ fn claim_pick(app: &AppHandle, req_id: &str) -> Option<(Arc<Server>, bool)> {
     Some((server, busy))
 }
 
+/// The server's `PICK_PATH_MAX` (src/appio.js): it refuses a longer picked path, so the shell does not send one. The server counts UTF-16
+/// units (a JavaScript string's `length`), so this does as well.
+const PICK_PATH_MAX: usize = 4096;
+
+/// Held by a dialog thread for the one dialog slot. `answer` sends the real answer; if the thread ends without having sent one (a panic in the
+/// dialog or in what follows it, even a thread that never started), `Drop` sends the null answer instead. Either way the slot is freed at the
+/// end, so a request can never stay open for ever and block every later dialog (Add project and the paperclip share the slot).
+struct PickGuard<S: FnMut(&str), R: FnMut()> {
+    send: S,
+    release: R,
+    null_line: String,
+    answered: bool,
+}
+
+impl<S: FnMut(&str), R: FnMut()> PickGuard<S, R> {
+    fn new(send: S, release: R, null_line: String) -> Self {
+        Self { send, release, null_line, answered: false }
+    }
+
+    /// The first answer goes out; later ones are ignored.
+    fn answer(&mut self, line: &str) {
+        if !self.answered {
+            self.answered = true;
+            (self.send)(line);
+        }
+    }
+}
+
+impl<S: FnMut(&str), R: FnMut()> Drop for PickGuard<S, R> {
+    fn drop(&mut self) {
+        if !self.answered {
+            let line = std::mem::take(&mut self.null_line);
+            (self.send)(&line);
+        }
+        (self.release)();
+    }
+}
+
+/// The guard of the real slot: answers go to the server's stdin, and releasing clears `Inner::pick`. Call it right after `claim_pick` said the
+/// slot is this request's, and move it into the dialog thread.
+fn pick_guard(app: &AppHandle, server: Arc<Server>, null_line: String) -> PickGuard<impl FnMut(&str), impl FnMut()> {
+    let app = app.clone();
+    PickGuard::new(
+        move |line: &str| {
+            let _ = server.send(line);
+        },
+        move || shell(&app).lock().pick = None,
+        null_line,
+    )
+}
+
 /// `pick-folder`: one dialog at a time (a second request, of either kind, is answered with "cancelled"); the dialog blocks, so it
 /// runs on its own thread. Only an absolute path of an existing directory is sent back.
 fn start_pick(app: &AppHandle, req_id: String) {
@@ -466,6 +517,7 @@ fn start_pick(app: &AppHandle, req_id: String) {
         let _ = server.send(&protocol::folder_line(&req_id, None));
         return;
     }
+    let mut guard = pick_guard(app, server, protocol::folder_line(&req_id, None));
     let app = app.clone();
     thread::spawn(move || {
         let picked = app
@@ -476,20 +528,21 @@ fn start_pick(app: &AppHandle, req_id: String) {
             .and_then(|p| p.into_path().ok())
             .filter(|p| protocol::valid_folder(p))
             .and_then(|p| p.to_str().map(str::to_owned));
-        let _ = server.send(&protocol::folder_line(&req_id, picked.as_deref()));
-        shell(&app).lock().pick = None;
+        guard.answer(&protocol::folder_line(&req_id, picked.as_deref()));
     });
 }
 
 /// `pick-files` (the attachment button): the same single slot as `pick-folder`, and the same thread, because the webview's own file input
 /// freezes the app on macOS (wry runs a modal panel inside a WebKit callback). Only absolute paths of existing regular files are sent
-/// back (valid UTF-8 only, at most `MAX_PICKED_FILES`); none left is "cancelled". The server opens and checks each file itself.
+/// back (valid UTF-8 only, each within `PICK_PATH_MAX`, at most `MAX_PICKED_FILES`, one line within `MAX_LINE`); none left is "cancelled".
+/// The server opens and checks each file itself.
 fn start_pick_files(app: &AppHandle, req_id: String) {
     let Some((server, busy)) = claim_pick(app, &req_id) else { return };
     if busy {
         let _ = server.send(&protocol::files_line(&req_id, None));
         return;
     }
+    let mut guard = pick_guard(app, server, protocol::files_line(&req_id, None));
     let app = app.clone();
     thread::spawn(move || {
         let picked: Vec<String> = app
@@ -503,9 +556,23 @@ fn start_pick_files(app: &AppHandle, req_id: String) {
             .filter(|p| protocol::valid_file(p))
             .filter_map(|p| p.to_str().map(str::to_owned))
             .collect();
-        let _ = server.send(&protocol::files_line(&req_id, protocol::cap_picked(picked).as_deref()));
-        shell(&app).lock().pick = None;
+        guard.answer(&files_reply(&req_id, picked));
     });
+}
+
+/// The `files` line for the paths a dialog returned: a path longer than `PICK_PATH_MAX` is dropped, at most `MAX_PICKED_FILES` stay, and while
+/// the line would pass `MAX_LINE` (serde escapes every control character to six bytes) the last path is dropped as well, so the server's
+/// reader never discards the answer. Nothing left is the null answer.
+fn files_reply(req_id: &str, paths: Vec<String>) -> String {
+    let fits = paths.into_iter().filter(|p| p.encode_utf16().count() <= PICK_PATH_MAX).collect();
+    let mut kept = protocol::cap_picked(fits).unwrap_or_default();
+    loop {
+        let line = protocol::files_line(req_id, (!kept.is_empty()).then_some(&kept[..]));
+        if kept.is_empty() || line.trim_end_matches('\n').len() <= protocol::MAX_LINE {
+            return line;
+        }
+        kept.pop();
+    }
 }
 
 /// The error page's Retry: a new child with a new secret and port, then a new window. Once per failure.
@@ -704,9 +771,12 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{applies, close_step, dispatch, hide_due, next_zoom, CloseStep, WindowOps};
+    use super::{applies, close_step, dispatch, files_reply, hide_due, next_zoom, CloseStep, PickGuard, WindowOps, PICK_PATH_MAX};
     use crate::protocol::WindowAction::{self, *};
+    use crate::protocol::{MAX_LINE, MAX_PICKED_FILES};
     use std::cell::RefCell;
+    use std::sync::{Arc, Mutex};
+    use std::thread;
 
     #[test]
     fn a_decision_applies_only_to_the_current_healthy_generation() {
@@ -768,6 +838,107 @@ mod tests {
         for a in [Quit, Close, Minimize] {
             assert_eq!(next_zoom(1.3, a), 1.3);
         }
+    }
+
+    const REQ: &str = "11111111-1111-4111-8111-111111111111";
+    const NULL_LINE: &str = "{\"type\":\"files\",\"reqId\":\"11111111-1111-4111-8111-111111111111\",\"paths\":null}\n";
+
+    /// A guard whose answers and releases are recorded: (sent lines, release count).
+    fn recorded(null_line: &str) -> (PickGuard<impl FnMut(&str), impl FnMut()>, Arc<Mutex<Vec<String>>>, Arc<Mutex<u32>>) {
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let freed = Arc::new(Mutex::new(0u32));
+        let (s, f) = (sent.clone(), freed.clone());
+        let guard = PickGuard::new(move |l: &str| s.lock().unwrap().push(l.to_string()), move || *f.lock().unwrap() += 1, null_line.to_string());
+        (guard, sent, freed)
+    }
+
+    #[test]
+    fn a_dialog_thread_that_panics_still_answers_null_and_frees_the_slot() {
+        // (-) the body panics before it answered: the guard sends the null answer on the way out, then frees the slot
+        let (guard, sent, freed) = recorded(NULL_LINE);
+        let h = thread::spawn(move || {
+            let _guard = guard;
+            panic!("the dialog died");
+        });
+        assert!(h.join().is_err(), "the thread did panic");
+        assert_eq!(*sent.lock().unwrap(), vec![NULL_LINE.to_string()]);
+        assert_eq!(*freed.lock().unwrap(), 1);
+        // (-) the same for the folder answer: whatever null line the guard was made with is the one that goes
+        let folder_null = "{\"type\":\"folder\",\"reqId\":\"11111111-1111-4111-8111-111111111111\",\"path\":null}\n";
+        let (guard, sent, freed) = recorded(folder_null);
+        assert!(thread::spawn(move || { let _guard = guard; panic!("x"); }).join().is_err());
+        assert_eq!((sent.lock().unwrap().clone(), *freed.lock().unwrap()), (vec![folder_null.to_string()], 1));
+    }
+
+    #[test]
+    fn a_dialog_that_answered_sends_that_answer_once_and_frees_the_slot_once() {
+        // (+) the real answer goes out, the null one never does, the slot is freed after it
+        let (mut guard, sent, freed) = recorded(NULL_LINE);
+        guard.answer("real\n");
+        assert_eq!(*freed.lock().unwrap(), 0, "freed only when the guard ends");
+        drop(guard);
+        assert_eq!(*sent.lock().unwrap(), vec!["real\n".to_string()]);
+        assert_eq!(*freed.lock().unwrap(), 1);
+        // (-) a second answer is ignored (one request, one answer)
+        let (mut guard, sent, freed) = recorded(NULL_LINE);
+        guard.answer("first\n");
+        guard.answer("second\n");
+        drop(guard);
+        assert_eq!((sent.lock().unwrap().clone(), *freed.lock().unwrap()), (vec!["first\n".to_string()], 1));
+        // (-) a guard dropped without any answer (a thread that never ran) sends null and frees the slot
+        let (guard, sent, freed) = recorded(NULL_LINE);
+        drop(guard);
+        assert_eq!((sent.lock().unwrap().clone(), *freed.lock().unwrap()), (vec![NULL_LINE.to_string()], 1));
+    }
+
+    #[test]
+    fn a_files_reply_drops_a_path_the_server_would_refuse() {
+        let path_of = |units: usize| format!("/{}", "a".repeat(units - 1));
+        let parse = |line: &str| serde_json::from_str::<serde_json::Value>(line).unwrap();
+        // (+) a path of exactly PICK_PATH_MAX units is sent
+        let v = parse(&files_reply(REQ, vec![path_of(PICK_PATH_MAX)]));
+        assert_eq!(v["paths"], serde_json::json!([path_of(PICK_PATH_MAX)]));
+        // (-) one unit more is dropped, and the paths around it stay in order
+        let v = parse(&files_reply(REQ, vec!["/tmp/a".into(), path_of(PICK_PATH_MAX + 1), "/tmp/b".into()]));
+        assert_eq!(v["paths"], serde_json::json!(["/tmp/a", "/tmp/b"]));
+        // (-) the server counts UTF-16 units, not bytes or characters: "/" plus 2047 astral characters is 4095 units (sent), plus 2048 is 4097 (dropped)
+        let astral = |n: usize| format!("/{}", "\u{1F4CE}".repeat(n));
+        assert_eq!((astral(2047).encode_utf16().count(), astral(2048).encode_utf16().count()), (PICK_PATH_MAX - 1, PICK_PATH_MAX + 1));
+        assert_eq!(parse(&files_reply(REQ, vec![astral(2047)]))["paths"].as_array().unwrap().len(), 1);
+        assert!(parse(&files_reply(REQ, vec![astral(2048)]))["paths"].is_null());
+        // (-) nothing is left: the null answer, as for a cancel
+        assert_eq!(files_reply(REQ, vec![path_of(PICK_PATH_MAX + 1)]), NULL_LINE);
+        assert_eq!(files_reply(REQ, Vec::new()), NULL_LINE);
+    }
+
+    #[test]
+    fn a_files_reply_holds_at_most_six_paths() {
+        // (+) seven in, the first six out
+        let seven: Vec<String> = (0..7).map(|i| format!("/tmp/f{i}")).collect();
+        let v: serde_json::Value = serde_json::from_str(&files_reply(REQ, seven.clone())).unwrap();
+        assert_eq!(MAX_PICKED_FILES, 6);
+        assert_eq!(v["paths"], serde_json::json!(seven[..6]));
+        // (+) six stay six
+        let v: serde_json::Value = serde_json::from_str(&files_reply(REQ, seven[..6].to_vec())).unwrap();
+        assert_eq!(v["paths"].as_array().unwrap().len(), 6);
+    }
+
+    #[test]
+    fn a_files_reply_never_passes_the_line_limit() {
+        // (-) six longest allowed paths made of control characters serialise to six bytes each: 6 x 4096 x 6 is far over 64 KB, so the tail is dropped
+        let heavy = |i: usize| format!("/{}{i}", "\u{1}".repeat(PICK_PATH_MAX - 3));
+        let paths: Vec<String> = (0..6).map(heavy).collect();
+        assert!(paths.iter().all(|p| p.encode_utf16().count() <= PICK_PATH_MAX));
+        let line = files_reply(REQ, paths.clone());
+        assert!(line.ends_with('\n') && line.matches('\n').count() == 1, "one line");
+        assert!(line.trim_end().len() <= MAX_LINE, "{} bytes", line.len());
+        let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+        let kept = v["paths"].as_array().unwrap();
+        assert!(!kept.is_empty() && kept.len() < 6);
+        assert_eq!(kept[0], paths[0].as_str(), "the first paths stay, in order");
+        // (+) ordinary paths are untouched
+        let v: serde_json::Value = serde_json::from_str(&files_reply(REQ, vec!["/tmp/a.png".into(), "/tmp/b.md".into()])).unwrap();
+        assert_eq!(v["paths"], serde_json::json!(["/tmp/a.png", "/tmp/b.md"]));
     }
 
     #[derive(Default)]

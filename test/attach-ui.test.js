@@ -12,6 +12,7 @@ import {
   MAX_FILES, MAX_BYTES, formatSize, shownName, uploadView, sendView, typeIcon, createAttachTray,
 } from '../public/attach.js';
 import { installDom, El, focus } from './fake-dom.js';
+import { icon } from '../public/dom.js';
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const read = (...p) => fs.readFileSync(path.join(ROOT, ...p), 'utf8');
@@ -38,6 +39,8 @@ class TEl extends El {
   }
 
   click() { this.clicks += 1; super.click(); }
+
+  after(node) { this.afterNode = node; } // ChildNode.after: the one node attach.js puts beside the tray
 
   contains(node) { // Node.contains: this element or any of its descendants
     for (let n = node; n; n = n.parent) if (n === this) return true;
@@ -71,8 +74,10 @@ function rig(opts = {}) {
   for (const [id, tag] of [['att-tray', 'ul'], ['att-btn', 'button'], ['att-drop', 'span'], ['composer-box', 'div'], ['composer', 'textarea'], ['send', 'button']]) els[id] = new TEl(tag);
   els['att-tray'].hidden = true;
   els['att-drop'].hidden = true;
+  els['att-btn'].setAttribute('aria-label', 'Add attachments'); // as session.html has it
   const docListeners = {};
   const restoreDom = installDom({ getElementById: (id) => els[id] ?? null, addEventListener: (t, fn) => { (docListeners[t] ??= []).push(fn); } });
+  els['att-btn'].append(icon('attach')); // the paperclip session.html draws
   const savedWindow = globalThis.window;
   globalThis.window = new TEl('window');
   current = () => { restoreDom(); globalThis.window = savedWindow; };
@@ -666,6 +671,154 @@ describe('the file chooser: the paperclip opens the shell\'s own dialog (W2-T6)'
     assert.deepEqual(r.log.calls.map((c) => [c.method, c.path.endsWith('/attachments')]), [['POST', true], ['POST', true]]);
     assert.equal(r.chips().length, 2);
     assert.deepEqual(pickCalls(r), []);
+  });
+});
+
+describe('the paperclip while the chooser is open: its own colour, icon and word (W2-T6 fix 1)', () => {
+  const OFF = { busy: undefined, label: 'Add attachments', icons: ['#i-attach'], spin: 0, line: '', shown: false };
+  const ON = { busy: 'true', label: `Choosing files${DOTS}`, icons: [], spin: 1, line: `Choose files in the system dialog${DOTS}`, shown: true };
+  const look = (r) => {
+    const b = r.els['att-btn'];
+    const note = r.els['att-tray'].afterNode;
+    return { busy: b.attrs['aria-busy'], label: b.attrs['aria-label'], icons: icons(b), spin: b.all((k) => k.className === 'spin').length, line: note.textContent, shown: !note.hidden };
+  };
+  const noteOf = (r) => r.els['att-tray'].afterNode;
+  const file1 = { ok: true, id: uploadId(1), name: 'notes.md', size: 2048, type: 'text' };
+  const gated = () => { // a dialog that stays open until release() is called
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    return { gate, release };
+  };
+
+  test('(+) before any pick: the paperclip, the normal name, and the line is there but hidden and empty', () => {
+    const r = rig();
+    assert.deepEqual(look(r), OFF);
+    const note = noteOf(r);
+    assert.deepEqual([note.tag, note.className, note.attrs.role], ['p', 'att-pick', 'status']);
+    assert.equal(note.parent, null, 'beside the tray, not inside it');
+  });
+
+  test('(+) while a pick is open: busy flag, spinner instead of the clip, "Choosing files" as the name, and the visible line; the spinner is hidden from assistive tech', async () => {
+    const { gate, release } = gated();
+    const r = rig();
+    r.state.gate = gate;
+    r.state.polls = [{ status: 200, body: { state: 'cancelled' } }];
+    r.els['att-btn'].fire('click');
+    await settle();
+    assert.deepEqual(look(r), ON);
+    const spin = r.els['att-btn'].all((k) => k.className === 'spin')[0];
+    assert.equal(spin.attrs['aria-hidden'], 'true');
+    assert.equal(r.els['att-btn'].kids.length, 1, 'the spinner replaces the clip, it does not sit beside it');
+    r.els['att-btn'].fire('click'); // a stray second click neither starts a second pick nor doubles the look
+    await settle();
+    assert.deepEqual([look(r), r.els['att-btn'].kids.length], [ON, 1]);
+    release();
+    await settle();
+    assert.deepEqual(look(r), OFF);
+  });
+
+  test('(+) each ending turns the look off: done, cancelled, 429, a gone session, no-project, a failed start, a closed or garbled poll', async () => {
+    const endings = [
+      ['done', { polls: [{ status: 200, body: { state: 'done', files: [file1] } }] }],
+      ['done, nothing picked', { polls: [{ status: 200, body: { state: 'done', files: [] } }] }],
+      ['cancelled', { polls: [{ status: 200, body: { state: 'cancelled' } }] }],
+      ['429', { start: { status: 429, body: { error: 'busy' } } }],
+      ['404 on the start', { start: { status: 404, body: { error: 'not_found' } } }],
+      ['409 no-project', { start: { status: 409, body: { error: 'no-project' } } }],
+      ['500 on the start', { start: { status: 500, body: null } }],
+      ['no answer to the start', { start: { status: 0, body: null } }],
+      ['a start without a usable reqId', { start: { status: 202, body: { reqId: '../x' } } }],
+      ['poll 404', { polls: [{ status: 404, body: null }] }],
+      ['poll 500', { polls: [{ status: 500, body: null }] }],
+      ['an unknown state', { polls: [{ status: 200, body: { state: 'exploded' } }] }],
+      ['a done answer without a list', { polls: [{ status: 200, body: { state: 'done' } }] }],
+    ];
+    for (const [name, { start, polls }] of endings) {
+      const { gate, release } = gated();
+      const r = rig();
+      r.state.pickStart = gate.then(() => start ?? { status: 202, body: { reqId: REQ } });
+      if (polls) r.state.polls = polls;
+      r.els['att-btn'].fire('click');
+      await settle();
+      assert.deepEqual(look(r), ON, `${name}: on while the start is out`);
+      release();
+      await settle();
+      assert.deepEqual(look(r), OFF, `${name}: off at the end`);
+      assert.equal(r.els['att-btn'].disabled, false, name);
+    }
+  });
+
+  test('(+) a pending poll keeps the look on, and the end of the wait turns it off', async () => {
+    const seen = [];
+    const polls = [{ status: 200, body: { state: 'pending' } }, { status: 200, body: { state: 'pending' } }, { status: 200, body: { state: 'cancelled' } }];
+    const r = rig({
+      reply: (p, o) => {
+        if (isPickStart(p, o)) return { status: 202, body: { reqId: REQ } };
+        seen.push(look(r)); // what the page shows while each poll is out
+        return polls.shift();
+      },
+    });
+    r.els['att-btn'].fire('click');
+    await settle();
+    assert.deepEqual(seen, [ON, ON, ON]);
+    assert.deepEqual(look(r), OFF);
+  });
+
+  test('(+) a pick that ends while input is off leaves the look off and the button disabled as "off" (no busy colour, no spinner, the normal name)', async () => {
+    const { gate, release } = gated();
+    const r = rig();
+    r.state.gate = gate;
+    r.state.polls = [{ status: 200, body: { state: 'done', files: [] } }];
+    r.els['att-btn'].fire('click');
+    await settle();
+    r.att.enable(false);
+    assert.deepEqual(look(r), ON, 'the dialog is still open, and the page says so');
+    release();
+    await settle();
+    assert.deepEqual(look(r), OFF);
+    assert.equal(r.els['att-btn'].disabled, true);
+  });
+
+  test('(−) the plain "input off" state keeps its own look: disabled, no busy flag, the clip, the normal name, no line', () => {
+    const r = rig();
+    r.att.enable(false);
+    assert.equal(r.els['att-btn'].disabled, true);
+    assert.deepEqual(look(r), OFF);
+    r.att.enable(true);
+    assert.equal(r.els['att-btn'].disabled, false);
+    assert.deepEqual(look(r), OFF);
+  });
+
+  test('(−) a full tray or a locked page starts no pick, so the look never turns on', async () => {
+    const full = rig();
+    await full.add(...['a', 'b', 'c', 'd', 'e', 'f'].map((n) => file(`${n}.png`)));
+    full.els['att-btn'].fire('click');
+    await settle();
+    assert.deepEqual(look(full), OFF);
+    const off = rig();
+    off.att.enable(false);
+    off.els['att-btn'].fire('click');
+    await settle();
+    assert.deepEqual(look(off), OFF);
+    const none = rig({ paneId: null });
+    none.els['att-btn'].fire('click');
+    await settle();
+    assert.deepEqual(look(none), OFF);
+  });
+
+  test('(+) the words are text: set with textContent, in ASCII source (the ellipsis is an escape)', () => {
+    const c = code(SRC);
+    assert.match(c, /note\.textContent\s*=/);
+    assert.match(c, /CHOOSING_LABEL\s*=\s*`Choosing files\$\{DOTS\}`/);
+    assert.match(c, /CHOOSING_LINE\s*=\s*`Choose files in the system dialog\$\{DOTS\}`/);
+  });
+
+  test('(+) the normal name and the clip in the code are the ones session.html draws', () => {
+    const c = code(SRC);
+    assert.match(c, /ADD_LABEL\s*=\s*'Add attachments'/);
+    assert.match(HTML, /id="att-btn"[^>]*aria-label="Add attachments"/);
+    assert.match(c, /icon\('attach'\)/);
+    assert.match(HTML, /id="att-btn"[^>]*><svg class="ic" aria-hidden="true"><use href="#i-attach"\/>/);
   });
 });
 
@@ -1385,6 +1538,35 @@ describe('session.css: the rules of section 8.7, tokens only', () => {
     assert.match(CSS, /prefers-reduced-motion[^{]*\{[^@]*\.att \.spin\s*\{[^}]*animation:\s*none/);
   });
 
+  test('(+) the paperclip\'s chooser-open state has its own rule: busy colour and edge, opacity 1, progress cursor, tokens only; the line beside the tray has one too', () => {
+    const busy = /(^|[\s}])#att-btn\[aria-busy="true"\]\s*\{([^}]*)\}/.exec(rules)?.[2] ?? '';
+    assert.notEqual(busy, '', 'the rule exists');
+    assert.match(busy, /opacity:\s*1\s*;/);
+    assert.match(busy, /cursor:\s*progress\s*;/);
+    assert.match(busy, /(^|[\s;])color:\s*var\(--busy\)/);
+    assert.match(busy, /border-color:\s*var\(--busy\)/);
+    assert.match(busy, /background:\s*var\(--busy-soft\)/);
+    assert.match(busy, /border-style:\s*dashed/, 'a shape cue as well as the colour');
+    assert.doesNotMatch(busy, /not-allowed/);
+    assert.doesNotMatch(busy, /#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\(/);
+    const line = /(^|[\s}])\.att-pick\s*\{([^}]*)\}/.exec(rules)?.[2] ?? '';
+    assert.match(line, /color:\s*var\(--busy\)/);
+    assert.match(line, /font-size:\s*var\(--fs-small\)/);
+    for (const v of ['--busy', '--busy-soft']) assert.match(TOKENS, new RegExp(`${v}:`), v);
+    assert.ok([...TOKENS.matchAll(/--busy:/g)].length >= 2, 'light and dark both define the busy colour');
+  });
+
+  test('(−) the dimmed "off" look is unchanged: .btn:disabled keeps opacity 0.5 and nothing in the attachment rules restyles the plain disabled paperclip', () => {
+    assert.match(CSS, /\.btn:disabled,\s*\.btn\[aria-disabled="true"\]\s*\{\s*opacity:\s*0\.5;\s*\}/);
+    assert.match(CSS, /\.btn\[aria-disabled="true"\],\s*\.btn\[aria-busy="true"\]\s*\{\s*cursor:\s*not-allowed;\s*\}/);
+    assert.doesNotMatch(rules, /#att-btn:disabled|#att-btn\[disabled\]|#att-btn\[aria-disabled/);
+    assert.equal([...rules.matchAll(/#att-btn[^{]*\{/g)].filter((m) => !/aria-busy|\.spin/.test(m[0])).length, 0, 'every #att-btn rule is the busy one (or its spinner)');
+  });
+
+  test('(+) the chooser spinner has the still look for reduced motion as well', () => {
+    assert.match(CSS, /prefers-reduced-motion[^{]*\{[^@]*#att-btn \.spin,\s*\.att \.spin\s*\{[^}]*animation:\s*none/);
+  });
+
   test('(+) the chip\'s remove button is at least 24 x 24 px', () => {
     assert.match(rules, /\.att-x\s*\{[^}]*min-width:\s*24px[^}]*min-height:\s*24px|\.att-x\s*\{[^}]*min-height:\s*24px[^}]*min-width:\s*24px/);
   });
@@ -1456,10 +1638,33 @@ describe('the static list and the desktop shell', () => {
     const body = fn.slice(0, fn.indexOf('\n}\n'));
     assert.match(body, /thread::spawn\(/);
     assert.ok(body.indexOf('thread::spawn(') < body.indexOf('.blocking_pick_files()'), 'the blocking dialog runs inside the thread, never on the main one');
-    for (const needle of ['.set_title("Attach files")', 'protocol::valid_file(p)', 'p.to_str()', 'protocol::cap_picked(picked)', 'protocol::files_line(&req_id', 'shell(&app).lock().pick = None;']) assert.ok(body.includes(needle), needle);
+    for (const needle of ['.set_title("Attach files")', 'protocol::valid_file(p)', 'p.to_str()', 'files_reply(&req_id, picked)', 'protocol::files_line(&req_id', 'guard.answer(']) assert.ok(body.includes(needle), needle);
+    assert.ok(body.indexOf('pick_guard(') < body.indexOf('thread::spawn('), 'the guard is made before the thread starts and moved into it');
     assert.equal([...lib.matchAll(/i\.pick = Some\(/g)].length, 1, 'one claim for both kinds: the slot is shared');
     assert.equal([...lib.matchAll(/claim_pick\(app, &req_id\)/g)].length, 2, 'start_pick and start_pick_files both take it');
     assert.match(body, /let Some\(\(server, busy\)\) = claim_pick\(app, &req_id\) else \{ return \};\s+if busy \{\s+let _ = server\.send\(&protocol::files_line\(&req_id, None\)\);/, 'a second request is answered at once with null');
+  });
+
+  test('(+) both dialog threads answer through a drop guard that sends the null answer and frees the one slot, and nothing else frees it', () => {
+    const lib = read('app', 'src-tauri', 'src', 'lib.rs');
+    for (const [name, nullLine, answer] of [['start_pick', 'protocol::folder_line(&req_id, None)', 'guard.answer(&protocol::folder_line(&req_id, picked.as_deref()))'], ['start_pick_files', 'protocol::files_line(&req_id, None)', 'guard.answer(&files_reply(&req_id, picked))']]) {
+      const fn = lib.slice(lib.indexOf(`fn ${name}(`));
+      const body = fn.slice(0, fn.indexOf('\n}\n'));
+      assert.ok(body.includes(`pick_guard(app, server, ${nullLine})`), `${name}: the guard carries the null answer of its kind`);
+      assert.ok(body.includes(answer), `${name}: the real answer goes through the guard`);
+      assert.ok(body.indexOf('pick_guard(') < body.indexOf('thread::spawn('), name);
+      assert.doesNotMatch(body, /\.pick = None|server\.send\(&protocol::\w+_line\(&req_id, (picked|Some)/, `${name}: no answer or release outside the guard`);
+    }
+    assert.equal([...lib.matchAll(/\.pick = None/g)].length, 1, 'the slot is freed in one place, the guard\'s release');
+    assert.match(lib, /impl<S: FnMut\(&str\), R: FnMut\(\)> Drop for PickGuard<S, R>/);
+  });
+
+  test('(+) the shell\'s longest path is the server\'s: PICK_PATH_MAX is the same number, and the shell counts UTF-16 units as JavaScript does', () => {
+    const lib = read('app', 'src-tauri', 'src', 'lib.rs');
+    const rust = Number(/const PICK_PATH_MAX: usize = (\d+);/.exec(lib)?.[1]);
+    const node = Number(/const PICK_PATH_MAX = (\d+);/.exec(read('src', 'appio.js'))?.[1]);
+    assert.ok(rust > 0 && rust === node, `${rust} vs ${node}`);
+    assert.match(lib, /p\.encode_utf16\(\)\.count\(\) <= PICK_PATH_MAX/);
   });
 
   test('(−) the shell registers no drag-drop listener and keeps its navigation guard and its new-window denial', () => {
