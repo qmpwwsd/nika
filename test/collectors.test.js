@@ -8,7 +8,8 @@ import path from 'node:path';
 import { makeFixture, cleanup, fakeExec, SID, NOW, PROC_START, jsonl } from './helpers.js';
 import { readRegistry, processTable, isAlive, parseStarttime, procStarts } from '../src/collect/registry.js';
 import { indexTranscripts, readTranscript, createTranscriptCache } from '../src/collect/transcripts.js';
-import { readSubagents } from '../src/collect/subagents.js';
+import { readSubagents, subagentDir, subagentTranscripts } from '../src/collect/subagents.js';
+import { SUBAGENT_ID, TOOL_USE_ID } from '../src/ids.js';
 import { listPanes, parsePaneLines } from '../src/collect/tmux.js';
 import { discoverReportDirs, indexReports } from '../src/collect/reports.js';
 import { resolveProject } from '../src/collect/projects.js';
@@ -492,6 +493,131 @@ describe('subagents', () => {
     assert.deepEqual(await readSubagents(idx.files.get(SID.idle)), []);
     const subs = await readSubagents(idx.files.get(SID.busy));
     assert.equal(subs.some((s) => s.id === 'ccc333'), false);
+  });
+});
+
+// 0.5, W8: the subagent index (design W8 2.2, 2.3). Test-local folders: the shared fixture keeps its two subagents.
+describe('subagents: ids, the index and the real-directory rule', () => {
+  const SESSION = '11111111-1111-4111-8111-111111111111';
+  const mk = () => {
+    const dir = fs.mkdtempSync(path.join(fx.root, 'subs-'));
+    const transcript = { path: path.join(dir, `${SESSION}.jsonl`), dir };
+    const sub = path.join(dir, SESSION, 'subagents');
+    fs.mkdirSync(sub, { recursive: true });
+    return { dir, transcript, sub };
+  };
+  const meta = (sub, id, over = {}) => fs.writeFileSync(path.join(sub, `agent-${id}.meta.json`), JSON.stringify({ agentType: 'Explore', description: 'List files', finished: false, ...over }));
+  const touch = (sub, name, text = '{}\n') => fs.writeFileSync(path.join(sub, name), text);
+
+  test('(+) SUBAGENT_ID and TOOL_USE_ID have exactly the shapes of the design', () => {
+    assert.equal(SUBAGENT_ID.source, '^[A-Za-z0-9_-]{1,64}$');
+    assert.equal(TOOL_USE_ID.source, '^[A-Za-z0-9_-]{1,128}$');
+    for (const ok of ['a', 'a0000000000000001', 'A_b-9', 'x'.repeat(64)]) assert.ok(SUBAGENT_ID.test(ok), ok);
+    for (const bad of ['', 'a.b', 'a/b', '../x', 'a b', 'a\n', 'x'.repeat(65)]) assert.equal(SUBAGENT_ID.test(bad), false, JSON.stringify(bad));
+    assert.ok(TOOL_USE_ID.test('toolu_01111111') && TOOL_USE_ID.test('t'.repeat(128)));
+    for (const bad of ['', 'a.b', 'a b', 't'.repeat(129)]) assert.equal(TOOL_USE_ID.test(bad), false, JSON.stringify(bad));
+  });
+
+  test('(+) readSubagents returns toolUseId when it has the shape (128 characters still do)', async () => {
+    const { transcript, sub } = mk();
+    meta(sub, 'aaa111', { toolUseId: 'toolu_01111111' });
+    meta(sub, 'bbb222', { toolUseId: 't'.repeat(128) });
+    const subs = await readSubagents(transcript);
+    assert.equal(subs.find((s) => s.id === 'aaa111').toolUseId, 'toolu_01111111');
+    assert.equal(subs.find((s) => s.id === 'bbb222').toolUseId, 't'.repeat(128));
+  });
+
+  test('(−) toolUseId that is not a string, has the wrong shape, is empty or has 129 characters is null', async () => {
+    const { transcript, sub } = mk();
+    const bad = [5, null, true, {}, ['toolu_01111111'], '', 'has space', 'a.b', '../x', 'toolu_0\n', 't'.repeat(129)];
+    bad.forEach((v, i) => meta(sub, `bad${i}`, { toolUseId: v }));
+    meta(sub, 'none'); // no key at all
+    const subs = await readSubagents(transcript);
+    assert.equal(subs.length, bad.length + 1);
+    for (const s of subs) assert.equal(s.toolUseId, null, s.id);
+  });
+
+  test('(+) model falls back to pickedEffortModel; model wins when both are there; neither → null', async () => {
+    const { transcript, sub } = mk();
+    meta(sub, 'only', { pickedEffortModel: 'claude-haiku-5-5' });
+    meta(sub, 'both', { model: 'sonnet', pickedEffortModel: 'claude-haiku-5-5' });
+    meta(sub, 'nope');
+    meta(sub, 'empty', { model: '', pickedEffortModel: 'claude-haiku-5-5' }); // an empty model is no model
+    meta(sub, 'wrongtype', { model: 5, pickedEffortModel: 7 });
+    const by = Object.fromEntries((await readSubagents(transcript)).map((s) => [s.id, s.model]));
+    assert.deepEqual(by, { only: 'claude-haiku-5-5', both: 'sonnet', nope: null, empty: 'claude-haiku-5-5', wrongtype: null });
+  });
+
+  test('(+) subagentDir is <session folder>/subagents for real folders; null when the folder is missing', async () => {
+    const { dir, transcript, sub } = mk();
+    assert.equal(await subagentDir(transcript), sub);
+    const bare = { path: path.join(dir, `${'2'.repeat(8)}-2222-4222-8222-${'2'.repeat(12)}.jsonl`), dir };
+    assert.equal(await subagentDir(bare), null);
+    assert.equal(await subagentDir({ path: path.join(dir, 'nowhere', `${SESSION}.jsonl`), dir: path.join(dir, 'nowhere') }), null);
+  });
+
+  test('(+) subagentTranscripts maps every agent-<id>.jsonl to a path inside the folder, built from the listing', async () => {
+    const { transcript, sub } = mk();
+    const ids = ['a0000000000000001', 'aaa111', 'A_b-9', 'x'.repeat(64)];
+    for (const id of ids) touch(sub, `agent-${id}.jsonl`);
+    meta(sub, 'aaa111'); // a meta next to it is not a transcript
+    const m = await subagentTranscripts(transcript);
+    assert.deepEqual([...m.keys()].sort(), [...ids].sort());
+    for (const [id, p] of m) assert.equal(p, path.join(sub, `agent-${id}.jsonl`));
+    for (const p of m.values()) assert.equal(path.dirname(p), sub);
+  });
+
+  test('(−) names that are not exactly agent-<id>.jsonl are left out', async () => {
+    const { transcript, sub } = mk();
+    const left = ['agent-.jsonl', 'agent-a b.jsonl', `agent-${'x'.repeat(65)}.jsonl`, 'agent-x.jsonl.bak', 'agent-x.meta.json', 'Agent-x.jsonl', 'xagent-x.jsonl',
+      'agent-a.b.jsonl', 'agent-x.jsonl~', 'agent-x.JSONL', 'agent-a\nb.jsonl'];
+    for (const n of left) touch(sub, n);
+    touch(sub, 'agent-kept.jsonl');
+    const m = await subagentTranscripts(transcript);
+    assert.deepEqual([...m.keys()], ['kept']);
+  });
+
+  test('(−) a symlinked <session> folder or subagents folder: readSubagents [], subagentTranscripts empty, subagentDir null', async () => {
+    // the real folder lives outside the project dir, with a perfectly good subagent in it
+    const outside = fs.mkdtempSync(path.join(fx.root, 'outside-'));
+    meta(outside, 'aaa111', { toolUseId: 'toolu_01111111' });
+    touch(outside, 'agent-aaa111.jsonl');
+
+    const a = mk(); // symlinked subagents folder
+    fs.rmSync(a.sub, { recursive: true });
+    fs.symlinkSync(outside, a.sub);
+    const b = mk(); // symlinked session folder (holding a real subagents folder)
+    const realSession = fs.mkdtempSync(path.join(fx.root, 'realsession-'));
+    fs.mkdirSync(path.join(realSession, 'subagents'));
+    meta(path.join(realSession, 'subagents'), 'aaa111');
+    touch(path.join(realSession, 'subagents'), 'agent-aaa111.jsonl');
+    fs.rmSync(path.join(b.dir, SESSION), { recursive: true });
+    fs.symlinkSync(realSession, path.join(b.dir, SESSION));
+
+    for (const t of [a, b]) {
+      assert.equal(await subagentDir(t.transcript), null);
+      assert.deepEqual(await readSubagents(t.transcript), []);
+      assert.equal((await subagentTranscripts(t.transcript)).size, 0);
+    }
+  });
+
+  test('(+) a meta without a transcript is still listed (no mtime); a transcript without a meta is only in the index', async () => {
+    const { transcript, sub } = mk();
+    meta(sub, 'onlymeta', { finished: true });
+    touch(sub, 'agent-onlyjsonl.jsonl');
+    const subs = await readSubagents(transcript);
+    assert.deepEqual(subs.map((s) => [s.id, s.finished, s.lastActivity]), [['onlymeta', true, null]]);
+    assert.deepEqual([...(await subagentTranscripts(transcript)).keys()], ['onlyjsonl']);
+  });
+
+  test('(+) the meta is read again on every call: finished goes away when the agent wakes up (live check L1)', async () => {
+    const { transcript, sub } = mk();
+    meta(sub, 'aaa111', { finished: true });
+    assert.equal((await readSubagents(transcript))[0].finished, true);
+    meta(sub, 'aaa111'); // finished: false again
+    assert.equal((await readSubagents(transcript))[0].finished, false);
+    fs.writeFileSync(path.join(sub, 'agent-aaa111.meta.json'), JSON.stringify({ agentType: 'Explore', description: 'List files' })); // key removed
+    assert.equal((await readSubagents(transcript))[0].finished, false);
   });
 });
 

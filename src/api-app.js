@@ -10,7 +10,7 @@ import { loadConfig, removeProject, updateSettings, getProjectConfig, updateProj
 import { openRegular, isRealDir } from './fsafe.js';
 import { configDir, stateDir } from './paths.js';
 import { clean } from './text.js';
-import { UUID, PANE_ID, PROJECT_KEY, CLAUDE_COMMAND, COMMAND_NAME } from './ids.js';
+import { UUID, SUBAGENT_ID, PANE_ID, PROJECT_KEY, CLAUDE_COMMAND, COMMAND_NAME } from './ids.js';
 import { mapLimit } from './util.js';
 import { MODE_TARGETS, bypassWindow, modeFromRows, promptFromRows, surveyShown } from './mode.js';
 import { MODEL_CATALOG } from './models.js';
@@ -98,7 +98,7 @@ async function listTemplates(dir) {
  *                           (src/model.js: one session by id whatever its age, live state included; throws EINDEX when the index is unreadable),
  *                           findSessions(ids) → Map id → { agent, group } (src/model.js: ended sessions by id, ONE transcript-index walk for
  *                           all of them, no ps and no tmux; throws EINDEX) }; handed to the modules as is
- * @param {object} o.deps    { version, collect() → snapshot, listPanes() → { panes, error }, readHistory, listPlugins, rulesState,
+ * @param {object} o.deps    { version, collect() → snapshot, listPanes() → { panes, error }, readHistory, readSubagentHistory, listPlugins, rulesState,
  *                           preview, apply, spawnAgent, startOrchestrator, mirror, keys, picker (start/status for folders, startFiles/filesStatus for the
  *                           attachment file chooser), listCommands;
  *                           window(action), the shell relay: writes one `window` line (appio.js);
@@ -518,6 +518,16 @@ export function createAppApi({ secret, ctx, deps }) {
     const id = param(params[0], UUID);
     if (!id) return err(404, 'not_found', 'no such session');
     return deps.readHistory(id, { before: query.get('before') ?? undefined, limit: query.get('limit') ?? undefined }, { claudeDir: ctx.claudeDir, cache: historyCache, now: ctx.now });
+  });
+
+  // 0.5, W8: a subagent's transcript, read like the session's own. The path is never in the request: the module finds the file in nika's own
+  // listing of the session's subagents folder.
+  route('GET', /^\/api\/app\/session\/([^/]+)\/subagents\/([^/]+)\/history$/, 0, async ({ params, query }) => {
+    const id = param(params[0], UUID);
+    if (!id) return err(404, 'not_found', 'no such session');
+    const agentId = param(params[1], SUBAGENT_ID);
+    if (!agentId) return err(404, 'not_found', 'no such subagent');
+    return deps.readSubagentHistory(id, agentId, { before: query.get('before') ?? undefined, limit: query.get('limit') ?? undefined }, { claudeDir: ctx.claudeDir, cache: historyCache, now: ctx.now });
   });
 
   route('GET', /^\/api\/app\/pane\/([^/]+)\/capture$/, 0, async ({ params, req }) => {

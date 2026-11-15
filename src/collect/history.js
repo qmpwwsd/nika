@@ -3,8 +3,9 @@
 // is opened through fsafe (O_NOFOLLOW, regular, owned by this user, single link). Every string is agent-controlled, so
 // text goes through cleanBlock() and the page renders it with textContent.
 import { openRegular } from '../fsafe.js';
-import { UUID } from '../ids.js';
+import { SUBAGENT_ID, TOOL_USE_ID, UUID } from '../ids.js';
 import { clean, cleanBlock } from '../text.js';
+import { readSubagents, subagentTranscripts } from './subagents.js';
 import { indexTranscripts } from './transcripts.js';
 
 const WINDOW = 1024 * 1024; // bytes read per request
@@ -13,6 +14,7 @@ const MAX_LIMIT = 200;
 const ENTRY_MAX = 32 * 1024; // bytes per entry text
 const MAX_READS = 4;
 const INDEX_TTL_MS = 10_000;
+const LINKED_TOOLS = new Set(['Agent', 'Task']); // Claude's subagent tool: `Agent` in 2.1.325, `Task` in older builds
 
 /** Runs at most `max` async tasks at once; the rest wait in FIFO order. A slot is released even when a task throws. */
 export function createLimiter(max) {
@@ -35,6 +37,12 @@ const limited = createLimiter(MAX_READS); // module-level: shared by every reque
 
 const fail = (status, error, message) => ({ status, body: { error, message } });
 const notFound = (message = 'no such session') => fail(404, 'not_found', message);
+
+/**
+ * The tool-use id of each Agent/Task call entry (0.5, W8). It lives only here: an entry never carries it, so no response can show it. It is
+ * compared for equality with a subagent meta's `toolUseId` (linkSubagents) and nowhere else.
+ */
+const CALL_ID = new WeakMap();
 
 /** undefined/null → dflt; a safe integer or a digit string → number; anything else → NaN. */
 function intParam(v, dflt) {
@@ -86,12 +94,15 @@ function resultText(content) {
   return content.filter((c) => c?.type === 'text' && typeof c.text === 'string').map((c) => c.text).join('\n');
 }
 
-/** One content block → { kind, raw, tool? } or null when it carries nothing worth showing. */
+/** One content block → { kind, raw, tool?, call? } or null when it carries nothing worth showing. */
 function fromBlock(b) {
   if (!b || typeof b !== 'object') return null;
   if (b.type === 'text') return typeof b.text === 'string' ? { kind: 'text', raw: b.text } : null;
   if (b.type === 'thinking') return typeof b.thinking === 'string' ? { kind: 'thinking', raw: b.thinking } : null;
-  if (b.type === 'tool_use') return { kind: 'tool_use', raw: JSON.stringify(b.input) ?? '', tool: clean(b.name, 100) };
+  if (b.type === 'tool_use') {
+    const call = LINKED_TOOLS.has(b.name) && typeof b.id === 'string' && TOOL_USE_ID.test(b.id) ? b.id : null;
+    return { kind: 'tool_use', raw: JSON.stringify(b.input) ?? '', tool: clean(b.name, 100), call };
+  }
   if (b.type === 'tool_result') return { kind: 'tool_result', raw: resultText(b.content) };
   return null;
 }
@@ -114,6 +125,7 @@ function entriesOf(line, off) {
     const entry = { id: `${off}:${i}`, at, role: line.type, kind: part.kind, text };
     if (part.kind === 'tool_use' && part.tool) entry.tool = part.tool;
     entry.truncated = truncated;
+    if (part.call) CALL_ID.set(entry, part.call);
     out.push(entry);
   }
   return out;
@@ -161,36 +173,98 @@ function pageOf(buf, start, limit) {
 }
 
 /**
- * GET /api/app/session/:id/history. `deps` = { claudeDir, cache?, now? }; `cache` is the collector cache object (the
- * transcript index is kept on it for 10 s). Returns { status, body } with body { entries, nextBefore } (oldest first).
+ * Adds `subagent: "<agent id>"` to the Agent/Task call entries whose tool-use id exactly one meta of this session's subagents folder names and
+ * whose subagent has a transcript in the folder listing (so the subagent route would find it). Two metas with one id link neither. Built
+ * only when the page holds such a call; the metas are read again every time (they change while an agent runs). A failure leaves the page
+ * without links, never without entries. The tool-use id itself is used here and goes nowhere.
  */
-export async function readHistory(sessionId, { before, limit } = {}, { claudeDir, cache, now = Date.now } = {}) {
-  if (typeof sessionId !== 'string' || !UUID.test(sessionId)) return notFound();
+async function linkSubagents(entries, parent) {
+  const calls = entries.filter((e) => CALL_ID.has(e));
+  if (!calls.length) return;
+  try {
+    const [subs, files] = await Promise.all([readSubagents(parent), subagentTranscripts(parent)]);
+    const owner = new Map(); // tool-use id → the agent id that names it, or null when two metas do
+    for (const s of subs) if (s.toolUseId !== null) owner.set(s.toolUseId, owner.has(s.toolUseId) ? null : s.id);
+    for (const e of calls) {
+      const agent = owner.get(CALL_ID.get(e));
+      if (agent && files.has(agent)) e.subagent = agent;
+    }
+  } catch {
+    // no links this time
+  }
+}
+
+/** limit and before from a request → { lim, bef } or { failure }. One place for both routes. */
+function paging({ before, limit }) {
   const lim = intParam(limit, DEFAULT_LIMIT);
-  if (!(lim >= 1 && lim <= MAX_LIMIT)) return fail(400, 'invalid', `limit must be an integer from 1 to ${MAX_LIMIT}`);
+  if (!(lim >= 1 && lim <= MAX_LIMIT)) return { failure: fail(400, 'invalid', `limit must be an integer from 1 to ${MAX_LIMIT}`) };
   const bef = intParam(before, null);
-  if (bef !== null && !(bef >= 0)) return fail(400, 'invalid', 'before must be a byte offset');
+  if (bef !== null && !(bef >= 0)) return { failure: fail(400, 'invalid', 'before must be a byte offset') };
+  return { lim, bef };
+}
 
-  const clock = typeof now === 'function' ? now : Date.now;
-  const file = await findTranscript(claudeDir, cache, sessionId, clock);
-  if (!file) return notFound();
-
+/**
+ * One page of the transcript at `file`, inside the shared limiter (4 reads in flight across both routes): open it through fsafe, read the
+ * window that ends at `bef` (default the end), cut the page, close. `after(entries)` runs inside the same slot once the file is closed.
+ */
+function readPage(file, bef, lim, after) {
   return limited(async () => {
     let opened;
     try {
-      opened = await openRegular(file.path);
+      opened = await openRegular(file);
     } catch {
       return notFound('transcript not readable');
     }
+    let page;
     try {
       const end = bef ?? opened.st.size;
       if (end > opened.st.size) return fail(400, 'invalid', 'before is beyond the end of the transcript');
       const start = Math.max(0, end - WINDOW);
-      return { status: 200, body: pageOf(await readRange(opened.handle, start, end), start, lim) };
+      page = pageOf(await readRange(opened.handle, start, end), start, lim);
     } catch {
       return notFound('transcript not readable');
     } finally {
       await opened.handle.close();
     }
+    if (after) await after(page.entries);
+    return { status: 200, body: page };
   });
+}
+
+/**
+ * GET /api/app/session/:id/history. `deps` = { claudeDir, cache?, now? }; `cache` is the collector cache object (the
+ * transcript index is kept on it for 10 s). Returns { status, body } with body { entries, nextBefore } (oldest first).
+ * An Agent/Task call entry may carry `subagent` (see linkSubagents).
+ */
+export async function readHistory(sessionId, { before, limit } = {}, { claudeDir, cache, now = Date.now } = {}) {
+  if (typeof sessionId !== 'string' || !UUID.test(sessionId)) return notFound();
+  const { lim, bef, failure } = paging({ before, limit });
+  if (failure) return failure;
+
+  const clock = typeof now === 'function' ? now : Date.now;
+  const file = await findTranscript(claudeDir, cache, sessionId, clock);
+  if (!file) return notFound();
+
+  return readPage(file.path, bef, lim, (entries) => linkSubagents(entries, file));
+}
+
+/**
+ * GET /api/app/session/:id/subagents/:agentId/history (0.5, W8): the same page, read from the subagent's `agent-<agentId>.jsonl`. The request
+ * carries two ids and byte offsets, never a path: the session comes from nika's transcript index, the file from nika's own listing of that
+ * session's subagents folder (real directories only), and is opened through fsafe. Checks run in this order: session id, agent id, limit,
+ * before, the session in the index, the agent in the listing, the file, `before` against the file's size. Entries never carry `subagent`.
+ */
+export async function readSubagentHistory(sessionId, agentId, { before, limit } = {}, { claudeDir, cache, now = Date.now } = {}) {
+  if (typeof sessionId !== 'string' || !UUID.test(sessionId)) return notFound();
+  if (typeof agentId !== 'string' || !SUBAGENT_ID.test(agentId)) return notFound('no such subagent');
+  const { lim, bef, failure } = paging({ before, limit });
+  if (failure) return failure;
+
+  const clock = typeof now === 'function' ? now : Date.now;
+  const file = await findTranscript(claudeDir, cache, sessionId, clock);
+  if (!file) return notFound();
+  const target = (await subagentTranscripts(file)).get(agentId);
+  if (!target) return notFound('no such subagent');
+
+  return readPage(target, bef, lim);
 }

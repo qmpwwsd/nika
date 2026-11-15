@@ -10,7 +10,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { createServer } from '../src/server.js';
 import { createAppApi } from '../src/api-app.js';
-import { readHistory } from '../src/collect/history.js';
+import { readHistory, readSubagentHistory } from '../src/collect/history.js';
 import { loadConfig, addProject, removeProject, getOrchestrator, setOrchestrator } from '../src/store.js';
 import { collect, findSession, findSessions } from '../src/model.js';
 import { startOrchestrator } from '../src/orchestrate.js';
@@ -53,6 +53,11 @@ function makeDeps(over = {}) {
     readHistory: rec('readHistory', async (id, q) => (q.limit === '0'
       ? { status: 400, body: { error: 'invalid', message: 'limit' } }
       : { status: 200, body: { entries: [], nextBefore: null } })),
+    readSubagentHistory: rec('readSubagentHistory', async (id, agent, q) => (q.limit === '0'
+      ? { status: 400, body: { error: 'invalid', message: 'limit' } }
+      : agent === 'missing'
+        ? { status: 404, body: { error: 'not_found', message: 'no such subagent' } }
+        : { status: 200, body: { entries: [{ id: '0:0', role: 'user', kind: 'text', text: 'sub', truncated: false }], nextBefore: null } })),
     listPlugins: rec('listPlugins', async () => ['alpha@market', 'beta@market']),
     rulesState: rec('rulesState', async () => ({ state: 'none', settingsIgnored: false, git: true })),
     preview: rec('preview', async () => ({ status: 200, body: { hash: 'h', files: [], warnings: [], backupDir: '/x' } })),
@@ -995,6 +1000,112 @@ describe('history', () => {
     assert.equal(r.body.entries[0].role, 'user');
     assert.equal(r.body.entries[0].text, 'synthetic prompt');
     assert.equal((await a.call('GET', '/api/app/session/99999999-9999-4999-8999-999999999999/history')).status, 404);
+  });
+});
+
+describe('subagent history (0.5, W8)', () => {
+  const sub = (id, agent, q = '') => `/api/app/session/${id}/subagents/${agent}/history${q}`;
+  const writeSub = (agent, lines) => {
+    const slugOf = (d) => d.replace(/[^A-Za-z0-9]/g, '-');
+    const dir = path.join(fx.claudeDir, 'projects', slugOf(fx.wt), SID.busy, 'subagents');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, `agent-${agent}.jsonl`), lines.map((l) => JSON.stringify(l)).join('\n') + '\n'); // a transcript with no meta: the snapshot does not list it
+  };
+
+  test('(+) passes the ids, before, limit and the history route\'s cache to the module and relays its answer', async () => {
+    const a = await boot();
+    const r = await a.call('GET', sub(SID.busy, 'a0000000000000001', '?before=10&limit=5'));
+    assert.equal(r.status, 200);
+    assert.equal(r.body.entries[0].text, 'sub');
+    await a.call('GET', sub(SID.busy, 'aaa111'));
+    await a.call('GET', `/api/app/session/${SID.busy}/history`);
+    const [first, second] = a.deps.calls.filter((c) => c[0] === 'readSubagentHistory');
+    assert.deepEqual(first.slice(1, 4), [SID.busy, 'a0000000000000001', { before: '10', limit: '5' }]);
+    assert.deepEqual(second.slice(2, 4), ['aaa111', { before: undefined, limit: undefined }]);
+    assert.equal(first[4].claudeDir, a.ctx.claudeDir);
+    assert.equal(typeof first[4].now, 'function');
+    assert.equal(first[4].cache, second[4].cache);
+    assert.equal(first[4].cache, a.deps.calls.find((c) => c[0] === 'readHistory')[3].cache, 'one transcript-index memo for both routes');
+  });
+
+  test('(+) an id is also accepted percent-encoded (the same decoding as every id parameter)', async () => {
+    const a = await boot();
+    assert.equal((await a.call('GET', sub(SID.busy, 'a%2D1'))).status, 200);
+    assert.equal(a.deps.calls.find((c) => c[0] === 'readSubagentHistory')[2], 'a-1');
+  });
+
+  test('(−) a session id that is not a UUID is 404 "no such session" without calling the module', async () => {
+    const a = await boot();
+    for (const id of ['..%2F..%2Fetc%2Fpasswd', 'not-a-uuid', REQ_ID.toUpperCase(), `${SID.busy}x`, '%2e%2e%2f', 'a%00b']) {
+      const r = await a.call('GET', sub(id, 'aaa111'));
+      assert.equal(r.status, 404, id);
+      assert.equal(r.body.message, 'no such session', id);
+    }
+    // a dot segment never reaches a handler as an id: the URL parser removes it (WHATWG), so the path is another route or none
+    const dots = await a.call('GET', sub('%2E%2E', 'aaa111'));
+    assert.equal(dots.status, 404);
+    assert.equal(a.deps.calls.some((c) => c[0] === 'readSubagentHistory'), false);
+  });
+
+  test('(−) an agent id that is not a SUBAGENT_ID is 404 "no such subagent" without calling the module', async () => {
+    const a = await boot();
+    for (const agent of ['a%2Fb', 'a%5Cb', 'a.b', 'a%20b', 'x'.repeat(65), '%00', 'a%0Ab', '%2e%2e%2f', '.hidden']) {
+      const r = await a.call('GET', sub(SID.busy, agent));
+      assert.equal(r.status, 404, agent);
+      assert.equal(r.body.message, 'no such subagent', agent);
+    }
+    assert.equal((await a.call('GET', `/api/app/session/${SID.busy}/subagents//history`)).status, 404, 'empty agent id');
+    assert.equal((await a.call('GET', `/api/app/session/${SID.busy}/subagents/a/b/history`)).status, 404, 'a slash splits the path: no such route');
+    // `..` and `%2E%2E` are dot segments: the URL parser folds them away before any handler runs, so they cannot name a file; they reach the
+    // subagent module never (the folded path is the session's own history route, which has its own tests)
+    for (const dots of ['..', '%2E%2E', '%2e%2E']) {
+      const r = await a.call('GET', sub(SID.busy, dots));
+      assert.equal(JSON.stringify(r.body).includes('"sub"'), false, dots);
+    }
+    assert.equal(a.deps.calls.some((c) => c[0] === 'readSubagentHistory'), false);
+  });
+
+  test('(−) the module\'s own 400 and 404 are relayed; POST is 405; a trailing slash is no route', async () => {
+    const a = await boot();
+    assert.equal((await a.call('GET', sub(SID.busy, 'aaa111', '?limit=0'))).status, 400);
+    assert.equal((await a.call('GET', sub(SID.busy, 'missing'))).status, 404);
+    const m = await a.call('POST', sub(SID.busy, 'aaa111'), { json: {} });
+    assert.equal(m.status, 405);
+    assert.equal(m.headers.allow, 'GET');
+    assert.equal((await a.call('GET', `${sub(SID.busy, 'aaa111')}/`)).status, 404);
+    assert.equal((await a.call('GET', `/api/app/session/${SID.busy}/subagents/aaa111`)).status, 404);
+  });
+
+  test('(−) without the app secret the route is refused like every app route: 403, module not called', async () => {
+    const a = await boot();
+    for (const headers of [{ 'x-nika-app': null }, { 'x-nika-app': WRONG_SAME_LENGTH }, { origin: 'http://evil.example' }, { 'sec-fetch-site': 'cross-site' }]) {
+      const r = await a.call('GET', sub(SID.busy, 'aaa111'), { headers });
+      assert.equal(r.status, 403, JSON.stringify(headers));
+    }
+    assert.equal(a.deps.calls.some((c) => c[0] === 'readSubagentHistory'), false);
+  });
+
+  test('(+) src/appio.js hands readSubagentHistory to the app API next to readHistory (the one place the real module is wired in)', () => {
+    const src = fs.readFileSync(new URL('../src/appio.js', import.meta.url), 'utf8');
+    assert.match(src, /import \{ readHistory, readSubagentHistory \} from '\.\/collect\/history\.js';/);
+    assert.match(src, /^\s+readHistory, readSubagentHistory, /m);
+  });
+
+  test('(+) with the real module a subagent transcript in the session\'s folder is paged; (−) an unknown agent and an unknown session are 404', async () => {
+    writeSub('ddd444', [{ type: 'user', isSidechain: true, timestamp: '2026-11-07T12:00:00.000Z', message: { role: 'user', content: 'sub prompt' } },
+      { type: 'assistant', isSidechain: true, timestamp: '2026-11-07T12:00:01.000Z', message: { role: 'assistant', content: [{ type: 'text', text: 'sub answer' }] } }]);
+    const a = await boot({ deps: makeDeps({ readHistory, readSubagentHistory }) });
+    const r = await a.call('GET', sub(SID.busy, 'ddd444', '?limit=10'));
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.body.entries.map((e) => [e.role, e.text]), [['user', 'sub prompt'], ['assistant', 'sub answer']]);
+    assert.equal(r.body.nextBefore, null);
+    const unknown = await a.call('GET', sub(SID.busy, 'zzz999'));
+    assert.equal(unknown.status, 404);
+    assert.equal(unknown.body.message, 'no such subagent');
+    assert.equal((await a.call('GET', sub('99999999-9999-4999-8999-999999999999', 'ddd444'))).body.message, 'no such session');
+    assert.equal((await a.call('GET', sub(SID.idle, 'ddd444'))).body.message, 'no such subagent', 'another session has no such file');
+    assert.equal((await a.call('GET', sub(SID.busy, 'ddd444', '?limit=0'))).status, 400);
+    assert.equal((await a.call('GET', sub(SID.busy, 'ddd444', '?before=999999'))).status, 400);
   });
 });
 

@@ -15,7 +15,7 @@ import { createAppApi } from './api-app.js';
 import { RELEASE_ALL_MS } from './fit.js';
 import { addProject, keyFor } from './store.js';
 import { listPanes } from './collect/tmux.js';
-import { readHistory } from './collect/history.js';
+import { readHistory, readSubagentHistory } from './collect/history.js';
 import { listPlugins } from './collect/plugins.js';
 import { listCommands } from './collect/commands.js';
 import { createMirror } from './mirror.js';
@@ -281,7 +281,7 @@ export function serveApp({ config, env = process.env, stdin, stdout, stderr, exe
         version: VERSION,
         collect: snapshot,
         listPanes: () => listPanes(exec, tmuxBin),
-        readHistory, listPlugins, listCommands, rulesState, preview, apply, spawnAgent, startOrchestrator,
+        readHistory, readSubagentHistory, listPlugins, listCommands, rulesState, preview, apply, spawnAgent, startOrchestrator,
         mirror: createMirror({ exec, tmuxBin, now }),
         keys: createKeys({ exec, tmuxBin, now }),
         attachments,

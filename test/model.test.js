@@ -54,6 +54,47 @@ describe('collect', () => {
     assert.equal(a.subagents[0].modelLabel, 'Sonnet (latest)');
   });
 
+  test('(+) a snapshot subagent has exactly the seven fields of the contract: no toolUseId, no path, no transcript text (0.5, W8)', async () => {
+    const a = byId(await snap(), SID.busy);
+    assert.ok(a.subagents.length >= 2);
+    for (const s of a.subagents) assert.deepEqual(Object.keys(s).sort(), ['description', 'id', 'lastActivity', 'model', 'modelLabel', 'state', 'type']);
+  });
+
+  test('(+) a meta that names a toolUseId and only a pickedEffortModel (Claude Code 2.1.325) gets its model label; the tool-use id stays out of the whole snapshot', async () => {
+    const fx2 = makeFixture();
+    try {
+      const dirs = fs.readdirSync(path.join(fx2.claudeDir, 'projects')).map((n) => path.join(fx2.claudeDir, 'projects', n, SID.busy, 'subagents')).filter((d) => fs.existsSync(d));
+      assert.equal(dirs.length, 1);
+      fs.writeFileSync(path.join(dirs[0], 'agent-a0000000000000001.meta.json'), JSON.stringify({ agentType: 'Explore', description: 'List files', toolUseId: 'toolu_01111111', pickedEffortModel: 'claude-haiku-5-5', finished: true }));
+      fs.writeFileSync(path.join(dirs[0], 'agent-a0000000000000001.jsonl'), '{}\n');
+      const s = await collect({ config: fx2.config, exec: fakeExec(), now: NOW, sinceMs: 7 * DAY });
+      const sub = byId(s, SID.busy).subagents.find((x) => x.id === 'a0000000000000001');
+      assert.equal(sub.model, 'claude-haiku-5-5');
+      assert.equal(sub.modelLabel, modelLabel('claude-haiku-5-5'));
+      assert.notEqual(sub.modelLabel, null);
+      assert.equal(sub.state, 'finished');
+      assert.deepEqual(Object.keys(sub).sort(), ['description', 'id', 'lastActivity', 'model', 'modelLabel', 'state', 'type']);
+      assert.equal(JSON.stringify(s).includes('toolu_01111111'), false);
+      assert.equal(JSON.stringify(s).includes('toolUseId'), false);
+    } finally {
+      cleanup(fx2);
+    }
+  });
+
+  test('(−) a symlinked subagents folder lists nothing in the snapshot (both tiers read it through the collector)', async () => {
+    const fx2 = makeFixture();
+    try {
+      const d = fs.readdirSync(path.join(fx2.claudeDir, 'projects')).map((n) => path.join(fx2.claudeDir, 'projects', n, SID.busy, 'subagents')).find((x) => fs.existsSync(x));
+      const real = path.join(fx2.root, 'elsewhere');
+      fs.renameSync(d, real);
+      fs.symlinkSync(real, d);
+      const s = await collect({ config: fx2.config, exec: fakeExec(), now: NOW, sinceMs: 7 * DAY });
+      assert.deepEqual(byId(s, SID.busy).subagents, []);
+    } finally {
+      cleanup(fx2);
+    }
+  });
+
   test('(−) dead pid becomes ended from its transcript; reused pid without transcript is dropped', async () => {
     const s = await snap();
     const dead = byId(s, SID.dead);
