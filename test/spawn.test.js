@@ -1749,7 +1749,7 @@ describe('collect() with nika report dirs', () => {
       const without = await run(fx);
       const withOwn = await run(fx, w.env);
       assert.equal(agent(without, SID.idle).report, null);
-      assert.deepEqual(agent(withOwn, SID.idle).report, { name: 'scout-1', status: 'STATUS: DONE nika-spawned report', rc: 3, hasFile: true });
+      assert.deepEqual(agent(withOwn, SID.idle).report, { name: 'scout-1', status: 'STATUS: DONE nika-spawned report', rc: 3, hasFile: true, sessionId: SID.idle });
       assert.equal(agent(withOwn, SID.idle).name, 'scout-1');
       assert.ok(withOwn.reportPaths.get(SID.idle).endsWith(path.join('reports', 'scout-1.md')));
       // nothing else changed: same agents, no phantom entries from the new file kinds

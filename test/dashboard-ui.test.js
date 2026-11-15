@@ -267,6 +267,19 @@ describe('pollModes', () => {
 
 // ---- app.js: the row (cannot be imported; pinned) ----------------------------------------------------------------------
 
+describe('dashboard report', () => {
+  test('(+) the report opens the id the report is filed under (a row continued after /compact files it under its host), else the row id', () => {
+    const show = fn(APP, 'async function showReport(');
+    assert.match(show, /fetch\(`\/api\/report\/\$\{encodeURIComponent\(a\.report\?\.sessionId \?\? a\.id\)\}`\)/);
+  });
+
+  test('(−) the report fetch never builds its URL from anything but the two session ids', () => {
+    const show = fn(APP, 'async function showReport(');
+    assert.equal((show.match(/\/api\/report\//g) ?? []).length, 1);
+    assert.doesNotMatch(show, /a\.(name|title|cwd|hostId)\b[^;]*\/api\/report/);
+  });
+});
+
 describe('dashboard row', () => {
   test('(+) the mode cell exists only on the app tier and holds a compact modeEl for the pane\'s entry, empty otherwise', () => {
     assert.match(APP, /import \{[^}]*\bmodeEl\b[^}]*\} from '\.\/modes\.js'/);

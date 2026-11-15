@@ -243,7 +243,10 @@ export async function collect({ config, exec, now = Date.now(), sinceMs, since =
     if (!reg && t && !t.hasConversation) return null;
     const host = hostOf.get(id) ?? null;
     // a spawned agent's report is filed under the session id claude was launched with, which after /compact is the host's, not the child's
-    const report = reports.get(id) ?? (host ? reports.get(host.sessionId) : null) ?? null;
+    const own = reports.get(id) ?? null;
+    const report = own ?? (host ? reports.get(host.sessionId) : null) ?? null;
+    // the session id the report is filed under: the page opens /api/report/<it> (a merged row's own id has no report file)
+    const reportId = own ? id : (report ? host.sessionId : null);
     if (report?.reportPath) reportPaths.set(id, report.reportPath);
     const paneId = (host ?? reg)?.tmuxPane;
     const paneInfo = paneId ? tmux.panes.get(paneId) ?? null : null;
@@ -300,7 +303,7 @@ export async function collect({ config, exec, now = Date.now(), sinceMs, since =
         lastPrompt: clean(t?.lastPrompt, PROMPT_MAX),
         pane: paneInfo ? { id: paneInfo.id, session: clean(paneInfo.session, 80), title: clean(paneInfo.title, 200), command: clean(paneInfo.command, 80) } : null,
         bridgeUrl: bridgeUrl(reg?.bridgeSessionId ?? t?.bridgeSessionId),
-        report: report ? { name: clean(report.name, 128), status: clean(report.status, 300), rc: report.rc, hasFile: Boolean(report.reportPath) } : null,
+        report: report ? { name: clean(report.name, 128), status: clean(report.status, 300), rc: report.rc, hasFile: Boolean(report.reportPath), sessionId: reportId } : null,
         subagents,
         resumeCmd: `${cwd ? `cd ${shellQuote(cwd)} && ` : ''}claude --resume ${UUID.test(id) ? id : shellQuote(id)}`,
       },

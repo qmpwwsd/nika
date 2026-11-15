@@ -105,7 +105,8 @@ async function showReport(a) {
   openDialog(dlg);
   let text;
   try {
-    const res = await fetch(`/api/report/${encodeURIComponent(a.id)}`);
+    // the id the report is filed under: a row that continues a session after /compact (hostId) has its report under the host's id
+    const res = await fetch(`/api/report/${encodeURIComponent(a.report?.sessionId ?? a.id)}`);
     text = res.ok ? await res.text() : `No report (${res.status}): ${await res.text()}`;
   } catch {
     text = 'Could not reach the nika server.';

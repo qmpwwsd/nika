@@ -34,7 +34,7 @@ describe('collect', () => {
     assert.equal(a.gitBranch, 'feat/x');
     assert.deepEqual(a.pane, { id: '%5', session: 'work', title: '[%5] build-7-1', command: 'zsh' });
     assert.equal(a.bridgeUrl, 'https://claude.ai/code/session_01AbCdEf');
-    assert.deepEqual(a.report, { name: 'build-7-1', status: 'STATUS: RUNNING 7.1 build', rc: null, hasFile: true });
+    assert.deepEqual(a.report, { name: 'build-7-1', status: 'STATUS: RUNNING 7.1 build', rc: null, hasFile: true, sessionId: SID.busy });
     assert.equal(a.resumeCmd, `cd ${shellQuote(fx.wt)} && claude --resume ${SID.busy}`);
   });
 
@@ -955,7 +955,8 @@ describe('collect: a background session and the pane that shows it (0.5, W12)', 
     await withReports({ 'compact-agent': { session: HOST, md: 'STATUS: DONE compact work', rc: 0 } }, async () => {
       const { s, row } = await scene();
       assert.equal(row(CHILD).hostId, HOST);
-      assert.deepEqual(row(CHILD).report, { name: 'compact-agent', status: 'STATUS: DONE compact work', rc: 0, hasFile: true });
+      // sessionId: the id the page opens /api/report/<id> with; the file is filed under the host's id, not the row's
+      assert.deepEqual(row(CHILD).report, { name: 'compact-agent', status: 'STATUS: DONE compact work', rc: 0, hasFile: true, sessionId: HOST });
       assert.equal(row(CHILD).name, 'compact-agent');
       assert.equal(s.reportPaths.get(CHILD).endsWith('compact-agent.md'), true);
       assert.equal(s.reportPaths.has(HOST), false, 'the host has no row, so no entry under its id');
@@ -966,7 +967,7 @@ describe('collect: a background session and the pane that shows it (0.5, W12)', 
     await withReports({ 'host-one': { session: HOST, md: 'STATUS: HOST' }, 'child-one': { session: CHILD, md: 'STATUS: CHILD' } }, async () => {
       const { s } = await scene();
       const { report, path: file } = reportOf(s, CHILD);
-      assert.deepEqual([report.name, report.status], ['child-one', 'STATUS: CHILD']);
+      assert.deepEqual([report.name, report.status, report.sessionId], ['child-one', 'STATUS: CHILD', CHILD]);
       assert.equal(file.endsWith('child-one.md'), true);
     });
   });
@@ -975,6 +976,7 @@ describe('collect: a background session and the pane that shows it (0.5, W12)', 
     await withReports({ 'compact-agent': { session: HOST, md: 'STATUS: DONE compact work' } }, async () => {
       const alone = await scene({ child: null });
       assert.equal(reportOf(alone.s, HOST).report.name, 'compact-agent');
+      assert.equal(reportOf(alone.s, HOST).report.sessionId, HOST, 'an unlinked row opens its own id');
       assert.equal(alone.s.reportPaths.get(HOST).endsWith('compact-agent.md'), true);
       const apart = await scene({ host: { parkedJobId: 'c0ffee02' } }); // the job ids differ: two rows
       assert.equal(reportOf(apart.s, HOST).report.name, 'compact-agent');
