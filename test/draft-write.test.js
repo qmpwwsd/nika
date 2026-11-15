@@ -65,7 +65,7 @@ function pane(opts = {}) {
     // placeholder (`queuedMsgs`), keys that do nothing (`swallowCu`, `swallowEnd`, `swallowEnter`), C-u that removes only `cuStep` characters, the
     // Enters that were taken (`submitted`) and the Escapes that went out while the registry did not say idle (`badEscapes`)
     cursorAt: null, left: 0, breakSpace: false, trail: false, queuedMsgs: false, ghost: null, swallowCu: false, swallowEnd: false, swallowEnter: false,
-    cuStep: 0, submitted: [], badEscapes: [], stopSends: false,
+    cuStep: 0, submitted: [], badEscapes: [], stopSends: false, freshSeq: null,
     ...opts,
   };
   made.push(w);
@@ -123,9 +123,25 @@ function pane(opts = {}) {
     else if (k === 'End') toEnd();
     else if (k === 'Enter') submit();
   };
-  // C-u kills from the cursor (at the text end here) to the start of its VISUAL row; at a row start it removes the newline before it (spike W13 section 1)
+  // text offset where each visual row starts, and the { row, col } (null = the text end) of an offset: the cursor of a C-u that is not at the text end
+  const rowStarts = (text) => { let off = 0; return text.split('\n').flatMap((line) => { const out = []; for (let i = 0; i < Math.max(line.length, 1); i += W) out.push(off + i); off += line.length + 1; return out; }); };
+  const cursorFor = (text, off) => {
+    if (off >= text.length) return null;
+    const starts = rowStarts(text);
+    const row = starts.findLastIndex((st) => st <= off);
+    return { row, col: off - starts[row] };
+  };
+  // C-u kills from the cursor (at the text end by default) to the start of its VISUAL row; at a row start it removes the newline before it (spike W13 section 1)
   const killRow = () => {
-    if (w.swallowCu || w.text === '' || w.cursorAt) return;
+    if (w.swallowCu || w.text === '') return;
+    if (w.cursorAt) { // a cursor inside the text: only what is left of it goes, the cursor then sits where the cut was
+      const starts = rowStarts(w.text);
+      const at = starts[w.cursorAt.row] + w.cursorAt.col;
+      const from = w.cursorAt.col === 0 ? Math.max(at - 1, 0) : starts[w.cursorAt.row];
+      w.text = w.text.slice(0, from) + w.text.slice(at);
+      w.cursorAt = cursorFor(w.text, from);
+      return;
+    }
     const last = visual(w.text).at(-1);
     if (last === '') { w.text = w.text.slice(0, -1); w.trail = false; return; }
     const cut = w.cuStep > 0 ? Math.min(w.cuStep, last.length) : last.length;
@@ -162,7 +178,12 @@ function pane(opts = {}) {
       return { status: 200, body: { sent: { text: 0, paste: 0, keys: 0 } } };
     },
   };
-  w.stateOf = async (id, o) => { w.stateArgs.push(o); return o?.fresh && w.freshState !== null ? w.freshState : w.state; };
+  // freshSeq: the answers of the successive fresh reads (the last one stays), for a state that changes between two reads
+  w.stateOf = async (id, o) => {
+    w.stateArgs.push(o);
+    if (o?.fresh && w.freshSeq) return w.freshSeq.length > 1 ? w.freshSeq.shift() : w.freshSeq[0];
+    return o?.fresh && w.freshState !== null ? w.freshState : w.state;
+  };
   w.setEdit = (id, kind) => {
     w.edits.push(kind);
     w.mem = kind === 'vim' ? { vim: true, plain: false } : kind === 'plain' ? { vim: false, plain: true } : { vim: false, plain: false };
@@ -327,12 +348,22 @@ describe('writeDraft: the answers that send nothing', () => {
     }
   });
 
-  test('(−) idle in the cached read but busy in the fresh read right before the Escape: 409 not-idle, no Escape (vim and plain)', async () => {
+  test('(−) idle in the cached read but busy in the fresh read (an earlier row): 409 cursor-not-at-end, ZERO keys -- not even the probe i -- in every edit mode', async () => {
+    for (const [name, o] of [['vim INSERT', { vim: true }], ['plain', PLAIN], ['unknown', {}], ['vim NORMAL', { vim: true, vimMode: 'normal' }]]) {
+      const w = pane({ ...earlier, state: 'idle', freshState: 'busy', ...o });
+      const r = await w.put('bye');
+      assert.deepEqual([r.status, r.body.error, r.body.draft.text], [409, 'cursor-not-at-end', 'one\ntwo'], name);
+      assert.deepEqual(w.stateArgs.filter(Boolean), [{ fresh: true }], `${name}: one registry read, and it skips the cache`);
+      assert.deepEqual(w.sent, [], name);
+    }
+  });
+
+  test('(−) idle at the road decision but busy at the Escape\'s own fresh read: 409 not-idle, no Escape (vim and plain)', async () => {
     for (const opts of [{ vim: true }, { mem: { vim: false, plain: true } }]) {
-      const w = pane({ ...earlier, freshState: 'busy', ...opts });
+      const w = pane({ ...earlier, freshSeq: ['idle', 'busy'], ...opts });
       const r = await w.put('bye');
       assert.deepEqual([r.status, r.body.error], [409, 'not-idle']);
-      assert.deepEqual(w.stateArgs.at(-1), { fresh: true }, 'the registry cache is skipped before an Escape');
+      assert.deepEqual(w.stateArgs.filter(Boolean), [{ fresh: true }, { fresh: true }], 'the road decision, then right before the Escape');
       assert.deepEqual(w.sent, []);
     }
   });
@@ -546,7 +577,7 @@ describe('writeDraft: replace', () => {
     assert.deepEqual(sentKeys(w), ['Escape', 'text:ggdG', 'text:i', 'text:bye']);
     assert.ok(w.sent[1].t - w.sent[0].t >= 40, 'ggdG waited for the redraw and 40 ms');
     assert.ok(w.slept.filter((ms) => ms === 20).length >= 3, 'polled every 20 ms while INSERT was still shown');
-    assert.deepEqual(w.stateArgs.filter(Boolean), [{ fresh: true }], 'one fresh registry read, right before the Escape');
+    assert.deepEqual(w.stateArgs.filter(Boolean), [{ fresh: true }, { fresh: true }], 'two fresh registry reads: the road decision, then right before the Escape');
     assert.deepEqual(w.edits, ['vim']);
     safe(w);
   });
@@ -1331,6 +1362,50 @@ describe('writeDraft: the C-u road (0.5, W13) -- the cursor on the last row, in 
     busySafe(w);
   });
 
+  test('(−) a C-u that is swallowed while the user moves the cursor: a cursor move is no progress, 409 clear-stopped, no second C-u', async () => {
+    const w = pane({ text: 'hello world', vim: true, state: 'busy', swallowCu: true });
+    w.afterType = (b, p) => { if (b.keys?.includes('C-u')) p.cursorAt = { row: 0, col: 3 }; };
+    const r = await w.put('bye');
+    assert.deepEqual([r.status, r.body.error, r.body.draft.text], [409, 'clear-stopped', 'hello world']);
+    assert.deepEqual(sentKeys(w), ['C-u']);
+    assert.ok(w.slept.filter((ms) => ms === 20).length >= 20, 'the full 400 ms of waiting: the moved cursor did not end it');
+    busySafe(w);
+  });
+
+  test('(−) the user moves the cursor into the text right after a C-u, and the next C-u would cut at that cursor: the cut is not the start of the text, 409 screen-changed, nothing more', async () => {
+    const w = pane({ text: 'line one\nline two', vim: true, state: 'busy' });
+    w.afterType = (b, p) => { if (b.keys?.includes('C-u') && w.sent.length === 1) p.cursorAt = { row: 0, col: 4 }; };
+    const r = await w.put('bye');
+    assert.deepEqual([r.status, r.body.error, r.body.draft.text], [409, 'screen-changed', ' one\n']);
+    assert.deepEqual(sentKeys(w), ['C-u', 'C-u']);
+    busySafe(w);
+  });
+
+  test('(+) a C-u from a cursor inside the text acts at the cursor, so End comes first and the whole text goes (the fake honours a mid-row cursor)', async () => {
+    const w = pane({ text: 'line one\nline two', vim: true, state: 'busy', cursorAt: { row: 1, col: 4 } });
+    const r = await w.put('bye');
+    assert.deepEqual([r.status, r.body.draft.text], [200, 'bye']);
+    assert.deepEqual(sentKeys(w), ['End', 'C-u', 'C-u', 'C-u', 'text:bye']);
+    busySafe(w);
+  });
+
+  test('(−) clear-stopped drops the pane\'s edit memory (End swallowed, C-u swallowed, too many presses): the next try probes with i again', async () => {
+    const stalls = [{ swallowEnd: true, cursorAt: { row: 0, col: 2 } }, { swallowCu: true }, { cuStep: 1 }];
+    for (const o of stalls) {
+      const w = pane({ text: 'hello world', ...PLAIN, state: 'busy', ...o });
+      const r = await w.put('bye');
+      assert.equal(r.body.error, 'clear-stopped', JSON.stringify(o));
+      assert.deepEqual(w.edits, ['none'], 'the memory was dropped');
+      assert.deepEqual(w.mem, { vim: false, plain: false });
+      assert.equal(r.body.draft.edit, 'unknown', 'the answer says so');
+      Object.assign(w, { swallowEnd: false, swallowCu: false, cuStep: 0, cursorAt: null });
+      w.sent.length = 0;
+      assert.equal((await w.put('bye')).status, 200, 'the next try works');
+      assert.equal(sentKeys(w)[0], 'text:i', `${JSON.stringify(o)}: it probes first`);
+      busySafe(w);
+    }
+  });
+
   test('(−) End does not reach the end of the text within 400 ms: 409 clear-stopped, only End was pressed', async () => {
     const w = pane({ text: 'hello world', vim: true, state: 'busy', cursorAt: { row: 0, col: 5 }, swallowEnd: true });
     const r = await w.put('bye');
@@ -1349,12 +1424,13 @@ describe('writeDraft: the C-u road (0.5, W13) -- the cursor on the last row, in 
     busySafe(one);
   });
 
-  test('(−) T51 on this road: a permission prompt, a dialog or an unknown footer appears before the next C-u: 409 screen-changed, no key goes into it', async () => {
+  test('(−) T51 on this road: a permission prompt, any of the six dialogs or an unknown footer appears before the next C-u: 409 screen-changed, no key goes into it', async () => {
     const hooks = [
       (p) => { p.prompt = true; },
-      (p) => { p.override = dialogScreen('ask'); },
+      ...Object.keys(DIALOGS).map((name) => (p) => { p.override = dialogScreen(name); }),
       (p) => { p.override = () => boxRows({ lines: ['a'], footer: 'some footer nobody recognises' }); },
     ];
+    assert.equal(hooks.length, 8, 'a permission prompt, six dialogs, a footer');
     for (const hook of hooks) {
       const w = pane({ text: 'a\nb\nc', vim: true, state: 'busy', before: (n, p) => { if (n === 4) hook(p); } });
       const r = await w.put('bye');
@@ -1415,8 +1491,6 @@ describe('writeDraft: the C-u road (0.5, W13) -- the cursor on the last row, in 
 
 // --- 0.5, W13: the guarded Send Enter (submit) ------------------------------------------------------------------------------------------
 
-/** What a submit may send: exactly one Enter, or nothing. */
-const enterOnly = (w) => assert.ok(sentKeys(w).length === 0 || (sentKeys(w).length === 1 && sentKeys(w)[0] === 'Enter'), `at most one Enter: ${sentKeys(w)}`);
 const sub = (w, body = { base: w.sig() }) => w.control().submit('%2', body);
 /** The screen with Claude's footer but no input box (a user's own layout, or the box scrolled away). */
 const noBox = () => { const s = boxRows({ lines: ['x'] }); return { ...s, rows: [s.rows[0], ...s.rows.slice(-2)] }; };
@@ -1495,6 +1569,19 @@ describe('submit: the Enter of Send (0.5, W13)', () => {
     assert.ok(w.slept.filter((ms) => ms === 50).length >= 20 && w.slept.every((ms) => ms === 50), '20 polls of 50 ms');
   });
 
+  test('(+) one read-back capture fails while every other poll still shows the text: taken null, never false (a failed read proves nothing); the Enter is not repeated', async () => {
+    const w = pane({ text: 'hello', vim: true, swallowEnter: true });
+    const capture = w.mirror.capture;
+    let polls = 0;
+    w.mirror.capture = async (...a) => (w.sent.length > 0 && (polls += 1) === 3 ? { status: 502, body: { error: 'tmux_failed', message: 'x' } } : capture(...a));
+    const r = await sub(w);
+    assert.deepEqual([r.status, r.body.taken, r.body.draft.text], [200, null, 'hello']);
+    assert.ok(polls >= 20, 'it kept polling the whole second');
+    assert.deepEqual(sentKeys(w), ['Enter']);
+    const clean = pane({ text: 'hello', vim: true, swallowEnter: true });
+    assert.equal((await sub(clean)).body.taken, false, 'the same run with no failed capture is false');
+  });
+
   test('(+) a prompt opens right after the Enter and the box is gone: taken null, nothing more is pressed', async () => {
     const w = pane({ text: 'hello', vim: true, state: 'busy', afterEnter: (p) => { p.prompt = true; } });
     const r = await sub(w);
@@ -1526,6 +1613,34 @@ describe('submit: the Enter of Send (0.5, W13)', () => {
         const r = await sub(w, body);
         assert.deepEqual([r.status, r.body.error], [409, 'prompt-open'], name);
         assert.deepEqual(w.sent, [], name);
+      }
+    }
+  });
+
+  test('(+) an empty box that shows Claude\'s queued placeholder or the `Try "..."` example is not a suggestion: the Enter goes', async () => {
+    const queued = pane({ text: '', vim: true, state: 'busy', queuedMsgs: true });
+    assert.deepEqual([readDraft(queued.screen()).queued, readDraft(queued.screen()).suggestion], [true, null], 'the fixture');
+    const example = pane({ text: '', vim: true, ghost: 'Try "fix the failing test"' });
+    assert.deepEqual([readDraft(example.screen()).state, readDraft(example.screen()).suggestion], ['empty', null], 'the fixture');
+    for (const w of [queued, example]) {
+      for (const body of [{ base: w.sig() }, {}]) {
+        w.sent.length = 0;
+        const r = await sub(w, body);
+        assert.equal(r.status, 200, JSON.stringify(body));
+        assert.deepEqual(sentKeys(w), ['Enter'], JSON.stringify(body));
+      }
+    }
+  });
+
+  test('(−) an empty box that shows a prompt suggestion (base or not, idle or busy): 409 suggestion-shown with the draft, ZERO keys -- what Enter does there is unverified', async () => {
+    for (const state of ['idle', 'busy']) {
+      for (const make of [(o) => ({ base: o.sig() }), () => ({})]) {
+        const w = pane({ text: '', vim: true, state, ghost: 'run the tests' });
+        assert.equal(readDraft(w.screen()).suggestion, 'run the tests', 'the fixture');
+        const r = await sub(w, make(w));
+        assert.deepEqual([r.status, r.body.error, r.body.draft.state, r.body.draft.suggestion], [409, 'suggestion-shown', 'empty', 'run the tests'], state);
+        assert.deepEqual(w.sent, [], state);
+        assert.equal(w.n, 1, 'one capture');
       }
     }
   });
