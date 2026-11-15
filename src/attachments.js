@@ -71,9 +71,11 @@ export function sniff(buf, name) {
 }
 
 // A file nika never takes, whatever its bytes are (rule 4, the owner's "don't collect sensitive data"): by base name, any case, `.env`, `.env.*`,
-// `*.key` and `*.pem`. public/attach.js keeps a copy of this pattern (browser code cannot import it); a test pins that the two agree.
-const SECRET_NAME = /^(?:\.env(?:\..*)?|.*\.(?:key|pem))$/is;
-/** True for the name (or the last part of a path) of a credential file: `.env`, `.env.*`, `*.key`, `*.pem`, case-insensitive. */
+// `.envrc`, `.envrc.*`, `*.key`, `*.pem`, the keystores `*.p12`, `*.pfx`, `*.jks` and `*.keystore`, and the SSH private keys by exact name (`id_rsa`, `id_dsa`,
+// `id_ecdsa`, `id_ed25519` and the FIDO forms `id_ecdsa_sk`, `id_ed25519_sk`; never their `.pub` files, never another name that only starts with `id_`).
+// public/attach.js keeps a copy of this pattern (browser code cannot import it); a test pins that the two agree.
+const SECRET_NAME = /^(?:\.env(?:\..*)?|\.envrc(?:\..*)?|id_(?:rsa|dsa|ecdsa|ed25519|ecdsa_sk|ed25519_sk)|.*\.(?:key|pem|p12|pfx|jks|keystore))$/is;
+/** True for the name (or the last part of a path) of a credential file (`.env`, `.env.*`, `.envrc`, `.envrc.*`, `*.key`, `*.pem`, `*.p12`, `*.pfx`, `*.jks`, `*.keystore`, an SSH private key), case-insensitive. */
 export const isSecretName = (name) => typeof name === 'string' && SECRET_NAME.test(name.split(/[\\/]/).pop().trimEnd());
 
 /** Step 1 of the upload: exactly `name` (a string, at most 255 UTF-16 units) and `data` (standard base64). null = fine, else the 400 (`secret-file` for a credential file's name). */

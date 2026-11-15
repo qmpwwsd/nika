@@ -200,10 +200,28 @@ describe('checkUploadBody', () => {
 describe('isSecretName and the credential-file refusal (rule 4, the owner\'s "don\'t collect sensitive data")', () => {
   const SECRET = ['.env', '.ENV', '.Env', '.env.dev', '.env.production.stage', '.env.', 'dir/.env', '/a/b/.env.test', 'C:\\proj\\.env', 'server.key', 'SERVER.KEY', 'id.pem', 'cert.PEM',
     '.key', '.pem', 'my.cert.pem', 'a b.key', 'x.key ', 'multi\nline.key', 'dir.key/real.pem'];
-  const FINE = ['env.txt', 'notes.md', 'a.env', '.environment', 'keyboard.png', 'monkey.txt', 'pem.txt', 'key', 'pem', 'env', 'x.keys', 'x.pem.txt', 'x.key.txt', 'readme.md', '', 'dir.pem/readme.md', 'a.PNG'];
+  // F3 (owner answer 2026-11-15): also .envrc, the keystores (*.p12, *.pfx, *.jks, *.keystore) and SSH private keys by exact name. Never a .pub file.
+  // Fix round 1 (orchestrator ruling): .envrc.* is refused like .env.* (.envrc.dev, .envrc.bak, .envrc. ...).
+  const NEW_KINDS = ['.envrc', '.envrc.dev', '.envrc.bak', '.envrc.', 'cert.p12', 'cert.pfx', 'store.jks', 'app.keystore', 'id_rsa', 'id_dsa', 'id_ecdsa', 'id_ed25519', 'id_ecdsa_sk', 'id_ed25519_sk'];
+  const mixed = (n) => [...n].map((c, i) => (i % 2 ? c.toUpperCase() : c.toLowerCase())).join('');
+  const variants = (n) => [n, n.toUpperCase(), mixed(n), `/x/y/${n.toUpperCase()}`, `/x/y/${n}`, `dir\\sub\\${n}`, `${n} `];
+  const FINE = ['env.txt', 'notes.md', 'a.env', '.environment', 'keyboard.png', 'monkey.txt', 'pem.txt', 'key', 'pem', 'env', 'x.keys', 'x.pem.txt', 'x.key.txt', 'readme.md', '', 'dir.pem/readme.md', 'a.PNG',
+    // F3: the public halves and the look-alikes of the new kinds stay attachable
+    'id_rsa.pub', 'id_ed25519.pub', 'ID_ECDSA.PUB', 'id_ecdsa_sk.pub', 'id_rsa_backup.txt', 'id_rsa.txt', 'my_id_rsa', 'id_rsax', 'id_rsa_sk', 'id_', 'id', 'my.keystore.md', 'notes.envrc.txt', 'envrc', 'envrc.dev', 'my.envrc.dev', '.envrcx', '.envrc-old', 'p12.txt', 'p12', 'pfx', 'jks',
+    'keystore', 'x.p12x', 'x.pfxs', 'cert.p12.txt', 'store.jks.bak', 'dir.p12/readme.md', '/x/y/id_rsa.pub'];
 
   test('(+) the names of .env, .env.*, *.key and *.pem files (any case, any directory part) are secret', () => {
     for (const name of SECRET) assert.equal(isSecretName(name), true, JSON.stringify(name));
+  });
+
+  test('(−) F3: .envrc, *.p12, *.pfx, *.jks, *.keystore and the SSH private keys are secret, in any case, with a path in front and with a trailing space', () => {
+    for (const kind of NEW_KINDS) for (const name of variants(kind)) assert.equal(isSecretName(name), true, JSON.stringify(name));
+  });
+
+  test('(+) F3: a .pub file is not secret, whatever key it belongs to (public keys stay attachable)', () => {
+    for (const name of ['id_rsa.pub', 'id_dsa.pub', 'id_ecdsa.pub', 'id_ed25519.pub', 'id_ecdsa_sk.pub', 'id_ed25519_sk.pub', '/x/y/ID_RSA.PUB', 'dir\\id_ed25519.pub']) {
+      assert.equal(isSecretName(name), false, JSON.stringify(name));
+    }
   });
 
   test('(−) ordinary names are not, and neither is anything that is not a string', () => {
@@ -219,6 +237,15 @@ describe('isSecretName and the credential-file refusal (rule 4, the owner\'s "do
     }
     assert.equal(checkUploadBody({ name: '.env' }).body.error, 'invalid', 'no data: the shape is wrong before the name is looked at');
     assert.equal(checkUploadBody({ name: '.env', data: 'QU!D' }).body.error, 'invalid');
+  });
+
+  test('(−) F3: checkUploadBody: every new kind (any case, with a path in front) is 400 secret-file with a good body', () => {
+    for (const kind of NEW_KINDS) {
+      for (const name of variants(kind)) {
+        const r = checkUploadBody({ name, data: 'QUJD' });
+        assert.deepEqual([r?.status, r?.body.error], [400, 'secret-file'], JSON.stringify(name));
+      }
+    }
   });
 
   test('(+) checkUploadBody: every ordinary name passes', () => {
@@ -237,9 +264,29 @@ describe('isSecretName and the credential-file refusal (rule 4, the owner\'s "do
     assert.equal(next.status, 200, 'the refused uploads did not use up the rate limit or the one-at-a-time slot');
   });
 
+  test('(−) F3: save: a new kind is refused the same way: nothing is written, nothing is logged or counted', async () => {
+    const { att, env, logs } = make();
+    for (const kind of NEW_KINDS) {
+      for (const name of [kind, kind.toUpperCase(), `/x/y/${kind.toUpperCase()}`]) {
+        const r = await att.save({ pane: PANE, key: KEY, name, data: b64(Buffer.from('synthetic\n')) });
+        assert.deepEqual([r.status, r.body.error], [400, 'secret-file'], name);
+      }
+    }
+    assert.equal(fs.existsSync(stateDir(env)), false);
+    assert.deepEqual(logs, []);
+    assert.equal((await upload(att, PNG, 'a.png')).status, 200, 'the refused uploads did not use up the rate limit or the one-at-a-time slot');
+  });
+
   test('(+) save: the same bytes under an ordinary name are stored', async () => {
     const { att } = make();
     assert.equal((await att.save({ pane: PANE, key: KEY, name: 'notes.txt', data: b64(Buffer.from('TOKEN=synthetic\n')) })).status, 200);
+  });
+
+  test('(+) F3: save: a public key (id_rsa.pub) and the look-alikes are stored', async () => {
+    const { att } = make();
+    for (const name of ['id_rsa.pub', 'id_ed25519.pub', 'id_rsa_backup.txt', 'my.keystore.md', 'notes.envrc.txt', 'p12.txt']) {
+      assert.equal((await att.save({ pane: PANE, key: KEY, name, data: b64(Buffer.from('synthetic\n')) })).status, 200, name);
+    }
   });
 });
 

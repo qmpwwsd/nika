@@ -383,6 +383,45 @@ describe('adding files', () => {
     }
   });
 
+  // F3 (owner answer 2026-11-15): the same refusal, before any request, for .envrc, the keystores and the SSH private keys.
+  // Fix round 1 (orchestrator ruling): .envrc.* is refused like .env.* (.envrc.dev, .envrc.bak, .envrc. ...).
+  const NEW_KINDS = ['.envrc', '.envrc.dev', '.envrc.bak', '.envrc.', 'cert.p12', 'cert.pfx', 'store.jks', 'app.keystore', 'id_rsa', 'id_dsa', 'id_ecdsa', 'id_ed25519', 'id_ecdsa_sk', 'id_ed25519_sk'];
+  const mixedCase = (n) => [...n].map((c, i) => (i % 2 ? c.toUpperCase() : c.toLowerCase())).join('');
+
+  test('(−) F3: a pasted or dropped .envrc, *.p12, *.pfx, *.jks, *.keystore or SSH private key (any case, with a path in front) is "Not attached": no read, no request, the same fixed line', async () => {
+    for (const kind of NEW_KINDS) {
+      for (const name of [kind, kind.toUpperCase(), mixedCase(kind), `/x/y/${kind.toUpperCase()}`]) {
+        let reads = 0;
+        const r = rig({ read: async () => { reads += 1; return 'QUJD'; } });
+        await r.add(file(name));
+        assert.equal(reads, 0, `${name}: never read`);
+        assert.equal(r.log.calls.length, 0, `${name}: no request`);
+        assert.deepEqual([view(r.chips()[0]).s, view(r.chips()[0]).meta], ['failed', 'Not attached'], name);
+        assert.deepEqual(r.log.problem.at(-1), ["nika doesn't attach .env, key or certificate files.", 'error', 8000], name);
+      }
+    }
+  });
+
+  test('(+) F3: a public key and the look-alikes of the new kinds are read and uploaded as before', async () => {
+    const names = ['id_rsa.pub', 'id_ed25519.pub', 'id_rsa_backup.txt', 'my.keystore.md', 'notes.envrc.txt', 'p12.txt'];
+    let reads = 0;
+    const r = rig({ read: async () => { reads += 1; return 'QUJD'; } });
+    await r.add(...names.map((n) => file(n)));
+    assert.equal(reads, names.length);
+    assert.equal(r.log.calls.length, names.length);
+    assert.deepEqual(r.chips().map((li) => view(li).s), names.map(() => 'ready'));
+  });
+
+  test('(+) fix round 1: envrc.dev, my.envrc.dev, .envrcx and .envrc-old are read and uploaded as before (only .envrc and .envrc.* are refused)', async () => {
+    const names = ['envrc.dev', 'my.envrc.dev', '.envrcx', '.envrc-old'];
+    let reads = 0;
+    const r = rig({ read: async () => { reads += 1; return 'QUJD'; } });
+    await r.add(...names.map((n) => file(n)));
+    assert.equal(reads, names.length);
+    assert.equal(r.log.calls.length, names.length);
+    assert.deepEqual(r.chips().map((li) => view(li).s), names.map(() => 'ready'));
+  });
+
   test('(+) M4: an ordinary file next to a secret one still uploads, in order', async () => {
     let reads = 0;
     const r = rig({ read: async () => { reads += 1; return 'QUJD'; } });
@@ -395,9 +434,14 @@ describe('adding files', () => {
   test('(+) M4: the page\'s name pattern and the server\'s agree on every name of the table (a copy that drifts fails here)', () => {
     const names = ['.env', '.ENV', '.env.dev', '.env.', 'dir/.env', 'C:\\p\\.env', 'server.key', 'SERVER.KEY', 'id.pem', 'cert.PEM', '.key', '.pem', 'x.key ', 'multi\nline.key',
       'env.txt', 'notes.md', 'a.env', '.environment', 'keyboard.png', 'monkey.txt', 'pem.txt', 'key', 'x.keys', 'x.pem.txt', '', 'a.PNG', 'dir.pem/readme.md'];
+    // F3: every new kind in four spellings, and the names that must stay attachable
+    for (const kind of NEW_KINDS) names.push(kind, kind.toUpperCase(), mixedCase(kind), `/x/y/${kind.toUpperCase()}`, `dir\\sub\\${kind}`, `${kind} `);
+    names.push('id_rsa.pub', 'id_ed25519.pub', 'ID_ECDSA.PUB', 'id_ecdsa_sk.pub', 'id_rsa_backup.txt', 'id_rsa_sk', 'my_id_rsa', 'id_', 'my.keystore.md', 'notes.envrc.txt', 'envrc', 'envrc.dev', 'my.envrc.dev', '.envrcx', '.envrc-old', 'p12.txt', 'p12', 'x.p12x', 'cert.p12.txt');
     for (const n of names) assert.equal(isSecretName(n), serverIsSecretName(n), JSON.stringify(n));
     for (const n of [undefined, null, 5, {}]) assert.equal(isSecretName(n), false);
     assert.equal(names.filter(isSecretName).length >= 12, true, 'the table has secret names in it');
+    assert.equal(names.filter((n) => !isSecretName(n)).length >= 15, true, 'the table has ordinary names in it');
+    assert.equal(NEW_KINDS.every((k) => isSecretName(k) && serverIsSecretName(k)), true, 'every new kind is secret on both sides');
   });
 
   test('(+) a 9 MB file: a failed chip "Too big", no read, no request', async () => {

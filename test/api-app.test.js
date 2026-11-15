@@ -4965,6 +4965,26 @@ describe('attachments: upload', () => {
     assert.equal(store.calls.length, 1);
   });
 
+  test('(−) F3: a body named .envrc, *.p12, *.pfx, *.jks, *.keystore or an SSH private key (any case, path in front) is 400 secret-file before the pane is looked at; the store is not called', async () => {
+    const store = fakeStore();
+    const { a } = await bootScreens({ over: { attachments: store, collect: async () => keyedSnapshot('%6') } });
+    for (const name of ['.envrc', '.ENVRC', '.envrc.dev', '.ENVRC.BAK', '/x/y/.envrc.dev', '.envrc.', 'cert.p12', 'CERT.PFX', 'store.jks', 'App.KeyStore', 'id_rsa', 'ID_RSA', '/x/y/ID_RSA', 'id_dsa', 'id_ecdsa', 'id_ed25519', 'Id_Ecdsa_Sk', 'id_ed25519_sk']) {
+      for (const id of ['%6', '%99']) {
+        const r = await att(a, id, 'attachments', { method: 'POST', json: { name, data: UPLOAD.data } });
+        assert.deepEqual([r.status, r.body.error], [400, 'secret-file'], `${name} ${id}`);
+      }
+    }
+    assert.deepEqual(store.calls, []);
+  });
+
+  test('(+) F3: a public key and the look-alikes of the new kinds still go to the store', async () => {
+    const store = fakeStore();
+    const { a } = await bootScreens({ over: { attachments: store, collect: async () => keyedSnapshot('%6') } });
+    const names = ['id_rsa.pub', 'id_ed25519.pub', 'id_rsa_backup.txt', 'my.keystore.md', 'notes.envrc.txt', 'p12.txt', 'envrc.dev', '.envrcx'];
+    for (const name of names) assert.equal((await att(a, '%6', 'attachments', { method: 'POST', json: { name, data: UPLOAD.data } })).status, 200, name);
+    assert.equal(store.calls.length, names.length);
+  });
+
   test('(−) the body is checked before the pane: a bad body to an unknown pane is 400, a good body to it is 404; the store is not called', async () => {
     const store = fakeStore();
     const { a } = await bootScreens({ over: { attachments: store, collect: async () => keyedSnapshot('%6') } });

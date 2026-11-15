@@ -1049,8 +1049,10 @@ The body is exactly these two keys: `name` a string of at most 255 UTF-16 units 
 reaches the disk, a log or an answer), `data` standard base64 (length a multiple of 4, alphabet `A-Za-z0-9+/`, at most two `=`). Anything
 else is `400 invalid`. A body over 12 MiB is `413 too_large` and a content type other than JSON `415 unsupported_media`, both from the
 dispatcher. Checks, in this order:
-1. Body shape → `400 invalid`; a `name` whose last part is `.env`, `.env.*`, `*.key` or `*.pem` (any case) → `400 secret-file` (rule 4: nika does
-   not take credential files; nothing is decoded or stored, and the tray refuses such a file before it reads it).
+1. Body shape → `400 invalid`; a `name` whose last part is `.env`, `.env.*`, `.envrc`, `.envrc.*`, `*.key`, `*.pem`, `*.p12`, `*.pfx`, `*.jks`, `*.keystore` or
+   an SSH private key by exact name (`id_rsa`, `id_dsa`, `id_ecdsa`, `id_ed25519`, `id_ecdsa_sk`, `id_ed25519_sk`; a `.pub` file is not one),
+   any case → `400 secret-file` (rule 4: nika does not take credential files; nothing is decoded or stored, and the tray refuses such a file
+   before it reads it).
 2. Ineligible pane (same rule as capture) → `404 not_found`.
 3. The pane's repository key, from nika's own snapshot (exactly one live agent claims the pane, else the key of a pane nika started; never
    from the request) → none, or two claims → `409 no-project` (`nika can't tell this session's project`).
@@ -1168,7 +1170,8 @@ never opened), one entry each, and a failed entry never stops the next one:
 - `ok: true`: the file is stored, exactly as an upload would have stored it; `id`, `size` and `type` (`png` · `jpeg` · `gif` · `webp` · `pdf` ·
   `text`) are the upload route's answer, and the id is used the same way (`DELETE …/attachments/:id`, `attach-send`).
 - `ok: false`, `error` is one of the chooser's own codes or one of the store's: `invalid` (the path from the shell is not a string, is not
-  absolute, is over 4096 characters or holds a NUL) · `secret-file` (the last part of the path is `.env`, `.env.*`, `*.key` or `*.pem`, any case:
+  absolute, is over 4096 characters or holds a NUL) · `secret-file` (the last part of the path is `.env`, `.env.*`, `.envrc`, `.envrc.*`, `*.key`, `*.pem`, `*.p12`, `*.pfx`, `*.jks`,
+  `*.keystore` or an SSH private key by exact name, `id_rsa`, `id_dsa`, `id_ecdsa`, `id_ed25519`, `id_ecdsa_sk` or `id_ed25519_sk`, any case:
   refused by name before anything is opened) · `unreadable` (it could not be opened as a regular file you own with one link, with no
   following of a final symbolic link: a link, a folder, a FIFO, a hard-linked file, another owner's file, a file that is gone) · `too_large`
   (more than 8 MiB, decided from the size of the open file before any byte is read) · and the upload's codes `too-big`, `empty`,

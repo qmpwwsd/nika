@@ -739,6 +739,54 @@ describe('file chooser', () => {
     assert.deepEqual(r.logs, []);
   });
 
+  // F3 (owner answer 2026-11-15): .envrc, the keystores and the SSH private keys are refused the same way. The picked path is absolute, so a directory is always in front.
+  test('(−) F3: a picked .envrc, *.p12, *.pfx, *.jks, *.keystore or SSH private key (any case) is refused as secret-file before it is opened: nothing stored, no path in the entry', async () => {
+    const r = rig();
+    const good = r.put('good.md', 'fine\n');
+    const kinds = ['.envrc', '.envrc.dev', '.envrc.bak', '.envrc.', 'cert.p12', 'cert.pfx', 'store.jks', 'app.keystore', 'id_rsa', 'id_dsa', 'id_ecdsa', 'id_ed25519', 'id_ecdsa_sk', 'id_ed25519_sk'];
+    for (const kind of kinds) { // one pick per kind (the store admits 30 saves a minute): three spellings, then one good file
+      const names = [kind, kind.toUpperCase(), [...kind].map((c, i) => (i % 2 ? c.toUpperCase() : c)).join('')];
+      const { answer } = await r.pick([...names.map((n) => r.put(n, 'synthetic\n')), good], { room: 4 });
+      const refused = answer.files.slice(0, 3);
+      assert.deepEqual(refused.map((f) => [f.ok, f.error, f.name]), names.map((n) => [false, 'secret-file', n]), kind);
+      for (const f of refused) assert.deepEqual(Object.keys(f).sort(), ['error', 'name', 'ok'], kind);
+      assert.equal(answer.files[3].ok, true, `the next file still went: ${kind}`);
+      assert.ok(!JSON.stringify(answer).includes(dirRoot), 'no path in the answer');
+    }
+    assert.equal(r.stored().length, kinds.length, 'only the good file of each pick was stored');
+    assert.deepEqual(r.logs, []);
+  });
+
+  test('(−) F3: the name decides before any open for the new kinds too: a FIFO or a dangling link named id_rsa, *.p12 or .envrc answers secret-file, not unreadable', async () => {
+    const r = rig();
+    const fifo = path.join(r.dir, 'store.p12');
+    execFileSync('mkfifo', [fifo]);
+    const dangling = path.join(r.dir, 'id_ed25519');
+    fs.symlinkSync(path.join(r.dir, 'nowhere'), dangling);
+    const envrc = path.join(r.dir, '.envrc');
+    fs.symlinkSync(path.join(r.dir, 'nowhere'), envrc);
+    const envrcLocal = path.join(r.dir, '.envrc.dev'); // fix round 1: .envrc.* is refused by name too
+    fs.symlinkSync(path.join(r.dir, 'nowhere'), envrcLocal);
+    const plainFifo = path.join(r.dir, 'id_ed25519.pub');
+    execFileSync('mkfifo', [plainFifo]);
+    const { answer } = await r.pick([fifo, dangling, envrc, envrcLocal, plainFifo], { room: 5 });
+    assert.deepEqual(answer.files.map((f) => f.error), ['secret-file', 'secret-file', 'secret-file', 'secret-file', 'unreadable'], 'a public key still goes through the open and fails there');
+  });
+
+  test('(+) fix round 1: envrc.dev, my.envrc.dev, .envrcx and .envrc-old are picked as before (only .envrc and .envrc.* are refused)', async () => {
+    const r = rig();
+    const paths = ['envrc.dev', 'my.envrc.dev', '.envrcx', '.envrc-old'].map((n) => r.put(n, `${n}\n`));
+    const { answer } = await r.pick(paths, { room: 4 });
+    assert.deepEqual(answer.files.map((f) => f.ok), [true, true, true, true]);
+  });
+
+  test('(+) F3: a public key and the look-alikes of the new kinds are picked as before: id_rsa.pub, id_ed25519.pub, id_rsa_backup.txt, my.keystore.md, notes.envrc.txt, p12.txt', async () => {
+    const r = rig();
+    const paths = ['id_rsa.pub', 'id_ed25519.pub', 'id_rsa_backup.txt', 'my.keystore.md', 'notes.envrc.txt', 'p12.txt'].map((n) => r.put(n, `${n}\n`));
+    const { answer } = await r.pick(paths, { room: 6 });
+    assert.deepEqual(answer.files.map((f) => f.ok), [true, true, true, true, true, true]);
+  });
+
   test('(−) the name decides before any open: a FIFO or a dangling link named .env or *.key answers secret-file, not unreadable', async () => {
     const r = rig();
     const fifo = path.join(r.dir, 'token.key');

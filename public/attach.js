@@ -34,8 +34,8 @@ const PICK_STATUS = {
 const TOO_BIG = `Too big ${MID} max 8 MB`;
 const SECRET_LINE = "nika doesn't attach .env, key or certificate files.";
 // A credential file's name (rule 4): a copy of `isSecretName` in src/attachments.js, which browser code cannot import; a test pins that the two agree.
-const SECRET_NAME = /^(?:\.env(?:\..*)?|.*\.(?:key|pem))$/is;
-/** True for the name of a `.env`, `.env.*`, `*.key` or `*.pem` file, any case. The tray refuses such a file before it reads a byte; the server refuses it again. */
+const SECRET_NAME = /^(?:\.env(?:\..*)?|\.envrc(?:\..*)?|id_(?:rsa|dsa|ecdsa|ed25519|ecdsa_sk|ed25519_sk)|.*\.(?:key|pem|p12|pfx|jks|keystore))$/is;
+/** True for the name of a credential file (`.env`, `.env.*`, `.envrc`, `.envrc.*`, `*.key`, `*.pem`, `*.p12`, `*.pfx`, `*.jks`, `*.keystore`, an SSH private key), any case. The tray refuses such a file before it reads a byte; the server refuses it again. */
 export const isSecretName = (name) => typeof name === 'string' && SECRET_NAME.test(name.split(/[\\/]/).pop().trimEnd());
 const FAILED = 'Upload failed';
 const SESSION_GONE = 'The session is gone.';

@@ -83,7 +83,7 @@ export function createPicker({ send, env, attachments }) {
     const name = pickedName(p);
     const bad = (error) => ({ ok: false, name, error });
     if (typeof p !== 'string' || p.length > PICK_PATH_MAX || p.includes('\0') || !path.isAbsolute(p)) return bad('invalid');
-    if (isSecretName(path.basename(p))) return bad('secret-file'); // .env, .env.*, *.key, *.pem: refused by name before the file is opened (rule 4)
+    if (isSecretName(path.basename(p))) return bad('secret-file'); // a credential file's name (`isSecretName`: .env*, .envrc*, *.key, *.pem, keystores, SSH private keys): refused before the file is opened (rule 4)
     let handle;
     try {
       let st;

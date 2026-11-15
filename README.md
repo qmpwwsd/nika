@@ -420,7 +420,8 @@ Desktop app only. None of this is on the browser dashboard.
   box says "Queued" until then. When a permission prompt or another dialog is open, nika presses nothing and says so.
 - **Attachments.** Paste images, PDFs or text files into the message box, drop them on it, or click the paperclip (**Add
   attachments**) to pick them in a file chooser. Up to 6 files per message and 8 MB each. nika never attaches a `.env`,
-  `.env.*`, `*.key` or `*.pem` file: it refuses it by name before reading it. A chip shows each file; remove
+  `.env.*`, `.envrc`, `.envrc.*`, `*.key`, `*.pem`, `*.p12`, `*.pfx`, `*.jks`, `*.keystore` or SSH private key file (`id_rsa`,
+  `id_ed25519` and the like; their `.pub` files are fine): it refuses it by name before reading it. A chip shows each file; remove
   one before you send. Nothing goes to Claude until Send: then nika pastes each file's path into Claude's input after your
   text and presses Enter, the way you would paste a file path in the terminal. Claude shows an image as `[Image #N]`; a PDF or
   text file it reads with its Read tool, which asks first because the file is outside your project. That prompt shows in the

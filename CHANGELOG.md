@@ -155,8 +155,10 @@ Fixes:
   screen, and it types nothing while a permission prompt, a question or plan dialog, the auto-mode notice, Claude's feedback
   survey or a screen nika cannot read (no input box and an unknown footer) is open: a digit or a letter typed there would answer
   it. A long message is typed in pieces, and nika looks again before each later piece; if something opens in between, it stops
-  there and keeps your text in the message box. nika also never attaches `.env` files or key and certificate files
-  (`*.key`, `*.pem`): paste, drop and the file chooser refuse them by name ("nika doesn't attach .env, key or certificate files.").
+  there and keeps your text in the message box. nika also never attaches `.env` and `.envrc` files (and `.env.*`, `.envrc.*` such as `.envrc.dev`), key and certificate files
+  (`*.key`, `*.pem`, `*.p12`, `*.pfx`, `*.jks`, `*.keystore`) or SSH private keys (`id_rsa`, `id_dsa`, `id_ecdsa`, `id_ed25519` and the
+  `_sk` forms of the last two; their `.pub` files stay attachable): paste, drop and the file chooser refuse them by name ("nika doesn't
+  attach .env, key or certificate files.").
 - **A pane whose Claude has ended gets no keys and no capture.** With tmux's `remain-on-exit`, the pane of a session that ended stays on
   screen, and tmux still names its command after Claude, so nika took it for a live session. The session window, the mode, End and the
   other pane routes now refuse such a pane ("pane not found"), and the mode list leaves it out. A tmux listing row whose dead-pane
