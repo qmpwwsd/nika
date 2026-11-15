@@ -282,10 +282,8 @@ a.name:hover { text-decoration: underline; }
 .subs > summary { cursor: pointer; padding: 2px 0 2px 4px; color: var(--text-muted); width: fit-content; min-height: 24px; }
 .subs > summary:hover { color: var(--text); }
 .subs > summary .sub-hid { font-size: var(--fs-small); }
-.subs ul { list-style: none; margin: 4px 0 6px; padding: 0 0 0 4px; display: grid; gap: 4px; }
-.subs li { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; padding: 4px 0; border-top: 1px dashed var(--line); }
-.sub-desc { flex: 1 1 160px; min-width: 0; overflow-wrap: anywhere; }
-.sub-type { color: var(--text-muted); }
+.subs-none { margin: 0; padding: 2px 0 2px 4px; color: var(--text-muted); min-height: 24px; }   /* W11: "No subagents running +K ended"; the list rules are in tokens.css */
+.subs-none .sub-hid { font-size: var(--fs-small); }
 details.ended > summary { cursor: pointer; padding: 8px 2px; color: var(--text-muted); width: fit-content; min-height: 24px; }
 details.ended > summary:hover { color: var(--text); }
 .empty { margin: var(--sp-8) auto; max-width: 460px; text-align: center; padding: var(--sp-6); }

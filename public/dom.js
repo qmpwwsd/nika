@@ -1,6 +1,6 @@
 // Tiny DOM helper shared by every page. Strings become text nodes or textContent, never parsed as markup.
 // `on*` keys register event listeners; every other key is a plain attribute (never a style or a URL built from data).
-import { ROLE_TAGS } from './dash-model.js';
+import { ROLE_TAGS, SUB_STATES } from './dash-model.js';
 import { ctxView } from './ctx.js';
 
 export function h(tag, attrs, ...children) {
@@ -42,6 +42,37 @@ export function roleTagEl(kind) {
   return h('span', { class: t.cls, title: t.title },
     h('span', { class: 'tag-l', text: t.long }),
     h('span', { class: 'tag-s', 'aria-hidden': 'true', text: t.short }));
+}
+
+/**
+ * The state badge of a Claude subagent (0.5, W8): `span.sst[data-ss][title]` holding a glyph (drawn by the stylesheet, hidden from
+ * assistive tech) and the word, so colour is never the only sign. `state` is the server's `running` / `finished` / `stopped`; anything
+ * else gives null. `pill` is the session header's rounded form.
+ */
+export function subStateEl(state, { pill = false } = {}) {
+  if (typeof state !== 'string' || !Object.hasOwn(SUB_STATES, state)) return null;
+  const t = SUB_STATES[state];
+  return h('span', { class: pill ? 'sst pill' : 'sst', 'data-ss': state, title: t.title },
+    h('span', { class: 'sst-g', 'aria-hidden': 'true' }),
+    h('span', { class: 'sst-l', text: t.label }));
+}
+
+/**
+ * One subagent line: `li.sub[data-ss]` holding the badge, the description (a link when `href` is given, else plain text; `fk` is the
+ * link's focus key so a redraw keeps focus on it), the type, the model label and `time` (a node the page passes, or nothing). Text
+ * goes in through h(), never as markup; the page builds `href` with dash-model.js subagentHref() from ids it has checked.
+ */
+export function subagentItemEl(s, { href = null, fk = null, time = null } = {}) {
+  const text = typeof s.description === 'string' && s.description ? s.description : '(no description)';
+  const badge = subStateEl(s.state);
+  return h('li', { class: 'sub', 'data-ss': badge ? s.state : null },
+    badge,
+    href
+      ? h('a', { class: 'sub-desc sub-link', href, 'data-fk': fk, title: 'Open its transcript (read-only)', text })
+      : h('span', { class: 'sub-desc', text }),
+    s.type ? h('span', { class: 'sub-type', text: s.type }) : null,
+    s.modelLabel ? h('span', { class: 'model', text: s.modelLabel }) : null,
+    time);
 }
 
 /**

@@ -118,12 +118,53 @@ export function roleTag(a, pickId) {
   return a.live !== true && Boolean(pickId) && a.id === pickId ? 'saved' : null;
 }
 
-/** Words of each badge: `long` and `short` (the narrow rows show the short one), the class and the title. dom.js roleTagEl() draws it. */
+/**
+ * Words of each badge: `long` and `short` (the narrow rows show the short one), the class and the title. dom.js roleTagEl() draws it.
+ * `subagent` (0.5, W8) is only for the read-only subagent view's header; roleTag() never answers it.
+ */
 export const ROLE_TAGS = {
   main: { cls: 'tag', long: 'orchestrator', short: 'orch', title: 'orchestrator' },
   sub: { cls: 'tag sub', long: 'sub-orchestrator', short: 'sub-orch', title: 'sub-orchestrator' },
   saved: { cls: 'tag muted', long: 'orchestrator', short: 'orch', title: "Saved orchestrator. Resume it from the header or this row's menu." },
+  subagent: { cls: 'tag sa', long: 'subagent', short: 'subagent', title: "Claude's own subagent. It runs inside its parent session." },
 };
+
+/* ---------- Claude's own subagents (0.5, W8) ---------- */
+/** The shape of a subagent id: the page's copy of src/ids.js SUBAGENT_ID (pages never import src/; a test compares the two). */
+export const SUBAGENT_ID = /^[A-Za-z0-9_-]{1,64}$/;
+const PROJECT_KEY = /^[a-z0-9]{16}$/;
+
+/** The word and title of each subagent state (the server's `running` / `finished` / `stopped`). dom.js subStateEl() draws it. */
+export const SUB_STATES = {
+  running: { label: 'Running', title: 'Running inside its session' },
+  finished: { label: 'Finished', title: 'Finished its task' },
+  stopped: { label: 'Stopped', title: 'Did not finish: its session is no longer running' },
+};
+
+/**
+ * What a subagent list draws, or null when there is nothing to list (not an array, or no object in it). Running ones always show; the
+ * rest only with `showEnded`. `shown` keeps the server's order; `running` counts the running ones; `hidden` is how many ended ones the
+ * list leaves out; `summary` is the line ("1 subagent · 1 running", "3 subagents", or "No subagents running" when nothing is shown);
+ * `hint` is "+N ended" while something is hidden, else null. Entries that are not objects are ignored.
+ */
+export function subagentView(subs, showEnded) {
+  const list = Array.isArray(subs) ? subs.filter((s) => s && typeof s === 'object' && !Array.isArray(s)) : [];
+  if (!list.length) return null;
+  const shown = showEnded ? list : list.filter((s) => s.state === 'running');
+  const running = shown.filter((s) => s.state === 'running').length;
+  const hidden = list.length - shown.length;
+  const summary = shown.length ? `${shown.length} subagent${shown.length === 1 ? '' : 's'}${running ? ` · ${running} running` : ''}` : 'No subagents running';
+  return { shown, running, hidden, summary, hint: hidden ? `+${hidden} ended` : null };
+}
+
+/**
+ * The link to a subagent's read-only view in the session window: `session.html?session=<uuid>&agent=<id>[&project=<key>]`, or null
+ * unless `session` is a session id and `agent` a subagent id. A project key is added only when it has the key shape.
+ */
+export function subagentHref({ session, agent, project } = {}) {
+  if (typeof session !== 'string' || !UUID.test(session) || typeof agent !== 'string' || !SUBAGENT_ID.test(agent)) return null;
+  return `session.html?session=${session}&agent=${agent}${typeof project === 'string' && PROJECT_KEY.test(project) ? `&project=${project}` : ''}`;
+}
 
 /* ---------- the nesting tree and the spawn counts (0.4, O2) ---------- */
 /** Most urgent first. The dashboard sorts by it, and a subtree takes the most urgent status inside it. */

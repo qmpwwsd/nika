@@ -2,11 +2,13 @@
 // project.js and settings.js; they are imported only when api.js says this is the app tier, so the browser tier
 // (read-only, 127.0.0.1:3335) never loads them. Every server string is rendered through h() (textContent).
 import { isApp, getJSON, windowCommand } from './api.js';
-import { h, icon, roleTagEl, ctxEl } from './dom.js';
+import { h, icon, roleTagEl, ctxEl, subagentItemEl } from './dom.js';
 import { modeEl, rowMode, canEndRow } from './modes.js';
 import { wantsHelp, wantsBack, isTextEntry, openShortcuts, helpHint, backHint, wireWindowKeys } from './shortcuts.js';
 import { copyBanner } from './app-copy.js';
-import { endedPlan, noMatchText, resetEndedState, roleTag, skippedText, statusOf, parentOf, treeRows, hasTree } from './dash-model.js';
+import {
+  endedPlan, noMatchText, resetEndedState, roleTag, skippedText, statusOf, parentOf, treeRows, hasTree, subagentView, subagentHref,
+} from './dash-model.js';
 import {
   $, $$, MAC, SHAPE, ORDER, state, hooks, load, loadFlag, save, timeEl, tickTimes, announce, toast, copyText,
   statusEl, modelEl, rulesEl, countsLine, sessionHref, menuEl, menuIsOpen, openDialog, initDialogs, initMenus,
@@ -115,22 +117,25 @@ async function showReport(a) {
 }
 
 /* ---------- rows ---------- */
-/** Claude's own subagents under a row. Finished and stopped ones are "ended": hidden until the view's "Show ended" is on (F5); a row with none left to show draws nothing. */
-function subagentsEl(a, showEnded) {
+/**
+ * Claude's own subagents under a row (dash-model.js subagentView decides what shows). Finished and stopped ones are "ended": hidden
+ * until the view's "Show ended" is on (F5). When every one is hidden the row says so in one muted line (W11); with none at all it
+ * draws nothing. Each line has a state badge; in the app tier its description links to the subagent's read-only view (W8), whose
+ * `data-fk` is scoped like the row's own keys so a redraw keeps focus on it.
+ */
+function subagentsEl(a, g, scope, showEnded) {
+  const v = subagentView(a.subagents, showEnded);
+  if (!v) return null;
+  const hint = v.hint ? h('span', { class: 'muted sub-hid', text: v.hint }) : null;
+  if (!v.shown.length) return h('p', { class: 'subs subs-none' }, v.summary, hint ? [' ', hint] : null);
   const id = `subs:${a.id}`;
-  const shown = showEnded ? a.subagents : a.subagents.filter((s) => s.state === 'running');
-  if (!shown.length) return null;
-  const running = shown.filter((s) => s.state === 'running').length;
-  const hidden = a.subagents.length - shown.length;
   const d = h('details', { class: 'subs', open: state.open.has(id) },
-    h('summary', { 'data-fk': `sum:${id}` }, `${shown.length} subagent${shown.length === 1 ? '' : 's'}${running ? ` · ${running} running` : ''}`,
-      hidden ? [' ', h('span', { class: 'muted sub-hid', text: `+${hidden} ended` })] : null),
-    h('ul', null, shown.map((s) => h('li', null,
-      h('span', { class: 'tag muted', text: s.state }),
-      h('span', { class: 'sub-desc', text: s.description ?? '(no description)' }),
-      s.type ? h('span', { class: 'sub-type', text: s.type }) : null,
-      s.modelLabel ? h('span', { class: 'model', text: s.modelLabel }) : null,
-      timeEl(s.lastActivity)))));
+    h('summary', { 'data-fk': `sum:${id}` }, v.summary, hint ? [' ', hint] : null),
+    h('ul', { 'aria-label': `Subagents of ${a.name}` }, v.shown.map((s) => subagentItemEl(s, {
+      href: isApp ? subagentHref({ session: a.id, agent: s.id, project: g.project?.key }) : null,
+      fk: `sub:${scope}:${a.id}:${s.id}`,
+      time: timeEl(s.lastActivity),
+    }))));
   d.addEventListener('toggle', () => { if (d.open) state.open.add(id); else state.open.delete(id); });
   return d;
 }
@@ -235,7 +240,7 @@ function rowEl(a, g, { scope, showProject = false, tree = null, showEnded = stat
     h('div', { class: 'c-act num', title: s === 'ended' ? 'Ended' : 'Last activity' }, h('span', { class: 'sr-only', text: 'Last activity: ' }), timeEl(a.lastActivity)),
     h('div', { class: 'c-pane', title: a.pane ? `tmux pane ${a.pane.id}` : 'No tmux pane' }, h('span', { class: 'sr-only', text: 'Pane ' }), a.pane?.id ?? '–'),
     h('div', { class: 'c-actions' }, menuEl(`More actions for ${a.name}`, items, fk('m'))),
-    a.subagents?.length ? subagentsEl(a, showEnded) : null);
+    a.subagents?.length ? subagentsEl(a, g, scope, showEnded) : null);
   // a click anywhere on the row opens the session, unless the user is selecting text
   if (href) {
     li.addEventListener('click', (e) => {

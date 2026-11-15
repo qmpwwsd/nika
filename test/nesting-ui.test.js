@@ -9,10 +9,11 @@ import path from 'node:path';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 import { El, installDom, withClass, focus } from './fake-dom.js';
-import { h, icon, roleTagEl, ctxEl } from '../public/dom.js';
+import { h, icon, roleTagEl, ctxEl, subStateEl, subagentItemEl } from '../public/dom.js';
 import { menuEl, sessionHref, RX } from '../public/ui.js';
 import {
   orchState, roleTag, savedPick, otherRunning, parentOf, spawnLimits, effectiveAgents, statusOf, treeRows, hasTree, endedPlan, STATUS_ORDER,
+  subagentView, subagentHref,
 } from '../public/dash-model.js';
 import { parseModes, modesAfter, modeEl, settingModeEl, MODE_META } from '../public/modes.js';
 import { pluginView, pluginSave, sortIds, countText, filterNote } from '../public/plugin-view.js';
@@ -85,6 +86,7 @@ function treeRig({ isApp = true, open = [], expanded = [], rowItems = null } = {
   const ctx = {
     isApp, state, hooks: rowItems ? { rowItems: (...args) => { seen.push(args); return rowItems; } } : {}, ORDER: STATUS_ORDER, ROW_CAP: 12,
     endedPlan, statusOf, treeRows, hasTree, parentOf, roleTag, roleTagEl, ctxEl, h, icon, menuEl, sessionHref, SHAPE,
+    subagentView, subagentHref, subagentItemEl,
     rowMode: () => null, canEndRow: () => false, reasonOf: () => 'Needs you', endedText: () => 'Ended',
     statusEl: () => new El('span'), modeEl: () => new El('span'), modelEl: () => new El('span'), timeEl: () => new El('span'),
     copyText: () => {}, showReport: () => {}, focusPane: () => {}, endSession: () => {},
@@ -330,14 +332,17 @@ describe('flat lists: the filter, the queue and Ended (design 2.1)', () => {
   });
 });
 
-// F5 (0.4): finished and stopped subagents hide with the ended sessions; the running ones stay. One toggle per view.
-describe('Claude\'s own subagents under a row: hidden when finished until "Show ended" (F5)', () => {
+// F5 (0.4) and W8 (0.5): finished and stopped subagents hide with the ended sessions; the running ones stay. One toggle per view.
+// W8: each line has a state badge (its own colour, glyph and word), the description is a link in the app tier, and a row whose
+// subagents are all hidden says so in one line (W11).
+describe('Claude\'s own subagents under a row: hidden when finished until "Show ended" (F5, W8)', () => {
   const sub = (id, state, over = {}) => ({ id, type: 'Explore', description: `task ${id}`, model: 'haiku', modelLabel: 'Haiku 4.5', state, lastActivity: 5, ...over });
   const SUBS = [sub('s1', 'running'), sub('s2', 'finished'), sub('s3', 'stopped')];
   const busy = () => ag(B1, 'builder-1', { state: 'busy', subagents: SUBS });
   const subsOf = (nodes) => nodes.flatMap((n) => n.all(withClass('subs')));
   const summaryOf = (d) => d.all((n) => n.tag === 'summary')[0];
   const itemsOf = (d) => d.all((n) => n.tag === 'li').map((li) => li.all(withClass('sub-desc'))[0].textContent);
+  const linesOf = (d) => d.all((n) => n.tag === 'li');
 
   test('(+) by default only the running subagent is listed; the summary counts what is shown and a muted "+2 ended" hint says the rest is hidden', () => {
     const r = treeRig();
@@ -357,12 +362,56 @@ describe('Claude\'s own subagents under a row: hidden when finished until "Show 
     assert.equal(summaryOf(d).all(withClass('muted')).length, 0);
   });
 
-  test('(+) a row whose subagents are all finished or stopped draws no subagent line at all while they are hidden', () => {
+  test('(+) W8: a state badge replaces the muted state word: Running, Finished or Stopped, each with its own data-ss; the old `tag muted` word is gone', () => {
+    const r = treeRig();
+    r.state.showEnded = true;
+    const [d] = subsOf(r.agentNodes(group([busy()]), '', 'g:k'));
+    const badges = d.all(withClass('sst'));
+    assert.deepEqual(badges.map((b) => [b.attrs['data-ss'], b.accName]), [['running', 'Running'], ['finished', 'Finished'], ['stopped', 'Stopped']]);
+    assert.equal(d.all(withClass('tag')).length, 0, 'no muted state word any more');
+    assert.deepEqual(linesOf(d).map((li) => li.attrs['data-ss']), ['running', 'finished', 'stopped']);
+    assert.equal(new Set(badges.map((b) => b.attrs.title)).size, 3);
+  });
+
+  test('(+) each line still shows the type, the model and the time after the description, in that order', () => {
+    const [d] = subsOf(treeRig().agentNodes(group([busy()]), '', 'g:k'));
+    const li = linesOf(d)[0];
+    assert.deepEqual(li.kids.map((k) => k.className.split(' ')[0]), ['sst', 'sub-desc', 'sub-type', 'model', ''], 'the last node is the time (the rig stubs timeEl with a bare span)');
+    assert.equal(li.all(withClass('sub-type'))[0].textContent, 'Explore');
+    assert.equal(li.all(withClass('model'))[0].textContent, 'Haiku 4.5');
+  });
+
+  test('(+) the list carries aria-label "Subagents of <name>"', () => {
+    const [d] = subsOf(treeRig().agentNodes(group([busy()]), '', 'g:k'));
+    assert.equal(d.all((n) => n.tag === 'ul')[0].attrs['aria-label'], 'Subagents of builder-1');
+  });
+
+  test('(+) W11: every subagent ended and hidden: one muted line "No subagents running +2 ended", no details, no list', () => {
     const a = ag(B1, 'builder-1', { state: 'busy', subagents: [sub('s2', 'finished'), sub('s3', 'stopped')] });
     const r = treeRig();
-    assert.equal(subsOf(r.agentNodes(group([a]), '', 'g:k')).length, 0);
+    const nodes = r.agentNodes(group([a]), '', 'g:k');
+    assert.equal(subsOf(nodes).filter((n) => n.tag === 'details').length, 0);
+    assert.equal(nodes.flatMap((n) => n.all((x) => x.tag === 'ul' && x.attrs['aria-label'] === 'Subagents of builder-1')).length, 0);
+    const [p] = nodes.flatMap((n) => n.all(withClass('subs-none')));
+    assert.equal(p.tag, 'p');
+    assert.ok(withClass('subs')(p), 'it spans the row grid like the disclosure does (.row > .subs)');
+    assert.equal(p.textContent, 'No subagents running +2 ended');
+    const hint = p.all(withClass('muted'))[0];
+    assert.equal(hint.textContent, '+2 ended');
+    assert.ok(withClass('sub-hid')(hint));
+    assert.equal(p.all((n) => n.tag === 'a' || n.tag === 'button' || n.tag === 'summary').length, 0, 'not interactive');
+  });
+
+  test('(+) W11 ends with the toggle: Show ended on lists the two ended ones in the disclosure and the line is gone', () => {
+    const a = ag(B1, 'builder-1', { state: 'busy', subagents: [sub('s2', 'finished'), sub('s3', 'stopped')] });
+    const r = treeRig();
     r.state.showEnded = true;
-    assert.equal(itemsOf(subsOf(r.agentNodes(group([a]), '', 'g:k'))[0]).length, 2);
+    const nodes = r.agentNodes(group([a]), '', 'g:k');
+    assert.equal(nodes.flatMap((n) => n.all(withClass('subs-none'))).length, 0);
+    const [d] = subsOf(nodes);
+    assert.equal(d.tag, 'details');
+    assert.deepEqual(itemsOf(d), ['task s2', 'task s3']);
+    assert.equal(summaryOf(d).textContent, '2 subagents');
   });
 
   test('(+) the project page has its own toggle: the option decides, the dashboard flag does not leak in, either way round', () => {
@@ -393,6 +442,82 @@ describe('Claude\'s own subagents under a row: hidden when finished until "Show 
     const [d] = subsOf(r.agentNodes(group([busy()]), '', 'g:k'));
     assert.ok(d.hasAttribute('open'));
     assert.ok(!subsOf(treeRig().agentNodes(group([busy()]), '', 'g:k'))[0].hasAttribute('open'), 'closed unless opened by hand');
+  });
+
+  describe('the link to the subagent\'s read-only view (W8 4.1, 4.2)', () => {
+    const linkOf = (d, id) => d.all((n) => n.tag === 'a' && withClass('sub-desc')(n)).find((a) => a.textContent === `task ${id}`);
+
+    test('(+) app tier: each description is an `a` to session.html?session=<id>&agent=<sub id>&project=<key>, with data-fk sub:<scope>:<id>:<sub id> and the title', () => {
+      const r = treeRig();
+      r.state.showEnded = true;
+      const [d] = subsOf(r.agentNodes(group([busy()]), '', 'g:k'));
+      for (const id of ['s1', 's2', 's3']) {
+        const a = linkOf(d, id);
+        assert.ok(a, `${id} is a link`);
+        assert.ok(withClass('sub-link')(a));
+        assert.equal(a.attrs.href, `session.html?session=${B1}&agent=${id}&project=${KEY}`);
+        assert.equal(a.attrs['data-fk'], `sub:g:k:${B1}:${id}`);
+        assert.equal(a.attrs.title, 'Open its transcript (read-only)');
+      }
+    });
+
+    test('(+) the project page and the Ended section get their own scope in the focus key, so the same subagent is never keyed twice', () => {
+      const r = treeRig();
+      const [pv] = subsOf(r.agentNodes(group([busy()]), '', 'pv:k'));
+      assert.equal(linkOf(pv, 's1').attrs['data-fk'], `sub:pv:k:${B1}:s1`);
+      const gone = ag(B2, 'builder-2', { live: false, state: 'ended', pane: null, subagents: [sub('s4', 'stopped')] });
+      const [e] = subsOf(r.agentNodes(group([gone]), '', 'g:k', { showEnded: true }));
+      assert.equal(linkOf(e, 's4').attrs['data-fk'], `sub:g:k-e:${B2}:s4`);
+    });
+
+    test('(+) a group with no registered project: the link has no &project part', () => {
+      const [d] = subsOf(treeRig().agentNodes(group([busy()], { project: null }), '', 'g:k'));
+      assert.equal(linkOf(d, 's1').attrs.href, `session.html?session=${B1}&agent=s1`);
+    });
+
+    test('(+) keyboard focus stays on the subagent link across a redraw (swap matches data-fk)', () => {
+      const r = treeRig({ open: [`subs:${B1}`] });
+      const host = hostOf();
+      r.swap(host, r.agentNodes(group([busy()]), '', 'g:k'));
+      const old = host.byFk(`sub:g:k:${B1}:s1`);
+      assert.ok(old);
+      r.ctx.document.activeElement = old;
+      r.swap(host, r.agentNodes(group([busy()]), '', 'g:k'));
+      const now = host.byFk(`sub:g:k:${B1}:s1`);
+      assert.notEqual(now, old, 'the link was rebuilt');
+      assert.equal(focus.el, now);
+    });
+
+    test('(−) browser tier: a span, no `a`, no data-fk; the badge and the hint are the same', () => {
+      const r = treeRig({ isApp: false });
+      const [d] = subsOf(r.agentNodes(group([busy()]), '', 'g:k'));
+      const desc = d.all(withClass('sub-desc'))[0];
+      assert.equal(desc.tag, 'span');
+      assert.equal(d.all((n) => n.tag === 'a').length, 0);
+      assert.equal(d.all((n) => n.hasAttribute('data-fk')).filter((n) => n.tag !== 'summary').length, 0);
+      assert.equal(d.all(withClass('sst'))[0].accName, 'Running');
+      assert.equal(summaryOf(d).textContent, '1 subagent · 1 running +2 ended');
+    });
+
+    test('(−) a subagent id that is not the id shape gives text, not a link, whatever else the line shows', () => {
+      const odd = ag(B1, 'builder-1', { state: 'busy', subagents: [sub('a/b', 'running'), sub('../x', 'running'), sub('a.b', 'running'), sub('x'.repeat(65), 'running'), sub('', 'running'), sub('ok_1-2', 'running')] });
+      const [d] = subsOf(treeRig().agentNodes(group([odd]), '', 'g:k'));
+      const links = d.all((n) => n.tag === 'a');
+      assert.deepEqual(links.map((a) => a.attrs.href), [`session.html?session=${B1}&agent=ok_1-2&project=${KEY}`], 'only the valid id is a link');
+      assert.equal(linesOf(d).length, 6, 'the other lines are still listed, as text');
+    });
+
+    test('(−) a session id that is not a UUID gives text, not a link', () => {
+      const a = ag('not-a-uuid', 'builder-1', { state: 'busy', subagents: [sub('s1', 'running')] });
+      const [d] = subsOf(treeRig().agentNodes(group([a]), '', 'g:k'));
+      assert.equal(d.all((n) => n.tag === 'a').length, 0);
+      assert.equal(d.all(withClass('sub-desc'))[0].tag, 'span');
+    });
+
+    test('(−) a hostile project key is left out of the link, never put in it', () => {
+      const [d] = subsOf(treeRig().agentNodes(group([busy()], { project: { key: 'x"><script>', name: 'demo-api' } }), '', 'g:k'));
+      assert.equal(linkOf(d, 's1').attrs.href, `session.html?session=${B1}&agent=s1`);
+    });
   });
 });
 

@@ -10,8 +10,9 @@ import { fileURLToPath } from 'node:url';
 import { load, loadFlag } from '../public/ui.js';
 import {
   DETECTED_MAX, skippedText, endedPlan, noMatchText, resetEndedState, sidebarModel, orchState, roleTag, savedPick, otherRunning, ROLE_TAGS,
-  statusOf, STATUS_ORDER, parentOf, treeRows, hasTree, spawnLimits,
+  statusOf, STATUS_ORDER, parentOf, treeRows, hasTree, spawnLimits, SUBAGENT_ID, SUB_STATES, subagentView, subagentHref,
 } from '../public/dash-model.js';
+import * as ids from '../src/ids.js';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const read = (f) => fs.readFileSync(path.join(PUBLIC, f), 'utf8');
@@ -1011,13 +1012,14 @@ describe('savedPick (the project\'s saved orchestrator, whatever it is doing)', 
 });
 
 describe('ROLE_TAGS (the words of each badge)', () => {
-  test('(+) main, sub and saved each have their own class, a long word, a short word and a title', () => {
-    assert.deepEqual(Object.keys(ROLE_TAGS), ['main', 'sub', 'saved']);
+  test('(+) main, sub, saved and (0.5, W8) subagent each have their own class, a long word, a short word and a title', () => {
+    assert.deepEqual(Object.keys(ROLE_TAGS), ['main', 'sub', 'saved', 'subagent']);
+    assert.deepEqual(ROLE_TAGS.subagent, { cls: 'tag sa', long: 'subagent', short: 'subagent', title: "Claude's own subagent. It runs inside its parent session." });
     assert.equal(ROLE_TAGS.main.long, 'orchestrator');
     assert.equal(ROLE_TAGS.sub.long, 'sub-orchestrator');
     assert.equal(ROLE_TAGS.sub.short, 'sub-orch');
     assert.match(ROLE_TAGS.saved.title, /^Saved orchestrator\. Resume it from the header or this row's menu\.$/);
-    assert.equal(new Set(Object.values(ROLE_TAGS).map((t) => t.cls)).size, 3, 'never the same look twice');
+    assert.equal(new Set(Object.values(ROLE_TAGS).map((t) => t.cls)).size, 4, 'never the same look twice');
   });
 });
 
@@ -1283,5 +1285,134 @@ describe('spawnLimits (the counts the spawn sheet and its openers show)', () => 
     assert.deepEqual(spawnLimits(undefined, null, 3), { parent: { running: 0, max: 3 }, project: { running: 0, cap: 9 } });
     assert.deepEqual(spawnLimits({}, '%1', 3), { parent: { running: 0, max: 3 }, project: { running: 0, cap: 9 } });
     for (const max of [undefined, null, 0, -1, 2.5, NaN, '3']) assert.equal(spawnLimits(g, null, max).parent.max, 3, String(max));
+  });
+});
+
+// 0.5, W8: Claude's subagents. The pure decisions behind the rows and the session window's list (design W8 4.1, 4.7).
+describe('SUBAGENT_ID and SUB_STATES (the page copy of the id shape and the words of each state)', () => {
+  test('(+) the page copy of SUBAGENT_ID has the server shape (src/ids.js once it exports it, else the collector\'s file-name pattern)', () => {
+    assert.equal(SUBAGENT_ID.source, '^[A-Za-z0-9_-]{1,64}$');
+    const theirs = ids.SUBAGENT_ID?.source ?? null;
+    if (theirs) assert.equal(SUBAGENT_ID.source, theirs, 'one shape on both sides');
+    else assert.ok(fs.readFileSync(path.join(PUBLIC, '..', 'src', 'collect', 'subagents.js'), 'utf8').includes(SUBAGENT_ID.source.slice(1, -1)), 'until T1 exports it, the collector holds the same character class and length');
+  });
+
+  test('(+) each state has its word and title, exactly (design 4.7)', () => {
+    assert.deepEqual(SUB_STATES, {
+      running: { label: 'Running', title: 'Running inside its session' },
+      finished: { label: 'Finished', title: 'Finished its task' },
+      stopped: { label: 'Stopped', title: 'Did not finish: its session is no longer running' },
+    });
+  });
+});
+
+describe('subagentView (what a subagent list draws)', () => {
+  const sub = (id, state, over = {}) => ({ id, type: 'Explore', description: `task ${id}`, model: 'haiku', modelLabel: 'Haiku 4.5', state, lastActivity: 5, ...over });
+  const three = () => [sub('s1', 'running'), sub('s2', 'finished'), sub('s3', 'stopped')];
+
+  test('(+) none, an empty list and anything that is not a list give null (nothing to draw)', () => {
+    for (const v of [undefined, null, [], 'x', 5, {}, { length: 2 }]) assert.equal(subagentView(v, true), null, String(v));
+  });
+
+  test('(+) one running of three: "1 subagent · 1 running", only that one shown, "+2 ended" while the rest is hidden', () => {
+    const v = subagentView(three(), false);
+    assert.equal(v.summary, '1 subagent · 1 running');
+    assert.equal(v.hint, '+2 ended');
+    assert.deepEqual(v.shown.map((s) => s.id), ['s1']);
+    assert.equal(v.running, 1);
+    assert.equal(v.hidden, 2);
+  });
+
+  test('(+) Show ended on: all of them, "3 subagents · 1 running", no hint', () => {
+    const v = subagentView(three(), true);
+    assert.equal(v.summary, '3 subagents · 1 running');
+    assert.equal(v.hint, null);
+    assert.equal(v.hidden, 0);
+    assert.deepEqual(v.shown.map((s) => s.id), ['s1', 's2', 's3']);
+  });
+
+  test('(+) Show ended on with none running: "3 subagents" and no running part', () => {
+    const v = subagentView([sub('a', 'finished'), sub('b', 'finished'), sub('c', 'stopped')], true);
+    assert.equal(v.summary, '3 subagents');
+    assert.equal(v.running, 0);
+    assert.equal(v.hint, null);
+  });
+
+  test('(+) a single running subagent is singular, and with no hint when nothing is hidden', () => {
+    const v = subagentView([sub('s1', 'running')], false);
+    assert.equal(v.summary, '1 subagent · 1 running');
+    assert.equal(v.hint, null);
+  });
+
+  test('(+) W11: every one ended and hidden: "No subagents running" and the hint "+2 ended", nothing shown', () => {
+    const v = subagentView([sub('s2', 'finished'), sub('s3', 'stopped')], false);
+    assert.equal(v.summary, 'No subagents running');
+    assert.equal(v.hint, '+2 ended');
+    assert.deepEqual(v.shown, []);
+    assert.equal(v.running, 0);
+  });
+
+  test('(+) the server\'s order is kept, with and without Show ended', () => {
+    const list = [sub('z', 'running'), sub('y', 'finished'), sub('x', 'running'), sub('w', 'stopped')];
+    assert.deepEqual(subagentView(list, true).shown.map((s) => s.id), ['z', 'y', 'x', 'w']);
+    assert.deepEqual(subagentView(list, false).shown.map((s) => s.id), ['z', 'x']);
+  });
+
+  test('(−) garbage entries (null, text, numbers, lists) are ignored; a list of only garbage is null', () => {
+    const v = subagentView([null, 'x', 7, [], undefined, sub('s1', 'running')], false);
+    assert.deepEqual(v.shown.map((s) => s.id), ['s1']);
+    assert.equal(v.summary, '1 subagent · 1 running');
+    assert.equal(v.hint, null, 'the garbage does not count as an ended subagent');
+    assert.equal(subagentView([null, 'x', 7, []], true), null);
+  });
+
+  test('(−) a state other than exactly "running" is hidden by default, whatever the word', () => {
+    const odd = [sub('s5', 'Running'), sub('s6', undefined), sub('s7', 'running'), sub('s8', 'busy'), sub('s9', null)];
+    const v = subagentView(odd, false);
+    assert.deepEqual(v.shown.map((s) => s.id), ['s7']);
+    assert.equal(v.running, 1);
+    assert.equal(v.hint, '+4 ended');
+  });
+
+  test('(−) Show ended given as a non-true value (undefined, 0, "") hides like false', () => {
+    for (const flag of [undefined, 0, '', null]) assert.deepEqual(subagentView(three(), flag).shown.map((s) => s.id), ['s1'], String(flag));
+  });
+});
+
+describe('subagentHref (the link to a subagent\'s read-only view)', () => {
+  const S = '33333333-3333-4333-8333-333333333333';
+  const KEY = '0123456789abcdef';
+
+  test('(+) a session, a subagent id and a project key give session.html?session=…&agent=…&project=…', () => {
+    assert.equal(subagentHref({ session: S, agent: 'a0000000000000001', project: KEY }), `session.html?session=${S}&agent=a0000000000000001&project=${KEY}`);
+  });
+
+  test('(+) without a project (or none registered) the link has no project part', () => {
+    assert.equal(subagentHref({ session: S, agent: 'aaa111' }), `session.html?session=${S}&agent=aaa111`);
+    assert.equal(subagentHref({ session: S, agent: 'aaa111', project: undefined }), `session.html?session=${S}&agent=aaa111`);
+  });
+
+  test('(+) every character of the id shape is allowed, up to 64', () => {
+    const agent = `A_b-9${'x'.repeat(59)}`;
+    assert.equal(subagentHref({ session: S, agent }), `session.html?session=${S}&agent=${agent}`);
+  });
+
+  test('(−) a bad session id gives null', () => {
+    for (const session of [undefined, null, '', 'nope', 'AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA', `${S}x`, '../x', 5, {}]) assert.equal(subagentHref({ session, agent: 'aaa111' }), null, String(session));
+  });
+
+  test('(−) a bad subagent id gives null: empty, a dot, a slash, a space, 65 characters, not text', () => {
+    for (const agent of [undefined, null, '', '..', 'a.b', 'a/b', '../x', 'a b', 'a&b=c', 'x'.repeat(65), 5, {}]) assert.equal(subagentHref({ session: S, agent }), null, String(agent));
+  });
+
+  test('(−) a project key without the key shape is left out, the rest of the link stays', () => {
+    for (const project of ['', 'short', 'UPPERCASE0123456', `${KEY}0`, '0123456789abcde!', 'a&b=c', 5, {}, null]) {
+      assert.equal(subagentHref({ session: S, agent: 'aaa111', project }), `session.html?session=${S}&agent=aaa111`, String(project));
+    }
+  });
+
+  test('(−) no argument at all gives null', () => {
+    assert.equal(subagentHref(), null);
+    assert.equal(subagentHref({}), null);
   });
 });
