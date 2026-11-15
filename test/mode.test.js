@@ -524,6 +524,82 @@ describe('subagent list below the footer', () => {
   });
 });
 
+// ---- D1: Claude's hover pointer on the list (spike D1-S, Claude Code 2.1.325) ---------------------------------------------------
+// Hover draws `❯` and a plain space in columns 0-1 of one row under the mouse; nothing else changes. Keyboard selection draws the same
+// row but replaces the mode line with a hint, so the block is not cut for it (gate 5).
+describe('subagent list: the hover pointer', () => {
+  const head = (footer = PHRASE.auto) => rowsOf('transcript line', ...BOX, '  Haiku 5.5  acme-api  master', footer);
+  /** The block with the first two columns of row `at` (1 = main, 2.. = agents, last = overflow) replaced by `lead`. */
+  const withLead = (block, at, lead) => block.map((r, i) => (i === at ? rowsOf(lead + rowText(r).slice(2))[0] : r));
+  const HINT_MAIN = '-- INSERT -- ↑/↓ to select';
+  const HINT_AGENT = '-- INSERT -- Enter to view · x to stop · ctrl+x ctrl+k to stop all agents';
+
+  test('(+) a pointer on main, on the first agent or on the last agent row: the mode is read, the footer is the last row', () => {
+    for (const cols of [120, 171]) {
+      for (const [name, footer] of [['auto', PHRASE.auto], ['manual', PHRASE.manual], ['plan', `-- INSERT -- ${PHRASE.plan}`]]) {
+        for (const pointer of ['main', 0, 2]) {
+          const top = head(footer);
+          const rows = [...top, ...subagentRows({ cols, agents: 3, pointer })];
+          const label = `${name} ${cols} cols pointer ${pointer}`;
+          assert.equal(modeFromRows(rows), name, label);
+          assert.equal(lastNonBlank(rows, 1)[0], footer, label);
+          assert.equal(footerEnd(rows.map(rowText)), top.length - 1, `${label}: footerEnd is the mode line`);
+        }
+      }
+    }
+  });
+
+  test('(+) a pointer with the overflow row and with a busy footer is read through the block too', () => {
+    const busy = '⏸ manual mode on · esc to interrupt · ↓ to manage';
+    assert.equal(modeFromRows([...head(), ...subagentRows({ agents: 5, more: 3, pointer: 4 })]), 'auto');
+    assert.equal(modeFromRows([...head(busy), ...subagentRows({ agents: 2, pointer: 'main' })]), 'manual');
+  });
+
+  test('(−) another glyph, a no-break space, extra indent or a pointer on the overflow row is no pointer: unknown', () => {
+    const block = subagentRows({ agents: 3, more: 2 });
+    const bad = {
+      'main with ›': withLead(block, 1, '› '),
+      'main with >': withLead(block, 1, '> '),
+      'agent with ›': withLead(block, 2, '› '),
+      'agent with >': withLead(block, 3, '> '),
+      'main, pointer and a no-break space': withLead(block, 1, '❯ '),
+      'agent, pointer and a no-break space': withLead(block, 2, '❯ '),
+      'main, pointer and two spaces': withLead(block, 1, '\u276f  '),
+      'agent, pointer and two spaces': withLead(block, 2, '\u276f  '),
+      'overflow row with the pointer': withLead(block, block.length - 1, '❯ '),
+    };
+    for (const [name, extra] of Object.entries(bad)) {
+      const rows = [...head(), ...extra];
+      assert.equal(modeFromRows(rows), 'unknown', name);
+      assert.notEqual(lastNonBlank(rows, 1)[0], PHRASE.auto, name);
+    }
+  });
+
+  test('(−) two rows with the pointer: the block is not cut, fail closed', () => {
+    const block = subagentRows({ agents: 3 });
+    const two = {
+      'main and an agent': withLead(withLead(block, 1, '❯ '), 3, '❯ '),
+      'two agents': withLead(withLead(block, 2, '❯ '), 4, '❯ '),
+      'all rows': block.map((r, i) => (i === 0 ? r : withLead([r], 0, '❯ ')[0])),
+    };
+    for (const [name, extra] of Object.entries(two)) {
+      const rows = [...head(), ...extra];
+      assert.equal(modeFromRows(rows), 'unknown', name);
+      assert.notEqual(lastNonBlank(rows, 1)[0], PHRASE.auto, name);
+    }
+  });
+
+  test('(−) pointer rows with the keyboard hint in place of the mode line stay unknown (keyboard selection)', () => {
+    for (const [name, hint] of [['main selected', HINT_MAIN], ['agent selected', HINT_AGENT]]) {
+      for (const pointer of ['main', 0, 1]) {
+        const rows = [...head(hint), ...subagentRows({ agents: 2, pointer })];
+        assert.equal(modeFromRows(rows), 'unknown', `${name} pointer ${pointer}`);
+        assert.notEqual(lastNonBlank(rows, 1)[0], hint, `${name} pointer ${pointer}: nothing is cut`);
+      }
+    }
+  });
+});
+
 describe('surveyShown', () => {
   const rowsWith = (...lines) => rowsOf('transcript', ...BOX, ...lines, PHRASE.auto);
 

@@ -213,17 +213,19 @@ export function boxRows({ cols = 120, lines = [''], mode = 'prompt', insert = fa
  *   agents  a number (n generic agents) or [{ type = 'Explore', label, elapsed = '5s', tokens = '↓ 23.4k' (null: none) }]
  *   more    N: add the overflow row
  *   blank   false drops the blank row above `main`; main false drops the `main` row (the (-) shapes)
+ *   pointer 'main' or a 0-based agent index: Claude's hover pointer (spike D1-S), `❯ ` in place of the two leading spaces of that row
  */
-export function subagentRows({ cols = 120, agents = 1, more = 0, blank = true, main = true } = {}) {
+export function subagentRows({ cols = 120, agents = 1, more = 0, blank = true, main = true, pointer = null } = {}) {
   const list = typeof agents === 'number' ? Array.from({ length: agents }, (_, i) => ({ label: `Agent ${i + 1}` })) : agents;
-  const rows = list.map(({ type = 'Explore', label, elapsed = '5s', tokens = '↓ 23.4k' }) => {
-    const head = `  ◯ ${type}  ${label}`;
+  const lead = (which) => (pointer === which ? '❯ ' : '  ');
+  const rows = list.map(({ type = 'Explore', label, elapsed = '5s', tokens = '↓ 23.4k' }, i) => {
+    const head = `${lead(i)}◯ ${type}  ${label}`;
     const tail = tokens === null ? elapsed : `${elapsed} · ${tokens} tokens`;
     return [span(head, { fg: 246 }), span(' '.repeat(Math.max(1, cols - cells(head) - cells(tail))), {}), span(tail, { fg: 246 })];
   });
   return [
     ...(blank ? [[]] : []),
-    ...(main ? [[span('  ⏺ main', { b: true })]] : []),
+    ...(main ? [[span(`${lead('main')}⏺ main`, { b: true })]] : []),
     ...rows,
     ...(more > 0 ? [[span(`  ↓ ${more} more`, { fg: 246 })]] : []),
   ];

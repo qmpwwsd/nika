@@ -19,7 +19,7 @@ import { configDir, stateDir } from '../src/paths.js';
 import { lastNonBlank, modeFromRows, PROMPT_ROWS } from '../src/mode.js';
 import { MODEL_CATALOG } from '../src/models.js';
 import { makeWorld, fakeTmux, TMUX, CLAUDE } from './tmux-fake.js';
-import { makeFixture, cleanup, fakeExec, SID, NOW, PROC_START, boxRows } from './helpers.js';
+import { makeFixture, cleanup, fakeExec, SID, NOW, PROC_START, boxRows, subagentRows } from './helpers.js';
 import { createMirror } from '../src/mirror.js';
 import { readDialogScreen, sigOf as dialogSig } from '../src/dialog.js';
 import { dialogWorld, TAB } from './dialog-fake.js';
@@ -3127,6 +3127,19 @@ describe('capture: draft', () => {
       screens['%6'] = Object.assign(box(['hello']).slice(), { cursor: { x: 2, y, visible: true } });
       assert.equal((await pane(a, '%6', 'capture')).body.draft, null, `y ${y}`);
     }
+  });
+
+  test('(+) D1: captures that alternate no pointer / pointer on main / no pointer / pointer on an agent row keep the mode, modeConfirmed and the draft', async () => {
+    const { a, screens } = await bootScreens();
+    const s = boxRows({ cols: 80, lines: ['ghj'] });
+    const seen = [];
+    for (const pointer of [null, 'main', null, 1]) {
+      screens['%6'] = Object.assign([...s.rows, ...subagentRows({ cols: 80, agents: 3, pointer })], { cursor: s.cursor });
+      const r = await pane(a, '%6', 'capture');
+      seen.push({ mode: r.body.mode, modeConfirmed: r.body.modeConfirmed, draft: r.body.draft });
+    }
+    assert.deepEqual([seen[0].mode, seen[0].modeConfirmed, seen[0].draft?.text], ['auto', true, 'ghj']);
+    for (const [i, one] of seen.entries()) assert.deepEqual(one, seen[0], `capture ${i + 1}`);
   });
 
   test('(+) edit follows the pane\'s memory: insert while INSERT shows (and it forgets plain), normal after INSERT was seen, plain after a probe landed as text, unknown after none', async () => {

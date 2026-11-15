@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createSessionControl, promptSig, boxInput, readDraft } from '../src/session-control.js';
 import { promptFromRows, rowText } from '../src/mode.js';
 import { RULE_ROW, parseDraft, boxSquash } from '../src/draft.js';
-import { boxRows } from './helpers.js';
+import { boxRows, subagentRows } from './helpers.js';
 import { dialogOnScreen } from '../src/dialog.js';
 import { dialogWorld, TAB } from './dialog-fake.js';
 
@@ -2291,6 +2291,26 @@ describe('boxInput (0.5, W2 fix round 1): the one preparation of a capture for t
       assert.deepEqual(boxSquash(input.rows, input.cursor, input.cols).draft, readDraft(s));
     }
     assert.equal(readDraft(vimInsert(true)).state, 'text');
+  });
+
+  test('(+) D1: the box reads with Claude\'s hover pointer on a row of the agent list under the footer (the cursor is in the box)', () => {
+    const plain = boxRows({ cols: 80, lines: ['hello'], insert: true, pad: true });
+    const want = readDraft(plain);
+    assert.equal(want.text, 'hello');
+    for (const pointer of [null, 'main', 0, 1]) {
+      const s = { ...plain, rows: [...plain.rows, ...subagentRows({ cols: 80, agents: 2, pointer })] };
+      assert.deepEqual(readDraft(s), want, `pointer ${pointer}`);
+    }
+  });
+
+  test('(−) D1: the same screen with the cursor parked on the last row (keyboard selection or the footer pill has focus, spike D1-S): no box', () => {
+    const plain = boxRows({ cols: 80, lines: ['hello'], insert: true, pad: true });
+    for (const pointer of ['main', 0]) {
+      const rows = [...plain.rows, ...subagentRows({ cols: 80, agents: 2, pointer })];
+      assert.equal(readDraft({ ...plain, rows, cursor: { x: 0, y: rows.length - 1, visible: false } }), null, `pointer ${pointer}`);
+    }
+    const rows = [...plain.rows, ...subagentRows({ cols: 80, agents: 2 })];
+    assert.equal(readDraft({ ...plain, rows, cursor: { x: 0, y: rows.length - 1, visible: false } }), null, 'footer pill focus: no pointer, same cursor');
   });
 
   test('(−) no integer cursor x and y: null, so readDraft is null too (N-1)', () => {

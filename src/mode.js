@@ -34,8 +34,13 @@ const isModeLine = (text) => FOOTER.some((f) => f.match.test(text)) || BYPASS.te
 // five run, `  <U+2193> <n> more`. The rows are recognised by their fixed prefix and suffix, never by the label (the model writes it).
 // shortcut: the elapsed forms `1m`, `2h 3m 4s` and tokens such as `1.2m` were not seen (`5s`, `1m 11s`, `20.5k`, `300` were); they are
 // accepted by the same formatter's pattern. Upgrade if Claude draws another unit.
-const MAIN_ROW = /^ {2}\u23fa main\s*$/;
-const AGENT_ROW = /^ {2}\u25ef \S+ {2}.* (?:\d+[dhm](?: \d+[hms])*|\d+s)(?: \u00b7 [\u2191\u2193] \d+(?:\.\d+)?[km]? tokens)?\s*$/;
+// Columns 0-1 of `main` and of an agent row are two spaces, or, on the one row under the mouse (hover) or the one picked with the arrow
+// keys, the pointer U+276F and a plain space (spike D1-S, 2.1.325: no-break space was not seen there). Picking with the keys also
+// replaces the mode line with a hint, which gate 5 refuses; the overflow row never carries the pointer.
+const LIST_LEAD = String.raw`(?: {2}|\u276f )`;
+const POINTER = '\u276f';
+const MAIN_ROW = new RegExp(String.raw`^${LIST_LEAD}\u23fa main\s*$`);
+const AGENT_ROW = new RegExp(String.raw`^${LIST_LEAD}\u25ef \S+ {2}.* (?:\d+[dhm](?: \d+[hms])*|\d+s)(?: \u00b7 [\u2191\u2193] \d+(?:\.\d+)?[km]? tokens)?\s*$`);
 const MORE_ROW = /^ {2}\u2193 \d+ more\s*$/;
 
 // Claude's question and plan dialogs (0.5, design W1 2.2 and 2.6). Their footers anchor a dialog on the screen. They live here, not in
@@ -97,7 +102,8 @@ function treeEnd(texts) {
   let agents = 0;
   while (at >= 0 && AGENT_ROW.test(texts[at])) { at -= 1; agents += 1; }
   const footer = at - 2;
-  const ok = agents > 0 && at >= 2 && MAIN_ROW.test(texts[at]) && texts[at - 1].trim() === '' && (isModeLine(texts[footer]) || isDialogEnd(texts[footer]));
+  const ok = agents > 0 && at >= 2 && MAIN_ROW.test(texts[at]) && texts[at - 1].trim() === '' && (isModeLine(texts[footer]) || isDialogEnd(texts[footer]))
+    && texts.slice(at, at + 1 + agents).filter((t) => t.startsWith(POINTER)).length <= 1; // one pointer row at most (spike D1-S)
   return ok ? footer : texts.length - 1;
 }
 
