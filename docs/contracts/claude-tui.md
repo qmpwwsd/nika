@@ -13,6 +13,8 @@ checked on 2026-11-15 against 2.1.325 (macOS, tmux 3.8, 120-column panes), also 
 Claude's view) were checked on 2026-11-14 and 2026-11-15 against 2.1.325 (macOS, tmux 3.8, panes of 120 to 130 columns), with synthetic
 files and made-up text. §13 (question dialogs and plan approvals) was checked on 2026-11-14 and 2026-11-15 against 2.1.325 (macOS, tmux
 3.8, panes of 40 to 130 columns), with made-up questions; the agent-list and `<n> shells` pill facts in §1 were checked again the same days.
+§14 (the files of Claude's own subagents) was checked on 2026-11-15 against 2.1.325 (macOS, a private tmux server, a throwaway git project, Haiku),
+and it reads only the throwaway session's own `subagents/` folder.
 
 ## 1. Footer (mode line)
 
@@ -1065,3 +1067,36 @@ user brought the focus back, Claude re-entered INSERT on arrival and the request
 layout of the form; the first `Down` onto a single-select text row on a plain pane that nika never saw (the live check always typed after an
 INSERT or a prior probe); `Enter` after text on the plan's free-text option; Stop and End during a long busy turn with a real subagent list
 (only the status line and the shells pill were tried); a taller dialog than the pane at the fit's smallest size (it would read `cut`).
+
+## 14. Claude's own subagents: their files while they run (0.5, W8)
+
+Claude Code 2.1.325, checked on 2026-11-15 (live check L1, Haiku, two runs, each with one background subagent). Every name and number below is
+from that throwaway session; no id, path or text of it is copied here. nika reads these files in `src/collect/subagents.js` and
+`src/collect/history.js`; the contract for what it shows is `api-app.md` (`subagents` in the snapshot, the subagent history route).
+
+**Where.** `<claude dir>/projects/<slug>/<session uuid>/subagents/`, holding for each subagent `agent-<id>.meta.json` and `agent-<id>.jsonl`. The
+ids seen are 17 lowercase hex characters (two agents); nika accepts `^[A-Za-z0-9_-]{1,64}$` (`SUBAGENT_ID`) because other builds and fixtures use other
+shapes. The parent's tool for starting one is `Agent` in 2.1.325 and `Task` in older builds.
+
+**The meta.** About 270 bytes of JSON with the keys `agentType`, `isBuiltIn`, `launchedWithDefaults`, `description`, `toolUseId`, `spawnDepth`,
+`requestShape`, `requestNonInteractive`, `pickedEffortModel` and, only when set, `finished`. There is no `model` key in 2.1.325 (nika reads
+`pickedEffortModel` instead). `toolUseId` equals the `id` of the parent's `Agent` tool call: that is the whole link between the call and the
+subagent's files (the subagent's own `.jsonl` does not name the parent's call).
+
+| Fact | What the check saw |
+|---|---|
+| The meta exists from the start of a run | seen 2 to 4 s after the `Agent` call; while the subagent runs it has **no `finished` key** (absent, not `false`) |
+| `finished: true` | written, as the last key, when the subagent's loop **stops**; seen within one 5 s poll of the stop |
+| `finished` is not final | when the subagent wakes up again (the check: its background shell ended and Claude woke it) the key is **removed** and the file is back to its running size; it is written again when the subagent stops. A subagent can be listed by Claude as waiting on its own background work while its meta already says `finished: true` |
+| The meta's mtime | changes at each of those writes |
+| `agent-<id>.jsonl` exists from the start | 17 to 23 lines (116 to 229 KB) at the first sample, 0 to 2 s old; the first line is a `user` entry |
+| It grows only at message boundaries | during one long tool call (about 85 s) it stayed at the same line count and size, then jumped; its mtime is therefore not a sign that the subagent is alive |
+| Escape in the parent | interrupted only the parent's own foreground tool ("Interrupted · What should Claude do instead?"); the background subagent ran to its natural end, and its meta and `.jsonl` did not change at the key |
+| `requestShape` | `background` in both runs, also when the parent had asked for a foreground subagent (the parent said so itself) |
+
+What nika does with it: the snapshot's subagent `state` is `finished` when the key is `true`, else `running` while the parent session is live, else
+`stopped`; it is read again on every snapshot and every poll of the read-only view, and nothing is latched (`api-app.md`, subagent history route).
+
+**Not covered.** A user stopping a subagent directly (for example from the `↓ to manage` panel), and a foreground subagent (never produced), so what
+`finished` reads after either is unknown. Older and newer Claude Code builds were not checked: if the folder moves or the tool is renamed again, the
+rows and links go quiet (no rows, no link), nothing worse.

@@ -94,7 +94,8 @@ set). You change them in Settings and on each project's page, not by hand; a key
 | `ps -A -o pid=,lstart=` | is the process still alive (and not a reused pid) |
 | `/proc/<pid>/stat` (Linux only) | one field, the process start time, for the pids in Claude's registry (at most 4 KB, your own processes only): tells a live session from a reused pid |
 | `~/.claude/projects/*/<session>.jsonl` | first 64 KB and last 256 KB only: cwd, branch, model, title, last prompt, and from the last reply only its token counts and model id (for the context column; no text) |
-| `…/<session>/subagents/agent-*.meta.json` | subagent type, description, model, finished |
+| `…/<session>/subagents/agent-*.meta.json` | subagent type, description, model, finished, and `toolUseId` (the id of the call that started it: the app tier's server compares it with the parent's `Agent` call to link them; it is never shown or sent) |
+| `…/<session>/subagents/agent-*.jsonl` | both tiers: its modification time only, as the subagent's last activity. App tier, only when you open a subagent: its transcript, in pages |
 | `tmux list-panes -a` | pane titles (`[%id] name` convention) and the four tags nika sets on the panes it starts (`@nika-role`, `@nika-agent`, `@nika-depth`, `@nika-parent`: who started whom), each read strictly |
 | `<scratchpad>/reports/<name>.session\|.md\|.rc` | agent role name, `STATUS:` line, report text |
 | nika's own `config.json` | the project list, each project's own settings and the auto-compact setting (the context column needs it); never a Claude settings file |
@@ -103,7 +104,7 @@ set). You change them in Settings and on each project's page, not by hand; a key
 
 It never reads `*.key` files, credentials or `.env` files. The browser tier never writes anything; what the app tier and the CLI write is listed in [docs/architecture.md](docs/architecture.md#where-writes-happen).
 
-The app tier also reads, on demand: full transcripts (in pages), the screen of Claude's tmux panes (to mirror a pane and to read its permission mode and questions), and the first 4 KB of command and skill files in the Claude config folder, the project and installed plugins (front matter only, never the body). The exact list is in [rules/project-rules.md](rules/project-rules.md).
+The app tier also reads, on demand: full transcripts (in pages; a session's own and, when you open one, a subagent's, found in nika's own listing of that session's `subagents` folder), the screen of Claude's tmux panes (to mirror a pane and to read its permission mode and questions), and the first 4 KB of command and skill files in the Claude config folder, the project and installed plugins (front matter only, never the body). The exact list is in [rules/project-rules.md](rules/project-rules.md).
 
 A transcript with no user or assistant message (Claude Code sometimes leaves a one-line title stub) is not an agent: nika lists it only while its session is live.
 
@@ -210,10 +211,18 @@ More: [docs/packaging.md](docs/packaging.md) (build details, signing, Linux pack
   under "Waiting on you", then every repository with its live agents (needs you, waiting, working). Ended agents are hidden:
   a repository with only ended agents says "No live agents."; tick **Show ended** to list them in an "Ended" section under
   each repository (open; fold it by hand and it stays folded until you tick the box again). Claude's finished subagents
-  stay hidden the same way. The project page has its own **Show ended** box. When Claude's session files cannot all be
+  stay hidden the same way, and a row whose subagents have all finished says "No subagents running +N ended". The project page has its own **Show ended** box. When Claude's session files cannot all be
   read, a muted note says how many were skipped. Filter by text and change the
   time window. Click a row to open its session window. Rows whose Claude pane nika can read
   also show the agent's permission mode as a tag, and their menu has **End session…**.
+- **Claude's subagents.** Under a row that has them, a folded list says "N subagents · M running" (the browser dashboard shows
+  the same list). Each line has a badge with its own colour, symbol and word (Running, Finished, Stopped), the description, the
+  type and the model. In the app, the description opens the subagent in the session window, read-only: its transcript, with
+  no terminal and no message box, and **Back** returns to the session that runs it. You can open one from a dashboard row,
+  from the project page, from the folded list at the top of a session window's Transcript (which has its own **Show ended**
+  box) and from the **Open subagent transcript** link under the call that started it. The view keeps updating while the
+  session runs, also after a subagent shows Finished, because Claude wakes a finished subagent again when its background work
+  ends. Why it is read-only: a subagent runs inside its parent session, so there is no pane to mirror and no input to send.
 - **Sidebar.** **Projects** lists your registered projects with their live or needs-you count; with none it says "No
   projects yet." and points to the "+". Under **Detected** it lists repositories that run live agents but are not projects
   yet (8 at first, the ones that need you first, then an "N more" button). The row shows that repository on the dashboard; its small "+" opens the
@@ -410,7 +419,8 @@ Desktop app only. None of this is on the browser dashboard.
   the message into Claude's input and presses Enter, as you would. Claude queues it and takes it at its next step; the message
   box says "Queued" until then. When a permission prompt or another dialog is open, nika presses nothing and says so.
 - **Attachments.** Paste images, PDFs or text files into the message box, drop them on it, or click the paperclip (**Add
-  attachments**) to pick them in a file chooser. Up to 6 files per message and 8 MB each. A chip shows each file; remove
+  attachments**) to pick them in a file chooser. Up to 6 files per message and 8 MB each. nika never attaches a `.env`,
+  `.env.*`, `*.key` or `*.pem` file: it refuses it by name before reading it. A chip shows each file; remove
   one before you send. Nothing goes to Claude until Send: then nika pastes each file's path into Claude's input after your
   text and presses Enter, the way you would paste a file path in the terminal. Claude shows an image as `[Image #N]`; a PDF or
   text file it reads with its Read tool, which asks first because the file is outside your project. That prompt shows in the
@@ -430,7 +440,7 @@ Desktop app only. None of this is on the browser dashboard.
   with that row.
 
 The routes are in [docs/contracts/api-app.md](docs/contracts/api-app.md); the threats, in [docs/security.md](docs/security.md)
-(T37, T38, T39, T54, T55).
+(T37, T38, T39, T54, T55, T56).
 
 ## Development
 

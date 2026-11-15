@@ -74,7 +74,7 @@ Rules for every direction:
 - One window. Dialogs are modal (`<dialog>.showModal()`), never nested; opening one closes any other.
 - The session window is a screen, not a dialog: it keeps the app chrome so the user can jump to any other agent.
 - "Needs you" (attention) always sorts first, everywhere: queue, groups, tray, palette.
-- Ended agents are collapsed by default ("N ended" disclosure) and never count toward the attention badge. Built amendment 2026-11-09 (0.3.1): on the dashboard "Show ended" hides them (off: no "Ended" section, and a group with nothing live says "No live agents."; on: every "Ended (n)" section is open until folded by hand, and the checkbox resets those folds); until 0.4.0 the project view always showed its open "Ended" section (superseded below). **(built amendment 2026-11-13 (0.4.0))** Finished is hidden by default everywhere (owner: "finished must be hidden by default everywhere"). Every view has **one remembered "Show ended" toggle, off by default**, and it hides two things together: ended sessions and Claude's finished or stopped subagents. The dashboard keeps its checkbox in the header bar (`nika.showEnded`); the **project page has its own** in the same style, in its header bar before the actions (`nika.showEndedProject`), and no longer forces its "Ended" section open. The browser tier is the same page code, so it follows the dashboard rule. The session window lists no subagents and has no toggle. A stored value that is not exactly `true`, or storage that is blocked, means off. Under a row, "N subagents · M running" counts only what is shown; running subagents always show; while the rest is hidden a muted "+K ended" follows the count (a row with nothing running and nothing shown draws no subagent line). The CLI follows the same rule: `nika status` prints no ended rows and one muted line, "… N ended hidden (nika status --ended)"; `--ended` lists the latest 5 per project, `--full` lists them all and implies `--ended`; Every project added to nika is listed, also one with no session in the window ("no sessions yet" for `--since all`, else "no sessions in the last 7d" and so on); a folder never added shows only while a session runs there, or with `--ended`. `--json` always carries every agent.
+- Ended agents are collapsed by default ("N ended" disclosure) and never count toward the attention badge. Built amendment 2026-11-09 (0.3.1): on the dashboard "Show ended" hides them (off: no "Ended" section, and a group with nothing live says "No live agents."; on: every "Ended (n)" section is open until folded by hand, and the checkbox resets those folds); until 0.4.0 the project view always showed its open "Ended" section (superseded below). **(built amendment 2026-11-13 (0.4.0))** Finished is hidden by default everywhere (owner: "finished must be hidden by default everywhere"). Every view has **one remembered "Show ended" toggle, off by default**, and it hides two things together: ended sessions and Claude's finished or stopped subagents. The dashboard keeps its checkbox in the header bar (`nika.showEnded`); the **project page has its own** in the same style, in its header bar before the actions (`nika.showEndedProject`), and no longer forces its "Ended" section open. The browser tier is the same page code, so it follows the dashboard rule. **(built amendment 2026-11-15 (0.5, W8))** The session window now lists its session's subagents, folded at the top of its Transcript column, with **its own remembered "Show ended" box inside that list** (`nika.showEndedSession`; §9.17); it does not follow the dashboard's. A stored value that is not exactly `true`, or storage that is blocked, means off. Under a row, "N subagents · M running" counts only what is shown; running subagents always show; while the rest is hidden a muted "+K ended" follows the count. A row with subagents but nothing running and nothing shown draws one muted line, "No subagents running +K ended" (a row with no subagents at all draws none; the line is not interactive, the toggle lives in the view's header bar). The CLI follows the same rule: `nika status` prints no ended rows and one muted line, "… N ended hidden (nika status --ended)"; `--ended` lists the latest 5 per project, `--full` lists them all and implies `--ended`; Every project added to nika is listed, also one with no session in the window ("no sessions yet" for `--since all`, else "no sessions in the last 7d" and so on); a folder never added shows only while a session runs there, or with `--ended`. `--json` always carries every agent.
 - The browser tier shows the same dashboard data with every privileged control removed (not disabled) and one info line pointing to the app.
 
 ### 1.3 The three directions
@@ -561,6 +561,8 @@ Container widths: ≤ 860 px (app tier: ≤ 1010 px) hides model and pane column
 **(0.4) Role badge** after the name (`roleTagEl(roleTag(a, pickId))`; markup and words in §3.16). At ≤ 860 px (app tier ≤ 1010 px) the long word is clipped like the mode label (still read by screen readers) and a short one shows.
 
 **(0.4) Nesting.** A group whose live agents hang under each other draws one flat `ul.rows` in tree order, each row indented by its place in the tree (§3.17). A group where nothing nests is drawn exactly as before.
+
+**(0.5, W8) Subagent lines.** Under a row that has subagents (§1.2, §9.17): a `details.subs` ("N subagents · M running" with a muted "+K ended") whose lines each hold a state badge (colour, glyph and word: Running, Finished, Stopped), the description, the type, the model and the time; or, when nothing is running and nothing shown, the one muted line "No subagents running +K ended". In the app tier the description is a link to the subagent's read-only view; on the browser tier it is plain text.
 
 ### 3.4 Project group / card
 
@@ -1131,7 +1133,7 @@ app-tier only). Session window: in the header bar, at the far right.
 
 **Dialog.** Native `<dialog id="kbd-dlg">`, 560 wide (min(560, vw−32)), max height min(720, vh−32), body scrolls. Header:
 `h2` "Keyboard shortcuts" (initial focus, `tabindex="-1"`) and a muted line naming the window ("Dashboard" / "Session
-window"). Body: one section per group, `h3` + `<table>` with a visually hidden `caption` (the group name),
+window" / (0.5, W8) "Subagent window"). Body: one section per group, `h3` + `<table>` with a visually hidden `caption` (the group name),
 `<th scope="col">` Name · Shortcut · Description; Shortcut cells use `<kbd>` per key joined by "+", alternatives joined by
 " or "; mono 12 for keys. Footer: on the app tier a muted line "Single-key shortcuts: On" (or "Off") + link button
 "Change in Settings" (dashboard: goes to `#settings` and closes; session window: opens the dashboard's Settings in the same
@@ -1193,6 +1195,20 @@ Session window:
 | Command list | Move | ↑ ↓ | Move through the commands |
 | | Insert | Enter or Tab | Put the command in the message box |
 | | Close | Esc | Close the list and keep the text |
+
+**(0.5, W8) Subagent window** (the read-only view of one of Claude's subagents, §9.17; app tier only, the browser tier has no such window): one group, Window, and none of the session window's Message box, Terminal, Mode switcher or Command list groups.
+
+| Group | Name | Shortcut | Description |
+|---|---|---|---|
+| Window | Back | ⌘[ / Alt+← | Back to the session that runs it |
+| | Keyboard shortcuts | ? or Mod+/ | Show this list |
+| | Quit nika | Mod+Q | Quit the app (your agents keep running in tmux) |
+| | Close window | Mod+W | Close this window |
+| | Zoom in | ⌘= / Ctrl+= or Ctrl++ | Make the window content larger |
+| | Zoom out | Mod+- | Make the window content smaller |
+| | Actual size | Mod+0 | Reset the zoom |
+
+Show or hide transcript (Mod+Shift+H) is not listed there: the view is one column with no split. The muted line under the title reads "Subagent window".
 
 **(built amendment 2026-11-13 (0.4.0, F2))** The Window group gains Quit nika, Close window, Zoom in, Zoom out and Actual size (the dashboard gets the same five as a Window group of its own); Typing into the pane gains Copy and Paste. **(built amendment 2026-11-09 (0.3.3))** Next permission mode, Arrow keys in Claude and Move focus back are new; Interrupt now stops the turn through the Stop route and keeps the selection rule. **(built amendment 2026-11-09 (0.3.4))** Show or hide transcript is new (§4.7).
 
@@ -2292,6 +2308,136 @@ least 32 px high and More / Less is 24 px (WCAG 2.5.8).
 
 **Not built:** "Chat about this"; the plan's text option and the plan text; moving between Claude's tabs; free text in a multi-select
 question on a tab that is not the last; a keyboard shortcut for an option; a Settings switch; anything on the browser tier.
+
+### 9.17 Subagents: rows, the session list and the read-only view (0.5, W8; the W11 line)
+
+Owner request (2026-11-15): "Show Claude's subagents and open them, from the dashboard and from the parent session." These are **Claude's own
+subagents**, the children of its `Agent` tool that run inside the parent session; they are not the agents nika spawns (§3.17). Routes and fields:
+`docs/contracts/api-app.md` (`subagents` in the snapshot, the subagent history route, `subagent` on a history entry); Claude's files:
+`docs/contracts/claude-tui.md` §14; the threat: `docs/security.md` T56.
+
+**Where they appear.**
+
+| Surface | Tier | What |
+|---|---|---|
+| Dashboard and project-page rows (§3.3) | both | the folded list under a row; the description is a link in the app tier and plain text in the browser tier |
+| Session window, top of the Transcript column | app | the session's own folded list, with its own "Show ended" box |
+| Read-only subagent view (the session window with `agent=<id>`) | app | the subagent's transcript, no pane, no input |
+| The parent's transcript | app | "Open subagent transcript" under the `Agent` call that started it |
+
+Decisions (owner, 2026-11-15, as recommended): a subagent opens in the same session window, read-only, and Back goes up to the parent session; the
+session window lists them folded at the top of the Transcript column (anything above the terminal would resize Claude's pane under the fit, §9.13,
+every time a subagent started, and Claude already draws its running subagents under the footer in the mirror); that list has its own remembered box
+(§1.2); the dashboard's lines stay folded by default, the summary says how many run.
+
+**The state badge** (`subStateEl` in `public/dom.js`; rules in `public/tokens.css`, shared by both pages). Colour, glyph and word, never colour alone;
+the glyph is `aria-hidden`, the word is text, the badge has a `title`. Only the status tokens `.st` already uses, light and dark, no new colour.
+
+| State | Word and title | Token | Glyph |
+|---|---|---|---|
+| `running` | Running · "Running inside its session" | `--busy` on `--busy-soft` | filled 10 px dot with a turning arc (`st-spin`; the arc stops under reduced motion) |
+| `finished` | Finished · "Finished its task" | `--ended` on `--ended-soft` | a check |
+| `stopped` | Stopped · "Did not finish: its session is no longer running" | `--idle` on `--idle-soft` | a hollow 8 px square |
+
+`.sst.pill` (padding 2 px 10 px 2 px 8 px, radius 999 px, the soft fill) is the session header's form. A state outside these three gives no badge: the
+line is drawn without one, and the read-only view hides its pill. The role tag `subagent` (`.tag.sa`: `--surface-2`, `--text`, a 1 px dashed
+`--accent-line` border; title "Claude's own subagent. It runs inside its parent session.") is used only by the read-only view's header. One line
+(`li.sub[data-ss]`, `subagentItemEl`) holds the badge, the description (a link, `a.sub-desc.sub-link`, title "Open its transcript (read-only)", at least
+24 px high; "(no description)" when empty), the type (`span.sub-type`, muted), the model label and a time (rows only); it wraps, so at ≤ 600 px the badge
+and description come first and the rest below.
+
+**Rows** (`subagentsEl` in `public/app.js`; `subagentView` and `subagentHref` in `public/dash-model.js`).
+
+1. `subagentView(subs, showEnded)`: no array or no object in it → nothing is drawn. `shown` is every entry with the view's "Show ended" on, else the
+   `running` ones, in the server's order (running first, then newest). Summary: "1 subagent · 1 running", "3 subagents" (none running), or "No
+   subagents running" (nothing shown). The hint "+K ended" follows the summary, muted, while K entries are hidden.
+2. Nothing shown (all ended, box off): one muted, non-interactive line `p.subs.subs-none`, "No subagents running +K ended" (the W11 line). It replaces the
+   0.4 rule that drew nothing.
+3. Otherwise `details.subs` (open state kept per row, `subs:<session id>`), summary = summary + hint, and a `ul` labelled "Subagents of <name>" with a
+   line per shown subagent, each with its time (`timeEl`).
+4. App tier: the description links to `session.html?session=<parent uuid>&agent=<id>[&project=<key>]` (`subagentHref`, only for a UUID and a
+   `SUBAGENT_ID`; the project key only when the row's group is a registered project). Browser tier: plain text. The link's focus key is
+   `sub:<scope>:<session id>:<agent id>`, so a redraw keeps focus on it. A click on the link or the disclosure does not open the row.
+
+**Session list** (`renderSubs` in `public/session.js`, `details#sess-subs` in `session.html`).
+
+1. Place: between the Transcript head and its scrolling list, in the same column (a narrow window: inside the Transcript tab). Hidden while the
+   session has no subagents, before the first poll, in the read-only view and in a window with no transcript.
+2. Closed by default. The page never opens or closes it; the reader's state survives every redraw (only the summary and the list children are replaced).
+3. Summary: the same words as the rows. Body: the "Show ended" box (`label.subs-ended`, 24 px high; remembered as `nika.showEndedSession`, on only for the
+   stored string `true`, storage that throws means off; a change is stored and drawn at once), then the list: the same lines as the rows, with **no time**
+   (it would change at every poll), each description a link by `subagentHref`. With everything ended and the box off, the summary reads "No subagents
+   running +K ended" and the body shows the box and an empty list; ticking it lists them.
+4. Redraw only when what it shows changes (the session id and name, the box, the summary, the hint and each shown line's id, state, description, type
+   and model label). Focus stays on the same link across a redraw (`data-fk` `sub:<agent id>`).
+5. Style: a strip with a 1 px bottom border, a summary 32 px high (muted, `--text` on hover), the list at most 40 vh and scrolling.
+
+**The read-only view** (`session.html?session=<uuid>&agent=<id>[&project=<key>]`, built only by `subagentHref`).
+
+1. Boot. In the browser tier the page keeps its message ("The session window is part of the nika app. …"). An `agent` that is not a subagent id → "This
+   link has no valid subagent id. Open the subagent again from its session." (a pane in the address is not looked at). A valid `agent` with no valid
+   `session` → "This link has no valid session id. Open the subagent again from its session." Otherwise the `pane` parameter is **ignored**, with no
+   notice. The page adds `sub-view` to the body, hides the tabs and "Skip to message input", shows the Transcript alone (`no-term`), and shows the notice
+   "Read-only. A subagent runs inside its parent session: nika shows its transcript, with no pane to mirror and no input."
+2. Wired: the transcript (history, Load older, Jump to latest), the page keys, the window keys (Quit, Close, zoom), the shortcuts window, Settings, the
+   agent poll and the history poll. **Not wired:** the terminal, the message box, attachments, the mode switcher, the quick actions, the fit, the
+   question form, the transcript toggle and the subagent list. The page makes no `/api/app/pane/*` request in this mode (a test asserts it).
+3. Data. The agent poll reads `/api/agents?since=all` and finds the **parent** by session id; the subagent is the parent's `subagents` entry with the
+   address's id. The transcript is `GET /api/app/session/<S>/subagents/<A>/history?limit=50[&before=n]`, newest page first, like the session window.
+4. Header, from the subagent's entry:
+
+| Part | Value |
+|---|---|
+| `h1` and the window title | the description, else the type, else "Subagent " and the first 8 characters of the id; the title is "<that> · nika"; before the first poll "Subagent" |
+| Role tag | `subagent` |
+| State pill | `subStateEl(state, { pill: true })`; hidden until a poll lists the subagent with a known state |
+| Type (`#sess-subtype`, hidden on narrow windows), model label | the entry's `type` and `modelLabel`; each hidden when empty |
+| Context meter, pane, branch, Claude link | never shown |
+| Back | `session.html?session=<parent uuid>` plus `&pane=<parent pane>` only while the parent is live, plus `&project=<key>` when the address had one; its label is the parent's name ("untitled session" when it has none). Before the first poll it is the dashboard, or the project when the address had one |
+
+5. **Polling (ruling 2026-11-15).** The state decides what the page does: `running` is busy, `finished` is idle, `stopped` is ended. The history
+   poll (every 5 s once loaded, 3 s until then) keeps running while the parent session is live, **also after `finished`**, because Claude removes
+   `finished` from the meta again when a subagent wakes up (for example when its background shell ends; `claude-tui.md` §14). It stops only on
+   `stopped` (the parent session is gone). When the state changes to `finished` or `stopped` the page reads the live edge once more and announces
+   "<title> finished" or "<title> stopped"; a change back to running announces "<title> is running again" and reads nothing extra. The first answer
+   announces nothing. A subagent the parent does not list, or a state nobody knows, hides the pill and keeps polling; a snapshot that no longer lists
+   the parent changes nothing (the header keeps its last values).
+6. Transcript. The same code as the session window, with three differences: the user's text reads **Parent** (not "You"; tool results stay "Tool",
+   Claude's text "Claude"), the start marker reads "Start of the subagent's transcript", and no entry carries a subagent link (no nesting).
+7. Shortcuts: the `subagent` window of §4.6 (Back, Keyboard shortcuts and the five window keys); "Change in Settings" opens Settings in the same window,
+   as in the session window.
+
+**The link in the parent's transcript.** A `tool_use` entry with a valid `subagent` id gets, after its fold, the link `a.hx-sub` "Open subagent
+transcript" (accent colour, underlined, at least 24 px high, small text) to `subagentHref({ session, agent, project })`. When the polled subagent list knows
+the id and gives it a description, the link's `aria-label` is "Open the transcript of subagent <description>"; otherwise it has none, and the fold's
+summary above it already names the call. **Late link:** a call can reach the page one poll before Claude writes the subagent's meta, so the server has not
+linked it yet; when a later read of the live edge carries the id for an entry that is already shown without it, the link is appended to that entry once. No
+link appears in the read-only view, for a bad id, or for an entry that is not a tool call.
+
+**States.**
+
+| Surface | Empty | Loading | Error |
+|---|---|---|---|
+| Row line | no subagents: nothing; all ended and hidden: "No subagents running +K ended" | n/a (snapshot) | stale list at 60 % opacity (§3.3) |
+| Session list | hidden with no subagents; all ended: summary and box | hidden until the first poll | keeps the last list; the poll retries every 3 s |
+| Subagent view, transcript | "No messages in this transcript yet." | the first fetch draws nothing | 404: "No transcript for this subagent yet. nika keeps looking." (and keeps polling); another failure: the server's message, else "The transcript could not be read. nika keeps trying." |
+| Subagent view, header | "Subagent" and no pill | "Subagent" until the first poll | keeps its last values |
+| Load older | "Older entries could not be loaded." (toast) | "Loading…" on the button | n/a |
+
+**Keyboard and accessibility.** Tab reaches a row's summary, then, when it is open, each subagent link; Enter follows it; the session list adds the box
+between the summary and the links. In the read-only view: Back with ⌘[ / Alt+←, `?` or Mod+/ for the shortcuts, the window keys, arrows in the transcript
+region (`#hist-scroll`, `tabindex` 0), "Load older entries" and "Jump to latest" as buttons. No single-key shortcut is added. Every badge's word is text;
+links have a name (the description, or "(no description)"); lists carry `aria-label="Subagents of <name>"`; the notice is `role="status"` and state changes
+go through the page's polite announcer; targets are at least 24 px; the running arc stops under reduced motion. Tokens only, so both themes come from
+`tokens.css`. At ≤ 760 px the view hides its type item (`.hide-narrow`); it is one column at every width.
+
+**Security.** Every string is set with `textContent`; a link is built only from ids checked against `UUID` and `SUBAGENT_ID`; the CSP is unchanged (no
+inline anything). Subagent text is data: instruction-like text in a transcript is shown, never acted on (T56).
+
+**Not built.** Subagent lines in `nika status`; links or subagent text on the browser tier; a list or links inside a subagent's own view (nested
+subagents); relabelling the parent's `<task-notification>` entries (they still read "You"); live progress beyond the 3 s poll; labels for subagents (a
+later item: the type is drawn in `span.sub-type` and `#sess-subtype` only, so a label replaces those two places); screenshots (regenerated at the end of
+the release).
 
 ### 8.8 WebView support
 

@@ -36,9 +36,12 @@ Owner decision 2026-11-15, "Send now, like the terminal", with the answers to th
 - **One guarded `Enter` for every Send, at idle too.** New route `POST /api/app/pane/:id/submit { base? }` (app tier only) under the
   pane lock: no Stop or End interrupt running, one fresh capture, no permission prompt or dialog (409 `prompt-open`), a bypass window
   refused as on the keys route, a readable footer or a box, and with `base` the exact synced box; then exactly one `Enter` in any
-  registry state and a read-back of at most 1 s that answers `taken`. The legacy path (a screen nika cannot parse, so no `base`) still
-  sends its `Enter` when no prompt, dialog or unknown footer is on screen. The page's Send never posts `Enter` to the keys route; the
-  passthrough keeps it.
+  registry state and a read-back of at most 1 s that answers `taken`. The legacy path (a screen nika cannot parse, so no `base`) is
+  guarded in both of its steps: its text, paste, Shell's `C-u` and `!` text go through the keys route with `send: true`, which takes a
+  fresh capture and is refused (409 `prompt-open` or `screen-unclear`, nothing typed) while a permission prompt, a dialog, Claude's
+  feedback survey or an unclear screen is open, and again before each later chunk of a long text (rule 12 of
+  `rules/project-rules.md`; `docs/security.md` T54); its `Enter` is then this route's, sent when no prompt, dialog or unknown footer is
+  on screen. The page's Send never posts `Enter` to the keys route; the passthrough keeps it, and it never carries `send: true`.
 - **`!` shell commands are sent** like any other message. Claude queues them and runs them after the turn.
 - **Claude's queued placeholder is an empty box.** `parseDraft` reads it as `state: 'empty'`, `queued: true`, `suggestion: null`. The
   page shows a `Queued` note and never offers the placeholder as a suggestion.

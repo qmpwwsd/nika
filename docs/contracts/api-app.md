@@ -24,6 +24,8 @@ Id shapes come from `src/ids.js`:
 | `KEY_NAME` | set: `Enter Escape Tab BTab Up Down Left Right Home End PPage NPage BSpace DC C-c C-u C-k C-a C-e C-l C-r C-w C-Home C-End` (0.5, W3: the last two are the scroll route's keys; `keys.send` checks every key against this set, so the keys route accepts them too, but nika's pages post them only to `…/scroll`) |
 | `PERMISSION_MODES` | `default manual acceptEdits plan auto dontAsk` — `default` passes no `--permission-mode` flag (Claude Code's own default); `bypassPermissions` is refused everywhere |
 | `PANE_PLACEMENTS` | `beside under-last` |
+| `SUBAGENT_ID` | `^[A-Za-z0-9_-]{1,64}$` (0.5, W8) — the `<id>` of Claude's `subagents/agent-<id>.jsonl` and `.meta.json` (no dot, no slash). The collector builds its file-name patterns from this one pattern; the page keeps a copy in `public/dash-model.js` and a test compares the two `.source` strings |
+| `TOOL_USE_ID` | `^[A-Za-z0-9_-]{1,128}$` (0.5, W8) — a `tool_use` block's `id` and a subagent meta's `toolUseId`. Compared for equality inside the server only; never shown, never sent |
 
 ## 1. Two tiers
 
@@ -289,6 +291,23 @@ report is its own, the host's id when it was taken from the host, `null` when th
 - The setting comes from nika's own `config.json` through the validated `loadConfig`, on both tiers; the browser tier (:3335) therefore
   also shows these numbers. The page formats them and never computes a window, a per cent or a threshold.
 
+0.5 (W8) writes down `subagents`, which both tiers already carry (the shape is unchanged; W8 adds no field to it):
+- `"subagents": [ { "id": "<SUBAGENT_ID>", "type": "<clean(agentType, 80)>" | null, "description": "<clean(…, 200)>" | null,
+  "model": "<clean(model, 80)>" | null, "modelLabel": "<label>" | null, "state": "running" | "finished" | "stopped", "lastActivity": <ms> | null } ]`:
+  Claude's own subagents of the session (the in-process children of its `Agent` tool), one per `agent-<id>.meta.json` in the session's `subagents/`
+  folder (≤ 64 KB each, a broken file is skipped); `[]` when there are none, no folder, or the folder is a symlink (`<session id>` and `subagents` must be
+  real directories). The meta is read again on every snapshot; nothing is cached.
+- `model` is the meta's `model` key, else its `pickedEffortModel` (Claude Code 2.1.325 writes only the second); `modelLabel` is the catalog label or the
+  derived one, as for a session.
+- `state`: `finished` when the meta holds `finished: true`; else `running` when the parent session is live; else `stopped`. `finished: true` means
+  the subagent's loop has stopped, not that it is gone for good: Claude removes the key again when the subagent wakes up (`claude-tui.md` §14), so a
+  subagent can go `finished`, then `running` again. A page must read the state at every poll and never latch `finished`.
+- `lastActivity`: the mtime of `agent-<id>.jsonl` (`lstat`, the file is not read), or `null` when it does not exist yet. It moves only when the
+  subagent writes a message, not while it waits on a long tool call, so it is not a liveness signal.
+- Order: `running` first, then newest `lastActivity` first.
+- No `toolUseId` (it is parsed from the meta for the history route's link and goes no further), no transcript text and no path. The browser tier gets
+  exactly this; it draws the list as plain text (no link) and has no route to open a subagent (§4).
+
 ### `GET /api/app/plugins`
 `200 { "plugins": [ "<PLUGIN_NAME>", … ] }` — installed plugin names read from Claude Code's config dir (names only,
 never settings, hooks or keys), ≤ 200, sorted.
@@ -346,7 +365,7 @@ an id ending in `[1m]`, else 200000 (an unknown or custom id is treated as 200k,
 1 MB per request, 4 requests in flight, and drops any single entry over 32 KB (`"truncated": true`).
 ```json
 { "entries": [ { "id": "<byte offset of the line>:<block index>", "at": "<ISO>", "role": "user" | "assistant", "kind": "text" | "thinking" | "tool_use" | "tool_result",
-                 "text": "<cleanBlock()>", "tool": "<name>?", "truncated": false } ],
+                 "text": "<cleanBlock()>", "tool": "<name>?", "truncated": false, "subagent": "<agent id>?" } ],
   "nextBefore": 123456 | null }
 ```
 Text is passed through `cleanBlock()` (first removes whole terminal escape sequences: CSI `ESC [ … final`, OSC
@@ -354,6 +373,52 @@ Text is passed through `cleanBlock()` (first removes whole terminal escape seque
 reads `Compacted` and a link's text stays while its target goes; a literal `[2m` without ESC is text and stays; then keeps
 `\n` and `\t` and strips every other control and bidi code point; `clean()` does the same for one line) and the
 page renders it with `textContent`.
+
+**`subagent` (0.5, W8).** A `tool_use` entry gains `"subagent": "<agent id>"` when all four hold: (1) the block's `name` is `Agent` (Claude Code
+2.1.325) or `Task` (older builds); (2) the block's `id` matches `TOOL_USE_ID`; (3) exactly one meta in this session's `subagents/` folder has that
+`toolUseId` (two or more: no link for any of them); (4) that meta's agent id has an `agent-<id>.jsonl` in nika's own listing of the folder, so the route
+below would find it. No other field changes. The tool-use id is used inside the server only: it is compared with the metas' `toolUseId` and is in no
+response. The link map is built only when the page holds at least one such call: one `readdir` and the metas (each ≤ 64 KB, 8 at a time), inside the
+read's own slot of the shared limiter, read again on every request (no cache; a meta appears a moment after its call is written, so a call can get its
+`subagent` on a later read than the one that first returned it, and the session window then adds the link to the entry it already shows). A failure
+leaves the page without links, never without entries. A page that gets no field (an older server) draws no link. Entries of the subagent route below
+never carry the field.
+
+### `GET /api/app/session/:id/subagents/:agentId/history?before=<n>&limit=<n>` (0.5, W8)
+The read-only view of one of Claude's own subagents (spec §9.17). The request carries two ids and byte offsets, never a path. `id` must be a `UUID`
+present in nika's transcript index (as for the route above); `agentId` must match `SUBAGENT_ID` and be a name in nika's own listing of that session's
+`<project dir>/<session id>/subagents/` folder (names `agent-<id>.jsonl` only). The file path is the listing's, never the request's. Both
+`<session id>` and `subagents` must be real directories (`lstat`, so a planted symlink cannot move the read to another folder), and the file opens
+through `fsafe.openRegular` (O_NOFOLLOW, regular, owned by the user, one link). `limit` and `before` mean what they mean on the route above, and so do
+the bounds: at most 1 MB per request, entries over 32 KB cut (`"truncated": true`), and **one limiter shared by both history routes** (4 reads in
+flight in all). `GET` only (other methods: 405). App tier only: the browser tier does not mount it (404, §4).
+
+Checks, in this order; the first that fails answers:
+
+| Check | Answer |
+|---|---|
+| `id` is not a `UUID` | 404 `not_found` "no such session" |
+| `agentId` does not match `SUBAGENT_ID` | 404 `not_found` "no such subagent" |
+| `limit` is not an integer 1–200 | 400 `invalid` (the text of the route above) |
+| `before` is not a byte offset | 400 `invalid` |
+| the session is not in nika's transcript index (10 s memo) | 404 "no such session" |
+| `agentId` is not in the session's `subagents/` listing, or the folder is missing or not real | 404 "no such subagent" |
+| the file cannot be opened through `fsafe` (a symlink, another owner, more than one link, not a regular file) or read | 404 "transcript not readable" |
+| `before` is beyond the end of the file | 400 "before is beyond the end of the transcript" |
+
+The malformed ids are refused before `limit` is read: a bad agent id with `limit=0` is 404, not 400. A dot segment in `:agentId` (`..`, `%2E%2E`) never reaches the
+handler (the URL parser folds it into the session's own history route, with the same guard); the handler is not called.
+
+200: exactly the history shape, `{ "entries": [ … ], "nextBefore": n | null }`, oldest first, read from the subagent's own file by the same code as the route
+above: `user` and `assistant` lines are entries, every other line type (`attachment`, `api-request*`) is skipped. Text is data: instruction-like text in a
+subagent's transcript is shown, never acted on.
+
+**Polling (ruling 2026-11-15).** A page that follows a subagent (the session window's read-only mode) reads the newest page every 5 s once it has one
+(3 s until then) and keeps doing so while the parent session is live, **also after the subagent's state reads `finished`**: `finished: true` in the
+subagent's meta means its loop has stopped, and Claude removes it again when the subagent wakes up (for example when its background shell ends; Claude Code
+as installed, 2026-11-15, `claude-tui.md` §14). The page stops only when the state reads `stopped` (the parent session is gone), after one last read at the live edge. The
+state itself comes from the snapshot's `subagents` (below), read again on every poll; nothing is latched. Until the file exists the route answers 404
+"no such subagent" and the page keeps asking.
 
 ### `GET /api/app/pane/:id/capture`
 `id` `PANE_ID`, must appear in the current `tmux list-panes -a`, be either a live Claude session's pane
@@ -1834,7 +1899,8 @@ checked by the router before `mirror` / `keys` are called; those modules still v
 |---|---|
 | `src/exec.js` | `makeExec()` — adds `opts.input` (string/Buffer written to the child's stdin, then closed) |
 | `src/text.js` | `cleanBlock(s, max)` — like `clean()` but keeps `\n` `\t` |
-| `src/collect/history.js` | `readHistory(sessionId, { before, limit }, { claudeDir, cache }) → { status, body }` |
+| `src/collect/history.js` | `readHistory(sessionId, { before, limit }, { claudeDir, cache }) → { status, body }` (an `Agent` / `Task` call entry may carry `subagent`); `readSubagentHistory(sessionId, agentId, { before, limit }, { claudeDir, cache }) → { status, body }` (0.5, W8: the same page from `agent-<agentId>.jsonl`; `appio.js` passes both in `deps`); both read through one module-level limiter (4 reads in flight); `createLimiter(max)` |
+| `src/collect/subagents.js` | (0.5, W8) every function takes the transcript index entry `{ path, dir, … }`, never a request value: `subagentDir(transcript) → string \| null` (`<dir>/<session>/subagents`, only when both folders are real directories); `subagentTranscripts(transcript) → Map<agentId, path>` (the folder's listing: names `agent-<SUBAGENT_ID>.jsonl`, the path built from the listed name; empty when the folder is missing or not real); `readSubagents(transcript) → [{ id, type, description, model, toolUseId, finished, lastActivity }]` (the metas, ≤ 64 KB each, 8 at a time, read again on every call; `toolUseId` a valid id or `null`; `model` falls back to `pickedEffortModel`). `src/model.js` maps these into the snapshot's `subagents` one field at a time, so `toolUseId` never reaches a response |
 | `src/collect/plugins.js` | `listPlugins(claudeDir) → string[]` (keys of `plugins` in `<claudeDir>/plugins/installed_plugins.json`, read through `fsafe` ≤ 1 MB; sorted, ≤ 200, each `PLUGIN_NAME`; `[]` when missing or invalid) |
 | `src/mirror.js` | `parseCapture(text, cols) → rows` (pure); `createMirror({ exec, tmuxBin, now }) → { capture(pane, ifNoneMatch) → { status, body, etag } }` |
 | `src/keys.js` | `createKeys({ exec, tmuxBin, now, sleep }) → { send(pane, { text, paste, keys, send? }, { recheck? }) → { status, body } }`; `recheck()` is an async `null \| { status, body }` run before each text chunk after the first (the route passes it for `send: true`); `badSend(body)` is the 400 for a `send` that is not `true` |

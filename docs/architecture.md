@@ -232,7 +232,7 @@ Every cache that is keyed by path or id has a cap, so a day-long run does not gr
 `util.js` `lru(max)` is a Map that drops its oldest entry past `max` (a read refreshes an entry). The parsed-transcript cache
 is an lru that `collect()` resizes to the transcripts on disk plus 64 after each pass, so entries of deleted transcripts leave
 and a transcript that is still on disk is never evicted; the command-list cache keeps 16 listings (each is reused for 10 s).
-The history route keeps one transcript index (replaced every 10 s), the mirror, rate limiter and answer guard sweep their
+The two history routes (a session's own and a subagent's) share one transcript index (replaced every 10 s) and one limit of 4 reads in flight; the mirror, rate limiter and answer guard sweep their
 per-pane entries by age, and `held`, `vim` and `ctx.started` drop a pane when the next pane list no longer has it. In the
 page, the transcript column keeps at most 500 entries: while the reader follows the tail the oldest leave from the top
 (Load older fetches them again), after Load older the newest leave from the bottom (Jump to latest returns), and a reader
@@ -290,12 +290,12 @@ latency. `--optimize-for-size` saved about 10 MB more but made history requests 
 | File | Reads |
 |---|---|
 | `commands.js` | Slash commands and skills for the palette: the built-in list plus the frontmatter (first 4 KB, never the body) of command and skill files in the user, project and plugin folders (app tier). |
-| `history.js` | A session transcript, paginated from disk, newest page first (app tier). |
+| `history.js` | A session transcript, paginated from disk, newest page first (app tier). Two routes read through one windowed read (`readPage`) and one limiter (4 reads in flight in all): `readHistory` (the session's own file; an `Agent` / `Task` call entry gains `subagent` when exactly one meta names its tool-use id) and, since 0.5 (W8), `readSubagentHistory` (a subagent's `agent-<id>.jsonl`, found in the listing of the session's `subagents/` folder, never from the request). |
 | `plugins.js` | Installed Claude Code plugin names; `listPluginDirs` also returns each plugin's `installPath`, only when it resolves inside the plugins cache. |
 | `projects.js` | Groups a working directory under its git repository; worktrees fold under the main repository. Never runs git. |
 | `registry.js` | The live session registry, one `<pid>.json` per running Claude Code process. |
 | `reports.js` | Spawn report files (`.session`, `.md`, `.rc`) in the scratchpad and in nika's own report dirs. |
-| `subagents.js` | In-process subagents of a session. |
+| `subagents.js` | Claude's own subagents of a session, in `<session>/subagents/` (both folders must be real directories, checked with `lstat`; every function takes the transcript index entry, never a request value). `readSubagents` reads the `agent-<id>.meta.json` files again on every call (≤ 64 KB each; type, description, model with `pickedEffortModel` as fallback, `finished`, the `agent-<id>.jsonl` mtime, and the `toolUseId` that only the server's link uses); `subagentTranscripts` lists the `agent-<id>.jsonl` names (the route's source of a file path); `subagentDir` is the folder check. The ids come from `SUBAGENT_ID` and `TOOL_USE_ID` in `src/ids.js`. |
 | `tmux.js` | tmux panes (`list-panes -a`), pane titles and the pane tags nika sets (`@nika-role`, `@nika-agent`, `@nika-depth`, `@nika-parent`), each parsed strictly. |
 | `transcripts.js` | Session transcripts: only the head and tail are read; results are cached by path, mtime and size. From the tail it also keeps the context size of the last assistant entry (`usage`: the sum of the input and cache tokens, and the model id; numbers only). |
 
@@ -304,16 +304,16 @@ latency. `--optimize-for-size` saved about 10 MB more but made history requests 
 | File | Does |
 |---|---|
 | `index.html`, `session.html` | The main page and the session window. |
-| `tokens.css`, `app.css`, `session.css` | Design tokens and styles (light, dark, system). |
+| `tokens.css`, `app.css`, `session.css` | Design tokens and styles (light, dark, system). `tokens.css` also holds what both pages share for Claude's subagents (0.5, W8): the state badge (`.sst`), the list lines and links, and the `subagent` role tag (`.tag.sa`). |
 | `attach.js` | The attachment tray, page side (0.5): the pure rules (`formatSize`, `uploadView`, `pickView`, `sendView`: every line is fixed copy chosen by status and code) and `createAttachTray` (chips, the paperclip's chooser, paste and drop, Send). It makes no request of its own; `session.js` hands it the routes. |
 | `api.js` | The only client of the app tier: takes the secret once and sends `X-Nika-App`. In the browser tier it refuses to run. |
 | `app-copy.js` | The Add to Applications banner: which banner `appCopy` shows and its fixed copy. Pure; the two POSTs live in `project.js`. |
-| `dash-model.js` | The Show ended rule of the dashboard and the project page (`endedPlan`, `resetEndedState`, per view; ended sessions and finished subagents stay hidden until it is on), the sidebar's Projects and Detected lists (`sidebarModel`) and the orchestrator's state and badge (`orchState`, `savedPick`, `otherRunning`, `roleTag`, `ROLE_TAGS`). Pure, both tiers. |
+| `dash-model.js` | The Show ended rule of the dashboard and the project page (`endedPlan`, `resetEndedState`, per view; ended sessions and finished subagents stay hidden until it is on), the sidebar's Projects and Detected lists (`sidebarModel`) and the orchestrator's state and badge (`orchState`, `savedPick`, `otherRunning`, `roleTag`, `ROLE_TAGS`), and, since 0.5 (W8), what a subagent list draws (`subagentView`: summary, "+N ended" hint, the lines shown), the link to a subagent's read-only view (`subagentHref`), the three state words (`SUB_STATES`) and the page's copy of `SUBAGENT_ID` (a test compares it with `src/ids.js`). Pure, both tiers. |
 | `app.js` | Main page: shell, dashboard (in the app tier: mode tags, the row menu's End and the Add to Applications banner), router, the poll loop and the Keyboard shortcuts keys. Runs in both tiers. |
 | `ui.js` | Shared state and widgets for the main page. |
 | `dialog-form.js` | Claude's question dialogs and plan approvals as a form, page side (0.5, W1): the pure rules (`cleanDialog`, `answerBody`, `dialogOutcome`: every line is fixed copy chosen by status and code, `stepText`, `announcement`) and `createDialogForm` (one step at a time, the tabs list, option rows, Other, review, plan choices, Decline). It presses no key of its own. |
 | `draft-sync.js` | The draft sync, page side (0.5), no DOM and no request of its own: `createDraftSync` pulls a changed screen into the message box after 1.5 s of quiet and pushes a local edit 250 ms after the last key; `draftSendPlan` decides what Send does (Enter alone, copy then Enter, the old paste, refuse, also when the footer is unknown and no box reads: `footerKnown`, F1; no plan carries an `Enter` key, Send's `Enter` always goes through the submit route); the note under the box (paused, long, hold, cursor, queued, suggest) and the fixed copy of the failed copy and the failed `Enter` (`sendMessage`, `submitMessage`, `submitResult`); twins of `src/draft.js` checked by test. |
-| `dom.js` | `h()`: builds DOM with `textContent`, never parses markup; `roleTagEl()` draws the orchestrator badge. |
+| `dom.js` | `h()`: builds DOM with `textContent`, never parses markup; `roleTagEl()` draws the orchestrator badge; `subStateEl()` the subagent state badge (glyph, word, title; null for an unknown state) and `subagentItemEl()` one subagent line (badge, description as a link when the page passes an `href`, type, model, time), shared by the rows and the session window (0.5, W8). |
 | `end-dialog.js` | The End-session dialog, shared by the session window and the dashboard row menu. |
 | `fit-ui.js` | The fit, page side (0.5): `panelSize` (the terminal box in cells, 40–400 × 10–200), `scaleFor` (text scale 0.4 to 1), `chipView` (the four chips and their fixed titles), `createFitPlanner` (the first `open: true`, a 5 s beat, a 250 ms debounce, one `DELETE` on `pagehide`). No DOM, no requests of its own; `session.js` wires it. |
 | `modes.js` | Permission modes in the UI: labels, icons, the switcher's state and the dashboard's mode map and tag. |
@@ -324,9 +324,9 @@ latency. `--optimize-for-size` saved about 10 MB more but made history requests 
 | `project.js` | App tier only: projects, add project, start orchestrator, project view (the Project setup card and its Choose plugins dialog), spawn sheet, apply-rules dialog, the poll of `/api/app/modes`, the Add to Applications install and dismiss requests. |
 | `quick-actions.js` | The quick actions', prompt buttons', End dialog's and Shell mode's rules and fixed copy. No DOM, no requests. |
 | `settings.js` | App tier only: the settings screen (defaults for every project; the Save and Discard bar shows only after a real change). |
-| `session.js` | App tier only: the session window (history, live mirror, composer, mode switcher, quick actions, prompt buttons, Shell mode, command palette). |
+| `session.js` | App tier only: the session window (history, live mirror, composer, mode switcher, quick actions, prompt buttons, Shell mode, command palette) and, with `agent=<id>` in the address (0.5, W8), the read-only view of one of Claude's subagents: the same page with the transcript only (it reads the subagent history route, builds no pane request and wires no terminal, composer, attachments, switcher, quick actions or fit), a header taken from the parent's snapshot, and a Back link to the parent's window. In a session window it also draws the folded list of the session's subagents (`renderSubs`) and the link from an `Agent` call to its subagent. |
 | `scroll.js` | Scrolling Claude's view, page side (0.5): `wheelRows`, `routeFor` (the mirror's own overflow first), `pageRowsOf`, `scrollGate` (the page twin of the server's gate), `refusalLine`, `noteView` and `createScrollPlanner` (whole pages, one request in flight, 100 ms apart, 8 pages at most). No DOM, no requests of its own; `session.js` wires it. |
-| `shortcuts.js` | The Keyboard shortcuts window and the key rules around it (`?`, Mod+/, Back). Static copy, both tiers. |
+| `shortcuts.js` | The Keyboard shortcuts window and the key rules around it (`?`, Mod+/, Back). Static copy, both tiers; the table has a `dashboard`, a `session` and (0.5, W8) a `subagent` window. |
 | `mirror-render.js` | Pane-mirror helpers: render model, cursor, key handling. Re-validates every value. |
 
 Also: `bin/nika` (launcher), `templates/` (generic rules, brief and guard prompt, written from scratch), `app/src-tauri`

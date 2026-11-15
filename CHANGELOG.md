@@ -117,6 +117,21 @@ Session window (desktop app):
   id. nika used to show two rows. It now shows one, with the tmux pane that shows it; a spawned agent keeps its report on that
   row (opened under the id it is filed under); and when the saved orchestrator of a project is the old id of a conversation that
   continues under a new one, nika saves the new id, so Start orchestrator resumes the right session.
+- **Open Claude's subagents.** Claude's own subagents (the ones its Agent tool starts inside a session) now show a badge on
+  dashboard and project-page rows, each state with its own colour, symbol and word: Running, Finished, Stopped (the browser
+  dashboard shows the badges too). In the app the description is a link: it opens the subagent in the session window,
+  read-only. You see its transcript, with a "subagent" tag, its state, type and model in the header, no terminal and no
+  message box; **Back** returns to the session that runs it, with its terminal. Open one from a dashboard row, from the
+  project page, from a new folded list at the top of a session window's Transcript (it has its own **Show ended** box,
+  remembered), or from the **Open subagent transcript** link under the call that started it. nika reads the subagent's
+  transcript from Claude's own `subagents` folder, in pages, like a session's, and only for a session and a subagent it
+  listed itself. The view keeps updating while the session runs, also after a subagent shows Finished: Claude marks a subagent
+  Finished when its loop stops and takes the mark away again when the subagent wakes up (for example when its background shell
+  ends); it stops when the state reads Stopped (the session is gone). A subagent now shows its model with Claude Code 2.1.325,
+  which names it under another key. The view has its own Keyboard shortcuts window (Back and the window keys). See
+  `docs/design/spec.md` §9.17 and `docs/security.md` T56.
+- **"No subagents running +N ended".** A row whose subagents have all finished used to draw no subagent line. It now says so in
+  one muted line, and **Show ended** lists them.
 
 Fixes:
 
@@ -136,6 +151,16 @@ Fixes:
   message box stopped mirroring for as long as the mouse stayed there. nika now reads the list with the pointer on one row. A row
   picked with the arrow keys still reads as unknown on purpose (Claude replaces the mode line with a hint then), so nothing is
   typed there.
+- **Send looks at the screen first.** Before Send types your message (and Shell's `!` text) it takes a fresh look at Claude's
+  screen, and it types nothing while a permission prompt, a question or plan dialog, the auto-mode notice, Claude's feedback
+  survey or a screen nika cannot read (no input box and an unknown footer) is open: a digit or a letter typed there would answer
+  it. A long message is typed in pieces, and nika looks again before each later piece; if something opens in between, it stops
+  there and keeps your text in the message box. nika also never attaches `.env` files or key and certificate files
+  (`*.key`, `*.pem`): paste, drop and the file chooser refuse them by name ("nika doesn't attach .env, key or certificate files.").
+- **The fit works when tmux shows pane titles.** With `pane-border-status` set to `top` or `bottom`, tmux takes one row of every
+  pane for the border line, so nika's read-back saw a pane one row shorter than its window, took it for a change by someone else,
+  and drew the text smaller instead of fitting. nika now accepts a pane of the window's height or one row less (the width and the
+  window size must still match exactly); the mirrored pane has one row fewer than the panel.
 
 ## 0.4.0 — 2026-11-13
 
