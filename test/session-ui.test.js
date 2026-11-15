@@ -3327,7 +3327,7 @@ describe('0.5: Send with the synced box (design W5, section 4)', () => {
         await r.send();
         const at = `${label} ${JSON.stringify(footer)}`;
         assert.deepEqual([r.log.keys, r.log.posts, r.log.pushed, r.log.sent, r.log.order], [[], [], [], [], []], at);
-        assert.deepEqual(r.log.problems, [[CANT_READ, 'error']], at);
+        assert.deepEqual(r.log.problems, [[opts.value.trim() === '' ? CANT_READ.replace(' Your text is kept.', '') : CANT_READ, 'error']], at); // an empty box has no text to keep
         assert.equal(r.ta.value, opts.value, `${at}: the text stays in the box`);
         assert.equal(r.log.shellOff, 0, `${at}: Shell stays on`);
       }
