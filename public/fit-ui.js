@@ -1,7 +1,7 @@
 // The fit, the page side (nika 0.5, design W7 sections 5, 8 and 9; the routes: docs/contracts/api-app.md, PUT and DELETE
 // /api/app/pane/:id/fit). The session window measures its terminal panel in cells, asks the server to fit the mirrored pane to it,
 // keeps that lease alive, gives it back on close, scales the text while the pane is larger than the panel, and shows the state in a
-// header chip. This file has no DOM and makes no request of its own: session.js hands createFitPlanner a route, a clock and a chip
+// header chip, a button that opens a panel with the reason and, where it helps, Fit again (F1, design F12). This file has no DOM and makes no request of its own: session.js hands createFitPlanner a route, a clock and a chip
 // sink, so Node tests every rule (test/fit-ui.test.js). A server answer is data: chipView looks its words up in fixed tables, so no
 // string of the server ever reaches the page.
 // Keep this file ASCII: write every symbol as an escape.
@@ -39,7 +39,7 @@ const TITLE = {
   'size-option': 'This tmux window has a window-size setting nika does not change',
   'foreign-tag': 'Another program marks this tmux window',
   changed: 'The tmux window changed while nika was fitting it, so nika put it back',
-  'user-change': 'You changed this tmux window, so nika put it back. Reopen the session window to fit again',
+  'user-change': 'You changed this tmux window, so nika put it back', // the panel's Fit again is the way back (F1)
 };
 const BLOCKED_PLAIN = 'nika is not fitting this tmux window';
 
@@ -51,7 +51,7 @@ const STATE = {
   other: { icon: 'window', text: `Fit ${DOT} another window`, label: 'Fit: another window', title: 'Another nika window shows a pane of this tmux window' },
 };
 
-/** What the chip shows for a PUT answer: { key, state, icon, text, title, say }, or null when the body is not a fit answer (the chip stays as it was). */
+/** What the chip shows for a PUT answer: { key, state, icon, text, label, title, say }, or null when the body is not a fit answer (the chip stays as it was). label is the button's name and the panel's heading. */
 export function chipView(body) {
   const fit = body?.fit;
   const state = fit?.state;
@@ -59,8 +59,47 @@ export function chipView(body) {
   const reason = typeof fit.reason === 'string' && fit.reason !== 'panel-smaller' && Object.hasOwn(TITLE, fit.reason) ? fit.reason : '';
   const v = STATE[state];
   const title = state === 'blocked' && reason ? TITLE[reason] : v.title;
-  return { key: `${state}:${state === 'blocked' ? reason : ''}`, state, icon: v.icon, text: v.text, title, say: `${v.label}. ${title}` };
+  return { key: `${state}:${state === 'blocked' ? reason : ''}`, state, icon: v.icon, text: v.text, label: v.label, title, say: `${v.label}. ${title}` };
 }
+
+// ---- the panel behind the chip (F1, design F12 2.3) ----------------------------------------------------------------------------
+
+const PANEL_NOTE = 'nika could not fit the window just now. It tries again within 5 seconds.';
+const FITTING = 'Fitting\u2026';
+// Looked up by the key of a chipView, never by a word of the server. `action` is the button's text: only where open: true can change
+// something (the server refuses it again for user-zoom, size-option and foreign-tag, and those recover once the user acts in tmux).
+const PANEL = {
+  'fitted:': {},
+  'zoomed:': { hint: 'To fill the panel without scaled text, make this window larger or hide the transcript (Ctrl+Shift+H).' },
+  'blocked:user-change': { hint: 'Fit again sizes the window to this panel once more. After a change of your own nika stays off until you ask.', action: 'Fit again' },
+  'blocked:changed': { hint: 'Fit again tries once more.', action: 'Fit again' },
+  'blocked:': { action: 'Fit again' },
+  'blocked:user-zoom': { hint: 'Unzoom it in tmux (prefix, then z) and nika fits the window by itself.' },
+  'blocked:size-option': {},
+  'blocked:foreign-tag': { hint: 'If no other nika runs, clear the mark in that tmux window, then nika fits it by itself:', code: 'tmux set-option -wu @nika-fit' },
+  'other:': { hint: 'The other nika window stops fitting it.', action: 'Fit here' },
+};
+
+/**
+ * What the chip's panel shows: { heading, why, hint, code, action, note } for a chipView and the panel's own state `ui` ({ pending, note }),
+ * or null when `view` is not one. heading and why are the view's label and title; hint, code (a command shown as text) and action
+ * ({ text }, "Fitting..." while pending) come from a fixed table by the view's key, and a key it does not know has none of them.
+ */
+export function fitPanelView(view, ui) {
+  if (view === null || typeof view !== 'object' || typeof view.key !== 'string') return null;
+  const row = Object.hasOwn(PANEL, view.key) ? PANEL[view.key] : {};
+  return {
+    heading: typeof view.label === 'string' ? view.label : '',
+    why: typeof view.title === 'string' ? view.title : '',
+    hint: row.hint ?? null,
+    code: row.code ?? null,
+    action: row.action ? { text: ui?.pending === true ? FITTING : row.action } : null,
+    note: ui?.note === true ? PANEL_NOTE : null,
+  };
+}
+
+/** The announcement when Fit again was answered and nothing changed (the chip is not told, so its own announcement does not come). */
+export const stillOffSay = (view) => `Fit is still off. ${view.title}`;
 
 // ---- the requests ------------------------------------------------------------------------------------------------------------
 
@@ -69,18 +108,23 @@ const same = (a, b) => a !== null && b !== null && a.cols === b.cols && a.rows =
 
 /**
  * The page's fit requests. `io.send(body)` -> Promise<{ status, body }> (PUT), `io.release()` (DELETE, fire and forget), `io.after(fn, ms)`
- * / `io.cancel(timer)`, `io.chip(view | null)` (told on a change of state only; null hides it).
+ * / `io.cancel(timer)`, `io.chip(view | null)` (told on a change of state only; null hides it), `io.fitAgain(event)` (optional, see below).
  * - One request in flight; a newer size waits and the latest wins. A resized panel is asked for after DEBOUNCE_MS; an unchanged size is
  *   not asked for; a heartbeat every BEAT_MS always is (it renews the lease), unless a request is already in flight.
  * - The first request of a page load is open: true, and stays so until the server has answered one with 200. Every later one is
- *   open: false, also after blocked / user-change or blocked / changed (the server keeps it off; only a new page load opens again),
- *   and also after a close() and a start() (the pane was gone and came back): a lease is acquired by open: false when none is held.
+ *   open: false, also after blocked / user-change or blocked / changed (the server keeps it off; only a new page load or reopen()
+ *   opens again), and also after a close() and a start() (the pane was gone and came back): a lease is acquired by open: false when
+ *   none is held.
+ * - reopen() is the user's Fit again (F1): the next request is open: true. It is told to `io.fitAgain` (optional): { pending: true } at
+ *   once, then { pending: false, status, view, changed } when the answer to that request came (view is the chipView of a 200 that was
+ *   a fit answer, changed: the chip was told this time). A refused or lost ask is tried again by the next heartbeat, silently.
  * - 409, 429, 502, a lost request or any other refusal waits for the next heartbeat. 403 stops everything for good.
  * - close() (the page leaves, the pane is gone) gives the window back with one release; start() after it is a new lease, and restart()
  *   (the page is back from the back/forward cache) is a new lease that opens like a page load.
  */
 export function createFitPlanner(io) {
-  const P = { on: false, dead: false, gen: 0, want: null, sent: null, opened: false, busy: false, hold: false, debounce: null, beat: null, key: null };
+  // ask: the user's Fit again: null, 'queued' (the next request is open: true) or 'sent' (that request is in flight)
+  const P = { on: false, dead: false, gen: 0, want: null, sent: null, opened: false, ask: null, busy: false, hold: false, debounce: null, beat: null, key: null };
 
   const clear = (name) => {
     if (P[name] !== null) io.cancel(P[name]);
@@ -110,12 +154,21 @@ export function createFitPlanner(io) {
     if (!renew && same(P.want, P.sent)) return; // skip unchanged
     const want = P.want;
     const gen = P.gen;
+    const open = !P.opened || P.ask === 'queued';
+    const asked = P.ask === 'queued';
+    if (asked) P.ask = 'sent';
     P.busy = true;
     // the executor runs at once, so the request still goes out synchronously; a send that throws is a lost request, not a stuck busy
-    new Promise((resolve) => { resolve(io.send({ cols: want.cols, rows: want.rows, open: !P.opened })); }).then((r) => settle(gen, want, r), () => settle(gen, want, null));
+    new Promise((resolve) => { resolve(io.send({ cols: want.cols, rows: want.rows, open })); }).then((r) => settle(gen, want, r, asked), () => settle(gen, want, null, asked));
   }
 
-  function settle(gen, want, r) {
+  /** The request of the user's ask ended: one fitAgain call, whatever the outcome. */
+  function answered(status, view, changed) {
+    P.ask = null;
+    io.fitAgain?.({ pending: false, status: Number.isInteger(status) ? status : 0, view, changed });
+  }
+
+  function settle(gen, want, r, asked) {
     if (gen !== P.gen || !P.on) return; // the lease it belonged to is over (closed, stopped or started again)
     P.busy = false;
     const status = r?.status;
@@ -123,20 +176,29 @@ export function createFitPlanner(io) {
       P.dead = true;
       halt();
       unchip();
+      if (asked) answered(status, null, false);
       return;
     }
     if (status !== 200) { // busy, rate limit, tmux failure, a lost request: the next heartbeat asks again
       P.hold = true;
+      if (asked) { // and that asking is open: true again, so the retry is not lost
+        P.opened = false;
+        answered(status, null, false);
+      }
       return;
     }
     P.opened = true;
     P.sent = want;
     const view = chipView(r.body);
+    let changed = false;
     if (view && view.key !== P.key) {
       P.key = view.key;
+      changed = true;
       io.chip(view);
     }
+    if (asked) answered(status, view, changed);
     if (!same(P.want, P.sent)) schedule(); // the panel changed while this request was in flight
+    if (P.ask === 'queued') flush(true); // an ask made while this request was in flight goes out now
   }
 
   function beat() {
@@ -149,7 +211,7 @@ export function createFitPlanner(io) {
   function start() {
     if (P.on || P.dead) return;
     P.gen += 1;
-    Object.assign(P, { on: true, sent: null, busy: false, hold: false });
+    Object.assign(P, { on: true, sent: null, ask: null, busy: false, hold: false });
     arm();
     flush(true);
   }
@@ -173,10 +235,22 @@ export function createFitPlanner(io) {
     },
     /** The window shows again (timers may have been suspended): one request now, and the next heartbeat 5 s on. */
     beat,
-    /** The page leaves or the pane is gone: the window comes back (one release), the timers stop, the chip hides. */
+    /**
+     * The user asks to fit again (F1): the next request is open: true, sent now (a hold is cleared and the heartbeat re-armed), or at once
+     * when the one in flight has ended. false, and nothing happens, before start(), after close(), after a 403 and while an ask is pending.
+     */
+    reopen() {
+      if (!P.on || P.dead || P.ask !== null) return false;
+      P.ask = 'queued';
+      io.fitAgain?.({ pending: true });
+      if (!P.busy) beat();
+      return true;
+    },
+    /** The page leaves or the pane is gone: the window comes back (one release), the timers stop, the chip hides. A pending ask is dropped without a word. */
     close() {
       if (!P.on) return;
       halt();
+      P.ask = null;
       io.release();
       unchip();
     },

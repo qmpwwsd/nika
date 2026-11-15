@@ -8,7 +8,7 @@
 // the subagent's transcript only (no pane, no input; the pane parameter is ignored) and a session window lists its subagents (renderSubs).
 // Rules: every string from the server is rendered with textContent (h() from dom.js, applyMirror from mirror-render.js);
 // no innerHTML, no inline handlers, element.style only for numbers this file computes. Contracts: docs/contracts/api-app.md.
-import { h, icon, roleTagEl, ctxEl, subStateEl, subagentItemEl } from './dom.js';
+import { h, icon, roleTagEl, ctxEl, subStateEl, subagentItemEl, placeMenuX, clearMenuPlacement } from './dom.js';
 import { isApp, appFetch, getJSON, applyTheme, windowCommand } from './api.js';
 import { roleTag, savedPick, subagentView, subagentHref, SUBAGENT_ID } from './dash-model.js';
 import { toRenderModel, cutCursor, applyMirror, planSend, planPaste, chunkText, keyForEvent, KEY_LABEL, arrowEcho } from './mirror-render.js';
@@ -22,7 +22,7 @@ import { MODEL_ID, MODEL_HINT, CUSTOM, fillModelSelect } from './models-ui.js';
 import { openEndDialog } from './end-dialog.js';
 import { paletteQuery, cleanCommands, paletteView, commandsButton, shouldFetch, sourceLabel, insertion, moveActive } from './palette.js';
 import { isMac, isTextEntry, wantsHelp, wantsBack, wantsHistToggle, backHint, helpHint, histHint, passKeyLabel, openShortcuts, wireWindowKeys } from './shortcuts.js';
-import { panelSize, scaleFor, createFitPlanner } from './fit-ui.js';
+import { panelSize, scaleFor, createFitPlanner, fitPanelView, stillOffSay } from './fit-ui.js';
 import { createScrollPlanner, routeFor, wheelRows, scrollGate, viewRowsOf, pageRowsOf, refusalLine, noteView, scrolledSay, NOTE_MS } from './scroll.js';
 import { createAttachTray } from './attach.js';
 import { createDialogForm, cleanDialog } from './dialog-form.js';
@@ -1387,8 +1387,9 @@ function jumpToLive() {
 // ---- fit (design W7): the panel in cells goes to the server, which fits the pane to it; a pane that stays larger is drawn at a smaller text scale ----
 
 // planner: the request planner of fit-ui.js, made when the window has a pane. panel: the last size measured, { cols, rows } in cells (null
-// before one). scale: the --fit-scale now set.
-const FIT = { planner: null, panel: null, scale: 1 };
+// before one). scale: the --fit-scale now set. view: the chip's last view (null while there is no chip). ui: the chip panel's own state
+// (F1): pending, a Fit again is on its way; note, it was refused or lost. pop: the panel is open.
+const FIT = { planner: null, panel: null, scale: 1, view: null, ui: { pending: false, note: false }, pop: false };
 
 /** The pane's fit route; a window with no pane has none, and asks nothing. */
 function fitCall(method, opts = {}) {
@@ -1428,20 +1429,151 @@ function fitCaptured() {
   fitScale();
 }
 
-/** The fit chip: hidden until the server has answered, then one of four states, each with its own colour (data-k), icon and words; the reason is the title. Called on a change of state, so it is announced once. */
+/**
+ * The fit chip, a button (F1): hidden until the server has answered, then one of four states, each with its own colour (data-k), icon and
+ * words; the reason is the title and the announcement. The button is named by the label alone (the words and the chevron are decoration).
+ * Called on a change of state, so it is announced once; an open panel is drawn again in place. With no view the wrapper hides, the panel
+ * closes and focus, if it was in there, goes to the transcript button.
+ */
 function renderFit(view) {
+  const wrap = $('fit-wrap');
   const el = $('fit-chip');
-  el.hidden = !view;
+  const inside = !view && wrap.contains(document.activeElement); // asked before the wrapper hides: a hidden element loses focus
+  FIT.view = view;
+  wrap.hidden = !view;
   if (!view) {
+    closeFitPop(false);
+    FIT.ui = { pending: false, note: false };
     el.removeAttribute('data-k');
     el.removeAttribute('title');
+    el.removeAttribute('aria-label');
     el.replaceChildren();
+    if (inside) $('hist-toggle').focus();
     return;
   }
   el.setAttribute('data-k', view.state);
   el.setAttribute('title', view.title);
-  el.replaceChildren(icon(view.icon), h('span', { text: view.text }));
+  el.setAttribute('aria-label', view.label);
+  el.replaceChildren(icon(view.icon), h('span', { text: view.text }), icon('chev', 'ic chev'));
+  if (FIT.pop) drawFitPop();
   announce(view.say);
+}
+
+/**
+ * The chip's panel from FIT.view and FIT.ui (fit-ui.js fitPanelView): text through textContent and h() only. Focus stays where it is,
+ * unless the action button it was on has just gone: then it goes to Close.
+ */
+function drawFitPop() {
+  const v = fitPanelView(FIT.view, FIT.ui);
+  if (!v) return;
+  const again = $('fit-again');
+  const held = document.activeElement === again;
+  $('fit-pop-h').textContent = v.heading;
+  $('fit-pop-why').textContent = v.why;
+  const hint = $('fit-pop-hint');
+  hint.hidden = v.hint === null;
+  hint.replaceChildren(...(v.hint === null ? [] : [v.hint, v.code === null ? null : h('code', { text: v.code })].filter(Boolean)));
+  const note = $('fit-pop-note');
+  note.hidden = v.note === null;
+  note.replaceChildren(...(v.note === null ? [] : [icon('warn'), v.note]));
+  again.hidden = v.action === null;
+  if (v.action === null) again.removeAttribute('aria-disabled');
+  else {
+    again.textContent = v.action.text;
+    if (FIT.ui.pending) again.setAttribute('aria-disabled', 'true'); // not disabled: focus stays on it
+    else again.removeAttribute('aria-disabled');
+  }
+  if (held && again.hidden) $('fit-pop-close').focus();
+}
+
+/** Opens the panel under the chip: drawn, placed by dom.js (it needs to be shown to have a width), focus on the action, else on Close. */
+function openFitPop() {
+  if (FIT.pop || !FIT.view) return;
+  const pop = $('fit-pop');
+  const chip = $('fit-chip');
+  FIT.pop = true;
+  drawFitPop();
+  clearMenuPlacement(pop); // measured again on every open
+  pop.hidden = false;
+  chip.setAttribute('aria-expanded', 'true');
+  placeMenuX(pop, chip);
+  document.addEventListener('pointerdown', fitAway);
+  ($('fit-again').hidden ? $('fit-pop-close') : $('fit-again')).focus();
+}
+
+/** Closes the panel; `refocus` puts focus on the chip (Esc, Close, the chip again), else it stays where the user went. */
+function closeFitPop(refocus) {
+  if (!FIT.pop) return;
+  FIT.pop = false;
+  FIT.ui.note = false;
+  $('fit-pop').hidden = true;
+  $('fit-chip').setAttribute('aria-expanded', 'false');
+  document.removeEventListener('pointerdown', fitAway);
+  if (refocus) $('fit-chip').focus();
+}
+
+/** A pointer went down somewhere: outside the panel and the chip, it closes the panel (and focus stays where the user went). Listens only while the panel is open. */
+function fitAway(e) {
+  const t = e.target;
+  if (t instanceof Node && !$('fit-pop').contains(t) && !$('fit-chip').contains(t)) closeFitPop(false);
+}
+
+/**
+ * The planner's word on the user's Fit again (fit-ui.js reopen): { pending: true } when it starts, else { pending: false, status, view, changed }
+ * when its request was answered. Fitted and zoomed close the panel; another state or the same one redraws it (the same one is announced here,
+ * a new one by renderFit); a refusal shows the note; a 403 has already hidden the chip.
+ */
+function fitAgainEvent(e) {
+  if (e.pending) {
+    FIT.ui = { pending: true, note: false };
+    if (FIT.pop) drawFitPop();
+    return;
+  }
+  FIT.ui = { pending: false, note: false };
+  if (e.status === 403) return;
+  if (e.status === 200 && e.view) {
+    if (e.view.state === 'fitted' || e.view.state === 'zoomed') closeFitPop(true);
+    else {
+      if (FIT.pop) drawFitPop();
+      if (!e.changed) announce(stillOffSay(e.view));
+    }
+    return;
+  }
+  if (FIT.pop) {
+    FIT.ui.note = true;
+    drawFitPop();
+  }
+  const p = fitPanelView(FIT.view, { pending: false, note: true });
+  if (p) announce(p.note);
+}
+
+/** The chip's button, the panel's Close and action, and the ways out: Esc, Tab out, a pointer elsewhere, a resized window. */
+function wireFitPop() {
+  const chip = $('fit-chip');
+  const pop = $('fit-pop');
+  chip.addEventListener('click', () => (FIT.pop ? closeFitPop(true) : openFitPop()));
+  $('fit-pop-close').addEventListener('click', () => closeFitPop(true));
+  $('fit-again').addEventListener('click', () => {
+    if ($('fit-again').getAttribute('aria-disabled') === 'true') return; // an ask is on its way
+    FIT.planner?.reopen();
+  });
+  const onKey = (e) => {
+    if (e.key !== 'Escape' || !FIT.pop) return; // shut: Esc is the page's
+    e.preventDefault();
+    e.stopPropagation(); // the page's own Esc handlers never see it
+    closeFitPop(true);
+  };
+  const onOut = (e) => { // Tab out of the chip or the panel
+    const to = e.relatedTarget;
+    if (to instanceof Node && !$('fit-wrap').contains(to)) closeFitPop(false);
+  };
+  for (const el of [chip, pop]) {
+    el.addEventListener('keydown', onKey);
+    el.addEventListener('focusout', onOut);
+  }
+  window.addEventListener('resize', () => {
+    if (FIT.pop) closeFitPop(pop.contains(document.activeElement));
+  });
 }
 
 function wireFit() {
@@ -1451,7 +1583,9 @@ function wireFit() {
     after: (fn, ms) => setTimeout(fn, ms),
     cancel: (timer) => clearTimeout(timer),
     chip: renderFit,
+    fitAgain: fitAgainEvent,
   });
+  wireFitPop();
   if (typeof ResizeObserver === 'function') new ResizeObserver(fitResize).observe($('term')); // the app's zoom changes the box too
   document.fonts?.ready.then(fitResize, () => {});
   window.addEventListener('pagehide', () => FIT.planner.close());

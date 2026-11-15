@@ -108,7 +108,19 @@
         <button type="button" class="btn" id="hist-toggle" aria-pressed="true" aria-controls="sess-hist" aria-keyshortcuts="Control+Shift+H" title="Show or hide the transcript (Ctrl+Shift+H)"><svg class="ic" aria-hidden="true"><use id="hist-use" href="#i-hist-on"/></svg><span class="lbl">Transcript</span><span class="onoff" id="hist-onoff" aria-hidden="true">on</span></button>
         <h2 id="term-h" class="sr-only">Live terminal</h2>
         <span class="live-dot" id="live-label">Connecting&hellip;</span>
-        <span class="fit" id="fit-chip" hidden></span>
+        <span class="fit-wrap" id="fit-wrap" hidden>
+          <button type="button" class="fit" id="fit-chip" aria-expanded="false" aria-controls="fit-pop"></button>
+          <div class="pop fit-pop" id="fit-pop" role="group" aria-labelledby="fit-pop-h" hidden>
+            <p class="pop-l" id="fit-pop-h"></p>
+            <p class="fit-pop-why" id="fit-pop-why"></p>
+            <p class="pop-h" id="fit-pop-hint" hidden></p>
+            <p class="pop-h fit-pop-note" id="fit-pop-note" hidden></p>
+            <div class="pop-f">
+              <button type="button" class="btn" id="fit-pop-close">Close</button>
+              <button type="button" class="btn primary" id="fit-again" aria-describedby="fit-pop-why" hidden></button>
+            </div>
+          </div>
+        </span>
         <span class="sp"></span>
         <span class="seg" role="group" aria-label="Terminal colours">
           <button type="button" aria-pressed="true" data-surface="dark">Dark</button>

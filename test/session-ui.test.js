@@ -14,7 +14,7 @@ import { quickState as quickStateReal, sendGate as sendGateReal, keysRefusal as 
 import { planSend as planSendReal, arrowEcho as arrowEchoReal, keyForEvent as keyForEventReal, planPaste as planPasteReal, toRenderModel as toRenderModelReal, cutCursor as cutCursorReal } from '../public/mirror-render.js';
 import { draftSendPlan as draftSendPlanReal, cleanDraft as cleanDraftReal, cutAt as cutAtReal, caretAfter as caretAfterReal, noteView as noteViewReal, suggestionFor as suggestionForReal, submitResult as submitResultReal, submitMessage as submitMessageReal } from '../public/draft-sync.js';
 import { switchFailure as switchFailureReal, MODE_TARGETS, MODE_META } from '../public/modes.js';
-import { createFitPlanner as createFitPlannerReal, panelSize as panelSizeReal, scaleFor as scaleForReal, chipView as chipViewReal } from '../public/fit-ui.js';
+import { createFitPlanner as createFitPlannerReal, panelSize as panelSizeReal, scaleFor as scaleForReal, chipView as chipViewReal, fitPanelView as fitPanelViewReal, stillOffSay as stillOffSayReal } from '../public/fit-ui.js';
 import { createScrollPlanner as createScrollPlannerReal, routeFor as routeForReal, wheelRows as wheelRowsReal, scrollGate as scrollGateReal, viewRowsOf as viewRowsOfReal, pageRowsOf as pageRowsOfReal, refusalLine as refusalLineReal, noteView as scrollNoteViewReal, scrolledSay as scrolledSayReal, NOTE_MS as NOTE_MS_REAL } from '../public/scroll.js';
 import { h as hReal, icon as iconReal, roleTagEl as roleTagElReal, subStateEl as subStateElReal, subagentItemEl as subagentItemElReal } from '../public/dom.js';
 import { subagentView as subagentViewReal, subagentHref as subagentHrefReal, SUBAGENT_ID as SUBAGENT_ID_REAL } from '../public/dash-model.js';
@@ -3796,14 +3796,58 @@ describe('W7-T3: the fit chip, the probe and the text scale (markup and styleshe
   const rule = (sel) => new RegExp(`(^|[\\s}])${sel.replace(/[.[\]]/g, '\\$&')}\\s*\\{([^}]*)\\}`).exec(css)?.[2] ?? null;
   const head = /<div class="term-head"[^>]*>([\s\S]*?)<div class="pass-banner"/.exec(HTML)?.[1] ?? '';
 
-  test('(+) #fit-chip is a hidden span in .term-head, after the Live label and before the spacer; it is not a live region (announce() speaks for it)', () => {
-    const t = tag('fit-chip');
-    assert.match(t, /^<span class="fit"/);
+  // F1 (design F12 2.1): the chip became a button inside a wrapper that carries `hidden`, followed by its panel
+  const wrapHtml = /<span class="fit-wrap"[^>]*>([\s\S]*?)<\/span>\s*<span class="sp">/.exec(head)?.[1] ?? '';
+
+  test('(+) F1: #fit-wrap is a hidden span in .term-head, after the Live label and before the spacer; it is not a live region (announce() speaks for it)', () => {
+    const t = tag('fit-wrap');
+    assert.match(t, /^<span class="fit-wrap"/);
     assert.match(t, /\bhidden\b/);
     assert.doesNotMatch(t, /aria-live|role=|tabindex/);
-    assert.ok(head.indexOf('id="live-label"') >= 0 && head.indexOf('id="live-label"') < head.indexOf('id="fit-chip"'), 'after Live C x R');
-    assert.ok(head.indexOf('id="fit-chip"') < head.indexOf('<span class="sp">'), 'before the spacer');
-    assert.match(HTML, /id="fit-chip" hidden><\/span>/, 'empty: the script fills it');
+    assert.ok(head.indexOf('id="live-label"') >= 0 && head.indexOf('id="live-label"') < head.indexOf('id="fit-wrap"'), 'after Live C x R');
+    assert.ok(head.indexOf('id="fit-wrap"') < head.indexOf('<span class="sp">'), 'before the spacer');
+    assert.ok(wrapHtml.length > 0, 'the wrapper holds the button and the panel');
+  });
+
+  test('(+) F1: #fit-chip is a button (type="button") with aria-expanded="false" and aria-controls="fit-pop", empty, and visible: the wrapper hides it', () => {
+    const t = tag('fit-chip');
+    assert.match(t, /^<button type="button" class="fit"/);
+    assert.match(t, /\baria-expanded="false"/);
+    assert.match(t, /\baria-controls="fit-pop"/);
+    assert.doesNotMatch(t, /\bhidden\b|\btitle=|aria-label=|aria-live|role=|tabindex/);
+    assert.match(HTML, /id="fit-chip"[^>]*><\/button>/, 'empty: the script fills it');
+    assert.doesNotMatch(HTML, /<span class="fit" id="fit-chip"/, 'no span any more');
+    assert.ok(wrapHtml.indexOf('id="fit-chip"') >= 0 && wrapHtml.indexOf('id="fit-chip"') < wrapHtml.indexOf('id="fit-pop"'), 'the button comes first in the wrapper');
+  });
+
+  test('(+) F1: #fit-pop is a hidden group labelled by its heading, inside the wrapper, with the heading, reason, hint, note and the footer in this order', () => {
+    const t = tag('fit-pop');
+    assert.match(t, /^<div class="pop fit-pop"/);
+    assert.match(t, /\brole="group"/);
+    assert.match(t, /\baria-labelledby="fit-pop-h"/);
+    assert.match(t, /\bhidden\b/);
+    const ids = [...wrapHtml.slice(wrapHtml.indexOf('id="fit-pop"')).matchAll(/\bid="([^"]+)"/g)].map((m) => m[1]);
+    assert.deepEqual(ids, ['fit-pop', 'fit-pop-h', 'fit-pop-why', 'fit-pop-hint', 'fit-pop-note', 'fit-pop-close', 'fit-again']);
+    assert.match(tag('fit-pop-h'), /^<p class="pop-l"/);
+    assert.match(tag('fit-pop-why'), /^<p class="fit-pop-why"/);
+    for (const id of ['fit-pop-hint', 'fit-pop-note']) {
+      assert.match(tag(id), /^<p class="pop-h[ "]/, id);
+      assert.match(tag(id), /\bhidden\b/, id);
+    }
+    assert.match(tag('fit-pop-note'), /class="pop-h fit-pop-note"/);
+  });
+
+  test('(+) F1: Close comes before the action in the footer (Tab order), the action is the primary button, hidden until the script shows it, and is read with its reason', () => {
+    assert.match(tag('fit-pop-close'), /^<button type="button" class="btn" /);
+    const again = tag('fit-again');
+    assert.match(again, /^<button type="button" class="btn primary"/);
+    assert.match(again, /\bhidden\b/);
+    assert.match(again, /\baria-describedby="fit-pop-why"/);
+    assert.match(wrapHtml, /<div class="pop-f">\s*<button[^>]*id="fit-pop-close"[^>]*>Close<\/button>\s*<button[^>]*id="fit-again"[^>]*><\/button>\s*<\/div>/);
+  });
+
+  test('(+) F1: the chevron and the warning icon the button and the note draw are in the sprite', () => {
+    for (const n of ['chev', 'warn']) assert.match(HTML, new RegExp(`<symbol id="i-${n}" viewBox="0 0 16 16">`), n);
   });
 
   test('(+) the sprite draws the four chip icons in the 16 x 16 stroke style, each different, and every icon chipView names is among them', () => {
@@ -3832,6 +3876,84 @@ describe('W7-T3: the fit chip, the probe and the text scale (markup and styleshe
     assert.ok(colours.every(Boolean), `${colours}`);
     assert.equal(new Set(colours).size, 4, `four states, four colours: ${colours}`);
     assert.doesNotMatch(css, /color-mix\(|:has\(/);
+  });
+
+  // F1 (design F12 2.9): the look of the button, its chevron and the panel; tokens only, both themes through them
+  const esc = (sel) => sel.replace(/[.[\]()+*?^$|\\]/g, '\\$&');
+  const body = (sel) => new RegExp(`(?:^|[\\s}])${esc(sel)}\\s*\\{([^}]*)\\}`).exec(css)?.[1] ?? null;
+
+  test('(+) F1: the wrapper is the panel\'s anchor (relative, inline-flex) so opening it never changes the header', () => {
+    const r = body('.fit-wrap') ?? '';
+    assert.match(r, /position:\s*relative/);
+    assert.match(r, /display:\s*inline-flex/);
+  });
+
+  test('(+) F1: the button resets the font and keeps the chip\'s size, reach and weight: 24 px high (WCAG 2.2 target size), a pointer, small bold text', () => {
+    const r = body('button.fit') ?? '';
+    assert.match(r, /min-height:\s*24px/);
+    assert.match(r, /cursor:\s*pointer/);
+    assert.match(r, /font:\s*inherit/);
+    assert.match(r, /font-size:\s*var\(--fs-small\)/);
+    assert.match(r, /font-weight:\s*600/);
+    assert.ok(r.indexOf('font: inherit') < r.indexOf('font-size'), 'the shorthand first, or it would reset the size');
+    assert.match(body('button.fit') ?? '', /background:\s*transparent|background:\s*none/, 'a button has its own background; blocked has none of its own');
+  });
+
+  test('(+) F1: hover and the open state draw the edge in the text colour (blocked keeps its dashes: only the colour changes)', () => {
+    const r = new RegExp(`button\\.fit:hover,\\s*button\\.fit\\[aria-expanded="true"\\]\\s*\\{([^}]*)\\}`).exec(css)?.[1] ?? '';
+    assert.match(r, /border-color:\s*currentColor/);
+    assert.doesNotMatch(r, /border-style|border:|dashed|solid/, 'only the colour, so the dashed edge of blocked stays');
+  });
+
+  test('(+) F1: the focus ring is the page\'s own (:focus-visible), and nothing takes the outline of the chip away', () => {
+    assert.match(css, /(?:^|[\s}]):focus-visible\s*\{[^}]*outline:\s*2px solid var\(--focus\)/);
+    assert.doesNotMatch(css, /\.fit[^{]*\{[^}]*outline:\s*(none|0)/);
+  });
+
+  test('(+) F1: the chevron is 12 px and turns half a turn while the panel is open, without a transition', () => {
+    const base = body('.fit .chev') ?? '';
+    assert.match(base, /width:\s*12px/);
+    assert.match(base, /height:\s*12px/);
+    assert.match(base, /margin-left:\s*2px/);
+    assert.match(body('.fit[aria-expanded="true"] .chev') ?? '', /transform:\s*rotate\(180deg\)/);
+    assert.doesNotMatch(css, /transition[^;}]*/, 'no motion rules in this stylesheet for the chip');
+  });
+
+  test('(+) F1: the panel is absolute under the chip (z-index above the terminal), 320 px wide, never wider than the window, and not pushed by .pop\'s own justify-self', () => {
+    const r = body('.fit-pop') ?? '';
+    assert.match(r, /position:\s*absolute/);
+    assert.match(r, /top:\s*calc\(100% \+ 4px\)/);
+    assert.match(r, /right:\s*0/);
+    assert.match(r, /z-index:\s*30/);
+    assert.match(r, /width:\s*320px/);
+    assert.match(r, /max-width:\s*calc\(100vw - 16px\)/);
+    assert.match(r, /justify-self:\s*auto/);
+    assert.ok(css.indexOf('.fit-pop {') > css.indexOf('.pop {'), 'after .pop, which sets the width and the justify-self it overrides');
+  });
+
+  test('(+) F1: the placement rule of dom.js (data-x="start") has its CSS: left-aligned to the chip', () => {
+    const r = body('.fit-pop[data-x="start"]') ?? '';
+    assert.match(r, /left:\s*0/);
+    assert.match(r, /right:\s*auto/);
+  });
+
+  // the design names a --warn token; the page has none: its warnings (.alert[data-kind="warn"] .ic, .dlg-warn) use --idle
+  test('(+) F1: the reason, the note and the command are styled with tokens: small text colour, the page\'s warning colour (--idle) on the note\'s icon, a wrapping mono command', () => {
+    assert.match(body('.fit-pop-why') ?? '', /font-size:\s*var\(--fs-small\)/);
+    assert.match(body('.fit-pop-why') ?? '', /(^|[\s;])color:\s*var\(--text\)/);
+    assert.match(body('.fit-pop-note') ?? '', /(^|[\s;])color:\s*var\(--text\)/);
+    assert.match(body('.fit-pop-note .ic') ?? '', /(^|[\s;])color:\s*var\(--idle\)/);
+    const code = body('.fit-pop code') ?? '';
+    assert.match(code, /font:\s*var\(--fs-small\) var\(--mono\)/);
+    assert.match(code, /overflow-wrap:\s*anywhere/);
+  });
+
+  test('(−) F1: the new rules take no colour but tokens that exist, and no color-mix() or :has()', () => {
+    const own = ['.fit-wrap', 'button.fit', '.fit .chev', '.fit[aria-expanded="true"] .chev', '.fit-pop', '.fit-pop[data-x="start"]', '.fit-pop-why', '.fit-pop-note', '.fit-pop-note .ic', '.fit-pop code']
+      .map((sel) => body(sel) ?? '').join(' ');
+    assert.notEqual(own.trim(), '');
+    assert.doesNotMatch(own, /#[0-9a-f]{3,8}\b|rgba?\(|hsla?\(|color-mix\(|:has\(/i);
+    for (const v of own.match(/var\(--[a-z0-9-]+\)/g)) assert.ok(TOKENS.includes(`${v.slice(4, -1)}:`), `${v} is a token`);
   });
 
   test('(+) a header too narrow for the chip wraps instead of pushing the window sideways', () => {
@@ -4006,32 +4128,74 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     };
   };
 
-  const NAMES = ['function fitCall(', 'function fitMeasure()', 'function fitScale()', 'function fitResize()', 'function fitCaptured()', 'function renderFit(view)', 'function wireFit()', 'function setGone()', 'function handleCapture(r)'];
+  const NAMES = [
+    'function fitCall(', 'function fitMeasure()', 'function fitScale()', 'function fitResize()', 'function fitCaptured()',
+    'function drawFitPop()', 'function openFitPop()', 'function closeFitPop(refocus)', 'function fitAway(e)', 'function fitAgainEvent(e)',
+    'function renderFit(view)', 'function wireFitPop()', 'function wireFit()', 'function setGone()', 'function handleCapture(r)',
+  ];
+  /** An element that also answers contains() (the fake El has no tree search): the panel's focus and dismissal rules ask it. */
+  class Box extends El {
+    contains(n) {
+      for (let x = n; x; x = x.parent) if (x === this) return true;
+      return false;
+    }
+  }
+  const box = (tag, hidden = false) => {
+    const e = new Box(tag);
+    e.hidden = hidden;
+    return e;
+  };
   /**
    * The fit functions of session.js with a pane (or none), a terminal box of box.w x box.h CSS px, a glyph cell of cell.w / 100 x cell.h px
    * (the probe is 100 glyphs wide) and the route's replies in order (then FITTED). The box 827 x 562 with an 8 x 18 cell is 100 x 30 cells.
+   * F1: the chip is a button in a hidden wrapper (`wrap`) with its panel (`pop`, `close`, `again`, ...); `outside` is a button elsewhere in
+   * the header, `histToggle` the one focus goes to when the whole chip goes away; focus is the fake DOM's (focusState.el).
    */
-  const rig = ({ pane = '%12', box = { w: 827, h: 562 }, cell = { w: 800, h: 18 }, replies = [], observer = true } = {}) => {
+  const rig = ({ pane = '%12', box: size = { w: 827, h: 562 }, cell = { w: 800, h: 18 }, replies = [], observer = true } = {}) => {
     const clk = fakeClock();
-    const log = { calls: [], said: [], props: [], ro: null, observed: null, events: {}, gone: 0, overlays: [] };
-    const term = { clientWidth: box.w, clientHeight: box.h, style: { setProperty: (k, v) => log.props.push([k, v]) } };
+    const log = { calls: [], said: [], props: [], ro: null, observed: null, events: {}, gone: 0, overlays: [], placed: [] };
+    const term = { clientWidth: size.w, clientHeight: size.h, style: { setProperty: (k, v) => log.props.push([k, v]) } };
     const probe = { getBoundingClientRect: () => ({ width: cell.w, height: cell.h }) };
-    const chip = new El('span');
-    chip.hidden = true;
+    const wrap = box('span', true);
+    const chip = box('button');
+    chip.setAttribute('aria-expanded', 'false');
+    const pop = box('div', true);
+    const [popH, popWhy, popHint, popNote, foot] = [box('p'), box('p'), box('p', true), box('p', true), box('div')];
+    const [close, again] = [box('button'), box('button', true)];
+    close.textContent = 'Close';
+    foot.append(close, again);
+    pop.append(popH, popWhy, popHint, popNote, foot);
+    wrap.append(chip, pop);
+    const histToggle = box('button');
+    const outside = box('button');
+    const els = { term, 'fit-probe': probe, 'fit-chip': chip, 'fit-wrap': wrap, 'fit-pop': pop, 'fit-pop-h': popH, 'fit-pop-why': popWhy, 'fit-pop-hint': popHint, 'fit-pop-note': popNote, 'fit-pop-close': close, 'fit-again': again, 'hist-toggle': histToggle };
+    const docOn = new Map(); // the document's listeners by type: the page adds pointerdown while the panel is open and removes it when it closes
+    focusState.el = null;
     const ctx = {
-      paneId: pane, M: { cols: 0, rows: 0, gone: false, timer: 0, errors: 0, inputOff: false }, FIT: { planner: null, panel: null, scale: 1 }, SC: { planner: null, scrolled: false },
-      $: (id) => ({ term, 'fit-probe': probe, 'fit-chip': chip })[id],
+      paneId: pane, M: { cols: 0, rows: 0, gone: false, timer: 0, errors: 0, inputOff: false }, FIT: { planner: null, panel: null, scale: 1, view: null, ui: { pending: false, note: false }, pop: false }, SC: { planner: null, scrolled: false },
+      $: (id) => els[id],
       call: async (path, opts) => { log.calls.push({ path, ...opts }); return replies.length ? replies.shift() : FITTED; },
-      announce: (m) => log.said.push(m), h: hReal, icon: iconReal,
-      panelSize: panelSizeReal, scaleFor: scaleForReal, createFitPlanner: createFitPlannerReal,
+      announce: (m) => log.said.push(m), h: hReal, icon: iconReal, Node: El,
+      panelSize: panelSizeReal, scaleFor: scaleForReal, createFitPlanner: createFitPlannerReal, fitPanelView: fitPanelViewReal, stillOffSay: stillOffSayReal,
+      placeMenuX: (m, btn) => log.placed.push(['place', m === pop, btn === chip, pop.hidden]),
+      clearMenuPlacement: (m) => log.placed.push(['clear', m === pop, pop.hidden]),
       setTimeout: clk.setTimeout, clearTimeout: clk.clearTimeout,
       ResizeObserver: observer ? class { constructor(cb) { log.ro = cb; } observe(el) { log.observed = el; } } : undefined,
-      document: { fonts: { ready: Promise.resolve() } },
+      document: {
+        fonts: { ready: Promise.resolve() },
+        get activeElement() { return focusState.el; },
+        addEventListener: (type, fn) => { if (!docOn.has(type)) docOn.set(type, new Set()); docOn.get(type).add(fn); },
+        removeEventListener: (type, fn) => { docOn.get(type)?.delete(fn); },
+      },
       window: { addEventListener: (type, fn) => { log.events[type] = fn; } },
       DS: { stop() {} }, setLive() {}, setPaneState() {}, setInputEnabled() {}, showOverlay: (title) => log.overlays.push(title), recovered() {}, serverMessage: () => '',
     };
-    const fns = vm.runInNewContext(`${NAMES.map(fnOf).join('\n')}; ({ fitCall, fitMeasure, fitScale, fitResize, fitCaptured, renderFit, wireFit, setGone, handleCapture })`, ctx);
-    return { ...fns, ctx, log, clk, term, chip };
+    const fns = vm.runInNewContext(`${NAMES.map(fnOf).join('\n')}; ({ fitCall, fitMeasure, fitScale, fitResize, fitCaptured, drawFitPop, openFitPop, closeFitPop, fitAgainEvent, renderFit, wireFitPop, wireFit, setGone, handleCapture })`, ctx);
+    const pointerdown = (target) => { for (const fn of [...(docOn.get('pointerdown') ?? [])]) fn({ type: 'pointerdown', target }); };
+    return {
+      ...fns, ctx, log, clk, term, chip, wrap, pop, popH, popWhy, popHint, popNote, close, again, histToggle, outside, pointerdown,
+      listeners: (type) => docOn.get(type)?.size ?? 0,
+    };
   };
   const calls = (r) => norm(r.log.calls);
   const PUT = (cols, rows, open) => ({ path: '/api/app/pane/%2512/fit', method: 'PUT', json: { cols, rows, open } });
@@ -4475,15 +4639,21 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
   test('(+) the chip is hidden until the first answer, then shows one of four states with colour (data-k), icon, words and the reason as its title', async () => {
     const r = rig({ replies: [answer('fitted')] });
     r.wireFit();
-    assert.equal(r.chip.hidden, true);
+    assert.equal(r.wrap.hidden, true);
     r.fitCaptured();
     await r.clk.advance(0);
+    assert.equal(r.wrap.hidden, false, 'F1: the wrapper carries hidden, the button inside it does not');
     assert.equal(r.chip.hidden, false);
     assert.equal(r.chip.getAttribute('data-k'), 'fitted');
-    assert.equal(r.chip.kids.length, 2);
+    assert.equal(r.chip.kids.length, 3, 'icon, words, chevron');
     assert.equal(r.chip.kids[0].kids[0].getAttribute('href'), '#i-fit');
     assert.equal(r.chip.kids[1].textContent, 'Fit · fills the panel');
+    assert.equal(r.chip.kids[2].kids[0].getAttribute('href'), '#i-chev');
+    assert.equal(r.chip.kids[2].getAttribute('aria-hidden'), 'true');
+    assert.match(r.chip.kids[2].getAttribute('class'), /\bchev\b/);
     assert.equal(r.chip.getAttribute('title'), chipViewReal(FITTED.body).title);
+    assert.equal(r.chip.getAttribute('aria-label'), 'Fit: fills the panel', 'F1: the button\'s name is the label, the words and the chevron are not read twice');
+    assert.equal(r.chip.getAttribute('aria-expanded'), 'false');
   });
 
   test('(+) all four states draw their own data-k, icon href, text and title; the six reasons draw their sentences', () => {
@@ -4505,7 +4675,7 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
       'size-option': 'This tmux window has a window-size setting nika does not change',
       'foreign-tag': 'Another program marks this tmux window',
       changed: 'The tmux window changed while nika was fitting it, so nika put it back',
-      'user-change': 'You changed this tmux window, so nika put it back. Reopen the session window to fit again',
+      'user-change': 'You changed this tmux window, so nika put it back',
     };
     for (const [reason, title] of Object.entries(SIX)) {
       r.renderFit(chipViewReal(answer('blocked', reason).body));
@@ -4541,7 +4711,7 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
       r.wireFit();
       r.fitCaptured();
       await r.clk.advance(0);
-      assert.equal(r.chip.hidden, true);
+      assert.equal(r.wrap.hidden, true);
       assert.deepEqual(r.log.said, []);
     }
   });
@@ -4551,11 +4721,12 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     r.wireFit();
     r.fitCaptured();
     await r.clk.advance(0);
-    assert.equal(r.chip.hidden, false);
+    assert.equal(r.wrap.hidden, false);
     r.setGone();
-    assert.equal(r.chip.hidden, true);
+    assert.equal(r.wrap.hidden, true);
     assert.equal(r.chip.getAttribute('data-k'), null);
     assert.equal(r.chip.getAttribute('title'), null);
+    assert.equal(r.chip.getAttribute('aria-label'), null);
     assert.equal(r.chip.kids.length, 0);
   });
 
@@ -4565,7 +4736,7 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     r.wireFit();
     r.fitCaptured();
     await r.clk.advance(0);
-    assert.equal(r.chip.hidden, false);
+    assert.equal(r.wrap.hidden, false);
     const all = JSON.stringify([r.chip.attrs, r.chip.textContent, r.log.said]);
     assert.doesNotMatch(all, /img|onerror/);
     assert.equal(r.chip.getAttribute('title'), 'nika is not fitting this tmux window');
@@ -4576,6 +4747,403 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     assert.match(src, /h\('span', \{ text: view\.text \}\)/);
     assert.match(src, /setAttribute\('title', view\.title\)/);
     assert.deepEqual(findSinks(src), []);
+  });
+
+  // ---- F1 (design F12 2): the chip is a button; its panel, its exits, and Fit again ----------------------------------------------------
+
+  const NOTE = 'nika could not fit the window just now. It tries again within 5 seconds.';
+  const BLOCKED = answer('blocked', 'user-change');
+  const REFUSED = { status: 502, body: { error: 'tmux_failed', message: 'tmux said no' } };
+  /** A page whose first answer has put a chip up: the first replies are the route's, in order. */
+  const chipped = async (replies) => {
+    const r = rig({ replies });
+    r.wireFit();
+    r.ctx.M.cols = 120;
+    r.ctx.M.rows = 39;
+    r.fitCaptured();
+    await r.clk.advance(0);
+    return r;
+  };
+  const opened = async (replies) => {
+    const r = await chipped(replies);
+    r.chip.click();
+    return r;
+  };
+  const isClosed = (r) => r.pop.hidden === true && r.chip.getAttribute('aria-expanded') === 'false' && r.listeners('pointerdown') === 0;
+
+  test('(+) F1: before the first click the panel is shut, nothing listens on the document, nothing was placed, and the window\'s resize is wired', async () => {
+    const r = await chipped([BLOCKED]);
+    assert.equal(isClosed(r), true);
+    assert.deepEqual(r.log.placed, []);
+    assert.equal(typeof r.log.events.resize, 'function');
+    assert.equal(r.wrap.hidden, false);
+  });
+
+  test('(+) F1: a click opens the panel: heading, reason and hint from the table, the action shown, focus on Fit again (blocked, user-change)', async () => {
+    const r = await opened([BLOCKED]);
+    assert.equal(r.pop.hidden, false);
+    assert.equal(r.chip.getAttribute('aria-expanded'), 'true');
+    assert.equal(focusState.el, r.again);
+    assert.equal(r.popH.textContent, 'Fit: off');
+    assert.equal(r.popWhy.textContent, 'You changed this tmux window, so nika put it back');
+    assert.equal(r.popHint.hidden, false);
+    assert.equal(r.popHint.textContent, 'Fit again sizes the window to this panel once more. After a change of your own nika stays off until you ask.');
+    assert.equal(r.popNote.hidden, true);
+    assert.equal(r.again.hidden, false);
+    assert.equal(r.again.textContent, 'Fit again');
+    assert.equal(r.again.getAttribute('aria-disabled'), null);
+    assert.equal(r.listeners('pointerdown'), 1);
+  });
+
+  test('(+) F1: fitted opens an info-only panel: heading and reason, no hint, no action, focus on Close; zoomed adds its hint', async () => {
+    const f = await opened([answer('fitted')]);
+    assert.deepEqual([f.popH.textContent, f.popHint.hidden, f.again.hidden, focusState.el === f.close], ['Fit: fills the panel', true, true, true]);
+    assert.equal(f.popWhy.textContent, chipViewReal(FITTED.body).title);
+    const z = await opened([answer('zoomed', 'panel-smaller')]);
+    assert.deepEqual([z.popH.textContent, z.popHint.hidden, z.again.hidden, focusState.el === z.close], ['Fit: zoomed, text scaled', false, true, true]);
+    assert.match(z.popHint.textContent, /^To fill the panel without scaled text, make this window larger or hide the transcript \(Ctrl\+Shift\+H\)\.$/);
+  });
+
+  test('(+) F1: the panel is placed by dom.js: clearMenuPlacement while it is hidden, then placeMenuX(panel, chip) once it is shown (it needs its width); again on every open', async () => {
+    const r = await opened([BLOCKED]);
+    assert.deepEqual(r.log.placed, [['clear', true, true], ['place', true, true, false]]);
+    r.chip.click(); // closes
+    r.chip.click(); // opens again
+    assert.equal(r.log.placed.length, 4);
+    assert.deepEqual(r.log.placed.slice(2), r.log.placed.slice(0, 2));
+  });
+
+  test('(+) F1: session.js imports placeMenuX and clearMenuPlacement from dom.js and keeps no placement logic of its own', () => {
+    const dom = /import \{([^}]*)\} from '\.\/dom\.js';/.exec(JS['session.js'])?.[1] ?? '';
+    for (const n of ['placeMenuX', 'clearMenuPlacement']) assert.match(dom, new RegExp(`\\b${n}\\b`), n);
+    for (const head of ['function openFitPop()', 'function closeFitPop(refocus)', 'function drawFitPop()', 'function fitAway(e)', 'function fitAgainEvent(e)', 'function wireFitPop()']) {
+      assert.doesNotMatch(fnOf(head), /getBoundingClientRect|innerWidth|offsetWidth|menuSpan|data-x|\.style\b/, head);
+    }
+    assert.match(fnOf('function openFitPop()'), /clearMenuPlacement\(pop\);[\s\S]*pop\.hidden = false;[\s\S]*placeMenuX\(pop, chip\);/);
+  });
+
+  test('(+) F1: Esc in the panel closes it, puts focus on the chip, and stops the key: the page\'s own Esc handlers never see it', async () => {
+    const r = await opened([BLOCKED]);
+    const e = r.pop.fire('keydown', { key: 'Escape' });
+    assert.deepEqual([e.defaultPrevented, e.stopped], [true, true]);
+    assert.equal(isClosed(r), true);
+    assert.equal(focusState.el, r.chip);
+  });
+
+  test('(−) F1: other keys in the panel do nothing; Esc on the chip while the panel is shut is left to the page (not prevented, not stopped)', async () => {
+    const r = await opened([BLOCKED]);
+    const k = r.pop.fire('keydown', { key: 'Enter' });
+    assert.deepEqual([k.defaultPrevented, k.stopped], [false, undefined]);
+    assert.equal(r.pop.hidden, false);
+    r.chip.fire('keydown', { key: 'Escape' }); // focus came back to the chip with the panel open: Esc still closes it
+    assert.equal(isClosed(r), true);
+    const e = r.chip.fire('keydown', { key: 'Escape' });
+    assert.deepEqual([e.defaultPrevented, e.stopped], [false, undefined]);
+  });
+
+  test('(+) F1: Close closes it with focus on the chip; a second click on the chip closes it too', async () => {
+    const r = await opened([BLOCKED]);
+    r.close.click();
+    assert.equal(isClosed(r), true);
+    assert.equal(focusState.el, r.chip);
+    r.chip.click();
+    focusState.el = r.again;
+    r.chip.click();
+    assert.equal(isClosed(r), true);
+    assert.equal(focusState.el, r.chip);
+  });
+
+  test('(+) F1: a pointerdown outside the panel and the chip closes it and does not take focus; inside it, on the chip or on its icon it does not', async () => {
+    const r = await opened([BLOCKED]);
+    for (const inside of [r.popWhy, r.pop, r.chip, r.chip.kids[0], r.again]) {
+      r.pointerdown(inside);
+      assert.equal(r.pop.hidden, false);
+    }
+    focusState.el = r.outside;
+    r.pointerdown(r.outside);
+    assert.equal(isClosed(r), true);
+    assert.equal(focusState.el, r.outside, 'it stays where the user went');
+    assert.equal(r.listeners('pointerdown'), 0, 'the document listener is gone with the panel');
+  });
+
+  test('(−) F1: a shut panel listens to nothing: opening and closing again and again leaves no document listener behind, and a pointerdown then does nothing', async () => {
+    const r = await chipped([BLOCKED]);
+    for (let i = 0; i < 4; i += 1) {
+      r.chip.click();
+      assert.equal(r.listeners('pointerdown'), 1);
+      r.close.click();
+      assert.equal(r.listeners('pointerdown'), 0);
+    }
+    focusState.el = r.outside;
+    r.pointerdown(r.outside);
+    assert.equal(focusState.el, r.outside);
+  });
+
+  test('(+) F1: Tab out of the panel (focus goes to something outside it and not the chip) closes it without taking focus; to the chip, or into the panel, or nowhere, it stays', async () => {
+    const r = await opened([BLOCKED]);
+    r.pop.fire('focusout', { relatedTarget: r.chip });
+    r.chip.fire('focusout', { relatedTarget: r.close });
+    r.pop.fire('focusout', { relatedTarget: r.again });
+    r.pop.fire('focusout', { relatedTarget: null });
+    assert.equal(r.pop.hidden, false);
+    focusState.el = r.outside;
+    r.pop.fire('focusout', { relatedTarget: r.outside });
+    assert.equal(isClosed(r), true);
+    assert.equal(focusState.el, r.outside);
+    r.chip.click();
+    r.chip.fire('focusout', { relatedTarget: r.outside }); // shift+Tab off the chip while the panel is open
+    assert.equal(isClosed(r), true);
+  });
+
+  test('(+) F1: the window\'s resize closes the panel; focus goes to the chip only when it was inside the panel', async () => {
+    const r = await opened([BLOCKED]);
+    assert.equal(focusState.el, r.again);
+    r.log.events.resize();
+    assert.equal(isClosed(r), true);
+    assert.equal(focusState.el, r.chip);
+    r.chip.click();
+    focusState.el = r.outside;
+    r.log.events.resize();
+    assert.equal(isClosed(r), true);
+    assert.equal(focusState.el, r.outside);
+    r.log.events.resize(); // shut already: nothing happens
+    assert.equal(focusState.el, r.outside);
+  });
+
+  test('(+) F1: Fit again reads "Fitting...", is aria-disabled (not disabled: focus stays), sends one PUT with open: true; the answer fitted closes the panel, focuses the chip and shows fitted', async () => {
+    const r = await opened([BLOCKED, answer('fitted')]);
+    assert.deepEqual(calls(r), [PUT(100, 30, true)]);
+    r.again.click();
+    assert.deepEqual(calls(r), [PUT(100, 30, true), PUT(100, 30, true)]);
+    assert.equal(r.again.textContent, 'Fitting…');
+    assert.equal(r.again.getAttribute('aria-disabled'), 'true');
+    assert.equal(r.again.disabled, false);
+    assert.equal(focusState.el, r.again);
+    assert.equal(r.pop.hidden, false);
+    await r.clk.advance(0);
+    assert.equal(isClosed(r), true);
+    assert.equal(focusState.el, r.chip);
+    assert.equal(r.chip.getAttribute('data-k'), 'fitted');
+    assert.equal(r.log.said.length, 2);
+    assert.equal(r.log.said[1], chipViewReal(FITTED.body).say);
+    assert.equal(r.again.textContent, 'Fitting…', 'the next draw resets it; a shut panel is not drawn');
+  });
+
+  test('(+) F1: an answer zoomed closes the panel like fitted', async () => {
+    const r = await opened([BLOCKED, answer('zoomed', 'panel-smaller')]);
+    r.again.click();
+    await r.clk.advance(0);
+    assert.equal(isClosed(r), true);
+    assert.equal(focusState.el, r.chip);
+    assert.equal(r.chip.getAttribute('data-k'), 'zoomed');
+  });
+
+  test('(+) F1: the same state again keeps the panel open, enables the button, keeps focus there and announces "Fit is still off. " + the reason', async () => {
+    const r = await opened([answer('blocked', 'changed'), answer('blocked', 'changed')]);
+    r.again.click();
+    assert.equal(r.again.getAttribute('aria-disabled'), 'true');
+    await r.clk.advance(0);
+    assert.equal(r.pop.hidden, false);
+    assert.equal(r.again.textContent, 'Fit again');
+    assert.equal(r.again.getAttribute('aria-disabled'), null);
+    assert.equal(focusState.el, r.again);
+    assert.equal(r.log.said.length, 2);
+    assert.equal(r.log.said[1], 'Fit is still off. The tmux window changed while nika was fitting it, so nika put it back');
+  });
+
+  test('(+) F1: another blocked reason with no action keeps the panel open, redraws it, announces the new state once, and moves focus to Close (the button it was on is gone)', async () => {
+    const r = await opened([answer('blocked', 'changed'), answer('blocked', 'user-zoom')]);
+    r.again.click();
+    await r.clk.advance(0);
+    assert.equal(r.pop.hidden, false);
+    assert.equal(r.again.hidden, true);
+    assert.equal(focusState.el, r.close);
+    assert.equal(r.popWhy.textContent, 'You zoomed another pane in this window; nika leaves it');
+    assert.equal(r.log.said.length, 2);
+    assert.equal(r.log.said[1], 'Fit: off. You zoomed another pane in this window; nika leaves it');
+  });
+
+  test('(+) F1: another blocked reason that has an action keeps focus on the button', async () => {
+    const r = await opened([answer('blocked', 'user-change'), answer('blocked', 'changed')]);
+    r.again.click();
+    await r.clk.advance(0);
+    assert.deepEqual([r.pop.hidden, r.again.hidden, focusState.el === r.again, r.again.getAttribute('aria-disabled')], [false, false, true, null]);
+    assert.equal(r.popHint.textContent, 'Fit again tries once more.');
+  });
+
+  test('(−) F1: a refused ask shows the note (with the warning icon), enables the button again, keeps focus, and announces the note', async () => {
+    const r = await opened([BLOCKED, REFUSED]);
+    r.again.click();
+    await r.clk.advance(0);
+    assert.equal(r.pop.hidden, false);
+    assert.equal(r.popNote.hidden, false);
+    assert.equal(r.popNote.textContent, NOTE);
+    assert.equal(r.popNote.kids[0].kids[0].getAttribute('href'), '#i-warn');
+    assert.equal(r.again.textContent, 'Fit again');
+    assert.equal(r.again.getAttribute('aria-disabled'), null);
+    assert.equal(focusState.el, r.again);
+    assert.equal(r.log.said.at(-1), NOTE);
+    assert.equal(r.chip.getAttribute('data-k'), 'blocked', 'the chip is as it was');
+    assert.doesNotMatch(JSON.stringify(r.log.said), /tmux said no/, 'the server\'s message is never shown');
+  });
+
+  test('(−) F1: the note goes away when the panel is closed and opened again, and when the next ask starts', async () => {
+    const r = await opened([BLOCKED, REFUSED, REFUSED]);
+    r.again.click();
+    await r.clk.advance(0);
+    assert.equal(r.popNote.hidden, false);
+    r.again.click();
+    assert.equal(r.popNote.hidden, true, 'a new ask starts clean');
+    await r.clk.advance(0);
+    assert.equal(r.popNote.hidden, false);
+    r.close.click();
+    r.chip.click();
+    assert.equal(r.popNote.hidden, true, 'closing forgets it');
+  });
+
+  test('(−) F1: a second click while the ask is pending sends nothing and does not reach the planner (the page ignores aria-disabled itself)', async () => {
+    const r = await opened([BLOCKED, answer('fitted')]);
+    let asks = 0;
+    const real = r.ctx.FIT.planner.reopen;
+    r.ctx.FIT.planner.reopen = () => { asks += 1; return real(); };
+    r.again.click();
+    r.again.click();
+    r.again.click();
+    assert.equal(asks, 1);
+    assert.equal(r.log.calls.length, 2);
+  });
+
+  test('(−) F1: no Fit again for user-zoom, size-option, foreign-tag, fitted and zoomed; focus goes to Close', async () => {
+    for (const [state, reason] of [['blocked', 'user-zoom'], ['blocked', 'size-option'], ['blocked', 'foreign-tag'], ['fitted', null], ['zoomed', 'panel-smaller']]) {
+      const r = await opened([answer(state, reason)]);
+      assert.equal(r.again.hidden, true, `${state} ${reason}`);
+      assert.equal(focusState.el, r.close, `${state} ${reason}`);
+    }
+  });
+
+  test('(+) F1: foreign-tag shows the command as text in a code element under its hint', async () => {
+    const r = await opened([answer('blocked', 'foreign-tag')]);
+    assert.equal(r.popHint.hidden, false);
+    const code = r.popHint.all((n) => n.tag === 'code');
+    assert.equal(code.length, 1);
+    assert.equal(code[0].textContent, 'tmux set-option -wu @nika-fit');
+    assert.match(r.popHint.textContent, /^If no other nika runs, clear the mark in that tmux window, then nika fits it by itself:tmux set-option -wu @nika-fit$/);
+  });
+
+  test('(+) F1: another nika window offers "Fit here", which sends open: true like Fit again', async () => {
+    const r = await opened([answer('other'), answer('fitted')]);
+    assert.equal(r.again.textContent, 'Fit here');
+    assert.equal(r.popHint.textContent, 'The other nika window stops fitting it.');
+    assert.equal(focusState.el, r.again);
+    r.again.click();
+    assert.deepEqual(calls(r).at(-1), PUT(100, 30, true));
+    await r.clk.advance(0);
+    assert.equal(r.chip.getAttribute('data-k'), 'fitted');
+    assert.equal(isClosed(r), true);
+  });
+
+  test('(+) F1: while the panel is open a new view redraws it in place: it stays open, focus stays on the button while the button stays, moves to Close when it goes, and each change is announced', () => {
+    const r = rig();
+    r.wireFit();
+    const view = (state, reason) => chipViewReal(answer(state, reason).body);
+    r.renderFit(view('blocked', 'user-change'));
+    r.chip.click();
+    r.renderFit(view('blocked', 'changed'));
+    assert.deepEqual([r.pop.hidden, r.popWhy.textContent, focusState.el === r.again], [false, 'The tmux window changed while nika was fitting it, so nika put it back', true]);
+    r.renderFit(view('blocked', 'user-zoom'));
+    assert.deepEqual([r.pop.hidden, r.again.hidden, focusState.el === r.close], [false, true, true]);
+    r.renderFit(view('other', null));
+    assert.deepEqual([r.pop.hidden, r.again.hidden, r.again.textContent, r.popH.textContent], [false, false, 'Fit here', 'Fit: another window']);
+    assert.equal(r.log.said.length, 4);
+  });
+
+  test('(+) F1: the chip hidden by a 403 while the panel is open closes the panel, hides the wrapper and puts focus on the transcript button', async () => {
+    const r = await opened([BLOCKED, { status: 403, body: { error: 'forbidden' } }]);
+    r.again.click();
+    await r.clk.advance(0);
+    assert.equal(r.wrap.hidden, true);
+    assert.equal(isClosed(r), true);
+    assert.equal(focusState.el, r.histToggle);
+    assert.equal(r.chip.kids.length, 0);
+    assert.equal(r.popNote.hidden, true, 'a 403 is not a note: the chip is gone');
+  });
+
+  test('(+) F1: the pane going away while the panel is open does the same; focus elsewhere stays where it is', async () => {
+    const r = await opened([BLOCKED]);
+    r.setGone();
+    assert.equal(r.wrap.hidden, true);
+    assert.equal(isClosed(r), true);
+    assert.equal(focusState.el, r.histToggle);
+    const q = await opened([BLOCKED]);
+    focusState.el = q.outside;
+    q.setGone();
+    assert.equal(q.wrap.hidden, true);
+    assert.equal(isClosed(q), true);
+    assert.equal(focusState.el, q.outside);
+  });
+
+  test('(+) F1: a pending ask forgotten by the chip going away does not come back: the next panel reads "Fit again", not "Fitting..."', async () => {
+    const r = await opened([BLOCKED, answer('fitted')]);
+    r.again.click();
+    assert.equal(r.again.textContent, 'Fitting…');
+    r.setGone();
+    await r.clk.advance(0);
+    r.renderFit(chipViewReal(BLOCKED.body));
+    r.chip.click();
+    assert.equal(r.again.textContent, 'Fit again');
+    assert.equal(r.again.getAttribute('aria-disabled'), null);
+  });
+
+  test('(+) F1: with the panel closed, an answer that arrives later changes no focus and opens nothing; the announcement still comes', async () => {
+    const r = await opened([answer('blocked', 'changed'), answer('blocked', 'changed')]);
+    r.again.click();
+    r.close.click();
+    focusState.el = r.outside;
+    await r.clk.advance(0);
+    assert.equal(isClosed(r), true);
+    assert.equal(focusState.el, r.outside);
+    assert.equal(r.log.said.at(-1), 'Fit is still off. The tmux window changed while nika was fitting it, so nika put it back');
+    r.chip.click();
+    assert.equal(r.again.textContent, 'Fit again', 'the ask is over: the next open is not pending');
+  });
+
+  test('(−) F1: a refusal that arrives after the panel was closed leaves no note behind for the next open, and still announces it', async () => {
+    const r = await opened([BLOCKED, REFUSED]);
+    r.again.click();
+    r.close.click();
+    await r.clk.advance(0);
+    assert.equal(r.log.said.at(-1), NOTE);
+    assert.equal(r.popNote.hidden, true);
+    r.chip.click();
+    assert.equal(r.popNote.hidden, true);
+    assert.equal(r.again.textContent, 'Fit again');
+  });
+
+  test('(−) F1: nothing the server says reaches the panel: a hostile reason, message or pane is never in its text or attributes', async () => {
+    const hostile = '<img src=x onerror=alert(1)>';
+    const r = await opened([{ status: 200, body: { fit: { state: 'blocked', reason: hostile, message: hostile, pane: { cols: hostile, rows: 1 } }, message: hostile } }]);
+    const all = JSON.stringify([r.popH, r.popWhy, r.popHint, r.popNote, r.again, r.chip].map((e) => [e.attrs, e.textContent]));
+    assert.doesNotMatch(all, /img|onerror/);
+    assert.equal(r.popWhy.textContent, 'nika is not fitting this tmux window');
+    assert.equal(r.again.textContent, 'Fit again');
+  });
+
+  test('(+) F1: the panel is written with h() text, textContent and the icon sprite only: no markup sink anywhere in the new functions', () => {
+    for (const head of ['function drawFitPop()', 'function openFitPop()', 'function closeFitPop(refocus)', 'function fitAway(e)', 'function fitAgainEvent(e)', 'function wireFitPop()', 'function renderFit(view)']) {
+      assert.deepEqual(findSinks(fnOf(head)), [], head);
+    }
+    assert.match(fnOf('function drawFitPop()'), /\.textContent = /);
+    assert.match(fnOf('function renderFit(view)'), /setAttribute\('aria-label', view\.label\)/);
+    assert.match(fnOf('function renderFit(view)'), /icon\('chev', 'ic chev'\)/);
+  });
+
+  test('(+) F1: wireFit hands the planner fitAgain and wires the panel; the pagehide, pageshow and resize handlers stay separate', async () => {
+    const wire = fnOf('function wireFit()');
+    assert.match(wire, /fitAgain:\s*fitAgainEvent/);
+    assert.match(wire, /wireFitPop\(\);/);
+    const r = rig();
+    r.wireFit();
+    assert.deepEqual(Object.keys(r.log.events).sort(), ['pagehide', 'pageshow', 'resize']);
   });
 });
 

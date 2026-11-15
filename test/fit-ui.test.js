@@ -4,12 +4,14 @@
 // is asserted exactly. Fixtures are synthetic.
 import { test, describe, after } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
-import { panelSize, scaleFor, chipView, createFitPlanner, BEAT_MS, DEBOUNCE_MS, SCALE_MIN } from '../public/fit-ui.js';
+import { panelSize, scaleFor, chipView, fitPanelView, stillOffSay, createFitPlanner, BEAT_MS, DEBOUNCE_MS, SCALE_MIN } from '../public/fit-ui.js';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const DOT = '·';
+const readSrc = (f) => fs.readFileSync(path.join(PUBLIC, f), 'utf8');
 const flush = () => new Promise((resolve) => { setImmediate(resolve); });
 
 describe('panelSize: the panel in cells (design 8.1)', () => {
@@ -85,7 +87,7 @@ describe('chipView: the chip from the PUT body (design 8.4, owner answer Q5, orc
     'size-option': 'This tmux window has a window-size setting nika does not change',
     'foreign-tag': 'Another program marks this tmux window',
     changed: 'The tmux window changed while nika was fitting it, so nika put it back',
-    'user-change': 'You changed this tmux window, so nika put it back. Reopen the session window to fit again',
+    'user-change': 'You changed this tmux window, so nika put it back', // F1: the panel's Fit again replaces "Reopen the session window"
   };
 
   test('(+) the four states each have their own state word, icon and text', () => {
@@ -152,13 +154,34 @@ describe('chipView: the chip from the PUT body (design 8.4, owner answer Q5, orc
     }
   });
 
+  // ---- F1 (design F12 section 2): the chip is a button; its name is the label, and the user-change title no longer sends the user away ----
+  test('(+) F1: every view carries its label (the button\'s name and the panel\'s heading), and the announcement is label + title', () => {
+    const labels = { fitted: 'Fit: fills the panel', zoomed: 'Fit: zoomed, text scaled', blocked: 'Fit: off', other: 'Fit: another window' };
+    for (const [state, label] of Object.entries(labels)) {
+      const v = chipView(body(state, state === 'zoomed' ? 'panel-smaller' : state === 'blocked' ? 'user-zoom' : null));
+      assert.equal(v.label, label, state);
+      assert.equal(v.say, `${label}. ${v.title}`, state);
+    }
+  });
+
+  test('(+) F1: the user-change title says what happened and no longer tells the user to reopen the window', () => {
+    assert.equal(chipView(body('blocked', 'user-change')).title, 'You changed this tmux window, so nika put it back');
+  });
+
+  test('(−) F1: no title, label or announcement still contains the "Reopen the session window" sentence', () => {
+    for (const reason of [...Object.keys(SIX), null]) {
+      const v = chipView(body(reason === 'panel-smaller' ? 'zoomed' : 'blocked', reason));
+      assert.doesNotMatch(JSON.stringify(v), /reopen/i, String(reason));
+    }
+  });
+
   test('(+) every string in a view is plain ASCII (the middle dot is an escape in the source)', () => {
     const states = [body('fitted'), body('other'), ...Object.keys(SIX).map((r) => body(r === 'panel-smaller' ? 'zoomed' : 'blocked', r))];
     for (const b of states) {
       const v = chipView(b);
       assert.equal(typeof v.text, 'string');
       assert.equal(v.text.includes(DOT), true);
-      for (const s of [v.title, v.say, v.icon, v.key]) assert.equal([...s].every((ch) => ch.codePointAt(0) < 128), true, s);
+      for (const s of [v.title, v.say, v.icon, v.key, v.label]) assert.equal([...s].every((ch) => ch.codePointAt(0) < 128), true, s);
     }
   });
 });
@@ -195,17 +218,19 @@ function clock() {
 const OK = (state = 'fitted', reason = null) => ({ status: 200, body: { fit: { state, reason, pane: { cols: 120, rows: 39 }, panes: 3, userZoom: false } } });
 
 /** A planner with a fake route: every body sent waits in `pending` until answer() gives its reply. */
-function rig() {
+function rig({ again = true } = {}) {
   const clk = clock();
-  const log = { sent: [], released: 0, chips: [] };
+  const log = { sent: [], released: 0, chips: [], again: [] };
   const pending = [];
-  const planner = createFitPlanner({
+  const io = {
     send: (b) => new Promise((resolve, reject) => { log.sent.push(b); pending.push({ resolve, reject }); }),
     release: () => { log.released += 1; return Promise.resolve({ status: 200, body: { released: true } }); },
     after: clk.after,
     cancel: clk.cancel,
     chip: (v) => log.chips.push(v),
-  });
+  };
+  if (again) io.fitAgain = (e) => log.again.push(e); // F1: the optional sink for the user's Fit again; a rig without it proves it is optional
+  const planner = createFitPlanner(io);
   return {
     planner, clk, log,
     get inFlight() { return pending.length; },
@@ -686,6 +711,312 @@ describe('createFitPlanner: what the answers do (design 8.5, 9; orchestrator rul
     await r.clk.advance(BEAT_MS * 3);
     assert.equal(r.log.sent.length, 1);
     assert.equal(r.clk.pending, 0);
+  });
+});
+
+describe('fitPanelView: the panel behind the chip (F1, design F12 2.3)', () => {
+  const body = (state, reason = null) => ({ fit: { state, reason, pane: { cols: 120, rows: 39 }, panes: 3, userZoom: false } });
+  const IDLE = { pending: false, note: false };
+  const panel = (state, reason, ui = IDLE) => fitPanelView(chipView(body(state, reason)), ui);
+  const NOTE = 'nika could not fit the window just now. It tries again within 5 seconds.';
+  const ROWS = [
+    // [state, reason, key, hint, code, action]
+    ['fitted', null, 'fitted:', null, null, null],
+    ['zoomed', 'panel-smaller', 'zoomed:', 'To fill the panel without scaled text, make this window larger or hide the transcript (Ctrl+Shift+H).', null, null],
+    ['blocked', 'user-change', 'blocked:user-change', 'Fit again sizes the window to this panel once more. After a change of your own nika stays off until you ask.', null, 'Fit again'],
+    ['blocked', 'changed', 'blocked:changed', 'Fit again tries once more.', null, 'Fit again'],
+    ['blocked', null, 'blocked:', null, null, 'Fit again'],
+    ['blocked', 'user-zoom', 'blocked:user-zoom', 'Unzoom it in tmux (prefix, then z) and nika fits the window by itself.', null, null],
+    ['blocked', 'size-option', 'blocked:size-option', null, null, null],
+    ['blocked', 'foreign-tag', 'blocked:foreign-tag', 'If no other nika runs, clear the mark in that tmux window, then nika fits it by itself:', 'tmux set-option -wu @nika-fit', null],
+    ['other', null, 'other:', 'The other nika window stops fitting it.', null, 'Fit here'],
+  ];
+
+  for (const [state, reason, key, hint, code, action] of ROWS) {
+    test(`(+) ${key}: heading and why are the chip's label and title; hint, code and action are the table's`, () => {
+      const view = chipView(body(state, reason));
+      assert.equal(view.key, key);
+      const p = fitPanelView(view, IDLE);
+      assert.equal(p.heading, view.label);
+      assert.equal(p.why, view.title);
+      assert.equal(p.hint, hint);
+      assert.equal(p.code, code);
+      assert.deepEqual(p.action, action === null ? null : { text: action });
+      assert.equal(p.note, null);
+    });
+  }
+
+  test('(+) the view has exactly heading, why, hint, code, action and note', () => {
+    assert.deepEqual(Object.keys(panel('fitted')).sort(), ['action', 'code', 'heading', 'hint', 'note', 'why']);
+  });
+
+  test('(+) a pending request turns the action text into "Fitting..." (an ellipsis escape) for the rows that have an action', () => {
+    for (const [state, reason, key, , , action] of ROWS) {
+      const p = panel(state, reason, { pending: true, note: false });
+      assert.deepEqual(p.action, action === null ? null : { text: 'Fitting…' }, key);
+    }
+  });
+
+  test('(+) the note line shows when ui.note is true, with the exact sentence, and for every row', () => {
+    for (const [state, reason, key] of ROWS) {
+      assert.equal(panel(state, reason, { pending: false, note: true }).note, NOTE, key);
+      assert.equal(panel(state, reason, { pending: false, note: false }).note, null, key);
+    }
+  });
+
+  test('(−) no action for user-zoom, size-option, foreign-tag, fitted and zoomed: open: true changes nothing there, so a button would only fail', () => {
+    for (const [state, reason] of [['blocked', 'user-zoom'], ['blocked', 'size-option'], ['blocked', 'foreign-tag'], ['fitted', null], ['zoomed', 'panel-smaller']]) {
+      assert.equal(panel(state, reason).action, null, `${state} ${reason}`);
+      assert.equal(panel(state, reason, { pending: true, note: true }).action, null, `${state} ${reason} pending`);
+    }
+  });
+
+  test('(−) a key the table does not know has no hint, no code and no action; blocked with no or an unknown reason is the "blocked:" row', () => {
+    const view = chipView(body('fitted'));
+    for (const key of ['fitted:x', 'bogus', '', 'blocked:something-new', '__proto__', 'constructor', 'toString', 'hasOwnProperty']) {
+      const p = fitPanelView({ ...view, key }, IDLE);
+      assert.deepEqual([p.hint, p.code, p.action], [null, null, null], key);
+    }
+    for (const reason of [undefined, 'something-new', 42, {}]) {
+      assert.deepEqual(panel('blocked', reason).action, { text: 'Fit again' }, String(reason));
+    }
+  });
+
+  test('(−) the table is looked up by the key of the view only: nothing a server said is copied into the panel', () => {
+    const hostile = '<img src=x onerror=alert(1)>';
+    const p = fitPanelView(chipView({ fit: { state: 'blocked', reason: hostile, message: hostile, pane: { cols: hostile, rows: 1 } }, message: hostile }), IDLE);
+    assert.doesNotMatch(JSON.stringify(p), /img|onerror/);
+    assert.deepEqual(p.action, { text: 'Fit again' });
+  });
+
+  test('(−) not a view: null, undefined, a string, a number and an object with no key give null', () => {
+    for (const bad of [null, undefined, 'fitted:', 42, [], {}, { key: 7 }]) assert.equal(fitPanelView(bad, IDLE), null, JSON.stringify(bad));
+  });
+
+  test('(−) a missing ui is idle: no note and no "Fitting..."', () => {
+    const p = fitPanelView(chipView(body('blocked', 'changed')));
+    assert.deepEqual([p.note, p.action], [null, { text: 'Fit again' }]);
+  });
+
+  test('(+) every string of a panel view is plain ASCII, except the ellipsis, which is an escape in the source and the only non-ASCII character', () => {
+    for (const [state, reason] of ROWS) {
+      for (const ui of [IDLE, { pending: true, note: true }]) {
+        const p = fitPanelView(chipView(body(state, reason)), ui);
+        for (const s of [p.heading, p.why, p.hint, p.code, p.note, p.action?.text].filter((x) => typeof x === 'string')) {
+          assert.equal([...s.replace('…', '')].every((ch) => ch.codePointAt(0) < 128), true, s);
+        }
+      }
+    }
+    assert.doesNotMatch(readSrc('fit-ui.js'), /[^\x00-\x7f]/, 'the module itself is ASCII');
+  });
+
+  test('(+) stillOffSay is the announcement when Fit again changed nothing: "Fit is still off. " + the title', () => {
+    const view = chipView(body('blocked', 'changed'));
+    assert.equal(stillOffSay(view), 'Fit is still off. The tmux window changed while nika was fitting it, so nika put it back');
+    assert.equal(stillOffSay(chipView(body('blocked', 'user-change'))), 'Fit is still off. You changed this tmux window, so nika put it back');
+  });
+});
+
+describe('createFitPlanner: reopen(), the user asks to fit again (F1, design F12 2.8)', () => {
+  const FAILED = { status: 502, body: { error: 'tmux_failed' } };
+  const opens = (r) => r.log.sent.map((b) => b.open);
+  /** A planner that has been answered once with `first`, so a chip exists (a button the user can press). */
+  const ready = async (first = OK('blocked', 'user-change'), opts) => {
+    const r = rig(opts);
+    r.planner.size(100, 30);
+    r.planner.start();
+    await r.answer(first);
+    return r;
+  };
+
+  test('(+) idle: reopen() sends open: true at once, tells fitAgain pending, then the result with the view; later beats are open: false again', async () => {
+    const r = await ready();
+    assert.equal(r.planner.reopen(), true);
+    assert.deepEqual(r.log.sent, [{ cols: 100, rows: 30, open: true }, { cols: 100, rows: 30, open: true }], 'no timer needed: it goes out now');
+    assert.deepEqual(r.log.again, [{ pending: true }]);
+    await r.answer(OK('fitted'));
+    assert.equal(r.log.again.length, 2);
+    const e = r.log.again[1];
+    assert.deepEqual([e.pending, e.status, e.view.key, e.changed], [false, 200, 'fitted:', true]);
+    assert.deepEqual(r.log.chips.map((v) => v.key), ['blocked:user-change', 'fitted:'], 'the chip was told first');
+    await r.clk.advance(BEAT_MS - 1);
+    assert.equal(r.log.sent.length, 2, 'the beat was re-armed 5 s from the ask');
+    await r.clk.advance(1);
+    assert.deepEqual(r.log.sent[2], { cols: 100, rows: 30, open: false });
+    await r.answer(OK('fitted'));
+    assert.equal(r.log.again.length, 2, 'an ordinary beat is not an ask');
+  });
+
+  test('(+) the same state again: fitAgain says changed: false with the view (the chip was not told twice)', async () => {
+    const r = await ready(OK('blocked', 'changed'));
+    r.planner.reopen();
+    await r.answer(OK('blocked', 'changed'));
+    const e = r.log.again[1];
+    assert.deepEqual([e.status, e.view.key, e.changed], [200, 'blocked:changed', false]);
+    assert.equal(r.log.chips.length, 1);
+  });
+
+  test('(+) reopen() while a request is in flight sends nothing more; when it settles with 200 the open: true request goes out at once (the older 200 does not cancel the ask)', async () => {
+    const r = await ready(OK('fitted'));
+    await r.clk.advance(BEAT_MS); // a beat: open: false, in flight
+    assert.equal(r.inFlight, 1);
+    assert.equal(r.planner.reopen(), true);
+    assert.equal(r.log.sent.length, 2, 'nothing more while one is in flight');
+    assert.deepEqual(r.log.again, [{ pending: true }]);
+    await r.answer(OK('fitted'));
+    assert.deepEqual(opens(r), [true, false, true], 'the ask goes out at once, with open: true');
+    assert.equal(r.log.again.length, 1);
+    await r.answer(OK('fitted'));
+    assert.deepEqual(r.log.again.map((e) => e.pending), [true, false]);
+  });
+
+  test('(+) reopen() while the very first open: true is still in flight is never stuck: the ask ends with an open: true answer', async () => {
+    const r = rig();
+    r.planner.size(100, 30);
+    r.planner.start();
+    assert.equal(r.planner.reopen(), true);
+    await r.answer(OK('fitted'));
+    assert.deepEqual(opens(r), [true, true]);
+    await r.answer(OK('fitted'));
+    assert.deepEqual(r.log.again.map((e) => e.pending), [true, false]);
+  });
+
+  test('(+) a non-200 answer to the ask: fitAgain gets that status and no view; the next beat sends open: true again, silently (the note promises a retry within 5 s)', async () => {
+    const r = await ready();
+    r.planner.reopen();
+    await r.answer(FAILED);
+    assert.deepEqual(r.log.again[1], { pending: false, status: 502, view: null, changed: false });
+    assert.equal(r.log.sent.length, 2, 'nothing before the beat');
+    await r.clk.advance(BEAT_MS);
+    assert.deepEqual(opens(r), [true, true, true]);
+    await r.answer(OK('fitted'));
+    assert.equal(r.log.again.length, 2, 'the retry is not reported as an ask');
+    assert.equal(r.log.chips.at(-1).key, 'fitted:', 'but the chip follows');
+    await r.clk.advance(BEAT_MS);
+    assert.equal(opens(r).at(-1), false, 'and it opens only once');
+  });
+
+  test('(+) a lost request is status 0; a rejecting send too; a 200 that is not a fit answer is status 200 with no view', async () => {
+    for (const [settleIt, expected] of [
+      [(r) => r.fail(), { pending: false, status: 0, view: null, changed: false }],
+      [(r) => r.answer({ status: 0, body: null }), { pending: false, status: 0, view: null, changed: false }],
+      [(r) => r.answer({ status: 200, body: null }), { pending: false, status: 200, view: null, changed: false }],
+      [(r) => r.answer({ status: 409, body: { error: 'busy' } }), { pending: false, status: 409, view: null, changed: false }],
+    ]) {
+      const r = await ready();
+      r.planner.reopen();
+      await settleIt(r);
+      assert.deepEqual(r.log.again[1], expected);
+    }
+  });
+
+  test('(+) a non-200 to the older request in flight: the ask waits for the next beat and goes out then with open: true', async () => {
+    const r = await ready(OK('fitted'));
+    await r.clk.advance(BEAT_MS);
+    r.planner.reopen();
+    await r.answer(FAILED);
+    assert.equal(r.log.sent.length, 2);
+    assert.deepEqual(r.log.again, [{ pending: true }], 'the ask is still open');
+    await r.clk.advance(BEAT_MS);
+    assert.deepEqual(opens(r), [true, false, true]);
+    await r.answer(OK('fitted'));
+    assert.deepEqual(r.log.again.map((e) => e.pending), [true, false]);
+  });
+
+  test('(+) reopen() after a refusal that put the planner on hold does not wait for the beat', async () => {
+    const r = await ready(OK('fitted'));
+    await r.clk.advance(BEAT_MS);
+    await r.answer(FAILED); // hold until the next beat
+    assert.equal(r.planner.reopen(), true);
+    assert.deepEqual(opens(r), [true, false, true]);
+  });
+
+  test('(−) reopen() is false and nothing is sent or reported before start()', () => {
+    const r = rig();
+    r.planner.size(100, 30);
+    assert.equal(r.planner.reopen(), false);
+    assert.deepEqual([r.log.sent, r.log.again], [[], []]);
+  });
+
+  test('(−) reopen() is false after close(): nothing is sent, nothing is reported', async () => {
+    const r = await ready();
+    r.planner.close();
+    assert.equal(r.planner.reopen(), false);
+    assert.equal(r.log.sent.length, 1);
+    assert.deepEqual(r.log.again, []);
+    assert.equal(r.clk.pending, 0, 'no timer was started');
+  });
+
+  test('(−) reopen() is false after a 403, and nothing is sent', async () => {
+    const r = rig();
+    r.planner.size(100, 30);
+    r.planner.start();
+    await r.answer(OK('fitted'));
+    await r.clk.advance(BEAT_MS);
+    await r.answer({ status: 403, body: { error: 'forbidden' } });
+    assert.equal(r.planner.reopen(), false);
+    assert.equal(r.log.sent.length, 2);
+    assert.deepEqual(r.log.again, []);
+    assert.equal(r.clk.pending, 0);
+  });
+
+  test('(−) reopen() is false while an ask is pending (queued or in flight): one ask at a time, one request, one fitAgain pending', async () => {
+    const r = await ready();
+    assert.equal(r.planner.reopen(), true);
+    assert.equal(r.planner.reopen(), false, 'in flight');
+    assert.equal(r.log.sent.length, 2);
+    assert.deepEqual(r.log.again, [{ pending: true }]);
+    await r.answer(OK('fitted'));
+    assert.equal(r.planner.reopen(), true, 'free again once it ended');
+    assert.equal(r.log.sent.length, 3);
+  });
+
+  test('(−) 403 as the answer to the ask: fitAgain gets 403 after the chip was told to hide, and nothing renews afterwards', async () => {
+    const r = await ready();
+    r.planner.reopen();
+    await r.answer({ status: 403, body: { error: 'forbidden' } });
+    assert.deepEqual(r.log.chips.map((v) => (v === null ? null : v.key)), ['blocked:user-change', null], 'the chip hid before fitAgain was told');
+    assert.deepEqual(r.log.again[1], { pending: false, status: 403, view: null, changed: false });
+    await r.clk.advance(BEAT_MS * 3);
+    assert.equal(r.log.sent.length, 2);
+  });
+
+  test('(+) close() while an ask is pending: no fitAgain later, even when the old answer arrives after a start(); the new lease opens with open: false', async () => {
+    const r = await ready();
+    r.planner.reopen();
+    r.planner.close();
+    assert.equal(r.log.released, 1);
+    r.planner.start();
+    assert.deepEqual(opens(r), [true, true, false]);
+    await r.answer(OK('fitted')); // the answer of the old lease
+    await r.answer(OK('fitted')); // the new lease
+    assert.deepEqual(r.log.again, [{ pending: true }], 'nothing was reported after the close');
+    assert.equal(r.planner.reopen(), true, 'a new lease can be asked again');
+  });
+
+  test('(+) restart() clears a pending ask too', async () => {
+    const r = await ready();
+    r.planner.reopen();
+    r.planner.close();
+    r.planner.restart();
+    await r.answer(OK('fitted'));
+    await r.answer(OK('fitted'));
+    assert.deepEqual(r.log.again, [{ pending: true }]);
+    assert.deepEqual(opens(r), [true, true, true], 'restart is a page load: open: true');
+  });
+
+  test('(+) a planner whose io has no fitAgain still works: reopen() sends open: true and nothing throws', async () => {
+    const r = await ready(OK('blocked', 'user-change'), { again: false });
+    assert.equal(r.planner.reopen(), true);
+    await r.answer(OK('fitted'));
+    assert.deepEqual(r.log.chips.map((v) => v.key), ['blocked:user-change', 'fitted:']);
+    assert.equal(r.log.again.length, 0);
+  });
+
+  test('(+) every body of an ask still has exactly cols, rows and open', async () => {
+    const r = await ready();
+    r.planner.reopen();
+    for (const b of r.log.sent) assert.deepEqual(Object.keys(b).sort(), ['cols', 'open', 'rows']);
   });
 });
 

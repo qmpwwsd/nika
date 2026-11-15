@@ -127,6 +127,12 @@ body.m-bypass .mode-frame { background: repeating-linear-gradient(135deg, var(--
 .fit[data-k="zoomed"] { color: var(--idle); background: var(--idle-soft); border-color: var(--idle-line); }
 .fit[data-k="blocked"] { color: var(--text-muted); border: 1px dashed var(--line-strong); }
 .fit[data-k="other"] { color: var(--fit-other); background: var(--fit-other-soft); border-color: var(--fit-other-line); }
+/* F1: the chip is a button that opens a panel (the panel's own rules follow .pop, which they override); a button resets its font and has a background of its own */
+.fit-wrap { position: relative; display: inline-flex; }
+button.fit { min-height: 24px; cursor: pointer; font: inherit; font-size: var(--fs-small); font-weight: 600; background: transparent; }
+button.fit:hover, button.fit[aria-expanded="true"] { border-color: currentColor; }
+.fit .chev { width: 12px; height: 12px; margin-left: 2px; }
+.fit[aria-expanded="true"] .chev { transform: rotate(180deg); }
 .seg { display: inline-flex; border: 1px solid var(--line-strong); border-radius: var(--r-md); overflow: hidden; }
 .seg button { min-height: 24px; padding: 0 8px; border: 0; background: var(--surface); font-size: var(--fs-small); }
 .seg button[aria-pressed="true"] { background: var(--text); color: var(--surface); }
@@ -258,6 +264,13 @@ body.m-bypass .mode-frame { background: repeating-linear-gradient(135deg, var(--
 .pop-input[aria-invalid="true"] { border-color: var(--danger); }
 .pop-h { margin: 0; font-size: var(--fs-small); color: var(--text-muted); }
 .pop-f { display: flex; justify-content: flex-end; gap: 8px; }
+/* the fit chip's panel (F1): under the chip and out of the flow, so opening it never changes the terminal box (a new box would be a fit request); dom.js placeMenuX sets data-x */
+.fit-pop { position: absolute; top: calc(100% + 4px); right: 0; z-index: 30; width: 320px; max-width: calc(100vw - 16px); justify-self: auto; }
+.fit-pop[data-x="start"] { left: 0; right: auto; }
+.fit-pop-why { margin: 0; font-size: var(--fs-small); color: var(--text); }
+.fit-pop-note { display: flex; align-items: flex-start; gap: 6px; color: var(--text); }
+.fit-pop-note .ic { margin-top: 1px; color: var(--idle); }
+.fit-pop code { display: block; margin-top: 4px; font: var(--fs-small) var(--mono); overflow-wrap: anywhere; }
 .field-err { margin: 4px 0 0; display: flex; align-items: flex-start; gap: 6px; color: var(--danger); font-size: var(--fs-small); font-weight: 600; }
 .field-err .ic { margin-top: 1px; }
 
