@@ -178,7 +178,8 @@ export function noteView(note) {
 const LONG_REFUSAL = "Claude's input already holds text; it would be sent together with yours. Clear it in the terminal or shorten your message.";
 const pausedLine = (reason) => `Claude's input holds ${reasonText(reason)}. Send or clear it in the terminal.`;
 const STALE_SUGGESTION = "Claude's suggestion changed. Nothing was sent.";
-const CANT_READ = "nika can't read Claude's input box right now (a menu may be open). Nothing was sent. Your text is kept.";
+const CANT_READ_LINE = "nika can't read Claude's input box right now (a menu may be open). Nothing was sent.";
+const CANT_READ = `${CANT_READ_LINE} Your text is kept.`;
 const BUSY_SWITCHING = 'Another action is running on this session. Try again in a moment. Your text is kept.';
 
 /** The body of Send's Enter against the screen `s`: its sig as `base` (the route presses Enter only while the box still reads so), or none. */
@@ -204,7 +205,7 @@ export function draftSendPlan({ value, shell = false, screen = null, cols = 0, f
   const v = String(value ?? '').replace(/\r\n?/g, '\n').replace(/\n+$/, '');
   if (v.trim() === '') {
     if (shell) return { act: 'legacy' };
-    if (!screen && !footerKnown) return { act: 'refuse', message: CANT_READ };
+    if (!screen && !footerKnown) return { act: 'refuse', message: CANT_READ_LINE }; // an empty box: there is no text to keep
     return screen?.state === 'empty' ? { act: 'none' } : { act: 'enter', ok: true, submit: submitBase(screen), summary: 'Enter' };
   }
   if (!screen) return footerKnown ? { act: 'legacy' } : { act: 'refuse', message: CANT_READ };

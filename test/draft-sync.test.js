@@ -391,8 +391,11 @@ describe('draftSendPlan: the Send table (design 4)', () => {
   test('(−) F1: no readable box and an UNKNOWN footer (Claude\'s agent list has the focus): text, Shell text and the empty-box Enter are refused with the fixed line', () => {
     const line = "nika can't read Claude's input box right now (a menu may be open). Nothing was sent. Your text is kept.";
     for (const screen of [null, undefined]) {
-      for (const over of [{}, { shell: true, value: 'ls' }, { value: '' }, { value: '  \n ' }, { value: 'y'.repeat(2000) }]) {
+      for (const over of [{}, { shell: true, value: 'ls' }, { value: 'y'.repeat(2000) }]) {
         assert.deepEqual(plan({ screen, footerKnown: false, ...over }), { act: 'refuse', message: line }, JSON.stringify(over));
+      }
+      for (const over of [{ value: '' }, { value: '  \n ' }]) { // an empty box: the line does not claim there is text to keep
+        assert.deepEqual(plan({ screen, footerKnown: false, ...over }), { act: 'refuse', message: line.replace(' Your text is kept.', '') }, JSON.stringify(over));
       }
     }
     assert.equal(plan({ value: '', shell: true, screen: null, footerKnown: false }).act, 'legacy', 'Shell on and nothing to run: the page does nothing');
