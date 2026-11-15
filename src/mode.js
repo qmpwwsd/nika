@@ -178,9 +178,10 @@ export function bypassWindow(rows) {
   if (!Array.isArray(rows)) return false;
   const texts = rows.map(rowText);
   const window = (end) => texts.slice(0, end + 1).filter((t) => t.trim()).slice(-PROMPT_ROWS).join(' ');
-  // The window above the nudge's footer (what lastNonBlank reads) AND the one above the subagent cut alone: a cut may add rows to what is
-  // read, never take any away (a quoted nudge pair must not hide a bypass option, W1-T1 review I1).
-  return mentionsBypass(window(footerEnd(texts))) || mentionsBypass(window(treeEnd(texts)));
+  // The window above the nudge's footer (what lastNonBlank reads), the one above the subagent cut alone, AND the literal bottom of the
+  // screen: no cut of any kind may shrink what the guard reads (a quoted nudge pair or a subagent label must not hide a bypass option,
+  // W1-T1 review I1 and N1; project rule 12: the last 15 non-blank rows of the screen).
+  return [footerEnd(texts), treeEnd(texts), texts.length - 1].some((end) => mentionsBypass(window(end)));
 }
 
 /** Mode shown by the mode line, the last non-blank row only; a phrase anywhere else never counts. */

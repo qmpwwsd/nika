@@ -656,6 +656,15 @@ describe('dialog ends', () => {
     assert.equal(bypassWindow(rowsOf('transcript line', 'Which mode should I use?', '❯ 1. plain', '  2. Type something.', '', ASK.many)), false);
   });
 
+  test('(−) a subagent label that mentions bypass, under a question dialog, is still read by the bypass window: no cut shrinks it (review N1, project rule 12)', () => {
+    const tree = subagentRows({ agents: [{ label: 'check the bypass settings' }] });
+    const rows = [...body(ASK.many), ...tree];
+    assert.equal(lastNonBlank(rows, 1)[0], ASK.many, 'the tree is cut for every other reader');
+    assert.equal(mentionsBypass(lastNonBlank(rows, PROMPT_ROWS).join(' ')), false, 'the cut window has no bypass');
+    assert.equal(bypassWindow(rows), true, 'the literal bottom of the screen does');
+    assert.equal(bypassWindow([...body(ASK.many), ...subagentRows({ agents: 2 })]), false, 'a tree without the word changes nothing');
+  });
+
   test('(−) the tree under an unknown row stays: Esc to cancel, the trust footer, an option row and a half-block are not anchors', () => {
     for (const end of ['Esc to cancel', 'Enter to confirm · Esc to cancel', '  2. No', 'Do you want to proceed?', '1. Submit answers']) {
       const rows = [...body(end), ...subagentRows({ agents: 2 })];
