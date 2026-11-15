@@ -2072,6 +2072,8 @@ wiring is `public/session.js`. App tier only. The window can change the user's t
 The tmux window is given back when this window closes, 15 s after the page goes quiet, or on the first change the user makes in
 tmux (unzoom, move, split, kill, resize; nika sees it within one second, and the restore follows within tens of milliseconds). After
 such a change nika does not fit again until the session window is opened again or the user presses Fit again in the chip's panel.
+A split or an exit of nika's own agent pane (a pane tagged `agent` or `sub-orchestrator`) is not a change of the user's (0.5, F2): nika
+gives the window back and fits it again within about a second, and the chip stays as it was ("When nika's own agents come and go", below).
 
 **Measuring the panel** (`panelSize`)
 
@@ -2186,11 +2188,29 @@ with an action shows heading, why, hint, Close and the action; pending shows "Fi
 
 **With the rest of the window.** A resize re-wraps Claude's input box, so the server changes the tmux window under the pane's control
 lock: a draft push that meets a fit step gets 409 `busy-switching` and the draft sync pushes again about 300 ms later (§9.12). The
-next capture after a resize carries the new size, rows and `draft.box`, so the cut strip follows. Spawning an agent into a tmux window
-that is fitted gives the window back first; the page fits it again, with the new pane count, on its next beat.
+next capture after a resize carries the new size, rows and `draft.box`, so the cut strip follows. Spawning an agent from the app's sheet
+into a tmux window that is fitted gives the window back first, and the page fits it again, with the new pane count, on its next beat. An
+agent that the orchestrator starts with `nika spawn` splits into the fitted window on its own (another process, no release first), and
+since F2 the watch fits the window again within about a second.
 
-**Known gap.** The sentence that says why a fit is off is only the chip's `title` and one announcement, so a keyboard or touch user
-cannot read it. Parked for the final review: it needs a small disclosure in the header, not a fix inside this section.
+**When nika's own agents come and go (0.5, F2; owner decisions 2026-11-15).** An orchestrator starts agents and its agents end, all in the
+window that is fitted, so a fit that turned itself off at the first split would be off most of the time. The server therefore tells nika's
+own panes from the user's by the pane tag `@nika-role` that the spawn sets (`agent` or `sub-orchestrator`; anything else, the orchestrator's
+`orchestrator` included, counts as the user's). What the user sees:
+
+| Event (window fitted for the orchestrator's pane) | Before F2 | Now |
+|---|---|---|
+| The orchestrator runs `nika spawn …` (CLI; split beside it) | restored, chip "Fit · off", off until the session window reopens | restored and fitted again within about a second; chip unchanged (or "zoomed" on the next beat, when the panel is smaller than the window with the new pane) |
+| Spawn from the app's sheet into that window | released before the split, fitted again on the next beat | same (unchanged) |
+| An agent's claude ends and its pane closes | off (pane count changed) | fitted again |
+| A sub-orchestrator's agents split beside it (its own session window) | off | fitted again |
+| The user splits, unzooms, switches pane, resizes, closes a pane of their own | off | off (unchanged; Fit again in the panel) |
+| The user closes an agent's pane by hand | off | fitted again (counted as nika's; a residual, `docs/security.md` m) |
+| The user splits in the same second as a nika spawn | off | off (the user's pane has no agent tag) |
+
+A new pane that has no tag yet gets one watch tick (about a second) to be tagged, because the spawn tags it right after the split; if it is
+still untagged then, it was the user's. Nothing about this shows on the page except the window being fitted again: no new chip, word or
+announcement, and a user who turned the fit off (any change of their own) is not fitted again behind their back.
 
 Not built: a settings switch, a per-project option, anything on the browser tier, a fit that re-asserts after the user changed the
 window, taking over a pane the user zoomed.

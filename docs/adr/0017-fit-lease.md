@@ -144,3 +144,53 @@ reopened window would have sent. Everything below is page side; **the routes, th
 - **Consequences.** The page's rule "every later request is `open: false`" now reads "until the user asks again"; `opened` is set by a 200
   and cleared by a failed ask. A user who presses Fit again over a window that still cannot be fitted (the same reason) gets the panel drawn
   again and "Fit is still off. <reason>" announced. `docs/design/spec.md` §9.13 has the panel, its keys and its copy.
+
+## Amendment 2026-11-15 (0.5, F2): nika's own agent panes never turn the fit off
+
+Owner request (2026-11-15): an orchestrator starts agents, and its agents end, in the window that is fitted. The first version took every
+split and every exit for a change of the user's, restored the window and stayed off, so a window with a working orchestrator was off most
+of the time. The decisions of the same day: refit at once, in the watch (Q2); a pane the user closes by hand that nika tagged as an agent
+counts as nika's (Q3); one watch tick of grace for a new pane that has no tag yet (Q4); the rule text of constraints 4 and 12 (Q6). Server
+side only, in `src/fit.js`; **no new route, body field, file key, tmux command or argv shape** (`ARGV` and `FILE_KEYS` are unchanged).
+
+- **What the watch can tell.** The fit's `list-panes -a` gets a 12th constant field, `#{@nika-role}`, read as exact text and compared only
+  with `agent` and `sub-orchestrator` (`NIKA_PANES`; never `orchestrator`, never any other text). A row needs exactly 12 fields, so a role
+  with a tab in it drops the row, and a dropped row of the window makes the row count differ from `window_panes`, which is a user change
+  (fail closed). The spawn sets `@nika-role` with `tagPane` right after `split-window` returns, which is why a new pane with no role gets one tick.
+- **What the lease remembers (memory only).** `known`: which panes of its window were nika's agents (set after every read-back that
+  succeeds and refreshed at every quiet watch tick), because a pane that left has no tags to read. `waitAt`: when the watch first saw an untagged new pane.
+  Neither is written to the lease file.
+- **The rules (`observe`).** A size change is judged first and is always the user's: a split or an exit changes the pane count and
+  unzooms the window, never its size. When the panes are the same, an unzoom or another active pane is the user's. When panes came or went,
+  the zoom and the active pane say nothing about the user (a split without `-Z` unzooms and activates the new pane; so does an exit). Panes
+  added and all tagged `agent` or `sub-orchestrator`, and panes removed all known as nika's → **refit**. Any removed pane that was not known
+  as an agent → the user's. An added pane with no role yet → **wait**: the watch remembers the first sighting and a look at least
+  `WATCH_MS` later that still sees it untagged is a user change.
+- **The refit.** `releaseNow` without a mark, a fresh listing, then `decide(…, open: false)` with the lease's last `cols` and `rows`, in the
+  window queue under the pane lock: a mark, a fresh note of the page's `DELETE`, a foreign tag and every refusal still win. The new lease
+  keeps the old `lastBeat`, so only the page's own request keeps a lease alive; a lapsed lease (> 15 s) is only released, never refitted or
+  waited for. A page request that meets the change before the watch (`renew`, and the N1 recheck inside the pane lock) does the same:
+  refit → release and acquire in the one request, wait → answered from the lease with no resize (the grace is counted from the watch's tick,
+  not the request). Calls: 18 after a split, 19 after an agent pane exits, because the restore then also puts focus back on the pane that
+  was active before nika's zoom.
+- **The user's table.** Split by the orchestrator's `nika spawn`, an agent's claude ending, a sub-orchestrator's agents: fitted again within
+  about a second. The user's own split, unzoom, focus change, resize or kill: off, as before (Fit again, F1). A user split in the same
+  second as a spawn: off (the user's pane is untagged). `docs/design/spec.md` §9.13 has the table.
+- **Alternatives rejected.** *Re-base the lease instead of release + acquire* (update `panes`, zoom again): the restore's saved layout and
+  window size would need recomputing at a fitted size; release + acquire reuses the two tested paths. *Let the page's next beat acquire after a
+  release without a mark* (no refit in the watch): the window sits restored for up to 5 s and then jumps back, two visible jumps instead of one
+  redraw pair. *Read the role through the tmux collector* (`src/collect/tmux.js`): a second listing per tick, outside the fit's
+  one-listing decision; the fit's own listing keeps every decision on one snapshot. *`ctx.started` (panes this process started) instead of the tag*: the CLI's spawns are
+  another process, which is the case F2 must cover. (A "Fit again" chip without a panel, the fifth alternative of the design, is in the F1 amendment.)
+- **Consequences.** `fit.test.js`'s fake tmux lists a role per pane; the F2 tests assert the exact call sequence of a refit, the grace to
+  the millisecond and every user change that must stay one. Residuals (`docs/security.md`, residual m items 6, 7 and 11 to 14): a split
+  between the acquire's resize and its read-back still ends `blocked / changed` (Fit again recovers it); a pane the user closes by hand
+  that nika tagged counts as nika's; a forged `@nika-role agent` makes nika refit instead of staying off (same window, same size, within
+  the single-user trust model); a refit applies two size changes in a row and cannot restore the saved layout (the pane count changed); and
+  **a `DELETE` of the session window that races a refit can leave the new lease held until it lapses**: `release` looks the pane's lease up
+  when the request arrives, so a `DELETE` that waits in the window queue behind a refit finds the old lease finished and does nothing, and one
+  that arrives between the refit's restore and its acquire finds no lease. The new lease inherits the old heartbeat, so the window stays
+  fitted for at most 15 s after the page's last request and is then given back without a mark. Not fixed in F2; the cheap fix, if wanted, is
+  to look the pane up again after the release in `release` and release a replacement lease.
+- **Not built:** telling a user's close of an agent's pane from the agent's own exit; fitting again after a user change without the user
+  asking (the W7 Q6 rule stands); a remembered "never fit this window" choice.

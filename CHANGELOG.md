@@ -68,17 +68,22 @@ Session window (desktop app):
   help, an action: **Fit again** after a change of your own or a window that changed, **Fit here** when another nika window
   holds the tmux window. It fits the window at once, without reopening the session window; nika still never fits again by
   itself after you changed the window. The "You changed this tmux window" tooltip no longer tells you to reopen the window.
+- **A spawn or an agent that ends no longer turns the fit off.** When the orchestrator starts an agent (or a sub-orchestrator's agents
+  appear) beside the fitted pane, or an agent's claude ends and its pane closes, nika is the one who changed the window, not you: it
+  gives the window back and fits it again within about a second, and the chip stays as it was. Only panes that nika itself tagged as
+  agents count; your own split, unzoom, focus change, resize or kill still turns the fit off, as does a new pane that is still
+  untagged a second after it appears. A pane you close by hand that was one of nika's agents is counted as nika's, so the fit stays on.
 - **nika gives your tmux window back as it was.** On closing the session window, 15 seconds after the window goes quiet,
   when you quit nika, and at the next start after a crash, nika undoes only what it did: the zoom, the window size, the
   `window-size` setting and, when you have not touched the layout, the layout and the focus. If you unzoom, move, split, kill a
   pane or resize in tmux while the window is fitted, nika sees it within a second, puts the window back right after, and does not
   fit it again until you open the session window again or press Fit again (a resize you make while the window is fitted is also undone: nika puts the
-  window back to its old size). A zoom you made yourself is never undone. Spawning an agent into a fitted window puts it back
+  window back to its old size; a split or an exit of one of nika's own agent panes is not your change, see above). A zoom you made yourself is never undone. Spawning an agent into a fitted window puts it back
   first. The restore is exact except for tmux's last-pane order: which pane `last-pane` jumps back to is not restored.
 - Known limits: the fit was tried on tmux 3.8, and the `linux-verify` check on CI runs it on the Linux runner's tmux (3.6a on
   ubuntu-latest: a 3-pane and a single-pane window fitted and given back exactly, `select-layout --` accepted, `window-size`
   unset reads empty); tmux 3.2, the lowest supported, and every version other than 3.6a and 3.8 are not checked yet; a crash leaves the window at nika's size until
-  nika starts again; with `pane-border-status` on, the mirrored pane has one row fewer than the panel.
+  nika starts again; closing the session window in the same second as a refit can leave the window fitted for up to 15 seconds more, until nika gives it back; with `pane-border-status` on, the mirrored pane has one row fewer than the panel.
 
 - **Attach images, PDFs and text files to a message.** Paste a file into the message box, drop it on the box, or click the
   paperclip ("Add attachments"; it opens nika's own file chooser, not the webview's, which froze the app on macOS). Up to 6 files
