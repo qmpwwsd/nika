@@ -8,6 +8,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SHORTCUTS, shortcutsFor, isMac, isTextEntry, wantsHelp, wantsBack, wantsHistToggle, backHint, helpHint, histHint, passKeyLabel, windowAction, wireWindowKeys, openShortcuts } from '../public/shortcuts.js';
 import { initDialogs, initMenus, openDialog } from '../public/ui.js';
+import { fakeStyle } from './fake-dom.js';
 
 const SRC = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public', 'shortcuts.js'), 'utf8');
 
@@ -32,6 +33,7 @@ class FNode {
   constructor(tag, text = '') {
     this.tag = tag; this.text = text; this.kids = []; this.attrs = {}; this.className = ''; this.listeners = {};
     this.isConnected = true; this.open = false; this.shown = 0; this.id = ''; this.hidden = false; this.previousElementSibling = null;
+    this.style = fakeStyle();
   }
 
   setAttribute(k, v) { this.attrs[k] = String(v); }
@@ -90,7 +92,8 @@ const button = (root, label) => root.find((n) => n.tag === 'button' && n.textCon
 
 let saved;
 before(() => {
-  saved = { document: globalThis.document, Node: globalThis.Node, location: globalThis.location };
+  saved = { document: globalThis.document, Node: globalThis.Node, location: globalThis.location, window: globalThis.window };
+  globalThis.window = { addEventListener() {} }; // ui.js initMenus listens for a resize
   globalThis.Node = FNode;
   globalThis.document = {
     createElement: (tag) => new FNode(tag),
@@ -116,6 +119,8 @@ before(() => {
 after(() => {
   globalThis.document = saved.document;
   globalThis.Node = saved.Node;
+  if (saved.window === undefined) delete globalThis.window;
+  else globalThis.window = saved.window;
   if (saved.location === undefined) delete globalThis.location;
   else globalThis.location = saved.location;
 });
@@ -834,6 +839,27 @@ describe('openShortcuts next to menus and dialogs (ui.js)', () => {
     assert.equal(menu.hasAttribute('data-up'), false, 'the flip marker goes too, as closeMenu does');
     assert.equal(esc(), false, 'the menu handler leaves this Esc to the dialog');
     assert.equal(ids['kbd-dlg'].open, false, 'one press is enough');
+  });
+
+  test('(+) the left/right placement goes too (data-x and the inline offset and width), so the next open measures again', () => {
+    freshPage();
+    const { menu, item } = addMenu();
+    menu.setAttribute('data-x', 'fit');
+    for (const [k, v] of [['right', 'auto'], ['left', '-142px'], ['min-width', '0px'], ['width', '184px']]) menu.style.setProperty(k, v);
+    show(item);
+    assert.equal(menu.hasAttribute('data-x'), false);
+    assert.deepEqual(menu.style.props, {});
+  });
+
+  test('(−) a menu that is already closed keeps its placement attributes and inline values (only open menus are touched)', () => {
+    freshPage();
+    const { menu } = addMenu();
+    menu.hidden = true;
+    menu.setAttribute('data-x', 'start');
+    menu.style.setProperty('left', '4px');
+    show(new FNode('button'));
+    assert.equal(menu.getAttribute('data-x'), 'start');
+    assert.equal(menu.style.props.left, '4px');
   });
 
   test('(+) when focus was inside the closed menu, Close returns it to the menu button, not to the hidden item', () => {

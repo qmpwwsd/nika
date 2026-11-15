@@ -2,7 +2,7 @@
 // session window. Everything except openShortcuts and wireWindowKeys is pure, so Node tests it (test/shortcuts.test.js). The content is static copy
 // kept here; nothing in the window comes from the server. ASCII only: key glyphs are escapes, because the session window's
 // files are scanned for invisible characters.
-import { h } from './dom.js';
+import { h, clearMenuPlacement } from './dom.js';
 
 const CMD = '\u2318';
 const SHIFT = '\u21e7';
@@ -208,7 +208,7 @@ function closeMenus(opener) {
   let back = opener;
   for (const m of document.querySelectorAll('.menu:not([hidden])')) {
     m.hidden = true;
-    m.removeAttribute('data-up');
+    clearMenuPlacement(m);
     const btn = m.previousElementSibling;
     btn?.setAttribute('aria-expanded', 'false');
     if (opener && m.contains(opener)) back = btn;

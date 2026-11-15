@@ -228,7 +228,7 @@ let savedCSS;
 before(() => {
   savedCSS = globalThis.CSS;
   globalThis.CSS = { escape: (s) => String(s) };
-  globalThis.window = { innerHeight: 800 }; // ui.js menus ask for the window height
+  globalThis.window = { innerHeight: 800, addEventListener() {} }; // ui.js menus ask for the window height (and listen for a resize; the width is left out: no left/right placement here)
   restore = installDom({
     createElement: (tag) => new PEl(tag),
     createElementNS: (ns, tag) => new PEl(tag),

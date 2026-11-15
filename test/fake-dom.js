@@ -4,10 +4,20 @@
 
 export const focus = { el: null };
 
+/** The part of `element.style` the page code uses (setProperty / removeProperty); `props` shows what is set. */
+export function fakeStyle() {
+  return {
+    props: {},
+    setProperty(k, v) { this.props[k] = String(v); },
+    removeProperty(k) { delete this.props[k]; },
+  };
+}
+
 export class El {
   constructor(tag, text = '') {
     this.tag = tag; this.attrs = {}; this.kids = []; this.listeners = {}; this.parent = null; this.own = text;
     this.className = ''; this.value = ''; this.checked = false; this.hidden = false; this.disabled = false; this.open = false;
+    this.style = fakeStyle();
   }
 
   get dataset() {
