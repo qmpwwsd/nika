@@ -17,7 +17,7 @@ import { MODEL_CATALOG } from './models.js';
 import { matches as etagMatches } from './mirror.js';
 import { createSessionControl, promptSig, insertShown, editMode, readDraft, checkDraftBody, checkSuggestionBody, checkDialogBody } from './session-control.js';
 import { dialogCapture } from './dialog.js';
-import { tagPane, pickState, claudePane } from './orchestrate.js';
+import { tagPane, pickState, claudePane, inProject } from './orchestrate.js';
 import { createFit, checkFitBody, FIT_RATE } from './fit.js';
 import { createScroll, checkScrollBody } from './scroll.js';
 import { ID, UPLOAD_CAP, PER_MESSAGE, checkUploadBody } from './attachments.js';
@@ -288,7 +288,18 @@ export function createAppApi({ secret, ctx, deps }) {
     }
     for (const [p, id] of picks) {
       const hit = known.get(id) ?? indexed.get(id) ?? null;
-      out.set(p.key, !hit && unreadable ? null : pickState(p, id, hit));
+      // The pick is a host that a live background session of this project continues (after /compact): the host's transcript ends there and
+      // the child's is the conversation, so the pick moves to the child's id (owner decision 2026-11-15; app tier only, T53). Best effort
+      // and only while the saved pick is still that host id (a PUT or DELETE since this request began wins); the answer reads the child.
+      const child = hit?.agent.hostId === id && hit.agent.live && inProject(hit.group, p) ? hit.agent.id : null;
+      if (child) {
+        try {
+          if ((await getOrchestrator(p.key, ctx.env)) === id) await setOrchestrator(p.key, child, ctx.env);
+        } catch {
+          // nothing changes and nothing is shown; the next poll tries again
+        }
+      }
+      out.set(p.key, !hit && unreadable ? null : pickState(p, child ?? id, hit));
     }
     return out;
   }

@@ -1802,7 +1802,7 @@ describe('a background session that continues the orchestrator\'s conversation a
   });
 
   /** acme-api with a host (pid 201, state idle, pane %9) and its background child (pid 202, busy); `tagged`: the pane carries nika's orchestrator tag. */
-  async function machine({ tagged = true, child = true, other = false } = {}) {
+  async function machine({ tagged = true, child = true, other = false, onCollect = null } = {}) {
     const world = await makeWorld();
     worlds.push(world);
     const project = await addProject(real.repo, world.env);
@@ -1831,37 +1831,131 @@ describe('a background session that continues the orchestrator\'s conversation a
     };
     const deps = makeDeps({
       startOrchestrator,
-      collect: async () => (await collect({ config, exec: collectExec, now: NOW, sinceMs: 7 * 86_400_000 })).snapshot,
+      collect: async () => {
+        const snapshot = (await collect({ config, exec: collectExec, now: NOW, sinceMs: 7 * 86_400_000 })).snapshot;
+        await onCollect?.(project, world.env); // a change to the saved pick while the poll is still running
+        return snapshot;
+      },
       createSessionControl: control.factory,
     });
     const a = await boot({ world, ctxOver, deps });
     deps.state.panes.set('%9', { command: 'claude' });
     deps.state.panes.set('%10', { command: 'claude' });
     const listed = async () => (await a.call('GET', '/api/app/projects')).body.projects.find((p) => p.key === project.key).orchestrator;
-    return { world, project, tmuxExec, a, batches, control, listed, url: `/api/app/projects/${project.key}/orchestrator`, pick: () => getOrchestrator(project.key, world.env) };
+    // every save of config.json is a rename onto a new file: a changed stamp is a write
+    const file = path.join(configDir(world.env), 'config.json');
+    const stamp = () => { const st = fs.statSync(file); return `${st.ino}:${st.mtimeMs}:${st.size}`; };
+    return { world, project, tmuxExec, a, batches, control, listed, stamp, file, url: `/api/app/projects/${project.key}/orchestrator`, pick: () => getOrchestrator(project.key, world.env) };
   }
 
-  test('(+) a saved pick that is the host\'s id reads live with the pane, and Start answers that pane (created: false) without starting anything', async () => {
+  test('(+) Start with the host\'s id as the saved pick (before the pick has moved) answers that pane, created: false, and starts nothing', async () => {
     const m = await machine();
     await setOrchestrator(m.project.key, HOST, m.world.env);
-    assert.deepEqual(await m.listed(), { sessionId: HOST, state: 'live', name: 'acme-api', pane: '%9' });
-    assert.deepEqual(m.batches, [], 'the snapshot holds it: no transcript-index walk');
     const before = m.tmuxExec.calls.length;
+    const stamp = m.stamp();
     const start = await m.a.call('POST', '/api/app/orchestrator/start', { json: { project: m.project.key } });
     assert.equal(start.status, 200);
     assert.deepEqual(start.body, { pane: '%9', session: 'work', sessionId: HOST, created: false });
     assert.equal(m.tmuxExec.calls.length, before, 'no tmux command: nothing started, no window opened');
     assert.equal(m.tmuxExec.of('new-window').length + m.tmuxExec.of('new-session').length, 0);
     assert.equal(m.a.ctx.started.size, 0);
-    assert.equal(await m.pick(), HOST, 'the pick is untouched');
+    assert.equal(await m.pick(), HOST, 'Start does not move the pick; only the project list does');
+    assert.equal(m.stamp(), stamp, 'no write');
   });
 
-  test('(+) a saved pick that is the child\'s id reads the same row', async () => {
+  test('(+) the project list reads the host\'s pick live with the pane, answers with the child\'s id and saves the child\'s id once; a second poll writes nothing', async () => {
     const m = await machine();
-    await setOrchestrator(m.project.key, CHILD, m.world.env);
+    await setOrchestrator(m.project.key, HOST, m.world.env);
+    const before = m.stamp();
     assert.deepEqual(await m.listed(), { sessionId: CHILD, state: 'live', name: 'acme-api', pane: '%9' });
+    assert.deepEqual(m.batches, [], 'the snapshot holds it: no transcript-index walk');
+    assert.equal(await m.pick(), CHILD, 'the saved pick is now the child\'s id');
+    const moved = m.stamp();
+    assert.notEqual(moved, before, 'one write');
+    assert.deepEqual(await m.listed(), { sessionId: CHILD, state: 'live', name: 'acme-api', pane: '%9' });
+    assert.equal(m.stamp(), moved, 'the second poll writes nothing');
     const start = await m.a.call('POST', '/api/app/orchestrator/start', { json: { project: m.project.key } });
     assert.deepEqual(start.body, { pane: '%9', session: 'work', sessionId: CHILD, created: false });
+    assert.equal(m.tmuxExec.of('new-window').length + m.tmuxExec.of('new-session').length, 0);
+    assert.equal(m.stamp(), moved, 'Start writes nothing either');
+  });
+
+  test('(−) no move when the saved pick already is the child\'s id: the answer is the same and nothing is written', async () => {
+    const m = await machine();
+    await setOrchestrator(m.project.key, CHILD, m.world.env);
+    const before = m.stamp();
+    assert.deepEqual(await m.listed(), { sessionId: CHILD, state: 'live', name: 'acme-api', pane: '%9' });
+    assert.equal(m.stamp(), before);
+    assert.equal(await m.pick(), CHILD);
+    const start = await m.a.call('POST', '/api/app/orchestrator/start', { json: { project: m.project.key } });
+    assert.deepEqual(start.body, { pane: '%9', session: 'work', sessionId: CHILD, created: false });
+  });
+
+  test('(−) no move without a link (the host is an ordinary row), and none for a pick that no session answers to', async () => {
+    const m = await machine({ child: false });
+    await setOrchestrator(m.project.key, HOST, m.world.env);
+    const before = m.stamp();
+    assert.deepEqual(await m.listed(), { sessionId: HOST, state: 'live', name: 'acme-api', pane: '%9' });
+    assert.equal(m.stamp(), before);
+    assert.equal(await m.pick(), HOST);
+    await setOrchestrator(m.project.key, OTHER, m.world.env); // no such session anywhere
+    const other = m.stamp();
+    assert.deepEqual(await m.listed(), { sessionId: OTHER, state: 'gone', name: null, pane: null });
+    assert.equal(m.stamp(), other, 'a gone pick is not touched by the list');
+    assert.equal(await m.pick(), OTHER);
+  });
+
+  test('(−) no move for another project: the host\'s row belongs to acme-api, so a pick of it in a second project reads gone and stays as it is', async () => {
+    const m = await machine();
+    const second = await addProject(real.plain, m.world.env);
+    await setOrchestrator(second.key, HOST, m.world.env);
+    const before = m.stamp();
+    const projects = (await m.a.call('GET', '/api/app/projects')).body.projects;
+    assert.deepEqual(projects.find((p) => p.key === second.key).orchestrator, { sessionId: HOST, state: 'gone', name: null, pane: null });
+    assert.equal(m.stamp(), before, 'nothing written');
+    assert.equal(await getOrchestrator(second.key, m.world.env), HOST);
+  });
+
+  test('(−) no move when the saved pick changed while the poll ran: the newer save wins', async () => {
+    const m = await machine({ onCollect: (project, env) => setOrchestrator(project.key, OTHER, env) });
+    await setOrchestrator(m.project.key, HOST, m.world.env);
+    assert.deepEqual(await m.listed(), { sessionId: CHILD, state: 'live', name: 'acme-api', pane: '%9' }, 'this poll answers from the pick it read');
+    assert.equal(await m.pick(), OTHER, 'the pick saved meanwhile was not overwritten');
+  });
+
+  test('(−) a failed save changes nothing and shows nothing: the answer still reads live with the child\'s id, and the next poll moves the pick', { skip: process.getuid?.() === 0 && 'root ignores a read-only folder' }, async () => {
+    const m = await machine();
+    await setOrchestrator(m.project.key, HOST, m.world.env);
+    const before = m.stamp();
+    fs.chmodSync(path.dirname(m.file), 0o500); // readable, so the config still loads; the save cannot create its temp file
+    let failed;
+    try {
+      failed = await m.a.call('GET', '/api/app/projects');
+    } finally {
+      fs.chmodSync(path.dirname(m.file), 0o700);
+    }
+    assert.equal(failed.status, 200);
+    assert.deepEqual(failed.body.projects.find((p) => p.key === m.project.key).orchestrator, { sessionId: CHILD, state: 'live', name: 'acme-api', pane: '%9' });
+    assert.equal(m.stamp(), before, 'the write failed');
+    assert.equal(await m.pick(), HOST);
+    assert.deepEqual(await m.listed(), { sessionId: CHILD, state: 'live', name: 'acme-api', pane: '%9' });
+    assert.equal(await m.pick(), CHILD);
+  });
+
+  test('(+) PUT with the child\'s id while the pick is the host\'s id moves the pick (200), not "another session is running"', async () => {
+    const m = await machine();
+    await setOrchestrator(m.project.key, HOST, m.world.env);
+    const put = await m.a.call('PUT', m.url, { json: { sessionId: CHILD } });
+    assert.deepEqual([put.status, put.body.orchestrator?.sessionId, put.body.orchestrator?.state, put.body.orchestrator?.pane], [200, CHILD, 'live', '%9']);
+    assert.equal(await m.pick(), CHILD);
+  });
+
+  test('(−) PUT with the child\'s id is still refused while another session is the running orchestrator (409), and nothing changes', async () => {
+    const m = await machine({ other: true });
+    await setOrchestrator(m.project.key, OTHER, m.world.env);
+    const put = await m.a.call('PUT', m.url, { json: { sessionId: CHILD } });
+    assert.deepEqual([put.status, put.body.error], [409, 'orchestrator_running']);
+    assert.equal(await m.pick(), OTHER);
   });
 
   test('(+) pane eligibility: only the child claims the pane, so the pane is eligible once and its registry state is the child\'s busy, not the host\'s idle', async () => {

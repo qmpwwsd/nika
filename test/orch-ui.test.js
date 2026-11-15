@@ -557,6 +557,21 @@ describe('rowItems: the row menu matrix (design 1.2)', () => {
     assert.deepEqual(texts(items(ended, { project: { orchestrator: pick('ended', { sessionId: ID2 }) } }).out), [SET, RESUME]);
   });
 
+  test('(+) a row whose hostId is the saved pick is the pick (0.5, after /compact): Stop using and the spawn items, no Set', () => {
+    const row = orchRow({ id: ID2, hostId: ID });
+    assert.deepEqual(texts(items(row, { project: { orchestrator: pick('live') } }).out), [STOP, ...SPAWN]);
+    assert.deepEqual(texts(items(row, { project: { orchestrator: pick('live', { sessionId: ID2 }) } }).out), [STOP, ...SPAWN], 'and the row\'s own id is the pick too');
+  });
+
+  test('(−) a hostId that is not the saved pick, or no hostId, does not make a row the pick (Set stays); no pick and no hostId is not a match either', () => {
+    const other = '33333333-3333-4333-8333-333333333333';
+    assert.deepEqual(texts(items(orchRow({ id: ID2, hostId: other }), { project: { orchestrator: pick('live') } }).out), [SET, ...SPAWN]);
+    assert.deepEqual(texts(items(orchRow({ id: ID2, hostId: null }), { project: { orchestrator: pick('live') } }).out), [SET, ...SPAWN]);
+    assert.deepEqual(texts(items(orchRow({ id: ID2 }), { project: { orchestrator: pick('live') } }).out), [SET, ...SPAWN], 'hostId absent (undefined)');
+    assert.deepEqual(texts(items(orchRow({ id: ID2 })).out), [SET, ...SPAWN], 'no pick, no hostId: undefined must not equal undefined');
+    assert.deepEqual(texts(items(orchRow({ id: ID2, hostId: null }), { project: { orchestrator: null } }).out), [SET, ...SPAWN]);
+  });
+
   test('(+) each item has its own fk, <kind>:<scope>:<id>', () => {
     const ended = { id: ID, name: 'planner', live: false, role: null, pane: null };
     assert.deepEqual(Array.from(items(ended, { project: { orchestrator: pick('ended') } }).out, (i) => i.fk), [`orch-resume:g:k:${ID}`, `orch-stop:g:k:${ID}`]);

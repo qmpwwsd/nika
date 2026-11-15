@@ -138,7 +138,7 @@ function linkTree(entries) {
  * After /compact Claude Code runs the continued conversation as a background job in a child claude: its registry file says `kind: "bg"`,
  * has a `jobId` and no `tmux`. The claude in the pane stays as the host: not `bg`, its old session id, `parkedJobId` = the child's `jobId`.
  * Returns child session id → host registry entry, only for a one-to-one match (both live, ids differ, one child per `jobId`, one host per
- * `parkedJobId`, same project). Anything else stays two rows. The ids are compared for equality and nothing else (docs/security.md T53).
+ * `parkedJobId`, same project, both with a cwd). Anything else stays two rows. The ids are compared for equality and nothing else (docs/security.md T53).
  */
 function linkHosts(live, projectCache) {
   const bgs = [...live.values()].filter((e) => e.kind === 'bg' && e.jobId);
@@ -148,6 +148,7 @@ function linkHosts(live, projectCache) {
     const [host, ...more] = hosts.filter((e) => e.parkedJobId === child.jobId);
     const twin = bgs.some((e) => e !== child && e.jobId === child.jobId);
     if (!host || more.length || twin || child.tmuxPane || host.sessionId === child.sessionId) continue;
+    if (!child.cwd || !host.cwd) continue; // two entries without a cwd would both read as the one "unknown" project
     if (resolveProject(child.cwd, projectCache).key !== resolveProject(host.cwd, projectCache).key) continue;
     links.set(child.sessionId, host);
   }
@@ -240,9 +241,10 @@ export async function collect({ config, exec, now = Date.now(), sinceMs, since =
     }
     // Not live and no user or assistant line: a title-only stub, not an agent (it made the "(unknown)" group, 0.1.1).
     if (!reg && t && !t.hasConversation) return null;
-    const report = reports.get(id) ?? null;
-    if (report?.reportPath) reportPaths.set(id, report.reportPath);
     const host = hostOf.get(id) ?? null;
+    // a spawned agent's report is filed under the session id claude was launched with, which after /compact is the host's, not the child's
+    const report = reports.get(id) ?? (host ? reports.get(host.sessionId) : null) ?? null;
+    if (report?.reportPath) reportPaths.set(id, report.reportPath);
     const paneId = (host ?? reg)?.tmuxPane;
     const paneInfo = paneId ? tmux.panes.get(paneId) ?? null : null;
     const cwd = reg?.cwd ?? t?.cwd ?? null;

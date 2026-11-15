@@ -425,7 +425,7 @@ function rowItems(a, g, scope) {
 function pickItems(a, g, fk) {
   const project = g.project;
   const pick = savedPick(project);
-  const isPick = pick?.id === a.id;
+  const isPick = Boolean(pick) && (pick.id === a.id || pick.id === a.hostId); // hostId: the pick is the session this background session continues (after /compact)
   const other = otherRunning(g, pick?.id, a.id); // R1
   const r1 = other ? runningText(other) : null;
   const items = [];

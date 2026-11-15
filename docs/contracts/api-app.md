@@ -109,8 +109,15 @@ It is checked against the transcript index, not the 24 h window: `live` = the se
 for it, **or the session belongs to another project** (the same membership check as Start and the PUT: a hand-edited config cannot make
 the page show or open another project's session; `name` and `pane` are `null`). The picker's `project` carries the same field.
 A saved id that is the host session of a background row (`hostId`, see Dashboard snapshot additions) reads as that row: `live` with its
-pane, `sessionId` unchanged. Start with such a pick answers `200 { created: false }` with that pane and starts nothing, and the PUT with
-that id is not refused as "another session is running".
+pane. Start with such a pick answers `200 { created: false }` with that pane and starts nothing, and the PUT with that id is not refused
+as "another session is running". **The pick moves (0.5, owner decision 2026-11-15).** This route, and the picker's `done` answer, save
+the row's own id (the child's) as the project's pick when the saved pick is the host id of a live, linked row of the same project, and
+answer with that id as `sessionId`: the host's transcript ends at `/compact`, the child's is the conversation that goes on. The write
+goes through the store, happens only while the saved pick still equals the host id (read again just before it), and is best effort: an
+error changes nothing and is not shown (the answer still reads the row, and the next poll tries again). A second poll writes nothing,
+and nothing moves for a pick that is already the child's id, a host with no link, a row of another project or a pick that reads `gone`.
+Start and PUT never move it; the PUT with the child's id while the pick is the host id is an ordinary save. The browser tier never moves
+a pick.
 
 Cost: the page polls this route every 3 s, so the whole list is built from ONE snapshot (the cached 24 h one, shared with `/modes`;
 a live session is always in it) and at most ONE transcript-index walk per request, whatever the number of projects: the picks
@@ -247,7 +254,9 @@ job in a child `claude` (registry `kind: "bg"`, a `jobId`, no `tmux`) while the 
 the job as `parkedJobId`. When exactly one live background session and exactly one live non-background session share that id, both
 resolve to the same project and the child has no `tmux` of its own, the snapshot has ONE row for the pair: the child's (its `id`,
 `state`, `pid`, `attention`, transcript fields), with the host's pane (`pane`, and with it `role`, `parent`, `depth`, `children`), and
-`hostId` = the host's session id. The host has no row. Every other row, and every pair that does not match one to one, has `hostId: null`
+`hostId` = the host's session id. The host has no row. Both registry entries must carry a `cwd` (two entries without one are not "the same
+project"). The row's `report` is the child's own, else the host's (a spawned agent's `<name>.session` holds the id claude was launched
+with, which after `/compact` is the host's). Every other row, and every pair that does not match one to one, has `hostId: null`
 (a page that gets no field, from an older server, reads it as null). `GET /api/app/projects`' `orchestrator` and Start accept either id
 (see `orchestrator` above). The ids are compared for equality only (`^[A-Za-z0-9_-]{1,64}$`), never used as a path, argv element or text.
 

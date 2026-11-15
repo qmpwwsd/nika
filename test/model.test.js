@@ -911,6 +911,9 @@ describe('collect: a background session and the pane that shows it (0.5, W12)', 
     ['a jobId with a space', { host: { parkedJobId: 'job 1' }, child: { jobId: 'job 1' } }, null, '%9'],
     ['a jobId of 65 characters', { host: { parkedJobId: 'j'.repeat(65) }, child: { jobId: 'j'.repeat(65) } }, null, '%9'],
     ['the two sessions are in different projects', { child: { cwd: fxw.plain } }, null, '%9'],
+    ['neither registry entry has a cwd (two unknowns are not one project)', { host: { cwd: null }, child: { cwd: null } }, null, '%9'],
+    ['only the child has no cwd', { child: { cwd: null } }, null, '%9'],
+    ['only the host has no cwd', { host: { cwd: null } }, null, '%9'],
   ];
   for (const [why, over, childPane, hostPane] of NO_LINK) {
     test(`(−) no link when ${why}: two rows as before, hostId null, the child has no pane of the host's`, async () => {
@@ -930,6 +933,55 @@ describe('collect: a background session and the pane that shows it (0.5, W12)', 
       assert.equal(host.hostId, null);
     });
   }
+
+  /** Runs `fn` with spawn reports on disk: files = { <name>: { session, md } }; they are removed again (the other tests count names). */
+  async function withReports(files, fn) {
+    const names = Object.keys(files);
+    const clear = () => names.forEach((n) => ['session', 'md', 'rc'].forEach((x) => fs.rmSync(path.join(fxw.reportsDir, `${n}.${x}`), { force: true })));
+    try {
+      for (const [n, f] of Object.entries(files)) {
+        fs.writeFileSync(path.join(fxw.reportsDir, `${n}.session`), `${f.session}\n`);
+        fs.writeFileSync(path.join(fxw.reportsDir, `${n}.md`), `${f.md}\n`);
+        if (f.rc !== undefined) fs.writeFileSync(path.join(fxw.reportsDir, `${n}.rc`), `${f.rc}\n`);
+      }
+      return await fn();
+    } finally {
+      clear();
+    }
+  }
+  const reportOf = (s, id) => ({ report: s.snapshot.groups.flatMap((g) => g.agents).find((a) => a.id === id)?.report, path: s.reportPaths.get(id) });
+
+  test('(+) a spawned agent\'s report (filed under the host\'s session id) shows on the merged row, and its path is kept under the row\'s id', async () => {
+    await withReports({ 'compact-agent': { session: HOST, md: 'STATUS: DONE compact work', rc: 0 } }, async () => {
+      const { s, row } = await scene();
+      assert.equal(row(CHILD).hostId, HOST);
+      assert.deepEqual(row(CHILD).report, { name: 'compact-agent', status: 'STATUS: DONE compact work', rc: 0, hasFile: true });
+      assert.equal(row(CHILD).name, 'compact-agent');
+      assert.equal(s.reportPaths.get(CHILD).endsWith('compact-agent.md'), true);
+      assert.equal(s.reportPaths.has(HOST), false, 'the host has no row, so no entry under its id');
+    });
+  });
+
+  test('(+) a report filed under the child\'s own id wins over the host\'s', async () => {
+    await withReports({ 'host-one': { session: HOST, md: 'STATUS: HOST' }, 'child-one': { session: CHILD, md: 'STATUS: CHILD' } }, async () => {
+      const { s } = await scene();
+      const { report, path: file } = reportOf(s, CHILD);
+      assert.deepEqual([report.name, report.status], ['child-one', 'STATUS: CHILD']);
+      assert.equal(file.endsWith('child-one.md'), true);
+    });
+  });
+
+  test('(−) without a link the host\'s report stays on the host\'s own row, and a child that is not linked does not take it', async () => {
+    await withReports({ 'compact-agent': { session: HOST, md: 'STATUS: DONE compact work' } }, async () => {
+      const alone = await scene({ child: null });
+      assert.equal(reportOf(alone.s, HOST).report.name, 'compact-agent');
+      assert.equal(alone.s.reportPaths.get(HOST).endsWith('compact-agent.md'), true);
+      const apart = await scene({ host: { parkedJobId: 'c0ffee02' } }); // the job ids differ: two rows
+      assert.equal(reportOf(apart.s, HOST).report.name, 'compact-agent');
+      assert.equal(reportOf(apart.s, CHILD).report, null);
+      assert.equal(apart.s.reportPaths.has(CHILD), false);
+    });
+  });
 
   test('(−) the child\'s own tmux field wins: its row keeps its pane and role, and the host row stays', async () => {
     const { row } = await scene({ child: { tmux: 'work:@5.%10' }, tmuxLines: ['%9\twork\t4\tacme-api\tclaude\torchestrator', '%10\twork\t5\tchild\tclaude\tagent\t\t2\t%9'] });
