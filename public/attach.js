@@ -57,6 +57,7 @@ const STOP_REASONS = {
   'screen-changed': "Claude's screen changed (a prompt, a menu or a search may be open; Esc closes a search)",
   'not-idle': 'Claude started working',
 };
+const LOCKED = 'Wait until the attachments have gone, then add more.';
 const REFUSE = {
   shell: "Turn Shell off to send attachments: a ! command can't carry them.",
   uploading: 'Wait until the attachments have finished uploading.',
@@ -269,7 +270,8 @@ export function createAttachTray(io) {
   }
 
   function add(files) {
-    if (lock() || !io.paneId) return;
+    if (!io.paneId || files.length === 0) return;
+    if (lock()) return io.showProblem(LOCKED, 'warn', 4000); // a paste, a drop or a pick while a send is out (or input is off): said, not dropped
     for (const f of files) {
       if (chips.length >= MAX_FILES) {
         io.showProblem(`Up to ${MAX_FILES} attachments per message.`, 'warn', 4000);
@@ -383,12 +385,13 @@ export function createAttachTray(io) {
       if (!hasFiles(e)) return;
       e.preventDefault();
       over += 1;
-      look(true);
+      look(!lock()); // adding is closed (sending, or input off): no drop look
     });
     box.addEventListener('dragover', (e) => {
       if (!hasFiles(e)) return;
-      e.preventDefault();
-      look(true);
+      e.preventDefault(); // cancelled even when closed, so a drop never opens the file
+      e.dataTransfer.dropEffect = lock() ? 'none' : 'copy';
+      look(!lock());
     });
     box.addEventListener('dragleave', () => {
       over = Math.max(0, over - 1);
@@ -406,7 +409,13 @@ export function createAttachTray(io) {
       add(Array.from(e.dataTransfer.files ?? []));
     });
     // A file dropped anywhere else would make the window open it: cancel it (the shell's navigation guard denies file: as well).
-    for (const type of ['dragover', 'drop']) document.addEventListener(type, (e) => { if (hasFiles(e)) e.preventDefault(); });
+    // The cursor outside the box says no (the box's own handler sets its effect).
+    document.addEventListener('dragover', (e) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      if (!box.contains(e.target)) e.dataTransfer.dropEffect = 'none';
+    });
+    document.addEventListener('drop', (e) => { if (hasFiles(e)) e.preventDefault(); });
     window.addEventListener('pagehide', () => { // files attached by mistake should not wait for the expiry
       for (const chip of chips) {
         if (chip.state !== 'ready') continue;

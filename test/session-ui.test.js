@@ -2745,6 +2745,19 @@ describe('0.5: drawing the mirror with the cut (design W6, section 5)', () => {
     assert.deepEqual(norm(ctx.M.draft), readable());
   });
 
+  test('(−) handleCapture while attachments are being sent: no sync capture (the box holds placeholders), but the mirror is drawn and the placeholder follows', () => {
+    const log = [];
+    const ctx = {
+      recovered() {}, noteScreen() {}, $: () => ({ style: {}, scrollTop: 0, scrollHeight: 9 }), M: { frozen: false, scrollTop: 0 }, setLive() {}, MID: ' - ', TIMES: 'x', ETAG: /^[0-9a-f]{1,64}$/,
+      cleanDraft: cleanDraftReal, DS: { capture: (d, cols) => log.push(['capture', d, cols]) }, drawMirror: () => log.push(['draw']), renderSuggestion: () => log.push(['suggest']), ATT: { sending: () => true },
+      setGone() {}, serverMessage: () => '', setPaneState() {}, setInputEnabled() {}, showOverlay() {},
+    };
+    const body = { ...BODY, draft: readable(), etag: 'ab12' };
+    vm.runInNewContext(`${fnOf('function handleCapture(r)')}; handleCapture`, ctx)({ status: 200, body });
+    assert.deepEqual(norm(log), [['draw'], ['suggest']].map(norm));
+    assert.equal(ctx.M.body, body, 'the body is still kept');
+  });
+
   test('(−) a sync that throws never takes the mirror down: the rows are drawn and the error is not thrown', () => {
     const drew = [];
     const ctx = {
@@ -2897,7 +2910,7 @@ describe('0.5: Send with the synced box (design W5, section 4)', () => {
   const GATE = 'Answer the prompt with the buttons above or in the terminal.';
 
   /** sendComposer for real, with the real plans (draftSendPlan, planSend, planShell, sendGate) and a fake sync. `pushAnswer`: what DS.send answers. */
-  const rig = ({ value, screen, shell = false, promptOpen = false, pushAnswer = { ok: true } } = {}) => {
+  const rig = ({ value, screen, shell = false, promptOpen = false, pushAnswer = { ok: true }, att = { pending: () => false } } = {}) => {
     const log = { order: [], problems: [], said: [], payloads: [], pushed: [], shellOff: 0 };
     const ta = { value, disabled: false };
     const ctx = {
@@ -2913,11 +2926,34 @@ describe('0.5: Send with the synced box (design W5, section 4)', () => {
       enqueueJob: (run) => run(),
       enqueueSeq: async (p) => { log.order.push('keys'); log.payloads.push(norm(p)); return { ok: true }; },
       deliver: async (p) => { log.order.push('keys'); log.payloads.push([norm(p)]); return { ok: true }; },
-      ATT: { pending: () => false },
+      ATT: att,
     };
     return { log, ta, send: mk(['async function sendComposer()', 'async function pushThenEnter(route)', 'function clearBox(value)'], ctx).sendComposer };
   };
   const ENTER = [[{ keys: ['Enter'] }]];
+
+  test('(+) 0.5 attachments pending: sendComposer hands the box text to ATT.send and sends nothing itself (no sequence, no push, no begin/end, the box is left to ATT)', async () => {
+    const handed = [];
+    const att = { pending: () => true, send: (v) => { handed.push(v); return Promise.resolve(); } };
+    const r = rig({ value: 'see the files', screen: D('text', ''), att });
+    await r.send();
+    assert.deepEqual(handed, ['see the files']);
+    assert.deepEqual(r.log.order, [], 'no keys job, no DS.send, no beginSend');
+    assert.deepEqual(r.log.payloads, []);
+    assert.deepEqual(r.log.pushed, []);
+    assert.deepEqual(r.log.said, []);
+    assert.equal(r.ta.value, 'see the files');
+  });
+
+  test('(−) 0.5 attachments pending behind an open permission prompt: the gate answers first and ATT.send is not called', async () => {
+    const handed = [];
+    const att = { pending: () => true, send: (v) => { handed.push(v); } };
+    const r = rig({ value: 'see the files', screen: D('text', ''), promptOpen: true, att });
+    await r.send();
+    assert.deepEqual(handed, []);
+    assert.deepEqual(r.log.problems, [['Answer the prompt in the terminal, or turn on Type into pane.', 'error']]);
+    assert.deepEqual(r.log.order, []);
+  });
 
   test('(+) row 1: the screen equals the box: Enter alone, no push, no text, then the box is cleared and the sync told', async () => {
     const r = rig({ value: 'fix the typo', screen: D('text', 'fix the typo') });

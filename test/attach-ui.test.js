@@ -38,6 +38,11 @@ class TEl extends El {
   }
 
   click() { this.clicks += 1; super.click(); }
+
+  contains(node) { // Node.contains: this element or any of its descendants
+    for (let n = node; n; n = n.parent) if (n === this) return true;
+    return false;
+  }
 }
 
 const tick = () => new Promise((resolve) => { setImmediate(resolve); });
@@ -530,6 +535,147 @@ describe('the ways in: button, paste, drop', () => {
       assert.equal(r.doc(type, { dataTransfer: { types: ['text/plain'] } }).defaultPrevented, false, type);
       assert.equal(r.doc(type, {}).defaultPrevented, false, type);
     }
+  });
+
+  // ---- fix round 1: the cursor tells the truth, and a refused add says so ----------------------------------------------------------------
+
+  const LOCKED_LINE = ['Wait until the attachments have gone, then add more.', 'warn', 4000];
+  const looksOn = (r) => [r.els['composer-box'].classList.contains('dropping'), r.els['att-drop'].hidden];
+
+  /** A page whose send is out and not answered yet: adding is locked because it is sending. */
+  async function sendingRig() {
+    let release;
+    const r = rig({
+      reply: (p, o) => {
+        if (isSend(p, o)) return new Promise((resolve) => { release = () => resolve({ status: 200, body: { sent: 1, images: 1 } }); });
+        return { status: 200, body: { id: uploadId(1), type: 'png', size: 5 } };
+      },
+    });
+    await r.add(file('a.png'));
+    const done = r.att.send('hi');
+    await settle();
+    assert.equal(r.att.sending(), true);
+    return { r, finish: async () => { release(); await done; } };
+  }
+
+  test('(+) a Files drag over the box with adding open shows the drop look and the copy cursor', () => {
+    const r = rig();
+    const box = r.els['composer-box'];
+    const dt = { types: ['Files'] };
+    const e = box.fire('dragover', { dataTransfer: dt });
+    assert.equal(e.defaultPrevented, true);
+    assert.equal(dt.dropEffect, 'copy');
+    assert.deepEqual(looksOn(r), [true, false]);
+  });
+
+  test('(−) a Files drag over the mirror or anywhere outside the box gets the none cursor; a text drag and a drag inside the box are not touched', () => {
+    const r = rig();
+    const mirror = new TEl('pre');
+    const inside = new TEl('textarea');
+    r.els['composer-box'].append(inside);
+    const out = { types: ['Files'] };
+    assert.equal(r.doc('dragover', { target: mirror, dataTransfer: out }).defaultPrevented, true, 'still cancelled: the window never opens the file');
+    assert.equal(out.dropEffect, 'none');
+    const nested = { types: ['Files'] };
+    r.doc('dragover', { target: inside, dataTransfer: nested });
+    assert.equal(nested.dropEffect, undefined, 'a child of the box: the box handler decides');
+    const text = { types: ['text/plain'] };
+    r.doc('dragover', { target: mirror, dataTransfer: text });
+    assert.equal(text.dropEffect, undefined);
+    const dropped = { types: ['Files'] };
+    r.doc('drop', { target: mirror, dataTransfer: dropped });
+    assert.equal(dropped.dropEffect, undefined, 'only dragover has an effect to set');
+  });
+
+  test('(−) a Files drag over the box while it sends or while input is off gets the none cursor and no drop look', async () => {
+    const { r, finish } = await sendingRig();
+    const box = r.els['composer-box'];
+    const dt = { types: ['Files'] };
+    assert.equal(box.fire('dragenter', { dataTransfer: dt }).defaultPrevented, true, 'still cancelled: no navigation');
+    box.fire('dragover', { dataTransfer: dt });
+    assert.equal(dt.dropEffect, 'none');
+    assert.deepEqual(looksOn(r), [false, true]);
+    await finish();
+    const off = rig();
+    off.att.enable(false);
+    const dt2 = { types: ['Files'] };
+    off.els['composer-box'].fire('dragenter', { dataTransfer: dt2 });
+    off.els['composer-box'].fire('dragover', { dataTransfer: dt2 });
+    assert.equal(dt2.dropEffect, 'none');
+    assert.deepEqual(looksOn(off), [false, true]);
+  });
+
+  test('(−) a drag that began while adding was open loses its look the moment a send starts, and gets it back after', async () => {
+    let release;
+    const r = rig({
+      reply: (p, o) => {
+        if (isSend(p, o)) return new Promise((resolve) => { release = () => resolve({ status: 200, body: { sent: 1, images: 1 } }); });
+        return { status: 200, body: { id: uploadId(1), type: 'png', size: 5 } };
+      },
+    });
+    await r.add(file('a.png'));
+    r.els['composer-box'].fire('dragover', { dataTransfer: { types: ['Files'] } });
+    assert.deepEqual(looksOn(r), [true, false]);
+    const done = r.att.send('hi');
+    await settle();
+    r.els['composer-box'].fire('dragover', { dataTransfer: { types: ['Files'] } });
+    assert.deepEqual(looksOn(r), [false, true]);
+    release();
+    await done;
+    r.els['composer-box'].fire('dragover', { dataTransfer: { types: ['Files'] } });
+    assert.deepEqual(looksOn(r), [true, false]);
+  });
+
+  test('(−) files pasted during a send: the paste is cancelled, a warn line shows for 4 s, no chip, no request', async () => {
+    const { r, finish } = await sendingRig();
+    const before = r.log.calls.length;
+    const e = r.els.composer.fire('paste', { clipboardData: { files: [file('late.png')] } });
+    await settle();
+    assert.equal(e.defaultPrevented, true);
+    assert.deepEqual(r.log.problem, [LOCKED_LINE]);
+    assert.equal(r.chips().length, 1, 'only the chip that is being sent');
+    assert.equal(r.log.calls.length, before, 'nothing was posted');
+    await finish();
+  });
+
+  test('(−) files dropped on the box during a send: the same line, no chip, no request, no look', async () => {
+    const { r, finish } = await sendingRig();
+    const before = r.log.calls.length;
+    const e = r.els['composer-box'].fire('drop', { dataTransfer: { types: ['Files'], files: [file('late.png')] } });
+    await settle();
+    assert.equal(e.defaultPrevented, true);
+    assert.deepEqual(r.log.problem, [LOCKED_LINE]);
+    assert.equal(r.chips().length, 1);
+    assert.equal(r.log.calls.length, before);
+    assert.deepEqual(looksOn(r), [false, true]);
+    await finish();
+  });
+
+  test('(−) files picked while locked, or pasted while input is off: the line shows; a cancelled picker says nothing', async () => {
+    const { r, finish } = await sendingRig();
+    r.els['att-input'].files = [file('late.png')];
+    r.els['att-input'].fire('change');
+    await settle();
+    assert.deepEqual(r.log.problem, [LOCKED_LINE]);
+    r.els['att-input'].files = [];
+    r.els['att-input'].fire('change'); // the picker closed without a file
+    await settle();
+    assert.equal(r.log.problem.length, 1);
+    await finish();
+    const off = rig();
+    off.att.enable(false);
+    off.els.composer.fire('paste', { clipboardData: { files: [file('a.png')] } });
+    assert.deepEqual(off.log.problem, [LOCKED_LINE]);
+    assert.equal(off.chips().length, 0);
+  });
+
+  test('(+) with adding open the line never shows, and a paste or drop still adds', async () => {
+    const r = rig();
+    r.els.composer.fire('paste', { clipboardData: { files: [file('a.png')] } });
+    r.els['composer-box'].fire('drop', { dataTransfer: { types: ['Files'], files: [file('b.pdf')] } });
+    await settle();
+    assert.equal(r.chips().length, 2);
+    assert.deepEqual(r.log.problem, []);
   });
 });
 
