@@ -9,11 +9,11 @@ import path from 'node:path';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 import { El, installDom, withClass, focus } from './fake-dom.js';
-import { h, icon, roleTagEl, ctxEl, subStateEl, subagentItemEl } from '../public/dom.js';
+import { h, icon, roleTagEl, ctxEl, subStateEl, subagentItemEl, labelEl } from '../public/dom.js';
 import { menuEl, sessionHref, RX } from '../public/ui.js';
 import {
   orchState, roleTag, savedPick, otherRunning, parentOf, spawnLimits, effectiveAgents, statusOf, treeRows, hasTree, endedPlan, STATUS_ORDER,
-  subagentView, subagentHref,
+  subagentView, subagentHref, agentLabelView, KINDS, KIND_TEXT, ROLE_KIND, kindFromModel,
 } from '../public/dash-model.js';
 import { parseModes, modesAfter, modeEl, settingModeEl, MODE_META } from '../public/modes.js';
 import { pluginView, pluginSave, sortIds, countText, filterNote } from '../public/plugin-view.js';
@@ -86,7 +86,7 @@ function treeRig({ isApp = true, open = [], expanded = [], rowItems = null } = {
   const ctx = {
     isApp, state, hooks: rowItems ? { rowItems: (...args) => { seen.push(args); return rowItems; } } : {}, ORDER: STATUS_ORDER, ROW_CAP: 12,
     endedPlan, statusOf, treeRows, hasTree, parentOf, roleTag, roleTagEl, ctxEl, h, icon, menuEl, sessionHref, SHAPE,
-    subagentView, subagentHref, subagentItemEl,
+    subagentView, subagentHref, subagentItemEl, labelEl, agentLabelView,
     rowMode: () => null, canEndRow: () => false, reasonOf: () => 'Needs you', endedText: () => 'Ended',
     statusEl: () => new El('span'), modeEl: () => new El('span'), modelEl: () => new El('span'), timeEl: () => new El('span'),
     copyText: () => {}, showReport: () => {}, focusPane: () => {}, endSession: () => {},
@@ -336,7 +336,7 @@ describe('flat lists: the filter, the queue and Ended (design 2.1)', () => {
 // W8: each line has a state badge (its own colour, glyph and word), the description is a link in the app tier, and a row whose
 // subagents are all hidden says so in one line (W11).
 describe('Claude\'s own subagents under a row: hidden when finished until "Show ended" (F5, W8)', () => {
-  const sub = (id, state, over = {}) => ({ id, type: 'Explore', description: `task ${id}`, model: 'haiku', modelLabel: 'Haiku 4.5', state, lastActivity: 5, ...over });
+  const sub = (id, state, over = {}) => ({ id, type: 'Explore', label: 'scout', description: `task ${id}`, model: 'haiku', modelLabel: 'Haiku 4.5', state, lastActivity: 5, ...over });
   const SUBS = [sub('s1', 'running'), sub('s2', 'finished'), sub('s3', 'stopped')];
   const busy = () => ag(B1, 'builder-1', { state: 'busy', subagents: SUBS });
   const subsOf = (nodes) => nodes.flatMap((n) => n.all(withClass('subs')));
@@ -373,11 +373,13 @@ describe('Claude\'s own subagents under a row: hidden when finished until "Show 
     assert.equal(new Set(badges.map((b) => b.attrs.title)).size, 3);
   });
 
-  test('(+) each line still shows the type, the model and the time after the description, in that order', () => {
+  test('(+) each line still shows the label, the model and the time after the description, in that order (W9: the label chip replaced the raw type)', () => {
     const [d] = subsOf(treeRig().agentNodes(group([busy()]), '', 'g:k'));
     const li = linesOf(d)[0];
-    assert.deepEqual(li.kids.map((k) => k.className.split(' ')[0]), ['sst', 'sub-desc', 'sub-type', 'model', ''], 'the last node is the time (the rig stubs timeEl with a bare span)');
-    assert.equal(li.all(withClass('sub-type'))[0].textContent, 'Explore');
+    assert.deepEqual(li.kids.map((k) => k.className.split(' ')[0]), ['sst', 'sub-desc', 'agent-kind', 'model', ''], 'the last node is the time (the rig stubs timeEl with a bare span)');
+    assert.equal(li.all(withClass('agent-kind'))[0].textContent, 'scout');
+    assert.equal(li.all(withClass('agent-kind'))[0].attrs.title, "Claude's Explore subagent. Kind: scout, finds files and facts, read-only");
+    assert.equal(li.all(withClass('sub-type')).length, 0);
     assert.equal(li.all(withClass('model'))[0].textContent, 'Haiku 4.5');
   });
 
@@ -618,7 +620,7 @@ function projRig({ agents = family(), project = {}, settings = SETTINGS, me = { 
   const nodes = new Map();
   const node = (sel) => {
     if (!nodes.has(sel)) {
-      const n = new El(sel === '#sp-model' ? 'select' : 'div');
+      const n = new El(sel === '#sp-model' || sel === '#sp-kind' ? 'select' : 'div');
       if (sel === 'input[name="sp-place"]:checked') n.value = 'settings';
       nodes.set(sel, n);
     }
@@ -639,6 +641,7 @@ function projRig({ agents = family(), project = {}, settings = SETTINGS, me = { 
   const ctx = {
     h, icon, $: node, state, hooks: {}, appFetch, menuEl, sessionHref, roleTag, orchState, savedPick, otherRunning, spawnLimits, effectiveAgents, parseModes, modesAfter, settingModeEl, MODE_META, RX,
     pluginView, pluginSave, sortIds, countText, filterNote, ROLES, ROLE_LABEL, CUSTOM, MODEL_ID, MODEL_HINT, modelLabel, fillModelSelect, fillRoleOverride, effectiveRoleModels,
+    KINDS, KIND_TEXT, ROLE_KIND, kindFromModel,
     location: { set href(v) { navs.push(v); }, get href() { return ''; }, hash: '' }, document: { title: '' },
     toast: (msg, o) => {
       const t = { msg, kind: o?.kind ?? 'info', action: o?.action, remove() {} };
@@ -651,7 +654,7 @@ function projRig({ agents = family(), project = {}, settings = SETTINGS, me = { 
     render: (force) => renders.push(force), buildGroups: () => [g], agentNodes: () => [new El('ul')], swap: (host, list) => host.replaceChildren(...list), interacting: () => false,
     rulesEl: () => new El('span'), setTimeout, clearTimeout, AbortController, TextEncoder, window: { addEventListener: () => {} },
   };
-  const api = vm.runInNewContext(`${PROJECT_SRC}\n({ groupActions, rowItems, openSpawn, changeRole, submitSpawn, setupCards, confirmRemove, limitCopy, limitReason, spawnPrefs, sp, renderProject })`, ctx);
+  const api = vm.runInNewContext(`${PROJECT_SRC}\n({ groupActions, rowItems, openSpawn, changeRole, submitSpawn, setupCards, confirmRemove, limitCopy, limitReason, spawnPrefs, sp, renderProject, fillSpawnKind, paintKindAuto })`, ctx);
   const set = (sel, patch) => Object.assign(node(sel), patch);
   const role = (which) => { // the radios say which role is chosen
     set('#sp-role-agent', { checked: which === 'agent' });
@@ -1360,6 +1363,347 @@ describe('markup and styles the code relies on', () => {
     const src = code(read('project.js'));
     assert.match(src, /for \(const id of \['#sp-role-agent', '#sp-role-orch'\]\) \$\(id\)\.addEventListener\('change', changeRole\);/);
     assert.match(src, /\$\('#sp-model'\)\.addEventListener\('change', \(\) => \{[^}]*sp\.touched = true;/);
-    assert.match(src, /\$\('#sp-model-custom'\)\.addEventListener\('input', \(\) => \{ sp\.touched = true; \}\);/);
+    assert.match(src, /\$\('#sp-model-custom'\)\.addEventListener\('input', \(\) => \{ sp\.touched = true;[^}]*\}\);/); // W9: it also repaints the Kind field's Automatic text (pinned in the Kind tests)
+  });
+});
+
+// ---- W9 (labels), the page side: the chip on a row and the Kind field of the spawn sheet (design W9 4.3 and 4.6) ---------------------------
+
+describe('the label chip on a row (W9 4.3)', () => {
+  const chips = (li) => li.all(withClass('agent-kind'));
+  const whatOf = (li) => li.all(withClass('c-what'))[0];
+  const nameCell = (li) => li.all(withClass('c-name'))[0];
+  const live = (over = {}) => ag(B1, 'builder-1', { label: 'coder', ...over });
+
+  for (const isApp of [true, false]) {
+    test(`(+) ${isApp ? 'app tier' : 'browser tier'}: a live agent row has the chip as the first child of .c-what: the word, and "Kind: <word>, <meaning>" as its title`, () => {
+      const r = treeRig({ isApp });
+      const li = r.rowEl(live(), group([live()]), { scope: 'g:k' });
+      const what = whatOf(li);
+      assert.equal(what.kids[0].className, 'agent-kind');
+      assert.equal(what.kids[0].textContent, 'coder');
+      assert.equal(what.kids[0].attrs.title, 'Kind: coder, writes and changes code');
+      assert.equal(chips(li).length, 1, 'one chip');
+      assert.equal(chips(nameCell(li)).length, 0, 'not in the name column: it would squeeze names again (the 0.4 concern)');
+    });
+  }
+
+  test('(+) every word of the list draws as itself', () => {
+    const r = treeRig();
+    for (const w of KINDS) assert.equal(chips(r.rowEl(live({ label: w }), group([live()]), { scope: 'g:k' }))[0].textContent, w, w);
+  });
+
+  test('(+) the chip comes before the project chip, the "under" chip, the prompt text and the branch', () => {
+    const r = treeRig();
+    const agents = family().map((a) => (a.id === B1 ? { ...a, label: 'coder', gitBranch: 'feat/x', lastPrompt: 'do it' } : a));
+    const a = agents.find((x) => x.id === B1);
+    const li = r.rowEl(a, group(agents), { scope: 'q', showProject: true, showEnded: false });
+    assert.deepEqual(whatOf(li).kids.map((k) => k.className.split(' ')[0]), ['agent-kind', 'proj-chip', 'proj-chip', 'what']);
+    const flat = r.rowEl(a, group(agents), { scope: 'g:k' });
+    assert.deepEqual(whatOf(flat).kids.map((k) => k.className.split(' ')[0]), ['agent-kind', 'proj-chip', 'what', 'branch'], 'in a flat list the "under <parent>" chip follows the label');
+  });
+
+  test('(+) a nested tree row draws it too', () => {
+    const r = treeRig();
+    const agents = family().map((a) => (a.id === B2 ? { ...a, label: 'tester' } : a));
+    const [ul] = r.agentNodes(group(agents), '', 'g:k');
+    const li = rowsOf(ul).find((x) => nameOf(x) === 'builder-2');
+    assert.equal(chips(li)[0].textContent, 'tester');
+  });
+
+  test('(−) no chip on the main orchestrator, a sub-orchestrator, a user\'s own session or an ended row', () => {
+    const r = treeRig();
+    const rows = [
+      ag(MAIN, 'planner', { role: 'orchestrator', label: null }),
+      ag(SUB, 'api-lead', { role: 'sub-orchestrator', label: 'sub-orchestrator', parent: MAIN }),
+      ag(B2, 'my-own', { role: null, label: null }),
+      ag(NEW, 'old', { live: false, state: 'ended', pane: null, label: null }),
+    ];
+    for (const a of rows) assert.equal(chips(r.rowEl(a, group(rows), { scope: 'g:k' })).length, 0, a.name);
+  });
+
+  test('(−) a label the page does not know draws nothing: a word outside the list, a kind on a sub-orchestrator or an orchestrator, a label that is not text', () => {
+    const r = treeRig();
+    const cases = [
+      live({ label: 'boss' }), live({ label: 'Coder' }), live({ label: '' }), live({ label: null }), live({ label: 5 }), live({ label: { toString: () => 'coder' } }),
+      live({ role: 'sub-orchestrator', label: 'coder' }), live({ role: 'orchestrator', label: 'coder' }), live({ role: null, label: 'coder' }),
+    ];
+    for (const a of cases) assert.equal(chips(r.rowEl(a, group([a]), { scope: 'g:k' })).length, 0, JSON.stringify(a.label));
+  });
+
+  test('(+) the row uses labelEl(agentLabelView(a)) once, first in .c-what, and nowhere else (source pin)', () => {
+    const row = fn(APP, 'function rowEl(');
+    assert.equal(row.match(/labelEl\(/g).length, 1);
+    assert.match(row, /h\('div', \{ class: 'c-what' \},\s*labelEl\(agentLabelView\(a\)\),/);
+    assert.match(APP, /import \{[^}]*\blabelEl\b[^}]*\} from '\.\/dom\.js'/);
+    assert.match(APP, /import \{[^}]*\bagentLabelView\b[^}]*\} from '\.\/dash-model\.js'/);
+  });
+});
+
+describe('the spawn sheet: the Kind field (W9 4.6)', () => {
+  const KIND_ROWS = [
+    ['coder', 'coder · writes and changes code'], ['reviewer', 'reviewer · reviews code or designs'], ['tester', 'tester · writes and runs tests'],
+    ['designer', 'designer · designs and plans'], ['scout', 'scout · finds files and facts, read-only'], ['writer', 'writer · writes docs and reports'], ['agent', 'agent · no particular kind'],
+  ];
+  const HELP = "Shown as a label on its row. Automatic picks it from the model's role.";
+  const HELP_SUB = 'A sub-orchestrator always shows sub-orchestrator.';
+  const READY = { status: 200, body: { sessionId: NEW, pane: '%9', kind: 'coder' } };
+  const opened = (over = {}, opts = { parent: mainRow() }) => {
+    const r = projRig(over);
+    r.api.openSpawn(r.g, opts);
+    return r;
+  };
+  const rowsOf2 = (r) => r.node('#sp-kind').kids.map((o) => [o.attrs.value, o.textContent]);
+  const autoOf = (r) => r.node('#sp-kind').kids[0].textContent;
+  const pickModel = (r, value, custom = '') => {
+    r.node('#sp-model').value = value;
+    r.node('#sp-model-custom').value = custom;
+    r.api.paintKindAuto();
+  };
+  const submit = async (r, tweak) => {
+    r.node('#sp-brief').value = 'Add the /health route and a test for it.';
+    r.node('#dlg-spawn').open = true;
+    tweak?.(r);
+    await r.api.submitSpawn({ preventDefault() {} });
+    await settle();
+    return r.posts()[0]?.json;
+  };
+
+  test('(+) #sp-kind holds Automatic first, then the seven kinds in KINDS order with their texts; it opens on Automatic', () => {
+    const r = opened();
+    const rows = rowsOf2(r);
+    assert.equal(rows.length, 8);
+    assert.equal(rows[0][0], '');
+    assert.deepEqual(rows.slice(1), KIND_ROWS);
+    assert.equal(r.node('#sp-kind').value, '');
+    assert.equal(r.node('#sp-kind').disabled, false);
+    assert.equal(r.node('#sp-kind-help').textContent, HELP);
+  });
+
+  test('(+) Automatic says which kind the model would give: Builder\'s model coder, Reasoner\'s designer, Scout\'s scout (the sheet opens on the Builder model)', () => {
+    const r = opened();
+    assert.equal(r.node('#sp-model').value, 'claude-sonnet-5-5');
+    assert.equal(autoOf(r), "Automatic · coder (Builder's model)");
+    pickModel(r, 'claude-opus-5-5');
+    assert.equal(autoOf(r), "Automatic · designer (Reasoner's model)");
+    pickModel(r, 'haiku');
+    assert.equal(autoOf(r), "Automatic · scout (Scout's model)");
+  });
+
+  test('(+) a model no role names, the orchestrator\'s model, or a catalog id says "no matching role"; Custom ID is read trimmed', () => {
+    const r = opened();
+    pickModel(r, 'claude-fable-1');
+    assert.equal(autoOf(r), 'Automatic · agent (no matching role)');
+    pickModel(r, 'claude-old-1');
+    assert.equal(autoOf(r), 'Automatic · agent (no matching role)');
+    pickModel(r, CUSTOM, '  claude-sonnet-5-5 ');
+    assert.equal(autoOf(r), "Automatic · coder (Builder's model)");
+    pickModel(r, CUSTOM, 'claude-private-9');
+    assert.equal(autoOf(r), 'Automatic · agent (no matching role)');
+    pickModel(r, CUSTOM, '');
+    assert.equal(autoOf(r), 'Automatic · agent (no matching role)');
+  });
+
+  test('(+) the project\'s own role models win over Settings\' (the key is the sheet\'s project)', () => {
+    const settings = { ...SETTINGS, perProject: { [KEY]: { models: { builder: 'claude-private-9' } } } };
+    const r = opened({ settings });
+    assert.equal(r.node('#sp-model').value, 'claude-private-9');
+    assert.equal(autoOf(r), "Automatic · coder (Builder's model)");
+    pickModel(r, 'claude-sonnet-5-5');
+    assert.equal(autoOf(r), 'Automatic · agent (no matching role)', 'Settings\' builder model is no longer this project\'s builder');
+  });
+
+  test('(+) Settings not loaded yet: "Automatic (from the model\'s role)", and it is still Automatic', () => {
+    const r = opened({ settings: null });
+    assert.equal(autoOf(r), "Automatic (from the model's role)");
+    pickModel(r, 'sonnet');
+    assert.equal(autoOf(r), "Automatic (from the model's role)");
+    assert.equal(r.node('#sp-kind').value, '');
+  });
+
+  test('(+) a model change rewrites only the Automatic text: the options, their order and the picked value stay', () => {
+    const r = opened();
+    r.node('#sp-kind').value = 'tester';
+    const before = rowsOf2(r).slice(1);
+    const nodes = [...r.node('#sp-kind').kids];
+    pickModel(r, 'claude-opus-5-5');
+    assert.deepEqual(rowsOf2(r).slice(1), before);
+    assert.equal(r.node('#sp-kind').value, 'tester');
+    assert.deepEqual(r.node('#sp-kind').kids, nodes, 'the same option nodes: only a text changed');
+    assert.equal(r.node('#sp-kind').kids[0].attrs.value, '');
+  });
+
+  test('(+) the model select and the Custom ID field both repaint Automatic (source pin of the two listeners)', () => {
+    assert.match(PROJECT_SRC, /\$\('#sp-model'\)\.addEventListener\('change', \(\) => \{[^}]*paintKindAuto\(\)/);
+    assert.match(PROJECT_SRC, /\$\('#sp-model-custom'\)\.addEventListener\('input', \(\) => \{[^}]*paintKindAuto\(\)/);
+  });
+
+  test('(+) a role switch repaints Automatic too: the sub-orchestrator\'s model gives "no matching role", back to agent the Builder model', () => {
+    const r = opened();
+    r.role('orchestrator');
+    r.api.changeRole();
+    assert.equal(r.node('#sp-model').value, 'claude-fable-1');
+    assert.equal(autoOf(r), 'Automatic · agent (no matching role)');
+    r.role('agent');
+    r.api.changeRole();
+    assert.equal(autoOf(r), "Automatic · coder (Builder's model)");
+  });
+
+  test('(+) a remembered kind is selected again, per project; another project opens on Automatic', () => {
+    const r = projRig();
+    r.api.spawnPrefs.set(`${KEY}:agent`, { model: 'haiku', kind: 'reviewer' });
+    r.api.openSpawn(r.g, { parent: mainRow() });
+    assert.equal(r.node('#sp-kind').value, 'reviewer');
+    r.api.openSpawn({ ...r.g, project: { ...r.g.project, key: 'fedcba9876543210' } }, { parent: mainRow() });
+    assert.equal(r.node('#sp-kind').value, '');
+  });
+
+  test('(−) a remembered kind that is not in the list (a stale value) opens as Automatic, and so does a non-text one', () => {
+    for (const kind of ['boss', 'Coder', 'coder ', 5, null, {}, '__proto__']) {
+      const r = projRig();
+      r.api.spawnPrefs.set(`${KEY}:agent`, { model: 'haiku', kind });
+      r.api.openSpawn(r.g, { parent: mainRow() });
+      assert.equal(r.node('#sp-kind').value, '', String(kind));
+    }
+  });
+
+  test('(+) the remembered kind is the agent\'s even when the sheet opens as a sub-orchestrator (the value is kept for the switch back)', () => {
+    const r = projRig();
+    r.api.spawnPrefs.set(`${KEY}:agent`, { model: 'haiku', kind: 'writer' });
+    r.api.openSpawn(r.g, { parent: mainRow(), role: 'orchestrator' });
+    assert.equal(r.node('#sp-kind').value, 'writer');
+    r.role('agent');
+    r.api.changeRole();
+    assert.equal(r.node('#sp-kind').value, 'writer');
+  });
+
+  test('(+) a sub-orchestrator has no Kind: the select is disabled with the reason as visible help, the value is kept; back to agent enables it and restores the help', () => {
+    const r = opened();
+    r.node('#sp-kind').value = 'tester';
+    r.role('orchestrator');
+    r.api.changeRole();
+    assert.equal(r.node('#sp-kind').disabled, true);
+    assert.equal(r.node('#sp-kind-help').textContent, HELP_SUB);
+    assert.equal(r.node('#sp-kind').value, 'tester', 'the value is kept');
+    r.role('agent');
+    r.api.changeRole();
+    assert.equal(r.node('#sp-kind').disabled, false);
+    assert.equal(r.node('#sp-kind-help').textContent, HELP);
+    assert.equal(r.node('#sp-kind').value, 'tester');
+  });
+
+  test('(+) opened straight as a sub-orchestrator it is already disabled with the reason; opened again as an agent it is enabled again', () => {
+    const r = projRig();
+    r.api.openSpawn(r.g, { parent: mainRow(), role: 'orchestrator' });
+    assert.equal(r.node('#sp-kind').disabled, true);
+    assert.equal(r.node('#sp-kind-help').textContent, HELP_SUB);
+    r.api.openSpawn(r.g, { parent: mainRow(), role: 'agent' });
+    assert.equal(r.node('#sp-kind').disabled, false);
+    assert.equal(r.node('#sp-kind-help').textContent, HELP);
+  });
+
+  test('(+) submit with a picked kind sends it; the other keys of the request are unchanged', async () => {
+    const r = projRig({ answers: { 'POST /api/app/spawn': READY } });
+    r.api.openSpawn(r.g, { parent: mainRow() });
+    const body = await submit(r, (x) => { x.node('#sp-kind').value = 'reviewer'; });
+    assert.deepEqual(body, { project: KEY, name: 'builder-3', model: 'claude-sonnet-5-5', brief: 'Add the /health route and a test for it.', role: 'agent', parent: '%1', kind: 'reviewer' });
+  });
+
+  test('(−) Automatic sends no kind at all (the server derives the same word), not an empty one', async () => {
+    const r = projRig({ answers: { 'POST /api/app/spawn': READY } });
+    r.api.openSpawn(r.g, { parent: mainRow() });
+    const body = await submit(r);
+    assert.ok(!('kind' in body));
+    assert.deepEqual(Object.keys(body), ['project', 'name', 'model', 'brief', 'role', 'parent']);
+  });
+
+  test('(−) a select value that is not one of the seven words (a forged or stale option) is never sent', async () => {
+    for (const bad of ['boss', 'Coder', 'coder ', '__proto__', 'sub-orchestrator']) {
+      const r = projRig({ answers: { 'POST /api/app/spawn': READY } });
+      r.api.openSpawn(r.g, { parent: mainRow() });
+      const body = await submit(r, (x) => { x.node('#sp-kind').value = bad; });
+      assert.ok(!('kind' in body), bad);
+    }
+  });
+
+  test('(−) a sub-orchestrator sends no kind, even with a kind picked before the switch', async () => {
+    const r = projRig({ answers: { 'POST /api/app/spawn': READY } });
+    r.api.openSpawn(r.g, { parent: mainRow() });
+    const body = await submit(r, (x) => {
+      x.node('#sp-kind').value = 'coder';
+      x.role('orchestrator');
+      x.api.changeRole();
+      x.node('#sp-brief').value = 'Plan the API work and split it between agents.';
+    });
+    assert.equal(body.role, 'orchestrator');
+    assert.ok(!('kind' in body));
+  });
+
+  test('(+) a success remembers the kind for that project\'s agents; Automatic is remembered as Automatic; a sub-orchestrator touches neither', async () => {
+    const r = projRig({ answers: { 'POST /api/app/spawn': READY } });
+    r.api.openSpawn(r.g, { parent: mainRow() });
+    await submit(r, (x) => { x.node('#sp-kind').value = 'tester'; });
+    assert.equal(r.api.spawnPrefs.get(`${KEY}:agent`).kind, 'tester');
+    r.api.openSpawn(r.g, { parent: mainRow() });
+    assert.equal(r.node('#sp-kind').value, 'tester', 'the next sheet opens on it');
+    r.calls.length = 0;
+    await submit(r, (x) => { x.node('#sp-kind').value = ''; });
+    assert.equal(r.api.spawnPrefs.get(`${KEY}:agent`).kind, '');
+    const o = projRig({ answers: { 'POST /api/app/spawn': READY } });
+    o.api.openSpawn(o.g, { parent: mainRow(), role: 'orchestrator' });
+    await submit(o);
+    assert.equal(o.api.spawnPrefs.get(`${KEY}:agent`), undefined);
+    assert.equal(o.api.spawnPrefs.get(`${KEY}:orchestrator`).kind, undefined, 'the sub-orchestrator entry holds no kind');
+  });
+
+  test('(−) a failed spawn remembers nothing', async () => {
+    const r = projRig({ answers: { 'POST /api/app/spawn': { status: 502, body: { error: 'tmux_failed', message: 'tmux failed: x' } } } });
+    r.api.openSpawn(r.g, { parent: mainRow() });
+    await submit(r, (x) => { x.node('#sp-kind').value = 'tester'; });
+    assert.equal(r.api.spawnPrefs.get(`${KEY}:agent`), undefined);
+  });
+
+  test('(+) while spawning the select is off with the rest of the sheet; afterwards an agent\'s is back on and a sub-orchestrator\'s stays off', async () => {
+    for (const [role, back] of [['agent', false], ['orchestrator', true]]) {
+      let during = null;
+      const r = projRig({ answers: { 'POST /api/app/spawn': () => { during = r.node('#sp-kind').disabled; return READY; } } });
+      r.api.openSpawn(r.g, { parent: mainRow(), role });
+      await submit(r);
+      assert.equal(during, true, role);
+      assert.equal(r.node('#sp-kind').disabled, back, role);
+    }
+  });
+
+  test('(+) a 400 about kind (a stale page) shows in the sheet\'s alert through the existing error path; the sheet stays open and keeps the pick', async () => {
+    const MSG = 'invalid kind: use coder, reviewer, tester, designer, scout, writer or agent';
+    const r = projRig({ answers: { 'POST /api/app/spawn': { status: 400, body: { error: 'invalid', message: MSG } } } });
+    r.api.openSpawn(r.g, { parent: mainRow() });
+    await submit(r, (x) => { x.node('#sp-kind').value = 'tester'; });
+    assert.equal(r.node('#sp-alert-text').textContent, MSG);
+    assert.equal(r.node('#sp-alert').hidden, false);
+    assert.equal(r.node('#dlg-spawn').open, true);
+    assert.equal(r.node('#sp-kind').value, 'tester');
+  });
+
+  test('(−) fillSpawnKind builds its options with h() (text nodes), never as markup, and a bad value falls back to Automatic', () => {
+    assert.doesNotMatch(PROJECT_SRC, /inner\s*HTML/);
+    const r = opened();
+    r.api.fillSpawnKind('<img src=x>');
+    assert.equal(r.node('#sp-kind').value, '');
+    assert.equal(r.node('#sp-kind').all((n) => n.tag === 'img').length, 0);
+    r.api.fillSpawnKind('writer');
+    assert.equal(r.node('#sp-kind').value, 'writer');
+    assert.equal(r.node('#sp-kind').kids.length, 8, 'refilled, not appended');
+  });
+
+  test('(+) index.html: the Kind field sits right after Model and before Brief, with its label, select, focus key and help (Tab order Role, Name, Model, Kind, Brief, Permission, Pane)', () => {
+    const html = read('index.html');
+    const FIELD = '<div class="field"><label for="sp-kind">Kind</label><select id="sp-kind" data-fk="sp-kind" aria-describedby="sp-kind-help"></select><p class="help" id="sp-kind-help">Shown as a label on its row. Automatic picks it from the model\'s role.</p></div>';
+    assert.ok(html.includes(FIELD), 'the field, word for word');
+    const at = (id) => html.indexOf(`id="${id}"`);
+    const order = ['sp-role', 'sp-name', 'sp-model', 'sp-kind', 'sp-brief', 'sp-perm', 'sp-place'].map(at);
+    assert.ok(order.every((i) => i > 0), 'all there');
+    assert.deepEqual(order, [...order].sort((a, b) => a - b));
+    assert.equal(html.match(/id="sp-kind"/g).length, 1);
   });
 });

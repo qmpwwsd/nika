@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { MODE_META, parseModes, modesAfter, rowMode, canEndRow } from '../public/modes.js';
 import { CUSTOM, ROLE_LABEL, fillModelSelect, effectiveRoleModels } from '../public/models-ui.js';
 import { h } from '../public/dom.js';
-import { statusOf, spawnLimits, effectiveAgents } from '../public/dash-model.js';
+import { statusOf, spawnLimits, effectiveAgents, KINDS, KIND_TEXT, ROLE_KIND, kindFromModel } from '../public/dash-model.js';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const read = (f) => fs.readFileSync(path.join(PUBLIC, f), 'utf8');
@@ -281,6 +281,20 @@ describe('dashboard report', () => {
 });
 
 describe('dashboard row', () => {
+  test('(+) W9 4.3: the row draws the label chip first in the "what" column (labelEl of agentLabelView), once, and not in the name column', () => {
+    const row = fn(APP, 'function rowEl(');
+    assert.match(row, /h\('div', \{ class: 'c-what' \},\s*labelEl\(agentLabelView\(a\)\),/);
+    assert.equal(row.match(/labelEl\(/g).length, 1);
+    assert.ok(row.indexOf('labelEl(') > row.indexOf("'c-name'") + 200, 'after the whole name cell has been built');
+    const name = row.slice(row.indexOf("h('div', { class: 'c-name' }"), row.indexOf("h('div', { class: 'c-model' }"));
+    assert.doesNotMatch(name, /labelEl|agent-kind/);
+  });
+
+  test('(−) W9: the chip has no state of its own: no colour, icon or data attribute is set by the row for it', () => {
+    const row = fn(APP, 'function rowEl(');
+    assert.doesNotMatch(row, /agent-kind/, 'the look lives in tokens.css, the row only places the chip');
+  });
+
   test('(+) the mode cell exists only on the app tier and holds a compact modeEl for the pane\'s entry, empty otherwise', () => {
     assert.match(APP, /import \{[^}]*\bmodeEl\b[^}]*\} from '\.\/modes\.js'/);
     assert.match(APP, /const mode = isApp \? rowMode\(a, state\.modes\.map\) : null;/);
@@ -650,12 +664,12 @@ describe('spawn sheet model picker (project.js openSpawn and spawnModel)', () =>
   const PROJECT_MOD = PROJECT.replace(/^import[\s\S]*?from '[^']+';$/gm, '').replace(/^export /gm, '');
   const rig = ({ catalog = CATALOG, settings = { models: SETTINGS_MODELS, permissionMode: 'default', panePlacement: 'beside' }, pref } = {}) => {
     const nodes = new Map();
-    const node = (sel) => { if (!nodes.has(sel)) nodes.set(sel, new FNode(sel === '#sp-model' ? 'select' : 'input')); return nodes.get(sel); };
+    const node = (sel) => { if (!nodes.has(sel)) nodes.set(sel, new FNode(sel === '#sp-model' || sel === '#sp-kind' ? 'select' : 'input')); return nodes.get(sel); };
     const ctx = {
-      $: node, h, state: { models: catalog, settings }, fillModelSelect, CUSTOM, ROLE_LABEL, effectiveRoleModels, spawnLimits, effectiveAgents,
+      $: node, h, state: { models: catalog, settings }, fillModelSelect, CUSTOM, ROLE_LABEL, effectiveRoleModels, spawnLimits, effectiveAgents, KINDS, KIND_TEXT, ROLE_KIND, kindFromModel,
       toast() {}, fieldError() {}, openDialog() {}, syncRadioCards() {}, TextEncoder,
     };
-    const api = vm.runInNewContext(`${PROJECT_MOD}\n({ openSpawn, spawnModel, spawnPrefs })`, ctx);
+    const api = vm.runInNewContext(`${PROJECT_MOD}\n({ openSpawn, spawnModel, spawnPrefs, paintKindAuto })`, ctx);
     if (pref) api.spawnPrefs.set('k1:agent', pref);
     return { ...api, node, ctx };
   };
@@ -698,6 +712,29 @@ describe('spawn sheet model picker (project.js openSpawn and spawnModel)', () =>
     assert.equal(odd.spawnModel(), 'claude-private-9');
     odd.node('#sp-model-custom').value = '  claude-private-10 ';
     assert.equal(odd.spawnModel(), 'claude-private-10', 'trimmed');
+  });
+
+  test('(+) W9: the Kind select opens on Automatic and says which kind the Builder model gives; picking the Scout role\'s model repaints that text', () => {
+    const { openSpawn, paintKindAuto, node } = rig();
+    openSpawn(group);
+    assert.equal(node('#sp-kind').value, '');
+    assert.equal(node('#sp-kind').kids[0].textContent, "Automatic · coder (Builder's model)");
+    assert.deepEqual(node('#sp-kind').kids.slice(1).map((o) => o.attrs.value), ['coder', 'reviewer', 'tester', 'designer', 'scout', 'writer', 'agent']);
+    node('#sp-model').value = 'haiku';
+    paintKindAuto();
+    assert.equal(node('#sp-kind').kids[0].textContent, "Automatic · scout (Scout's model)");
+  });
+
+  test('(−) W9: without Settings the Automatic text promises nothing it cannot know, and a remembered kind that is not a word of the list is dropped', () => {
+    const noSettings = rig({ settings: null });
+    noSettings.openSpawn(group);
+    assert.equal(noSettings.node('#sp-kind').kids[0].textContent, "Automatic (from the model's role)");
+    const stale = rig({ pref: { model: 'haiku', kind: 'boss' } });
+    stale.openSpawn(group);
+    assert.equal(stale.node('#sp-kind').value, '');
+    const known = rig({ pref: { model: 'haiku', kind: 'scout' } });
+    known.openSpawn(group);
+    assert.equal(known.node('#sp-kind').value, 'scout');
   });
 
   test('(−) Custom ID never sends its marker value, and an empty field sends an empty id for the validator to refuse', () => {

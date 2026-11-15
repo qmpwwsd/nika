@@ -2,12 +2,12 @@
 // project.js and settings.js; they are imported only when api.js says this is the app tier, so the browser tier
 // (read-only, 127.0.0.1:3335) never loads them. Every server string is rendered through h() (textContent).
 import { isApp, getJSON, windowCommand } from './api.js';
-import { h, icon, roleTagEl, ctxEl, subagentItemEl } from './dom.js';
+import { h, icon, roleTagEl, ctxEl, subagentItemEl, labelEl } from './dom.js';
 import { modeEl, rowMode, canEndRow } from './modes.js';
 import { wantsHelp, wantsBack, isTextEntry, openShortcuts, helpHint, backHint, wireWindowKeys } from './shortcuts.js';
 import { copyBanner } from './app-copy.js';
 import {
-  endedPlan, noMatchText, resetEndedState, roleTag, skippedText, statusOf, parentOf, treeRows, hasTree, subagentView, subagentHref,
+  endedPlan, noMatchText, resetEndedState, roleTag, skippedText, statusOf, parentOf, treeRows, hasTree, subagentView, subagentHref, agentLabelView,
 } from './dash-model.js';
 import {
   $, $$, MAC, SHAPE, ORDER, state, hooks, load, loadFlag, save, timeEl, tickTimes, announce, toast, copyText,
@@ -233,6 +233,7 @@ function rowEl(a, g, { scope, showProject = false, tree = null, showEnded = stat
     h('div', { class: 'c-model' }, modelEl(a)),
     h('div', { class: 'c-ctx' }, ctxEl(a.context)),
     h('div', { class: 'c-what' },
+      labelEl(agentLabelView(a)),
       showProject ? h('span', { class: 'proj-chip', title: g.label, text: g.label.length > 18 ? `${g.label.slice(0, 17)}…` : g.label }) : null,
       parent ? h('span', { class: 'proj-chip', title: `Under ${parent.name}`, text: `under ${parent.name.length > 24 ? `${parent.name.slice(0, 23)}…` : parent.name}` }) : null,
       h('span', { class: 'what', title: a.lastPrompt ?? '', text: what }),

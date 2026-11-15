@@ -11,6 +11,7 @@ import { load, loadFlag } from '../public/ui.js';
 import {
   DETECTED_MAX, skippedText, endedPlan, noMatchText, resetEndedState, sidebarModel, orchState, roleTag, savedPick, otherRunning, ROLE_TAGS,
   statusOf, STATUS_ORDER, parentOf, treeRows, hasTree, spawnLimits, SUBAGENT_ID, SUB_STATES, subagentView, subagentHref,
+  KINDS, KIND_TEXT, ROLE_KIND, kindFromModel, agentLabelView, subLabelView,
 } from '../public/dash-model.js';
 import * as ids from '../src/ids.js';
 
@@ -1414,5 +1415,104 @@ describe('subagentHref (the link to a subagent\'s read-only view)', () => {
   test('(−) no argument at all gives null', () => {
     assert.equal(subagentHref(), null);
     assert.equal(subagentHref({}), null);
+  });
+});
+
+// ---- labels (0.5, W9; design W9 4.2): the kind list, the two chips' views and the page's copy of kindFromModel ----------------------------
+describe('labels: the page copies and the chip views (W9 4.2)', () => {
+  // the seven words, in the order the spawn sheet lists them (design W9 2.1), written out here on purpose
+  const WORDS = ['coder', 'reviewer', 'tester', 'designer', 'scout', 'writer', 'agent'];
+  const MEANING = {
+    coder: 'writes and changes code', reviewer: 'reviews code or designs', tester: 'writes and runs tests', designer: 'designs and plans',
+    scout: 'finds files and facts, read-only', writer: 'writes docs and reports', agent: 'no particular kind',
+  };
+  const MODELS = { builder: 'claude-sonnet-5-5', reasoner: 'claude-opus-5-5', scout: 'claude-haiku-5-5', orchestrator: 'claude-fable-5-2' };
+  // one table of cases both copies of kindFromModel must answer the same way: [model, models, want]
+  const CASES = [
+    ['claude-sonnet-5-5', MODELS, 'coder'], ['claude-opus-5-5', MODELS, 'designer'], ['claude-haiku-5-5', MODELS, 'scout'],
+    ['claude-opus-5-5', { ...MODELS, orchestrator: 'claude-opus-5-5' }, 'designer'],
+    ['claude-fable-5-2', MODELS, 'agent'], ['claude-private-9', MODELS, 'agent'], ['sonnet', MODELS, 'agent'],
+    ['claude-sonnet-5-5', { ...MODELS, scout: 'claude-sonnet-5-5' }, 'agent'], ['claude-sonnet-5-5', { builder: 'claude-sonnet-5-5', reasoner: 'claude-sonnet-5-5' }, 'agent'],
+    ['claude-sonnet-5-5', null, 'agent'], ['claude-sonnet-5-5', {}, 'agent'], [null, MODELS, 'agent'], [undefined, MODELS, 'agent'], [5, MODELS, 'agent'],
+    [null, { builder: null, reasoner: 'claude-opus-5-5', scout: 'claude-haiku-5-5' }, 'agent'], [5, { builder: 5 }, 'agent'], // an unset role (null) never matches a missing model
+  ];
+  const T1_LANDED = fs.existsSync(path.join(PUBLIC, '..', 'src', 'labels.js')) && Array.isArray(ids.KINDS);
+
+  test('(+) KINDS is exactly the seven words in sheet order; KIND_TEXT holds the meaning of each, nothing else', () => {
+    assert.deepEqual([...KINDS], WORDS);
+    assert.deepEqual(Object.keys(KIND_TEXT), WORDS);
+    assert.deepEqual({ ...KIND_TEXT }, MEANING);
+  });
+
+  test('(+) ROLE_KIND maps the three roles that name a kind: builder coder, reasoner designer, scout scout (the orchestrator names none)', () => {
+    assert.deepEqual({ ...ROLE_KIND }, { builder: 'coder', reasoner: 'designer', scout: 'scout' });
+  });
+
+  test('(+) kindFromModel: the builder\'s id gives coder, the reasoner\'s designer, the scout\'s scout; a reasoner and an orchestrator on one id still give designer', () => {
+    assert.equal(kindFromModel('claude-sonnet-5-5', MODELS), 'coder');
+    assert.equal(kindFromModel('claude-opus-5-5', MODELS), 'designer');
+    assert.equal(kindFromModel('claude-haiku-5-5', MODELS), 'scout');
+    assert.equal(kindFromModel('claude-opus-5-5', { ...MODELS, orchestrator: 'claude-opus-5-5' }), 'designer');
+  });
+
+  test('(−) kindFromModel gives agent: no role has the id, builder and scout share it, no models, a model that is not text, an alias against a full id, the orchestrator\'s id only', () => {
+    assert.equal(kindFromModel('claude-private-9', MODELS), 'agent');
+    assert.equal(kindFromModel('claude-sonnet-5-5', { ...MODELS, scout: 'claude-sonnet-5-5' }), 'agent', 'two roles name two kinds');
+    for (const models of [null, undefined, {}, 'x', 5]) assert.equal(kindFromModel('claude-sonnet-5-5', models), 'agent', String(models));
+    for (const model of [null, undefined, 5, {}, ['claude-sonnet-5-5'], '']) assert.equal(kindFromModel(model, MODELS), 'agent', String(model));
+    assert.equal(kindFromModel(null, { builder: null, reasoner: 'claude-opus-5-5', scout: 'claude-haiku-5-5' }), 'agent', 'a role with no model set (null) does not match a spawn with no model');
+    assert.equal(kindFromModel('sonnet', MODELS), 'agent', 'no alias resolution: sonnet is not claude-sonnet-5-5');
+    assert.equal(kindFromModel('claude-fable-5-2', MODELS), 'agent', 'the orchestrator\'s model names no kind');
+  });
+
+  test('(+) the page copy answers the whole table of cases (the same table runs against src/labels.js in the parity test below)', () => {
+    for (const [model, models, want] of CASES) assert.equal(kindFromModel(model, models), want, JSON.stringify([model, models]));
+  });
+
+  test('(+) parity with the server: KINDS equals src/ids.js KINDS, ROLE_KIND equals src/labels.js ROLE_KIND, and both kindFromModel agree on every case', { skip: T1_LANDED ? false : 'src/labels.js and ids.KINDS land with W9 T1; this test runs the moment they exist' }, async () => {
+    const labels = await import('../src/labels.js');
+    assert.deepEqual([...KINDS], [...ids.KINDS]);
+    assert.deepEqual({ ...ROLE_KIND }, { ...labels.ROLE_KIND });
+    for (const [model, models] of CASES) assert.equal(kindFromModel(model, models), labels.kindFromModel(model, models), JSON.stringify([model, models]));
+  });
+
+  test('(+) agentLabelView: a pane tagged agent with a kind gives the word and "Kind: <word>, <meaning>", for every word', () => {
+    assert.deepEqual(agentLabelView({ role: 'agent', label: 'coder' }), { text: 'coder', title: 'Kind: coder, writes and changes code' });
+    for (const w of WORDS) assert.deepEqual(agentLabelView({ role: 'agent', label: w }), { text: w, title: `Kind: ${w}, ${MEANING[w]}` }, w);
+  });
+
+  test('(−) agentLabelView gives null: a sub-orchestrator (its role tag is its label), the orchestrator, no role, a label that is not a word of the list, no label, no agent', () => {
+    assert.equal(agentLabelView({ role: 'sub-orchestrator', label: 'sub-orchestrator' }), null);
+    assert.equal(agentLabelView({ role: 'sub-orchestrator', label: 'coder' }), null, 'a kind on a sub-orchestrator is ignored');
+    assert.equal(agentLabelView({ role: 'orchestrator', label: null }), null);
+    assert.equal(agentLabelView({ role: 'orchestrator', label: 'coder' }), null);
+    assert.equal(agentLabelView({ role: null, label: 'coder' }), null);
+    assert.equal(agentLabelView({ label: 'coder' }), null);
+    for (const label of ['boss', 'Coder', 'coder ', '', 'sub-orchestrator', 'constructor', '__proto__', null, undefined, 5, {}, ['coder']]) assert.equal(agentLabelView({ role: 'agent', label }), null, String(label));
+    assert.equal(agentLabelView({ role: 'agent' }), null);
+    for (const a of [null, undefined, 'agent', 5]) assert.equal(agentLabelView(a), null, String(a));
+  });
+
+  test('(+) subLabelView: a built-in type shows its word, its raw type in the title and the kind\'s meaning; a custom label gets a title without the Kind part', () => {
+    assert.deepEqual(subLabelView({ label: 'scout', type: 'Explore' }), { text: 'scout', title: "Claude's Explore subagent. Kind: scout, finds files and facts, read-only" });
+    assert.deepEqual(subLabelView({ label: 'security-reviewer', type: 'security-reviewer' }), { text: 'security-reviewer', title: "Claude's security-reviewer subagent" });
+    assert.deepEqual(subLabelView({ label: 'crew-code-reviewer', type: 'codecrew:crew-code-reviewer' }), { text: 'crew-code-reviewer', title: "Claude's codecrew:crew-code-reviewer subagent" }, 'the full plugin type is in the title');
+    assert.deepEqual(subLabelView({ label: 'agent', type: 'general-purpose' }), { text: 'agent', title: "Claude's general-purpose subagent. Kind: agent, no particular kind" });
+  });
+
+  test('(+) subLabelView: no type gives the title "Claude\'s subagent"; 24 code points are allowed, counted as code points', () => {
+    assert.deepEqual(subLabelView({ label: 'designer' }), { text: 'designer', title: "Claude's subagent. Kind: designer, designs and plans" });
+    assert.deepEqual(subLabelView({ label: 'x', type: '' }), { text: 'x', title: "Claude's subagent" });
+    assert.deepEqual(subLabelView({ label: 'x', type: 5 }), { text: 'x', title: "Claude's subagent" });
+    const edge = `${'a'.repeat(23)}\u2026`; // what the server cuts a long name to: 23 characters and an ellipsis
+    assert.equal(subLabelView({ label: edge, type: 't' }).text, edge);
+    const emoji = '\u{1F600}'.repeat(24); // 24 code points, 48 UTF-16 units
+    assert.equal(subLabelView({ label: emoji }).text, emoji);
+  });
+
+  test('(−) subLabelView text is agent: a label that is not text, empty, blank, or longer than 24 code points; no subagent at all', () => {
+    for (const label of [undefined, null, 5, {}, ['scout'], '', '   ', 'a'.repeat(25), '\u{1F600}'.repeat(25)]) assert.equal(subLabelView({ label, type: 'Explore' }).text, 'agent', String(label));
+    assert.deepEqual(subLabelView({ label: 'a'.repeat(25), type: 'Explore' }), { text: 'agent', title: "Claude's Explore subagent. Kind: agent, no particular kind" });
+    for (const s of [null, undefined, {}, 'x', 5]) assert.deepEqual(subLabelView(s), { text: 'agent', title: "Claude's subagent. Kind: agent, no particular kind" }, String(s));
   });
 });

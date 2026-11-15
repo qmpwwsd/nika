@@ -1,6 +1,6 @@
 // Tiny DOM helper shared by every page. Strings become text nodes or textContent, never parsed as markup.
 // `on*` keys register event listeners; every other key is a plain attribute (never a style or a URL built from data).
-import { ROLE_TAGS, SUB_STATES } from './dash-model.js';
+import { ROLE_TAGS, SUB_STATES, subLabelView } from './dash-model.js';
 import { ctxView } from './ctx.js';
 
 export function h(tag, attrs, ...children) {
@@ -58,8 +58,19 @@ export function subStateEl(state, { pill = false } = {}) {
 }
 
 /**
+ * A label chip (0.5, W9): `span.agent-kind[title]` holding the word. `view` is dash-model.js agentLabelView() or subLabelView() ({ text, title });
+ * anything without a word gives null. A label is not a state, so every label looks the same (one neutral pill, no colour and no icon): the word
+ * is the whole message and the title adds its meaning for mouse users.
+ */
+export function labelEl(view) {
+  if (!view || typeof view !== 'object' || typeof view.text !== 'string' || !view.text) return null;
+  return h('span', { class: 'agent-kind', title: typeof view.title === 'string' && view.title ? view.title : null, text: view.text });
+}
+
+/**
  * One subagent line: `li.sub[data-ss]` holding the badge, the description (a link when `href` is given, else plain text; `fk` is the
- * link's focus key so a redraw keeps focus on it), the type, the model label and `time` (a node the page passes, or nothing). Text
+ * link's focus key so a redraw keeps focus on it), the label chip (the server's `label`, 'agent' at worst; the raw type is in its title),
+ * the model label and `time` (a node the page passes, or nothing). Text
  * goes in through h(), never as markup; the page builds `href` with dash-model.js subagentHref() from ids it has checked.
  */
 export function subagentItemEl(s, { href = null, fk = null, time = null } = {}) {
@@ -70,7 +81,7 @@ export function subagentItemEl(s, { href = null, fk = null, time = null } = {}) 
     href
       ? h('a', { class: 'sub-desc sub-link', href, 'data-fk': fk, title: 'Open its transcript (read-only)', text })
       : h('span', { class: 'sub-desc', text }),
-    s.type ? h('span', { class: 'sub-type', text: s.type }) : null,
+    labelEl(subLabelView(s)),
     s.modelLabel ? h('span', { class: 'model', text: s.modelLabel }) : null,
     time);
 }

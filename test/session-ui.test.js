@@ -16,8 +16,8 @@ import { draftSendPlan as draftSendPlanReal, cleanDraft as cleanDraftReal, cutAt
 import { switchFailure as switchFailureReal, MODE_TARGETS, MODE_META } from '../public/modes.js';
 import { createFitPlanner as createFitPlannerReal, panelSize as panelSizeReal, scaleFor as scaleForReal, chipView as chipViewReal, fitPanelView as fitPanelViewReal, stillOffSay as stillOffSayReal } from '../public/fit-ui.js';
 import { createScrollPlanner as createScrollPlannerReal, routeFor as routeForReal, wheelRows as wheelRowsReal, scrollGate as scrollGateReal, viewRowsOf as viewRowsOfReal, pageRowsOf as pageRowsOfReal, refusalLine as refusalLineReal, noteView as scrollNoteViewReal, scrolledSay as scrolledSayReal, NOTE_MS as NOTE_MS_REAL } from '../public/scroll.js';
-import { h as hReal, icon as iconReal, roleTagEl as roleTagElReal, subStateEl as subStateElReal, subagentItemEl as subagentItemElReal } from '../public/dom.js';
-import { subagentView as subagentViewReal, subagentHref as subagentHrefReal, SUBAGENT_ID as SUBAGENT_ID_REAL } from '../public/dash-model.js';
+import { h as hReal, icon as iconReal, roleTagEl as roleTagElReal, subStateEl as subStateElReal, subagentItemEl as subagentItemElReal, labelEl as labelElReal } from '../public/dom.js';
+import { subagentView as subagentViewReal, subagentHref as subagentHrefReal, SUBAGENT_ID as SUBAGENT_ID_REAL, agentLabelView as agentLabelViewReal, subLabelView as subLabelViewReal } from '../public/dash-model.js';
 import { SESSION_ID as SESSION_ID_REAL, PANE_ID as PANE_ID_REAL } from '../public/quick-actions.js';
 import { cleanDialog as cleanDialogReal } from '../public/dialog-form.js';
 import { installDom, El, withClass, focus as focusState } from './fake-dom.js';
@@ -6167,7 +6167,7 @@ describe('W8-T3: the subagent list and the read-only subagent view (design W8, 4
   const AG = 'a0000000000000001';
   const AG2 = 'aaa111';
   const OLD_S = '22222222-2222-4222-8222-222222222222';
-  const SA = (over = {}) => ({ id: AG, type: 'Explore', description: 'List project files', model: 'claude-haiku-5-5', modelLabel: 'Haiku 5.5', state: 'running', lastActivity: 1700000000000, ...over });
+  const SA = (over = {}) => ({ id: AG, type: 'Explore', label: 'scout', description: 'List project files', model: 'claude-haiku-5-5', modelLabel: 'Haiku 5.5', state: 'running', lastActivity: 1700000000000, ...over });
   const PARENT = (over = {}) => ({ id: S, name: 'acme-api refactor', live: true, pane: { id: '%12' }, subagents: [SA()], ...over });
 
   let restoreDom;
@@ -6204,11 +6204,14 @@ describe('W8-T3: the subagent list and the read-only subagent view (design W8, 4
     assert.ok(body.indexOf('id="subs-ended"') < body.indexOf('id="subs-list"'), 'the box comes before the list');
   });
 
-  test('(+) 4.4: the header has #sess-subtype (hidden, dropped on narrow windows) in the meta row; the context meter, pane, branch and claude.ai link start hidden, so the subagent view never shows them', () => {
+  test('(+) W9 4.4: the header has #sess-kind (hidden until a label is known) right after #sess-role, outside the meta row, so no width drops it; #sess-subtype is gone; the context meter, pane, branch and claude.ai link start hidden, so the subagent view never shows them', () => {
+    assert.match(HTML, /<span id="sess-role" hidden><\/span>\s*<span id="sess-kind" hidden><\/span>/);
+    assert.match(tagOf('sess-kind'), /\bhidden\b/);
+    assert.doesNotMatch(tagOf('sess-kind'), /hide-narrow/, 'visible at every width (the title truncates first)');
+    assert.equal(HTML.match(/id="sess-kind"/g).length, 1);
+    assert.doesNotMatch(HTML, /sess-subtype/);
     const meta = /<span class="sess-meta">([\s\S]*?)<\/span>\s*<span class="sp">/.exec(HTML)?.[1] ?? '';
-    assert.match(meta, /id="sess-subtype"/);
-    assert.match(tagOf('sess-subtype'), /\bclass="hide-narrow"/);
-    assert.match(tagOf('sess-subtype'), /\bhidden\b/);
+    assert.doesNotMatch(meta, /sess-kind/, 'not in the meta row, which is dropped on narrow windows');
     for (const id of ['sess-ctx', 'meta-pane', 'sess-branch', 'claude-link', 'sess-model']) assert.match(tagOf(id), /\bhidden\b/, id);
   });
 
@@ -6388,11 +6391,11 @@ describe('W8-T3: the subagent list and the read-only subagent view (design W8, 4
 
   const subRig = ({ kind = null, session = S, project = KEY, agent = AG } = {}) => {
     const p = page();
-    for (const id of ['sess-ctx', 'meta-pane', 'sess-branch', 'claude-link', 'sess-model', 'sess-subtype', 'sess-role', 'sess-st']) p.$(id).hidden = true; // as the markup has them
+    for (const id of ['sess-ctx', 'meta-pane', 'sess-branch', 'claude-link', 'sess-model', 'sess-kind', 'sess-role', 'sess-st']) p.$(id).hidden = true; // as the markup has them
     const log = { said: [], history: 0, back: [], hrefs: [] };
     const ctx = {
       $: p.$, A: { name: 'the agent', kind, subs: [] }, agentId: agent, sessionId: session, projectKey: project, MID: ' · ', document: { title: '' },
-      roleTagEl: roleTagElReal, subStateEl: subStateElReal, PANE_ID: PANE_ID_REAL,
+      roleTagEl: roleTagElReal, subStateEl: subStateElReal, labelEl: labelElReal, subLabelView: subLabelViewReal, PANE_ID: PANE_ID_REAL,
       announce: (m) => log.said.push(m), refreshHistory: () => { log.history += 1; }, setBack: (l) => log.back.push(l), setBackHref: (u) => log.hrefs.push(u),
     };
     const api = mk(['function subTitle(s)', 'function subBack(parent)', 'function applySubagent(parent)'], ctx);
@@ -6412,7 +6415,7 @@ describe('W8-T3: the subagent list and the read-only subagent view (design W8, 4
     }
   });
 
-  test('(+) 4.4: the header shows the subagent role tag, the state pill (colour, glyph and word), the type and the model; the other header parts stay hidden', () => {
+  test('(+) 4.4: the header shows the subagent role tag, the state pill (colour, glyph and word), the label chip and the model; the other header parts stay hidden', () => {
     const r = subRig();
     r.applySubagent(r.hit());
     const role = r.p.$('sess-role');
@@ -6424,22 +6427,48 @@ describe('W8-T3: the subagent list and the read-only subagent view (design W8, 4
     assert.equal(pill.className, 'sst pill');
     assert.equal(pill.attrs['data-ss'], 'running');
     assert.equal(pill.accName, 'Running', 'the word is the name; the glyph is aria-hidden');
-    assert.equal(r.p.$('sess-subtype').textContent, 'Explore');
-    assert.equal(r.p.$('sess-subtype').hidden, false);
+    assert.equal(r.p.$('sess-kind').hidden, false);
+    assert.equal(r.p.$('sess-kind').kids.length, 1);
+    assert.equal(r.p.$('sess-kind').kids[0].className, 'agent-kind');
+    assert.equal(r.p.$('sess-kind').kids[0].textContent, 'scout');
+    assert.equal(r.p.$('sess-kind').kids[0].attrs.title, "Claude's Explore subagent. Kind: scout, finds files and facts, read-only");
     assert.equal(r.p.$('sess-model').textContent, 'Haiku 5.5');
     assert.equal(r.p.$('sess-model').hidden, false);
     for (const id of ['sess-ctx', 'meta-pane', 'sess-branch', 'claude-link']) assert.equal(r.p.$(id).hidden, true, `${id} stays hidden`);
   });
 
-  test('(+) 4.4: each state has its own pill word: Running, Finished, Stopped; a subagent with no type or model hides those two slots', () => {
+  test('(+) 4.4: each state has its own pill word: Running, Finished, Stopped; a subagent with no model hides that slot, and one with no type or label still shows the label "agent" (W9: never empty)', () => {
     for (const [state, word] of [['running', 'Running'], ['finished', 'Finished'], ['stopped', 'Stopped']]) {
       const r = subRig();
-      r.applySubagent(r.hit(withState(state, { type: '', modelLabel: '' })));
+      r.applySubagent(r.hit(withState(state, { type: '', label: undefined, modelLabel: '' })));
       assert.equal(r.p.$('sess-st').kids[0].attrs['data-ss'], state);
       assert.equal(r.p.$('sess-st').kids[0].accName, word);
-      assert.equal(r.p.$('sess-subtype').hidden, true);
+      assert.equal(r.p.$('sess-kind').hidden, false);
+      assert.equal(r.p.$('sess-kind').kids[0].textContent, 'agent');
+      assert.equal(r.p.$('sess-kind').kids[0].attrs.title, "Claude's subagent. Kind: agent, no particular kind");
       assert.equal(r.p.$('sess-model').hidden, true);
     }
+  });
+
+  test('(+) W9 4.4: a custom agent type shows its own name as the chip and the full type in the title; the chip follows a later poll (replaced, not added)', () => {
+    const r = subRig();
+    r.applySubagent(r.hit(PARENT({ subagents: [SA({ type: 'codecrew:crew-code-reviewer', label: 'crew-code-reviewer' })] })));
+    assert.equal(r.p.$('sess-kind').kids[0].textContent, 'crew-code-reviewer');
+    assert.equal(r.p.$('sess-kind').kids[0].attrs.title, "Claude's codecrew:crew-code-reviewer subagent");
+    r.applySubagent(r.hit());
+    assert.equal(r.p.$('sess-kind').kids.length, 1);
+    assert.equal(r.p.$('sess-kind').kids[0].textContent, 'scout');
+  });
+
+  test('(−) W9: #sess-subtype is not touched by the script any more (the chip replaced it); applySubagent writes #sess-kind and nothing else of the type', () => {
+    assert.doesNotMatch(SRC, /sess-subtype/);
+    const fn = fnOf('function applySubagent(');
+    assert.match(fn, /\$\('sess-kind'\)/);
+    assert.doesNotMatch(fn, /\.type\b/);
+  });
+
+  test('(+) W9 4.5: the subagent list\'s redraw signature includes the label, so a chip that changes is drawn again', () => {
+    assert.match(fnOf('function renderSubs('), /s\.type, s\.label, s\.modelLabel/);
   });
 
   test('(+) 4.4: Back goes to the parent\'s session window with its pane while it runs, and the project when the address had one; its label is the parent\'s name', () => {
@@ -7049,5 +7078,86 @@ describe('W8-T3: the subagent list and the read-only subagent view (design W8, 4
     assert.equal(kbdRig(true).window, 'subagent');
     assert.equal(kbdRig(false).window, 'session');
     assert.equal(kbdRig(true).tier, 'app');
+  });
+});
+
+// ---- W9 4.4: the chip of an agent in the normal window (renderKind) -------------------------------------------------------------------
+describe('the session header: the kind chip of an agent (W9 4.4)', () => {
+  const SRC = code(JS['session.js']);
+  const fnOf = (head) => {
+    const at = SRC.indexOf(head);
+    assert.ok(at >= 0, head);
+    return SRC.slice(at, SRC.indexOf('\n}\n', at) + 2);
+  };
+  let restoreDom;
+  before(() => { restoreDom = installDom(); });
+  after(() => restoreDom());
+
+  const rig = () => {
+    const els = new Map();
+    const $ = (id) => {
+      if (!els.has(id)) {
+        const n = new El('span');
+        n.id = id;
+        n.hidden = true; // as the markup has it
+        els.set(id, n);
+      }
+      return els.get(id);
+    };
+    const run = vm.runInNewContext(`${fnOf('function renderKind(')}; renderKind`, { $, labelEl: labelElReal, agentLabelView: agentLabelViewReal });
+    return { $, run };
+  };
+  const a = (over = {}) => ({ id: 's', name: 'builder-1', live: true, role: 'agent', label: 'coder', ...over });
+
+  test('(+) a live agent shows its kind: #sess-kind holds the chip (word and title) and is shown', () => {
+    const r = rig();
+    r.run(a());
+    assert.equal(r.$('sess-kind').hidden, false);
+    assert.equal(r.$('sess-kind').kids.length, 1);
+    assert.equal(r.$('sess-kind').kids[0].className, 'agent-kind');
+    assert.equal(r.$('sess-kind').kids[0].textContent, 'coder');
+    assert.equal(r.$('sess-kind').kids[0].attrs.title, 'Kind: coder, writes and changes code');
+  });
+
+  test('(+) every word of the list; a later poll replaces the chip, it does not add one', () => {
+    const r = rig();
+    for (const w of ['coder', 'reviewer', 'tester', 'designer', 'scout', 'writer', 'agent']) {
+      r.run(a({ label: w }));
+      assert.deepEqual(r.$('sess-kind').kids.map((k) => k.textContent), [w], w);
+    }
+  });
+
+  test('(−) hidden and empty for a sub-orchestrator, the orchestrator, a user\'s own session and an ended one', () => {
+    for (const over of [{ role: 'sub-orchestrator', label: 'sub-orchestrator' }, { role: 'orchestrator', label: null }, { role: null, label: null }, { live: false, label: null }, { label: undefined }]) {
+      const r = rig();
+      r.run(a(over));
+      assert.equal(r.$('sess-kind').hidden, true, JSON.stringify(over));
+      assert.equal(r.$('sess-kind').kids.length, 0, JSON.stringify(over));
+    }
+  });
+
+  test('(−) a chip that was shown goes away again when the poll says the session has no label (the window follows a pane after /clear)', () => {
+    const r = rig();
+    r.run(a());
+    assert.equal(r.$('sess-kind').hidden, false);
+    r.run(a({ role: null, label: null }));
+    assert.equal(r.$('sess-kind').hidden, true);
+    assert.equal(r.$('sess-kind').kids.length, 0);
+  });
+
+  test('(−) a label the page does not know is not drawn (a word outside the list, a kind on a sub-orchestrator)', () => {
+    for (const over of [{ label: 'boss' }, { label: 'Coder' }, { label: 5 }, { role: 'sub-orchestrator', label: 'coder' }]) {
+      const r = rig();
+      r.run(a(over));
+      assert.equal(r.$('sess-kind').hidden, true, JSON.stringify(over));
+    }
+  });
+
+  test('(+) wiring: applyAgent draws it beside the role badge, after renderRole, in the normal window only (the subagent view returns first)', () => {
+    const fn = fnOf('function applyAgent(');
+    assert.match(fn, /renderRole\(agent\);\s*renderKind\(agent\);/);
+    assert.ok(fn.indexOf('applySubagent(agent)') < fn.indexOf('renderKind(agent)'), 'the subagent view is handled first');
+    assert.match(JS['session.js'], /import \{[^}]*\blabelEl\b[^}]*\} from '\.\/dom\.js'/);
+    assert.match(JS['session.js'], /import \{[^}]*\bagentLabelView\b[^}]*\bsubLabelView\b[^}]*\} from '\.\/dash-model\.js'|import \{[^}]*\bsubLabelView\b[^}]*\bagentLabelView\b[^}]*\} from '\.\/dash-model\.js'/);
   });
 });

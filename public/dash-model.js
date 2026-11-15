@@ -166,6 +166,58 @@ export function subagentHref({ session, agent, project } = {}) {
   return `session.html?session=${session}&agent=${agent}${typeof project === 'string' && PROJECT_KEY.test(project) ? `&project=${project}` : ''}`;
 }
 
+/* ---------- labels: what kind of agent a row is (0.5, W9) ---------- */
+/** The words a spawned agent's label can be, in the order the spawn sheet lists them: the page's copy of src/ids.js KINDS (a test compares the two). */
+export const KINDS = ['coder', 'reviewer', 'tester', 'designer', 'scout', 'writer', 'agent'];
+
+/** What each kind means, in the words of the chip's title and the sheet's options. */
+export const KIND_TEXT = {
+  coder: 'writes and changes code',
+  reviewer: 'reviews code or designs',
+  tester: 'writes and runs tests',
+  designer: 'designs and plans',
+  scout: 'finds files and facts, read-only',
+  writer: 'writes docs and reports',
+  agent: 'no particular kind',
+};
+
+/** The role models that name a kind (the orchestrator's names none): the page's copy of src/labels.js ROLE_KIND (a test compares the two). */
+export const ROLE_KIND = { builder: 'coder', reasoner: 'designer', scout: 'scout' };
+
+/**
+ * The kind a spawn without `kind` would get: the page's copy of src/labels.js kindFromModel, used only to preview "Automatic" in the
+ * spawn sheet (the sheet sends no kind then; the server derives the word). The roles among builder, reasoner and scout whose model in
+ * `models` equals `model` exactly: one kind gives it, none or two different kinds give 'agent'. No alias resolution.
+ */
+export function kindFromModel(model, models) {
+  const kinds = new Set(Object.entries(ROLE_KIND).filter(([role]) => typeof model === 'string' && models?.[role] === model).map(([, k]) => k));
+  return kinds.size === 1 ? [...kinds][0] : 'agent';
+}
+
+/**
+ * The chip of an agent row or session header: `{ text, title }`, or null. Only a pane the server tagged agent has one, with a word of the
+ * list; a sub-orchestrator's role tag is already its label, and the orchestrator, a user's own session and an ended one have none.
+ * A label is a noun fixed for the agent's life, not a state: dom.js labelEl() draws every one the same way.
+ */
+export function agentLabelView(a) {
+  if (!a || typeof a !== 'object' || a.role !== 'agent' || !KINDS.includes(a.label)) return null;
+  return { text: a.label, title: `Kind: ${a.label}, ${KIND_TEXT[a.label]}` };
+}
+
+const LABEL_MAX = 24; // code points, the server's cut included (src/labels.js)
+
+/**
+ * The chip of a subagent line or the subagent view's header: always `{ text, title }`. The text is the server's `label` (1 to 24 code
+ * points, not blank), else 'agent'. The title names Claude's raw type and, for a word of the list, the kind and its meaning.
+ */
+export function subLabelView(s) {
+  const label = s?.label;
+  const text = typeof label === 'string' && label.trim() && Array.from(label).length <= LABEL_MAX ? label : 'agent';
+  const type = typeof s?.type === 'string' && s.type ? s.type : null;
+  const named = type ? `Claude's ${type} subagent` : "Claude's subagent";
+  return { text, title: KINDS.includes(text) ? `${named}. Kind: ${text}, ${KIND_TEXT[text]}` : named };
+}
+
 /* ---------- the nesting tree and the spawn counts (0.4, O2) ---------- */
 /** Most urgent first. The dashboard sorts by it, and a subtree takes the most urgent status inside it. */
 export const STATUS_ORDER = { attn: 0, idle: 1, busy: 2, ended: 3 };

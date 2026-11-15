@@ -12,7 +12,9 @@ import {
   CUSTOM, MODEL_ID, MODEL_HINT, ROLES, ROLE_LABEL, modelLabel, fillModelSelect, fillRoleOverride, effectiveRoleModels,
 } from './models-ui.js';
 import { buildGroups, agentNodes, swap, interacting, render } from './app.js';
-import { DETECTED_MAX, sidebarModel, orchState, savedPick, otherRunning, roleTag, spawnLimits, effectiveAgents, resetEndedState } from './dash-model.js';
+import {
+  DETECTED_MAX, sidebarModel, orchState, savedPick, otherRunning, roleTag, spawnLimits, effectiveAgents, resetEndedState, KINDS, KIND_TEXT, ROLE_KIND, kindFromModel,
+} from './dash-model.js';
 import { pluginView, pluginSave, sortIds, countText, filterNote } from './plugin-view.js';
 
 const PERM_LABEL = {
@@ -1179,12 +1181,47 @@ function fillSpawnModel(role, remembered) {
   fieldError($('#sp-model-custom'), '');
 }
 
-/** What the role changes in the sheet's words: the title, the button, the brief help and the selected card. */
+/* The Kind field (0.5, W9; design W9 4.6). Automatic sends no kind: the server derives the same word from the model's role. The page
+   only previews it, with its own copy of kindFromModel (a test runs both over one table of cases). */
+const KIND_HELP = "Shown as a label on its row. Automatic picks it from the model's role.";
+const KIND_HELP_SUB = 'A sub-orchestrator always shows sub-orchestrator.';
+let kindAuto = null; // the Automatic option of #sp-kind: a model change rewrites its text and nothing else
+
+/** The Automatic option's text: the kind the sheet's model would get and the role that names it. Before Settings has loaded it promises nothing. */
+function kindAutoText() {
+  if (!state.settings?.models) return "Automatic (from the model's role)";
+  const kind = kindFromModel(spawnModel(), effectiveRoleModels(state.settings, sp.group.project.key));
+  const role = Object.keys(ROLE_KIND).find((r) => ROLE_KIND[r] === kind);
+  return role ? `Automatic · ${kind} (${ROLE_LABEL[role]}'s model)` : 'Automatic · agent (no matching role)';
+}
+
+/** Fill the Kind select: Automatic, then the seven kinds in KINDS order. `remembered` (this window's last pick for the project's agents) is selected when it is one of the seven. */
+function fillSpawnKind(remembered) {
+  kindAuto = h('option', { value: '', text: kindAutoText() });
+  $('#sp-kind').replaceChildren(kindAuto, ...KINDS.map((k) => h('option', { value: k, text: `${k} · ${KIND_TEXT[k]}` })));
+  $('#sp-kind').value = KINDS.includes(remembered) ? remembered : '';
+}
+
+/** The model changed (or the role did): the Automatic text follows. Only the text moves; the options and the picked value stay. */
+function paintKindAuto() {
+  if (sp.group && kindAuto) kindAuto.textContent = kindAutoText();
+}
+
+/** A sub-orchestrator has no Kind (its row always shows sub-orchestrator): the select is off, with the reason as visible help. The value is kept for the switch back. */
+function paintKindRole(role) {
+  const sub = role === 'orchestrator';
+  $('#sp-kind').disabled = sub;
+  $('#sp-kind-help').textContent = sub ? KIND_HELP_SUB : KIND_HELP;
+}
+
+/** What the role changes in the sheet's words: the title, the button, the brief help, the selected card and the Kind field. */
 function paintRole(role) {
   $('#sp-h').textContent = SP_TITLE[role];
   $('#sp-go').textContent = SP_TITLE[role];
   $('#sp-brief-help').textContent = SP_BRIEF[role];
   syncRadioCards($('#sp-role'));
+  paintKindRole(role);
+  paintKindAuto();
 }
 
 /** The role the radios say. */
@@ -1236,6 +1273,7 @@ function openSpawn(g, { parent = null, role = 'agent' } = {}) {
   $('#sp-name').value = sp.autoName;
   $('#sp-brief').value = '';
   fillSpawnModel(start, pref.model);
+  fillSpawnKind(spawnPrefs.get(`${g.project.key}:agent`)?.kind); // the agents' pick, kept while the sheet is a sub-orchestrator's
   paintRole(start);
   $('#sp-perm').replaceChildren(
     h('option', { value: '', text: `Use this project's setting: ${s ? PERM_LABEL[eff.permissionMode] ?? eff.permissionMode : 'default'}` }),
@@ -1318,6 +1356,8 @@ async function submitSpawn(e) {
   const parent = sp.parent;
   const req = { project: g.project.key, name, model, brief: $('#sp-brief').value, role };
   if (parent) req.parent = parent.pane.id;
+  const kind = role === 'agent' && KINDS.includes($('#sp-kind').value) ? $('#sp-kind').value : ''; // Automatic and a sub-orchestrator send none
+  if (kind) req.kind = kind;
   if ($('#sp-perm').value) req.permissionMode = $('#sp-perm').value;
   if (place === 'under' && sp.under) req.under = sp.under;
   const dlg = $('#dlg-spawn');
@@ -1326,6 +1366,7 @@ async function submitSpawn(e) {
   dlg.dataset.busy = '1';
   $('#sp-cancel').disabled = true;
   $('#sp-role').disabled = true;
+  $('#sp-kind').disabled = true;
   setBusy(go, true, `Starting ${name}…`);
   let r = null;
   try {
@@ -1337,9 +1378,10 @@ async function submitSpawn(e) {
   delete dlg.dataset.busy;
   $('#sp-cancel').disabled = false;
   $('#sp-role').disabled = false;
+  $('#sp-kind').disabled = role === 'orchestrator';
   setBusy(go, false);
   if (r?.status === 200) {
-    spawnPrefs.set(`${g.project.key}:${role}`, { model: req.model, perm: $('#sp-perm').value, place });
+    spawnPrefs.set(`${g.project.key}:${role}`, { model: req.model, perm: $('#sp-perm').value, place, ...(role === 'agent' ? { kind } : {}) });
     dlg.close();
     const href = sessionHref({ session: r.body.sessionId, pane: r.body.pane, project: g.project.key });
     const who = parent ? ` under ${trunc(parent.name, 40)}` : '';
@@ -1662,8 +1704,9 @@ export async function initApp() {
     sp.touched = true;
     $('#sp-model-custom').hidden = $('#sp-model').value !== CUSTOM;
     fieldError($('#sp-model-custom'), '');
+    paintKindAuto();
   });
-  $('#sp-model-custom').addEventListener('input', () => { sp.touched = true; });
+  $('#sp-model-custom').addEventListener('input', () => { sp.touched = true; paintKindAuto(); });
   for (const id of ['#sp-role-agent', '#sp-role-orch']) $(id).addEventListener('change', changeRole);
   for (const [id, key] of [['sp-name', 'agent']]) {
     $(`#${id}`).addEventListener('blur', () => fieldError($(`#${id}`), RX[key][0].test($(`#${id}`).value) ? '' : RX[key][1]));

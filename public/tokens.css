@@ -272,7 +272,6 @@ dialog.dlg-kbd .dlg-foot .muted { color: var(--text-muted); font-size: var(--fs-
 .subs ul { list-style: none; margin: 4px 0 6px; padding: 0 0 0 4px; display: grid; gap: 4px; }
 .subs li { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; padding: 4px 0; border-top: 1px dashed var(--line); }
 .sub-desc { flex: 1 1 160px; min-width: 0; overflow-wrap: anywhere; }
-.sub-type { color: var(--text-muted); }
 .sub-link { color: var(--text); text-decoration: underline; text-underline-offset: 2px; min-height: 24px; display: inline-flex; align-items: center; }
 .sub-link:hover { color: var(--accent); }
 .sst { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; color: var(--sst-c); font-weight: 600; font-size: var(--fs-small); }
@@ -285,6 +284,11 @@ dialog.dlg-kbd .dlg-foot .muted { color: var(--text-muted); font-size: var(--fs-
 .sst[data-ss="finished"] .sst-g::before { content: ""; position: absolute; left: 2px; top: 0; box-sizing: content-box; width: 4px; height: 7px; border: solid var(--sst-c); border-width: 0 2px 2px 0; transform: rotate(45deg); }
 .sst[data-ss="stopped"] .sst-g { width: 8px; height: 8px; margin: 1px; border: 2px solid var(--sst-c); border-radius: 1px; }
 .sst.pill { padding: 2px 10px 2px 8px; border-radius: 999px; background: var(--sst-bg); }
+
+/* The label chip (0.5, W9; docs/design/spec.md 4.1): what kind of agent a row, a session header or a subagent line is. A label is a noun
+   fixed for the agent's life, not a state, so there is one neutral pill for every label: no hue (the hues mean status, mode, fit and
+   subagent state), no icon, the word is the whole message. Body text on the second surface, a hairline border, one line clipped at 24ch. */
+.agent-kind { display: inline-flex; align-items: center; flex: none; min-height: 20px; padding: 0 8px; border-radius: 999px; font-size: var(--fs-cap); font-weight: 500; color: var(--text); background: var(--surface-2); border: 1px solid var(--line); white-space: nowrap; max-width: 24ch; overflow: hidden; text-overflow: ellipsis; }
 
 @media (prefers-reduced-motion: reduce) {
   :root { --dur-1: 0ms; --dur-2: 0ms; --dur-3: 0ms; }

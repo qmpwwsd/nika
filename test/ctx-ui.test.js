@@ -8,9 +8,9 @@ import path from 'node:path';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 import { El, installDom, withClass } from './fake-dom.js';
-import { h, icon, roleTagEl, ctxEl } from '../public/dom.js';
+import { h, icon, roleTagEl, ctxEl, labelEl } from '../public/dom.js';
 import { menuEl, sessionHref } from '../public/ui.js';
-import { roleTag, parentOf } from '../public/dash-model.js';
+import { roleTag, parentOf, agentLabelView } from '../public/dash-model.js';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const read = (f) => fs.readFileSync(path.join(PUBLIC, f), 'utf8');
@@ -140,7 +140,7 @@ describe('the row cell (both tiers, design 6.2)', () => {
   const SHAPE = { uuid: /^[0-9a-f-]{36}$/, pane: /^%\d{1,6}$/, key: /^[a-z0-9]{16}$/, claudeUrl: /^https:\/\/claude\.ai\/code\/session_[A-Za-z0-9]{1,64}$/ };
   function rowOf(a, { isApp }) {
     const sandbox = {
-      h, icon, roleTag, roleTagEl, menuEl, hooks: {}, SHAPE, sessionHref, isApp, parentOf, ctxEl,
+      h, icon, roleTag, roleTagEl, menuEl, hooks: {}, SHAPE, sessionHref, isApp, parentOf, ctxEl, labelEl, agentLabelView,
       state: { modes: { map: {} } }, document: { getSelection: () => ({ isCollapsed: true }) }, location: {},
       sOf: (x) => (x.live ? 'idle' : 'ended'), rowMode: () => null, canEndRow: () => false, endedText: () => 'Ended', reasonOf: () => '', endedScope: (s) => `${s}-e`,
       statusEl: () => new El('span'), modeEl: () => new El('span'), modelEl: () => h('span', { class: 'model', text: 'Sonnet 5.5' }), timeEl: () => new El('span'),

@@ -235,6 +235,7 @@
       </fieldset>
       <div class="field"><label for="sp-name">Name</label><input type="text" id="sp-name" data-rx="agent" autocomplete="off" spellcheck="false" aria-describedby="sp-name-help sp-name-err"><p class="help" id="sp-name-help">Lowercase letters, digits and dashes. Used for the pane title and the report file.</p><p class="err" id="sp-name-err" hidden></p></div>
       <div class="field"><label for="sp-model">Model</label><select id="sp-model"></select><input type="text" id="sp-model-custom" hidden spellcheck="false" autocomplete="off" placeholder="claude-sonnet-5-5 or sonnet[1m]" aria-label="Custom model ID" aria-describedby="sp-model-custom-err"><p class="err" id="sp-model-custom-err" hidden></p></div>
+      <div class="field"><label for="sp-kind">Kind</label><select id="sp-kind" data-fk="sp-kind" aria-describedby="sp-kind-help"></select><p class="help" id="sp-kind-help">Shown as a label on its row. Automatic picks it from the model's role.</p></div>
       <div class="field"><label for="sp-brief">Brief</label><textarea id="sp-brief" rows="8" aria-describedby="sp-brief-help sp-brief-err"></textarea><p class="help" id="sp-brief-help">The agent's first message: more than one word. It never passes through the tmux command line.</p><p class="err" id="sp-brief-err" hidden></p><span class="counter num" id="sp-count"></span></div>
       <div class="grid2">
         <div class="field"><label for="sp-perm">Permission mode</label><select id="sp-perm"></select></div>

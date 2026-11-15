@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { El, installDom, withClass } from './fake-dom.js';
 import { h, icon } from '../public/dom.js';
 import { menuEl, sessionHref } from '../public/ui.js';
-import { orchState, roleTag, savedPick, otherRunning, spawnLimits, effectiveAgents } from '../public/dash-model.js';
+import { orchState, roleTag, savedPick, otherRunning, spawnLimits, effectiveAgents, KINDS, KIND_TEXT, ROLE_KIND, kindFromModel } from '../public/dash-model.js';
 import { parseModes, modesAfter, settingModeEl, MODE_META } from '../public/modes.js';
 import { pluginView, pluginSave, sortIds, countText, filterNote } from '../public/plugin-view.js';
 import {
@@ -81,6 +81,7 @@ function rig({ loaded = settingsWith(), put = {}, throwOn = null, rules = 'nika'
     syncRadioCards: () => {}, parseModes, modesAfter, settingModeEl, MODE_META,
     pluginView, pluginSave, sortIds, countText, filterNote,
     CUSTOM, MODEL_ID, MODEL_HINT, ROLES, ROLE_LABEL, modelLabel, fillModelSelect, fillRoleOverride, effectiveRoleModels,
+    KINDS, KIND_TEXT, ROLE_KIND, kindFromModel,
     location: { set href(v) {}, get href() { return ''; }, hash: '' },
     document: { title: '' },
     toast: (msg, o) => { toastLog.push({ msg, kind: o?.kind ?? 'info', action: o?.action }); },

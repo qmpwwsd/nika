@@ -8,9 +8,9 @@
 // the subagent's transcript only (no pane, no input; the pane parameter is ignored) and a session window lists its subagents (renderSubs).
 // Rules: every string from the server is rendered with textContent (h() from dom.js, applyMirror from mirror-render.js);
 // no innerHTML, no inline handlers, element.style only for numbers this file computes. Contracts: docs/contracts/api-app.md.
-import { h, icon, roleTagEl, ctxEl, subStateEl, subagentItemEl, placeMenuX, clearMenuPlacement } from './dom.js';
+import { h, icon, roleTagEl, ctxEl, subStateEl, subagentItemEl, labelEl, placeMenuX, clearMenuPlacement } from './dom.js';
 import { isApp, appFetch, getJSON, applyTheme, windowCommand } from './api.js';
-import { roleTag, savedPick, subagentView, subagentHref, SUBAGENT_ID } from './dash-model.js';
+import { roleTag, savedPick, subagentView, subagentHref, SUBAGENT_ID, agentLabelView, subLabelView } from './dash-model.js';
 import { toRenderModel, cutCursor, applyMirror, planSend, planPaste, chunkText, keyForEvent, KEY_LABEL, arrowEcho } from './mirror-render.js';
 import { createDraftSync, cleanDraft, cutAt, caretAfter, draftSendPlan, suggestionFor, submitResult, submitMessage } from './draft-sync.js';
 import { MODE_META, MODE_TARGETS, modeKey, modeEl, bypassTag, switcherState, modeNote, switchFailure } from './modes.js';
@@ -194,6 +194,14 @@ function renderRole(agent) {
   el.hidden = !tag;
 }
 
+/** The kind chip next to the role badge (design W9 4.4): a pane the server tagged agent shows its kind; the orchestrator, a sub-orchestrator, a user's own session and an ended one show nothing. Replaced at every poll, never added to. */
+function renderKind(agent) {
+  const chip = labelEl(agentLabelView(agent));
+  const el = $('sess-kind');
+  el.replaceChildren(...(chip ? [chip] : []));
+  el.hidden = !chip;
+}
+
 /** App tier, once per window and only for a session that ended: is it the project's saved orchestrator? (A running one shows its tmux tags.) True when it has just learned the answer. */
 async function loadPick(agent) {
   if (!isApp || !projectKey || A.pickAsked || agent.live) return;
@@ -232,7 +240,7 @@ function renderSubs(agent) {
     SUBS.sig = '';
     return;
   }
-  const sig = JSON.stringify([agent.id, A.name, SUBS.show, v.summary, v.hint, v.shown.map((s) => [s.id, s.state, s.description, s.type, s.modelLabel])]);
+  const sig = JSON.stringify([agent.id, A.name, SUBS.show, v.summary, v.hint, v.shown.map((s) => [s.id, s.state, s.description, s.type, s.label, s.modelLabel])]);
   if (sig === SUBS.sig) return;
   SUBS.sig = sig;
   $('subs-sum').replaceChildren(...(v.hint ? [v.summary, ' ', h('span', { class: 'muted sub-hid', text: v.hint })] : [v.summary]));
@@ -279,6 +287,7 @@ function applyAgent(agent, group) {
   $('sess-branch').hidden = !agent.gitBranch;
   $('sess-branch').textContent = agent.gitBranch ? String(agent.gitBranch) : '';
   renderRole(agent);
+  renderKind(agent);
   loadPick(agent).then((learned) => { if (learned) renderRole(agent); }, () => {});
 
   const link = $('claude-link');
@@ -395,8 +404,9 @@ function applySubagent(parent) {
   const role = roleTagEl('subagent');
   $('sess-role').replaceChildren(...(role ? [role] : []));
   $('sess-role').hidden = !role;
-  $('sess-subtype').textContent = typeof s.type === 'string' ? s.type : '';
-  $('sess-subtype').hidden = !$('sess-subtype').textContent;
+  const chip = labelEl(subLabelView(s)); // never empty: the label is 'agent' at worst, and its title names Claude's own type
+  $('sess-kind').replaceChildren(...(chip ? [chip] : []));
+  $('sess-kind').hidden = !chip;
   $('sess-model').textContent = typeof s.modelLabel === 'string' ? s.modelLabel : '';
   $('sess-model').hidden = !$('sess-model').textContent;
   const kind = ({ running: 'busy', finished: 'idle', stopped: 'ended' })[s.state]; // finished is still polled: Claude removes it again when the subagent wakes up
