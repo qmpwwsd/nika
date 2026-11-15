@@ -185,26 +185,29 @@ const BUSY_SWITCHING = 'Another action is running on this session. Try again in 
 const submitBase = (s) => (typeof s?.sig === 'string' && SIG.test(s.sig) ? { base: s.sig } : {});
 
 /**
- * What Send does with the box and the screen. `screen` is cleanDraft's answer for the last capture (null: no readable box). Returns
+ * What Send does with the box and the screen. `screen` is cleanDraft's answer for the last capture (null: no readable box). `footerKnown`
+ * is whether that capture read Claude's mode line (`modeConfirmed` and a mode): with no readable box and no known footer (a menu, Claude's
+ * agent list) the legacy road would type the text before the submit route could refuse, so Send refuses and sends nothing. Returns
  *   { act: 'none' }   nothing to send: the box is empty and Claude's input (a readable screen) is empty too. An Enter there could only act
  *                     on Claude's suggestion, which nika never verified, so no request goes out. The attachment tray treats it as "no text".
  *   { act: 'enter', submit, summary, textSummary? }   Enter alone (the screen already equals the box, or the box is empty and Claude's input holds
  *                                       something or cannot be read); `textSummary` (only when the box has text) names that text for the echo; `submit` is the body
  *                                       of the guarded submit route: { base } with the screen's sig, or {} when it has none
  *   { act: 'push', text, summary }   copy the box into Claude's input first; the Enter follows with the sig of that write
- *   { act: 'legacy' }   today's paste / Shell path (no readable box, or a long text onto an empty prompt)
+ *   { act: 'legacy' }   today's paste / Shell path (no readable box on a known footer, or a long text onto an empty prompt)
  *   { act: 'refuse', message }
  * No plan carries an Enter key: the page's Send presses Enter only through the submit route (W13). The sendGate (a permission prompt)
  * runs before this; Claude working does not gate Send: Claude queues the message, and the route refuses a prompt that opened after the
  * page looked.
  */
-export function draftSendPlan({ value, shell = false, screen = null, cols = 0 } = {}) {
+export function draftSendPlan({ value, shell = false, screen = null, cols = 0, footerKnown = true } = {}) {
   const v = String(value ?? '').replace(/\r\n?/g, '\n').replace(/\n+$/, '');
   if (v.trim() === '') {
     if (shell) return { act: 'legacy' };
+    if (!screen && !footerKnown) return { act: 'refuse', message: CANT_READ };
     return screen?.state === 'empty' ? { act: 'none' } : { act: 'enter', ok: true, submit: submitBase(screen), summary: 'Enter' };
   }
-  if (!screen) return { act: 'legacy' };
+  if (!screen) return footerKnown ? { act: 'legacy' } : { act: 'refuse', message: CANT_READ };
   if (screen.state === 'unreadable') return { act: 'refuse', message: pausedLine(screen.reason) };
   const want = canon(v, shell);
   const text = pushText(want);

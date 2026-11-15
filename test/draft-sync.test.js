@@ -379,6 +379,31 @@ describe('draftSendPlan: the Send table (design 4)', () => {
     assert.equal(plan({ screen: undefined }).act, 'legacy');
     assert.equal(plan({ value: 'ls', shell: true, screen: null }).act, 'legacy');
   });
+
+  test('(+) F1: no readable box on a KNOWN footer is still today\'s path (footerKnown true, and the default for a caller that does not know)', () => {
+    for (const over of [{ footerKnown: true }, {}]) {
+      assert.equal(plan({ screen: null, ...over }).act, 'legacy');
+      assert.equal(plan({ value: 'ls', shell: true, screen: null, ...over }).act, 'legacy');
+      assert.equal(plan({ value: '', screen: null, ...over }).act, 'enter');
+    }
+  });
+
+  test('(−) F1: no readable box and an UNKNOWN footer (Claude\'s agent list has the focus): text, Shell text and the empty-box Enter are refused with the fixed line', () => {
+    const line = "nika can't read Claude's input box right now (a menu may be open). Nothing was sent. Your text is kept.";
+    for (const screen of [null, undefined]) {
+      for (const over of [{}, { shell: true, value: 'ls' }, { value: '' }, { value: '  \n ' }, { value: 'y'.repeat(2000) }]) {
+        assert.deepEqual(plan({ screen, footerKnown: false, ...over }), { act: 'refuse', message: line }, JSON.stringify(over));
+      }
+    }
+    assert.equal(plan({ value: '', shell: true, screen: null, footerKnown: false }).act, 'legacy', 'Shell on and nothing to run: the page does nothing');
+  });
+
+  test('(+) F1: an unknown footer changes nothing when a box reads (it is the screen that decides then)', () => {
+    assert.equal(plan({ footerKnown: false }).act, 'enter');
+    assert.equal(plan({ screen: empty(), footerKnown: false }).act, 'push');
+    assert.equal(plan({ value: '', screen: empty(), footerKnown: false }).act, 'none');
+    assert.equal(plan({ screen: unreadable('pasted'), footerKnown: false }).act, 'refuse');
+  });
 });
 
 // ---- the controller --------------------------------------------------------------------------------------------------------

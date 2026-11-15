@@ -723,7 +723,7 @@ describe('command palette wiring (spec 9.7, Task 11)', () => {
     const ctx = {
       composer: () => ta, $: (id) => ({ addEventListener() {}, focus() { calls.push(`focus ${id}`); } }), document: { querySelectorAll: () => [] },
       PL: state.PL ?? { open: false, active: -1, shown: [] }, Q: { pop: state.pop === true }, S: { on: false }, SW: { busy: state.switching ? 'plan' : null },
-      W: { pane: state.pane ?? 'ok', promptOpen: state.promptOpen === true, prompt: null }, A: { kind: state.status ?? 'idle' }, DF: state.form ?? null,
+      W: { pane: state.pane ?? 'ok', promptOpen: state.promptOpen === true, prompt: null, dialog: state.dialog === true ? {} : null }, A: { kind: state.status ?? 'idle' }, DF: state.form ?? null,
       composerKey: composerKeyReal, hasAnswerButtons: hasAnswerButtonsReal, moveActive: moveActiveReal,
       grow() {}, updateChip() {}, wirePalette() {}, setPass: () => calls.push('pass'),
       sendComposer: () => calls.push('send'), sendKey: (k) => calls.push(`key ${k}`), closeModelPop: (r) => calls.push(`model ${r}`),
@@ -934,6 +934,7 @@ describe('command palette wiring (spec 9.7, Task 11)', () => {
     assert.deepEqual(press({ ...CLOSED, status: 'idle' }, { key: 'c', ctrlKey: true }), line('Nothing to stop: Claude is waiting.'));
     assert.deepEqual(press({ ...CLOSED, status: 'attn' }, { key: 'c', ctrlKey: true }), line('Answer the prompt first.'));
     assert.deepEqual(press({ ...CLOSED, status: 'busy', promptOpen: true }, { key: 'c', ctrlKey: true }), line('Answer the prompt first. Esc = No is in the prompt panel.'));
+    assert.deepEqual(press({ ...CLOSED, status: 'busy', promptOpen: true, dialog: true }, { key: 'c', ctrlKey: true }), line('Answer the question above first.'), 'F3: W.dialog reaches composerKey; a question form has no No');
     assert.deepEqual(press({ ...CLOSED, status: 'busy', pane: 'connecting' }, { key: 'c', ctrlKey: true }), line('Connecting to the pane\u2026'));
   });
 
@@ -1331,7 +1332,7 @@ describe('Task 14b: wiring of the page rules', () => {
     const log = Object.assign(sendLog(), { problems: [], said: [], shellOff: 0 });
     const ta = { value, disabled: false };
     const ctx = {
-      sending: false, composer: () => ta, DF: null, S: { on: shell }, W: { promptOpen, prompt, pane }, A: { kind }, sendGate: sendGateReal, hasAnswerButtons: hasAnswerButtonsReal, planShell: planShellReal, planSend: planSendReal,
+      sending: false, composer: () => ta, DF: null, S: { on: shell }, W: { promptOpen, prompt, pane, mode: 'default', confirmed: true }, A: { kind }, sendGate: sendGateReal, hasAnswerButtons: hasAnswerButtonsReal, planShell: planShellReal, planSend: planSendReal,
       showProblem: (m, k) => log.problems.push([m, k]), $: () => el(), say: (m) => log.said.push(m),
       paneId: '%12', setShell: () => { log.shellOff += 1; }, grow() {}, updateChip() {},
       DS: { screen: () => null, beginSend() {}, endSend() {}, sent() {}, submitted() {} }, draftSendPlan: draftSendPlanReal, M: { cols: 120, gone: false }, ATT: { pending: () => false },
@@ -1631,11 +1632,11 @@ describe('Task 14b: wiring of the page rules', () => {
   });
 
   // -- B2: Stop uses its own route
-  const stopRig = ({ status = 200, body = { stopped: true, presses: 1 }, busy = null, stopping = false, gone = false } = {}) => {
+  const stopRig = ({ status = 200, body = { stopped: true, presses: 1 }, busy = null, stopping = false, gone = false, dialog = null } = {}) => {
     const log = { calls: [], said: [], problems: [], gone: 0, cleared: 0, renders: 0, marks: [] };
     const Q = { busy, stopping };
     const ctx = {
-      Q, M: { gone }, paneId: '%12', A: { name: 'builder-1' }, renderQuick: () => { log.renders += 1; log.marks.push(Q.stopping); }, stopOutcome: stopOutcomeReal, problemKind: problemKindReal,
+      Q, M: { gone }, W: { dialog }, paneId: '%12', A: { name: 'builder-1' }, renderQuick: () => { log.renders += 1; log.marks.push(Q.stopping); }, stopOutcome: stopOutcomeReal, problemKind: problemKindReal,
       call: async (path, opts) => { log.calls.push([path, opts]); return { status, body }; }, clearProblem: () => { log.cleared += 1; }, say: (m) => log.said.push(m),
       setGone: () => { log.gone += 1; }, showProblem: (m, k) => log.problems.push([m, k]),
     };
@@ -1669,6 +1670,15 @@ describe('Task 14b: wiring of the page rules', () => {
       assert.equal(r.log.gone, status === 404 ? 1 : 0, `${status} gone`);
       assert.deepEqual(r.log.said, []);
     }
+  });
+
+  test('(+) F3: Stop\'s 409 prompt-open while a question or plan form shows (W.dialog) says to answer the question above; a permission prompt keeps Esc = No (rows above)', async () => {
+    const r = stopRig({ status: 409, body: { error: 'prompt-open' }, dialog: { at: 'question' } });
+    await r.stop();
+    assert.deepEqual(r.log.problems, [['Answer the question above first.', 'warn']]);
+    const other = stopRig({ status: 409, body: { error: 'not-busy' }, dialog: { at: 'question' } });
+    await other.stop();
+    assert.deepEqual(other.log.problems, [['Nothing to stop: Claude is waiting.', 'warn']], 'only prompt-open changes');
   });
 
   test('(+) B2: a command in flight (Compact waiting on the control lock) does not block Stop: the route takes no lock', async () => {
@@ -1742,6 +1752,25 @@ describe('Task 14b: wiring of the page rules', () => {
     assert.notEqual(run({ queued: false, kind: 'busy' }), QUEUED);
     assert.notEqual(run({ queued: true, kind: 'idle' }), QUEUED, 'nothing to stop, nothing to explain');
     assert.match(fnOf('function renderQuick()'), /quickState\(\{[^}]*queued: Q\.queued/);
+  });
+
+  test('(+) F3: renderQuick reads W.dialog: a question or plan form gets the form copy for Stop\'s title and the reason line; a permission prompt keeps Esc = No', () => {
+    const run = ({ dialog }) => {
+      const b = Object.fromEntries(['stop', 'compact', 'clear', 'model', 'rewind', 'end'].map((id) => [id, { attrs: {}, title: '', classList: { toggle() {} }, setAttribute(k, v) { this.attrs[k] = String(v); }, removeAttribute(k) { delete this.attrs[k]; } }]));
+      let reason = null;
+      const why = { hidden: true, replaceChildren: (...nodes) => { reason = nodes.map((n) => n.text).filter(Boolean).join(''); } };
+      const ctx = {
+        Q: { ready: true, b, busy: null, stopping: false, whySig: null, pop: false }, W: { pane: 'ok', promptOpen: true, dialog }, A: { kind: 'attn' }, SW: { busy: null },
+        quickState: quickStateReal, $: () => why, icon: () => ({}), h: (tag, o) => o, closeModelPop() {},
+      };
+      mk(['function renderQuick()'], ctx).renderQuick();
+      return { title: b.stop.title, reason };
+    };
+    assert.deepEqual(run({ dialog: { at: 'question' } }), { title: 'Decline is in the question form', reason: 'Answer the question above first.' });
+    assert.deepEqual(run({ dialog: null }), { title: 'Esc = No is in the prompt panel', reason: 'Answer the prompt first. Esc = No is in the prompt panel.' });
+    assert.match(fnOf('function renderQuick()'), /quickState\(\{[^}]*dialog: W\.dialog !== null/);
+    assert.match(fnOf('function wireComposer()'), /promptOpen: W\.promptOpen, dialog: W\.dialog !== null/);
+    assert.match(fnOf('async function stop()'), /stopOutcome\(\{[^}]*dialog: W\.dialog !== null/);
   });
 
   test('(+) B2: the Stop button runs stop(); Esc = No and the message box\'s Esc stay on the keys route; Ctrl+C in the box is Stop, never a C-c key', () => {
@@ -2279,7 +2308,7 @@ describe('0.3.3: the hint line, the mode row and the message box name (markup, s
   });
 
   test('(+) the message box name says where the keys go, in the markup and for a named agent', () => {
-    const tail = ' Enter sends, Shift+Enter adds a line. Escape, Control+C and Shift+Tab go to Claude, and so do the arrow keys and Enter when the box is empty. Control+Shift+Tab moves focus back.';
+    const tail = ' Enter sends, Shift+Enter adds a line. Escape and Control+C go to Claude; so does Shift+Tab when no question or prompt is open, and the arrow keys and Enter when the box is empty. Control+Shift+Tab moves focus back.';
     assert.match(HTML, new RegExp(`<label for="composer" class="sr-only" id="composer-label">Message to the agent\\.${tail.replace(/[.+]/g, '\\$&')}</label>`));
     assert.ok(fnOf('function applyAgent(').includes(`Message to \${A.name}.${tail}`));
   });
@@ -3124,11 +3153,11 @@ describe('0.5: Send with the synced box (design W5, section 4)', () => {
    * sendComposer for real, with the real plans (draftSendPlan, planSend, planShell, sendGate, submitResult), a fake sync and fake routes.
    * `pushAnswer`: what DS.send answers; `submit(tail, body)`: what the submit route answers (default: taken); `kind`: the agent's status.
    */
-  const rig = ({ value, screen, shell = false, promptOpen = false, pushAnswer = { ok: true, sig: PUSHED }, submit, kind = 'idle', att = { pending: () => false } } = {}) => {
+  const rig = ({ value, screen, shell = false, promptOpen = false, pushAnswer = { ok: true, sig: PUSHED }, submit, kind = 'idle', att = { pending: () => false }, footer = { mode: 'default', confirmed: true } } = {}) => {
     const log = Object.assign(sendLog(), { problems: [], said: [], pushed: [], told: [], shellOff: 0 });
     const ta = { value, disabled: false };
     const ctx = {
-      sending: false, composer: () => ta, DF: null, S: { on: shell }, W: { promptOpen, prompt: null, pane: 'ok' }, A: { kind }, M: { cols: 120, gone: false },
+      sending: false, composer: () => ta, DF: null, S: { on: shell }, W: { promptOpen, prompt: null, pane: 'ok', ...footer }, A: { kind }, M: { cols: 120, gone: false },
       sendGate: sendGateReal, hasAnswerButtons: hasAnswerButtonsReal, planShell: planShellReal, planSend: planSendReal, draftSendPlan: draftSendPlanReal,
       showProblem: (m, k) => log.problems.push([m, k]), $: () => ({ setAttribute() {}, removeAttribute() {} }), say: (m) => log.said.push(m), paneId: '%12',
       setShell: () => { log.shellOff += 1; }, grow() {}, updateChip() {},
@@ -3284,6 +3313,38 @@ describe('0.5: Send with the synced box (design W5, section 4)', () => {
     await shell.send();
     assert.deepEqual(shell.log.keys, [{ keys: ['C-u'] }, { text: '!ls' }]);
     assert.deepEqual(shell.log.posts, SUBMIT());
+  });
+
+  // F1 (live, Claude 2.1.325): keyboard focus in Claude's agent list replaces the mode line by a hint; the capture then reads mode `unknown` (never seen) or the
+  // remembered mode with modeConfirmed false, and draft null. The legacy road would type the text into that list before the submit route could refuse.
+  const CANT_READ = "nika can't read Claude's input box right now (a menu may be open). Nothing was sent. Your text is kept.";
+  const UNKNOWN_FOOTERS = [{ mode: 'unknown', confirmed: true }, { mode: 'default', confirmed: false }, { mode: 'unknown', confirmed: false }];
+
+  test('(−) F1: no readable box and an unknown footer (an agent list has the focus): text, Shell text and an empty-box Enter send NOTHING (no keys, no submit, no begin), show the fixed line, keep the text and Shell', async () => {
+    for (const footer of UNKNOWN_FOOTERS) {
+      for (const [label, opts] of [['text', { value: 'hello' }], ['Shell text', { value: 'ls', shell: true }], ['empty Enter', { value: '' }], ['spaces', { value: '  \n ' }]]) {
+        const r = rig({ ...opts, screen: null, footer });
+        await r.send();
+        const at = `${label} ${JSON.stringify(footer)}`;
+        assert.deepEqual([r.log.keys, r.log.posts, r.log.pushed, r.log.sent, r.log.order], [[], [], [], [], []], at);
+        assert.deepEqual(r.log.problems, [[CANT_READ, 'error']], at);
+        assert.equal(r.ta.value, opts.value, `${at}: the text stays in the box`);
+        assert.equal(r.log.shellOff, 0, `${at}: Shell stays on`);
+      }
+    }
+    const lone = rig({ value: '', shell: true, screen: null, footer: UNKNOWN_FOOTERS[0] });
+    await lone.send();
+    assert.deepEqual([lone.log.keys, lone.log.posts, lone.log.problems], [[], [], []], 'Shell on and nothing to run stays a quiet no-op');
+  });
+
+  test('(+) F1: the footer state only matters when no box reads: a readable screen sends as before whatever the footer says (a ! box reads its footer as unknown)', async () => {
+    for (const footer of UNKNOWN_FOOTERS) {
+      const r = rig({ value: 'ls', shell: true, screen: D('empty', '', { mode: 'bash' }), footer });
+      await r.send();
+      assert.deepEqual(r.log.pushed, ['!ls'], JSON.stringify(footer));
+      assert.deepEqual(r.log.posts, SUBMIT(PUSHED), JSON.stringify(footer));
+      assert.deepEqual(r.log.problems, [], JSON.stringify(footer));
+    }
   });
 
   test('(−) a permission prompt still gates every row first: nothing is pushed or sent, and no send begins', async () => {
@@ -5230,7 +5291,7 @@ describe('W1-T3: question dialogs and plan approvals in the session window (hook
     const log = sendLog();
     const ta = { value: 'hello', disabled: false };
     const ctx = {
-      sending: false, composer: () => ta, DF: null, S: { on: false }, W: { promptOpen: false, prompt: null, pane: 'ok' }, A: { kind: 'idle' }, M: { cols: 120, gone: false },
+      sending: false, composer: () => ta, DF: null, S: { on: false }, W: { promptOpen: false, prompt: null, pane: 'ok', mode: 'default', confirmed: true }, A: { kind: 'idle' }, M: { cols: 120, gone: false },
       sendGate: sendGateReal, hasAnswerButtons: hasAnswerButtonsReal, planShell: planShellReal, planSend: planSendReal, draftSendPlan: draftSendPlanReal,
       showProblem() {}, $: () => el(), say() {}, paneId: '%12', setShell() {}, grow() {}, updateChip() {},
       DS: { screen: () => null, beginSend() {}, endSend() {}, sent() {}, submitted() {} }, ATT: { pending: () => false },

@@ -233,7 +233,7 @@ function applyAgent(agent, group) {
   }
   renderAttn();
   renderPrompt();
-  $('composer-label').textContent = `Message to ${A.name}. Enter sends, Shift+Enter adds a line. Escape, Control+C and Shift+Tab go to Claude, and so do the arrow keys and Enter when the box is empty. Control+Shift+Tab moves focus back.`;
+  $('composer-label').textContent = `Message to ${A.name}. Enter sends, Shift+Enter adds a line. Escape and Control+C go to Claude; so does Shift+Tab when no question or prompt is open, and the arrow keys and Enter when the box is empty. Control+Shift+Tab moves focus back.`;
   if (!$('composer').disabled) $('composer').placeholder = idlePlaceholder();
   $('pb-pane').textContent = paneId ?? '';
 }
@@ -521,7 +521,7 @@ function renderModelName(name) {
 
 function renderQuick() {
   if (!Q.ready) return;
-  const st = quickState({ pane: W.pane, status: A.kind, prompt: W.promptOpen, switching: SW.busy !== null || Q.busy !== null || Q.stopping, queued: Q.queued });
+  const st = quickState({ pane: W.pane, status: A.kind, prompt: W.promptOpen, dialog: W.dialog !== null, switching: SW.busy !== null || Q.busy !== null || Q.stopping, queued: Q.queued });
   for (const id of Object.keys(Q.b)) {
     const b = Q.b[id];
     b.setAttribute('aria-disabled', String(st[id].off));
@@ -565,7 +565,7 @@ async function stop() {
   const r = await call(`/api/app/pane/${encodeURIComponent(paneId)}/stop`, { method: 'POST', json: {} });
   Q.stopping = false;
   renderQuick();
-  const out = stopOutcome({ status: r.status, code: r.body?.error, name: A.name });
+  const out = stopOutcome({ status: r.status, code: r.body?.error, name: A.name, dialog: W.dialog !== null });
   if (out.ok) {
     clearProblem();
     say(out.say);
@@ -1529,7 +1529,7 @@ async function sendComposer() {
   if (ATT.pending()) return ATT.send(composer().value); // chips under the box: the text and the files go together (attach.js)
   const value = ta.value;
   // the box is mirrored in Claude's input box: when the screen already holds this text only Enter goes out, else the text is copied over first (design W5, section 4)
-  const route = draftSendPlan({ value, shell: S.on, screen: DS.screen(), cols: M.cols });
+  const route = draftSendPlan({ value, shell: S.on, screen: DS.screen(), cols: M.cols, footerKnown: W.confirmed === true && W.mode !== 'unknown' }); // an unknown footer (a menu, Claude's agent list) and no readable box: refused before any key is typed
   if (route.act === 'refuse') {
     showProblem(route.message, 'error'); // nothing is sent and the text stays in the box
     return;
@@ -1976,7 +1976,7 @@ function wireComposer() {
     const sug = suggestionNow(); // what the placeholder shows: the text Tab or the right arrow would accept
     const a = composerKey(e, {
       empty: ta.value === '', selection: ta.selectionStart !== ta.selectionEnd, choosing: PL.active >= 0, paletteOpen: PL.open,
-      pop: Q.pop, pane: W.pane, status: A.kind, promptOpen: W.promptOpen,
+      pop: Q.pop, pane: W.pane, status: A.kind, promptOpen: W.promptOpen, dialog: W.dialog !== null,
       buttons: (W.pane === 'ok' && hasAnswerButtons(W.prompt)) || DF?.live() === true, bypass: W.prompt?.bypass === true, switching: SW.busy !== null, suggestion: sug,
     });
     if (a.act === 'none') return;

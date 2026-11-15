@@ -63,11 +63,13 @@ export function promptSig(rows) {
   return createHash('sha256').update(lastNonBlank(rows, PROMPT_ROWS).join('\n')).digest('hex').slice(0, 16);
 }
 
+/** The row indexes of every rule row of the screen. */
+const ruleRows = (rows) => (Array.isArray(rows) ? rows : []).flatMap((row, i) => (RULE_ROW.test(rowText(row).trimEnd()) ? [i] : []));
+
 /** The rows (span lists, styles kept) between the last two rule rows (the input box), or null when the screen has fewer than two. */
 function inputBox(rows) {
-  const list = Array.isArray(rows) ? rows : [];
-  const rules = list.flatMap((row, i) => (RULE_ROW.test(rowText(row).trimEnd()) ? [i] : []));
-  return rules.length < 2 ? null : list.slice(rules.at(-2) + 1, rules.at(-1));
+  const rules = ruleRows(rows);
+  return rules.length < 2 ? null : rows.slice(rules.at(-2) + 1, rules.at(-1));
 }
 
 /**
@@ -102,6 +104,11 @@ function boxOf(seen) {
 }
 /** Whether the capture's cursor sits on a row between the two rules of the box that was read: the input is where the box is. */
 const cursorInBox = (seen, draft) => Number.isInteger(seen.cursor?.y) && seen.cursor.y > draft.box.top && seen.cursor.y < draft.box.bottom;
+/** Whether the capture shows the input box's two rule rows and its cursor (integer x and y) below the bottom one: Claude's focus is not in the box (the shells pill or an agent list under it). */
+const cursorBelowBox = (seen) => {
+  const rules = ruleRows(seen.rows);
+  return rules.length >= 2 && Number.isInteger(seen.cursor?.x) && Number.isInteger(seen.cursor?.y) && seen.cursor.y > rules.at(-1);
+};
 /** The draft as the screen holds it, in the form the page sends: a `!` box reads `!` + its text (Shell mode). */
 const canonOf = (draft) => (draft.mode === 'bash' ? `!${draft.text}` : draft.text);
 
@@ -1014,7 +1021,9 @@ export function createSessionControl({
    * bypass window with a permission prompt or an unreadable footer (409 bypass-prompt, as the keys route, T26); a permission prompt or a dialog
    * (409 prompt-open: an Enter would confirm its highlighted option); an unreadable footer and no input box (409 screen-unclear); with a `base`,
    * a plain box with the cursor in it (409 input-unreadable) whose `sig` is `base` (409 draft-changed { draft }; an unreadable box has no sig,
-   * and `''` matches nothing); an empty box that shows a prompt suggestion, with or without a `base` (409 suggestion-shown { draft }: what Enter
+   * and `''` matches nothing); with no `base`, no box that reads, the box's two rule rows on screen and the cursor below the bottom one (409
+   * input-unreadable: Claude's focus is on the shells pill or an agent list; a cursor above the top rule, a status line under the box, goes on); an
+   * empty box that shows a prompt suggestion, with or without a `base` (409 suggestion-shown { draft }: what Enter
    * does with one is unverified, claude-tui.md; Claude's queued placeholder is not a suggestion). Then exactly one `Enter`, in any registry state (Claude queues a message sent while it works), and no other key
    * ever. Read-back every SUBMIT_POLL_MS for SUBMIT_READ_MS: 200 { taken: true, draft } at the first poll that shows a plain box in state `empty`
    * (the queued placeholder included); taken false when `base` was given and every poll still showed that sig (the Enter did not take; it is never
@@ -1037,6 +1046,8 @@ export function createSessionControl({
       if (base !== undefined) {
         if (box === null || !cursorInBox(seen, box)) return conflict('input-unreadable');
         if (box.sig !== base) return reply(409, 'draft-changed', seen);
+      } else if (box === null && cursorBelowBox(seen)) {
+        return conflict('input-unreadable'); // Claude's focus is on the shells pill or an agent list: an Enter there opens the Background dialog or an agent view
       }
       // Enter on an empty box with a suggestion was never verified (claude-tui.md): refused, base or not
       if (box?.state === 'empty' && box.suggestion !== null) return reply(409, 'suggestion-shown', seen);

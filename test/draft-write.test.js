@@ -5,6 +5,7 @@ import { test, describe, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { createSessionControl, checkDraftBody, checkSubmitBody, readDraft } from '../src/session-control.js';
 import { parseDraft } from '../src/draft.js';
+import { modeFromRows } from '../src/mode.js';
 import { boxRows, span } from './helpers.js';
 import { dialogWorld, TAB } from './dialog-fake.js';
 
@@ -1688,6 +1689,48 @@ describe('submit: the Enter of Send (0.5, W13)', () => {
       assert.deepEqual([r.status, r.body.error], [409, 'input-unreadable']);
       assert.deepEqual(w.sent, []);
     }
+  });
+
+  // Claude with its focus on the `<n> shells` pill (live, 2.1.325): the mode line still reads, the pill is reverse video, and the hidden cursor is
+  // parked at column 0 of the last row. `cursor` says where the capture puts it; rows: top rule 0, box 1, bottom rule 2, status line 3, mode line 4.
+  const pillScreen = (cursor, extra = {}) => () => {
+    const s = boxRows({ lines: [''], cursor, ...extra });
+    return { ...s, rows: [...s.rows.slice(0, -1), [...s.rows.at(-1), span(' 1 shell', { r: true })]] };
+  };
+
+  test('(−) F2: no base, the focus is on the shells pill (cursor at column 0 of the last row, below the bottom rule): 409 input-unreadable, ZERO keys -- an Enter there opens the Background dialog', async () => {
+    for (const cursor of [{ x: 0, y: 4 }, { x: 0, y: 3 }, { x: 0, y: 9 }]) {
+      const w = pane({ text: '', vim: true, state: 'busy', override: pillScreen(cursor) });
+      const screen = w.screen();
+      assert.deepEqual([readDraft(screen), modeFromRows(screen.rows)], [null, 'auto'], 'the fixture: the mode line reads, no box does');
+      const r = await sub(w, {});
+      assert.deepEqual([r.status, r.body.error], [409, 'input-unreadable'], JSON.stringify(cursor));
+      assert.deepEqual(w.sent, [], JSON.stringify(cursor));
+      assert.equal(w.n, 1, 'one capture');
+    }
+  });
+
+  test('(+) F2: the same pill screen with the cursor in the box, no base: the box reads and the one Enter goes', async () => {
+    const w = pane({ text: '', vim: true, override: pillScreen(undefined) });
+    assert.equal(readDraft(w.screen())?.state, 'empty', 'the fixture: the box reads');
+    const r = await sub(w, {});
+    assert.deepEqual([r.status, sentKeys(w)], [200, ['Enter']]);
+  });
+
+  test('(+) F2: no base, the cursor above the top rule or on a rule row (a status line drawn under the box, N-1): today\'s road, the one Enter goes (taken null)', async () => {
+    for (const make of [pillScreen({ x: 0, y: 0 }, { hint: 'a hint row' }), pillScreen({ x: 0, y: 0 }), pillScreen({ x: 0, y: 2 })]) {
+      const w = pane({ text: '', vim: true, override: make });
+      assert.equal(readDraft(w.screen()), null, 'the fixture: the cursor is outside the box');
+      const r = await sub(w, {});
+      assert.deepEqual([r.status, r.body.taken, sentKeys(w)], [200, null, ['Enter']]);
+    }
+  });
+
+  test('(+) F2 is narrow: a capture without a cursor, or with only one rule row on screen, keeps today\'s road (the one Enter)', async () => {
+    const lost = pane({ text: '', vim: true, override: () => ({ ...pillScreen(undefined)(), cursor: null }) });
+    assert.deepEqual([(await sub(lost, {})).status, sentKeys(lost)], [200, ['Enter']]);
+    const one = pane({ text: 'x', vim: true, override: () => { const s = boxRows({ lines: ['x'], cursor: { x: 0, y: 4 } }); return { ...s, rows: s.rows.filter((_, i) => i !== 0) }; } });
+    assert.deepEqual([(await sub(one, {})).status, sentKeys(one)], [200, ['Enter']]);
   });
 
   test('(−) Stop or End interrupts the pane: 409 not-idle, ZERO keys, not even a capture; within 40 ms of Stop\'s Escape the same; from 40 ms on the Enter goes', async () => {

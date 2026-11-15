@@ -119,6 +119,28 @@ describe('quickState: the spec 9.4 states table, first matching row wins', () =>
     assert.equal(st.reason, 'Answer the prompt first. Esc = No is in the prompt panel.');
   });
 
+  test('(+) F3: a question or plan form (dialog) has no No: the reason and Stop\'s title point at the form; End stays live, the four and Stop stay off', () => {
+    for (const status of ['attn', 'busy', 'idle', null]) {
+      const st = quickState({ status, prompt: true, dialog: true });
+      assert.equal(st.reason, 'Answer the question above first.', String(status));
+      assert.equal(st.stop.title, 'Decline is in the question form', String(status));
+      assert.ok(offs(st, ['stop', ...FOUR]), String(status));
+      assert.equal(st.end.off, false, String(status));
+      assert.doesNotMatch(JSON.stringify(st), /Esc = No/, 'a dialog never mentions No');
+    }
+  });
+
+  test('(−) F3: a permission prompt keeps the old copy (no dialog, or `dialog` anything but true); a dialog flag without an open prompt changes nothing', () => {
+    for (const dialog of [undefined, false, null, 'true', 1, {}]) {
+      const st = quickState({ status: 'attn', prompt: PROMPT, dialog });
+      assert.equal(st.reason, 'Answer the prompt first. Esc = No is in the prompt panel.', String(dialog));
+      assert.equal(st.stop.title, 'Esc = No is in the prompt panel', String(dialog));
+    }
+    assert.deepEqual(quickState({ status: 'attn', prompt: null, dialog: true }), quickState({ status: 'attn', prompt: null }), 'no open prompt: the dialog flag is not read');
+    assert.deepEqual(quickState({ status: 'busy', dialog: true }), quickState({ status: 'busy' }));
+    assert.equal(quickState({ pane: 'gone', prompt: true, dialog: true }).reason, 'The pane is gone.');
+  });
+
   test('(+) pane gone, tmux error, no capture yet: everything is off including End, each with its own line', () => {
     const rows = { gone: ['The pane is gone.', 'The pane is gone'], tmux: ["nika couldn't reach tmux.", "nika couldn't reach tmux."], connecting: [`Connecting to the pane${DOTS}`, `Connecting to the pane${DOTS}`] };
     for (const [pane, [reason, endTitle]] of Object.entries(rows)) {
@@ -631,6 +653,15 @@ describe('stopOutcome: the stop route\'s answers (contract section 3, fixed copy
     for (const code of ['prompt-open', 'not-busy', 'mode-unknown']) assert.equal(s(409, code).ok, false, code);
   });
 
+  test('(+) F3: 409 prompt-open while a question or plan form shows says to answer the question above (no No there); every other code is unchanged', () => {
+    assert.deepEqual(stopOutcome({ status: 409, code: 'prompt-open', dialog: true }), { ok: false, say: '', message: 'Answer the question above first.' });
+    for (const code of ['not-busy', 'mode-unknown', 'stopping', 'screen-unclear']) assert.equal(stopOutcome({ status: 409, code, dialog: true }).message, s(409, code).message, code);
+  });
+
+  test('(−) F3: a permission prompt\'s prompt-open keeps the Esc = No line (dialog false, absent or not true)', () => {
+    for (const dialog of [false, undefined, null, 'true', 1]) assert.equal(stopOutcome({ status: 409, code: 'prompt-open', dialog }).message, 'Answer the prompt first. Esc = No is in the prompt panel.', String(dialog));
+  });
+
   test('(+) 409 screen-unclear (no mode line and no input box on screen): its own line, which says nothing was sent and names Esc in the terminal', () => {
     const line = "nika can't tell what Claude is showing, so Stop sent nothing. Press Esc in the terminal.";
     assert.deepEqual(s(409, 'screen-unclear'), { ok: false, say: '', message: line });
@@ -932,6 +963,10 @@ describe('composerKey (0.3.3): what a key in the message box does', () => {
     const warn = (message) => ({ act: 'refuse', message, kind: 'warn', ms: 3000 });
     for (const status of ['idle', null, 'ended']) assert.deepEqual(K('c', { ctrlKey: true }, { status }), warn(WAITING), String(status));
     assert.deepEqual(K('c', { ctrlKey: true }, { status: 'busy', promptOpen: true }), warn('Answer the prompt first. Esc = No is in the prompt panel.'));
+    assert.deepEqual(K('c', { ctrlKey: true }, { status: 'busy', promptOpen: true, dialog: false }), warn('Answer the prompt first. Esc = No is in the prompt panel.'), 'a permission prompt keeps its line');
+    assert.deepEqual(K('c', { ctrlKey: true }, { status: 'busy', promptOpen: true, dialog: true }), warn('Answer the question above first.'), 'F3: a question or plan form has no No');
+    assert.deepEqual(K('c', { ctrlKey: true }, { status: 'attn', promptOpen: true, dialog: true }), warn('Answer the question above first.'));
+    assert.deepEqual(K('c', { ctrlKey: true }, { status: 'busy', dialog: true }), { act: 'stop' }, 'no open prompt: the dialog flag is not read');
     assert.deepEqual(K('c', { ctrlKey: true }, { status: 'attn' }), warn('Answer the prompt first.'));
     assert.deepEqual(K('c', { ctrlKey: true }, { status: 'busy', pane: 'connecting' }), warn('Connecting to the pane\u2026'));
     assert.deepEqual(K('c', { ctrlKey: true }, { status: 'busy', pane: 'gone' }), warn('The pane is gone.'));
