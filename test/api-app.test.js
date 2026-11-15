@@ -3061,7 +3061,7 @@ describe('capture: draft', () => {
     const d = r.body.draft;
     assert.deepEqual([d.state, d.mode, d.text, d.edit, d.suggestion], ['text', 'prompt', 'hello\nsecond line', 'unknown', null]);
     assert.match(d.sig, /^[0-9a-f]{16}$/);
-    assert.deepEqual(Object.keys(d).sort(), ['box', 'cursorAtEnd', 'edit', 'ghost', 'mode', 'sig', 'state', 'suggestion', 'text']);
+    assert.deepEqual(Object.keys(d).sort(), ['box', 'cursorAtEnd', 'edit', 'ghost', 'mode', 'queued', 'sig', 'state', 'suggestion', 'text']);
     assert.equal(d.ghost, false, 'no ghost cell was dropped');
     assert.deepEqual(d.box, { top: 0, bottom: 3 });
     assert.equal(r.body.mode, 'auto', 'the mode and the prompt fields are as before');

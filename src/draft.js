@@ -24,6 +24,8 @@ export const squash = (s) => s.replace(/\s+/g, '');
 const GLYPHS = { '\u276f': 'prompt', '!': 'bash' };
 const TALL_ROWS = 14; // a box of 14 rows or more may be a scrolled window of a taller draft (S9)
 const SUGGESTION_MAX = 200;
+/** Claude's dim placeholder in an empty box while messages are queued (spike W13 section 5): not a suggestion. */
+const QUEUED_PLACEHOLDER = 'Press up to edit queued messages';
 const MAX_CHARS = 1024;
 const MAX_NEWLINES = 12;
 const MAX_ROWS = 13;
@@ -193,7 +195,9 @@ function joinRows(bodies, w) {
  *             dim text next to real text, see dimIsTrailing, and a wrap that reads two ways, see joinRows)
  *   box       { top, bottom }: the row indexes of the two rule rows
  *   cursorAtEnd   the cursor sits right after the last visible real character of the last box row (padding spaces do not count)
- *   suggestion    dim text of an empty box (not the `Try "..."` example), clean() at most 200; else null
+ *   suggestion    dim text of an empty box (not the `Try "..."` example, not Claude's queued placeholder), clean() at most 200; else null
+ *   queued        true for an empty box whose only content is the dim text `Press up to edit queued messages` (Claude shows it while
+ *                 messages are queued; the box is empty, the sig is the sig of any empty box); false for every other Draft
  *   ghost         true when any dim, reverse-video or fg-246 hint cell of the box was dropped as ghost text (a suggestion, the
  *                 placeholder, a completion, the slash hint); false for plain text, an empty box and every unreadable draft
  * The footer is the last non-blank row, minus a subagent list Claude draws below it (lastNonBlank in src/mode.js; F2).
@@ -233,7 +237,7 @@ function readBox(rows, cursor, cols) {
 
   const box = { top, bottom };
   let parts = null; // set once the rows are split; a refusal after that carries them
-  const bad = (reason) => ({ draft: { state: 'unreadable', mode: first.mode, text: '', sig: null, reason, box, cursorAtEnd: false, suggestion: null, ghost: false }, parts });
+  const bad = (reason) => ({ draft: { state: 'unreadable', mode: first.mode, text: '', sig: null, reason, box, cursorAtEnd: false, suggestion: null, queued: false, ghost: false }, parts });
   const label = LABELLED.exec(rowText(rows[top]).trimEnd())?.[1];
   if (label !== undefined && HISTORY_LABEL.test(label)) return bad('history');
 
@@ -277,13 +281,15 @@ function readBox(rows, cursor, cols) {
   }
 
   let suggestion = null;
+  let queued = false;
   if (empty) {
     const ghost = clean(parts.map((p) => p.dim).join(' '), SUGGESTION_MAX);
-    suggestion = ghost !== null && !/^Try "/.test(ghost) ? ghost : null;
+    queued = ghost === QUEUED_PLACEHOLDER;
+    suggestion = ghost !== null && !queued && !/^Try "/.test(ghost) ? ghost : null;
   }
   const state = empty ? 'empty' : 'text';
   const sig = createHash('sha256').update(`${state}\n${first.mode}\n${text}`).digest('hex').slice(0, 16);
-  return { draft: { state, mode: first.mode, text, sig, box, cursorAtEnd, suggestion, ghost: parts.some((p) => p.ghost) }, parts };
+  return { draft: { state, mode: first.mode, text, sig, box, cursorAtEnd, suggestion, queued, ghost: parts.some((p) => p.ghost) }, parts };
 }
 
 /**

@@ -86,6 +86,7 @@ describe('parseDraft: readable text', () => {
       box: { top: 0, bottom: 2 },
       cursorAtEnd: true,
       suggestion: null,
+      queued: false,
       ghost: false,
     });
     assert.match(d.sig, /^[0-9a-f]{16}$/);
@@ -428,7 +429,7 @@ describe('parseDraft: readable text', () => {
 
 describe('parseDraft: empty box and ghost text', () => {
   const EMPTY_AT = (suggestion, text = '', ghost = suggestion !== null) => ({
-    state: 'empty', mode: 'prompt', text, sig: sigOf('empty', 'prompt', text), box: { top: 0, bottom: 2 }, cursorAtEnd: true, suggestion, ghost,
+    state: 'empty', mode: 'prompt', text, sig: sigOf('empty', 'prompt', text), box: { top: 0, bottom: 2 }, cursorAtEnd: true, suggestion, queued: false, ghost,
   });
 
   test('(+) the glyph and a no-break space alone is empty', () => {
@@ -498,6 +499,123 @@ describe('parseDraft: empty box and ghost text', () => {
   test('(−) a bold, coloured or underlined run is real text', () => {
     const d = read({ lines: [[span('see ', { b: true }), span('web-shop', { fg: 39, u: true })]] });
     assert.equal(d.text, 'see web-shop');
+  });
+});
+
+describe('parseDraft: Claude\'s queued placeholder (W13)', () => {
+  const PLACEHOLDER = 'Press up to edit queued messages';
+  const BUSY = '⏵⏵ auto mode on (shift+tab to cycle) · esc to interrupt'; // the footer while a turn runs
+  const dim = (t) => span(t, { d: true });
+  const EMPTY = (queued, suggestion = null) => ({
+    state: 'empty', mode: 'prompt', text: '', sig: sigOf('empty', 'prompt', ''), box: { top: 0, bottom: 2 }, cursorAtEnd: true, suggestion, queued, ghost: true,
+  });
+  /** A screen with rows drawn ABOVE the box (the queued text, its hint, the spinner); the cursor moves down with the box. */
+  const withAbove = (s, above) => ({ ...s, rows: [...above, ...s.rows], cursor: { ...s.cursor, y: s.cursor.y + above.length } });
+  const shifted = (d, n) => ({ ...d, box: { top: d.box.top + n, bottom: d.box.bottom + n } });
+  const SPINNER = [[span('✶ Working… (12s · esc to interrupt)', { fg: 174 })]];
+  const QUEUED = [
+    [span('❯ Queued note: when you see this, reply with the word blue.', { fg: 246 })],
+    [span('  ctrl+x ctrl+s to send now', { fg: 246 })],
+  ];
+
+  test('(+) the dim placeholder in an empty box reads empty with `queued: true`, never as a suggestion (plain and vim INSERT footers, 120 and 171 columns)', () => {
+    for (const cols of [120, 171]) {
+      for (const opts of [{}, { insert: true }, { footer: BUSY }, { insert: true, footer: BUSY }]) {
+        assert.deepEqual(read({ cols, lines: [''], ghost: PLACEHOLDER, ...opts }), EMPTY(true), `${cols} columns, ${JSON.stringify(opts)}`);
+      }
+    }
+  });
+
+  test('(+) the live shape: the glyph in fg 246, the words dim; no-break spaces between the words read as spaces', () => {
+    const s = boxRows({ lines: [''], ghost: PLACEHOLDER });
+    s.rows[1][0] = span(`${PROMPT}${NB}`, { fg: 246 });
+    assert.deepEqual(parseDraft(s.rows, s.cursor, s.cols), EMPTY(true));
+    assert.deepEqual(read({ lines: [''], ghost: PLACEHOLDER.replaceAll(' ', NB) }), EMPTY(true));
+    assert.deepEqual(read({ lines: [''], ghost: `  ${PLACEHOLDER}  ` }), EMPTY(true), 'trimmed');
+  });
+
+  test('(+) a queued empty box keeps the sig of every empty box (queued is not part of it) and boxSquash reads it as empty ghost text', () => {
+    assert.equal(read({ lines: [''], ghost: PLACEHOLDER }).sig, read({ lines: [''] }).sig);
+    const s = boxRows({ lines: [''], ghost: PLACEHOLDER });
+    const sq = boxSquash(s.rows, s.cursor, s.cols);
+    assert.deepEqual([sq.draft.queued, sq.squash, sq.ghost], [true, '', true]);
+  });
+
+  test('(+) the grey queued text, its `ctrl+x ctrl+s to send now` row and the spinner above the box do not change the box read', () => {
+    const plain = boxRows({ lines: [''], ghost: PLACEHOLDER, footer: BUSY });
+    const base = parseDraft(plain.rows, plain.cursor, plain.cols);
+    assert.deepEqual(base, EMPTY(true));
+    for (const above of [QUEUED, [...QUEUED, ...SPINNER], [...SPINNER, [], ...QUEUED], [...QUEUED, [span('❯ Another queued note', { fg: 246 })], [span('  ctrl+x ctrl+s to send now', { fg: 246 })], ...SPINNER]]) {
+      const s = withAbove(plain, above);
+      assert.deepEqual(parseDraft(s.rows, s.cursor, s.cols), shifted(base, above.length), `${above.length} rows above`);
+    }
+    // the same rows above a box that holds text, and above an empty box without the placeholder
+    const text = boxRows({ lines: ['fix the retry loop'], footer: BUSY });
+    const t = withAbove(text, [...QUEUED, ...SPINNER]);
+    assert.deepEqual(parseDraft(t.rows, t.cursor, t.cols), shifted(parseDraft(text.rows, text.cursor, text.cols), 3));
+    assert.equal(parseDraft(t.rows, t.cursor, t.cols).queued, false);
+    const none = boxRows({ lines: [''], footer: BUSY });
+    const n = withAbove(none, [...QUEUED, ...SPINNER]);
+    assert.deepEqual(parseDraft(n.rows, n.cursor, n.cols), shifted({ ...EMPTY(false), ghost: false }, 3));
+  });
+
+  test('(+) a `Ctrl+Y to paste deleted text` hint row above the top rule leaves the box read intact', () => {
+    for (const lines of [[''], ['fix the retry loop']]) {
+      const ghost = lines[0] === '' ? PLACEHOLDER : null;
+      const without = read({ lines, ghost });
+      const withHint = read({ lines, ghost, hint: 'Ctrl+Y to paste deleted text' });
+      assert.deepEqual(withHint, shifted(without, 1));
+      assert.equal(withHint.queued, ghost !== null);
+    }
+  });
+
+  test('(+) a normal dim suggestion still reads as today, with `queued: false`', () => {
+    assert.deepEqual(read({ lines: [''], ghost: 'run the tests in acme-api' }), EMPTY(false, 'run the tests in acme-api'));
+    assert.deepEqual(read({ lines: [''], ghost: 'yes', insert: true, footer: BUSY }), EMPTY(false, 'yes'));
+    const wrapped = read({ lines: [[dim('add a test for the retry loop and')], [dim('check the backoff')]] });
+    assert.deepEqual([wrapped.suggestion, wrapped.queued], ['add a test for the retry loop and check the backoff', false]);
+  });
+
+  test('(+) the placeholder wrapped over two ghost rows in a narrow pane is still the placeholder', () => {
+    const d = read({ cols: 40, lines: [[dim('Press up to edit')], [dim('queued messages')]] });
+    assert.deepEqual([d.state, d.text, d.queued, d.suggestion], ['empty', '', true, null]);
+  });
+
+  test('(−) the same words typed as normal (not dim) text are a draft: `state: text`, `queued: false`', () => {
+    const d = read({ lines: [PLACEHOLDER] });
+    assert.deepEqual([d.state, d.text, d.queued, d.suggestion, d.ghost], ['text', PLACEHOLDER, false, null, false]);
+  });
+
+  test('(−) the placeholder as a completion ghost after typed text is not queued', () => {
+    const d = read({ lines: ['hello'], ghost: ` ${PLACEHOLDER}` });
+    assert.deepEqual([d.state, d.text, d.queued, d.suggestion], ['text', 'hello', false, null]);
+  });
+
+  test('(−) a dim `Try "..."` and any other dim text are not queued', () => {
+    const t = read({ lines: [''], ghost: 'Try "fix typecheck errors"' });
+    assert.deepEqual([t.state, t.queued, t.suggestion, t.ghost], ['empty', false, null, true]);
+    for (const text of ['Message acme-api', 'Press Enter to send', 'ctrl+x ctrl+s to send now']) {
+      const d = read({ lines: [''], ghost: text });
+      assert.deepEqual([d.state, d.queued, d.suggestion], ['empty', false, text], text);
+    }
+  });
+
+  test('(−) the placeholder words with more text after them, before them, or only part of them (dim) are a suggestion, not queued', () => {
+    for (const text of [`${PLACEHOLDER} now`, `now ${PLACEHOLDER}`, `${PLACEHOLDER}.`, 'Press up to edit', 'queued messages', 'Press up to edit queued', 'Press up to edit queued message',
+      'press up to edit queued messages', 'Press up to edit queued  messages please']) {
+      const d = read({ lines: [''], ghost: text });
+      assert.deepEqual([d.state, d.queued, d.suggestion], ['empty', false, text.replace(/\s+/g, ' ')], text);
+    }
+    // the placeholder split by a second dim run on the next row: both rows join into one text
+    const two = read({ lines: [[dim(PLACEHOLDER)], [dim('and more')]] });
+    assert.deepEqual([two.queued, two.suggestion], [false, `${PLACEHOLDER} and more`]);
+  });
+
+  test('(−) an unreadable box is never queued; the placeholder next to typed text is unreadable, not queued', () => {
+    const hist = read({ lines: ['an old prompt'], label: 'History 3/3' });
+    assert.equal(hist.queued, false);
+    const layout = read({ lines: [[dim(PLACEHOLDER), span('typed')]] });
+    assert.deepEqual([layout.state, layout.reason, layout.queued], ['unreadable', 'layout', false]);
   });
 });
 
@@ -784,7 +902,7 @@ describe('parseDraft: rows padded with spaces to the pane width (seen live, Clau
 
 describe('parseDraft: unreadable', () => {
   const unreadable = (reason, mode = 'prompt', bottom = 2) => ({
-    state: 'unreadable', mode, text: '', sig: null, reason, box: { top: 0, bottom }, cursorAtEnd: false, suggestion: null, ghost: false,
+    state: 'unreadable', mode, text: '', sig: null, reason, box: { top: 0, bottom }, cursorAtEnd: false, suggestion: null, queued: false, ghost: false,
   });
 
   test('(−) a `History n/m` rule (prompt-history recall) is unreadable: history, the whole shape', () => {
