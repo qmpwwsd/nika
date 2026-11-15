@@ -12,11 +12,12 @@ import { configDir, stateDir } from './paths.js';
 import { clean } from './text.js';
 import { UUID, PANE_ID, PROJECT_KEY, CLAUDE_COMMAND, COMMAND_NAME } from './ids.js';
 import { mapLimit } from './util.js';
-import { MODE_TARGETS, bypassWindow, modeFromRows, promptFromRows } from './mode.js';
+import { MODE_TARGETS, bypassWindow, modeFromRows, promptFromRows, surveyShown } from './mode.js';
 import { MODEL_CATALOG } from './models.js';
 import { matches as etagMatches } from './mirror.js';
 import { createSessionControl, promptSig, insertShown, editMode, readDraft, checkDraftBody, checkSubmitBody, checkSuggestionBody, checkDialogBody } from './session-control.js';
-import { dialogCapture } from './dialog.js';
+import { dialogCapture, dialogOnScreen } from './dialog.js';
+import { badSend } from './keys.js';
 import { tagPane, pickState, claudePane, inProject } from './orchestrate.js';
 import { createFit, checkFitBody, FIT_RATE } from './fit.js';
 import { createScroll, checkScrollBody } from './scroll.js';
@@ -551,7 +552,30 @@ export function createAppApi({ secret, ctx, deps }) {
     return { status: 200, body: { modes: Object.fromEntries(read.filter(Boolean)) } };
   });
 
+  /**
+   * The fresh look of the keys route (T26, T54): null when the request may go on, else the response that refuses it (nothing is sent). One capture,
+   * never the cached one; its own failure is the answer. In order: a bypass window with a permission prompt (409 bypass-prompt) or an unreadable
+   * footer (409 screen-unclear), as before. Then, only for Send's own typing (`send`): a permission prompt, any dialog or Claude's feedback survey
+   * (409 prompt-open: a digit or text typed there would answer it), and an unreadable footer with no input box (409 screen-unclear, the rule `submit`
+   * uses: a dialog nika does not know may be open). A passthrough request (no `send`) never gets the second group: it is the user's own keys.
+   */
+  async function keysLook(id, { send }) {
+    const cap = await deps.mirror.capture(id, undefined, { fresh: true });
+    if (cap.status !== 200) return { status: cap.status, body: cap.body };
+    const rows = cap.body.rows;
+    if (bypassWindow(rows)) {
+      if (promptFromRows(rows) !== null) return err(409, 'bypass-prompt', 'Answer this prompt in the terminal');
+      if (modeFromRows(rows) === 'unknown') return err(409, 'screen-unclear', "nika can't tell what Claude is showing; use the terminal");
+    }
+    if (!send) return null;
+    if (promptFromRows(rows) !== null || dialogOnScreen(rows) || surveyShown(rows)) return err(409, 'prompt-open', 'A prompt, a dialog or a survey is open in Claude; answer it first');
+    if (modeFromRows(rows) === 'unknown' && readDraft(cap.body) === null) return err(409, 'screen-unclear', "nika can't tell what Claude is showing; use the terminal");
+    return null;
+  }
+
   route('POST', /^\/api\/app\/pane\/([^/]+)\/keys$/, CAP.keys, async ({ params, body }) => {
+    const bad = badSend(body); // 400 first, as on the other routes: `send` is the boolean true or absent
+    if (bad) return bad;
     const { id, failure } = await eligiblePane(params[0]);
     if (failure) return failure;
     // Enter, BTab, a digit or a paste could answer a permission prompt, and the answer route's bypass refusal does not reach
@@ -559,16 +583,15 @@ export function createAppApi({ secret, ctx, deps }) {
     // a dialog nika cannot read (its footer is unreadable) does (409 screen-unclear) (T26). Typing letters, arrows and Escape
     // stay as fast as in 0.2. The page's passthrough posts to this route too, so it is guarded as well: only the terminal itself
     // can answer such a prompt.
-    if (answersPrompt(body)) {
-      const cap = await deps.mirror.capture(id, undefined, { fresh: true });
-      if (cap.status !== 200) return { status: cap.status, body: cap.body };
-      const rows = cap.body.rows;
-      if (bypassWindow(rows)) {
-        if (promptFromRows(rows) !== null) return err(409, 'bypass-prompt', 'Answer this prompt in the terminal');
-        if (modeFromRows(rows) === 'unknown') return err(409, 'screen-unclear', "nika can't tell what Claude is showing; use the terminal");
-      }
+    // Send's own typing (`send: true`, the page's legacy text road, T54) always looks first and is also refused while a prompt, a dialog,
+    // the survey or an unclear screen is up; each chunk of a long text after the first looks again (keys.js `recheck`).
+    const send = body.send === true;
+    if (send || answersPrompt(body)) {
+      const refused = await keysLook(id, { send });
+      if (refused) return refused;
     }
-    return deps.keys.send(id, { text: body.text, paste: body.paste, keys: body.keys });
+    const request = { text: body.text, paste: body.paste, keys: body.keys };
+    return send ? deps.keys.send(id, { ...request, send: true }, { recheck: () => keysLook(id, { send }) }) : deps.keys.send(id, request);
   });
 
   // --- session control (0.3): each route validates, checks the pane, then hands over to the shared controller ---

@@ -16,12 +16,13 @@ import { collect, findSession, findSessions } from '../src/model.js';
 import { startOrchestrator } from '../src/orchestrate.js';
 import { spawnAgent } from '../src/spawn.js';
 import { configDir, stateDir } from '../src/paths.js';
-import { lastNonBlank, modeFromRows, PROMPT_ROWS } from '../src/mode.js';
+import { lastNonBlank, modeFromRows, promptFromRows, surveyShown, PROMPT_ROWS } from '../src/mode.js';
 import { MODEL_CATALOG } from '../src/models.js';
 import { makeWorld, fakeTmux, TMUX, CLAUDE } from './tmux-fake.js';
 import { makeFixture, cleanup, fakeExec, SID, NOW, PROC_START, boxRows, subagentRows } from './helpers.js';
 import { createMirror } from '../src/mirror.js';
-import { readDialogScreen, sigOf as dialogSig } from '../src/dialog.js';
+import { readDialogScreen, dialogOnScreen, sigOf as dialogSig } from '../src/dialog.js';
+import { createKeys } from '../src/keys.js';
 import { dialogWorld, TAB } from './dialog-fake.js';
 
 const SECRET = 'Zm9vYmFyZm9vYmFyZm9vYmFyZm9vYmFyZm9vYmFyZm9v'.slice(0, 43);
@@ -3586,6 +3587,223 @@ const dialogRows = (opts = {}) => {
 const SIG16 = /^[0-9a-f]{16}$/;
 const DSIG = '0123456789abcdef';
 
+// --- Send's own typing (0.5, security review I1, T54): the keys route with `send: true` looks at a fresh screen and refuses a prompt, a dialog, the survey, an unclear screen ---
+
+describe("POST /api/app/pane/:id/keys: Send's own typing (send: true, T54)", () => {
+  const keysTo = (a, json, id = '%6') => pane(a, id, 'keys', { method: 'POST', json });
+  const sent = (a) => a.deps.calls.filter((c) => c[0] === 'keys');
+  const boxScreen = (o = {}) => { const b = boxRows({ cols: 80, lines: ['hello'], ...o }); return Object.assign(b.rows, { cursor: b.cursor, cols: b.cols }); };
+  const SURVEY_ROWS = ['⏺ All done.', '● How is Claude doing this session? (optional)', '  1: Bad    2: Fine    3: Good    0: Dismiss', FOOTER.plan];
+  const UNCLEAR_ROWS = ['Trust the files in this folder?', ' Enter to confirm · Esc to cancel'];
+  const BODIES = [{ text: 'hello' }, { text: '2' }, { text: '1. yes' }, { paste: 'one\ntwo' }, { keys: ['C-u'] }, { text: '!ls' }, { text: 'ok', keys: ['Enter'] }];
+  // the five dialogs of Claude's that nika knows (dialog-fake.js): each is a dialog shape, none is a permission prompt
+  const DIALOGS = {
+    ask: () => dialogRows({ phase: 'ask', tabs: [TAB.project, TAB.mode] }),
+    review: () => dialogRows({ phase: 'review', tabs: [TAB.project, TAB.mode] }),
+    plan: () => dialogRows({ phase: 'plan' }),
+    exit: () => dialogRows({ phase: 'exit' }),
+    nudge: () => dialogRows({ phase: 'nudge' }),
+  };
+
+  test('(+) the fixtures are what the cases below say they are', () => {
+    for (const [name, make] of Object.entries(DIALOGS)) {
+      assert.equal(dialogOnScreen(make()), true, `${name} is a dialog shape`);
+      assert.equal(promptFromRows(make()), null, `${name} is not a permission prompt`);
+    }
+    assert.notEqual(promptFromRows(rowsOf(PROMPT)), null);
+    assert.equal(surveyShown(rowsOf(SURVEY_ROWS)), true);
+    assert.equal(promptFromRows(rowsOf(SURVEY_ROWS)), null);
+    assert.equal(dialogOnScreen(rowsOf(SURVEY_ROWS)), false);
+    assert.notEqual(modeFromRows(rowsOf(SURVEY_ROWS)), 'unknown', 'only the survey check can refuse the survey screen');
+    assert.equal(modeFromRows(rowsOf(UNCLEAR_ROWS)), 'unknown');
+    assert.equal(promptFromRows(rowsOf(UNCLEAR_ROWS)), null);
+    assert.equal(dialogOnScreen(rowsOf(UNCLEAR_ROWS)), false);
+  });
+
+  test('(+) a plain screen with a known footer: one fresh capture, then the module gets the body with send: true and a recheck', async () => {
+    for (const screen of [rowsOf(['hello', FOOTER.plan]), boxScreen()]) {
+      const { a, screens, mirror } = await bootScreens();
+      screens['%6'] = screen;
+      for (const json of [{ text: 'hello', send: true }, { paste: 'one\ntwo', send: true }, { keys: ['C-u'], send: true }, { text: '!ls', send: true }]) {
+        assert.equal((await keysTo(a, json)).status, 200, JSON.stringify(json));
+      }
+      assert.deepEqual(mirror.opts, Array(4).fill({ fresh: true }), 'one capture per request, never the cached one');
+      assert.deepEqual(sent(a).map((c) => c[2]), [
+        { text: 'hello', paste: undefined, keys: undefined, send: true }, { text: undefined, paste: 'one\ntwo', keys: undefined, send: true },
+        { text: undefined, paste: undefined, keys: ['C-u'], send: true }, { text: '!ls', paste: undefined, keys: undefined, send: true },
+      ]);
+      for (const c of sent(a)) assert.equal(typeof c[3]?.recheck, 'function', 'the chunk look is handed over');
+    }
+  });
+
+  test('(+) letters without send skip the capture (as in 0.2); the same letters with send take one', async () => {
+    const { a, screens, mirror } = await bootScreens();
+    screens['%6'] = rowsOf(['hello', FOOTER.plan]);
+    assert.equal((await keysTo(a, { text: 'abc' })).status, 200);
+    assert.deepEqual(mirror.seen, []);
+    assert.equal((await keysTo(a, { text: 'abc', send: true })).status, 200);
+    assert.deepEqual(mirror.seen, ['%6']);
+  });
+
+  test('(−) a permission prompt: 409 prompt-open for every kind of body, zero keys', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = rowsOf(PROMPT);
+    for (const body of BODIES) {
+      const r = await keysTo(a, { ...body, send: true });
+      assert.deepEqual([r.status, r.body.error], [409, 'prompt-open'], JSON.stringify(body));
+    }
+    assert.deepEqual(sent(a), []);
+  });
+
+  test('(−) each of Claude\'s dialogs (question, review, plan, Exit plan mode?, the nudge): 409 prompt-open, zero keys', async () => {
+    for (const [name, make] of Object.entries(DIALOGS)) {
+      const { a, screens } = await bootScreens();
+      screens['%6'] = make();
+      for (const body of BODIES) {
+        const r = await keysTo(a, { ...body, send: true });
+        assert.deepEqual([r.status, r.body.error], [409, 'prompt-open'], `${name} ${JSON.stringify(body)}`);
+      }
+      assert.deepEqual(sent(a), [], name);
+    }
+  });
+
+  test('(−) Claude\'s feedback survey (it takes the digits 0 to 3): 409 prompt-open, zero keys', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = rowsOf(SURVEY_ROWS);
+    for (const body of BODIES) assert.deepEqual([(await keysTo(a, { ...body, send: true })).body.error], ['prompt-open'], JSON.stringify(body));
+    assert.deepEqual(sent(a), []);
+  });
+
+  test('(−) an unreadable footer with no input box: 409 screen-unclear, zero keys', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = rowsOf(UNCLEAR_ROWS);
+    for (const body of BODIES) {
+      const r = await keysTo(a, { ...body, send: true });
+      assert.deepEqual([r.status, r.body.error], [409, 'screen-unclear'], JSON.stringify(body));
+    }
+    assert.deepEqual(sent(a), []);
+  });
+
+  test('(−) a bypass prompt keeps its own code and line (the bypass checks run first, unchanged)', async () => {
+    const { a, screens } = await bootScreens();
+    for (const lines of [BYPASS_PROMPT, BYPASS_QUESTION_PROMPT]) {
+      screens['%6'] = rowsOf(lines);
+      const r = await keysTo(a, { text: 'hello', send: true });
+      assert.deepEqual([r.status, r.body.error, r.body.message], [409, 'bypass-prompt', 'Answer this prompt in the terminal']);
+    }
+    screens['%6'] = rowsOf(['Allow bypass permissions for this folder?', ' Enter to confirm · Esc to cancel']);
+    const r = await keysTo(a, { text: 'hello', send: true });
+    assert.deepEqual([r.status, r.body.error], [409, 'screen-unclear']);
+    assert.deepEqual(sent(a), []);
+  });
+
+  test('(−) the capture fails: its status and body, zero keys', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = null;
+    const r = await keysTo(a, { text: 'hello', send: true });
+    assert.deepEqual([r.status, r.body], [503, { error: 'tmux_unavailable', message: 'x' }]);
+    assert.deepEqual(sent(a), []);
+  });
+
+  test('(−) send must be the boolean true: false, 1, "yes", null, an object are 400, before the pane check, with no capture and no keys', async () => {
+    const { a, screens, mirror } = await bootScreens();
+    screens['%6'] = rowsOf(['hello', FOOTER.plan]);
+    for (const send of [false, 1, 0, 'yes', 'true', null, {}, []]) {
+      for (const id of ['%6', '%5']) { // %5 is not eligible: 400 still comes first
+        const r = await keysTo(a, { text: 'hello', send }, id);
+        assert.deepEqual([r.status, r.body.error], [400, 'invalid'], `${JSON.stringify(send)} ${id}`);
+      }
+    }
+    assert.deepEqual(mirror.seen, []);
+    assert.deepEqual(sent(a), []);
+  });
+
+  test('(−) an ineligible pane is still 404 with send: true, before any capture', async () => {
+    const { a, screens, mirror } = await bootScreens();
+    screens['%6'] = rowsOf(['hello', FOOTER.plan]);
+    assert.equal((await keysTo(a, { text: 'hello', send: true }, '%5')).status, 404);
+    assert.deepEqual(mirror.seen, []);
+  });
+
+  test('(+) the passthrough (no send) is unchanged: digits and letters still go to a prompt, a dialog, the survey and an unclear screen, with no recheck handed over', async () => {
+    const screens = [rowsOf(PROMPT), ...Object.values(DIALOGS).map((make) => make()), rowsOf(SURVEY_ROWS), rowsOf(UNCLEAR_ROWS)];
+    for (const screen of screens) {
+      const { a, screens: shown } = await bootScreens();
+      shown['%6'] = screen;
+      for (const json of [{ text: '2' }, { text: 'abc' }, { keys: ['Escape'] }, { keys: ['Down', 'Up'] }]) assert.equal((await keysTo(a, json)).status, 200, JSON.stringify(json));
+      assert.equal(sent(a).length, 4);
+      for (const c of sent(a)) assert.equal(c.length, 3, 'two arguments, as before: no options, no send');
+    }
+  });
+
+  test('(−) the passthrough keeps today\'s bypass refusal on a bypass prompt (a digit is 409 bypass-prompt), and send changes nothing there', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = rowsOf(BYPASS_PROMPT);
+    assert.equal((await keysTo(a, { text: '2' })).body.error, 'bypass-prompt');
+    assert.equal((await keysTo(a, { text: '2', send: true })).body.error, 'bypass-prompt');
+    assert.equal((await keysTo(a, { text: 'abc' })).status, 200, 'letters without send skip the capture');
+  });
+
+  describe('a long text: each chunk after the first looks again (real createKeys, a scripted screen)', () => {
+    const rig = async (afterFirst) => {
+      const typed = [];
+      let boot2;
+      const exec = async (cmd, args) => {
+        if (args.includes('-l')) {
+          typed.push(args.at(-1));
+          if (typed.length === 1) boot2.screens['%6'] = afterFirst;
+        }
+        return { stdout: '', stderr: '' };
+      };
+      const keys = createKeys({ exec, tmuxBin: 'tmux', sleep: async () => {} });
+      boot2 = await bootScreens({ over: { keys } });
+      boot2.screens['%6'] = rowsOf(['hello', FOOTER.plan]);
+      return { ...boot2, typed };
+    };
+    const TEXT = 'x'.repeat(800); // 700 + 100
+
+    test('(+) the screen stays plain: both chunks go, the answer is 200, two fresh captures (before the first chunk and before the second)', async () => {
+      const { a, mirror, typed } = await rig(rowsOf(['hello', FOOTER.plan]));
+      const r = await keysTo(a, { text: TEXT, send: true });
+      assert.deepEqual([r.status, r.body], [200, { sent: { text: 800, paste: 0, keys: 0 } }]);
+      assert.deepEqual(typed.map((t) => t.length), [700, 100]);
+      assert.deepEqual(mirror.opts, [{ fresh: true }, { fresh: true }]);
+    });
+
+    test('(−) a permission prompt, each dialog, the survey or an unclear screen appears after the first chunk: 409, the second chunk is not typed, the answer counts the first', async () => {
+      const cases = { prompt: rowsOf(PROMPT), survey: rowsOf(SURVEY_ROWS), unclear: rowsOf(UNCLEAR_ROWS), ...Object.fromEntries(Object.entries(DIALOGS).map(([k, make]) => [k, make()])) };
+      for (const [name, screen] of Object.entries(cases)) {
+        const { a, typed } = await rig(screen);
+        const r = await keysTo(a, { text: TEXT, send: true });
+        assert.equal(r.status, 409, name);
+        assert.ok(['prompt-open', 'screen-unclear'].includes(r.body.error), `${name}: ${r.body.error}`);
+        assert.deepEqual(r.body.sent, { text: 700, paste: 0, keys: 0 }, name);
+        assert.deepEqual(typed.map((t) => t.length), [700], `${name}: only the first chunk went out`);
+      }
+    });
+
+    test('(−) a bypass prompt after the first chunk: 409 bypass-prompt, no second chunk', async () => {
+      const { a, typed } = await rig(rowsOf(BYPASS_PROMPT));
+      const r = await keysTo(a, { text: TEXT, send: true });
+      assert.deepEqual([r.status, r.body.error, r.body.sent], [409, 'bypass-prompt', { text: 700, paste: 0, keys: 0 }]);
+      assert.equal(typed.length, 1);
+    });
+
+    test('(−) the capture fails before the second chunk: its status, no second chunk', async () => {
+      const { a, typed } = await rig(null);
+      const r = await keysTo(a, { text: TEXT, send: true });
+      assert.equal(r.status, 503);
+      assert.equal(typed.length, 1);
+    });
+
+    test('(−) without send the same text is typed in both chunks whatever appears in between (the passthrough is the user\'s own typing)', async () => {
+      const { a, typed } = await rig(rowsOf(PROMPT));
+      const r = await keysTo(a, { text: TEXT });
+      assert.deepEqual([r.status, typed.map((t) => t.length)], [200, [700, 100]]);
+    });
+  });
+});
+
 describe('capture: the dialog field', () => {
   test('(+) a question on screen: ready, with the tabs, the options and a 16-hex sig; prompt stays null', async () => {
     const { a, screens } = await bootScreens();
@@ -4620,6 +4838,20 @@ describe('attachments: upload', () => {
       assert.equal((await att(a, '%6', 'attachments', { method: 'POST', body, headers: { 'content-type': 'application/json' } })).status, 400, body);
     }
     assert.deepEqual(store.calls, []);
+  });
+
+  test('(−) M4: a body named .env, .env.*, *.key or *.pem is 400 secret-file before the pane is looked at; the store is not called, and an ordinary name still goes', async () => {
+    const store = fakeStore();
+    const { a } = await bootScreens({ over: { attachments: store, collect: async () => keyedSnapshot('%6') } });
+    for (const name of ['.env', '.ENV.dev', 'prod.key', 'CERT.PEM', 'dir/.env']) {
+      for (const id of ['%6', '%99']) { // an unknown pane too: the body comes first
+        const r = await att(a, id, 'attachments', { method: 'POST', json: { name, data: UPLOAD.data } });
+        assert.deepEqual([r.status, r.body.error], [400, 'secret-file'], `${name} ${id}`);
+      }
+    }
+    assert.deepEqual(store.calls, []);
+    assert.equal((await att(a, '%6', 'attachments', { method: 'POST', json: { name: 'notes.txt', data: UPLOAD.data } })).status, 200);
+    assert.equal(store.calls.length, 1);
   });
 
   test('(−) the body is checked before the pane: a bad body to an unknown pane is 400, a good body to it is 404; the store is not called', async () => {

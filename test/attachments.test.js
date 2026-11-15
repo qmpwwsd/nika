@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { stateDir } from '../src/paths.js';
 import { updateSettings } from '../src/store.js';
 import {
-  UPLOAD_CAP, MAX_BYTES, PER_MESSAGE, ID, PATH_OK, sniff, checkUploadBody, createAttachments,
+  UPLOAD_CAP, MAX_BYTES, PER_MESSAGE, ID, PATH_OK, sniff, checkUploadBody, isSecretName, createAttachments,
 } from '../src/attachments.js';
 
 // A stored path must match PATH_OK (and stay under 200 characters), so the temp root has to be a short plain path; os.tmpdir() may not be.
@@ -194,6 +194,52 @@ describe('checkUploadBody', () => {
   test('(−) a body that inherits name or data does not count', () => {
     const body = Object.create({ name: 'a', data: 'QUJD' });
     assert.equal(checkUploadBody(body).status, 400);
+  });
+});
+
+describe('isSecretName and the credential-file refusal (rule 4, the owner\'s "don\'t collect sensitive data")', () => {
+  const SECRET = ['.env', '.ENV', '.Env', '.env.dev', '.env.production.stage', '.env.', 'dir/.env', '/a/b/.env.test', 'C:\\proj\\.env', 'server.key', 'SERVER.KEY', 'id.pem', 'cert.PEM',
+    '.key', '.pem', 'my.cert.pem', 'a b.key', 'x.key ', 'multi\nline.key', 'dir.key/real.pem'];
+  const FINE = ['env.txt', 'notes.md', 'a.env', '.environment', 'keyboard.png', 'monkey.txt', 'pem.txt', 'key', 'pem', 'env', 'x.keys', 'x.pem.txt', 'x.key.txt', 'readme.md', '', 'dir.pem/readme.md', 'a.PNG'];
+
+  test('(+) the names of .env, .env.*, *.key and *.pem files (any case, any directory part) are secret', () => {
+    for (const name of SECRET) assert.equal(isSecretName(name), true, JSON.stringify(name));
+  });
+
+  test('(−) ordinary names are not, and neither is anything that is not a string', () => {
+    for (const name of FINE) assert.equal(isSecretName(name), false, JSON.stringify(name));
+    for (const name of [undefined, null, 5, {}, ['.env'], true]) assert.equal(isSecretName(name), false, String(name));
+  });
+
+  test('(−) checkUploadBody: a secret name with a good body is 400 secret-file; the shape check still comes first (400 invalid)', () => {
+    for (const name of SECRET.filter((n) => n.length <= 255)) {
+      const r = checkUploadBody({ name, data: 'QUJD' });
+      assert.equal(r?.status, 400, JSON.stringify(name));
+      assert.equal(r.body.error, 'secret-file', JSON.stringify(name));
+    }
+    assert.equal(checkUploadBody({ name: '.env' }).body.error, 'invalid', 'no data: the shape is wrong before the name is looked at');
+    assert.equal(checkUploadBody({ name: '.env', data: 'QU!D' }).body.error, 'invalid');
+  });
+
+  test('(+) checkUploadBody: every ordinary name passes', () => {
+    for (const name of FINE) assert.equal(checkUploadBody({ name, data: 'QUJD' }), null, JSON.stringify(name));
+  });
+
+  test('(−) save: a secret name is refused with its content untouched: nothing is written, not even the state folder, and nothing is logged or counted', async () => {
+    const { att, env, logs } = make();
+    for (const name of ['.env', '.env.dev', 'prod.key', 'cert.pem']) {
+      const r = await att.save({ pane: PANE, key: KEY, name, data: b64(Buffer.from('TOKEN=synthetic\n')) });
+      assert.deepEqual([r.status, r.body.error], [400, 'secret-file'], name);
+    }
+    assert.equal(fs.existsSync(stateDir(env)), false);
+    assert.deepEqual(logs, []);
+    const next = await upload(att, PNG, 'a.png');
+    assert.equal(next.status, 200, 'the refused uploads did not use up the rate limit or the one-at-a-time slot');
+  });
+
+  test('(+) save: the same bytes under an ordinary name are stored', async () => {
+    const { att } = make();
+    assert.equal((await att.save({ pane: PANE, key: KEY, name: 'notes.txt', data: b64(Buffer.from('TOKEN=synthetic\n')) })).status, 200);
   });
 });
 

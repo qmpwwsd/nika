@@ -12,7 +12,7 @@ import { moveActive as moveActiveReal, cleanCommands as cleanCommandsReal, palet
 import { wantsHelp, wantsBack, wantsHistToggle, isTextEntry, backHint, helpHint, histHint, passKeyLabel, wireWindowKeys as wireWindowKeysReal } from '../public/shortcuts.js';
 import { quickState as quickStateReal, sendGate as sendGateReal, keysRefusal as keysRefusalReal, stopOutcome as stopOutcomeReal, commandSaid as commandSaidReal, commandFailure as commandFailureReal, problemKind as problemKindReal, followSession as followSessionReal, planShell as planShellReal, cleanPrompt as cleanPromptReal, hasAnswerButtons as hasAnswerButtonsReal, attnNote as attnNoteReal, answerOutcome as answerOutcomeReal, promptOff as promptOffReal, composerKey as composerKeyReal } from '../public/quick-actions.js';
 import { planSend as planSendReal, arrowEcho as arrowEchoReal, keyForEvent as keyForEventReal, planPaste as planPasteReal, toRenderModel as toRenderModelReal, cutCursor as cutCursorReal } from '../public/mirror-render.js';
-import { draftSendPlan as draftSendPlanReal, cleanDraft as cleanDraftReal, cutAt as cutAtReal, caretAfter as caretAfterReal, noteView as noteViewReal, suggestionFor as suggestionForReal, submitResult as submitResultReal } from '../public/draft-sync.js';
+import { draftSendPlan as draftSendPlanReal, cleanDraft as cleanDraftReal, cutAt as cutAtReal, caretAfter as caretAfterReal, noteView as noteViewReal, suggestionFor as suggestionForReal, submitResult as submitResultReal, submitMessage as submitMessageReal } from '../public/draft-sync.js';
 import { switchFailure as switchFailureReal, MODE_TARGETS, MODE_META } from '../public/modes.js';
 import { createFitPlanner as createFitPlannerReal, panelSize as panelSizeReal, scaleFor as scaleForReal, chipView as chipViewReal } from '../public/fit-ui.js';
 import { createScrollPlanner as createScrollPlannerReal, routeFor as routeForReal, wheelRows as wheelRowsReal, scrollGate as scrollGateReal, viewRowsOf as viewRowsOfReal, pageRowsOf as pageRowsOfReal, refusalLine as refusalLineReal, noteView as scrollNoteViewReal, scrolledSay as scrolledSayReal, NOTE_MS as NOTE_MS_REAL } from '../public/scroll.js';
@@ -1378,7 +1378,7 @@ describe('Task 14b: wiring of the page rules', () => {
     assert.equal(attnRig({ kind: kindOf(SHELL_AGENT) }).note.hidden, true, 'no needs-you note');
     const r = composerRig({ value: 'hello', kind: kindOf(SHELL_AGENT) });
     await r.send();
-    assert.deepEqual([r.log.keys, r.log.posts], [[{ text: 'hello' }], [['submit', {}]]], 'the line goes out: the text, then the guarded Enter');
+    assert.deepEqual([r.log.keys, r.log.posts], [[{ text: 'hello', send: true }], [['submit', {}]]], 'the line goes out: the text, then the guarded Enter');
     assert.deepEqual(r.log.problems, []);
     assert.equal(r.ta.value, '', 'the box is emptied after a send');
   });
@@ -1412,7 +1412,7 @@ describe('Task 14b: wiring of the page rules', () => {
   test('(−) B1: with no prompt everything goes out: a line (the text, then the guarded Enter), an empty box (the Enter alone), Shell (C-u and the command, then the Enter, then Shell off)', async () => {
     const line = composerRig({ value: 'hello' });
     await line.send();
-    assert.deepEqual([line.log.keys, line.log.posts], [[{ text: 'hello' }], [['submit', {}]]]);
+    assert.deepEqual([line.log.keys, line.log.posts], [[{ text: 'hello', send: true }], [['submit', {}]]]);
     assert.equal(line.log.problems.length, 0);
     assert.equal(line.ta.value, '', 'the box is emptied after a send');
     const empty = composerRig({ value: '' });
@@ -1420,7 +1420,7 @@ describe('Task 14b: wiring of the page rules', () => {
     assert.deepEqual([empty.log.keys, empty.log.posts], [[], [['submit', {}]]]);
     const shell = composerRig({ value: 'ls', shell: true });
     await shell.send();
-    assert.deepEqual(shell.log.keys, [{ keys: ['C-u'] }, { text: '!ls' }]);
+    assert.deepEqual(shell.log.keys, [{ keys: ['C-u'], send: true }, { text: '!ls', send: true }]);
     assert.deepEqual(shell.log.posts, [['submit', {}]]);
     assert.equal(shell.log.shellOff, 1);
   });
@@ -1433,9 +1433,9 @@ describe('Task 14b: wiring of the page rules', () => {
     const log = { problems: [], gone: 0 };
     const ctx = {
       M: { gone: false }, paneId: '%12', call: async () => response, showProblem: (m, k, ms) => log.problems.push([m, k, ms]), clearProblem() {}, setGone: () => { log.gone += 1; },
-      sleep: async () => {}, RATE_MSG: 'Too fast.', keysRefusal: keysRefusalReal, serverMessage: (r, fb) => (typeof r.body?.message === 'string' ? r.body.message : fb),
+      sleep: async () => {}, RATE_MSG: 'Too fast.', keysRefusal: keysRefusalReal, submitMessage: submitMessageReal, serverMessage: (r, fb) => (typeof r.body?.message === 'string' ? r.body.message : fb),
     };
-    return { log, deliver: mk(['async function postRetry(tail, payload)', 'async function deliver(payload)'], ctx).deliver };
+    return { log, deliver: mk(['async function postRetry(tail, payload)', 'function sendRefusal(payload, r)', 'async function deliver(payload)'], ctx).deliver };
   };
 
   test('(+) B1: the keys route\'s 409 bypass-prompt shows the fixed line, never the server\'s text', async () => {
@@ -1453,6 +1453,44 @@ describe('Task 14b: wiring of the page rules', () => {
     assert.equal(gone.log.gone, 1);
     const other = await deliverRig({ status: 409, body: { error: 'something-else', message: 'The pane is busy.' } }).deliver({ text: 'x' });
     assert.equal(other.message, 'The pane is busy.', 'only bypass-prompt has fixed copy; the rest is unchanged');
+  });
+
+  // T54: Send's own typing (`send: true`) is refused by the keys route for a prompt, a dialog, the survey or an unclear screen; the page shows the
+  // fixed lines of the submit route (draft-sync.js submitMessage), never the server's text, and the passthrough keeps its own copy.
+  const SUBMIT_PROMPT_OPEN = 'A prompt opened in Claude, so nika did not press Enter. Answer it, then send again. Your text is kept.';
+  const SUBMIT_UNCLEAR = "nika can't tell what Claude is showing, so it did not press Enter. Use the terminal. Your text is kept.";
+
+  test('(+) T54: a 409 prompt-open or screen-unclear for a body with send: true shows the submit route\'s fixed line, never the server\'s text', async () => {
+    for (const [code, line] of [['prompt-open', SUBMIT_PROMPT_OPEN], ['screen-unclear', SUBMIT_UNCLEAR]]) {
+      for (const payload of [{ text: 'hello', send: true }, { paste: 'a\nb', send: true }, { keys: ['C-u'], send: true }]) {
+        const r = deliverRig({ status: 409, body: { error: code, message: 'Evil <b>server</b> text', sent: { text: 700, paste: 0, keys: 0 } } });
+        const out = await r.deliver(payload);
+        assert.deepEqual(norm(out), { ok: false, message: line }, `${code} ${JSON.stringify(payload).slice(0, 30)}`);
+        assert.deepEqual(r.log.problems, [[line, 'error', 0]]);
+      }
+    }
+  });
+
+  test('(+) T54: bypass-prompt for a body with send: true still shows the bypass line', async () => {
+    const r = deliverRig({ status: 409, body: { error: 'bypass-prompt', message: 'x' } });
+    assert.equal((await r.deliver({ text: 'hello', send: true })).message, 'Answer this prompt in the terminal.');
+  });
+
+  test('(−) T54: without send the same 409s keep their old lines (the passthrough is the user\'s own typing)', async () => {
+    const unclear = await deliverRig({ status: 409, body: { error: 'screen-unclear', message: 'x' } }).deliver({ text: 'a' });
+    assert.equal(unclear.message, "nika can't tell what Claude is showing; use the terminal.", 'the keys route\'s own line (quick-actions.js)');
+    const open = await deliverRig({ status: 409, body: { error: 'prompt-open', message: 'The server says so.' } }).deliver({ text: 'a' });
+    assert.equal(open.message, 'The server says so.', 'no fixed copy for the passthrough: an unknown 409 keeps serverMessage');
+    for (const bad of [{ send: false }, { send: 1 }, { send: 'true' }]) {
+      const r = await deliverRig({ status: 409, body: { error: 'prompt-open', message: 'The server says so.' } }).deliver({ text: 'a', ...bad });
+      assert.equal(r.message, 'The server says so.', `only the boolean true marks Send's typing: ${JSON.stringify(bad)}`);
+    }
+  });
+
+  test('(−) T54: no passthrough call site (typed characters, a paste into the pane, named keys, arrow batches) sets send', () => {
+    for (const head of ['async function sendKey(name)', 'function flushArrows()', 'function flushPass()', 'function wirePassthrough()']) {
+      assert.doesNotMatch(fnOf(head), /\bsend\s*:\s*true/, head);
+    }
   });
 
   /** postRetry and submitEnter for real. `answers`: what the route gives, in order (the last repeats). */
@@ -3284,7 +3322,7 @@ describe('0.5: Send with the synced box (design W5, section 4)', () => {
   test('(+) row 4: a long text onto an empty prompt goes as today\'s paste (keys route, no Enter), then the guarded Enter with no base', async () => {
     const r = rig({ value: 'y'.repeat(2000), screen: D('empty') });
     await r.send();
-    assert.deepEqual(r.log.keys, [{ paste: 'y'.repeat(2000) }]);
+    assert.deepEqual(r.log.keys, [{ paste: 'y'.repeat(2000), send: true }]);
     assert.deepEqual(r.log.posts, SUBMIT());
     assert.deepEqual(r.log.pushed, []);
     assert.deepEqual(r.log.order, ['begin', 'keys', 'submit', 'submitted', 'sent', 'end']);
@@ -3307,11 +3345,11 @@ describe('0.5: Send with the synced box (design W5, section 4)', () => {
   test('(+) row 7: no readable box is today\'s path, including Shell\'s C-u and command: typed by the keys route, then the guarded Enter with no base', async () => {
     const line = rig({ value: 'hello', screen: null });
     await line.send();
-    assert.deepEqual(line.log.keys, [{ text: 'hello' }]);
+    assert.deepEqual(line.log.keys, [{ text: 'hello', send: true }]);
     assert.deepEqual(line.log.posts, SUBMIT());
     const shell = rig({ value: 'ls', shell: true, screen: null });
     await shell.send();
-    assert.deepEqual(shell.log.keys, [{ keys: ['C-u'] }, { text: '!ls' }]);
+    assert.deepEqual(shell.log.keys, [{ keys: ['C-u'], send: true }, { text: '!ls', send: true }]);
     assert.deepEqual(shell.log.posts, SUBMIT());
   });
 

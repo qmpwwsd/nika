@@ -29,7 +29,8 @@ export const RC_NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
 export const KEY_NAME = new Set([
   'Enter', 'Escape', 'Tab', 'BTab', 'Up', 'Down', 'Left', 'Right', 'Home', 'End', 'PPage', 'NPage', 'BSpace', 'DC',
   'C-c', 'C-u', 'C-k', 'C-a', 'C-e', 'C-l', 'C-r', 'C-w',
-  // scroll (0.5, W3, T39): src/scroll.js only
+  // scroll (0.5, W3, T39): src/scroll.js sends them. KEY_NAME is also the keys route's list, so that route accepts them too (harmless keys:
+  // Claude's full-screen view jumps to its top or bottom).
   'C-Home', 'C-End',
 ]);
 /** `#{pane_current_command}` of a pane running Claude Code: `claude`, `node`, or (native builds) its version, e.g. 2.1.319. */

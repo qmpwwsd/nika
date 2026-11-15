@@ -10,7 +10,7 @@ import { h, icon, roleTagEl, ctxEl } from './dom.js';
 import { isApp, appFetch, getJSON, applyTheme, windowCommand } from './api.js';
 import { roleTag, savedPick } from './dash-model.js';
 import { toRenderModel, cutCursor, applyMirror, planSend, planPaste, chunkText, keyForEvent, KEY_LABEL, arrowEcho } from './mirror-render.js';
-import { createDraftSync, cleanDraft, cutAt, caretAfter, draftSendPlan, suggestionFor, submitResult } from './draft-sync.js';
+import { createDraftSync, cleanDraft, cutAt, caretAfter, draftSendPlan, suggestionFor, submitResult, submitMessage } from './draft-sync.js';
 import { MODE_META, MODE_TARGETS, modeKey, modeEl, bypassTag, switcherState, modeNote, switchFailure } from './modes.js';
 import {
   quickState, cleanPrompt, answerOutcome, escOutcome, promptOff, promptNote, commandFailure, commandSaid, problemKind, planShell, sendGate, keysRefusal, stopOutcome, followSession,
@@ -1428,6 +1428,12 @@ async function postRetry(tail, payload) {
   return r;
 }
 
+/** Send's own typing (`send: true`, T54) refused for a prompt, a dialog, the survey or an unclear screen: the fixed lines of the submit route (draft-sync.js submitMessage). Nothing more is sent and the text stays. null for everything else. */
+function sendRefusal(payload, r) {
+  const code = r.body?.error;
+  return payload.send === true && r.status === 409 && (code === 'prompt-open' || code === 'screen-unclear') ? submitMessage({ status: 409, code }) : null;
+}
+
 async function deliver(payload) {
   if (M.gone || !paneId) return { ok: false, message: 'The pane is gone.' };
   const r = await postRetry('keys', payload);
@@ -1436,7 +1442,8 @@ async function deliver(payload) {
     return { ok: true };
   }
   if (r.status === 404) setGone();
-  const message = keysRefusal({ status: r.status, code: r.body?.error })
+  const message = sendRefusal(payload, r)
+    ?? keysRefusal({ status: r.status, code: r.body?.error })
     ?? (r.status === 429 ? `${RATE_MSG} Try again in a moment.`
       : r.status === 0 ? 'nika did not answer. Your text is kept.'
         : serverMessage(r, `The pane did not accept this (${r.status}).`));

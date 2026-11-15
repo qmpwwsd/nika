@@ -450,8 +450,9 @@ describe('planShell (spec 9.6 sends: C-u, then ! + text; the Enter is the submit
     const p = planShell('git status --short');
     assert.equal(p.ok, true);
     assert.equal(p.empty, undefined);
-    assert.deepEqual(p.payloads, [{ keys: ['C-u'] }, { text: '!git status --short' }]);
+    assert.deepEqual(p.payloads, [{ keys: ['C-u'], send: true }, { text: '!git status --short', send: true }]);
     for (const k of p.payloads.flatMap((x) => x.keys ?? [])) assert.ok(KEY_NAME.has(k), k);
+    for (const body of p.payloads) assert.equal(body.send, true, 'T54: Shell\'s typing is Send\'s typing too');
     assert.match(p.summary, /shell command .* \+ Enter$/);
   });
 
@@ -464,7 +465,7 @@ describe('planShell (spec 9.6 sends: C-u, then ! + text; the Enter is the submit
   });
 
   test('(+) trailing newlines are trimmed and the command itself is untouched (inner spaces stay)', () => {
-    assert.deepEqual(planShell('ls  -la\n\n').payloads[1], { text: '!ls  -la' });
+    assert.deepEqual(planShell('ls  -la\n\n').payloads[1], { text: '!ls  -la', send: true });
   });
 
   test('(−) an empty or blank box sends nothing: no lone "!"', () => {

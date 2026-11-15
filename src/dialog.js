@@ -62,7 +62,7 @@ const spaced = (text) => text.replace(/\u00a0/g, ' ').trimEnd();
  * the footer at a narrow width (their texts are joined with one space; a wrapped footer is found but never read, see readAsk).
  *   ask      a question step: the footer is ASK_FOOTER
  *   review   the review step: the last row is `2. Cancel` and `Review your answers` is in the last 40 rows
- *   plan     the plan approval: the footer is PLAN_FOOTER and `Ready to code?` is above it
+ *   plan     the plan approval: the footer is PLAN_FOOTER and `Ready to code?` is above it (the reader wants exactly one such row)
  *   exit     "Exit plan mode?": two options, no footer (spike W1-T0b 3.9)
  *   nudge    "Teach auto mode about your environment?": digit options, its footer is not the last row (src/mode.js nudgeFooterAt)
  * The last two are recognised so that everything that needs a plain input box fails closed; they are never read as a form.
@@ -88,15 +88,22 @@ function shapeOf(rows) {
     const ask = ASK_FOOTER.exec(joined);
     if (ask !== null) return { ...base, kind: 'ask', foot, nav: ask[1] };
     if (PLAN_FOOTER.test(joined)) {
-      const ready = texts.slice(0, foot[0]).findLastIndex((t) => t.trim() === 'Ready to code?');
-      if (ready >= 0) return { ...base, kind: 'plan', foot, ready };
+      const above = texts.slice(0, foot[0]);
+      const ready = above.findLastIndex((t) => t.trim() === 'Ready to code?');
+      // `readies`: how many such rows are above the footer. The dialog is recognised with one or more (so everything that needs a plain box still
+      // refuses), but it is read only with exactly one: a plan text that repeats the title would move where the reading starts (M6).
+      if (ready >= 0) return { ...base, kind: 'plan', foot, ready, readies: above.filter((t) => t.trim() === 'Ready to code?').length };
     }
   }
   if (REVIEW_END.test(T(last)) && nb.slice(-40).some((x) => T(x) === 'Review your answers')) return { ...base, kind: 'review', foot: [last] };
   return null;
 }
 
-/** True when the bottom of the screen shows one of Claude's dialogs (a question step, the review, a plan approval, or the two shapes nika never reads). W3 imports it: no scroll keys while true. */
+/**
+ * True when the bottom of the screen shows one of Claude's dialogs (a question step, the review, a plan approval, or the two shapes nika never reads).
+ * src/session-control.js (promptOpen) and src/api-app.js (the keys route's look for Send's typing) import it. src/scroll.js does not: it relies on
+ * `readDraft` being null for every dialog shape (the footer is no mode line, or the cursor is outside a box), so its box gate refuses them by itself.
+ */
 export const dialogOnScreen = (rows) => shapeOf(rows) !== null;
 
 /** The strip row: tokens ` <box> <header> ` with an optional `Submit` token (with or without brackets), arrows at both ends. null when it is not exactly that. */
@@ -345,8 +352,9 @@ function readAsk(shape, rows, cols) {
 
 /** The plan approval. */
 function readPlan(shape, rows, cols) {
-  const { texts, foot, ready } = shape;
+  const { texts, foot, ready, readies } = shape;
   const bad = new Set();
+  if (readies !== 1) bad.add('layout'); // a second `Ready to code?` row: the plan's start is ambiguous, so the plan is not read
   const stop = foot[0];
   const last = foot.at(-1);
   if (!Number.isInteger(cols) || cols < MIN_COLS || foot.length > 1) bad.add('wide');

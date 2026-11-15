@@ -9,8 +9,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  MAX_FILES, MAX_BYTES, formatSize, shownName, uploadView, sendView, typeIcon, createAttachTray,
+  MAX_FILES, MAX_BYTES, formatSize, shownName, uploadView, sendView, typeIcon, createAttachTray, isSecretName,
 } from '../public/attach.js';
+import { isSecretName as serverIsSecretName } from '../src/attachments.js';
 import { installDom, El, focus } from './fake-dom.js';
 import { icon } from '../public/dom.js';
 
@@ -213,6 +214,16 @@ describe('uploadView: section 8.6, upload rows', () => {
     }
   });
 
+  test('(+) M4: a credential file (.env, .env.*, *.key, *.pem) has its fixed chip word and line', () => {
+    assert.deepEqual(v(400, 'secret-file', '.env'), { short: 'Not attached', line: "nika doesn't attach .env, key or certificate files." });
+    assert.deepEqual(v(400, 'secret-file', 'x.pem'), v(400, 'secret-file', 'other.key'), 'the line does not echo the name');
+  });
+
+  test('(−) M4: secret-file is read only as a 400; the server\'s own text never shows', () => {
+    for (const s of [0, 200, 409, 415, 429, 507]) assert.deepEqual(v(s, 'secret-file'), { short: 'Upload failed', line: null }, String(s)); // (a 413 is "Too big" whatever its code, as before)
+    assert.doesNotMatch(JSON.stringify(uploadView({ status: 400, code: 'secret-file', message: 'SERVER SAID THIS /secret/path' }, 'a.key')), /SERVER|secret\/path/);
+  });
+
   test('(−) the server\'s own text never reaches the page', () => {
     const out = uploadView({ status: 409, code: 'no-project', message: 'SERVER SAID THIS /secret/path' }, 'a.txt');
     assert.doesNotMatch(JSON.stringify(out), /SERVER|secret/);
@@ -357,6 +368,36 @@ describe('adding files', () => {
     await r.add(file('over.png', MAX_BYTES + 1));
     assert.equal(r.log.calls.length, 1, 'no second request');
     assert.deepEqual([view(r.chips()[1]).s, view(r.chips()[1]).meta], ['failed', `Too big ${MID} max 8 MB`]);
+  });
+
+  // M4 (rule 4): the tray never reads a credential file. The name decides, so FileReader is never called and nothing is posted.
+  test('(−) M4: a pasted or dropped .env, .env.*, *.key or *.pem file is a failed chip "Not attached": no read, no request, the fixed line', async () => {
+    for (const name of ['.env', '.ENV', '.env.production', 'server.key', 'CERT.PEM', 'dir/.env']) {
+      let reads = 0;
+      const r = rig({ read: async () => { reads += 1; return 'QUJD'; } });
+      await r.add(file(name));
+      assert.equal(reads, 0, `${name}: never read`);
+      assert.equal(r.log.calls.length, 0, `${name}: no request`);
+      assert.deepEqual([view(r.chips()[0]).s, view(r.chips()[0]).meta], ['failed', 'Not attached'], name);
+      assert.deepEqual(r.log.problem.at(-1), ["nika doesn't attach .env, key or certificate files.", 'error', 8000], name);
+    }
+  });
+
+  test('(+) M4: an ordinary file next to a secret one still uploads, in order', async () => {
+    let reads = 0;
+    const r = rig({ read: async () => { reads += 1; return 'QUJD'; } });
+    await r.add(file('.env'), file('notes.md'), file('keys.md'));
+    assert.equal(reads, 2);
+    assert.deepEqual(r.chips().map((li) => view(li).s), ['failed', 'ready', 'ready']);
+    assert.equal(r.log.calls.length, 2);
+  });
+
+  test('(+) M4: the page\'s name pattern and the server\'s agree on every name of the table (a copy that drifts fails here)', () => {
+    const names = ['.env', '.ENV', '.env.dev', '.env.', 'dir/.env', 'C:\\p\\.env', 'server.key', 'SERVER.KEY', 'id.pem', 'cert.PEM', '.key', '.pem', 'x.key ', 'multi\nline.key',
+      'env.txt', 'notes.md', 'a.env', '.environment', 'keyboard.png', 'monkey.txt', 'pem.txt', 'key', 'x.keys', 'x.pem.txt', '', 'a.PNG', 'dir.pem/readme.md'];
+    for (const n of names) assert.equal(isSecretName(n), serverIsSecretName(n), JSON.stringify(n));
+    for (const n of [undefined, null, 5, {}]) assert.equal(isSecretName(n), false);
+    assert.equal(names.filter(isSecretName).length >= 12, true, 'the table has secret names in it');
   });
 
   test('(+) a 9 MB file: a failed chip "Too big", no read, no request', async () => {
@@ -514,6 +555,14 @@ describe('the file chooser: the paperclip opens the shell\'s own dialog (W2-T6)'
     r3.state.polls = [done(...want.slice(12).map(([e]) => badFile(e)))];
     await click(r3);
     assert.deepEqual(r3.chips().map((li) => view(li).meta), want.slice(12).map(([, m]) => m));
+  });
+
+  test('(−) M4: a picked file the server refuses as secret-file reads "Not attached" with the fixed line; the file next to it is unaffected', async () => {
+    const r = rig();
+    r.state.polls = [done(badFile('secret-file', '.env.dev'), { ok: true, name: 'notes.md', id: uploadId(1), size: 10, type: 'text' })];
+    await click(r);
+    assert.deepEqual(r.chips().map((li) => [view(li).name, view(li).s, view(li).meta]), [['.env.dev', 'failed', 'Not attached'], ['notes.md', 'ready', formatSize(10)]]);
+    assert.deepEqual(r.log.problem.map((x) => x[0]), ["nika doesn't attach .env, key or certificate files."]);
   });
 
   test('(+) the problem lines of the upload path show for a picked file too (wrong type names the file; storage full says why), and never the server\'s own text', async () => {

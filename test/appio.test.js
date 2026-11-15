@@ -721,6 +721,43 @@ describe('file chooser', () => {
     assert.deepEqual(r.stored(), []);
   });
 
+  // M4 (security review 0.5): rule 4 says nika never reads .env or *.key files. The chooser refuses by name, before the file is opened.
+  test('(−) a picked .env, .env.*, *.key or *.pem file (any case) is refused as secret-file before it is opened: nothing stored, no path in the entry', async () => {
+    const r = rig();
+    const good = r.put('good.md', 'fine\n');
+    const names = ['.env', '.ENV', '.env.dev', '.Env.Production', 'server.key', 'SERVER.KEY', 'cert.pem', 'Cert.PEM'];
+    for (const name of names) {
+      const secret = r.put(name, 'TOKEN=synthetic\n');
+      const { answer } = await r.pick([secret, good], { room: 2 });
+      const [f, g] = answer.files;
+      assert.deepEqual([f.ok, f.error, f.name], [false, 'secret-file', name], name);
+      assert.deepEqual(Object.keys(f).sort(), ['error', 'name', 'ok'], name);
+      assert.equal(g.ok, true, `the next file still went: ${name}`);
+      assert.ok(!JSON.stringify(answer).includes(dirRoot), 'no path in the answer');
+    }
+    assert.equal(r.stored().length, names.length, 'only the good file of each pick was stored');
+    assert.deepEqual(r.logs, []);
+  });
+
+  test('(−) the name decides before any open: a FIFO or a dangling link named .env or *.key answers secret-file, not unreadable', async () => {
+    const r = rig();
+    const fifo = path.join(r.dir, 'token.key');
+    execFileSync('mkfifo', [fifo]);
+    const dangling = path.join(r.dir, '.env');
+    fs.symlinkSync(path.join(r.dir, 'nowhere'), dangling);
+    const plainFifo = path.join(r.dir, 'token.txt');
+    execFileSync('mkfifo', [plainFifo]);
+    const { answer } = await r.pick([fifo, dangling, plainFifo], { room: 3 });
+    assert.deepEqual(answer.files.map((f) => f.error), ['secret-file', 'secret-file', 'unreadable'], 'a non-secret name still goes through the open and fails there');
+  });
+
+  test('(+) names that only look similar are picked as before: env.txt, notes.key.txt, monkey.md, .environment', async () => {
+    const r = rig();
+    const paths = ['env.txt', 'notes.key.txt', 'monkey.md', '.environment', 'keys.md'].map((n) => r.put(n, `${n}\n`));
+    const { answer } = await r.pick(paths, { room: 5 });
+    assert.deepEqual(answer.files.map((f) => f.ok), [true, true, true, true, true]);
+  });
+
   test('(+) a file of exactly 8 MiB is accepted; one byte more is too_large and is not read', async () => {
     const r = rig();
     const ok = path.join(r.dir, 'edge.txt');

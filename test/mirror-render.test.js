@@ -263,17 +263,33 @@ describe('planSend', () => {
   });
 
   test('(+) one plain line goes as text; trailing newlines are dropped; the summary still names the Enter', () => {
-    assert.deepEqual(planSend('hello world').payloads, [{ text: 'hello world' }]);
-    assert.deepEqual(planSend('hello\n\n').payloads, [{ text: 'hello' }]);
+    assert.deepEqual(planSend('hello world').payloads, [{ text: 'hello world', send: true }]);
+    assert.deepEqual(planSend('hello\n\n').payloads, [{ text: 'hello', send: true }]);
     assert.deepEqual(planSend('x'.repeat(1024)).payloads[0].text.length, 1024);
     assert.match(planSend('abc').summary, /3 characters \+ Enter/);
   });
 
   test('(+) several lines, a line over 1024 chars or a line with a tab go as a paste', () => {
-    assert.deepEqual(planSend('a\nb\r\nc').payloads, [{ paste: 'a\nb\nc' }]);
+    assert.deepEqual(planSend('a\nb\r\nc').payloads, [{ paste: 'a\nb\nc', send: true }]);
     assert.equal(planSend('x'.repeat(1025)).payloads[0].paste.length, 1025);
-    assert.deepEqual(planSend('a\tb').payloads, [{ paste: 'a\tb' }]);
+    assert.deepEqual(planSend('a\tb').payloads, [{ paste: 'a\tb', send: true }]);
     assert.match(planSend('a\nb').summary, /2 lines/);
+  });
+
+  test('(+) T54: every body of Send\'s typing carries send: true, so the keys route looks at a fresh screen first', () => {
+    for (const v of ['hello', 'a\nb', 'x'.repeat(2000), 'a\tb', '2', '1. yes']) {
+      const { payloads } = planSend(v);
+      assert.ok(payloads.length > 0, v.slice(0, 10));
+      for (const body of payloads) assert.equal(body.send, true, v.slice(0, 10));
+    }
+  });
+
+  test('(−) T54: the passthrough bodies (planPaste, typed characters, named keys) never carry send', () => {
+    for (const v of ['hello', 'a\nb', 'x'.repeat(2000)]) assert.equal(Object.hasOwn(planPaste(v).payload, 'send'), false, v.slice(0, 10));
+    for (const key of [{ key: 'a' }, { key: 'Enter' }, { key: 'ArrowUp' }, { key: 'c', ctrlKey: true }, { key: 'Tab', shiftKey: true }]) {
+      const r = keyForEvent({ metaKey: false, isComposing: false, altKey: false, ctrlKey: false, shiftKey: false, ...key });
+      assert.equal(Object.hasOwn(r, 'send'), false, JSON.stringify(key));
+    }
   });
 
   test('(−) W13: no body carries an Enter key (Send presses Enter only through the submit route), whatever the text', () => {

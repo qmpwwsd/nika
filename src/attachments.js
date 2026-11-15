@@ -70,13 +70,20 @@ export function sniff(buf, name) {
   return { type: 'text', ext: TEXT_EXT.has(ext) ? ext : 'txt' };
 }
 
-/** Step 1 of the upload: exactly `name` (a string, at most 255 UTF-16 units) and `data` (standard base64). null = fine, else the 400. */
+// A file nika never takes, whatever its bytes are (rule 4, the owner's "don't collect sensitive data"): by base name, any case, `.env`, `.env.*`,
+// `*.key` and `*.pem`. public/attach.js keeps a copy of this pattern (browser code cannot import it); a test pins that the two agree.
+const SECRET_NAME = /^(?:\.env(?:\..*)?|.*\.(?:key|pem))$/is;
+/** True for the name (or the last part of a path) of a credential file: `.env`, `.env.*`, `*.key`, `*.pem`, case-insensitive. */
+export const isSecretName = (name) => typeof name === 'string' && SECRET_NAME.test(name.split(/[\\/]/).pop().trimEnd());
+
+/** Step 1 of the upload: exactly `name` (a string, at most 255 UTF-16 units) and `data` (standard base64). null = fine, else the 400 (`secret-file` for a credential file's name). */
 export function checkUploadBody(body) {
   const ok = body !== null && typeof body === 'object' && !Array.isArray(body)
     && Object.keys(body).length === 2 && Object.hasOwn(body, 'name') && Object.hasOwn(body, 'data')
     && typeof body.name === 'string' && body.name.length <= 255
     && typeof body.data === 'string' && body.data.length % 4 === 0 && BASE64.test(body.data);
-  return ok ? null : fail(400, 'invalid');
+  if (!ok) return fail(400, 'invalid');
+  return isSecretName(body.name) ? fail(400, 'secret-file') : null;
 }
 
 /**

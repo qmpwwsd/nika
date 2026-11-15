@@ -26,12 +26,17 @@ const POLL_MS = 300; // between two looks at the open file dialog
 const REQ_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 // The error codes of a picked file, as the status the upload copy below reads them by (one table of words for both doors).
 const PICK_STATUS = {
-  'too-big': 413, too_large: 413, 'wrong-type': 415, empty: 400, 'no-project': 409, 'path-unusable': 409, 'folder-unsafe': 409, 'storage-full': 507, 'disk-full': 507,
+  'too-big': 413, too_large: 413, 'wrong-type': 415, empty: 400, 'secret-file': 400, 'no-project': 409, 'path-unusable': 409, 'folder-unsafe': 409, 'storage-full': 507, 'disk-full': 507,
 };
 
 // ---- the copy (section 8.6 and 6): fixed lines, picked by status and code only ------------------------------------------------------------
 
 const TOO_BIG = `Too big ${MID} max 8 MB`;
+const SECRET_LINE = "nika doesn't attach .env, key or certificate files.";
+// A credential file's name (rule 4): a copy of `isSecretName` in src/attachments.js, which browser code cannot import; a test pins that the two agree.
+const SECRET_NAME = /^(?:\.env(?:\..*)?|.*\.(?:key|pem))$/is;
+/** True for the name of a `.env`, `.env.*`, `*.key` or `*.pem` file, any case. The tray refuses such a file before it reads a byte; the server refuses it again. */
+export const isSecretName = (name) => typeof name === 'string' && SECRET_NAME.test(name.split(/[\\/]/).pop().trimEnd());
 const FAILED = 'Upload failed';
 const SESSION_GONE = 'The session is gone.';
 const ADD_LABEL = 'Add attachments';
@@ -110,6 +115,7 @@ export function uploadView(r, name = 'file') {
   if (status === 413) return { short: TOO_BIG, line: null }; // the store's `too-big` and the dispatcher's `too_large` read the same
   if (status === 415 && code === 'wrong-type') return { short: 'Not supported', line: `${name}: use PNG, JPEG, GIF, WebP, PDF or UTF-8 text.` };
   if (status === 400 && code === 'empty') return { short: 'Empty file', line: null };
+  if (status === 400 && code === 'secret-file') return { short: 'Not attached', line: SECRET_LINE };
   if (status === 409 && Object.hasOwn(UPLOAD_409, code)) return UPLOAD_409[code];
   if (status === 507 && Object.hasOwn(UPLOAD_507, code)) return UPLOAD_507[code];
   return { short: FAILED, line: null }; // 429 after the retry, no answer, 5xx, anything the page does not know
@@ -251,6 +257,12 @@ export function createAttachTray(io) {
   async function upload(chip) {
     chip.started = true;
     const path = io.path('attachments');
+    if (isSecretName(chip.file.name)) { // never read: the name alone decides (rule 4)
+      chip.file = null;
+      const v = uploadView({ status: 400, code: 'secret-file' }, chip.name);
+      fail(chip, v.short, v.line);
+      return;
+    }
     let r;
     try {
       const data = await read(chip.file);

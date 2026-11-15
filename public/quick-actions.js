@@ -322,7 +322,7 @@ const CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
  * What Enter does while Shell is on (spec 9.6), in the shape of planSend: `{ ok: true, empty: true }` (nothing is sent, no lone
  * "!"), `{ ok: false, message }` (the text is kept) or `{ ok: true, payloads, summary }` with the two keys-route bodies in
  * order: Ctrl-U, "!" + the command. The Enter is not among them: Send presses it through the submit route (W13). The command is one
- * line: the route refuses control characters in `text`.
+ * line: the route refuses control characters in `text`. Both bodies carry `send: true` (T54), like planSend's.
  */
 export function planShell(value) {
   const v = String(value ?? '').replace(/\r\n?/g, '\n').replace(/\n+$/, '');
@@ -330,7 +330,7 @@ export function planShell(value) {
   if (v.includes('\n')) return { ok: false, message: 'Shell mode sends one line. Remove the line breaks or turn Shell off. Your text is kept.' };
   if (CONTROL.test(v)) return { ok: false, message: 'Shell mode cannot send control characters. Your text is kept.' };
   if (v.length + 1 > TEXT_MAX) return { ok: false, message: `A shell command can be at most ${TEXT_MAX - 1} characters. Shorten it. Your text is kept.` };
-  return { ok: true, payloads: [{ keys: ['C-u'] }, { text: `!${v}` }], summary: `a shell command (${v.length} characters) + Enter` };
+  return { ok: true, payloads: [{ keys: ['C-u'], send: true }, { text: `!${v}`, send: true }], summary: `a shell command (${v.length} characters) + Enter` };
 }
 
 /** The shapes session.js validates its URL with (the one copy; session.js imports them). */

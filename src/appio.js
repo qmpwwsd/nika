@@ -20,7 +20,7 @@ import { listPlugins } from './collect/plugins.js';
 import { listCommands } from './collect/commands.js';
 import { createMirror } from './mirror.js';
 import { createKeys } from './keys.js';
-import { createAttachments, MAX_BYTES } from './attachments.js';
+import { createAttachments, MAX_BYTES, isSecretName } from './attachments.js';
 import { openRegular } from './fsafe.js';
 import { rulesState, preview, apply } from './rules.js';
 import { spawnAgent } from './spawn.js';
@@ -83,6 +83,7 @@ export function createPicker({ send, env, attachments }) {
     const name = pickedName(p);
     const bad = (error) => ({ ok: false, name, error });
     if (typeof p !== 'string' || p.length > PICK_PATH_MAX || p.includes('\0') || !path.isAbsolute(p)) return bad('invalid');
+    if (isSecretName(path.basename(p))) return bad('secret-file'); // .env, .env.*, *.key, *.pem: refused by name before the file is opened (rule 4)
     let handle;
     try {
       let st;

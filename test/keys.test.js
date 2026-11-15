@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { createKeys } from '../src/keys.js';
+import { createKeys, badSend } from '../src/keys.js';
 import { KEY_NAME } from '../src/ids.js';
 import { CHUNK_GAP_MS } from '../src/draft.js';
 
@@ -384,5 +384,70 @@ describe('createKeys.send: tmux failures and rate limit', () => {
   test('(+) a clock that is not a function falls back to Date.now', async () => {
     const k = createKeys({ exec: fakeTmux(), now: 'soon' });
     assert.equal((await k.send('%1', { keys: ['Up'] })).status, 200);
+  });
+});
+
+describe('createKeys.send: the send flag and the look before each later chunk (T54; a text is at most 1024 characters, so at most two chunks)', () => {
+  const words = 'alpha beta gamma delta '.repeat(60).slice(0, 1024);
+  const typed = (exec) => exec.calls.filter((c) => c.includes('-l')).map((c) => c.at(-1));
+  const REFUSAL = { status: 409, body: { error: 'prompt-open', message: 'A prompt is open' } };
+
+  test('(+) send is absent or the boolean true; both type as before', async () => {
+    const exec = fakeTmux();
+    assert.equal((await make(exec).send('%5', { text: 'hello' })).status, 200);
+    assert.equal((await make(exec).send('%5', { text: 'hello', send: true })).status, 200);
+    assert.equal(exec.calls.length, 2);
+    assert.equal(badSend({ text: 'x' }), null);
+    assert.equal(badSend({ send: true }), null);
+    assert.equal(badSend(null), null);
+  });
+
+  test('(−) send must be the boolean true: false, null, 1, "yes", "true", an object, an array are 400 and nothing is sent', async () => {
+    for (const send of [false, null, 1, 0, 'yes', 'true', '', {}, [], [true]]) {
+      const exec = fakeTmux();
+      const r = await make(exec).send('%5', { text: 'hello', send });
+      assert.deepEqual([r.status, r.body.error], [400, 'invalid'], JSON.stringify(send));
+      assert.match(r.body.message, /send/);
+      assert.equal(exec.calls.length, 0, JSON.stringify(send));
+      assert.notEqual(badSend({ send }), null, JSON.stringify(send));
+    }
+  });
+
+  test('(+) a recheck runs after the pause and before every chunk after the first, never before the first; the text still joins', async () => {
+    const exec = fakeTmux();
+    const order = [];
+    const sleep = async () => { order.push('sleep'); };
+    const recheck = async () => { order.push(`recheck@${typed(exec).length}`); return null; };
+    const r = await make(exec, sleep).send('%5', { text: words, keys: ['Enter'], send: true }, { recheck });
+    assert.deepEqual(r.body, { sent: { text: 1024, paste: 0, keys: 1 } });
+    assert.deepEqual(order, ['sleep', 'recheck@1'], 'one gap, then one look with the first chunk already typed');
+    assert.equal(typed(exec).join(''), words);
+  });
+
+  test('(−) a refusal before the second chunk stops there: the first chunk stays, no second chunk, no key, and the answer says how much was typed', async () => {
+    const exec = fakeTmux();
+    const r = await make(exec).send('%5', { text: words, keys: ['Enter'], send: true }, { recheck: async () => REFUSAL });
+    assert.deepEqual([r.status, r.body.error], [409, 'prompt-open']);
+    const parts = typed(exec);
+    assert.equal(parts.length, 1, 'only the first chunk went out');
+    assert.deepEqual(r.body.sent, { text: parts[0].length, paste: 0, keys: 0 });
+    assert.ok(parts[0].length > 0 && parts[0].length <= 700);
+    assert.equal(exec.calls.length, 1, 'no named key either');
+  });
+
+  test('(−) a refusal from the look never reaches a paste or a key that follows the text', async () => {
+    const exec = fakeTmux();
+    const r = await make(exec).send('%5', { text: words, keys: ['C-u', 'Enter'], send: true }, { recheck: async () => ({ status: 409, body: { error: 'screen-unclear', message: 'x' } }) });
+    assert.deepEqual([r.status, r.body.error], [409, 'screen-unclear']);
+    assert.equal(exec.calls.filter((c) => !c.includes('-l')).length, 0);
+  });
+
+  test('(+) a text of one chunk never calls the recheck (the route already looked), and a call without a recheck behaves as before', async () => {
+    const exec = fakeTmux();
+    let looks = 0;
+    await make(exec).send('%5', { text: 'x'.repeat(700), send: true }, { recheck: async () => { looks += 1; return null; } });
+    assert.equal(looks, 0);
+    const plain = await make(fakeTmux()).send('%5', { text: words });
+    assert.equal(plain.status, 200);
   });
 });
