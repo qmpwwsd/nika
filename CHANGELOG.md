@@ -62,18 +62,23 @@ Session window (desktop app):
   zoomed, text scaled", "Fit · off" (hover for why: you zoomed another pane, the window has a `window-size` setting nika does not
   change, another program marks the window, the window changed while nika was fitting it, or you changed it) and "Fit · another
   window" (another nika window shows a pane of the same tmux window; the one you opened last fits it).
+- **The fit chip opens a panel with the reason and Fit again.** The chip is now a button. Its panel says why the fit is on or
+  off in words you can read with the keyboard or a screen reader (the reason was a tooltip and one spoken announcement before),
+  gives a hint where there is one (to unzoom in tmux, or the one command that clears another program's mark) and, where it can
+  help, an action: **Fit again** after a change of your own or a window that changed, **Fit here** when another nika window
+  holds the tmux window. It fits the window at once, without reopening the session window; nika still never fits again by
+  itself after you changed the window. The "You changed this tmux window" tooltip no longer tells you to reopen the window.
 - **nika gives your tmux window back as it was.** On closing the session window, 15 seconds after the window goes quiet,
   when you quit nika, and at the next start after a crash, nika undoes only what it did: the zoom, the window size, the
   `window-size` setting and, when you have not touched the layout, the layout and the focus. If you unzoom, move, split, kill a
   pane or resize in tmux while the window is fitted, nika sees it within a second, puts the window back right after, and does not
-  fit it again until you open the session window again (a resize you make while the window is fitted is also undone: nika puts the
+  fit it again until you open the session window again or press Fit again (a resize you make while the window is fitted is also undone: nika puts the
   window back to its old size). A zoom you made yourself is never undone. Spawning an agent into a fitted window puts it back
   first. The restore is exact except for tmux's last-pane order: which pane `last-pane` jumps back to is not restored.
 - Known limits: the fit was tried on tmux 3.8, and the `linux-verify` check on CI runs it on the Linux runner's tmux (3.6a on
   ubuntu-latest: a 3-pane and a single-pane window fitted and given back exactly, `select-layout --` accepted, `window-size`
   unset reads empty); tmux 3.2, the lowest supported, and every version other than 3.6a and 3.8 are not checked yet; a crash leaves the window at nika's size until
-  nika starts again; with `pane-border-status` on, the mirrored pane has one row fewer than the panel; the reason a fit is off shows as a
-  tooltip and one spoken announcement only.
+  nika starts again; with `pane-border-status` on, the mirrored pane has one row fewer than the panel.
 
 - **Attach images, PDFs and text files to a message.** Paste a file into the message box, drop it on the box, or click the
   paperclip ("Add attachments"; it opens nika's own file chooser, not the webview's, which froze the app on macOS). Up to 6 files
@@ -120,7 +125,7 @@ Session window (desktop app):
 - **Open Claude's subagents.** Claude's own subagents (the ones its Agent tool starts inside a session) now show a badge on
   dashboard and project-page rows, each state with its own colour, symbol and word: Running, Finished, Stopped (the browser
   dashboard shows the badges too). In the app the description is a link: it opens the subagent in the session window,
-  read-only. You see its transcript, with a "subagent" tag, its state, type and model in the header, no terminal and no
+  read-only. You see its transcript, with a "subagent" tag, its state, label and model in the header, no terminal and no
   message box; **Back** returns to the session that runs it, with its terminal. Open one from a dashboard row, from the
   project page, from a new folded list at the top of a session window's Transcript (it has its own **Show ended** box,
   remembered), or from the **Open subagent transcript** link under the call that started it. nika reads the subagent's
@@ -132,6 +137,25 @@ Session window (desktop app):
   `docs/design/spec.md` §9.17 and `docs/security.md` T56.
 - **"No subagents running +N ended".** A row whose subagents have all finished used to draw no subagent line. It now says so in
   one muted line, and **Show ended** lists them.
+
+Labels (both tiers; spawning in the desktop app and the CLI):
+
+- **Each agent row says what kind of agent it is.** A small neutral chip with one word: `coder` (writes and changes code),
+  `reviewer`, `tester`, `designer`, `scout` (finds files and facts, read-only), `writer` or `agent`. It is first in the prompt
+  column on the dashboard and the project page, beside the role tag in the session window's header, and on Claude's subagent
+  lines (where the subagent's type was). Every label looks the same on purpose: a label is not a state, so it gets no colour or
+  icon of its own and the word is the message. A sub-orchestrator keeps its own tag; the main orchestrator, your own sessions and
+  ended sessions show no chip, and agents spawned before 0.5 read `agent`. The browser dashboard shows the chips too. See
+  `docs/design/spec.md` §3.21 and `docs/security.md` T57.
+- **`--kind` on spawn, and a Kind field in the spawn sheet.** `nika spawn <name> <model> <brief> --kind reviewer`, or the sheet's
+  **Kind** select, sets the label. Without one nika picks it when it spawns: the Builder model gives `coder`, the Reasoner model
+  `designer`, the Scout model `scout`, any other model `agent` (**Automatic** in the sheet shows which). A word that is not one of
+  the seven is refused (400, CLI exit 2), and so is a kind for a sub-orchestrator. nika marks the agent's tmux pane `@nika-kind`
+  with that one word; the label never reaches Claude. The rules template now tells orchestrators to pass `--kind` (template version
+  3): apply rules to a project to get it, until then its rules read "outdated".
+- **Claude's subagents are labelled by their type.** Explore, claude-code-guide and web-fetch read `scout`, Plan `designer`,
+  statusline-setup `coder`, general-purpose and the others `agent`; any other type (a custom or plugin agent) shows its own name
+  without the plugin's prefix, cut to 24 characters. The type is in the chip's tooltip.
 
 Fixes:
 

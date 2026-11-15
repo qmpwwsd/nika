@@ -89,7 +89,7 @@ Routes: [`contracts/api-app.md` section 3](contracts/api-app.md). Parsed screen 
 A main orchestrator can start sub-orchestrators, and a sub-orchestrator can start agents: three levels, never an agent under
 an agent ([ADR 0013](adr/0013-nested-orchestration.md)). The only record of who started whom is tmux's own. nika sets four tags
 on a pane with `set-option -p` and fixed argv (`@nika-role` `orchestrator`, `sub-orchestrator` or `agent`; `@nika-agent`
-`<project key>/<name>`; `@nika-depth` `1` to `3`; `@nika-parent` a pane id), and `collect/tmux.js` reads them back strictly. A
+`<project key>/<name>`; `@nika-depth` `1` to `3`; `@nika-parent` a pane id; 0.5 adds a fifth, `@nika-kind`, see Labels below), and `collect/tmux.js` reads them back strictly. A
 spawn names its parent (the page sends a `parent` pane id; the CLI uses `$TMUX_PANE`), and `spawn.js` resolves the parent and
 computes the depth from one fresh `tmux list-panes -a`, never from argv, env or a file. Only this project's orchestrator and
 sub-orchestrators can parent; any other nika-tagged pane is refused (409 `depth`). Limits: `limits.maxAgents` (N) bounds the
@@ -97,6 +97,19 @@ live agents and sub-orchestrators under each parent, and a project runs at most 
 `{ scope, running, max }`. On the read side `model.js` `linkTree()` turns the tags into `parent`, `depth` and `children` for
 each live agent (the depth is the place in the parent chain, not the tag's value), and `dash-model.js` `treeRows()` lays the
 rows out as a folding tree on both tiers.
+
+## Labels (0.5, W9)
+
+Each agent row says what kind of agent it is, in one word. A label is display only: nothing in a flag, a prompt, a tool list, a permission or a cap
+reads it, and it never reaches claude. A spawn carries an optional `kind`, one of the seven words of `ids.js` `KINDS` (`coder`, `reviewer`, `tester`,
+`designer`, `scout`, `writer`, `agent`), checked by the API, the CLI (`--kind`), `spawnAgent` and again by `orchestrate.js` `tagPane`, which sets it
+as the last tag, `@nika-kind`, on an agent pane only. Without a `kind`, `spawn.js` derives one at spawn time from its own model and the project's
+effective role models (`labels.js` `kindFromModel`: an exact match, builder → coder, reasoner → designer, scout → scout, else agent). `collect/tmux.js`
+reads the tag back as the last field of its listing, only beside `@nika-role agent` and only as an exact word; `model.js` puts `label` on every
+agent (the kind, `agent` when the tag is missing, `sub-orchestrator` for that role, `null` for an orchestrator, a user's own session or an ended
+one) and on every Claude subagent (`labels.js` `subagentLabel`: a table for Claude's built-in types, else the type's own cleaned name, at most 24
+characters). On the page, `dash-model.js` (`agentLabelView`, `subLabelView`) decides the chip's text and title and `dom.js` `labelEl()` draws one
+neutral pill; `app.js`, `session.js` and `project.js` (the spawn sheet's Kind select) place it. Spec 3.21; threat T57.
 
 ## Auto-compact (0.4)
 
@@ -117,14 +130,15 @@ The session window measures its terminal panel and the app tier makes the mirror
 ([ADR 0017](adr/0017-fit-lease.md)).
 
 1. `public/fit-ui.js` (pure) turns the panel box into cells, plans the requests (the first `open: true`, a beat every 5 s, a 250 ms
-   debounce, one `DELETE` on `pagehide`), scales the text while the pane is larger than the panel and picks the header chip;
-   `session.js` wires it with a probe, a `ResizeObserver` and `visibilitychange`.
+   debounce, one `DELETE` on `pagehide`), scales the text while the pane is larger than the panel and picks the header chip, a button
+   whose panel (`fitPanelView`) says why the fit is on or off and, where it helps, offers Fit again: `reopen()` makes the next request
+   `open: true` (F1); `session.js` wires it with a probe, a `ResizeObserver` and `visibilitychange`.
 2. `api-app.js` has two routes, `PUT` and `DELETE /api/app/pane/:id/fit`; they check the body, the pane and the rate, and hand over to
    `fit.js`.
 3. `fit.js` reads tmux's own listing and decides: zoom a window with several panes, resize only when the panel is at least as big as
    the window. It takes a lease on the window (memory, `<state>/fit/fit-<nonce>.json`, the window option `@nika-fit`); a 1 s watch, a
    15 s lapse, `DELETE`, quit and the next start give the window back, and a change by the user ends the lease for good until the
-   session window is opened again. Every change runs under `session-control.js` `withPaneLock`, and so does every read that decides a
+   session window is opened again or the user presses Fit again. Every change runs under `session-control.js` `withPaneLock`, and so does every read that decides a
    zoom, a resize or a restore: an acquire and a renew that resizes look again after the lock wait and change nothing when the window
    moved on (the renew then releases as a user change), a restore runs wholly inside the lock.
 4. `appio.js` runs `recover()` before `ready` and `releaseAll()` at quit; `spawn.js` gives a fitted window back before a split lands in it.
@@ -267,8 +281,9 @@ latency. `--optimize-for-size` saved about 10 MB more but made history requests 
 | `fit.js` | The fit (0.5, [ADR 0017](adr/0017-fit-lease.md)): `createFit()` zooms the mirrored pane and sizes its tmux window to the session window's panel only when no other pane would be squeezed, keeps one lease per window (memory, a lease file, the window tag `@nika-fit`) and gives back exactly what it changed. Every tmux argv of the fit is built here. App tier only. |
 | `fsafe.js` | Safe reads of agent-writable files (no symlink, no FIFO, owned by you, size cap). |
 | `fwrite.js` | The only writer: atomic, symlink-safe writes and backups; `removeOwnFile` is the one way nika deletes a file of its own (the fit's lease files and the attachments). |
-| `ids.js` | Id shapes (pane, project key, agent name, model, command name, session, key names, with `C-Home` and `C-End` for the scroll route) checked at every boundary. |
+| `ids.js` | Id shapes (pane, project key, agent name, model, command name, session, key names, with `C-Home` and `C-End` for the scroll route) checked at every boundary, and `KINDS`, the seven words a label can be (0.5, W9). |
 | `keys.js` | Keystrokes and bracketed paste into a tmux pane. A text of more than 700 characters is typed in chunks 300 ms apart, because Claude reads a burst of 801 or more as a paste. |
+| `labels.js` | Labels (0.5, W9), pure: `isKind`, `kindFromModel(model, models)` (the kind a spawn without `kind` gets from its model's role), `subagentLabel(type)` (Claude's built-in subagent types → a kind, else the type's own cleaned name, at most `LABEL_MAX` 24 code points), and the tables `ROLE_KIND` and `SUBAGENT_KIND`. |
 | `mirror.js` | `capture-pane` output turned into rows of whitelisted styled spans; a `fresh` capture skips the 250 ms cache for the control actions. It reads `#{alternate_on}` in the same `display-message` as the size and cursor (`alt`) and sets `scrolled` from Claude's scroll pill (0.5, W3). |
 | `mode.js` | Pure parsers over mirror rows: the permission mode from the footer and the permission prompt. They fail closed. The footer is the last non-blank row without a background-subagent list drawn under it (F2, `claude-tui.md` section 1); `surveyShown` spots Claude's feedback survey; `pillShown` spots the pill Claude draws while its view is scrolled up (W3); `isDialogEnd` lets a question, review or plan dialog's last row end the footer's subagent list (W1). |
 | `model.js` | `collect()`: merges every source into agent records and groups them by project; `findSession(id)` finds one session of any age in the transcript index (the saved orchestrator's lookup); `findSessions(ids)` does the same for several ids in one index walk, with no ps, tmux or registry (the project list's lookup). `contextOf` turns the last usage, nika's compaction setting (read through `loadConfig`, both tiers) and whether nika started the session into the agent's `context` (contract C6). |
@@ -296,7 +311,7 @@ latency. `--optimize-for-size` saved about 10 MB more but made history requests 
 | `registry.js` | The live session registry, one `<pid>.json` per running Claude Code process. |
 | `reports.js` | Spawn report files (`.session`, `.md`, `.rc`) in the scratchpad and in nika's own report dirs. |
 | `subagents.js` | Claude's own subagents of a session, in `<session>/subagents/` (both folders must be real directories, checked with `lstat`; every function takes the transcript index entry, never a request value). `readSubagents` reads the `agent-<id>.meta.json` files again on every call (≤ 64 KB each; type, description, model with `pickedEffortModel` as fallback, `finished`, the `agent-<id>.jsonl` mtime, and the `toolUseId` that only the server's link uses); `subagentTranscripts` lists the `agent-<id>.jsonl` names (the route's source of a file path); `subagentDir` is the folder check. The ids come from `SUBAGENT_ID` and `TOOL_USE_ID` in `src/ids.js`. |
-| `tmux.js` | tmux panes (`list-panes -a`), pane titles and the pane tags nika sets (`@nika-role`, `@nika-agent`, `@nika-depth`, `@nika-parent`), each parsed strictly. |
+| `tmux.js` | tmux panes (`list-panes -a`), pane titles and the pane tags nika sets (`@nika-role`, `@nika-agent`, `@nika-depth`, `@nika-parent` and, since W9, `@nika-kind`, last in the listing and kept only beside role `agent` as one of the seven words), each parsed strictly. |
 | `transcripts.js` | Session transcripts: only the head and tail are read; results are cached by path, mtime and size. From the tail it also keeps the context size of the last assistant entry (`usage`: the sum of the input and cache tokens, and the model id; numbers only). |
 
 ### `public/` (the page, plain browser modules, strict CSP)
@@ -308,14 +323,14 @@ latency. `--optimize-for-size` saved about 10 MB more but made history requests 
 | `attach.js` | The attachment tray, page side (0.5): the pure rules (`formatSize`, `uploadView`, `pickView`, `sendView`: every line is fixed copy chosen by status and code) and `createAttachTray` (chips, the paperclip's chooser, paste and drop, Send). It makes no request of its own; `session.js` hands it the routes. |
 | `api.js` | The only client of the app tier: takes the secret once and sends `X-Nika-App`. In the browser tier it refuses to run. |
 | `app-copy.js` | The Add to Applications banner: which banner `appCopy` shows and its fixed copy. Pure; the two POSTs live in `project.js`. |
-| `dash-model.js` | The Show ended rule of the dashboard and the project page (`endedPlan`, `resetEndedState`, per view; ended sessions and finished subagents stay hidden until it is on), the sidebar's Projects and Detected lists (`sidebarModel`) and the orchestrator's state and badge (`orchState`, `savedPick`, `otherRunning`, `roleTag`, `ROLE_TAGS`), and, since 0.5 (W8), what a subagent list draws (`subagentView`: summary, "+N ended" hint, the lines shown), the link to a subagent's read-only view (`subagentHref`), the three state words (`SUB_STATES`) and the page's copy of `SUBAGENT_ID` (a test compares it with `src/ids.js`). Pure, both tiers. |
+| `dash-model.js` | The Show ended rule of the dashboard and the project page (`endedPlan`, `resetEndedState`, per view; ended sessions and finished subagents stay hidden until it is on), the sidebar's Projects and Detected lists (`sidebarModel`) and the orchestrator's state and badge (`orchState`, `savedPick`, `otherRunning`, `roleTag`, `ROLE_TAGS`), and, since 0.5 (W8), what a subagent list draws (`subagentView`: summary, "+N ended" hint, the lines shown), the link to a subagent's read-only view (`subagentHref`), the three state words (`SUB_STATES`) and the page's copy of `SUBAGENT_ID` (a test compares it with `src/ids.js`). Since W9 also the labels: the copies of `KINDS` and `ROLE_KIND` and of `kindFromModel` (tests compare them with `src/ids.js` and `src/labels.js`), `KIND_TEXT`, and `agentLabelView` / `subLabelView`, which give a chip its text and title. Pure, both tiers. |
 | `app.js` | Main page: shell, dashboard (in the app tier: mode tags, the row menu's End and the Add to Applications banner), router, the poll loop and the Keyboard shortcuts keys. Runs in both tiers. |
 | `ui.js` | Shared state and widgets for the main page. |
 | `dialog-form.js` | Claude's question dialogs and plan approvals as a form, page side (0.5, W1): the pure rules (`cleanDialog`, `answerBody`, `dialogOutcome`: every line is fixed copy chosen by status and code, `stepText`, `announcement`) and `createDialogForm` (one step at a time, the tabs list, option rows, Other, review, plan choices, Decline). It presses no key of its own. |
 | `draft-sync.js` | The draft sync, page side (0.5), no DOM and no request of its own: `createDraftSync` pulls a changed screen into the message box after 1.5 s of quiet and pushes a local edit 250 ms after the last key; `draftSendPlan` decides what Send does (Enter alone, copy then Enter, the old paste, refuse, also when the footer is unknown and no box reads: `footerKnown`, F1; no plan carries an `Enter` key, Send's `Enter` always goes through the submit route); the note under the box (paused, long, hold, cursor, queued, suggest) and the fixed copy of the failed copy and the failed `Enter` (`sendMessage`, `submitMessage`, `submitResult`); twins of `src/draft.js` checked by test. |
-| `dom.js` | `h()`: builds DOM with `textContent`, never parses markup; `roleTagEl()` draws the orchestrator badge; `subStateEl()` the subagent state badge (glyph, word, title; null for an unknown state) and `subagentItemEl()` one subagent line (badge, description as a link when the page passes an `href`, type, model, time), shared by the rows and the session window (0.5, W8). |
+| `dom.js` | `h()`: builds DOM with `textContent`, never parses markup; `roleTagEl()` draws the orchestrator badge; `subStateEl()` the subagent state badge (glyph, word, title; null for an unknown state) and `subagentItemEl()` one subagent line (badge, description as a link when the page passes an `href`, label chip, model, time), shared by the rows and the session window (0.5, W8); `labelEl()` draws a label chip, `span.agent-kind[title]`, the same neutral pill for every label (0.5, W9). |
 | `end-dialog.js` | The End-session dialog, shared by the session window and the dashboard row menu. |
-| `fit-ui.js` | The fit, page side (0.5): `panelSize` (the terminal box in cells, 40–400 × 10–200), `scaleFor` (text scale 0.4 to 1), `chipView` (the four chips and their fixed titles), `createFitPlanner` (the first `open: true`, a 5 s beat, a 250 ms debounce, one `DELETE` on `pagehide`). No DOM, no requests of its own; `session.js` wires it. |
+| `fit-ui.js` | The fit, page side (0.5): `panelSize` (the terminal box in cells, 40–400 × 10–200), `scaleFor` (text scale 0.4 to 1), `chipView` (the four chips and their fixed titles), `fitPanelView` (the chip panel's hint, code and action, by the chip's key; F1), `createFitPlanner` (the first `open: true`, a 5 s beat, a 250 ms debounce, one `DELETE` on `pagehide`, and `reopen()` for the user's Fit again). No DOM, no requests of its own; `session.js` wires it. |
 | `modes.js` | Permission modes in the UI: labels, icons, the switcher's state and the dashboard's mode map and tag. |
 | `ctx.js` | Pure text helpers for token counts, the Auto-compact result line and the context meter (`fmtTokens`, `compactPreview`, `ctxView`). No DOM; `dom.js` `ctxEl` draws the meter. |
 | `models-ui.js` | The model dropdown shared by the session window, Settings and the spawn sheet: groups from the catalog, the Custom ID field and its `MODEL_ID` check. |

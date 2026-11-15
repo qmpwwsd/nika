@@ -115,3 +115,32 @@ values must not be steerable from a request, a tag or a file.
   tmux 3.2 to 3.5 and 3.7 are not verified (the older layout string without markers was exercised only by 3.4, which CI no longer runs).
 - Not built: the take-over of a user's zoom, re-asserting after a user change, reading `#{window_manual_width}` (3.8 only), any fit on
   the browser tier.
+
+## Amendment 2026-11-15 (0.5, F1): the chip is a button, and Fit again re-opens
+
+Owner request (2026-11-15): after nika puts a window back because of a change the user made, the only way to fit again was to close and open
+the session window, and nothing on the page said so for a keyboard or touch user (the reason was a `title` and one announcement). The chip is
+now a button that opens a small panel (heading, the reason, a hint and, where it helps, an action), and the action sends the request the
+reopened window would have sent. Everything below is page side; **the routes, their bodies, their answers and the controller are unchanged**.
+
+- **What the action sends.** "Fit again" (states `blocked / user-change`, `blocked / changed` and a `blocked` with no known reason) and
+  "Fit here" (state `other`) make the page's next `PUT` carry `open: true`, the one flag that already clears a window's mark and takes a
+  window over from another nika window (rows 6 and 8 of the contract's decision table). The planner (`createFitPlanner`) gains `reopen()`: it
+  clears a waiting heartbeat, re-arms the beat and sends at once, or as soon as the request in flight ends. Exactly one asked request is
+  tracked; a refused or lost one (any status but 200 or 403) leaves the page treating the window as not yet opened, so the next heartbeat
+  sends `open: true` again, and a second ask while one is pending does nothing.
+- **Owner decision W7 Q6 stays.** After a user change nika stays off until the *user* asks: by opening the session window or by pressing
+  Fit again. Nothing fits the window again on nika's own initiative, and `open: true` is still sent only on a page load, a `pageshow` from the
+  back/forward cache and the user's ask.
+- **No action where it cannot help.** `user-zoom`, `size-option` and `foreign-tag` get a hint (and, for `foreign-tag`, the command
+  `tmux set-option -wu @nika-fit` as text) but no button: the controller refuses `open: true` again for them, so a button would only
+  fail. `user-zoom` and `foreign-tag` recover on the next heartbeat once the user acts in tmux.
+- **A button in every state** (fitted and zoomed too), because the panel is where the reason is readable without a pointer. The chip's
+  words and colours are unchanged; the `user-change` title no longer says "Reopen the session window to fit again".
+- **Alternatives rejected.** *A "Fit again" chip without a panel*: no room for the reason or the hint, which would stay a `title` that
+  keyboard and touch users never see. *Fitting again by itself after a user change* (on a timer or at the next heartbeat): the user just undid nika's
+  zoom, and doing it again is fighting them (Q6 stands). *A new route or a new body field for the ask*: `open` already means "the user opened this
+  window"; a second flag would only duplicate it.
+- **Consequences.** The page's rule "every later request is `open: false`" now reads "until the user asks again"; `opened` is set by a 200
+  and cleared by a failed ask. A user who presses Fit again over a window that still cannot be fitted (the same reason) gets the panel drawn
+  again and "Fit is still off. <reason>" announced. `docs/design/spec.md` §9.13 has the panel, its keys and its copy.

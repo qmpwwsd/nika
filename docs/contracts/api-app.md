@@ -291,8 +291,8 @@ report is its own, the host's id when it was taken from the host, `null` when th
 - The setting comes from nika's own `config.json` through the validated `loadConfig`, on both tiers; the browser tier (:3335) therefore
   also shows these numbers. The page formats them and never computes a window, a per cent or a threshold.
 
-0.5 (W8) writes down `subagents`, which both tiers already carry (the shape is unchanged; W8 adds no field to it):
-- `"subagents": [ { "id": "<SUBAGENT_ID>", "type": "<clean(agentType, 80)>" | null, "description": "<clean(…, 200)>" | null,
+0.5 (W8) writes down `subagents`, which both tiers already carry (W8 adds no field to it; W9 adds `label`, below):
+- `"subagents": [ { "id": "<SUBAGENT_ID>", "type": "<clean(agentType, 80)>" | null, "label": "<label>", "description": "<clean(…, 200)>" | null,
   "model": "<clean(model, 80)>" | null, "modelLabel": "<label>" | null, "state": "running" | "finished" | "stopped", "lastActivity": <ms> | null } ]`:
   Claude's own subagents of the session (the in-process children of its `Agent` tool), one per `agent-<id>.meta.json` in the session's `subagents/`
   folder (≤ 64 KB each, a broken file is skipped); `[]` when there are none, no folder, or the folder is a symlink (`<session id>` and `subagents` must be
@@ -307,6 +307,33 @@ report is its own, the host's id when it was taken from the host, `null` when th
 - Order: `running` first, then newest `lastActivity` first.
 - No `toolUseId` (it is parsed from the meta for the history route's link and goes no further), no transcript text and no path. The browser tier gets
   exactly this; it draws the list as plain text (no link) and has no route to open a subagent (§4).
+
+0.5 (W9) adds `label`, on both tiers: what kind of agent a row is. It is display only: no flag, prompt, tool list, permission, cap or route
+depends on it, and it never reaches claude.
+- An agent record gains `"label": "coder" | "reviewer" | "tester" | "designer" | "scout" | "writer" | "agent" | "sub-orchestrator" | null` (first match wins):
+  a live pane tagged `@nika-role sub-orchestrator` → `"sub-orchestrator"` (a `@nika-kind` on it is ignored); a live pane tagged `@nika-role agent`
+  → its `@nika-kind` when that is exactly one of the seven words, else `"agent"` (an agent spawned before 0.5, or one whose tag call failed);
+  the main orchestrator, a session nika did not start, an ended session (no pane, so no tags) and a pane with no `@nika-role` → `null`. The
+  tag is read with the listing of §8 (its last field) and only beside `@nika-role agent`; a value that is padded, in another case or carries a
+  tab is not a word of the list (the pane's kind is absent, so the label is `agent`). The orchestrator is never labelled.
+- A subagent entry's `label` is always a non-empty string of 1 to 24 code points, from the entry's `type` (Claude's `agentType`, not a path or text
+  of a transcript): a built-in type of Claude Code maps to a kind (exact, case-sensitive match); a missing, empty or non-string type gives
+  `"agent"`; any other type (a custom or plugin agent, a built-in added later) gives its own name, cleaned (`clean(type, 80)`, so controls,
+  escapes and bidi marks are gone), after the last `:` when anything is left there (a plugin's agent `plugin:name` shows `name`; `plugin:` alone
+  keeps `plugin:`), cut to 24 code points (23 and `…`, never inside a surrogate pair). `type` stays in the entry (the read-only view's title falls
+  back to it). A custom agent that is named like a built-in gets the built-in's label (one rule, the meta's `isBuiltIn` is not read).
+
+  | `type` | `label` |
+  |---|---|
+  | `Explore`, `claude-code-guide`, `web-fetch` | `scout` |
+  | `Plan` | `designer` |
+  | `statusline-setup` | `coder` |
+  | `general-purpose`, `claude`, `fork` | `agent` |
+
+  `web-fetch` and `fork` are not confirmed built-ins of Claude Code (they were seen only in the Agent tool list of one build, not on its
+  documentation page); if they are not Claude's they still map, to harmless words. Lookup is by own property: `constructor` or `__proto__`
+  is a name, not a table hit.
+- No new field carries a path or a transcript string; the values are the seven words, `sub-orchestrator`, a cleaned type name, or `null`.
 
 ### `GET /api/app/plugins`
 `200 { "plugins": [ "<PLUGIN_NAME>", … ] }` — installed plugin names read from Claude Code's config dir (names only,
@@ -831,8 +858,8 @@ on that window, and gives everything back by itself when the page goes quiet or 
 { "cols": 120, "rows": 39, "open": false }
 ```
 The body is exactly these three keys: `cols` an integer 40–400, `rows` an integer 10–200, `open` a boolean (`true` on the first
-requests of a page load, until one is answered 200; it is the one thing that clears an "off until the window is opened again" mark,
-see `user-change` below). Everything else (the tmux window, its size, its layout, its zoom) comes from tmux's own listing, never from the request.
+requests of a page load, until one is answered 200, and (0.5, F1) on the one request the user asks for with Fit again or Fit here in the
+chip's panel; it is the one thing that clears an "off until the window is opened again" mark, see `user-change` below). Everything else (the tmux window, its size, its layout, its zoom) comes from tmux's own listing, never from the request.
 Order of checks: body → `400 invalid` (message `cols must be an integer 40–400, rows 10–200, open a boolean`), before the pane
 check; ineligible pane (same rule as capture: in the listing, running claude, not dead, live or started by nika) → `404 not_found`; the rate
 limit → `429 busy` (`at most 4 fit requests per second per pane`: a sliding second, PUT and DELETE each have their own bucket per
@@ -854,11 +881,12 @@ number of panes in its tmux window, `userZoom` whether the user had the mirrored
 | `blocked` | `foreign-tag` | `@nika-fit` on the window holds a value nika has no lease for (another program, a stale tag with no usable lease file, or a value that is not 16 lowercase hex characters: the listing reads it as foreign, never as an unreadable row that is dropped) | nothing |
 | `blocked` | `changed` | something nika read did not hold (a layout nika may not keep, a lease file over 16 KB, no active pane), or the read-back after its own change differed (a tmux hook fought back) | nothing, or everything put back |
 | `blocked` | `user-change` | the user changed the window (unzoomed, navigated, split, killed a pane, resized) after nika fitted it | everything put back |
-| `other` | `null` | another session window of nika holds this tmux window and this request has `open: false` | nothing |
+| `other` | `null` | another session window of nika holds this tmux window and this request has `open: false` (with `open: true`, the page's Fit here, this window takes it over: row 6) | nothing |
 
 `user-change` and `changed` (after a read-back mismatch) keep the window **off**: the answer to every later request with
 `open: false` is `blocked` with that reason and nothing is changed, until a request with `open: true` arrives (the session window
-opened again). nika never fits a window again behind the user's back (owner decision 2026-11-14, Q6). The mark is in memory, for
+opened again, or, 0.5 F1, the user pressed Fit again in the chip's panel: the same request). nika never fits a window again behind the
+user's back (owner decision 2026-11-14, Q6): only the user's own ask sends `open: true` after the first requests of a page load. The mark is in memory, for
 at most 64 windows. It is set only after the restore found its own tag on the window, inside the pane lock: a lease dropped because
 its tag or window was gone sets none (M4), and neither does a refusal of an acquire (see "Reads inside the lock"). `none` is not a state of this route (the page shows no chip before its first answer and after a `DELETE`).
 
@@ -974,8 +1002,18 @@ failed (409, 502, 503), by `releaseWindow` (a spawn), by the watch, by a lapse o
 **What the page does with an answer** (`public/fit-ui.js`): 200 shows the chip for `state` and `reason` (spec §9.13) and nothing
 else; 403 stops the fit for good and hides the chip; `404`, `409`, `429`, `502`, `503`, any other status and a lost request change
 nothing and wait for the next beat (5 s), so a refusal is never retried faster. After `blocked / user-change` and
-`blocked / changed` the page keeps sending `open: false`; only a page load (or a `pageshow` from the back/forward cache) sends
-`open: true` again.
+`blocked / changed` the page keeps sending `open: false`; only a page load (or a `pageshow` from the back/forward cache) or the user's
+Fit again / Fit here (0.5, F1) sends `open: true` again.
+
+**Fit again and Fit here (0.5, F1; no server change).** The chip is a button that opens a panel (spec §9.13). Its action, shown only where
+`open: true` can change something (`blocked / user-change`, `blocked / changed`, a `blocked` the page has no reason for, and `other`), makes the
+page's next request `open: true`: the same `PUT`, body and answers as above, sent at once (a heartbeat that waits is cleared and the beat
+re-armed; a request in flight finishes first, then this one goes out). The page ends that ask in exactly one way: 200 with a fit answer (the
+panel closes on `fitted` or `zoomed`, else it is drawn again for the new state), 403 (everything stops, the chip hides), or any other status or
+a lost request (the panel shows "nika could not fit the window just now. It tries again within 5 seconds."; the page then treats the window as
+not yet opened, so the next heartbeat sends `open: true` again). `user-zoom`, `size-option` and `foreign-tag` have no action: the server refuses
+`open: true` again for them (rows 5, 9 and 10 do not look at `open`), so a button would only fail; they recover on the next heartbeat once the
+user acts in tmux.
 
 Logging: nothing of the body, a layout or a nonce goes to a log or the console; errors carry the pane id, the window id, the step
 name and the error code only. Both routes exist on the app tier only (the browser tier has no fit route, no tag read and no lease
@@ -1436,7 +1474,7 @@ otherwise. Never `kill-pane`, never a signal. The eligibility cache is reset aft
 ```json
 { "project": "<PROJECT_KEY>", "name": "<AGENT_NAME>", "model": "<MODEL_ID>", "brief": "<≤ 64 KB, more than one word>",
   "permissionMode": "<PERMISSION_MODES>?", "under": "<PANE_ID>?", "session": "<TMUX_SESSION>?", "rc": "off|<RC_PREFIX>?",
-  "role": "agent|orchestrator?", "parent": "<PANE_ID>?" }
+  "role": "agent|orchestrator?", "kind": "<KINDS>?", "parent": "<PANE_ID>?" }
 ```
 A one-word `brief` (no whitespace once trimmed) → 400 `brief must be more than one word`: the brief is claude's positional
 prompt after `--`, and a lone `update` or `doctor` could be read as a subcommand; `_run-agent` refuses a stored one-word
@@ -1463,9 +1501,11 @@ needed, a broken install) and took the pane, and a server nika had just started,
 answer is `502 claude_exited`, message "Claude exited right after it started. Run `claude` once in a terminal in this folder to see why (for
 example, to log in)." The same check runs for Start and Resume. One check at 1 s: a claude that dies later is not caught here. Response:
 ```json
-{ "pane": "%12", "session": "<tmux session>", "sessionId": "<UUID>", "reports": { "dir": "<stateDir>/projects/<key>/reports",
+{ "pane": "%12", "session": "<tmux session>", "sessionId": "<UUID>", "kind": "coder", "reports": { "dir": "<stateDir>/projects/<key>/reports",
   "session": "<name>.session", "report": "<name>.md", "rc": "<name>.rc", "remote": "<name>.remote" } }
 ```
+`kind` (0.5, W9) is only in a spawn's answer: the word nika tagged on the agent's pane, or `null` for a sub-orchestrator. A spawn's `sessionId` is
+`null` (only `_run-agent` knows the id); the UUID in the example is what Start and Resume answer.
 
 **Nesting (0.4, ADR 0013).** `role` defaults to `agent`; `orchestrator` starts a *sub-orchestrator* (its pane is tagged
 `sub-orchestrator`). Both values are checked: anything else is 400 `invalid`, as is a `parent` that is not a pane id. The parent is
@@ -1500,7 +1540,24 @@ The `409 limit` body is `{ "error": "limit", "message": …, "scope", "running",
 parent's agents and toward the project cap. The checks and the split run in one queue per project; a CLI process and the app
 server have a queue each and can race by one pane (T36).
 
-The new pane is tagged (§8) with its role, `@nika-agent`, `@nika-depth` (1 to 3) and, with a parent, `@nika-parent`.
+**Kind (0.5, W9).** `kind` is the label of the agent's row (spec §3.21); it is optional and display only. Checked in `parseRequest`, after the
+`role` check and before anything else runs, so nothing is created on a 400 (no file, no tmux call):
+
+| Input | Answer |
+|---|---|
+| `kind` absent | fine: nika derives one, below |
+| `kind` not exactly one of `coder`, `reviewer`, `tester`, `designer`, `scout`, `writer`, `agent` (`"Coder"`, `"boss"`, `""`, `null`, `5`, `["coder"]`, `"coder "`) | `400 invalid` "invalid kind: use coder, reviewer, tester, designer, scout, writer or agent" |
+| `kind` present with `role: "orchestrator"` (even a valid word) | `400 invalid` "kind is for agents: a sub-orchestrator always shows sub-orchestrator" |
+
+The word to tag is decided once, at spawn: the request's `kind`, else the one the spawn's own `model` names among the project's role models
+(`kindFromModel`: the project's effective models, its own override over Settings'; `builder` → `coder`, `reasoner` → `designer`, `scout` →
+`scout`; the orchestrator's model names none). The comparison is exact on the model id, with no alias resolution (`sonnet` never equals
+`claude-sonnet-5-5`); no role with that id, or two roles with different kinds on one id → `agent`. A sub-orchestrator has no kind (`null`). The
+word is not stored in `<name>.agent.json` (its keys are unchanged) and never reaches claude. Because it is decided at spawn, a later `/model`
+switch does not change it, and the snapshot cannot tell a chosen kind from a derived one.
+
+The new pane is tagged (§8) with its role, `@nika-agent`, `@nika-depth` (1 to 3), with a parent `@nika-parent` and, for an agent, `@nika-kind`
+(last; the word above).
 
 ### `POST /api/app/orchestrator/start`
 `{ "project": "<PROJECT_KEY>" }` → `200 { "pane": "%3", "session": "<name>", "sessionId": "<UUID>|null", "created": true, "cleared"?: "gone" }`.
@@ -1770,7 +1827,7 @@ Write API (`src/fwrite.js`): `ensureDir(dir, mode = 0o700)`, `writeAtomic(dir, n
 | `nika app install` | macOS: copy or update the app in `~/Applications` (§6 "App copy"); prints "added nika X.Y.Z to ~/Applications (find it with Spotlight)", "updated …" or "already current"; exit 1 with the reason for `no-source` / `foreign-target` / `copy-failed`; Linux: exit 1, "the .deb or AppImage installs the desktop entry" |
 | `nika serve [--app]` | browser tier on `NIKA_PORT` (3335) · app tier on port 0 with the stdio protocol (§5); `--app` refuses a TTY stdin |
 | `nika status [--json] [--since w] [--ended] [--full]` | 0.4.0: ended rows only with `--ended` (the latest 5 per project) or `--full` (all, implies `--ended`); otherwise one line says how many are hidden. Every project added to nika is listed, also one with no session in the window (`<name>  <folder>   no sessions yet` for `--since all`, else `no sessions in the last <window>`); a folder never added shows only while a session runs there, or with `--ended`. The project list is read in every text view (a `config.json` nika cannot use gives a `note:` line and no empty projects). `--json` is unchanged (the snapshot only) and carries every agent |
-| `nika spawn <name> <model> <brief> [--project dir] [--permission-mode m] [--rc prefix\|off] [--role agent\|orchestrator] [--under %pane] [--session name]` | spawn an agent in tmux (needs `$TMUX` or `--session`); `brief` is a file path or `-` for stdin. 0.4: `--role orchestrator` starts a sub-orchestrator (only the main orchestrator's pane may; else exit 3, `depth`). The parent is the pane it runs in, `$TMUX_PANE`, when that is a pane id (else none); there is no `--parent` option, and a `$TMUX_PANE` that tmux no longer lists is "no parent". The server reads that pane's role and depth from tmux's tags |
+| `nika spawn <name> <model> <brief> [--project dir] [--permission-mode m] [--rc prefix\|off] [--role agent\|orchestrator] [--kind <kind>] [--under %pane] [--session name]` | spawn an agent in tmux (needs `$TMUX` or `--session`); `brief` is a file path or `-` for stdin. 0.4: `--role orchestrator` starts a sub-orchestrator (only the main orchestrator's pane may; else exit 3, `depth`). The parent is the pane it runs in, `$TMUX_PANE`, when that is a pane id (else none); there is no `--parent` option, and a `$TMUX_PANE` that tmux no longer lists is "no parent". The server reads that pane's role and depth from tmux's tags. 0.5 (W9): `--kind coder\|reviewer\|tester\|designer\|scout\|writer\|agent` is the label on the agent's row (§3, spawn "Kind"); anything else is exit 2 (`--kind must be one of coder, reviewer, tester, designer, scout, writer, agent`), and so is `--kind` with `--role orchestrator` (`--kind is for agents: a sub-orchestrator always shows sub-orchestrator`), before anything runs; without it nika picks one from the model's role. The output gains a `kind: <word>` line after `session:` when the answer carries a kind (an agent; a sub-orchestrator has none, so no line). Its help line reads `--kind <kind>      coder \| reviewer \| tester \| designer \| scout \| writer \| agent: the label on its row (default: from the model's role)` |
 | `nika orchestrate [dir]` | create or reuse the project's tmux session and start the orchestrator pane |
 | `nika projects list\|add <dir>\|remove <key>` | project registry |
 | `nika rules preview\|apply [dir] [--yes] [--overwrite-foreign] [--gitignore]` | preview prints the diffs; apply asks for confirmation unless `--yes` |
@@ -1787,14 +1844,14 @@ multi-argument shell-commands (tmux execs them directly, no `sh -c`, T6).
 
 | Purpose | argv |
 |---|---|
-| list panes | `tmux -u list-panes -a -F #{pane_id}\t#{session_name}\t#{window_index}\t#{pane_title}\t#{pane_current_command}\t#{@nika-role}\t#{@nika-agent}\t#{@nika-depth}\t#{@nika-parent}\t#{pane_dead}` (0.1; the tags 0.2 and 0.4; each tag is read strictly, a value that does not parse is absent, and the tags of a pane with no nika role are ignored; `pane_dead` last, 0.5: `0` running, `1` dead and kept by `remain-on-exit` (the pane stays in the listing, marked dead, and the eligibility check refuses it), anything else drops the row) |
+| list panes | `tmux -u list-panes -a -F #{pane_id}\t#{session_name}\t#{window_index}\t#{pane_title}\t#{pane_current_command}\t#{@nika-role}\t#{@nika-agent}\t#{@nika-depth}\t#{@nika-parent}\t#{pane_dead}\t#{@nika-kind}` (0.1; the tags 0.2 and 0.4; each tag is read strictly, a value that does not parse is absent, and the tags of a pane with no nika role are ignored; `pane_dead` last, 0.5: `0` running, `1` dead and kept by `remain-on-exit` (the pane stays in the listing, marked dead, and the eligibility check refuses it), anything else drops the row; `@nika-kind` last, 0.5 W9: the field is free text, so it comes after every other and a tab in a forged value cannot shift one; it counts only beside `@nika-role` `agent` and only as exactly one of the seven words of `KINDS`, else the pane has no kind; a line without the field parses with no kind. This is the only listing that reads it: the spawn's tag listing, Start's listing and the fit's do not) |
 | session exists | `tmux -u has-session -t =<session>` |
 | create session + orchestrator | `tmux -u new-session -d -s <session> -n orchestrator -c <projectDir> -x 200 -y 50 -P -F #{pane_id} [-e CLAUDE_CODE_AUTO_COMPACT_WINDOW=<W> [-e CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=<PCT>]] -- <claudeBin> <orchestrator flags>` |
 | remove the pair from the session environment (0.4) | `tmux -u set-environment -t =<session> -u CLAUDE_CODE_AUTO_COMPACT_WINDOW`, then the same for `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`: only after a `new-session` that carried `-e`, only for a name it sent; best effort (a failure is ignored) |
 | create session + first agent (0.4) | `tmux -u new-session -d -s <session> -n agents -c <projectDir> -x 200 -y 50 -P -F #{pane_id} -- <nikaBin…> _run-agent <key> <name>`: a spawn when the project's session does not exist (no server, or a server without it); no `-e` pair (an agent's compaction travels in `<name>.agent.json`, so nothing is added to the session environment); the pane is tagged as a split-window one |
 | early-exit check (0.4) | `tmux -u display-message -p -t %n #{pane_dead}` 1 s after Start, Resume or spawn created pane `%n`: `0` = running; `1`, a tmux error (pane or server gone) or anything else = `502 claude_exited`. A constant format and a pane id nika got from tmux and matched against `PANE_ID`; no request data |
 | orchestrator in existing session | `tmux -u new-window -t =<session>: -n orchestrator -c <projectDir> -P -F #{pane_id} [-e … as above] -- <claudeBin> <orchestrator flags>` |
-| tag a pane nika created | `tmux -u set-option -p -t %n @nika-role orchestrator` (after new-session / new-window), `… @nika-role agent` or (0.4) `… @nika-role sub-orchestrator` (after split-window), then `@nika-agent <PROJECT_KEY>/<AGENT_NAME>` (0.4: `<PROJECT_KEY>/orchestrator` for an orchestrator), `@nika-depth <1\|2\|3>` (an orchestrator 1) and, for a nested spawn, `@nika-parent <PANE_ID>`; every value is a constant, a validated name or a pane id (no `#`); best effort |
+| tag a pane nika created | `tmux -u set-option -p -t %n @nika-role orchestrator` (after new-session / new-window), `… @nika-role agent` or (0.4) `… @nika-role sub-orchestrator` (after split-window), then `@nika-agent <PROJECT_KEY>/<AGENT_NAME>` (0.4: `<PROJECT_KEY>/orchestrator` for an orchestrator), `@nika-depth <1\|2\|3>` (an orchestrator 1) and, for a nested spawn, `@nika-parent <PANE_ID>`, then (0.5, W9), on an agent pane only (never an orchestrator or a sub-orchestrator), `@nika-kind <word>` as the last call, the word being one of the seven constants of `KINDS` (checked again in `tagPane`, so no other text from a request reaches tmux): `tmux -u set-option -p -t %n @nika-kind <word>`; every value is a constant, a validated name or a pane id (no `#`); best effort (a failed `@nika-kind` call leaves the row on `agent`) |
 | adopt a live session as orchestrator (0.4) | `tmux -u set-option -p -t %n @nika-role orchestrator`, then `@nika-agent <PROJECT_KEY>/orchestrator`, then `@nika-depth 1` (`PUT …/orchestrator`; the depth is a constant 1, 2 or 3, never request data) |
 | resume the orchestrator (0.4) | the orchestrator argv above (the same `-e` pairs) with `--resume <UUID>` instead of `--session-id <UUID>`; the UUID is the stored pick |
 | tags of a spawn | `tmux -u list-panes -a -F #{pane_id}\t#{pane_dead}\t#{@nika-role}\t#{@nika-agent}\t#{@nika-depth}\t#{@nika-parent}\t#{session_name}\t#{window_name}` (one fresh listing per spawn; the names are last because they are free text; a pane with `pane_dead` `1`, one that remain-on-exit keeps after claude exited, is skipped, so it is never live, never counts toward a cap or the duplicate-name check and is never a parent: a dead parent reads like a gone one) → (1) the requested parent's role and depth (`POST /spawn`, "Nesting"), and (2) the live set: the panes with `@nika-role` = `agent` or `sub-orchestrator` whose `@nika-agent` is `<key>/<name>` for the project's key, for the duplicate-name check and the two caps. A tag is parsed strictly (exactly one `/`, `PROJECT_KEY` before it, `AGENT_NAME` after it; a depth is exactly `1`, `2` or `3`; a parent is a `PANE_ID`); anything else is agent-writable noise and is ignored, never trusted |

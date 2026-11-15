@@ -560,9 +560,11 @@ Container widths: ≤ 860 px (app tier: ≤ 1010 px) hides model and pane column
 
 **(0.4) Role badge** after the name (`roleTagEl(roleTag(a, pickId))`; markup and words in §3.16). At ≤ 860 px (app tier ≤ 1010 px) the long word is clipped like the mode label (still read by screen readers) and a short one shows.
 
+**(0.5, W9) Label chip**, first child of `.c-what`, before the project chip and the "under <parent>" chip (`labelEl(agentLabelView(a))`; look, words and states in §3.21). A row has one only when a spawned agent's pane carries a kind: the main orchestrator, a sub-orchestrator (its role tag is its label), a user's own session and an ended row show none. Both tiers draw it.
+
 **(0.4) Nesting.** A group whose live agents hang under each other draws one flat `ul.rows` in tree order, each row indented by its place in the tree (§3.17). A group where nothing nests is drawn exactly as before.
 
-**(0.5, W8) Subagent lines.** Under a row that has subagents (§1.2, §9.17): a `details.subs` ("N subagents · M running" with a muted "+K ended") whose lines each hold a state badge (colour, glyph and word: Running, Finished, Stopped), the description, the type, the model and the time; or, when nothing is running and nothing shown, the one muted line "No subagents running +K ended". In the app tier the description is a link to the subagent's read-only view; on the browser tier it is plain text.
+**(0.5, W8) Subagent lines.** Under a row that has subagents (§1.2, §9.17): a `details.subs` ("N subagents · M running" with a muted "+K ended") whose lines each hold a state badge (colour, glyph and word: Running, Finished, Stopped), the description, the label chip (§3.21), the model and the time; or, when nothing is running and nothing shown, the one muted line "No subagents running +K ended". In the app tier the description is a link to the subagent's read-only view; on the browser tier it is plain text.
 
 ### 3.4 Project group / card
 
@@ -885,7 +887,7 @@ When the project sets its own limit (0.4.0, below) the `parent` tail reads "Wait
 
 The 409 `limit` copy is chosen by the body's `scope` (`parent` or `project`) and uses its `running` and `max`; a body that does not parse, a 409 `depth` on a plain agent request, a 404 with no parent (or with an `under` pane, which may be the one that is gone) and every other refusal show the server's own message. Sub-orchestrators count toward their parent's limit and the project cap.
 
-**Spawn sheet.** The title and button read "Spawn agent" or "Spawn sub-orchestrator". A `dl.kv.sp-kv` row "Parent" shows "<name> · orchestrator|sub-orchestrator · pane %3", or "None. You start it from nika.". A **Role** fieldset has two radio cards, Agent ("Does one task and reports back.") and Sub-orchestrator ("Plans the work and spawns up to <N> agents of its own. It may run only nika spawn and nika status."). When the parent cannot have a sub-orchestrator (none, or a sub-orchestrator) the radio is `disabled`, its card gets `data-off="true"` (50 % opacity) and `p.help#sp-role-why` (full contrast, the radio's `aria-describedby`) says why: "Sub-orchestrators run under the orchestrator. Use Spawn sub-orchestrator in the header, or the orchestrator's row menu." / "Only the main orchestrator can start sub-orchestrators: nika allows three levels." Switching the role changes the title, the button, the brief help, the name (only while it still holds the last default, `builder-N` or `lead-N`) and the model (only while the select is untouched: Roles › Builder, or › Orchestrator). The remembered model, permission mode and placement are kept per project and role. The footer note counts at open time: "<parent>: 2 of 3 · <project>: 5 of 9 running" (or "Spawned from nika: …"; names cut at 24). The request carries `role` (`agent` or `orchestrator`) and, with a parent, `parent` (its pane); the header's Spawn agent sends no parent. Success toast: "Spawned builder-3 in pane %12", "Spawned builder-3 under planner in pane %12" or "Spawned sub-orchestrator lead-1 under planner in pane %9", with **Open session**. A refusal keeps every field and puts the copy in the sheet's alert, with focus on it.
+**Spawn sheet.** The title and button read "Spawn agent" or "Spawn sub-orchestrator". A `dl.kv.sp-kv` row "Parent" shows "<name> · orchestrator|sub-orchestrator · pane %3", or "None. You start it from nika.". A **Role** fieldset has two radio cards, Agent ("Does one task and reports back.") and Sub-orchestrator ("Plans the work and spawns up to <N> agents of its own. It may run only nika spawn and nika status."). When the parent cannot have a sub-orchestrator (none, or a sub-orchestrator) the radio is `disabled`, its card gets `data-off="true"` (50 % opacity) and `p.help#sp-role-why` (full contrast, the radio's `aria-describedby`) says why: "Sub-orchestrators run under the orchestrator. Use Spawn sub-orchestrator in the header, or the orchestrator's row menu." / "Only the main orchestrator can start sub-orchestrators: nika allows three levels." Switching the role changes the title, the button, the brief help, the name (only while it still holds the last default, `builder-N` or `lead-N`) and the model (only while the select is untouched: Roles › Builder, or › Orchestrator). The remembered model, permission mode and placement are kept per project and role. The footer note counts at open time: "<parent>: 2 of 3 · <project>: 5 of 9 running" (or "Spawned from nika: …"; names cut at 24). The request carries `role` (`agent` or `orchestrator`) and, with a parent, `parent` (its pane); the header's Spawn agent sends no parent. (0.5, W9) An agent's request also carries `kind` when the **Kind** select (`#sp-kind`, after Model; §3.21) holds a word; Automatic and a sub-orchestrator send none. Success toast: "Spawned builder-3 in pane %12", "Spawned builder-3 under planner in pane %12" or "Spawned sub-orchestrator lead-1 under planner in pane %9", with **Open session**. A refusal keeps every field and puts the copy in the sheet's alert, with focus on it.
 
 **Settings and the New agents card.** Settings › Panes and limits: the label "Agents per project at once" is now **Agents per orchestrator**; help: "1 to 8. How many agents each orchestrator can run at once; the agents you spawn from nika share one more such limit. One project runs at most 3 times this number, and never more than 24." The Models section line ends "A project can override them on its page." The project page's **New agents** card lists Permission mode, Pane, **Per orchestrator** "<N> at once", **Spawned from nika** "<r> of <N>" and **This project** "<r> of <cap> running"; the `.limit` note appears at the project cap ("Limit reached: <r> of <cap> agents are running in this project. Spawning is off until one ends.") or when your own bucket is full ("Limit reached: you run <r> of <N> agents spawned from nika. Spawn from an orchestrator's row, or wait for one to end."). Remove project: "nika stops listing this project and forgets its plugin, model, permission mode, pane and agent limit choices and its saved orchestrator. No files change and running agents keep running."
 
@@ -896,7 +898,7 @@ The 409 `limit` copy is chosen by the body's `scope` (`parent` or `project`) and
 - *Elsewhere.* "Spawned from nika <r> of <N>", "This project <r> of <cap> running" and the `.limit` note use the project's limit. In the spawn sheet the permission select's first option reads "Use this project's setting: <effective mode>" and the pane choice "<effective pane> (from Settings)" or "(set for this project)". An explicit mode in the sheet or on the CLI still wins.
 - *`menuEl`.* Two optional additions, existing callers unchanged: a fourth argument, the button's content in place of the "⋯" icon (class `btn ghost menu-val`), and a per-item `current` flag (once any item has it, every item gets the check slot).
 
-Test hooks (`data-fk`): tree toggle `tree:<scope>:<id>`, header `spawn-sub:<key>`, row items `spawn-under:` and `spawn-sub:` (§3.16), sheet `sp-parent`, `sp-role-agent`, `sp-role-orch`; ids `sp-role`, `sp-role-why`, `sp-note`, `limit-note`.
+Test hooks (`data-fk`): tree toggle `tree:<scope>:<id>`, header `spawn-sub:<key>`, row items `spawn-under:` and `spawn-sub:` (§3.16), sheet `sp-parent`, `sp-role-agent`, `sp-role-orch`, `sp-kind`; ids `sp-role`, `sp-role-why`, `sp-note`, `limit-note`.
 
 ### 3.18 Auto-compact setting (0.4, ADR 0014)
 
@@ -1024,6 +1026,116 @@ move into a drawer that the **Settings** button opens (owner decision 2026-11-13
   fit below and does fit above inside the drawer body; otherwise it opens below and the body scrolls to show all of it, so it is never cut off (measured at 900 × 700 and 900 × 480).
 - Browser tier: unchanged (the project page, the button and the drawer are app-only).
 - Edge cases: a project that is not registered empties both homes; without `matchMedia` the page counts as wide.
+
+### 3.21 Labels: what kind of agent a row is (0.5, W9)
+
+**(built 2026-11-15 (0.5).)** Owner request (plan calls 21 and W9, 2026-11-13): a row says what kind of agent it is, in one word on a chip. A label is
+display only: no flag, prompt, tool list, permission or limit depends on it, and it never reaches claude. Contract: `api-app.md` (the snapshot's
+`label`, the spawn's `kind`, the CLI's `--kind`, the `@nika-kind` tag); the threat: `docs/security.md` T57. The logic that has no DOM is in
+`public/dash-model.js` (`KINDS`, `KIND_TEXT`, `ROLE_KIND`, `kindFromModel`, `agentLabelView`, `subLabelView`); the chip is `labelEl` in
+`public/dom.js`.
+
+**The words** (`KINDS`, in the order the sheet lists them; `KIND_TEXT` is also the wording of the chip's title, the sheet's options and the rules template)
+
+| Kind | Meaning |
+|---|---|
+| `coder` | writes and changes code |
+| `reviewer` | reviews code or designs |
+| `tester` | writes and runs tests |
+| `designer` | designs and plans |
+| `scout` | finds files and facts, read-only |
+| `writer` | writes docs and reports |
+| `agent` | no particular kind |
+
+A sub-orchestrator is always labelled by its role tag ("sub-orchestrator", §3.16) and takes no kind. An agent spawned without a kind gets one from
+the model it was spawned with (Builder's model → `coder`, Reasoner's → `designer`, Scout's → `scout`, any other → `agent`, decided at spawn), and an
+agent spawned before 0.5 reads `agent`. Claude's own subagents are labelled from their `agentType` (`api-app.md`, snapshot): a built-in type's kind
+(`Explore` → `scout`, `Plan` → `designer`, `general-purpose` → `agent`, …), else the type's own name, cleaned and cut to 24 characters.
+
+**Why one neutral chip (the visible-state rule).** The owner's rule (every state has its own colour, icon and word) is about **states**. A label is
+not a state: it is a noun that is fixed for the agent's life, it never asks the user to act and it never changes while the row lives. Colouring
+eight labels would spend eight hues that already mean status, mode, fit and subagent state, and a row would carry a coloured thing that is not a
+state. So every label uses the **same neutral pill** and the word is the whole message. The pill shape and the neutral fill keep it apart from the
+state badges (which always have a hue and a glyph) and from the role tag (square corners, accent). No icon: one shared icon adds nothing, eight
+would be decoration.
+
+**Look** (`span.agent-kind[title]`, `public/tokens.css`, loaded by both pages): `display: inline-flex; align-items: center; flex: none;
+min-height: 20px; padding: 0 8px; border-radius: 999px; font-size: var(--fs-cap); font-weight: 500; color: var(--text); background:
+var(--surface-2); border: 1px solid var(--line); white-space: nowrap; max-width: 24ch; overflow: hidden; text-overflow: ellipsis`. `--text` on
+`--surface-2` is a body-text pair in both themes (well above 4.5:1); the border is decoration; no new token. `labelEl(view)` returns `null` for a view
+with no text. The word goes in through `textContent`; the `title` carries the meaning for mouse users.
+
+**Where it shows**
+
+| Surface | Tier | Chip |
+|---|---|---|
+| Dashboard and project-page rows (§3.3) | both | first child of `.c-what`, before the project chip and the "under <parent>" chip. Title "Kind: <kind>, <meaning>". None on the main orchestrator, a sub-orchestrator, a user's own session or an ended row |
+| Session window header (§9.2) | app | `#sess-kind` right after `#sess-role`, replaced at every poll, hidden when there is none; shown at every width |
+| Subagent lines (§3.3, §9.17), rows and the session list | rows both, list app | where the raw type was: badge, description, **label**, model, time. Title "Claude's <type> subagent", plus ". Kind: <kind>, <meaning>" for a word of the list |
+| Read-only subagent view header (§9.17) | app | `#sess-kind`, always shown once the subagent is known (`agent` at worst) |
+| Spawn sheet (§3.17) | app | the **Kind** select, below |
+
+Why in `.c-what` and not beside the name: at 1280 px the name column is at its 120 px minimum with the tree elbow, the fold and the role tag
+(§3.3, the 0.4 squeeze), and a pill there would squeeze names to one letter again. The chip never shrinks (`flex: none`), so on a narrow row it takes its
+width from the prompt text. At ≤ 600 px `.c-what` moves to the second line (the existing grid) and the chip stays first in it; the
+`@container cwhat (max-width: 188px)` rule still hides only the branch and the second project chip, never the label. The project page uses the
+same `rowEl`, so it gets the chip too.
+
+**Spawn sheet: the Kind field.** A native `<select id="sp-kind" data-fk="sp-kind" aria-describedby="sp-kind-help">` with the visible label "Kind", right
+after the Model field (Tab order: Role, Name, Model, **Kind**, Brief, Permission mode, Pane, Cancel, Spawn). Help `p#sp-kind-help`: "Shown as a label on
+its row. Automatic picks it from the model's role."
+
+| Option (value) | Text |
+|---|---|
+| Automatic (`''`) | Settings loaded and the sheet's model is exactly one role's model: "Automatic · coder (Builder's model)", "Automatic · designer (Reasoner's model)", "Automatic · scout (Scout's model)". No single role (a model that is no role's, or two roles with different kinds on one id): "Automatic · agent (no matching role)". Settings not loaded yet: "Automatic (from the model's role)" |
+| `coder` … `agent` | "<kind> · <meaning>", one per `KINDS` entry, in that order |
+
+1. Open: the value is this window's last pick for the project's agents (`spawnPrefs`, key `<project key>:agent`) when it is one of the seven words,
+   else Automatic.
+2. A change of the model select, or typing in the Custom ID field, rewrites the Automatic option's text only; the value stays.
+3. Role switched to sub-orchestrator: the select is `disabled`, `#sp-kind-help` reads "A sub-orchestrator always shows sub-orchestrator.", and
+   the value is kept; back to agent it is enabled and the help text is back.
+4. Submit: `kind` goes into the request only for an agent with a picked word. Automatic sends none, and the server derives the same word from
+   the model's role (the page's `kindFromModel` is a copy used only for the preview; a test runs both over one table of cases). The pick is
+   remembered for `<project key>:agent` after a 200.
+5. While spawning the select is disabled with the rest of the sheet (as `#sp-role`), then enabled again unless the sheet is a sub-orchestrator's.
+6. A 400 about `kind` (only a stale page could get one) shows in `#sp-alert` through the existing error path.
+
+The role name in the Automatic text is `ROLE_LABEL` of `models-ui.js`. The native select needs no new shortcut (arrows and type-ahead pick; the
+platform's own key opens it).
+
+**Copy (exact)**
+
+| Where | Text |
+|---|---|
+| Sheet field, help | "Kind"; "Shown as a label on its row. Automatic picks it from the model's role." |
+| Sheet help, sub-orchestrator | "A sub-orchestrator always shows sub-orchestrator." |
+| Automatic option | "Automatic · <kind> (<Role>'s model)" / "Automatic · agent (no matching role)" / "Automatic (from the model's role)" |
+| Kind options | "<kind> · <meaning>" |
+| Chip title, agent | "Kind: <kind>, <meaning>" |
+| Chip title, subagent | "Claude's <type> subagent" (+ ". Kind: <kind>, <meaning>" for a word of the list) / "Claude's subagent" |
+| API 400 | "invalid kind: use coder, reviewer, tester, designer, scout, writer or agent" / "kind is for agents: a sub-orchestrator always shows sub-orchestrator" |
+| CLI exit 2 | "--kind must be one of coder, reviewer, tester, designer, scout, writer, agent" / "--kind is for agents: a sub-orchestrator always shows sub-orchestrator" |
+
+**States**
+
+| Surface | No label | Loading | Error |
+|---|---|---|---|
+| Row | no chip (orchestrator, sub-orchestrator, user's session, ended) | n/a (snapshot) | stale list at 60 % opacity (existing) |
+| Session header | `#sess-kind` hidden | hidden until the first poll | keeps the last value |
+| Subagent line, subagent view | never empty (`agent` at worst) | n/a | n/a |
+| Sheet | Automatic is the default | "Automatic (from the model's role)" until Settings loads | the server's 400 in `#sp-alert` |
+
+**Accessibility.** The chip's word is visible text (no colour carries meaning); its `title` adds the meaning for mouse users, and a screen reader reads
+the word in reading order. The sheet's select has a visible label and `aria-describedby` help, and the disabled state has its reason in visible
+text. Tokens only, both themes from `tokens.css`; no motion.
+
+**Rules template.** `templates/orchestration.md` tells an orchestrator to pass `--kind <kind>` on every `nika spawn`, lists the seven words, says what
+nika picks without one, and says a sub-orchestrator takes no `--kind`. `TEMPLATE_VERSION` is 3, so every registered project's rules read "outdated"
+until rules are applied again (this repository's own included).
+
+**Not built.** A label for an ended session, the main orchestrator or a user's own session; a label column in `nika status`, or in the tray; a change of
+the guard prompts, `agent.json` or `_run-agent`; a colour or an icon per label, or a filter by label; telling a chosen kind from a derived one.
 
 ## 4. Keyboard model
 
@@ -1514,7 +1626,7 @@ The edge and the focus ring are two shadows in one declaration, so focus adds th
 
 ### 9.2 Header
 
-Order: back crumb · `h1` name · **role badge** (`#sess-role`, §3.16; hidden when there is none) · status pill · **mode tag** (`#sess-mode`) · model · **context meter** (`#sess-ctx`, §3.19; hidden until the first poll) · pane · branch · spacer · Open in
+Order: back crumb · `h1` name · **role badge** (`#sess-role`, §3.16; hidden when there is none) · **label chip** (`#sess-kind`, §3.21; hidden when there is none) · status pill · **mode tag** (`#sess-mode`) · model · **context meter** (`#sess-ctx`, §3.19; hidden until the first poll) · pane · branch · spacer · Open in
 claude.ai · Keyboard shortcuts. **(built amendment 2026-11-09 (0.3.3))** The mode switcher moved under the message
 box (§9.3); the `.bar-end` wrapper is gone and `.bar-tools` holds the two buttons.
 
@@ -1949,7 +2061,7 @@ step. Your queued message then goes to Claude at once." (`public/quick-actions.j
 **(built 2026-11-14 (0.5).)** The session window measures its terminal panel in cells and asks the server to make the mirrored
 pane that size. Contract: `api-app.md` (`PUT` and `DELETE /api/app/pane/:id/fit`); the lease and what is safe: ADR 0017 and
 `docs/security.md` T52. Always on, no setting (owner decision 2026-11-14). The logic that has no DOM is `public/fit-ui.js`; the
-wiring is `public/session.js`. App tier only. The window can change the user's tmux window, so it says so: the chip below.
+wiring is `public/session.js`. App tier only. The window can change the user's tmux window, so it says so: the chip below, which since F1 is a button that opens a panel with the reason and, where it helps, Fit again.
 
 | What the user sees | When |
 |---|---|
@@ -1959,7 +2071,7 @@ wiring is `public/session.js`. App tier only. The window can change the user's t
 
 The tmux window is given back when this window closes, 15 s after the page goes quiet, or on the first change the user makes in
 tmux (unzoom, move, split, kill, resize; nika sees it within one second, and the restore follows within tens of milliseconds). After
-such a change nika does not fit again until the session window is opened again.
+such a change nika does not fit again until the session window is opened again or the user presses Fit again in the chip's panel.
 
 **Measuring the panel** (`panelSize`)
 
@@ -1977,8 +2089,8 @@ style attribute). `.term-rows` uses `font-size: calc(var(--fs-term) * var(--fit-
 the pane's grid stays exact. Below 0.4 the text stops shrinking and the terminal scrolls, as before. The header keeps the pane's
 real size ("Live · 120 × 39", §9.12).
 
-**The chip.** `#fit-chip` sits in the terminal header after "Live · C × R". It follows the rule of §9.6: colour, icon and words,
-never colour alone. It is hidden until the first 200 answer, and again after the window gives the lease back or a 403. The header
+**The chip.** `#fit-chip`, a button inside `#fit-wrap` since F1 (the panel below), sits in the terminal header after "Live · C × R". It follows the rule of §9.6: colour, icon and words,
+never colour alone. It is hidden (its wrapper is) until the first 200 answer, and again after the window gives the lease back or a 403. The header
 wraps (`flex-wrap`) when the chip does not fit, so the window never scrolls sideways. A state change is announced once (polite,
 `announce()`) as "Fit: <words>. <title>".
 
@@ -1998,18 +2110,71 @@ a string of the server):
 | `size-option` | This tmux window has a window-size setting nika does not change |
 | `foreign-tag` | Another program marks this tmux window |
 | `changed` | The tmux window changed while nika was fitting it, so nika put it back |
-| `user-change` | You changed this tmux window, so nika put it back. Reopen the session window to fit again |
+| `user-change` | You changed this tmux window, so nika put it back |
 
 Each state has its own colour (owner decision, Q5), so `other` has its own cerulean pair of tokens in `tokens.css`, used by this chip
 only (light `#0f68a2` on `#ddf2ff`, edge `#3786c3`; dark `#4abce9` on `#0e2a36`, edge `#1c8cb4`): text on its fill 5.17:1 (light)
 and 6.89:1 (dark), edge at least 3.5:1, and an OKLab distance of at least 0.05 to every status and mode hue (asserted by
 `test/session-ui.test.js`). `blocked` keeps the muted grey on a dashed edge, so the four chips differ in icon, words, edge and hue.
 
+**The panel (0.5, F1; owner request 2026-11-15).** The chip is a button, and in every state (fitted and zoomed too): the reason was a `title` and one
+announcement, which a keyboard or touch user never reads, so it now has a place to be read, and where `open: true` can help the panel offers the way
+back. Markup: `span#fit-wrap.fit-wrap` (hidden while there is no chip, so the panel can never show without it) holding `button#fit-chip.fit`
+(`type="button"`, `aria-expanded`, `aria-controls="fit-pop"`, `aria-label` = the state's label such as "Fit: off"; inside: the icon, the words, and a
+chevron `i-chev` that turns 180° while the panel is open) and `div#fit-pop.pop.fit-pop` (`role="group"`, `aria-labelledby="fit-pop-h"`): the heading
+`p#fit-pop-h` (the label), `p#fit-pop-why` (the state's `title`, the reason sentence), `p#fit-pop-hint` (the hint, and a `code` line where there
+is one), `p#fit-pop-note` (the note, below), and a footer with `button#fit-pop-close` "Close" and `button#fit-again.btn.primary`
+(`aria-describedby="fit-pop-why"`, so it is read with its reason). `fitPanelView(view, ui)` in `public/fit-ui.js` is pure; the hint, the code and
+the action are looked up by the chip's key, never by a word of the server.
+
+| Chip key | Hint | Code (text only) | Action |
+|---|---|---|---|
+| `fitted` | none | none | none |
+| `zoomed` | "To fill the panel without scaled text, make this window larger or hide the transcript (Ctrl+Shift+H)." | none | none |
+| `blocked` / `user-change` | "Fit again sizes the window to this panel once more. After a change of your own nika stays off until you ask." | none | **Fit again** |
+| `blocked` / `changed` | "Fit again tries once more." | none | **Fit again** |
+| `blocked`, no or unknown reason | none | none | **Fit again** |
+| `blocked` / `user-zoom` | "Unzoom it in tmux (prefix, then z) and nika fits the window by itself." | none | none |
+| `blocked` / `size-option` | none | none | none |
+| `blocked` / `foreign-tag` | "If no other nika runs, clear the mark in that tmux window, then nika fits it by itself:" | `tmux set-option -wu @nika-fit` | none |
+| `other` | "The other nika window stops fitting it." | none | **Fit here** |
+
+No action for `user-zoom`, `size-option` and `foreign-tag`: `open: true` changes nothing there (the server refuses again), so a button would only
+fail; `user-zoom` and `foreign-tag` recover on the next heartbeat once the user acts in tmux. "Fit here" says that this window takes the tmux window
+over from the other nika window, which "Fit again" would not.
+
+Words: the button's name and the panel's heading are the state's label ("Fit: fills the panel", "Fit: zoomed, text scaled", "Fit: off", "Fit: another
+window"); the actions read "Fit again", "Fit here" and, while a request is on its way, "Fitting…" (the button gets `aria-disabled="true"`, not
+`disabled`, so focus stays on it); the footer's other button is "Close"; the note reads "nika could not fit the window just now. It tries again
+within 5 seconds." (with the `i-warn` icon, in the `--idle` colour; there is no `--warn` token).
+
+| When | What happens |
+|---|---|
+| click, Enter or Space on the chip while closed | the panel is drawn and placed (absolute under the chip, so opening never changes the terminal box and never fires a fit request; `placeMenuX` keeps it inside the window, right-aligned to the chip by default, `data-x="start"` left-aligned); focus goes to Fit again when it is shown, else to Close |
+| click on the chip while open, Esc (inside the panel or on the chip; it never reaches the page's handlers), or Close | closes; focus goes to the chip |
+| Tab out of the chip and the panel, or a pointer down outside the panel and the chip | closes; focus stays where it went |
+| the window is resized | closes; focus goes to the chip if it was inside the panel |
+| a new chip state while open | the panel is drawn again in place (announced once by the chip as before); focus stays, unless the focused action has just gone: then Close |
+| the chip hides (a 403, the window given back, the pane gone) | closes; focus goes to the transcript button if it was inside |
+| Fit again (click, Enter or Space; ignored while `aria-disabled`) | the page's next request is `open: true`; the button reads "Fitting…" |
+| the answer is 200 with `fitted` or `zoomed` | the panel closes; focus on the chip; the chip announces its state |
+| 200 with `blocked` or `other` and a new key | the panel stays, drawn again; the chip announces its state |
+| 200 with the same key as before | the panel stays; "Fit is still off. <title>" is announced |
+| any other status, or no answer | the note shows, the button is enabled again; the planner asks `open: true` again at the next beat; the note is announced |
+| 403 | everything stops; the chip hides and focus goes to the transcript button |
+
+**Keyboard and accessibility.** Tab order: transcript button, the chip, then, with the panel open, Close and the action (DOM order), then the colour
+buttons. No new shortcut. The button is at least 24 px high (2.5.8); the focus ring is the page-wide `:focus-visible` rule. Both themes use the same
+tokens as the chip; the primary action is the existing `.btn.primary`. At ≤ 760 px the header wraps as before (the chevron adds 14 px) and the panel
+stays on screen. States: no chip before the first 200 answer (no button, no panel); fitted and zoomed open an information-only panel; a blocked state
+with an action shows heading, why, hint, Close and the action; pending shows "Fitting…"; a failed ask shows the note under the hint.
+
 **When the page asks** (`createFitPlanner`; one request at a time, the newest size wins)
 
 | Event | Request |
 |---|---|
-| the first capture answers (the pane is live) | `PUT { open: true }`, repeated until one is answered 200; every later request is `open: false`, also after `blocked / user-change` and `blocked / changed` |
+| the first capture answers (the pane is live) | `PUT { open: true }`, repeated until one is answered 200; every later request is `open: false`, also after `blocked / user-change` and `blocked / changed`, until the user asks (next row) |
+| the user presses Fit again or Fit here (F1) | `PUT { open: true }` at once: a waiting heartbeat is cleared and the beat re-armed, and a request in flight finishes first, then this one goes out. A refused or lost ask is tried again by the next beat, again with `open: true`; later requests are `open: false` once one is answered 200. Not before the first capture, not after the pane is gone or a 403, and not while an ask is pending |
 | the panel changes size | `PUT { open: false }` 250 ms after the last change |
 | every 5 s | `PUT { open: false }` with the current size (the beat: the server lets a lease lapse after 15 s without one) |
 | the window is shown again (`visibilitychange`) | one `PUT` at once: timers may have been suspended and the lease may have lapsed |
@@ -2343,7 +2508,7 @@ the glyph is `aria-hidden`, the word is text, the badge has a `title`. Only the 
 line is drawn without one, and the read-only view hides its pill. The role tag `subagent` (`.tag.sa`: `--surface-2`, `--text`, a 1 px dashed
 `--accent-line` border; title "Claude's own subagent. It runs inside its parent session.") is used only by the read-only view's header. One line
 (`li.sub[data-ss]`, `subagentItemEl`) holds the badge, the description (a link, `a.sub-desc.sub-link`, title "Open its transcript (read-only)", at least
-24 px high; "(no description)" when empty), the type (`span.sub-type`, muted), the model label and a time (rows only); it wraps, so at ≤ 600 px the badge
+24 px high; "(no description)" when empty), the label chip (`span.agent-kind`, §3.21; the raw type is in its title), the model label and a time (rows only); it wraps, so at ≤ 600 px the badge
 and description come first and the rest below.
 
 **Rows** (`subagentsEl` in `public/app.js`; `subagentView` and `subagentHref` in `public/dash-model.js`).
@@ -2368,8 +2533,8 @@ and description come first and the rest below.
    stored string `true`, storage that throws means off; a change is stored and drawn at once), then the list: the same lines as the rows, with **no time**
    (it would change at every poll), each description a link by `subagentHref`. With everything ended and the box off, the summary reads "No subagents
    running +K ended" and the body shows the box and an empty list; ticking it lists them.
-4. Redraw only when what it shows changes (the session id and name, the box, the summary, the hint and each shown line's id, state, description, type
-   and model label). Focus stays on the same link across a redraw (`data-fk` `sub:<agent id>`).
+4. Redraw only when what it shows changes (the session id and name, the box, the summary, the hint and each shown line's id, state, description, type,
+   label and model label). Focus stays on the same link across a redraw (`data-fk` `sub:<agent id>`).
 5. Style: a strip with a 1 px bottom border, a summary 32 px high (muted, `--text` on hover), the list at most 40 vh and scrolling.
 
 **The read-only view** (`session.html?session=<uuid>&agent=<id>[&project=<key>]`, built only by `subagentHref`).
@@ -2391,7 +2556,7 @@ and description come first and the rest below.
 | `h1` and the window title | the description, else the type, else "Subagent " and the first 8 characters of the id; the title is "<that> · nika"; before the first poll "Subagent" |
 | Role tag | `subagent` |
 | State pill | `subStateEl(state, { pill: true })`; hidden until a poll lists the subagent with a known state |
-| Type (`#sess-subtype`, hidden on narrow windows), model label | the entry's `type` and `modelLabel`; each hidden when empty |
+| Label chip (`#sess-kind`, after the role tag; shown at every width), model label | the entry's `label` (never empty: `agent` at worst; chip title "Claude's <type> subagent. Kind: <kind>, <meaning>", or without the Kind part for a name that is no kind) and `modelLabel` (hidden when empty) |
 | Context meter, pane, branch, Claude link | never shown |
 | Back | `session.html?session=<parent uuid>` plus `&pane=<parent pane>` only while the parent is live, plus `&project=<key>` when the address had one; its label is the parent's name ("untitled session" when it has none). Before the first poll it is the dashboard, or the project when the address had one |
 
@@ -2429,14 +2594,13 @@ between the summary and the links. In the read-only view: Back with ⌘[ / Alt+�
 region (`#hist-scroll`, `tabindex` 0), "Load older entries" and "Jump to latest" as buttons. No single-key shortcut is added. Every badge's word is text;
 links have a name (the description, or "(no description)"); lists carry `aria-label="Subagents of <name>"`; the notice is `role="status"` and state changes
 go through the page's polite announcer; targets are at least 24 px; the running arc stops under reduced motion. Tokens only, so both themes come from
-`tokens.css`. At ≤ 760 px the view hides its type item (`.hide-narrow`); it is one column at every width.
+`tokens.css`. At ≤ 760 px the view hides nothing of its header: the label chip stays (at most 24 characters; the `h1` truncates first), and it is one column at every width.
 
 **Security.** Every string is set with `textContent`; a link is built only from ids checked against `UUID` and `SUBAGENT_ID`; the CSP is unchanged (no
 inline anything). Subagent text is data: instruction-like text in a transcript is shown, never acted on (T56).
 
 **Not built.** Subagent lines in `nika status`; links or subagent text on the browser tier; a list or links inside a subagent's own view (nested
-subagents); relabelling the parent's `<task-notification>` entries (they still read "You"); live progress beyond the 3 s poll; labels for subagents (a
-later item: the type is drawn in `span.sub-type` and `#sess-subtype` only, so a label replaces those two places); screenshots (regenerated at the end of
+subagents); relabelling the parent's `<task-notification>` entries (they still read "You"); live progress beyond the 3 s poll; screenshots (regenerated at the end of
 the release).
 
 ### 8.8 WebView support
