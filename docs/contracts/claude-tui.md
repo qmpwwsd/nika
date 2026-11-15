@@ -86,7 +86,7 @@ simply not on the screen.
 
 Hover pointer (Claude Code 2.1.325, 171 x 45 and 120 x 40, spike D1-S): on the `⏺ main` row or an agent row under the mouse, columns
 0-1 read `❯` (U+276F) and then a plain space (0x20; the input box uses a no-break space, the list does not) instead of two spaces.
-Only that row changes (it loses its grey), at most one row at a time, and the mode line, the box and the cursor stay as they were,
+Only that row changes (an agent row loses its grey; `main` stays bold), at most one row at a time, and the mode line, the box and the cursor stay as they were,
 so the box keeps the keys. The pointer was never on the overflow row, not with the mouse over it and not with the selection
 scrolled past the fifth agent. nika accepts the pointer in gates 2 and 3, on one row at most, so the footer reads the same with or
 without it.
@@ -94,13 +94,15 @@ without it.
 Keyboard selection (Down from the box goes to the footer's `<n> shells` pill, then to `main`, then down the agents) draws a selected
 row exactly like a hovered one, but the mode line is replaced by a hint (`↑/↓ to select` on `main`; on an agent
 `Enter to view · x to stop · ctrl+x ctrl+k to stop all agents`), and the cursor is hidden and parked at column 0 of the last row of
-the pane. Gate 5 therefore refuses the screen (no mode line above the blank row: nothing is cut, the footer reads `unknown`), and
+the pane (seen with an idle box and a `<n> shells` pill on the footer). Gate 5 therefore refuses the screen (no mode line above the blank row: nothing is cut, the footer reads `unknown`), and
 the box reader refuses a cursor outside the box. With the pill selected the text looks like a normal idle box with its mode line,
-but the cursor is parked the same way (and `Enter` opens a Background dialog instead of sending), so the cursor rule refuses that
-screen too.
+but the cursor is parked the same way (and `Enter` opens a Background dialog instead of sending). The cursor rule refuses the box
+there, so nothing is typed into it; the mode line still reads, and what `BTab` does with the pill selected was not tried (a mode
+switch re-reads the footer after every press and stops on a footer it does not know).
 
 Not seen, so read as `unknown`: `↑ <n> more`, a wrapped label, a different glyph or a no-break space after the pointer, and a
-permission prompt or dialog drawn with the list below it.
+permission prompt drawn with the list below it. Not tried: keyboard selection during a busy turn, with no `<n> shells` pill, or
+with a question or plan dialog open.
 
 **Known limit (fail closed).** A permission prompt or a dialog with the subagent list under it stays `unknown` (its footer is not the
 last row, and gate 5 does not hold for it). nika then reads no prompt, so it cannot answer it from the page, and the mode

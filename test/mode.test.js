@@ -590,7 +590,8 @@ describe('subagent list: the hover pointer', () => {
   });
 
   test('(−) pointer rows with the keyboard hint in place of the mode line stay unknown (keyboard selection)', () => {
-    for (const [name, hint] of [['main selected', HINT_MAIN], ['agent selected', HINT_AGENT]]) {
+    const bare = (h) => h.replace('-- INSERT -- ', '');
+    for (const [name, hint] of [['main selected', HINT_MAIN], ['agent selected', HINT_AGENT], ['main selected, no INSERT', bare(HINT_MAIN)], ['agent selected, no INSERT', bare(HINT_AGENT)]]) {
       for (const pointer of ['main', 0, 1]) {
         const rows = [...head(hint), ...subagentRows({ agents: 2, pointer })];
         assert.equal(modeFromRows(rows), 'unknown', `${name} pointer ${pointer}`);

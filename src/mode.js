@@ -37,8 +37,8 @@ const isModeLine = (text) => FOOTER.some((f) => f.match.test(text)) || BYPASS.te
 // Columns 0-1 of `main` and of an agent row are two spaces, or, on the one row under the mouse (hover) or the one picked with the arrow
 // keys, the pointer U+276F and a plain space (spike D1-S, 2.1.325: no-break space was not seen there). Picking with the keys also
 // replaces the mode line with a hint, which gate 5 refuses; the overflow row never carries the pointer.
-const LIST_LEAD = String.raw`(?: {2}|\u276f )`;
 const POINTER = '\u276f';
+const LIST_LEAD = `(?: {2}|${POINTER} )`;
 const MAIN_ROW = new RegExp(String.raw`^${LIST_LEAD}\u23fa main\s*$`);
 const AGENT_ROW = new RegExp(String.raw`^${LIST_LEAD}\u25ef \S+ {2}.* (?:\d+[dhm](?: \d+[hms])*|\d+s)(?: \u00b7 [\u2191\u2193] \d+(?:\.\d+)?[km]? tokens)?\s*$`);
 const MORE_ROW = /^ {2}\u2193 \d+ more\s*$/;
@@ -112,7 +112,8 @@ function treeEnd(texts) {
  * when it is exactly the captured block (MAIN_ROW after exactly one blank row, then agent rows only, then at most one overflow row)
  * AND the row above the blank row is a mode line or the last row of a dialog (isDialogEnd): anything else below the footer (junk,
  * a dialog, a changed layout) stays, so the footer reads `unknown` (fail closed). A mode line cannot be forged by a label: labels
- * live in agent rows only. The auto-mode nudge (nudgeFooterAt, an exact anchor) makes its own footer the last row, what hangs under it is cut.
+ * live in agent rows only. `main` and the agent rows may start with Claude's hover pointer instead of two spaces, on one row at most
+ * (spike D1-S). The auto-mode nudge (nudgeFooterAt, an exact anchor) makes its own footer the last row, what hangs under it is cut.
  */
 export function footerEnd(texts) {
   const end = treeEnd(texts);

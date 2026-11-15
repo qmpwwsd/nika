@@ -217,6 +217,7 @@ export function boxRows({ cols = 120, lines = [''], mode = 'prompt', insert = fa
  */
 export function subagentRows({ cols = 120, agents = 1, more = 0, blank = true, main = true, pointer = null } = {}) {
   const list = typeof agents === 'number' ? Array.from({ length: agents }, (_, i) => ({ label: `Agent ${i + 1}` })) : agents;
+  if (pointer !== null && pointer !== 'main' && !(Number.isInteger(pointer) && pointer >= 0 && pointer < list.length)) throw new RangeError(`subagentRows: no row for pointer ${pointer}`);
   const lead = (which) => (pointer === which ? '❯ ' : '  ');
   const rows = list.map(({ type = 'Explore', label, elapsed = '5s', tokens = '↓ 23.4k' }, i) => {
     const head = `${lead(i)}◯ ${type}  ${label}`;
