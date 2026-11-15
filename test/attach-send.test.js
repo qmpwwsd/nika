@@ -32,11 +32,13 @@ const dline = (t) => (Array.isArray(t) ? t : t === '' ? [] : [span(t)]);
 const dcap = (rows, cursor = { x: 2, y: 0, visible: true }) => ({ rows: rows.map(dline), cursor, cols: 100 });
 const RULE = (style) => [span('─'.repeat(100), style)];
 const DIALOGS = {
-  nudge: () => {
+  // `text`: what the input box under the nudge holds (the send's text so far), so only the footer gate can refuse it
+  nudge: (text = '') => {
     const rows = [['⏺ All done.', ''], [RULE(ACC)], [[span('  Teach auto mode about your environment?', { b: true })]], [''], ['  Auto mode works better when it knows your environment.'], [''],
-      ['  ❯ 1. Yes', '    2. Not now', "    3. Don't show again"], [''], [[span('  Enter to confirm · Esc to cancel', { fg: 246, i: true })]], [RULE(DIM)], ['❯'], [RULE(DIM)],
+      ['  ❯ 1. Yes', '    2. Not now', "    3. Don't show again"], [''], [[span('  Enter to confirm · Esc to cancel', { fg: 246, i: true })]], [RULE(DIM)], [text ? `❯\u00a0${text}` : '❯'], [RULE(DIM)],
       ['  -- INSERT -- ⏵⏵ auto mode on (shift+tab to cycle)']].flat(1);
-    return dcap(rows, { x: 2, y: rows.indexOf('❯'), visible: true });
+    const box = rows.findIndex((r) => typeof r === 'string' && r.startsWith('❯'));
+    return dcap(rows, { x: text ? 2 + text.length : 2, y: box, visible: true });
   },
   ask: () => dcap([['⏺ I have a question first.', ''], [RULE(DIM)], [' ☐ Project  ☐ Tools  ✔ Submit'], [''], ['Which project should I open?'], [''], ['❯ 1. acme-api', '  2. web-shop', '  3. Type something.'], [''], ['Enter to select · Tab/Arrow keys to navigate · Esc to cancel']].flat(1)),
   plan: () => dcap([['⏺ plan', ''], [[span(`  ${'─'.repeat(96)}`, ACC)]], ['   Ready to code?'], [''], ["   Here is Claude's plan:"], ['   - do it'], [[span(`  ${'─'.repeat(96)}`, ACC)]],
@@ -449,7 +451,7 @@ describe('send: it stops when the screen is not what was built (T38, T51)', () =
       // captures of a two-file send: 1 first look, 2 read-back, 3 look before paste 2, 4 read-back, 5 the look before Enter
       for (const [at, error, pasted] of [[1, 'mode-unknown', 0], [3, 'screen-changed', 1], [5, 'screen-changed', 2]]) {
         const rg = rig({ busy: 'auto' });
-        rg.pane.onCapture = (n) => { if (n === at) rg.pane.screen = make(); };
+        rg.pane.onCapture = (n) => { if (n === at) rg.pane.screen = make(rg.pane.text); };
         const r = await stopped(rg, [PNG, PDF], error, pasted);
         assert.equal(r.body.pasted, pasted, `${name} at capture ${at}`);
         assert.deepEqual(pastes(rg), [PNG.path, ` ${PDF.path}`].slice(0, pasted), `${name} at capture ${at}: no paste after the dialog appeared`);
