@@ -392,6 +392,123 @@ describe('save', () => {
   });
 });
 
+// saveBytes (W2-T6): the file chooser reads the bytes itself and hands them over; every rule of save() applies, in the same place.
+describe('saveBytes', () => {
+  const put = (att, buf, name = 'file', extra = {}) => att.saveBytes({ pane: PANE, key: KEY, name, bytes: buf, ...extra });
+
+  test('(+) stores the bytes like save(): { id, type, size } only, 0600 in a 0700 folder, no name and no path in the answer, no log', async () => {
+    const { att, env, logs } = make();
+    const r = await put(att, PNG, 'Holiday Photo.png');
+    assert.equal(r.status, 200);
+    assert.deepEqual(Object.keys(r.body).sort(), ['id', 'size', 'type']);
+    assert.deepEqual([r.body.type, r.body.size], ['png', PNG.length]);
+    const file = path.join(keyDir(env), `${r.body.id}.png`);
+    assert.deepEqual(fs.readFileSync(file), PNG);
+    assert.equal(mode(file), 0o600);
+    assert.equal(mode(keyDir(env)), 0o700);
+    assert.deepEqual(leftovers(env), [`${r.body.id}.png`]);
+    assert.ok(!JSON.stringify(r.body).includes('Holiday') && !JSON.stringify(r.body).includes(root));
+    assert.deepEqual(logs, []);
+  });
+
+  test('(+) the stored file is found by lookup for its pane, so a send can use it', async () => {
+    const { att } = make();
+    const b = (await put(att, Buffer.from('print(1)\n'), 'job.py')).body;
+    const found = await att.lookup(PANE, b.id);
+    assert.deepEqual([found.id, found.type, found.size], [b.id, 'text', 9]);
+    assert.match(found.path, /\.py$/, 'the text extension comes from the name, through the same list');
+    assert.equal(await att.lookup('%8', b.id), null, 'another pane cannot send it');
+  });
+
+  test('(+) save() is the same code path: a byte-for-byte equal result for the same bytes', async () => {
+    const { att, env } = make();
+    const a = (await put(att, PDF, 'a.pdf')).body;
+    const b = await saved(att, PDF, 'a.pdf');
+    assert.deepEqual([a.type, a.size], [b.type, b.size]);
+    assert.deepEqual(fs.readFileSync(path.join(keyDir(env), `${a.id}.pdf`)), fs.readFileSync(path.join(keyDir(env), `${b.id}.pdf`)));
+  });
+
+  test('(−) 8 MiB + 1 is 413 too-big, empty is 400 empty, other bytes are 415 wrong-type; nothing is written', async () => {
+    const { att, env } = make();
+    const big = await put(att, Buffer.alloc(MAX_BYTES + 1, 0x61), 'big.txt');
+    assert.deepEqual([big.status, big.body.error], [413, 'too-big']);
+    const empty = await put(att, Buffer.alloc(0), 'e.txt');
+    assert.deepEqual([empty.status, empty.body.error], [400, 'empty']);
+    const wrong = await put(att, bytes('MZ', PAYLOAD), 'x.png');
+    assert.deepEqual([wrong.status, wrong.body.error], [415, 'wrong-type']);
+    assert.deepEqual(leftovers(env), null);
+    assert.equal((await put(att, Buffer.alloc(MAX_BYTES, 0x61), 'ok.txt')).status, 200, '8 MiB exactly is accepted');
+  });
+
+  test('(−) bytes that are not a Buffer are 400 invalid (a string, a Uint8Array, null); nothing is written', async () => {
+    const { att, env } = make();
+    for (const v of ['abc', new Uint8Array([1, 2, 3]), null, undefined, 5, {}]) {
+      const r = await put(att, v);
+      assert.deepEqual([r.status, r.body.error], [400, 'invalid'], String(v));
+    }
+    assert.equal(fs.existsSync(stateDir(env)), false);
+  });
+
+  test('(−) a pane or key that is not nika\'s own shape is refused before any disk access', async () => {
+    const { att, env } = make();
+    for (const pane of ['7', '%abc', 5, null]) assert.equal((await put(att, PNG, 'a', { pane })).status, 404, JSON.stringify(pane));
+    for (const key of ['../etc', 'ABCDEF0123456789', '', null]) {
+      const r = await put(att, PNG, 'a', { key });
+      assert.deepEqual([r.status, r.body.error], [409, 'no-project'], JSON.stringify(key));
+    }
+    assert.equal(fs.existsSync(stateDir(env)), false);
+  });
+
+  test('(−) one save at a time across both doors: a save() and a saveBytes() together make one 429 busy', async () => {
+    const { att, env } = make();
+    const first = put(att, PNG);
+    const second = upload(att, JPEG);
+    assert.deepEqual([(await second).status, (await first).status], [429, 200]);
+    const third = upload(att, GIF89);
+    const fourth = put(att, JPEG);
+    assert.deepEqual([(await fourth).body.error, (await third).status], ['busy', 200]);
+    assert.equal(leftovers(env).length, 2, 'only the two that held the slot were written');
+  });
+
+  test('(−) the 30-a-minute limit counts both doors: 15 + 15 pass, the 31st is 429, and a failed check counts too', async () => {
+    const { att } = make();
+    for (let i = 0; i < 15; i += 1) {
+      assert.equal((await upload(att, Buffer.from(`u${i}`))).status, 200);
+      assert.equal((await put(att, Buffer.from(`b${i}`))).status, 200);
+    }
+    assert.equal((await put(att, Buffer.from('b15'))).status, 429);
+    assert.equal((await upload(att, Buffer.from('u15'))).status, 429);
+    const other = make();
+    for (let i = 0; i < 30; i += 1) assert.equal((await put(other.att, bytes('MZ', PAYLOAD))).status, 415);
+    assert.equal((await put(other.att, PNG)).status, 429);
+  });
+
+  test('(−) a full store and a failed write answer with the codes of save(); the log has the node code only', async () => {
+    const { att, env, logs } = make();
+    const real = fsp.open;
+    mock.method(fsp, 'open', async (p, ...rest) => {
+      const handle = await real(p, ...rest);
+      if (String(p).endsWith('.tmp')) handle.writeFile = async () => { throw Object.assign(new Error(`no space left at ${p}`), { code: 'ENOSPC' }); };
+      return handle;
+    });
+    const r = await put(att, PNG);
+    assert.deepEqual([r.status, r.body.error], [507, 'disk-full']);
+    assert.deepEqual(leftovers(env), []);
+    assert.deepEqual(logs, ['nika: attachments: ENOSPC']);
+  });
+
+  test('(−) a key folder that is a symlink is refused here too (409 folder-unsafe) and nothing is written through it', async () => {
+    const { att, env } = make();
+    const outside = path.join(root, 'outside-bytes');
+    fs.mkdirSync(outside);
+    fs.mkdirSync(attRoot(env), { recursive: true, mode: 0o700 });
+    fs.symlinkSync(outside, keyDir(env));
+    const r = await put(att, PNG);
+    assert.deepEqual([r.status, r.body.error], [409, 'folder-unsafe']);
+    assert.deepEqual(fs.readdirSync(outside), []);
+  });
+});
+
 describe('lookup, remove and markSent', () => {
   test('(+) lookup of an own, unsent id gives { id, path, type, size }; the path is the real <key folder>/<id>.<ext>', async () => {
     const { att, env } = make();

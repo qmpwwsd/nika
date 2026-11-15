@@ -20,7 +20,8 @@ import { listPlugins } from './collect/plugins.js';
 import { listCommands } from './collect/commands.js';
 import { createMirror } from './mirror.js';
 import { createKeys } from './keys.js';
-import { createAttachments } from './attachments.js';
+import { createAttachments, MAX_BYTES } from './attachments.js';
+import { openRegular } from './fsafe.js';
 import { rulesState, preview, apply } from './rules.js';
 import { spawnAgent } from './spawn.js';
 import { startOrchestrator } from './orchestrate.js';
@@ -62,27 +63,81 @@ function readLines(stream, onLine) {
   });
 }
 
-/** One open folder picker at a time. State lives here; the shell's `folder` message resolves it (contract §3, §5). */
-export function createPicker({ send, env }) {
-  let slot = null; // { reqId, state: 'pending' | 'working' | 'done' | 'cancelled', project? }
+/** The name of a picked file as the page shows it: the last part of its path only, never the path; `file` when nothing is left. */
+function pickedName(p) {
+  return clean(typeof p === 'string' ? path.basename(p) : '', 255) ?? 'file';
+}
+
+/**
+ * One chooser open at a time, of either kind (a folder for Add project, files for the attachment button). State lives here; the shell's
+ * `folder` or `files` message resolves it (contract §3, §5). A files request reads what the user picked itself, through fsafe, and hands the
+ * bytes to the attachment store; the paths live only for the length of that read and never reach an answer, a log or the page.
+ */
+export function createPicker({ send, env, attachments }) {
+  let slot = null; // { kind: 'folder' | 'files', reqId, state: 'pending' | 'working' | 'done' | 'cancelled', project?, pane?, key?, room?, files? }
   const open = () => slot && (slot.state === 'pending' || slot.state === 'working');
+  const answers = (s, msg) => s && s.state === 'pending' && msg.reqId === s.reqId;
+
+  /** One picked path as an entry of the answer. A failure here is this entry's alone. */
+  async function readPicked(p, { pane, key }) {
+    const name = pickedName(p);
+    const bad = (error) => ({ ok: false, name, error });
+    if (typeof p !== 'string' || p.length > PICK_PATH_MAX || p.includes('\0') || !path.isAbsolute(p)) return bad('invalid');
+    let handle;
+    try {
+      let st;
+      try {
+        ({ handle, st } = await openRegular(p)); // O_NOFOLLOW, a regular file, owned by this user, one link
+      } catch {
+        return bad('unreadable');
+      }
+      if (st.size > MAX_BYTES) return bad('too_large'); // from the fstat, before any byte is read
+      const bytes = Buffer.alloc(st.size);
+      let got = 0;
+      while (got < st.size) {
+        const { bytesRead } = await handle.read(bytes, got, st.size - got, got);
+        if (bytesRead === 0) break; // the file shrank: what was there is all there is
+        got += bytesRead;
+      }
+      const saved = await attachments.saveBytes({ pane, key, name, bytes: bytes.subarray(0, got) });
+      return saved.status === 200 ? { ok: true, name, id: saved.body.id, size: saved.body.size, type: saved.body.type } : bad(saved.body?.error ?? 'write-failed');
+    } catch {
+      return bad('write-failed'); // a read or store failure; its text could carry the path, so nothing of it is kept
+    } finally {
+      await handle?.close().catch(() => {});
+    }
+  }
+
   return {
-    /** New request id, or null while another picker is open. */
+    /** New folder request id, or null while another chooser is open. */
     start() {
       if (open()) return null;
-      slot = { reqId: crypto.randomUUID(), state: 'pending' };
+      slot = { kind: 'folder', reqId: crypto.randomUUID(), state: 'pending' };
       send({ type: 'pick-folder', reqId: slot.reqId });
       return slot.reqId;
     },
-    /** { state, project? } of the latest request, or null for any other id. */
+    /** New files request id for `pane` (its project `key`; at most `room` files are taken), or null while another chooser is open. */
+    startFiles({ pane, key, room }) {
+      if (open()) return null;
+      slot = { kind: 'files', reqId: crypto.randomUUID(), state: 'pending', pane, key, room };
+      send({ type: 'pick-files', reqId: slot.reqId });
+      return slot.reqId;
+    },
+    /** { state, project? } of the latest folder request, or null for any other id (a files request is not one). */
     status(reqId) {
-      if (!slot || slot.reqId !== reqId) return null;
+      if (!slot || slot.kind !== 'folder' || slot.reqId !== reqId) return null;
       return slot.state === 'working' ? { state: 'pending' } : { state: slot.state, project: slot.project };
+    },
+    /** { state: 'pending' | 'cancelled' } or { state: 'done', files } of the latest files request, or null for any other id or another pane's. */
+    filesStatus(pane, reqId) {
+      if (!slot || slot.kind !== 'files' || slot.reqId !== reqId || slot.pane !== pane) return null;
+      if (slot.state === 'done') return { state: 'done', files: slot.files };
+      return { state: slot.state === 'working' ? 'pending' : slot.state };
     },
     /** A `folder` message: ignored unless it answers the open request; an unusable path closes it as cancelled. */
     async onFolder(msg) {
       const s = slot;
-      if (!s || s.state !== 'pending' || msg.reqId !== s.reqId) return;
+      if (s?.kind !== 'folder' || !answers(s, msg)) return;
       if (msg.path === null) {
         s.state = 'cancelled';
         return;
@@ -98,6 +153,24 @@ export function createPicker({ send, env }) {
       } catch {
         s.state = 'cancelled';
       }
+    },
+    /**
+     * A `files` message: ignored unless it answers the open files request. `paths: null` (or anything that is not a list with an entry)
+     * closes it as cancelled; otherwise the first `room` entries are read one after the other, each on its own: a failure of one
+     * never stops the others, and the entries beyond `room` are never opened.
+     */
+    async onFiles(msg) {
+      const s = slot;
+      if (s?.kind !== 'files' || !answers(s, msg)) return;
+      if (!Array.isArray(msg.paths) || msg.paths.length === 0) {
+        s.state = 'cancelled';
+        return;
+      }
+      s.state = 'working'; // a second answer for the same request is ignored
+      const files = [];
+      for (const p of msg.paths.slice(0, s.room)) files.push(await readPicked(p, s));
+      s.files = files;
+      s.state = 'done';
     },
   };
 }
@@ -197,9 +270,9 @@ export function serveApp({ config, env = process.env, stdin, stdout, stderr, exe
         findSessions: (ids) => findSessions(ids, { config: cfg, now: now(), cache: collectorCache }), // ended sessions by id in one transcript-index walk (the project list's saved orchestrators)
       };
       const snapshot = () => collect({ config: cfg, exec, now: now(), sinceMs: parseSince(DEFAULT_SINCE), since: DEFAULT_SINCE, cache: collectorCache }).then((r) => r.snapshot);
-      const picker = createPicker({ send: say, env });
       const attachLog = attachOpts.log ?? ((line) => stderr.write(`${line}\n`)); // the store's lines and the routes' go to the same stderr
       attachments = createAttachments({ env, now, ...attachOpts, log: attachLog });
+      const picker = createPicker({ send: say, env, attachments }); // the file chooser hands what it reads to the same store the routes use
       // the copy of the app in ~/Applications (ADR 0011): where it comes from and goes to is fixed by this install, never by a request
       const copyArgs = { root: appCopy.root ?? INSTALL_ROOT, home: appCopy.home ?? os.homedir(), platform: appCopy.platform ?? process.platform, stateDir: stateDir(env) };
       const copyDeps = { exec: appCopy.exec ?? makeExec({ timeout: COPY_MS }), ...(appCopy.brewApps ? { brewApps: appCopy.brewApps } : {}) };
@@ -253,6 +326,7 @@ export function serveApp({ config, env = process.env, stdin, stdout, stderr, exe
       tick();
       onMessage = (msg) => {
         if (msg.type === 'folder') picker.onFolder(msg);
+        if (msg.type === 'files') picker.onFiles(msg);
       };
     }
 

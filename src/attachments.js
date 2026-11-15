@@ -173,9 +173,9 @@ export function createAttachments({
     return out;
   }
 
-  /** Steps 5 to 11 of the upload. */
-  async function store({ pane, key, name, data }) {
-    const buf = Buffer.from(data, 'base64');
+  /** Steps 5 to 11 of the upload; `buf` is a Buffer (the decoded body of an upload, or the bytes the file chooser read). */
+  async function store({ pane, key, name, buf }) {
+    if (!Buffer.isBuffer(buf)) return fail(400, 'invalid');
     if (buf.length > MAX_BYTES) return fail(413, 'too-big');
     const kind = sniff(buf, name);
     if (kind.error) return fail(kind.error === 'empty' ? 400 : 415, kind.error);
@@ -212,25 +212,38 @@ export function createAttachments({
     timer = null;
   }
 
+  /**
+   * The admission every save passes, whichever door it came through (the upload route, or the file chooser's reads): the pane and key
+   * shapes, the rate limit and the one save at a time. `buf()` makes the bytes only once the save is admitted.
+   */
+  async function admitted({ pane, key, name }, buf) {
+    if (typeof pane !== 'string' || !PANE_ID.test(pane)) return fail(404, 'not_found');
+    if (typeof key !== 'string' || !PROJECT_KEY.test(key)) return fail(409, 'no-project');
+    const t = now();
+    while (stamps.length && t - stamps[0] >= 60_000) stamps.shift();
+    if (inflight || stamps.length >= UPLOADS_PER_MIN) return fail(429, 'busy'); // checked and set before any await: two calls cannot both pass
+    stamps.push(t);
+    inflight = true;
+    writing = key;
+    try {
+      return await store({ pane, key, name, buf: buf() });
+    } finally {
+      writing = null;
+      inflight = false;
+    }
+  }
+
   return {
     /** Design 3.2 steps 4 to 11. `pane` and `key` come from nika's own snapshot, never from the request; resolves `{ status, body }`. */
     async save({ pane, key, name, data }) {
       const bad = checkUploadBody({ name, data });
       if (bad) return bad;
-      if (typeof pane !== 'string' || !PANE_ID.test(pane)) return fail(404, 'not_found');
-      if (typeof key !== 'string' || !PROJECT_KEY.test(key)) return fail(409, 'no-project');
-      const t = now();
-      while (stamps.length && t - stamps[0] >= 60_000) stamps.shift();
-      if (inflight || stamps.length >= UPLOADS_PER_MIN) return fail(429, 'busy'); // checked and set before any await: two calls cannot both pass
-      stamps.push(t);
-      inflight = true;
-      writing = key;
-      try {
-        return await store({ pane, key, name, data });
-      } finally {
-        writing = null;
-        inflight = false;
-      }
+      return admitted({ pane, key, name }, () => Buffer.from(data, 'base64'));
+    },
+
+    /** The same save for bytes the server read itself (the file chooser, W2-T6): `bytes` is a Buffer; every rule of save() applies. */
+    saveBytes({ pane, key, name, bytes }) {
+      return admitted({ pane, key, name }, () => bytes);
     },
 
     /** The send's file check (design 4.3): an unsent id this process issued for this pane, whose file is still the one nika wrote. */

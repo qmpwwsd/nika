@@ -45,7 +45,7 @@ struct Inner {
     windows_made: u64,
     tray: Option<TrayIcon>,
     view: View,
-    /// The open `pick-folder` request, one at a time.
+    /// The open `pick-folder` or `pick-files` request: one dialog at a time, of either kind.
     pick: Option<String>,
     zoom: f64,
     /// macOS: the full-screen close whose timer will hide the window once it has left full screen
@@ -439,24 +439,29 @@ fn handle(app: &AppHandle, gen: u64, ev: Sup, secret: &Secret) {
         Sup::Ready(port) => on_ready(app, port, secret),
         Sup::Status(s) => refresh_tray(app, Some(View::from_status(&s)), false),
         Sup::Pick(req_id) => start_pick(app, req_id),
+        Sup::PickFiles(req_id) => start_pick_files(app, req_id),
         Sup::Window(action) => dispatch(app, action),
         Sup::Failed => show_error(app, Reason::StartFailed),
         Sup::Exited => show_error(app, Reason::Stopped),
     }
 }
 
-/// `pick-folder`: one at a time (a second request is answered with "cancelled"); the dialog blocks, so it runs on
-/// its own thread. Only an absolute path of an existing directory is sent back.
+/// Takes the one dialog slot for `req_id`. `None`: no server to answer. `Some((server, true))`: a dialog is open already, so the
+/// caller answers "cancelled" at once; `Some((server, false))`: the slot is this request's, and the caller must free it when done.
+fn claim_pick(app: &AppHandle, req_id: &str) -> Option<(Arc<Server>, bool)> {
+    let mut i = shell(app).lock();
+    let server = i.server.clone()?; // no server, no claim: nothing would ever free the slot
+    let busy = i.pick.is_some();
+    if !busy {
+        i.pick = Some(req_id.to_string());
+    }
+    Some((server, busy))
+}
+
+/// `pick-folder`: one dialog at a time (a second request, of either kind, is answered with "cancelled"); the dialog blocks, so it
+/// runs on its own thread. Only an absolute path of an existing directory is sent back.
 fn start_pick(app: &AppHandle, req_id: String) {
-    let (server, busy) = {
-        let mut i = shell(app).lock();
-        let busy = i.pick.is_some();
-        if !busy {
-            i.pick = Some(req_id.clone());
-        }
-        (i.server.clone(), busy)
-    };
-    let Some(server) = server else { return };
+    let Some((server, busy)) = claim_pick(app, &req_id) else { return };
     if busy {
         let _ = server.send(&protocol::folder_line(&req_id, None));
         return;
@@ -472,6 +477,33 @@ fn start_pick(app: &AppHandle, req_id: String) {
             .filter(|p| protocol::valid_folder(p))
             .and_then(|p| p.to_str().map(str::to_owned));
         let _ = server.send(&protocol::folder_line(&req_id, picked.as_deref()));
+        shell(&app).lock().pick = None;
+    });
+}
+
+/// `pick-files` (the attachment button): the same single slot as `pick-folder`, and the same thread, because the webview's own file input
+/// freezes the app on macOS (wry runs a modal panel inside a WebKit callback). Only absolute paths of existing regular files are sent
+/// back (valid UTF-8 only, at most `MAX_PICKED_FILES`); none left is "cancelled". The server opens and checks each file itself.
+fn start_pick_files(app: &AppHandle, req_id: String) {
+    let Some((server, busy)) = claim_pick(app, &req_id) else { return };
+    if busy {
+        let _ = server.send(&protocol::files_line(&req_id, None));
+        return;
+    }
+    let app = app.clone();
+    thread::spawn(move || {
+        let picked: Vec<String> = app
+            .dialog()
+            .file()
+            .set_title("Attach files")
+            .blocking_pick_files()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|p| p.into_path().ok())
+            .filter(|p| protocol::valid_file(p))
+            .filter_map(|p| p.to_str().map(str::to_owned))
+            .collect();
+        let _ = server.send(&protocol::files_line(&req_id, protocol::cap_picked(picked).as_deref()));
         shell(&app).lock().pick = None;
     });
 }

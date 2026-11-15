@@ -1,7 +1,10 @@
 // Attachments in the session window (nika 0.5, design W2 sections 6 and 8; routes: docs/contracts/api-app.md). The user adds images, PDFs and
 // text files (button, paste, drop on the message box), sees each one as a chip with its state (uploading, ready, failed), removes chips,
-// and sends them with the message. Nothing reaches Claude before Send: a file is uploaded as JSON { name, data: base64 } and kept by the
-// server under a name of its own; Send names the chips by the ids the server gave back, never by a path.
+// and sends them with the message. Nothing reaches Claude before Send: a pasted or dropped file is uploaded as JSON { name, data: base64 } and
+// kept by the server under a name of its own; Send names the chips by the ids the server gave back, never by a path.
+// The button (W2-T6) opens no file input of its own (the webview's freezes the app on macOS): it asks the server for the desktop shell's native
+// file dialog and polls for the answer. The server reads what the user picked and stores it itself, so the page gets ids, names, sizes, types
+// and error codes back (never a path) and shows each file as a chip that is already ready or failed.
 // Rules: every name and every line is text (h() and textContent, never markup); no inline style (classes and data attributes only); the
 // server's own words never show (every code maps to a fixed line below); the page talks to the server only through the io session.js
 // hands in. The pure rules come first and are tested alone; createAttachTray is the DOM side and does nothing at import.
@@ -19,12 +22,22 @@ const DOTS = String.fromCharCode(0x2026);
 const MID = String.fromCharCode(0xb7);
 const BIDI_AND_CONTROLS = new RegExp(`[${[[0, 0x1f], [0x7f, 0x9f], [0x200e, 0x200f], [0x202a, 0x202e], [0x2066, 0x2069]].map(([a, b]) => `${String.fromCharCode(a)}-${String.fromCharCode(b)}`).join('')}]`, 'g'); // C0, DEL, C1 and the bidi marks
 const NAME_MAX = 255;
+const POLL_MS = 300; // between two looks at the open file dialog
+const REQ_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+// The error codes of a picked file, as the status the upload copy below reads them by (one table of words for both doors).
+const PICK_STATUS = {
+  'too-big': 413, too_large: 413, 'wrong-type': 415, empty: 400, 'no-project': 409, 'path-unusable': 409, 'folder-unsafe': 409, 'storage-full': 507, 'disk-full': 507,
+};
 
 // ---- the copy (section 8.6 and 6): fixed lines, picked by status and code only ------------------------------------------------------------
 
 const TOO_BIG = `Too big ${MID} max 8 MB`;
 const FAILED = 'Upload failed';
 const SESSION_GONE = 'The session is gone.';
+const CHOOSER_OPEN = 'A file chooser is already open. Finish or cancel it first.';
+const CHOOSER_GONE = 'The file chooser closed. Nothing was added.';
+const CHOOSER_FAILED = "nika couldn't open the file chooser. Nothing was added.";
+const UNREADABLE = "nika can't read this file (a link, a folder, or a file with another owner).";
 const PATH_LINE = "nika's attachments folder has a path Claude can't take (a space or a special character). Set XDG_STATE_HOME to a plain path.";
 const CANT_READ = "nika can't read Claude's input box right now (a menu may be open). Nothing was sent. Your text is kept.";
 const DRAFT_UNREADABLE = "Claude's input holds something nika can't read back. Send or clear it in the terminal, then try again.";
@@ -100,6 +113,13 @@ export function uploadView(r, name = 'file') {
   return { short: FAILED, line: null }; // 429 after the retry, no answer, 5xx, anything the page does not know
 }
 
+/** What a picked file that failed shows: the upload copy for the same code, plus the two codes only the chooser has. `code` is the entry's `error`. */
+export function pickView(code, name = 'file') {
+  if (code === 'unreadable') return { short: "Can't read", line: `${name}: ${UNREADABLE}` };
+  if (code === 'invalid') return { short: "Can't read", line: null };
+  return uploadView({ status: Object.hasOwn(PICK_STATUS, code) ? PICK_STATUS[code] : 0, code }, name);
+}
+
 const stopped = (k, n, reason) => `nika put ${k} of ${n} attachment${n === 1 ? '' : 's'} into Claude's input, then stopped without pressing Enter: ${reason}. Send or clear Claude's input in the terminal (Esc twice), then send again. Your text and attachments are kept here.`;
 
 /**
@@ -146,7 +166,8 @@ const wait = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
 // ---- the tray ------------------------------------------------------------------------------------------------------------------------------
 
 /**
- * io: paneId; path(tail) -> the pane's route for 'attachments', 'attachments/<id>' or 'attach-send' (session.js owns every /api/app string);
+ * io: paneId; path(tail) -> the pane's route for 'attachments', 'attachments/<id>', 'attachments/pick', 'attachments/pick/<reqId>' or 'attach-send'
+ * (session.js owns every /api/app string);
  * call(path, { method, json }) -> { status, body } (never rejects); appFetch(path, { method, keepalive }) (the pagehide delete);
  * ds = the draft sync (screen, send, beginSend, endSend); enqueueJob(run) -> Promise (the keys chain); say, announce, showProblem(msg, kind, ms),
  * clearProblem, showNotice, setGone; box() -> { value, shell }; working() -> Claude is busy; cols(); clearBox(value) (clears the message
@@ -161,6 +182,7 @@ export function createAttachTray(io) {
   let enabled = true;
   let sending = false;
   let queued = false; // pump is running
+  let picking = false; // the shell's file dialog is open for this page
   let noticed = false; // the Read notice shows once per page
   let over = 0; // drag enter minus leave: the box is "dropping" while a file is over it or one of its children
 
@@ -289,6 +311,88 @@ export function createAttachTray(io) {
     pump();
   }
 
+  // ---- the button: the shell's own file dialog (W2-T6) -------------------------------------------------------------------------------------
+
+  /** Disabled while input is off or a dialog is open (the dialog is the only thing in flight, and it says so with aria-busy). */
+  function syncButton() {
+    const btn = el('att-btn');
+    btn.disabled = !enabled || picking;
+    if (picking) btn.setAttribute('aria-busy', 'true');
+    else btn.removeAttribute('aria-busy');
+  }
+
+  /** Starts the dialog and waits for it. Resolves the entries it returned, or null (cancelled, or a refusal that has already been said). */
+  async function choose(room) {
+    const start = await io.call(io.path('attachments/pick'), { method: 'POST', json: { room } });
+    const said = (line, kind = 'error', ms) => { io.showProblem(line, kind, ms); return null; };
+    if (start.status === 429) return said(CHOOSER_OPEN, 'warn', 4000);
+    if (start.status === 404) {
+      io.setGone();
+      return said(SESSION_GONE);
+    }
+    if (start.status === 409 && start.body?.error === 'no-project') return said(UPLOAD_409['no-project'].line);
+    const reqId = start.body?.reqId;
+    if (start.status !== 202 || typeof reqId !== 'string' || !REQ_ID.test(reqId)) return said(CHOOSER_FAILED);
+    for (;;) {
+      await sleep(POLL_MS);
+      const r = await io.call(io.path(`attachments/pick/${reqId}`));
+      if (r.status === 404) return said(CHOOSER_GONE, 'warn');
+      const state = r.status === 200 ? r.body?.state : null;
+      if (state === 'pending') continue;
+      if (state === 'cancelled') return null;
+      if (state === 'done' && Array.isArray(r.body.files)) return r.body.files;
+      return said(CHOOSER_FAILED);
+    }
+  }
+
+  /** The entries a dialog returned, as chips in their final state: the server has already read and stored each file, so nothing is uploaded here. */
+  function addPicked(files) {
+    const trusted = (f) => f !== null && typeof f === 'object' && f.ok === true && ID.test(f.id ?? '') && TYPES.has(f.type);
+    const discard = (f) => { if (trusted(f)) io.call(deletePath(f.id), { method: 'DELETE' }); }; // a copy the tray has no room or no right to keep
+    if (lock()) { // input went off, or a send began, while the dialog was open
+      files.forEach(discard);
+      return io.showProblem(LOCKED, 'warn', 4000);
+    }
+    let full = false;
+    for (const f of files) {
+      if (chips.length >= MAX_FILES) {
+        full = true;
+        discard(f);
+        continue;
+      }
+      const ready = trusted(f);
+      const name = shownName(f?.name);
+      const chip = { key: (seq += 1), name, state: ready ? 'ready' : 'failed', meta: ready ? formatSize(f.size) : '', type: ready ? f.type : null, id: ready ? f.id : null, file: null, started: true, removed: false, el: null };
+      chips.push(chip);
+      el('att-tray').append(build(chip));
+      if (ready) {
+        io.announce(`Attached ${name}, ${chip.meta}.`);
+      } else {
+        const v = f?.ok === false ? pickView(f.error, name) : { short: FAILED, line: null };
+        fail(chip, v.short, v.line);
+      }
+    }
+    if (full) io.showProblem(`Up to ${MAX_FILES} attachments per message.`, 'warn', 4000);
+    show();
+  }
+
+  /** The paperclip. The page opens no file input; the room left in the tray goes to the server, which asks the shell for its dialog. */
+  async function pick() {
+    if (!io.paneId || lock() || picking) return;
+    const room = MAX_FILES - chips.length;
+    if (room < 1) return io.showProblem(`Up to ${MAX_FILES} attachments per message.`, 'warn', 4000);
+    picking = true;
+    syncButton();
+    try {
+      const files = await choose(room);
+      if (files) addPicked(files);
+    } finally {
+      picking = false;
+      syncButton();
+      el('att-btn').focus();
+    }
+  }
+
   // ---- Send (section 6) ---------------------------------------------------------------------------------------------------------------------
 
   async function send(value) {
@@ -363,13 +467,7 @@ export function createAttachTray(io) {
   const hasFiles = (e) => Array.from(e.dataTransfer?.types ?? []).includes('Files');
 
   function wire() {
-    const input = el('att-input');
-    el('att-btn').addEventListener('click', () => { if (!lock()) input.click(); });
-    input.addEventListener('change', () => {
-      const picked = Array.from(input.files ?? []);
-      input.value = '';
-      add(picked);
-    });
+    el('att-btn').addEventListener('click', pick);
     el('composer').addEventListener('paste', (e) => { // a pasted screenshot or file; text alone is the browser's own paste
       const files = e.clipboardData?.files;
       if (!files || files.length === 0) return;
@@ -430,7 +528,7 @@ export function createAttachTray(io) {
 
   function enable(on) {
     enabled = on === true;
-    el('att-btn').disabled = !enabled;
+    syncButton();
     for (const chip of chips) chip.el.x.disabled = !enabled;
   }
 

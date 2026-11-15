@@ -717,6 +717,53 @@ Logging: nothing of the body, a layout or a nonce goes to a log or the console; 
 name and the error code only. Both routes exist on the app tier only (the browser tier has no fit route, no tag read and no lease
 file).
 
+### `POST /api/app/pane/:id/attachments/pick` and `GET /api/app/pane/:id/attachments/pick/:reqId` (0.5, W2)
+The attachment button's file chooser. The page opens **no file input of its own** (the webview's freezes the app on macOS: wry runs a modal
+open panel inside a WebKit callback): it asks the server, the server asks the desktop shell for its native dialog (`pick-files` / `files`,
+§5), reads what the user picked itself and hands the bytes to the attachment store, and the page polls for the outcome. Paste and drop do
+not use these routes (they upload through `POST …/attachments`). App tier only; the browser tier has neither route (`404`).
+
+`POST` body (≤ 4 KB, `CAP.small`) is exactly `{ "room": n }`, an integer 1 to 6: the room left in the tray (6 minus its chips). Any other
+body, key or value is `400 invalid` (a `room` over 6 or under 1 included). Order: body `400`, pane `404`, project `409`, then the picker.
+- `202 { "reqId": "<UUID>" }`: the dialog was asked for. The id is a fresh UUID; the picker keeps the latest request only.
+- `404 not_found`: the pane is not an eligible pane (§5, pane eligibility) · `409 no-project`: nika cannot tell the pane's project, the same
+  rule and key as the upload.
+- `429 busy`: a chooser of either kind (this one, or Add project's folder chooser) is already open; one dialog at a time, nothing is sent
+  to the shell.
+
+`GET` answers (`200`, `no-store`), by `state`:
+```json
+{ "state": "pending" }
+{ "state": "cancelled" }
+{ "state": "done", "files": [
+  { "ok": true, "id": "<16 hex>", "name": "notes.md", "size": 2048, "type": "text" },
+  { "ok": false, "name": "big.bin", "error": "too_large" } ] }
+```
+`pending` covers both the dialog being open and the server still reading the files. `cancelled`: the user closed the dialog, nothing usable was
+picked, or the shell's answer was malformed. `done` lists the picked files **in the dialog's order, at most `room` of them** (the rest are
+never opened), one entry each, and a failed entry never stops the next one:
+- `ok: true`: the file is stored, exactly as an upload would have stored it; `id`, `size` and `type` (`png` · `jpeg` · `gif` · `webp` · `pdf` ·
+  `text`) are the upload route's answer, and the id is used the same way (`DELETE …/attachments/:id`, `attach-send`).
+- `ok: false`, `error` is one of the chooser's own codes or one of the store's: `invalid` (the path from the shell is not a string, is not
+  absolute, is over 4096 characters or holds a NUL) · `unreadable` (it could not be opened as a regular file you own with one link, with no
+  following of a final symbolic link: a link, a folder, a FIFO, a hard-linked file, another owner's file, a file that is gone) · `too_large`
+  (more than 8 MiB, decided from the size of the open file before any byte is read) · and the upload's codes `too-big`, `empty`,
+  `wrong-type`, `path-unusable`, `folder-unsafe`, `storage-full`, `disk-full`, `write-failed`, `busy` (another save was running, or 30
+  saves in the last minute). An unexpected failure while reading or storing is `write-failed`.
+- `name` is the last part of the path only, through `clean()` and at most 255 characters (`file` when nothing is left). **No answer, log or
+  error ever holds a path, and nothing logs a name**; the store's own `nika: attachments: <code>` lines stay codes only.
+
+`404 not_found` for a `reqId` that is not a UUID, is unknown, was replaced by a newer request, or was started for another pane (one
+answer for all four). The `GET` is not eligibility-gated: the answer belongs to the request, and the pane may have gone while the dialog was
+open. A `done` answer stays readable until the next chooser request replaces it. Methods other than `POST` / `GET` on these paths are `405`;
+`DELETE …/attachments/pick` stays the delete route and answers `400 invalid` (`pick` is not an attachment id).
+
+**What the page does** (`public/attach.js`): posts `{ room }` (a tray with no room never posts), disables the button with `aria-busy` while the
+request is open, polls every 300 ms, and turns a `done` answer into chips that are already `ready` (type icon, size) or `failed` (the upload's
+copy for the same code; `Can't read` for `unreadable` and `invalid`), without uploading anything. `429` shows "A file chooser is already open.
+Finish or cancel it first."; any other refusal, a `404` on the poll or an answer it does not know ends the wait with a fixed line and nothing is
+added.
+
 ### `POST /api/app/pane/:id/mode` (body ≤ 4 KB, `CAP.small`)
 ```json
 { "target": "plan" }
@@ -1069,10 +1116,12 @@ No other channel exists: no Tauri IPC, no HTTP client in Rust.
 | server → shell | `status` (every 3 s and after each `collect()`) | `{"type":"status","busy":n,"idle":n,"other":n,"ended":n,"attention":n,"projects":[{"key":"…","name":"…","busy":n,"idle":n,"attention":n}]}` (≤ 8 projects) |
 | server → shell | `pick-folder` | `{"type":"pick-folder","reqId":"<UUID>"}` |
 | shell → server | `folder` | `{"type":"folder","reqId":"<UUID>","path":"<abs dir>" \| null}` — the server validates `reqId` (open request) and the path (absolute, existing, real dir) before `addProject` |
+| server → shell | `pick-files` | `{"type":"pick-files","reqId":"<UUID>"}` — the attachment button's file dialog (0.5, W2); it names no room, type or folder |
+| shell → server | `files` | `{"type":"files","reqId":"<UUID>","paths":["<abs file>", …] \| null}` — `null` = cancelled or nothing usable. The shell sends only absolute paths of existing regular files (a link to a file passes; the server refuses it), valid UTF-8, at most 6. The server ignores the message unless it answers the open `pick-files` request (`pending` only; a second answer, another id, or a `files` for a folder request changes nothing), takes at most the request's `room` entries, and opens every path itself (`openRegular`: `O_NOFOLLOW`, a regular file, owned by you, one link, at most 8 MiB) before it reads a byte; a path never reaches the page, a log or a request |
 | server → shell | `window` | `{"type":"window","action":"quit"\|"close"\|"minimize"\|"zoom-in"\|"zoom-out"\|"zoom-reset"}` — one line per `POST /api/app/window` (§3); the line names no window, so which window it applies to is the shell's decision; the shell answers nothing. Not a command from the shell: a `window` line on stdin is ignored |
 | server → shell | `error` | `{"type":"error","message":"<clean()>"}` before a non-zero exit (bad `hello`, port in use) |
 
-Limits: one open `pick-folder` at a time; `status` fields are integers ≥ 0; names are `clean()`ed; `attention` = live
+Limits: one open dialog at a time, `pick-folder` or `pick-files` (they share one slot, on the server and in the shell: a second request of either kind is refused by the server with `429 busy`, and answered at once with `null` by the shell if one slips through); `status` fields are integers ≥ 0; names are `clean()`ed; `attention` = live
 agents whose registry status is neither busy, shell nor idle (e.g. waiting on a permission prompt; `shell` counts as busy); `projects[].key` is
 `keyFor(repo root)`, never a path. Pane eligibility (§3 capture/keys): a registry pane qualifies only while its
 `pane_current_command` is claude-like (`CLAUDE_COMMAND` in `src/ids.js`), because `tmuxPane` is agent-writable; a pane

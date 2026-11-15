@@ -7,11 +7,12 @@ import http from 'node:http';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { serveApp, createPicker, statusLine } from '../src/appio.js';
 import { loadConfig } from '../src/store.js';
+import { createAttachments, MAX_BYTES } from '../src/attachments.js';
 import { makeFixture, cleanup, fakeExec, NOW } from './helpers.js';
 
 const VERSION = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
@@ -30,11 +31,11 @@ const hello = (secret = SECRET, extra = {}) => `${JSON.stringify({ type: 'hello'
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** serveApp on PassThrough streams with its own temp config/state dirs. */
-function harness({ tty = false, helloMs = 2000, intervalMs = 60_000, secret = SECRET, appCopy, exec = fakeExec(), releaseMs, attachments } = {}) {
+function harness({ tty = false, helloMs = 2000, intervalMs = 60_000, secret = SECRET, appCopy, exec = fakeExec(), releaseMs, attachments, state } = {}) {
   counter += 1;
   const base = path.join(ROOT, `h${counter}`);
   fs.mkdirSync(path.join(base, 'cfg'), { recursive: true });
-  const env = { NIKA_CONFIG_DIR: path.join(base, 'cfg'), XDG_STATE_HOME: path.join(base, 'state'), NIKA_TMUX: 'tmux', NIKA_CLAUDE: '/nonexistent/claude' };
+  const env = { NIKA_CONFIG_DIR: path.join(base, 'cfg'), XDG_STATE_HOME: state ?? path.join(base, 'state'), NIKA_TMUX: 'tmux', NIKA_CLAUDE: '/nonexistent/claude' };
   const stdin = new PassThrough();
   stdin.isTTY = tty;
   const stdout = new PassThrough();
@@ -492,6 +493,354 @@ describe('folder picker', () => {
     assert.equal(picker.start(), null);
     assert.deepEqual(picker.status(id), { state: 'pending', project: undefined });
     assert.equal(picker.status(REQ_A), null);
+  });
+});
+
+// The attachment chooser (W2-T6): the shell's native file dialog answers with paths, the server reads them itself and hands the bytes to the
+// attachment store. The page only ever sees ids, names, sizes and types, never a path.
+describe('file chooser', () => {
+  // The store refuses a state path Claude cannot take as one token, so these tests keep theirs short and plain (as attachments.test.js does).
+  const tmpBase = (() => {
+    const t = fs.realpathSync(os.tmpdir());
+    return /^\/[A-Za-z0-9._/+-]{1,80}$/.test(t) ? t : '/tmp';
+  })();
+  const dirRoot = fs.mkdtempSync(path.join(tmpBase, 'nika-pf-'));
+  after(() => fs.rmSync(dirRoot, { recursive: true, force: true }));
+
+  const KEY = 'a1b2c3d4e5f60718';
+  const KEY2 = 'b8a7f6e5d4c3b2a1';
+  const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 1, 2, 3]);
+  const MIB = 1024 * 1024;
+  const uid = typeof process.getuid === 'function' ? process.getuid() : null;
+  let nth = 0;
+
+  /** A picker on a real attachment store in its own temp state dir; `sent` = what it wrote to the shell, `logs` = every line the store logged. */
+  function rig() {
+    nth += 1;
+    const base = path.join(dirRoot, `r${nth}`);
+    const dir = path.join(base, 'files');
+    fs.mkdirSync(dir, { recursive: true });
+    const env = { NIKA_CONFIG_DIR: path.join(base, 'cfg'), XDG_STATE_HOME: path.join(base, 'state') };
+    const sent = [];
+    const logs = [];
+    const attachments = createAttachments({ env, loadKeepDays: async () => 7, log: (l) => logs.push(l) });
+    const picker = createPicker({ send: (m) => sent.push(m), env, attachments });
+    const put = (name, data = 'hello\n') => {
+      const p = path.join(dir, name);
+      fs.writeFileSync(p, data);
+      return p;
+    };
+    const storeDir = path.join(base, 'state', 'nika', 'attachments');
+    const stored = () => (fs.existsSync(storeDir) ? fs.readdirSync(storeDir).flatMap((k) => fs.readdirSync(path.join(storeDir, k))) : []);
+    /** Starts a files request, answers it with `paths`, waits for the end; resolves { reqId, answer }. */
+    async function pick(paths, { room = 6, pane = '%6', key = KEY } = {}) {
+      const reqId = picker.startFiles({ pane, key, room });
+      assert.match(reqId, /^[0-9a-f-]{36}$/);
+      await picker.onFiles({ type: 'files', reqId, paths });
+      return { reqId, answer: picker.filesStatus(pane, reqId) };
+    }
+    return { picker, sent, logs, dir, put, stored, pick, env, base, attachments };
+  }
+
+  test('(+) start sends exactly one pick-files line; the request is pending, and only for its own pane', () => {
+    const r = rig();
+    const reqId = r.picker.startFiles({ pane: '%6', key: KEY, room: 3 });
+    assert.deepEqual(r.sent, [{ type: 'pick-files', reqId }]);
+    assert.deepEqual(r.picker.filesStatus('%6', reqId), { state: 'pending' });
+    assert.equal(r.picker.filesStatus('%7', reqId), null, 'another pane cannot see it');
+    assert.equal(r.picker.filesStatus('%6', REQ_A), null, 'an unknown id');
+    assert.equal(r.picker.status(reqId), null, 'the folder reading does not know a files request');
+  });
+
+  test('(+) round trip: two picked files are read, stored under the pane key and answered as ready entries in order, with no path', async () => {
+    const r = rig();
+    const text = r.put('notes.md', '# synthetic\n');
+    const png = r.put('shot.png', PNG);
+    const { answer } = await r.pick([text, png]);
+    assert.equal(answer.state, 'done');
+    assert.equal(answer.files.length, 2);
+    const [a, b] = answer.files;
+    assert.deepEqual(Object.keys(a).sort(), ['id', 'name', 'ok', 'size', 'type']);
+    assert.deepEqual([a.ok, a.name, a.size, a.type], [true, 'notes.md', 12, 'text']);
+    assert.deepEqual([b.ok, b.name, b.size, b.type], [true, 'shot.png', PNG.length, 'png']);
+    assert.match(a.id, /^[0-9a-f]{16}$/);
+    assert.equal(r.stored().length, 2);
+    const wire = JSON.stringify(answer);
+    assert.ok(!wire.includes(r.dir) && !wire.includes(dirRoot) && !wire.includes('/'), 'no path in the answer');
+    assert.deepEqual(r.logs, []);
+    assert.equal(r.sent.length, 1, 'the shell got one line');
+  });
+
+  test('(+) the picked file is a send-ready attachment of that pane: lookup finds it for the pane and not for another', async () => {
+    const r = rig();
+    const { answer } = await r.pick([r.put('a.md')], { pane: '%6' });
+    assert.ok(await r.attachments.lookup('%6', answer.files[0].id));
+    assert.equal(await r.attachments.lookup('%7', answer.files[0].id), null);
+    const other = await r.pick([r.put('b.md')], { pane: '%9', key: KEY2 });
+    assert.ok(fs.readdirSync(path.join(r.base, 'state', 'nika', 'attachments')).includes(KEY2));
+    assert.equal(other.answer.files[0].ok, true);
+  });
+
+  test('(+) cancel: null closes the request as cancelled, a new one can start, and the old id is then unknown', async () => {
+    const r = rig();
+    const a = r.picker.startFiles({ pane: '%6', key: KEY, room: 6 });
+    await r.picker.onFiles({ type: 'files', reqId: a, paths: null });
+    assert.deepEqual(r.picker.filesStatus('%6', a), { state: 'cancelled' });
+    const b = r.picker.startFiles({ pane: '%6', key: KEY, room: 6 });
+    assert.ok(b && b !== a);
+    assert.equal(r.picker.filesStatus('%6', a), null);
+    assert.deepEqual(r.stored(), []);
+  });
+
+  test('(−) an empty list, or paths that is not a list, closes the request as cancelled and reads nothing', async () => {
+    const r = rig();
+    for (const paths of [[], 'x', { 0: '/a' }, 7, undefined, true]) {
+      const reqId = r.picker.startFiles({ pane: '%6', key: KEY, room: 6 });
+      await r.picker.onFiles({ type: 'files', reqId, paths });
+      assert.deepEqual(r.picker.filesStatus('%6', reqId), { state: 'cancelled' }, JSON.stringify(paths));
+    }
+    assert.deepEqual(r.stored(), []);
+  });
+
+  test('(−) one slot for both kinds: a folder request while files are open is busy, and files while a folder is open are busy', async () => {
+    const r = rig();
+    const files = r.picker.startFiles({ pane: '%6', key: KEY, room: 6 });
+    assert.equal(r.picker.start(), null);
+    assert.equal(r.picker.startFiles({ pane: '%6', key: KEY, room: 6 }), null);
+    assert.deepEqual(r.sent, [{ type: 'pick-files', reqId: files }], 'no second line went out');
+    await r.picker.onFiles({ type: 'files', reqId: files, paths: null });
+    const folder = r.picker.start();
+    assert.ok(folder);
+    assert.equal(r.picker.startFiles({ pane: '%6', key: KEY, room: 6 }), null);
+    assert.deepEqual(r.sent.at(-1), { type: 'pick-folder', reqId: folder });
+    assert.equal(r.sent.length, 2);
+    assert.equal(r.picker.filesStatus('%6', folder), null, 'a folder request is not a files request');
+    await r.picker.onFolder({ type: 'folder', reqId: folder, path: null });
+    assert.ok(r.picker.startFiles({ pane: '%6', key: KEY, room: 6 }), 'free again once it ended');
+  });
+
+  test('(−) a request that is being read still holds the slot', async () => {
+    const r = rig();
+    const reqId = r.picker.startFiles({ pane: '%6', key: KEY, room: 6 });
+    const reading = r.picker.onFiles({ type: 'files', reqId, paths: [r.put('slow.md')] });
+    assert.deepEqual(r.picker.filesStatus('%6', reqId), { state: 'pending' }, 'working reads as pending');
+    assert.equal(r.picker.start(), null);
+    assert.equal(r.picker.startFiles({ pane: '%6', key: KEY, room: 6 }), null);
+    await reading;
+    assert.equal(r.picker.filesStatus('%6', reqId).state, 'done');
+  });
+
+  test('(−) a files message for another request, for a folder request, with no id or a bad id, or a second answer, changes nothing', async () => {
+    const r = rig();
+    const good = r.put('good.md');
+    const reqId = r.picker.startFiles({ pane: '%6', key: KEY, room: 6 });
+    for (const msg of [{ type: 'files', reqId: REQ_A, paths: [good] }, { type: 'files', paths: [good] }, { type: 'files', reqId: 5, paths: [good] }, { type: 'files', reqId: null, paths: null }, { type: 'folder', reqId, path: r.dir }]) {
+      await (msg.type === 'folder' ? r.picker.onFolder(msg) : r.picker.onFiles(msg));
+    }
+    assert.deepEqual(r.picker.filesStatus('%6', reqId), { state: 'pending' });
+    assert.deepEqual(r.stored(), []);
+    await r.picker.onFiles({ type: 'files', reqId, paths: [good] });
+    await r.picker.onFiles({ type: 'files', reqId, paths: [r.put('again.md')] }); // a repeat answer
+    await r.picker.onFiles({ type: 'files', reqId, paths: null });
+    assert.equal(r.picker.filesStatus('%6', reqId).state, 'done');
+    assert.equal(r.stored().length, 1);
+    // and a files message with no open request at all
+    await r.picker.onFiles({ type: 'files', reqId, paths: [good] });
+    assert.equal(r.stored().length, 1);
+    // a folder request is not answered by a files message
+    const folder = r.picker.start();
+    await r.picker.onFiles({ type: 'files', reqId: folder, paths: [good] });
+    assert.equal(r.picker.status(folder).state, 'pending');
+    assert.equal(r.stored().length, 1);
+  });
+
+  test('(+) more paths than room: only the first `room` are read; the rest are never opened', async () => {
+    const r = rig();
+    const paths = ['a', 'b', 'c', 'd'].map((n) => r.put(`${n}.md`, `text ${n}\n`));
+    const { answer } = await r.pick(paths, { room: 2 });
+    assert.deepEqual(answer.files.map((f) => f.name), ['a.md', 'b.md']);
+    assert.equal(r.stored().length, 2);
+    const one = await r.pick(paths, { room: 1 });
+    assert.deepEqual(one.answer.files.map((f) => f.name), ['a.md']);
+    const six = await r.pick([...paths, ...paths, ...paths], { room: 6 });
+    assert.equal(six.answer.files.length, 6);
+  });
+
+  // ---- an entry that cannot be read fails alone ----
+
+  test('(−) each unusable entry fails on its own and the good file next to it is still saved', async () => {
+    const r = rig();
+    const good = r.put('good.md', 'fine\n');
+    const target = r.put('target.txt', 'real\n');
+    const link = path.join(r.dir, 'link.txt');
+    fs.symlinkSync(target, link);
+    const folder = path.join(r.dir, 'folder.txt');
+    fs.mkdirSync(folder);
+    const fifo = path.join(r.dir, 'fifo.txt');
+    execFileSync('mkfifo', [fifo]);
+    const hardA = r.put('hard-a.txt', 'shared\n');
+    const hardB = path.join(r.dir, 'hard-b.txt');
+    fs.linkSync(hardA, hardB);
+    const huge = path.join(r.dir, 'huge.txt');
+    fs.writeFileSync(huge, 'a');
+    fs.truncateSync(huge, 9 * MIB);
+    const cases = [
+      ['relative/dir/file.txt', 'invalid'], ['', 'invalid'], [`${r.dir}/with\0nul.txt`, 'invalid'], [`/${'a'.repeat(5000)}`, 'invalid'],
+      [42, 'invalid'], [null, 'invalid'], [{ a: 1 }, 'invalid'], [['/x'], 'invalid'],
+      [link, 'unreadable'], [folder, 'unreadable'], [fifo, 'unreadable'], [hardA, 'unreadable'], [hardB, 'unreadable'], [path.join(r.dir, 'missing.txt'), 'unreadable'],
+      [huge, 'too_large'],
+    ];
+    for (const [bad, code] of cases) {
+      const label = JSON.stringify(bad).slice(0, 40);
+      const { answer } = await r.pick([bad, good], { room: 2 });
+      assert.equal(answer.state, 'done', label);
+      const [f, g] = answer.files;
+      assert.deepEqual([f.ok, f.error], [false, code], label);
+      assert.deepEqual(Object.keys(f).sort(), ['error', 'name', 'ok'], label);
+      assert.equal(g.ok, true, `the next file still went: ${label}`);
+      assert.equal(g.name, 'good.md');
+      assert.ok(!JSON.stringify(f).includes(dirRoot), 'no path in a failed entry');
+    }
+    assert.equal(r.stored().length, cases.length, 'only the good file of each pick was stored');
+    assert.equal(fs.readFileSync(target, 'utf8'), 'real\n', 'the link target was not touched');
+  });
+
+  test('(−) a failed entry is named by the last part of the path only, a non-string by a placeholder; control characters never reach the answer', async () => {
+    const r = rig();
+    const { answer } = await r.pick([`${r.dir}/missing\u202e\u0007name.txt`, 'rel/sub/x.md', 7], { room: 3 });
+    assert.deepEqual(answer.files.map((f) => f.name), ['missing name.txt', 'x.md', 'file']);
+    assert.ok(!JSON.stringify(answer).includes(dirRoot));
+  });
+
+  test('(−) an empty file and a file of the wrong type are refused by the store, with the store\'s own codes', async () => {
+    const r = rig();
+    const empty = r.put('empty.txt', '');
+    const bin = r.put('tool.bin', Buffer.from([0x4d, 0x5a, 0, 1, 2, 3]));
+    const { answer } = await r.pick([empty, bin], { room: 2 });
+    assert.deepEqual(answer.files.map((f) => [f.ok, f.error]), [[false, 'empty'], [false, 'wrong-type']]);
+    assert.deepEqual(r.stored(), []);
+  });
+
+  test('(+) a file of exactly 8 MiB is accepted; one byte more is too_large and is not read', async () => {
+    const r = rig();
+    const ok = path.join(r.dir, 'edge.txt');
+    fs.writeFileSync(ok, Buffer.alloc(MAX_BYTES, 0x61));
+    const over = path.join(r.dir, 'over.txt');
+    fs.writeFileSync(over, Buffer.alloc(MAX_BYTES + 1, 0x61));
+    const { answer } = await r.pick([ok, over], { room: 2 });
+    assert.deepEqual(answer.files.map((f) => [f.ok, f.size ?? f.error]), [[true, MAX_BYTES], [false, 'too_large']]);
+  });
+
+  test('(−) a file that grows after it was opened is read only up to the size it had (never more than the cap)', async () => {
+    const r = rig();
+    const p = r.put('grow.txt', 'abc');
+    const orig = fs.promises.open;
+    let wrapped = 0;
+    fs.promises.open = async (...a) => { // appends between the fstat and the read
+      const h = await orig(...a);
+      if (String(a[0]) === p) {
+        const stat = h.stat.bind(h);
+        h.stat = async (...x) => {
+          const st = await stat(...x);
+          fs.appendFileSync(p, 'MORE');
+          return st;
+        };
+        wrapped += 1;
+      }
+      return h;
+    };
+    try {
+      const { answer } = await r.pick([p], { room: 1 });
+      assert.deepEqual([answer.files[0].ok, answer.files[0].size], [true, 3]);
+      assert.equal(wrapped, 1, 'the seam really ran');
+    } finally {
+      fs.promises.open = orig;
+    }
+  });
+
+  test('(−) a file of another owner is refused (needs root to make one)', { skip: uid !== 0 && 'chown needs root' }, async () => {
+    const r = rig();
+    const p = r.put('theirs.txt', 'x\n');
+    fs.chownSync(p, 12345, 12345);
+    const { answer } = await r.pick([p], { room: 1 });
+    assert.deepEqual([answer.files[0].ok, answer.files[0].error], [false, 'unreadable']);
+  });
+
+  test('(−) nothing logged and nothing sent to the shell carries a path or a name; a store that throws is one entry that failed', async () => {
+    const r = rig();
+    const named = r.put('very-private-name.md', 'x\n');
+    const { answer } = await r.pick([named, path.join(r.dir, 'missing-private.md'), 'rel/private-rel.md'], { room: 3 });
+    assert.equal(answer.files.length, 3);
+    const seen = JSON.stringify([r.logs, r.sent]);
+    for (const needle of [dirRoot, 'private']) assert.equal(seen.includes(needle), false, needle);
+    const boom = createPicker({ send: () => {}, env: r.env, attachments: { saveBytes: async () => { throw Object.assign(new Error(`EACCES ${named}`), { code: 'EACCES' }); } } });
+    const reqId = boom.startFiles({ pane: '%6', key: KEY, room: 1 });
+    await boom.onFiles({ type: 'files', reqId, paths: [named] });
+    const f = boom.filesStatus('%6', reqId).files[0];
+    assert.deepEqual([f.ok, f.error], [false, 'write-failed']);
+    assert.equal(JSON.stringify(f).includes(dirRoot), false);
+  });
+
+  test('(+) a pick answers the same GET again and again (the page may ask twice) and a new request replaces the old one', async () => {
+    const r = rig();
+    const { reqId, answer } = await r.pick([r.put('a.md')]);
+    assert.deepEqual(r.picker.filesStatus('%6', reqId), answer);
+    const next = r.picker.startFiles({ pane: '%6', key: KEY, room: 1 });
+    assert.equal(r.picker.filesStatus('%6', reqId), null);
+    assert.deepEqual(r.picker.filesStatus('%6', next), { state: 'pending' });
+  });
+
+  // ---- through the real server ----
+
+  test('(+) end to end: POST pick, the pick-files line, a files message, GET until done; the route answers carry ids and names, no path', async () => {
+    const h = harness({ state: path.join(dirRoot, 'e2e-state') });
+    await h.up();
+    const dir = path.join(dirRoot, `e2e-${counter}`);
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, 'e2e-note.md');
+    fs.writeFileSync(file, '# note\n');
+    const start = await h.call('POST', '/api/app/pane/%256/attachments/pick', { json: { room: 2 } });
+    assert.equal(start.status, 202, JSON.stringify(start.body));
+    const { reqId } = start.body;
+    assert.deepEqual(await h.waitFor((l) => l.type === 'pick-files'), { type: 'pick-files', reqId });
+    assert.deepEqual((await h.call('GET', `/api/app/pane/%256/attachments/pick/${reqId}`)).body, { state: 'pending' });
+    assert.equal((await h.call('POST', '/api/app/projects/pick', { json: {} })).status, 429, 'a folder chooser is busy while files are open');
+    assert.equal((await h.call('POST', '/api/app/pane/%256/attachments/pick', { json: { room: 1 } })).status, 429);
+    h.send(JSON.stringify({ type: 'files', reqId, paths: [file] }));
+    let r;
+    for (let i = 0; i < 100; i += 1) {
+      r = await h.call('GET', `/api/app/pane/%256/attachments/pick/${reqId}`);
+      if (r.body.state !== 'pending') break;
+      await sleep(10);
+    }
+    assert.equal(r.status, 200);
+    assert.equal(r.body.state, 'done');
+    assert.deepEqual(r.body.files.map((f) => [f.ok, f.name, f.type, f.size]), [[true, 'e2e-note.md', 'text', 7]]);
+    assert.equal(JSON.stringify(r.body).includes(dir), false, 'no path in the answer');
+    assert.equal(h.err().includes('e2e-note'), false, 'no name on stderr');
+    assert.equal(h.err().includes(dir), false, 'no path on stderr');
+    h.noSecret();
+    await h.close();
+  });
+
+  test('(−) a files line with no open request, or a bad one, is ignored by the running server; stdin stays usable', async () => {
+    const h = harness();
+    await h.up();
+    h.send(JSON.stringify({ type: 'files', reqId: REQ_A, paths: ['/x'] }));
+    h.send(JSON.stringify({ type: 'files', paths: null }));
+    h.send('{"type":"files","reqId":');
+    await sleep(40);
+    const start = await h.call('POST', '/api/app/pane/%256/attachments/pick', { json: { room: 1 } });
+    assert.equal(start.status, 202);
+    assert.equal(h.err().includes('/x'), false);
+    await h.close();
+  });
+
+  test('(+) the running server routes a files message to the picker, and builds the picker with the same attachment store the routes use', () => {
+    const src = fs.readFileSync(new URL('../src/appio.js', import.meta.url), 'utf8');
+    assert.match(src, /if \(msg\.type === 'files'\) picker\.onFiles\(msg\);/);
+    assert.match(src, /createPicker\(\{ send: say, env, attachments \}\)/);
+    assert.ok(src.indexOf('attachments = createAttachments(') < src.indexOf('createPicker({ send: say'), 'the store exists before the picker takes it');
   });
 });
 

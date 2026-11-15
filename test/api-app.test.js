@@ -4313,6 +4313,210 @@ describe('attachments: upload', () => {
   });
 });
 
+// The paperclip's own file chooser (W2-T6): the page asks for a native dialog and polls for what the user picked. The server owns the reads.
+const PICK = 'attachments/pick';
+const FILES_DONE = [
+  { ok: true, id: ATT, name: 'shot.png', size: 15, type: 'png' },
+  { ok: false, name: 'big.bin', error: 'too_large' },
+];
+
+/** A picker whose files half records what it is given; `files` = reqId -> { pane, answer } for the status route. */
+function fakePicker(over = {}) {
+  const f = { starts: [], reqs: new Map(), calls: [] };
+  f.start = () => null;
+  f.status = () => null;
+  f.startFiles = (arg) => {
+    f.starts.push(arg);
+    if (over.busy) return null;
+    const id = over.reqId ?? REQ_ID;
+    f.reqs.set(id, { pane: arg.pane, answer: over.answer ?? { state: 'pending' } });
+    return id;
+  };
+  f.filesStatus = (pane, reqId) => {
+    f.calls.push([pane, reqId]);
+    const r = f.reqs.get(reqId);
+    return r && r.pane === pane ? r.answer : null;
+  };
+  return f;
+}
+
+describe('attachments: the file chooser (POST pick)', () => {
+  test('(+) a room of 1 to 6 starts a request for the pane and the key of the group that claims it; 202 with the id, nothing else', async () => {
+    for (const room of [1, 2, 3, 4, 5, 6]) {
+      const picker = fakePicker();
+      const { a } = await bootScreens({ over: { picker, collect: async () => keyedSnapshot('%6') } });
+      const r = await att(a, '%6', PICK, { method: 'POST', json: { room } });
+      assert.deepEqual([r.status, r.body], [202, { reqId: REQ_ID }], String(room));
+      assert.deepEqual(picker.starts, [{ pane: '%6', key: GROUP_KEY, room }]);
+      assert.equal(r.headers['cache-control'], 'no-store');
+    }
+  });
+
+  test('(+) a pane nika started has its start key', async () => {
+    const picker = fakePicker();
+    const { a } = await bootScreens({ over: { picker } });
+    a.ctx.started.set('%8', { key: w.project.key, name: 'x', sessionId: null, role: 'agent' });
+    const r = await att(a, '%8', PICK, { method: 'POST', json: { room: 3 } });
+    assert.equal(r.status, 202);
+    assert.deepEqual(picker.starts, [{ pane: '%8', key: w.project.key, room: 3 }]);
+  });
+
+  test('(−) the body is exactly { room } with room an integer 1 to 6: anything else is 400 invalid and no chooser starts', async () => {
+    const picker = fakePicker();
+    const { a } = await bootScreens({ over: { picker, collect: async () => keyedSnapshot('%6') } });
+    const bad = [{}, { room: 0 }, { room: 7 }, { room: -1 }, { room: 1.5 }, { room: '3' }, { room: null }, { room: [3] }, { room: true }, { room: NaN },
+      { room: 1, key: GROUP_KEY }, { room: 1, path: '/etc/passwd' }, { room: 1, pane: '%7' }, { ROOM: 1 }, { rooms: 1 }, { room: 1, extra: 0 }];
+    for (const json of bad) {
+      const r = await att(a, '%6', PICK, { method: 'POST', json });
+      assert.deepEqual([r.status, r.body.error], [400, 'invalid'], JSON.stringify(json));
+    }
+    for (const body of ['[]', 'null', '"x"', '{bad', '', '{"room":1,"room":2,"x":1}']) {
+      const r = await att(a, '%6', PICK, { method: 'POST', body, headers: { 'content-type': 'application/json' } });
+      assert.equal(r.status, 400, body);
+    }
+    assert.equal((await att(a, '%6', PICK, { method: 'POST', body: '{"room":1}', headers: { 'content-type': 'text/plain' } })).status, 415);
+    assert.deepEqual(picker.starts, []);
+  });
+
+  test('(−) a body over 4 KB is 413 and no chooser starts', async () => {
+    const picker = fakePicker();
+    const { a } = await bootScreens({ over: { picker, collect: async () => keyedSnapshot('%6') } });
+    assert.equal((await att(a, '%6', PICK, { method: 'POST', json: { room: 1, pad: 'x'.repeat(5000) } })).status, 413);
+    assert.deepEqual(picker.starts, []);
+  });
+
+  test('(−) the body is checked before the pane: a bad body to an unknown pane is 400, a good body to it is 404', async () => {
+    const picker = fakePicker();
+    const { a } = await bootScreens({ over: { picker, collect: async () => keyedSnapshot('%6') } });
+    assert.equal((await att(a, '%99', PICK, { method: 'POST', json: {} })).status, 400);
+    assert.equal((await att(a, '%99', PICK, { method: 'POST', json: { room: 1 } })).status, 404);
+    assert.deepEqual(picker.starts, []);
+  });
+
+  test('(−) a pane that is not in the tmux list, runs a shell, is not live Claude or was not started is 404; no chooser starts', async () => {
+    const picker = fakePicker();
+    const { a } = await bootScreens({ over: { picker, collect: async () => keyedSnapshot('%6', '%5') } });
+    for (const id of ['%5', '%8', '%99']) assert.equal((await att(a, id, PICK, { method: 'POST', json: { room: 1 } })).status, 404, id);
+    assert.equal((await a.call('POST', '/api/app/pane/abc/attachments/pick', { json: { room: 1 } })).status, 404);
+    assert.deepEqual(picker.starts, []);
+  });
+
+  test('(−) no-project: two live agents claim the pane, or no group names it: 409 and no chooser starts', async () => {
+    const picker = fakePicker();
+    const twice = { groups: [{ key: GROUP_KEY, agents: [{ live: true, state: 'idle', pane: { id: '%6' } }] }, { key: 'c1c2c3c4c5c6c7c8', agents: [{ live: true, state: 'idle', pane: { id: '%6' } }] }] };
+    for (const snapshot of [twice, { groups: [{ key: 'BAD KEY', agents: [{ live: true, state: 'idle', pane: { id: '%6' } }] }] }]) {
+      const { a } = await bootScreens({ over: { picker, collect: async () => snapshot } });
+      const r = await att(a, '%6', PICK, { method: 'POST', json: { room: 1 } });
+      assert.deepEqual([r.status, r.body.error], [409, 'no-project']);
+    }
+    assert.deepEqual(picker.starts, []);
+  });
+
+  test('(−) 429 busy while any chooser (a folder or files) is open', async () => {
+    const picker = fakePicker({ busy: true });
+    const { a } = await bootScreens({ over: { picker, collect: async () => keyedSnapshot('%6') } });
+    const r = await att(a, '%6', PICK, { method: 'POST', json: { room: 2 } });
+    assert.deepEqual([r.status, r.body.error], [429, 'busy']);
+    assert.equal(picker.starts.length, 1, 'the picker was asked, and it said busy');
+  });
+
+  test('(−) GET and PUT on the start route are 405; no secret is 403', async () => {
+    const picker = fakePicker();
+    const { a } = await bootScreens({ over: { picker, collect: async () => keyedSnapshot('%6') } });
+    assert.equal((await att(a, '%6', PICK, { method: 'GET' })).status, 405);
+    assert.equal((await att(a, '%6', PICK, { method: 'PUT', json: { room: 1 } })).status, 405);
+    assert.equal((await att(a, '%6', PICK, { method: 'POST', json: { room: 1 }, headers: { 'x-nika-app': null } })).status, 403);
+    assert.deepEqual(picker.starts, []);
+  });
+});
+
+describe('attachments: the file chooser (GET pick/:reqId)', () => {
+  const get = (a, id, reqId, opts) => att(a, id, `${PICK}/${reqId}`, opts);
+
+  test('(+) pending, cancelled and done (with the files) as the picker says; done carries ids, names, sizes, types and error codes, no path', async () => {
+    const answers = [{ state: 'pending' }, { state: 'cancelled' }, { state: 'done', files: FILES_DONE }];
+    const ids = ['aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'];
+    const picker = fakePicker();
+    ids.forEach((id, i) => picker.reqs.set(id, { pane: '%6', answer: answers[i] }));
+    const { a } = await bootScreens({ over: { picker } });
+    for (const [i, id] of ids.entries()) {
+      const r = await get(a, '%6', id);
+      assert.deepEqual([r.status, r.body], [200, answers[i]], id);
+      assert.equal(r.headers['cache-control'], 'no-store');
+    }
+    const done = (await get(a, '%6', ids[2])).raw;
+    assert.equal(/\/|\\/.test(done), false, 'no path separator anywhere in a done answer');
+    assert.deepEqual(picker.calls.at(-1), ['%6', ids[2]], 'the picker is asked with the pane of the URL and the id');
+  });
+
+  test('(−) an unknown id, a malformed id and an id started for another pane are 404 (the same answer for all three)', async () => {
+    const picker = fakePicker();
+    picker.reqs.set(REQ_ID, { pane: '%6', answer: { state: 'done', files: FILES_DONE } });
+    const { a } = await bootScreens({ over: { picker } });
+    const unknown = await get(a, '%6', 'dddddddd-dddd-4ddd-8ddd-dddddddddddd');
+    const other = await get(a, '%7', REQ_ID);
+    assert.deepEqual([unknown.status, other.status], [404, 404]);
+    assert.equal(unknown.raw, other.raw);
+    for (const bad of ['not-a-uuid', '..%2F..%2Fetc', '%00', 'AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA'.slice(0, 35)]) {
+      assert.equal((await get(a, '%6', bad)).status, 404, bad);
+    }
+    assert.equal((await a.call('GET', `/api/app/pane/abc/attachments/pick/${REQ_ID}`)).status, 404, 'a malformed pane id');
+  });
+
+  test('(+) the poll is not eligibility-gated: a pane that left the tmux list after the dialog opened still gets its answer', async () => {
+    const picker = fakePicker();
+    picker.reqs.set(REQ_ID, { pane: '%6', answer: { state: 'done', files: FILES_DONE } });
+    const { a } = await bootScreens({ over: { picker } });
+    a.deps.state.panes.delete('%6');
+    assert.equal((await get(a, '%6', REQ_ID)).status, 200);
+  });
+
+  test('(−) POST, PUT and DELETE are 405 on the status route; no secret is 403', async () => {
+    const picker = fakePicker();
+    picker.reqs.set(REQ_ID, { pane: '%6', answer: { state: 'pending' } });
+    const { a } = await bootScreens({ over: { picker } });
+    for (const method of ['POST', 'PUT', 'DELETE']) assert.equal((await get(a, '%6', REQ_ID, { method, ...(method === 'DELETE' ? {} : { json: {} }) })).status, 405, method);
+    assert.equal((await get(a, '%6', REQ_ID, { headers: { 'x-nika-app': null } })).status, 403);
+  });
+
+  test('(−) the delete route still takes only an attachment id: DELETE .../attachments/pick is 400 invalid, not a chooser', async () => {
+    const picker = fakePicker();
+    const store = fakeStore();
+    const { a } = await bootScreens({ over: { picker, attachments: store } });
+    const r = await att(a, '%6', PICK, { method: 'DELETE' });
+    assert.deepEqual([r.status, r.body.error], [400, 'invalid']);
+    assert.deepEqual(store.calls, []);
+  });
+
+  test('(−) the browser tier has neither chooser route: POST and GET are 404 there, whatever the headers', async () => {
+    const server = createServer({ config: fx.config, exec: fakeExec(), token: 'tok', now: () => NOW, version: '0.0.0' });
+    await new Promise((res) => server.listen(0, '127.0.0.1', res));
+    servers.push(server);
+    const port = server.address().port;
+    const call = (method, p, payload) => new Promise((resolve, reject) => {
+      const q = http.request({ host: '127.0.0.1', port, method, path: p, headers: { host: `127.0.0.1:${port}`, 'x-nika-app': SECRET, 'content-type': 'application/json', ...(payload ? { 'content-length': String(payload.length) } : {}) } }, (res) => {
+        res.resume();
+        res.on('end', () => resolve(res.statusCode));
+      });
+      q.on('error', reject);
+      q.end(payload);
+    });
+    assert.equal(await call('POST', '/api/app/pane/%256/attachments/pick', '{"room":1}'), 404);
+    assert.equal(await call('GET', `/api/app/pane/%256/attachments/pick/${REQ_ID}`), 404);
+  });
+
+  test('(−) nothing of a chooser is logged by the routes: no path, name or id on any console or stderr', async () => {
+    const picker = fakePicker({ answer: { state: 'done', files: FILES_DONE } });
+    const { a } = await bootScreens({ over: { picker, collect: async () => keyedSnapshot('%6') } });
+    const lines = await capturingLog(async () => {
+      await att(a, '%6', PICK, { method: 'POST', json: { room: 2 } });
+      await get(a, '%6', REQ_ID);
+      await get(a, '%7', REQ_ID);
+    });
+    assert.deepEqual(lines, []);
+  });
+});
+
 describe('attachments: delete', () => {
   test('(+) removes by pane and id: { removed: true }; an unknown, another pane\'s or a sent id is { removed: false } (no oracle)', async () => {
     const store = fakeStore({ remove: (p, id) => p === '%6' && id === ATT });

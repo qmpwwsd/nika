@@ -53,6 +53,10 @@ const uploadId = (n) => `00000000000000${String(n).padStart(2, '0')}`;
 const typeOf = (name) => (/\.png$/.test(name) ? 'png' : /\.pdf$/.test(name) ? 'pdf' : 'text');
 const isUpload = (p, o) => o.method === 'POST' && /\/attachments$/.test(p);
 const isSend = (p, o) => o.method === 'POST' && /\/attach-send$/.test(p);
+const REQ = '11111111-1111-4111-8111-111111111111';
+const isPickStart = (p, o) => o.method === 'POST' && /\/attachments\/pick$/.test(p);
+const isPickPoll = (p, o) => o.method === 'GET' && /\/attachments\/pick\/[0-9a-f-]{36}$/.test(p);
+const isPickStartCall = (c) => c.method === 'POST' && /\/attachments\/pick$/.test(c.path);
 const sends = (r) => r.log.calls.filter((c) => c.path.endsWith('attach-send'));
 const deletes = (r) => r.log.calls.filter((c) => c.method === 'DELETE');
 const icons = (node) => node.all(() => true).filter((n) => n.tag === 'use').map((n) => n.attrs.href);
@@ -64,10 +68,9 @@ afterEach(() => { current?.(); current = null; });
 function rig(opts = {}) {
   current?.(); // one page at a time: a second rig in a test starts from a clean document
   const els = {};
-  for (const [id, tag] of [['att-tray', 'ul'], ['att-btn', 'button'], ['att-input', 'input'], ['att-drop', 'span'], ['composer-box', 'div'], ['composer', 'textarea'], ['send', 'button']]) els[id] = new TEl(tag);
+  for (const [id, tag] of [['att-tray', 'ul'], ['att-btn', 'button'], ['att-drop', 'span'], ['composer-box', 'div'], ['composer', 'textarea'], ['send', 'button']]) els[id] = new TEl(tag);
   els['att-tray'].hidden = true;
   els['att-drop'].hidden = true;
-  els['att-input'].files = [];
   const docListeners = {};
   const restoreDom = installDom({ getElementById: (id) => els[id] ?? null, addEventListener: (t, fn) => { (docListeners[t] ??= []).push(fn); } });
   const savedWindow = globalThis.window;
@@ -79,13 +82,18 @@ function rig(opts = {}) {
     return e;
   };
   const log = { calls: [], say: [], announce: [], problem: [], notice: [], gone: 0, ds: [], clear: [], focus: 0, jobs: 0, sleeps: [] };
-  const state = { screen: opts.screen === undefined ? screenOf() : opts.screen, working: false, shell: false, pushed: null, sentReply: null, n: 0 };
+  const state = { screen: opts.screen === undefined ? screenOf() : opts.screen, working: false, shell: false, pushed: null, sentReply: null, n: 0, pickStart: null, polls: [], gate: null };
   const reply = opts.reply ?? ((p, o) => {
     if (isUpload(p, o)) {
       state.n += 1;
       return { status: 200, body: { id: uploadId(state.n), type: typeOf(o.json.name), size: 123 } };
     }
     if (isSend(p, o)) return state.sentReply ?? { status: 200, body: { sent: o.json.ids.length, images: 0 } };
+    if (isPickStart(p, o)) return state.pickStart ?? { status: 202, body: { reqId: REQ } };
+    if (isPickPoll(p, o)) { // state.polls = the answers in order, the last one repeats; state.gate holds every poll back until it resolves
+      const next = () => (state.polls.length > 1 ? state.polls.shift() : state.polls[0] ?? { status: 200, body: { state: 'cancelled' } }); // never pending by default: the fake sleep is instant
+      return state.gate ? state.gate.then(next) : next();
+    }
     return { status: 200, body: { removed: true } };
   });
   const io = {
@@ -128,7 +136,7 @@ function rig(opts = {}) {
   return {
     att, els, io, log, state, tray, doc, win: globalThis.window,
     chips: () => tray.kids,
-    add: async (...fs) => { els['att-input'].files = fs; els['att-input'].fire('change'); await settle(); },
+    add: async (...fs) => { els.composer.fire('paste', { clipboardData: { files: fs } }); await settle(); }, // files in, the way a paste brings them
   };
 }
 
@@ -445,25 +453,230 @@ describe('adding files', () => {
   });
 });
 
-describe('the ways in: button, paste, drop', () => {
-  test('(+) the button opens the file picker; the picked files are added and the input is cleared', async () => {
+describe('the file chooser: the paperclip opens the shell\'s own dialog (W2-T6)', () => {
+  const CHOOSER_OPEN = ['A file chooser is already open. Finish or cancel it first.', 'warn', 4000];
+  const okFile = (n, over = {}) => ({ ok: true, id: uploadId(n), name: 'notes.md', size: 2048, type: 'text', ...over });
+  const badFile = (error, name = 'big.bin') => ({ ok: false, name, error });
+  const done = (...files) => ({ status: 200, body: { state: 'done', files } });
+  const pending = { status: 200, body: { state: 'pending' } };
+  const pickCalls = (r) => r.log.calls.filter((c) => /\/attachments\/pick/.test(c.path));
+  const click = async (r) => { r.els['att-btn'].fire('click'); await settle(); };
+  const START = '/api/app/pane/%257/attachments/pick';
+
+  test('(+) the button posts { room: 6 } and polls every 300 ms until done; a ready and a failed file become two chips in their final states, and nothing is uploaded', async () => {
     const r = rig();
-    r.els['att-btn'].fire('click');
-    assert.equal(r.els['att-input'].clicks, 1);
-    r.els['att-input'].value = 'C:\\fake\\shot.png';
-    r.els['att-input'].files = [file('shot.png')];
-    r.els['att-input'].fire('change');
-    await settle();
-    assert.equal(r.els['att-input'].value, '');
-    assert.equal(r.chips().length, 1);
+    r.state.polls = [pending, pending, done(okFile(1), badFile('too_large'))];
+    await click(r);
+    const calls = pickCalls(r);
+    assert.deepEqual(calls[0], { path: START, method: 'POST', json: { room: 6 } });
+    assert.deepEqual(calls.slice(1).map((c) => [c.method, c.path, c.json]), Array(3).fill(['GET', `${START}/${REQ}`, undefined]));
+    assert.deepEqual(r.log.sleeps, [300, 300, 300]);
+    assert.equal(r.log.calls.some((c) => /\/attachments$/.test(c.path)), false, 'no upload: the server already has the files');
+    const [ok, bad] = r.chips().map(view);
+    assert.deepEqual([ok.s, ok.busy, ok.spin, ok.name, ok.meta, ok.icons], ['ready', undefined, false, 'notes.md', '2 KB', ['#i-text']]);
+    assert.deepEqual([bad.s, bad.busy, bad.spin, bad.name, bad.meta, bad.icons], ['failed', undefined, false, 'big.bin', `Too big ${MID} max 8 MB`, ['#i-warn']]);
+    assert.equal(r.tray.hidden, false);
+    assert.deepEqual(r.log.announce, ['Attached notes.md, 2 KB.', `big.bin can't be attached: Too big ${MID} max 8 MB.`]);
   });
 
+  test('(+) a picked chip is a chip like any other: it can be removed (DELETE by its id) and sent (attach-send names its id, never a path)', async () => {
+    const r = rig();
+    r.state.polls = [done(okFile(1), okFile(2, { name: 'shot.png', type: 'png', size: 800 }))];
+    await click(r);
+    assert.deepEqual(r.chips().map((li) => view(li).icons[0]), ['#i-text', '#i-image']);
+    r.chips()[0].kids[3].click();
+    assert.deepEqual(deletes(r).map((c) => c.path), [`/api/app/pane/%257/attachments/${uploadId(1)}`]);
+    await r.att.send('hello');
+    assert.deepEqual(sends(r)[0].json.ids, [uploadId(2)]);
+    assert.equal(r.chips().length, 0);
+  });
+
+  test('(+) every error code of a failed file reads as the upload path reads it; the two the chooser adds read "Can\'t read"', async () => {
+    const want = [
+      ['too_large', `Too big ${MID} max 8 MB`], ['too-big', `Too big ${MID} max 8 MB`], ['wrong-type', 'Not supported'], ['empty', 'Empty file'], ['no-project', 'Try again'],
+      ['path-unusable', "Can't store"], ['folder-unsafe', "Can't store"], ['storage-full', 'Storage full'], ['disk-full', 'Disk full'],
+      ['unreadable', "Can't read"], ['invalid', "Can't read"], ['busy', 'Upload failed'], ['write-failed', 'Upload failed'], ['constructor', 'Upload failed'], ['', 'Upload failed'],
+    ];
+    const r = rig();
+    r.state.polls = [done(...want.slice(0, 6).map(([e]) => badFile(e)))];
+    await click(r);
+    assert.deepEqual(r.chips().map((li) => view(li).meta), want.slice(0, 6).map(([, m]) => m));
+    const r2 = rig();
+    r2.state.polls = [done(...want.slice(6, 12).map(([e]) => badFile(e)))];
+    await click(r2);
+    assert.deepEqual(r2.chips().map((li) => view(li).meta), want.slice(6, 12).map(([, m]) => m));
+    const r3 = rig();
+    r3.state.polls = [done(...want.slice(12).map(([e]) => badFile(e)))];
+    await click(r3);
+    assert.deepEqual(r3.chips().map((li) => view(li).meta), want.slice(12).map(([, m]) => m));
+  });
+
+  test('(+) the problem lines of the upload path show for a picked file too (wrong type names the file; storage full says why), and never the server\'s own text', async () => {
+    const r = rig();
+    r.state.polls = [done({ ...badFile('wrong-type', 'tool.bin'), message: 'SERVER SAID THIS /secret/path' }, badFile('storage-full', 'b.md'), badFile('unreadable', 'link.txt'))];
+    await click(r);
+    assert.deepEqual(r.log.problem.map((x) => x[0]), [
+      'tool.bin: use PNG, JPEG, GIF, WebP, PDF or UTF-8 text.',
+      "nika's attachment storage is full (256 MB). Older attachments go after a day or two; try again later.",
+      "link.txt: nika can't read this file (a link, a folder, or a file with another owner).",
+    ]);
+    assert.doesNotMatch(JSON.stringify([r.log.problem, r.log.announce, r.chips().map((li) => [view(li).name, view(li).meta])]), /SERVER|secret/);
+  });
+
+  test('(+) the room is 6 minus the chips in the tray (failed ones count)', async () => {
+    const r = rig();
+    await r.add(file('a.png'), file('b.png'), file('huge.bin', MAX_BYTES + 1));
+    r.state.polls = [{ status: 200, body: { state: 'cancelled' } }];
+    await click(r);
+    assert.deepEqual(pickCalls(r)[0].json, { room: 3 });
+  });
+
+  test('(−) a full tray (room 0) never posts: the "Up to 6" line shows instead', async () => {
+    const r = rig();
+    await r.add(...['a', 'b', 'c', 'd', 'e', 'f'].map((n) => file(`${n}.png`)));
+    assert.equal(r.chips().length, 6);
+    await click(r);
+    assert.deepEqual(pickCalls(r), []);
+    assert.deepEqual(r.log.problem.at(-1), ['Up to 6 attachments per message.', 'warn', 4000]);
+    assert.equal(r.els['att-btn'].disabled, false, 'the button was never locked');
+  });
+
+  test('(+) cancelled does nothing: no chip, no line, no announcement, and the button is back', async () => {
+    const r = rig();
+    r.state.polls = [pending, { status: 200, body: { state: 'cancelled' } }];
+    await click(r);
+    assert.equal(r.chips().length, 0);
+    assert.equal(r.tray.hidden, true);
+    assert.deepEqual([r.log.problem, r.log.announce, r.log.say], [[], [], []]);
+    assert.deepEqual([r.els['att-btn'].disabled, r.els['att-btn'].attrs['aria-busy']], [false, undefined]);
+  });
+
+  test('(+) a done answer with no file at all adds nothing and says nothing', async () => {
+    const r = rig();
+    r.state.polls = [done()];
+    await click(r);
+    assert.deepEqual([r.chips().length, r.log.problem], [0, []]);
+  });
+
+  test('(−) 429 on the start shows the warn line for 4 s, polls nothing and gives the button back', async () => {
+    const r = rig();
+    r.state.pickStart = { status: 429, body: { error: 'busy', message: 'a file chooser is already open' } };
+    await click(r);
+    assert.deepEqual(r.log.problem, [CHOOSER_OPEN]);
+    assert.equal(pickCalls(r).length, 1);
+    assert.deepEqual([r.els['att-btn'].disabled, r.els['att-btn'].attrs['aria-busy']], [false, undefined]);
+  });
+
+  test('(+) while the chooser is open the button is disabled with aria-busy and no other pick starts; afterwards it is back and focused', async () => {
+    let release;
+    const r = rig();
+    r.state.gate = new Promise((resolve) => { release = resolve; });
+    r.state.polls = [done(okFile(1))];
+    await click(r);
+    assert.deepEqual([r.els['att-btn'].disabled, r.els['att-btn'].attrs['aria-busy']], [true, 'true']);
+    r.els['att-btn'].fire('click'); // fire() ignores `disabled`, as a stray click event would
+    r.els['att-btn'].fire('click');
+    await settle();
+    assert.equal(pickCalls(r).filter((c) => c.method === 'POST').length, 1, 'one start only');
+    r.att.enable(true); // the input coming back on does not unlock the button mid-pick
+    assert.equal(r.els['att-btn'].disabled, true);
+    release();
+    await settle();
+    assert.deepEqual([r.els['att-btn'].disabled, r.els['att-btn'].attrs['aria-busy']], [false, undefined]);
+    assert.equal(r.chips().length, 1);
+    assert.equal(focus.el, r.els['att-btn'], 'focus returns to the button the dialog was opened from');
+    await click(r);
+    assert.equal(pickCalls(r).filter((c) => c.method === 'POST').length, 2, 'the next pick starts normally');
+  });
+
+  test('(−) the start fails: 404 is the gone session, 409 no-project and the rest are said in fixed words; nothing is polled; the button is back each time', async () => {
+    const cases = [
+      [{ status: 404, body: { error: 'not_found' } }, 'The session is gone.', 1],
+      [{ status: 409, body: { error: 'no-project', message: 'SERVER TEXT' } }, "nika can't tell this session's project yet. Try again in a moment.", 0],
+      [{ status: 400, body: { error: 'invalid' } }, "nika couldn't open the file chooser. Nothing was added.", 0],
+      [{ status: 500, body: { error: 'internal' } }, "nika couldn't open the file chooser. Nothing was added.", 0],
+      [{ status: 0, body: null }, "nika couldn't open the file chooser. Nothing was added.", 0],
+      [{ status: 202, body: { reqId: '../../etc' } }, "nika couldn't open the file chooser. Nothing was added.", 0],
+      [{ status: 202, body: null }, "nika couldn't open the file chooser. Nothing was added.", 0],
+    ];
+    for (const [reply, line, gone] of cases) {
+      const r = rig();
+      r.state.pickStart = reply;
+      await click(r);
+      assert.equal(r.log.problem.at(-1)[0], line, JSON.stringify(reply));
+      assert.equal(r.log.gone, gone, JSON.stringify(reply));
+      assert.equal(pickCalls(r).length, 1);
+      assert.doesNotMatch(JSON.stringify(r.log.problem), /SERVER/);
+      assert.equal(r.els['att-btn'].disabled, false);
+    }
+  });
+
+  test('(−) a poll that fails stops the wait with a fixed line: 404 (the request is gone), any other status, a lost answer or a state the page does not know', async () => {
+    const cases = [
+      [{ status: 404, body: { error: 'not_found' } }, 'The file chooser closed. Nothing was added.'],
+      [{ status: 500, body: { error: 'internal' } }, "nika couldn't open the file chooser. Nothing was added."],
+      [{ status: 0, body: null }, "nika couldn't open the file chooser. Nothing was added."],
+      [{ status: 200, body: { state: 'exploded' } }, "nika couldn't open the file chooser. Nothing was added."],
+      [{ status: 200, body: null }, "nika couldn't open the file chooser. Nothing was added."],
+      [{ status: 200, body: { state: 'done', files: 'nope' } }, "nika couldn't open the file chooser. Nothing was added."],
+    ];
+    for (const [reply, line] of cases) {
+      const r = rig();
+      r.state.polls = [pending, reply];
+      await click(r);
+      assert.equal(r.log.problem.at(-1)[0], line, JSON.stringify(reply));
+      assert.deepEqual(r.log.sleeps, [300, 300]);
+      assert.equal(r.chips().length, 0);
+      assert.equal(r.els['att-btn'].disabled, false, 'the button is back');
+    }
+  });
+
+  test('(−) a ready entry the page cannot trust (a bad id or type) shows as failed and keeps no id; control characters in a name never show', async () => {
+    const r = rig();
+    r.state.polls = [done(okFile(1, { id: '../../x' }), okFile(2, { type: 'exe' }), okFile(3, { name: `a${String.fromCharCode(0x202e)}b\u0007c.md` }), okFile(4, { name: 5 }))];
+    await click(r);
+    const v = r.chips().map(view);
+    assert.deepEqual(v.map((x) => x.s), ['failed', 'failed', 'ready', 'ready']);
+    assert.deepEqual(v.slice(0, 2).map((x) => x.meta), ['Upload failed', 'Upload failed']);
+    assert.deepEqual(v.slice(2).map((x) => x.name), ['abc.md', 'file']);
+    assert.deepEqual(r.log.calls.filter((c) => c.method === 'DELETE'), [], 'nothing is deleted: the page never held a trusted id for those');
+  });
+
+  test('(−) more files than room came back (the tray changed meanwhile): the first ones that fit become chips, the others are deleted by id, and the 6-line shows', async () => {
+    const r = rig();
+    await r.add(...['a', 'b', 'c', 'd'].map((n) => file(`${n}.png`)));
+    r.state.polls = [done(okFile(11), okFile(12), okFile(13, { name: 'third.md' }), badFile('empty'))];
+    await click(r);
+    assert.equal(r.chips().length, 6);
+    assert.deepEqual(deletes(r).map((c) => c.path), [`/api/app/pane/%257/attachments/${uploadId(13)}`]);
+    assert.equal(r.log.problem.at(-1)[0], 'Up to 6 attachments per message.');
+  });
+
+  test('(−) no pane: the button asks for nothing', async () => {
+    const none = rig({ paneId: null });
+    await click(none);
+    assert.deepEqual(none.log.calls, []);
+  });
+
+  test('(+) paste and drop are as they were: they read the File and post it to the upload route, and never touch the chooser', async () => {
+    const r = rig();
+    r.els.composer.fire('paste', { clipboardData: { files: [file('p.png')] } });
+    r.els['composer-box'].fire('drop', { dataTransfer: { types: ['Files'], files: [file('d.pdf')] } });
+    await settle();
+    assert.deepEqual(r.log.calls.map((c) => [c.method, c.path.endsWith('/attachments')]), [['POST', true], ['POST', true]]);
+    assert.equal(r.chips().length, 2);
+    assert.deepEqual(pickCalls(r), []);
+  });
+});
+
+describe('the ways in: button, paste, drop', () => {
   test('(−) a disabled input ignores the button and every way of adding; enable(true) brings them back', async () => {
     const r = rig();
     r.att.enable(false);
     assert.equal(r.els['att-btn'].disabled, true);
     r.els['att-btn'].fire('click');
-    assert.equal(r.els['att-input'].clicks, 0);
+    await settle();
+    assert.deepEqual(r.log.calls, [], 'the button asks for no chooser while input is off');
     const e = r.els.composer.fire('paste', { clipboardData: { files: [file('a.png')] } });
     await settle();
     assert.equal(r.chips().length, 0);
@@ -473,6 +686,9 @@ describe('the ways in: button, paste, drop', () => {
     r.els.composer.fire('paste', { clipboardData: { files: [file('a.png')] } });
     await settle();
     assert.equal(r.chips().length, 1);
+    r.els['att-btn'].fire('click');
+    await settle();
+    assert.equal(r.log.calls.filter(isPickStartCall).length, 1, 'and the button asks again');
   });
 
   test('(−) no pane, no attachments: nothing is added or posted', async () => {
@@ -651,22 +867,36 @@ describe('the ways in: button, paste, drop', () => {
     await finish();
   });
 
-  test('(−) files picked while locked, or pasted while input is off: the line shows; a cancelled picker says nothing', async () => {
-    const { r, finish } = await sendingRig();
-    r.els['att-input'].files = [file('late.png')];
-    r.els['att-input'].fire('change');
+  test('(−) a chooser answer that arrives while locked (input turned off): the line shows, no chip, and the stored copies are deleted', async () => {
+    let release;
+    const r = rig();
+    r.state.gate = new Promise((resolve) => { release = resolve; });
+    r.state.polls = [{ status: 200, body: { state: 'done', files: [{ ok: true, id: uploadId(1), name: 'late.png', size: 9, type: 'png' }, { ok: false, name: 'bad.bin', error: 'too_large' }] } }];
+    r.els['att-btn'].fire('click');
+    await settle();
+    r.att.enable(false); // Claude ended while the dialog was open
+    release();
     await settle();
     assert.deepEqual(r.log.problem, [LOCKED_LINE]);
-    r.els['att-input'].files = [];
-    r.els['att-input'].fire('change'); // the picker closed without a file
-    await settle();
-    assert.equal(r.log.problem.length, 1);
-    await finish();
+    assert.equal(r.chips().length, 0);
+    assert.deepEqual(deletes(r).map((c) => c.path), [`/api/app/pane/%257/attachments/${uploadId(1)}`]);
+    assert.equal(r.els['att-btn'].disabled, true, 'enable(false) won over the end of the pick');
+    assert.equal(r.els['att-btn'].attrs['aria-busy'], undefined);
     const off = rig();
     off.att.enable(false);
     off.els.composer.fire('paste', { clipboardData: { files: [file('a.png')] } });
     assert.deepEqual(off.log.problem, [LOCKED_LINE]);
     assert.equal(off.chips().length, 0);
+  });
+
+  test('(−) the button while a send is out asks for no chooser (the send stays the only thing in flight)', async () => {
+    const { r, finish } = await sendingRig();
+    const before = r.log.calls.length;
+    r.els['att-btn'].fire('click');
+    await settle();
+    assert.equal(r.log.calls.length, before);
+    assert.deepEqual(r.log.problem, []);
+    await finish();
   });
 
   test('(+) with adding open the line never shows, and a paste or drop still adds', async () => {
@@ -1053,11 +1283,18 @@ describe('public/attach.js source', () => {
     assert.match(c, /\.textContent/, 'strings from files and the server are text');
   });
 
-  test('(+) it reaches the server only through the io the page gives it: no route string of its own (tier separation), three routes asked of io.path', () => {
+  test('(+) it reaches the server only through the io the page gives it: no route string of its own (tier separation), five routes asked of io.path', () => {
     const c = code(SRC);
     assert.doesNotMatch(c, /\/api\//, 'ui.test.js: only the app-tier modules name /api/app, and session.js builds the paths');
-    for (const call of ["io.path('attachments')", "io.path('attach-send')", 'io.path(`attachments/${id}`)']) assert.ok(c.includes(call), call);
-    assert.equal([...c.matchAll(/io\.path\(/g)].length, 3, 'the upload, the send and the delete path only');
+    for (const call of ["io.path('attachments')", "io.path('attach-send')", 'io.path(`attachments/${id}`)', "io.path('attachments/pick')", 'io.path(`attachments/pick/${reqId}`)']) assert.ok(c.includes(call), call);
+    assert.equal([...c.matchAll(/io\.path\(/g)].length, 5, 'the upload, the send, the delete, and the chooser start and poll paths only');
+  });
+
+  test('(−) the page has no webview file input anywhere: attach.js and session.html hold no att-input, no type="file", no input.click()', () => {
+    const c = code(SRC);
+    assert.doesNotMatch(c, /att-input|type\s*[:=]\s*['"]file['"]|\.click\(\)|createElement\(\s*['"]input['"]/);
+    assert.doesNotMatch(HTML, /att-input|type="file"/i);
+    for (const f of fs.readdirSync(path.join(ROOT, 'public')).filter((n) => /\.(js|html)$/.test(n))) assert.doesNotMatch(read('public', f), /type="file"|type: 'file'|att-input/, f);
   });
 
   test('(+) every icon it draws and every id it looks up exists in session.html', () => {
@@ -1068,7 +1305,7 @@ describe('public/attach.js source', () => {
     for (const n of drawn) assert.ok(symbols.has(n), n);
     const ids = new Set([...HTML.matchAll(/\sid="([^"]+)"/g)].map((m) => m[1]));
     const used = new Set([...code(SRC).matchAll(/\bel\('([a-z-]+)'\)/g)].map((m) => m[1]));
-    for (const id of ['att-tray', 'att-btn', 'att-input', 'att-drop', 'composer-box', 'composer']) assert.ok(used.has(id), id);
+    for (const id of ['att-tray', 'att-btn', 'att-drop', 'composer-box', 'composer']) assert.ok(used.has(id), id);
     for (const id of used) assert.ok(ids.has(id), id);
   });
 });
@@ -1096,15 +1333,12 @@ describe('session.html: the markup of section 8.1', () => {
     assert.ok(at('id="cmd-btn"') < at('id="att-btn"') && at('id="att-btn"') < at('id="send"'));
   });
 
-  test('(+) a hidden multiple file input with the picker filter, and the drop hint inside the message box', () => {
-    const i = tag('att-input');
-    assert.match(i, /type="file"/);
-    assert.match(i, /\bmultiple\b/);
-    assert.match(i, /\bhidden\b/);
-    assert.match(i, /accept="image\/png,image\/jpeg,image\/gif,image\/webp,application\/pdf,text\/\*,/);
+  test('(+) the button has no file input beside it, and the drop hint stays inside the message box', () => {
+    assert.equal(tag('att-input'), '');
+    assert.doesNotMatch(HTML, /type="file"|accept=/);
     assert.match(HTML, /<span class="att-drop" id="att-drop" aria-hidden="true" hidden>Drop to attach<\/span>/);
     const inbox = HTML.slice(at('<div class="inbox">'), at('<div class="mode-row"'));
-    assert.ok(inbox.includes('id="att-btn"') && inbox.includes('id="att-input"') && inbox.includes('id="att-drop"'));
+    assert.ok(inbox.includes('id="att-btn"') && inbox.includes('id="att-drop"') && !inbox.includes('<input'));
   });
 
   test('(+) the help line is screen-reader text in the notes row and names the limits', () => {
@@ -1213,6 +1447,19 @@ describe('the static list and the desktop shell', () => {
     assert.ok(off > 0, 'the call is in make_window');
     assert.ok(off < body.indexOf('builder.build()'), 'before build');
     assert.ok(off < body.indexOf('.on_navigation('), 'in the same chain as the navigation guard');
+  });
+
+  test('(+) the shell answers pick-files with its own native dialog on its own thread, in the one slot pick-folder uses; only files, at most six, valid UTF-8', () => {
+    const lib = read('app', 'src-tauri', 'src', 'lib.rs');
+    assert.match(lib, /Sup::PickFiles\(req_id\) => start_pick_files\(app, req_id\),/);
+    const fn = lib.slice(lib.indexOf('fn start_pick_files('));
+    const body = fn.slice(0, fn.indexOf('\n}\n'));
+    assert.match(body, /thread::spawn\(/);
+    assert.ok(body.indexOf('thread::spawn(') < body.indexOf('.blocking_pick_files()'), 'the blocking dialog runs inside the thread, never on the main one');
+    for (const needle of ['.set_title("Attach files")', 'protocol::valid_file(p)', 'p.to_str()', 'protocol::cap_picked(picked)', 'protocol::files_line(&req_id', 'shell(&app).lock().pick = None;']) assert.ok(body.includes(needle), needle);
+    assert.equal([...lib.matchAll(/i\.pick = Some\(/g)].length, 1, 'one claim for both kinds: the slot is shared');
+    assert.equal([...lib.matchAll(/claim_pick\(app, &req_id\)/g)].length, 2, 'start_pick and start_pick_files both take it');
+    assert.match(body, /let Some\(\(server, busy\)\) = claim_pick\(app, &req_id\) else \{ return \};\s+if busy \{\s+let _ = server\.send\(&protocol::files_line\(&req_id, None\)\);/, 'a second request is answered at once with null');
   });
 
   test('(−) the shell registers no drag-drop listener and keeps its navigation guard and its new-window denial', () => {

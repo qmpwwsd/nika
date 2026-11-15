@@ -13,6 +13,8 @@ pub const PROTO: u64 = 1;
 /// A line longer than this (without its newline) is discarded through the next newline.
 pub const MAX_LINE: usize = 64 * 1024;
 pub const MAX_PROJECTS: usize = 8;
+/// The most files one `pick-files` dialog hands back (the page's limit per message; the server takes at most the room left in the tray).
+pub const MAX_PICKED_FILES: usize = 6;
 const MAX_COUNT: u64 = 1_000_000;
 const MAX_NAME_CHARS: usize = 200;
 
@@ -68,6 +70,8 @@ pub enum Msg {
     BadReady,
     Status(Status),
     PickFolder { req_id: String },
+    /// The attachment button's file dialog (W2-T6): same id rule and same single slot as `PickFolder`.
+    PickFiles { req_id: String },
     Window(WindowAction),
     Error { message: String },
 }
@@ -90,6 +94,18 @@ pub fn valid_project_key(s: &str) -> bool {
 /// A picked folder is sent back only when it is an absolute path to an existing directory.
 pub fn valid_folder(p: &Path) -> bool {
     p.is_absolute() && std::fs::metadata(p).map(|m| m.is_dir()).unwrap_or(false)
+}
+
+/// A picked file is sent back only when it is an absolute path to an existing regular file. A link to a file passes: the server
+/// refuses a link itself (it opens with O_NOFOLLOW) and the page then shows that file as one that could not be read.
+pub fn valid_file(p: &Path) -> bool {
+    p.is_absolute() && std::fs::metadata(p).map(|m| m.is_file()).unwrap_or(false)
+}
+
+/// What goes back to the server for the picked files: the first `MAX_PICKED_FILES`, and `None` (a cancel) when none is left.
+pub fn cap_picked(mut files: Vec<String>) -> Option<Vec<String>> {
+    files.truncate(MAX_PICKED_FILES);
+    (!files.is_empty()).then_some(files)
 }
 
 /// Display text from the child: no control characters, no bidi or zero-width controls, bounded, trimmed.
@@ -157,6 +173,10 @@ pub fn parse_line(line: &str) -> Option<Msg> {
             let id = obj.get("reqId")?.as_str()?;
             valid_req_id(id).then(|| Msg::PickFolder { req_id: id.to_string() })
         }
+        "pick-files" => {
+            let id = obj.get("reqId")?.as_str()?;
+            valid_req_id(id).then(|| Msg::PickFiles { req_id: id.to_string() })
+        }
         "window" => WindowAction::from_name(obj.get("action")?.as_str()?).map(Msg::Window),
         "error" => Some(Msg::Error { message: clean(obj.get("message").and_then(Value::as_str).unwrap_or("")) }),
         _ => None,
@@ -218,6 +238,14 @@ struct Folder<'a> {
     path: Option<&'a str>,
 }
 
+#[derive(Serialize)]
+struct Files<'a> {
+    r#type: &'a str,
+    #[serde(rename = "reqId")]
+    req_id: &'a str,
+    paths: Option<&'a [String]>,
+}
+
 /// The first line the server must receive. Holds the secret: write it to the pipe and drop it, never log it.
 pub fn hello_line(secret: &Secret) -> String {
     let mut s = serde_json::to_string(&Hello { r#type: "hello", proto: PROTO, secret: secret.expose() }).expect("hello serialises");
@@ -227,6 +255,13 @@ pub fn hello_line(secret: &Secret) -> String {
 
 pub fn folder_line(req_id: &str, path: Option<&str>) -> String {
     let mut s = serde_json::to_string(&Folder { r#type: "folder", req_id, path }).expect("folder serialises");
+    s.push('\n');
+    s
+}
+
+/// The answer to a `pick-files` request: the picked absolute paths, or `null` when the user cancelled or nothing usable was picked.
+pub fn files_line(req_id: &str, paths: Option<&[String]>) -> String {
+    let mut s = serde_json::to_string(&Files { r#type: "files", req_id, paths }).expect("files serialises");
     s.push('\n');
     s
 }
@@ -345,6 +380,22 @@ mod tests {
     }
 
     #[test]
+    fn pick_files_requires_a_uuid_shaped_req_id() {
+        // (+) the same id rule as pick-folder, and its own message
+        assert_eq!(parse_line(&format!(r#"{{"type":"pick-files","reqId":"{REQ}"}}"#)), Some(Msg::PickFiles { req_id: REQ.into() }));
+        assert_ne!(parse_line(&format!(r#"{{"type":"pick-files","reqId":"{REQ}"}}"#)), parse_line(&format!(r#"{{"type":"pick-folder","reqId":"{REQ}"}}"#)));
+        // (-) a bad, missing or non-string id is ignored; extra fields change nothing; the singular name is not a message
+        for bad in ["", "abc", "11111111111111111111111111111111", "11111111-1111-4111-8111-11111111111", "1111111g-1111-4111-8111-111111111111", "../../x"] {
+            assert_eq!(parse_line(&format!(r#"{{"type":"pick-files","reqId":"{bad}"}}"#)), None, "{bad}");
+        }
+        assert_eq!(parse_line(r#"{"type":"pick-files"}"#), None);
+        assert_eq!(parse_line(r#"{"type":"pick-files","reqId":7}"#), None);
+        assert_eq!(parse_line(r#"{"type":"pick-files","reqId":null}"#), None);
+        assert_eq!(parse_line(&format!(r#"{{"type":"pick-file","reqId":"{REQ}"}}"#)), None);
+        assert_eq!(parse_line(&format!(r#"{{"type":"pick-files","reqId":"{REQ}","paths":["/etc/passwd"],"room":99}}"#)), Some(Msg::PickFiles { req_id: REQ.into() }));
+    }
+
+    #[test]
     fn error_message_is_cleaned() {
         // (+)
         assert_eq!(parse_line("{\"type\":\"error\",\"message\":\"port in use\\n\\u001b]0;x\\u0007\"}"), Some(Msg::Error { message: "port in use]0;x".into() }));
@@ -419,6 +470,35 @@ mod tests {
         let tricky = folder_line(REQ, Some("/tmp/a\"b\nc"));
         assert_eq!(tricky.matches('\n').count(), 1);
         assert_eq!(serde_json::from_str::<Value>(&tricky).unwrap()["path"], "/tmp/a\"b\nc");
+    }
+
+    #[test]
+    fn files_line_carries_the_paths_or_null() {
+        // (+) a list, in order, and null for a cancel
+        let two = vec!["/tmp/a.txt".to_string(), "/tmp/b c.png".to_string()];
+        assert_eq!(files_line(REQ, Some(&two)), format!("{{\"type\":\"files\",\"reqId\":\"{REQ}\",\"paths\":[\"/tmp/a.txt\",\"/tmp/b c.png\"]}}\n"));
+        assert_eq!(files_line(REQ, None), format!("{{\"type\":\"files\",\"reqId\":\"{REQ}\",\"paths\":null}}\n"));
+        // (-) names with quotes, newlines and control characters stay one JSON line and come back as they were
+        let tricky = vec!["/tmp/a\"b\nc\u{7}.txt".to_string(), "/tmp/\u{202e}x".to_string()];
+        let line = files_line(REQ, Some(&tricky));
+        assert_eq!(line.matches('\n').count(), 1);
+        let v: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(v["paths"][0], "/tmp/a\"b\nc\u{7}.txt");
+        assert_eq!(v["paths"][1], "/tmp/\u{202e}x");
+        // (-) no other field: the answer holds the type, the id and the paths
+        assert_eq!(v.as_object().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn picked_files_are_capped_and_empty_means_cancelled() {
+        // (+) at most MAX_PICKED_FILES (6, the page's limit) go back
+        let many: Vec<String> = (0..10).map(|i| format!("/tmp/f{i}")).collect();
+        let kept = cap_picked(many.clone());
+        assert_eq!(MAX_PICKED_FILES, 6);
+        assert_eq!(kept.as_deref(), Some(&many[..6]));
+        assert_eq!(cap_picked(vec!["/tmp/one".into()]).as_deref(), Some(&["/tmp/one".to_string()][..]));
+        // (-) nothing left is a cancel, not an empty list
+        assert_eq!(cap_picked(Vec::new()), None);
     }
 
     #[test]
@@ -499,5 +579,40 @@ mod tests {
         assert!(!valid_folder(&file));
         std::fs::remove_file(&file).unwrap();
         assert!(!valid_folder(Path::new("")));
+    }
+
+    #[test]
+    fn file_validation() {
+        // (+) an absolute path to an existing regular file
+        let file = std::env::temp_dir().join(format!("nika-file-test-{}", std::process::id()));
+        std::fs::write(&file, b"x").unwrap();
+        assert!(valid_file(&file));
+        // (-) a directory, a missing file, a relative path, empty
+        assert!(!valid_file(&std::env::temp_dir()));
+        assert!(!valid_file(&std::env::temp_dir().join("nika-no-such-file-3f9a")));
+        assert!(!valid_file(Path::new("relative/file.txt")));
+        assert!(!valid_file(Path::new("file.txt")));
+        assert!(!valid_file(Path::new("")));
+        std::fs::remove_file(&file).unwrap();
+        assert!(!valid_file(&file), "gone after removal");
+    }
+
+    #[test]
+    fn file_validation_follows_a_link_to_a_file_but_not_to_a_directory() {
+        // The server refuses a link itself (O_NOFOLLOW) and says so on the chip; the shell only keeps what is a file.
+        let dir = std::env::temp_dir().join(format!("nika-file-link-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("real.txt");
+        std::fs::write(&file, b"x").unwrap();
+        #[cfg(unix)]
+        {
+            let link = dir.join("link.txt");
+            std::os::unix::fs::symlink(&file, &link).unwrap();
+            assert!(valid_file(&link));
+            let to_dir = dir.join("dirlink");
+            std::os::unix::fs::symlink(&dir, &to_dir).unwrap();
+            assert!(!valid_file(&to_dir));
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

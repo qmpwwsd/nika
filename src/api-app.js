@@ -20,7 +20,7 @@ import { dialogCapture } from './dialog.js';
 import { tagPane, pickState, claudePane } from './orchestrate.js';
 import { createFit, checkFitBody, FIT_RATE } from './fit.js';
 import { createScroll, checkScrollBody } from './scroll.js';
-import { ID, UPLOAD_CAP, checkUploadBody } from './attachments.js';
+import { ID, UPLOAD_CAP, PER_MESSAGE, checkUploadBody } from './attachments.js';
 import { createAttachSend, checkAttachBody, logLine } from './attach-send.js';
 import { SIG } from './draft.js';
 
@@ -98,7 +98,8 @@ async function listTemplates(dir) {
  *                           findSessions(ids) → Map id → { agent, group } (src/model.js: ended sessions by id, ONE transcript-index walk for
  *                           all of them, no ps and no tmux; throws EINDEX) }; handed to the modules as is
  * @param {object} o.deps    { version, collect() → snapshot, listPanes() → { panes, error }, readHistory, listPlugins, rulesState,
- *                           preview, apply, spawnAgent, startOrchestrator, mirror, keys, picker, listCommands;
+ *                           preview, apply, spawnAgent, startOrchestrator, mirror, keys, picker (start/status for folders, startFiles/filesStatus for the
+ *                           attachment file chooser), listCommands;
  *                           window(action), the shell relay: writes one `window` line (appio.js);
  *                           appCopy { state(), install(), dismiss() } (src/appcopy.js bound to this install);
  *                           createSessionControl, a test seam for the factory in session-control.js;
@@ -623,6 +624,28 @@ export function createAppApi({ secret, ctx, deps }) {
       attachLog(logLine(e));
       return err(500, 'write-failed', 'write failed');
     }
+  });
+
+  // The paperclip's file chooser (0.5, W2-T6): the page never opens a file input (the webview's freezes the app on macOS). It asks, the shell opens
+  // its own native dialog, the server reads what the user picked (src/appio.js, through fsafe) and hands the bytes to the store. Order: body 400,
+  // pane 404, project 409, then the picker (one chooser of any kind at a time: 429). The answers hold ids, names, sizes, types and codes, never a path.
+  route('POST', /^\/api\/app\/pane\/([^/]+)\/attachments\/pick$/, CAP.small, async ({ params, body }) => {
+    const keys = Object.keys(body);
+    if (keys.length !== 1 || keys[0] !== 'room' || !Number.isInteger(body.room) || body.room < 1 || body.room > PER_MESSAGE) return err(400, 'invalid', `body must be { room: 1 to ${PER_MESSAGE} }`);
+    const { id, failure } = await eligiblePane(params[0]);
+    if (failure) return failure;
+    const key = await paneKey(id);
+    if (key === null) return err(409, 'no-project', "nika can't tell this session's project");
+    const reqId = deps.picker.startFiles({ pane: id, key, room: body.room });
+    return reqId ? { status: 202, body: { reqId } } : err(429, 'busy', 'a file chooser is already open');
+  });
+
+  // Not eligibility-gated, like the folder chooser's poll: the answer belongs to the request, and the pane may have gone while the dialog was open.
+  route('GET', /^\/api\/app\/pane\/([^/]+)\/attachments\/pick\/([^/]+)$/, 0, async ({ params }) => {
+    const id = param(params[0], PANE_ID);
+    const reqId = param(params[1], UUID);
+    const answer = id && reqId && deps.picker.filesStatus(id, reqId);
+    return answer ? { status: 200, body: answer } : err(404, 'not_found', 'no such chooser request'); // unknown and another pane's read alike
   });
 
   // Not eligibility-gated: the pane may be gone, and the file must still go. false for an unknown, another pane's or an already sent id (no oracle).
