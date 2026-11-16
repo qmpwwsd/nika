@@ -184,8 +184,10 @@ and 64 to 120 columns (spike S-F13). A permission prompt in a named session, 120
   sit between the block and the box's rule at idle; none was seen under a dialog.
 - **The plan approval shows no task block at all** (36, 45, 52 and 60 rows, named or not). A named session adds the labelled rule as the very last row,
   directly under the footer; an unnamed one ends at the footer.
-- **Not verified:** a permission prompt in an unnamed session; Claude 2.1.319; overflow rows with hidden `pending` or `in progress` tasks; the
-  `blocked by` and owner suffixes; the survey together with a task list; vim mode.
+- **A permission prompt in an unnamed session** (live check of the 0.5 release candidate, 2.1.325, 106x42): no rule row; after the
+  `Esc to cancel · Tab to amend` footer come blank rows (13 there), then the task block. nika read it and answered it from the page.
+- **Not verified:** Claude 2.1.319; overflow rows with hidden `pending` or `in progress` tasks; the `blocked by` and owner suffixes; the
+  survey together with a task list; vim mode.
 
 nika's rule (`taskEnd` in `src/mode.js`, called by `footerEnd` and by the prompt reader; rule 12 of `rules/project-rules.md` has the approved text). It
 reads **bottom-up on right-trimmed rows** and cuts **exactly one** of the following, otherwise nothing (the footer reads `unknown`, fail closed):
