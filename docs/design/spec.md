@@ -1845,9 +1845,16 @@ feedback question nika can't read exactly. Answer it in the terminal."
 | 5xx, network error | "nika couldn't reach tmux." | on again |
 
 **No Esc for 4 seconds after a rating.** Claude shows "Feedback: Fine · Esc to undo" for about 3 s after a 1, 2 or 3, and an Escape there takes the rating back, so the server sends no
-Escape of its own for 4 s (`api-app.md`, the survey route). Every place that can answer 409 `survey-undo` (Stop, End and its dialog, the quick-action commands, the draft clear, the
-question form's Decline) shows this one fixed line, plain text, as a problem line of the same kind as that route's other 409 lines, and retries nothing:
+Escape of its own for 4 s (`api-app.md`, the survey route). Every place that can answer 409 `survey-undo` (Stop, End and its dialog, the quick-action commands, Send (its clear of the
+box), the question form's Decline) shows this one fixed line, plain text, as a problem line of the same kind as that route's other 409 lines, and retries nothing:
 `Claude shows "Esc to undo" for the rating nika just sent, so nika sends no Esc for 4 seconds. Try again then.` Dismiss (0) starts no hold. Your own Esc in the pane still works.
+
+**Claude's follow-up row after a rating.** For about 3 s after a 1, 2 or 3 (once the "Esc to undo" row has gone) Claude shows `Thanks for the feedback!` and under it
+`(Optional) Press [1] to tell us more`, where a `1` opens `/feedback`. It is not a survey: no panel, and the capture's `survey` stays `null`. The server treats the screen as it
+treats a survey (no box now), so the page sees only fixed, existing outcomes: the draft sync pauses and nothing is typed; a Send that comes in those seconds gets the line for 409
+`prompt-open` ("A prompt opened in Claude, so nika did not press Enter. Answer it, then send again. Your text is kept.") when the page's last capture already showed the row, or the line
+for 409 `input-unreadable` ("nika can't read Claude's input box right now (a menu may be open). Nothing was sent. Your text is kept.") when the row appeared after it; and a
+question dialog that opens in those seconds keeps the banner ("answer it in the terminal", reason `survey`). The text stays in the message box in every case (an empty message box can still press its one Enter: it types nothing). No new copy, no new state.
 
 - **The message box waits while a survey shows.** Send sends nothing (not a line, a paste, a Shell line or the Enter of an empty box) and the text stays. The note under the box is, for a
   ready rating, "Answer Claude's feedback question above, or Dismiss it."; for a consent question "Answer Claude's feedback question above." (not reached in 0.5); for a `terminal` survey the

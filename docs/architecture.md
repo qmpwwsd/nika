@@ -248,11 +248,15 @@ the screen is the only source.
    transcript question, a mention of bypass, a box with text, vim normal mode and any other shape come back as `terminal` with a reason, and nothing is typed for them.
 2. `api-app.js` puts the result in the capture's `survey` field (null while a permission prompt or a dialog is on screen; part of the ETag, because it depends on the pane's vim memory).
 3. `POST /api/app/pane/:id/survey { n, sig }` (`checkSurveyBody` in the router, pane 404, then `answerSurvey`) runs under the pane lock: fresh capture, the same reading, the `sig`, a fresh
-   registry state `idle`, then one digit as literal text and a read-back of at most 1 s. Never `Enter` or any other key.
-4. The controller's one key function refuses every `Escape` of its own (Stop, End, the commands, the draft route, a dialog's Decline) with 409 `survey-undo` for 4 s after a rating of 1 to 3,
-   because Claude then shows "Esc to undo". The keys route (the user's own keys) is not held.
+   registry state `idle`, then (S1) one more fresh capture that must still read the same survey (`survey-changed` otherwise; the state read is a whole snapshot, so the screen is
+   looked at again after it), then one digit as literal text and a read-back of at most 1 s. Never `Enter` or any other key.
+4. The controller's one key function refuses every `Escape` of its own (Stop, End, the commands, Send's clear through the draft route, a dialog's Decline) with 409 `survey-undo` for 4 s after
+   a rating of 1 to 3, because Claude then shows "Esc to undo". The keys route (the user's own keys) is not held.
 5. `public/survey-panel.js` draws the buttons (or "Terminal only" and the reason), posts exactly `{ n, sig }` and gates the message box while a survey shows. `session.js` hooks it after the
    dialog form.
+
+6. For the few seconds after a rating Claude shows `(Optional) Press [1] to tell us more` (a `1` there opens `/feedback`). `mode.js` (`followUpShown`, `surveyOrFollowUpShown`) matches that row;
+   the draft box, Send's typing and the dialog reader treat it like a survey (no box: nothing typed), while `survey.js` does not read it, so there is no panel.
 
 Contract: `contracts/api-app.md` (the capture's `survey`, the route). Screens: `contracts/claude-tui.md` section 10.13. Page: design spec 9.5. Threat: T58 in [security](security.md).
 

@@ -106,3 +106,9 @@ Waiting for Claude to hide the list (no signal for it). Matching other Claude ve
 **Consequences.** The shapes come from Claude 2.1.325 and the strings in its binary; another version that draws something else is `unreadable` and keeps the banner. The
 subagent list is still cut only under a mode line or a dialog end, not under a permission prompt. A question row that is only `│` reads as no bar, so `layout` (a shape
 never seen; open question). `docs/security.md` T37 and `docs/contracts/claude-tui.md` (the section on the task list under a dialog, §13.1, §13.5) carry the details.
+
+**Open point (M2, from the 2026-11-16 re-review; not seen live).** Claude draws the bar when the question text holds a line break, so a question with a paragraph break has a
+blank row inside it. If that row is drawn as `│` alone, nika reads it as a question row without the bar, so the dialog is `unreadable / layout` and the user answers in the
+terminal (a missed feature, not a safety problem: it fails closed). A probe on synthetic rows shows `layout` for that shape and a normal read for the same question without the
+blank row. Whether Claude draws `│` on the blank row is for the next live capture; only then should a row that is exactly `│` count as barred and stay out of the question's text.
+`docs/contracts/claude-tui.md` §13.1 carries the same line.

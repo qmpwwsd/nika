@@ -529,6 +529,7 @@ Only SGR codes 0, 1, 2, 3, 4, 7, 22–24, 27, 30–37, 39, 40–47, 49, 90–97,
 wrap rule in `claude-tui.md` §10); the page mirrors it into the message box (spec §9.12):
 - `draft` is `null` while the screen has no plain input box: the footer is not a known mode line (a permission prompt, a dialog,
   the transient `paste again to expand` hint), a permission prompt parses, there are
+  a feedback survey is on screen or Claude's post-rating row `(Optional) Press [1] to tell us more` (a digit typed there would answer the survey or open `/feedback`, M1), there are
   fewer than two rule rows or nothing between the last two, the first box row is not the glyph `❯` or `!` followed by a
   no-break space, or the terminal cursor lies outside the rows of the box (`claude-tui.md` §10.1, §10.5: the box that parsed
   may be a status line, not the input). The page then shows every row of the mirror and does not sync. A capture with no cursor
@@ -561,7 +562,7 @@ wrap rule in `claude-tui.md` §10); the page mirrors it into the message box (sp
   strip, no strip, a text that ends in `…`, or a plan without its rules; `wide`: a row as wide as the pane (Claude may have cut it), a
   label that may have been word-wrapped, a wrapped footer, or fewer than 20 columns; `numbers`: option numbers not `1..k+2` without gaps,
   or above 9; `tab`: not exactly one current tab (two marked, or none); `layout`: any other shape (a duplicate label, a header with `☐`,
-  `☒` or `✔`, a footer that disagrees with the strip, a string over its maximum); `survey`: a feedback survey is on screen. `Exit plan
+  `☒` or `✔`, a footer that disagrees with the strip, a string over its maximum); `survey`: a feedback survey is on screen, or Claude's row `(Optional) Press [1] to tell us more` that it draws for a few seconds after a rating (0.5, M1: a digit typed for an option could reach that row's `1`, which opens `/feedback`). `Exit plan
   mode?` and the auto-mode nudge are `unreadable` with `kind: null` and `reason: "layout"`: nika recognises them so that every control
   that needs a plain box fails closed, and never answers them. The page keeps its banner for every `unreadable`.
 - `{ "state": "ready", "kind": "ask", "at": "question", "sig", "bypass", "tabs": [ { "header", "answered" } ], "current", "final",
@@ -582,7 +583,9 @@ wrap rule in `claude-tui.md` §10); the page mirrors it into the message box (sp
   never carry it.
 
 0.5 field, Claude's feedback survey (F14; `claude-tui.md` §10.13; the page: spec §9.5). Parsed server-side from the same rows by `src/survey.js` (`surveyOf`):
-- `survey` is `null` when no survey is on screen, and also while a permission `prompt` parses or a dialog is on screen (that panel owns the slot, and its own gates hold).
+- `survey` is `null` when no survey is on screen, and also while a permission `prompt` parses or a dialog is on screen (that panel owns the slot, and its own gates hold). It stays `null`
+  while Claude's post-rating row `(Optional) Press [1] to tell us more` shows (M1): that row is no survey and offers nothing to answer, so there is no panel; but for those seconds the
+  capture's `draft` is `null` too (the draft sync pauses and nothing is typed), the keys route with `send: true` answers `409 prompt-open`, and the dialog reads `unreadable / survey`.
 - `{ "state": "ready", "kind": "rating", "sig": "<16 hex>", "options": [ { "n": 1, "label": "Bad" }, { "n": 2, "label": "Fine" }, { "n": 3, "label": "Good" }, { "n": 0, "label": "Dismiss" } ] }`:
   exactly the captured rating survey and nothing in the way of a digit. All of these must hold: the rows `● How is Claude doing this session? (optional)` (the bullet at column 0)
   and `  1: Bad … 2: Fine … 3: Good … 0: Dismiss` (indent exactly 2) once, the second directly below the first; no other row that looks like a survey question or options
@@ -662,8 +665,8 @@ and `{ text: "!<command>" }`) with `"send": true`; the passthrough (arrows, Esc,
 sending nothing:
 
 - the bypass checks above, unchanged (409 `bypass-prompt`, 409 `screen-unclear`);
-- a permission prompt, any question, plan or review dialog, the auto-mode nudge, or Claude's feedback survey on screen → `409 { "error":
-  "prompt-open" }`: a digit or a letter typed there would answer it;
+- a permission prompt, any question, plan or review dialog, the auto-mode nudge, Claude's feedback survey, or (M1) the row `(Optional) Press [1] to tell us more` it draws for a
+  few seconds after a rating, on screen → `409 { "error": "prompt-open" }`: a digit or a letter typed there would answer it (a lone `1` on that row opens `/feedback`);
 - an unreadable footer and no input box (the rule `submit` uses; a dialog nika does not know may be open) → `409 { "error": "screen-unclear" }`.
 
 A `text` of more than 700 characters is typed in chunks (above); with `send: true` each chunk after the first runs the same look again, after the
@@ -699,7 +702,7 @@ the other control routes. Checks and steps, in this order (every step fails clos
 3. Fresh capture (never the cache) and registry state. A capture that fails → its status and body.
 4. A permission prompt on screen → 409 `not-idle` (T51: a draft write never lands in a prompt).
 5. No plain box (`draft` would be `null`, which includes a cursor outside the rows of the box, a box that may be a status line):
-   footer unknown → 409 `mode-unknown` (a dialog may be open); otherwise → 409 `input-unreadable`, with no `draft` key.
+   footer unknown → 409 `mode-unknown` (a dialog may be open); otherwise (a survey or the post-rating row included) → 409 `input-unreadable`, with no `draft` key.
 6. `state` is `unreadable` → 409 `draft-unreadable` with `reason` (nika never writes over a draft it cannot read).
 7. `draft.sig` differs from `base` → 409 `draft-changed` (the terminal changed since the page looked; the page pulls).
 8. The trailing spaces and tabs of `text` are removed (they are invisible in the box and would make it unreadable), then the text
@@ -1371,7 +1374,7 @@ Checks, in this order (the first that fails answers; nothing is sent after a ref
 |---|---|---|
 | `no-view` | `alt` is not true: Claude's full-screen layout is off, so there is nothing to scroll | `Claude's full-screen view is off, so there is nothing to scroll.` |
 | `prompt-open` | a permission prompt parses (`prompt` not null): Claude binds the page keys to the highlight of its select lists | `A permission prompt is open. Answer it first.` |
-| `screen-unclear` | `draft` is `null`: no plain input box (a dialog, a survey, an overlay, an unknown footer, a cursor outside the box, the transient `paste again to expand` hint) | `Claude's input box is not on screen (a dialog, a menu or a survey may be open).` |
+| `screen-unclear` | `draft` is `null`: no plain input box (a dialog, a survey, Claude's post-rating row `(Optional) Press [1] to tell us more`, an overlay, an unknown footer, a cursor outside the box, the transient `paste again to expand` hint) | `Claude's input box is not on screen (a dialog, a menu or a survey may be open).` |
 | `menu-open` | the draft is text that starts with `/`, or an unreadable draft whose first box row starts with `❯ /`: Claude's slash menu is drawn above the box and leaves the footer readable, so the gate fails closed | `A slash command is being typed. Finish or clear it first.` |
 
 8. The keys, one `keys.send`. Its non-200 answer (`429 busy`: the keys route's 20 requests per second per pane is shared; a tmux failure)
@@ -1460,7 +1463,7 @@ whether anything is in Claude's input. Steps, in this order:
 4. The box must be a plain, readable, ours-to-paste-into input box:
    - no readable box: an unreadable draft whose reason nika can name (`history`, `tall`, `layout`, `pasted`, `trailing`) → `409 draft-unreadable`
      with `reason` and `draft`; an unknown footer (a question, review or plan dialog, the auto-mode nudge, a survey, an overlay) →
-     `409 mode-unknown`; a footer that reads but no recognised box or a cursor outside it → `409 input-unreadable`;
+     `409 mode-unknown`; a footer that reads but no recognised box (also while Claude's post-rating row `(Optional) Press [1] to tell us more` shows, M1) or a cursor outside it → `409 input-unreadable`;
    - a readable box with an unreadable draft → `409 draft-unreadable` with `reason` and `draft`; mode `bash` (Shell) → `409 shell-mode` with
      `draft`; its `sig` differs from `base` → `409 draft-changed` with `draft`; text whose cursor is not at its end (vim normal mode sits one
      to the left) → `409 cursor-not-at-end` with `draft`; an empty box while vim normal mode is the pane's edit mode → `409 vim-normal` with `draft`.
@@ -1700,10 +1703,13 @@ is logged. The order: body, pane, then the controller.
 5. The `sig` is not the screen's → `409 survey-changed`. The same `sig` was answered on this pane in the last 3 s (a double click, or a second window) → `409 already-answered`,
    nothing sent. (`400 invalid` for an `n` that is not among the shown options exists in the controller and cannot fire for the rating, whose options are always 0–3.)
 6. The registry state of the session, read fresh (the cache skipped), is not `idle` → `409 not-idle`. Claude itself takes the digit while it works (spike S-F14); the gate is
-   stricter than Claude needs, as rule 12 says. An interrupt that began meanwhile → `409 not-idle` (the last check before the key).
-7. **Exactly one key:** the digit as literal text through the controller's keys path (`send-keys -l -- <n>`; it counts toward the 20 requests/s per pane; a `429` or a tmux error
+   stricter than Claude needs, as rule 12 says. An interrupt that began meanwhile → `409 not-idle`.
+7. **One more fresh capture** (S1, 0.5: the fresh state read in step 6 runs a whole snapshot, not a few milliseconds, and nothing had looked at the screen since step 3). Its own
+   failure passes through, like step 3's. `src/survey.js` on it (with the pane's vim memory) must be `ready` with the same `sig`; a prompt, a dialog, another survey, text in the
+   box, anything else → `409 survey-changed`, nothing sent. An interrupt that began during it → `409 not-idle` (the last check before the key). One extra tmux capture per click.
+8. **Exactly one key:** the digit as literal text through the controller's keys path (`send-keys -l -- <n>`; it counts toward the 20 requests/s per pane; a `429` or a tmux error
    passes through with its status and body). Never `Enter`, `Escape`, `C-u`, `BSpace` or any other key, and never a letter. Claude takes the digit after a pause of about 400 ms.
-8. Read-back, at most 1 s (`SURVEY_READ_MS`, polls 150 ms apart): `200 { "answered": n }` as soon as a fresh capture shows **no survey at all** and a box that does not read
+9. Read-back, at most 1 s (`SURVEY_READ_MS`, polls 150 ms apart): `200 { "answered": n }` as soon as a fresh capture shows **no survey at all** and a box that does not read
    exactly the digit. Otherwise `409 not-taken` with `sent: 1` (nika never removes the digit: it may still sit in Claude's input box; the page says so). A capture that fails
    after the key answers that status and body plus `sent: 1`. The `sig` is held for 3 s after any key that went out (so a second click is `already-answered`).
 
@@ -1713,7 +1719,7 @@ Statuses: `200`; `400` `invalid`, `terminal-only`; `404 not_found`; `409` `busy-
 **The Escape hold (409 `survey-undo`).** After a rating **1 to 3** (not Dismiss, `0`) Claude shows `Feedback: <label> · Esc to undo` for about 3 s, and an `Escape` there takes the
 rating back (`claude-tui.md` §10.13). For `SURVEY_UNDO_MS` = 4000 ms after such a digit went out, **no `Escape` of nika's own leaves the controller**: every one answers
 `409 survey-undo` and is not sent. This covers Stop and End (each says so up front, before it starts, when it would have sent an `Escape`: a busy turn or a prompt or dialog on
-screen), the commands' history-search `Escape`, the draft route's `Escape` and the dialog route's Decline; it is enforced in the controller's one key function, so a later
+screen), the commands' history-search `Escape`, the draft route's `Escape` (Send's clear of the box) and the dialog route's Decline; it is enforced in the controller's one key function, so a later
 caller cannot forget it. The hold is set before the digit leaves; a digit that never went out puts back the hold it found. **The user's own keys are not held:** the keys route
 and the page's passthrough still send `Escape` (it is Claude's own "Esc to undo"). The hold is memory only, per controller instance: an app-server restart forgets it
 (`docs/security.md`, residual q). The page's line for it: spec §9.5.

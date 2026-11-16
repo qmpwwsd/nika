@@ -5,19 +5,18 @@
 Session window (desktop app):
 
 - **Answer Claude's feedback question with one click.** When Claude asks "How is Claude doing this session?
-  (optional)", a panel above the message box shows **1 Bad**, **2 Fine**, **3 Good** and **0 Dismiss**, in Claude's
-  order. A click types that one number into Claude's input, as you would, and presses no Enter. nika first looks at
-  the screen again: the question must be exactly the one it knows, with Claude's input empty, not in vim normal mode,
-  no permission prompt or dialog open, nothing mentioning bypass, and the session idle; it then reads the screen for a
-  second to see that Claude took the number (if not, you see "Claude didn't take the answer" and where the number may
-  be). While the question shows, the message box sends nothing and says why. After a rating of 1, 2 or 3 Claude offers
-  "Esc to undo" for about three seconds, so nika sends no Esc of its own for 4 seconds: Stop, End, the commands and
-  the question form's Decline answer "Claude shows "Esc to undo" for the rating nika just sent, so nika sends no Esc
-  for 4 seconds. Try again then." and send nothing (your own Esc still works). The follow-up question whether
-  Anthropic may look at the session transcript is **not** answered by nika: its layout was never captured, so it stays
-  the terminal's, and so does every other survey question nika does not read exactly (the panel says "Terminal only").
-  Untried: a click through nika against a real Claude (the rows and the digit come from one spike on Claude Code
-  2.1.325, with one real rating). See `docs/design/spec.md` §9.5 and `docs/security.md` T58.
+  (optional)", a panel above the message box shows **1 Bad**, **2 Fine**, **3 Good** and **0 Dismiss**. A click types
+  that one number into Claude's input, as you would, and presses no Enter. Just before it types, nika checks the
+  screen twice and sends the number only if it is still exactly that question, Claude's input is empty and not in vim
+  normal mode, nothing mentions bypass, and the session is idle; if Claude does not take the number within a second,
+  you see where it may be. While the question shows, the message box sends nothing and says why. After a rating of 1,
+  2 or 3 Claude offers "Esc to undo" for about three seconds, so nika sends no Esc of its own for 4 seconds: Stop,
+  End, the commands, Send and the question form's Decline say so and send nothing (your own Esc still works). In the
+  seconds after a rating, while Claude shows "Press [1] to tell us more", nika types nothing into Claude's input, so
+  Send waits and your text is kept. The follow-up question whether Anthropic may look at the session transcript, and
+  every survey question nika does not read exactly, stay in the terminal (the panel says "Terminal only"). Untried: a
+  click through nika against a real Claude (the rows and the digit come from one spike on Claude Code 2.1.325). See
+  `docs/design/spec.md` §9.5 and `docs/security.md` T58.
 - **The message box and Claude's input box follow each other.** Type in the terminal and the text shows up in the message
   box once you stop typing for a moment (1.5 seconds). Type in the message box and the text appears in Claude's input a
   quarter of a second after your last key. Both ways work with several lines, pasted text and the Shell toggle: when Claude's
