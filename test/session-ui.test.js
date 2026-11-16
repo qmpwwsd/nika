@@ -4218,7 +4218,7 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
   const NAMES = [
     'function fitCall(', 'function fitMeasure()', 'function fitScale()', 'function fitResize()', 'function fitCaptured()',
     'function drawFitPop()', 'function openFitPop()', 'function closeFitPop(refocus)', 'function fitAway(e)', 'function fitAgainEvent(e)',
-    'function renderFit(view)', 'function wireFitPop()', 'function wireFit()', 'function setGone()', 'function handleCapture(r)',
+    'function renderFit(view, opts)', 'function wireFitPop()', 'function wireFit()', 'function setGone()', 'function handleCapture(r)', 'function fitFocused()',
   ];
   /** An element that also answers contains() (the fake El has no tree search): the panel's focus and dismissal rules ask it. */
   class Box extends El {
@@ -4257,6 +4257,8 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     const outside = box('button');
     const els = { term, 'fit-probe': probe, 'fit-chip': chip, 'fit-wrap': wrap, 'fit-pop': pop, 'fit-pop-h': popH, 'fit-pop-why': popWhy, 'fit-pop-hint': popHint, 'fit-pop-note': popNote, 'fit-pop-close': close, 'fit-again': again, 'hist-toggle': histToggle };
     const docOn = new Map(); // the document's listeners by type: the page adds pointerdown while the panel is open and removes it when it closes
+    // F9: what the page reads for its focus: document.visibilityState and document.hasFocus(); `throws` makes hasFocus() throw
+    const page = { visible: true, focus: false, throws: false };
     focusState.el = null;
     const ctx = {
       paneId: pane, M: { cols: 0, rows: 0, gone: false, timer: 0, errors: 0, inputOff: false }, FIT: { planner: null, panel: null, scale: 1, view: null, ui: { pending: false, note: false }, pop: false }, SC: { planner: null, scrolled: false },
@@ -4270,6 +4272,8 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
       ResizeObserver: observer ? class { constructor(cb) { log.ro = cb; } observe(el) { log.observed = el; } } : undefined,
       document: {
         fonts: { ready: Promise.resolve() },
+        get visibilityState() { return page.visible ? 'visible' : 'hidden'; },
+        hasFocus: () => { if (page.throws) throw new Error('hasFocus unreadable'); return page.focus; },
         get activeElement() { return focusState.el; },
         addEventListener: (type, fn) => { if (!docOn.has(type)) docOn.set(type, new Set()); docOn.get(type).add(fn); },
         removeEventListener: (type, fn) => { docOn.get(type)?.delete(fn); },
@@ -4277,15 +4281,16 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
       window: { addEventListener: (type, fn) => { log.events[type] = fn; } },
       DS: { stop() {} }, setLive() {}, setPaneState() {}, setInputEnabled() {}, showOverlay: (title) => log.overlays.push(title), recovered() {}, serverMessage: () => '',
     };
-    const fns = vm.runInNewContext(`${NAMES.map(fnOf).join('\n')}; ({ fitCall, fitMeasure, fitScale, fitResize, fitCaptured, drawFitPop, openFitPop, closeFitPop, fitAgainEvent, renderFit, wireFitPop, wireFit, setGone, handleCapture })`, ctx);
+    const fns = vm.runInNewContext(`${NAMES.map(fnOf).join('\n')}; ({ fitCall, fitMeasure, fitScale, fitResize, fitCaptured, drawFitPop, openFitPop, closeFitPop, fitAgainEvent, renderFit, wireFitPop, wireFit, setGone, handleCapture, fitFocused })`, ctx);
     const pointerdown = (target) => { for (const fn of [...(docOn.get('pointerdown') ?? [])]) fn({ type: 'pointerdown', target }); };
     return {
-      ...fns, ctx, log, clk, term, chip, wrap, pop, popH, popWhy, popHint, popNote, close, again, histToggle, outside, pointerdown,
+      ...fns, ctx, log, clk, page, term, chip, wrap, pop, popH, popWhy, popHint, popNote, close, again, histToggle, outside, pointerdown,
       listeners: (type) => docOn.get(type)?.size ?? 0,
     };
   };
   const calls = (r) => norm(r.log.calls);
-  const PUT = (cols, rows, open) => ({ path: '/api/app/pane/%2512/fit', method: 'PUT', json: { cols, rows, open } });
+  // F9 (requirement change, not a weakened test): the body carries `focus` too, false while the page is not focused (the rig's default)
+  const PUT = (cols, rows, open, focus = false) => ({ path: '/api/app/pane/%2512/fit', method: 'PUT', json: { cols, rows, open, focus } });
   const DELETE = { path: '/api/app/pane/%2512/fit', method: 'DELETE', keepalive: true };
 
   test('(+) measuring: the box 827 x 562 with a probe of 800 x 18 px (8 x 18 per glyph) is 100 x 30 cells; padding is taken off first', () => {
@@ -4358,6 +4363,7 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     assert.deepEqual(calls(r), [PUT(100, 30, true), PUT(100, 30, false), PUT(100, 30, false)]);
   });
 
+  // F9 (requirement change, not a weakened test): the handler now also calls planner.focusChanged(document.hidden) first, both ways; the stubs have the method
   test('(+) the window showing again is one PUT now: boot\'s visibilitychange handler calls planner.beat() when the page is visible, and not when it is hidden', () => {
     const boot = fnOf('function boot()');
     const at = boot.indexOf("document.addEventListener('visibilitychange'");
@@ -4374,13 +4380,265 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
       handler();
       return log;
     };
-    assert.deepEqual(run({ hidden: false, planner: { beat: () => 'ignored' } }).length, 3, 'the old three still run');
+    assert.deepEqual(run({ hidden: false, planner: { beat: () => 'ignored', focusChanged: () => {} } }).length, 3, 'the old three still run');
     const beats = [];
-    run({ hidden: false, planner: { beat: () => beats.push(1) } });
+    run({ hidden: false, planner: { beat: () => beats.push(1), focusChanged: () => {} } });
     assert.equal(beats.length, 1);
-    run({ hidden: true, planner: { beat: () => beats.push(1) } });
+    run({ hidden: true, planner: { beat: () => beats.push(1), focusChanged: () => {} } });
     assert.equal(beats.length, 1, 'hidden: nothing');
     assert.doesNotThrow(() => run({ hidden: false, planner: null }), 'a window with no pane has no planner');
+  });
+
+  // F9 (design F9 3.2, 7.4)
+  test('(+) F9: the visibilitychange handler calls planner.focusChanged(document.hidden) first, in both directions, then keeps its visible-only work in the old order', () => {
+    const boot = fnOf('function boot()');
+    const at = boot.indexOf("document.addEventListener('visibilitychange'");
+    const stmt = boot.slice(at, boot.indexOf('\n  });', at) + 6);
+    const run = (hidden) => {
+      const log = [];
+      let handler;
+      vm.runInNewContext(stmt, {
+        document: { hidden, addEventListener: (type, fn) => { if (type === 'visibilitychange') handler = fn; } },
+        kickMirror: () => log.push('mirror'), refreshHistory: () => log.push('history'), refreshAgent: () => log.push('agent'),
+        FIT: { planner: { focusChanged: (immediate) => log.push(`focusChanged ${immediate}`), beat: () => log.push('beat') } },
+      });
+      handler();
+      return log;
+    };
+    assert.deepEqual(run(false), ['focusChanged false', 'mirror', 'history', 'agent', 'beat']);
+    assert.deepEqual(run(true), ['focusChanged true'], 'hidden: the immediate give-back, and none of the visible-only work');
+  });
+
+  test('(−) F9: a page with no pane has no planner, and the handler still does not throw hidden or shown', () => {
+    const boot = fnOf('function boot()');
+    const at = boot.indexOf("document.addEventListener('visibilitychange'");
+    const stmt = boot.slice(at, boot.indexOf('\n  });', at) + 6);
+    for (const hidden of [true, false]) {
+      let handler;
+      vm.runInNewContext(stmt, {
+        document: { hidden, addEventListener: (type, fn) => { if (type === 'visibilitychange') handler = fn; } },
+        kickMirror() {}, refreshHistory() {}, refreshAgent() {}, FIT: { planner: null },
+      });
+      assert.doesNotThrow(() => handler(), String(hidden));
+    }
+  });
+
+  // ---- F9 (design F9 3.1 to 3.3, 7.4): the page's focus goes to the server --------------------------------------------------------------------
+  /** fitFocused() run alone against a document made of `doc`. */
+  const focusedWith = (doc) => vm.runInNewContext(`${fnOf('function fitFocused()')}; fitFocused()`, { document: doc });
+
+  test('(+) F9: fitFocused is true only while the page is visible and hasFocus() is the boolean true', () => {
+    assert.equal(focusedWith({ visibilityState: 'visible', hasFocus: () => true }), true);
+    assert.equal(focusedWith({ visibilityState: 'visible', hasFocus: () => false }), false);
+    assert.equal(focusedWith({ visibilityState: 'hidden', hasFocus: () => true }), false, 'minimized, closed to the tray or covered: no focus, whatever hasFocus() says');
+    assert.equal(focusedWith({ visibilityState: 'prerender', hasFocus: () => true }), false);
+  });
+
+  test('(−) F9: anything unreadable is "no focus": a missing or non-function hasFocus, a non-boolean answer, a throw, a missing visibilityState', () => {
+    assert.equal(focusedWith({ visibilityState: 'visible' }), false, 'no hasFocus');
+    assert.equal(focusedWith({ visibilityState: 'visible', hasFocus: true }), false, 'not a function');
+    for (const odd of [1, 'true', {}, null, undefined, [true]]) assert.equal(focusedWith({ visibilityState: 'visible', hasFocus: () => odd }), false, JSON.stringify(odd));
+    assert.equal(focusedWith({ visibilityState: 'visible', hasFocus: () => { throw new Error('boom'); } }), false, 'hasFocus throws');
+    assert.equal(focusedWith({ get visibilityState() { throw new Error('boom'); }, hasFocus: () => true }), false, 'visibilityState throws');
+    assert.equal(focusedWith({ hasFocus: () => true }), false, 'no visibilityState');
+    assert.equal(focusedWith({}), false);
+  });
+
+  test('(+) F9: io.focused is fitFocused: the first PUT carries focus true while the page is visible and focused, false otherwise', async () => {
+    for (const [visible, focus, expected] of [[true, true, true], [true, false, false], [false, true, false]]) {
+      const r = rig();
+      r.page.visible = visible;
+      r.page.focus = focus;
+      r.wireFit();
+      r.fitCaptured();
+      await r.clk.advance(0);
+      assert.deepEqual(calls(r), [PUT(100, 30, true, expected)], `visible ${visible} focus ${focus}`);
+    }
+    const r = rig();
+    r.page.focus = true;
+    r.page.throws = true;
+    r.wireFit();
+    r.fitCaptured();
+    await r.clk.advance(0);
+    assert.deepEqual(calls(r), [PUT(100, 30, true, false)], 'hasFocus() throws: no focus');
+    assert.match(fnOf('function wireFit()'), /focused:\s*fitFocused\b/);
+  });
+
+  test('(+) F9: wireFit listens for the window\'s focus and blur; both call planner.focusChanged(false) (a blur is sent 200 ms on, a focus 400 ms on)', async () => {
+    const r = rig();
+    r.page.focus = true;
+    r.wireFit();
+    r.ctx.M.cols = 120;
+    r.ctx.M.rows = 39;
+    r.fitCaptured();
+    await r.clk.advance(0);
+    assert.equal(typeof r.log.events.focus, 'function');
+    assert.equal(typeof r.log.events.blur, 'function');
+    r.page.focus = false;
+    r.log.events.blur({ target: r.ctx.window });
+    await r.clk.advance(199);
+    assert.equal(r.log.calls.length, 1);
+    await r.clk.advance(1);
+    assert.deepEqual(calls(r).slice(1), [PUT(100, 30, false, false)]);
+    r.page.focus = true;
+    r.log.events.focus({ target: r.ctx.window });
+    await r.clk.advance(399);
+    assert.equal(r.log.calls.length, 2);
+    await r.clk.advance(1);
+    assert.deepEqual(calls(r).slice(2), [PUT(100, 30, false, true)]);
+    const src = fnOf('function wireFit()');
+    assert.match(src, /addEventListener\('focus', \(e\) => \{[^}]*focusChanged\(false\)/);
+    assert.match(src, /addEventListener\('blur', \(e\) => \{[^}]*focusChanged\(false\)/);
+  });
+
+  test('(−) F9: a focus or blur event whose target is not the window (an element\'s event seen from inside) does nothing; neither does an event with no target', async () => {
+    const r = rig();
+    r.page.focus = true;
+    r.wireFit();
+    r.fitCaptured();
+    await r.clk.advance(0);
+    r.page.focus = false;
+    for (const ev of [{ target: {} }, { target: r.chip }, { target: null }, {}, undefined]) {
+      r.log.events.blur(ev);
+      r.log.events.focus(ev);
+    }
+    await r.clk.advance(1000 - 1); // the poll is the only way left to notice, and it is a second away
+    assert.equal(r.log.calls.length, 1, 'no settle was started by a foreign event');
+  });
+
+  test('(−) F9: a window focus or blur before the planner has started (no capture yet) sends nothing', async () => {
+    const r = rig();
+    r.page.focus = true;
+    r.wireFit();
+    r.log.events.blur({ target: r.ctx.window });
+    r.log.events.focus({ target: r.ctx.window });
+    await r.clk.advance(60000);
+    assert.deepEqual(calls(r), []);
+  });
+
+  test('(+) F9: the poll catches a change no event reported: hasFocus() flips, the PUT follows within about 1.2 s', async () => {
+    const r = rig();
+    r.page.focus = true;
+    r.wireFit();
+    r.fitCaptured();
+    await r.clk.advance(0);
+    r.page.focus = false;
+    await r.clk.advance(1199);
+    assert.equal(r.log.calls.length, 1);
+    await r.clk.advance(1);
+    assert.deepEqual(calls(r).slice(1), [PUT(100, 30, false, false)]);
+  });
+
+  test('(+) F9: after pagehide the focus events and the poll send nothing (the planner is closed, no timer is left)', async () => {
+    const r = rig();
+    r.page.focus = true;
+    r.wireFit();
+    r.fitCaptured();
+    await r.clk.advance(0);
+    r.log.events.pagehide();
+    r.page.focus = false;
+    r.log.events.blur({ target: r.ctx.window });
+    await r.clk.advance(60000);
+    assert.deepEqual(calls(r), [PUT(100, 30, true, true), DELETE]);
+    assert.equal(r.clk.pending, 0);
+  });
+
+  test('(+) F9: a persisted pageshow reads the focus fresh: the new lease opens with the focus of that moment', async () => {
+    const r = rig();
+    r.page.focus = true;
+    r.wireFit();
+    r.ctx.M.cols = 120;
+    r.ctx.M.rows = 39;
+    r.fitCaptured();
+    await r.clk.advance(0);
+    r.log.events.pagehide();
+    r.page.focus = false;
+    r.log.events.pageshow({ persisted: true });
+    await r.clk.advance(0);
+    assert.deepEqual(calls(r).slice(2), [PUT(100, 30, true, false)]);
+  });
+
+  // -- renderFit(view, { quiet })
+  test('(+) F9: renderFit(view, { quiet: true }) updates data-k, title, aria-label and the words, and does not announce; without quiet it announces as today', () => {
+    const r = rig();
+    const fitted = chipViewReal(answer('fitted').body);
+    const term = chipViewReal(answer('terminal', null).body);
+    r.renderFit(fitted);
+    assert.deepEqual(norm(r.log.said), [fitted.say], 'without options: announced');
+    r.renderFit(term, { quiet: true });
+    assert.equal(r.chip.getAttribute('data-k'), 'terminal');
+    assert.equal(r.chip.getAttribute('title'), term.title);
+    assert.equal(r.chip.getAttribute('aria-label'), term.label);
+    assert.equal(r.chip.kids[1].textContent, term.text);
+    assert.equal(r.chip.kids[0].kids[0].getAttribute('href'), '#i-term');
+    assert.equal(r.wrap.hidden, false);
+    assert.deepEqual(norm(r.log.said), [fitted.say], 'quiet: nothing more was said');
+    r.renderFit(fitted, { quiet: false });
+    assert.deepEqual(norm(r.log.said), [fitted.say, fitted.say], 'quiet: false announces');
+  });
+
+  test('(−) F9: only the boolean true is quiet: a truthy lookalike, an empty options object and null still announce', () => {
+    for (const opts of [{ quiet: 'true' }, { quiet: 1 }, { quiet: {} }, {}, null, undefined, { Quiet: true }]) {
+      const r = rig();
+      r.renderFit(chipViewReal(answer('fitted').body), opts);
+      assert.equal(r.log.said.length, 1, JSON.stringify(opts));
+    }
+  });
+
+  test('(+) F9: a quiet change redraws an open panel in place (the panel shows the new hint) and still says nothing', () => {
+    const r = rig();
+    r.wireFit();
+    r.renderFit(chipViewReal(answer('fitted').body));
+    r.chip.click();
+    assert.equal(r.ctx.FIT.pop, true);
+    r.log.said.length = 0;
+    r.renderFit(chipViewReal({ fit: { state: 'terminal', reason: 'switching', panes: 1, userZoom: false } }), { quiet: true });
+    assert.equal(r.popHint.textContent, 'nika sizes the tmux window to this panel again within a minute while this window keeps focus.');
+    assert.equal(r.popWhy.textContent, chipViewReal({ fit: { state: 'terminal', reason: 'switching' } }).title);
+    assert.deepEqual(norm(r.log.said), []);
+  });
+
+  test('(+) F9: end to end, a state change that follows a focus change is drawn but not announced; one that follows a resize is announced', async () => {
+    const r = rig({ replies: [answer('fitted'), answer('terminal'), answer('fitted'), answer('zoomed', 'panel-smaller')] });
+    r.page.focus = true;
+    r.wireFit();
+    r.fitCaptured();
+    await r.clk.advance(0);
+    assert.equal(r.log.said.length, 1, 'the first answer is announced');
+    r.page.focus = false;
+    r.log.events.blur({ target: r.ctx.window });
+    await r.clk.advance(200);
+    assert.equal(r.chip.getAttribute('data-k'), 'terminal', 'the chip follows');
+    assert.equal(r.log.said.length, 1, 'the blur-driven change is not announced');
+    r.page.focus = true;
+    r.log.events.focus({ target: r.ctx.window });
+    await r.clk.advance(400);
+    assert.equal(r.chip.getAttribute('data-k'), 'fitted');
+    assert.equal(r.log.said.length, 1, 'neither is the focus-driven one');
+    r.term.clientWidth = 24 + 8 * 110 + 1;
+    r.log.ro();
+    await r.clk.advance(250);
+    assert.equal(r.chip.getAttribute('data-k'), 'zoomed');
+    assert.equal(r.log.said.length, 2, 'a change that follows a resize is announced as always');
+    assert.match(r.log.said[1], /^Fit: zoomed, text scaled\. /);
+  });
+
+  // -- no new colour, icon or CSS rule
+  test('(−) F9: no new token, colour, sprite symbol or CSS rule: the new chip keys are the earlier states, with their icons, and the five state rules are the only ones', () => {
+    const css = strip(CSS);
+    const rules = [...css.matchAll(/(?:^|[\s}])\.fit\[data-k="([a-z]+)"\]\s*\{/g)].map((m) => m[1]);
+    assert.deepEqual(rules, ['fitted', 'zoomed', 'blocked', 'other', 'terminal'], 'the chip rules: five states, none added');
+    for (const b of [{ state: 'fitted', reason: 'terminal' }, { state: 'terminal', reason: 'switching', panes: 1 }, { state: 'terminal', reason: null, panes: 3 }]) {
+      const v = chipViewReal({ fit: b });
+      assert.ok(rules.includes(v.state), `${v.key}: its state has a rule`);
+      assert.match(HTML, new RegExp(`<symbol id="i-${v.icon}" viewBox="0 0 16 16">`), `${v.key}: its icon is in the sprite`);
+    }
+    assert.equal(chipViewReal({ fit: { state: 'fitted', reason: 'terminal' } }).icon, chipViewReal({ fit: { state: 'fitted', reason: null } }).icon);
+    assert.equal(chipViewReal({ fit: { state: 'terminal', reason: 'switching' } }).icon, chipViewReal({ fit: { state: 'terminal', reason: null } }).icon);
+    assert.deepEqual(findSinks(fnOf('function fitFocused()')), []);
+    assert.deepEqual(findSinks(fnOf('function wireFit()')), []);
+    assert.doesNotMatch(code(JS['fit-ui.js']), /\b(?:document|window|navigator|localStorage)\s*[.[]|\.style\b|innerHTML|getElementById|querySelector|addEventListener|\bsetTimeout\b|\bfetch\(/, 'fit-ui.js has no DOM and no timer or request of its own');
+    assert.doesNotMatch(JS['fit-ui.js'], /[^\x00-\x7f]/, 'fit-ui.js stays ASCII');
   });
 
   test('(+) the visibilitychange PUT really goes out: beat() through the page\'s planner sends one request', async () => {
@@ -4830,7 +5088,7 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
   });
 
   test('(+) renderFit writes with h() text and the icon sprite only: no markup sink, and the title through setAttribute', () => {
-    const src = fnOf('function renderFit(view)');
+    const src = fnOf('function renderFit(view, opts)');
     assert.match(src, /h\('span', \{ text: view\.text \}\)/);
     assert.match(src, /setAttribute\('title', view\.title\)/);
     assert.deepEqual(findSinks(src), []);
@@ -5142,7 +5400,8 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     assert.equal(r.popH.textContent, "Fit: your terminal's size");
     assert.equal(r.popWhy.textContent, TERM_ONE.title);
     assert.equal(r.popHint.hidden, false);
-    assert.equal(r.popHint.textContent, 'When no terminal has shown this tmux window for 30 seconds, nika sizes it to this panel by itself. Switch your terminal to another window or detach it to get there.');
+    // F9 (design F9 5.2, requirement change, not a weakened test): the hint now starts with what a click into this window does; the 30 seconds stay in it
+    assert.equal(r.popHint.textContent, 'Click into this window and nika sizes the tmux window to this panel; your terminal gets its size back when you click into it again. With no terminal on the window for 30 seconds, nika also sizes it to this panel by itself.');
     assert.equal(r.popHint.all((n) => n.tag === 'code').length, 0, 'no command');
     assert.equal(r.again.hidden, true);
     assert.equal(r.popNote.hidden, true);
@@ -5155,7 +5414,8 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     await r.clk.advance(5000);
     assert.equal(r.chip.getAttribute('title'), TERM_ZOOM.title);
     assert.equal(r.popWhy.textContent, TERM_ZOOM.title, 'the open panel is drawn again in place');
-    assert.match(r.popHint.textContent, /^Your terminal shows this pane zoomed too, until this session window closes\. When no terminal has shown the tmux window for 30 seconds, nika sizes it to this panel by itself\.$/);
+    // F9 (design F9 5.2, requirement change): the zoom hint names the click, not the 30 seconds
+    assert.match(r.popHint.textContent, /^Your terminal shows this pane zoomed too, until this session window closes\. Click into this window and nika sizes the tmux window to this panel\.$/);
     assert.deepEqual(r.log.said, [TERM_ONE.say, TERM_ZOOM.say]);
     assert.equal(r.chip.getAttribute('data-k'), 'terminal');
     assert.deepEqual([r.again.hidden, focusState.el === r.close], [true, true], 'no action in either form of the terminal panel');
@@ -5290,12 +5550,12 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
   });
 
   test('(+) F1: the panel is written with h() text, textContent and the icon sprite only: no markup sink anywhere in the new functions', () => {
-    for (const head of ['function drawFitPop()', 'function openFitPop()', 'function closeFitPop(refocus)', 'function fitAway(e)', 'function fitAgainEvent(e)', 'function wireFitPop()', 'function renderFit(view)']) {
+    for (const head of ['function drawFitPop()', 'function openFitPop()', 'function closeFitPop(refocus)', 'function fitAway(e)', 'function fitAgainEvent(e)', 'function wireFitPop()', 'function renderFit(view, opts)']) {
       assert.deepEqual(findSinks(fnOf(head)), [], head);
     }
     assert.match(fnOf('function drawFitPop()'), /\.textContent = /);
-    assert.match(fnOf('function renderFit(view)'), /setAttribute\('aria-label', view\.label\)/);
-    assert.match(fnOf('function renderFit(view)'), /icon\('chev', 'ic chev'\)/);
+    assert.match(fnOf('function renderFit(view, opts)'), /setAttribute\('aria-label', view\.label\)/);
+    assert.match(fnOf('function renderFit(view, opts)'), /icon\('chev', 'ic chev'\)/);
   });
 
   test('(+) F1: wireFit hands the planner fitAgain and wires the panel; the pagehide, pageshow and resize handlers stay separate', async () => {
@@ -5304,7 +5564,8 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     assert.match(wire, /wireFitPop\(\);/);
     const r = rig();
     r.wireFit();
-    assert.deepEqual(Object.keys(r.log.events).sort(), ['pagehide', 'pageshow', 'resize']);
+    // F9 (requirement change): the window's focus and blur are wired here too (the visibilitychange of the document is boot's)
+    assert.deepEqual(Object.keys(r.log.events).sort(), ['blur', 'focus', 'pagehide', 'pageshow', 'resize']);
   });
 });
 

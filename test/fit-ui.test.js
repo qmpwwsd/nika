@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
-import { panelSize, scaleFor, chipView, fitPanelView, stillOffSay, createFitPlanner, BEAT_MS, DEBOUNCE_MS, SCALE_MIN } from '../public/fit-ui.js';
+import { panelSize, scaleFor, chipView, fitPanelView, stillOffSay, createFitPlanner, BEAT_MS, DEBOUNCE_MS, SCALE_MIN, FOCUS_SETTLE_MS, BLUR_SETTLE_MS, FOCUS_POLL_MS } from '../public/fit-ui.js';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const DOT = '·';
@@ -190,8 +190,9 @@ describe('chipView: the chip from the PUT body (design 8.4, owner answer Q5, orc
 describe('F4: chipView, the state `terminal` (a terminal shows the tmux window, so nika leaves its size alone)', () => {
   const TEXT = `Fit ${DOT} your terminal's size`;
   const LABEL = "Fit: your terminal's size";
-  const TITLE_PLAIN = 'A terminal shows this tmux window, so nika leaves its size to the terminal and scales the text to this panel';
-  const TITLE_ZOOM = 'A terminal shows this tmux window, so nika only zoomed this pane, leaves the size to the terminal and scales the text to this panel';
+  // F9 (design F9 5.2, requirement change, not a weakened test): the sentence now says that this window has no focus, because a focused window gets the size
+  const TITLE_PLAIN = 'A terminal shows this tmux window and this window does not have focus, so nika leaves the size to the terminal and scales the text to this panel';
+  const TITLE_ZOOM = 'A terminal shows this tmux window and this window does not have focus, so nika only zoomed this pane, leaves the size to the terminal and scales the text to this panel';
   // the shared contract of design F4 section 8: state "terminal", reason null, panes and userZoom as today
   const term = (panes, userZoom = false, reason = null) => ({ fit: { state: 'terminal', reason, pane: { cols: 200, rows: 50 }, panes, userZoom } });
 
@@ -220,7 +221,8 @@ describe('F4: chipView, the state `terminal` (a terminal shows the tmux window, 
     assert.equal(chipView(noPanes).key, 'terminal:', 'panes missing altogether');
   });
 
-  test('(−) a reason on `terminal` is ignored: the server sends null, and nothing it puts there changes the key, the title or the words', () => {
+  // F9 (requirement change): the one reason `terminal` takes is `switching` (own describe below); every other reason is still ignored
+  test('(−) any reason on `terminal` but `switching` is ignored: nothing the server puts there changes the key, the title or the words', () => {
     const plain = chipView(term(1));
     const zoom = chipView(term(3));
     for (const reason of ['user-change', 'panel-smaller', 'changed', 'user-zoom', 'terminal-zoom', 'terminal', '<img src=x onerror=alert(1)>', '__proto__', 42, {}]) {
@@ -298,22 +300,28 @@ function clock() {
 
 const OK = (state = 'fitted', reason = null) => ({ status: 200, body: { fit: { state, reason, pane: { cols: 120, rows: 39 }, panes: 3, userZoom: false } } });
 
-/** A planner with a fake route: every body sent waits in `pending` until answer() gives its reply. */
-function rig({ again = true } = {}) {
+/**
+ * A planner with a fake route: every body sent waits in `pending` until answer() gives its reply.
+ * F9: `page.focus` is what io.focused() reads (change it, then call planner.focusChanged like the page's events do); `page.throws` makes it throw;
+ * `focus: false` in the options and `noFocusIo: true` leave io.focused out altogether. log.quiet holds the `quiet` flag of each chip call that got one.
+ */
+function rig({ again = true, focus = false, noFocusIo = false } = {}) {
   const clk = clock();
-  const log = { sent: [], released: 0, chips: [], again: [] };
+  const log = { sent: [], released: 0, chips: [], again: [], quiet: [] };
+  const page = { focus, throws: false };
   const pending = [];
   const io = {
     send: (b) => new Promise((resolve, reject) => { log.sent.push(b); pending.push({ resolve, reject }); }),
     release: () => { log.released += 1; return Promise.resolve({ status: 200, body: { released: true } }); },
     after: clk.after,
     cancel: clk.cancel,
-    chip: (v) => log.chips.push(v),
+    chip: (v, opts) => { log.chips.push(v); if (opts !== undefined) log.quiet.push(opts.quiet); },
   };
+  if (!noFocusIo) io.focused = () => { if (page.throws) throw new Error('focus unreadable'); return page.focus; };
   if (again) io.fitAgain = (e) => log.again.push(e); // F1: the optional sink for the user's Fit again; a rig without it proves it is optional
   const planner = createFitPlanner(io);
   return {
-    planner, clk, log,
+    planner, clk, log, page,
     get inFlight() { return pending.length; },
     async answer(reply) { pending.shift().resolve(reply); await flush(); },
     async fail(error = new Error('network down')) { pending.shift().reject(error); await flush(); },
@@ -333,7 +341,7 @@ describe('createFitPlanner: when a request goes out (design 8.2)', () => {
     const r = rig();
     r.planner.size(100, 30);
     r.planner.start();
-    assert.deepEqual(r.log.sent, [{ cols: 100, rows: 30, open: true }]);
+    assert.deepEqual(r.log.sent, [{ cols: 100, rows: 30, open: true, focus: false }]);
   });
 
   test('(+) later requests are open: false', async () => {
@@ -343,7 +351,7 @@ describe('createFitPlanner: when a request goes out (design 8.2)', () => {
     await r.answer(OK());
     r.planner.size(110, 30);
     await r.clk.advance(DEBOUNCE_MS);
-    assert.deepEqual(r.log.sent, [{ cols: 100, rows: 30, open: true }, { cols: 110, rows: 30, open: false }]);
+    assert.deepEqual(r.log.sent, [{ cols: 100, rows: 30, open: true, focus: false }, { cols: 110, rows: 30, open: false, focus: false }]);
   });
 
   test('(+) a start before any measure waits for the first size, then asks at once', async () => {
@@ -351,7 +359,7 @@ describe('createFitPlanner: when a request goes out (design 8.2)', () => {
     r.planner.start();
     assert.deepEqual(r.log.sent, []);
     r.planner.size(100, 30);
-    assert.deepEqual(r.log.sent, [{ cols: 100, rows: 30, open: true }]);
+    assert.deepEqual(r.log.sent, [{ cols: 100, rows: 30, open: true, focus: false }]);
   });
 
   test('(+) a burst of sizes is debounced 250 ms: one request, the last size', async () => {
@@ -367,7 +375,7 @@ describe('createFitPlanner: when a request goes out (design 8.2)', () => {
     await r.clk.advance(DEBOUNCE_MS - 1);
     assert.equal(r.log.sent.length, 1, '249 ms after the last size nothing has gone out');
     await r.clk.advance(1);
-    assert.deepEqual(r.log.sent.slice(1), [{ cols: 103, rows: 31, open: false }]);
+    assert.deepEqual(r.log.sent.slice(1), [{ cols: 103, rows: 31, open: false, focus: false }]);
   });
 
   test('(+) a size equal to the last answered one sends nothing (skip unchanged)', async () => {
@@ -395,7 +403,7 @@ describe('createFitPlanner: when a request goes out (design 8.2)', () => {
     assert.equal(r.inFlight, 1);
     await r.answer(OK());
     await r.clk.advance(DEBOUNCE_MS);
-    assert.deepEqual(r.log.sent.slice(1), [{ cols: 102, rows: 30, open: false }]);
+    assert.deepEqual(r.log.sent.slice(1), [{ cols: 102, rows: 30, open: false, focus: false }]);
     assert.equal(r.inFlight, 1);
   });
 
@@ -408,10 +416,10 @@ describe('createFitPlanner: when a request goes out (design 8.2)', () => {
     await r.clk.advance(BEAT_MS - 1);
     assert.equal(r.log.sent.length, 1);
     await r.clk.advance(1);
-    assert.deepEqual(r.log.sent.slice(1), [{ cols: 100, rows: 30, open: false }]);
+    assert.deepEqual(r.log.sent.slice(1), [{ cols: 100, rows: 30, open: false, focus: false }]);
     await r.answer(OK());
     await r.clk.advance(BEAT_MS);
-    assert.deepEqual(r.log.sent.slice(2), [{ cols: 100, rows: 30, open: false }]);
+    assert.deepEqual(r.log.sent.slice(2), [{ cols: 100, rows: 30, open: false, focus: false }]);
     await r.answer(OK());
     await r.clk.advance(BEAT_MS * 3);
     assert.equal(r.log.sent.length, 4, 'three beats fall, one request goes out, and the two behind it are not stacked: one in flight at a time');
@@ -435,7 +443,7 @@ describe('createFitPlanner: when a request goes out (design 8.2)', () => {
     await r.answer(OK());
     await r.clk.advance(3000);
     r.planner.beat();
-    assert.deepEqual(r.log.sent.slice(1), [{ cols: 100, rows: 30, open: false }]);
+    assert.deepEqual(r.log.sent.slice(1), [{ cols: 100, rows: 30, open: false, focus: false }]);
     await r.answer(OK());
     await r.clk.advance(BEAT_MS - 1);
     assert.equal(r.log.sent.length, 2);
@@ -464,16 +472,17 @@ describe('createFitPlanner: when a request goes out (design 8.2)', () => {
     await r.clk.advance(BEAT_MS * 2);
     assert.deepEqual(r.log.sent, []);
     r.planner.size(40, 10);
-    assert.deepEqual(r.log.sent, [{ cols: 40, rows: 10, open: true }], 'the smallest legal size goes');
+    assert.deepEqual(r.log.sent, [{ cols: 40, rows: 10, open: true, focus: false }], 'the smallest legal size goes');
   });
 
-  test('(+) every body has exactly cols, rows and open (the route takes no other key)', async () => {
+  // F9 (requirement change, not a weakened test): the route takes `focus` too, so a body is cols, rows, open and focus
+  test('(+) every body has exactly cols, rows, open and focus (the route takes no other key)', async () => {
     const r = rig();
     r.planner.size(100, 30);
     r.planner.start();
     await r.answer(OK());
     await r.clk.advance(BEAT_MS);
-    for (const b of r.log.sent) assert.deepEqual(Object.keys(b).sort(), ['cols', 'open', 'rows']);
+    for (const b of r.log.sent) assert.deepEqual(Object.keys(b).sort(), ['cols', 'focus', 'open', 'rows']);
   });
 });
 
@@ -561,7 +570,7 @@ describe('createFitPlanner: what the answers do (design 8.5, 9; orchestrator rul
       await r.clk.advance(BEAT_MS - DEBOUNCE_MS * 3 - 1);
       assert.equal(r.log.sent.length, 1, `status ${reply.status}: nothing before the heartbeat`);
       await r.clk.advance(1);
-      assert.deepEqual(r.log.sent.slice(1), [{ cols: 120, rows: 32, open: true }], `status ${reply.status}: the heartbeat asks again with the latest size`);
+      assert.deepEqual(r.log.sent.slice(1), [{ cols: 120, rows: 32, open: true, focus: false }], `status ${reply.status}: the heartbeat asks again with the latest size`);
     }
   });
 
@@ -643,7 +652,7 @@ describe('createFitPlanner: what the answers do (design 8.5, 9; orchestrator rul
     assert.equal(sent.length, 1, 'a lost request is not retried before the heartbeat');
     await clk.advance(BEAT_MS - DEBOUNCE_MS);
     assert.equal(sent.length, 2, 'the heartbeat goes out');
-    assert.deepEqual(sent[1], { cols: 110, rows: 30, open: true }, 'nothing was opened by the thrown one: still open: true');
+    assert.deepEqual(sent[1], { cols: 110, rows: 30, open: true, focus: false }, 'nothing was opened by the thrown one: still open: true');
     assert.deepEqual(chips, ['fitted']);
     await clk.advance(BEAT_MS);
     assert.deepEqual(sent.map((b) => b.open), [true, true, false]);
@@ -751,7 +760,7 @@ describe('createFitPlanner: what the answers do (design 8.5, 9; orchestrator rul
     r.planner.close();
     r.planner.restart();
     assert.deepEqual(r.log.sent.map((b) => b.open), [true, true]);
-    assert.deepEqual(r.log.sent.at(-1), { cols: 100, rows: 30, open: true });
+    assert.deepEqual(r.log.sent.at(-1), { cols: 100, rows: 30, open: true, focus: false });
     await r.answer(OK());
     await r.clk.advance(BEAT_MS);
     assert.deepEqual(r.log.sent.map((b) => b.open), [true, true, false], 'the heartbeats go on as always');
@@ -903,8 +912,9 @@ describe('F4: fitPanelView and the planner for the state `terminal` (design F4 3
   const body = (panes, userZoom = false) => ({ fit: { state: 'terminal', reason: null, pane: { cols: 200, rows: 50 }, panes, userZoom } });
   const IDLE = { pending: false, note: false };
   const NOTE = 'nika could not fit the window just now. It tries again within 5 seconds.';
-  const HINT_PLAIN = 'When no terminal has shown this tmux window for 30 seconds, nika sizes it to this panel by itself. Switch your terminal to another window or detach it to get there.';
-  const HINT_ZOOM = 'Your terminal shows this pane zoomed too, until this session window closes. When no terminal has shown the tmux window for 30 seconds, nika sizes it to this panel by itself.';
+  // F9 (design F9 5.2, requirement change): both hints now start with what clicking into this window does
+  const HINT_PLAIN = 'Click into this window and nika sizes the tmux window to this panel; your terminal gets its size back when you click into it again. With no terminal on the window for 30 seconds, nika also sizes it to this panel by itself.';
+  const HINT_ZOOM = 'Your terminal shows this pane zoomed too, until this session window closes. Click into this window and nika sizes the tmux window to this panel.';
   const ROWS = [['terminal:', body(1), HINT_PLAIN], ['terminal:zoom', body(3), HINT_ZOOM]];
 
   for (const [key, b, hint] of ROWS) {
@@ -934,11 +944,10 @@ describe('F4: fitPanelView and the planner for the state `terminal` (design F4 3
     });
   }
 
-  test('(+) both hints say the 30 seconds the owner agreed to (Q2) and do not say how the terminal is told apart', () => {
-    for (const [, , hint] of ROWS) {
-      assert.match(hint, /30 seconds/);
-      assert.doesNotMatch(hint, /window_active_clients|tmux set-option|control mode/);
-    }
+  // F9 (requirement change): design F9 5.2 words the zoom hint without the 30 s (it names the click only); the plain hint keeps the 30 seconds the owner agreed to (F4 Q2)
+  test('(+) the plain hint says the 30 seconds the owner agreed to (F4 Q2); neither hint says how the terminal is told apart', () => {
+    assert.match(HINT_PLAIN, /30 seconds/);
+    for (const [, , hint] of ROWS) assert.doesNotMatch(hint, /window_active_clients|tmux set-option|control mode/);
   });
 
   test('(−) the table is looked up by the key: a key it does not know (a made-up terminal variant) has no hint, no code and no action', () => {
@@ -1008,7 +1017,7 @@ describe('createFitPlanner: reopen(), the user asks to fit again (F1, design F12
   test('(+) idle: reopen() sends open: true at once, tells fitAgain pending, then the result with the view; later beats are open: false again', async () => {
     const r = await ready();
     assert.equal(r.planner.reopen(), true);
-    assert.deepEqual(r.log.sent, [{ cols: 100, rows: 30, open: true }, { cols: 100, rows: 30, open: true }], 'no timer needed: it goes out now');
+    assert.deepEqual(r.log.sent, [{ cols: 100, rows: 30, open: true, focus: false }, { cols: 100, rows: 30, open: true, focus: false }], 'no timer needed: it goes out now');
     assert.deepEqual(r.log.again, [{ pending: true }]);
     await r.answer(OK('fitted'));
     assert.equal(r.log.again.length, 2);
@@ -1018,7 +1027,7 @@ describe('createFitPlanner: reopen(), the user asks to fit again (F1, design F12
     await r.clk.advance(BEAT_MS - 1);
     assert.equal(r.log.sent.length, 2, 'the beat was re-armed 5 s from the ask');
     await r.clk.advance(1);
-    assert.deepEqual(r.log.sent[2], { cols: 100, rows: 30, open: false });
+    assert.deepEqual(r.log.sent[2], { cols: 100, rows: 30, open: false, focus: false });
     await r.answer(OK('fitted'));
     assert.equal(r.log.again.length, 2, 'an ordinary beat is not an ask');
   });
@@ -1189,10 +1198,608 @@ describe('createFitPlanner: reopen(), the user asks to fit again (F1, design F12
     assert.equal(r.log.again.length, 0);
   });
 
-  test('(+) every body of an ask still has exactly cols, rows and open', async () => {
+  test('(+) every body of an ask still has exactly cols, rows, open and focus (F9: focus is the fourth key)', async () => {
     const r = await ready();
     r.planner.reopen();
-    for (const b of r.log.sent) assert.deepEqual(Object.keys(b).sort(), ['cols', 'open', 'rows']);
+    for (const b of r.log.sent) assert.deepEqual(Object.keys(b).sort(), ['cols', 'focus', 'open', 'rows']);
+  });
+});
+
+// ---- F9 (design F9 3 and 5, 7.3; owner answers of 2026-11-16): the focused window wins the pane's size -----------------------------------------
+describe('F9: chipView, `fitted` with reason `terminal` and `terminal` with reason `switching`', () => {
+  const FITTED_TERMINAL = 'nika sized the tmux window to this panel because this window has focus; your terminal shows it too and gets its size back when you click into it';
+  const SWITCHING = 'You switched between this window and your terminal often in the last minute, so nika leaves the size to the terminal for now and scales the text to this panel';
+  const body = (state, reason, panes = 3, userZoom = false) => ({ fit: { state, reason, pane: { cols: 120, rows: 39 }, panes, userZoom } });
+
+  test('(+) fitted + terminal: key "fitted:terminal", the fitted state, icon and words, the exact title; the announcement is label + title', () => {
+    const v = chipView(body('fitted', 'terminal'));
+    const plain = chipView(body('fitted', null));
+    assert.deepEqual(v, { key: 'fitted:terminal', state: 'fitted', icon: 'fit', text: `Fit ${DOT} fills the panel`, label: 'Fit: fills the panel', title: FITTED_TERMINAL, say: `Fit: fills the panel. ${FITTED_TERMINAL}` });
+    assert.deepEqual([v.state, v.icon, v.text, v.label], [plain.state, plain.icon, plain.text, plain.label], 'owner Q1: no new colour (data-k is the state), icon or words');
+    assert.notEqual(v.key, plain.key, 'a different key: the chip is redrawn when one becomes the other');
+  });
+
+  test('(+) terminal + switching: key "terminal:switching", the terminal state, icon and words, the exact title; panes and userZoom do not matter', () => {
+    const plain = chipView(body('terminal', null, 1));
+    for (const [panes, userZoom] of [[1, false], [3, false], [3, true], [undefined, false], ['3', false]]) {
+      const v = chipView(body('terminal', 'switching', panes, userZoom));
+      assert.deepEqual(v, { key: 'terminal:switching', state: 'terminal', icon: 'term', text: `Fit ${DOT} your terminal's size`, label: "Fit: your terminal's size", title: SWITCHING, say: `Fit: your terminal's size. ${SWITCHING}` }, `${panes} ${userZoom}`);
+    }
+    assert.deepEqual([plain.state, plain.icon, plain.text, plain.label], ['terminal', 'term', `Fit ${DOT} your terminal's size`, "Fit: your terminal's size"]);
+  });
+
+  test('(−) fitted with any other reason is plain "fitted:"; terminal with any other reason keeps its F4 key (a reason that only looks like these is ignored)', () => {
+    const lookalikes = ['Terminal', 'TERMINAL', ' terminal', 'terminal ', 'terminal\n', 'terminals', 'switching', 'Switching', 'SWITCHING', ' switching', 'switching ', 'switch', '', null, undefined, 42, {}, [], ['terminal'], '__proto__', 'constructor', 'user-change', 'panel-smaller'];
+    for (const reason of lookalikes.filter((x) => x !== 'terminal')) {
+      assert.deepEqual(chipView(body('fitted', reason)), chipView(body('fitted', null)), `fitted ${JSON.stringify(reason)}`);
+    }
+    for (const reason of lookalikes.filter((x) => x !== 'switching')) {
+      assert.deepEqual(chipView(body('terminal', reason, 1)), chipView(body('terminal', null, 1)), `terminal ${JSON.stringify(reason)}`);
+      assert.deepEqual(chipView(body('terminal', reason, 3)), chipView(body('terminal', null, 3)), `terminal zoom ${JSON.stringify(reason)}`);
+    }
+  });
+
+  test('(−) the two new sentences are selected by the exact pair only: no other state takes them, and `blocked` cannot be pointed at them', () => {
+    for (const state of ['zoomed', 'other']) {
+      for (const reason of ['terminal', 'switching']) {
+        const v = chipView(body(state, reason));
+        assert.doesNotMatch(JSON.stringify(v), /shows it too|switched between/, `${state} ${reason}`);
+      }
+    }
+    for (const reason of ['terminal', 'switching']) {
+      const v = chipView(body('blocked', reason));
+      assert.equal(v.key, 'blocked:', reason);
+      assert.equal(v.title, 'nika is not fitting this tmux window', reason);
+    }
+    assert.doesNotMatch(JSON.stringify(chipView(body('fitted', 'switching'))), /switched between/);
+    assert.doesNotMatch(JSON.stringify(chipView(body('terminal', 'terminal', 1))), /shows it too/);
+  });
+
+  test('(+) seven keys, five states: the new keys add no state, so no new colour (data-k) and no new icon', () => {
+    const views = [
+      chipView(body('fitted', null)), chipView(body('fitted', 'terminal')), chipView(body('zoomed', 'panel-smaller')), chipView(body('blocked', 'user-zoom')), chipView(body('other', null)),
+      chipView(body('terminal', null, 1)), chipView(body('terminal', null, 3)), chipView(body('terminal', 'switching', 1)),
+    ];
+    assert.equal(new Set(views.map((x) => x.key)).size, views.length, 'every key is different');
+    assert.deepEqual([...new Set(views.map((x) => x.state))].sort(), ['blocked', 'fitted', 'other', 'terminal', 'zoomed']);
+    assert.deepEqual([...new Set(views.map((x) => x.icon))].sort(), ['fit', 'off', 'term', 'window', 'zoom']);
+  });
+
+  test('(+) every string of the new views is plain ASCII', () => {
+    for (const v of [chipView(body('fitted', 'terminal')), chipView(body('terminal', 'switching'))]) {
+      assert.equal(v.text.includes(DOT), true);
+      for (const s of [v.title, v.say, v.icon, v.key, v.label]) assert.equal([...s].every((ch) => ch.codePointAt(0) < 128), true, s);
+    }
+  });
+});
+
+describe('F9: fitPanelView for the new and the reworded keys (design F9 5.2)', () => {
+  const body = (state, reason, panes = 1) => ({ fit: { state, reason, pane: { cols: 120, rows: 39 }, panes, userZoom: false } });
+  const IDLE = { pending: false, note: false };
+  const NOTE = 'nika could not fit the window just now. It tries again within 5 seconds.';
+  const ROWS = [
+    ['fitted:terminal', body('fitted', 'terminal'), 'Your terminal shows dots around this tmux window while this window has focus. Click into the terminal and it gets its own size back within a second.'],
+    ['terminal:', body('terminal', null, 1), "Click into this window and nika sizes the tmux window to this panel; your terminal gets its size back when you click into it again. With no terminal on the window for 30 seconds, nika also sizes it to this panel by itself."],
+    ['terminal:zoom', body('terminal', null, 3), 'Your terminal shows this pane zoomed too, until this session window closes. Click into this window and nika sizes the tmux window to this panel.'],
+    ['terminal:switching', body('terminal', 'switching', 1), 'nika sizes the tmux window to this panel again within a minute while this window keeps focus.'],
+  ];
+
+  for (const [key, b, hint] of ROWS) {
+    test(`(+) ${key}: heading and why are the chip's label and title; the exact hint; no command; no action`, () => {
+      const view = chipView(b);
+      assert.equal(view.key, key);
+      const p = fitPanelView(view, IDLE);
+      assert.equal(p.heading, view.label);
+      assert.equal(p.why, view.title);
+      assert.equal(p.hint, hint);
+      assert.equal(p.code, null);
+      assert.equal(p.action, null);
+      assert.equal(p.note, null);
+    });
+
+    test(`(−) ${key}: a pending request never gives it a button; the note shows its sentence; every string is plain ASCII`, () => {
+      const view = chipView(b);
+      assert.equal(fitPanelView(view, { pending: true, note: true }).action, null);
+      assert.equal(fitPanelView(view, { pending: false, note: true }).note, NOTE);
+      const p = fitPanelView(view, { pending: true, note: true });
+      for (const s of [p.heading, p.why, p.hint, p.note]) assert.equal([...s].every((ch) => ch.codePointAt(0) < 128), true, s);
+    });
+  }
+
+  test('(−) the hint of `fitted:` stays none: only the new key has the dots line', () => {
+    const p = fitPanelView(chipView(body('fitted', null)), IDLE);
+    assert.deepEqual([p.hint, p.code, p.action], [null, null, null]);
+  });
+
+  test('(−) a made-up variant of the new keys has no hint, no code and no action', () => {
+    const view = chipView(body('fitted', 'terminal'));
+    for (const key of ['fitted:Terminal', 'fitted:terminal ', 'fitted:switching', 'terminal:Switching', 'terminal:switching:', 'terminal:terminal']) {
+      const p = fitPanelView({ ...view, key }, IDLE);
+      assert.deepEqual([p.hint, p.code, p.action], [null, null, null], key);
+    }
+  });
+
+  test('(−) nothing the server said reaches the panel of the new keys', () => {
+    const hostile = '<img src=x onerror=alert(1)>';
+    for (const [state, reason] of [['fitted', 'terminal'], ['terminal', 'switching']]) {
+      const p = fitPanelView(chipView({ fit: { state, reason, message: hostile, pane: { cols: hostile, rows: 1 }, panes: hostile }, message: hostile }), IDLE);
+      assert.doesNotMatch(JSON.stringify(p), /img|onerror/, state);
+    }
+  });
+});
+
+describe('F9: createFitPlanner, the focus the page sends (design F9 3.3, 3.4)', () => {
+  const focusOf = (r) => r.log.sent.map((b) => b.focus);
+  /** Started, with a size, the first request answered fitted; the page has `focus`. */
+  const started = async (focus = true, opts = {}) => {
+    const r = rig({ focus, ...opts });
+    r.planner.size(100, 30);
+    r.planner.start();
+    await r.answer(OK());
+    return r;
+  };
+
+  test('(+) the three timings are the owner\'s Q3: focus 400 ms, blur 200 ms, a poll every second', () => {
+    assert.deepEqual([FOCUS_SETTLE_MS, BLUR_SETTLE_MS, FOCUS_POLL_MS], [400, 200, 1000]);
+  });
+
+  // -- what the first body carries
+  test('(+) the first body carries focus from io.focused(), true and false alike', async () => {
+    for (const focus of [true, false]) {
+      const r = rig({ focus });
+      r.planner.size(100, 30);
+      r.planner.start();
+      assert.deepEqual(r.log.sent, [{ cols: 100, rows: 30, open: true, focus }]);
+    }
+  });
+
+  test('(+) io.focused missing, throwing, or answering anything but the boolean true is focus: false (a page that cannot tell holds nothing)', async () => {
+    const missing = rig({ noFocusIo: true });
+    missing.planner.size(100, 30);
+    missing.planner.start();
+    assert.deepEqual(missing.log.sent, [{ cols: 100, rows: 30, open: true, focus: false }]);
+
+    const throws = rig({ focus: true });
+    throws.page.throws = true;
+    throws.planner.size(100, 30);
+    assert.doesNotThrow(() => throws.planner.start());
+    assert.deepEqual(throws.log.sent, [{ cols: 100, rows: 30, open: true, focus: false }]);
+
+    for (const odd of [1, 'true', {}, [], null, undefined, 'yes']) {
+      const r = rig({ focus: odd });
+      r.planner.size(100, 30);
+      r.planner.start();
+      assert.equal(r.log.sent[0].focus, false, JSON.stringify(odd));
+    }
+  });
+
+  test('(+) every later body carries the settled focus too: a size change and a heartbeat', async () => {
+    const r = await started(true);
+    r.planner.size(110, 30);
+    await r.clk.advance(DEBOUNCE_MS);
+    await r.answer(OK());
+    await r.clk.advance(BEAT_MS);
+    assert.deepEqual(focusOf(r), [true, true, true]);
+  });
+
+  // -- blur and focus settle, then go out at once
+  test('(+) blur: exactly one PUT focus: false at +200 ms, not waiting for the 5 s beat', async () => {
+    const r = await started(true);
+    r.page.focus = false;
+    r.planner.focusChanged(false);
+    await r.clk.advance(BLUR_SETTLE_MS - 1);
+    assert.equal(r.log.sent.length, 1, '199 ms: still settling');
+    await r.clk.advance(1);
+    assert.deepEqual(r.log.sent.slice(1), [{ cols: 100, rows: 30, open: false, focus: false }]);
+    await r.answer(OK());
+    await r.clk.advance(BEAT_MS - BLUR_SETTLE_MS - 1);
+    assert.equal(r.log.sent.length, 2, 'and nothing else before the beat');
+  });
+
+  test('(+) focus: exactly one PUT focus: true at +400 ms', async () => {
+    const r = await started(false);
+    r.page.focus = true;
+    r.planner.focusChanged(false);
+    await r.clk.advance(FOCUS_SETTLE_MS - 1);
+    assert.equal(r.log.sent.length, 1, '399 ms: still settling');
+    await r.clk.advance(1);
+    assert.deepEqual(r.log.sent.slice(1), [{ cols: 100, rows: 30, open: false, focus: true }]);
+  });
+
+  test('(−) blur then focus within 200 ms sends nothing, and the settle timer is gone', async () => {
+    const r = await started(true);
+    r.page.focus = false;
+    r.planner.focusChanged(false);
+    await r.clk.advance(100);
+    r.page.focus = true;
+    r.planner.focusChanged(false);
+    await r.clk.advance(BEAT_MS - 100 - 1);
+    assert.equal(r.log.sent.length, 1);
+    assert.equal(r.clk.pending, 2, 'only the beat and the poll are left');
+  });
+
+  test('(−) focus then blur within 400 ms sends nothing', async () => {
+    const r = await started(false);
+    r.page.focus = true;
+    r.planner.focusChanged(false);
+    await r.clk.advance(300);
+    r.page.focus = false;
+    r.planner.focusChanged(false);
+    await r.clk.advance(BEAT_MS - 300 - 1);
+    assert.equal(r.log.sent.length, 1);
+    assert.equal(r.clk.pending, 2);
+  });
+
+  test('(−) a flick the events missed: the settle reads again when it ends, and a value that went back sends nothing', async () => {
+    const r = await started(true);
+    r.page.focus = false;
+    r.planner.focusChanged(false); // the blur event
+    await r.clk.advance(100);
+    r.page.focus = true; // the focus came back with no event at all
+    await r.clk.advance(BLUR_SETTLE_MS);
+    assert.equal(r.log.sent.length, 1);
+  });
+
+  test('(+) a change called twice in the same direction keeps its first settle (200 ms from the first call, not from the second)', async () => {
+    const r = await started(true);
+    r.page.focus = false;
+    r.planner.focusChanged(false);
+    await r.clk.advance(150);
+    r.planner.focusChanged(false);
+    await r.clk.advance(50);
+    assert.deepEqual(focusOf(r), [true, false]);
+  });
+
+  test('(+) a settle that changed direction starts over: blur, focus, blur again sends at 200 ms after the last blur', async () => {
+    const r = await started(true);
+    r.page.focus = false;
+    r.planner.focusChanged(false);
+    await r.clk.advance(100);
+    r.page.focus = true;
+    r.planner.focusChanged(false);
+    await r.clk.advance(50);
+    r.page.focus = false;
+    r.planner.focusChanged(false);
+    await r.clk.advance(BLUR_SETTLE_MS - 1);
+    assert.equal(r.log.sent.length, 1);
+    await r.clk.advance(1);
+    assert.deepEqual(focusOf(r), [true, false]);
+  });
+
+  test('(+) hidden: focusChanged(true) sends at once, with no settle', async () => {
+    const r = await started(true);
+    r.page.focus = false;
+    r.planner.focusChanged(true);
+    assert.deepEqual(r.log.sent.slice(1), [{ cols: 100, rows: 30, open: false, focus: false }]);
+  });
+
+  test('(−) hidden while a blur is settling: the immediate send wins and the old settle does not send a second one', async () => {
+    const r = await started(true);
+    r.page.focus = false;
+    r.planner.focusChanged(false);
+    await r.clk.advance(100);
+    r.planner.focusChanged(true);
+    assert.equal(r.log.sent.length, 2);
+    await r.answer(OK());
+    await r.clk.advance(BLUR_SETTLE_MS);
+    assert.equal(r.log.sent.length, 2);
+  });
+
+  test('(−) a focusChanged with the value the planner already holds sends nothing, immediate or not', async () => {
+    const r = await started(true);
+    r.planner.focusChanged(false);
+    r.planner.focusChanged(true);
+    await r.clk.advance(BLUR_SETTLE_MS + FOCUS_SETTLE_MS);
+    assert.equal(r.log.sent.length, 1);
+  });
+
+  test('(−) focusChanged before start() sends nothing and arms nothing', async () => {
+    const r = rig({ focus: true });
+    r.planner.size(100, 30);
+    r.planner.focusChanged(false); // would start a settle
+    assert.equal(r.clk.pending, 0, 'no settle timer before start()');
+    r.planner.focusChanged(true);
+    r.planner.focusChanged(false);
+    await r.clk.advance(60000);
+    assert.deepEqual(r.log.sent, []);
+    assert.equal(r.clk.pending, 0);
+  });
+
+  // -- the poll
+  test('(+) a change with no event at all: the 1 s poll starts the settle, then the PUT follows', async () => {
+    const r = await started(true);
+    r.page.focus = false;
+    await r.clk.advance(FOCUS_POLL_MS - 1);
+    assert.equal(r.log.sent.length, 1, 'before the poll');
+    await r.clk.advance(1);
+    assert.equal(r.log.sent.length, 1, 'the poll started the settle, it did not send');
+    await r.clk.advance(BLUR_SETTLE_MS - 1);
+    assert.equal(r.log.sent.length, 1);
+    await r.clk.advance(1);
+    assert.deepEqual(focusOf(r), [true, false]);
+  });
+
+  test('(+) the poll keeps going: a second missed change is caught a second after the first', async () => {
+    const r = await started(true);
+    r.page.focus = false;
+    await r.clk.advance(FOCUS_POLL_MS + BLUR_SETTLE_MS);
+    await r.answer(OK());
+    r.page.focus = true;
+    await r.clk.advance(FOCUS_POLL_MS + FOCUS_SETTLE_MS);
+    assert.deepEqual(focusOf(r), [true, false, true]);
+  });
+
+  test('(−) a blur that settled and was acknowledged is not sent again when the poll falls a moment later (no second settle, no early send)', async () => {
+    const r = await started(true);
+    r.page.focus = false;
+    r.planner.focusChanged(false); // t = 0, settle ends at 200
+    await r.clk.advance(FOCUS_POLL_MS - 1); // the settle has sent by now
+    await r.answer(OK());
+    await r.clk.advance(1); // the poll: the value is settled and acked
+    assert.deepEqual(focusOf(r), [true, false]);
+  });
+
+  // -- a request in flight
+  test('(+) a focus change while a request is in flight goes out right after its 200 (never two in flight)', async () => {
+    const r = rig({ focus: true });
+    r.planner.size(100, 30);
+    r.planner.start(); // in flight
+    r.page.focus = false;
+    r.planner.focusChanged(true);
+    assert.equal(r.log.sent.length, 1, 'nothing overtakes the request in flight');
+    assert.equal(r.inFlight, 1);
+    await r.answer(OK());
+    assert.deepEqual(r.log.sent.slice(1), [{ cols: 100, rows: 30, open: false, focus: false }]);
+    assert.equal(r.inFlight, 1);
+  });
+
+  test('(−) a refusal of the request in flight does not drop the waiting focus change: the poll sends it within a second', async () => {
+    const r = rig({ focus: true });
+    r.planner.size(100, 30);
+    r.planner.start();
+    r.page.focus = false;
+    r.planner.focusChanged(true);
+    await r.answer({ status: 409, body: { error: 'busy' } });
+    assert.equal(r.log.sent.length, 1);
+    await r.clk.advance(FOCUS_POLL_MS);
+    assert.deepEqual(focusOf(r), [true, false]);
+  });
+
+  // -- refused or lost focus changes
+  test('(+) a focus change that was refused (409, 429, 502, lost) is sent again by the next poll, at most once a second, despite the hold', async () => {
+    for (const reply of [{ status: 409, body: { error: 'busy' } }, { status: 429, body: { error: 'busy' } }, { status: 502, body: { error: 'tmux_failed' } }, { status: 0, body: null }]) {
+      const r = await started(false);
+      r.page.focus = true;
+      r.planner.focusChanged(true);
+      await r.answer(reply);
+      assert.equal(r.log.sent.length, 2, `status ${reply.status}: no instant retry`);
+      await r.clk.advance(FOCUS_POLL_MS - 1);
+      assert.equal(r.log.sent.length, 2, `status ${reply.status}: not before the poll`);
+      await r.clk.advance(1);
+      assert.deepEqual(focusOf(r), [false, true, true], `status ${reply.status}`);
+      await r.answer(OK());
+      await r.clk.advance(FOCUS_POLL_MS * 3);
+      assert.equal(r.log.sent.length, 3, `status ${reply.status}: once acknowledged it is not sent again`);
+    }
+  });
+
+  test('(+) a rejecting send is a lost request for a focus change too: the poll sends it again', async () => {
+    const r = await started(false);
+    r.page.focus = true;
+    r.planner.focusChanged(true);
+    await r.fail();
+    await r.clk.advance(FOCUS_POLL_MS);
+    assert.deepEqual(focusOf(r), [false, true, true]);
+  });
+
+  test('(−) a refused size-only request still waits for the beat: the poll does not resend it', async () => {
+    const r = await started(true);
+    r.planner.size(110, 30);
+    await r.clk.advance(DEBOUNCE_MS);
+    await r.answer({ status: 409, body: { error: 'busy' } });
+    await r.clk.advance(BEAT_MS - DEBOUNCE_MS - 1);
+    assert.equal(r.log.sent.length, 2, 'the polls fell and sent nothing');
+    await r.clk.advance(1);
+    assert.equal(r.log.sent.length, 3, 'the beat asks again');
+  });
+
+  test('(−) a first request that was refused is not resent by the poll either: only the beat asks again', async () => {
+    const r = rig({ focus: true });
+    r.planner.size(100, 30);
+    r.planner.start();
+    await r.answer({ status: 409, body: { error: 'busy' } });
+    await r.clk.advance(BEAT_MS - 1);
+    assert.equal(r.log.sent.length, 1);
+    await r.clk.advance(1);
+    assert.equal(r.log.sent.length, 2);
+  });
+
+  test('(+) a focus change clears the hold a refused size request left: it goes out at its settle, not at the beat', async () => {
+    const r = rig({ focus: false });
+    r.planner.size(100, 30);
+    r.planner.start();
+    await r.answer({ status: 409, body: { error: 'busy' } });
+    r.page.focus = true;
+    r.planner.focusChanged(false);
+    await r.clk.advance(FOCUS_SETTLE_MS);
+    assert.deepEqual(r.log.sent.slice(1), [{ cols: 100, rows: 30, open: true, focus: true }]);
+  });
+
+  // -- the beat
+  test('(+) the beat carries a changed hasFocus() with no settle: the window shown again is settled enough', async () => {
+    const r = await started(false);
+    r.page.focus = true; // no event reached the planner
+    r.planner.beat();
+    assert.deepEqual(r.log.sent.slice(1), [{ cols: 100, rows: 30, open: false, focus: true }]);
+  });
+
+  test('(+) the 5 s heartbeat carries it too, and it ends a settle that was running', async () => {
+    const r = await started(true);
+    await r.clk.advance(BEAT_MS - 100);
+    r.page.focus = false;
+    r.planner.focusChanged(false); // settles until BEAT_MS + 100
+    await r.clk.advance(100);
+    assert.deepEqual(focusOf(r), [true, false], 'the beat sent it before the settle ended');
+    assert.equal(r.clk.pending, 2, 'the settle timer was cancelled by the beat: only the beat and the poll are left');
+    await r.answer(OK());
+    await r.clk.advance(BLUR_SETTLE_MS);
+    assert.equal(r.log.sent.length, 2, 'and the cancelled settle sends nothing more');
+  });
+
+  test('(+) a beat that adopts a new focus while a request is in flight queues it for after the 200', async () => {
+    const r = rig({ focus: false });
+    r.planner.size(100, 30);
+    r.planner.start();
+    r.page.focus = true;
+    r.planner.beat();
+    assert.equal(r.log.sent.length, 1);
+    await r.answer(OK());
+    assert.deepEqual(focusOf(r), [false, true]);
+  });
+
+  // -- the chip is told quietly
+  test('(+) the chip of an answer to a focus-change request is told { quiet: true }', async () => {
+    const r = await started(true);
+    assert.deepEqual(r.log.quiet, [false], 'the first answer');
+    r.page.focus = false;
+    r.planner.focusChanged(true);
+    await r.answer(OK('terminal'));
+    assert.deepEqual(r.log.chips.map((v) => v.key), ['fitted:', 'terminal:zoom']);
+    assert.deepEqual(r.log.quiet, [false, true]);
+    r.page.focus = true;
+    r.planner.focusChanged(true);
+    await r.answer(OK('fitted'));
+    assert.deepEqual(r.log.quiet, [false, true, true]);
+  });
+
+  test('(−) the first answer, a size answer and a beat answer are told { quiet: false }', async () => {
+    const r = rig({ focus: true });
+    r.planner.size(100, 30);
+    r.planner.start();
+    await r.answer(OK('fitted'));
+    r.planner.size(110, 30);
+    await r.clk.advance(DEBOUNCE_MS);
+    await r.answer(OK('zoomed', 'panel-smaller'));
+    await r.clk.advance(BEAT_MS);
+    await r.answer(OK('blocked', 'user-zoom'));
+    assert.deepEqual(r.log.chips.map((v) => v.key), ['fitted:', 'zoomed:', 'blocked:user-zoom']);
+    assert.deepEqual(r.log.quiet, [false, false, false]);
+  });
+
+  test('(−) a state change that arrives with the same focus as the answer before it is not quiet, even right after a focus change', async () => {
+    const r = await started(true);
+    r.page.focus = false;
+    r.planner.focusChanged(true);
+    await r.answer(OK('fitted')); // acknowledged, same key: no chip call
+    await r.clk.advance(BEAT_MS);
+    await r.answer(OK('zoomed', 'panel-smaller')); // a beat at the same focus
+    assert.deepEqual(r.log.quiet, [false, false]);
+  });
+
+  test('(−) the answer to the user\'s Fit again is never quiet (the user asked, so the chip is announced)', async () => {
+    const r = await started(false);
+    r.page.focus = true; // the click on the chip gave focus; the settle has not ended
+    r.planner.focusChanged(false);
+    assert.equal(r.planner.reopen(), true); // the beat adopts the focus, and the ask goes out with it
+    assert.equal(r.log.sent.at(-1).open, true);
+    assert.equal(r.log.sent.at(-1).focus, true);
+    await r.answer(OK('zoomed', 'panel-smaller'));
+    assert.deepEqual(r.log.quiet.at(-1), false);
+  });
+
+  test('(−) hiding the chip (close, 403) tells io.chip(null) with no options', async () => {
+    const r = await started(true);
+    r.planner.close();
+    assert.equal(r.log.chips.at(-1), null);
+    assert.equal(r.log.quiet.length, 1, 'the null call carried no { quiet }');
+  });
+
+  // -- over for good
+  test('(−) after close(): focus events, the poll and a settle in progress send nothing, and no timer is left', async () => {
+    const r = await started(true);
+    r.page.focus = false;
+    r.planner.focusChanged(false); // a settle is running
+    r.planner.close();
+    assert.equal(r.clk.pending, 0, 'the settle, the poll and the beat are all cancelled');
+    r.planner.focusChanged(true);
+    r.planner.focusChanged(false);
+    r.page.focus = true;
+    await r.clk.advance(60000);
+    assert.equal(r.log.sent.length, 1);
+    assert.equal(r.clk.pending, 0);
+  });
+
+  test('(−) after a 403: focus events, the poll and a settle in progress send nothing, and no timer is left', async () => {
+    const r = rig({ focus: true });
+    r.planner.size(100, 30);
+    r.planner.start();
+    r.page.focus = false;
+    r.planner.focusChanged(false); // a settle is running
+    await r.answer({ status: 403, body: { error: 'forbidden' } });
+    assert.equal(r.clk.pending, 0, 'the settle, the poll and the beat are all cancelled');
+    r.planner.focusChanged(true);
+    r.page.focus = true;
+    r.planner.focusChanged(false);
+    r.planner.beat();
+    await r.clk.advance(60000);
+    assert.equal(r.log.sent.length, 1);
+    assert.equal(r.clk.pending, 0);
+  });
+
+  test('(−) a 403 drops the waiting focus change: nothing is sent after the 403 answer', async () => {
+    const r = rig({ focus: true });
+    r.planner.size(100, 30);
+    r.planner.start();
+    r.page.focus = false;
+    r.planner.focusChanged(true); // waits behind the request in flight
+    await r.answer({ status: 403, body: { error: 'forbidden' } });
+    await r.clk.advance(60000);
+    assert.equal(r.log.sent.length, 1);
+  });
+
+  test('(−) close() drops the waiting focus change: a start() after it sends the focus it reads then, once', async () => {
+    const r = rig({ focus: true });
+    r.planner.size(100, 30);
+    r.planner.start();
+    r.page.focus = false;
+    r.planner.focusChanged(true); // due, behind the request in flight
+    r.planner.close();
+    await r.answer(OK()); // the old lease's answer
+    assert.equal(r.log.sent.length, 1);
+    r.page.focus = true;
+    r.planner.start();
+    assert.deepEqual(r.log.sent.slice(1), [{ cols: 100, rows: 30, open: true, focus: true }], 'no 200 had answered the first request, so the new lease opens');
+    await r.answer(OK());
+    assert.equal(r.log.sent.length, 2, 'the dropped change did not come back');
+  });
+
+  test('(+) start() after close() and restart() read the focus fresh, and the poll runs again', async () => {
+    const r = await started(true);
+    r.planner.close();
+    r.page.focus = false;
+    r.planner.restart();
+    assert.equal(r.log.sent.at(-1).focus, false);
+    await r.answer(OK());
+    assert.deepEqual(r.log.quiet, [false, false], 'the first answer of the new lease is not quiet, although the focus differs from the old lease\'s last one');
+    r.page.focus = true;
+    await r.clk.advance(FOCUS_POLL_MS + FOCUS_SETTLE_MS);
+    assert.equal(r.log.sent.at(-1).focus, true, 'the poll of the new lease caught a missed change');
+  });
+
+  test('(+) a focus change that is acknowledged is not sent again by the poll, however long the page stays', async () => {
+    const r = await started(true);
+    r.page.focus = false;
+    r.planner.focusChanged(true);
+    await r.answer(OK());
+    await r.clk.advance(FOCUS_POLL_MS * 4);
+    assert.equal(r.log.sent.length, 2);
+  });
+
+  test('(+) io.focused throwing after the start reads as no focus: the poll sees a blur and sends it', async () => {
+    const r = await started(true);
+    r.page.throws = true;
+    await r.clk.advance(FOCUS_POLL_MS + BLUR_SETTLE_MS);
+    assert.deepEqual(focusOf(r), [true, false]);
   });
 });
 

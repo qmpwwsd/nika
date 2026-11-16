@@ -1407,6 +1407,18 @@ function fitCall(method, opts = {}) {
   return call(`/api/app/pane/${encodeURIComponent(paneId)}/fit`, { method, ...opts });
 }
 
+/**
+ * Whether this window has focus (F9, the focused window wins the pane's size): visible, and document.hasFocus() is the boolean true. Anything unreadable is
+ * no focus, so a page that cannot tell never holds the size of a window a terminal shows. The planner reads it fresh on every event, poll and request.
+ */
+function fitFocused() {
+  try {
+    return document.visibilityState === 'visible' && typeof document.hasFocus === 'function' && document.hasFocus() === true;
+  } catch {
+    return false;
+  }
+}
+
 /** The panel in cells: the terminal's client box over one glyph cell, taken from the probe (100 glyphs in the unscaled font). A box that cannot be measured (a hidden tab) keeps the last good size. */
 function fitMeasure() {
   const term = $('term');
@@ -1442,10 +1454,11 @@ function fitCaptured() {
 /**
  * The fit chip, a button (F1): hidden until the server has answered, then one of five states, each with its own colour (data-k), icon and
  * words; the reason is the title and the announcement. The button is named by the label alone (the words and the chevron are decoration).
- * Called on a change of state, so it is announced once; an open panel is drawn again in place. With no view the wrapper hides, the panel
+ * Called on a change of state, so it is announced once (not when `opts.quiet` is true: the planner says so for a change that followed a change of the
+ * window's focus, F9; the chip, its title and its name still change); an open panel is drawn again in place. With no view the wrapper hides, the panel
  * closes and focus, if it was in there, goes to the transcript button.
  */
-function renderFit(view) {
+function renderFit(view, opts) {
   const wrap = $('fit-wrap');
   const el = $('fit-chip');
   const inside = !view && wrap.contains(document.activeElement); // asked before the wrapper hides: a hidden element loses focus
@@ -1466,7 +1479,7 @@ function renderFit(view) {
   el.setAttribute('aria-label', view.label);
   el.replaceChildren(icon(view.icon), h('span', { text: view.text }), icon('chev', 'ic chev'));
   if (FIT.pop) drawFitPop();
-  announce(view.say);
+  if (opts?.quiet !== true) announce(view.say); // F9: a change that followed the window's own focus is drawn, not announced twice (the status stays readable on the chip)
 }
 
 /**
@@ -1594,11 +1607,16 @@ function wireFit() {
     cancel: (timer) => clearTimeout(timer),
     chip: renderFit,
     fitAgain: fitAgainEvent,
+    focused: fitFocused, // F9: the focus every request carries
   });
   wireFitPop();
   if (typeof ResizeObserver === 'function') new ResizeObserver(fitResize).observe($('term')); // the app's zoom changes the box too
   document.fonts?.ready.then(fitResize, () => {});
   window.addEventListener('pagehide', () => FIT.planner.close());
+  // F9: events are only triggers, the planner reads the value itself; hidden (visibilitychange, in boot) is sent at once, these two settle first. e.target is the window
+  // itself: the focus and blur of an element inside the page are not the window's
+  window.addEventListener('focus', (e) => { if (e?.target === window) FIT.planner.focusChanged(false); });
+  window.addEventListener('blur', (e) => { if (e?.target === window) FIT.planner.focusChanged(false); });
   window.addEventListener('pageshow', (e) => { // back from the back/forward cache: pagehide gave the window back, so this is a new page load (open: true)
     if (!e || e.persisted !== true || M.gone || !M.cols) return; // a first load, a pane that is gone, or no capture yet: nothing to restart
     fitResize();
@@ -2546,6 +2564,7 @@ function boot() {
   loadSettings();
   startAgentPoll();
   document.addEventListener('visibilitychange', () => {
+    FIT.planner?.focusChanged(document.hidden); // F9, both ways: hidden gives the size back at once, shown settles (the beat below adopts it)
     if (document.hidden) return;
     kickMirror(0);
     refreshHistory();
