@@ -245,7 +245,8 @@ export const surveyShown = (rows) => Array.isArray(rows) && rows.some((row) => {
 // src/survey.js never reads it and the capture's `survey` stays null. Only the start of the row is matched (the row wraps in a narrow pane, and the words that
 // follow are not needed), as a whole row: prose that quotes it mid-line does not match. The `Thanks` row is not matched: it always comes with this row,
 // and alone a model's own line `Thanks for the feedback!` would hold the draft sync for as long as it stays on screen.
-const FOLLOW_UP = /^\s*\(Optional\) Press \[1\] to tell us more\b/;
+// Column 0 only, as captured (spike S-F14 section 4, 10 of 10): Claude indents its own reply rows, so a reply that quotes the row never matches (RR05 N1).
+const FOLLOW_UP = /^\(Optional\) Press \[1\] to tell us more\b/;
 /** True when a row of the screen is Claude's post-rating row `(Optional) Press [1] to tell us more` (any row: its place was not pinned down). */
 export const followUpShown = (rows) => Array.isArray(rows) && rows.some((row) => FOLLOW_UP.test(rowText(row)));
 /**

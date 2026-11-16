@@ -640,10 +640,16 @@ describe('followUpShown / surveyOrFollowUpShown (the post-rating row)', () => {
   const THANKS = 'Thanks for the feedback!';
   const ROW = '(Optional) Press [1] to tell us more \u00b7 /feedback';
 
-  test('(+) the captured row (column 0, as drawn), with indent, and the first half of it when a narrow pane wraps it', () => {
+  test('(−) RR05 N1: the row indented, as a reply of Claude that quotes it is drawn, is not the post-rating row', () => {
+    assert.equal(followUpShown(rowsWith(`  ${ROW}`)), false, 'a reply row (indent 2)');
+    assert.equal(followUpShown(rowsWith(`   ${ROW}`)), false, 'indent 3');
+    assert.equal(followUpShown(rowsWith(`\t${ROW}`)), false, 'a tab');
+    assert.equal(surveyOrFollowUpShown(rowsWith(`  ${ROW}`)), false, 'the combined check too');
+  });
+
+  test('(+) the captured row (column 0, as drawn), and the first half of it when a narrow pane wraps it', () => {
     assert.equal(followUpShown(rowsWith(THANKS, ROW)), true);
     assert.equal(followUpShown(rowsWith(ROW)), true);
-    assert.equal(followUpShown(rowsWith(`   ${ROW}`)), true, 'indented');
     assert.equal(followUpShown(rowsWith('(Optional) Press [1] to tell us more \u00b7', '/feedback')), true, 'wrapped before the last word');
     assert.equal(followUpShown(rowsWith('(Optional) Press [1] to tell us more')), true, 'the words alone');
     assert.equal(followUpShown([...rowsWith(ROW), ...subagentRows({ agents: 1 })]), true, 'with a subagent list below');
