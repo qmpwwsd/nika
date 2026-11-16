@@ -4,6 +4,20 @@
 
 Session window (desktop app):
 
+- **Answer Claude's feedback question with one click.** When Claude asks "How is Claude doing this session?
+  (optional)", a panel above the message box shows **1 Bad**, **2 Fine**, **3 Good** and **0 Dismiss**, in Claude's
+  order. A click types that one number into Claude's input, as you would, and presses no Enter. nika first looks at
+  the screen again: the question must be exactly the one it knows, with Claude's input empty, not in vim normal mode,
+  no permission prompt or dialog open, nothing mentioning bypass, and the session idle; it then reads the screen for a
+  second to see that Claude took the number (if not, you see "Claude didn't take the answer" and where the number may
+  be). While the question shows, the message box sends nothing and says why. After a rating of 1, 2 or 3 Claude offers
+  "Esc to undo" for about three seconds, so nika sends no Esc of its own for 4 seconds: Stop, End, the commands and
+  the question form's Decline answer "Claude shows "Esc to undo" for the rating nika just sent, so nika sends no Esc
+  for 4 seconds. Try again then." and send nothing (your own Esc still works). The follow-up question whether
+  Anthropic may look at the session transcript is **not** answered by nika: its layout was never captured, so it stays
+  the terminal's, and so does every other survey question nika does not read exactly (the panel says "Terminal only").
+  Untried: a click through nika against a real Claude (the rows and the digit come from one spike on Claude Code
+  2.1.325, with one real rating). See `docs/design/spec.md` §9.5 and `docs/security.md` T58.
 - **The message box and Claude's input box follow each other.** Type in the terminal and the text shows up in the message
   box once you stop typing for a moment (1.5 seconds). Type in the message box and the text appears in Claude's input a
   quarter of a second after your last key. Both ways work with several lines, pasted text and the Shell toggle: when Claude's
@@ -25,7 +39,8 @@ Session window (desktop app):
   under the box: "Suggestion: Tab or → accepts what Claude suggests." Press **Tab** or **→** to take it: nika checks that Claude
   is waiting and still shows exactly that suggestion, presses Tab in Claude's input once, and the message box fills with the
   text. If anything changed (the suggestion went away, Claude got busy, a question opened), nothing is pressed and you see why.
-  Without a suggestion, Tab moves focus and → goes to the pane as before. **Send** with an empty message box and an empty input sends nothing, because what Enter submits on a suggestion has not been verified.
+  Without a suggestion, Tab moves focus and → goes to the pane as before. **Send** with an empty message box and an empty
+  input sends nothing, because what Enter submits on a suggestion has not been verified.
 - **Long messages.** Text that does not fit Claude's box (more than 1024 characters, 12 line breaks or 13 rows) is not mirrored
   ("Not mirrored: Long text goes to Claude when you send it"). Send still pastes it into an empty input, as before. If Claude's
   input already holds other text, Send refuses, so the two are never sent together; clear it in the terminal or shorten your
@@ -54,8 +69,9 @@ Session window (desktop app):
   there, not against Claude itself), and Tab or Enter on a real Claude suggestion through nika has not been tried yet.
 - **The terminal fills its panel.** The session window measures its terminal panel and asks nika to make the pane that size, so
   the mirror shows the whole pane with no empty space and no sideways scroll. nika zooms the pane inside its tmux window and, when
-  that cannot squeeze anything, sizes the tmux window to the panel. It resizes a window with several panes only when the panel is at
-  least as big as the window; when the panel is smaller, nika zooms the pane, leaves the window at its size and draws the text
+  that cannot squeeze anything, sizes the tmux window to the panel. A window with several panes is resized when the panel is at
+  least as big as the window, or, while the session window has focus, also when it is smaller (the next entries but one); with no
+  focus and a smaller panel, nika zooms the pane, leaves the window at its size and draws the text
   smaller (never larger than normal, never below 0.4 times). A window with one pane is sized to the panel. The header still says
   "Live · 120 × 39", the pane's real size.
 - **A "Fit" chip says what nika did to your tmux window**, with its own colour, icon and words: "Fit · fills the panel", "Fit ·
@@ -78,10 +94,12 @@ Session window (desktop app):
   `window-size` setting and, when you have not touched the layout, the layout and the focus. If you unzoom, move, split, kill a
   pane or resize in tmux while the window is fitted, nika sees it within a second, puts the window back right after, and does not
   fit it again until you open the session window again or press Fit again (a resize you make while the window is fitted is also undone: nika puts the
-  window back to its old size; a split or an exit of one of nika's own agent panes is not your change, see above). A zoom you made yourself is never undone. Spawning an agent into a fitted window puts it back
+  window back to its old size; a split or an exit of one of nika's own agent panes is not your change, see above). A zoom you
+  made yourself is never undone. Spawning an agent into a fitted window puts it back
   first. The restore is exact except for tmux's last-pane order: which pane `last-pane` jumps back to is not restored.
 - **nika no longer resizes a tmux window your terminal shows while the session window has no focus**, so your terminal does not get dots around
-  it because of nika (with focus, the next entry applies). While a terminal shows the window, nika only zooms the pane (when the window has several) and the session window scales the text; the chip reads
+  it because of nika (with focus, the next entry applies). While a terminal shows the window, nika only zooms the pane (when
+  the window has several) and the session window scales the text; the chip reads
   "Fit · your terminal's size" (its own plum colour and a terminal icon, with a hint in its panel). When no terminal has shown the window for 30
   seconds, nika sizes it to the panel again. A terminal that comes to a window nika has already sized gets the window back within about a
   second, and your terminal resizing the window is never taken for a change of yours. Your own unzoom, focus change, split or kill still turns
@@ -99,6 +117,18 @@ Session window (desktop app):
   `linux-verify` checks F9a and F9b (a control-mode client as the terminal) pass in the CI job. Untried: how WebKit reports focus and blur in the
   app's window on macOS and on Linux (if events are missed, a once-a-second check of `document.hasFocus()` catches them), and the redraw count per
   switch with a real Claude.
+- **While the session window has focus, nika squeezes the other panes of the tmux window and gives them back when you leave.** Until now a
+  smaller panel left a window with several panes at its size and the text small. Now, with focus, nika sizes the window to the panel
+  whatever the other panes run (a shell, an editor, another agent): the zoom hides them and tmux shrinks them with the window. When the
+  session window loses focus (or your terminal takes the window), nika gives back the window's size and its layout, then zooms the
+  mirrored pane again; for a moment every pane is visible and redraws. nika reads the layout first and keeps it in memory; when it
+  cannot read it, it squeezes nothing and the pane stays zoomed with scaled text. The chip says "Fit · zoomed, text scaled" only for a
+  window without focus; its title is now "Other panes share this tmux window. With focus nika sizes the window to this panel; without
+  focus it only zooms the pane and scales the text." and its hint "Click into this window to fill the panel; the other panes get their
+  size and layout back when you leave it." A shell or an editor in a hidden pane sees a narrow window while you work here and may keep
+  wrapped lines; each switch sends a resize signal to every pane (at most 12 takes a minute per window, as before). Untried: the new
+  `linux-verify` check F15a runs for the first time on CI; tmux 3.2 (the lowest supported) and versions other than 3.6a and 3.8 are not
+  checked.
 - **Clicking into the session window changes the pane once, and faster.** One click into nika used to resize the pane five times in four
   seconds, because nika measured its panel again every time a line, a chip or a panel appeared, and each resize made the next one. Now nika
   measures the panel when you click in, when you resize the window and when the text size changes, and not while the screen changes under
@@ -133,8 +163,13 @@ Session window (desktop app):
   shows everything, and the number in its header is the real total.
 - Known limits: the fit was tried on tmux 3.8, and the `linux-verify` check on CI runs it on the Linux runner's tmux (3.6a on
   ubuntu-latest: a 3-pane and a single-pane window fitted and given back exactly, `select-layout --` accepted, `window-size`
-  unset reads empty); tmux 3.2, the lowest supported, and every version other than 3.6a and 3.8 are not checked yet; a crash leaves the window at nika's size until
-  nika starts again; with `pane-border-status` on, the mirrored pane has one row fewer than the panel; a terminal that comes to a window nika has sized sees dots for up to about a second before nika gives the window back; the rule for a window your terminal shows was tried on tmux 3.8, and its two checks in the `linux-verify` job (a control-mode client as the terminal) pass on CI; a big terminal with a small session window gives small text (about 0.42 times for a 200 × 50 pane in a 112 × 21 panel, and below 0.4 times it scrolls).
+  unset reads empty); tmux 3.2, the lowest supported, and every version other than 3.6a and 3.8 are not checked yet; a crash
+  leaves the window at nika's size until
+  nika starts again; with `pane-border-status` on, the mirrored pane has one row fewer than the panel; a terminal that comes
+  to a window nika has sized sees dots for up to about a second before nika gives the window back; the rule for a window your
+  terminal shows was tried on tmux 3.8, and its two checks in the `linux-verify` job (a control-mode client as the terminal)
+  pass on CI; a big terminal with a small session window gives small text (about 0.42 times for a 200 × 50 pane in a 112 × 21
+  panel, and below 0.4 times it scrolls).
 
 - **Attach images, PDFs and text files to a message.** Paste a file into the message box, drop it on the box, or click the
   paperclip ("Add attachments"; it opens nika's own file chooser, not the webview's, which froze the app on macOS). Up to 6 files
@@ -172,6 +207,12 @@ Session window (desktop app):
   bypass is terminal-only: nika offers only Decline. While a form shows, Send, Stop, the mode switch and the commands wait (Stop's
   tooltip says "Decline is in the question form"). Esc in the message box still goes to Claude, as in the terminal, and declines
   the dialog. See `docs/adr/0015-dialogs-from-the-screen.md`.
+- **Questions, plans and permission prompts are read with Claude's task list under them, and long questions are read.** Claude 2.1.325 draws
+  its task list (and, in a named session, a labelled rule row above it) under a dialog or a permission prompt, and a long question or option
+  description with a bar `│ ` in front of every row. nika cuts the task list off the rows it reads only when it matches Claude's drawing
+  exactly (header, one row per task, an optional "+N …" row, counts that add up), never reads a task's text, and reads the bar and a row as
+  wide as the pane when the next row continues it. The prompt's buttons answer exactly as before, and a task that mentions bypass still
+  keeps a prompt terminal-only. Anything that does not match keeps the old note: answer in the terminal.
 - **Long text in the keys route is typed in pieces.** Text of 701 to 1024 characters is sent in chunks of at most 700 characters
   about 300 ms apart, because Claude turns a burst of more than 800 characters into a pasted block and loses part of the text.
 - **One row per conversation after `/compact`.** Claude continues a compacted conversation in the background under a new session
@@ -235,10 +276,12 @@ Fixes:
   screen, and it types nothing while a permission prompt, a question or plan dialog, the auto-mode notice, Claude's feedback
   survey or a screen nika cannot read (no input box and an unknown footer) is open: a digit or a letter typed there would answer
   it. A long message is typed in pieces, and nika looks again before each later piece; if something opens in between, it stops
-  there and keeps your text in the message box. nika also never attaches `.env` and `.envrc` files (and `.env.*`, `.envrc.*` such as `.envrc.dev`), key and certificate files
-  (`*.key`, `*.pem`, `*.p12`, `*.pfx`, `*.jks`, `*.keystore`) or SSH private keys (`id_rsa`, `id_dsa`, `id_ecdsa`, `id_ed25519` and the
-  `_sk` forms of the last two; their `.pub` files stay attachable): paste, drop and the file chooser refuse them by name ("nika doesn't
-  attach .env, key or certificate files.").
+  there and keeps your text in the message box. nika also never attaches `.env` and `.envrc` files (and `.env.*`, `.envrc.*`
+  such as `.envrc.dev`), key, certificate and credential
+  files (`*.key`, `*.pem`, `*.p12`, `*.pfx`, `*.jks`, `*.keystore`, `*.ovpn`, `.netrc`, `.git-credentials`, `.pgpass`, `.npmrc`, `credentials`)
+  or SSH private keys (`id_rsa`, `id_dsa`, `id_ecdsa`, `id_ed25519` and the `_sk` forms of the last two; their `.pub` files stay
+  attachable): paste, drop and the file chooser refuse them by name ("nika doesn't attach .env, key, certificate or credential files.").
+  A secret under another name is not recognised.
 - **A pane whose Claude has ended gets no keys and no capture.** With tmux's `remain-on-exit`, the pane of a session that ended stays on
   screen, and tmux still names its command after Claude, so nika took it for a live session. The session window, the mode, End and the
   other pane routes now refuse such a pane ("pane not found"), and the mode list leaves it out. A tmux listing row whose dead-pane
@@ -253,6 +296,33 @@ Fixes:
   pane for the border line, so nika's read-back saw a pane one row shorter than its window, took it for a change by someone else,
   and drew the text smaller instead of fitting. nika now accepts a pane of the window's height or one row less (the width and the
   window size must still match exactly); the mirrored pane has one row fewer than the panel.
+- **Dropdown menus stay inside the window.** A menu that did not fit under its button's right edge ran off the window or under the sidebar,
+  or was cut by a dialog's body. It now stays right-aligned when it fits, otherwise opens from its button's left edge, otherwise is narrowed to
+  the space and its items wrap; it keeps off the sidebar and inside a dialog body, and resizing the window closes an open menu.
+- **End works on a pane Claude has left.** With tmux's `remain-on-exit`, a pane whose Claude ended after `/exit` stays listed with its
+  command still named after Claude; End now reads the pane as dead and reports it ended instead of reporting it still running.
+- **When nika cannot read Claude's session list, it no longer starts a second orchestrator.** With an unreadable session registry the saved
+  orchestrator reads as unknown (the project page keeps what it showed), and Start (the app and the CLI) refuses with "nika couldn't check the
+  saved orchestrator, so nothing was started" instead of resuming a session that may be running. Start with no saved pick is unaffected.
+- **A pane whose state tmux did not report is never taken for a parent.** For spawn, a pane whose dead-pane field is neither 0 nor 1 counts
+  toward the agent limits and the duplicate-name check, but it cannot start agents ("tmux did not say whether that session still runs").
+- **Quitting gives the fit release its full three seconds.** The desktop shell sends SIGTERM 2 seconds after it closes the server's input, and
+  the release that gives your tmux window back may take 3; the server now keeps handling that signal until the release has finished (or its
+  3 seconds are up), so the window is no longer left at nika's size. A second Ctrl-C still ends it.
+- **A quick second Send keeps your text.** Send now compares against the screen after the message it just sent, and a push that Claude's
+  screen refused keeps the box you edited ("Claude's input changed while nika was copying your text. Nothing was sent. Your text is kept.").
+- **Attached files survive leaving and coming back.** A page that goes into the browser's back/forward cache (for example after the "Open
+  subagent transcript" link) keeps its chips and their files; only a page that never returns leaves them to the expiry.
+- **Attachment send and Tab on a suggestion wait for the redraw after a click into the window**, like Send and the mode switch, and the "On
+  hold" and "Cursor" notes stay while a switch is running or a request is answered 429.
+- **A failed mode switch names the mode nika actually read.** "Stopped at …" now uses the first screen the page applied, not one held back
+  during a redraw.
+- **Settings checks fields in page order.** A bad value is focused from the top of the page down: model ids, Auto-compact percent, name
+  prefix, agents per orchestrator, keep attachments. In the Settings drawer the cards' titles are third-level headings and Plugins and
+  Models fourth-level, so the heading list has no skipped level; they look as before.
+- **Every non-image attachment path is pasted with a leading space**, so Claude's box never begins with `/` (a slash command); nika stops
+  and presses no Enter if it does. nika also removes an attachment folder once it is empty.
+- **The release check refuses an undated or unreleased changelog heading** (`(unreleased)` must become the release date before a tag).
 
 ## 0.4.0 — 2026-11-13
 

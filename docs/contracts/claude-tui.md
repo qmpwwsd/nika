@@ -16,6 +16,11 @@ files and made-up text. §13 (question dialogs and plan approvals) was checked o
 §14 (the files of Claude's own subagents) was checked on 2026-11-15 against 2.1.325 (macOS, a private tmux server, a throwaway git project, Haiku),
 and it reads only the throwaway session's own `subagents/` folder.
 
+Claude's task list and the session-name rule under a dialog or a permission prompt (§1, F13), the `│ ` bar and the pane-wide rows of a long
+question (§13.1, §13.5), the plan approval footer of 2.1.325 (§13.3), a pasted path and `C-u` (§11), the feedback survey's rows (§10.13) and what tmux
+answers to the give with a layout (§15) were checked on 2026-11-16 against Claude Code 2.1.325 and tmux 3.8 (macOS, private tmux servers, throwaway
+projects, Haiku), with made-up text. The orchestrator's own long-running Claude 2.1.319 was not re-checked.
+
 ## 1. Footer (mode line)
 
 The mode line is the last non-blank row of the pane while Claude's prompt box is shown, **not counting a list of background
@@ -136,6 +141,67 @@ the row above the blank row is the dialog's last row (gate 5, `isDialogEnd`), so
 readers see it as they would without the list. That case is covered by fixtures only (`test/mode.test.js`); it was never seen live
 (§10.11). The auto-mode nudge is anchored on its own exact rows (`nudgeFooterAt`), and what hangs under it is cut the same way.
 
+### Claude's task list and the session-name rule under a dialog or a prompt (F13)
+
+Claude draws its task list in the bottom block of the pane. While a question, review or plan dialog or a permission prompt is open, that block sits
+**under the dialog's last row** instead of under the input box, so the dialog's own footer is no longer the last row and the readers (§2, §13) used to
+fall back to the banner. Checked 2026-11-16 on Claude Code 2.1.325, tmux 3.8 (macOS, a private server, Haiku, made-up task labels), at 30 to 60 rows
+and 64 to 120 columns (spike S-F13). A permission prompt in a named session, 120 x 45, four tasks:
+
+```
+ Do you want to proceed?
+ ❯ 1. Yes
+   ...
+   4. No
+(blank)
+ Esc to cancel · Tab to amend
+(three blank rows)
+──────────────────…──── <name> ─          a rule row at column 0, labelled with the session name (110 dashes + the name in 120 columns)
+(blank)
+  4 tasks (1 done, 1 in progress, 2 open)
+  ✔ Gather flour
+  ◼ Mix dough
+  ◻ Bake loaves
+  ◻ Slice bread
+```
+
+- **Where it sits.** Under a permission prompt's footer (`Esc to cancel · Tab to amend`), a question step's footer (either form, §13.1), the review
+  step's `2. Cancel` (§13.2) and, in a named session, the plan approval's footer as a lone rule row (§13.3).
+- **Blank rows are not a fixed number.** Between the dialog's last row and the rule (or the header) there are 0 blank rows at 36 rows and up to 10 to 11
+  at 60 rows (the bottom block is anchored to the bottom of the pane); 3 under the prompt at 45 rows.
+- **Named and unnamed sessions.** Started with `-n <name>`, the rule row is labelled `<dashes> <name> ─`, followed by exactly one blank row and the
+  header. Started without `-n`, there is **no rule row** under a dialog: the footer, the blank rows, the header. At idle the input box's top rule is
+  plain without `-n` and labelled with it.
+- **The header** is `  <T> tasks (<D> done, <P> in progress, <O> open)`: the word is always `tasks` (`1 tasks` is real); the `in progress` part is
+  absent when it is 0 (all done reads `8 tasks (8 done, 0 open)`); `done` and `open` are always printed, also at 0. Task rows are `  ◼ ` (in
+  progress), `  ✔ ` (done) or `  ◻ ` (open) and a label cut with `…`, in the order in progress, open, done. From the binary only, never seen: a label may
+  end with ` › blocked by #n` or ` (@owner)`, and an in-progress task with an owner can add a second row.
+- **The overflow row** is three spaces, `…`, a space and `+<counts>` (`   … +3 completed`); the visible rows plus the hidden ones add up to the
+  header's counts. From the binary only: the hidden counts read `N in progress`, `N pending`, `N completed`, only those above 0, in that order, joined by
+  `, `; the number of visible rows is 0 up to 10 pane rows, then `min(5, max(3, rows − 14))`, and with 0 visible rows the header stands alone.
+- **When it goes.** About 3 to 4 s after the last task completes the block is still there (all `✔`); by 7 s it is gone. While Claude works the list is
+  drawn in another form, under the spinner line (`  ⎿  ✔ …`), and not under a dialog. Notification rows (`tmux focus-events off · …`, a usage notice)
+  sit between the block and the box's rule at idle; none was seen under a dialog.
+- **The plan approval shows no task block at all** (36, 45, 52 and 60 rows, named or not). A named session adds the labelled rule as the very last row,
+  directly under the footer; an unnamed one ends at the footer.
+- **Not verified:** a permission prompt in an unnamed session; Claude 2.1.319; overflow rows with hidden `pending` or `in progress` tasks; the
+  `blocked by` and owner suffixes; the survey together with a task list; vim mode.
+
+nika's rule (`taskEnd` in `src/mode.js`, called by `footerEnd` and by the prompt reader; rule 12 of `rules/project-rules.md` has the approved text). It
+reads **bottom-up on right-trimmed rows** and cuts **exactly one** of the following, otherwise nothing (the footer reads `unknown`, fail closed):
+
+1. The anchor is the last row of a question step (either footer form), the review's `2. Cancel`, the plan approval's footer, or a permission prompt's
+   footer, a row starting `Esc to cancel` that counts only when the prompt reader parses a prompt in the 15 non-blank rows that end there.
+2. Under it, any number of blank rows, then either a rule row alone at column 0 (plain, or `<dashes> <name> ─`) as the last non-blank row; or, in a named
+   session, a rule row at column 0, **exactly one** blank row and the task block; or, in an unnamed session, the task block with at least one blank row above it.
+3. The task block is the header (regex-exact, `1 tasks` accepted, `in progress` only when above 0), task rows that start `  ◼ `, `  ✔ ` or `  ◻ ` followed
+   by a non-space character (the label is never read for meaning), and at most one last row `   … +<counts>`. The counts must add up: total = done +
+   in progress + open and at least 1; `◼` rows plus hidden in progress = in progress; `◻` rows plus hidden pending = open; `✔` rows plus hidden
+   completed = done. A header with no task row is allowed only with no overflow row.
+4. Any other row (a second row under a task, a notification row) means **no cut**. Never under a mode line. A subagent list together with any of this
+   is no cut. The bypass guard reads two windows: the 15 non-blank rows that end at the footer and those that end at the screen's last row, so the
+   rows nika leaves out are read too, and the prompt's `sig`, options and question are the same with and without the block.
+
 ## 2. Permission prompt
 
 Bottom of the pane while Claude asks (labels here are examples):
@@ -158,7 +224,7 @@ Bottom of the pane while Claude asks (labels here are examples):
 - The question line ends with `?` and sits directly above option 1.
 - Option rows: optional selection marker `❯`, then `<n>. <label>`, numbered from 1 without gaps (4 options observed).
 - A long label wraps onto indented rows without a number; they join the label with one space.
-- The closing hint row starts with `Esc to cancel`.
+- The closing hint row starts with `Esc to cancel`; on 2.1.325 it reads `Esc to cancel · Tab to amend` and Claude's task list can sit under it (§1).
 - Pressing the digit alone answers the prompt; no Enter is needed. Esc cancels (the "No" path).
 - Labels can contain the user's folder paths: show them in the app only, never log them.
 - Other dialogs (the folder-trust question at startup) use `❯` with unnumbered options and
@@ -414,7 +480,7 @@ shows every row) when any of these holds:
 | Condition | Why |
 |---|---|
 | the mode line is unknown: a permission prompt, a dialog or an unknown footer replaces it (§1), including the transient `paste again to expand` hint | a dialog that draws `❯ 1. Yes` between two `─` rows must never be read as a draft |
-| a feedback survey is on screen (`surveyShown` in `src/mode.js`; only the first question and the options row were ever captured, see §10.11): any row that is exactly `How is Claude doing this session?` with an optional ` (optional)` (and an optional `●` before it), or the options row `1: … 0: Dismiss`; also a row that starts with `How well is Claude following the instructions`, `How was Claude's recollection` or `Can Anthropic look at your session transcript` | the survey answers to the digits 0–3 (the transcript question to 1–3), so a draft that starts with a digit must never be typed while one shows. The capture's `draft` is null (the sync pauses), the draft write, End and the commands answer 409 `input-unreadable` with nothing typed. Matched on whole rows, so prose that quotes the question does not trigger it. The keys route has no such guard: a digit pressed in the mirror is the user's own key |
+| a feedback survey is on screen (`surveyShown` in `src/mode.js`; the rating's question and options rows were captured on 2026-11-16, §10.13; the other questions are binary strings only, §10.11): any row that is exactly `How is Claude doing this session?` with an optional ` (optional)` (and an optional `●` before it), or the options row `1: … 0: Dismiss`; also a row that starts with `How well is Claude following the instructions`, `How was Claude's recollection` or `Can Anthropic look at your session transcript` | the rating answers to the digits 0–3 (the transcript question, from the binary only, to the letters `y`, `n` and `d`), so a draft that starts with a digit must never be typed while one shows. The capture's `draft` is null (the sync pauses), the draft write, End and the commands answer 409 `input-unreadable` with nothing typed. Matched on whole rows, so prose that quotes the question does not trigger it. Since F14 nika answers the **rating** (and only the rating) with one typed digit through its own route, after exact checks (§10.13; `api-app.md`, `POST /api/app/pane/:id/survey`); every other survey question stays the user's. The keys route has no such guard: a digit pressed in the mirror is the user's own key |
 | the footer is `! for shell mode` but the box does not start with `!` (that footer is accepted only for a bash box) | §1 |
 | a permission prompt parses on the screen (§2) | redundant with the footer rule; it is the T51 anchor |
 | fewer than two rule rows, or nothing between the last two | no box |
@@ -638,11 +704,10 @@ and vim insert mode, made-up text).
 
 ### 10.11 Not verified
 
-- The feedback survey was never seen on screen (4 prompts, 8 subagent runs, 2026-11-14): only the first question row and the options
-  row come from an earlier capture (spike S15). The three other question variants (`How well is Claude following the instructions`,
-  `How was Claude's recollection`, `Can Anthropic look at your session transcript`) are strings of the 2.1.325 binary only: how and
-  where they are drawn, and whether their options row has the same shape, was never captured (§10.1 matches the start of the row, so a
-  different layout may go unnoticed). Whether the survey takes a digit while the input box has focus is not known, so the guard stays for every box.
+- The feedback survey's rating rows were captured on 2026-11-16 (§10.13). The three other question variants (`How well is Claude following the
+  instructions`, `How was Claude's recollection`, `Can Anthropic look at your session transcript`) are strings of the 2.1.325 binary only: how and
+  where they are drawn, and whether their options row has the same shape, was never captured live (§10.1 matches the start of the row, so a
+  different layout may go unnoticed). The transcript question could not be reached: after a rating `2` it did not come (§10.13).
 - A permission prompt, or a dialog nika does not know, drawn with the background-subagent list below it (§1): never seen, so it reads
   `unknown` and nika cannot answer it (the user does, in the terminal). A question, review or plan dialog with the list below it is cut
   by `treeEnd` and read (§1, gate 5), but only fixtures cover that; it was not seen live either.
@@ -760,6 +825,57 @@ The interrupted step ends and the queued message goes to Claude at once as a new
 - A paste of more than 800 characters reads `❯ [Pasted text #N]`; `Enter` queues it, and the footer shows `paste again to expand` for a
   moment. nika never writes over such a box (§10.6, `pasted`).
 
+### 10.13 The feedback survey (0.5, spike S-F14)
+
+Claude Code 2.1.325, tmux 3.8, macOS, a private tmux server, Haiku, checked 2026-11-16 at 120, 64 and 40 to 47 columns with Claude in plain mode and in vim
+INSERT and NORMAL. The facts here are about Claude; nika reads the rating rows exactly and answers them with one typed digit (F14: `src/survey.js`, `src/session-control.js`
+`answerSurvey`), and keeps a draft from answering them (§10.1). One rating `2` (Fine) was sent on a throwaway session; the transcript question was never reached.
+
+- **When it shows.** The binary's default is: at least 10 minutes since the start and 5 user turns, probability 0.005 per check (remote configuration
+  `tengu_feedback_survey_config`; the user setting `feedbackSurveyRate` replaces the probability), then at least an hour and 10 turns between two
+  surveys. For tests the environment variable `CLAUDE_FORCE_DISPLAY_SURVEY` (`1`, `true`, `yes` or `on`) opens it once per process at once;
+  `CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY` turns it off. It can be open **while Claude is busy** (it opened during a turn and stayed through `thinking`).
+- **Place and rows.** Above the input box's top rule and below the transcript or the spinner, one blank row above the question. Exactly one row sits
+  between the options row and the box's top rule (39 of 39 captures); it is **not always blank**: it can hold `◐ medium · /effort`, a usage notice or the
+  tmux `focus-events off` notice, so treat it as free text.
+
+```
+(blank)
+● How is Claude doing this session? (optional)            column 0: ●, a space, the bold text from column 2; the ● is cyan
+  1: Bad    2: Fine   3: Good   0: Dismiss                indent 2; the digits are cyan; each item is 10 wide (4, 3 and 3 spaces after the labels)
+(one row, free text)
+────────────────────────  <name> ─                       the box's top rule
+```
+
+- **Width.** 46 columns and more: question and options each on one row (120 and 64 columns identical). 45 down to 42: the question wraps to
+  `● How is Claude doing this session?` and `  (optional)`. 41: the options squeeze (`3: Good  0: Dismiss`). 40: `0:` and `Dismiss` split over two rows. A parser that wants
+  the two rows directly above each other therefore fails closed below 46 columns.
+- **The digit goes into the input box.** It shows there (`❯ 0`, the cursor one column right) and Claude acts on it after a **400 ms pause** (or on
+  `Enter`); the digit is visible for about 0.2 to 0.5 s, then the survey rows vanish. A digit within 600 ms after the survey mounted is ignored. It works in
+  plain mode, in vim INSERT and while Claude is busy. In vim **NORMAL** the survey stays and the digit does nothing (`0` is a motion). **Any other
+  character** in the box hides the survey at once and abandons it, and clearing the box does not bring it back; later digits are plain text. A box holding
+  exactly one of `0 1 2 3` keeps the survey open and the digit acts, so a draft that is a single `1`, `2` or `3` followed by a 400 ms pause would rate; a one-shot
+  `send-keys -l` of longer text is safe.
+- **After the answer.** After `0` (Dismiss) nothing replaces the rows (no confirmation) and the box shows its placeholder again. After `2`: for about 3 s one
+  row `Feedback: Fine · Esc to undo` (`Esc` undoes the rating, so no `Escape` may be sent there: nika sends none for 4 s after a rating of 1 to 3, F14), then for about 5 s two rows, `Thanks for the feedback!` and
+  `(Optional) Press [1] to tell us more · /feedback` (a `1` there opens `/feedback`), then nothing. No transcript question appeared in 30 captures.
+- **The transcript question: its layout is NOT recorded, so nika never answers it.** It was never seen on a screen, and the rows below are a reading of Claude's binary, not a
+  capture. nika treats it as `terminal / consent` wherever a row starts `Can Anthropic look at your session transcript` (also beside a rating), offers no button, and has no code
+  path that types a letter for it; the approved rule 12 text lets nika answer it only "in the exact layout recorded" in this file, and no layout is recorded. A later round needs a
+  live capture of the rows, the screen after `n` and the width behaviour first, and a new request body (its keys are letters, the route's body is `n` 0 to 3).
+- **The transcript question (binary only, not seen live).** After a rating Claude asks whether Anthropic may look at the session transcript only when
+  the user's `transcriptShareDismissed` flag is not set and a random draw against `tengu_<bad|fine|good>_survey_transcript_ask_config` succeeds; the binary
+  default of each probability is 0, and the forced path is stubbed off, so it could not be reached on demand. The layout from the component, **unverified**:
+  a blank row, `● Can Anthropic look at your session transcript to help us improve Claude Code?`, a link row indented 2 (possibly an OSC 8 hyperlink with the URL
+  as its text), and an options row indented 2, `y: Yes` and `n: No` (each 10 wide) then `d: Don't ask again`. Its keys are **letters**: one typed character,
+  lowercased, `y` yes, `n` no, `d` dont-ask-again, through the same input box and 400 ms pause. **`d` writes `transcriptShareDismissed: true` to the user's
+  config; nika never presses it.** In vim NORMAL, `y`, `n` and `d` are operators or motions, so a letter answer needs INSERT mode.
+- **Other surveys (binary only).** `How well is Claude following the instructions you gave earlier in this conversation? (optional)` (flags
+  `tengu_long_context_survey_*`) with the same options row; a memory survey (`Claude recalled a memory:`, a sentence, `How was Claude's recollection?
+  (optional)`) whose options row probably gains `4: Unsure`. All share `0: Dismiss`, which `SURVEY_OPTIONS` in `src/mode.js` matches.
+- **Not reached:** the transcript question; the memory and long-context surveys; the survey together with a permission prompt, a slash menu or a scrolled-up
+  view; what the `bad` and `good` transcript probabilities are for an account.
+
 ## 11. Attachments (0.5, W2)
 
 What Claude Code does with a file path pasted into its input box, and what the box shows. Checked 2026-11-14 and 2026-11-15, Claude Code
@@ -777,7 +893,17 @@ side is `docs/design/spec.md` §9.14 and the route is `POST /api/app/pane/:id/at
 
 - Placeholder spans carry no SGR attributes, so a reader that ignores styling sees them as plain text: `[Image #1]`.
 - Consecutive placeholders get a space between them (`[Image #1] [Image #2]`). After typed text, a pasted image path gets **no** space added
-  (`look at these[Image #5]`), so nika pastes an image path alone and a non-image path with one leading space after text.
+  (`look at these[Image #5]`), so nika pastes an image path alone. Every non-image path goes in with **one leading space**, also into an empty box (see the
+  next bullets).
+- **A pasted path keeps its leading space** (checked 2026-11-16, Claude 2.1.325, tmux 3.8): pasted into an empty box, ` /…` shows as `❯  /…` (two
+  spaces after the glyph; the cursor at the end of the text), a PDF path wraps at the pane width, and a pasted `/…` path does **not** open the slash menu
+  (a paste without the space into an empty box showed no menu either). Sent with `Enter` after the space, Claude took the message as a **prompt**, read
+  the file with its Read tool and answered from it; it was not run as a command. Not tested: the no-space paste followed by `Enter`, a typed (not
+  pasted) `/`, vim mode. That is why nika keeps the space for every non-image path: a box that begins with `/` is Claude's slash-command input, and
+  nika's send stops (409 `screen-changed`, no `Enter`) when the box was empty at the start and its text begins with `/` after a paste or right before
+  the `Enter`.
+- `C-u` clears **one wrapped row per press** (a 3-row pasted path needed three presses; the fourth did nothing; same fact as §10.8). End and the
+  commands type short text, but cleanup of a longer paste leaves text behind after one `C-u`.
 - A large image is converted, not refused: a 7.9 MB PNG still gave `[Image #N]` within 656 ms of the send. Whether Claude accepts the
   message with that image on submit was not tested (the one turn tried used a small PNG).
 - vim INSERT: the box takes both kinds. vim NORMAL with an empty box: a paste is inserted as text or placeholder (no history search
@@ -953,6 +1079,14 @@ Enter to select · Tab/Arrow keys to navigate · Esc to cancel      the footer: 
   single-select label ends in ` ✔` (nika removes it). Typing in the multi text row ticks its box by itself.
 - The tmux cursor sits on the focused row, and parks at column 0 of a row (`0,39`) on the button row and on `Chat about this`.
 - Re-entering a tab (`Left` in the terminal) resets the focus to option 1 and keeps ticks and typed text.
+- **A long question wears a bar** (2.1.325, checked 2026-11-16 at 64, 70, 80, 90 and 120 columns). When the question text is wider than 80 columns or holds a
+  line break, Claude draws every row of the **question** with a dim `│ ` in front (U+2502 then a space; `ESC[2m│ESC[0m `, then the bold text), at any pane width.
+  The option descriptions have no bar. A 71-character question wrapped to two rows at 64 columns has no bar; an 89-character one has it at 64 columns (two rows)
+  and at 120 (one row, 91 wide). The 80-column boundary itself is from the binary only (`text.includes("\n") || width(text) > 80`); 80 and 81 were not tested.
+  nika leaves the bar out of the question's text when **every** question row has it, and reads a screen where only some rows have it as `layout`.
+- **A text row can be as wide as the pane.** The measured limit below (`cols − 1`) held for short questions; with the bar the widest row reached `cols` at 64 (64
+  wide: the bar and 62 characters), 70 and 80 columns, and 87 at 90 and 119 at 120 depending on the wrap. A row of that width is a wrap only when the row
+  right below it continues the same question paragraph or the same option's description; nika accepts it only then (`wide` otherwise, §13.5).
 
 ### 13.2 The review step
 
@@ -995,6 +1129,9 @@ Ready to submit your answers?
 
 - **A digit takes effect at once** (spike W1-T0b L5, digit `2` with the focus on option 1: `User approved Claude's plan`, the mode line became
   `-- INSERT -- ⏸ manual mode on`, and the model replied). `Enter` after typed text on the free-text option was never run.
+- The footer on 2.1.325 reads `ctrl+g to edit in Vim · <plans folder>/<name>.md` (no `· Esc to cancel`) and is the last row of the screen at 36, 45, 52 and 60
+  rows. Claude's task list is **not** drawn under a plan approval; a session started with `-n` draws its labelled rule row directly under the footer as the
+  very last row, and an unnamed one has nothing under it (§1, F13). nika reads the footer as a dialog end in both cases.
 - The plan dialog **never shows the `-- INSERT --` marker**, even with the free-text option focused. The plan text can be longer than the
   screen and is cut; nika uses the visible plan rows only for the dialog's identity and never shows them.
 
@@ -1014,13 +1151,16 @@ Both take a digit or `Enter` that was meant for something else, so every control
 | Reason | Seen live / rule |
 |---|---|
 | `cut` | No top rule directly above the strip, or no strip (a pane shorter than the dialog: the dialog clips from the top, the option list scrolls, and `↑` / `↓` replace the two leading spaces of the first or last visible option row, which no option pattern matches); a plan without `Ready to code?`, either `╌` rule or the prompt row; a header, label, question or answer that ends in `…` |
-| `wide` | A row (not a rule, not the free-text row's wrapped value, not a plan row) as wide as the pane: Claude may have cut it. A row under an option row whose first word would **not** have fitted behind the option's last character: a wrapped label looks like a description by its indent, so nika cannot tell them apart unless the row's first word would have fitted behind the label (word wrap at `cols - 1` would then have kept it there, so the row is a description: `src/dialog.js:222-225`). A wrapped footer. Fewer than 20 columns. At 40 columns Claude wraps the question, the labels, the descriptions and the footer (2 rows, 3 with INSERT), so the old banner shows |
+| `wide` | A row (not a rule, not the free-text row's wrapped value, not a plan row) as wide as the pane: Claude may have cut it. A row under an option row whose first word would **not** have fitted behind the option's last character: a wrapped label looks like a description by its indent, so nika cannot tell them apart unless the row's first word would have fitted behind the label (word wrap at `cols - 1` would then have kept it there, so the row is a description: `src/dialog.js:222-225`). A wrapped footer. Fewer than 20 columns. **Exempt (F13-B):** a row that reaches the pane's last column is accepted when the row right below it continues the same question
+paragraph or the same option's description (a question row followed by another question row, a description row followed by another row of the same description), because
+a long question is drawn that wide (§13.1). At 40 columns Claude wraps the question, the labels, the descriptions and the footer (2 rows, 3 with INSERT), so the old banner shows |
 | `numbers` | Option numbers not `1..k+2` without gaps, or above 9 (a digit answers without `Enter`, so `k` is at most 7); the free-text row not `k+1`, the chat row not `k+2`; a button row on a single-select question or none on a multi-select one |
 | `tab` | Not exactly one current tab (zero or two marked tokens) |
-| `layout` | The footer says `↑/↓` with several tabs, or `Tab/Arrow keys` with one tab and no `Submit`; a multi-select question or several tabs without `Submit`; a duplicate label, a label equal to the free-text or chat placeholder, a header, label or question holding `☐`, `☒` or `✔`; a string over its maximum (header 40, question 500, label 200, description 500, answer 500); the button row's name disagreeing with the last-tab rule; any other shape |
+| `layout` | Some but not all of the question's rows start with Claude's `│ ` bar (§13.1); a question row that is only the bar, with no text, reads as no bar (shape unverified); the footer says `↑/↓` with several tabs, or `Tab/Arrow keys` with one tab and no `Submit`; a multi-select question or several tabs without `Submit`; a duplicate label, a label equal to the free-text or chat placeholder, a header, label or question holding `☐`, `☒` or `✔`; a string over its maximum (header 40, question 500, label 200, description 500, answer 500); the button row's name disagreeing with the last-tab rule; any other shape |
 | `survey` | Claude's feedback survey is on screen (it takes digits, §10.1) |
 
-- Measured: the widest text row is `cols - 1` in every capture (119 at 120 columns, 39 at 40); only rule rows reach `cols`. 300 typed
+- Measured on short questions: the widest text row is `cols - 1` in every capture (119 at 120 columns, 39 at 40); only rule rows reach `cols`. A long question
+  with the bar can reach `cols` (§13.1). 300 typed
   characters in the text row read back exactly (3 rows joined with one space: the break space of a wrap disappears).
 - At 40 columns the footer wraps, but a wrapped footer is still found (the last one to three non-blank rows joined) so `dialogOnScreen` is
   true and the capture says `unreadable` / `wide`, not `null`.
@@ -1100,3 +1240,32 @@ What nika does with it: the snapshot's subagent `state` is `finished` when the k
 **Not covered.** A user stopping a subagent directly (for example from the `↓ to manage` panel), and a foreground subagent (never produced), so what
 `finished` reads after either is unknown. Older and newer Claude Code builds were not checked: if the folder moves or the tool is renamed again, the
 rows and links go quiet (no rows, no link), nothing worse.
+
+## 15. tmux: giving a squeezed window back with its layout (0.5, F15, spike S-F15)
+
+These are facts about tmux, not about Claude; they sit here because the fit (`src/fit.js`, ADR 0017) reads Claude's pane through them. Checked 2026-11-16
+on **tmux 3.8** (macOS, a private server, panes running `sleep`, no Claude), with no client, with a control-mode client (`tmux -C attach`, unsized and sized
+to the window) and with a real tty client. tmux 3.2, the floor, the versions in between and 3.6a (the CI runner) were not part of this spike; the
+`linux-verify` group `F15a` runs the same sequence on the runner's tmux.
+
+- **The give sequence is exact.** `resize-window -t @W -x <W0> -y <H0>` (R3), `set-option -wu -t @W window-size` (R4), `select-layout -t @W -- <T>`,
+  `resize-pane -Z -t %P` restored the stripped layout, the zoom, the active pane, every hidden pane's size, the window size and the unset `window-size` option in
+  **870 of 870 cycles** (29 cases × 30 cycles: windows from 64 × 46 to 200 × 50 squeezed to panels from 145 × 28 down to 12 × 20; 4 and 6 panes, side by side and
+  stacked, also when the squeeze pushed hidden panes to 1 column or 1 row). The same four commands as one tmux invocation passed 480 of 480 cycles (16 cases × 30).
+  Nothing drifts across cycles: the layout read at the start of cycle N equalled cycle 1's in every case.
+- **`#{window_layout}` under zoom** still returns the full unzoomed layout, hidden pane sizes included, and `#{window_visible_layout}` returns the single zoomed
+  leaf. In tmux 3.8 the layout is JSON (`{"V":2,"L":{…}}`) with `"a":true` (active) and `"l":N` (last) markers, which nika strips before it compares or applies one.
+- **Without `select-layout` the layout does not come back.** A plain round trip (`resize-window` there and back) left a different layout in 16 of 29 cases
+  (some stacked and some side by side; the other 13 came back unchanged), with the zoomed pane's own size drifting too (one case: 80 → 74 columns); the drift
+  appears on the first round trip and then repeats exactly (30 round trips gave one distinct layout). `select-layout` fixed all of them, and it **always unzooms** (32 of 32 runs, also on a window that was unzoomed already), so the pane is zoomed again.
+- **`select-layout <T>` on a window that is not exactly T's size** never fails (exit 0, no output). With `window-size` manual it **scales** T to the window and
+  leaves the option alone; with the option unset and no sized client it resizes the window to T's size and is exact. The give satisfies this because the resize
+  back and the option come first.
+- **Clients.** No difference in any measured value between the four client kinds. The one client effect: `set-option -wu window-size` snaps the window to a
+  sized client's size at once, where with no (or an unsized) client it leaves the window where it is. A control-mode client's `%layout-change` events carry
+  the flags `*` (not zoomed) and `*Z` (zoomed) and alternate per cycle, so the unzoomed moment between `select-layout` and `resize-pane -Z` is visible to a client.
+- **Smallest panel.** 6 panes side by side reach 11 columns × 1 row, stacked 1 column × 11 rows (2n − 1 along the split axis, 1 on the other; 4 panes side by
+  side: 7 columns). Below the minimum `resize-window` exits 0, prints nothing and leaves the window at the minimum on that axis while keeping the other as
+  asked, so the window ends larger than the panel and only a read-back shows it.
+- **Not verified:** how long every pane is visible between `select-layout` and `resize-pane -Z`; a user changing focus between the take and the give; a client of
+  another size at give time; mixed grids (rows of columns); tmux 3.2; a shell's or editor's redraw (the panes ran `sleep`).

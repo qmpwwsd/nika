@@ -49,7 +49,7 @@ missing; since 0.4 a tmux server that is not running is not an error for Start o
 a second after Start, Resume or spawn created it), `limit` 409 (maxAgents reached), `foreign` 409 (rules file not written by nika, apply without
 `overwriteForeign`), `refused` 409 (a write-safety check failed; `"code"` carries the fwrite/OS code such as `ESYMLINK`),
 and for session control (0.3) `not-idle`, `mode-unknown`, `mode-unchanged`, `not-in-cycle`, `busy-switching`, `no-prompt`,
-`prompt-changed`, `already-answered`, `input-not-empty`, `input-unreadable`, `not-at-prompt`, `bypass-prompt`, `screen-unclear`, all 409. The 0.3 codes are hyphenated, as the spec names them; the older codes keep their underscores. Draft sync (0.5) adds `draft-unreadable`, `draft-changed`, `screen-changed` and `draft-mismatch`, all 409 (`PUT /api/app/pane/:id/draft`; the first, second and fourth also `POST /api/app/pane/:id/suggestion`). Sending while Claude works (0.5, W13) adds `cursor-not-at-end` and `clear-stopped` (`PUT /api/app/pane/:id/draft`) and `prompt-open` and `suggestion-shown` (`POST /api/app/pane/:id/submit`; that route also answers `not-idle`, `bypass-prompt`, `screen-unclear`, `input-unreadable`, `draft-changed` and `busy-switching`), all 409. The keys route with `send: true` (Send's own typing) answers `prompt-open` and `screen-unclear`, both 409, besides its `bypass-prompt`. Attachments (0.5, W2) add, on the upload and the file chooser, `empty` and `secret-file` 400, `too-big` 413 (more than 8 MiB decoded; the dispatcher's own `too_large` 413 is a body over the route's cap), `wrong-type` 415, `folder-unsafe`, `path-unusable` and `no-project` 409, `busy` 429, `storage-full` and `disk-full` 507 and `write-failed` 500; and, on `POST /api/app/pane/:id/attach-send`, `attachment-gone`, `path-unusable`, `not-idle`, `mode-unknown`, `input-unreadable`, `draft-unreadable`, `shell-mode`, `draft-changed`, `cursor-not-at-end`, `vim-normal`, `screen-changed`, `not-taken` and `busy-switching`, all 409, and `internal` 500. Scrolling (0.5, W3) adds `no-view`, `prompt-open`, `screen-unclear`, `menu-open` and `busy-switching`, all 409 (`POST /api/app/pane/:id/scroll`).
+`prompt-changed`, `already-answered`, `input-not-empty`, `input-unreadable`, `not-at-prompt`, `bypass-prompt`, `screen-unclear`, all 409. The 0.3 codes are hyphenated, as the spec names them; the older codes keep their underscores. Draft sync (0.5) adds `draft-unreadable`, `draft-changed`, `screen-changed` and `draft-mismatch`, all 409 (`PUT /api/app/pane/:id/draft`; the first, second and fourth also `POST /api/app/pane/:id/suggestion`). Sending while Claude works (0.5, W13) adds `cursor-not-at-end` and `clear-stopped` (`PUT /api/app/pane/:id/draft`) and `prompt-open` and `suggestion-shown` (`POST /api/app/pane/:id/submit`; that route also answers `not-idle`, `bypass-prompt`, `screen-unclear`, `input-unreadable`, `draft-changed` and `busy-switching`), all 409. The keys route with `send: true` (Send's own typing) answers `prompt-open` and `screen-unclear`, both 409, besides its `bypass-prompt`. Attachments (0.5, W2) add, on the upload and the file chooser, `empty` and `secret-file` 400, `too-big` 413 (more than 8 MiB decoded; the dispatcher's own `too_large` 413 is a body over the route's cap), `wrong-type` 415, `folder-unsafe`, `path-unusable` and `no-project` 409, `busy` 429, `storage-full` and `disk-full` 507 and `write-failed` 500; and, on `POST /api/app/pane/:id/attach-send`, `attachment-gone`, `path-unusable`, `not-idle`, `mode-unknown`, `input-unreadable`, `draft-unreadable`, `shell-mode`, `draft-changed`, `cursor-not-at-end`, `vim-normal`, `screen-changed`, `not-taken` and `busy-switching`, all 409, and `internal` 500. Scrolling (0.5, W3) adds `no-view`, `prompt-open`, `screen-unclear`, `menu-open` and `busy-switching`, all 409 (`POST /api/app/pane/:id/scroll`). The feedback survey (0.5, F14) adds `no-survey`, `survey-changed`, `text-mode` and `survey-undo`, all 409, and `terminal-only` 400 (`POST /api/app/pane/:id/survey`; `survey-undo` is also an answer of Stop, End, the commands, the draft route and the dialog route, see there).
 
 ## 3. Routes
 
@@ -102,7 +102,9 @@ speed, and the shell clamps zoom to 0.5–3.0 (`docs/security.md`, residual risk
 { "key": "0123456789abcdef", "dir": "<abs realpath>", "name": "<basename, clean()>", "addedAt": "<ISO>",
   "rules": { "state": "none" | "nika" | "foreign" | "outdated", "settingsIgnored": true, "git": true } }
 ```
-`orchestrator` (0.4, C1; app tier only, never on :3335): `null` (no saved orchestrator, or the transcript index could not be read) or
+`orchestrator` (0.4, C1; app tier only, never on :3335): `null` (no saved orchestrator, the transcript index could not be read, or, since 0.5, the session
+registry could not be read: the snapshot's `sources.registry` is not `ok` or the snapshot has no `sources` at all, so no session reads live, every pick is
+unknown and the page keeps what it had) or
 ```json
 { "sessionId": "<UUID>", "state": "live" | "ended" | "gone", "name": "<clean(name)>" | null, "pane": "%3" | null }
 ```
@@ -470,7 +472,8 @@ pane whose process ended and still names its command after the pane's argv, so i
 whose `pane_dead` is neither `0` nor `1` is dropped, so that pane is not in the listing at all. Cached 100 ms per pane (0.5, F10: was 250 ms, so the
 page sees Claude's repaint after a resize sooner; this is the mirror's cache, `src/mirror.js` `TTL_MS`, the same one every mention below means),
 one capture in flight per pane (others wait for it), `ETag` = hash of the mirror's rows hash **and** the `mode` and `modeConfirmed` the
-response shows (so a held mode that changed over unchanged rows is never hidden behind a 304); `If-None-Match` → 304.
+response shows (so a held mode that changed over unchanged rows is never hidden behind a 304), and (0.5, F14) the `survey` field, which depends on the pane's vim memory;
+`If-None-Match` → 304.
 ```json
 { "cols": 120, "rows": [ [ { "t": "text", "s": { "b": true, "fg": 4, "bg": null, "u": false, "i": false, "d": false } } ] ],
   "cursor": { "x": 0, "y": 0, "visible": true }, "alt": true, "scrolled": false, "etag": "<hex>",
@@ -577,6 +580,27 @@ wrap rule in `claude-tui.md` §10); the page mirrors it into the message box (sp
   Decline. Strings pass through `clean()` (header 40, question 500, label 200, description 500, answer 500 characters; longer is `unreadable`).
   Labels and answers can hold the user's folder paths: shown in the app only, never logged. App tier only: `/api/agents` and the browser tier
   never carry it.
+
+0.5 field, Claude's feedback survey (F14; `claude-tui.md` §10.13; the page: spec §9.5). Parsed server-side from the same rows by `src/survey.js` (`surveyOf`):
+- `survey` is `null` when no survey is on screen, and also while a permission `prompt` parses or a dialog is on screen (that panel owns the slot, and its own gates hold).
+- `{ "state": "ready", "kind": "rating", "sig": "<16 hex>", "options": [ { "n": 1, "label": "Bad" }, { "n": 2, "label": "Fine" }, { "n": 3, "label": "Good" }, { "n": 0, "label": "Dismiss" } ] }`:
+  exactly the captured rating survey and nothing in the way of a digit. All of these must hold: the rows `● How is Claude doing this session? (optional)` (the bullet at column 0)
+  and `  1: Bad … 2: Fine … 3: Good … 0: Dismiss` (indent exactly 2) once, the second directly below the first; no other row that looks like a survey question or options
+  row; exactly one row (any content) between the options row and the input box's top rule; the box an empty prompt-mode box (ghost text allowed) with the cursor in it; the
+  pane not in vim NORMAL (the pane's memory: `-- INSERT --` was seen on it and is not shown now). `kind` is always `rating` in 0.5 (the field is reserved for a later kind, see
+  Consent below). `sig` is the first 16 hex characters of sha256 over the trimmed question row, the trimmed options row and the up to 3 non-blank rows above the question: it
+  identifies this occurrence and does not change with the cursor or the free row.
+- `{ "state": "terminal", "reason": "consent" | "bypass" | "unreadable" | "input" | "normal" }`: a survey is on screen and nika does not offer it (the page says to answer it in the
+  terminal), checked in this order, the first that holds decides. `consent`: a row starts the transcript question (`Can Anthropic look at your session transcript`, an optional `●`
+  before it), anywhere on the screen, also next to a rating. `bypass`: one of the last 15 non-blank rows mentions bypass (`bypassWindow`). `unreadable`: the rows are not exactly the
+  captured pair once directly above the box (another question, another indent, a wrapped question below 46 columns, two pairs, a different number of free rows). `input`: the box is
+  not an empty prompt-mode box with the cursor in it (text, a `!` box, an older prompt, no readable box). `normal`: vim NORMAL, where a digit is a vim command.
+- **Consent is terminal-only in 0.5.** The follow-up question whether Anthropic may look at the session transcript was never captured live (spike S-F14 could not reach it:
+  `claude-tui.md` §10.13), so its rows are not recorded, and its keys are the letters `y`, `n` and `d`, not digits. nika therefore never offers it: the `consent` reason has no
+  `ready` form, and the body of the survey route cannot carry a letter. Answering it later needs a live capture and a new body shape. **nika never sends `d`** (Don't ask again
+  writes `transcriptShareDismissed: true` to the user's Claude config).
+- The field is part of the ETag (it depends on the pane's vim memory, which the rows' hash does not cover). App tier only: `/api/agents` and the browser tier never carry it.
+  Nothing of it is logged.
 
 ### `GET /api/app/modes`
 `200 { "modes": { "%3": { "mode": "plan", "confirmed": true } } }` — one entry per eligible pane (same rule as
@@ -869,9 +893,10 @@ files).
 The session window asks for its terminal panel's size in cells (0.5, W7; ADR 0017, `docs/security.md` T52, the page: spec §9.13; since F10 the page may
 instead ask once for 33 rows with the columns in the panel's proportion when Claude's input box and footer do not fit the panel, in the same body and ranges, and since F11 it asks for
 the rows its mirror hides under the input-box strip as well, again in the same body and ranges, see "The page's size, room for Claude's footer and the redraw hold" below).
-The server zooms the mirrored pane and sizes its tmux window to the panel **when that cannot squeeze another pane and either no terminal shows
-the window or the session window has focus** (0.5, F4 and F9, the focused one wins: while a terminal shows the window, nika resizes it only for
-a session window that has focus, and the terminal then shows dots around it; without focus nika never resizes it), keeps a lease on that
+The server zooms the mirrored pane and sizes its tmux window to the panel **when that cannot squeeze another pane, or, while the session window has focus,
+even when it does** (0.5, F15), and either no terminal shows the window or the session window has focus (0.5, F4 and F9, the focused one wins: while a terminal
+shows the window, nika resizes it only for a session window that has focus, and the terminal then shows dots around it; without focus nika never resizes it, and
+never squeezes another pane), keeps a lease on that
 window, and gives everything back by itself when the page goes quiet or the user changes the window. App tier only.
 ```json
 { "cols": 120, "rows": 39, "open": false, "focus": true }
@@ -899,9 +924,9 @@ user had the mirrored pane zoomed. `state` and `reason`:
 
 | `state` | `reason` | Meaning | What nika changed |
 |---|---|---|---|
-| `fitted` | `null` | the pane is exactly the panel's size | window resized to the panel when it differs (a window with several panes is also zoomed on this pane, unless the user already had it zoomed) |
+| `fitted` | `null` | the pane is exactly the panel's size | window resized to the panel when it differs (a window with several panes is also zoomed on this pane, unless the user already had it zoomed). **0.5, F15:** with `focus: true` this includes a window with several panes and a panel smaller than the window, whatever the other panes run: the zoom hides them and tmux shrinks them with the window; the window's layout is read right before the resize and kept in server memory for the way back |
 | `fitted` | `terminal` | (0.5, F9; owner decision 2026-11-16, Q1: no new state or colour) the same, and a terminal shows the tmux window too (`#{window_active_clients}` above 0): nika sized the window to the panel because the page has focus, and the terminal shows dots around it | the same as `fitted` / `null`; the terminal gets its size back within about a second of the page losing focus (a give, below) |
-| `zoomed` | `panel-smaller` | the panel is smaller than a window with several panes; resizing would squeeze the other panes | zoom only, window at its own size; the page scales its text |
+| `zoomed` | `panel-smaller` | the panel is smaller than a window with several panes and the page has **no focus** (F15: with focus such a window is `fitted`); also the state after the give of a squeezed window when no terminal shows it, and a window whose layout nika could not read at a take | zoom only, window at its own size; the page scales its text |
 | `terminal` | `null` | (0.5, F4, F9) a terminal shows the tmux window (`#{window_active_clients}` above 0) and the page has no focus, or the request is a refit inside the 30 s grace of a `terminal` lease that has no focus | the tag, and a zoom on this pane when the window has several panes that nobody zoomed; **no resize**: the terminal sizes the window and the page scales its text |
 | `terminal` | `switching` | (0.5, F9) the page has focus, but nika has already taken the size back 12 times in the last 60 s on this window (the cap, "When the server gives the window back by itself" below); the answer to a page without focus never carries it | as `terminal` / `null`; the watch takes the size when the minute frees up |
 | `blocked` | `user-zoom` | the user zoomed another pane of this window | nothing |
@@ -926,14 +951,14 @@ session does not; nika itself is never a client. What nika does with it depends 
 
 | Page | A terminal shows the window | Lease | tmux |
 |---|---|---|---|
-| has focus | yes | `fitted` / `terminal`, or `zoomed / panel-smaller` when the window has several panes and the panel is smaller than the window | resized to the panel (`window-size` becomes `manual`; the terminal shows dots), or zoom only |
-| has focus | no | `fitted` or `zoomed` | as in W7: resized to the panel when that squeezes no pane, else zoom only |
+| has focus | yes | `fitted` / `terminal` (F15: also for a window with several panes and a smaller panel) | resized to the panel (`window-size` becomes `manual`; the terminal shows dots) |
+| has focus | no | `fitted` | resized to the panel, also a smaller one for a window with several panes (F15); zoom only if the window's layout could not be read |
 | no focus | yes | `terminal` | never resized; zoom only (several panes) |
 | no focus | no, a `terminal` lease within `GROW_MS` | `terminal` (the grace) | as it is |
-| no focus | no, otherwise | `fitted` or `zoomed` | as in W7: resized to the panel when that squeezes no pane, else zoom only |
+| no focus | no, otherwise | `fitted` or `zoomed` | as in W7: resized to the panel when that squeezes no pane (a panel at least as wide and as tall as the window), else zoom only (`zoomed / panel-smaller`) |
 
-A page with focus, a terminal and a smaller panel over a window with several panes lands on `zoomed / panel-smaller`, not `terminal`: the reason
-nika does not resize is the squeeze rule, and the `zoomed` hint is the action that helps. For a page without focus `terminal` still wins over
+A page with focus, a terminal and a smaller panel over a window with several panes lands on `fitted / terminal` since F15 (before it, `zoomed /
+panel-smaller`): the window is squeezed and the terminal shows dots. For a page without focus `terminal` still wins over
 `zoomed / panel-smaller` (both are zoom only; `terminal` names the lasting reason, and its take decides `fitted` or `zoomed` later). The answer to
 `terminal` carries `reason: null` (`switching` only to a page with focus); `panes` and `userZoom` tell the page whether nika zoomed the pane (several
 panes, not the user's own zoom). The lease is the usual one (memory, file, tag); `focus`, `viewed`, `sized`, `awayAt` and the `terminal` state are
@@ -960,14 +985,14 @@ tmux and a user's split or kill are still user changes; a change of the **sessio
 | 10 | the window is zoomed on a pane other than this one | `blocked / user-zoom` |
 | 11 | no active pane, or `#{window_layout}` is not printable ASCII of 1–8192 characters without `#`, or the lease file would pass 16 KB | `blocked / changed` |
 | 12 | (0.5, F4, F9) a terminal shows the window (`#{window_active_clients}` above 0) **and the request's `focus` is false**, or the request is a refit that keeps the terminal form (a `terminal` lease inside its 30 s grace whose last `focus` is false, see "Refit") | lease (tag); a window with several panes that nobody zoomed is zoomed on this pane; **not resized** → `terminal`. With `focus: true` a terminal does not stop the resize: the request goes on to rows 13–14 |
-| 13 | one pane, or the panel is at least as wide **and** as tall as the window | lease; a window with several panes and no zoom is zoomed on this pane; resized to the panel unless it already is → `fitted` (reason `terminal` when a terminal shows the window too, F9) |
-| 14 | several panes and the panel is smaller in either dimension | lease; zoom only → `zoomed / panel-smaller`. A renew that finds a smaller panel resizes the window back to its original size, never below it |
+| 13 | one pane, or the panel is at least as wide **and** as tall as the window, or (0.5, F15) the request has `focus: true` | lease; a window with several panes and no zoom is zoomed on this pane; resized to the panel unless it already is → `fitted` (reason `terminal` when a terminal shows the window too, F9) |
+| 14 | several panes, the panel is smaller in either dimension and the request has no focus | lease; zoom only → `zoomed / panel-smaller`. A renew that finds a smaller panel without focus resizes the window back to its original size, never below it |
 | 15 | the read-back after rows 13–14 differs from what nika set (a `terminal` lease's read-back checks no size) | released at once → `blocked / changed`, never retried. A read-back that finds a terminal on a window nika just resized, for a request without focus, is not a difference: it is a give (F9, below) |
 
 Rows 1–11 win over row 12 (nothing is changed there), and for a request without focus `terminal` wins over `zoomed / panel-smaller`: both are zoom only,
 `terminal` names the lasting reason, and its take decides `fitted` or `zoomed` later. For a request with focus a window with several panes and a smaller
-panel is `zoomed / panel-smaller` (row 14), not `terminal`. A window with several panes is never made smaller than it was: another pane
-would be squeezed (spike S10). The lease lives in
+panel is `fitted` (row 13, F15), also when a terminal shows it (`fitted / terminal`). Without focus a window with several panes is never made smaller than it
+was: another pane would be squeezed (spike S10); with focus it is, and the way back puts its layout back (F15, below). The lease lives in
 three places: server memory, a 0600 file `<state>/fit/fit-<nonce>.json` and the window option `@nika-fit <nonce>` (§8).
 
 **Reads inside the lock (review I1).** Rows 9–11 and 12–14 are decided from reads taken before the lock wait (a listing, the
@@ -1029,8 +1054,8 @@ Stop and the keys route take no lock. What a fit step holds the lock for (code a
 | restore (`DELETE`, the watch, a lapse, quit, start, spawn, a take-over, a user change found by a renew) | 8: a listing and the layout read, then unzoom, size, option, layout, focus, untag (it decides each step from those two reads) | R9: one listing, to log a difference |
 | acquire | 6: a listing, the layout and the `window-size` option read, then tag, zoom (a window nobody zoomed), resize | the read-back: a listing and the layout |
 | renew that resizes | 2: a listing, then `resize-window` | the read-back: a listing and the layout |
-| give (0.5, F9: the page lost focus, or a terminal came to a window nika resized while the page has none; the watch, or a renew) | 3: a listing, then `resize-window` back to the window's own size (only when nika holds a size and the window is not at it), then `set-option -wu window-size` (or `set-option -w window-size <saved>`); no unzoom, no layout, no focus, no tag call | the read-back: a listing and the layout (lease file written with `resized: false`) |
-| take (0.5, F9: the page got focus, or a terminal has been away for `GROW_MS`, or a terminal resized a window nika did not; the watch, or a renew) | 3: a listing, `show-options -w window-size`, then `resize-window` to the panel (only when the plan resizes); no tag, zoom or layout call | the read-back: a listing and the layout (lease file written with `resized: true` when it resized) |
+| give (0.5, F9: the page lost focus, or a terminal came to a window nika resized while the page has none; the watch, or a renew; **F15: a window nika squeezed has 6**: a listing, `resize-window` back, the `window-size` option back, `select-layout` of the layout read at the take, a guard listing, `resize-pane -Z` of the mirrored pane; the read-back checks zoom, size, layout and the pane's place) | 3: a listing, then `resize-window` back to the window's own size (only when nika holds a size and the window is not at it), then `set-option -wu window-size` (or `set-option -w window-size <saved>`); no unzoom, no layout, no focus, no tag call | the read-back: a listing and the layout (lease file written with `resized: false`) |
+| take (0.5, F9: the page got focus, or a terminal has been away for `GROW_MS`, or a terminal resized a window nika did not; the watch, or a renew) | 3: a listing, `show-options -w window-size`, then `resize-window` to the panel (only when the plan resizes); no tag, zoom or layout call. **F15: a take that squeezes a window with several panes has 4**: the same listing and option read, then the layout read (`display-message … #{window_layout}`), then the resize | the read-back: a listing and the layout (lease file written with `resized: true` when it resized) |
 | refit (0.5, F2: the watch, or a renew that meets nika's own agent pane; the call counts below are for a split or an exit) | two turns of the lock. Restore: 5 after a split (a listing and the layout read, then size, option, untag), 6 after an agent pane exits (also focus). Acquire: 6, as above | R9 after the restore, the read-back after the acquire; 18 tmux calls after a split and 19 after an exit, the watch's own listing included (see "Refit" below) |
 | renew at the size nika holds (a heartbeat) | none (no lock) | none |
 
@@ -1047,9 +1072,11 @@ read-back), so a lock is never held for two steps at once.
 | only nika's own agent panes came or went (0.5, F2): the window size is what nika set, every row of the window parsed (the row count equals `window_panes`), each pane added has `@nika-role` `agent` or `sub-orchestrator`, and each pane that left was known as such | **refit**: released without a mark and fitted again at once (below) |
 | a pane was added, has no `@nika-role` yet, and the rest is explained as above | **wait**: nothing now, the first sighting is remembered; a look at least `WATCH_MS` (1000 ms) later that still sees an untagged new pane is a user change |
 | (0.5, F9) the lease's last request had **no focus**, a terminal shows a window nika **resized** (`#{window_active_clients}` above 0), and nothing else changed | **GIVE**: the window's size goes back to the terminal, in place (below) → `terminal`. The lease, the tag and the zoom stay |
+| (0.5, F15) the lease's last request had **no focus**, nika squeezed the window below its own size (several panes), and nothing else changed | **GIVE**, whether or not a terminal shows the window; judged before the terminal rows. The size, the `window-size` option **and the layout** go back and the mirrored pane is zoomed again (F15 below) → `terminal` when a terminal shows the window, else `zoomed / panel-smaller`. The lease and the tag stay |
 | (0.5, F4) the last request had no focus, a terminal shows a window nika did **not** resize, the lease is not `terminal` yet, and nothing else changed | **VIEW**: the lease becomes `terminal` (memory only, no tmux call) |
 | (0.5, F4) a `terminal` lease without focus, no terminal now, `GROW_MS` (30 000 ms) since the first tick without one not over | **AWAY**: the watch notes the first tick without a terminal (`awayAt`); a tick with a terminal clears it |
 | (0.5, F9) a `terminal` lease without focus, no terminal for `GROW_MS` | **TAKE**: the window is planned again with the panel's size, in place (below) → `fitted`, or `zoomed / panel-smaller` |
+| (0.5, F15) the last request had **focus** and the lease is `zoomed` (the panel was smaller, or the layout could not be read at an earlier take) | **TAKE** at once, in place: a window with several panes is squeezed now (and `fitted`), unless its layout cannot be read again |
 | (0.5, F9) the last request had **focus**, and the lease is `terminal` (after a give, or inside its grace), or nika has not resized the window and it is no longer at the size saved as its own (`width0` × `height0`: a terminal resized it), and nothing else changed | **TAKE** at once, in place (no wait for the 30 s) |
 | (0.5, F9) a focused lease whose window is at the panel's size nika set, a terminal or not | nothing: the panel wins |
 | (0.5, F9) a **TAKE** for a page with focus when 12 focus takes that resized the window have already happened on it in the last 60 000 ms (`TAKE_MAX` / `TAKE_SPAN_MS`) | no take: the lease stays as it is and a `terminal` lease answers `reason: switching` to the page with focus; the watch takes when the oldest of the 12 is 60 s old. A give is never limited; only a take for a page with focus that sent `resize-window` counts (not the unfocused take after `GROW_MS`, not a renew to a new panel size); the counts are in memory for at most 64 windows, the oldest dropped first |
@@ -1090,7 +1117,8 @@ refits. They keep the lease, the tag and the zoom; each is one change of the win
 window queue and the pane lock. Both run in the request that carries the change of `focus` (a blur → give, a focus → take, in that request), and the
 watch runs them as the fallback within a second (it reads the `focus` recorded from the last request, even a refused one). tmux resizes the layout
 of a zoomed window as a whole, so **every pane of the window** (the hidden agent panes too) gets the new size and its Claude redraws once per move;
-no unzoom, no `select-layout` and no focus change happen, so a terminal showing a window with several panes sees no flash of the other panes.
+no unzoom, no `select-layout` and no focus change happen, so a terminal showing a window with several panes sees no flash of the other panes. **This holds for a
+window nika sized without squeezing; the give of a window nika squeezed (F15) does unzoom it, see below.**
 
 - **Give** (the page has no focus and a terminal shows a window nika resized): inside the lock a fresh listing (which refreshes what the lease knows
   of the terminal: a terminal that has left meanwhile is not reported), the same look as the watch's (`observe` must still say give, else
@@ -1141,6 +1169,31 @@ when the layout is still the one nika left, the pane count is unchanged and the 
 had it, only when that pane still exists and the focus still sits on the mirrored pane; the tag off; the lease file removed. One more read at the end logs a
 difference (`nika: fit restore of @n differs after <step>`) and never retries. The size is compared only when nika holds a size it set and no
 terminal shows the window after the restore (F4, F9: after a give the window follows the terminal, and a window a terminal shows is not compared).
+
+**F15: a focused page squeezes any pane; the give puts the layout back (0.5, F15; owner decision 2026-11-16, "resize while zoomed", asked twice; ADR 0017, the last
+amendment).** No route, body key, answer field, reason, lease-file key, tmux command, listing field or argv shape changes (`ARGV` and `FILE_KEYS` are unchanged; the
+reason `other-panes` of the design does not exist).
+
+- **Plan.** `fitted` at the panel when the window has one pane, when the panel is at least as wide and as tall as the window, or when the request has `focus: true`;
+  otherwise `zoomed / panel-smaller` at the window's own size. A user's zoom of another pane still blocks (`blocked / user-zoom`). The cap of 12 takes a minute per window,
+  the rate and the tag are as before.
+- **Take that squeezes** (several panes, a target below the window's own size in either dimension; at the acquire, a take and a renew that finds a focused lease at its own
+  size and a smaller panel): inside the lock, from the same fresh listing that decides it, one `display-message -p -t @W -F #{window_layout}`; the answer has the focus markers
+  stripped and is validated exactly like `layout0` (printable ASCII, 1–8192 characters, no `#`) and is kept in **memory** as `layoutT`; then `resize-window`. A layout that
+  cannot be read or validated means no squeeze (fail closed): the pane stays zoomed at the window's size (`zoomed / panel-smaller`) and the watch retries at its next tick while
+  the page has focus. `layoutT` is never written to the lease file; a crash while squeezed is recovered from `layout0`.
+- **Give of a squeezed window** (the lease's last request had no focus, or a terminal came; in the request that carries the change and in the watch as the fallback; also
+  when **no terminal** shows the window; never limited): R3 `resize-window` back to the window's own size (when nika holds a size), R4 the `window-size` option back,
+  `select-layout -t @W -- <layoutT>` (tmux unzooms the window), one guard listing, `resize-pane -Z -t %P` **only if** the pane is still in the window and shows unzoomed, then
+  one read-back listing: zoom flag 1, the window's own size, the stripped layout equal to `layoutT`, the mirrored pane still in the window. Any mismatch releases the lease
+  with `blocked / changed`, once, with no retry. `layoutT` is cleared. The state afterwards is `terminal` when a terminal shows the window, else `zoomed / panel-smaller`.
+  For a moment every pane of the window is visible (between `select-layout` and the zoom), and each pane gets two size changes and a redraw.
+- **Not squeezed, so the plain give:** a window nika *grew* (a panel bigger than the window) and a later renew squeezes has no own-size layout to read (tmux scaled it): it
+  keeps no `layoutT`, its give is the F9 give, and the release's R5 restores `layout0`. A window the user changed while squeezed (layout, size, zoom) is a user change or
+  `changed`, and R5 is skipped when the user changed the layout.
+- **Page strings** (`public/fit-ui.js`): the `zoomed / panel-smaller` title is "Other panes share this tmux window. With focus nika sizes the window to this panel; without
+  focus it only zooms the pane and scales the text." and its hint "Click into this window to fill the panel; the other panes get their size and layout back when you leave
+  it." A server that sends `other-panes` with `blocked` is shown as a plain "Fit · off".
 
 ### `DELETE /api/app/pane/:id/fit` (no body)
 Gives the window back. The page sends it with `keepalive: true` on `pagehide` and when the pane is gone. `id` must match
@@ -1251,7 +1304,8 @@ above). Everything below is the page's behaviour, written here because it decide
   text scaled), and if the mode line is still off at that size the second hold waits another 1.2 s and the frame is drawn as it is (the mode "unconfirmed", as before). No route, body key, answer
   field or server gate changes.
 - **What waits for the hold, and what does not.** These page requests wait until the hold is over, at most `HOLD_MS` (twice that with a room step), then go out as they
-  always do: the scroll route's request, Send's own steps (the copy into Claude's input, the draft write `PUT …/draft`, the `Enter` through `…/submit`), the mode switch,
+  always do: the scroll route's request, Send's own steps (the copy into Claude's input, the draft write `PUT …/draft`, the `Enter` through `…/submit`), the attachment send
+  (`…/attach-send`, on every road, 0.5 final review), the suggestion accept (`…/suggestion`), the mode switch,
   and the quick-action commands. End opens its dialog after the hold (the dialog sends its own request, so that request is not delayed). These do not wait: the user's own
   keys typed into the pane (the passthrough and the arrow keys, `…/keys`), the answers to a prompt or a dialog (a prompt or a dialog ends the hold at once), and Stop.
   **Every server gate is unchanged:** each request takes its own fresh capture under the same lock and refuses on the same rules as before; the page never sends anything on the
@@ -1344,7 +1398,8 @@ The body is exactly these two keys: `name` a string of at most 255 UTF-16 units 
 reaches the disk, a log or an answer), `data` standard base64 (length a multiple of 4, alphabet `A-Za-z0-9+/`, at most two `=`). Anything
 else is `400 invalid`. A body over 12 MiB is `413 too_large` and a content type other than JSON `415 unsupported_media`, both from the
 dispatcher. Checks, in this order:
-1. Body shape → `400 invalid`; a `name` whose last part is `.env`, `.env.*`, `.envrc`, `.envrc.*`, `*.key`, `*.pem`, `*.p12`, `*.pfx`, `*.jks`, `*.keystore` or
+1. Body shape → `400 invalid`; a `name` whose last part is `.env`, `.env.*`, `.envrc`, `.envrc.*`, `*.key`, `*.pem`, `*.p12`, `*.pfx`, `*.jks`, `*.keystore`, `*.ovpn`,
+   one of the credential files `.netrc`, `.git-credentials`, `.pgpass`, `.npmrc` or `credentials` (exact base names; owner decision 2026-11-16) or
    an SSH private key by exact name (`id_rsa`, `id_dsa`, `id_ecdsa`, `id_ed25519`, `id_ecdsa_sk`, `id_ed25519_sk`; a `.pub` file is not one),
    any case → `400 secret-file` (rule 4: nika does not take credential files; nothing is decoded or stored, and the tray refuses such a file
    before it reads it).
@@ -1372,7 +1427,9 @@ after the app restarts an old id is unknown (`attachment-gone` at the send, `rem
 The page allows 6 files of at most 8 MB per message and uploads one at a time; the server enforces the 6 only at the send.
 
 ### `DELETE /api/app/pane/:id/attachments/:attId` (no body)
-Removes an unsent file now: the chip's ×, a closed window (`pagehide`, with `keepalive: true`), a chip removed while it uploaded. `id` must
+Removes an unsent file now: the chip's ×, a closed window (`pagehide`, with `keepalive: true`; a `pagehide` with `persisted` exactly `true` sends nothing,
+because the page goes into the back/forward cache and comes back with its chips, for example after the "Open subagent transcript" link, which opens in the
+same window; a page that never returns leaves its files to the expiry), a chip removed while it uploaded. `id` must
 match `PANE_ID` and `attId` `^[0-9a-f]{16}$`, else `400 invalid` (`invalid pane or attachment id`; `DELETE …/attachments/pick` lands here too).
 It is **not** eligibility-gated (the pane may be gone and the file must still go). Answer `200 { "removed": true | false }`; `false` for an
 id that is unknown, belongs to another pane, was already sent, whose file is already gone, or whose removal was refused (a linked folder or a
@@ -1409,13 +1466,15 @@ whether anything is in Claude's input. Steps, in this order:
      to the left) → `409 cursor-not-at-end` with `draft`; an empty box while vim normal mode is the pane's edit mode → `409 vim-normal` with `draft`.
 5. One paste per file, in the order of `ids`, each after a fresh look at the screen that must still read exactly what the sequence has built
    so far (spaces and line breaks ignored), in prompt mode, with no prompt (else `409 screen-changed`). The paste is the stored path as one
-   bracketed paste (`keys.send { paste }`): an image path alone; any other file's path alone into an empty box and otherwise with one leading
-   space. Then nika reads the box back every 150 ms: for an image up to 10 times (a large PNG needs a read), for a PDF or text file up to 4. An
+   bracketed paste (`keys.send { paste }`): an image path alone; any other file's path with **one leading space, also into an empty box** (0.5, final
+   review; the box then never begins with `/`, which would be Claude's slash-command input; `claude-tui.md` §11). Then nika reads the box back every 150 ms: for an image up to 10 times (a large PNG needs a read), for a PDF or text file up to 4. An
    image must read as the text so far followed by `[Image #N]` (any N); another file as the text so far followed by its path. Nothing new after
    that → `409 not-taken` with `id` when the box is unchanged or still shows the path as text; any other difference or a prompt →
-   `409 screen-changed`.
+   `409 screen-changed`. When the box was empty at the start, its text must also **not begin with `/`** after the first paste and again after each later one
+   (Claude did not keep the leading space): `409 screen-changed` with `pasted: n`, no `Enter`, and the box is left as it is. A draft the user typed before
+   (even one that starts with `/`) is not judged by this check.
 6. Right before the `Enter`: no interrupt (`not-idle`), one more fresh capture that shows no prompt, a plain box in prompt mode with **no ghost
-   text** and exactly what was built → else `409 screen-changed`.
+   text** and exactly what was built (and, when the box was empty at the start, a text that does not begin with `/`) → else `409 screen-changed`.
 7. Exactly one `Enter`, then the files are marked sent (they can no longer be looked up or deleted; pruning still ages them out).
 
 Success: `200 { "sent": n, "images": k }` (files pasted, and how many of them were images). A key request that fails (`429 busy`, a tmux
@@ -1466,7 +1525,7 @@ never opened), one entry each, and a failed entry never stops the next one:
   `text`) are the upload route's answer, and the id is used the same way (`DELETE …/attachments/:id`, `attach-send`).
 - `ok: false`, `error` is one of the chooser's own codes or one of the store's: `invalid` (the path from the shell is not a string, is not
   absolute, is over 4096 characters or holds a NUL) · `secret-file` (the last part of the path is `.env`, `.env.*`, `.envrc`, `.envrc.*`, `*.key`, `*.pem`, `*.p12`, `*.pfx`, `*.jks`,
-  `*.keystore` or an SSH private key by exact name, `id_rsa`, `id_dsa`, `id_ecdsa`, `id_ed25519`, `id_ecdsa_sk` or `id_ed25519_sk`, any case:
+  `*.keystore`, `*.ovpn`, `.netrc`, `.git-credentials`, `.pgpass`, `.npmrc`, `credentials` (exact base names) or an SSH private key by exact name, `id_rsa`, `id_dsa`, `id_ecdsa`, `id_ed25519`, `id_ecdsa_sk` or `id_ed25519_sk`, any case:
   refused by name before anything is opened) · `unreadable` (it could not be opened as a regular file you own with one link, with no
   following of a final symbolic link: a link, a folder, a FIFO, a hard-linked file, another owner's file, a file that is gone) · `too_large`
   (more than 8 MiB, decided from the size of the open file before any byte is read) · and the upload's codes `too-big`, `empty`,
@@ -1624,6 +1683,41 @@ commands → 409 `not-idle`; a draft write and a suggestion accept → 409 `not-
 (its box read finds no plain box); the scroll route → 409 `screen-unclear`; the keys route and the page's passthrough are unchanged (the
 bypass guard of T26); the permission `answer` route is unchanged and sees no prompt.
 
+### `POST /api/app/pane/:id/survey` (body ≤ 4 KB, `CAP.small`)
+```json
+{ "n": 2, "sig": "<16 hex>" }
+```
+Answers Claude's feedback survey (0.5, F14; `docs/security.md` T58; rule 12 of `rules/project-rules.md`) with **one typed digit**. Exact key set `{ n, sig }`: `n` an integer 0–3,
+`sig` 16 lowercase hex characters, from the capture's `survey` field (`ready`). App tier only: the browser tier has no such route. Nothing of the body (the digit, the `sig`)
+is logged. The order: body, pane, then the controller.
+
+1. Body invalid → `400 invalid`, checked before the pane. Ineligible pane (same rule as capture) → `404 not_found`. Another control action running on this pane (mode, End,
+   command, answer, draft, submit, dialog, fit steps) → `409 busy-switching`.
+2. A Stop or End interrupt running on the pane, or its `Escape` sent less than 40 ms ago → `409 not-idle` (a digit right behind an `Escape` would be Meta+digit).
+3. One fresh capture; its own failure passes through. A permission prompt or a dialog on screen → `409 prompt-open`.
+4. `src/survey.js` on that capture (with the pane's vim memory): no survey → `409 no-survey`; `terminal / consent` or `bypass` → `400 terminal-only` ("answer this in the
+   terminal"); `terminal / input` → `409 input-not-empty`; `terminal / normal` → `409 text-mode`; `terminal / unreadable` → `409 survey-changed`.
+5. The `sig` is not the screen's → `409 survey-changed`. The same `sig` was answered on this pane in the last 3 s (a double click, or a second window) → `409 already-answered`,
+   nothing sent. (`400 invalid` for an `n` that is not among the shown options exists in the controller and cannot fire for the rating, whose options are always 0–3.)
+6. The registry state of the session, read fresh (the cache skipped), is not `idle` → `409 not-idle`. Claude itself takes the digit while it works (spike S-F14); the gate is
+   stricter than Claude needs, as rule 12 says. An interrupt that began meanwhile → `409 not-idle` (the last check before the key).
+7. **Exactly one key:** the digit as literal text through the controller's keys path (`send-keys -l -- <n>`; it counts toward the 20 requests/s per pane; a `429` or a tmux error
+   passes through with its status and body). Never `Enter`, `Escape`, `C-u`, `BSpace` or any other key, and never a letter. Claude takes the digit after a pause of about 400 ms.
+8. Read-back, at most 1 s (`SURVEY_READ_MS`, polls 150 ms apart): `200 { "answered": n }` as soon as a fresh capture shows **no survey at all** and a box that does not read
+   exactly the digit. Otherwise `409 not-taken` with `sent: 1` (nika never removes the digit: it may still sit in Claude's input box; the page says so). A capture that fails
+   after the key answers that status and body plus `sent: 1`. The `sig` is held for 3 s after any key that went out (so a second click is `already-answered`).
+
+Statuses: `200`; `400` `invalid`, `terminal-only`; `404 not_found`; `409` `busy-switching`, `not-idle`, `prompt-open`, `no-survey`, `input-not-empty`, `text-mode`,
+`survey-changed`, `already-answered`, `not-taken`; `429` and `5xx` from the key or the capture. **Every non-200 after the digit went out carries `sent: 1`.**
+
+**The Escape hold (409 `survey-undo`).** After a rating **1 to 3** (not Dismiss, `0`) Claude shows `Feedback: <label> · Esc to undo` for about 3 s, and an `Escape` there takes the
+rating back (`claude-tui.md` §10.13). For `SURVEY_UNDO_MS` = 4000 ms after such a digit went out, **no `Escape` of nika's own leaves the controller**: every one answers
+`409 survey-undo` and is not sent. This covers Stop and End (each says so up front, before it starts, when it would have sent an `Escape`: a busy turn or a prompt or dialog on
+screen), the commands' history-search `Escape`, the draft route's `Escape` and the dialog route's Decline; it is enforced in the controller's one key function, so a later
+caller cannot forget it. The hold is set before the digit leaves; a digit that never went out puts back the hold it found. **The user's own keys are not held:** the keys route
+and the page's passthrough still send `Escape` (it is Claude's own "Esc to undo"). The hold is memory only, per controller instance: an app-server restart forgets it
+(`docs/security.md`, residual q). The page's line for it: spec §9.5.
+
 ### `POST /api/app/pane/:id/command` (body ≤ 4 KB, `CAP.small`)
 ```json
 { "text": "/compact" }
@@ -1672,7 +1766,8 @@ waiting must not block Stop), but there is one interrupt per pane at a time (End
    `Escape` only leaves it, `claude-tui.md` §5): send `Escape`, take fresh captures (up to 4, 150 ms apart) until
    `-- INSERT --` is gone (still shown → 409 `mode-unknown`, no second key), read the registry state again **uncached**
    (the server drops its 1 s eligibility snapshot first), and send a second `Escape` only if it is still busy. Another
-   interrupt (a Stop, or End's) already running on the pane → 409 `stopping`, nothing sent.
+   interrupt (a Stop, or End's) already running on the pane → 409 `stopping`, nothing sent. Within 4 s after the survey route rated 1 to 3, this step sends nothing and answers
+   409 `survey-undo` (F14, see the survey route).
 4. `200 { "stopped": true, "presses": 1 }` (or `2`). A failed capture or key send → its status and body.
 
 ### `POST /api/app/pane/:id/end` (body ≤ 4 KB, `CAP.small`)
@@ -1684,7 +1779,8 @@ Body `{}`. Steps, in this order:
    that is a non-empty string other than `idle` (busy): interrupt as the stop route above does (in vim insert mode two
    `Escape`s, the second only while the registry still says busy, read uncached; a Stop already interrupting the pane →
    409 `not-idle`, nothing sent). No state at all (no live session on the pane, or two
-   claim it) with no prompt on screen → 409 `not-idle`, **no key sent**. After an `Escape`: wait 1 s, then take a fresh
+   claim it) with no prompt on screen → 409 `not-idle`, **no key sent**. Within 4 s after the survey route rated 1 to 3, a step that would send an `Escape` (a prompt or a
+   dialog on screen, or a busy state) answers 409 `survey-undo` and sends nothing (0.5, F14; End with an idle state and no prompt sends no `Escape` and is not held). After an `Escape`: wait 1 s, then take a fresh
    capture and read the registry state again.
 3. The state is still not `idle`, or a `prompt` is still on screen → 409 `not-idle`, nothing typed. Footer `unknown`
    (a dialog may be open) → 409 `mode-unknown`, nothing typed. So End can never answer a prompt or a dialog.
@@ -1719,7 +1815,9 @@ Body `{}`. Steps, in this order:
    is a non-empty prefix of what nika typed (spaces ignored: a word-wrap can drop one) → send `C-u`; anything else → stop and leave it (it is not only nika's
    text). `C-u` clears one visual row (`claude-tui.md` §5), hence the rounds. Else send `Enter`.
 7. Check the pane every 500 ms for up to 3 s (by count, not by clock): gone or no longer running claude
-   (`CLAUDE_COMMAND`, after trimming) → `200 { "ended": true }`; else `200 { "ended": false }`.
+   (`CLAUDE_COMMAND`, after trimming) → `200 { "ended": true }`; else `200 { "ended": false }`. **A dead pane is gone (0.5):** with tmux's `remain-on-exit`
+   the pane stays listed after `/exit` with its command still named claude (from its argv), so the check reads `pane_dead`: a pane with `pane_dead` `1`
+   answers as no pane, and End reports `ended: true` at once. A live pane that still runs claude after the 3 s is still `ended: false`.
 
 When any key send (or a capture) fails (for example 429) the sequence stops and the pane is checked once: gone or no longer
 running claude → `{ "ended": true }`, else `{ "ended": false, "reason": "keys" }`. `reason` appears only here, never on
@@ -1780,6 +1878,9 @@ role are never read from the request, argv, env or a file. From one fresh `tmux 
   does not fit the role, or a role value nika never writes. Such a pane is never "you". Message: "<name> can't start agents for this
   project: only this project's orchestrator and its sub-orchestrators can. Nothing was started.", with the name from the pane's
   `@nika-agent` tag when it parses (cleaned), else the pane id.
+- **a parent whose `pane_dead` tmux did not print as `0` or `1` (0.5) → `409 depth`** ("<name> can't start agents right now: tmux did not say whether
+  that session still runs. Nothing was started."; the page and the CLI alike, nothing split). Such a pane still counts toward both caps and the
+  duplicate-name check (fail closed: it may be alive); only a pane known dead (`1`) is left out of the live set.
 `role: "orchestrator"` with "you" or under a sub-orchestrator → `409 depth` ("That session can't start a sub-orchestrator. Only the
 main orchestrator can: nika allows three levels (orchestrator, sub-orchestrators, their agents). Nothing was started."). A `parent`
 pane that is no longer listed → `404 not_found` for a page request; the CLI treats its gone `$TMUX_PANE` as "you". The name
@@ -1827,7 +1928,13 @@ With a saved orchestrator (0.4) the server looks it up in the transcript index f
 - **live** → `200` with its pane (`created: false`, no new session); `409 no_pane` when it runs outside tmux;
 - **ended** → `claude --resume <id>` in the same way as a new start, tagged `orchestrator`, `created: true`; the pick stays;
 - **gone** (no transcript, or a session of another project) → the pick is forgotten, a new orchestrator starts, and the answer carries `"cleared": "gone"`;
-- the lookup failing (index unreadable) → `503 index_unavailable`, nothing started, the pick kept.
+- the lookup failing (index unreadable) → `503 index_unavailable`, nothing started, the pick kept;
+- **the session registry unreadable (0.5, final review) → `503 index_unavailable`** ("nika couldn't check the saved orchestrator, so nothing was started"),
+  nothing looked up, no pane, no claude, the pick kept. The pick reads live only through the registry, so without it a live orchestrator would read
+  `ended` and be resumed in a second claude. It is asked first and only **while a pick is saved**, from a fresh snapshot (`sources.registry === 'ok'`;
+  a snapshot that cannot be taken, or has none, counts as not readable); a start without a saved pick needs no registry and runs. **The CLI follows it:**
+  `nika orchestrate` with a saved pick asks `readRegistry` alone (the same question, without ps, tmux or the index) and refuses the same way, exit 1
+  (the CLI maps every 5xx to 1), with no tmux command at all and the pick kept. A sessions folder that is missing or unreadable is such a case in both tiers.
 
 A new start saves its own `--session-id` as the project's pick, so Resume is offered after it ends.
 
@@ -2129,7 +2236,7 @@ multi-argument shell-commands (tmux execs them directly, no `sh -c`, T6).
 | fit: zoom or unzoom | `tmux -u resize-pane -Z -t %P` (a toggle on the window: run only after the zoom flag and the active pane were read) |
 | fit: size | `tmux -u resize-window -t @W -x <C> -y <R>` (digits, 1–10000; the panel's 40–400 × 10–200 or the window's saved size; also the one change of a take and of a give, 0.5 F9: no new argv shape) |
 | fit: window-size back | `tmux -u set-option -wu -t @W window-size` (it was unset) or `tmux -u set-option -w -t @W window-size <latest\|largest\|smallest\|manual>` (its saved value); also the second change of a give (0.5, F9) |
-| fit: layout back | `tmux -u select-layout -t @W -- <layout>` (the saved layout with the 3.8 `,"a":…` and `,"l":…` markers removed, so focus does not move; only when the layout is still the one nika left) |
+| fit: layout back | `tmux -u select-layout -t @W -- <layout>` (the saved layout with the 3.8 `,"a":…` and `,"l":…` markers removed, so focus does not move; only when the layout is still the one nika left; also, 0.5 F15, the give of a squeezed window: the layout read inside the lock right before the squeeze, from tmux's own output, never from a request; no new argv shape) |
 | fit: focus back | `tmux -u select-pane -t %A` (the pane that was active before the zoom; also in the restore of a refit after an agent pane exits, not after a split) |
 | fit: untag | `tmux -u set-option -wu -t @W @nika-fit` (only in a release that read the tag back as nika's nonce) |
 | spawn into a fitted window (0.5) | `tmux -u display-message -p -t <=session:\|%n> -F #{window_id}` before the `split-window` of an existing session, only while the fit holds a window; the `-t` value is the split's own target; the answer must match `WINDOW_ID`, then the fit gives that window back (`releaseWindow`). The split's argv is unchanged. Best effort: a failure logs the step and its code and the spawn goes on. This is the app's own spawn only: a spawn from the CLI is another process and splits into the fitted window without it, and since 0.5 (F2) the watch fits that window again (a refit, §3 "When the server gives the window back by itself") |
@@ -2226,6 +2333,7 @@ checked by the router before `mirror` / `keys` are called; those modules still v
 | `src/attachments.js` | `createAttachments({ env, now, loadKeepDays, setTimer, clearTimer, log }) → { save({ pane, key, name, data }), saveBytes({ pane, key, name, bytes }), lookup(pane, id), remove(pane, id), markSent(ids), prune({ need }), start(), stop() }`: `save`, `saveBytes` resolve `{ status, body }` (`save` is the upload route's, `saveBytes` the file chooser's: the same admission, sniff, caps and write); `lookup` → `{ id, path, type, size }` or `null`; `remove` → boolean; `start()` prunes at once and every 24 h (the timer is unref'd). Pure helpers `sniff(buf, name)`, `checkUploadBody(body)` and `isSecretName(name)`; constants `UPLOAD_CAP`, `MAX_BYTES`, `PER_MESSAGE`, `ID`, `PATH_OK`. The records of issued ids live in memory only (the 500 newest): after a restart an old id is `attachment-gone` |
 | `src/attach-send.js` | `createAttachSend({ mirror, keys, store, lock, keyGap, vimOf, plainOf, sleep, log }) → { send(pane, { ids, base }) → { status, body } }` and `checkAttachBody(body)` (the 400 shape check shared with the route); `lock` and `keyGap` are the session controller's `withPaneLock` and `keyGap` |
 | `src/dialog.js` | pure: `dialogOnScreen(rows)`, `readDialogScreen(rows, cols) → null \| { unreadable, kind } \| S`, `identityOf(S)`, `sigOf(S)`, `otherAllowed(S)`, `dialogCapture(rows, cols)` (the capture's `dialog` field) and the constants (`TEXT_MAX` 300, `STEPS_MAX` 24, `MULTI_OTHER`, `PLAN_PICK`, `PLAIN_TEXT`). `answerDialog(pane, body)` and `checkDialogBody(body)` live in `src/session-control.js` |
+| `src/survey.js` | pure, ASCII (0.5, F14): `surveyOf(capture, edit) → null \| { state: 'ready', kind: 'rating', sig, options } \| { state: 'terminal', reason }` (`capture` is `{ rows, cursor, cols }`, `edit` is `{ vim, insert }`; never throws), `SURVEY_UNDO_MS` = 4000. The controller's `answerSurvey(pane, { n, sig })` and the exported `checkSurveyBody(body)` live in `src/session-control.js`; `boxInput` moved to `src/draft.js` (re-exported by `src/session-control.js`) and `src/draft.js` gained `surveyBox(rows, cursor, cols)` (the box reader with only the survey gate skipped). |
 | `src/scroll.js` | `createScroll({ mirror, keys, lock, keyGap, now, sleep }) → { scroll(pane, body) → { status, body } }`; pure `checkScrollBody(body)`, `scrollKeys(body)` (the fixed table), `scrollGate(capture)` (the 409 code or `null`) and `pillShown(rows)` (re-exported from `src/mode.js`); constants `SCROLL_RATE` (10) and `MAX_PAGES` (8) |
 | `src/fit.js` | `createFit({ exec, tmuxBin, now, stateDir, lock, log, schedule, sleep }) → { hold(id, { cols, rows, open }), release(id), releaseWindow(w), releaseAll(), recover(), size() }`: `hold` and `release` return `{ status, body }`, `releaseWindow(@W)` → boolean (for spawn), `releaseAll()` → number (bounded by `RELEASE_ALL_MS`, 3 s), `recover()` → `{ released, dropped }` (same bound), `size()` → leases held; `checkFitBody(body)` → `{ value } \| { error }` is shared with the route; `lock(pane, fn)` is `withPaneLock` of `createSessionControl`. `createAppApi` builds one and sets `ctx.fit`; `appio.js` calls `recover()` before `ready` and `releaseAll()` in `finish()` after the server stopped taking requests; `spawnAgent` reads `ctx.fit` |
 | `src/rules.js` | `async rulesState(project) → { state, settingsIgnored, git }`; `preview(project, ctx) → { status, body }`; `apply(project, { hash, overwriteForeign, gitignore }, ctx) → { status, body }` |

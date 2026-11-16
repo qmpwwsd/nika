@@ -80,3 +80,29 @@ The facts that shaped the design:
 - Under a subagent list, an `AskUserQuestion`, review or plan dialog is read (the list is cut when the row above is a dialog end); a permission
   prompt or an unknown dialog with the list below stays `unknown`.
 - Not built (YAGNI): "Chat about this", the plan's text option, navigating tabs, plan text, anything on the browser tier.
+
+## Amendment 2026-11-16 (0.5, final review, F13 and Design B): a task list under the dialog, and long questions
+
+**Context.** Claude 2.1.325 (spike S-F13) draws its task list under a dialog and under a permission prompt: a header `N tasks (D done, …)`, one row per
+task, and in a named session a labelled rule row above it. A long question or option description is drawn with a bar `│ ` in front of each row, and a row can be
+exactly as wide as the pane. Round 1 read some of these shapes; the owner approved the exact grammar below (rule text v2 for constraint 12, 2026-11-16).
+
+**Decision.**
+- **The block is cut only when it matches exactly** (`taskEnd` in `src/mode.js`, read from the bottom, rows right-trimmed). Anchors above it: the two ask footers, the
+  review's `2. Cancel`, the plan footer (also as 2.1.325 draws it, `ctrl+g to edit in Vim · <path>`) and a permission prompt's `Esc to cancel` footer, the last
+  only when `promptOf` parses a prompt in the 15 non-blank rows ending there. The cut is either a rule row alone as the last non-blank row (plain or labelled), or, in a
+  named session, a rule row at column 0, exactly one blank row and the task block, or, in an unnamed session, the task block with at least one blank row above it. The
+  header is `  N tasks (D done, [P in progress, ]O open)` (`0 in progress` is no cut, `1 tasks` is real); the rows are `  ◼|✔|◻ <label>`; an optional last row
+  `   … +N in progress, N pending, N completed`; the counts must add up. A label is never read, shown or sent. Any mismatch cuts nothing, and the dialog stays the banner.
+- **A permission prompt keeps its answer path.** `promptSig`, the options and the question are the same with and without the block (the cut precedes `lastNonBlank`).
+  The bypass guard (constraint 12) reads the 15 non-blank rows ending at the footer **and** those ending at the screen's last row, so a task label that mentions
+  bypass still stops the keys route (409 `bypass-prompt`) and the buttons ("answered in the terminal").
+- **Design B (`src/dialog.js`).** A bar `│ ` on every question row (left out of the text) or on none; some rows with it is `layout`. A row as wide as the pane is accepted
+  only when the row below continues the same question or the same option's description; every other pane-wide row stays `wide`.
+
+**Alternatives.** Cutting any rows under the dialog (it could hide a prompt or a warning; rejected). Reading the task labels (never needed, and they are agent text).
+Waiting for Claude to hide the list (no signal for it). Matching other Claude versions' shapes without a capture (fail closed instead).
+
+**Consequences.** The shapes come from Claude 2.1.325 and the strings in its binary; another version that draws something else is `unreadable` and keeps the banner. The
+subagent list is still cut only under a mode line or a dialog end, not under a permission prompt. A question row that is only `│` reads as no bar, so `layout` (a shape
+never seen; open question). `docs/security.md` T37 and `docs/contracts/claude-tui.md` (the section on the task list under a dialog, §13.1, §13.5) carry the details.

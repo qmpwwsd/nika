@@ -27,7 +27,8 @@ values must not be steerable from a request, a tag or a file.
   nobody has zoomed it; the flag and the active pane are read first, so no blind toggle). It is resized to the panel only when the
   panel is at least as wide and as tall as the window; a smaller panel gets the zoom only and the page scales its text (never
   above 1×, never below 0.4×). A renew that finds a smaller panel resizes back to the window's original size, never below it. A
-  single-pane window has no siblings and is resized to the panel.
+  single-pane window has no siblings and is resized to the panel. *F15 (the last amendment of this file) narrows this: while the session
+  window has focus, a smaller panel also sizes a window with several panes, and the way back puts its layout back.*
 - **One lease per tmux window, in three places.** Server memory (the truth while running), a 0600 file
   `<state>/fit/fit-<nonce>.json` written before the first tmux change (crash recovery), and the window option
   `@nika-fit <16 hex nonce>` (proof that the window is the same one and nika's; it dies with the tmux server). A restore runs only
@@ -70,7 +71,10 @@ values must not be steerable from a request, a tag or a file.
   into a nika-sized window, so `spawnAgent` reads the window id of its split target (`display-message -p -t <target> -F
   '#{window_id}'`) and calls `releaseWindow` before the `split-window`; the page fits again on its next beat.
 - **Quit and start.** `finish()` stops taking requests, then `releaseAll()` (bounded by 3 s); `start()` runs `recover()` (bounded by
-  3 s) before `ready`, which gives back what a crash left, from the lease files.
+  3 s) before `ready`, which gives back what a crash left, from the lease files. (Fix before 0.5.0: the shell sends SIGTERM 2 s after
+  stdin closes, and `finish()` used to remove the server's SIGTERM listener first, so the restore could be cut at 2 s. `finish()` now keeps a
+  no-op SIGTERM listener from the start of the release until `releaseAll()` has resolved or hit its 3 s, then removes it; SIGINT is not held.
+  The shell's SIGKILL at about 4 s is the only cut left.)
 - **Own files go through `fwrite.js`.** The lease file is written by `writeAtomic` and removed by the new `removeOwnFile(dir, name)`
   (rule 11); it is read back through `fsafe` with every field shape-checked.
 - Rate: 4 requests per second per pane, in one bucket for `PUT` and another for `DELETE`.
@@ -488,3 +492,60 @@ live Claude or tmux for this amendment: the owner's live checklist (design-F11 �
   another 1.2 s and the frame is drawn as it is ("unconfirmed", as before), because there is one room step per window until Fit again or a window resize. A mode line that is gone for another reason (a notice that replaces the
   footer, say) costs the same 1.2 s and one room step. Page side only (`public/fit-ui.js`, `public/session.js`): no new route, body key, answer field, lease-file key, tmux command or argv shape, no change of any gate. Evidence: the
   unit and rig tests (fit-ui 332 tests; fit-ui and session-ui together 1043; 19 of 19 code reversions caught) and the full suite. Nothing was run against a live Claude or tmux: the owner's live check is the proof.
+
+## Amendment 2026-11-16 (0.5, F15): while the session window has focus, any pane may be squeezed, and the way back puts the layout back
+
+Owner decision (2026-11-16, "resize while zoomed", asked twice and confirmed): a window with several panes is sized to the panel while the session
+window has focus even when the panel is smaller than the window, **whatever the other panes run**, and on blur nika re-applies the layout it read right
+before the resize and zooms the mirrored pane again. This replaces the design's `nikaOnly` rule (squeeze only when every other pane is one of nika's
+agents) and its `other-panes` reason. **Server side** (`src/fit.js`) **and the chip's two strings** (`public/fit-ui.js`); **no new route, body key, answer
+field, reason, lease-file key, tmux command, listing field or argv shape** (`ARGV` and `FILE_KEYS` unchanged). Evidence: spike S-F15 (tmux 3.8 only, no
+Claude), `test/fit.test.js` (a describe block of its own, checked by reverting the code piece by piece in a scratch copy), `linux-verify` group `F15a` (CI), and the full suite.
+
+- **The plan.** `plan(…, yields, focus)` is `fitted` to the panel when the window has one pane, when the panel is at least as wide and as tall as the
+  window, **or when the page has focus**; otherwise `zoomed / panel-smaller` at the window's own size. There is no `other-panes` reason any more (the
+  page shows a plain "off" if a server ever sent it with `blocked`). A user's own zoom of another pane still blocks (`blocked / user-zoom`), a
+  terminal that shows the window still ends `terminal` without focus, and everything else of F4 and F9 stands: the tag, the cap of 12 takes a minute per
+  window, the rate, the release's R5 with `layout0`, and a window tmux cannot shrink (`blocked / changed`).
+- **The take keeps the layout.** When the target is below the window's own size in either dimension (`squeezes`), the take reads `#{window_layout}`
+  inside the pane lock, from the same fresh listing that decides it, strips the focus markers and validates it exactly as it does `layout0` (`turnBack`),
+  and keeps it in **memory** as `layoutT` (set in `acquire`, `take` and `renew`; never in the lease file; absent from `FILE_KEYS`; `null` after a parse). Then
+  `resize-window`. A layout that cannot be read or does not validate (a `#` in it, say) means nothing is squeezed: the pane stays zoomed at the window's
+  size with scaled text (`zoomed / panel-smaller`) and the watch tries again at its next tick while the page has focus. A crash while squeezed is
+  recovered from `layout0`, as before, at the next start.
+- **The give puts it back.** A give (blur; a terminal that comes; the page's `DELETE` is the release below) does, in this order, R3 `resize-window` back
+  to the window's own size, R4 the `window-size` option back, `select-layout -t @W -- <layoutT>` (tmux unzooms the window), one guard listing, and
+  `resize-pane -Z -t %P` **only if** the pane is still in that window and shows unzoomed (so a `select-layout` that did not unzoom is never toggled off),
+  then one read-back listing: zoom flag 1, the window's own size, the stripped layout equal to `layoutT`, the pane still in the window. Any mismatch
+  releases with `blocked / changed`, once, with no retry loop. `layoutT` is cleared after a give. The give also runs when no terminal shows the window,
+  judged before the `viewed` rule (the state is then `zoomed / panel-smaller`; with a terminal it is `terminal`), and is never rate-limited.
+- **What the spike found (S-F15, tmux 3.8).** The give sequence restored the stripped layout, the zoom, the active pane, every hidden pane's size, the window
+  size and the unset `window-size` option exactly in **870 of 870 cycles** (29 cases × 30; 4 and 6 panes, side by side and stacked, also when the squeeze
+  pushed hidden panes to 1 column or 1 row), and the same four commands sent as one tmux invocation passed 480 of 480. Client kind made no difference: no
+  client, a control-mode client (sized and unsized) and a real tty client; the only client effect is that `set-option -wu window-size` snaps the window to a
+  sized client's size at once. A plain round trip (`resize-window` there and back) without `select-layout` left a different layout in 16 of 29 cases, and
+  the drift does not grow (one distinct layout from the first round trip on). `select-layout` never failed (rc 0, no output) on a window that is not exactly
+  the layout's size: with `window-size` manual it scales the layout to the window, with the option unset and no sized client it resizes the window to the
+  layout's size; the give satisfies the second case because R3 and R4 run first. The smallest panel tmux reaches with 6 panes is 11 columns × 1 row side by
+  side and 1 × 11 stacked (2n − 1 along the split axis, 1 on the other); below that `resize-window` exits 0, prints nothing and leaves the window at the
+  minimum, so the size is read back (`verify`) and a window larger than the panel ends `blocked / changed`. Not measured: the time every pane is visible
+  between `select-layout` and `resize-pane -Z`; tmux 3.2 (the floor); mixed grids; a client of another size at give time.
+- **Alternatives rejected.** *Squeeze only when every other pane is nika's* (`nikaOnly`, the design): the owner wants the window filled whatever runs beside.
+  *Give with `resize-window` and `window-size` only*: S-F15 shows the layout comes back wrong in more than half of the cases. *Send the give as one tmux
+  invocation*: it passed, but each step is then not read back; the separate calls stay (the guard listing sits between `select-layout` and `-Z`).
+  *Keep the layout on disk*: a new file key and a second source for a value that must come from tmux; a crash keeps using `layout0`.
+- **Consequences** (all accepted by the owner except where noted; `docs/security.md` T52 and residual m): (1) A shell or an editor in a hidden pane sees a
+  narrow window while the page has focus and may keep lines wrapped at that width. (2) On blur the terminal briefly shows every pane (between
+  `select-layout` and the zoom). (3) Up to 12 takes a minute per window, and each take and each give sends SIGWINCH to every pane of the window. (4) tmux
+  hooks the user set on `window-layout-changed`, `window-resized` or `pane-focus-in` run on every take and give. (5) A window nika had **grown** and a
+  later renew squeezes has no own-size layout to read (tmux scaled it), so it keeps no `layoutT`: its give is the plain one, and the release's R5 restores
+  `layout0`; the hidden panes then get their layout back at the release, not at the blur. (6) A user who changes the layout, size or zoom while the window is
+  squeezed is a user change or `changed`: the lease is released and R5 is skipped when the user changed the layout. (7) A window tmux cannot shrink to the
+  panel ends `blocked / changed` at once. (8) `F15a` in `scripts/linux-verify.sh` assumes `#{window_layout}` under zoom reports the saved layout and
+  `select-layout` restores it exactly; it passes only where CI says so, and a different tmux makes the read-back release with `changed` instead of leaving a
+  wrong layout.
+- **Rule text.** Constraint 12's Fit sentence changes in two places (approved 2026-11-16, word for word from design-F13-addendum, "F15 changes" item 7): it
+  resizes a window with several panes when the panel is at least as wide and as tall, and, while the session window has focus, also to a smaller panel; the
+  restore's `select-layout` and the zoom again are named. Constraint 3's Fit targets are changed by the final review's text (a file gives them only at the
+  next start, and only while tmux's listing shows the tag equal to the file's nonce); constraint 4 is unchanged.
+- **Not built:** a squeeze that waits for the other panes to be idle, a setting to turn the squeeze off, a layout kept in the lease file, a flash-free give.

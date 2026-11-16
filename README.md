@@ -418,7 +418,9 @@ Desktop app only. None of this is on the browser dashboard.
 - **Prompt suggestions.** Claude's grey suggestion for your next prompt shows in the empty message box; **Tab** or **→** takes it.
 - **Long messages.** Text over 1024 characters or 12 line breaks is not mirrored. Send pastes it into an empty input, and refuses
   when Claude's input already holds other text.
-- **Fit.** The terminal view fills its panel: nika zooms the pane, and sizes its tmux window only when nothing else is squeezed.
+- **Fit.** The terminal view fills its panel: nika zooms the pane and, while the session window has focus, sizes its tmux window to the
+  panel even when other panes share it (the zoom hides them; they get their size and layout back when you leave the session window).
+  Without focus a smaller panel only zooms the pane and scales the text.
   A chip says what it did, and nika gives your tmux window back as it was. The chip is a button: its panel says why the
   fit is on or off and, after a change of your own, **Fit again** fits the window without reopening the session window. An agent that
   starts or ends beside the fitted pane is not a change of your own: nika fits the window again by itself. The focused window wins: while the
@@ -431,16 +433,22 @@ Desktop app only. None of this is on the browser dashboard.
   the chip's panel says so, and Fit again tries full-size text. The terminal view stops above Claude's input box with a thin line; nika asks
   for the rows hidden under that line in the same resize, so Claude's conversation fills the panel down to the line.
 - **Question forms.** When Claude asks a question or for a plan approval, a form above the message box answers it one step at a
-  time (options, your own text under Other, the review, the plan's choices, Decline). When nika cannot read the dialog, or it
+  time (options, your own text under Other, the review, the plan's choices, Decline). It also works when Claude's task list is
+  drawn under the dialog or a permission prompt, and for long questions. When nika cannot read the dialog, or it
   mentions bypass, you answer in the terminal. Why: [ADR 0015](docs/adr/0015-dialogs-from-the-screen.md).
+
+- **Feedback question.** When Claude asks "How is Claude doing this session? (optional)", a panel above the message box rates it
+  with one click (Bad, Fine, Good or Dismiss): nika types that one number and presses no Enter. It never answers the follow-up
+  question about sharing the session transcript with Anthropic; that one stays in the terminal.
 
 - **Send works while Claude works.** Press Send while Claude is busy, or waits for background agents or shells, and nika puts
   the message into Claude's input and presses Enter, as you would. Claude queues it and takes it at its next step; the message
   box says "Queued" until then. When a permission prompt or another dialog is open, nika presses nothing and says so.
 - **Attachments.** Paste images, PDFs or text files into the message box, drop them on it, or click the paperclip (**Add
   attachments**) to pick them in a file chooser. Up to 6 files per message and 8 MB each. nika never attaches a `.env`,
-  `.env.*`, `.envrc`, `.envrc.*`, `*.key`, `*.pem`, `*.p12`, `*.pfx`, `*.jks`, `*.keystore` or SSH private key file (`id_rsa`,
-  `id_ed25519` and the like; their `.pub` files are fine): it refuses it by name before reading it. A chip shows each file; remove
+  `.env.*`, `.envrc`, `.envrc.*`, `*.key`, `*.pem`, `*.p12`, `*.pfx`, `*.jks`, `*.keystore`, `*.ovpn`, `.netrc`, `.git-credentials`,
+  `.pgpass`, `.npmrc`, `credentials` or SSH private key file (`id_rsa`, `id_ed25519` and the like; their `.pub` files are fine): it
+  refuses it by name before reading it. A secret under another name is not recognised, so keep such files out of the way. A chip shows each file; remove
   one before you send. Nothing goes to Claude until Send: then nika pastes each file's path into Claude's input after your
   text and presses Enter, the way you would paste a file path in the terminal. Claude shows an image as `[Image #N]`; a PDF or
   text file it reads with its Read tool, which asks first because the file is outside your project. That prompt shows in the

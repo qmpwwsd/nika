@@ -588,7 +588,7 @@ Container widths: ≤ 860 px (app tier: ≤ 1010 px) hides model and pane column
 | Checkbox / switch | 16 px, `accent-color: --accent`; switch 34×20 | — | ring | 50 % | — |
 | Stepper (max agents) | [−] 64 px input [+], 32 px | — | ring | − at 1, + at 8 disabled | message "Choose a whole number from 1 to 8." |
 
-Validation: on blur for format errors, on submit for everything. Submit with errors → error summary banner at the top of the form ("3 fields need a fix before saving.") and focus moves to the first invalid field. Server 400 names the field; show the same message pattern on that field.
+Validation: on blur for format errors, on submit for everything. Submit with errors → error summary banner at the top of the form ("3 fields need a fix before saving.") and focus moves to the first invalid field **in the order of the page** (0.5, final review; Settings page and drawer): the custom model ids (Models), the Auto-compact percent, the Name prefix, Agents per orchestrator (`#set-max`), then Keep attachments (`#set-keep-days`). Server 400 names the field; show the same message pattern on that field.
 
 Messages (exact copy):
 - model: "Use a model id such as claude-sonnet-5-5, or opus, sonnet, haiku, fable."
@@ -678,6 +678,11 @@ every other allow-listed key. The prompt gates the Shift-Tab and Enter chips had
 
 - Row menu ("⋯"): disclosure button (`aria-expanded`, `aria-controls`) + list of buttons; Esc closes and returns focus; one open at a time; items: Copy resume command, Show report, Open in claude.ai ↗, Focus pane %n in tmux.
 - **(0.4)** `menuEl` items may carry `fk` (`data-fk`), `group: true` (`li.grp`: a rule above the item) and `reason` (the item is `aria-disabled="true"` with the reason as its `title`; it stays focusable, a click shows the reason as an error toast and runs nothing). The app tier adds the orchestrator items of §3.16 between "Focus pane" and "End session…", each group set off by a rule.
+- **Where an open menu goes (0.5; the stylesheet anchors a menu to its button's right edge).** Horizontally a menu stays right-aligned when it fits between the edges of the
+  space it may use; else it grows to the right from its button's left edge; else it is narrowed to that space and its items wrap. The space is the window less 8 px on each
+  side, and, when the button sits in a dialog body, inside that body (a dialog body clips what sticks out of it), or in the content column, inside the column (the menu never
+  runs under the sidebar). Vertically it opens above its button when it does not fit below and fits above (§3.20). A resize of the window closes an open menu, so none stays
+  at a place that no longer fits. `placeMenuX` and `menuSpan` in `public/dom.js`; the menus themselves are in `public/ui.js`.
 - Tabs (session narrow layout): `role="tablist"` / `tab` / `aria-selected`; Left/Right move, Home/End jump (spec; mock uses click).
 - Skeleton: `--surface-2` → `--surface-3` sweep 1.4 s; flat with reduced motion; `aria-busy="true"` on the container, plus "Loading agents…" `sr-only`.
 
@@ -1013,9 +1018,13 @@ move into a drawer that the **Settings** button opens (owner decision 2026-11-13
   `#proj-settings`, an empty host (`display: contents`) inside `.bar-end`, the flex group that holds the host and the Show ended box, so the two wrap together: when the row is
   too narrow the group moves under the title as one unit. The "Rules current/outdated" chip stays next to the project name, so a rules warning shows with the drawer closed.
 - **Drawer.** `<dialog id="dlg-setup" class="sheet">`, the Spawn sheet's look, keys and animation (§3.6): `showModal()`, the scrim, Esc, the × button and a
-  click on the scrim close it. A press that starts inside the drawer and ends on the scrim (dragging a selection out) does not. Header: "Settings" with the project name
+  click on the scrim close it. A press that starts inside the drawer and ends on the scrim (dragging a selection out) does not. Header: "Settings" (the drawer's title is the heading `h2`) with the project name
   as a muted line (it tells this drawer from the app's Settings page); the body scrolls and the header stays; it opens at the top. Focus moves to the heading on open and back to the Settings button on close
   (found again by its `data-fk` if a render replaced the button). A hash change (the "Settings" link in the Project setup card, or a way back) closes it.
+- **Headings (0.5, final review).** In the column the card titles are `h2` and the inner headings of Project setup (Plugins, Models) `h3`, as always. In the drawer the title
+  "Settings" is the `h2`, so the cards' titles Rules, Project setup and New agents are `h3` and Plugins and Models `h4`: the heading list reads Settings > Rules / Project setup /
+  New agents, with no level skipped. They are real heading elements (no `aria-level`); `#su-body .card h3` and `#su-body .card h4` in `public/app.css` give them the look the
+  column's `h2` and `h3` have, and `setupCards(p, g, inDrawer)` picks the element.
 - **One home for the cards.** `setupCards()` stays the only builder. Narrow, the cards live in the drawer body (`#su-body`) and `#proj-setup` is empty and hidden;
   wide, they live in `#proj-setup` and the body is empty; never both, so no id appears twice. A render while the drawer is open rebuilds the cards inside it, keeps it
   open and keeps focus on the control that survives (by `data-fk`). The app polls only while no dialog is open, so the counts in New agents refresh when it closes.
@@ -1023,7 +1032,7 @@ move into a drawer that the **Settings** button opens (owner decision 2026-11-13
 - **Dialogs from the cards.** Preview rules, Choose plugins…, Choose models… and the confirm dialog open on top of the drawer (`openDialog(dlg, { keep })`); Esc closes the top
   one only, and focus returns to the button that opened it inside the drawer. Any other pair of dialogs still closes the first.
 - **Menus.** The New agents value menus work inside the drawer. Esc closes an open menu first and the drawer stays. A menu opens above its button when it does not
-  fit below and does fit above inside the drawer body; otherwise it opens below and the body scrolls to show all of it, so it is never cut off (measured at 900 × 700 and 900 × 480).
+  fit below and does fit above inside the drawer body; otherwise it opens below and the body scrolls to show all of it, so it is never cut off (measured at 900 × 700 and 900 × 480). Sideways the menu keeps inside the drawer body (§3.12).
 - Browser tier: unchanged (the project page, the button and the drawer are app-only).
 - Edge cases: a project that is not registered empties both homes; without `matchMedia` the page counts as wide.
 
@@ -1685,7 +1694,7 @@ Paused and passthrough (§3.9) change nothing: a paused mirror still applies cap
 | Response | Message (exact copy) | Also |
 |---|---|---|
 | 200 | none | focus stays on the segment; `#mode-live` says "builder-1: permission mode is now Plan." (§2.8.7) |
-| any non-200 after presses, the next capture reads a confirmed mode other than the start mode | "Stopped at Accept edits." | the tag already shows the mode reached; `#mode-live` announces it once. Wins over the rows below |
+| any non-200 after presses, the first capture the page **applies** after the failure reads a confirmed mode other than the start mode (0.5: a capture the redraw hold kept back is no look, so the mode named is never one read from a half-drawn screen) | "Stopped at Accept edits." | the tag already shows the mode reached; `#mode-live` announces it once. Wins over the rows below |
 | 409 `not-in-cycle`, the next capture is back at the start mode | "Auto isn't in this session's Shift-Tab cycle." | that target struck through. Strikes clear when the pane's mode changes; a used-up press budget that stopped elsewhere is the row above, never a strike |
 | 409 `not-idle` | "Switch when Claude is waiting for you." | |
 | 409 `mode-unknown` | "nika can't read the mode." | |
@@ -1779,6 +1788,76 @@ Rule: the buttons re-enable after any non-200 except `prompt-changed`, `already-
 - Option labels can contain folder paths: shown in the app only, never logged.
 
 Keyboard and focus: each button is a Tab stop (they are the main action while Claude asks). The panel appearing never moves focus; the live region says "builder-1 asks: Do you want to proceed? 4 choices above the message box." Ctrl+Shift+Tab from the message box reaches the Shell toggle (Shift+Tab in the box goes to Claude, §4.2); Shift+Tab from the toggle reaches the panel's Esc button, then the options. **(built amendment 2026-11-09 (0.3.3))**
+
+#### Feedback panel (0.5, F14)
+
+When Claude shows its feedback survey, the capture's `survey` field (`api-app.md`; the threat: `docs/security.md` T58) puts a panel above the message box, and one click types
+the number into Claude's input: `POST /api/app/pane/:id/survey { n, sig }`. The page presses no key and types nothing; the server types the one digit. The logic that has no
+DOM is `public/survey-panel.js` (`cleanSurvey`, `surveyBody`, `surveyOutcome`, `announcement`, `gateNote`, tested alone); the wiring is `public/session.js`. App tier only.
+
+- **Placement.** `div.ask.svy#survey-panel` (`role="group"`, `aria-labelledby="svy-q"`, `hidden`) sits in `#composer-box` after `#dialog-form` and before the attachment tray. It reuses
+  `.ask`. It never shows together with the permission panel (§9.5), a question form (§9.16) or the attention note: the **page** hides it in those cases even if the server sent a survey.
+- **What the page accepts.** `ready` only with a 16-lowercase-hex `sig`, a known `kind`, 1 to 4 options with an integer `n` from 0 to 3, each used once, labels of 1 to 20 characters (the page
+  strips controls and bidi marks; a longer label is refused, not cut), and for `rating` exactly the numbers 1, 2, 3 and 0. `terminal` only with a reason of `consent`, `bypass`, `input`,
+  `normal` or `unreadable`. Anything else, including an older server with no field, is "no survey": no panel, no gate, the user answers in the terminal as before.
+- **Header.** The kind tag `i-info` + "Feedback" (`.dlg-kind[data-k="survey"]`) and the reason "Claude asks". Question `p.ask-q#svy-q`: "How is Claude doing this session? (optional)".
+- **Buttons.** One native `button.pbtn` per option, in Claude's order: keycap digit (`kbd`) + the label: **1 Bad, 2 Fine, 3 Good**, and **0 Dismiss** as the ghost button (`.pbtn.esc`) on
+  the right. They are `aria-disabled` while a request runs or after an answer (still Tab stops). Under a 560 px composer (container query) they wrap two by two. The hint under them:
+  "Each button presses its number in the pane. Claude takes it at once; no Enter."
+- **Consent has no buttons in 0.5.** The server never sends a `ready` transcript question (its layout was never captured and its keys are letters, `claude-tui.md` §10.13), so the
+  consent form that `survey-panel.js` can draw (Claude's labels, and under them, always visible, the line "A yes shares this session's transcript with Anthropic.") is never reached.
+  The transcript question is `terminal / consent`.
+
+**States.** Every state has its own colour, icon and word.
+
+| State | When | Look |
+|---|---|---|
+| ready | `ready` | `--accent` edge on `--accent-soft`, `i-info` "Feedback", the buttons |
+| sending | a request is in flight | the pressed button has `aria-busy`, a spinner and the word "Sending…"; every button aria-disabled |
+| sent | 200 | `i-check` "Sent 3 (Good) to %12" in `--idle`; buttons stay off until the panel leaves or the `sig` changes |
+| already answered | 409 `already-answered` | `i-check` "Already answered" in `--idle`, no problem line (a second window or a double click answered it) |
+| problem | any other answer | `i-warn` and the fixed line below, `--idle` text for a retriable answer, `--danger` for 404 and tmux errors; the panel edge is `--danger` for any failed press |
+| terminal | `terminal` | `i-term` "Terminal only" in a muted dashed row, edge `--text-muted`, no buttons, and the reason line below |
+
+The reason lines of `terminal` (fixed copy, picked by the reason): `consent` "Claude asks whether Anthropic may look at this session's transcript. That is your call: answer it in the
+terminal."; `bypass` "This screen mentions bypass, so nika leaves the survey to you: answer it in the terminal."; `input` "Claude's input box has text, so a number would land there.
+Answer the survey in the terminal."; `normal` "Claude's input is in vim normal mode, where a number is a vim count. Answer the survey in the terminal."; `unreadable` "Claude shows a
+feedback question nika can't read exactly. Answer it in the terminal."
+
+**Route results** (problem line `role="alert"`, exact copy; the server's own text never shows; only the status and the `error` code are read):
+
+| Response | Line | Buttons after |
+|---|---|---|
+| 200 | none (echo "Sent 3 (Good) to %12") | off until the panel leaves or the `sig` changes |
+| 409 `already-answered` | none; the state reads "Already answered" | off until the `sig` changes |
+| 409 `survey-changed` | "The survey changed; check the session." | off until the `sig` changes |
+| 409 `input-not-empty` | "Claude's input box has text, so a number would land there. Answer the survey in the terminal." | off until the `sig` changes |
+| 409 `text-mode` | "Claude's input is in vim normal mode. Answer the survey in the terminal." | off until the `sig` changes |
+| 409 `not-taken` | "Claude didn't take the answer. Check the terminal: the number may be in Claude's input box." | off until the `sig` changes (the digit may be in the box; a second one would land beside it) |
+| 400 `terminal-only` | "Answer this survey in the terminal." | off until the `sig` changes |
+| 400 `invalid`, any other status or code | "nika couldn't send that answer." | off until the `sig` changes (the key may have gone out) |
+| 409 `no-survey` | "The survey is gone." | on again (the panel leaves with the next capture) |
+| 409 `busy-switching` | "Another action is running on this session." | on again |
+| 409 `not-idle` | "Claude is busy; try again in a moment." | on again |
+| 409 `prompt-open` | "Claude is asking something else first; answer that." | on again |
+| 429 | "Too many keys at once; try again." | on again |
+| 404 | "The session is gone." | on again; the window goes to its pane-gone state (§3.9), which removes the panel |
+| 5xx, network error | "nika couldn't reach tmux." | on again |
+
+**No Esc for 4 seconds after a rating.** Claude shows "Feedback: Fine · Esc to undo" for about 3 s after a 1, 2 or 3, and an Escape there takes the rating back, so the server sends no
+Escape of its own for 4 s (`api-app.md`, the survey route). Every place that can answer 409 `survey-undo` (Stop, End and its dialog, the quick-action commands, the draft clear, the
+question form's Decline) shows this one fixed line, plain text, as a problem line of the same kind as that route's other 409 lines, and retries nothing:
+`Claude shows "Esc to undo" for the rating nika just sent, so nika sends no Esc for 4 seconds. Try again then.` Dismiss (0) starts no hold. Your own Esc in the pane still works.
+
+- **The message box waits while a survey shows.** Send sends nothing (not a line, a paste, a Shell line or the Enter of an empty box) and the text stays. The note under the box is, for a
+  ready rating, "Answer Claude's feedback question above, or Dismiss it."; for a consent question "Answer Claude's feedback question above." (not reached in 0.5); for a `terminal` survey the
+  reason line above.
+- **Keyboard and focus.** Each button is a Tab stop; the panel appearing never moves focus. If the panel is replaced while a button had focus, focus goes to the new question; if it leaves,
+  to the message box. The polite region says once per `sig` (never on focus): "<name>: Claude asks for feedback. 4 choices above the message box." (a terminal survey: "<name>: <reason
+  line>"); after a press "Sent 3 (Good) to %12".
+- **Contrast.** `--text`, `--text-muted`, `--accent`, `--idle` and `--danger` are at least 4.5:1 on `--accent-soft`; the edges `--accent`, `--idle`, `--danger` and `--text-muted` at least 3:1
+  on `--bg`, `--surface` and `--surface-2` (`test/survey-ui.test.js` checks them in light and both dark themes). The terminal row's edge uses `--text-muted`, because `--line-strong` on `--surface-2`
+  is 2.98:1 in light.
 
 ### 9.6 Shell toggle (and the on/off rule)
 
@@ -1944,8 +2023,8 @@ unchanged.
 |---|---|---|---|---|
 | paused | `i-pause` | `--idle` on `--idle-soft` | **Sync paused:** Claude's input holds <reason>. Edit or clear it in the terminal. | the screen's draft is unreadable; nothing is pulled or pushed, and nika never writes over it |
 | long | `i-info` | `--text` on `--surface-3` | **Not mirrored:** Long text goes to Claude when you send it. | unsent text that does not fit Claude's box, or that the server refused as too long |
-| hold | `i-dialog` | `--attn` on `--attn-soft` | **On hold:** A prompt is open or Stop is running. Your text goes into Claude's input when that is over. | the last write was refused with 409 `not-idle` (a permission prompt or dialog is open, or a Stop or End interrupt runs); tried again every 3 s |
-| cursor | `i-window` | `--fit-other` on `--fit-other-soft` | **Cursor:** Claude is working and the cursor in its input is not at the end. Move it to the end in the terminal, or wait: your text goes in when Claude waits. | the last write was refused with 409 `cursor-not-at-end`: Claude is not idle, its cursor is on an earlier row of its box, and only `Escape` could clear that (it would interrupt the turn); tried again every 3 s |
+| hold | `i-dialog` | `--attn` on `--attn-soft` | **On hold:** A prompt is open or Stop is running. Your text goes into Claude's input when that is over. | the last write was refused with 409 `not-idle` (a permission prompt or dialog is open, or a Stop or End interrupt runs); tried again every 3 s. The note survives a later refusal that says nothing about the prompt (409 `busy-switching`, 429): the page keeps it and tries again (0.5, final review) |
+| cursor | `i-window` | `--fit-other` on `--fit-other-soft` | **Cursor:** Claude is working and the cursor in its input is not at the end. Move it to the end in the terminal, or wait: your text goes in when Claude waits. | the last write was refused with 409 `cursor-not-at-end`: Claude is not idle, its cursor is on an earlier row of its box, and only `Escape` could clear that (it would interrupt the turn); tried again every 3 s. Like the hold note it survives a `busy-switching` or 429 answer (0.5, final review) |
 | queued | `i-send` | `--busy` on `--busy-soft` | **Queued:** Claude takes your message at its next step. | both boxes are empty and in sync and Claude's box shows its queued-messages placeholder (`draft.queued`, `api-app.md`): Claude holds a message nika sent while it works. Never together with the suggest note (Claude's queued placeholder is no suggestion) |
 | suggest | `i-kbd` | `--accent` on `--accent-soft` | **Suggestion:** Tab or → accepts what Claude suggests. | the message box and Claude's input box are in sync, both empty, and Claude's box shows a prompt suggestion (below) |
 
@@ -2019,7 +2098,7 @@ fixed copy chosen by the status and code, never the server's text, in the `role=
 
 | Answer | Line |
 |---|---|
-| 409 `draft-changed`, `screen-changed`, `draft-mismatch` | "Claude's input changed while nika was copying your text. nika shows what it holds now. Nothing was sent." |
+| 409 `draft-changed`, `screen-changed`, `draft-mismatch` | "Claude's input changed while nika was copying your text. nika shows what it holds now. Nothing was sent." Since 0.5 (final review), when the user edited the message box after the last capture, the box keeps their edit and the line is "Claude's input changed while nika was copying your text. Nothing was sent. Your text is kept." |
 | 409 `draft-unreadable` | the paused line above, with "Send or clear it in the terminal." |
 | 409 `not-idle` | "A prompt is open in Claude or Stop is running, so nika can't change its input now. Nothing was sent. Your text is kept." |
 | 409 `cursor-not-at-end` | "Claude is working and the cursor in its input is not at the end. Move it to the end in the terminal, or send when Claude waits. Nothing was sent. Your text is kept." |
@@ -2069,8 +2148,8 @@ wiring is `public/session.js`. App tier only. The window can change the user's t
 
 | What the user sees | When |
 |---|---|
-| the pane has the panel's size: the mirror shows it with no scrolling and no scaling | `fitted`: nika sized the tmux window to the panel (a window with several panes is also zoomed on this pane); since F9 also while a terminal shows the window, when this window has focus (key `fitted:terminal`) |
-| the pane is zoomed in its tmux window and keeps its own size; the text is drawn smaller | `zoomed`: the panel is smaller than a window with several panes, and resizing would squeeze them |
+| the pane has the panel's size: the mirror shows it with no scrolling and no scaling | `fitted`: nika sized the tmux window to the panel (a window with several panes is also zoomed on this pane, and with focus it is sized to the panel even when that squeezes the other panes: they are hidden by the zoom and get their size and layout back when this window loses focus, F15); since F9 also while a terminal shows the window, when this window has focus (key `fitted:terminal`) |
+| the pane is zoomed in its tmux window and keeps its own size; the text is drawn smaller | `zoomed`: the panel is smaller than a window with several panes **and this window has no focus** (0.5, F15; with focus nika sizes the window to the panel, `fitted`) |
 | the pane keeps the size the user's terminal gives the tmux window (nika resizes nothing); the text is drawn smaller when the pane is larger than the panel | `terminal` (0.5, F4, F9): a terminal shows the tmux window and this window does not have focus; a window with several panes is also zoomed on this pane |
 | the pane keeps its real size (text scaled when it is larger than the panel) | `blocked` or `other`: nika changed nothing |
 
@@ -2114,7 +2193,7 @@ wraps (`flex-wrap`) when the chip does not fit, so the window never scrolls side
 | `state` | Icon | Text / fill / edge | Words | `title` (hover) |
 |---|---|---|---|---|
 | `fitted` | `i-fit` | `--accent` / `--accent-soft` / `--accent-line` | Fit · fills the panel | nika sized the tmux window to this panel and puts it back when this window closes (F9, key `fitted:terminal`, the answer's reason `terminal`: "nika sized the tmux window to this panel because this window has focus; your terminal shows it too and gets its size back when you click into it") |
-| `zoomed` | `i-zoom` | `--idle` / `--idle-soft` / `--idle-line` | Fit · zoomed, text scaled | Other panes in this tmux window would be squeezed, so nika zoomed the pane and scaled the text |
+| `zoomed` | `i-zoom` | `--idle` / `--idle-soft` / `--idle-line` | Fit · zoomed, text scaled | Other panes share this tmux window. With focus nika sizes the window to this panel; without focus it only zooms the pane and scales the text. (F15; owner decision 2026-11-16) |
 | `blocked` | `i-off` | `--text-muted` / none / dashed `--line-strong` | Fit · off | the reason below; "nika is not fitting this tmux window" for a reason the page does not know |
 | `other` | `i-window` | `--fit-other` / `--fit-other-soft` / `--fit-other-line` | Fit · another window | Another nika window shows a pane of this tmux window |
 | `terminal` (0.5, F4) | `i-term` | `--fit-term` / `--fit-term-soft` / `--fit-term-line` | Fit · your terminal's size | A terminal shows this tmux window and this window does not have focus, so nika leaves the size to the terminal and scales the text to this panel (three titles, below) |
@@ -2171,7 +2250,7 @@ the action are looked up by the chip's key, never by a word of the server.
 | `fitted` | none | none | none |
 | `fitted` with a terminal (key `fitted:terminal`, F9) | "Your terminal shows dots around this tmux window while this window has focus. Click into the terminal and it gets its own size back within a second." | none | none |
 | `fitted` or `fitted:terminal` while the room is on (F10: nika asked for 33 rows or more, F11, because Claude's input box and footer did not fit) | "Claude's input box and footer did not fit this panel's rows, so nika gave the pane more rows and scaled the text. Fit again tries full-size text." (F11, owner decision 2026-11-16, Q3; replaces the row's own hint) | none | **Fit again** (clears the room, measures, and asks `open: true`) |
-| `zoomed` | "To fill the panel without scaled text, make this window larger or hide the transcript (Ctrl+Shift+H)." | none | none |
+| `zoomed` | "Click into this window to fill the panel; the other panes get their size and layout back when you leave it." (F15; before it the hint named a larger window) | none | none |
 | `blocked` / `user-change` | "Fit again turns the fit on once more. After a change of your own nika stays off until you ask." (reworded in F4: Fit again over a window a terminal shows lands on `terminal`, so it no longer promises a size) | none | **Fit again** |
 | `blocked` / `changed` | "Fit again tries once more." | none | **Fit again** |
 | `blocked`, no or unknown reason | none | none | **Fit again** |
@@ -2229,7 +2308,7 @@ with an action shows heading, why, hint, Close and the action; pending shows "Fi
 | this window gains focus (`focus`, F9) | the panel is measured at once (F10), then `PUT` with `focus: true` 150 ms after the focus (F10; F9 had 400 ms), if it still holds; the server answers with the take |
 | this window is hidden (minimized, closed to the tray; `visibilitychange`, F9) | `PUT` with `focus: false` at once |
 | every second (F9) | the page reads `hasFocus()` again (a missed event is caught within a second) and sends a refused or lost focus change again; a refused request without a new focus waits for the beat |
-| the window closes or leaves the page (`pagehide`) | one `DELETE` with `keepalive: true` |
+| the window closes or leaves the page (`pagehide` with `persisted` not `true`) | one `DELETE` with `keepalive: true`. A `pagehide` with `persisted === true` (the page goes into the back/forward cache and `pageshow` brings it back, as after the "Open subagent transcript" link) sends nothing (0.5, final review) |
 | the capture answers 404 (the pane is gone) | one `DELETE`; the beats stop. If the pane comes back, the lease is asked for again with `open: false` |
 | the page returns from the back/forward cache (`pageshow`, `persisted`) | it measures again and sends `PUT { open: true }` |
 | 403 | everything stops for good and the chip is hidden |
@@ -2303,7 +2382,9 @@ What the user sees (a terminal and the session window show the orchestrator's wi
 | Situation | Now |
 |---|---|
 | this window has focus, a terminal shows the window | panel filled; chip "Fit · fills the panel" with the longer title; the terminal shows dots |
-| you click into the terminal | within about 0.2 s (F10; F9 said 0.3 s; at most a second) the terminal has its full size; several panes stay zoomed (no flash of the other panes); the chip reads "Fit · your terminal's size" and the text is scaled |
+| you click into the terminal | within about 0.2 s (F10; F9 said 0.3 s; at most a second) the terminal has its full size; a window with several panes that nika did not squeeze stays zoomed (no flash of the other panes); the chip reads "Fit · your terminal's size" and the text is scaled |
+| you click into the terminal while nika had squeezed the other panes (F15) | the same time; nika gives the size back, puts the window's layout back and zooms this pane again. For a moment every pane of the window is visible, and each pane redraws; the chip reads "Fit · your terminal's size" when a terminal shows the window, else "Fit · zoomed, text scaled". A layout nika could not keep is never squeezed in the first place (the pane stays zoomed, text scaled) |
+| you click back into this window while its window has several panes (F15) | the window is sized to the panel, also when that is smaller than the window; the other panes are hidden by the zoom and shrink with the window |
 | you click back into this window | within about 0.55 s (at most about 0.9 s; F9 said 0.5 s) the panel is filled again, as one finished frame (see "Steady size, room and the redraw hold", below) |
 | you minimize or hide this window | the terminal keeps its size (hidden is sent at once); the lease stays until this window is shown again, goes quiet for 15 s or closes |
 | the terminal leaves and this window has no focus | `terminal` for 30 s more, then filled (F4) |
@@ -2330,7 +2411,7 @@ the half-redrawn screen while Claude repainted. What the user sees now (the numb
 | you click into this window | the panel is measured once, at the focus (§9.13 "Measuring the panel"), and the pane is resized once; after the 150 ms settle and Claude's repaint (about 0.55 s, at most about 0.9 s) the new frame appears in one step with a 120 ms fade, and when the text grows it also zooms in from the old text size (anchored bottom-left, where the input box and footer are). No animation with `prefers-reduced-motion`. The chip's words, the mode chip and the "Live · C × R" label change in the same step as the mirror, and the header, the toolbar and the composer do not move |
 | a line, a chip, a prompt panel or a taller draft makes the terminal box shorter or taller | nothing is asked and the text keeps its size; the mirror stays pinned to the bottom, so the input box and footer stay visible and the top rows are hidden while the box is shorter (the mirror scrolls); the text size changes again only at the next commit point |
 | Claude's input box and footer did not fit the panel (a tall task list) | nika first asks for the panel's size, waits for the redraw (the hold, below) and, when the box is still not on screen, asks once for 33 rows (`ROOM_ROWS`; F11: or more, see "More conversation under the strip", below) with the columns in the panel's proportion and scales the text to the panel: about 8–9 px for a panel of 21–24 rows (text 66–75 %), 100 % wherever the footer fits. That first focus of a window takes about 1.1–1.4 s and two resizes; the room then stays on for the window, so every later focus is one resize straight to the room size. The chip's panel says why ("Fit · fills the panel", its panel line in the table above) and Fit again asks for full-size text |
-| you scroll, send, switch the mode or run a quick action right after the click | the request waits for the redraw hold (at most 1.2 s, 2.4 s with a room step) and then goes; no "dialog or menu" line appears for nika's own redraw |
+| you scroll, send (also the send of attached files), accept Claude's suggestion, switch the mode or run a quick action right after the click | the request waits for the redraw hold (at most 1.2 s, 2.4 s with a room step) and then goes; no "dialog or menu" line appears for nika's own redraw |
 | you press Fit again | the room is cleared, the panel measured, the rows hidden under the strip read again (F11), and the next request is `open: true` with the panel's own columns and the rows that fill it (no room) |
 
 **The redraw hold.** After nika's own resize (the 200 answer's pane size differs from the drawn one) the page keeps drawing the last good frame until a capture at the
@@ -2419,7 +2500,7 @@ more." (warning, 4 s). Uploads go one at a time; a 429 is tried once more after 
 
 Removing: the × on a ready chip deletes the file at once; on an uploading chip it marks the file to be deleted when the upload answers;
 a failed chip just goes. Focus moves to the next chip's remove button, else the previous one, else the message box. Announced "Removed
-<name>." Closing the window deletes the files of ready chips (`pagehide`, `keepalive`).
+<name>." Closing the window deletes the files of ready chips (`pagehide`, `keepalive`); a page that only goes into the back/forward cache keeps its chips and their files (`event.persisted`), and a page that never returns leaves its files to the expiry.
 
 **Why a file failed** (fixed copy picked by status and code; the server's words never show):
 
@@ -2576,7 +2657,7 @@ the threat: `security.md` T37. The logic that has no DOM is `public/dialog-form.
 field on :3335.
 
 The form reads **exactly or not at all**. A dialog nika cannot read (a cut-off or too-wide screen, a wrapped label, an unknown shape, a
-feedback survey) keeps the old banner ("<name> needs you: <reason>. Answer it in the terminal, or turn on Type into pane."), and the gates
+feedback survey, which is answered by its own panel, §9.5, not by this form) keeps the old banner ("<name> needs you: <reason>. Answer it in the terminal, or turn on Type into pane."), and the gates
 still count it as a prompt. The form shows **one step at a time** (the current question, the review, or the plan's choices) and follows
 Claude's own tabs; it never moves between them. After an answer the next question appears with a new `sig`.
 
@@ -2596,6 +2677,12 @@ nodes, so typed text and focus survive the 250 ms captures. The attention note a
 | Buttons (question) | **Send answer** (`.btn.primary`) when the answer ends the dialog (`final`: one tab, single-select), else **Answer**; **Decline** (`.btn.ghost`, `title` "Presses Esc in the pane: Claude stops and waits for you"). Enter in the Other field is the primary button, never a newline (Shift+Enter and an IME's Enter excepted). The primary is aria-disabled until the choice is valid (one pick, or a typed answer; a multi-select needs at least one pick or text) |
 | Review | heading "Review your answers"; when Claude shows it, a warn row (`i-warn`, `--idle`) "You have not answered all questions"; `dl.dlg-review` with the question (`dt`) and the answer (`dd`) as Claude shows them; **Submit answers** (primary) and **Decline** |
 | Plan | the note "Read the plan in the terminal view." (`i-window`; the plan text is never shown or sent to the page); one `button.pbtn` per choice (`kbd` and Claude's label, verbatim) that answers on click, Enter or Space; the text option ("Tell Claude what to change") is a `.pbtn-off` row "<label>: use the terminal"; **Reject (Esc)** (`.pbtn.esc`, the Decline) |
+
+**Under the dialog (0.5, final review; Claude 2.1.325).** Claude draws its task list (`N tasks (…)`, one row per task) and, in a named session, the labelled rule row under a
+dialog and under a permission prompt. nika cuts that block off the screen it parses only when it matches Claude's drawing exactly (`claude-tui.md`, the section on the task list
+under a dialog): any other shape cuts nothing, and the dialog stays the banner above. The form and the prompt buttons are the same as without the block; the prompt's `sig`
+does not change with it. A long question or option description is drawn by Claude with a bar `│ ` in front of every row (and a row as wide as the pane where one line continues
+on the next); nika reads such a question exactly, and a screen where only some rows have the bar is `unreadable`. The task text is never shown or sent to the page.
 
 **States.** Every state has its own colour, icon and word.
 

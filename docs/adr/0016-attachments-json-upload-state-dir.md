@@ -32,7 +32,7 @@ prompts under default settings (no prompt under the user's own allow rules); ans
   first beyond 256 MiB or 500 files (never one younger than 1 h).
 - **Nothing reaches Claude before Send.** Chips live in the page and in the state folder. Send is the draft push (unchanged), then
   `POST /api/app/pane/:id/attach-send { ids, base }`: under the pane lock nika pastes each stored path after the text (one bracketed
-  paste per file, an image path alone, a non-image path with one leading space after text), re-reads the box before every paste and
+  paste per file, an image path alone, every other path with one leading space, see the amendment of 2026-11-16), re-reads the box before every paste and
   reads each result back with whitespace ignored (`[Image #N]` for an image, the path for any other file), and presses `Enter`
   itself, once, after a last fresh check. The send names attachments by id, never by a path.
 - **Fail closed, never clean up.** Any difference stops the sequence with a 409 that says how many pastes went in. nika never clears
@@ -77,3 +77,21 @@ prompts under default settings (no prompt under the user's own allow rules); ans
 - Not built: thumbnails, serving a file back, attachments on the browser tier, a Retry button on a failed chip, long text with
   attachments (text over the sync envelope is refused: "send the text first, then the attachments"), Shell with attachments, SVG,
   HEIC, TIFF and archives, per-session folders.
+
+## Amendment 2026-11-16 (0.5, final review): more refused names, a leading space for every non-image path, empty folders removed
+
+- **More names are refused by name** (owner decision 2026-11-16), in the store, the chooser and the page's copy alike: `*.ovpn`, and the exact base names `.netrc`,
+  `.git-credentials`, `.pgpass`, `.npmrc` and `credentials`, besides `.env`, `.env.*`, `.envrc`, `.envrc.*`, `*.key`, `*.pem`, `*.p12`, `*.pfx`, `*.jks`, `*.keystore` and the
+  SSH private key names. The name is compared after trimming trailing spaces. The chip line reads "nika doesn't attach .env, key, certificate or credential files." A
+  name list is not a scan: a secret under another name is still taken (`docs/security.md` T38).
+- **Every non-image path is pasted with one leading space**, also into an empty box. Without it a text file's path alone would begin with `/`, which Claude reads as a slash
+  command. When the box was empty at the start, `attach-send` also checks after each paste and before the `Enter` that the text does not begin with `/`; else
+  409 `screen-changed`, no `Enter`, and the box is left as it is. Checked live (spike S-F13, Claude 2.1.325): a pasted path keeps its leading space, no slash menu opens,
+  and with `Enter` Claude reads the message as a prompt, not as a command (`docs/contracts/claude-tui.md` §11).
+- **Empty folders go.** The prune removes a repository's empty `<key>` folder through `removeOwnDir` in `src/fwrite.js` (`lstat`, never a link, a real folder owned by
+  the user, `rmdir`, so a folder that holds anything stays).
+- **A page that goes into the back/forward cache keeps its chips.** `pagehide` with `persisted === true` no longer deletes the files of ready chips; a page that never
+  returns leaves them to the expiry. The attachment send waits for the redraw hold like Send does.
+- **Not fixed, recorded:** the check that allows one upload at a time per pane runs after the request body is read, so several bodies of up to 12 MiB can sit in memory at
+  once (the app secret is needed and admission is limited to 30 a minute); and a picked file on a hung network mount keeps the chooser slot busy until the mount
+  answers (`docs/security.md` T38, T55 and residual o).
