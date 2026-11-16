@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.4.0 — 2026-11-13
+## 0.4.0 — 2026-11-16
 
 Orchestration (desktop app):
 
