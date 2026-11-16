@@ -6,6 +6,7 @@
 // word of the server ever reaches the page (the notes and problem lines below are fixed copy).
 // Keep this file ASCII: write every symbol as an escape.
 import { cellWidth } from './mirror-render.js';
+import { SURVEY_UNDO_LINE } from './quick-actions.js';
 
 export const QUIET_MS = 1500; // local quiet before the terminal's text is pulled into the box
 export const PUSH_MS = 250; // after the last local edit, the box is pushed
@@ -240,6 +241,7 @@ function sendMessage({ status, code, reason, kept = false }) {
     if (code === 'clear-stopped') return "Claude's input did not clear in time. Nothing was sent. Your text is kept; send again.";
     if (code === 'input-unreadable' || code === 'mode-unknown') return CANT_READ;
     if (code === 'busy-switching') return BUSY_SWITCHING;
+    if (code === 'survey-undo') return SURVEY_UNDO_LINE; // the clear needs an Escape, which would undo the rating Claude still shows
   }
   if (status === 400) return "This text can't be copied into Claude's input as it is. Your text is kept.";
   if (status === 404) return 'The session is gone.';
@@ -406,12 +408,12 @@ export function createDraftSync(io) {
    * line shows once per run of failures, at the first one that is the `at`-th or later: a mix of kinds (a clear that stopped, then a 500) can
    * never give up without it.
    */
-  function fail(status, wait = status === 0 ? 2000 : 3000, at = 1) {
+  function fail(status, wait = status === 0 ? 2000 : 3000, at = 1, line = null) {
     D.fails += 1;
     D.retryAt = now() + wait;
     if (D.told || D.fails < at) return;
     D.told = true;
-    io.problem(status === 0 ? 'nika did not answer. Your text is kept.' : "nika couldn't copy your text into Claude's input. It is kept here.");
+    io.problem(line ?? (status === 0 ? 'nika did not answer. Your text is kept.' : "nika couldn't copy your text into Claude's input. It is kept here."));
   }
 
   function settle(r, own = false) {
@@ -451,6 +453,9 @@ export function createDraftSync(io) {
       D.retryAt = now() + 3000;
     } else if (code === 'cursor-not-at-end') { // Claude works and its cursor is on an earlier row: only the idle road can write; the answer's draft is already in D.screen
       D.retryAt = now() + 3000;
+    } else if (code === 'survey-undo') { // the clear's Escape would undo the rating. Send's own push gets the line from its return value (sendMessage); the background write says it here, once
+      if (own) D.retryAt = now() + 3000;
+      else fail(r.status, 3000, 1, SURVEY_UNDO_LINE);
     } else if (code === 'clear-stopped') { // nika's own clear stopped half-way: the screen holds a partial text, which is never adopted
       fail(r.status, 1000, 3);
     } else if (code === 'input-unreadable' || code === 'mode-unknown' || ADOPT.has(code)) {

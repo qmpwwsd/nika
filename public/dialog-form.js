@@ -7,7 +7,7 @@
 // and Reject are the explicit ways). The pure rules come first and are tested alone; createDialogForm is the DOM side and does nothing at import.
 // Keep this file ASCII: write every symbol as an escape.
 import { h, icon } from './dom.js';
-import { problemKind } from './quick-actions.js';
+import { problemKind, SURVEY_UNDO_LINE } from './quick-actions.js';
 
 export const READING_MS = 2000; // how long "Reading" shows for a dialog nika cannot read yet, before the banner takes over
 export const TEXT_MAX = 300; // free text nika may type (the route's TEXT_MAX)
@@ -52,6 +52,7 @@ const L409 = {
   'already-answered': ['', true],
   'busy-switching': ['Another action is running on this session.', false],
   'not-idle': ["nika is stopping Claude's turn; try again in a moment.", false],
+  'survey-undo': [SURVEY_UNDO_LINE, false], // Decline is an Escape; the rating's undo row is still up. Nothing is retried; the buttons come back
 };
 const L400 = {
   'terminal-only': ['Answer this in the terminal.', true],

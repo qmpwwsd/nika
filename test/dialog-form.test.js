@@ -272,6 +272,7 @@ describe('dialogOutcome: every route answer is a fixed line (design W1 section 6
     [409, 'already-answered', '', true],
     [409, 'busy-switching', 'Another action is running on this session.', false],
     [409, 'not-idle', "nika is stopping Claude's turn; try again in a moment.", false],
+    [409, 'survey-undo', 'Claude shows "Esc to undo" for the rating nika just sent, so nika sends no Esc for 4 seconds. Try again then.', false],
     [400, 'terminal-only', 'Answer this in the terminal.', true],
     [400, 'invalid', "nika couldn't send this answer. Check it and try again.", false],
     [429, undefined, 'Too many keys at once; try again.', false],
@@ -323,6 +324,22 @@ describe('dialogOutcome: every route answer is a fixed line (design W1 section 6
     assert.equal(o(409, 'something-new').lock, false);
     assert.equal(o(418).message, "nika couldn't send this answer. Check it and try again.");
     assert.doesNotMatch(code(SRC), /\.message\b[^;\n]*\bbody\b|body\??\.message/);
+  });
+
+  test('(+) F14 round 2: Decline refused with 409 survey-undo is a failed, warned, unlocked step with the one shared line; keys pressed before are named', () => {
+    const line = 'Claude shows "Esc to undo" for the rating nika just sent, so nika sends no Esc for 4 seconds. Try again then.';
+    const r = o(409, 'survey-undo');
+    assert.deepEqual([r.ok, r.phase, r.lock, r.kind, r.gone, r.message], [false, 'failed', false, 'warn', false, line]);
+    assert.equal(o(409, 'survey-undo', { sent: 2 }).message, `${line} nika had pressed 2 keys in the pane before it stopped.`);
+  });
+
+  test('(−) F14 round 2: another status or a near-miss code with survey-undo gets the generic line, never the survey one', () => {
+    const generic = "nika couldn't send this answer. Check it and try again.";
+    for (const [status, code] of [[409, 'survey-undone'], [409, 'SURVEY-UNDO'], [409, undefined], [418, 'survey-undo']]) {
+      assert.equal(o(status, code).message, generic, `${status} ${code}`);
+    }
+    assert.equal(o(400, 'survey-undo').message, generic, '400 has its own table');
+    assert.equal(o(500, 'survey-undo').message, "nika couldn't reach tmux.", '5xx stays the tmux line');
   });
 });
 

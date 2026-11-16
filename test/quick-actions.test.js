@@ -5,9 +5,10 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { KEY_NAME } from '../src/ids.js';
+import { SURVEY_UNDO_MS } from '../src/survey.js';
 import {
   quickState, cleanPrompt, isBypassLabel, promptMentionsBypass, answerOutcome, escOutcome, promptOff, promptNote, commandFailure, commandSaid, endOutcome, endNote,
-  planShell, problemKind, sendGate, keysRefusal, stopOutcome, followSession, hasAnswerButtons, attnNote, composerKey, SESSION_ID, PANE_ID,
+  planShell, problemKind, sendGate, keysRefusal, stopOutcome, followSession, hasAnswerButtons, attnNote, composerKey, SESSION_ID, PANE_ID, SURVEY_UNDO_LINE,
 } from '../public/quick-actions.js';
 
 const DOTS = '…';
@@ -691,6 +692,58 @@ describe('stopOutcome: the stop route\'s answers (contract section 3, fixed copy
   test('(−) an error status is never ok, even with a stray success-looking code', () => {
     for (const status of [400, 404, 409, 429, 500, 0]) assert.equal(s(status, 'stopped').ok, false, String(status));
     assert.equal(stopOutcome().ok, false);
+  });
+});
+
+describe('409 survey-undo (F14 round 2): Stop, End and the command route say why nika sent no Escape', () => {
+  // Claude shows "Esc to undo" for 4 s after nika typed a rating; an Escape of nika's would take the rating back, so the server refuses it.
+  const LINE = 'Claude shows "Esc to undo" for the rating nika just sent, so nika sends no Esc for 4 seconds. Try again then.';
+
+  test('(+) the exact line, plain text, one shared constant', () => {
+    assert.equal(SURVEY_UNDO_LINE, LINE);
+    assert.match(LINE, /^[\x20-\x7e]+$/, 'ASCII, no markup');
+  });
+
+  test('(+) the seconds in the line are the server\'s hold (SURVEY_UNDO_MS), so a change of one cannot leave the other behind', () => {
+    assert.ok(Number.isInteger(SURVEY_UNDO_MS / 1000), 'a whole number of seconds');
+    assert.ok(LINE.includes(`for ${SURVEY_UNDO_MS / 1000} seconds.`));
+  });
+
+  test('(+) Stop: 409 survey-undo gives the line, as a problem (not ok, nothing said)', () => {
+    assert.deepEqual(stopOutcome({ status: 409, code: 'survey-undo' }), { ok: false, say: '', message: LINE });
+    assert.equal(stopOutcome({ status: 409, code: 'survey-undo', dialog: true }).message, LINE, 'a dialog on screen does not change it');
+    assert.equal(problemKind(409), 'warn', 'shown as a warning, like the other 409 lines');
+  });
+
+  test('(+) End: 409 survey-undo gives the line, the dialog stays open as a warning, nothing ended', () => {
+    assert.deepEqual(endOutcome({ status: 409, code: 'survey-undo' }), { ended: false, text: LINE, kind: 'warn' });
+  });
+
+  test('(+) the command route (the history search of Compact, Clear, Model, Rewind): 409 survey-undo gives the line', () => {
+    assert.equal(commandFailure({ status: 409, code: 'survey-undo' }), LINE);
+  });
+
+  test('(−) the line belongs to 409 only: another status with that code gets the route\'s own line', () => {
+    for (const status of [200, 400, 403, 429, 404, 500, 0]) {
+      assert.notEqual(stopOutcome({ status, code: 'survey-undo' }).message, LINE, `stop ${status}`);
+      assert.notEqual(endOutcome({ status, code: 'survey-undo' }).text, LINE, `end ${status}`);
+      assert.notEqual(commandFailure({ status, code: 'survey-undo' }), LINE, `command ${status}`);
+    }
+    assert.equal(stopOutcome({ status: 200, code: 'survey-undo' }).ok, true, 'a 200 stays a success');
+  });
+
+  test('(−) an unknown code still gets each route\'s generic line, never the survey one and never the server\'s text', () => {
+    for (const code of ['survey-undone', 'SURVEY-UNDO', 'survey_undo', ' survey-undo', undefined]) {
+      assert.equal(stopOutcome({ status: 409, code, message: LINE }).message, "nika couldn't stop the turn.", String(code));
+      assert.equal(endOutcome({ status: 409, code, message: LINE }).text, "nika couldn't end the session.", String(code));
+      assert.equal(commandFailure({ status: 409, code, message: LINE }), "nika couldn't send that command.", String(code));
+    }
+  });
+
+  test('(+) DRY: the text is defined once in public/ (every module imports SURVEY_UNDO_LINE)', () => {
+    const hits = fs.readdirSync(new URL('../public/', import.meta.url)).filter((f) => f.endsWith('.js'))
+      .filter((f) => fs.readFileSync(new URL(`../public/${f}`, import.meta.url), 'utf8').includes('Esc to undo'));
+    assert.deepEqual(hits, ['quick-actions.js']);
   });
 });
 

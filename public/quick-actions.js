@@ -140,6 +140,13 @@ export function promptNote(name, prompt) {
   return `${name} asks: ${prompt.question} ${n} ${n === 1 ? 'choice' : 'choices'} above the message box.`;
 }
 
+/**
+ * The 409 `survey-undo` line (0.5, F14): for 4 s after nika typed a rating (1 to 3), the server sends no Escape of its own, because Claude
+ * shows "Esc to undo" and an Escape would take the rating back. The one copy: Stop, End, the command route, the draft route and the dialog
+ * form's Decline all show it (the page imports it from here). Nothing is retried automatically.
+ */
+export const SURVEY_UNDO_LINE = 'Claude shows "Esc to undo" for the rating nika just sent, so nika sends no Esc for 4 seconds. Try again then.';
+
 const BUSY = 'Another action is running on this session.';
 const RATE = 'Too many keys at once; try again.';
 const GONE = 'The session is gone.';
@@ -182,6 +189,7 @@ export function commandFailure({ status, code } = {}) {
     if (code === 'not-idle') return WHY.working;
     if (code === 'mode-unknown') return "Claude's screen isn't at the prompt; use the terminal.";
     if (code === 'busy-switching') return BUSY;
+    if (code === 'survey-undo') return SURVEY_UNDO_LINE; // the history search of a command in vim normal mode needs an Escape
   }
   if (status === 429) return RATE;
   if (status === 404) return GONE;
@@ -201,6 +209,7 @@ const STOP_409 = {
   'not-busy': 'Nothing to stop: Claude is waiting.',
   'mode-unknown': "Claude's input stayed in vim insert mode; press Esc in the terminal.",
   stopping: 'Already stopping the turn.', // another window is in the middle of the same stop
+  'survey-undo': SURVEY_UNDO_LINE, // an Escape right after a rating would undo it
 };
 
 /**
@@ -301,6 +310,7 @@ export function endOutcome({ status, code, ended, reason } = {}) {
     if (code === 'input-unreadable') return no("nika can't find Claude's input box, so it didn't type /exit. Close any menu in the terminal (Esc), then try again.", 'warn');
     if (code === 'not-at-prompt') return no("Claude's input didn't take /exit; nothing was submitted.");
     if (code === 'busy-switching') return no(BUSY);
+    if (code === 'survey-undo') return no(SURVEY_UNDO_LINE, 'warn'); // a wait of 4 s, then End works again: the look of the other "try again" refusals
   }
   if (status === 429) return no(RATE);
   if (status === 404) return no(GONE);

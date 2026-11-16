@@ -1608,6 +1608,75 @@ describe('W13: the writes Claude refuses while it works (hold, cursor, clear-sto
   });
 });
 
+describe('F14 round 2: 409 survey-undo (the clear needs an Escape that would undo Claude\'s rating)', () => {
+  const LINE = 'Claude shows "Esc to undo" for the rating nika just sent, so nika sends no Esc for 4 seconds. Try again then.';
+  const GENERIC = "nika couldn't copy your text into Claude's input. It is kept here.";
+  const undo = (extra = {}) => ({ error: 'survey-undo', message: 'Evil <b>server</b> text', draft: text('older text in claude', { sig: sig(7) }), ...extra });
+  const setup = async (status, body) => {
+    const r = rig();
+    r.ds.capture(empty(), 120);
+    r.answer = () => ({ status, body });
+    r.type('abc');
+    await r.advance(PUSH_MS);
+    return r;
+  };
+
+  test('(+) Send\'s push: 409 survey-undo gives the exact line, nothing is sent, and the server\'s text never shows', async () => {
+    const r = rig();
+    r.ds.capture(empty({ sig: sig(4) }), 120);
+    r.answer = () => ({ status: 409, body: undo() });
+    r.ds.beginSend();
+    assert.deepEqual(await r.ds.send('abc'), { ok: false, message: LINE });
+    assert.deepEqual(r.log.problems, [], 'Send returns the line; the sync does not say it a second time');
+  });
+
+  test('(+) the background write: 409 survey-undo says the line once (the same retry as any failed write), never adopts the screen\'s text', async () => {
+    const r = await setup(409, undo());
+    assert.deepEqual(r.log.problems, [LINE]);
+    assert.deepEqual(r.log.sets, [], 'the box keeps its text');
+    assert.equal(r.st.box.value, 'abc');
+    await r.advance(3000);
+    assert.equal(r.log.puts.length, 2, 'the existing retry, no new one');
+    assert.equal(r.log.problems.length, 1, 'said once, not at every retry');
+  });
+
+  test('(+) once the undo row is gone the retry lands, and a later failure of another kind can say its own line', async () => {
+    const r = await setup(409, undo());
+    r.answer = (body) => ({ status: 200, body: { draft: text(body.text, { sig: sig(60) }) } });
+    await r.advance(3000);
+    assert.equal(r.log.puts.length, 2);
+    assert.equal(r.log.problems.length, 1);
+    r.answer = () => ({ status: 500, body: null });
+    r.type('abcd');
+    await r.advance(PUSH_MS);
+    assert.deepEqual(r.log.problems, [LINE, GENERIC], 'a 200 ended the run, so the next failure is told again');
+  });
+
+  test('(−) an unknown 409 code still gets the generic lines, in both places, and the server\'s text never shows', async () => {
+    for (const error of ['survey-undone', 'SURVEY-UNDO', 'something-new']) {
+      const r = await setup(409, undo({ error }));
+      assert.deepEqual(r.log.problems, [GENERIC], error);
+      const s = rig();
+      s.ds.capture(empty({ sig: sig(4) }), 120);
+      s.answer = () => ({ status: 409, body: undo({ error }) });
+      s.ds.beginSend();
+      const out = await s.ds.send('abc');
+      assert.equal(out.ok, false);
+      assert.equal(out.message, "nika couldn't copy your text into Claude's input. Your text is kept.", error);
+    }
+  });
+
+  test('(−) the code needs a 409: a 500 or a 400 that carries it keeps its own handling', async () => {
+    const a = await setup(500, undo());
+    assert.deepEqual(a.log.problems, [GENERIC]);
+    const s = rig();
+    s.ds.capture(empty({ sig: sig(4) }), 120);
+    s.answer = () => ({ status: 400, body: undo() });
+    s.ds.beginSend();
+    assert.equal((await s.ds.send('abc')).message, "This text can't be copied into Claude's input as it is. Your text is kept.");
+  });
+});
+
 describe('W13: the Queued note', () => {
   const q = (over = {}) => empty({ queued: true, ...over });
 
