@@ -997,7 +997,7 @@ describe('shutdown and secrecy', () => {
 // --- the fit (0.5, W7): recovery before ready, release at quit ---------------------------------------------------------------
 
 const NONCE = '0123456789abcdef';
-const FIT_FORMAT = ['#{pane_id}', '#{window_id}', '#{window_panes}', '#{window_zoomed_flag}', '#{pane_active}', '#{window_width}', '#{window_height}', '#{pane_width}', '#{pane_height}', '#{pane_current_command}', '#{@nika-fit}', '#{@nika-role}'].join('\t');
+const FIT_FORMAT = ['#{pane_id}', '#{window_id}', '#{window_panes}', '#{window_zoomed_flag}', '#{pane_active}', '#{window_width}', '#{window_height}', '#{pane_width}', '#{pane_height}', '#{pane_current_command}', '#{@nika-fit}', '#{@nika-role}', '#{window_active_clients}'].join('\t');
 
 /**
  * A tmux with one single-pane window, @1 (pane %6 running claude, as the synthetic machine has it), that answers the fit's argv shapes
@@ -1021,7 +1021,7 @@ function fitTmux(base, { tag = '', w = 100, h = 30 } = {}) {
     const held = st.gate(name);
     if (held) await held;
     switch (name) {
-      case 'list': return { stdout: `%6\t@1\t1\t0\t1\t${st.w}\t${st.h}\t${st.w}\t${st.h}\tclaude\t${st.tag}\t\n`, stderr: '' };
+      case 'list': return { stdout: `%6\t@1\t1\t0\t1\t${st.w}\t${st.h}\t${st.w}\t${st.h}\tclaude\t${st.tag}\t\t0\n`, stderr: '' };
       case 'layout': return { stdout: `{"w":${st.w},"h":${st.h}}\n`, stderr: '' };
       case 'tag': st.tag = a[5]; return { stdout: '', stderr: '' };
       case 'untag': st.tag = ''; return { stdout: '', stderr: '' };

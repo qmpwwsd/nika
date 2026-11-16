@@ -249,6 +249,9 @@ JS
 # ---- e. the session window's fit on this machine's tmux (0.5, W7): zoom, resize, and the exact way back ------------
 # Drives src/fit.js against the private server: a 3-pane window (fitted by a bigger panel, then given back), a single pane
 # (resized smaller, then given back), and the two tmux calls the restore leans on (S10 Q7: tmux 3.2 is the floor).
+# F4 (0.5): and two checks with a terminal. A control-mode client (`tmux -C attach`, stdin held open by a pipe, like iTerm2's tmux integration)
+# counts as a terminal in #{window_active_clients}: (a) it shows the 3-pane window -> nika zooms it and never resizes it (state terminal);
+# (b) it attaches to a window nika resized -> within 2.5 s nika has given the size back, and the restore (R9) logs no difference.
 check_fit() {
   local hold=(node -e 'setInterval(()=>{},1e9)') pa p3 p1 w3 w1
   CUR=fit
@@ -264,11 +267,12 @@ check_fit() {
   w3="$(tm display-message -p -t "$p3" '#{window_id}')"
   w1="$(tm display-message -p -t "$p1" '#{window_id}')"
   mkdir -m 700 "$WORK/fitstate"
-  P3="$p3" W3="$w3" P1="$p1" W1="$w1" SOCK="$SOCK" STATE="$WORK/fitstate" run_js fit <<JS
+  P3="$p3" W3="$w3" P1="$p1" W1="$w1" S3=fit3 S1=fit1 SOCK="$SOCK" STATE="$WORK/fitstate" run_js fit <<JS
+import { spawn } from 'node:child_process';
 import { createFit } from './src/fit.js';
 import { makeExec } from './src/exec.js';
 $JS_REC
-const { P3: p3, W3: w3, P1: p1, W1: w1, SOCK: sock, STATE: state } = process.env;
+const { P3: p3, W3: w3, P1: p1, W1: w1, S3: sess3, S1: sess1, SOCK: sock, STATE: state } = process.env;
 const base = makeExec({ timeout: 5000 });
 const exec = (cmd, args, opts) => base(cmd, ['-L', sock, ...args], opts);
 const tmux = async (...a) => (await exec('tmux', ['-u', ...a])).stdout.trim();
@@ -288,7 +292,8 @@ const sized = async (p) => tmux('display-message', '-p', '-t', p, '-F', '#{pane_
 
 const ready = await until(async () => (await tmux('list-panes', '-a', '-F', '#{pane_id} #{pane_current_command}')).split('\n').filter((l) => / node\$/.test(l)).length === 2);
 rec(ready, 'e. fit: panes run node (the pane test accepts it as claude)', ready ? '' : 'timeout');
-const fit = createFit({ exec, tmuxBin: 'tmux', stateDir: state });
+const logs = []; // the fit's own log lines (a stderr line as before); F4 looks for a restore that "differs"
+const fit = createFit({ exec, tmuxBin: 'tmux', stateDir: state, log: (m) => { logs.push(m); console.error(m); } });
 
 // L1: three panes, panel 120x40 bigger than the window -> fitted, pane 120x40; give back -> the window is as it was
 const before3 = await snap(w3);
@@ -315,6 +320,55 @@ try { layout = await tmux('display-message', '-p', '-t', w3, '-F', '#{window_lay
 rec(accepted && strip(await tmux('display-message', '-p', '-t', w3, '-F', '#{window_layout}')) === strip(layout), 'e. fit L4: select-layout -t @W -- <window_layout> is accepted and changes nothing', accepted ? '' : layout);
 const unset = await exec('tmux', ['-u', 'show-options', '-w', '-t', w3, 'window-size']).then((r) => r.stdout, (e) => 'error: ' + String(e.stderr || e.message).trim());
 rec(unset === '', 'e. fit L4: show-options -w window-size prints nothing while the option is unset', show(unset));
+
+// F4: a control-mode client counts as a terminal. Its stdin is a pipe that stays open until stop(), as iTerm2's tmux integration holds it.
+const control = (session) => {
+  const child = spawn('tmux', ['-u', '-L', sock, '-C', 'attach-session', '-t', session], { stdio: ['pipe', 'ignore', 'ignore'] });
+  child.on('error', () => {});
+  return { stop: () => { try { child.stdin.end(); } catch { /* already closed */ } child.kill(); } };
+};
+const clientsOf = (w) => tmux('display-message', '-p', '-t', w, '#{window_active_clients}');
+const differs = () => logs.filter((m) => /differs/.test(m));
+
+// F4 (a): a control-mode client shows the 3-pane window -> terminal: the pane is zoomed and tagged, the window is never resized (window-size not manual)
+let ctl3 = null;
+try {
+  ctl3 = control(sess3);
+  const attached3 = await until(async () => (await clientsOf(w3)) === '1');
+  rec(attached3, 'e. fit F4a: a control-mode client attaches and #{window_active_clients} reads 1 for its window', 'count ' + show(await clientsOf(w3)));
+  const putT = await fit.hold(p3, { cols: 120, rows: 40, open: true });
+  const duringT = await snap(w3);
+  rec(putT.status === 200 && putT.body.fit.state === 'terminal' && putT.body.fit.reason === null && duringT.window.includes('zoomed=1') && duringT.option === '',
+    'e. fit F4a: a terminal shows the 3-pane window -> terminal, window zoomed, window-size not manual (never resized)', show(putT.body) + ' ' + duringT.window + ' option=' + show(duringT.option));
+  const delT = await fit.release(p3);
+  const afterT = await snap(w3);
+  rec(delT.body.released === true && !afterT.window.includes('zoomed=1') && afterT.window.includes('tag=[]') && afterT.option === '' && differs().length === 0,
+    'e. fit F4a: release gives back the zoom, the tag and the option, and logs no difference', show(delT.body) + ' ' + afterT.window + ' ' + show(differs()));
+} finally {
+  ctl3?.stop();
+}
+
+// F4 (b): no terminal -> fitted (the window is resized to the panel); then a control-mode client attaches -> within 2.5 s the size is given back and hold says terminal
+let ctl1 = null;
+try {
+  const put1b = await fit.hold(p1, { cols: 60, rows: 15, open: true });
+  rec(put1b.status === 200 && put1b.body.fit.state === 'fitted' && (await sized(p1)) === '60x15', 'e. fit F4b: no terminal -> fitted, pane 60x15', show(put1b.body) + ' ' + (await sized(p1)));
+  const t0 = Date.now();
+  ctl1 = control(sess1);
+  let leftAt = null;
+  let last = null;
+  const done = await until(async () => {
+    if (leftAt === null && (await sized(p1)) !== '60x15') leftAt = Date.now() - t0;
+    last = await fit.hold(p1, { cols: 60, rows: 15, open: false });
+    return leftAt !== null && last.body?.fit?.state === 'terminal';
+  }, 2500);
+  rec(leftAt !== null && leftAt <= 2600, 'e. fit F4b: a control-mode client attaches -> within 2.5 s the window is no longer at the panel size', 'after ' + leftAt + ' ms, pane ' + (await sized(p1)));
+  rec(done, 'e. fit F4b: and hold answers terminal within the same 2.5 s', show(last?.body) + ' count ' + show(await clientsOf(w1)));
+  const del1b = await fit.release(p1);
+  rec(del1b.body.released === true && differs().length === 0, 'e. fit F4b: the restore (R9) logs no difference', show(del1b.body) + ' ' + show(differs()));
+} finally {
+  ctl1?.stop();
+}
 
 rec((await fit.releaseAll()) === 0 && fit.size() === 0, 'e. fit: nothing left held after the releases', 'size ' + fit.size());
 JS
