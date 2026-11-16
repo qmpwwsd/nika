@@ -1440,7 +1440,7 @@ function fitCaptured() {
 }
 
 /**
- * The fit chip, a button (F1): hidden until the server has answered, then one of four states, each with its own colour (data-k), icon and
+ * The fit chip, a button (F1): hidden until the server has answered, then one of five states, each with its own colour (data-k), icon and
  * words; the reason is the title and the announcement. The button is named by the label alone (the words and the chevron are decoration).
  * Called on a change of state, so it is announced once; an open panel is drawn again in place. With no view the wrapper hides, the panel
  * closes and focus, if it was in there, goes to the transcript button.
@@ -1530,7 +1530,7 @@ function fitAway(e) {
 
 /**
  * The planner's word on the user's Fit again (fit-ui.js reopen): { pending: true } when it starts, else { pending: false, status, view, changed }
- * when its request was answered. Fitted and zoomed close the panel; another state or the same one redraws it (the same one is announced here,
+ * when its request was answered. Fitted, zoomed and terminal close the panel; another state or the same one redraws it (the same one is announced here,
  * a new one by renderFit); a refusal shows the note; a 403 has already hidden the chip.
  */
 function fitAgainEvent(e) {
@@ -1542,7 +1542,7 @@ function fitAgainEvent(e) {
   FIT.ui = { pending: false, note: false };
   if (e.status === 403) return;
   if (e.status === 200 && e.view) {
-    if (e.view.state === 'fitted' || e.view.state === 'zoomed') closeFitPop(true);
+    if (['fitted', 'zoomed', 'terminal'].includes(e.view.state)) closeFitPop(true);
     else {
       if (FIT.pop) drawFitPop();
       if (!e.changed) announce(stillOffSay(e.view));

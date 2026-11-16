@@ -186,6 +186,87 @@ describe('chipView: the chip from the PUT body (design 8.4, owner answer Q5, orc
   });
 });
 
+// ---- F4 (design F4 section 3.5, owner answers of 2026-11-16: Q1 a state of its own, Q2 the 30 s in the copy) ------------------------------
+describe('F4: chipView, the state `terminal` (a terminal shows the tmux window, so nika leaves its size alone)', () => {
+  const TEXT = `Fit ${DOT} your terminal's size`;
+  const LABEL = "Fit: your terminal's size";
+  const TITLE_PLAIN = 'A terminal shows this tmux window, so nika leaves its size to the terminal and scales the text to this panel';
+  const TITLE_ZOOM = 'A terminal shows this tmux window, so nika only zoomed this pane, leaves the size to the terminal and scales the text to this panel';
+  // the shared contract of design F4 section 8: state "terminal", reason null, panes and userZoom as today
+  const term = (panes, userZoom = false, reason = null) => ({ fit: { state: 'terminal', reason, pane: { cols: 200, rows: 50 }, panes, userZoom } });
+
+  test('(+) one pane: key "terminal:", icon "term", the words, the label, the title and the announcement', () => {
+    assert.deepEqual(chipView(term(1)), {
+      key: 'terminal:', state: 'terminal', icon: 'term', text: TEXT, label: LABEL, title: TITLE_PLAIN, say: `${LABEL}. ${TITLE_PLAIN}`,
+    });
+  });
+
+  test('(+) several panes that nika zoomed (userZoom false): key "terminal:zoom" and the title that says "only zoomed this pane"; the words, icon and label stay', () => {
+    const v = chipView(term(3, false));
+    assert.deepEqual(v, {
+      key: 'terminal:zoom', state: 'terminal', icon: 'term', text: TEXT, label: LABEL, title: TITLE_ZOOM, say: `${LABEL}. ${TITLE_ZOOM}`,
+    });
+    assert.equal(chipView(term(2, false)).key, 'terminal:zoom', 'two panes are several');
+  });
+
+  test('(−) nika did not zoom it, or the pane count is not a count above one: key "terminal:" and the plain title', () => {
+    const hostile = '<img src=x onerror=alert(1)>';
+    for (const [panes, userZoom] of [[3, true], ['3', false], [undefined, false], [null, false], [0, false], [1, false], [-3, false], [1.5, false], [2.5, false], [NaN, false], [hostile, false], [[3], false], [{}, false]]) {
+      const v = chipView(term(panes, userZoom));
+      assert.equal(v.key, 'terminal:', `${JSON.stringify(panes)} ${userZoom}`);
+      assert.equal(v.title, TITLE_PLAIN, `${JSON.stringify(panes)} ${userZoom}`);
+    }
+    const noPanes = { fit: { state: 'terminal', reason: null, userZoom: false } };
+    assert.equal(chipView(noPanes).key, 'terminal:', 'panes missing altogether');
+  });
+
+  test('(−) a reason on `terminal` is ignored: the server sends null, and nothing it puts there changes the key, the title or the words', () => {
+    const plain = chipView(term(1));
+    const zoom = chipView(term(3));
+    for (const reason of ['user-change', 'panel-smaller', 'changed', 'user-zoom', 'terminal-zoom', 'terminal', '<img src=x onerror=alert(1)>', '__proto__', 42, {}]) {
+      assert.deepEqual(chipView(term(1, false, reason)), plain, String(reason));
+      assert.deepEqual(chipView(term(3, false, reason)), zoom, String(reason));
+    }
+  });
+
+  test('(−) the zoom sentence is not a reason: a server cannot select it through `blocked`, and no other state takes it', () => {
+    for (const reason of ['terminal-zoom', 'terminal']) {
+      const v = chipView({ fit: { state: 'blocked', reason, panes: 3, userZoom: false } });
+      assert.equal(v.key, 'blocked:', reason);
+      assert.equal(v.title, 'nika is not fitting this tmux window', reason);
+    }
+    for (const state of ['fitted', 'zoomed', 'other']) {
+      const v = chipView({ fit: { state, reason: null, panes: 3, userZoom: false } });
+      assert.doesNotMatch(JSON.stringify(v), /terminal/i, state);
+    }
+  });
+
+  test('(+) five states now: each has its own key, state word, icon and text (never colour alone)', () => {
+    const views = [
+      chipView({ fit: { state: 'fitted', reason: null } }), chipView({ fit: { state: 'zoomed', reason: 'panel-smaller' } }), chipView({ fit: { state: 'blocked', reason: 'user-zoom' } }),
+      chipView({ fit: { state: 'other', reason: null } }), chipView(term(1)),
+    ];
+    for (const k of ['state', 'icon', 'text', 'key', 'label', 'title']) assert.equal(new Set(views.map((x) => x[k])).size, 5, `five states, five different ${k}`);
+    assert.equal(views.at(-1).icon, 'term');
+  });
+
+  test('(−) the `terminal:zoom` key is a different key from `terminal:` (the chip is redrawn and announced when one becomes the other)', () => {
+    assert.notEqual(chipView(term(1)).key, chipView(term(3)).key);
+    assert.equal(chipView(term(3, false)).key, chipView(term(7, false)).key, 'the count itself does not matter');
+  });
+
+  test('(−) a state name that only looks like `terminal` is still not a fit answer', () => {
+    for (const state of ['Terminal', 'TERMINAL', 'terminal ', ' terminal', 'terminal-zoom', 'terminals', 'term']) assert.equal(chipView({ fit: { state, reason: null, panes: 1, userZoom: false } }), null, state);
+  });
+
+  test('(+) every string of both terminal views is plain ASCII (the middle dot and the apostrophe are written so in the source)', () => {
+    for (const v of [chipView(term(1)), chipView(term(3))]) {
+      assert.equal(v.text.includes(DOT), true);
+      for (const s of [v.title, v.say, v.icon, v.key, v.label]) assert.equal([...s].every((ch) => ch.codePointAt(0) < 128), true, s);
+    }
+  });
+});
+
 /** A manual clock with the after / cancel pair the planner takes: advance(ms) runs every timer due, in order, including the ones they arm. */
 function clock() {
   let now = 0;
@@ -723,7 +804,8 @@ describe('fitPanelView: the panel behind the chip (F1, design F12 2.3)', () => {
     // [state, reason, key, hint, code, action]
     ['fitted', null, 'fitted:', null, null, null],
     ['zoomed', 'panel-smaller', 'zoomed:', 'To fill the panel without scaled text, make this window larger or hide the transcript (Ctrl+Shift+H).', null, null],
-    ['blocked', 'user-change', 'blocked:user-change', 'Fit again sizes the window to this panel once more. After a change of your own nika stays off until you ask.', null, 'Fit again'],
+    // F4 (design F4 3.6, requirement change, not a weakened test): Fit again over a window a terminal shows lands in `terminal`, not "sized to this panel", so the old sentence would be false
+    ['blocked', 'user-change', 'blocked:user-change', 'Fit again turns the fit on once more. After a change of your own nika stays off until you ask.', null, 'Fit again'],
     ['blocked', 'changed', 'blocked:changed', 'Fit again tries once more.', null, 'Fit again'],
     ['blocked', null, 'blocked:', null, null, 'Fit again'],
     ['blocked', 'user-zoom', 'blocked:user-zoom', 'Unzoom it in tmux (prefix, then z) and nika fits the window by itself.', null, null],
@@ -814,6 +896,100 @@ describe('fitPanelView: the panel behind the chip (F1, design F12 2.3)', () => {
     const view = chipView(body('blocked', 'changed'));
     assert.equal(stillOffSay(view), 'Fit is still off. The tmux window changed while nika was fitting it, so nika put it back');
     assert.equal(stillOffSay(chipView(body('blocked', 'user-change'))), 'Fit is still off. You changed this tmux window, so nika put it back');
+  });
+});
+
+describe('F4: fitPanelView and the planner for the state `terminal` (design F4 3.6)', () => {
+  const body = (panes, userZoom = false) => ({ fit: { state: 'terminal', reason: null, pane: { cols: 200, rows: 50 }, panes, userZoom } });
+  const IDLE = { pending: false, note: false };
+  const NOTE = 'nika could not fit the window just now. It tries again within 5 seconds.';
+  const HINT_PLAIN = 'When no terminal has shown this tmux window for 30 seconds, nika sizes it to this panel by itself. Switch your terminal to another window or detach it to get there.';
+  const HINT_ZOOM = 'Your terminal shows this pane zoomed too, until this session window closes. When no terminal has shown the tmux window for 30 seconds, nika sizes it to this panel by itself.';
+  const ROWS = [['terminal:', body(1), HINT_PLAIN], ['terminal:zoom', body(3), HINT_ZOOM]];
+
+  for (const [key, b, hint] of ROWS) {
+    test(`(+) ${key}: heading and why are the chip's label and title; the exact hint; no command; no action (open: true cannot override the terminal)`, () => {
+      const view = chipView(b);
+      assert.equal(view.key, key);
+      const p = fitPanelView(view, IDLE);
+      assert.equal(p.heading, view.label);
+      assert.equal(p.why, view.title);
+      assert.equal(p.hint, hint);
+      assert.equal(p.code, null);
+      assert.equal(p.action, null);
+      assert.equal(p.note, null);
+    });
+
+    test(`(−) ${key}: a pending request or a note never gives it a button; the note shows its sentence`, () => {
+      const view = chipView(b);
+      assert.equal(fitPanelView(view, { pending: true, note: false }).action, null);
+      assert.equal(fitPanelView(view, { pending: true, note: true }).action, null);
+      assert.equal(fitPanelView(view, { pending: false, note: true }).note, NOTE);
+      assert.equal(fitPanelView(view, undefined).note, null);
+    });
+
+    test(`(+) ${key}: every string of the panel is plain ASCII`, () => {
+      const p = fitPanelView(chipView(b), { pending: true, note: true });
+      for (const s of [p.heading, p.why, p.hint, p.note]) assert.equal([...s].every((ch) => ch.codePointAt(0) < 128), true, s);
+    });
+  }
+
+  test('(+) both hints say the 30 seconds the owner agreed to (Q2) and do not say how the terminal is told apart', () => {
+    for (const [, , hint] of ROWS) {
+      assert.match(hint, /30 seconds/);
+      assert.doesNotMatch(hint, /window_active_clients|tmux set-option|control mode/);
+    }
+  });
+
+  test('(−) the table is looked up by the key: a key it does not know (a made-up terminal variant) has no hint, no code and no action', () => {
+    const view = chipView(body(1));
+    for (const key of ['terminal', 'terminal:x', 'terminal:zoom:', 'Terminal:', 'terminal: ', 'terminal-zoom']) {
+      const p = fitPanelView({ ...view, key }, IDLE);
+      assert.deepEqual([p.hint, p.code, p.action], [null, null, null], key);
+    }
+  });
+
+  test('(−) nothing the server said reaches the panel of a terminal answer', () => {
+    const hostile = '<img src=x onerror=alert(1)>';
+    const p = fitPanelView(chipView({ fit: { state: 'terminal', reason: hostile, message: hostile, pane: { cols: hostile, rows: 1 }, panes: 3, userZoom: false }, message: hostile }), IDLE);
+    assert.doesNotMatch(JSON.stringify(p), /img|onerror/);
+    assert.equal(p.hint, HINT_ZOOM);
+  });
+
+  test('(−) F4 reworded the user-change hint: no panel still says Fit again "sizes the window to this panel", because over a window a terminal shows it lands in `terminal`', () => {
+    const states = [['fitted', null], ['zoomed', 'panel-smaller'], ['other', null], ...['user-zoom', 'size-option', 'foreign-tag', 'changed', 'user-change', null].map((r) => ['blocked', r])];
+    for (const [state, reason] of states) {
+      const p = fitPanelView(chipView({ fit: { state, reason, panes: 3, userZoom: false } }), IDLE);
+      assert.doesNotMatch(p.hint ?? '', /sizes the window to this panel once more/, `${state} ${reason}`);
+    }
+    for (const b of [body(1), body(3)]) assert.doesNotMatch(fitPanelView(chipView(b), IDLE).hint, /Fit again/);
+  });
+
+  // the planner treats every fit answer alike; the new state needs nothing there, and these tests keep it so
+  test('(+) a `terminal` answer tells the chip once, a change between `terminal:` and `terminal:zoom` tells it again, and the heartbeat stays open: false', async () => {
+    const r = rig();
+    r.planner.size(120, 39);
+    r.planner.start();
+    await r.answer({ status: 200, body: body(1) });
+    assert.deepEqual(r.log.chips.map((v) => v.key), ['terminal:']);
+    await r.clk.advance(5000);
+    await r.answer({ status: 200, body: body(1) });
+    assert.equal(r.log.chips.length, 1, 'the same key again says nothing');
+    await r.clk.advance(5000);
+    await r.answer({ status: 200, body: body(3) });
+    assert.deepEqual(r.log.chips.map((v) => v.key), ['terminal:', 'terminal:zoom']);
+    assert.deepEqual(r.log.sent.map((b) => b.open), [true, false, false]);
+  });
+
+  test('(+) a Fit again answered `terminal` reaches fitAgain as a 200 with the terminal view (the page closes the panel on it)', async () => {
+    const r = rig();
+    r.planner.size(120, 39);
+    r.planner.start();
+    await r.answer(OK('blocked', 'user-change'));
+    assert.equal(r.planner.reopen(), true);
+    await r.answer({ status: 200, body: body(1) });
+    const done = r.log.again.at(-1);
+    assert.deepEqual([done.pending, done.status, done.view.state, done.view.key, done.changed], [false, 200, 'terminal', 'terminal:', true]);
   });
 });
 

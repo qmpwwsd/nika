@@ -4009,8 +4009,8 @@ describe('W7-T3: the fit chip, the probe and the text scale (markup and styleshe
   });
 });
 
-describe('W7-T3 fix round 1: the "other" chip has its own hue (tokens.css --fit-other*)', () => {
-  const css = strip(CSS);
+/** The colour helpers the fit chip's hue tests share (W7 fix round 1, F4): the tokens of each theme, WCAG 2.x contrast and OKLab distance. */
+function colourKit() {
   const blockAt = (opener) => {
     const at = TOKENS.indexOf(opener);
     assert.ok(at >= 0, `${opener} exists`);
@@ -4024,8 +4024,6 @@ describe('W7-T3 fix round 1: the "other" chip has its own hue (tokens.css --fit-
     darkPinned: blockAt(':root[data-theme="dark"] {'),
   };
   const THEME = Object.fromEntries(Object.entries(BLOCKS).map(([k, b]) => [k, k === 'light' ? vars(b) : { ...vars(BLOCKS.light), ...vars(b) }]));
-  const NAMES = ['--fit-other', '--fit-other-soft', '--fit-other-line'];
-
   // WCAG 2.x contrast, and OKLab distance (Ottosson) for "a different colour", not only a different hex
   const lin = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255).map((v) => (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4));
   const lum = (hex) => { const c = lin(hex); return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]; };
@@ -4039,6 +4037,13 @@ describe('W7-T3 fix round 1: the "other" chip has its own hue (tokens.css --fit-
   };
   const dE = (a, b) => { const [p, q] = [oklab(a), oklab(b)]; return Math.hypot(p[0] - q[0], p[1] - q[1], p[2] - q[2]); };
   const MIN_DE = 0.05; // the palette's own closest pair of colours that are meant to differ is 0.053 (dark: --m-manual and --m-default)
+  return { THEME, ratio, dE, MIN_DE };
+}
+
+describe('W7-T3 fix round 1: the "other" chip has its own hue (tokens.css --fit-other*)', () => {
+  const css = strip(CSS);
+  const { THEME, ratio, dE, MIN_DE } = colourKit();
+  const NAMES = ['--fit-other', '--fit-other-soft', '--fit-other-line'];
 
   test('(+) the three tokens are plain 6-digit hex in the light block and in both dark blocks, and the dark blocks agree', () => {
     for (const [name, v] of Object.entries(THEME)) for (const n of NAMES) assert.match(v[n] ?? '', /^#[0-9a-f]{6}$/i, `${n} in ${name}`);
@@ -4083,6 +4088,88 @@ describe('W7-T3 fix round 1: the "other" chip has its own hue (tokens.css --fit-
     assert.equal(users.length, 5);
     const rules = read('session.css').split('\n').filter((l) => /var\(--fit-other/.test(l)).map((l) => l.slice(0, l.indexOf(' {')));
     assert.deepEqual(rules, ['.fit[data-k="other"]', '.dnote[data-k="cursor"]']);
+    const tokens = TOKENS.replace(/\/\*[\s\S]*?\*\//g, '');
+    assert.doesNotMatch(tokens, /color-mix\(|:has\(/);
+    assert.equal([...TOKENS].every((ch) => ch.codePointAt(0) < 128), true);
+  });
+});
+
+// ---- 0.5, F4-T2: the state `terminal` (design F4 3.5 to 3.7; owner answers of 2026-11-16: its own plum colour tokens and a terminal icon) ----
+describe('F4-T2: the terminal chip has its own plum hue (tokens.css --fit-term*) and its own icon (session.html i-term)', () => {
+  const css = strip(CSS);
+  const { THEME, ratio, dE, MIN_DE } = colourKit();
+  const NAMES = ['--fit-term', '--fit-term-soft', '--fit-term-line'];
+  const rule = (k) => new RegExp(`(?:^|[\\s}])\\.fit\\[data-k="${k}"\\]\\s*\\{([^}]*)\\}`).exec(css)?.[1] ?? '';
+  const symbol = (n) => new RegExp(`<symbol id="i-${n}" viewBox="0 0 16 16">([\\s\\S]*?)</symbol>`).exec(HTML)?.[1] ?? null;
+
+  test('(+) the sprite draws i-term in the 16 x 16 stroke style (the .ic class draws the stroke), and it differs from every other chip icon and from the transcript frame', () => {
+    const t = symbol('term');
+    assert.ok(t, 'i-term is in the sprite');
+    assert.match(t, /<(path|circle|rect)\b/);
+    assert.match(t, /<rect\b/, 'a frame');
+    assert.match(t, /<path\b/, 'with a prompt in it');
+    assert.doesNotMatch(t, /\b(fill|stroke|style)=/);
+    const others = ['fit', 'zoom', 'off', 'window', 'hist-off', 'hist-on'].map(symbol);
+    assert.ok(others.every(Boolean));
+    assert.equal(new Set([t, ...others]).size, 7, 'a different drawing from the other six');
+  });
+
+  test('(+) the icon chipView names for `terminal` is in the sprite', () => {
+    const v = chipViewReal({ fit: { state: 'terminal', reason: null, panes: 1, userZoom: false } });
+    assert.equal(v.icon, 'term');
+    assert.match(HTML, new RegExp(`<symbol id="i-${v.icon}" viewBox="0 0 16 16">`));
+  });
+
+  test('(+) the three tokens are plain 6-digit hex in the light block and in both dark blocks, the dark blocks agree, and each is tuned per theme', () => {
+    for (const [name, v] of Object.entries(THEME)) for (const n of NAMES) assert.match(v[n] ?? '', /^#[0-9a-f]{6}$/i, `${n} in ${name}`);
+    for (const n of NAMES) assert.equal(THEME.dark[n], THEME.darkPinned[n], n);
+    for (const n of NAMES) assert.notEqual(THEME.light[n], THEME.dark[n], `${n} is tuned per theme`);
+  });
+
+  for (const name of Object.keys(THEME)) {
+    test(`(+) contrast (${name}): the chip text is 4.5:1 on its soft fill and on the surfaces it can sit on (the --fit-other grounds); the edge is 3:1`, () => {
+      const v = THEME[name];
+      for (const ground of [v['--fit-term-soft'], v['--surface'], v['--bg'], v['--surface-2'], v['--surface-3'], v['--attn-row']]) {
+        assert.ok(ratio(v['--fit-term'], ground) >= 4.5, `text on ${ground}: ${ratio(v['--fit-term'], ground).toFixed(2)}`);
+      }
+      for (const ground of [v['--bg'], v['--surface'], v['--surface-2']]) {
+        assert.ok(ratio(v['--fit-term-line'], ground) >= 3, `edge on ${ground}: ${ratio(v['--fit-term-line'], ground).toFixed(2)}`);
+      }
+    });
+
+    test(`(+) distinct (${name}): the colour is at least ${MIN_DE} OKLab away from accent, busy, idle, attention, danger, ended, the muted grey, every --m-* mode colour and --fit-other`, () => {
+      const v = THEME[name];
+      const peers = ['--accent', '--busy', '--idle', '--attn', '--danger', '--ended', '--text-muted', '--fit-other', ...Object.keys(v).filter((k) => /^--m-[a-z]+$/.test(k))];
+      assert.ok(peers.length >= 8 + 8, `the mode colours were found: ${peers.length}`);
+      for (const p of peers) assert.ok(dE(v['--fit-term'], v[p]) >= MIN_DE, `${p} ${v[p]}: ${dE(v['--fit-term'], v[p]).toFixed(3)}`);
+    });
+  }
+
+  test('(+) the terminal state reads the three tokens for text, fill and edge, and the five states have five different text colours', () => {
+    const term = rule('terminal');
+    assert.match(term, /(^|[\s;])color:\s*var\(--fit-term\)/);
+    assert.match(term, /background:\s*var\(--fit-term-soft\)/);
+    assert.match(term, /border-color:\s*var\(--fit-term-line\)/);
+    const colours = ['fitted', 'zoomed', 'blocked', 'other', 'terminal'].map((k) => /(?:^|[\s;])color:\s*(var\(--[a-z-]+\))/.exec(rule(k))?.[1]);
+    assert.ok(colours.every(Boolean), `${colours}`);
+    assert.equal(new Set(colours).size, 5, `five states, five colours: ${colours}`);
+  });
+
+  test('(−) the earlier four states keep their colours: other keeps --fit-other (it is not shared), blocked the muted grey, fitted accent, zoomed idle', () => {
+    assert.match(rule('other'), /(^|[\s;])color:\s*var\(--fit-other\)/);
+    assert.doesNotMatch(rule('other'), /--fit-term/);
+    assert.match(rule('blocked'), /(^|[\s;])color:\s*var\(--text-muted\)/);
+    assert.match(rule('blocked'), /dashed/);
+    assert.match(rule('fitted'), /(^|[\s;])color:\s*var\(--accent\)/);
+    assert.match(rule('zoomed'), /(^|[\s;])color:\s*var\(--idle\)/);
+  });
+
+  test('(−) the new tokens are used by the terminal chip rule only, defined once per theme block in tokens.css, which stays ASCII with no color-mix() or :has()', () => {
+    const users = ['session.css', 'app.css', 'tokens.css'].flatMap((f) => (read(f).match(/var\(--fit-term[a-z-]*\)/g) ?? []).map((u) => `${f} ${u}`));
+    assert.deepEqual(users, ['session.css var(--fit-term)', 'session.css var(--fit-term-soft)', 'session.css var(--fit-term-line)']);
+    const rules = read('session.css').split('\n').filter((l) => /var\(--fit-term/.test(l)).map((l) => l.slice(0, l.indexOf(' {')));
+    assert.deepEqual(rules, ['.fit[data-k="terminal"]']);
+    for (const n of NAMES) assert.equal([...TOKENS.matchAll(new RegExp(`${n}:`, 'g'))].length, 3, `${n}: the light block and the two dark blocks`);
     const tokens = TOKENS.replace(/\/\*[\s\S]*?\*\//g, '');
     assert.doesNotMatch(tokens, /color-mix\(|:has\(/);
     assert.equal([...TOKENS].every((ch) => ch.codePointAt(0) < 128), true);
@@ -4787,7 +4874,8 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     assert.equal(r.popH.textContent, 'Fit: off');
     assert.equal(r.popWhy.textContent, 'You changed this tmux window, so nika put it back');
     assert.equal(r.popHint.hidden, false);
-    assert.equal(r.popHint.textContent, 'Fit again sizes the window to this panel once more. After a change of your own nika stays off until you ask.');
+    // F4 (design F4 3.6, a requirement change, not a weakened test): over a window a terminal shows Fit again lands in `terminal`, so the old sentence would be false
+    assert.equal(r.popHint.textContent, 'Fit again turns the fit on once more. After a change of your own nika stays off until you ask.');
     assert.equal(r.popNote.hidden, true);
     assert.equal(r.again.hidden, false);
     assert.equal(r.again.textContent, 'Fit again');
@@ -5028,6 +5116,79 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     assert.equal(code.length, 1);
     assert.equal(code[0].textContent, 'tmux set-option -wu @nika-fit');
     assert.match(r.popHint.textContent, /^If no other nika runs, clear the mark in that tmux window, then nika fits it by itself:tmux set-option -wu @nika-fit$/);
+  });
+
+  // ---- F4 (design F4 3.5 to 3.7): the state `terminal` in the page ----
+  const termAnswer = (panes = 1, userZoom = false) => ({ status: 200, body: { fit: { state: 'terminal', reason: null, pane: { cols: 200, rows: 50 }, panes, userZoom } } });
+  const TERM_ONE = chipViewReal(termAnswer(1).body);
+  const TERM_ZOOM = chipViewReal(termAnswer(3).body);
+
+  test('(+) F4: a 200 `terminal` answer draws the chip: data-k terminal, the terminal icon, the words, the label as the button name, the title, and announces it once', async () => {
+    const r = await chipped([termAnswer(1), termAnswer(1)]); // the second reply is the heartbeat's (the rig's default after the replies is fitted)
+    assert.equal(r.wrap.hidden, false);
+    assert.equal(r.chip.getAttribute('data-k'), 'terminal');
+    assert.equal(r.chip.kids[0].kids[0].getAttribute('href'), '#i-term');
+    assert.equal(r.chip.kids[1].textContent, "Fit \u00b7 your terminal's size");
+    assert.equal(r.chip.getAttribute('aria-label'), "Fit: your terminal's size");
+    assert.equal(r.chip.getAttribute('title'), TERM_ONE.title);
+    assert.deepEqual(r.log.said, [TERM_ONE.say]);
+    await r.clk.advance(5000); // the heartbeat's answer is the same state: nothing more is said
+    assert.equal(r.log.said.length, 1);
+  });
+
+  test('(+) F4: a click on a `terminal` chip opens an info-only panel: heading, reason, the 30-second hint, no action, no note, focus on Close', async () => {
+    const r = await opened([termAnswer(1)]);
+    assert.equal(r.pop.hidden, false);
+    assert.equal(r.popH.textContent, "Fit: your terminal's size");
+    assert.equal(r.popWhy.textContent, TERM_ONE.title);
+    assert.equal(r.popHint.hidden, false);
+    assert.equal(r.popHint.textContent, 'When no terminal has shown this tmux window for 30 seconds, nika sizes it to this panel by itself. Switch your terminal to another window or detach it to get there.');
+    assert.equal(r.popHint.all((n) => n.tag === 'code').length, 0, 'no command');
+    assert.equal(r.again.hidden, true);
+    assert.equal(r.popNote.hidden, true);
+    assert.equal(focusState.el, r.close);
+  });
+
+  test('(+) F4: several panes that nika zoomed give the zoom title and hint; going from one form to the other is a new key, so the chip is drawn and announced again, and an open panel is redrawn', async () => {
+    const r = await opened([termAnswer(1), termAnswer(3)]);
+    assert.equal(r.popWhy.textContent, TERM_ONE.title);
+    await r.clk.advance(5000);
+    assert.equal(r.chip.getAttribute('title'), TERM_ZOOM.title);
+    assert.equal(r.popWhy.textContent, TERM_ZOOM.title, 'the open panel is drawn again in place');
+    assert.match(r.popHint.textContent, /^Your terminal shows this pane zoomed too, until this session window closes\. When no terminal has shown the tmux window for 30 seconds, nika sizes it to this panel by itself\.$/);
+    assert.deepEqual(r.log.said, [TERM_ONE.say, TERM_ZOOM.say]);
+    assert.equal(r.chip.getAttribute('data-k'), 'terminal');
+    assert.deepEqual([r.again.hidden, focusState.el === r.close], [true, true], 'no action in either form of the terminal panel');
+  });
+
+  test('(+) F4: Fit again answered `terminal` closes the panel like fitted and zoomed, focuses the chip, shows the terminal chip and announces it', async () => {
+    const r = await opened([BLOCKED, termAnswer(1)]);
+    r.again.click();
+    assert.equal(r.again.getAttribute('aria-disabled'), 'true');
+    await r.clk.advance(0);
+    assert.equal(isClosed(r), true);
+    assert.equal(focusState.el, r.chip);
+    assert.equal(r.chip.getAttribute('data-k'), 'terminal');
+    assert.deepEqual(calls(r), [PUT(100, 30, true), PUT(100, 30, true)]);
+    assert.equal(r.log.said.length, 2);
+    assert.equal(r.log.said[1], TERM_ONE.say);
+  });
+
+  test('(+) F4: Fit here (another nika window) answered `terminal` closes the panel too', async () => {
+    const r = await opened([answer('other'), termAnswer(3)]);
+    r.again.click();
+    await r.clk.advance(0);
+    assert.equal(isClosed(r), true);
+    assert.equal(focusState.el, r.chip);
+    assert.equal(r.chip.getAttribute('data-k'), 'terminal');
+  });
+
+  test('(−) F4: the answers that do not close the panel still do not: blocked with the same or another reason keeps it open (only fitted, zoomed and terminal are a way back)', async () => {
+    const r = await opened([answer('blocked', 'changed'), answer('blocked', 'changed')]);
+    r.again.click();
+    await r.clk.advance(0);
+    assert.equal(r.pop.hidden, false);
+    assert.equal(r.chip.getAttribute('data-k'), 'blocked');
   });
 
   test('(+) F1: another nika window offers "Fit here", which sends open: true like Fit again', async () => {

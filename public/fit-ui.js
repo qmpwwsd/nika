@@ -33,6 +33,7 @@ export function scaleFor({ panelCols, panelRows, cols, rows }) {
 // ---- the chip --------------------------------------------------------------------------------------------------------------
 
 // The reason sentences are the title of the chip and part of its announcement. panel-smaller belongs to `zoomed`, the other five to `blocked`.
+// The sentence of the terminal chip when nika zoomed the pane (F4) is not a reason, so it lives outside this table: a server reason can never select it.
 const TITLE = {
   'panel-smaller': 'Other panes in this tmux window would be squeezed, so nika zoomed the pane and scaled the text',
   'user-zoom': 'You zoomed another pane in this window; nika leaves it',
@@ -42,6 +43,7 @@ const TITLE = {
   'user-change': 'You changed this tmux window, so nika put it back', // the panel's Fit again is the way back (F1)
 };
 const BLOCKED_PLAIN = 'nika is not fitting this tmux window';
+const TERMINAL_ZOOM = 'A terminal shows this tmux window, so nika only zoomed this pane, leaves the size to the terminal and scales the text to this panel';
 
 // Each state has its own word, icon (a symbol of session.html's sprite) and colour (session.css, data-k), never colour alone.
 const STATE = {
@@ -49,6 +51,8 @@ const STATE = {
   zoomed: { icon: 'zoom', text: `Fit ${DOT} zoomed, text scaled`, label: 'Fit: zoomed, text scaled', title: TITLE['panel-smaller'] },
   blocked: { icon: 'off', text: `Fit ${DOT} off`, label: 'Fit: off', title: BLOCKED_PLAIN },
   other: { icon: 'window', text: `Fit ${DOT} another window`, label: 'Fit: another window', title: 'Another nika window shows a pane of this tmux window' },
+  // F4: a terminal shows the tmux window, so nika leaves its size to the terminal and only scales the text (one pane or several: one chip)
+  terminal: { icon: 'term', text: `Fit ${DOT} your terminal's size`, label: "Fit: your terminal's size", title: 'A terminal shows this tmux window, so nika leaves its size to the terminal and scales the text to this panel' },
 };
 
 /** What the chip shows for a PUT answer: { key, state, icon, text, label, title, say }, or null when the body is not a fit answer (the chip stays as it was). label is the button's name and the panel's heading. */
@@ -58,8 +62,11 @@ export function chipView(body) {
   if (typeof state !== 'string' || !Object.hasOwn(STATE, state)) return null;
   const reason = typeof fit.reason === 'string' && fit.reason !== 'panel-smaller' && Object.hasOwn(TITLE, fit.reason) ? fit.reason : '';
   const v = STATE[state];
-  const title = state === 'blocked' && reason ? TITLE[reason] : v.title;
-  return { key: `${state}:${state === 'blocked' ? reason : ''}`, state, icon: v.icon, text: v.text, label: v.label, title, say: `${v.label}. ${title}` };
+  // F4: with several panes (and not the user's own zoom) nika zoomed the pane, which the title says; `panes` and `userZoom` are read as data and never shown
+  const zoom = state === 'terminal' && Number.isInteger(fit.panes) && fit.panes > 1 && fit.userZoom !== true;
+  const sub = state === 'blocked' ? reason : zoom ? 'zoom' : '';
+  const title = state === 'blocked' && reason ? TITLE[reason] : zoom ? TERMINAL_ZOOM : v.title;
+  return { key: `${state}:${sub}`, state, icon: v.icon, text: v.text, label: v.label, title, say: `${v.label}. ${title}` };
 }
 
 // ---- the panel behind the chip (F1, design F12 2.3) ----------------------------------------------------------------------------
@@ -71,13 +78,17 @@ const FITTING = 'Fitting\u2026';
 const PANEL = {
   'fitted:': {},
   'zoomed:': { hint: 'To fill the panel without scaled text, make this window larger or hide the transcript (Ctrl+Shift+H).' },
-  'blocked:user-change': { hint: 'Fit again sizes the window to this panel once more. After a change of your own nika stays off until you ask.', action: 'Fit again' },
+  // F4: Fit again over a window a terminal shows lands in `terminal`, so the hint no longer promises a size
+  'blocked:user-change': { hint: 'Fit again turns the fit on once more. After a change of your own nika stays off until you ask.', action: 'Fit again' },
   'blocked:changed': { hint: 'Fit again tries once more.', action: 'Fit again' },
   'blocked:': { action: 'Fit again' },
   'blocked:user-zoom': { hint: 'Unzoom it in tmux (prefix, then z) and nika fits the window by itself.' },
   'blocked:size-option': {},
   'blocked:foreign-tag': { hint: 'If no other nika runs, clear the mark in that tmux window, then nika fits it by itself:', code: 'tmux set-option -wu @nika-fit' },
   'other:': { hint: 'The other nika window stops fitting it.', action: 'Fit here' },
+  // F4: no action: the terminal rule cannot be overridden (open: true lands here again); the 30 s are the owner's answer Q2 (GROW_MS on the server)
+  'terminal:': { hint: 'When no terminal has shown this tmux window for 30 seconds, nika sizes it to this panel by itself. Switch your terminal to another window or detach it to get there.' },
+  'terminal:zoom': { hint: 'Your terminal shows this pane zoomed too, until this session window closes. When no terminal has shown the tmux window for 30 seconds, nika sizes it to this panel by itself.' },
 };
 
 /**

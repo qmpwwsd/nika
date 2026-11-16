@@ -121,12 +121,13 @@ body.m-bypass .mode-frame { background: repeating-linear-gradient(135deg, var(--
 .live-dot::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--busy); }
 .term-head[data-s="paused"] .live-dot::before { background: var(--idle); border-radius: 1px; }
 .term-head[data-s="wait"] .live-dot::before, .term-head[data-s="off"] .live-dot::before { background: var(--ended); border-radius: 1px; }
-/* the fit chip (W7, spec 9.6 rule): each of the four states has its own colour, icon and words; the reason is the title and the announcement */
+/* the fit chip (W7, spec 9.6 rule): each of the five states has its own colour, icon and words; the reason is the title and the announcement */
 .fit { display: inline-flex; align-items: center; gap: 5px; min-height: 22px; padding: 0 8px 0 6px; border: 1px solid transparent; border-radius: var(--r-sm); font-size: var(--fs-small); font-weight: 600; white-space: nowrap; }
 .fit[data-k="fitted"] { color: var(--accent); background: var(--accent-soft); border-color: var(--accent-line); }
 .fit[data-k="zoomed"] { color: var(--idle); background: var(--idle-soft); border-color: var(--idle-line); }
 .fit[data-k="blocked"] { color: var(--text-muted); border: 1px dashed var(--line-strong); }
 .fit[data-k="other"] { color: var(--fit-other); background: var(--fit-other-soft); border-color: var(--fit-other-line); }
+.fit[data-k="terminal"] { color: var(--fit-term); background: var(--fit-term-soft); border-color: var(--fit-term-line); }
 /* F1: the chip is a button that opens a panel (the panel's own rules follow .pop, which they override); a button resets its font and has a background of its own */
 .fit-wrap { position: relative; display: inline-flex; }
 button.fit { min-height: 24px; cursor: pointer; font: inherit; font-size: var(--fs-small); font-weight: 600; background: transparent; }

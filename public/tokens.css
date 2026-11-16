@@ -54,6 +54,8 @@
   --m-default: #3b5b84; --m-default-soft: #e6edf6; --m-default-line: #6f8fb8;
   /* the session window's fit chip, state `other` (W7): a cerulean no status and no permission mode uses; text 5.2:1 on its fill, edge 3.5:1; the blocked state keeps the muted grey */
   --fit-other: #0f68a2; --fit-other-soft: #ddf2ff; --fit-other-line: #3786c3;
+  /* the fit chip, state `terminal` (F4): a plum no status and no permission mode uses; checked in test/session-ui.test.js (text 4.5:1 on its fill and the surfaces, edge 3:1, 0.05 OKLab from every other chip and status colour) */
+  --fit-term: #8b3f6b; --fit-term-soft: #f8e8f1; --fit-term-line: #b96a98;
   --shell: var(--text); --on-shell: var(--surface);
 }
 
@@ -85,6 +87,7 @@
     --m-unknown: #a4abb6; --m-unknown-soft: #202328; --m-unknown-line: #6f7783;
     --m-default: #a9c3e6; --m-default-soft: #1e2a3a; --m-default-line: #5f7fa8;
     --fit-other: #4abce9; --fit-other-soft: #0e2a36; --fit-other-line: #1c8cb4;
+    --fit-term: #d9a6c8; --fit-term-soft: #35222f; --fit-term-line: #a8789b;
   }
 }
 
@@ -118,6 +121,7 @@
   --m-unknown: #a4abb6; --m-unknown-soft: #202328; --m-unknown-line: #6f7783;
   --m-default: #a9c3e6; --m-default-soft: #1e2a3a; --m-default-line: #5f7fa8;
   --fit-other: #4abce9; --fit-other-soft: #0e2a36; --fit-other-line: #1c8cb4;
+  --fit-term: #d9a6c8; --fit-term-soft: #35222f; --fit-term-line: #a8789b;
 }
 
 /* permission modes (docs/design/spec.md 2.8.1, 2.8.5, 9.3): one class per mode sets the local trio the tag, the frame, the
