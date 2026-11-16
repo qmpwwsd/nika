@@ -26,6 +26,7 @@ import { panelSize, createFitPlanner, fitPanelView, stillOffSay, remeasure, hidd
 import { createScrollPlanner, routeFor, wheelRows, scrollGate, viewRowsOf, pageRowsOf, refusalLine, noteView, scrolledSay, NOTE_MS } from './scroll.js';
 import { createAttachTray } from './attach.js';
 import { createDialogForm, cleanDialog } from './dialog-form.js';
+import { createSurveyPanel, cleanSurvey } from './survey-panel.js';
 
 const PROJECT_KEY = /^[a-z0-9]{16}$/;
 const CLAUDE_SESSION = /^session_[A-Za-z0-9]{1,64}$/;
@@ -435,9 +436,10 @@ function startAgentPoll() {
 // prompt: the capture's prompt as cleanPrompt allows it, for drawing the buttons only. promptOpen: the capture has a prompt at all
 // (even an off-contract one), for every gate: the switcher, the quick actions, the message box keys (composerKey) and the End note.
 // dialog: the capture's question dialog or plan approval as cleanDialog allows it (0.5): the form draws from it, a dialog also counts as promptOpen.
-const W = { pane: 'connecting', got: false, mode: 'unknown', confirmed: true, prompt: null, promptOpen: false, dialog: null, last: null, msg: null, struck: new Set(), strikeAt: null, tagSig: '', whySig: '' };
+const W = { pane: 'connecting', got: false, mode: 'unknown', confirmed: true, prompt: null, promptOpen: false, dialog: null, survey: null, last: null, msg: null, struck: new Set(), strikeAt: null, tagSig: '', whySig: '' };
 const SW = { busy: null, pressed: null, parts: [] };
 let DF = null; // the question dialog form (dialog-form.js), built in boot() with the pane
+let SV = null; // the feedback survey panel (survey-panel.js), built in boot() with the pane
 
 function renderTag() {
   const key = W.pane === 'ok' ? modeKey(W.mode) : '';
@@ -517,6 +519,7 @@ function renderMode() {
   renderAttn();
   renderPrompt();
   DF?.render({ pane: W.pane, dialog: W.dialog, name: A.name, attention: A.attention });
+  SV?.render({ pane: W.pane, survey: W.survey, blocked: W.promptOpen || A.kind === 'attn', name: A.name }); // never beside a prompt, a dialog or the attention note
 }
 
 /** What a capture says about the mode and the prompt. The tag follows every capture; only a change is announced. */
@@ -528,6 +531,7 @@ function noteScreen(body) {
   W.prompt = cleanPrompt(body.prompt); // null for anything but the contract shape: no panel, no buttons
   W.dialog = cleanDialog(body.dialog); // null only when the capture has none; anything off the contract is { state: 'unreadable' }
   W.promptOpen = Boolean(body.prompt) || W.dialog !== null; // an off-contract prompt or dialog still counts as a prompt for the gates
+  W.survey = cleanSurvey(body.survey); // null for anything but the contract shape (0.5, F14): no panel
   if (W.struck.size && W.confirmed && W.mode !== 'unknown' && W.mode !== W.strikeAt) W.struck.clear();
   if (!SW.busy) { // a switch announces its end result once, when the route answers
     const n = modeNote(A.name, W.last, { mode: W.mode, confirmed: W.confirmed });
@@ -2047,6 +2051,12 @@ let sending = false;
 async function sendComposer() {
   const ta = composer();
   if (sending || ta.disabled) return;
+  const note = SV?.sendNote();
+  if (note) {
+    // a feedback question is open above the box (0.5, F14): nothing is sent and the text stays in the box
+    showProblem(note, 'error');
+    return;
+  }
   const gate = sendGate({ promptOpen: W.promptOpen, status: A.kind, buttons: (W.pane === 'ok' && hasAnswerButtons(W.prompt)) || DF?.live() === true, bypass: W.prompt?.bypass === true }); // Enter would confirm the prompt's highlighted option: answer with the buttons
   if (!gate.ok) {
     showProblem(gate.message, 'error'); // nothing is sent and the text stays in the box
@@ -2803,6 +2813,7 @@ function boot() {
     wireQuick();
     wireFit();
     DF = createDialogForm({ root: $('dialog-form'), paneId, call, path: (tail) => `/api/app/pane/${encodeURIComponent(paneId)}/${tail}`, announce, say, showProblem, clearProblem, setGone, composer, refresh: renderAttn });
+    SV = createSurveyPanel({ root: $('survey-panel'), paneId, call, path: (tail) => `/api/app/pane/${encodeURIComponent(paneId)}/${tail}`, announce, say, clearProblem, setGone, composer });
     $('pb-pane').textContent = paneId;
     $('term').setAttribute('aria-label', `Live terminal of ${A.name}, pane ${paneId}`);
     showOverlay(`Connecting to pane ${paneId}${DOTS}`, '');

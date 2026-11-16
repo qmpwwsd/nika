@@ -15,8 +15,9 @@ import { mapLimit } from './util.js';
 import { MODE_TARGETS, bypassWindow, modeFromRows, promptFromRows, surveyShown } from './mode.js';
 import { MODEL_CATALOG } from './models.js';
 import { matches as etagMatches } from './mirror.js';
-import { createSessionControl, promptSig, insertShown, editMode, readDraft, checkDraftBody, checkSubmitBody, checkSuggestionBody, checkDialogBody } from './session-control.js';
+import { createSessionControl, promptSig, insertShown, editMode, readDraft, checkDraftBody, checkSubmitBody, checkSuggestionBody, checkDialogBody, checkSurveyBody } from './session-control.js';
 import { dialogCapture, dialogOnScreen } from './dialog.js';
+import { surveyOf } from './survey.js';
 import { badSend } from './keys.js';
 import { tagPane, pickState, claudePane, inProject } from './orchestrate.js';
 import { createFit, checkFitBody, FIT_RATE } from './fit.js';
@@ -560,11 +561,14 @@ export function createAppApi({ secret, ctx, deps }) {
     const draft = parsed && { ...parsed, edit: editMode(r.body.rows, vim.get(id) === true, plain.get(id) === true) };
     // the dialog on screen (design W1 3): read from the rows and the width only, so r.etag already covers it; null while a permission prompt parses
     const dialog = screen.prompt ? null : dialogCapture(r.body.rows, r.body.cols);
-    const etag = crypto.createHash('sha256').update(JSON.stringify([r.etag, screen.mode, screen.modeConfirmed, draft?.edit ?? null])).digest('hex').slice(0, 32);
+    // Claude's feedback survey (0.5, F14); surveyOf is null while a prompt or a dialog owns the slot. It depends on the pane's vim memory (vim NORMAL is not
+    // answerable), which r.etag does not cover and the draft's `edit` cannot carry (the draft is null while the survey shows), so it is part of the ETag itself.
+    const survey = surveyOf(r.body, { vim: vim.get(id) === true, insert: insertShown(r.body.rows) });
+    const etag = crypto.createHash('sha256').update(JSON.stringify([r.etag, screen.mode, screen.modeConfirmed, draft?.edit ?? null, survey])).digest('hex').slice(0, 32);
     const headers = { ETag: `"${etag}"` };
     if (etagMatches(req.headers['if-none-match'], etag)) return { status: 304, body: null, headers };
     // a new object: the mirror's cached body is shared and stays as captured
-    return { status: 200, body: { ...r.body, ...screen, draft, dialog, etag }, headers };
+    return { status: 200, body: { ...r.body, ...screen, draft, dialog, survey, etag }, headers };
   });
 
   route('GET', /^\/api\/app\/modes$/, 0, async () => {
@@ -758,6 +762,15 @@ export function createAppApi({ secret, ctx, deps }) {
     if (bad) return bad;
     const { id, failure } = await eligiblePane(params[0]);
     return failure ?? control.answerDialog(id, body);
+  });
+
+  // Answer Claude's feedback survey with one digit (0.5, F14). Order: body 400 (exactly { n, sig }), pane 404, then the controller (the lock, the screen checks,
+  // the registry, the one key). Nothing of the body (the digit or the sig) is logged here or there. App tier only: the browser tier has no such route.
+  route('POST', /^\/api\/app\/pane\/([^/]+)\/survey$/, CAP.small, async ({ params, body }) => {
+    const bad = checkSurveyBody(body);
+    if (bad) return bad;
+    const { id, failure } = await eligiblePane(params[0]);
+    return failure ?? control.answerSurvey(id, { n: body.n, sig: body.sig });
   });
 
   route('POST', /^\/api\/app\/pane\/([^/]+)\/answer$/, CAP.small, async ({ params, body }) => {

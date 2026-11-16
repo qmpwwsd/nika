@@ -417,6 +417,33 @@ button.fit:hover, button.fit[aria-expanded="true"] { border-color: currentColor;
   .dlg-chip .spin { animation: none; border-right-color: currentColor; border-style: dotted; }
 }
 
+/* feedback survey (0.5, F14): Claude's rating question and its transcript question as buttons, in the permission panel's look (.ask) with a calmer edge: the accent on the accent-soft fill
+   (a question for you, not a block). Every state has its own colour, icon and word: ready accent with the info icon, sending the spinner on the pressed button, sent and answered the idle colour with
+   the check icon, a problem the idle or danger colour with the warn icon, terminal muted and dashed with the terminal icon. Tokens only, so light and dark come along. */
+.ask.svy { background: var(--accent-soft); box-shadow: inset 3px 0 0 var(--accent); }
+.svy[data-s="sent"], .svy[data-s="answered"] { box-shadow: inset 3px 0 0 var(--idle); }
+.svy[data-s="error"] { box-shadow: inset 3px 0 0 var(--danger); }
+.svy[data-s="terminal"] { background: var(--surface-2); box-shadow: inset 3px 0 0 var(--text-muted); }   /* --line-strong is 2.98:1 on --surface-2 in light: the muted text colour keeps the edge at 3:1 and more */
+.dlg-kind[data-k="survey"] { color: var(--accent); }
+.svy .ask-reason { color: var(--accent); }
+.svy .ask-q { margin: 0; padding: 0; font-size: var(--fs-body); line-height: inherit; }
+.svy-btns { display: flex; flex-wrap: wrap; gap: 6px; }
+.svy-btns .pbtn { align-items: center; }
+.svy-btns .pbtn.esc { margin-left: auto; }
+.svy .pbtn[aria-busy="true"] { opacity: 1; border-color: var(--accent); color: var(--accent); }
+.svy-line { margin: 0; color: var(--text); font-size: var(--fs-small); font-weight: 600; }
+.svy-st, .svy-problem { display: flex; align-items: center; gap: 6px; margin: 0; color: var(--idle); font-size: var(--fs-small); font-weight: 600; overflow-wrap: anywhere; }
+.svy-problem[data-k="error"] { color: var(--danger); }
+.svy-st[hidden], .svy-problem[hidden] { display: none; }
+.svy-reason { margin: 0; color: var(--text-muted); font-size: var(--fs-small); }
+@container composer (max-width: 560px) {
+  .svy-btns { display: grid; grid-template-columns: 1fr 1fr; }
+  .svy-btns .pbtn.esc { margin-left: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .svy .spin { animation: none; border-right-color: currentColor; border-style: dotted; }
+}
+
 /* 0.5 (W8): the list of Claude's own subagents above the transcript, and the link from a tool call to a subagent's transcript. The badge and line rules are in tokens.css. */
 #sess-subs { flex: none; border-bottom: 1px solid var(--line); padding: 4px 8px 4px 14px; }
 #sess-subs > summary { cursor: pointer; display: flex; align-items: center; gap: 6px; min-height: 32px; color: var(--text-muted); }

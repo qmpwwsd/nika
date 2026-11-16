@@ -1,19 +1,20 @@
-// Eight controls on a live Claude pane (api-app.md section 3): switch the permission mode, End the session, run a slash
+// Nine controls on a live Claude pane (api-app.md section 3): switch the permission mode, End the session, run a slash
 // command, answer a permission prompt, write the draft, accept Claude's prompt suggestion (0.5), answer Claude's question and plan
-// dialogs (0.5, W1, answerDialog), and press Send's Enter (0.5, W13, submit). They type into a real agent session, so every path fails
+// dialogs (0.5, W1, answerDialog), press Send's Enter (0.5, W13, submit) and answer Claude's feedback survey with one digit (0.5, F14, answerSurvey). They type into a real agent session, so every path fails
 // closed: when the screen or the registry state is not exactly what the step needs, nothing is sent and the answer is a 409.
 // Keys go only through `keys.send` (src/keys.js: fixed argv, KEY_NAME allow-list, rate limit); this module never kills a pane
 // and never signals a process. End and the commands type only into an empty input box and press Enter only after the box reads
 // exactly what nika typed (claude-tui.md section 5), so a user's draft is never sent, extended or cleared by them. The draft
 // route (writeDraft) is the one place that changes a draft, and it never presses Enter; acceptSuggestion presses only Tab; submit
-// presses only Enter, the one Enter of the page's Send.
+// presses only Enter, the one Enter of the page's Send; answerSurvey types one digit and never presses a key.
 // The input box is read by src/draft.js.
 import { createHash } from 'node:crypto';
 import { CLAUDE_COMMAND } from './ids.js';
 import { clean } from './text.js';
 import { MODE_TARGETS, OPTION, PROMPT_ROWS, bypassWindow, lastNonBlank, mentionsBypass, modeFromRows, promptFromRows, rowText } from './mode.js';
-import { RULE_ROW, SIG, parseDraft, boxSquash, normDraft, sameDraft, inEnvelope, chunks, CHUNK_GAP_MS } from './draft.js';
+import { RULE_ROW, SIG, parseDraft, boxSquash, boxInput, normDraft, sameDraft, inEnvelope, chunks, CHUNK_GAP_MS } from './draft.js';
 import { TEXT_MAX, STEPS_MAX, PLAIN_TEXT, PLAN_PICK, dialogOnScreen, readDialogScreen, identityOf, sigOf, otherAllowed } from './dialog.js';
+import { surveyOf, SURVEY_UNDO_MS } from './survey.js';
 
 const EXIT_POLL_MS = 500;
 const LOCK_POLL_MS = 20; // withPaneLock: poll step and the longest wait (5 s) for a running control action
@@ -46,6 +47,8 @@ const CLEAR_WAIT_MS = 400;
 // Submit (design W13 section 2): after the Enter, the box is read every SUBMIT_POLL_MS for SUBMIT_READ_MS to see whether Claude took it.
 const SUBMIT_POLL_MS = 50;
 const SUBMIT_READ_MS = 1000;
+// Survey (0.5, F14): after the digit the screen is read back for at most this long (Claude acts after a 400 ms pause, S-F14).
+const SURVEY_READ_MS = 1000;
 
 const conflict = (error) => ({ status: 409, body: { error } });
 const invalid = (message) => ({ status: 400, body: { error: 'invalid', message } });
@@ -72,20 +75,9 @@ function inputBox(rows) {
   return rules.length < 2 ? null : rows.slice(rules.at(-2) + 1, rules.at(-1));
 }
 
-/**
- * A capture `{ rows, cursor, cols }` prepared for src/draft.js: `{ rows, cursor, cols }` again, with the no-break spaces of the last
- * non-blank row made plain spaces (the mode line is read with plain spaces, insertShown does the same, so a no-break space inside
- * `-- INSERT --` does not hide the mode). null when the cursor has no integer x and y: only the cursor says which rules frame the
- * input (N-1), so a capture without one has no box. Everything that reads the box of a live pane starts here (readDraft, and the
- * attachment send's boxSquash), so both read the same screen the same way.
- */
-export function boxInput(seen) {
-  if (!Number.isInteger(seen?.cursor?.x) || !Number.isInteger(seen?.cursor?.y)) return null;
-  const rows = Array.isArray(seen?.rows) ? seen.rows : [];
-  const last = rows.findLastIndex((row) => rowText(row).trim() !== '');
-  const spaced = (row) => (Array.isArray(row) ? row.map((sp) => (typeof sp?.t === 'string' ? { ...sp, t: plain(sp.t) } : sp)) : row);
-  return { rows: last < 0 ? rows : rows.map((row, i) => (i === last ? spaced(row) : row)), cursor: seen.cursor, cols: seen?.cols };
-}
+// boxInput (the one preparation of a capture for the box readers) lives in src/draft.js since 0.5, F14, where src/survey.js needs it too; it is
+// re-exported here because the attachment send and the tests import it from the controller.
+export { boxInput };
 
 /**
  * The input box (src/draft.js) of a capture `{ rows, cursor, cols }`: a Draft, or null when the screen has no plain box (see boxInput
@@ -192,6 +184,13 @@ export function checkSuggestionBody(body) {
   return null;
 }
 
+/** The body of the survey route, exactly `{ n, sig }` (n an integer from 0 to 3, sig 16 lowercase hex): null when it is valid, else the 400 answer. The router and answerSurvey both call it. */
+export function checkSurveyBody(body) {
+  const names = body !== null && typeof body === 'object' && !Array.isArray(body) ? Object.keys(body).sort().join() : '';
+  if (names !== 'n,sig' || !Number.isInteger(body.n) || body.n < 0 || body.n > 3 || typeof body.sig !== 'string' || !SIG.test(body.sig)) return invalid('body must be { n, sig }: n an integer from 0 to 3, sig 16 lowercase hex characters');
+  return null;
+}
+
 // Dialog route (design W1 4.1): free text may hold no control, bidi or zero-width character (they are not seen on screen, so the read-back could
 // not prove them) and no lone surrogate (tmux would type U+FFFD). It may not start with 1-9 either: on an EMPTY text row Claude may take that
 // digit as the option shortcut (not seen live, W1-T4), which would answer a different option and leave the rest of the text in the input box.
@@ -266,7 +265,7 @@ function rawOption(rows, n) {
  * The draft route's timings: draftPollMs (poll step while it waits for a redraw), escGapMs (plain mode: gap between its two Escapes), chunkGapMs.
  */
 export function createSessionControl({
-  mirror, keys, paneCommand, stateOf, vimOf, plainOf = () => false, setEdit = () => {}, now = Date.now, sleep = realSleep,
+  mirror, keys: rawKeys, paneCommand, stateOf, vimOf, plainOf = () => false, setEdit = () => {}, now = Date.now, sleep = realSleep,
   pollMs = 300, settleMs = 1800, maxPresses = 6, escWaitMs = 1000, exitWaitMs = 3000, answerHoldMs = 3000,
   settleTries = 4, settlePollMs = 150, draftPollMs = 20, escGapMs = 60, chunkGapMs = CHUNK_GAP_MS,
 }) {
@@ -276,6 +275,25 @@ export function createSessionControl({
   const interrupting = new Set(); // panes whose Escape sequence is running: Stop and End share it, apart from the control lock
   const answered = new Map(); // pane → { sig, at } of the last successful answer
   const escapedAt = new Map(); // pane → now() when the last Escape of a Stop or an End went out (N-2): a key right behind it would be Meta+key
+
+  const ratedAt = new Map(); // pane → now() when the digit of a rating (1 to 3) was sent: Claude shows `Feedback: <label> · Esc to undo` for a few seconds
+
+  /** True while less than SURVEY_UNDO_MS has passed since a rating's digit on the pane; a clock that went back counts as passed. */
+  function undoHold(pane) {
+    const at = ratedAt.get(pane);
+    if (at === undefined) return false;
+    const passed = now() - at;
+    if (passed >= 0 && passed < SURVEY_UNDO_MS) return true;
+    ratedAt.delete(pane);
+    return false;
+  }
+
+  // The one place a key leaves this controller. An Escape is refused (409 survey-undo, never sent) while a rating's "Esc to undo" row shows
+  // (0.5, F14): Claude would undo the rating with it. Every Escape of Stop, End, a command's history search, the draft route and a dialog's
+  // Decline goes through this function, so the guarantee does not depend on each caller remembering it; Stop and End also say so before they start.
+  const keys = {
+    send: (pane, body) => (Array.isArray(body?.keys) && body.keys.includes('Escape') && undoHold(pane) ? Promise.resolve(conflict('survey-undo')) : rawKeys.send(pane, body)),
+  };
 
   /** True while less than VIM_ESC_GAP_MS has passed since an Escape of Stop or End on the pane (N-2); a clock that went back counts as passed. */
   function escapeGap(pane) {
@@ -520,6 +538,8 @@ export function createSessionControl({
    */
   async function interrupt(pane, rows, state, ctx, taken = 'not-idle') {
     if (interrupting.has(pane)) return { res: conflict(taken) };
+    // An Escape would undo the rating Claude still shows (F14). The keys wrapper refuses it too, but End would turn that refusal into ended: false; say it plainly.
+    if ((promptOpen(rows) || isBusy(state)) && undoHold(pane)) return { res: conflict('survey-undo') };
     interrupting.add(pane);
     try {
       const escape = async (n) => {
@@ -669,6 +689,58 @@ export function createSessionControl({
       if (sent.status !== 200) return { status: sent.status, body: sent.body };
       holdAnswer(pane, sig);
       return { status: 200, body: { answered: n } };
+    });
+  }
+
+  /**
+   * Answers Claude's feedback survey with ONE digit (0.5, F14; design F13 section 2.4, docs/contracts/claude-tui.md section 10.11). `body` is
+   * checkSurveyBody's `{ n, sig }`: n one of the shown options (0 to 3), sig the identity the capture handed out (src/survey.js). Under the per-pane
+   * lock (409 busy-switching), in this order, nothing sent until the last check: no Stop/End interrupt running and no Escape of one less than 40 ms
+   * ago (409 not-idle: a digit right behind an Escape is Meta+digit); one fresh capture (its own failure passes through); a permission prompt or a
+   * dialog (409 prompt-open); src/survey.js on that capture: no survey (409 no-survey), the transcript question or a bypass mention (400
+   * terminal-only), text in the box (409 input-not-empty), vim NORMAL (409 text-mode), rows nika does not read exactly (409 survey-changed); `sig`
+   * not the screen's (409 survey-changed); the same sig answered under answerHoldMs ago (409 already-answered); n not among the shown options (400
+   * invalid); the registry state read fresh and not idle (409 not-idle); an interrupt that began meanwhile (409 not-idle). Then exactly one key:
+   * the digit as literal text (`keys.send(pane, { text })`, counted in the per-pane rate; a 429 or any failure passes through), never Enter,
+   * Escape, C-u or any other. The screen is read back for at most SURVEY_READ_MS: 200 { answered: n } at the first read that shows no survey
+   * rows at all and a box that does not hold exactly the digit; else 409 not-taken (nika never takes the digit back; the page says where it may
+   * be). Every non-200 after the key carries `sent: 1`, and the sig is held (answered) after any key that went out. After a rating (1 to 3) no
+   * Escape leaves this controller for SURVEY_UNDO_MS (see `keys` above). Nothing of the body is logged.
+   */
+  function answerSurvey(pane, body) {
+    const bad = checkSurveyBody(body);
+    if (bad) return Promise.resolve(bad);
+    const { n, sig } = body;
+    return exclusive(pane, async (ctx) => {
+      if (keyGap(pane)) return conflict('not-idle');
+      const seen = await look(pane, ctx);
+      if (seen.res) return seen.res;
+      if (promptOpen(seen.rows)) return conflict('prompt-open');
+      const edit = { vim: (await vimOf(pane)) === true || ctx.insert, insert: insertShown(seen.rows) };
+      const found = surveyOf(seen, edit);
+      if (found === null) return conflict('no-survey');
+      if (found.state === 'terminal') {
+        if (found.reason === 'consent' || found.reason === 'bypass') return { status: 400, body: { error: 'terminal-only', message: 'answer this in the terminal' } };
+        return conflict(found.reason === 'input' ? 'input-not-empty' : found.reason === 'normal' ? 'text-mode' : 'survey-changed');
+      }
+      if (found.sig !== sig) return conflict('survey-changed');
+      const last = answered.get(pane);
+      if (last?.sig === sig && now() - last.at < answerHoldMs) return conflict('already-answered');
+      if (!found.options.some((o) => o.n === n)) return invalid('n is not one of the survey options');
+      if ((await stateNow(pane, { fresh: true })) !== 'idle') return conflict('not-idle');
+      if (keyGap(pane)) return conflict('not-idle'); // a Stop began while the state was read: the last check before the key
+      const before = ratedAt.get(pane);
+      if (n !== 0) ratedAt.set(pane, now()); // set before the key leaves, so no Escape can slip in behind it
+      const sent = await keys.send(pane, { text: String(n) });
+      if (sent.status !== 200) {
+        if (before === undefined) ratedAt.delete(pane);
+        else ratedAt.set(pane, before); // the digit never went out: the hold of an earlier rating stays as it was
+        return { status: sent.status, body: sent.body };
+      }
+      holdAnswer(pane, sig);
+      const taken = await settled(pane, (rows, cap) => surveyOf(cap, edit) === null && !readsAs(cap, String(n)), ctx, Math.max(1, Math.floor(SURVEY_READ_MS / settlePollMs)));
+      if (taken.res) return { status: taken.res.status, body: { ...taken.res.body, sent: 1 } };
+      return taken.rows ? { status: 200, body: { answered: n } } : { status: 409, body: { error: 'not-taken', sent: 1 } };
     });
   }
 
@@ -1238,5 +1310,5 @@ export function createSessionControl({
   /** True while no key may go: a Stop or End interrupt runs, or its Escape went out less than 40 ms ago (N-2). The scroll route (src/scroll.js) checks it inside the lock. */
   const keyGap = (pane) => interrupting.has(pane) || escapeGap(pane);
 
-  return { switchMode, endSession, runCommand, answer, stop, writeDraft, submit, acceptSuggestion, answerDialog, withPaneLock, keyGap };
+  return { switchMode, endSession, runCommand, answer, answerSurvey, stop, writeDraft, submit, acceptSuggestion, answerDialog, withPaneLock, keyGap };
 }

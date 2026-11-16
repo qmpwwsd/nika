@@ -211,13 +211,37 @@ function joinRows(bodies, w) {
 export const parseDraft = (rows, cursor, cols) => readBox(rows, cursor, cols)?.draft ?? null;
 
 /**
+ * A capture `{ rows, cursor, cols }` prepared for the box readers: `{ rows, cursor, cols }` again, with the no-break spaces of the last
+ * non-blank row made plain spaces (the mode line is read with plain spaces, insertShown does the same, so a no-break space inside
+ * `-- INSERT --` does not hide the mode). null when the cursor has no integer x and y: only the cursor says which rules frame the
+ * input (N-1), so a capture without one has no box. Everything that reads the box of a live pane starts here (readDraft, the attachment
+ * send's boxSquash and the survey's surveyBox), so all of them read the same screen the same way. (0.5, F14: moved here from
+ * src/session-control.js, which re-exports it, so src/survey.js can use it without importing the controller.)
+ */
+export function boxInput(seen) {
+  if (!Number.isInteger(seen?.cursor?.x) || !Number.isInteger(seen?.cursor?.y)) return null;
+  const rows = Array.isArray(seen?.rows) ? seen.rows : [];
+  const last = rows.findLastIndex((row) => rowText(row).trim() !== '');
+  const spaced = (row) => (Array.isArray(row) ? row.map((sp) => (typeof sp?.t === 'string' ? { ...sp, t: sp.t.replace(/\xa0/g, ' ') } : sp)) : row);
+  return { rows: last < 0 ? rows : rows.map((row, i) => (i === last ? spaced(row) : row)), cursor: seen.cursor, cols: seen?.cols };
+}
+
+/**
+ * The Draft of the input box while Claude's feedback survey shows (0.5, F14): readBox with only the survey gate skipped, because the
+ * survey's own rows sit above the box and src/survey.js is the reader that has just recognised them. Every other gate stays (a known
+ * footer, no permission prompt, two rules, the first row a prompt glyph or `!`, the cursor strictly between the rules). `rows`, `cursor`
+ * and `cols` are boxInput's. The Draft, or null when the screen has no plain box.
+ */
+export const surveyBox = (rows, cursor, cols) => readBox(rows, cursor, cols, { survey: true })?.draft ?? null;
+
+/**
  * The box of a screen as `boxSquash` needs it (0.5, W2): `{ draft, parts }` where `draft` is exactly what parseDraft returns and `parts`
  * are the box rows split into real and ghost text, or null for a draft that was refused before the rows were split (history, tall, a
  * row nika does not know). null when the screen has no plain box.
  */
-function readBox(rows, cursor, cols) {
+function readBox(rows, cursor, cols, { survey = false } = {}) {
   if (!Array.isArray(rows)) return null;
-  if (surveyShown(rows)) return null; // F2: the survey takes the digits 0-3, so no box is offered (sync pauses, nothing is typed)
+  if (!survey && surveyShown(rows)) return null; // F2: the survey takes the digits 0-3, so no box is offered (sync pauses, nothing is typed); only surveyBox looks past it
   const rules = [];
   rows.forEach((row, i) => { if (RULE_ROW.test(rowText(row).trimEnd())) rules.push(i); }); // column 0: a draft line of dashes has two spaces before it
   if (rules.length < 2) return null;

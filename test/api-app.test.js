@@ -25,6 +25,7 @@ import { createMirror } from '../src/mirror.js';
 import { readDialogScreen, dialogOnScreen, sigOf as dialogSig } from '../src/dialog.js';
 import { createKeys } from '../src/keys.js';
 import { dialogWorld, TAB } from './dialog-fake.js';
+import { surveyOf } from '../src/survey.js';
 
 const SECRET = 'Zm9vYmFyZm9vYmFyZm9vYmFyZm9vYmFyZm9vYmFyZm9v'.slice(0, 43);
 const REQ_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -2294,6 +2295,7 @@ function fakeControl(answers = {}) {
       submit: method('submit', () => ({ status: 200, body: { taken: true, draft: null } })),
       acceptSuggestion: method('acceptSuggestion', () => ({ status: 200, body: { draft: null } })),
       answerDialog: method('answerDialog', () => ({ status: 200, body: { done: 'next', sent: 1 } })),
+      answerSurvey: method('answerSurvey', (pane, b) => ({ status: 200, body: { answered: b.n } })),
       withPaneLock: async (id, fn) => fn(), // the lock and the interrupt gap the scroll controller is built with (src/scroll.js insists on both)
       keyGap: () => false,
     };
@@ -4413,6 +4415,231 @@ describe('POST /api/app/pane/:id/dialog', () => {
     }
     assert.ok(lines.some((l) => /POST .*dialog failed/.test(l)), 'the internal error was logged (so the check is real)');
     assert.deepEqual(lines.filter((l) => l.includes(secret) || l.includes(DSIG)), []);
+  });
+});
+
+// --- Claude's feedback survey (0.5, F14): the capture's `survey` field and POST /api/app/pane/:id/survey -------------------------------------------------
+
+const SURVEY_Q = '● How is Claude doing this session? (optional)';
+const SURVEY_O = '  1: Bad    2: Fine   3: Good   0: Dismiss';
+/** The rows of a pane that shows the survey above an empty input box (the live layout of spike S-F14); the array carries the box's cursor, shifted below the survey rows. */
+const surveyScreen = ({ above = ['Done. Anything else?', ''], free = '', q = SURVEY_Q, opt = SURVEY_O, lines = [''], ghost = 'Try "write a test"', ...box } = {}) => {
+  const prefix = rowsOf([...above, q, opt, free]);
+  const b = boxRows({ cols: 80, lines, ghost, ...box });
+  return Object.assign([...prefix, ...b.rows], { cursor: { ...b.cursor, y: b.cursor.y + prefix.length }, cols: 80 });
+};
+const surveyIn = (screen, edit = {}) => surveyOf({ rows: screen, cursor: screen.cursor, cols: screen.cols }, edit);
+const SURVEY_OPTIONS = [{ n: 1, label: 'Bad' }, { n: 2, label: 'Fine' }, { n: 3, label: 'Good' }, { n: 0, label: 'Dismiss' }];
+
+describe('capture: the survey field', () => {
+  test('(+) the survey above an empty box: ready, kind rating, the four options in Claude\'s order and a 16-hex sig; prompt, dialog and draft stay what they are', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = surveyScreen();
+    const r = await pane(a, '%6', 'capture');
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.body.survey, { state: 'ready', kind: 'rating', sig: surveyIn(screens['%6']).sig, options: SURVEY_OPTIONS });
+    assert.match(r.body.survey.sig, SIG16);
+    assert.deepEqual([r.body.prompt, r.body.dialog, r.body.draft], [null, null, null], 'the box reads nothing while the survey shows (the digits would answer it)');
+  });
+
+  test('(+) every terminal verdict reaches the page with its reason: consent, bypass, input, normal, unreadable', async () => {
+    const { a, screens, control } = await bootScreens();
+    const read = async () => (await pane(a, '%6', 'capture')).body.survey;
+    screens['%6'] = surveyScreen({ q: '● Can Anthropic look at your session transcript to help us improve Claude Code?' });
+    assert.deepEqual(await read(), { state: 'terminal', reason: 'consent' });
+    screens['%6'] = surveyScreen({ free: 'bypass is mentioned here' });
+    assert.deepEqual(await read(), { state: 'terminal', reason: 'bypass' });
+    screens['%6'] = surveyScreen({ lines: ['hello'], ghost: null });
+    assert.deepEqual(await read(), { state: 'terminal', reason: 'input' });
+    screens['%6'] = surveyScreen({ opt: '  1: Bad    2: Fine   3: Good   4: Unsure 0: Dismiss' });
+    assert.deepEqual(await read(), { state: 'terminal', reason: 'unreadable' });
+    screens['%6'] = surveyScreen();
+    control.opts.setEdit('%6', 'vim'); // INSERT was seen on this pane before, none shows now: vim NORMAL
+    assert.deepEqual(await read(), { state: 'terminal', reason: 'normal' });
+    screens['%6'] = surveyScreen({ insert: true });
+    assert.equal((await read()).state, 'ready', 'INSERT shown again: the digit types');
+  });
+
+  test('(+) survey is part of the ETag: the same rows after the pane\'s vim memory changed are not a 304 (the draft is null while the survey shows, so its `edit` cannot carry it)', async () => {
+    const { a, screens, control } = await bootScreens();
+    screens['%6'] = surveyScreen();
+    const first = await pane(a, '%6', 'capture');
+    assert.equal(first.body.survey.state, 'ready');
+    const same = await pane(a, '%6', 'capture', { headers: { 'if-none-match': first.headers.etag } });
+    assert.equal(same.status, 304);
+    control.opts.setEdit('%6', 'vim');
+    const changed = await pane(a, '%6', 'capture', { headers: { 'if-none-match': first.headers.etag } });
+    assert.equal(changed.status, 200);
+    assert.deepEqual(changed.body.survey, { state: 'terminal', reason: 'normal' });
+  });
+
+  test('(+) a pane without a survey carries survey null, also on an empty screen', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = rowsOf(['hello', FOOTER.plan]);
+    assert.equal((await pane(a, '%6', 'capture')).body.survey, null);
+    screens['%6'] = rowsOf([]);
+    assert.equal((await pane(a, '%6', 'capture')).body.survey, null);
+  });
+
+  test('(−) a permission prompt or a dialog on screen owns the slot: survey null, whatever rows sit above it', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = rowsOf([SURVEY_Q, SURVEY_O, '', ...PROMPT]);
+    const p = await pane(a, '%6', 'capture');
+    assert.ok(p.body.prompt, 'the permission prompt is read');
+    assert.equal(p.body.survey, null);
+    const dialog = dialogRows({ tabs: [TAB.project] });
+    screens['%6'] = Object.assign([...rowsOf([SURVEY_Q, SURVEY_O, '']), ...dialog], { cursor: dialog.cursor, cols: dialog.cols });
+    const d = await pane(a, '%6', 'capture');
+    assert.ok(d.body.dialog, 'the dialog is read');
+    assert.equal(d.body.survey, null);
+  });
+
+  test('(−) the survey is on the app tier\'s capture only: the browser tier has neither the capture nor the survey route, and its agent list carries no survey', async () => {
+    const server = createServer({ config: fx.config, exec: fakeExec(), token: 'tok', now: () => NOW, version: '0.0.0' });
+    await new Promise((res) => server.listen(0, '127.0.0.1', res));
+    servers.push(server);
+    const port = server.address().port;
+    const call = (method, p, bodyText) => new Promise((resolve, reject) => {
+      const q = http.request({ host: '127.0.0.1', port, method, path: p, headers: { host: `127.0.0.1:${port}`, 'x-nika-app': SECRET, 'x-nika-token': 'tok', origin: `http://127.0.0.1:${port}`, ...(method === 'GET' ? {} : { 'content-type': 'application/json', 'content-length': String(Buffer.byteLength(bodyText)) }) } }, (res) => {
+        let data = '';
+        res.on('data', (c) => { data += c; });
+        res.on('end', () => resolve({ status: res.statusCode, data }));
+      });
+      q.on('error', reject);
+      q.end(method === 'GET' ? undefined : bodyText);
+    });
+    assert.equal((await call('GET', '/api/app/pane/%256/capture')).status, 404);
+    assert.equal((await call('POST', '/api/app/pane/%256/survey', JSON.stringify({ n: 3, sig: DSIG }))).status, 404, 'answering the survey presses a key: app tier only');
+    const agents = await call('GET', '/api/agents?since=all');
+    assert.equal(agents.status, 200);
+    assert.doesNotMatch(agents.data, /"survey"/);
+  });
+});
+
+describe('POST /api/app/pane/:id/survey', () => {
+  const body = { n: 3, sig: DSIG };
+
+  test('(+) hands the pane and exactly { n, sig } to the controller and relays its answer and status (every digit)', async () => {
+    for (const n of [0, 1, 2, 3]) {
+      const json = { n, sig: DSIG };
+      const { a, control } = await bootScreens({ ctlAnswers: { answerSurvey: { status: 200, body: { answered: n } } } });
+      const r = await pane(a, '%6', 'survey', { method: 'POST', json });
+      assert.deepEqual([r.status, r.body], [200, { answered: n }]);
+      assert.deepEqual(control.calls, [['answerSurvey', '%6', json]]);
+      assert.equal(r.headers['cache-control'], 'no-store');
+    }
+  });
+
+  test('(+) a started pane is eligible; every 400, 409 and 429 the controller gives (with `sent`) is relayed as it is', async () => {
+    const answers = [
+      { status: 409, body: { error: 'survey-changed' } },
+      { status: 409, body: { error: 'already-answered' } },
+      { status: 409, body: { error: 'no-survey' } },
+      { status: 409, body: { error: 'prompt-open' } },
+      { status: 409, body: { error: 'input-not-empty' } },
+      { status: 409, body: { error: 'text-mode' } },
+      { status: 409, body: { error: 'not-idle' } },
+      { status: 409, body: { error: 'busy-switching' } },
+      { status: 409, body: { error: 'not-taken', sent: 1 } },
+      { status: 400, body: { error: 'terminal-only', message: 'answer this in the terminal' } },
+      { status: 400, body: { error: 'invalid', message: 'x' } },
+      { status: 429, body: { error: 'busy', message: 'x' } },
+    ];
+    for (const answer of answers) {
+      const { a, control } = await bootScreens({ ctlAnswers: { answerSurvey: answer } });
+      a.ctx.started.set('%8', { key: w.project.key, name: 'x', sessionId: null, role: 'agent', mode: 'plan' });
+      const r = await pane(a, '%8', 'survey', { method: 'POST', json: body });
+      assert.deepEqual([r.status, r.body], [answer.status, answer.body]);
+      assert.deepEqual(control.calls, [['answerSurvey', '%8', body]]);
+    }
+  });
+
+  test('(−) a bad body is 400 before the pane check, and the controller is not called', async () => {
+    const { a, control } = await bootScreens();
+    const bad = [
+      {}, { n: 3 }, { sig: DSIG }, { n: 4, sig: DSIG }, { n: -1, sig: DSIG }, { n: '3', sig: DSIG }, { n: 1.5, sig: DSIG }, { n: null, sig: DSIG }, { n: [3], sig: DSIG },
+      { n: 3, sig: 'xyz' }, { n: 3, sig: DSIG.toUpperCase() }, { n: 3, sig: `${DSIG}0` }, { n: 3, sig: 3 }, { n: 3, sig: null },
+      { n: 3, sig: DSIG, extra: 1 }, { n: 3, sig: DSIG, text: '3' }, { n: 3, sig: DSIG, keys: ['Enter'] }, { n: 3, sig: DSIG, path: '/etc/passwd' },
+      [], 'sig',
+    ];
+    for (const json of bad) {
+      for (const id of ['%6', '%5']) {
+        const r = await pane(a, id, 'survey', { method: 'POST', json });
+        assert.equal(r.status, 400, `${JSON.stringify(json)} on ${id}`);
+      }
+      if (!Array.isArray(json) && typeof json === 'object') assert.equal((await pane(a, '%6', 'survey', { method: 'POST', json })).body.error, 'invalid');
+    }
+    const proto = await pane(a, '%6', 'survey', { method: 'POST', body: `{"__proto__":{"n":3},"n":3,"sig":"${DSIG}"}`, headers: { 'content-type': 'application/json' } });
+    assert.equal(proto.status, 400, '__proto__ is refused');
+    assert.deepEqual(control.calls, []);
+  });
+
+  test('(−) an ineligible pane (zsh, not live, unknown id, bad id) is 404 and the controller is not called', async () => {
+    const { a, control } = await bootScreens();
+    for (const id of ['%5', '%7', '%99', 'abc', '..']) {
+      const r = await a.call('POST', `/api/app/pane/${id.replace('%', '%25')}/survey`, { json: body });
+      assert.equal(r.status, 404, id);
+    }
+    assert.deepEqual(control.calls, []);
+  });
+
+  test('(−) without the secret 403; text/plain 415; GET and PUT 405; a body over 4 KB 413 -- the controller is not called', async () => {
+    const { a, control } = await bootScreens();
+    assert.equal((await pane(a, '%6', 'survey', { method: 'POST', json: body, headers: { 'x-nika-app': null } })).status, 403);
+    assert.equal((await pane(a, '%6', 'survey', { method: 'POST', body: JSON.stringify(body), headers: { 'content-type': 'text/plain' } })).status, 415);
+    assert.equal((await pane(a, '%6', 'survey', { method: 'GET' })).status, 405);
+    assert.equal((await pane(a, '%6', 'survey', { method: 'PUT', json: body })).status, 405);
+    assert.equal((await pane(a, '%6', 'survey', { method: 'POST', json: { n: 3, sig: DSIG, pad: 'x'.repeat(5000) } })).status, 413);
+    assert.deepEqual(control.calls, []);
+  });
+
+  test('(−) nothing of the body reaches a log line, on success and on an internal error', async () => {
+    const lines = [];
+    const saved = { error: console.error, log: console.log, warn: console.warn, info: console.info };
+    for (const name of Object.keys(saved)) console[name] = (...args) => { lines.push(args.map((x) => (x instanceof Error ? `${x.message}\n${x.stack}` : String(x))).join(' ')); };
+    try {
+      for (const ctlAnswers of [undefined, { answerSurvey: () => { throw new Error('boom'); } }]) {
+        const { a } = await bootScreens({ ctlAnswers });
+        await pane(a, '%6', 'survey', { method: 'POST', json: { n: 2, sig: 'fedcba9876543210' } });
+      }
+    } finally {
+      Object.assign(console, saved);
+    }
+    assert.ok(lines.some((l) => /POST .*survey failed/.test(l)), 'the internal error was logged (so the check is real)');
+    assert.deepEqual(lines.filter((l) => l.includes('fedcba9876543210')), []);
+  });
+
+  describe('with the real controller: one digit, nothing else', () => {
+    /** A pane whose keys change its screen the way Claude does: the digit is taken and the survey rows go. `takes: false` leaves them. */
+    async function live({ takes = true } = {}) {
+      const screens = {};
+      const typed = [];
+      const keys = { send: async (id, b) => { typed.push(b); if (takes && /^[0-3]$/.test(b.text ?? '')) screens[id] = rowsOf(['Done. Anything else?', FOOTER.plan]); return { status: 200, body: { sent: { text: 1, paste: 0, keys: 0 } } }; } };
+      const a = await boot({ deps: makeDeps({ mirror: screenMirror(screens), keys }) });
+      screens['%6'] = surveyScreen();
+      return { a, screens, typed };
+    }
+
+    test('(+) capture, then the answer: exactly one typed digit, no key, 200 { answered }', async () => {
+      const { a, typed } = await live();
+      const sig = (await pane(a, '%6', 'capture')).body.survey.sig;
+      const r = await pane(a, '%6', 'survey', { method: 'POST', json: { n: 2, sig } });
+      assert.deepEqual([r.status, r.body], [200, { answered: 2 }]);
+      assert.deepEqual(typed, [{ text: '2' }]);
+      assert.equal((await pane(a, '%6', 'capture')).body.survey, null, 'the survey is gone from the capture too');
+    });
+
+    test('(−) a sig the screen does not have, a digit that Claude does not take: 409, and in the first case no key at all', async () => {
+      const { a, typed } = await live();
+      const stale = await pane(a, '%6', 'survey', { method: 'POST', json: { n: 2, sig: '0000000000000000' } });
+      assert.deepEqual([stale.status, stale.body.error], [409, 'survey-changed']);
+      assert.deepEqual(typed, []);
+      const slow = await live({ takes: false });
+      const sig = (await pane(slow.a, '%6', 'capture')).body.survey.sig;
+      const r = await pane(slow.a, '%6', 'survey', { method: 'POST', json: { n: 3, sig } });
+      assert.deepEqual([r.status, r.body], [409, { error: 'not-taken', sent: 1 }]);
+      assert.deepEqual(slow.typed, [{ text: '3' }]);
+    });
   });
 });
 

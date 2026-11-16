@@ -6,6 +6,7 @@ import { RULE_ROW, parseDraft, boxSquash } from '../src/draft.js';
 import { boxRows, subagentRows } from './helpers.js';
 import { dialogOnScreen } from '../src/dialog.js';
 import { dialogWorld, TAB } from './dialog-fake.js';
+import { surveyOf, SURVEY_UNDO_MS } from '../src/survey.js';
 
 // Synthetic screens only. The phrases follow docs/contracts/claude-tui.md sections 1, 2 and 5; symbols are escapes.
 const DEF = { b: false, fg: null, bg: null, u: false, i: false, d: false };
@@ -30,6 +31,9 @@ const OPTIONS = ['Yes', 'Yes, and always allow this for the project', 'No'];
 const EMPTY_BOX = PROMPT_CHAR; // the prompt character alone
 // Claude Code 2.1.319 (claude-tui.md section 5, F3): `/` typed in vim NORMAL mode opens a history search instead of typing a slash.
 const HISTORY_HINT = '↑/↓ to navigate · Enter to use · Esc to cancel · ctrl+s to scope · Esc i / for slash commands';
+// Claude's feedback survey (0.5, F14; live capture of spike S-F14): the bullet at column 0, the options row indented 2, one row, the box's top rule.
+const SURVEY_Q = '\u25cf How is Claude doing this session? (optional)';
+const SURVEY_O = '  1: Bad    2: Fine   3: Good   0: Dismiss';
 // Real-shaped rows (span lists as the mirror delivers them): the prompt character and a no-break space, then a dim placeholder.
 const PLACEHOLDER_BOX = [sp(`${PROMPT_CHAR}${NB}`), sp('Try "fix lint errors"', true)];
 /** A box row from a string: `❯ text` becomes the real shape (no-break space, then non-dim text); a span list stays as it is. */
@@ -63,7 +67,7 @@ function world(opts = {}) {
     box: [PLACEHOLDER_BOX], vim: false, vimMode: 'insert', insertWorks: true, swallow: false, afterType: null,
     typeLag: 0, boxStale: null, insertLag: 0, insertLeft: 0, cuWorks: true, captureFailFrom: null,
     history: false, historyStuck: false, escLag: 0, escLeft: 0, hookSlash: false,
-    topRule: RULE, below: [], footerTail: '',
+    topRule: RULE, below: [], footerTail: '', survey: null, surveyLeft: 0,
     ...opts,
   };
   w.rows = () => {
@@ -79,7 +83,8 @@ function world(opts = {}) {
     const inserting = w.vim && ((w.vimMode === 'insert' && w.insertLeft <= 0) || w.escLeft > 0);
     const line = `${inserting ? '-- INSERT -- ' : ''}${PHRASE[shown]}${w.footerTail}`;
     const shownBox = w.boxStale?.left > 0 ? w.boxStale.box : w.box;
-    const box = shownBox === null ? [] : ['', w.topRule, ...shownBox.map(toRow), RULE, ...w.below];
+    const above = w.survey ? ['', SURVEY_Q, SURVEY_O, w.survey.free ?? ''] : ['']; // `survey`: { free?, lag?, takes? }
+    const box = shownBox === null ? [] : [...above, w.topRule, ...shownBox.map(toRow), RULE, ...w.below];
     return rowsOf('earlier output', ...box, line);
   };
   /** Where tmux puts the cursor (readDraft needs one, N-1): on the last row between the last two rule rows, at column 2; else the top-left cell. */
@@ -98,6 +103,7 @@ function world(opts = {}) {
       if (w.boxStale?.left > 0) w.boxStale.left -= 1;
       if (w.insertLeft > 0) w.insertLeft -= 1;
       if (w.escLeft > 0) w.escLeft -= 1;
+      if (w.surveyLeft > 0 && (w.surveyLeft -= 1) === 0) { w.survey = null; w.box = [PLACEHOLDER_BOX]; } // Claude took the digit: the rows and the digit go
       return res;
     },
   };
@@ -141,6 +147,7 @@ function world(opts = {}) {
           if (w.typeLag > 0) w.boxStale = { box: before, left: w.typeLag };
         }
       }
+      if (w.survey && w.survey.takes !== false && /^[0-3]$/.test(body.text ?? '') && !(w.vim && w.vimMode === 'normal')) w.surveyLeft = w.survey.lag ?? 1; // captures that still show the digit
       w.onKeys?.(body);
       return { status: 200, body: { sent: { text: 0, paste: 0, keys: 1 } } };
     },
@@ -2470,5 +2477,365 @@ describe('a question or plan dialog on screen (promptOpen)', () => {
       assert.deepEqual(await w.control().endSession('%2'), code(409, 'not-idle'), name);
       assert.deepEqual(keysOf(w), ['Escape'], name);
     }
+  });
+});
+
+describe('answerSurvey (0.5, F14): one digit into Claude\'s feedback survey', () => {
+  const survey = (extra = {}) => world({ survey: {}, ...extra });
+  /** The sig the page would hand back: the one src/survey.js reads from the screen as it is now. */
+  const sigOf = (w) => {
+    const rows = w.rows();
+    return surveyOf({ rows, cursor: w.cursorIn(rows) }, { vim: w.vim, insert: w.vim && w.vimMode === 'insert' }).sig;
+  };
+  const ask = (sc, w, n, extra = {}) => sc.answerSurvey('%2', { n, sig: sigOf(w), ...extra });
+  const texts = (w) => w.sent.map((b) => b.text);
+  const escapes = (w) => w.sent.filter((b) => b.keys?.includes('Escape')).length;
+
+  describe('(+)', () => {
+    test('(+) 3 (Good): exactly one key, the literal text "3", then 200 { answered: 3 }; every capture and the registry read are fresh', async () => {
+      const w = survey();
+      assert.deepEqual(await ask(w.control(), w, 3), { status: 200, body: { answered: 3 } });
+      assert.deepEqual(w.sent, [{ text: '3' }], 'one digit, no Enter, no Escape, no other key');
+      assert.ok(w.captures.every((c) => c.o?.fresh === true));
+      assert.deepEqual(w.stateArgs, [{ fresh: true }], 'the registry is read once, skipping its cache');
+      assert.deepEqual(w.slept, [150, 150], 'the first read-back still shows the digit and the rows, the second is clean');
+    });
+
+    test('(+) 0 (Dismiss) and 1, 2: the same, each digit as typed text', async () => {
+      for (const n of [0, 1, 2]) {
+        const w = survey();
+        assert.deepEqual(await ask(w.control(), w, n), { status: 200, body: { answered: n } }, String(n));
+        assert.deepEqual(w.sent, [{ text: String(n) }], String(n));
+      }
+    });
+
+    test('(+) vim INSERT, and a vim pane that is not in NORMAL, answer too', async () => {
+      const w = survey({ vim: true, vimMode: 'insert' });
+      assert.deepEqual(await ask(w.control(), w, 2), { status: 200, body: { answered: 2 } });
+      assert.deepEqual(w.sent, [{ text: '2' }]);
+    });
+
+    test('(+) a survey that opens mid-turn is answered once the registry says idle; the row between the options and the box may hold a notice', async () => {
+      const w = survey({ survey: { free: "You've used 80% of your weekly limit" } });
+      assert.equal((await ask(w.control(), w, 1)).status, 200);
+    });
+
+    test('(+) the read-back waits for Claude\'s 400 ms pause: a slow redraw (rows still there for 4 reads) is still taken within the 1 s window', async () => {
+      const w = survey({ survey: { lag: 4 } });
+      assert.deepEqual(await ask(w.control(), w, 3), { status: 200, body: { answered: 3 } });
+      assert.deepEqual(w.slept, [150, 150, 150, 150, 150]);
+    });
+
+    test('(+) the read-back is bounded: it never sleeps more than 1 s in total', async () => {
+      const w = survey({ survey: { takes: false } });
+      assert.deepEqual(await ask(w.control(), w, 3), { status: 409, body: { error: 'not-taken', sent: 1 } });
+      assert.ok(w.slept.reduce((a, b) => a + b, 0) <= 1000, JSON.stringify(w.slept));
+      assert.ok(w.slept.length >= 3, 'and long enough for the 400 ms pause');
+    });
+
+    test('(+) the same sig answered under 3 s ago is 409 already-answered with no key; a different survey (another sig) can be answered at once', async () => {
+      const w = survey();
+      const sc = w.control();
+      const sig = sigOf(w);
+      assert.equal((await sc.answerSurvey('%2', { n: 3, sig })).status, 200);
+      w.survey = {}; // Claude shows the same survey again, same words under the same message
+      assert.deepEqual(await sc.answerSurvey('%2', { n: 3, sig }), code(409, 'already-answered'));
+      assert.deepEqual(texts(w), ['3']);
+      w.t += 3000;
+      assert.equal((await sc.answerSurvey('%2', { n: 1, sig })).status, 200, 'after the hold');
+    });
+  });
+
+  describe('(−) nothing sent', () => {
+    test('(−) a body that is not exactly { n: 0-3, sig } is 400 invalid before anything is read', async () => {
+      const w = survey();
+      const sig = sigOf(w);
+      for (const body of [null, undefined, [], 'x', {}, { n: 3 }, { sig }, { n: 4, sig }, { n: -1, sig }, { n: '3', sig }, { n: 1.5, sig }, { n: 3, sig: 'ABCDEF0123456789' }, { n: 3, sig: 'abc' }, { n: 3, sig, extra: 1 }]) {
+        const r = await w.control().answerSurvey('%2', body);
+        assert.equal(r.status, 400, JSON.stringify(body));
+        assert.equal(r.body.error, 'invalid');
+      }
+      assert.deepEqual(w.sent, []);
+      assert.deepEqual(w.captures, [], 'the body is checked before the screen is looked at');
+    });
+
+    test('(−) another control action is running on the pane: 409 busy-switching, nothing sent', async () => {
+      const w = survey();
+      const release = hold(w);
+      const sc = w.control();
+      const first = sc.switchMode('%1', 'plan');
+      await tick();
+      assert.deepEqual(await sc.answerSurvey('%1', { n: 3, sig: sigOf(w) }), code(409, 'busy-switching'));
+      release();
+      await first;
+      assert.ok(!texts(w).includes('3'));
+    });
+
+    test('(−) a Stop or End interrupt is running, or its Escape went out less than 40 ms ago: 409 not-idle, nothing sent (a digit right behind an Escape is Meta+digit)', async () => {
+      const w = survey({ state: 'busy' });
+      const sc = w.control();
+      const sig = sigOf(w);
+      assert.equal((await sc.stop('%2')).status, 200);
+      assert.deepEqual(keysOf(w), ['Escape']);
+      w.state = 'idle';
+      assert.deepEqual(await sc.answerSurvey('%2', { n: 3, sig }), code(409, 'not-idle'), 'the Escape went out at this very moment');
+      assert.deepEqual(keysOf(w), ['Escape'], 'no digit');
+      w.t += 40;
+      assert.equal((await sc.answerSurvey('%2', { n: 3, sig })).status, 200, 'after the gap');
+      // an interrupt that is still running (between its two Escapes)
+      const v = survey({ vim: true, vimMode: 'insert', state: 'busy' });
+      const sig2 = sigOf(v);
+      let release;
+      const gate = new Promise((r) => { release = r; });
+      let entered;
+      const reached = new Promise((r) => { entered = r; });
+      let first = true;
+      const sleep = async (ms) => { v.t += ms; v.slept.push(ms); if (first) { first = false; entered(); await gate; } };
+      const sc2 = v.control({ sleep });
+      const stopping = sc2.stop('%2');
+      await reached;
+      assert.deepEqual(await sc2.answerSurvey('%2', { n: 3, sig: sig2 }), code(409, 'not-idle'));
+      release();
+      await stopping;
+      assert.ok(!texts(v).includes('3'));
+    });
+
+    test('(−) the registry does not say idle (busy, an attention state, no state, a failing lookup): 409 not-idle, zero keys, after the screen checks', async () => {
+      for (const state of ['busy', 'attn', 'shell', null]) {
+        const w = survey({ state });
+        assert.deepEqual(await ask(w.control(), w, 3), code(409, 'not-idle'), String(state));
+        assert.deepEqual(w.sent, [], String(state));
+      }
+      const failing = survey();
+      failing.stateFn = () => { throw new Error('registry unreadable'); };
+      assert.deepEqual(await ask(failing.control(), failing, 3), code(409, 'not-idle'));
+      assert.deepEqual(failing.sent, []);
+    });
+
+    test('(−) a Stop that goes out while the registry is being read: the last check before the key refuses (not-idle), the digit is never typed', async () => {
+      const w = survey();
+      const sc = w.control({ sleep: async (ms) => { w.slept.push(ms); } }); // the clock stands still: the Escape is "just now" when the state read returns
+      const sig = sigOf(w);
+      w.onKeys = (b) => { if (b.keys?.[0] === 'Escape') w.state = 'idle'; };
+      w.stateFn = async (calls) => {
+        if (calls > 1) return w.state;
+        w.state = 'busy';
+        assert.equal((await sc.stop('%2')).status, 200);
+        return 'idle';
+      };
+      assert.deepEqual(await sc.answerSurvey('%2', { n: 3, sig }), code(409, 'not-idle'));
+      assert.equal(escapes(w), 1);
+      assert.ok(!texts(w).includes('3'), 'a digit right behind an Escape would be Meta+digit');
+    });
+
+    test('(−) a failed capture passes through with its own status and body, nothing sent', async () => {
+      const w = survey({ captureFail: { status: 404, body: { error: 'not_found', message: 'gone' } } });
+      assert.deepEqual(await w.control().answerSurvey('%2', { n: 3, sig: '0123456789abcdef' }), { status: 404, body: { error: 'not_found', message: 'gone' } });
+      assert.deepEqual(w.sent, []);
+    });
+
+    test('(−) a permission prompt or a dialog on screen: 409 prompt-open, zero keys', async () => {
+      const prompt = survey({ prompt: true });
+      assert.deepEqual(await prompt.control().answerSurvey('%2', { n: 3, sig: '0123456789abcdef' }), code(409, 'prompt-open'));
+      assert.deepEqual(prompt.sent, []);
+      const dialog = dialogWorld({});
+      assert.equal(dialogOnScreen(dialog.screen().rows), true, 'the fake dialog is one nika sees');
+      assert.deepEqual(await dialog.control().answerSurvey('%2', { n: 3, sig: '0123456789abcdef' }), code(409, 'prompt-open'));
+      assert.deepEqual(dialog.keysLog(), []);
+    });
+
+    test('(−) no survey on screen: 409 no-survey, zero keys', async () => {
+      const w = world({});
+      assert.deepEqual(await w.control().answerSurvey('%2', { n: 3, sig: '0123456789abcdef' }), code(409, 'no-survey'));
+      assert.deepEqual(w.sent, []);
+    });
+
+    test('(−) the transcript question or a bypass mention: 400 terminal-only, zero keys (the page says to answer in the terminal)', async () => {
+      const consent = survey();
+      const rows = consent.rows;
+      consent.rows = () => rowsOf(...rows().map((r) => rowText(r)).map((t) => (t === SURVEY_Q ? '● Can Anthropic look at your session transcript to help us improve Claude Code?' : t)));
+      assert.deepEqual(await consent.control().answerSurvey('%2', { n: 3, sig: '0123456789abcdef' }), { status: 400, body: { error: 'terminal-only', message: 'answer this in the terminal' } });
+      const bypass = survey({ survey: { free: 'a bypass notice' } });
+      assert.deepEqual(await bypass.control().answerSurvey('%2', { n: 3, sig: '0123456789abcdef' }), { status: 400, body: { error: 'terminal-only', message: 'answer this in the terminal' } });
+      const mode = survey({ mode: 'bypassPermissions' });
+      assert.equal((await mode.control().answerSurvey('%2', { n: 3, sig: '0123456789abcdef' })).body.error, 'terminal-only');
+      for (const w of [consent, bypass, mode]) assert.deepEqual(w.sent, []);
+    });
+
+    test('(−) text in the input box (a draft, a typed digit): 409 input-not-empty, zero keys', async () => {
+      for (const box of [[`${PROMPT_CHAR} half-written note`], [`${PROMPT_CHAR} 3`]]) {
+        const w = survey({ box });
+        assert.deepEqual(await w.control().answerSurvey('%2', { n: 3, sig: '0123456789abcdef' }), code(409, 'input-not-empty'), box[0]);
+        assert.deepEqual(w.sent, []);
+      }
+    });
+
+    test('(−) vim NORMAL (the pane was seen in INSERT, no marker now): 409 text-mode, zero keys', async () => {
+      const w = survey({ vim: true, vimMode: 'normal' });
+      assert.deepEqual(await w.control().answerSurvey('%2', { n: 3, sig: '0123456789abcdef' }), code(409, 'text-mode'));
+      assert.deepEqual(w.sent, []);
+    });
+
+    test('(−) rows nika does not read exactly (a second row between, another options row): 409 survey-changed, zero keys', async () => {
+      const w = survey({ survey: { free: SURVEY_O } });
+      assert.deepEqual(await w.control().answerSurvey('%2', { n: 3, sig: '0123456789abcdef' }), code(409, 'survey-changed'));
+      assert.deepEqual(w.sent, []);
+    });
+
+    test('(−) the page\'s sig is not the screen\'s (another survey, or the same one under another message): 409 survey-changed, zero keys', async () => {
+      const w = survey();
+      assert.deepEqual(await w.control().answerSurvey('%2', { n: 3, sig: '0123456789abcdef' }), code(409, 'survey-changed'));
+      assert.deepEqual(w.sent, []);
+      const sig = sigOf(w);
+      w.rows = ((rows) => () => [...rowsOf('a different message above'), ...rows()])(w.rows);
+      assert.deepEqual(await w.control().answerSurvey('%2', { n: 3, sig }), code(409, 'survey-changed'));
+      assert.deepEqual(w.sent, []);
+    });
+
+    test('(−) the order of the checks: the screen before the registry (a missing survey is no-survey even when busy), the sig before the registry', async () => {
+      const gone = world({ state: 'busy' });
+      assert.deepEqual(await gone.control().answerSurvey('%2', { n: 3, sig: '0123456789abcdef' }), code(409, 'no-survey'));
+      const wrong = survey({ state: 'busy' });
+      assert.deepEqual(await wrong.control().answerSurvey('%2', { n: 3, sig: '0123456789abcdef' }), code(409, 'survey-changed'));
+      assert.deepEqual(wrong.stateCalls, 0, 'the registry is not even read');
+    });
+  });
+
+  describe('(−) after the key', () => {
+    test('(−) the rows stay (Claude did not take the digit): 409 not-taken with sent 1; nika never removes the digit', async () => {
+      const w = survey({ survey: { takes: false } });
+      assert.deepEqual(await ask(w.control(), w, 3), { status: 409, body: { error: 'not-taken', sent: 1 } });
+      assert.deepEqual(w.sent, [{ text: '3' }], 'no C-u, no BSpace, no Escape to take it back');
+    });
+
+    test('(−) the rows are gone but the box still reads exactly the digit: 409 not-taken with sent 1', async () => {
+      const w = survey();
+      const sc = w.control();
+      const sig = sigOf(w);
+      w.onKeys = (b) => { if (b.text === '3') { w.survey = null; w.surveyLeft = 0; } }; // the rows vanish, the digit stays in the box
+      assert.deepEqual(await sc.answerSurvey('%2', { n: 3, sig }), { status: 409, body: { error: 'not-taken', sent: 1 } });
+      assert.deepEqual(w.sent, [{ text: '3' }]);
+    });
+
+    test('(−) a not-taken answer is still held: a second click on the same sig is already-answered, with no second digit (and a digit that stuck in the box is input-not-empty)', async () => {
+      const w = survey({ survey: { takes: false }, swallow: true }); // the digit never reached the box
+      const sc = w.control();
+      const sig = sigOf(w);
+      assert.equal((await sc.answerSurvey('%2', { n: 3, sig })).body.error, 'not-taken');
+      assert.deepEqual(await sc.answerSurvey('%2', { n: 3, sig }), code(409, 'already-answered'));
+      assert.deepEqual(w.sent, [{ text: '3' }]);
+      const stuck = survey({ survey: { takes: false } }); // the digit sits in the box and the rows stay
+      const sc2 = stuck.control();
+      const sig2 = sigOf(stuck);
+      assert.equal((await sc2.answerSurvey('%2', { n: 3, sig: sig2 })).body.error, 'not-taken');
+      assert.deepEqual(await sc2.answerSurvey('%2', { n: 3, sig: sig2 }), code(409, 'input-not-empty'));
+      assert.deepEqual(stuck.sent, [{ text: '3' }], 'no second digit');
+    });
+
+    test('(−) a 429 or any other failure of the key send passes through with its own status and body; nothing is held', async () => {
+      const w = survey();
+      w.failSend = () => ({ status: 429, body: { error: 'busy', message: 'too many keys' } });
+      const sc = w.control();
+      const sig = sigOf(w);
+      assert.deepEqual(await sc.answerSurvey('%2', { n: 3, sig }), { status: 429, body: { error: 'busy', message: 'too many keys' } });
+      w.failSend = null;
+      assert.equal((await sc.answerSurvey('%2', { n: 3, sig })).status, 200, 'not held: a retry goes');
+      const down = survey();
+      down.failSend = () => ({ status: 502, body: { error: 'tmux', message: 'x' } });
+      assert.deepEqual(await ask(down.control(), down, 2), { status: 502, body: { error: 'tmux', message: 'x' } });
+    });
+
+    test('(−) a capture that fails after the key passes through with sent 1', async () => {
+      const w = survey();
+      const sc = w.control();
+      const sig = sigOf(w);
+      w.onKeys = () => { w.captureFail = { status: 404, body: { error: 'not_found', message: 'gone' } }; };
+      assert.deepEqual(await sc.answerSurvey('%2', { n: 3, sig }), { status: 404, body: { error: 'not_found', message: 'gone', sent: 1 } });
+    });
+  });
+
+  describe('no Escape for Claude\'s "Esc to undo" row (SURVEY_UNDO_MS)', () => {
+    test('(+) after a rating (1-3), Stop and End send no Escape for SURVEY_UNDO_MS: 409 survey-undo, then they go as before', async () => {
+      const w = survey();
+      const sc = w.control();
+      assert.equal((await ask(sc, w, 2)).status, 200);
+      w.state = 'busy'; // a new turn began right after the rating
+      w.t += 100;
+      assert.deepEqual(await sc.stop('%2'), code(409, 'survey-undo'));
+      assert.deepEqual(await sc.endSession('%2'), code(409, 'survey-undo'));
+      assert.equal(escapes(w), 0);
+      w.t += SURVEY_UNDO_MS;
+      assert.deepEqual(await sc.stop('%2'), { status: 200, body: { stopped: true, presses: 1 } });
+      assert.equal(escapes(w), 1);
+    });
+
+    test('(+) the hold is a guarantee of the one key path: any Escape of this controller is refused inside it (the history search of a command in vim NORMAL), other keys are not', async () => {
+      const w = survey();
+      const sc = w.control({ vimOf: () => false });
+      assert.equal((await ask(sc, w, 1)).status, 200);
+      w.vim = true;
+      w.vimMode = 'normal'; // the pane turns out to be vim, in NORMAL: `/` opens the history search, which only an Escape closes
+      w.t += 100;
+      assert.deepEqual(await sc.runCommand('%2', '/compact'), code(409, 'survey-undo'));
+      assert.equal(escapes(w), 0);
+      assert.equal(w.history, true, 'the search stays open until the hold ends: nika sends no Escape');
+    });
+
+    test('(+) keys other than Escape are not held: a mode switch right after the rating presses BTab', async () => {
+      const w = survey();
+      const sc = w.control();
+      assert.equal((await ask(sc, w, 3)).status, 200);
+      w.t += 100;
+      assert.equal((await sc.switchMode('%2', 'acceptEdits')).status, 200);
+      assert.ok(keysOf(w).includes('BTab'));
+    });
+
+    test('(−) Dismiss (0) has no undo row: Stop works at once; so does a send that failed', async () => {
+      const w = survey();
+      const sc = w.control();
+      assert.equal((await ask(sc, w, 0)).status, 200);
+      w.state = 'busy';
+      assert.equal((await sc.stop('%2')).status, 200);
+      const f = survey();
+      f.failSend = () => ({ status: 429, body: { error: 'busy', message: 'x' } });
+      const sc2 = f.control();
+      assert.equal((await ask(sc2, f, 3)).status, 429);
+      f.failSend = null;
+      f.state = 'busy';
+      assert.equal((await sc2.stop('%2')).status, 200, 'the digit never went out: no hold');
+    });
+
+    test('(−) a digit that fails to go out leaves the hold of an earlier rating as it was', async () => {
+      const w = survey();
+      const sc = w.control();
+      const sig = sigOf(w);
+      assert.equal((await sc.answerSurvey('%2', { n: 2, sig })).status, 200);
+      w.survey = {}; // shown again, 3 s later (the answered hold is over, the undo hold is not)
+      w.t += 3000;
+      w.failSend = () => ({ status: 429, body: { error: 'busy', message: 'x' } });
+      assert.equal((await sc.answerSurvey('%2', { n: 3, sig })).status, 429);
+      w.failSend = null;
+      w.state = 'busy';
+      assert.deepEqual(await sc.stop('%2'), code(409, 'survey-undo'));
+    });
+
+    test('(−) the hold is per pane', async () => {
+      const w = survey();
+      const sc = w.control();
+      assert.equal((await ask(sc, w, 3)).status, 200);
+      w.state = 'busy';
+      w.t += 100;
+      assert.equal((await sc.stop('%3')).status, 200, 'another pane');
+      assert.deepEqual(await sc.stop('%2'), code(409, 'survey-undo'));
+    });
+
+    test('(−) a clock that went back counts as passed, like the 40 ms gap', async () => {
+      const w = survey();
+      const sc = w.control();
+      assert.equal((await ask(sc, w, 3)).status, 200);
+      w.state = 'busy';
+      w.t -= 5000;
+      assert.equal((await sc.stop('%2')).status, 200);
+    });
   });
 });

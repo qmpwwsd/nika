@@ -24,6 +24,7 @@ import { h as hReal, icon as iconReal, roleTagEl as roleTagElReal, subStateEl as
 import { subagentView as subagentViewReal, subagentHref as subagentHrefReal, SUBAGENT_ID as SUBAGENT_ID_REAL, agentLabelView as agentLabelViewReal, subLabelView as subLabelViewReal } from '../public/dash-model.js';
 import { SESSION_ID as SESSION_ID_REAL, PANE_ID as PANE_ID_REAL } from '../public/quick-actions.js';
 import { cleanDialog as cleanDialogReal } from '../public/dialog-form.js';
+import { cleanSurvey as cleanSurveyReal } from '../public/survey-panel.js';
 import { installDom, El, withClass, focus as focusState } from './fake-dom.js';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
@@ -171,7 +172,7 @@ describe('session.html under the strict CSP', () => {
 describe('contracts with the other UI modules', () => {
   test('(+) session.js imports only names the shared modules export, from sibling files', () => {
     const imports = [...JS['session.js'].matchAll(/import \{([^}]+)\} from '([^']+)'/g)];
-    assert.deepEqual(imports.map((m) => m[2]), ['./dom.js', './api.js', './dash-model.js', './mirror-render.js', './draft-sync.js', './modes.js', './quick-actions.js', './models-ui.js', './end-dialog.js', './palette.js', './shortcuts.js', './fit-ui.js', './scroll.js', './attach.js', './dialog-form.js']);
+    assert.deepEqual(imports.map((m) => m[2]), ['./dom.js', './api.js', './dash-model.js', './mirror-render.js', './draft-sync.js', './modes.js', './quick-actions.js', './models-ui.js', './end-dialog.js', './palette.js', './shortcuts.js', './fit-ui.js', './scroll.js', './attach.js', './dialog-form.js', './survey-panel.js']);
     for (const [, names, from] of imports) {
       const exported = read(from.slice(2));
       for (const n of names.split(',').map((x) => x.trim())) assert.match(exported, new RegExp(`export (async )?(function|const|let) ${n}\\b`), `${from} exports ${n}`);
@@ -730,7 +731,7 @@ describe('command palette wiring (spec 9.7, Task 11)', () => {
     const ctx = {
       composer: () => ta, $: (id) => ({ addEventListener() {}, focus() { calls.push(`focus ${id}`); } }), document: { querySelectorAll: () => [] },
       PL: state.PL ?? { open: false, active: -1, shown: [] }, Q: { pop: state.pop === true }, S: { on: false }, SW: { busy: state.switching ? 'plan' : null },
-      W: { pane: state.pane ?? 'ok', promptOpen: state.promptOpen === true, prompt: null, dialog: state.dialog === true ? {} : null }, A: { kind: state.status ?? 'idle' }, DF: state.form ?? null,
+      W: { pane: state.pane ?? 'ok', promptOpen: state.promptOpen === true, prompt: null, dialog: state.dialog === true ? {} : null }, A: { kind: state.status ?? 'idle' }, DF: state.form ?? null, SV: null,
       composerKey: composerKeyReal, hasAnswerButtons: hasAnswerButtonsReal, moveActive: moveActiveReal,
       grow() {}, updateChip() {}, wirePalette() {}, setPass: () => calls.push('pass'),
       sendComposer: () => calls.push('send'), sendKey: (k) => calls.push(`key ${k}`), closeModelPop: (r) => calls.push(`model ${r}`),
@@ -1339,7 +1340,7 @@ describe('Task 14b: wiring of the page rules', () => {
     const log = Object.assign(sendLog(), { problems: [], said: [], shellOff: 0 });
     const ta = { value, disabled: false };
     const ctx = {
-      sending: false, composer: () => ta, DF: null, S: { on: shell }, W: { promptOpen, prompt, pane, mode: 'default', confirmed: true }, A: { kind }, sendGate: sendGateReal, hasAnswerButtons: hasAnswerButtonsReal, planShell: planShellReal, planSend: planSendReal,
+      sending: false, composer: () => ta, DF: null, SV: null, S: { on: shell }, W: { promptOpen, prompt, pane, mode: 'default', confirmed: true }, A: { kind }, sendGate: sendGateReal, hasAnswerButtons: hasAnswerButtonsReal, planShell: planShellReal, planSend: planSendReal,
       showProblem: (m, k) => log.problems.push([m, k]), $: () => el(), say: (m) => log.said.push(m),
       paneId: '%12', setShell: () => { log.shellOff += 1; }, grow() {}, updateChip() {},
       DS: { screen: () => null, beginSend() {}, endSend() {}, sent() {}, submitted() {} }, draftSendPlan: draftSendPlanReal, M: { cols: 120, gone: false }, ATT: { pending: () => false },
@@ -1606,7 +1607,7 @@ describe('Task 14b: wiring of the page rules', () => {
   const attnRig = ({ mac = false, kind = 'attn', prompt = null, pane = 'ok' } = {}) => {
     const note = { hidden: true };
     const text = { textContent: '' };
-    const ctx = { $: (id) => (id === 'attn-note' ? note : text), DF: null, W: { pane, prompt }, A: { kind, name: 'builder-1', attention: 'Asking to run a command' }, attnNote: attnNoteReal, passKeyLabel, MAC: mac };
+    const ctx = { $: (id) => (id === 'attn-note' ? note : text), DF: null, SV: null, W: { pane, prompt }, A: { kind, name: 'builder-1', attention: 'Asking to run a command' }, attnNote: attnNoteReal, passKeyLabel, MAC: mac };
     mk(['function renderAttn()'], ctx).renderAttn();
     return { note, text };
   };
@@ -3339,7 +3340,7 @@ describe('0.5: Send with the synced box (design W5, section 4)', () => {
     const log = Object.assign(sendLog(), { problems: [], said: [], pushed: [], told: [], shellOff: 0 });
     const ta = { value, disabled: false };
     const ctx = {
-      sending: false, composer: () => ta, DF: null, S: { on: shell }, W: { promptOpen, prompt: null, pane: 'ok', ...footer }, A: { kind }, M: { cols: 120, gone: false },
+      sending: false, composer: () => ta, DF: null, SV: null, S: { on: shell }, W: { promptOpen, prompt: null, pane: 'ok', ...footer }, A: { kind }, M: { cols: 120, gone: false },
       sendGate: sendGateReal, hasAnswerButtons: hasAnswerButtonsReal, planShell: planShellReal, planSend: planSendReal, draftSendPlan: draftSendPlanReal,
       showProblem: (m, k) => log.problems.push([m, k]), $: () => ({ setAttribute() {}, removeAttribute() {} }), say: (m) => log.said.push(m), paneId: '%12',
       setShell: () => { log.shellOff += 1; }, grow() {}, updateChip() {},
@@ -3803,7 +3804,7 @@ describe('W4: Claude\'s prompt suggestion in the message box (wiring)', () => {
     const ta = { value: state.value ?? '', selectionStart: 0, selectionEnd: 0, addEventListener(type, f) { if (type === 'keydown') this.keydown = f; } };
     const ctx = {
       composer: () => ta, $: () => ({ addEventListener() {}, focus() {} }), document: { querySelectorAll: () => [] },
-      PL: { open: false, active: -1, shown: [] }, Q: { pop: false }, S: { on: false }, SW: { busy: null }, W: { pane: 'ok', promptOpen: false, prompt: null }, A: { kind: 'idle' }, DF: null,
+      PL: { open: false, active: -1, shown: [] }, Q: { pop: false }, S: { on: false }, SW: { busy: null }, W: { pane: 'ok', promptOpen: false, prompt: null }, A: { kind: 'idle' }, DF: null, SV: null,
       composerKey: composerKeyReal, hasAnswerButtons: hasAnswerButtonsReal, moveActive: moveActiveReal,
       grow() {}, updateChip() {}, wirePalette() {}, setPass() {}, sendComposer: () => calls.push('send'), sendKey: (k) => calls.push(`key ${k}`),
       closeModelPop() {}, closePalette() {}, insertActive() {}, setActive() {}, queueArrow: (k) => calls.push(`arrow ${k}`), endArrows: () => { calls.push('ends'); return false; }, chain: Promise.resolve(), stop() {},
@@ -7663,7 +7664,7 @@ describe('W1-T3: question dialogs and plan approvals in the session window (hook
     const log = { renders: 0 };
     const W = { pane: 'connecting', got: false, mode: 'unknown', confirmed: true, prompt: null, promptOpen: false, dialog: null, last: null, struck: new Set(), strikeAt: null };
     const ctx = {
-      W, SW: { busy: null }, A: { name: 'builder-1' }, modeKey: (m) => m ?? 'unknown', cleanPrompt: cleanPromptReal, cleanDialog: cleanDialogReal,
+      W, SW: { busy: null }, A: { name: 'builder-1' }, modeKey: (m) => m ?? 'unknown', cleanPrompt: cleanPromptReal, cleanDialog: cleanDialogReal, cleanSurvey: cleanSurveyReal,
       modeNote: () => ({ last: null, msg: '' }), announceMode() {}, renderMode: () => { log.renders += 1; },
     };
     return { W, log, note: mk(['function noteScreen(body)'], ctx).noteScreen };
@@ -7716,7 +7717,7 @@ describe('W1-T3: question dialogs and plan approvals in the session window (hook
       paneId: '%12', SW: { parts: [{}], busy: null }, W: { pane: 'ok', dialog: 'D', mode: 'default', confirmed: true, msg: null, promptOpen: true },
       A: { kind: 'attn', name: 'builder-1', attention: 'Claude has a question' }, switcherState: () => ({ reason: '' }),
       renderTag: stub('tag'), renderSegments: stub('segments'), renderWhy: stub('why'), renderQuick: stub('quick'), renderAttn: stub('attn'), renderPrompt: stub('prompt'),
-      DF: { render: (a) => { order.push('form'); args = a; } },
+      DF: { render: (a) => { order.push('form'); args = a; } }, SV: null,
     };
     mk(['function renderMode()'], ctx).renderMode();
     assert.deepEqual(order, ['tag', 'segments', 'why', 'quick', 'attn', 'prompt', 'form']);
@@ -7726,7 +7727,7 @@ describe('W1-T3: question dialogs and plan approvals in the session window (hook
   test('(−) P3: before the form exists (no pane, or boot not done) renderMode draws no form and does not fail', () => {
     const ctx = {
       paneId: '%12', SW: { parts: [{}], busy: null }, W: { pane: 'ok', mode: 'default', confirmed: true, msg: null }, A: { kind: 'idle', name: 'x', attention: '' }, switcherState: () => ({ reason: '' }),
-      renderTag() {}, renderSegments() {}, renderWhy() {}, renderQuick() {}, renderAttn() {}, renderPrompt() {}, DF: null,
+      renderTag() {}, renderSegments() {}, renderWhy() {}, renderQuick() {}, renderAttn() {}, renderPrompt() {}, DF: null, SV: null,
     };
     assert.doesNotThrow(() => mk(['function renderMode()'], ctx).renderMode());
   });
@@ -7736,7 +7737,7 @@ describe('W1-T3: question dialogs and plan approvals in the session window (hook
   const attnRig = ({ form, prompt = null, pane = 'ok', kind = 'attn' }) => {
     const note = { hidden: true };
     const ctx = {
-      $: (id) => (id === 'attn-note' ? note : { textContent: '' }), DF: form === undefined ? null : form, W: { pane, prompt }, A: { kind, name: 'builder-1', attention: 'Claude has a question' },
+      $: (id) => (id === 'attn-note' ? note : { textContent: '' }), DF: form === undefined ? null : form, SV: null, W: { pane, prompt }, A: { kind, name: 'builder-1', attention: 'Claude has a question' },
       attnNote: attnNoteReal, passKeyLabel, MAC: false,
     };
     mk(['function renderAttn()'], ctx).renderAttn();
@@ -7762,7 +7763,7 @@ describe('W1-T3: question dialogs and plan approvals in the session window (hook
     const log = Object.assign(sendLog(), { problems: [], atts: [] });
     const ta = { value: 'hello', disabled: false };
     const ctx = {
-      sending: false, composer: () => ta, DF: form, S: { on: false }, W: { promptOpen: true, prompt, pane: 'ok' }, A: { kind: 'attn' }, M: { cols: 120, gone: false },
+      sending: false, composer: () => ta, DF: form, SV: null, S: { on: false }, W: { promptOpen: true, prompt, pane: 'ok' }, A: { kind: 'attn' }, M: { cols: 120, gone: false },
       sendGate: sendGateReal, hasAnswerButtons: hasAnswerButtonsReal, planShell: planShellReal, planSend: planSendReal, draftSendPlan: draftSendPlanReal,
       showProblem: (m, k) => log.problems.push([m, k]), $: () => el(), say() {}, paneId: '%12', setShell() {}, grow() {}, updateChip() {},
       DS: { screen: () => null, beginSend() {}, endSend() {}, sent() {}, submitted() {} },
@@ -7800,7 +7801,7 @@ describe('W1-T3: question dialogs and plan approvals in the session window (hook
     const log = sendLog();
     const ta = { value: 'hello', disabled: false };
     const ctx = {
-      sending: false, composer: () => ta, DF: null, S: { on: false }, W: { promptOpen: false, prompt: null, pane: 'ok', mode: 'default', confirmed: true }, A: { kind: 'idle' }, M: { cols: 120, gone: false },
+      sending: false, composer: () => ta, DF: null, SV: null, S: { on: false }, W: { promptOpen: false, prompt: null, pane: 'ok', mode: 'default', confirmed: true }, A: { kind: 'idle' }, M: { cols: 120, gone: false },
       sendGate: sendGateReal, hasAnswerButtons: hasAnswerButtonsReal, planShell: planShellReal, planSend: planSendReal, draftSendPlan: draftSendPlanReal,
       showProblem() {}, $: () => el(), say() {}, paneId: '%12', setShell() {}, grow() {}, updateChip() {},
       DS: { screen: () => null, beginSend() {}, endSend() {}, sent() {}, submitted() {} }, ATT: { pending: () => false },
@@ -8089,14 +8090,14 @@ describe('W8-T3: the subagent list and the read-only subagent view (design W8, 4
 
   // -- boot (4.4: 2 to 6)
 
-  const BOOT_SPIES = ['setBackHref', 'setBack', 'syncKbdHint', 'syncHistHint', 'syncPassKeys', 'watchNotes', 'showUrlNotice', 'wireTabs', 'wireHistory', 'wireHist', 'wireTerminal', 'wireComposer', 'wireSubs', 'wireSwitcher', 'wireQuick', 'wireFit', 'loadSettings', 'startAgentPoll', 'startHistoryPoll', 'kickMirror', 'refreshHistory', 'refreshAgent', 'wireWindowKeys', 'createDialogForm'];
+  const BOOT_SPIES = ['setBackHref', 'setBack', 'syncKbdHint', 'syncHistHint', 'syncPassKeys', 'watchNotes', 'showUrlNotice', 'wireTabs', 'wireHistory', 'wireHist', 'wireTerminal', 'wireComposer', 'wireSubs', 'wireSwitcher', 'wireQuick', 'wireFit', 'loadSettings', 'startAgentPoll', 'startHistoryPoll', 'kickMirror', 'refreshHistory', 'refreshAgent', 'wireWindowKeys', 'createDialogForm', 'createSurveyPanel'];
   const bootRig = ({ sub = false, bad = false, session = S, pane = null, project = KEY, app = true, search = '' } = {}) => {
     const p = page();
     const log = { calls: [], doc: [] };
     const spy = (name) => (...args) => { log.calls.push(name); return args; };
     const ctx = {
       isApp: () => app, $: p.$, SUB: sub, BAD_AGENT: bad, agentId: sub ? AG : null, sessionId: session, paneId: pane, projectKey: project, location: { search }, URLSearchParams,
-      MAC: false, P: { on: false }, windowCommand() {}, notices: [], MID: ' \u00b7 ', ATT: { wire: spy('ATT.wire') }, FIT: { planner: null }, DF: null, A: { name: 'the agent' },
+      MAC: false, P: { on: false }, windowCommand() {}, notices: [], MID: ' \u00b7 ', ATT: { wire: spy('ATT.wire') }, FIT: { planner: null }, DF: null, SV: null, A: { name: 'the agent' },
       composer: () => ({ focus() {} }), onPageKey() {}, openKbd() {}, announce() {}, setGone() {}, call() {}, say() {}, showProblem() {}, clearProblem() {}, renderAttn() {}, showOverlay() {}, DOTS: '...',
       document: { body: node('body'), title: '', querySelector: (sel) => (sel === '.skip-2' ? p.$('skip-2') : null), addEventListener: (type) => log.doc.push(type) },
       ...Object.fromEntries(BOOT_SPIES.map((n) => [n, spy(n)])),
@@ -8104,7 +8105,7 @@ describe('W8-T3: the subagent list and the read-only subagent view (design W8, 4
     const { boot } = mk(['function showEmpty(text)', 'function showNotice(msg)', 'function readOnlyView()', 'function boot()'], ctx);
     return { boot, p, log, ctx };
   };
-  const MIRROR = ['wireTabs', 'wireHist', 'wireTerminal', 'wireComposer', 'ATT.wire', 'wireSubs', 'wireSwitcher', 'wireQuick', 'wireFit', 'createDialogForm', 'kickMirror'];
+  const MIRROR = ['wireTabs', 'wireHist', 'wireTerminal', 'wireComposer', 'ATT.wire', 'wireSubs', 'wireSwitcher', 'wireQuick', 'wireFit', 'createDialogForm', 'createSurveyPanel', 'kickMirror'];
 
   test('(+) 4.4: boot in subagent mode: no terminal column, the Transcript alone, no tabs, no "Skip to message input", the read-only notice, the body class', () => {
     const r = bootRig({ sub: true, search: `?session=${S}&agent=${AG}&project=${KEY}` });
