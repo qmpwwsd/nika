@@ -53,6 +53,7 @@ const DASHED_RULE = /^ *\u254c+$/;
 const PLAIN_RULE = /^ *\u2500+$/;
 const GLYPH = /[\u2610\u2612\u2714]/;
 const ELLIPSIS = '\u2026';
+const BAR = '\u2502 '; // Claude draws it, dim, in front of every row of a wide or multi-line question (spike S-F13, 2.1.325); nika leaves it out
 
 const spaced = (text) => text.replace(/\u00a0/g, ' ').trimEnd();
 
@@ -184,18 +185,25 @@ const reachesCols = (texts, from, to, cols, exempt) => {
   return false;
 };
 
-/** The current question tab (everything between the strip and the footer). Returns the fields of S or null; reasons go to `bad`. */
+/**
+ * The current question tab (everything between the strip and the footer). Returns the fields of S or null; reasons go to `bad`. The question's
+ * rows either all start with Claude's bar (`BAR`, removed before reading) or none does (some: `layout`). A row as wide as the pane is exempt from
+ * the `wide` rule when the row right below it continues the same question or the same option's description (it was wrapped there, not cut).
+ */
 function readQuestion(c) {
   const { texts, bad, s, stop, tabs, strip, cols } = c;
   let x = s + 1;
   const q = [];
+  const qx = []; // the indexes of the question's rows
   while (x < stop && !ASK_OPTION.test(texts[x])) {
-    if (texts[x].trim()) q.push(texts[x].trim());
+    if (texts[x].trim()) { q.push(texts[x].trim()); qx.push(x); }
     if (RULE_ROW.test(texts[x]) || STRIP_START.test(texts[x])) bad.add('layout'); // a rule or a strip inside the question could be taken for the real one
     x += 1;
   }
   if (x >= stop) { bad.add('numbers'); return null; }
   if (q.length === 0) bad.add('layout');
+  const barred = qx.filter((i) => texts[i].startsWith(BAR)).length;
+  if (barred > 0 && barred < qx.length) bad.add('layout');
   const items = []; // the numbered rows down to the separator; indented rows belong to the numbered row above them
   let sep = -1;
   for (; x < stop; x += 1) {
@@ -261,7 +269,9 @@ function readQuestion(c) {
   if (multi && (button === 'Submit') !== (current === tabs.length - 1)) bad.add('layout'); // Submit is the last tab's button, Next any other's
   if ((multi || tabs.length > 1) && strip.submit === null) bad.add('layout');
   const exempt = new Set([tail.x, ...tail.extra.filter((e) => BUTTON_ROW.exec(texts[e]) === null)]); // a text row's wrapped value reaches the pane's edge legitimately
-  const question = take(bad, q.join(' '), QUESTION_MAX);
+  for (const i of qx) if (qx.includes(i + 1)) exempt.add(i); // a question row with another question row right below it
+  for (const it of items.slice(0, k)) for (const e of it.extra) if (it.extra.includes(e + 1)) exempt.add(e); // a description row with another row of the same description below it
+  const question = take(bad, (barred === qx.length && barred > 0 ? q.map((t) => t.slice(BAR.length)) : q).join(' '), QUESTION_MAX);
   if (GLYPH.test(question)) bad.add('layout');
   return { question, multi, options, textRow, chat: chat.n, button, focus: marks.length === 1 ? marks[0] : null, exempt };
 }

@@ -6,7 +6,8 @@ import {
   surveyShown, pillShown, SHELL_FOOTER, ASK_FOOTER, PLAN_FOOTER, REVIEW_END, isDialogEnd, nudgeFooterAt, footerEnd,
 } from '../src/mode.js';
 import { parseCapture } from '../src/mirror.js';
-import { subagentRows } from './helpers.js';
+import { promptSig } from '../src/session-control.js';
+import { subagentRows, taskRows, taskScreen, taskMisfits } from './helpers.js';
 
 const DEF = { b: false, fg: null, bg: null, u: false, i: false, d: false };
 const span = (t, s = DEF) => ({ t, s });
@@ -940,5 +941,233 @@ describe('the auto-mode nudge (orchestrator ruling 4)', () => {
     assert.equal(modeFromRows(idle), 'auto');
     assert.equal(lastNonBlank(idle, 2)[0], BOX[1]);
     assert.equal(promptFromRows(rowsOf('Do you want to proceed?', '❯ 1. Yes', '  2. No', 'Esc to cancel')).question, 'Do you want to proceed?');
+  });
+});
+
+// ---- 0.5, F13-A v2: Claude's task list (and a lone rule row) under a dialog's or a permission prompt's last row (design F13 v2) --------
+describe('task list under a dialog or a permission prompt (F13-A v2)', () => {
+  const ASK = {
+    one: 'Enter to select · ↑/↓ to navigate · Esc to cancel',
+    many: 'Enter to select · Tab/Arrow keys to navigate · Esc to cancel',
+    insert: '-- INSERT -- · Enter to select · Tab/Arrow keys to navigate · ctrl+g to edit in Vim',
+    ctrl: 'Enter to select · Tab/Arrow keys to navigate · ctrl+g to edit in Vim',
+    review: '  2. Cancel',
+    pointer: '❯ 2. Cancel',
+    plan: '   ctrl+g to edit in Vim · <plans>/demo-api.md',
+    prompt: 'Esc to cancel · Tab to amend',
+    promptBare: 'Esc to cancel',
+  };
+  const body = (end) => rowsOf('transcript line', '', 'Which project should I open?', '', '❯ 1. acme-api', '  2. Type something.', end);
+  /** The permission prompt of spike S-F13 (a), made-up text: a Bash prompt with four options, the second one wrapped. */
+  const PROMPT = rowsOf(
+    '────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────', ' Bash command', '',
+    '   make a made-up file', '╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌', ' Do you want to proceed?', ' ❯ 1. Yes',
+    '   2. Yes, and always allow access to <dir> from this project', '   3. Yes, and switch to auto mode · auto mode handles these prompts for you', '   4. No', '', ' ' + ASK.prompt,
+  );
+  const end = (rows) => rows.length - 1;
+  const at = (rows) => footerEnd(rows.map(rowText));
+  const anchors = { 'one tab': ASK.one, 'several tabs': ASK.many, insert: ASK.insert, 'editor hint': ASK.ctrl, review: ASK.review, 'review with the pointer': ASK.pointer, plan: ASK.plan };
+  const screens = { ...Object.fromEntries(Object.entries(anchors).map(([k, v]) => [k, () => body(v)])), 'permission prompt': () => PROMPT };
+
+  test('(+) footerEnd is the last row of the dialog or the prompt under the block: named and unnamed, 0, 3 and 11 blank rows, every anchor', () => {
+    for (const [name, make] of Object.entries(screens)) {
+      for (const named of [true, false]) {
+        for (const blank of [named ? 0 : 1, 3, 11]) {
+          const dialog = make();
+          const rows = [...dialog, ...taskRows({ named, blank })];
+          assert.equal(at(rows), end(dialog), `${name} / named ${named} / ${blank} blank rows`);
+          assert.equal(lastNonBlank(rows, 1)[0], lastNonBlank(dialog, 1)[0], name);
+        }
+      }
+    }
+  });
+
+  test('(+) the same on whole screens of 45 and 60 rows: the rule is directly under the footer at 45 rows and far below it at 60 (named), the header with blank rows above it (unnamed)', () => {
+    for (const [name, make] of Object.entries(screens)) {
+      for (const rows of [45, 60]) {
+        for (const named of [true, false]) {
+          const dialog = make();
+          const screen = taskScreen(dialog, { rows, named });
+          assert.equal(screen.length, rows, `${name} fills ${rows} rows`);
+          assert.equal(at(screen), 12 + dialog.length - 1, `${name} / ${rows} / named ${named}`);
+        }
+      }
+    }
+  });
+
+  test('(+) a lone rule row as the last row under the dialog is left out too (the plan approval of a named session), plain or labelled, after any blank rows', () => {
+    const rule = taskRows({ doing: 0, open: 0, shownDone: 0, hiddenDone: 0 }).slice(0, 1);
+    const plain = taskRows({ rule: 'plain', doing: 0, open: 0, shownDone: 0, hiddenDone: 0 }).slice(0, 1);
+    for (const [name, make] of Object.entries(screens)) {
+      for (const r of [rule, plain]) {
+        for (const blank of [0, 2, 10]) {
+          const dialog = make();
+          assert.equal(at([...dialog, ...Array.from({ length: blank }, () => []), ...r]), end(dialog), `${name} / ${blank}`);
+          assert.equal(at([...dialog, ...Array.from({ length: blank }, () => []), ...r, [], []]), end(dialog), `${name} / ${blank} / trailing blank rows`);
+        }
+      }
+    }
+  });
+
+  test('(+) the block shapes of the spike: 1 tasks, no in-progress part, all done, header only, every overflow form, labels with suffixes, four-digit counts', () => {
+    const dialog = body(ASK.many);
+    const shapes = {
+      'plain block': {},
+      '1 tasks (one task in progress)': { doing: 1, open: 0, shownDone: 0, hiddenDone: 0 },
+      '1 tasks (one task done)': { doing: 0, open: 0, shownDone: 1, hiddenDone: 0 },
+      'all done, no in-progress part, overflow': { doing: 0, open: 0, shownDone: 5, hiddenDone: 3 },
+      'no overflow row': { hiddenDone: 0 },
+      'overflow: in progress': { hiddenDoing: 2, hiddenDone: 0 },
+      'overflow: pending': { hiddenOpen: 2, hiddenDone: 0 },
+      'overflow: completed': { hiddenDone: 4 },
+      'overflow: in progress and pending': { hiddenDoing: 1, hiddenOpen: 2, hiddenDone: 0 },
+      'overflow: pending and completed': { hiddenOpen: 2, hiddenDone: 3 },
+      'overflow: all three': { hiddenDoing: 1, hiddenOpen: 2, hiddenDone: 3 },
+      'header only (a pane too short for the rows)': { doing: 0, open: 0, shownDone: 0, hiddenDone: 0, claim: { total: 5, done: 3, open: 2 } },
+      'header only, in progress': { doing: 0, open: 0, shownDone: 0, hiddenDone: 0, claim: { total: 5, done: 3, doing: 1, open: 1 } },
+      'mixed order': { order: 'xdxoxo', hiddenDone: 1 },
+      'only open': { doing: 0, shownDone: 0, hiddenDone: 0, open: 3 },
+      'long list': { doing: 3, open: 2, shownDone: 5, hiddenDone: 1234 },
+      'labels with suffixes': { labels: ['A label that was cut by Claude…', 'Review the notes › blocked by #1, #2', 'Tidy the folders (@robin)', '◼ ✔ ◻ inside the label'] },
+    };
+    for (const [name, opts] of Object.entries(shapes)) {
+      for (const named of [true, false]) assert.equal(at([...dialog, ...taskRows({ named, ...opts })]), end(dialog), `${name} / named ${named}`);
+    }
+  });
+
+  test('(+) padded rows, trailing blank rows and a trailing row of spaces', () => {
+    const dialog = body(ASK.one);
+    const block = taskRows({ cols: 64, doing: 1, open: 0, shownDone: 4, hiddenDone: 12 });
+    const pad = (rows, cols) => rows.map((r) => [...r, span(' '.repeat(Math.max(0, cols - r.map((sp) => sp.t).join('').length)))]);
+    assert.equal(at([...dialog, ...block]), end(dialog));
+    assert.equal(at(pad([...dialog, ...block], 64)), end(dialog), 'padded');
+    assert.equal(at([...dialog, ...block, [], []]), end(dialog), 'trailing blank rows');
+    assert.equal(at([...dialog, ...block, [span(' '.repeat(64))]]), end(dialog), 'a trailing row of spaces');
+  });
+
+  test('(+) every reader sees the last row of the dialog or the prompt as the last row: lastNonBlank, the mode, the prompt, the nudge', () => {
+    for (const [name, make] of Object.entries(screens)) {
+      for (const named of [true, false]) {
+        const dialog = make();
+        const rows = [...dialog, ...taskRows({ named })];
+        assert.deepEqual(lastNonBlank(rows, 15), lastNonBlank(dialog, 15), name);
+        assert.equal(modeFromRows(rows), modeFromRows(dialog), name);
+        assert.deepEqual(promptFromRows(rows), promptFromRows(dialog), name);
+        assert.equal(nudgeFooterAt(rows.map(rowText)), -1, 'the nudge needs a mode line at the end, so it never fires on a cut');
+      }
+    }
+  });
+
+  test('(+) the permission prompt reads the same with and without the block: the options, the question, and the sig the answer route checks', () => {
+    const plain = promptFromRows(PROMPT);
+    assert.deepEqual(plain.options.map((o) => o.n), [1, 2, 3, 4]);
+    assert.equal(plain.question, 'Do you want to proceed?');
+    for (const named of [true, false]) {
+      for (const blank of [named ? 0 : 1, 3]) {
+        const rows = [...PROMPT, ...taskRows({ named, blank })];
+        assert.deepEqual(promptFromRows(rows), plain);
+        assert.equal(promptSig(rows), promptSig(PROMPT));
+        assert.equal(bypassWindow(rows), false);
+      }
+    }
+  });
+
+  test('(+) a task label that mentions bypass is still read by the bypass window: the guard reads the literal bottom, the cut window has no bypass', () => {
+    for (const [name, make] of Object.entries(screens)) {
+      const dialog = make();
+      const rows = [...dialog, ...taskRows({ labels: ['Check the bypass settings'] })];
+      assert.equal(at(rows), end(dialog), `${name}: the block is cut for every other reader`);
+      assert.equal(mentionsBypass(lastNonBlank(rows, PROMPT_ROWS).join(' ')), false, 'the cut window has no bypass');
+      assert.equal(bypassWindow(rows), true, `${name}: the literal bottom of the screen does`);
+      assert.equal(bypassWindow([...dialog, ...taskRows()]), false, 'a block without the word changes nothing');
+    }
+  });
+
+  test('(+) a bypass mention that only the cut window reaches is still found: the guard reads the union of the windows, never less', () => {
+    const filler = Array.from({ length: 8 }, (_, i) => `  ${i + 3}. Option ${i + 3}`);
+    const dialog = rowsOf('Which mode should I use?', '❯ 1. bypass permissions', ...filler, '', ASK.many);
+    const rows = [...dialog, ...taskRows()];
+    const live = rows.map(rowText).filter((t) => t.trim());
+    const mention = live.findIndex((t) => t.includes('bypass'));
+    assert.ok(live.length - mention > PROMPT_ROWS, 'the mention lies outside the last 15 non-blank rows of the literal screen');
+    assert.equal(mentionsBypass(lastNonBlank(rows, PROMPT_ROWS).join(' ')), true, 'but inside the 15 rows above the dialog end');
+    assert.equal(bypassWindow(rows), true);
+  });
+
+  test('(−) a block or a rule row in any shape but the captured ones leaves footerEnd at the last row (counts, blank rows, rule, glyphs, overflow row, places)', () => {
+    for (const cols of [64, 120]) {
+      for (const [name, rows] of Object.entries(taskMisfits(body(ASK.many), { cols }))) assert.equal(at(rows), rows.length - 1, `${name} / ${cols}`);
+    }
+  });
+
+  test('(−) the same misfits under every other anchor, the permission prompt included, leave footerEnd at the last row', () => {
+    for (const [label, make] of Object.entries(screens)) {
+      for (const [name, rows] of Object.entries(taskMisfits(make()))) assert.equal(at(rows), rows.length - 1, `${label}: ${name}`);
+    }
+  });
+
+  test('(−) the trust footer, the nudge footer, an option row and a question are no anchors; Esc to cancel is one only for a permission prompt that parses', () => {
+    for (const foot of ['Enter to confirm · Esc to cancel', '  2. No', 'Do you want to proceed?', '1. Submit answers']) {
+      const rows = [...body(foot), ...taskRows()];
+      assert.equal(at(rows), rows.length - 1, foot);
+    }
+    for (const foot of [ASK.prompt, ASK.promptBare]) {
+      const noPrompt = [...rowsOf('transcript line', 'a message', foot), ...taskRows()];
+      assert.equal(at(noPrompt), noPrompt.length - 1, `no prompt above ${foot}`);
+      const oneOption = [...rowsOf('Do you want to proceed?', '❯ 1. Yes', foot), ...taskRows()];
+      assert.equal(at(oneOption), oneOption.length - 1, `one option above ${foot}`);
+      const noQuestion = [...rowsOf('Some text', '❯ 1. Yes', '  2. No', foot), ...taskRows()];
+      assert.equal(at(noQuestion), noQuestion.length - 1, `no question above ${foot}`);
+    }
+  });
+
+  test('(−) a permission prompt taller than the rows nika reads (option 1 more than 15 non-blank rows above the footer) is no prompt, so the block under it is cut by nobody', () => {
+    const tall = rowsOf('Do you want to proceed?', '❯ 1. Yes', ...Array.from({ length: PROMPT_ROWS }, () => '     more words of the label'), '  2. No', '', ' ' + ASK.prompt);
+    assert.equal(promptFromRows(tall), null);
+    assert.equal(promptFromRows(PROMPT) !== null, true, 'control: the normal prompt reads');
+    for (const tail of [taskRows(), taskRows({ named: false })]) assert.equal(at([...tall, ...tail]), tall.length + tail.length - 1);
+  });
+
+  test('(−) a fake footer in a message above a real input box, with a real block above that box, cuts nothing (the block is not at the bottom)', () => {
+    const idle = rowsOf('transcript line', ...BOX, PHRASE.auto);
+    const rows = [...body(ASK.many), ...taskRows(), ...idle];
+    assert.equal(at(rows), rows.length - 1);
+    assert.equal(modeFromRows(rows), 'auto');
+  });
+
+  test('(−) a block or a lone rule under a mode line changes nothing for a screen that is not a dialog: the mode, the box and the prompt read as before', () => {
+    const top = rowsOf('transcript line', ...BOX, PHRASE.plan);
+    for (const tail of [taskRows(), taskRows({ named: false }), taskRows({ doing: 0, open: 0, shownDone: 0, hiddenDone: 0 }).slice(0, 1)]) {
+      const rows = [...top, ...tail];
+      assert.equal(at(rows), rows.length - 1);
+      assert.equal(modeFromRows(rows), 'unknown', 'the block is the last row: not a mode line, as before');
+    }
+    assert.equal(modeFromRows(top), 'plan');
+  });
+
+  test('(−) the exact count rules, one by one: the same block with one number wrong is not cut, with the numbers right it is', () => {
+    const dialog = body(ASK.many);
+    const cut = (o) => at([...dialog, ...taskRows(o)]) === end(dialog);
+    assert.equal(cut({}), true);
+    assert.equal(cut({ hiddenDoing: 2, hiddenOpen: 1 }), true);
+    assert.equal(cut({ claim: { total: 8 } }), false, 'total');
+    assert.equal(cut({ claim: { done: 6, total: 8 } }), false, 'done');
+    assert.equal(cut({ claim: { doing: 2, total: 8 } }), false, 'in progress');
+    assert.equal(cut({ claim: { open: 2, total: 8 } }), false, 'open');
+    assert.equal(cut({ hiddenDoing: 2, claim: { doing: 4, total: 10 } }), false, 'hidden in progress');
+    assert.equal(cut({ hiddenOpen: 2, claim: { open: 4, total: 10 } }), false, 'hidden pending');
+  });
+
+  test('(−) footerEnd and the row readers never throw on malformed input', () => {
+    assert.equal(footerEnd([]), -1);
+    assert.equal(footerEnd(['']), 0);
+    assert.equal(footerEnd(['  1 tasks (1 done, 0 open)']), 0);
+    assert.equal(footerEnd(['x', '', '  ✔ a', '   … +1 completed']), 3);
+    assert.equal(footerEnd(['', '  1 tasks (1 done, 0 open)']), 1);
+    assert.equal(footerEnd(['───────', '']), 1);
+    assert.equal(footerEnd(['───────']), 0);
+    for (const bad of [null, undefined, [], [[]], [[{}]], [[{ t: 5 }]], [null], [[null]], 'x', 5, {}]) {
+      assert.doesNotThrow(() => { lastNonBlank(bad, 3); bypassWindow(bad); modeFromRows(bad); promptFromRows(bad); promptSig(bad); }, JSON.stringify(bad));
+    }
   });
 });

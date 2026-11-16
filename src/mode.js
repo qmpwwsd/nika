@@ -79,7 +79,7 @@ const isRule = (texts, x) => typeof texts[x] === 'string' && RULE_ROW.test(texts
  * row above is the footer, with the title within NUDGE_SPAN non-blank rows above it. The two rows anywhere else (quoted in a message,
  * in a Bash preview, above a prompt or another dialog) are no nudge, so nothing is cut.
  */
-export function nudgeFooterAt(texts, end = treeEnd(texts)) {
+export function nudgeFooterAt(texts, end = blockEnd(texts)) {
   let x = skipBlank(texts, Math.min(end, texts.length - 1));
   if (x < 0 || !isModeLine(texts[x])) return -1;
   x = skipBlank(texts, x - 1);
@@ -95,7 +95,7 @@ export function nudgeFooterAt(texts, end = treeEnd(texts)) {
 }
 
 /** Index of the last row of `texts` that is not a subagent list hanging under a mode line or a dialog end, else the last row (see footerEnd). */
-function treeEnd(texts) {
+function subagentEnd(texts) {
   let at = texts.length - 1;
   while (at >= 0 && !texts[at].trim()) at -= 1;
   if (at >= 0 && MORE_ROW.test(texts[at])) at -= 1;
@@ -107,16 +107,105 @@ function treeEnd(texts) {
   return ok ? footer : texts.length - 1;
 }
 
+// Claude's task list and the rule row under a dialog (0.5, F13; spike S-F13, Claude 2.1.325, and the 2.1.319 capture of an open question dialog).
+// Claude anchors this block to the bottom of the screen, under the last row of a question, review or plan dialog or of a permission prompt:
+// any number of blank rows (a taller pane has more), then ONE of
+//   - a rule row alone (plain, or labelled with the session name) as the last row: the plan approval of a named session;
+//   - the task block: in a named session a rule row at column 0, exactly one blank row, the block; in an unnamed one (no rule row) just
+//     the block, with at least one blank row above it. The block is the header `  <T> tasks (<D> done, <P> in progress, <O> open)` (the in-progress
+//     part only when P is above 0; the word is "tasks" for one task too), one row per listed task `  <glyph> <label>` (U+25FC in progress, U+2714
+//     done, U+25FB open; a label may end in U+2026, ` U+203A blocked by #n` or ` (@owner)`) and at most one last row `   \u2026 +<n> in progress, <n> pending, <n> completed` naming the hidden
+//     tasks (only the parts above 0, in that order). With the input box shown the list sits ABOVE the box instead.
+// Rows are rtrimmed and recognised by their fixed prefix, never by the label, which is model-controlled text.
+const TASK_HEAD = /^ {2}(\d{1,4}) tasks \((\d{1,4}) done, (?:(\d{1,4}) in progress, )?(\d{1,4}) open\)$/;
+const TASK_ROW = /^ {2}([\u25fc\u2714\u25fb]) \S.*$/;
+const TASK_MORE = /^ {3}\u2026 \+(.+)$/;
+const MORE_PART = /^([1-9]\d{0,3}) (in progress|pending|completed)$/;
+const MORE_STATES = ['in progress', 'pending', 'completed'];
+
+/** The hidden counts { 'in progress', pending, completed } of an overflow row (each part above 0, once, in that order), else null. */
+function moreOf(text) {
+  const m = TASK_MORE.exec(text);
+  if (m === null) return null;
+  const hidden = { 'in progress': 0, pending: 0, completed: 0 };
+  let last = -1;
+  for (const part of m[1].split(', ')) {
+    const p = MORE_PART.exec(part);
+    if (p === null || MORE_STATES.indexOf(p[2]) <= last) return null;
+    last = MORE_STATES.indexOf(p[2]);
+    hidden[p[2]] = Number(p[1]);
+  }
+  return hidden;
+}
+
+/** True when texts[k] is the last row of what a task block or a lone rule row may hang under: a dialog end, or the footer of a permission prompt that parses. */
+function blockAnchor(texts, k) {
+  if (k < 0 || typeof texts[k] !== 'string') return false;
+  if (isDialogEnd(texts[k])) return true;
+  return plain(texts[k]).startsWith('Esc to cancel') && promptOf(texts.slice(0, k + 1).filter((t) => t.trim()).slice(-PROMPT_ROWS)) !== null;
+}
+
+/**
+ * Index of the last row of the dialog or the permission prompt when `texts` end in what Claude draws under it (see above), else -1. Read bottom-up: a rule
+ * row alone as the last non-blank row; or at most one overflow row, the task rows, the header, the blank rows (exactly one under a rule row, at least one
+ * otherwise), the optional rule row, more blank rows if any, and the anchor (blockAnchor). The counts must add up: total = done + in progress + open >= 1,
+ * the \u25fc rows plus the hidden in-progress tasks = in progress, the \u25fb rows plus the hidden pending ones = open, the \u2714 rows plus the hidden completed ones = done;
+ * a header with no row under it (a pane too short for the rows) is read on its sum alone but allows no overflow row. Anything else (a second row
+ * under a task, a notification row, an unknown glyph, a rule row followed by two blank rows, the block under a mode line, not at the bottom) returns -1,
+ * so nothing is cut and the footer reads `unknown`.
+ */
+function taskEnd(texts) {
+  let at = skipBlank(texts, texts.length - 1);
+  if (at < 0) return -1;
+  if (isRule(texts, at)) { // the lone rule row
+    const k = skipBlank(texts, at - 1);
+    return blockAnchor(texts, k) ? k : -1;
+  }
+  const more = moreOf(texts[at].trimEnd());
+  if (more !== null) at -= 1;
+  const seen = { '\u25fc': 0, '\u2714': 0, '\u25fb': 0 };
+  let rows = 0;
+  const rowAt = (x) => (x >= 0 ? TASK_ROW.exec(texts[x].trimEnd()) : null);
+  for (let m = rowAt(at); m !== null; m = rowAt(at)) { seen[m[1]] += 1; rows += 1; at -= 1; }
+  const head = at >= 0 ? TASK_HEAD.exec(texts[at].trimEnd()) : null;
+  if (head === null) return -1;
+  const [total, done, open] = [head[1], head[2], head[4]].map(Number);
+  const doing = head[3] === undefined ? 0 : Number(head[3]);
+  if ((head[3] !== undefined && doing < 1) || total < 1 || total !== done + doing + open || (rows === 0 && more !== null)) return -1;
+  const hidden = more ?? { 'in progress': 0, pending: 0, completed: 0 };
+  if ((rows > 0 || more !== null)
+    && (seen['\u25fc'] + hidden['in progress'] !== doing || seen['\u25fb'] + hidden.pending !== open || seen['\u2714'] + hidden.completed !== done)) return -1;
+  const above = skipBlank(texts, at - 1);
+  const blanks = at - 1 - above;
+  if (blanks < 1) return -1;
+  if (!isRule(texts, above)) return blockAnchor(texts, above) ? above : -1; // an unnamed session
+  const k = skipBlank(texts, above - 1);
+  return blanks === 1 && blockAnchor(texts, k) ? k : -1; // a named one: the rule row, exactly one blank row
+}
+
+/**
+ * Index of the last row of `texts` that is not a subagent list hanging under a mode line or a dialog end, nor the task list or the lone rule row that hangs under
+ * a dialog end or a permission prompt (taskEnd), else the last row. The two are exclusive: one hanging under the other is never cut.
+ */
+function blockEnd(texts) {
+  const agents = subagentEnd(texts);
+  if (agents !== texts.length - 1) return agents;
+  const tasks = taskEnd(texts);
+  return tasks >= 0 ? tasks : agents;
+}
+
 /**
  * Index of the last row of `texts` that is not a subagent list hanging under a mode line, else the last row. The list is cut only
  * when it is exactly the captured block (MAIN_ROW after exactly one blank row, then agent rows only, then at most one overflow row)
  * AND the row above the blank row is a mode line or the last row of a dialog (isDialogEnd): anything else below the footer (junk,
  * a dialog, a changed layout) stays, so the footer reads `unknown` (fail closed). A mode line cannot be forged by a label: labels
  * live in agent rows only. `main` and the agent rows may start with Claude's hover pointer instead of two spaces, on one row at most
- * (spike D1-S). The auto-mode nudge (nudgeFooterAt, an exact anchor) makes its own footer the last row, what hangs under it is cut.
+ * (spike D1-S). Claude's task list, or a rule row alone, under the last row of a dialog or of a permission prompt (taskEnd, 0.5 F13) is cut the
+ * same way, only when it is exactly one of the captured shapes, never under a mode line. The auto-mode nudge (nudgeFooterAt, an exact anchor) makes
+ * its own footer the last row, what hangs under it is cut.
  */
 export function footerEnd(texts) {
-  const end = treeEnd(texts);
+  const end = blockEnd(texts);
   const nudge = nudgeFooterAt(texts, end);
   return nudge >= 0 ? nudge : end;
 }
@@ -133,7 +222,7 @@ export function rowText(row) {
 }
 
 /**
- * Texts of the last n non-blank rows, oldest first; empty unless n is a positive integer. A subagent list under the footer (see
+ * Texts of the last n non-blank rows, oldest first; empty unless n is a positive integer. A subagent list or a task list under the footer (see
  * footerEnd) is not counted: the footer is the last row, as everywhere nika reads "the footer" (the mode, the INSERT prefix, the
  * `! for shell mode` line, the history hint).
  */
@@ -185,10 +274,10 @@ export function bypassWindow(rows) {
   if (!Array.isArray(rows)) return false;
   const texts = rows.map(rowText);
   const window = (end) => texts.slice(0, end + 1).filter((t) => t.trim()).slice(-PROMPT_ROWS).join(' ');
-  // The window above the nudge's footer (what lastNonBlank reads), the one above the subagent cut alone, AND the literal bottom of the
-  // screen: no cut of any kind may shrink what the guard reads (a quoted nudge pair or a subagent label must not hide a bypass option,
+  // The window above the nudge's footer (what lastNonBlank reads), the one above the subagent or task cut alone, AND the literal bottom of the
+  // screen: no cut of any kind may shrink what the guard reads (a quoted nudge pair, a subagent label or a task label must not hide a bypass option,
   // W1-T1 review I1 and N1; project rule 12: the last 15 non-blank rows of the screen).
-  return [footerEnd(texts), treeEnd(texts), texts.length - 1].some((end) => mentionsBypass(window(end)));
+  return [footerEnd(texts), blockEnd(texts), texts.length - 1].some((end) => mentionsBypass(window(end)));
 }
 
 /** Mode shown by the mode line, the last non-blank row only; a phrase anywhere else never counts. */
@@ -213,8 +302,10 @@ const MAX_OPTIONS = 9;
  * gaps) sit above it and a question ending in `?` directly above option 1, all within the last PROMPT_ROWS non-blank
  * rows. Any other layout, such as the unnumbered folder-trust dialog, is null so no buttons show.
  */
-export function promptFromRows(rows) {
-  const win = lastNonBlank(rows, PROMPT_ROWS);
+export const promptFromRows = (rows) => promptOf(lastNonBlank(rows, PROMPT_ROWS));
+
+/** The permission prompt in `win`, the last PROMPT_ROWS non-blank rows ending at its `Esc to cancel` row (see promptFromRows), or null. */
+function promptOf(win) {
   const hint = win.length - 1;
   if (hint < 0 || !win[hint].trimStart().startsWith('Esc to cancel')) return null;
   const first = win.slice(0, hint).findLastIndex((t) => OPTION.exec(t)?.[1] === '1');

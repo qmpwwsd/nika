@@ -231,3 +231,132 @@ export function subagentRows({ cols = 120, agents = 1, more = 0, blank = true, m
     ...(more > 0 ? [[span(`  ↓ ${more} more`, { fg: 246 })]] : []),
   ];
 }
+
+// ---- Claude's task list under a dialog's last row (F13-A v2: the S-F13 shapes; made-up labels) --------------------------------
+// Rows, after the dialog's last row: [blank rows], then ONE of: a rule row alone; the task block, which in a named session is a rule row at column
+// 0 (labelled with the session name), one blank row and the block, and in an unnamed one just the block (at least one blank row above it).
+// Block: `  <T> tasks (<D> done, <P> in progress, <O> open)` (the in-progress part only when P > 0; "1 tasks" is real), task rows
+// `  <glyph> <label>` (◼ in progress, ✔ done, ◻ open) and, when tasks are hidden, `   … +<n> in progress, <n> pending, <n> completed` (only
+// the parts above 0, in that order).
+const TASK_LABELS = ['Draft the outline', 'Check the sample data', 'Write the summary', 'Review the notes', 'Tidy the folders', 'Plan the next step', 'Collect the figures'];
+const TASK_GLYPH = { doing: '◼', done: '✔', open: '◻' };
+const TASK_FG = { doing: 174, done: 114, open: 246 };
+
+/**
+ * The rows Claude draws below a dialog or a permission prompt while it keeps a task list, to append to a screen.
+ *   cols         pane width (the rule row is cols wide)
+ *   named        a session started with -n: a rule row labelled with the name comes first; false: no rule row, the block follows the blank rows
+ *   rule         'labelled' | 'plain' | 'indented' (two spaces before the dashes) | 'none'; default by named
+ *   label        the session name in the labelled rule
+ *   blank        blank rows between the dialog's last row and the rule (named) or the header (unnamed; default 1); gap: blank rows between the rule and the header (default 1)
+ *   doing, open, shownDone    rows ◼, ◻ and ✔ shown, in that order (order: a string of 'd', 'x', 'o' in drawing order, e.g. 'dxxo', replaces it)
+ *   hiddenDoing, hiddenOpen, hiddenDone   the numbers in the overflow row (in progress, pending, completed); 0 for all: no overflow row
+ *   hiddenText   replaces the text after '+' in the overflow row; claim: overrides of the header numbers { total, done, doing, open }
+ *   head         replaces the whole header; labels: the task labels, in order
+ * The header numbers are the truth computed from the rows and the overflow row unless claim overrides them.
+ */
+export function taskRows({ cols = 120, named = true, rule = null, label = 'demo-session', blank = null, gap = 1, doing = 1, open = 1, shownDone = 2, hiddenDoing = 0, hiddenOpen = 0, hiddenDone = 3, order = null, hiddenText = null, claim = {}, head = null, labels = TASK_LABELS } = {}) {
+  const kinds = [...(order ?? ('d'.repeat(doing) + 'x'.repeat(shownDone) + 'o'.repeat(open)))].map((c) => ({ d: 'doing', x: 'done', o: 'open' })[c]);
+  const count = (k) => kinds.filter((x) => x === k).length;
+  const n = { done: count('done') + hiddenDone, doing: count('doing') + hiddenDoing, open: count('open') + hiddenOpen };
+  Object.assign(n, { total: n.done + n.doing + n.open, ...claim });
+  const bold = (v) => span(String(v), { b: true });
+  const kind = rule ?? (named ? 'labelled' : 'none');
+  const ruleRow = kind === 'none' ? [] : [[span(kind === 'plain' ? '─'.repeat(cols)
+    : kind === 'indented' ? `  ${'─'.repeat(cols - 2)}`
+      : `${'─'.repeat(Math.max(2, cols - label.length - 3))} ${label} ─`, { fg: 244 })]];
+  const parts = [[hiddenDoing, 'in progress'], [hiddenOpen, 'pending'], [hiddenDone, 'completed']].filter(([v]) => v > 0).map(([v, w]) => `${v} ${w}`);
+  const overflow = hiddenText ?? (parts.length > 0 ? parts.join(', ') : null);
+  return [
+    ...Array.from({ length: blank ?? (kind === 'none' ? 1 : 0) }, () => []),
+    ...ruleRow,
+    ...(kind === 'none' ? [] : Array.from({ length: gap }, () => [])),
+    head !== null ? [span(head)] : [span('  '), bold(n.total), span(' tasks ('), bold(n.done), span(' done, '), ...(n.doing > 0 ? [bold(n.doing), span(' in progress, ')] : []), bold(n.open), span(' open)')],
+    ...kinds.map((k, i) => [span(`  ${TASK_GLYPH[k]} `, { fg: TASK_FG[k] }), span(labels[i % labels.length], k === 'done' ? { fg: 246 } : { b: true })]),
+    ...(overflow !== null ? [[span(`   … +${overflow}`, { fg: 246 })]] : []),
+  ];
+}
+
+/**
+ * A whole screen of `rows` rows as Claude draws it: `top` rows of older transcript, the dialog, then the block anchored to the bottom, so a
+ * taller pane has more blank rows between the dialog's last row and the rule (spike S-F13: 0 at 36 to 45 rows, 10 to 11 at 60). opts go to taskRows.
+ */
+export function taskScreen(dialog, { rows = 45, top = 12, ...opts } = {}) {
+  const transcript = Array.from({ length: top }, (_, i) => (i % 3 === 2 ? [] : [span(`⏺ older text ${i}`)]));
+  const base = taskRows(opts);
+  const lead = base.findIndex((r) => r.length > 0);
+  const blanks = Math.max(0, rows - top - dialog.length - base.length);
+  return [...transcript, ...dialog, ...taskRows({ ...opts, blank: lead + blanks })];
+}
+
+/** Capture text as `tmux capture-pane -p -e -N` writes it, from span rows: SGR codes for the style, every row padded with spaces to `cols`. */
+export function ansiOf(rows, cols) {
+  const sgr = (s = {}) => ['0', s.b ? '1' : null, s.d ? '2' : null, s.i ? '3' : null, s.u ? '4' : null, s.r ? '7' : null,
+    s.fg == null ? null : `38;5;${s.fg}`, s.bg == null ? null : `48;5;${s.bg}`].filter((c) => c !== null).join(';');
+  return rows.map((row) => {
+    const text = row.map((sp) => sp.t).join('');
+    const pad = ' '.repeat(Math.max(0, cols - cells(text)));
+    return `${row.map((sp) => `\u001b[${sgr(sp.s)}m${sp.t}`).join('')}\u001b[0m${pad}`;
+  }).join('\n') + '\n';
+}
+
+/**
+ * Screens that carry a task list or a rule row in a shape nika must NOT cut (F13-A (−)): name → rows. Every entry leaves `footerEnd` at the last
+ * row. `dialog` are the rows of a dialog or a permission prompt the block would hang under (its last row is the anchor). The entries that
+ * change one row of the block do it on a copy of the plain named block (taskRows() defaults: 1 in progress, 1 open, 2 done listed + 3 hidden,
+ * 7 tasks) and keep the header's counts true, so that only the shape is wrong and each entry fails for the one check it names.
+ */
+export function taskMisfits(dialog, { cols = 120 } = {}) {
+  const line = (text, s) => [span(text, s)];
+  const block = (o) => taskRows({ cols, ...o });
+  const withBlock = (o) => [...dialog, ...block(o)];
+  const edit = (change, o) => { const rows = withBlock(o); change(rows); return rows; };
+  const headAt = (rows) => rows.findIndex((r) => /tasks \(/.test(r.map((sp) => sp.t).join('')));
+  const modeLine = [line('transcript line'), line('│ > │'), line('╰──────╯'), line('⏵⏵ auto mode on (shift+tab to cycle)')];
+  const agents = subagentRows({ cols, agents: 2 });
+  const rule = taskRows({ cols, doing: 0, open: 0, shownDone: 0, hiddenDone: 0 }).slice(0, 1);
+  return {
+    'the total does not add up': withBlock({ claim: { total: 8 } }),
+    'the done count does not match the rows and the overflow row': withBlock({ claim: { done: 6, total: 8 } }),
+    'the in-progress count does not match the rows': withBlock({ claim: { doing: 2, total: 8 } }),
+    'the open count does not match the rows': withBlock({ claim: { open: 2, total: 8 } }),
+    'the hidden in-progress count does not match': withBlock({ hiddenDoing: 2, claim: { doing: 4, total: 10 } }),
+    'the hidden pending count does not match': withBlock({ hiddenOpen: 2, claim: { open: 4, total: 10 } }),
+    'no task at all (total 0)': withBlock({ doing: 0, open: 0, shownDone: 0, hiddenDone: 0 }),
+    'no task row and an overflow row': withBlock({ doing: 0, open: 0, shownDone: 0, hiddenDone: 3 }),
+    'a rule row followed by two blank rows': withBlock({ gap: 2 }),
+    'a rule row followed by no blank row': withBlock({ gap: 0 }),
+    'an unnamed block with no blank row above the header': withBlock({ named: false, blank: 0 }),
+    'a rule row indented by two spaces': withBlock({ rule: 'indented' }),
+    'a text row instead of the blank row between the rule and the header': edit((rows) => { rows[headAt(rows) - 1] = line('  a note'); }),
+    'a text row instead of the rule row': edit((rows) => { rows[headAt(rows) - 2] = line('  a note'); }),
+    'a text row between the dialog end and an unnamed block': edit((rows) => { rows.splice(headAt(rows), 0, line('  a note'), []); }, { named: false }),
+    'the header says 0 in progress': withBlock({ doing: 0, open: 2, shownDone: 2, hiddenDone: 0, head: '  4 tasks (2 done, 0 in progress, 2 open)' }),
+    'the header says 1 task': withBlock({ doing: 0, open: 0, shownDone: 1, hiddenDone: 0, head: '  1 task (1 done, 0 open)' }),
+    'a row with an unknown glyph': edit((rows) => rows.splice(headAt(rows) + 2, 0, line('  ● Another thing'))),
+    'a task row indented by four spaces': edit((rows) => { rows[headAt(rows) + 1] = line('    \u25fc Draft the outline'); }),
+    'a task row indented by one space': edit((rows) => { rows[headAt(rows) + 1] = line(' \u25fc Draft the outline'); }),
+    'a task row indented by three spaces': edit((rows) => { rows[headAt(rows) + 1] = line('   \u25fc Draft the outline'); }),
+    'a glyph row without a label': edit((rows) => { rows[headAt(rows) + 1] = line('  ◼ '); }),
+    'a second row under a task': edit((rows) => rows.splice(headAt(rows) + 2, 0, line('    rest of the label'))),
+    'a notification row after the last row of the block': [...withBlock(), line('  A notice from the shell')],
+    'a notification row between the tasks': edit((rows) => rows.splice(headAt(rows) + 3, 0, line('  A notice from the shell'))),
+    'the overflow row names a state that does not exist': edit((rows) => { rows[rows.length - 1] = line('   … +3 finished'); }),
+    'the overflow row lists the states in another order': withBlock({ hiddenDone: 3, hiddenOpen: 1, hiddenText: '3 completed, 1 pending' }),
+    'the overflow row lists a state with a zero count': withBlock({ hiddenDone: 3, hiddenText: '0 pending, 3 completed' }),
+    'the overflow row repeats a state': withBlock({ hiddenDone: 1, hiddenText: '2 completed, 1 completed' }),
+    'the overflow row has text after its last part': withBlock({ hiddenText: '3 completed soon' }),
+    'the overflow row joins its parts with a space': withBlock({ hiddenDone: 3, hiddenOpen: 1, hiddenText: '1 pending 3 completed' }),
+    'the overflow row is not the last row': (() => { const rows = withBlock({ shownDone: 3, hiddenDone: 3 }); rows.push(rows.splice(-2, 1)[0]); return rows; })(),
+    'two overflow rows': [...withBlock({ claim: { total: 10, done: 8 } }), line('   … +3 completed')],
+    'a lone rule followed by a text row': [...dialog, ...rule, line('  a note')],
+    'two rule rows': [...dialog, ...rule, ...rule],
+    'the block hangs under a mode line': [...modeLine, ...block()],
+    'a lone rule hangs under a mode line': [...modeLine, ...rule],
+    'the block hangs under Esc to cancel with no prompt above it': [line('transcript line'), line('Esc to cancel · Tab to amend'), ...block()],
+    'a subagent list below the block': [...withBlock(), ...agents],
+    'the block below a subagent list': [...dialog, ...agents, ...block()],
+    'an unnamed block below a subagent list': [...dialog, ...agents, ...block({ named: false })],
+    'a real block above a message and a real input box (not at the bottom)': [...withBlock(), line('⏺ A later message.'), ...modeLine],
+  };
+}

@@ -9,10 +9,11 @@ import {
   REASONS, TABS_MAX, NUMBER_MAX, HEADER_MAX, QUESTION_MAX, LABEL_MAX, DESC_MAX, ANSWER_MAX, TEXT_MAX, STEPS_MAX, MULTI_OTHER, PLAN_PICK,
   PLAIN_TEXT, PLAN_TEXT_LABEL, dialogOnScreen, readDialogScreen, identityOf, sigOf, otherAllowed, dialogCapture,
 } from '../src/dialog.js';
-import { promptFromRows, modeFromRows, lastNonBlank, bypassWindow } from '../src/mode.js';
-import { readDraft } from '../src/session-control.js';
+import { promptFromRows, modeFromRows, lastNonBlank, bypassWindow, isDialogEnd } from '../src/mode.js';
+import { readDraft, promptSig } from '../src/session-control.js';
 import { parseDraft } from '../src/draft.js';
-import { boxRows, subagentRows, span } from './helpers.js';
+import { parseCapture } from '../src/mirror.js';
+import { boxRows, subagentRows, span, taskRows, taskScreen, taskMisfits, ansiOf } from './helpers.js';
 
 const COLS = 120;
 const DIM = { fg: 246 };
@@ -81,7 +82,7 @@ function askParts(o = {}) {
     top: [[span('─'.repeat(cols), DIM)]],
     strip: [strip({ tabs, current, answered, submit, mark, bracket })],
     gap1: [''],
-    question: [].concat(question).map((q) => [span(q, { b: true, fg: 231 })]),
+    question: [].concat(question).map((q) => (Array.isArray(q) ? q : [span(q, { b: true, fg: 231 })])),
     gap2: [''],
     options: opts,
     sep: [[span('─'.repeat(cols), DIM)]],
@@ -1030,5 +1031,275 @@ describe('source hygiene', () => {
 
   test('(−) src/mode.js stays ASCII after the dialog additions', () => {
     assert.equal(/[^\x00-\x7f]/.test(fs.readFileSync(new URL('../src/mode.js', import.meta.url), 'utf8')), false);
+  });
+});
+
+// ---- 0.5, F13-A v2: Claude's task list (and a lone rule row) under a dialog's or a permission prompt's last row (design F13 v2) ----------
+describe('a task list under the dialog or the prompt (F13-A v2)', () => {
+  const block = (o = {}) => taskRows({ cols: COLS, ...o });
+  const loneRule = (cols = COLS) => taskRows({ cols, doing: 0, open: 0, shownDone: 0, hiddenDone: 0 }).slice(0, 1);
+  const PLAN_325 = '   ctrl+g to edit in Vim · ~/.claude/plans/two-line-plan-calm-river.md';
+  const PROMPT = ['Bash command', '', '  make a made-up file', '', 'Do you want to proceed?', '❯ 1. Yes', '  2. Yes, and always allow access to <dir> from this project', '  3. No', '', ' Esc to cancel · Tab to amend'].map(lineOf);
+  const screens = {
+    'question (several tabs)': () => ask(),
+    'question (one tab)': () => ask({ tabs: ['Project'] }),
+    'question (vim insert)': () => ask({ focus: 4, insert: true }),
+    'multi-select question': () => ask({ tabs: ['Tools', 'Project'], multi: true, options: CHECKS, question: 'Which checks should I run?' }),
+    'question with the editor hint': () => ask({ focus: 4, ctrl: true }),
+    'review': () => rowsFrom(reviewParts()),
+    'plan approval': () => rowsFrom(planParts()),
+    'plan approval (2.1.325 footer)': () => rowsFrom(planParts({ footer: PLAN_325 })),
+  };
+  const tails = {
+    'named, the rule directly under the footer': () => block(),
+    'named, 11 blank rows above the rule': () => block({ blank: 11 }),
+    'unnamed': () => block({ named: false }),
+    'unnamed, 10 blank rows': () => block({ named: false, blank: 10 }),
+    'unnamed, 1 tasks, no in-progress part': () => block({ named: false, doing: 0, open: 0, shownDone: 1, hiddenDone: 0 }),
+    'named, all done and an overflow row': () => block({ doing: 0, open: 0, shownDone: 5, hiddenDone: 3 }),
+    'overflow with pending and in progress': () => block({ hiddenDoing: 1, hiddenOpen: 2, hiddenDone: 0 }),
+    'a lone rule row': () => loneRule(),
+    'a lone rule row after blank rows': () => [[], [], [], ...loneRule()],
+  };
+  const withTail = (rows, tail) => [...rows, ...tails[tail]()];
+
+  test('(+) every dialog with the block or the lone rule under it reads as the same step without it, and has the same sig', () => {
+    for (const [name, make] of Object.entries(screens)) {
+      const plain = read(make());
+      assert.equal(plain.unreadable, undefined, name);
+      for (const tail of Object.keys(tails)) {
+        const S = read(withTail(make(), tail));
+        assert.deepEqual(S, plain, `${name} / ${tail}`);
+        assert.equal(sigOf(S), sigOf(plain), `${name} / ${tail}`);
+        assert.equal(dialogCapture(withTail(make(), tail), COLS).state, 'ready', `${name} / ${tail}`);
+      }
+    }
+  });
+
+  test('(+) padded rows and trailing blank rows read the same', () => {
+    const plain = read(ask());
+    const pad = (rows) => rows.map((r) => [...r, span(' '.repeat(Math.max(0, COLS - text(r).length)))]);
+    assert.deepEqual(read([...rowsFrom(askParts(), { pad: true }), ...pad(block())]), plain);
+    assert.deepEqual(read([...rowsFrom(askParts(), { pad: true }), ...pad(block({ named: false }))]), plain);
+    assert.deepEqual(read([...ask(), ...block(), [], []]), plain);
+    assert.deepEqual(read([...ask(), ...loneRule(), []]), plain);
+  });
+
+  test('(+) the plan footer as 2.1.325 draws it (the editor hint and the plan path, no Esc to cancel) is a dialog end today, and the plan reads', () => {
+    assert.equal(isDialogEnd(PLAN_325), true);
+    const rows = rowsFrom(planParts({ footer: PLAN_325 }));
+    const S = read(rows);
+    assert.equal(S.kind, 'plan');
+    assert.equal(S.unreadable, undefined);
+    assert.equal(dialogOnScreen(rows), true);
+    assert.equal(dialogCapture(rows, COLS).state, 'ready');
+  });
+
+  test('(+) the dialog is on screen and nothing else is: no prompt, no mode, no draft, no plain input box', () => {
+    for (const [name, make] of Object.entries(screens)) {
+      for (const tail of ['named, the rule directly under the footer', 'unnamed', 'a lone rule row']) {
+        const rows = withTail(make(), tail);
+        assert.equal(dialogOnScreen(rows), true, name);
+        assert.equal(promptFromRows(rows), null, name);
+        assert.equal(modeFromRows(rows), 'unknown', name);
+        assert.equal(readDraft({ rows, cursor: { x: 0, y: 5 }, cols: COLS }), null, name);
+        assert.equal(parseDraft(rows, null, COLS), null, name);
+      }
+    }
+  });
+
+  test('(+) a permission prompt with the block under it is read as the same prompt: the same options, question and sig, and it is no dialog', () => {
+    const plain = promptFromRows(PROMPT);
+    assert.deepEqual(plain.options.map((o) => o.n), [1, 2, 3]);
+    for (const tail of Object.keys(tails)) {
+      const rows = withTail(PROMPT, tail);
+      assert.deepEqual(promptFromRows(rows), plain, tail);
+      assert.equal(promptSig(rows), promptSig(PROMPT), tail);
+      assert.equal(dialogOnScreen(rows), false, tail);
+      assert.equal(dialogCapture(rows, COLS), null, tail);
+      assert.equal(bypassWindow(rows), false, tail);
+    }
+  });
+
+  test('(+) a task label that mentions bypass sets bypass on the ready dialog (the guard reads the literal bottom), and only then; on a prompt it flags the bypass window', () => {
+    const labels = ['Check the bypass settings'];
+    for (const [name, make] of Object.entries(screens)) {
+      const rows = [...make(), ...block({ labels })];
+      assert.equal(read(rows).bypass, true, name);
+      assert.equal(dialogCapture(rows, COLS).bypass, true, name);
+      assert.equal(dialogCapture(rows, COLS).state, 'ready', name);
+      assert.equal(read([...make(), ...block()]).bypass, false, name);
+      assert.equal(read(make()).bypass, false, name);
+    }
+    assert.equal(bypassWindow([...PROMPT, ...block({ labels })]), true);
+    assert.notEqual(promptFromRows([...PROMPT, ...block({ labels })]), null);
+  });
+
+  test('(+) the full capture path on synthetic 64-column screens shaped like the spike\'s (named and unnamed, 45 and 60 rows) gives a ready dialog with the sig of the screen without the block', () => {
+    const cols = 64;
+    for (const tabs of [['Project'], ['Project', 'Tools']]) {
+      const dialog = rowsFrom(askParts({ cols, tabs }), { cols });
+      for (const [rows, named] of [[45, true], [45, false], [60, true], [60, false]]) {
+        const screen = taskScreen(dialog, { rows, named, cols, doing: 1, open: 0, shownDone: 4, hiddenDone: 12 });
+        assert.equal(screen.length, rows);
+        const got = dialogCapture(parseCapture(ansiOf(screen, cols), cols), cols);
+        const want = dialogCapture(parseCapture(ansiOf(dialog, cols), cols), cols);
+        assert.equal(got.state, 'ready', `${tabs.join()} / ${rows} / ${named}`);
+        assert.match(got.sig, /^[0-9a-f]{16}$/);
+        assert.equal(got.sig, want.sig);
+        assert.deepEqual(got, want);
+        assert.equal(got.bypass, false);
+      }
+    }
+    const head = taskRows({ cols, doing: 1, open: 0, shownDone: 4, hiddenDone: 12 }).map(text);
+    assert.deepEqual(head.slice(1, 3), ['', '  17 tasks (16 done, 1 in progress, 0 open)'], 'the header of the shape: 17 tasks');
+    assert.equal(head.at(-1), '   … +12 completed');
+    assert.equal(head[0].length, cols, 'a labelled rule, as wide as the pane');
+  });
+
+  test('(+) a dialog that is unreadable for another reason stays unreadable, with the same reason, when the block sits under it (the cut only shows it to the exact reader)', () => {
+    const wide = { options: [{ label: 'a'.repeat(COLS - 4), desc: 'x' }, { label: 'b', desc: 'y' }] };
+    const noStrip = () => { const rows = ask(); rows.splice(rowAt(rows, (t) => t.includes('Project') && t.includes('Tools')), 1); return rows; };
+    const survey = () => { const rows = ask(); rows.unshift(lineOf('● How is Claude doing this session? (optional)'), lineOf('  1: Bad    2: Fine    3: Good    0: Dismiss')); return rows; };
+    for (const [name, make] of Object.entries({ wide: () => ask(wide), noStrip, survey })) {
+      const before = reason(make());
+      assert.notEqual(before, undefined, name);
+      for (const tail of Object.keys(tails)) {
+        assert.equal(reason(withTail(make(), tail)), before, `${name} / ${tail}`);
+        assert.deepEqual(dialogCapture(withTail(make(), tail), COLS), dialogCapture(make(), COLS), `${name} / ${tail}`);
+      }
+    }
+  });
+
+  test('(−) a block or a rule row in any shape but the captured ones is cut by nobody: no form, and no dialog on screen (the banner stays)', () => {
+    for (const [name, make] of Object.entries(screens)) {
+      for (const [bad, rows] of Object.entries(taskMisfits(make()))) {
+        const cap = dialogCapture(rows, COLS);
+        assert.notEqual(cap?.state, 'ready', `${name}: ${bad}`);
+        assert.equal(cap === null, !dialogOnScreen(rows), `${name}: ${bad}`);
+        // An old quirk (not touched by F13-A): an ask footer that ends in the editor hint without `· Esc to cancel`, and a plan footer, take the next
+        // two rows for a wrapped footer (the [^·]+ and .+ of ASK_FOOTER and PLAN_FOOTER). Such a screen is a dialog on screen that is unreadable
+        // ('wide'), never a form; every other footer sees no dialog at all.
+        if (!['question (vim insert)', 'plan approval', 'plan approval (2.1.325 footer)'].includes(name)) assert.equal(dialogOnScreen(rows), false, `${name}: ${bad}`);
+      }
+    }
+    for (const [bad, rows] of Object.entries(taskMisfits(PROMPT))) assert.equal(dialogCapture(rows, COLS), null, bad);
+  });
+
+  test('(−) the block does not make a prompt or hide one: a screen that ends in the block without a prompt above it is no prompt', () => {
+    const noPrompt = [lineOf('transcript line'), lineOf('Esc to cancel · Tab to amend')];
+    assert.equal(promptFromRows([...noPrompt, ...block()]), null);
+    assert.equal(dialogOnScreen([...noPrompt, ...block()]), false);
+    assert.equal(promptFromRows([...PROMPT, ...block({ gap: 2 })]), null, 'a misshapen block under a real prompt cuts nothing, so the prompt reads as it did before: not at all');
+  });
+
+  test('(−) malformed input never throws', () => {
+    for (const bad of [null, undefined, [], [[]], [[{}]], [[{ t: 5 }]], [null], [[null]], 'x', 5, {}]) {
+      assert.doesNotThrow(() => { dialogOnScreen(bad); readDialogScreen(bad, COLS); dialogCapture(bad, COLS); dialogCapture(bad, NaN); }, JSON.stringify(bad));
+    }
+    const rows = [...ask(), ...block()];
+    for (const cols of [undefined, null, NaN, 0, -3, 5, 64]) assert.doesNotThrow(() => dialogCapture(rows, cols), String(cols));
+  });
+});
+
+// ---- 0.5, F13-B: the question's bar and the rows as wide as the pane (design F13 1.4; spike S-F13 (c): Claude 2.1.325 draws both) ----------
+describe('the bar and the pane-wide rows of a long question (F13-B)', () => {
+  const C = 64;
+  // A made-up text of exactly n characters that ends in a letter.
+  const words = (n) => { const t = 'amber river quiet maple stone cedar hazel '.repeat(8).slice(0, n); return t.endsWith(' ') ? `${t.slice(0, -1)}x` : t; };
+  const bar = (t) => [span('│', { d: true }), span(' '), span(t, { b: true, fg: 231 })];
+  const barred = (texts) => texts.map(bar);
+  const plainQ = (texts) => texts.map((t) => [span(t, { b: true, fg: 231 })]);
+  const QUESTION = [words(62), words(60), words(31)];
+  const OPTS_WRAPPED = [{ label: 'Night start', desc: [words(59), words(53)] }, { label: 'Day start', desc: [words(55)] }];
+  const make = (o = {}) => rowsFrom(askParts({ cols: C, tabs: ['Plan'], question: barred(QUESTION), options: OPTS_WRAPPED, ...o }), { cols: C });
+  const readC = (rows) => readDialogScreen(rows, C);
+  const wideOf = (rows) => Math.max(...rows.map((r) => text(r).length));
+
+  test('(+) the fixture has what the spike saw: a bar on every question row, a question row and a description row as wide as the pane', () => {
+    const rows = make();
+    assert.equal(rowAt(rows, (t) => t.length === C && t.startsWith('│ ')) >= 0, true);
+    assert.equal(rowAt(rows, (t) => t.length === C && t.startsWith('     ')) >= 0, true);
+    assert.equal(wideOf(rows), C);
+  });
+
+  test('(+) a bar on every question row is left out: the question reads as the same text without the bars, with the same sig', () => {
+    const S = readC(make());
+    assert.equal(S.unreadable, undefined);
+    assert.equal(S.question, QUESTION.join(' '));
+    const without = readC(make({ question: plainQ([words(40), words(31)]) }));
+    const withBars = readC(make({ question: barred([words(40), words(31)]) }));
+    assert.equal(sigOf(withBars), sigOf(without));
+    assert.deepEqual(withBars, without);
+  });
+
+  test('(+) one barred row, as wide as the pane or not (a 90-character question at 120 columns), reads', () => {
+    const one = rowsFrom(askParts({ tabs: ['Plan'], question: barred([words(89)]) }));
+    assert.equal(read(one).question, words(89));
+    const wideOne = rowsFrom(askParts({ cols: 91, tabs: ['Plan'], question: barred([words(89)]) }), { cols: 91 });
+    assert.equal(readDialogScreen(wideOne, 91).unreadable, 'wide', 'a single row as wide as the pane has nothing below it');
+  });
+
+  test('(+) a question row as wide as the pane is read when the next row continues the question; so is a description row with another description row below it', () => {
+    const S = readC(make());
+    assert.equal(S.unreadable, undefined);
+    assert.equal(S.options[0].description, `${words(59)} ${words(53)}`);
+    const plain = readC(make({ question: plainQ(QUESTION) }));
+    assert.equal(plain.unreadable, undefined, 'the same without bars: a plain row as wide as the pane with a continuation below');
+    assert.equal(plain.question, QUESTION.join(' '));
+  });
+
+  test('(+) the full capture path at 64 columns: the barred question, the wide rows and an unnamed block under the footer give a ready dialog with the sig of the screen without the block', () => {
+    const dialog = make();
+    const tasks = taskRows({ cols: C, named: false, doing: 1, open: 0, shownDone: 0, hiddenDone: 0, labels: ['bake one loaf'] });
+    assert.deepEqual(tasks.map(text), ['', '  1 tasks (0 done, 1 in progress, 0 open)', '  ◼ bake one loaf']);
+    const got = dialogCapture(parseCapture(ansiOf([...dialog, ...tasks], C), C), C);
+    const want = dialogCapture(parseCapture(ansiOf(dialog, C), C), C);
+    assert.equal(want.state, 'ready');
+    assert.equal(got.state, 'ready');
+    assert.equal(got.sig, want.sig);
+    assert.deepEqual(got, want);
+    assert.equal(got.question, QUESTION.join(' '));
+  });
+
+  test('(−) a bar on some question rows only is a layout the reader refuses (first row, last row, the middle one)', () => {
+    const rowsFor = (flags) => QUESTION.map((t, n) => (flags[n] ? bar(t) : [span(t, { b: true, fg: 231 })]));
+    for (const flags of [[true, false, false], [false, false, true], [false, true, false], [true, true, false], [false, true, true]]) {
+      assert.equal(readC(make({ question: rowsFor(flags) })).unreadable, 'layout', flags.join());
+    }
+    assert.equal(readC(make({ question: rowsFor([true, true, true]) })).unreadable, undefined);
+    assert.equal(readC(make({ question: rowsFor([false, false, false]) })).unreadable, undefined);
+    const lone = make({ question: [bar(words(40)), [span('│', { d: true })], bar(words(30))] });
+    assert.equal(readC(lone).unreadable, 'layout', 'a bar row with no text is not a barred row');
+  });
+
+  test('(−) a question row as wide as the pane stays refused when nothing continues it: the last row of the question, a blank row below it, an option row below it', () => {
+    assert.equal(readC(make({ question: barred([words(40), words(62)]) })).unreadable, 'wide', 'the last row of the question');
+    assert.equal(readC(make({ question: plainQ([words(40), words(64)]) })).unreadable, 'wide', 'plain: the last row of the question');
+    assert.equal(readC(make({ question: barred([words(62), '', words(31)].filter((t) => t !== '')) })).unreadable, undefined, 'control: the continuation case reads');
+    const withBlank = make({ question: [...barred([words(62)]), [], ...barred([words(31)])] });
+    assert.equal(readC(withBlank).unreadable, 'wide', 'a blank row between the wide row and the next question row');
+    assert.equal(readC(make({ question: barred([words(62)]) })).unreadable, 'wide', 'a wide row with the first option row below it');
+  });
+
+  test('(−) a description row as wide as the pane stays refused when it is the last row of its description (the next row is an option or the separator)', () => {
+    assert.equal(readC(make({ options: [{ label: 'Night start', desc: [words(53), words(59)] }, { label: 'Day start', desc: [words(55)] }] })).unreadable, 'wide', 'the last row of the first description');
+    assert.equal(readC(make({ options: [{ label: 'Night start', desc: [words(53)] }, { label: 'Day start', desc: [words(55), words(59)] }] })).unreadable, 'wide', 'the last row of the last description');
+    assert.equal(readC(make({ options: [{ label: 'Night start', desc: [words(59)] }, { label: 'Day start', desc: [words(55)] }] })).unreadable, 'wide', 'a single wide description row');
+  });
+
+  test('(−) an option row as wide as the pane stays refused, with or without a continuation below it; so do the strip, the footer and a review or plan row', () => {
+    const optionRow = words(C - 5);
+    assert.equal(readC(make({ options: [{ label: optionRow, desc: [words(40)] }, { label: 'Day start', desc: [words(55)] }] })).unreadable, 'wide');
+    assert.equal(readC(make({ options: [{ label: optionRow, desc: [] }, { label: 'Day start', desc: [] }] })).unreadable, 'wide');
+    assert.equal(readC(rowsFrom(reviewParts({ cols: C, pairs: [{ q: words(C - 3), a: 'x' }, { q: 'Which checks should I run?', a: 'lint' }] }), { cols: C })).unreadable, 'wide');
+    assert.equal(readC(rowsFrom(planParts({ cols: C, prose: ['x'], labels: [words(C - 8), 'Yes, manually approve edits'] }), { cols: C })).unreadable, 'wide');
+  });
+
+  test('(−) the bar changes nothing outside a question step: a barred line in a review pair or above the strip is just text, and the sig of a question depends on the text, not on the bar', () => {
+    const base = readC(make({ question: plainQ(['Which step comes next?']) }));
+    const barredOne = readC(make({ question: barred(['Which step comes next?']) }));
+    assert.equal(sigOf(base), sigOf(barredOne));
+    assert.notEqual(sigOf(readC(make({ question: barred(['Which step comes first?']) }))), sigOf(barredOne));
   });
 });
