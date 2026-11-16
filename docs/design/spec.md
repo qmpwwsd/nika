@@ -2222,7 +2222,7 @@ with an action shows heading, why, hint, Close and the action; pending shows "Fi
 | the first capture answers (the pane is live) | `PUT { open: true }`, repeated until one is answered 200; every later request is `open: false`, also after `blocked / user-change` and `blocked / changed`, until the user asks (next row). F11: that first frame is a commit point, so it is measured before the request goes out and the request carries the rows hidden under the strip; still one request |
 | the user presses Fit again or Fit here (F1) | `PUT { open: true }` at once: a waiting heartbeat is cleared and the beat re-armed, and a request in flight finishes first, then this one goes out. A refused or lost ask is tried again by the next beat, again with `open: true`; later requests are `open: false` once one is answered 200. Not before the first capture, not after the pane is gone or a 403, and not while an ask is pending |
 | the panel changes size (a commit point of "Measuring the panel", F10: not a change of the height alone) | `PUT { open: false }` 250 ms after the last change |
-| a redraw hold ends by timeout with the room conditions (F10, "Steady size, room and the redraw hold", below) | one `PUT` at once (no debounce) for the room's size: 33 rows or more (F11 adds the hidden rows) and the columns in the panel's proportion, with `focus` read now; not sent (the pending frame is applied) when it would ask no more rows than the request last sent |
+| a redraw hold ends by timeout with the room conditions (F10, "Steady size, room and the redraw hold", below; F12: also when the box is readable but the mode line Claude showed before the resize is gone) | one `PUT` at once (no debounce) for the room's size: 33 rows or more (F11 adds the hidden rows) and the columns in the panel's proportion, with `focus` read now; not sent (the pending frame is applied) when it would ask no more rows than the request last sent |
 | every 5 s | `PUT { open: false }` with the current size (the beat: the server lets a lease lapse after 15 s without one) |
 | the window is shown again (`visibilitychange`) | one `PUT` at once: timers may have been suspended and the lease may have lapsed; it carries the focus read now |
 | this window loses focus (`blur`, F9) | `PUT` with `focus: false` 150 ms after the blur (F10; F9 had 200 ms), if it still holds (a flick back sends nothing); the server answers with the give |
@@ -2334,7 +2334,7 @@ the half-redrawn screen while Claude repainted. What the user sees now (the numb
 | you press Fit again | the room is cleared, the panel measured, the rows hidden under the strip read again (F11), and the next request is `open: true` with the panel's own columns and the rows that fill it (no room) |
 
 **The redraw hold.** After nika's own resize (the 200 answer's pane size differs from the drawn one) the page keeps drawing the last good frame until a capture at the
-answered size shows Claude's input box, a prompt, a dialog or no full-screen view, 1.2 s at most; it reads the capture at once and every 100 ms meanwhile. A capture that is
+answered size shows Claude's input box (F12: and its mode line, when the frame drawn before showed it, see "The mode line" below), a prompt, a dialog or no full-screen view, 1.2 s at most; it reads the capture at once and every 100 ms meanwhile. A capture that is
 not ready is not drawn and is not given to the mode chip, "Waiting for Claude to confirm the mode.", the quick actions, the scroll gate or the Live label, so none of them flashes.
 The fit chip's new view waits with the frame, so **the answer's pane size reaches the page before the chip, and the chip can appear up to 1.2 s after the answer** (with nothing
 drawn yet it appears at once; orchestrator ruling 2026-11-16, T2). When the hold runs out, the latest capture is drawn as it is: if Claude's footer is still not on screen the
@@ -2342,6 +2342,15 @@ page shows the truth ("unconfirmed", and the scroll refusal "Claude's input box 
 (the copy into Claude's input, the draft write and the Enter; **never the passthrough or the arrow keys**), the mode switch and the quick-action commands; **End opens its dialog after
 the hold, and the End request itself takes a fresh capture and its own gate** as always; Stop, the user's own keys and the answers to a prompt or a dialog do not wait. The server
 gates are all unchanged (contract `api-app.md`, "The page's size, room for Claude's footer and the redraw hold").
+
+**The mode line (0.5, F12; owner decision 2026-11-16, after the build-11 check).** Claude's bottom area (a 7-line task list, a notice, the input box and a three-line footer) can be one row too
+tall for the pane. Claude then lets the footer's last line, the one with the mode (`-- INSERT -- … auto mode on`), run off the screen while the input box stays readable. The hold counted the readable box as
+a finished frame, so the room step never ran: the capture answered `modeConfirmed: false`, the mode chip read "unconfirmed" and a mode switch from nika was refused (scroll and Send worked; they need only the box).
+Now the page records, at each start of the hold, whether the frame drawn before the resize showed the mode (a confirmed mode other than unknown). If it did, the hold treats a frame as finished only when the box **and**
+the mode line are on screen (a prompt, a dialog, a screen outside the full-screen view and a frame with no readable box before are finished as before), and when the 1.2 s run out with the box readable but the mode line gone the
+room step is taken once, like for a missing box: 33 rows or more, the text scaled, the chip's panel line "nika gave the pane more rows…". Nothing else changes: the 1.2 s, the 150 ms settles, one room step per window
+until Fit again or a window resize, the chip's words, colours and icons. **The cost:** a frame whose mode line never confirms after nika's resize keeps the old frame on screen for the whole 1.2 s (where the box alone used to end the hold at once)
+before the room step; if the mode line is still off at that size, the second hold waits another 1.2 s and then the frame is drawn as it is, with the mode "unconfirmed" as before.
 
 **Accessibility.** The transition is a 120 ms opacity and transform animation on the pane's text, none under `prefers-reduced-motion` (the class is removed by a timer then). The room
 hint is text in the chip's panel (`p#fit-pop-hint`), reachable by keyboard like the other hints. The hold announces nothing, and a state change is announced when the chip is drawn.

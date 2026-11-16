@@ -1223,9 +1223,10 @@ above). Everything below is the page's behaviour, written here because it decide
     height overflow at the top (about 4 rows in the example), the mirror staying pinned to the bottom; a cut that moves up (a longer draft) leaves that many empty rows; one that moves down overflows; the next commit corrects it.
 - **The room step.** The page asks for room once for a window, at once (no debounce, `size(…, { now: true })`), when the redraw hold below ran out and all of these
   hold: the frame drawn before the resize showed a readable input box; the latest capture is at the answered size, in the full-screen view (`alt`), with no prompt, no
-  dialog and no readable draft; the chip's state is `fitted` (never `zoomed`, `terminal`, `blocked` or `other`); the panel has fewer than 33 rows; the room is not
+  dialog and no readable draft **or (F12) a readable draft whose capture does not confirm the mode (`modeConfirmed` not `true`) although the frame drawn before the resize
+  did (a confirmed mode other than `unknown`: `modeBefore`)**; the chip's state is `fitted` (never `zoomed`, `terminal`, `blocked` or `other`); the panel has fewer than 33 rows; the room is not
   already on; and (F11) the room ask has more rows than the request last sent. The room step asks the room's fill size (at least 33 rows, from the K of the last commit: its pending frame
-  has no readable box, so K is not read again); when that ask would be the size already sent the step would send nothing and only wait out another hold, so it is not taken and the
+  has no readable box or no mode line, so K is not read again); when that ask would be the size already sent the step would send nothing and only wait out another hold, so it is not taken and the
   pending frame is applied. At most one room step per window: after its own hold the latest capture is applied whatever it shows. The room stays on across focus changes (each later
   focus is one resize straight to the room size, a take that counts in the 12 a minute like any other) until Fit again, a commit with a new window size or width, or a
   page load; it lives in page memory only. For the route the room step is a request with a larger `cols` and `rows` from a page that holds the lease (a renew of a
@@ -1233,12 +1234,22 @@ above). Everything below is the page's behaviour, written here because it decide
   pane, the lock, the lease. The fit chip's panel says why while the room is on and offers Fit again (spec §9.13); the chip's states, words, colours and icons do not change.
 - **The redraw hold.** The planner tells the page the pane size of every 200 answer (`fit.pane`, when both numbers are integers 1–10000; before the chip is told, so the
   chip can wait). When a frame is drawn and the answered size differs from the drawn pane size, nika's own resize is under way, and the page keeps drawing the last good frame
-  until a 200 capture at the answered size (columns and row count) shows a readable input box, a prompt, a dialog or no full-screen view (or there was no readable box
+  until a 200 capture at the answered size (columns and row count) shows a readable input box (and, F12, the mode line too when the frame drawn before showed it, see below),
+  a prompt, a dialog or no full-screen view (or there was no readable box
   before the resize), for at most 1.2 s (`HOLD_MS`). It reads the capture route at once and then every 100 ms (`HOLD_POLL_MS`; normally every 250 ms). A capture that is not
   ready is kept and not applied: not drawn, not given to the mode chip, the draft sync, the scroll gate, the quick actions or the Live label, which keep the last good state.
   A 304 changes nothing; a 404, a 403 or an error ends the hold at once and is handled as always (a pane that is gone is never hidden). A chip view that arrives during the
   hold is drawn when it ends, in the same frame as the mirror (up to 1.2 s after the answer). When the hold runs out the room step above is taken if its conditions hold,
   else the latest kept capture is drawn as it is and the page shows the truth (the mode "unconfirmed", the scroll refusal `screen-unclear`).
+  **F12 (owner decision 2026-11-16, after the build-11 check): the hold waits for the mode line too.** At each start of the hold the page records `modeBefore`: the frame drawn before the
+  resize had a readable input box and a capture with `modeConfirmed` `true` and a `mode` other than `unknown` (a restart of the hold, including the room step's, keeps the first
+  `modeBefore`, as it keeps the first "readable box before"). With `modeBefore` a capture that shows the box is ready only when it also has `modeConfirmed` `true`; a prompt, a
+  dialog, a screen not in the full-screen view and a hold with no readable box before are ready as before, and with `modeBefore` false the rule is exactly the one above. Cause: Claude's
+  bottom area (a task list, a notice, the input box and a three-line footer) can be one row too tall for the pane, so Claude lets the footer's last line, the one with the mode, run off
+  the screen while the input box stays readable; the capture then answers `modeConfirmed: false` (the remembered mode, not confirmed), the chip reads "unconfirmed" and a mode switch would be
+  refused. The cost: a frame whose mode line never comes back after nika's resize keeps the page on the old frame for the full 1.2 s, then the room step is taken once (33 rows or more, the
+  text scaled), and if the mode line is still off at that size the second hold waits another 1.2 s and the frame is drawn as it is (the mode "unconfirmed", as before). No route, body key, answer
+  field or server gate changes.
 - **What waits for the hold, and what does not.** These page requests wait until the hold is over, at most `HOLD_MS` (twice that with a room step), then go out as they
   always do: the scroll route's request, Send's own steps (the copy into Claude's input, the draft write `PUT …/draft`, the `Enter` through `…/submit`), the mode switch,
   and the quick-action commands. End opens its dialog after the hold (the dialog sends its own request, so that request is not delayed). These do not wait: the user's own

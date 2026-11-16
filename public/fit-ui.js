@@ -127,10 +127,13 @@ export function drawnScale({ frame, cols, rows, hide, strip }) {
  * F10: whether a capture is a finished frame at the size nika asked for. `body` is the capture, `draft` its cleaned draft (null when no input box is
  * readable), `want` the answered pane size { cols, rows }, `plainBefore` whether the frame drawn before the resize showed a readable input box. The
  * size must match, and then at least one of: a readable box, a prompt, a dialog, no full-screen view, or nothing to wait for (!plainBefore).
+ * F12: with `modeBefore` exactly true (Claude's mode line was readable before the resize) a readable box counts only when the capture also has
+ * `modeConfirmed` exactly true; the other four exits are as they were.
  */
-export function frameReady({ body, draft, want, plainBefore } = {}) {
+export function frameReady({ body, draft, want, plainBefore, modeBefore } = {}) {
   if (!body || !want || body.cols !== want.cols || !Array.isArray(body.rows) || body.rows.length !== want.rows) return false;
-  return hasBox(draft) || Boolean(body.prompt) || body.dialog != null || body.alt !== true || plainBefore !== true;
+  const box = hasBox(draft) && (modeBefore !== true || body.modeConfirmed === true);
+  return box || Boolean(body.prompt) || body.dialog != null || body.alt !== true || plainBefore !== true;
 }
 
 /**
@@ -138,11 +141,13 @@ export function frameReady({ body, draft, want, plainBefore } = {}) {
  * yet, the panel has fewer than ROOM_ROWS rows (`frameRows`), the chip says `fitted` (nika resized the window), the frame before the resize showed a readable box
  * (`plainBefore`), and the latest capture `body` is at the answered size `want`, in the full-screen view, with no prompt, no dialog and no readable `draft`.
  * F11: and `gain` is exactly true: the room ask has more rows than the request last sent (else the step would send nothing and only wait out another hold).
+ * F12: a readable box does not stop the step when `modeBefore` is exactly true (Claude's mode line was readable before the resize) and the capture's `modeConfirmed`
+ * is not exactly true (the mode line fell off the screen); every other condition is as it was.
  */
-export function roomStep({ room, frameRows, state, plainBefore, want, body, draft, gain } = {}) {
+export function roomStep({ room, frameRows, state, plainBefore, want, body, draft, gain, modeBefore } = {}) {
   if (gain !== true || room === true || !Number.isInteger(frameRows) || frameRows >= ROOM_ROWS || state !== 'fitted' || plainBefore !== true) return false;
   if (!body || !want || body.cols !== want.cols || !Array.isArray(body.rows) || body.rows.length !== want.rows) return false;
-  return body.alt === true && !body.prompt && body.dialog == null && !hasBox(draft);
+  return body.alt === true && !body.prompt && body.dialog == null && (!hasBox(draft) || (modeBefore === true && body.modeConfirmed !== true));
 }
 
 /** F10: where the zoom of a new frame starts, as a scale: the old text scale over the new one when the text grows (never below 0.5), else 1 (a fade only). */
@@ -156,16 +161,17 @@ const validPane = (p) => p !== null && typeof p === 'object' && Number.isInteger
 
 /**
  * F10, design F10 4: the redraw hold. After nika's own resize the page keeps drawing the last good frame until a capture shows Claude's input box at the
- * new size, for HOLD_MS at most. `io.after(fn, ms)` / `io.cancel(timer)` are the clock; `io.timeout(pending, { want, plainBefore })` (optional) is told when
+ * new size, for HOLD_MS at most. `io.after(fn, ms)` / `io.cancel(timer)` are the clock; `io.timeout(pending, { want, plainBefore, modeBefore })` (optional) is told when
  * the time is up, with the latest capture that was kept (or null), and may start the hold again from inside (the room step), which keeps it going; if it
  * does not, the hold is over. `io.ended()` (optional) is told every time a hold stops (a ready frame, end(), a timeout that did not start it again).
- * - start({ want, plainBefore }): a hold begins (or, while one runs, goes on with the new `want` and a restarted timer; plainBefore stays that of the first
- *   start). `want` is the answered pane size { cols, rows }, or null while the answer is awaited (nothing is ready then).
+ * - start({ want, plainBefore, modeBefore }): a hold begins (or, while one runs, goes on with the new `want` and a restarted timer; plainBefore and modeBefore
+ *   stay those of the first start). `want` is the answered pane size { cols, rows }, or null while the answer is awaited (nothing is ready then).
+ *   F12: modeBefore (exactly true counts) says Claude's mode line was readable in the frame drawn before the resize; the hold then waits for it too.
  * - offer(capture = { body, draft, ... }): 'apply' with no hold, or when the capture is ready (the hold ends); else 'keep' (it becomes the pending one).
  * - wait(): a promise that resolves when no hold runs (at once when none does). end(): the hold stops now; active: whether one runs.
  */
 export function createRedrawHold(io) {
-  const H = { on: false, want: null, plainBefore: false, pending: null, timer: null, waiters: [] };
+  const H = { on: false, want: null, plainBefore: false, modeBefore: false, pending: null, timer: null, waiters: [] };
 
   const stop = () => {
     if (H.timer !== null) io.cancel(H.timer);
@@ -183,16 +189,17 @@ export function createRedrawHold(io) {
     H.timer = io.after(() => {
       H.timer = null;
       if (!H.on) return;
-      try { io.timeout?.(H.pending, { want: H.want, plainBefore: H.plainBefore }); } catch { /* the hold ends below all the same */ }
+      try { io.timeout?.(H.pending, { want: H.want, plainBefore: H.plainBefore, modeBefore: H.modeBefore }); } catch { /* the hold ends below all the same */ }
       if (H.on && H.timer === null) stop(); // io.timeout did not start it again
     }, HOLD_MS);
   };
 
   return {
-    start({ want, plainBefore } = {}) {
+    start({ want, plainBefore, modeBefore } = {}) {
       if (!H.on) {
         H.on = true;
         H.plainBefore = plainBefore === true;
+        H.modeBefore = modeBefore === true;
         H.pending = null;
       }
       H.want = validPane(want) ? { cols: want.cols, rows: want.rows } : null;
@@ -200,7 +207,7 @@ export function createRedrawHold(io) {
     },
     offer(capture) {
       if (!H.on) return 'apply';
-      if (frameReady({ body: capture?.body, draft: capture?.draft, want: H.want, plainBefore: H.plainBefore })) {
+      if (frameReady({ body: capture?.body, draft: capture?.draft, want: H.want, plainBefore: H.plainBefore, modeBefore: H.modeBefore })) {
         stop();
         return 'apply';
       }

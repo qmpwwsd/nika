@@ -13,7 +13,7 @@ import { wantsHelp, wantsBack, wantsHistToggle, isTextEntry, backHint, helpHint,
 import { quickState as quickStateReal, sendGate as sendGateReal, keysRefusal as keysRefusalReal, stopOutcome as stopOutcomeReal, commandSaid as commandSaidReal, commandFailure as commandFailureReal, problemKind as problemKindReal, followSession as followSessionReal, planShell as planShellReal, cleanPrompt as cleanPromptReal, hasAnswerButtons as hasAnswerButtonsReal, attnNote as attnNoteReal, answerOutcome as answerOutcomeReal, promptOff as promptOffReal, composerKey as composerKeyReal } from '../public/quick-actions.js';
 import { planSend as planSendReal, arrowEcho as arrowEchoReal, keyForEvent as keyForEventReal, planPaste as planPasteReal, toRenderModel as toRenderModelReal, cutCursor as cutCursorReal } from '../public/mirror-render.js';
 import { draftSendPlan as draftSendPlanReal, cleanDraft as cleanDraftReal, cutAt as cutAtReal, caretAfter as caretAfterReal, noteView as noteViewReal, suggestionFor as suggestionForReal, submitResult as submitResultReal, submitMessage as submitMessageReal } from '../public/draft-sync.js';
-import { switchFailure as switchFailureReal, MODE_TARGETS, MODE_META } from '../public/modes.js';
+import { switchFailure as switchFailureReal, MODE_TARGETS, MODE_META, modeKey as modeKeyReal } from '../public/modes.js';
 import {
   createFitPlanner as createFitPlannerReal, panelSize as panelSizeReal, scaleFor as scaleForReal, chipView as chipViewReal, fitPanelView as fitPanelViewReal, stillOffSay as stillOffSayReal,
   createRedrawHold as createRedrawHoldReal, remeasure as remeasureReal, askSize as askSizeReal, roomStep as roomStepReal, refitFrom as refitFromReal, HOLD_MS as HOLD_MS_REAL, REFIT_MS as REFIT_MS_REAL, FOCUS_SETTLE_MS as FOCUS_SETTLE_REAL, BLUR_SETTLE_MS as BLUR_SETTLE_REAL,
@@ -4391,6 +4391,7 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
       announce: (m) => log.said.push(m), h: hReal, icon: iconReal, Node: El,
       panelSize: panelSizeReal, scaleFor: scaleForReal, createFitPlanner: createFitPlannerReal, fitPanelView: fitPanelViewReal, stillOffSay: stillOffSayReal,
       remeasure: remeasureReal, askSize: askSizeReal, roomStep: roomStepReal, refitFrom: refitFromReal, REFIT_MS: REFIT_MS_REAL,
+      modeKey: modeKeyReal, // F12: fitSized tells whether the drawn frame showed a known mode
       hiddenRows: hiddenRowsReal, fillSize: fillSizeReal, drawnScale: drawnScaleReal, // F11
       cutAt: cutAtReal, cutCursor: cutCursorReal, toRenderModel: toRenderModelReal, applyMirror: (container, model) => { log.drawn.push(1); log.cutRows.push(model.length); }, // F11: for the real drawMirror (`realDraw`)
       // F10: the capture path of handleCapture, with spies where the page would draw or judge the screen (noteScreen is what moves the mode chip)
@@ -5719,13 +5720,13 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
    * The page with a mirror drawn at 171 x 45 (the terminal's size), the fit started and its first answer given: `pane` is the pane size nika's
    * resize made, so a redraw hold runs (`plain`: the drawn frame showed a readable input box). The replies after it are `more`.
    */
-  const heldRig = async ({ box = PANEL_145X22, pane = { cols: 145, rows: 21 }, plain = true, state = 'fitted', more = [], focus = false } = {}) => {
+  const heldRig = async ({ box = PANEL_145X22, pane = { cols: 145, rows: 21 }, plain = true, state = 'fitted', more = [], focus = false, before = {} } = {}) => {
     const r = rig({ box, replies: [answerAt(state, pane), ...more] });
     r.page.focus = focus;
     r.wireFit();
     r.ctx.M.cols = 171;
     r.ctx.M.rows = 45;
-    r.ctx.M.body = shot(171, 45, { draft: plain ? BOXED : null }).body;
+    r.ctx.M.body = shot(171, 45, { draft: plain ? BOXED : null, ...before }).body; // F12: `before` is what the drawn frame says about the mode (a confirmed `auto` by default)
     r.ctx.M.draft = plain ? cleanDraftReal(BOXED) : null;
     r.fitCaptured();
     await r.clk.advance(0);
@@ -6110,6 +6111,91 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     assert.equal(r.log.noted.length, 1, 'the capture is drawn as it is');
     r.holdTimeout(pending, { want: { cols: 145, rows: 21 }, plainBefore: true });
     assert.equal(r.ctx.FIT.room, true, 'and with plainBefore the same call does take the step');
+  });
+
+  // -- F12 (owner decision 2026-11-16, build 11): the box stays readable, Claude's mode line runs off the screen
+  /** What the server answers when the footer's mode line is off the screen: the box reads, the mode is the remembered one and not confirmed. */
+  const noModeLine = (cols, rows, over = {}) => shot(cols, rows, { draft: BOXED, mode: 'auto', modeConfirmed: false, ...over });
+
+  test('(+) F12: a resize from a confirmed mode, then captures with the box but no mode line: the old frame stays 1.2 s, then exactly one room PUT; the frame with the mode line ends the hold', async () => {
+    const r = await heldRig({ more: [answerAt('fitted', { cols: 210, rows: 32 })] });
+    r.handleHeld(noModeLine(145, 21));
+    r.handleHeld(noModeLine(145, 21));
+    assert.equal(r.log.noted.length, 0, 'the box alone no longer ends the hold: the old frame stays drawn');
+    assert.equal(r.ctx.HOLD.active, true);
+    await r.clk.advance(HOLD_MS - 1);
+    assert.equal(r.log.calls.length, 1, 'nothing before 1.2 s');
+    await r.clk.advance(1);
+    assert.deepEqual(calls(r), [PUT(145, 22, true), PUT(210, 33, false)], 'one room PUT, at once');
+    assert.equal(r.ctx.FIT.room, true);
+    assert.equal(r.log.noted.length, 0, 'the old frame stays drawn meanwhile');
+    assert.equal(r.ctx.HOLD.active, true, 'the hold goes on until the answer');
+    r.handleHeld(shot(210, 32, { draft: BOXED })); // 33 rows: the mode line is back
+    assert.equal(r.log.noted.length, 1);
+    assert.equal(r.log.noted[0].modeConfirmed, true);
+    assert.deepEqual([r.ctx.M.cols, r.ctx.M.rows], [210, 32]);
+    assert.equal(r.ctx.HOLD.active, false);
+    await r.clk.advance(HOLD_MS * 2);
+    assert.equal(r.log.calls.length, 2, 'one room step only');
+  });
+
+  test('(+) F12: the room step is taken once: when the mode line is still off at 33 rows the second hold waits 1.2 s and then draws the frame as it is, no third PUT', async () => {
+    const r = await heldRig({ more: [answerAt('fitted', { cols: 210, rows: 32 })] });
+    r.handleHeld(noModeLine(145, 21));
+    await r.clk.advance(HOLD_MS);
+    assert.equal(r.log.calls.length, 2);
+    r.handleHeld(noModeLine(210, 32));
+    assert.equal(r.log.noted.length, 0, 'the second hold waits for the mode line too (modeBefore stays that of the first start)');
+    await r.clk.advance(HOLD_MS - 1);
+    assert.equal(r.log.noted.length, 0);
+    await r.clk.advance(1);
+    assert.equal(r.log.calls.length, 2, 'no third PUT');
+    assert.deepEqual([r.log.noted.length, r.log.noted[0].modeConfirmed, r.ctx.HOLD.active], [1, false, false], 'drawn as it is: the chip stays honest');
+  });
+
+  test('(−) F12: a frame whose mode was unconfirmed or unknown before the resize ends the hold on the box at once, as before; no room step', async () => {
+    for (const [why, before] of [['mode not confirmed', { modeConfirmed: false }], ['mode unknown', { mode: 'unknown', modeConfirmed: true }], ['mode missing', { mode: undefined, modeConfirmed: true }]]) {
+      const r = await heldRig({ before });
+      r.handleHeld(noModeLine(145, 21));
+      assert.equal(r.log.noted.length, 1, `${why}: the box ends the hold`);
+      assert.equal(r.ctx.HOLD.active, false, why);
+      await r.clk.advance(HOLD_MS * 2);
+      assert.deepEqual([r.log.calls.length, r.ctx.FIT.room], [1, false], why);
+    }
+  });
+
+  test('(−) F12: a prompt or a dialog without the mode line ends the hold as before (the mode line is not asked of them)', async () => {
+    for (const [why, over] of [['prompt', { prompt: { kind: 'tool', question: 'x', options: [] }, draft: null }], ['dialog', { dialog: { state: 'unreadable' }, draft: null }]]) {
+      const r = await heldRig();
+      r.handleHeld(noModeLine(145, 21, over));
+      assert.equal(r.log.noted.length, 1, why);
+      assert.equal(r.ctx.HOLD.active, false, why);
+    }
+  });
+
+  test('(+) F12: holdTimeout hands modeBefore to the room step: a readable box without the mode line takes it, and with modeBefore false it does not', async () => {
+    const r = await heldRig();
+    r.ctx.HOLD.end();
+    const body = noModeLine(145, 21).body;
+    const pending = { r: { status: 200, body }, body, draft: cleanDraftReal(BOXED) };
+    const before = r.log.calls.length;
+    r.holdTimeout(pending, { want: { cols: 145, rows: 21 }, plainBefore: true, modeBefore: false });
+    assert.equal(r.ctx.FIT.room, false);
+    assert.equal(r.log.calls.length, before, 'no resize');
+    assert.equal(r.log.noted.length, 1, 'the capture is drawn as it is');
+    r.holdTimeout(pending, { want: { cols: 145, rows: 21 }, plainBefore: true, modeBefore: true });
+    assert.equal(r.ctx.FIT.room, true, 'and with modeBefore the same call takes the step');
+    assert.equal(r.ctx.HOLD.active, true);
+  });
+
+  test('(+) F12: the code records modeBefore from the drawn frame at each hold start and hands it on at the room step', () => {
+    const sized = fnOf('function fitSized(pane)');
+    assert.match(sized, /const plainBefore = M\.body\.alt === true && M\.draft !== null;/);
+    assert.match(sized, /const modeBefore = plainBefore && M\.body\.modeConfirmed === true && modeKey\(M\.body\.mode\) !== 'unknown';/);
+    assert.match(sized, /HOLD\.start\(\{ want: \{ cols: pane\.cols, rows: pane\.rows \}, plainBefore, modeBefore \}\);/);
+    const timeout = fnOf('function holdTimeout(pending, ctx)');
+    assert.match(timeout, /roomStep\(\{[^}]*plainBefore: ctx\.plainBefore, modeBefore: ctx\.modeBefore,/);
+    assert.match(timeout, /HOLD\.start\(\{ want: null, plainBefore: ctx\.plainBefore, modeBefore: ctx\.modeBefore \}\);/);
   });
 
   test('(−) F10: fitSized with nothing drawn yet does nothing and does not throw', () => {

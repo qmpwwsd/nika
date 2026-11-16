@@ -1957,6 +1957,35 @@ describe('F10: frameReady, a frame that shows Claude\'s input box at the answere
     assert.equal(frameReady({ body: body({ rows: 'x' }), draft: BOX, want, plainBefore: false }), false);
     assert.equal(frameReady(), false);
   });
+
+  // F12 (owner decision 2026-11-16): Claude's mode line was readable before nika's resize; a frame with the box but without it is not finished
+  test('(+) F12: modeBefore, a readable box, but the mode line is gone (modeConfirmed false or not true): not ready; ready once modeConfirmed is true', () => {
+    for (const modeConfirmed of [false, undefined, null, 'true', 1]) {
+      assert.equal(frameReady({ body: body({ mode: 'auto', modeConfirmed }), draft: BOX, want, plainBefore: true, modeBefore: true }), false, String(modeConfirmed));
+    }
+    assert.equal(frameReady({ body: body({ mode: 'auto', modeConfirmed: true }), draft: BOX, want, plainBefore: true, modeBefore: true }), true);
+  });
+
+  test('(−) F12: without modeBefore (false, absent, anything but true) F10\'s rule holds: a box alone is ready, whatever modeConfirmed says', () => {
+    for (const modeBefore of [false, undefined, null, 0, 1, 'true']) {
+      for (const modeConfirmed of [false, true, undefined]) {
+        assert.equal(frameReady({ body: body({ mode: 'auto', modeConfirmed }), draft: BOX, want, plainBefore: true, modeBefore }), true, `${String(modeBefore)} / ${String(modeConfirmed)}`);
+      }
+    }
+  });
+
+  test('(−) F12: modeBefore changes no other exit: a prompt, a dialog, no full-screen view and !plainBefore are ready with the mode line gone', () => {
+    const gone = { mode: 'auto', modeConfirmed: false };
+    assert.equal(frameReady({ body: body({ ...gone, prompt: { question: 'x', options: [] } }), draft: null, want, plainBefore: true, modeBefore: true }), true, 'prompt');
+    assert.equal(frameReady({ body: body({ ...gone, dialog: { state: 'unreadable' } }), draft: null, want, plainBefore: true, modeBefore: true }), true, 'dialog');
+    assert.equal(frameReady({ body: body({ ...gone, alt: false }), draft: null, want, plainBefore: true, modeBefore: true }), true, 'not full-screen');
+    assert.equal(frameReady({ body: body(gone), draft: BOX, want, plainBefore: false, modeBefore: true }), true, '!plainBefore');
+  });
+
+  test('(−) F12: modeBefore with no readable box is still not ready (as before), and the size rule still comes first', () => {
+    assert.equal(frameReady({ body: body({ mode: 'auto', modeConfirmed: true }), draft: null, want, plainBefore: true, modeBefore: true }), false);
+    assert.equal(frameReady({ body: body({ cols: 138, mode: 'auto', modeConfirmed: true }), draft: BOX, want, plainBefore: true, modeBefore: true }), false);
+  });
 });
 
 describe('F10: roomStep, one more resize when the footer did not come back (design F10 3.1)', () => {
@@ -1998,6 +2027,51 @@ describe('F10: roomStep, one more resize when the footer did not come back (desi
   test('(−) the frame needs a number of rows', () => {
     assert.equal(roomStep({ ...base(), frameRows: undefined }), false);
     assert.equal(roomStep(), false);
+  });
+
+  // F12 (owner decision 2026-11-16): the box is readable, but the mode line Claude showed before nika's resize is off the screen
+  describe('F12: the mode line fell off the screen while the box stayed readable', () => {
+    const gone = () => ({
+      ...base(), modeBefore: true, draft: { state: 'empty' },
+      body: { cols: 138, rows: new Array(20).fill([]), alt: true, prompt: null, dialog: null, mode: 'auto', modeConfirmed: false },
+    });
+    const withBody = (over) => ({ ...gone(), body: { ...gone().body, ...over } });
+
+    test('(+) a readable box, modeBefore, modeConfirmed false or not true: take the step', () => {
+      assert.equal(roomStep(gone()), true);
+      for (const modeConfirmed of [undefined, null, 'true', 1]) assert.equal(roomStep(withBody({ modeConfirmed })), true, String(modeConfirmed));
+    });
+
+    test('(+) the old rule stays: no readable box takes the step with or without modeBefore, whatever the capture says about the mode', () => {
+      assert.equal(roomStep({ ...gone(), draft: null }), true);
+      assert.equal(roomStep({ ...gone(), draft: null, modeBefore: false, body: { ...gone().body, modeConfirmed: true } }), true);
+      assert.equal(roomStep(base()), true);
+    });
+
+    const each = [
+      ['the mode line is confirmed on the capture', withBody({ modeConfirmed: true })],
+      ['modeBefore is false', { ...gone(), modeBefore: false }],
+      ['modeBefore is absent', (() => { const g = gone(); delete g.modeBefore; return g; })()],
+      ['modeBefore is not exactly true', { ...gone(), modeBefore: 1 }],
+      ['room is already on', { ...gone(), room: true }],
+      ['gain is false (the room ask adds no rows)', { ...gone(), gain: false }],
+      ['gain is not exactly true', { ...gone(), gain: 1 }],
+      ['the frame already has 33 rows', { ...gone(), frameRows: 33 }],
+      ['the chip state is zoomed', { ...gone(), state: 'zoomed' }],
+      ['there was no readable box before (!plainBefore)', { ...gone(), plainBefore: false }],
+      ['the capture is not at the answered size (rows)', withBody({ rows: new Array(45).fill([]) })],
+      ['the capture is not at the answered size (columns)', withBody({ cols: 171 })],
+      ['Claude is not in its full-screen view', withBody({ alt: false })],
+      ['a prompt is on screen', withBody({ prompt: { question: 'x', options: [] } })],
+      ['a dialog is on screen', withBody({ dialog: { state: 'unreadable' } })],
+      ['no capture', { ...gone(), body: null }],
+      ['no answered size', { ...gone(), want: null }],
+    ];
+    for (const [why, args] of each) {
+      test(`(−) not when ${why}`, () => {
+        assert.equal(roomStep(args), false);
+      });
+    }
   });
 });
 
@@ -2071,7 +2145,7 @@ describe('F10: createRedrawHold, the last good frame stays until Claude has repa
     assert.equal(w.done, true);
   });
 
-  test('(+) the timeout at HOLD_MS calls io.timeout with the latest pending capture and the hold\'s want and plainBefore; the hold ends and waiters resolve', async () => {
+  test('(+) the timeout at HOLD_MS calls io.timeout with the latest pending capture and the hold\'s want, plainBefore and modeBefore; the hold ends and waiters resolve', async () => {
     const r = make();
     r.hold.start({ want: WANT, plainBefore: true });
     const w = r.waiter();
@@ -2084,7 +2158,8 @@ describe('F10: createRedrawHold, the last good frame stays until Claude has repa
     await r.clk.advance(1);
     assert.equal(r.log.timeouts.length, 1);
     assert.equal(r.log.timeouts[0][0], second, 'the latest capture, not the first');
-    assert.deepEqual(r.log.timeouts[0][1], { want: WANT, plainBefore: true });
+    // F12 (requirement change, not a weakened test): the timeout's context carries modeBefore too (false when the start gave none)
+    assert.deepEqual(r.log.timeouts[0][1], { want: WANT, plainBefore: true, modeBefore: false });
     assert.deepEqual([w.done, r.hold.active, r.log.ended], [true, false, 1]);
   });
 
@@ -2103,7 +2178,74 @@ describe('F10: createRedrawHold, the last good frame stays until Claude has repa
     await r.clk.advance(HOLD_MS - 1);
     assert.equal(r.log.timeouts.length, 0, 'the timer began again at the second start');
     await r.clk.advance(1);
-    assert.deepEqual(r.log.timeouts[0][1], { want: WANT, plainBefore: true });
+    assert.deepEqual(r.log.timeouts[0][1], { want: WANT, plainBefore: true, modeBefore: false }); // F12 (requirement change): modeBefore is in the context
+  });
+
+  // F12 (owner decision 2026-11-16)
+  test('(+) F12: modeBefore is told to io.timeout, and a second start keeps the first start\'s modeBefore, as it keeps plainBefore', async () => {
+    const a = make();
+    a.hold.start({ want: { cols: 100, rows: 20 }, plainBefore: true, modeBefore: true });
+    await a.clk.advance(600);
+    a.hold.start({ want: WANT, plainBefore: false, modeBefore: false });
+    await a.clk.advance(HOLD_MS);
+    assert.deepEqual(a.log.timeouts[0][1], { want: WANT, plainBefore: true, modeBefore: true }, 'true stays true');
+    const b = make();
+    b.hold.start({ want: { cols: 100, rows: 20 }, plainBefore: true, modeBefore: false });
+    b.hold.start({ want: WANT, plainBefore: true, modeBefore: true });
+    await b.clk.advance(HOLD_MS);
+    assert.deepEqual(b.log.timeouts[0][1], { want: WANT, plainBefore: true, modeBefore: false }, 'false stays false');
+    const c = make();
+    c.hold.start({ want: WANT, plainBefore: true, modeBefore: 'yes' });
+    await c.clk.advance(HOLD_MS);
+    assert.equal(c.log.timeouts[0][1].modeBefore, false, 'only exactly true counts');
+  });
+
+  test('(+) F12: with modeBefore a box without the mode line is kept; the next box with it is applied and ends the hold', async () => {
+    const r = make();
+    r.hold.start({ want: WANT, plainBefore: true, modeBefore: true });
+    const w = r.waiter();
+    const noMode = cap({ draft: { state: 'empty' }, body: { cols: 210, rows, alt: true, prompt: null, dialog: null, mode: 'auto', modeConfirmed: false } });
+    const withMode = cap({ draft: { state: 'empty' }, body: { cols: 210, rows, alt: true, prompt: null, dialog: null, mode: 'auto', modeConfirmed: true } });
+    assert.equal(r.hold.offer(noMode), 'keep');
+    await flush();
+    assert.deepEqual([r.hold.active, w.done], [true, false]);
+    assert.equal(r.hold.offer(withMode), 'apply');
+    await flush();
+    assert.deepEqual([r.hold.active, w.done, r.log.ended], [false, true, 1]);
+  });
+
+  test('(+) F12: a box that never shows the mode line costs the whole HOLD_MS: the timeout is told the last such frame and modeBefore', async () => {
+    const r = make();
+    r.hold.start({ want: WANT, plainBefore: true, modeBefore: true });
+    const noMode = cap({ draft: { state: 'empty' }, body: { cols: 210, rows, alt: true, prompt: null, dialog: null, mode: 'auto', modeConfirmed: false } });
+    r.hold.offer(noMode);
+    await r.clk.advance(HOLD_MS - 1);
+    assert.equal(r.log.timeouts.length, 0, 'held for the full time');
+    await r.clk.advance(1);
+    assert.equal(r.log.timeouts[0][0], noMode);
+    assert.equal(r.log.timeouts[0][1].modeBefore, true);
+  });
+
+  test('(−) F12: without modeBefore a box without the mode line is applied at once, as before', () => {
+    for (const modeBefore of [undefined, false]) {
+      const r = make();
+      r.hold.start({ want: WANT, plainBefore: true, modeBefore });
+      assert.equal(r.hold.offer(cap({ draft: { state: 'empty' }, body: { cols: 210, rows, alt: true, prompt: null, dialog: null, mode: 'auto', modeConfirmed: false } })), 'apply', String(modeBefore));
+    }
+  });
+
+  test('(−) F12: a restart from io.timeout (the room step) keeps modeBefore, and a fresh hold after it starts clean', async () => {
+    let n = 0;
+    const r = make({ timeout: (pending, ctx) => { n += 1; if (n === 1) r.hold.start({ want: null, plainBefore: ctx.plainBefore, modeBefore: false }); } });
+    r.hold.start({ want: WANT, plainBefore: true, modeBefore: true });
+    await r.clk.advance(HOLD_MS);
+    const noMode = cap({ draft: { state: 'empty' }, body: { cols: 210, rows, alt: true, prompt: null, dialog: null, mode: 'auto', modeConfirmed: false } });
+    r.hold.start({ want: WANT, plainBefore: true, modeBefore: false }); // the room answer arrives
+    assert.equal(r.hold.offer(noMode), 'keep', 'still waiting for the mode line');
+    await r.clk.advance(HOLD_MS);
+    assert.equal(r.hold.active, false);
+    r.hold.start({ want: WANT, plainBefore: true, modeBefore: false }); // a later resize
+    assert.equal(r.hold.offer(noMode), 'apply', 'the next hold has its own modeBefore');
   });
 
   test('(+) after a restart the new want decides what is ready', () => {

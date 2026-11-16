@@ -1546,7 +1546,10 @@ function fitSized(pane) {
     HOLD.end();
     return;
   }
-  HOLD.start({ want: { cols: pane.cols, rows: pane.rows }, plainBefore: M.body.alt === true && M.draft !== null });
+  // F12: besides the box, did the drawn frame show Claude's mode line (a confirmed, known mode)? Then the hold waits for the mode line too.
+  const plainBefore = M.body.alt === true && M.draft !== null;
+  const modeBefore = plainBefore && M.body.modeConfirmed === true && modeKey(M.body.mode) !== 'unknown';
+  HOLD.start({ want: { cols: pane.cols, rows: pane.rows }, plainBefore, modeBefore });
   kickMirror(0);
 }
 
@@ -1610,16 +1613,16 @@ function endRefit() {
 }
 
 /**
- * The hold ran out (F10 4.4). With the room conditions (fit-ui.js roomStep) the page asks once for 33 rows and the hold goes on until that answer; else the
- * latest kept capture is drawn as it is, so the page then shows the truth (the server refuses what it must).
+ * The hold ran out (F10 4.4). With the room conditions (fit-ui.js roomStep; F12: also a readable box whose mode line is gone) the page asks once for 33 rows and
+ * the hold goes on until that answer; else the latest kept capture is drawn as it is, so the page then shows the truth (the server refuses what it must).
  */
 function holdTimeout(pending, ctx) {
   const frame = FIT.frame;
   const ask = frame ? fillSize(frame, true, FIT.d, FIT.hide, FIT.strip) : null; // F11: the room fill size, with the hidden rows of the last commit
-  if (pending && frame && roomStep({ room: FIT.room, frameRows: frame.rows, state: FIT.state, plainBefore: ctx.plainBefore, want: ctx.want, body: pending.body, draft: pending.draft, gain: ask.rows > FIT.sentRows })) {
+  if (pending && frame && roomStep({ room: FIT.room, frameRows: frame.rows, state: FIT.state, plainBefore: ctx.plainBefore, modeBefore: ctx.modeBefore, want: ctx.want, body: pending.body, draft: pending.draft, gain: ask.rows > FIT.sentRows })) {
     FIT.room = true;
     if (FIT.pop) drawFitPop();
-    HOLD.start({ want: null, plainBefore: ctx.plainBefore });
+    HOLD.start({ want: null, plainBefore: ctx.plainBefore, modeBefore: ctx.modeBefore });
     FIT.planner?.size(ask.cols, ask.rows, { now: true });
     return;
   }

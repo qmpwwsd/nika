@@ -126,6 +126,8 @@ Session window (desktop app):
   above the panel's edge until your next click into the window or Fit again (the view stays at the bottom; scroll up to see them). The fit
   chip's panel now says "nika gave the pane more rows" and "Fit again tries full-size text". Untried: the extra rows against a real Claude in
   the app's window (your live check).
+- **The mode chip stays confirmed when a tall task list pushes Claude's mode line off the screen.** After its own resize nika now waits up to
+  1.2 seconds for that line and, when it does not come back, asks once for more rows, as it already does for a missing input box.
 - **The `/` palette lists yours first, and all of them.** The project's commands come first, then your personal ones, then those of the
   plugins applied to the project, then Claude's built-ins, then every other installed plugin's. The list no longer stops at 50: a bare `/`
   shows everything, and the number in its header is the real total.
