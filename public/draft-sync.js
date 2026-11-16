@@ -250,6 +250,10 @@ function sendMessage({ status, code, reason, kept = false }) {
   return "nika couldn't copy your text into Claude's input. Your text is kept.";
 }
 
+/** A Send pressed while the last one is still in flight (session.js sendComposer, attach.js send): this fixed line as a warn (not an error), shown STILL_SENDING_MS like the rate-limit line. Nothing is sent or queued; the text stays in the box. */
+export const STILL_SENDING = 'Still sending your last message; press Send again in a moment.';
+export const STILL_SENDING_MS = 3000;
+
 const NOT_TAKEN = "nika pressed Enter, but Claude's input still shows your text (a menu may have taken the Enter). Check the terminal. Your text is kept.";
 
 /** The line for a Send whose Enter did not go (the submit route, W13). Fixed copy: only the status and the server's `error` code pick it. */

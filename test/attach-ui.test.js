@@ -1589,6 +1589,65 @@ describe('Send with attachments: the table of section 6', () => {
     assert.equal(r.log.ds.filter(([k]) => k === 'end').length, 1);
   });
 
+  // ---- Double Send (owner-approved fix, 2026-11-16): a second press while the attachment send is out says so ----------------------------
+
+  const STILL_LINE = ['Still sending your last message; press Send again in a moment.', 'warn', 3000];
+  const stillLines = (r) => r.log.problem.filter(([m]) => m === STILL_LINE[0]);
+
+  test('(+) a second press while the attachment send is out shows the line (warn, 3 s), sends nothing more and keeps the chips; the first send still ends as before', async () => {
+    let release;
+    const r = rig({
+      reply: (p, o) => {
+        if (isSend(p, o)) return new Promise((resolve) => { release = () => resolve({ status: 200, body: { sent: 1, images: 1 } }); });
+        return { status: 200, body: { id: uploadId(1), type: 'png', size: 5 } };
+      },
+    });
+    await r.add(file('a.png'));
+    const done = r.att.send('hi');
+    await settle();
+    assert.equal(r.att.sending(), true);
+    const jobs = r.log.jobs;
+    await r.att.send('hi'); // Enter or the Send button again, while the first is out
+    assert.deepEqual(r.log.problem.filter(([m]) => m !== ''), [STILL_LINE]);
+    assert.equal(sends(r).length, 1, 'one request, not two');
+    assert.equal(r.log.jobs, jobs, 'nothing queued behind the first');
+    assert.equal(r.chips().length, 1, 'the chip stays');
+    assert.deepEqual(r.log.clear, [], 'the box is not cleared by the second press');
+    assert.equal(r.att.sending(), true, 'the first send is untouched');
+    release();
+    await done;
+    assert.equal(sends(r).length, 1);
+    assert.deepEqual(r.log.clear, ['hi'], 'the first send ended as it always does');
+    assert.equal(r.chips().length, 0);
+    assert.deepEqual(r.log.problem.at(-1), [''], 'its success clears the line');
+  });
+
+  test('(−) the first press never shows the line, and neither does a press with no chips', async () => {
+    const r = rig();
+    await r.att.send('no chips'); // nothing pending: sendComposer would not even call send
+    assert.deepEqual(r.log.problem, []);
+    assert.equal(r.log.jobs, 0);
+    await r.add(file('a.png'));
+    await r.att.send('hi');
+    assert.deepEqual(stillLines(r), []);
+    assert.equal(sends(r).length, 1);
+  });
+
+  test('(−) a press after the send ended (nothing in flight) is a plain press again: no line', async () => {
+    const r = rig({ reply: (p, o) => (isSend(p, o) ? { status: 500, body: null } : { status: 200, body: { id: uploadId(1), type: 'png', size: 5 } }) });
+    await r.add(file('a.png'));
+    await r.att.send('hi'); // fails: the chips stay
+    assert.equal(r.att.sending(), false);
+    await r.att.send('hi');
+    assert.deepEqual(stillLines(r), []);
+    assert.equal(sends(r).length, 2, 'the retry went out');
+  });
+
+  test('(−) the line is the one shared copy (draft-sync.js): attach.js holds no text of its own and uses the warn kind', () => {
+    assert.ok(!SRC.includes('Still sending'), 'no second copy');
+    assert.match(code(SRC), /io\.showProblem\(STILL_SENDING, 'warn', STILL_SENDING_MS\);/);
+  });
+
   test('(+) the send goes through the keys chain (enqueueJob), once', async () => {
     const r = rig();
     await r.add(file('a.png'));

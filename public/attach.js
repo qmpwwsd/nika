@@ -10,7 +10,7 @@
 // hands in. The pure rules come first and are tested alone; createAttachTray is the DOM side and does nothing at import.
 // Keep this file ASCII: write every symbol as an escape.
 import { h, icon } from './dom.js';
-import { draftSendPlan } from './draft-sync.js';
+import { draftSendPlan, STILL_SENDING, STILL_SENDING_MS } from './draft-sync.js';
 
 export const MAX_FILES = 6; // per message (the server's PER_MESSAGE)
 export const MAX_BYTES = 8 * 1024 * 1024; // per file, decoded (the server's MAX_BYTES)
@@ -425,7 +425,11 @@ export function createAttachTray(io) {
   // ---- Send (section 6) ---------------------------------------------------------------------------------------------------------------------
 
   async function send(value) {
-    if (sending || chips.length === 0) return;
+    if (chips.length === 0) return;
+    if (sending) { // the last attachment send is still in flight: say so, send and queue nothing; the text and the chips stay
+      io.showProblem(STILL_SENDING, 'warn', STILL_SENDING_MS);
+      return;
+    }
     const refuse = (message) => io.showProblem(message, 'error'); // nothing is sent; the text and the chips stay
     if (io.box().shell) return refuse(REFUSE.shell);
     if (chips.some((c) => c.state === 'uploading')) return refuse(REFUSE.uploading);

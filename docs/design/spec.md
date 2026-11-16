@@ -2146,6 +2146,11 @@ lost). The echo of a message that Claude queued while it works reads "Queued for
 it; the visible cue is the `Queued` note). While Claude holds a queued message, the Stop button's title reads "Stop ends Claude's current
 step. Your queued message then goes to Claude at once." (`public/quick-actions.js`, only while `draft.queued`).
 
+**A Send while the last one is in flight.** Enter or the Send button pressed while the previous Send is still going shows the warn line
+"Still sending your last message; press Send again in a moment." in the problem slot for 3 s, sends and queues nothing and keeps the
+text (`STILL_SENDING` in `public/draft-sync.js`). It clears when that Send succeeds; if that Send fails, its own line replaces it. A
+disabled box stays silent.
+
 ### 9.13 Fit: the mirror fills the panel (0.5, W7)
 
 **(built 2026-11-14 (0.5).)** The session window measures its terminal panel in cells and asks the server to make the mirrored
@@ -2536,7 +2541,8 @@ long to go with attachments. Send the text first, then the attachments."), or Cl
 input box right now (a menu may be open). Nothing was sent. Your text is kept." or, for an unreadable draft, "Claude's input holds
 something nika can't read back. Send or clear it in the terminal, then try again."). Otherwise: the text is copied into Claude's input
 first (the draft write of §9.12; a copy that fails sends nothing), then `attach-send` pastes the paths and presses `Enter`. The draft
-sync holds still until the send is over. Sending works while Claude works: Claude queues the message with its files (W13).
+sync holds still until the send is over. Sending works while Claude works: Claude queues the message with its files (W13). A second
+press while the attachment send is out shows the same "Still sending" line as §9.12 and sends nothing; the chips and the text stay.
 
 On 200 the message box and the chips clear, and the echo reads "Sent 2 attachments and your message to %7" ("Sent 1 attachment to %7"
 with no text). After a send that held a PDF or text file the page shows one notice per page load: "Claude may ask to read the attached

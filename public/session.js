@@ -12,7 +12,7 @@ import { h, icon, roleTagEl, ctxEl, subStateEl, subagentItemEl, labelEl, placeMe
 import { isApp, appFetch, getJSON, applyTheme, windowCommand } from './api.js';
 import { roleTag, savedPick, subagentView, subagentHref, SUBAGENT_ID, agentLabelView, subLabelView } from './dash-model.js';
 import { toRenderModel, cutCursor, applyMirror, planSend, planPaste, chunkText, keyForEvent, KEY_LABEL, arrowEcho } from './mirror-render.js';
-import { createDraftSync, cleanDraft, cutAt, caretAfter, draftSendPlan, suggestionFor, submitResult, submitMessage } from './draft-sync.js';
+import { createDraftSync, cleanDraft, cutAt, caretAfter, draftSendPlan, suggestionFor, submitResult, submitMessage, STILL_SENDING, STILL_SENDING_MS } from './draft-sync.js';
 import { MODE_META, MODE_TARGETS, modeKey, modeEl, bypassTag, switcherState, modeNote, switchFailure } from './modes.js';
 import {
   quickState, cleanPrompt, answerOutcome, escOutcome, promptOff, promptNote, commandFailure, commandSaid, problemKind, planShell, sendGate, keysRefusal, stopOutcome, followSession,
@@ -2050,7 +2050,11 @@ function updateChip() {
 let sending = false;
 async function sendComposer() {
   const ta = composer();
-  if (sending || ta.disabled) return;
+  if (ta.disabled) return; // an off box stays silent
+  if (sending) { // the last Send is still in flight (Enter, the Send button): say so, send and queue nothing; the text stays in the box
+    showProblem(STILL_SENDING, 'warn', STILL_SENDING_MS);
+    return;
+  }
   const note = SV?.sendNote();
   if (note) {
     // a feedback question is open above the box (0.5, F14): nothing is sent and the text stays in the box

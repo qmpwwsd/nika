@@ -12,7 +12,7 @@ import { moveActive as moveActiveReal, cleanCommands as cleanCommandsReal, palet
 import { wantsHelp, wantsBack, wantsHistToggle, isTextEntry, backHint, helpHint, histHint, passKeyLabel, wireWindowKeys as wireWindowKeysReal } from '../public/shortcuts.js';
 import { quickState as quickStateReal, sendGate as sendGateReal, keysRefusal as keysRefusalReal, stopOutcome as stopOutcomeReal, commandSaid as commandSaidReal, commandFailure as commandFailureReal, problemKind as problemKindReal, followSession as followSessionReal, planShell as planShellReal, cleanPrompt as cleanPromptReal, hasAnswerButtons as hasAnswerButtonsReal, attnNote as attnNoteReal, answerOutcome as answerOutcomeReal, promptOff as promptOffReal, composerKey as composerKeyReal } from '../public/quick-actions.js';
 import { planSend as planSendReal, arrowEcho as arrowEchoReal, keyForEvent as keyForEventReal, planPaste as planPasteReal, toRenderModel as toRenderModelReal, cutCursor as cutCursorReal } from '../public/mirror-render.js';
-import { draftSendPlan as draftSendPlanReal, cleanDraft as cleanDraftReal, cutAt as cutAtReal, caretAfter as caretAfterReal, noteView as noteViewReal, suggestionFor as suggestionForReal, submitResult as submitResultReal, submitMessage as submitMessageReal } from '../public/draft-sync.js';
+import { draftSendPlan as draftSendPlanReal, cleanDraft as cleanDraftReal, cutAt as cutAtReal, caretAfter as caretAfterReal, noteView as noteViewReal, suggestionFor as suggestionForReal, submitResult as submitResultReal, submitMessage as submitMessageReal, STILL_SENDING as STILL_SENDING_REAL, STILL_SENDING_MS as STILL_SENDING_MS_REAL } from '../public/draft-sync.js';
 import { switchFailure as switchFailureReal, MODE_TARGETS, MODE_META, modeKey as modeKeyReal } from '../public/modes.js';
 import {
   createFitPlanner as createFitPlannerReal, panelSize as panelSizeReal, scaleFor as scaleForReal, chipView as chipViewReal, fitPanelView as fitPanelViewReal, stillOffSay as stillOffSayReal,
@@ -3387,6 +3387,167 @@ describe('0.5: Send with the synced box (design W5, section 4)', () => {
     assert.deepEqual(handed, []);
     assert.deepEqual(r.log.problems, [['Answer the prompt in the terminal, or turn on Type into pane.', 'error']]);
     assert.deepEqual(r.log.order, []);
+  });
+
+  // ---- Double Send (owner-approved fix, 2026-11-16, live check L6): a Send pressed while the last one is in flight says so --------------------
+
+  describe('a Send while the last one is in flight', () => {
+    afterEach(() => mock.timers.reset());
+    const STILL = 'Still sending your last message; press Send again in a moment.';
+
+    /** The Send rig with the new line's words and a showProblem that keeps the timer too: [message, kind, ms]. */
+    const stillRig = (opts = {}) => {
+      const r = rig({ value: 'fix the typo', screen: D('text', 'fix the typo'), ...opts });
+      r.log.shown = [];
+      Object.assign(r.ctx, { STILL_SENDING: STILL_SENDING_REAL, STILL_SENDING_MS: STILL_SENDING_MS_REAL, showProblem: (m, k, ms) => r.log.shown.push([m, k, ms]) });
+      return r;
+    };
+    const nothingWentOut = (r) => {
+      assert.deepEqual(r.log.sent, [], 'no keys, no submit');
+      assert.deepEqual(r.log.pushed, [], 'no push into Claude\'s input');
+      assert.deepEqual(r.log.order, [], 'no job, no sync call');
+      assert.deepEqual(r.log.said, []);
+    };
+    const until = async (ok) => { for (let i = 0; i < 50 && !ok(); i += 1) await new Promise((res) => setImmediate(res)); };
+
+    test('(+) the copy is the owner\'s exact line, from one place, and warn is the non-error kind', () => {
+      assert.equal(STILL_SENDING_REAL, STILL);
+      assert.equal(STILL_SENDING_MS_REAL, 3000);
+      assert.match(code(JS['session.js']), /if \(sending\) \{[^}]*showProblem\(STILL_SENDING, 'warn', STILL_SENDING_MS\);\s*return;\s*\}/);
+      assert.ok(!JS['session.js'].includes(STILL.slice(0, 20)), 'session.js holds no copy of its own');
+    });
+
+    test('(+) a Send while one is in flight shows the line as a warn, sends and queues nothing, and keeps the text', async () => {
+      const r = stillRig();
+      r.ctx.sending = true;
+      await r.send();
+      assert.deepEqual(r.log.shown, [[STILL, 'warn', 3000]]);
+      nothingWentOut(r);
+      assert.equal(r.ta.value, 'fix the typo', 'the text stays in the box');
+      assert.equal(r.ctx.sending, true, 'the flag belongs to the Send that is out; this press leaves it alone');
+    });
+
+    test('(+) the real double Enter: the second press while the first waits on the submit route makes no second request and says so; the first still finishes', async () => {
+      let release;
+      const held = new Promise((res) => { release = res; });
+      const r = stillRig({ submit: async () => { await held; return TAKEN; } });
+      const first = r.send();
+      await until(() => r.log.posts.length === 1);
+      assert.equal(r.ctx.sending, true, 'the first Send is out');
+      await r.send(); // ~160 ms later in the live check: Enter again, or the Send button
+      assert.deepEqual(r.log.shown, [[STILL, 'warn', 3000]]);
+      assert.equal(r.log.posts.length, 1, 'one request, not two');
+      assert.deepEqual(r.log.keys, []);
+      assert.equal(r.ta.value, 'fix the typo', 'the text is still there while the first is out');
+      release();
+      await first;
+      assert.equal(r.log.posts.length, 1);
+      assert.equal(r.ta.value, '', 'the first Send finished as before: the box is emptied');
+      assert.equal(r.ctx.sending, false);
+      assert.deepEqual(r.log.said, ['Sent Enter to %12']);
+    });
+
+    test('(+) the open prompt gate and the plans do not run for a Send in flight: the line is the only thing shown', async () => {
+      const r = stillRig({ promptOpen: true });
+      r.ctx.sending = true;
+      await r.send();
+      assert.deepEqual(r.log.shown, [[STILL, 'warn', 3000]]);
+      assert.deepEqual(r.log.problems, [], 'no gate line next to it');
+    });
+
+    describe('the line goes away', () => {
+      /** The page's real showProblem over a fake #problem, with the timers mocked; clearProblem as the page has it. */
+      const lineRig = (opts) => {
+        mock.timers.enable({ apis: ['setTimeout'] });
+        const el = { textContent: '', className: '' };
+        const real = vm.runInNewContext(`${fnOf('function showProblem(')}; showProblem`, { $: () => el, problemTimer: 0, setTimeout: (f, ms) => setTimeout(f, ms), clearTimeout: (t) => clearTimeout(t) });
+        const r = rig({ value: 'fix the typo', screen: D('text', 'fix the typo'), ...opts });
+        Object.assign(r.ctx, { STILL_SENDING: STILL_SENDING_REAL, STILL_SENDING_MS: STILL_SENDING_MS_REAL, showProblem: real, clearProblem: () => real('') });
+        return { r, el };
+      };
+
+      test('(+) after 3 s, like the rate-limit line, and not a moment before', async () => {
+        const { r, el } = lineRig();
+        r.ctx.sending = true;
+        await r.send();
+        assert.equal(el.textContent, STILL);
+        assert.equal(el.className, 'problem', 'a notice, not the red error look');
+        mock.timers.tick(2999);
+        assert.equal(el.textContent, STILL);
+        mock.timers.tick(1);
+        assert.equal(el.textContent, '');
+      });
+
+      test('(+) when the Send that was out succeeds: the page\'s own clearProblem takes it away at once', async () => {
+        let release;
+        const held = new Promise((res) => { release = res; });
+        const { r, el } = lineRig({ submit: async () => { await held; return TAKEN; } });
+        const first = r.send();
+        await until(() => r.log.posts.length === 1);
+        await r.send();
+        assert.equal(el.textContent, STILL);
+        release();
+        await first;
+        assert.equal(el.textContent, '', 'cleared by the first Send\'s success, no waiting for the timer');
+      });
+
+      test('(+) when the Send that was out fails: its own error line replaces this notice', async () => {
+        let release;
+        const held = new Promise((res) => { release = res; });
+        const { r, el } = lineRig({ submit: async () => { await held; return { status: 409, body: { error: 'prompt-open' } }; } });
+        const first = r.send();
+        await until(() => r.log.posts.length === 1);
+        await r.send();
+        assert.equal(el.textContent, STILL);
+        release();
+        await first;
+        assert.equal(el.textContent, submitMessageReal({ status: 409, code: 'prompt-open' }));
+        assert.equal(el.className, 'problem error');
+        assert.equal(r.ta.value, 'fix the typo', 'a failed Send keeps the text');
+      });
+    });
+
+    test('(−) a Send with nothing in flight never shows the line (a normal Send, then another one after it)', async () => {
+      const r = stillRig();
+      await r.send();
+      assert.deepEqual(r.log.shown, []);
+      assert.equal(r.log.posts.length, 1);
+      assert.equal(r.ctx.sending, false);
+      r.ta.value = 'next one';
+      r.ctx.sending = false;
+      await r.send(); // the first is over: this is a plain Send again
+      assert.ok(!r.log.shown.some(([m]) => m === STILL));
+      assert.equal(r.log.posts.length, 2);
+    });
+
+    test('(−) a Send refused by a gate with nothing in flight shows the gate line, not this one', async () => {
+      const r = stillRig({ promptOpen: true });
+      r.ctx.showProblem = (m, k) => r.log.problems.push([m, k]);
+      await r.send();
+      assert.ok(r.log.problems.length === 1 && r.log.problems[0][0] !== STILL);
+      assert.deepEqual(r.log.shown, []);
+    });
+
+    test('(−) a disabled box stays silent, in flight or not: no line, no request', async () => {
+      for (const sending of [false, true]) {
+        const r = stillRig();
+        r.ta.disabled = true;
+        r.ctx.sending = sending;
+        await r.send();
+        assert.deepEqual(r.log.shown, [], `sending ${sending}`);
+        assert.deepEqual(r.log.problems, []);
+        nothingWentOut(r);
+        assert.equal(r.ta.value, 'fix the typo');
+      }
+    });
+
+    test('(−) every Send entry reaches the guard: Enter in the box and the Send button are the only two callers of sendComposer, both of them the plain call', () => {
+      const src = code(JS['session.js']);
+      const calls = [...src.matchAll(/\bsendComposer\b/g)].length;
+      assert.equal(calls, 3, 'the definition and two calls: a new caller needs a look at this guard (and this test)');
+      assert.match(src, /else if \(a\.act === 'send'\) sendComposer\(\);/);
+      assert.match(src, /\$\('send'\)\.addEventListener\('click', \(\) => \{ endArrows\(\); sendComposer\(\); ta\.focus\(\); \}\);/);
+    });
   });
 
   test('(+) row 1: the screen equals the box: the guarded Enter alone with the screen\'s sig, no push, no text, then the box is cleared and the sync told', async () => {

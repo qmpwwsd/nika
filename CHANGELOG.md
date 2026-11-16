@@ -51,6 +51,9 @@ Session window (desktop app):
   same way. Before every Enter nika takes a fresh look at Claude's screen: when a permission prompt, a question or another dialog
   is open, it presses nothing and says so ("A prompt opened in Claude, so nika did not press Enter. Answer it, then send again.
   Your text is kept."), and Send over an empty message box and an empty input sends nothing.
+- **A second Send while the first is still going says so.** Pressing Enter or Send again while a message (or attachments) is on its
+  way shows "Still sending your last message; press Send again in a moment." for three seconds, sends nothing more and keeps your
+  text. Before, the second press did nothing and said nothing.
 - **nika no longer presses Esc to change Claude's input while Claude works.** To replace the text in Claude's input it now uses End
   and Ctrl+U, which never interrupt a turn; it uses Esc only when Claude is idle and the cursor sits on an earlier line of the box.
   When Claude works and the cursor in its input is not on the last line, the message box waits instead and says so ("Cursor: …":
