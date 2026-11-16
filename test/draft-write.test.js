@@ -1808,3 +1808,55 @@ describe('submit: the Enter of Send (0.5, W13)', () => {
     }
   });
 });
+
+// M1 (RR05): Claude's row after a rating, `(Optional) Press [1] to tell us more`, is drawn for a few seconds above the box (spike S-F14 section 4). A `1`
+// there opens /feedback, so the box reads as "no box" (src/mode.js surveyOrFollowUpShown) and neither the draft write nor Send's Enter goes out.
+describe('M1: the post-rating row pauses the draft write and Send', () => {
+  const ROWS = ['', 'Thanks for the feedback!', '(Optional) Press [1] to tell us more · /feedback', ''];
+  /** The pane with the follow-up rows above its box while `w.followUp` is true (the rows go when it turns false). Returns the sig of the plain screen, the page's `base`. */
+  const withFollowUp = (w) => {
+    const plain = w.screen;
+    const base = w.sig();
+    w.followUp = true;
+    w.screen = () => {
+      const cap = plain();
+      if (!w.followUp) return cap;
+      const above = ROWS.map((t) => (t ? [span(t)] : []));
+      return { ...cap, rows: [...above, ...cap.rows], cursor: { ...cap.cursor, y: cap.cursor.y + above.length } };
+    };
+    return base;
+  };
+
+  test('(−) the draft write: 409 input-unreadable and no key while the row shows; with the row gone the same write types', async () => {
+    const w = pane({ text: 'older', vim: true });
+    const base = withFollowUp(w);
+    assert.equal(readDraft(w.screen()), null, 'the box reads nothing while the row shows');
+    assert.deepEqual(await w.put('hello', base), code(409, 'input-unreadable'));
+    assert.deepEqual(w.sent, [], 'nothing typed, not even a probe');
+    safe(w);
+    w.followUp = false;
+    const r = await w.put('older and more', base);
+    assert.equal(r.status, 200);
+    assert.equal(w.text, 'older and more', 'the control: the same pane writes once the row is gone');
+  });
+
+  test('(−) a lone 1 in the draft is not typed while the row shows (it would open /feedback)', async () => {
+    const w = pane({ text: '', vim: true });
+    const base = withFollowUp(w);
+    assert.deepEqual(await w.put('1', base), code(409, 'input-unreadable'));
+    assert.deepEqual(w.sent, []);
+    assert.equal(w.text, '');
+  });
+
+  test("(−) Send's Enter: 409 input-unreadable and no key while the row shows; with the row gone it goes", async () => {
+    const w = pane({ text: 'hello', vim: true });
+    const base = withFollowUp(w);
+    assert.deepEqual(await sub(w, { base }), code(409, 'input-unreadable'));
+    assert.deepEqual(w.sent, [], 'no Enter');
+    assert.deepEqual(w.submitted, []);
+    w.followUp = false;
+    const r = await sub(w, { base });
+    assert.deepEqual([r.status, r.body.taken], [200, true]);
+    assert.deepEqual(sentKeys(w), ['Enter']);
+  });
+});

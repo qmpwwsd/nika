@@ -700,7 +700,9 @@ export function createSessionControl({
    * dialog (409 prompt-open); src/survey.js on that capture: no survey (409 no-survey), the transcript question or a bypass mention (400
    * terminal-only), text in the box (409 input-not-empty), vim NORMAL (409 text-mode), rows nika does not read exactly (409 survey-changed); `sig`
    * not the screen's (409 survey-changed); the same sig answered under answerHoldMs ago (409 already-answered); n not among the shown options (400
-   * invalid); the registry state read fresh and not idle (409 not-idle); an interrupt that began meanwhile (409 not-idle). Then exactly one key:
+   * invalid); the registry state read fresh and not idle (409 not-idle); an interrupt that began meanwhile (409 not-idle); then one more fresh capture (S1: the state
+   * read is a whole snapshot) that must show the same survey, ready, with the same sig, else 409 survey-changed (a failed capture passes through); and an
+   * interrupt that began during it (409 not-idle). Then exactly one key:
    * the digit as literal text (`keys.send(pane, { text })`, counted in the per-pane rate; a 429 or any failure passes through), never Enter,
    * Escape, C-u or any other. The screen is read back for at most SURVEY_READ_MS: 200 { answered: n } at the first read that shows no survey
    * rows at all and a box that does not hold exactly the digit; else 409 not-taken (nika never takes the digit back; the page says where it may
@@ -716,7 +718,8 @@ export function createSessionControl({
       const seen = await look(pane, ctx);
       if (seen.res) return seen.res;
       if (promptOpen(seen.rows)) return conflict('prompt-open');
-      const edit = { vim: (await vimOf(pane)) === true || ctx.insert, insert: insertShown(seen.rows) };
+      const editOf = async (cap) => ({ vim: (await vimOf(pane)) === true || ctx.insert, insert: insertShown(cap.rows) });
+      const edit = await editOf(seen);
       const found = surveyOf(seen, edit);
       if (found === null) return conflict('no-survey');
       if (found.state === 'terminal') {
@@ -728,7 +731,15 @@ export function createSessionControl({
       if (last?.sig === sig && now() - last.at < answerHoldMs) return conflict('already-answered');
       if (!found.options.some((o) => o.n === n)) return invalid('n is not one of the survey options');
       if ((await stateNow(pane, { fresh: true })) !== 'idle') return conflict('not-idle');
-      if (keyGap(pane)) return conflict('not-idle'); // a Stop began while the state was read: the last check before the key
+      if (keyGap(pane)) return conflict('not-idle'); // a Stop began while the state was read
+      // S1 (RR05): the fresh state read above runs a whole snapshot (registry, ps, tmux, transcripts), not a few milliseconds, and nothing has read the
+      // screen since the capture at the top. One more capture: the digit goes out only onto the very survey the page showed (surveyOf is null for a
+      // prompt or a dialog, and ready only for the captured rows once, an empty box and the same sig). Its own failure passes through, like the first.
+      const again = await look(pane, ctx);
+      if (again.res) return again.res;
+      const still = surveyOf(again, await editOf(again));
+      if (still?.state !== 'ready' || still.sig !== sig) return conflict('survey-changed');
+      if (keyGap(pane)) return conflict('not-idle'); // a Stop began while the screen was read again: the last check before the key
       const before = ratedAt.get(pane);
       if (n !== 0) ratedAt.set(pane, now()); // set before the key leaves, so no Escape can slip in behind it
       const sent = await keys.send(pane, { text: String(n) });

@@ -4,7 +4,7 @@
 // Keep this file ASCII: write every symbol as an escape.
 import { createHash } from 'node:crypto';
 import { clean } from './text.js';
-import { RULE_ROW, SHELL_FOOTER, lastNonBlank, modeFromRows, promptFromRows, rowText, surveyShown } from './mode.js';
+import { RULE_ROW, SHELL_FOOTER, lastNonBlank, modeFromRows, promptFromRows, rowText, surveyOrFollowUpShown } from './mode.js';
 
 // RULE_ROW (a rule row of Claude's input box) lives in src/mode.js, where the auto-mode nudge's exact anchor needs it; it is re-exported here.
 export { RULE_ROW };
@@ -201,7 +201,7 @@ function joinRows(bodies, w) {
  *   ghost         true when any dim, reverse-video or fg-246 hint cell of the box was dropped as ghost text (a suggestion, the
  *                 placeholder, a completion, the slash hint); false for plain text, an empty box and every unreadable draft
  * The footer is the last non-blank row, minus a subagent list Claude draws below it (lastNonBlank in src/mode.js; F2).
- * Null: Claude's feedback survey is on screen (it takes digits as answers), the footer is not a known mode line (a dialog, a menu, a prompt), a permission prompt parses, fewer than two rule rows,
+ * Null: Claude's feedback survey is on screen (it takes digits as answers) or the row it draws after a rating, `(Optional) Press [1] to tell us more` (a `1` opens /feedback), the footer is not a known mode line (a dialog, a menu, a prompt), a permission prompt parses, fewer than two rule rows,
  * nothing between the last two, the first box row does not start with the prompt glyph or `!` and Claude's no-break space
  * (U+00A0; a plain space is a status line of the user's, I-1), or the cursor (integer x and y given) is not on a row strictly
  * between the two rules (N-1: a status line drawn under Claude's box can look like a box; a missing cursor changes nothing).
@@ -241,7 +241,7 @@ export const surveyBox = (rows, cursor, cols) => readBox(rows, cursor, cols, { s
  */
 function readBox(rows, cursor, cols, { survey = false } = {}) {
   if (!Array.isArray(rows)) return null;
-  if (!survey && surveyShown(rows)) return null; // F2: the survey takes the digits 0-3, so no box is offered (sync pauses, nothing is typed); only surveyBox looks past it
+  if (!survey && surveyOrFollowUpShown(rows)) return null; // F2: the survey takes the digits 0-3 and its post-rating row (M1) a 1, so no box is offered (sync pauses, nothing is typed); only surveyBox looks past it
   const rules = [];
   rows.forEach((row, i) => { if (RULE_ROW.test(rowText(row).trimEnd())) rules.push(i); }); // column 0: a draft line of dashes has two spaces before it
   if (rules.length < 2) return null;

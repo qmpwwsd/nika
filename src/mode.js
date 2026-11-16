@@ -240,6 +240,21 @@ const SURVEY_OPTIONS = /^\s*1: \S.*\b0: Dismiss\s*$/;
 /** True when a row of the screen is a feedback survey question or its options row (any row: the survey's place was not captured). */
 export const surveyShown = (rows) => Array.isArray(rows) && rows.some((row) => { const t = rowText(row); return SURVEY_QUESTION.test(t) || SURVEY_OPTIONS.test(t); });
 
+// After a rating (1 to 3) Claude draws, for a few seconds (S-F14: from about +3.65 s to +6.5 s after the digit), `Thanks for the feedback!` and under it the row `(Optional) Press [1] to tell us more <middot> /feedback`;
+// a `1` there opens /feedback (spike S-F14 section 4, 10 of 10 captures, both rows at column 0). It is NOT a survey: nothing in it can be answered by nika, so
+// src/survey.js never reads it and the capture's `survey` stays null. Only the start of the row is matched (the row wraps in a narrow pane, and the words that
+// follow are not needed), as a whole row: prose that quotes it mid-line does not match. The `Thanks` row is not matched: it always comes with this row,
+// and alone a model's own line `Thanks for the feedback!` would hold the draft sync for as long as it stays on screen.
+const FOLLOW_UP = /^\s*\(Optional\) Press \[1\] to tell us more\b/;
+/** True when a row of the screen is Claude's post-rating row `(Optional) Press [1] to tell us more` (any row: its place was not pinned down). */
+export const followUpShown = (rows) => Array.isArray(rows) && rows.some((row) => FOLLOW_UP.test(rowText(row)));
+/**
+ * True while a digit typed into the input box could answer something of Claude's feedback flow: the survey's own rows (surveyShown) or the
+ * post-rating row (followUpShown). The draft box, Send's typing and the dialog reader treat both as "no box now": nika types nothing.
+ * src/survey.js uses surveyShown alone, so the follow-up row never becomes a survey panel.
+ */
+export const surveyOrFollowUpShown = (rows) => surveyShown(rows) || followUpShown(rows);
+
 // Claude's scrolled-up pill (spike S5, W3-T2b; Claude Code 2.1.325): `Jump to bottom: fn+<down arrow> to scroll`, or `Jump to bottom (click)
 // <down arrow>` with tmux `mouse on`; once new output arrives while scrolled, `1 new message: fn+<down arrow> to scroll`, `2 new messages: ...`.
 // All of them are drawn over the last transcript row, to the right of whatever that row holds, in one span of fg 231 on bg 237 that starts at

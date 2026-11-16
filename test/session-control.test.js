@@ -34,6 +34,8 @@ const HISTORY_HINT = '↑/↓ to navigate · Enter to use · Esc to cancel · ct
 // Claude's feedback survey (0.5, F14; live capture of spike S-F14): the bullet at column 0, the options row indented 2, one row, the box's top rule.
 const SURVEY_Q = '\u25cf How is Claude doing this session? (optional)';
 const SURVEY_O = '  1: Bad    2: Fine   3: Good   0: Dismiss';
+const FOLLOW_UP_THANKS = 'Thanks for the feedback!'; // the rows after a rating (spike S-F14 section 4): column 0
+const FOLLOW_UP_ROW = '(Optional) Press [1] to tell us more \u00b7 /feedback';
 // Real-shaped rows (span lists as the mirror delivers them): the prompt character and a no-break space, then a dim placeholder.
 const PLACEHOLDER_BOX = [sp(`${PROMPT_CHAR}${NB}`), sp('Try "fix lint errors"', true)];
 /** A box row from a string: `❯ text` becomes the real shape (no-break space, then non-dim text); a span list stays as it is. */
@@ -67,7 +69,7 @@ function world(opts = {}) {
     box: [PLACEHOLDER_BOX], vim: false, vimMode: 'insert', insertWorks: true, swallow: false, afterType: null,
     typeLag: 0, boxStale: null, insertLag: 0, insertLeft: 0, cuWorks: true, captureFailFrom: null,
     history: false, historyStuck: false, escLag: 0, escLeft: 0, hookSlash: false,
-    topRule: RULE, below: [], footerTail: '', survey: null, surveyLeft: 0,
+    topRule: RULE, below: [], footerTail: '', survey: null, surveyLeft: 0, followUp: false,
     ...opts,
   };
   w.rows = () => {
@@ -83,7 +85,8 @@ function world(opts = {}) {
     const inserting = w.vim && ((w.vimMode === 'insert' && w.insertLeft <= 0) || w.escLeft > 0);
     const line = `${inserting ? '-- INSERT -- ' : ''}${PHRASE[shown]}${w.footerTail}`;
     const shownBox = w.boxStale?.left > 0 ? w.boxStale.box : w.box;
-    const above = w.survey ? ['', SURVEY_Q, SURVEY_O, w.survey.free ?? ''] : ['']; // `survey`: { free?, lag?, takes? }
+    // `survey`: { free?, lag?, takes? }; `followUp`: the rows Claude draws for a few seconds after a rating (M1), which are no survey
+    const above = w.survey ? ['', SURVEY_Q, SURVEY_O, w.survey.free ?? ''] : w.followUp ? ['', FOLLOW_UP_THANKS, FOLLOW_UP_ROW, ''] : [''];
     const box = shownBox === null ? [] : [...above, w.topRule, ...shownBox.map(toRow), RULE, ...w.below];
     return rowsOf('earlier output', ...box, line);
   };
@@ -2501,6 +2504,17 @@ describe('answerSurvey (0.5, F14): one digit into Claude\'s feedback survey', ()
       assert.deepEqual(w.slept, [150, 150], 'the first read-back still shows the digit and the rows, the second is clean');
     });
 
+    test('(+) S1: the registry is read between two captures, and the digit goes out only after the second one: the state is read with one capture behind it, the key with two', async () => {
+      const w = survey();
+      const order = [];
+      w.stateFn = async () => { order.push(`state after ${w.captures.length} capture(s)`); return 'idle'; };
+      w.onKeys = (b) => { if (b.text === '3') order.push(`digit after ${w.captures.length} capture(s)`); };
+      assert.deepEqual(await ask(w.control(), w, 3), { status: 200, body: { answered: 3 } });
+      assert.deepEqual(order, ['state after 1 capture(s)', 'digit after 2 capture(s)']);
+      assert.deepEqual(w.sent, [{ text: '3' }], 'the one digit, once');
+      assert.ok(w.captures.every((c) => c.o?.fresh === true), 'the second capture is fresh too');
+    });
+
     test('(+) 0 (Dismiss) and 1, 2: the same, each digit as typed text', async () => {
       for (const n of [0, 1, 2]) {
         const w = survey();
@@ -2626,6 +2640,76 @@ describe('answerSurvey (0.5, F14): one digit into Claude\'s feedback survey', ()
       assert.deepEqual(await sc.answerSurvey('%2', { n: 3, sig }), code(409, 'not-idle'));
       assert.equal(escapes(w), 1);
       assert.ok(!texts(w).includes('3'), 'a digit right behind an Escape would be Meta+digit');
+    });
+
+    test('(−) S1: the screen changes while the registry is read (answered in the terminal, text typed, a prompt opened, a bypass mention): 409 survey-changed, nothing sent, two captures', async () => {
+      const changes = {
+        'the rows are gone (answered in the terminal)': (w) => { w.survey = null; },
+        'text typed into the box': (w) => { w.box = ['❯ half-written note']; },
+        'a digit typed into the box': (w) => { w.box = ['❯ 3']; },
+        'a permission prompt opened': (w) => { w.prompt = true; },
+        'a bypass mention appeared (the sig does not cover that row)': (w) => { w.survey = { free: 'a bypass notice' }; },
+        'another row between the options and the box': (w) => { w.survey = { free: SURVEY_O }; },
+      };
+      for (const [name, change] of Object.entries(changes)) {
+        const w = survey();
+        const sig = sigOf(w);
+        w.stateFn = async () => { change(w); return 'idle'; };
+        assert.deepEqual(await w.control().answerSurvey('%2', { n: 3, sig }), code(409, 'survey-changed'), name);
+        assert.deepEqual(w.sent, [], name);
+        assert.equal(w.captures.length, 2, `${name}: the second capture is what refused`);
+      }
+    });
+
+    test('(−) S1: another survey stands there when the registry answers (the sig differs, the words are the same): 409 survey-changed, nothing sent', async () => {
+      const w = survey();
+      const sig = sigOf(w);
+      w.stateFn = async () => { const rows = w.rows; w.rows = () => [...rowsOf('a different message above'), ...rows()]; return 'idle'; };
+      assert.deepEqual(await w.control().answerSurvey('%2', { n: 3, sig }), code(409, 'survey-changed'));
+      assert.deepEqual(w.sent, []);
+      assert.equal(w.captures.length, 2);
+    });
+
+    test('(−) S1: the second capture fails: its own status and body pass through (nothing was sent, so no `sent`), nothing typed', async () => {
+      const w = survey({ captureFailOn: 2 });
+      assert.deepEqual(await ask(w.control(), w, 3), { status: 404, body: { error: 'not_found', message: 'gone' } });
+      assert.deepEqual(w.sent, []);
+      assert.equal(w.captures.length, 2);
+    });
+
+    test('(−) S1: the error order is unchanged: a registry that does not say idle refuses (not-idle) before the second capture is even taken', async () => {
+      const busy = survey({ state: 'busy' });
+      busy.rows = ((rows) => () => (busy.captures.length >= 2 ? rowsOf('changed') : rows()))(busy.rows);
+      assert.deepEqual(await ask(busy.control(), busy, 3), code(409, 'not-idle'), 'not idle before the second capture is even taken');
+      assert.equal(busy.captures.length, 1);
+    });
+
+    test('(−) S1: a Stop that goes out while the screen is read again: the last check before the key refuses (not-idle), the digit is never typed', async () => {
+      const w = survey({ state: 'busy' });
+      const sc = w.control({ sleep: async (ms) => { w.slept.push(ms); } }); // the clock stands still: the Escape is "just now" when the second read returns
+      const sig = sigOf(w);
+      w.onKeys = (b) => { if (b.keys?.[0] === 'Escape') w.state = 'idle'; };
+      w.stateFn = async (calls) => (calls === 1 ? 'idle' : w.state);
+      const capture = w.mirror.capture;
+      let stopped = false;
+      w.mirror.capture = async (...args) => {
+        const res = await capture(...args);
+        if (w.captures.length === 2 && !stopped) { // the second look of answerSurvey: Stop begins while it is in flight
+          stopped = true;
+          assert.equal((await sc.stop('%2')).status, 200);
+        }
+        return res;
+      };
+      assert.deepEqual(await sc.answerSurvey('%2', { n: 3, sig }), code(409, 'not-idle'));
+      assert.equal(escapes(w), 1);
+      assert.ok(!texts(w).includes('3'), 'a digit right behind an Escape would be Meta+digit');
+    });
+
+    test('(−) M1: the rows Claude draws after a rating are no survey: 409 no-survey, nothing sent, however the sig was got', async () => {
+      const w = world({ followUp: true });
+      assert.deepEqual(await w.control().answerSurvey('%2', { n: 1, sig: '0123456789abcdef' }), code(409, 'no-survey'));
+      assert.deepEqual(w.sent, [], 'a 1 there would open /feedback');
+      assert.equal(w.stateCalls, 0, 'the registry is not even read');
     });
 
     test('(−) a failed capture passes through with its own status and body, nothing sent', async () => {

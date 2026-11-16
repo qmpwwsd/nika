@@ -101,6 +101,16 @@ describe('surveyOf (−): nothing to answer, or an answer that stays with the us
     assert.equal(surveyOf({ rows: [], cursor: null, cols: 80 }), null);
   });
 
+  test('(−) M1: the rows Claude draws after a rating ("Thanks for the feedback!" and "(Optional) Press [1] to tell us more") are no survey: null, never a panel, with a box or without', () => {
+    const THANKS = 'Thanks for the feedback!';
+    const ROW = '(Optional) Press [1] to tell us more · /feedback';
+    assert.equal(surveyOf(screen({ q: THANKS, opt: ROW })), null, 'both rows, over an empty box');
+    assert.equal(surveyOf(screen({ q: null, opt: ROW })), null, 'the follow-up row alone');
+    assert.equal(surveyOf(screen({ q: THANKS, opt: ROW, lines: ['1'] })), null, 'a lone 1 in the box');
+    assert.equal(surveyOf(screen({ q: THANKS, opt: ROW }), { vim: true, insert: true }), null, 'vim INSERT');
+    assert.equal(surveyOf(screen({ q: THANKS, opt: ROW, free: 'tmux focus-events off' })), null, 'with a notice row below');
+  });
+
   test('(−) a permission prompt or a dialog owns the slot: null, whatever the survey rows say', () => {
     const prompt = { rows: [...[Q, O].map(row), ...PROMPT.map(row)], cursor: { x: 0, y: 0, visible: true }, cols: 120 };
     assert.equal(surveyOf(prompt), null, 'a prompt under the survey rows');

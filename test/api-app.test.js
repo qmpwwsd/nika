@@ -3996,6 +3996,25 @@ describe("POST /api/app/pane/:id/keys: Send's own typing (send: true, T54)", () 
     assert.deepEqual(sent(a), []);
   });
 
+  test('(−) M1: Claude\'s post-rating row "(Optional) Press [1] to tell us more" (a 1 there opens /feedback): 409 prompt-open, zero keys; the passthrough is the user\'s own keys and still goes', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = rowsOf(['⏺ All done.', 'Thanks for the feedback!', '(Optional) Press [1] to tell us more · /feedback', FOOTER.plan]);
+    assert.equal(surveyShown(screens['%6']), false, 'it is not a survey row');
+    for (const body of BODIES) assert.deepEqual([(await keysTo(a, { ...body, send: true })).body.error], ['prompt-open'], JSON.stringify(body));
+    assert.deepEqual(sent(a), []);
+    assert.equal((await keysTo(a, { text: '1' })).status, 200, 'no send: today\'s passthrough');
+    assert.equal(sent(a).length, 1);
+  });
+
+  test('(+) M1 control: the Thanks row alone, or a quote of the follow-up row in a longer line, does not stop Send\'s typing', async () => {
+    for (const rows of [['⏺ All done.', 'Thanks for the feedback!', FOOTER.plan], ['⏺ The row reads (Optional) Press [1] to tell us more', FOOTER.plan]]) {
+      const { a, screens } = await bootScreens();
+      screens['%6'] = rowsOf(rows);
+      assert.equal((await keysTo(a, { text: 'hello', send: true })).status, 200, rows[1]);
+      assert.equal(sent(a).length, 1);
+    }
+  });
+
   test('(−) an unreadable footer with no input box: 409 screen-unclear, zero keys', async () => {
     const { a, screens } = await bootScreens();
     screens['%6'] = rowsOf(UNCLEAR_ROWS);
@@ -4479,6 +4498,19 @@ describe('capture: the survey field', () => {
     assert.equal((await pane(a, '%6', 'capture')).body.survey, null);
     screens['%6'] = rowsOf([]);
     assert.equal((await pane(a, '%6', 'capture')).body.survey, null);
+  });
+
+  test('(−) M1: the rows Claude draws after a rating ("Thanks for the feedback!", "(Optional) Press [1] to tell us more") are no survey: survey null (no panel), and the box reads nothing while they show', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = surveyScreen({ q: 'Thanks for the feedback!', opt: '(Optional) Press [1] to tell us more · /feedback' });
+    const r = await pane(a, '%6', 'capture');
+    assert.equal(r.status, 200);
+    assert.equal(r.body.survey, null);
+    assert.deepEqual([r.body.prompt, r.body.dialog, r.body.draft], [null, null, null], 'a lone 1 typed here would open /feedback: nothing is offered');
+    screens['%6'] = surveyScreen({ q: 'Thanks for the feedback!', opt: 'Claude said: (Optional) Press [1] to tell us more', lines: ['hello'], ghost: null });
+    const control = await pane(a, '%6', 'capture');
+    assert.equal(control.body.survey, null);
+    assert.equal(control.body.draft?.text, 'hello', 'the same box with only a quote of the row reads');
   });
 
   test('(−) a permission prompt or a dialog on screen owns the slot: survey null, whatever rows sit above it', async () => {

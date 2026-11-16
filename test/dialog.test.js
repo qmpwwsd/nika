@@ -944,6 +944,16 @@ describe('unreadable: every rule of design 2.3 has a fixture', () => {
     assert.equal(reason(rowsFrom({ ...planParts(), above: ['How is Claude doing this session? (optional)'] })), 'survey');
   });
 
+  test('(−) survey (M1): Claude\'s post-rating row "(Optional) Press [1] to tell us more" (a 1 there opens /feedback) also wins over a readable dialog; the Thanks row alone and a quote do not', () => {
+    const AFTER = ['Thanks for the feedback!', '(Optional) Press [1] to tell us more · /feedback'];
+    assert.equal(reason(ask({ above: AFTER })), 'survey');
+    assert.equal(dialogCapture(ask({ above: AFTER }), COLS).reason, 'survey');
+    assert.equal(reason(ask({ above: [AFTER[1]] })), 'survey', 'the row alone');
+    assert.equal(reason(rowsFrom({ ...planParts(), above: ['(Optional) Press [1] to tell us more'] })), 'survey', 'a plan too, the words alone');
+    assert.equal(reason(ask({ above: [AFTER[0]] })), undefined, 'the Thanks row alone is a model line: the dialog reads');
+    assert.equal(reason(ask({ above: ['Claude said: (Optional) Press [1] to tell us more'] })), undefined, 'a quote mid-row');
+  });
+
   test('(−) the first failing rule decides, in the order of REASONS (cut before wide before numbers before tab before layout before survey)', () => {
     const cutAndWide = ask({ cols: 70, tabs: ['Project', 'To…'], footer: ['Enter to select · Tab/Arrow keys to navigate', '· Esc to cancel'] });
     assert.equal(reason(cutAndWide, 70), 'cut');

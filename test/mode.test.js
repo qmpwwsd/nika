@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import * as mode from '../src/mode.js';
 import {
   MODES, MODE_TARGETS, PROMPT_ROWS, FOOTER, OPTION, rowText, lastNonBlank, modeFromRows, promptFromRows, mentionsBypass, bypassWindow,
-  surveyShown, pillShown, SHELL_FOOTER, ASK_FOOTER, PLAN_FOOTER, REVIEW_END, isDialogEnd, nudgeFooterAt, footerEnd,
+  surveyShown, followUpShown, surveyOrFollowUpShown, pillShown, SHELL_FOOTER, ASK_FOOTER, PLAN_FOOTER, REVIEW_END, isDialogEnd, nudgeFooterAt, footerEnd,
 } from '../src/mode.js';
 import { parseCapture } from '../src/mirror.js';
 import { promptSig } from '../src/session-control.js';
@@ -631,6 +631,50 @@ describe('surveyShown', () => {
 
   test('(−) malformed input is false, never throws', () => {
     for (const bad of [null, undefined, 'abc', 7, {}, [], [null], [[{}]]]) assert.equal(surveyShown(bad), false, String(bad));
+  });
+});
+
+// M1 (RR05): the row Claude draws for a few seconds after a rating (spike S-F14 section 4): a `1` there opens /feedback.
+describe('followUpShown / surveyOrFollowUpShown (the post-rating row)', () => {
+  const rowsWith = (...lines) => rowsOf('transcript', ...BOX, ...lines, PHRASE.auto);
+  const THANKS = 'Thanks for the feedback!';
+  const ROW = '(Optional) Press [1] to tell us more \u00b7 /feedback';
+
+  test('(+) the captured row (column 0, as drawn), with indent, and the first half of it when a narrow pane wraps it', () => {
+    assert.equal(followUpShown(rowsWith(THANKS, ROW)), true);
+    assert.equal(followUpShown(rowsWith(ROW)), true);
+    assert.equal(followUpShown(rowsWith(`   ${ROW}`)), true, 'indented');
+    assert.equal(followUpShown(rowsWith('(Optional) Press [1] to tell us more \u00b7', '/feedback')), true, 'wrapped before the last word');
+    assert.equal(followUpShown(rowsWith('(Optional) Press [1] to tell us more')), true, 'the words alone');
+    assert.equal(followUpShown([...rowsWith(ROW), ...subagentRows({ agents: 1 })]), true, 'with a subagent list below');
+  });
+
+  test('(+) the combined check is true for the follow-up row and for the survey rows, and the survey check stays survey-only', () => {
+    assert.equal(surveyOrFollowUpShown(rowsWith(THANKS, ROW)), true);
+    assert.equal(surveyOrFollowUpShown(rowsWith('\u25cf How is Claude doing this session? (optional)')), true);
+    assert.equal(surveyOrFollowUpShown(rowsWith('  1: Bad    2: Fine   3: Good   0: Dismiss')), true);
+    assert.equal(surveyShown(rowsWith(THANKS, ROW)), false, 'the follow-up row is not a survey row: src/survey.js (surveyShown) never sees it');
+    assert.equal(followUpShown(rowsWith('\u25cf How is Claude doing this session? (optional)')), false, 'and a survey row is not a follow-up row');
+  });
+
+  test('(−) prose that quotes the row mid-line, the Thanks row alone, other digits and look-alikes do not match', () => {
+    assert.equal(followUpShown(rowsWith()), false);
+    assert.equal(followUpShown(rowsWith(THANKS)), false, 'a model line "Thanks for the feedback!" must not hold the draft sync');
+    assert.equal(followUpShown(rowsWith(`Claude said: ${ROW}`)), false, 'mid-row');
+    assert.equal(followUpShown(rowsWith('The row reads "(Optional) Press [1] to tell us more" and then a link')), false, 'quoted');
+    assert.equal(followUpShown(rowsWith('\u25cf (Optional) Press [1] to tell us more')), false, 'a bullet in front is a model line');
+    assert.equal(followUpShown(rowsWith('(Optional) Press [2] to tell us more')), false, 'another digit');
+    assert.equal(followUpShown(rowsWith('(Optional) Press [1] to tell us moreover')), false, 'no word boundary');
+    assert.equal(followUpShown(rowsWith('Press [1] to tell us more')), false, 'without (Optional)');
+    assert.equal(surveyOrFollowUpShown(rowsWith()), false);
+    assert.equal(surveyOrFollowUpShown(rowsWith(THANKS, `Claude said: ${ROW}`)), false);
+  });
+
+  test('(−) malformed input is false, never throws', () => {
+    for (const bad of [null, undefined, 'abc', 7, {}, [], [null], [[{}]]]) {
+      assert.equal(followUpShown(bad), false, String(bad));
+      assert.equal(surveyOrFollowUpShown(bad), false, String(bad));
+    }
   });
 });
 

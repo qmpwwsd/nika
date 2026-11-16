@@ -6,7 +6,7 @@
 import { createHash } from 'node:crypto';
 import { clean } from './text.js';
 import { RULE_ROW, width } from './draft.js';
-import { ASK_FOOTER, PLAN_FOOTER, REVIEW_END, bypassWindow, footerEnd, mentionsBypass, nudgeFooterAt, promptFromRows, rowText, surveyShown } from './mode.js';
+import { ASK_FOOTER, PLAN_FOOTER, REVIEW_END, bypassWindow, footerEnd, mentionsBypass, nudgeFooterAt, promptFromRows, rowText, surveyOrFollowUpShown } from './mode.js';
 
 export const TABS_MAX = 8; // strip tokens; more is garbage
 export const NUMBER_MAX = 9; // a digit answers without Enter, so an option number above 9 is unsupported (k <= 7)
@@ -439,7 +439,7 @@ export function readDialogScreen(rows, cols) {
   if (shape.kind === 'nudge' || shape.kind === 'exit') return { unreadable: 'layout', kind: null };
   const plan = shape.kind === 'plan';
   const { bad, S } = plan ? readPlan(shape, rows, cols) : readAsk(shape, rows, cols);
-  if (surveyShown(rows)) bad.add('survey');
+  if (surveyOrFollowUpShown(rows)) bad.add('survey'); // also Claude's post-rating row (M1): a digit typed for an option could reach its `1`
   const reason = REASONS.find((r) => bad.has(r));
   return reason === undefined && S !== null ? S : { unreadable: reason ?? 'layout', kind: plan ? 'plan' : 'ask' };
 }

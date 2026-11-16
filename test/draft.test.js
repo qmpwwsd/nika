@@ -1206,6 +1206,20 @@ describe('parseDraft: the subagent list below the footer (F2, live capture 2.1.3
       assert.equal(readDraft({ rows: below({ lines: ['1 go'] }).rows, cursor: boxRows({ lines: ['1 go'] }).cursor, cols: 120 }), null, 'the live reader too');
     });
 
+    test('(−) M1: the row Claude draws after a rating, "(Optional) Press [1] to tell us more", leaves no box either (a 1 there opens /feedback): null for an empty box, a draft and a lone 1', () => {
+      const AFTER = ['Thanks for the feedback!', '(Optional) Press [1] to tell us more · /feedback'];
+      for (const lines of [[''], ['hello'], ['1'], ['1 fix the bug']]) assert.equal(parse(below({ lines }, AFTER)), null, JSON.stringify(lines));
+      assert.equal(parse(below({ lines: ['x'] }, [AFTER[1]])), null, 'the row alone');
+      assert.equal(readDraft({ rows: below({ lines: ['1'] }, AFTER).rows, cursor: boxRows({ lines: ['1'] }).cursor, cols: 120 }), null, 'the live reader too');
+      assert.equal(parse(below({ lines: ['hello'] }, ['(Optional) Press [1] to tell us more'])), null, 'the words alone (a wrapped row)');
+    });
+
+    test('(+) M1 control: the Thanks row alone, and prose that quotes the follow-up row, do not block the box', () => {
+      assert.equal(parse(below({ lines: ['hello'] }, ['Thanks for the feedback!'])).text, 'hello');
+      assert.equal(parse(below({ lines: ['hello'] }, ['Claude said: (Optional) Press [1] to tell us more'])).text, 'hello');
+      assert.equal(parse(boxRows({ lines: ['(Optional) Press [1] to tell us more'] })).text, '(Optional) Press [1] to tell us more', 'a draft that contains the words is a draft (it starts with the glyph)');
+    });
+
     test('(+) the control: the same screens without the survey rows read as before; prose that quotes the survey does not block', () => {
       assert.equal(parse(below({ lines: ['hello'] }, [])).text, 'hello');
       assert.equal(parse(below({ lines: ['hello'] }, ['Claude asked: how is Claude doing this session? and moved on'])).text, 'hello');

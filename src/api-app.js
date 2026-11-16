@@ -12,7 +12,7 @@ import { configDir, stateDir } from './paths.js';
 import { clean } from './text.js';
 import { UUID, SUBAGENT_ID, PANE_ID, PROJECT_KEY, CLAUDE_COMMAND, COMMAND_NAME } from './ids.js';
 import { mapLimit } from './util.js';
-import { MODE_TARGETS, bypassWindow, modeFromRows, promptFromRows, surveyShown } from './mode.js';
+import { MODE_TARGETS, bypassWindow, modeFromRows, promptFromRows, surveyOrFollowUpShown } from './mode.js';
 import { MODEL_CATALOG } from './models.js';
 import { matches as etagMatches } from './mirror.js';
 import { createSessionControl, promptSig, insertShown, editMode, readDraft, checkDraftBody, checkSubmitBody, checkSuggestionBody, checkDialogBody, checkSurveyBody } from './session-control.js';
@@ -599,7 +599,7 @@ export function createAppApi({ secret, ctx, deps }) {
       if (modeFromRows(rows) === 'unknown') return err(409, 'screen-unclear', "nika can't tell what Claude is showing; use the terminal");
     }
     if (!send) return null;
-    if (promptFromRows(rows) !== null || dialogOnScreen(rows) || surveyShown(rows)) return err(409, 'prompt-open', 'A prompt, a dialog or a survey is open in Claude; answer it first');
+    if (promptFromRows(rows) !== null || dialogOnScreen(rows) || surveyOrFollowUpShown(rows)) return err(409, 'prompt-open', 'A prompt, a dialog or a survey is open in Claude; answer it first');
     if (modeFromRows(rows) === 'unknown' && readDraft(cap.body) === null) return err(409, 'screen-unclear', "nika can't tell what Claude is showing; use the terminal");
     return null;
   }
