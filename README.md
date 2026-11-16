@@ -416,10 +416,12 @@ Desktop app only. None of this is on the browser dashboard.
 - **Prompt suggestions.** Claude's grey suggestion for your next prompt shows in the empty message box; **Tab** or **→** takes it.
 - **Long messages.** Text over 1024 characters or 12 line breaks is not mirrored. Send pastes it into an empty input, and refuses
   when Claude's input already holds other text.
-- **Fit.** The terminal view fills its panel: nika zooms the pane, and sizes its tmux window only when nothing else is squeezed.
-  A chip says what it did, and nika gives your tmux window back as it was. The chip is a button: its panel says why the
+- **Fit.** The terminal view fills its panel: nika zooms the pane, and sizes its tmux window only when nothing else is squeezed
+  and no terminal of yours shows that window. A chip says what it did, and nika gives your tmux window back as it was. The chip is a button: its panel says why the
   fit is on or off and, after a change of your own, **Fit again** fits the window without reopening the session window. An agent that
-  starts or ends beside the fitted pane is not a change of your own: nika fits the window again by itself.
+  starts or ends beside the fitted pane is not a change of your own: nika fits the window again by itself. While your own terminal shows
+  the tmux window, nika never resizes it ("Fit · your terminal's size"): it only scales the text, and it sizes the window to the panel again
+  after 30 seconds without a terminal.
 - **Question forms.** When Claude asks a question or for a plan approval, a form above the message box answers it one step at a
   time (options, your own text under Other, the review, the plan's choices, Decline). When nika cannot read the dialog, or it
   mentions bypass, you answer in the terminal. Why: [ADR 0015](docs/adr/0015-dialogs-from-the-screen.md).

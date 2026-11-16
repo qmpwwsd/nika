@@ -80,10 +80,17 @@ Session window (desktop app):
   fit it again until you open the session window again or press Fit again (a resize you make while the window is fitted is also undone: nika puts the
   window back to its old size; a split or an exit of one of nika's own agent panes is not your change, see above). A zoom you made yourself is never undone. Spawning an agent into a fitted window puts it back
   first. The restore is exact except for tmux's last-pane order: which pane `last-pane` jumps back to is not restored.
+- **nika no longer resizes a tmux window your terminal shows**, so your terminal never gets dots around it because of nika. While a
+  terminal shows the window, nika only zooms the pane (when the window has several) and the session window scales the text; the chip reads
+  "Fit · your terminal's size" (its own plum colour and a terminal icon, with a hint in its panel). When no terminal has shown the window for 30
+  seconds, nika sizes it to the panel again. A terminal that comes to a window nika has already sized gets the window back within about a
+  second, and your terminal resizing the window is never taken for a change of yours. Your own unzoom, focus change, split or kill still turns
+  the fit off. Closing the session window puts back a size only when nika set it, so a window your terminal shows is not resized at the close
+  either. If you close the session window while nika is fitting the window again (an agent started or ended), the new fit is given back too.
 - Known limits: the fit was tried on tmux 3.8, and the `linux-verify` check on CI runs it on the Linux runner's tmux (3.6a on
   ubuntu-latest: a 3-pane and a single-pane window fitted and given back exactly, `select-layout --` accepted, `window-size`
   unset reads empty); tmux 3.2, the lowest supported, and every version other than 3.6a and 3.8 are not checked yet; a crash leaves the window at nika's size until
-  nika starts again; closing the session window in the same second as a refit can leave the window fitted for up to 15 seconds more, until nika gives it back; with `pane-border-status` on, the mirrored pane has one row fewer than the panel.
+  nika starts again; with `pane-border-status` on, the mirrored pane has one row fewer than the panel; a terminal that comes to a window nika has sized sees dots for up to about a second before nika gives the window back; the rule for a window your terminal shows was tried on tmux 3.8, and its two checks in the `linux-verify` job (a control-mode client as the terminal) pass on CI; a big terminal with a small session window gives small text (about 0.42 times for a 200 × 50 pane in a 112 × 21 panel, and below 0.4 times it scrolls).
 
 - **Attach images, PDFs and text files to a message.** Paste a file into the message box, drop it on the box, or click the
   paperclip ("Add attachments"; it opens nika's own file chooser, not the webview's, which froze the app on macOS). Up to 6 files

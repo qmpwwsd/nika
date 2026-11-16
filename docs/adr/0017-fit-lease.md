@@ -183,14 +183,95 @@ side only, in `src/fit.js`; **no new route, body field, file key, tmux command o
   one-listing decision; the fit's own listing keeps every decision on one snapshot. *`ctx.started` (panes this process started) instead of the tag*: the CLI's spawns are
   another process, which is the case F2 must cover. (A "Fit again" chip without a panel, the fifth alternative of the design, is in the F1 amendment.)
 - **Consequences.** `fit.test.js`'s fake tmux lists a role per pane; the F2 tests assert the exact call sequence of a refit, the grace to
-  the millisecond and every user change that must stay one. Residuals (`docs/security.md`, residual m items 6, 7 and 11 to 14): a split
+  the millisecond and every user change that must stay one. Residuals (`docs/security.md`, residual m items 6, 7, 11, 12 and 13): a split
   between the acquire's resize and its read-back still ends `blocked / changed` (Fit again recovers it); a pane the user closes by hand
   that nika tagged counts as nika's; a forged `@nika-role agent` makes nika refit instead of staying off (same window, same size, within
-  the single-user trust model); a refit applies two size changes in a row and cannot restore the saved layout (the pane count changed); and
-  **a `DELETE` of the session window that races a refit can leave the new lease held until it lapses**: `release` looks the pane's lease up
-  when the request arrives, so a `DELETE` that waits in the window queue behind a refit finds the old lease finished and does nothing, and one
-  that arrives between the refit's restore and its acquire finds no lease. The new lease inherits the old heartbeat, so the window stays
-  fitted for at most 15 s after the page's last request and is then given back without a mark. Not fixed in F2; the cheap fix, if wanted, is
-  to look the pane up again after the release in `release` and release a replacement lease.
+  the single-user trust model); and a refit applies two size changes in a row and cannot restore the saved layout (the pane count changed).
 - **Not built:** telling a user's close of an agent's pane from the agent's own exit; fitting again after a user change without the user
   asking (the W7 Q6 rule stands); a remembered "never fit this window" choice.
+
+## Amendment 2026-11-16 (0.5, F4): nika never resizes a tmux window that a terminal shows
+
+Owner ruling (2026-11-16, "need to fix it"): with the user's own terminal attached to the orchestrator's tmux window and the session window open,
+the fit resized the window to the panel (`window-size manual`) and the terminal showed fill characters (dots) around the smaller window. From now
+on, while any terminal client views the tmux window nika never resizes it: it zooms the pane (a window with several panes) and the page scales the
+text. When no terminal views the window nika may size it to the panel as before. "Never resize at all" and "keep as is" were rejected. Server side
+in `src/fit.js`, page side in `public/fit-ui.js`; **no new route, body field, file key, tmux command or argv shape** (`ARGV` and `FILE_KEYS` are
+unchanged). Evidence: spike S16 (tmux 3.8, a private socket) and the two live checks F4a and F4b of the `linux-verify` fit group.
+
+- **The test: a terminal views the window.** The fit's single `list-panes -a` gets a 13th constant field, `#{window_active_clients}`, read as digits
+  in 0 to 9999 and compared only with 0 ("viewed" is above 0); it is never a target, a stored value, a lease-file key or page text. A row needs
+  exactly 13 fields and a value that does not parse drops the row; a dropped row of the lease's window is a user change (fail closed, as in F2).
+  **Every client counts**: a plain terminal, a control-mode client (iTerm2's tmux integration), an `ignore-size` client, a read-only one, and a
+  client of a linked or grouped session on this window. A client on another window of the same session does not (tmux counts per window). Counting
+  one that would not have shown dots costs only full-size text; missing one that does breaks the ruling. nika itself is never a client: the fit, the
+  capture and every other tmux call of nika are command clients that never attach (spike S16 read 0 with only the listing connected). tmux computes
+  the number and it is not an option, so no `set-option` can forge it; changing it means attaching or detaching a client on the tmux socket, which
+  could resize any window anyway (rule 10). The field is in the tmux 3.1 source (the floor is 3.2); on a tmux without it the format expands to
+  nothing, every row drops and the fit answers 404.
+- **The state `terminal`.** A decision that finds the window viewed (row 12 of the contract's decision table; the `blocked` rows win over it) takes
+  the lease and the tag as before, zooms a window with several panes that nobody has zoomed, and **never sends `resize-window`**. The answer is
+  `{ state: "terminal", reason: null, pane, panes, userZoom }`. It wins over `zoomed / panel-smaller` (both are zoom only; `terminal` names the
+  lasting reason). A renew of a `terminal` lease takes no lock and makes no tmux call; it keeps the panel's `cols` and `rows` for the grow below.
+- **Two races close inside the request.** An acquire reads the viewer count again inside the pane lock: a terminal that arrived during the lock wait
+  gets no resize and a `terminal` lease. The read-back (`verify`) does not judge the size of a `terminal` lease (the terminal sizes the window); when
+  a terminal came between nika's own resize and the read-back (spike S16), nika gives the window back without a mark and the same request takes it
+  again once with `noResize`, so the retry can neither resize nor answer `AGAIN`: at most one retry.
+- **The watch** judges the viewer inside "nothing else changed", so a user who unzooms in the tick their terminal arrives is still a user change (W7
+  Q6). The verdicts of `observe`:
+  - a terminal views a window nika **resized** → **SHRINK**: a refit at once (F2's release without a mark, then decide again), which lands as
+    `terminal`; a page request or the read-back may see it first. The dots last at most about a second.
+  - a terminal views a window nika did **not** resize → **VIEW**: the lease becomes `terminal` in memory, no tmux call.
+  - a `terminal` lease with no terminal → **AWAY**: the watch notes the first tick without a terminal (`awayAt`); a terminal back clears it.
+  - a `terminal` lease with no terminal for `GROW_MS` (30 s, owner answer Q2) → **GROW**: a refit that sizes the window to the panel again →
+    `fitted` or `zoomed`. Shrink at once, grow after 30 s: someone who looks away and comes back within 30 s never meets a resized window. A window
+    does at most one grow and one shrink per 30 s, so at most 4 refits a minute.
+
+  The size of a window nika did not resize is not judged while a terminal shows it or while the lease is `terminal` (the window follows its terminal:
+  a terminal resize is not a user change). A size nika set is always judged (no terminal can resize a `manual` window). An unzoom, a focus change and
+  a user's split or kill stay user changes. A page silent for 15 s still only releases (never a refit, a view or an away).
+- **A refit inside the grace keeps it.** F2's refit of a `terminal` lease that is still inside the `GROW_MS` grace (an agent's split, say) takes the
+  window again with `noResize`: it never ends the grace early, and the watch's refit carries `awayAt` to the new lease so the 30 s go on where they
+  were. A refit that a **page request** meets first also stays `terminal`, but does not carry `awayAt`: the 30 s start over, which is longer, never
+  shorter (kept on review, 2026-11-16).
+- **The restore resizes back only a size nika set.** The lease has a memory flag `sized`, set before the call that may resize (A4, or a renew's
+  `resize-window`), so a call that failed counts. A lease read from a file after a crash has it set (nika may have resized before the crash). R3, the
+  resize back, runs only when `sized` and the size differs from the saved one. So the restore of a `terminal` lease, whose window follows its
+  terminal, sends no `resize-window` (it would be one frame of dots and two redraws at every close of the session window), and a zoom-only window
+  that the user resized by hand is left alone. "The resize back also overrides a resize the user made during the lease" (above) now holds for leases
+  nika resized. R9, the one read at the end that logs a difference, compares the size only when `sized` **and** no terminal shows the window after the
+  restore: after a SHRINK the window follows the terminal and its size is no longer the saved one (kept on review, 2026-11-16).
+- **A `DELETE` that meets a refit releases the lease the refit made** (owner answer Q5; F2's leftover is fixed). `release` takes the window from the
+  pane's lease, or from a queued operation of that pane (a refit between its restore and its acquire holds no lease), waits its turn in the window
+  queue and releases **whatever lease the pane holds then**, not the one it found when it arrived. It notes the window for 2 s as before. A pane
+  with no lease and no queued operation still answers `released: false` with no tmux call. A `DELETE` that meets a queued operation of its pane
+  answers `released: true` and notes the window even when that operation ends with no lease, so a late heartbeat within 2 s is blocked.
+- **The page.** Chip state `terminal`: words "Fit · your terminal's size", label "Fit: your terminal's size", the terminal icon (`i-term`), its own
+  plum tokens `--fit-term*`. Two titles, chosen by the chip: with one pane, or the user's own zoom, "A terminal shows this tmux window, so nika
+  leaves its size to the terminal and scales the text to this panel"; with several panes that nika zoomed "A terminal shows this tmux window, so
+  nika only zoomed this pane, leaves the size to the terminal and scales the text to this panel" (chip keys `terminal:` and `terminal:zoom`). The
+  panel of both has a hint and no action, because `open: true` cannot override the terminal rule. A Fit again answered `terminal` closes the panel,
+  and the hint of `blocked / user-change` no longer promises a size. `docs/design/spec.md` §9.13 has the words, tokens and contrast.
+- **Alternatives rejected.** *`list-clients -F '#{window_id}'`* (a second call, outside the fit's one-snapshot decision). *Leaving out control-mode,
+  `ignore-size` or read-only clients*: they draw the window, so missing one breaks the ruling. *Counting every client of the window's session or of the
+  server*: a window would almost never be full size while its session is attached, and the ruling says "views". *A reason on an existing state*
+  (`zoomed / terminal`, `blocked / terminal`): "Fit · off" would show in the owner's own one-pane case and read as broken, and "zoomed" is false for one
+  pane. *Shrinking in place instead of a refit* (option back, keep zoom and tag): the saved size and layout go stale against the terminal's size; the
+  refit re-reads them and reuses tested paths. *Growing at once or at the next beat*: every short look away would leave a resized window and dots on
+  return. *Growing only on Fit again*: the chip would claim "your terminal's size" after the terminal is gone for good. *tmux hooks for zero delay*:
+  they write the user's tmux configuration and run commands from hooks, against rules 3 and 11. *No lease for a one-pane window a terminal shows*: the
+  grow, the `other` state and the hysteresis would need a second mechanism.
+- **Consequences.** Up to about a second of dots remains possible when a terminal comes to a window nika resized (the watch tick; a window with
+  several panes also shows unzoomed for the refit's ~100 ms); only tmux hooks could remove it. A big terminal and a small panel give small text (about
+  0.42× for a 200 × 50 pane in a 112 × 21 panel; below 0.4× the panel scrolls, W7 Q2). The zoom shows in the user's terminal and moves its focus to the
+  mirrored pane. A refit sends the mirrored pane about 4 to 6 size changes within ~100 ms (Claude redraws on each); while a terminal shows the window
+  nika sends none. The watch costs the same (one listing a second while a lease is held, one field more). The 30 s in the panel hints are typed text:
+  if `GROW_MS` changes, `PANEL` in `public/fit-ui.js` changes with it. The `linux-verify` fit group gains F4a (a control-mode client shows the 3-pane
+  window → `terminal`, zoomed, `window-size` never `manual`) and F4b (a fitted single pane, a control-mode client attaches → within 2.5 s the size is
+  given back and the answer is `terminal`, the restore logs nothing); they run on the Linux runner's tmux in CI, not on macOS. Unverified: the field on
+  tmux 3.2 to 3.5 and 3.7 (spike S16 read the 3.1 source and ran 3.8), how iTerm2's control mode draws a `manual` window, and tmux's `select-layout` of
+  a layout saved at another size (R5 at a SHRINK). `docs/security.md` T52 and residual m items 14 to 19 list them. Rules 4 and 12 gain the viewer-count
+  read and the sentences above (approved 2026-11-16).
+- **Not built:** tmux hooks, a faster watch, a per-session or server-wide viewer test, a countdown of the 30 s on the page, a setting for the delay,
+  skipping R3 for a resized lease while a terminal watches the release (it needs the window's global `window-size`, which nika does not read), and a
+  Fit again that overrides the terminal rule.

@@ -852,8 +852,9 @@ files).
 
 ### `PUT /api/app/pane/:id/fit` (body ≤ 4 KB, `CAP.small`)
 The session window asks for its terminal panel's size in cells (0.5, W7; ADR 0017, `docs/security.md` T52, the page: spec §9.13).
-The server zooms the mirrored pane and sizes its tmux window to the panel **when that cannot squeeze another pane**, keeps a lease
-on that window, and gives everything back by itself when the page goes quiet or the user changes the window. App tier only.
+The server zooms the mirrored pane and sizes its tmux window to the panel **when that cannot squeeze another pane and no terminal shows the
+window** (0.5, F4: while a terminal shows it, nika never resizes it), keeps a lease on that window, and gives everything back by itself when
+the page goes quiet or the user changes the window. App tier only.
 ```json
 { "cols": 120, "rows": 39, "open": false }
 ```
@@ -869,13 +870,16 @@ pane, nothing is executed on a refusal); then the controller (`src/fit.js`).
 ```json
 { "fit": { "state": "fitted", "reason": null, "pane": { "cols": 120, "rows": 39 }, "panes": 3, "userZoom": false } }
 ```
-`pane` is the mirrored pane's size as tmux reports it (for `fitted` and `zoomed` the read-back after nika's change), `panes` the
-number of panes in its tmux window, `userZoom` whether the user had the mirrored pane zoomed. `state` and `reason`:
+`pane` is the mirrored pane's size as tmux reports it (for `fitted` and `zoomed` the read-back after nika's change; for `terminal` the size in
+the last listing of that request, the read-back after an acquire or the request's own listing at a beat: the terminal sizes the window, so it
+can change between requests, and the capture carries the live size), `panes` the number of panes in its tmux window, `userZoom` whether the
+user had the mirrored pane zoomed. `state` and `reason`:
 
 | `state` | `reason` | Meaning | What nika changed |
 |---|---|---|---|
 | `fitted` | `null` | the pane is exactly the panel's size | window resized to the panel when it differs (a window with several panes is also zoomed on this pane, unless the user already had it zoomed) |
 | `zoomed` | `panel-smaller` | the panel is smaller than a window with several panes; resizing would squeeze the other panes | zoom only, window at its own size; the page scales its text |
+| `terminal` | `null` | (0.5, F4) a terminal shows the tmux window (`#{window_active_clients}` above 0), or the request is a refit inside the 30 s grace of a `terminal` lease | the tag, and a zoom on this pane when the window has several panes that nobody zoomed; **never a resize**: the terminal sizes the window and the page scales its text |
 | `blocked` | `user-zoom` | the user zoomed another pane of this window | nothing |
 | `blocked` | `size-option` | the window has a window-level `window-size` that is not unset or one of `latest largest smallest manual` (nika could not put it back exactly) | nothing |
 | `blocked` | `foreign-tag` | `@nika-fit` on the window holds a value nika has no lease for (another program, a stale tag with no usable lease file, or a value that is not 16 lowercase hex characters: the listing reads it as foreign, never as an unreadable row that is dropped) | nothing |
@@ -891,6 +895,16 @@ fits again by itself is a window whose own agent pane was split into it or left 
 at most 64 windows. It is set only after the restore found its own tag on the window, inside the pane lock: a lease dropped because
 its tag or window was gone sets none (M4), and neither does a refusal of an acquire (see "Reads inside the lock"). `none` is not a state of this route (the page shows no chip before its first answer and after a `DELETE`).
 
+**`terminal` (0.5, F4; owner ruling 2026-11-16).** While any terminal client shows the tmux window, nika never resizes it. The test is the 13th
+field of the fit's listing, `#{window_active_clients}` (§8), read as digits 0–9999 and compared only with 0. Every kind of client counts (a plain
+terminal, control mode, `ignore-size`, read-only, a linked session's client on this window); a client on another window of the same session does
+not; nika itself is never a client. The answer carries `reason: null`; `panes` and `userZoom` tell the page whether nika zoomed the pane (several
+panes, not the user's own zoom). The lease is the usual one (memory, file, tag); `sized`, `awayAt` and the `terminal` state are memory only and
+never in the file. While a lease is `terminal`, a terminal resize is not a user change (the window follows its terminal and its size is not
+judged), a beat takes no lock and makes no tmux call (it keeps the panel's `cols` and `rows`), and the lease turns back into `fitted` or `zoomed`
+only after no terminal has shown the window for `GROW_MS` = 30 s (the watch, below). An unzoom, a focus change and a user's split or kill are
+still user changes.
+
 **What the server decides**, in this order (the first row that matches ends the request):
 
 | # | Condition | Decision |
@@ -901,27 +915,38 @@ its tag or window was gone sets none (M4), and neither does a refusal of an acqu
 | 4 | the window holds a lease whose tag is gone or differs | the lease is dropped, no tmux call (a restarted tmux server reuses window ids) |
 | 5 | `@nika-fit` holds a nonce nika has no lease for | a lease file of that nonce for this window is used to put the window back (a crash), then on; no usable file, or the tag still there: `blocked / foreign-tag` |
 | 6 | another pane holds the window | `open: false`: `other`; `open: true`: that lease is released (the last opened window wins) and the request goes on |
-| 7 | this pane holds the window with another size | renew: the user changed the window since the last look → released, `blocked / user-change`; nika's own agent pane came or went since the last look (0.5, F2) → released without a mark and fitted again in this same request (the watch's `refit`, below); a new pane with no role yet → answered from the lease, nothing resized (`wait`, below); otherwise resized as in rows 12–13 and read back. A renew that has to resize looks again inside the pane lock, before `resize-window` (see "Reads inside the lock") |
+| 7 | this pane holds the window with another size | renew: the user changed the window since the last look → released, `blocked / user-change`; nika's own agent pane came or went since the last look (0.5, F2) → released without a mark and fitted again in this same request (the watch's `refit`, below); a new pane with no role yet → answered from the lease, nothing resized (`wait`, below); a terminal came to a window nika did not resize → the lease becomes `terminal` and the request goes on (F4); a terminal came to a window nika resized, or the 30 s without a terminal of a `terminal` lease are over → released without a mark and fitted again in this same request (F4: the watch's SHRINK and GROW, below); otherwise a `terminal` lease keeps the new `cols` and `rows` with no lock and no tmux call (F4), and any other lease is resized as in rows 13–14 and read back. A renew that has to resize looks again inside the pane lock, before `resize-window` (see "Reads inside the lock") |
 | 8 | `open` is `false` and the window is marked off, or this page's own `DELETE` gave the window back 2000 ms ago or less (its last heartbeat in flight) | `blocked` with the mark (`user-change` or `changed`); for the late heartbeat `blocked / user-change`, no tmux call and no mark |
 | 9 | the window-level `window-size` is unknown | `blocked / size-option` |
 | 10 | the window is zoomed on a pane other than this one | `blocked / user-zoom` |
 | 11 | no active pane, or `#{window_layout}` is not printable ASCII of 1–8192 characters without `#`, or the lease file would pass 16 KB | `blocked / changed` |
-| 12 | one pane, or the panel is at least as wide **and** as tall as the window | lease; a window with several panes and no zoom is zoomed on this pane; resized to the panel unless it already is → `fitted` |
-| 13 | several panes and the panel is smaller in either dimension | lease; zoom only → `zoomed / panel-smaller`. A renew that finds a smaller panel resizes the window back to its original size, never below it |
-| 14 | the read-back after rows 12–13 differs from what nika set | released at once → `blocked / changed`, never retried |
+| 12 | (0.5, F4) a terminal shows the window (`#{window_active_clients}` above 0), or the request is a refit that keeps the terminal form (a `terminal` lease inside its 30 s grace, see "Refit") | lease (tag); a window with several panes that nobody zoomed is zoomed on this pane; **never resized** → `terminal` |
+| 13 | one pane, or the panel is at least as wide **and** as tall as the window | lease; a window with several panes and no zoom is zoomed on this pane; resized to the panel unless it already is → `fitted` |
+| 14 | several panes and the panel is smaller in either dimension | lease; zoom only → `zoomed / panel-smaller`. A renew that finds a smaller panel resizes the window back to its original size, never below it |
+| 15 | the read-back after rows 13–14 differs from what nika set (a `terminal` lease's read-back checks no size) | released at once → `blocked / changed`, never retried |
 
-A window with several panes is never made smaller than it was: another pane would be squeezed (spike S10). The lease lives in
+Rows 1–11 win over row 12 (nothing is changed there), and `terminal` wins over `zoomed / panel-smaller`: both are zoom only, `terminal` names
+the lasting reason, and its grow decides `fitted` or `zoomed` later. A window with several panes is never made smaller than it was: another pane
+would be squeezed (spike S10). The lease lives in
 three places: server memory, a 0600 file `<state>/fit/fit-<nonce>.json` and the window option `@nika-fit <nonce>` (§8).
 
-**Reads inside the lock (review I1).** Rows 9–11 and 12–13 are decided from reads taken before the lock wait (a listing, the
+**Reads inside the lock (review I1).** Rows 9–11 and 12–14 are decided from reads taken before the lock wait (a listing, the
 `window-size` option, `#{window_layout}`), and the wait can be long (a draft write holds the lock). So a fit **reads again with the
 lock held, before its first change**: the listing (the pane still in the same window, with the same pane count, zoom flag, active
 pane, window size and pane size, and no tag on the window), the layout (compared with tmux 3.8's focus markers stripped) and the
 `window-size` option. Any difference → `blocked / changed`; nothing is changed: no tag, zoom or resize, no lease kept, no lease file,
 no mark (the next beat looks at the window as it is then). The pane gone, or in another window → `404`. An acquire's calls are
-therefore: listing, option, layout, then inside the lock listing, layout, option, tag, zoom (a window nobody zoomed), resize, and
-after the lock the read-back (listing, layout; row 14). A pane control lock that stays taken for the whole wait (`409 busy`) before
+therefore: listing, option, layout, then inside the lock listing, layout, option, tag, zoom (a window nobody zoomed), resize (F4: not while a terminal shows the window), and
+after the lock the read-back (listing, layout; row 15). A pane control lock that stays taken for the whole wait (`409 busy`) before
 the step ran drops the lease directly: nothing had been changed, so nothing is given back.
+
+**A terminal in the lock wait, and a terminal after the resize (0.5, F4).** The viewer count is read again inside the lock with the rest. A
+terminal that arrived during the wait while the window kept the size nika planned on is not a difference: the acquire goes on without the resize
+and the lease is `terminal`. A terminal that arrived and also changed the window's size is a difference (`blocked / changed`, no mark; the next
+beat lands `terminal`). The read-back of a `terminal` lease checks no size, only the tag, the pane count and, for several panes, the zoom and the
+active pane. When the read-back of a lease nika resized finds a viewer (a terminal came between the resize and the read-back), the window is given
+back without a mark and the same request takes it again once, never resizing (`noResize`): at most one retry per request, and the answer is
+`terminal`. If the terminal left in the meantime, the watch's GROW handles it 30 s later.
 
 A **renew that resizes** (row 7, a panel of another size) does the same before its one `resize-window` (N1): inside the lock it
 lists the window again and judges it with the lease as nika holds it (the size and zoom it set before, not the ones it is about to
@@ -932,7 +957,8 @@ pane with no role yet leaves the lease as it was and answers from it. For a user
 (a separate turn of the lock), the answer is `blocked / user-change` as in "A request that ends in a release" below, and the window
 stays off until `open: true`: nika never resizes over a user's resize and never tries again. A tag or window that is gone is dropped
 instead (nothing touched, no mark). If that release finds the pane busy, the answer is `409 busy` and the lease stays as it was; the
-next beat or the watch tick releases it. A heartbeat at the size nika holds makes no tmux call and takes no lock.
+next beat or the watch tick releases it. A heartbeat at the size nika holds makes no tmux call and takes no lock. (F4) A renew that finds a terminal came during the lock wait resizes
+nothing: a window nika did not resize becomes `terminal`, and a window nika resized is given back and fitted again in this request.
 
 A request that ends in a release (`blocked / user-change`, or `blocked / changed` after a read-back mismatch) answers with the
 window **as it is after the restore** (T5-F2): `pane` and `panes` come from a listing taken after the release, and `userZoom` is
@@ -961,7 +987,7 @@ Stop and the keys route take no lock. What a fit step holds the lock for (code a
 | restore (`DELETE`, the watch, a lapse, quit, start, spawn, a take-over, a user change found by a renew) | 8: a listing and the layout read, then unzoom, size, option, layout, focus, untag (it decides each step from those two reads) | R9: one listing, to log a difference |
 | acquire | 6: a listing, the layout and the `window-size` option read, then tag, zoom (a window nobody zoomed), resize | the read-back: a listing and the layout |
 | renew that resizes | 2: a listing, then `resize-window` | the read-back: a listing and the layout |
-| refit (0.5, F2: the watch, or a renew that meets nika's own agent pane) | two turns of the lock. Restore: 5 after a split (a listing and the layout read, then size, option, untag), 6 after an agent pane exits (also focus). Acquire: 6, as above | R9 after the restore, the read-back after the acquire; 18 tmux calls after a split and 19 after an exit, the watch's own listing included (see "Refit" below) |
+| refit (0.5, F2: the watch, or a renew that meets nika's own agent pane; F4: SHRINK and GROW take the same two turns, the call counts below are for a split or an exit) | two turns of the lock. Restore: 5 after a split (a listing and the layout read, then size, option, untag), 6 after an agent pane exits (also focus). Acquire: 6, as above | R9 after the restore, the read-back after the acquire; 18 tmux calls after a split and 19 after an exit, the watch's own listing included (see "Refit" below) |
 | renew at the size nika holds (a heartbeat) | none (no lock) | none |
 
 Steps that find a change release in a separate turn of the lock (a renew that finds the user's change, an acquire that fails its
@@ -976,15 +1002,19 @@ read-back), so a lock is never held for two steps at once.
 | the pane is gone, left its window, or is not claude any more | released (no mark) |
 | only nika's own agent panes came or went (0.5, F2): the window size is what nika set, every row of the window parsed (the row count equals `window_panes`), each pane added has `@nika-role` `agent` or `sub-orchestrator`, and each pane that left was known as such | **refit**: released without a mark and fitted again at once (below) |
 | a pane was added, has no `@nika-role` yet, and the rest is explained as above | **wait**: nothing now, the first sighting is remembered; a look at least `WATCH_MS` (1000 ms) later that still sees an untagged new pane is a user change |
-| the window size is not the size nika set; the same panes but (several panes) the window unzoomed or another pane active; a pane left that was not nika's agent; a new pane still untagged after the grace; a row of the window that did not parse | released, mark `user-change` |
-| 15 s without a request for this pane (`LAPSE_MS`: the page is gone without a `DELETE`) | released (no mark); a lapsed lease is only released, never refitted and never waited for |
+| (0.5, F4) a terminal shows a window nika **resized** (`#{window_active_clients}` above 0), and nothing else changed | **SHRINK**: a refit at once (below): released without a mark and fitted again without a resize → `terminal` |
+| (0.5, F4) a terminal shows a window nika did **not** resize, the lease is not `terminal` yet, and nothing else changed | **VIEW**: the lease becomes `terminal` (memory only, no tmux call) |
+| (0.5, F4) a `terminal` lease, no terminal now, `GROW_MS` (30 000 ms) since the first tick without one not over | **AWAY**: the watch notes the first tick without a terminal (`awayAt`); a tick with a terminal clears it |
+| (0.5, F4) a `terminal` lease, no terminal for `GROW_MS` | **GROW**: a refit that sizes the window to the panel again (→ `fitted`, or `zoomed / panel-smaller`) |
+| the window size is not the size nika set (F4: not judged for a window nika did not resize while a terminal shows it or the lease is `terminal`: the window follows its terminal); the same panes but (several panes) the window unzoomed or another pane active; a pane left that was not nika's agent; a new pane still untagged after the grace; a row of the window that did not parse | released, mark `user-change` |
+| 15 s without a request for this pane (`LAPSE_MS`: the page is gone without a `DELETE`) | released (no mark); a lapsed lease is only released, never refitted, never waited for and (F4) never moved to or kept in the terminal form |
 | tmux answers that no server runs | every lease is dropped |
 
 **Refit (0.5, F2; owner decisions 2026-11-15).** nika's own spawn splits a pane into a fitted window (a CLI `nika spawn` from the
 orchestrator is another process, so the app's release before the split never runs for it), and an agent's pane closes when its claude
 ends: neither is the user's doing, so neither turns the fit off. The fit's listing (§8) has a 12th field, `#{@nika-role}`, and a pane
 counts as nika's own only when that is exactly `agent` or `sub-orchestrator` (`NIKA_PANES`; never `orchestrator`, never another text; a
-row with a tab in its role has 13 fields and is dropped, and a dropped row of the window makes the row count differ from
+row with a tab in its role has 14 fields and is dropped, and a dropped row of the window makes the row count differ from
 `window_panes`, which is a user change: fail closed). The lease remembers, in memory only (the lease file and its keys are unchanged), which
 panes of its window were nika's agents (`known`: set after every read-back that succeeds and refreshed at every watch tick that sees
 nothing changed) and when the watch first saw an untagged new pane (`waitAt`). Why the rules read as they do: a split without `-Z`
@@ -1008,30 +1038,44 @@ new window. A heartbeat at the size the lease holds is answered from the lease w
 can still get the old answer until the watch's next tick has refitted (at most a second); its chip key is usually unchanged (one pane
 becoming two can turn `fitted` into `zoomed`, which the next beat shows and announces).
 
-A `DELETE` of the session window that races a refit can leave the new lease held (`docs/security.md`, residual m item 12). `DELETE` looks up
-the pane's lease when it arrives. If a refit replaces that lease while the `DELETE` waits in the window queue, the `DELETE` finds the old
-lease finished and does nothing (the route still answers `released: true` and sets its 2000 ms note), and a `DELETE` that arrives between the
-refit's restore and its acquire finds no lease (`released: false`). Either way the new lease inherits the old heartbeat, so with the page
-gone it lapses at most 15 s after the page's last request and is then given back (no mark).
+**F4 uses the refit (0.5, F4).** SHRINK and GROW are this refit with another reason: no new sequence of tmux calls, fresh base values (`W0×H0`,
+the layout, the option, the active pane) after each, and every row of the decision table still applies (a SHRINK lands on row 12 because the viewer
+is there, a GROW on rows 13–14 when no terminal came back). A refit of a `terminal` lease that is still inside its 30 s grace (an agent's split
+while the terminal has been away for less than 30 s) takes the window again with `noResize`, so it stays `terminal` and never ends the grace
+early. The watch's refit carries the grace (`awayAt`) to the new lease; a refit that a page request meets first does not, so the 30 s start over
+(longer, never shorter). The F4 rows of the watch table apply only when nothing else changed, so a user who unzooms in the tick a terminal arrives
+stays a user change (W7 Q6). Shrink at once, grow after 30 s: a window does at most one grow and one shrink per 30 s, so at most 4 refits a
+minute in the worst case, and about a second of dots at most per return after an absence of more than 30 s. A refit sends the mirrored pane about
+4 to 6 size changes within ~100 ms; while a terminal shows the window nika sends none.
+
+A `DELETE` of the session window that meets a refit releases the lease the refit made (see `DELETE` below).
 
 A restore (`DELETE`, the watch, quit, the next start, a spawn) undoes only what nika did, in this order, each step on its own
 (a failing step does not stop the later ones). It starts with a listing inside the lock: the window gone, or its tag no longer this
 lease's nonce → the lease is dropped (the file removed) and nothing is touched or marked. Then: unzoom, only when nika zoomed, the
-pane is still the active zoomed one; resize the window back to its saved size, **even when the user resized the window during the
-lease** (the one step that overrides a user action: the saved size is the only size nika can name, and a lease nika did not
-release would leave the window at the panel's size); the saved window-level `window-size` back (unset again when it was unset); the saved layout, only
+pane is still the active zoomed one; resize the window back to its saved size, but (0.5, F4) only when nika resized the window during the lease
+(`sized`: memory only, set before the call that may resize so that a failed call counts, and set for a lease read from a file after a crash), and
+then **even when the user resized the window during the lease** (the one step that overrides a user action: the saved size is the only size nika
+can name, and a lease nika did not release would leave the window at the panel's size; a `terminal` lease's window follows its terminal, so its
+restore sends no resize, and a zoom-only window the user resized by hand is left alone); the saved window-level `window-size` back (unset again when it was unset); the saved layout, only
 when the layout is still the one nika left, the pane count is unchanged and the window is unzoomed; focus back to the pane that
 had it, only when that pane still exists and the focus still sits on the mirrored pane; the tag off; the lease file removed. One more read at the end logs a
-difference (`nika: fit restore of @n differs after <step>`) and never retries.
+difference (`nika: fit restore of @n differs after <step>`) and never retries. The size is compared only when nika resized the window and no
+terminal shows it after the restore (F4: after a SHRINK the window follows the terminal).
 
 ### `DELETE /api/app/pane/:id/fit` (no body)
 Gives the window back. The page sends it with `keepalive: true` on `pagehide` and when the pane is gone. `id` must match
 `PANE_ID` (`400 invalid`). It is **not** eligibility-gated: the pane may be gone already and the user's window must still come
 back. The rate limit (`429 busy`) is checked before the controller, in its own bucket of 4 per second per pane, so a close right
-after a burst of beats still works. Answer `200 { "released": true }` when this pane held a lease (the restore ran, or the lease
-was dropped because its window was gone), `200 { "released": false }` when it held none (no tmux call is made) or a release for it
-is already running. `409 busy` when the pane's control lock stayed taken for more than 5 s (the lease is kept; the watch or the
-next request goes on); `502` / `503` when tmux could not be read (the lease is kept too).
+after a burst of beats still works. Answer `200 { "released": false }` when the pane holds no lease and no queued operation of any window
+names it (no tmux call is made). Otherwise (0.5, F4; owner answer Q5, which fixes F2's leftover) the request waits its turn in the window's
+queue behind whatever runs there (a renew, a refit, a release) and releases **the lease the pane holds at its turn**, not the one it found when
+it arrived: a refit in front of it replaces the lease, and the new one must not stay held after the page has closed. The answer is then `200
+{ "released": true }` (the restore ran, or the lease was dropped because its window was gone, or the pane held none by then). A `DELETE` that
+meets a queued operation of its pane (a refit between its restore and its acquire holds no lease) also answers `released: true` and notes the
+window, even when that operation ends with no lease, so a late heartbeat within 2 s is blocked. `409 busy` when the pane's control lock stayed
+taken for more than 5 s (the lease is kept; the watch or the next request goes on); `502` / `503` when tmux could not be read (the lease is
+kept too).
 
 **Late heartbeat (M1).** After a `DELETE` that answered `released: true`, the server remembers the window for 2000 ms, inclusive
 (an in-memory map, at most 64 windows, the oldest dropped first): a `PUT` with `open: false` in that time is the page's last
@@ -1049,11 +1093,12 @@ Fit again / Fit here (0.5, F1) sends `open: true` again.
 `open: true` can change something (`blocked / user-change`, `blocked / changed`, a `blocked` the page has no reason for, and `other`), makes the
 page's next request `open: true`: the same `PUT`, body and answers as above, sent at once (a heartbeat that waits is cleared and the beat
 re-armed; a request in flight finishes first, then this one goes out). The page ends that ask in exactly one way: 200 with a fit answer (the
-panel closes on `fitted` or `zoomed`, else it is drawn again for the new state), 403 (everything stops, the chip hides), or any other status or
+panel closes on `fitted`, `zoomed` or `terminal`, else it is drawn again for the new state), 403 (everything stops, the chip hides), or any other status or
 a lost request (the panel shows "nika could not fit the window just now. It tries again within 5 seconds."; the page then treats the window as
 not yet opened, so the next heartbeat sends `open: true` again). `user-zoom`, `size-option` and `foreign-tag` have no action: the server refuses
 `open: true` again for them (rows 5, 9 and 10 do not look at `open`), so a button would only fail; they recover on the next heartbeat once the
-user acts in tmux.
+user acts in tmux. `terminal` has no action either (0.5, F4): `open: true` lands on `terminal` again while a terminal shows the window (row 12
+does not look at `open`), and the chip's panel says when nika sizes the window to the panel again (30 s without a terminal).
 
 Logging: nothing of the body, a layout or a nonce goes to a log or the console; errors carry the pane id, the window id, the step
 name and the error code only. Both routes exist on the app tier only (the browser tier has no fit route, no tag read and no lease
@@ -1757,7 +1802,7 @@ the folder-picker flow once (`hooks.addProject()` in `public/app.js`), then the 
 | `${XDG_STATE_HOME \|\| ~/.local/state}/nika/` | 0700 | state dir |
 | `…/nika/projects/<key>/reports/` | 0700 | per agent: `<name>.brief.md` and `<name>.agent.json` (`{model, permissionMode, rc, role, parent, depth, compact}`, re-validated on read) written by `spawn`; `<name>.session` (UUID), `<name>.remote` (RC name or empty), `<name>.pane` (`$TMUX_PANE`, display only: never counted) written by `_run-agent` before claude starts and `<name>.rc` (claude's exit code, as in 0.1) after it exits; `<name>.md` written by the agent; `.last-pane` |
 | `…/nika/backups/<key>/<ISO>/<relPath>` | 0700 / 0600 | byte-for-byte copies taken by `rules apply` before each overwrite (`<ISO>` = `YYYYMMDDTHHMMSSZ`, plus `-<n>` for a second apply in the same second); the newest 10 folders per project are kept: after a successful apply `pruneBackups` removes the older ones, touching only stamp-named real directories owned by the user |
-| `…/nika/fit/fit-<nonce>.json` | 0700 / 0600 | the fit's lease (0.5, W7): exactly the keys `v nonce window pane panes zoomed0 active0 width0 height0 size0 layout0 layout1 cols rows resized userZoom at`, written by `writeAtomic` before the first tmux change and after each resize, removed by `removeOwnFile` on release; `<nonce>` is 16 hex (`FIT_NONCE`); at most 20 files are read back at the app tier's start (when more match, `nika: fit recover read 20 of N lease files` is logged, counts only and never names; the rest stay on disk), each ≤ 16 KB through `fsafe`, every field shape-checked, and a file that does not parse is removed; a symlinked `fit/` folder is not followed |
+| `…/nika/fit/fit-<nonce>.json` | 0700 / 0600 | the fit's lease (0.5, W7): exactly the keys `v nonce window pane panes zoomed0 active0 width0 height0 size0 layout0 layout1 cols rows resized userZoom at` (F4: `sized`, `awayAt` and the `terminal` state are memory only and never in the file), written by `writeAtomic` before the first tmux change and after each resize, removed by `removeOwnFile` on release; `<nonce>` is 16 hex (`FIT_NONCE`); at most 20 files are read back at the app tier's start (when more match, `nika: fit recover read 20 of N lease files` is logged, counts only and never names; the rest stay on disk), each ≤ 16 KB through `fsafe`, every field shape-checked, and a file that does not parse is removed; a symlinked `fit/` folder is not followed |
 | `…/nika/attachments/<key>/<id>.<ext>` | 0700 / 0600 | the files of the session window's attachments (0.5, W2; ADR 0016): `<key>` is the pane's `PROJECT_KEY` from nika's own snapshot, `<id>` 16 random hex, `<ext>` `png` `jpg` `gif` `webp` `pdf` or, for a text file, an extension from a fixed list (`txt` when the name's is not on it); the user's file name is never stored. Written by `writeAtomic` (0600) after the bytes were sniffed (type from the magic bytes, never from the name), removed by `removeOwnFile`. The root and each key folder must be real folders you own (`ensureDir`; a link or a foreign owner is `409 folder-unsafe`). The whole path must match `^/[A-Za-z0-9._/+-]{1,200}$` (`409 path-unusable` otherwise: it is pasted into Claude as one token). Pruned at start, every 24 h and before each save: a file older than `attachments.keepDays`, a left-over temp file older than 1 h, then the oldest first while the store holds more than 256 MiB or 500 files in all (a file younger than 1 h is never evicted: the next save refuses with `507 storage-full` instead), and an empty key folder; only names nika writes, in real folders you own, as regular single-link files you own. Unsent files also go at once on `DELETE …/attachments/:id` |
 
 `config.json` schema and defaults (unknown keys are dropped, wrong types fall back to the default; both produce a
@@ -1905,7 +1950,7 @@ multi-argument shell-commands (tmux execs them directly, no `sh -c`, T6).
 | send paste | `tmux -u load-buffer -b nika-<16 hex> -` (paste bytes on stdin; argv over ~16 KB fails with "command too long") then `tmux -u paste-buffer -p -d -b nika-<16 hex> -t %n`; on a paste failure `delete-buffer -b nika-<hex>` |
 | send key | `tmux -u send-keys -t %n -- <KEY_NAME>` |
 | focus | `tmux -u switch-client -t %n` / `select-window -t %n` / `select-pane -t %n` (0.1) |
-| fit: read all panes (0.5) | `tmux -u list-panes -a -F #{pane_id}\t#{window_id}\t#{window_panes}\t#{window_zoomed_flag}\t#{pane_active}\t#{window_width}\t#{window_height}\t#{pane_width}\t#{pane_height}\t#{pane_current_command}\t#{@nika-fit}\t#{@nika-role}` (one call; the watch's only read; exactly 12 fields (0.5, F2: the last is the pane's role, kept as exact text and compared only with `agent` and `sub-orchestrator`), every field parsed strictly, a row that does not parse is dropped, a tag that is not 16 hex reads as foreign) |
+| fit: read all panes (0.5) | `tmux -u list-panes -a -F #{pane_id}\t#{window_id}\t#{window_panes}\t#{window_zoomed_flag}\t#{pane_active}\t#{window_width}\t#{window_height}\t#{pane_width}\t#{pane_height}\t#{pane_current_command}\t#{@nika-fit}\t#{@nika-role}\t#{window_active_clients}` (one call; the watch's only read; exactly 13 fields (0.5, F2: the 12th is the pane's role, kept as exact text and compared only with `agent` and `sub-orchestrator`; 0.5, F4: the 13th is the window's client count, digits 0–9999, compared only with 0, every kind of client counted), every field parsed strictly, a row that does not parse is dropped, a tag that is not 16 hex reads as foreign) |
 | fit: layout | `tmux -u display-message -p -t @W -F #{window_layout}` (one line; kept only when it is printable ASCII, 1–8192 characters, no `#`) |
 | fit: window-size option | `tmux -u show-options -w -t @W window-size` → empty (unset) or `window-size <latest\|largest\|smallest\|manual>`; anything else is `blocked / size-option` |
 | fit: tag the window | `tmux -u set-option -w -t @W @nika-fit <nonce>` (16 hex from `crypto.randomBytes(8)`; a value, not a format) |
