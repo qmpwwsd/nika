@@ -4117,7 +4117,7 @@ describe('W7-T3: the fit chip, the probe and the text scale (markup and styleshe
   });
 
   test('(−) the pure module has no DOM, request, storage or timer of its own', () => {
-    assert.doesNotMatch(code(JS['fit-ui.js']), /\b(document|window|navigator|location)\s*[.[]|\b(fetch|setTimeout|setInterval|clearTimeout|XMLHttpRequest)\s*\(|localStorage|sessionStorage|\/api\//);
+    assert.doesNotMatch(code(JS['fit-ui.js']).replace(/'(?:[^'\\\n]|\\.)*'/g, "''"), /\b(document|window|navigator|location)\s*[.[]|\b(fetch|setTimeout|setInterval|clearTimeout|XMLHttpRequest)\s*\(|localStorage|sessionStorage|\/api\//);
   });
 });
 
@@ -4777,7 +4777,7 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     assert.equal(chipViewReal({ fit: { state: 'terminal', reason: 'switching' } }).icon, chipViewReal({ fit: { state: 'terminal', reason: null } }).icon);
     assert.deepEqual(findSinks(fnOf('function fitFocused()')), []);
     assert.deepEqual(findSinks(fnOf('function wireFit()')), []);
-    assert.doesNotMatch(code(JS['fit-ui.js']), /\b(?:document|window|navigator|localStorage)\s*[.[]|\.style\b|innerHTML|getElementById|querySelector|addEventListener|\bsetTimeout\b|\bfetch\(/, 'fit-ui.js has no DOM and no timer or request of its own');
+    assert.doesNotMatch(code(JS['fit-ui.js']).replace(/'(?:[^'\\\n]|\\.)*'/g, "''"), /\b(?:document|window|navigator|localStorage)\s*[.[]|\.style\b|innerHTML|getElementById|querySelector|addEventListener|\bsetTimeout\b|\bfetch\(/, 'fit-ui.js has no DOM and no timer or request of its own');
     assert.doesNotMatch(JS['fit-ui.js'], /[^\x00-\x7f]/, 'fit-ui.js stays ASCII');
   });
 
@@ -5169,7 +5169,7 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
       assert.equal(r.chip.kids[1].textContent, 'Fit · off', reason);
     }
     r.renderFit(chipViewReal(answer('zoomed', 'panel-smaller').body));
-    assert.equal(r.chip.getAttribute('title'), 'Other panes in this tmux window would be squeezed, so nika zoomed the pane and scaled the text');
+    assert.equal(r.chip.getAttribute('title'), 'Other panes share this tmux window. With focus nika sizes the window to this panel; without focus it only zooms the pane and scales the text.');
   });
 
   test('(+) a state change is announced once through announce(); the same state again, and a 502, say nothing', async () => {
@@ -5288,7 +5288,7 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     assert.equal(f.popWhy.textContent, chipViewReal(FITTED.body).title);
     const z = await opened([answer('zoomed', 'panel-smaller')]);
     assert.deepEqual([z.popH.textContent, z.popHint.hidden, z.again.hidden, focusState.el === z.close], ['Fit: zoomed, text scaled', false, true, true]);
-    assert.match(z.popHint.textContent, /^To fill the panel without scaled text, make this window larger or hide the transcript \(Ctrl\+Shift\+H\)\.$/);
+    assert.match(z.popHint.textContent, /^Click into this window to fill the panel; the other panes get their size and layout back when you leave it\.$/);
   });
 
   test('(+) F1: the panel is placed by dom.js: clearMenuPlacement while it is hidden, then placeMenuX(panel, chip) once it is shown (it needs its width); again on every open', async () => {

@@ -86,7 +86,7 @@ describe('scaleFor: the text scale (design 8.3)', () => {
 describe('chipView: the chip from the PUT body (design 8.4, owner answer Q5, orchestrator ruling 1)', () => {
   const body = (state, reason = null) => ({ fit: { state, reason, pane: { cols: 120, rows: 39 }, panes: 3, userZoom: false } });
   const SIX = {
-    'panel-smaller': 'Other panes in this tmux window would be squeezed, so nika zoomed the pane and scaled the text',
+    'panel-smaller': 'Other panes share this tmux window. With focus nika sizes the window to this panel; without focus it only zooms the pane and scales the text.', // F15 (owner decision 2026-11-16)
     'user-zoom': 'You zoomed another pane in this window; nika leaves it',
     'size-option': 'This tmux window has a window-size setting nika does not change',
     'foreign-tag': 'Another program marks this tmux window',
@@ -131,12 +131,15 @@ describe('chipView: the chip from the PUT body (design 8.4, owner answer Q5, orc
 
   test('(−) zoomed always carries the panel-smaller sentence; fitted and other ignore a reason', () => {
     assert.equal(chipView(body('zoomed')).title, SIX['panel-smaller']);
+    assert.equal(chipView(body('zoomed', 'other-panes')).title, SIX['panel-smaller'], 'F15: no second zoomed sentence');
+    assert.equal(chipView(body('zoomed', 'other-panes')).key, chipView(body('zoomed', 'panel-smaller')).key);
     assert.equal(chipView(body('fitted', 'user-zoom')).title, chipView(body('fitted')).title);
     assert.equal(chipView(body('other', 'changed')).title, chipView(body('other')).title);
   });
 
   test('(−) blocked with no reason, or one nika does not know, is still "off" with a plain sentence', () => {
-    for (const reason of [null, undefined, 'something-new', 42, {}, 'panel-smaller']) {
+    // F15: `other-panes` (design F13 3.2, dropped by the owner's answers 5 and 6) is no reason either, on any state
+    for (const reason of [null, undefined, 'something-new', 42, {}, 'panel-smaller', 'other-panes']) {
       const v = chipView({ fit: { state: 'blocked', reason } });
       assert.equal(v.text, `Fit ${DOT} off`);
       assert.equal(v.title, 'nika is not fitting this tmux window');
@@ -818,7 +821,7 @@ describe('fitPanelView: the panel behind the chip (F1, design F12 2.3)', () => {
   const ROWS = [
     // [state, reason, key, hint, code, action]
     ['fitted', null, 'fitted:', null, null, null],
-    ['zoomed', 'panel-smaller', 'zoomed:', 'To fill the panel without scaled text, make this window larger or hide the transcript (Ctrl+Shift+H).', null, null],
+    ['zoomed', 'panel-smaller', 'zoomed:', 'Click into this window to fill the panel; the other panes get their size and layout back when you leave it.', null, null],
     // F4 (design F4 3.6, requirement change, not a weakened test): Fit again over a window a terminal shows lands in `terminal`, not "sized to this panel", so the old sentence would be false
     ['blocked', 'user-change', 'blocked:user-change', 'Fit again turns the fit on once more. After a change of your own nika stays off until you ask.', null, 'Fit again'],
     ['blocked', 'changed', 'blocked:changed', 'Fit again tries once more.', null, 'Fit again'],
@@ -1821,7 +1824,10 @@ describe('F10: the constants and the file (design F10 9)', () => {
   test('(+) fit-ui.js stays ASCII and has no DOM', () => {
     const src = readSrc('fit-ui.js');
     assert.equal([...src].every((ch) => ch.codePointAt(0) < 128), true);
-    assert.doesNotMatch(src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, ''), /\b(document|window|navigator|globalThis)\s*[.[]|localStorage|getElementById|querySelector|addEventListener|createElement|\bfetch\s*\(/);
+    // comments and quoted sentences are not code: F15's chip title says "this tmux window. With focus ..." (the owner's words), which is not a DOM access
+    const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '').replace(/'(?:[^'\\\n]|\\.)*'/g, "''");
+    assert.doesNotMatch(code, /\b(document|window|navigator|globalThis)\s*[.[]|localStorage|getElementById|querySelector|addEventListener|createElement|\bfetch\s*\(/);
+    assert.match("x = window.document;", /\b(document|window|navigator|globalThis)\s*[.[]/, 'the pattern still sees real code');
   });
 });
 

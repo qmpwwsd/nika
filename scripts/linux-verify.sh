@@ -254,8 +254,11 @@ JS
 # (b) it attaches to a window nika resized -> within 2.5 s nika has given the size back, and the restore (R9) logs no difference.
 # F9 (0.5): and two checks with the page's focus. With a control-mode client attached, `focus: true` makes nika resize the window to the panel anyway
 # (a: one pane; b: three panes, the pane stays zoomed), and `focus: false` gives the size back in place: the lease, the tag and the zoom stay.
+# F15 (0.5, owner decision 2026-11-16, resize while zoomed): and one check on a window of its own, with no terminal. Any pane may be squeezed while the page has focus: a plain shell,
+# an agent-tagged pane running node and the mirrored pane share a 100x29 window; focus true with a smaller panel (60x20) sizes the window to the panel and keeps the zoom,
+# and focus false gives the window its size, layout and zoom back exactly (select-layout, then the zoom again), three times over; the release puts back what was there before.
 check_fit() {
-  local hold=(node -e 'setInterval(()=>{},1e9)') pa p3 p1 w3 w1
+  local hold=(node -e 'setInterval(()=>{},1e9)') pa p3 p1 w3 w1 pa15 p15 pb15 w15
   CUR=fit
   echo "tmux $(tmux -V)" >"$LOGS/fit.log"
   # every mirrored pane runs `node`, which nika's pane test takes for claude; the 3-pane window is 100x29: two `sleep` panes on the left, the mirrored one on the right
@@ -266,15 +269,24 @@ check_fit() {
     add FAIL "e. fit: start the private server and its panes" "see log"
     return
   fi
+  # F15a: a plain shell (left, top), an agent-tagged pane running node (left, bottom) and the mirrored pane running node (right), 100x29
+  if ! pa15="$(tm new-session -d -s fit15 -x 100 -y 29 -P -F '#{pane_id}' -- sh 2>>"$LOGS/fit.log")" \
+    || ! p15="$(tm split-window -d -h -t "$pa15" -P -F '#{pane_id}' -- "${hold[@]}" 2>>"$LOGS/fit.log")" \
+    || ! pb15="$(tm split-window -d -v -t "$pa15" -P -F '#{pane_id}' -- "${hold[@]}" 2>>"$LOGS/fit.log")" \
+    || ! tm set-option -p -t "$pb15" @nika-role agent 2>>"$LOGS/fit.log"; then
+    add FAIL "e. fit F15a: start its window and its three panes" "see log"
+    return
+  fi
   w3="$(tm display-message -p -t "$p3" '#{window_id}')"
   w1="$(tm display-message -p -t "$p1" '#{window_id}')"
+  w15="$(tm display-message -p -t "$p15" '#{window_id}')"
   mkdir -m 700 "$WORK/fitstate"
-  P3="$p3" W3="$w3" P1="$p1" W1="$w1" S3=fit3 S1=fit1 SOCK="$SOCK" STATE="$WORK/fitstate" run_js fit <<JS
+  P3="$p3" W3="$w3" P1="$p1" W1="$w1" P15="$p15" W15="$w15" PB15="$pb15" S3=fit3 S1=fit1 SOCK="$SOCK" STATE="$WORK/fitstate" run_js fit <<JS
 import { spawn } from 'node:child_process';
 import { createFit } from './src/fit.js';
 import { makeExec } from './src/exec.js';
 $JS_REC
-const { P3: p3, W3: w3, P1: p1, W1: w1, S3: sess3, S1: sess1, SOCK: sock, STATE: state } = process.env;
+const { P3: p3, W3: w3, P1: p1, W1: w1, P15: p15, W15: w15, PB15: pb15, S3: sess3, S1: sess1, SOCK: sock, STATE: state } = process.env;
 const base = makeExec({ timeout: 5000 });
 const exec = (cmd, args, opts) => base(cmd, ['-L', sock, ...args], opts);
 const tmux = async (...a) => (await exec('tmux', ['-u', ...a])).stdout.trim();
@@ -292,7 +304,7 @@ const snap = async (w) => ({
 const diff = (a, b) => Object.keys(a).filter((k) => a[k] !== b[k]).map((k) => k + ': ' + show(a[k]) + ' -> ' + show(b[k])).join('; ').slice(0, 400);
 const sized = async (p) => tmux('display-message', '-p', '-t', p, '-F', '#{pane_width}x#{pane_height}');
 
-const ready = await until(async () => (await tmux('list-panes', '-a', '-F', '#{pane_id} #{pane_current_command}')).split('\n').filter((l) => / node\$/.test(l)).length === 2);
+const ready = await until(async () => (await tmux('list-panes', '-a', '-F', '#{pane_id} #{pane_current_command}')).split('\n').filter((l) => / node\$/.test(l)).length === 4);
 rec(ready, 'e. fit: panes run node (the pane test accepts it as claude)', ready ? '' : 'timeout');
 const logs = []; // the fit's own log lines (a stderr line as before); F4 looks for a restore that "differs"
 const fit = createFit({ exec, tmuxBin: 'tmux', stateDir: state, log: (m) => { logs.push(m); console.error(m); } });
@@ -426,6 +438,48 @@ try {
     'e. fit F9b: the release unzooms, removes the tag and logs no difference (R9)', show(del3f.body) + ' ' + after3f.window + ' ' + show(differs()));
 } finally {
   ctl3f?.stop();
+}
+
+// F15a (no terminal shows @W15, panel 60x20 is smaller than the window in both directions). It asserts, in this order:
+//  1. no focus -> zoomed / panel-smaller: the window is still 100x29, zoom flag 1, 3 panes, tagged (this snapshot is the reference for the gives);
+//  2. focus true -> fitted: the mirrored pane and the window are 60x20, zoom flag 1, 3 panes, window-size manual (the shell and the agent pane shrank with the window);
+//  3. focus false -> zoomed / panel-smaller: window size, stripped layout, window-size option, tag, every pane's size and active flag and the zoom flag are exactly
+//     those of step 1 (select-layout of the layout read right before the squeeze, then the mirrored pane zoomed again); steps 2 and 3 run three times over;
+//  4. release -> layout, size, zoom, option, active pane and tag exactly as before step 1, and the restore (R9) logs no difference.
+{
+  const hidden = async () => (await tmux('list-panes', '-t', w15, '-F', '#{pane_id}=#{pane_width}x#{pane_height}')).split('\n').filter((l) => !l.startsWith(p15 + '=')).join(' ');
+  const before15 = await snap(w15);
+  const diffs15 = differs().length;
+  const base15 = await fit.hold(p15, { cols: 60, rows: 20, open: true });
+  const ref15 = await snap(w15);
+  const hiddenRef = await hidden();
+  rec(base15.status === 200 && base15.body.fit.state === 'zoomed' && base15.body.fit.reason === 'panel-smaller' && ref15.window.startsWith('100x29 zoomed=1 panes=3 tag=[') && !ref15.window.endsWith('tag=[]'),
+    'e. fit F15a: no focus -> zoomed / panel-smaller, window still 100x29, zoomed, 3 panes, tagged', show(base15.body) + ' ' + ref15.window);
+  const badTake = [];
+  const badGive = [];
+  let squeezedHidden = '';
+  for (let i = 1; i <= 3; i += 1) {
+    const take = await fit.hold(p15, { cols: 60, rows: 20, open: false, focus: true });
+    const during = await snap(w15);
+    const size = await sized(p15);
+    squeezedHidden = await hidden();
+    if (!(take.status === 200 && take.body.fit.state === 'fitted' && size === '60x20' && during.window.startsWith('60x20 zoomed=1 panes=3 tag=[') && during.option === 'window-size manual')) {
+      badTake.push('cycle ' + i + ': ' + show(take.body) + ' pane ' + size + ' window ' + during.window + ' option=' + show(during.option));
+    }
+    const give = await fit.hold(p15, { cols: 60, rows: 20, open: false, focus: false });
+    const after = await snap(w15);
+    const changed = diff(ref15, after);
+    if (!(give.status === 200 && give.body.fit.state === 'zoomed' && give.body.fit.reason === 'panel-smaller' && changed === '')) {
+      badGive.push('cycle ' + i + ': ' + show(give.body) + ' ' + (changed || 'same as the reference'));
+    }
+  }
+  rec(badTake.length === 0, 'e. fit F15a: focus true (3 times) -> fitted, window and pane 60x20, zoomed, 3 panes, window-size manual', badTake.join('; ') || 'hidden panes at 60x20: ' + squeezedHidden + ' (were ' + hiddenRef + ')');
+  rec(badGive.length === 0, 'e. fit F15a: focus false (3 times) -> the window\'s size, layout, option, tag, pane sizes, active pane and zoom exactly as before the squeeze', badGive.join('; '));
+  const del15 = await fit.release(p15);
+  const after15 = await snap(w15);
+  const back15 = diff(before15, after15);
+  rec(del15.body.released === true && back15 === '' && differs().length === diffs15 && fit.size() === 0,
+    'e. fit F15a: the release puts layout0, size, zoom, option, active pane and tag back exactly, and R9 logs no difference', back15 || show(del15.body) + ' ' + show(differs()) + ' size ' + fit.size());
 }
 
 rec((await fit.releaseAll()) === 0 && fit.size() === 0, 'e. fit: nothing left held after the releases', 'size ' + fit.size());

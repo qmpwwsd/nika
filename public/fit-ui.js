@@ -230,7 +230,8 @@ export function createRedrawHold(io) {
 // The sentences of the terminal chip when nika zoomed the pane (F4), of the filled chip a terminal also shows (F9) and of the capped terminal chip (F9) are not
 // reasons, so they live outside this table: a server reason can never select them, only the exact pair of state and reason does (chipView).
 const TITLE = {
-  'panel-smaller': 'Other panes in this tmux window would be squeezed, so nika zoomed the pane and scaled the text',
+  // F15 (owner decision 2026-11-16, resize while zoomed): with focus nika sizes the window to the panel whatever the other panes run, so `zoomed` now means the page has no focus
+  'panel-smaller': 'Other panes share this tmux window. With focus nika sizes the window to this panel; without focus it only zooms the pane and scales the text.',
   'user-zoom': 'You zoomed another pane in this window; nika leaves it',
   'size-option': 'This tmux window has a window-size setting nika does not change',
   'foreign-tag': 'Another program marks this tmux window',
@@ -282,7 +283,8 @@ const FITTING = 'Fitting\u2026';
 // something (the server refuses it again for user-zoom, size-option and foreign-tag, and those recover once the user acts in tmux).
 const PANEL = {
   'fitted:': {},
-  'zoomed:': { hint: 'To fill the panel without scaled text, make this window larger or hide the transcript (Ctrl+Shift+H).' },
+  // F15: a click into this window is the way to the size (the other panes get their size and layout back when the page loses focus)
+  'zoomed:': { hint: 'Click into this window to fill the panel; the other panes get their size and layout back when you leave it.' },
   // F4: Fit again over a window a terminal shows lands in `terminal`, so the hint no longer promises a size
   'blocked:user-change': { hint: 'Fit again turns the fit on once more. After a change of your own nika stays off until you ask.', action: 'Fit again' },
   'blocked:changed': { hint: 'Fit again tries once more.', action: 'Fit again' },

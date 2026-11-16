@@ -19,6 +19,10 @@
 // absent). A page with focus gets the panel's size even while a terminal shows the window (the terminal shows dots); a page without focus yields
 // as in F4. Every size switch is one in place move on the same lease, with no release and no change of tag or zoom: GIVE (the window's own size
 // back, then its `window-size` option) and TAKE (the panel's size). At most TAKE_MAX focus takes per window in TAKE_SPAN_MS; a give is never limited.
+// F15 (design F13 section 3 as changed by the owner's answers, 2026-11-16, "resize while zoomed"): while the page has focus any pane may be squeezed, whatever the
+// other panes of the window run: the zoom hides them and tmux shrinks them with the window. A take that sizes a window with several panes below its own size reads
+// the window's layout in the same locked listing right before the resize and keeps it in memory (`layoutT`, never in the lease file). The give then does R3, R4,
+// `select-layout` of that layout (which unzooms) and `resize-pane -Z` of the mirrored pane again, and reads the window back; any mismatch releases with `changed`.
 import { randomBytes } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -142,7 +146,8 @@ function parseLease(text, nonce, at) {
   for (const k of FILE_KEYS) lease[k] = o[k];
   // F4: a lease read from a file may have resized its window before the crash, so its restore sends the resize back (`sized`); `awayAt` is memory only.
   // F9: `focus` and `viewed` are memory only too (a lease from a file is only released, never moved)
-  return { ...lease, lastBeat: at, state: null, reason: null, seen: null, done: false, known: null, waitAt: null, sized: true, awayAt: null, focus: false, viewed: false };
+  // F15: `layoutT` is memory only too (a crash recovery puts layout0 back)
+  return { ...lease, lastBeat: at, state: null, reason: null, seen: null, done: false, known: null, waitAt: null, sized: true, awayAt: null, focus: false, viewed: false, layoutT: null };
 }
 const fileOf = (l) => Object.fromEntries(FILE_KEYS.map((k) => [k, l[k]]));
 const leaseText = (l) => JSON.stringify(fileOf(l));
@@ -152,12 +157,20 @@ const expOf = (l) => (l.resized ? [l.cols, l.rows] : [l.width0, l.height0]);
 /**
  * F4 + F9: `yields` = a terminal shows the window and the page has no focus (or a refit keeps the terminal form): then nika never resizes it. Else
  * resize only when it cannot squeeze other panes: one pane, or a panel at least as big as the window (design 2.1 rows 8, 11, 12; design-F4 section 3.1).
+ * F15: or when the page has focus (`focus`): then the panel's size wins over the other panes too.
  */
-function plan(panes, C, R, w0, h0, yields = false) {
+function plan(panes, C, R, w0, h0, yields = false, focus = false) {
   if (yields) return { target: [w0, h0], state: 'terminal', reason: null };
-  const fits = panes === 1 || (C >= w0 && R >= h0);
+  const fits = panes === 1 || (C >= w0 && R >= h0) || focus; // F15: a page with focus gets the panel's size even when that squeezes the other panes
   return { target: fits ? [C, R] : [w0, h0], state: fits ? 'fitted' : 'zoomed', reason: fits ? null : 'panel-smaller' };
 }
+/** F15: the target is smaller than the window's own size in either direction, with several panes: the others are squeezed (the zoom hides them). */
+const squeezes = (panes, target, w0, h0) => panes > 1 && (target[0] < w0 || target[1] < h0);
+/** F15: the layout a give puts back: tmux's own text for the window (already checked by readLayout), markers stripped (they would move focus, spike S10), checked again like layout0. null: not one nika may apply. */
+const turnBack = (raw) => {
+  const text = raw === null ? '' : strip(raw);
+  return validLayout(text) ? text : null;
+};
 /** F4: the lease is in the terminal form: a terminal sizes the window, nika only keeps the tag and the zoom. Memory only, never in the lease file. */
 const toTerminal = (l) => { l.state = 'terminal'; l.reason = null; l.awayAt = null; };
 /** F4 + F9: the lease keeps the terminal form: the page has no focus, the lease has the form, and no terminal has been away for GROW_MS yet. */
@@ -370,9 +383,12 @@ export function createFit({
       // Judged here, inside "nothing else changed": a user who unzooms in the tick a terminal arrives or the focus changes stays a user change (W7 Q6)
       if (lease.focus) { // F9: the page has focus: the panel wins over any terminal
         if (lease.resized) return null; // the window has the panel's size (manual): nothing to do
-        // the terminal form, or a window that followed its terminal to another size: plan it again
-        return lease.state === 'terminal' || m.winW !== lease.width0 || m.winH !== lease.height0 ? TAKE : null;
+        // the terminal form, a window that followed its terminal to another size, or (F15) a zoomed one the others of which the page may squeeze now: plan it again
+        return lease.state === 'terminal' || lease.state === 'zoomed' || m.winW !== lease.width0 || m.winH !== lease.height0 ? TAKE : null;
       }
+      // F15: the page has no focus and nika squeezed the window below its own size: the other panes get their size and layout back, whether or not a terminal
+      // shows the window. Judged before the viewed rule.
+      if (lease.resized && squeezes(lease.panes, [lease.cols, lease.rows], lease.width0, lease.height0)) return GIVE;
       if (viewed) return lease.resized ? GIVE : lease.state === 'terminal' ? null : VIEW;
       if (lease.state !== 'terminal') return null;
       return holdsTerminal(lease, at) ? AWAY : TAKE;
@@ -558,8 +574,11 @@ export function createFit({
   }
 
   // ---- ACQUIRE (design 2.1 rows 6-12, 4 A1-A5) ----------------------------------------------------------------------------
-  /** A5: read back what nika did; a mismatch (a user hook fights back) releases once, never loops. */
-  async function verify(lease) {
+  /**
+   * A5: read back what nika did; a mismatch (a user hook fights back) releases once, never loops. F15: `back` = the layout a give has just put back: the
+   * window must also have its own size and exactly that layout (markers stripped), else it is released with `changed`.
+   */
+  async function verify(lease, back = null) {
     const snap = await listing();
     const m = snap.get(lease.pane);
     if (!m || m.window !== lease.window) {
@@ -570,8 +589,10 @@ export function createFit({
     const term = lease.state === 'terminal'; // F4: the terminal sizes the window: only the tag, the pane count and the zoom are nika's to check
     // The pane height may be eh or eh-1: tmux reserves one row for `pane-border-status top|bottom` even on a zoomed or only pane.
     const ok = m.tag === lease.nonce && m.panes === lease.panes && (lease.panes === 1 || (m.zoomed === 1 && m.active === 1))
-      && (term || (m.winW === ew && m.winH === eh && m.paneW === ew && (m.paneH === eh || m.paneH === eh - 1)));
-    const layout = ok ? await readLayout(lease.window) : null;
+      && (term || (m.winW === ew && m.winH === eh && m.paneW === ew && (m.paneH === eh || m.paneH === eh - 1)))
+      && (back === null || (m.winW === lease.width0 && m.winH === lease.height0));
+    const read = ok ? await readLayout(lease.window) : null;
+    const layout = read !== null && (back === null || strip(read) === back) ? read : null;
     if (layout !== null) lease.layout1 = layout;
     const text = layout !== null ? leaseText(lease) : null;
     if (text === null || Buffer.byteLength(text) > LEASE_FILE_MAX) {
@@ -633,7 +654,14 @@ export function createFit({
         lease.height0 = m.winH;
       }
       lease.viewed = m.clients > 0;
-      const { target, state, reason } = plan(lease.panes, lease.cols, lease.rows, m.winW, m.winH, lease.viewed && !lease.focus);
+      let { target, state, reason } = plan(lease.panes, lease.cols, lease.rows, m.winW, m.winH, lease.viewed && !lease.focus, lease.focus);
+      if (squeezes(lease.panes, target, m.winW, m.winH)) {
+        // F15: the layout to put back on the give, read in this lock, from the listing that decided the take, right before the resize. If it cannot be kept
+        // there is nothing to put back: fail closed, the pane is zoomed and the text scaled as without focus.
+        const layoutT = turnBack(await readLayout(w));
+        if (layoutT === null) ({ target, state, reason } = plan(lease.panes, lease.cols, lease.rows, m.winW, m.winH, false, false));
+        else lease.layoutT = layoutT;
+      }
       Object.assign(lease, { state, reason, awayAt: null, resized: target[0] !== lease.width0 || target[1] !== lease.height0 });
       if (target[0] !== m.winW || target[1] !== m.winH) {
         lease.sized = true; // set before the call, as in A4: a call that failed may still have resized the window
@@ -651,10 +679,14 @@ export function createFit({
   /**
    * Give the window's size back to the terminal that shows it: the page lost focus, or a terminal came to a window nika resized while the page has none.
    * The lease, the tag and the zoom stay. The resize back goes to the window's own size from just before nika's last resize (width0/height0).
+   * F15: a window nika squeezed (several panes, below its own size) gets its layout back too, whether or not a terminal shows it: after R3 and R4 the layout
+   * the take read (`layoutT`) is applied, which unzooms the window, and the mirrored pane is zoomed again; the read-back must show that layout, the window's own
+   * size and the zoom (verify). Without a terminal such a lease is `zoomed / panel-smaller` afterwards.
    */
   async function give(lease, size = null) {
     const w = lease.window;
     let out = 'skip';
+    let back = null; // F15: the layout put back
     await lock(lease.pane, async () => {
       const snap = await listing();
       const row = snap.get(lease.pane);
@@ -667,10 +699,22 @@ export function createFit({
       const m = snap.get(lease.pane);
       if (lease.sized && (m.winW !== lease.width0 || m.winH !== lease.height0)) await tmux(ARGV.size(w, lease.width0, lease.height0)); // R3
       await tmux(lease.size0 === null ? ARGV.optUnset(w) : ARGV.optSet(w, lease.size0)); // R4: the window follows its terminal again
+      const alone = !lease.viewed && squeezes(lease.panes, [lease.cols, lease.rows], lease.width0, lease.height0); // F15: squeezed, and nobody else shows the window
+      if (lease.layoutT !== null) {
+        await tmux(ARGV.select(w, lease.layoutT)); // F15: the layout from before the squeeze; tmux unzooms the window (spike S10)
+        // toggle the zoom only on a window that shows unzoomed now, never one that is still (or again) zoomed or whose pane left
+        const after = (await listing()).get(lease.pane);
+        if (after?.window === w && after.zoomed === 0) await tmux(ARGV.zoom(lease.pane));
+        back = lease.layoutT;
+      }
       lease.resized = false;
-      lease.sized = false; // only after both calls: a call that failed leaves the restore's R3 armed
-      lease.viewed = true;
-      toTerminal(lease);
+      lease.sized = false; // only after the calls: a call that failed leaves the restore's R3 armed
+      lease.layoutT = null;
+      if (alone) Object.assign(lease, { state: 'zoomed', reason: 'panel-smaller', awayAt: null });
+      else {
+        lease.viewed = true;
+        toTerminal(lease);
+      }
       if (size) Object.assign(lease, { cols: size[0], rows: size[1] }); // only now: while the lease was resized, its cols and rows are the size the window must have
       out = 'done';
     });
@@ -678,7 +722,7 @@ export function createFit({
       await releaseNow(lease, 'user-change');
       return restored(lease, 'user-change');
     }
-    return out === 'done' ? verify(lease) : answer(lease);
+    return out === 'done' ? verify(lease, back) : answer(lease);
   }
 
   /** `noResize`: the caller already knows a terminal has the window (a refit inside the terminal grace). `focus`: the page has focus (F9). */
@@ -691,12 +735,12 @@ export function createFit({
     if (!a0) return fromRow('blocked', 'changed', me);
     const layout0 = await readLayout(w);
     if (layout0 === null) return fromRow('blocked', 'changed', me);
-    const { target, state, reason } = plan(me.panes, C, R, me.winW, me.winH, noResize || (me.clients > 0 && !focus));
+    const { target, state, reason } = plan(me.panes, C, R, me.winW, me.winH, noResize || (me.clients > 0 && !focus), focus);
     const lease = {
       v: 1, nonce: randomBytes(8).toString('hex'), window: w, pane: id, panes: me.panes, zoomed0: me.zoomed, active0: a0, width0: me.winW, height0: me.winH,
       size0: o0, layout0, layout1: layout0, cols: C, rows: R, resized: target[0] !== me.winW || target[1] !== me.winH, userZoom: me.zoomed === 1, at: now(), lastBeat: now(),
       state, reason, seen: [me.paneW, me.paneH], pre: [me.paneW, me.paneH], done: false, known: null, waitAt: null, sized: false, awayAt: null,
-      focus, viewed: me.clients > 0, // F9: memory only
+      focus, viewed: me.clients > 0, layoutT: null, // F9 and F15: memory only
     };
     const text = leaseText(lease);
     if (Buffer.byteLength(text) > LEASE_FILE_MAX) return fromRow('blocked', 'changed', me);
@@ -718,9 +762,17 @@ export function createFit({
         const same = m.panes === me.panes && m.zoomed === me.zoomed && a === a0 && m.tag === '' && m.winW === me.winW && m.winH === me.winH
           && m.paneW === me.paneW && m.paneH === me.paneH;
         // layout0 and o0 are what a later restore puts back: read after the wait, a user's change in it must not be undone by that restore
-        if (!same || strip((await readLayout(w)) ?? '') !== strip(layout0) || (await readOption(w)) !== o0) {
+        let now0 = null;
+        if (!same || (now0 = await readLayout(w)) === null || strip(now0) !== strip(layout0) || (await readOption(w)) !== o0) {
           refusal = fromRow('blocked', 'changed', m);
           return;
+        }
+        if (squeezes(me.panes, target, me.winW, me.winH)) { // F15: this is the layout right before the resize; a give puts it back
+          lease.layoutT = turnBack(now0);
+          if (lease.layoutT === null) {
+            refusal = fromRow('blocked', 'changed', m);
+            return;
+          }
         }
         if (m.clients > 0 && !focus) { // F4: a terminal came during the wait (the window still has the size nika planned on) and the page has no focus: no resize
           toTerminal(lease);
@@ -780,9 +832,9 @@ export function createFit({
       lease.seen = [me.paneW, me.paneH];
       return answer(lease);
     }
-    const { state, reason, target } = plan(lease.panes, C, R, lease.width0, lease.height0);
+    const { state, reason, target } = plan(lease.panes, C, R, lease.width0, lease.height0, false, lease.focus);
     const [ew, eh] = expOf(lease);
-    const kept = { cols: lease.cols, rows: lease.rows, state: lease.state, reason: lease.reason, resized: lease.resized };
+    const kept = { cols: lease.cols, rows: lease.rows, state: lease.state, reason: lease.reason, resized: lease.resized, layoutT: lease.layoutT };
     Object.assign(lease, { cols: C, rows: R, state, reason });
     if (target[0] === ew && target[1] === eh) {
       lease.seen = [me.paneW, me.paneH];
@@ -795,6 +847,7 @@ export function createFit({
       let waiting = false;
       let viewing = false;
       let move = null; // F9: 'give' | 'take'
+      let bare = false; // F15: the window is to be squeezed, but its layout cannot be kept: nothing is resized
       await lock(lease.pane, async () => {
         // N1: `snap` is older than the lock wait; a window the user changed meanwhile is released, never resized over. Judged against
         // the size nika holds (`kept`), not the one it is about to set. Nika's own agent split or exit (F2) is never resized over either,
@@ -808,6 +861,15 @@ export function createFit({
           else changed = true; // 'away' needs a terminal lease, which returned above: only a user change is left
           return;
         }
+        // F15: a window at its own size that is about to be squeezed: the layout to put back is read here, right before the resize. A window nika had grown
+        // has no own-size layout to read (tmux scaled it), so it keeps none: its give is the plain one and the release's R5 puts layout0 back.
+        if (lease.layoutT === null && !kept.resized && squeezes(lease.panes, target, lease.width0, lease.height0)) {
+          lease.layoutT = turnBack(await readLayout(lease.window));
+          if (lease.layoutT === null) { // fail closed, as the take does: nothing to put back, so nothing is squeezed
+            bare = true;
+            return;
+          }
+        }
         lease.sized = true; // set before the call, as in A4
         await tmux(ARGV.size(lease.window, target[0], target[1]));
       });
@@ -819,6 +881,10 @@ export function createFit({
         Object.assign(lease, kept);
         toTerminal(lease);
         Object.assign(lease, { cols: C, rows: R });
+        return answer(lease);
+      }
+      if (bare) { // F15: the pane stays zoomed at the window's own size, the text is scaled; the watch tries again as a take (focus and zoomed)
+        Object.assign(lease, kept, { cols: C, rows: R, state: 'zoomed', reason: 'panel-smaller', seen: [me.paneW, me.paneH] });
         return answer(lease);
       }
       if (move) { // F9: nothing was resized in this turn; the lease goes on as it was, and the move runs in this same request with the page's size

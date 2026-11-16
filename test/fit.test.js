@@ -40,7 +40,9 @@ function makeWorld() {
   const wins = new Map();
   // `border`: rows tmux takes from every pane for `pane-border-status top|bottom` (0 = off). tmux 3.8 reserves them on a zoomed pane and
   // on the only pane of a window too (layout_fix_panes has no check on either), so a pane that fills a window of height H is H-border tall.
-  const world = { wins, calls: [], bad: [], locked: 0, lockIds: [], fail: null, block: null, after: null, junk: [], noServer: false, enoent: false, border: 0 };
+  // F15: `drift` = a resize-window of a window with several panes changes the arrangement (tmux's layout after a squeeze does not come back with the size;
+  // only select-layout puts it back); `minSize` = [cols, rows] the smallest size tmux can give a window (a window it cannot shrink that far keeps the minimum)
+  const world = { wins, calls: [], bad: [], locked: 0, lockIds: [], fail: null, block: null, after: null, junk: [], noServer: false, enoent: false, border: 0, drift: false, minSize: null };
   const num = (id) => Number(id.slice(1));
   const paneSize = (w, p) => p.size ?? (w.panes.length === 1 || (w.zoomed && p.id === w.active) ? [w.width, w.height - world.border] : [Math.floor(w.width / w.panes.length), w.height - world.border]);
   const layoutOf = (w) => w.pinned ?? `{"w":${w.width},"h":${w.height},"s":"${w.arr}","p":[${w.panes.map((p) => `{"i":${num(p.id)}${p.id === w.active ? ',"a":true' : ''}${p.id === w.last ? `,"l":${num(p.id)}` : ''}}`).join(',')}]}`;
@@ -94,7 +96,14 @@ function makeWorld() {
       case 'untag': win(a[3]).tag = ''; return '';
       case 'optUnset': win(a[3]).sizeOpt = null; follow(win(a[3])); return '';
       case 'optSet': win(a[3]).sizeOpt = a[5]; follow(win(a[3])); return '';
-      case 'size': { const w = win(a[2]); w.width = Number(a[4]); w.height = Number(a[6]); w.sizeOpt = 'manual'; return ''; }
+      case 'size': {
+        const w = win(a[2]);
+        w.width = Math.max(Number(a[4]), world.minSize?.[0] ?? 0);
+        w.height = Math.max(Number(a[6]), world.minSize?.[1] ?? 0);
+        w.sizeOpt = 'manual';
+        if (world.drift && w.panes.length > 1) w.arr = `drift${w.width}x${w.height}`;
+        return '';
+      }
       case 'zoom': { // a toggle on the window, whichever pane is named; a no-op on a single pane (spike S10)
         const w = winOf(a[3]);
         if (!w) throw tmuxErr(`can't find pane: ${a[3]}`);
@@ -3602,14 +3611,16 @@ describe('F9: the focused window wins the pane\'s size (give and take in place)'
       assert.deepEqual([f.resized, f.cols, f.rows, f.width0, f.height0], [true, 100, 30, 80, 24]);
     });
 
-    test('(+) three panes, a terminal, focus true: zoom and resize for a panel as big as the window; zoom only (zoomed / panel-smaller) for a smaller one', async () => {
+    // F15 (requirement change, owner decision 2026-11-16): the smaller panel is squeezed too while the page has focus; it used to stay zoomed / panel-smaller
+    test('(+) three panes, a terminal, focus true: zoom and resize for a panel as big as the window, and (F15) for a smaller one too', async () => {
       const a = rig((w) => w.view('@1', 1, [200, 50]));
       assert.deepEqual(await a.putf('%2', 220, 60, true), ans('fitted', 'terminal', 220, 60, 3));
       assert.deepEqual(a.names(), ['list', 'option', 'layout', 'list', 'layout', 'option', 'tag', 'zoom', 'size', 'list', 'layout']);
       assert.deepEqual([win(a).zoomed, win(a).width, win(a).height], [true, 220, 60]);
       const b = rig((w) => w.view('@1', 1, [200, 50]));
-      assert.deepEqual(await b.putf('%2', 100, 30, true), ans('zoomed', 'panel-smaller', 200, 50, 3));
-      assert.deepEqual(b.names(), ['list', 'option', 'layout', 'list', 'layout', 'option', 'tag', 'zoom', 'list', 'layout']);
+      assert.deepEqual(await b.putf('%2', 100, 30, true), ans('fitted', 'terminal', 100, 30, 3));
+      assert.deepEqual(b.names(), ['list', 'option', 'layout', 'list', 'layout', 'option', 'tag', 'zoom', 'size', 'list', 'layout']);
+      assert.deepEqual([win(b).zoomed, win(b).width, win(b).height], [true, 100, 30]);
     });
 
     test('(−) focus false, or no focus key, with a terminal: terminal and no resize-window (F4)', async () => {
@@ -3747,32 +3758,34 @@ describe('F9: the focused window wins the pane\'s size (give and take in place)'
       assert.equal((await r.putf('%4', 100, 30, false, false)).body.fit.reason, 'user-change', 'the mark');
     });
 
-    test('(+) a focused zoomed / panel-smaller lease (never resized): the terminal shrinks the window below the panel → the next tick takes, resized, fitted / terminal', async () => {
+    // F15 (requirement change, owner decision 2026-11-16): a focused page squeezes a smaller panel, so a focused lease that was never resized has the panel of the
+    // window's size (200x50 here); the tests below used a 100x30 panel, which is now a squeeze (see the F15 describe at the end of this file)
+    test('(+) a focused lease that was never resized (the panel is as big as the window): the terminal shrinks the window → the next tick takes, resized, fitted / terminal', async () => {
       const r = rig((w) => w.view('@1', 1, [200, 50]));
-      assert.deepEqual(await r.putf('%2', 100, 30, true), ans('zoomed', 'panel-smaller', 200, 50, 3));
-      r.world.view('@1', 1, [90, 25]); // the window (not manual) follows
+      assert.deepEqual(await r.putf('%2', 200, 50, true), ans('fitted', 'terminal', 200, 50, 3));
+      r.world.view('@1', 1, [190, 45]); // the window (not manual) follows
       const at = r.at();
       await r.tick();
       assert.deepEqual(r.names(at), TAKE);
       inPlace(r, at);
-      assert.deepEqual(await r.putf('%2', 100, 30, true, false), ans('fitted', 'terminal', 100, 30, 3));
-      assert.equal(r.lease(r.tag()).width0, 90);
+      assert.deepEqual(await r.putf('%2', 200, 50, true, false), ans('fitted', 'terminal', 200, 50, 3));
+      assert.equal(r.lease(r.tag()).width0, 190);
     });
 
-    test('(+) a take that finds the panel smaller than the window (several panes): zoomed / panel-smaller, no resize', async () => {
+    test('(+) F15: a take with a panel smaller than the window (several panes) squeezes it: fitted / terminal, the layout read inside the lock before the resize', async () => {
       const r = rig((w) => w.view('@1', 1, [200, 50]));
       assert.deepEqual(await r.put('%2', 100, 30), ans('terminal', null, 200, 50, 3));
       const at = r.at();
-      assert.deepEqual(await r.putf('%2', 100, 30, true), ans('zoomed', 'panel-smaller', 200, 50, 3));
-      assert.deepEqual(r.names(at), ['list', 'list', 'option', 'list', 'layout']);
-      assert.deepEqual(sizesOf(r, at), []);
+      assert.deepEqual(await r.putf('%2', 100, 30, true), ans('fitted', 'terminal', 100, 30, 3));
+      assert.deepEqual(r.names(at), ['list', 'list', 'option', 'layout', 'size', 'list', 'layout']);
+      assert.deepEqual(sizesOf(r, at), ['-x 100 -y 30']);
     });
 
-    test('(+) a focused zoomed lease (never resized), the page loses focus while a terminal shows the window: terminal, memory only (no tmux call but the listing)', async () => {
+    test('(+) a focused lease that was never resized, the page loses focus while a terminal shows the window: terminal, memory only (no tmux call but the listing)', async () => {
       const r = rig((w) => w.view('@1', 1, [200, 50]));
-      assert.deepEqual(await r.putf('%2', 100, 30, true), ans('zoomed', 'panel-smaller', 200, 50, 3));
+      assert.deepEqual(await r.putf('%2', 200, 50, true), ans('fitted', 'terminal', 200, 50, 3));
       const at = r.at();
-      assert.deepEqual(await r.putf('%2', 100, 30, false), ans('terminal', null, 200, 50, 3));
+      assert.deepEqual(await r.putf('%2', 200, 50, false), ans('terminal', null, 200, 50, 3));
       assert.deepEqual(r.names(at), ['list']);
     });
 
@@ -3834,10 +3847,10 @@ describe('F9: the focused window wins the pane\'s size (give and take in place)'
       assert.deepEqual(sizesOf(r, t).slice(-1), ['-x 130 -y 45']);
     });
 
-    test('(+) N1: the terminal shrinks the window of a focused zoomed lease while a renew with a bigger panel waits for the lock → no resize in that turn; the take of this same request uses the new window size and the new panel', async () => {
+    test('(+) N1: the terminal shrinks the window of a focused lease that was never resized while a renew with a bigger panel waits for the lock → no resize in that turn; the take of this same request uses the new window size and the new panel', async () => {
       const r = rig((w) => w.view('@1', 1, [200, 50]));
       const { fit, g } = gatedFit(r);
-      assert.deepEqual(await fit.hold('%2', { cols: 100, rows: 30, open: true, focus: true }), ans('zoomed', 'panel-smaller', 200, 50, 3));
+      assert.deepEqual(await fit.hold('%2', { cols: 200, rows: 50, open: true, focus: true }), ans('fitted', 'terminal', 200, 50, 3));
       g.shut();
       const at = r.at();
       const done = fit.hold('%2', { cols: 230, rows: 60, open: false, focus: true }); // would resize to 230x60
@@ -4463,6 +4476,449 @@ describe('F9: the focused window wins the pane\'s size (give and take in place)'
       assert.equal((await p).status, 200);
       assert.deepEqual(sizesOf(r, at), [], 'no resize in this turn');
       assert.equal(fit.size(), 1);
+    });
+  });
+});
+
+describe('F15: any pane may be squeezed while the session window has focus; the blur gives size and layout back (design F13 section 3 as changed by the addendum)', () => {
+  const win = (r, id = '@1') => r.world.wins.get(id);
+  const sizesOf = (r, at) => r.argv(at).filter((a) => a[0] === 'resize-window').map((a) => a.slice(3).join(' '));
+  const count = (r, name, at = 0) => r.names(at).filter((n) => n === name).length;
+  const KEYS = ['v', 'nonce', 'window', 'pane', 'panes', 'zoomed0', 'active0', 'width0', 'height0', 'size0', 'layout0', 'layout1', 'cols', 'rows', 'resized', 'userZoom', 'at'];
+  const CHANGES = new Set(['size', 'optUnset', 'optSet', 'select', 'zoom', 'tag', 'untag', 'focus']);
+  /** every tmux change of a stretch of the call log, in order, as argv */
+  const changes = (r, at = 0) => r.world.calls.slice(at).filter((c) => CHANGES.has(c.name)).map((c) => c.argv);
+  /** a take of a squeezed window: its own listing, the in-lock listing, the option check, the layout (the one to put back), the resize, the read-back */
+  const TAKE_SQ = ['list', 'list', 'option', 'layout', 'size', 'list', 'layout'];
+  /** a give of a squeezed window: its own listing, the in-lock listing, R3, R4, the layout, a look at the zoom, the zoom, the read-back */
+  const GIVE_SQ = ['list', 'list', 'size', 'optUnset', 'select', 'list', 'zoom', 'list', 'layout'];
+  /** the plain give (no layout to put back) */
+  const GIVE_PLAIN = ['list', 'list', 'size', 'optUnset', 'list', 'layout'];
+  /**
+   * @1: zsh %1 (no role), claude %2 (the mirrored pane), claude %3; 200x50; a resize of it drifts the arrangement. The page has no focus and no terminal shows
+   * the window: zoomed / panel-smaller. `ref` is what a give must bring back exactly.
+   */
+  async function zoomedRig(setup) {
+    const r = rig((x) => { x.drift = true; setup?.(x); });
+    const before = r.world.snap('@1');
+    assert.deepEqual(await r.put('%2', 100, 30), ans('zoomed', 'panel-smaller', 200, 50, 3));
+    return { r, before, ref: r.world.snap('@1') };
+  }
+  /** zoomedRig, then the focus: the take squeezes the window to 100x30. */
+  async function squeezed(setup) {
+    const z = await zoomedRig(setup);
+    assert.deepEqual(await z.r.putf('%2', 100, 30, true), ans('fitted', null, 100, 30, 3));
+    return z;
+  }
+
+  describe('the squeeze (acquire and take)', () => {
+    test('(+) acquire with focus: an untagged shell beside, a smaller panel → resize-window to the panel, the zoom kept, fitted; the hidden pane is squeezed with the window; no new key in the lease file', async () => {
+      const r = rig((x) => { x.drift = true; });
+      const L0 = r.world.layoutOf(win(r));
+      assert.deepEqual(await r.putf('%2', 100, 30, true), ans('fitted', null, 100, 30, 3));
+      assert.deepEqual(r.names(), ['list', 'option', 'layout', 'list', 'layout', 'option', 'tag', 'zoom', 'size', 'list', 'layout']);
+      assert.deepEqual(sizesOf(r, 0), ['-x 100 -y 30']);
+      const w = win(r);
+      assert.deepEqual([w.zoomed, w.active, w.width, w.height, w.sizeOpt], [true, '%2', 100, 30, 'manual']);
+      assert.deepEqual(r.world.paneSize(w, w.panes[0]), [33, 30], 'the hidden shell shrank with the window');
+      assert.deepEqual(r.world.lockIds, ['%2']);
+      const f = r.lease(r.tag());
+      assert.deepEqual(Object.keys(f), KEYS, 'the layout to put back lives in memory: no new key in the file');
+      assert.deepEqual([f.resized, f.cols, f.rows, f.width0, f.height0, f.layout0], [true, 100, 30, 200, 50, L0]);
+    });
+
+    test('(+) whatever the other panes run or carry as a tag, a focused page squeezes them (shell, editor, agent running node, sub-orchestrator, orchestrator, foreign text)', async () => {
+      for (const [command, role] of [['zsh', undefined], ['vim', ''], ['node', 'agent'], ['claude', 'sub-orchestrator'], ['node', 'orchestrator'], ['bash', '?'], ['zsh', 'something']]) {
+        const r = rig((x) => x.add('@5', [['%5', 'claude'], ['%6', command, role]], 200, 50));
+        assert.deepEqual(await r.putf('%5', 100, 30, true), ans('fitted', null, 100, 30, 2), `${command} ${role}`);
+        assert.deepEqual(sizesOf(r, 0), ['-x 100 -y 30'], `${command} ${role}`);
+      }
+    });
+
+    test('(−) one dimension smaller is a squeeze too (its give puts the layout back); a panel as big as the window in both is not (its give is the plain F9 one)', async () => {
+      const a = rig((x) => { x.drift = true; });
+      const ref = strip(a.world.layoutOf(win(a)));
+      assert.deepEqual(await a.putf('%2', 300, 40, true), ans('fitted', null, 300, 40, 3));
+      assert.deepEqual(sizesOf(a, 0), ['-x 300 -y 40']);
+      const at = a.at();
+      assert.deepEqual(await a.putf('%2', 300, 40, false), ans('zoomed', 'panel-smaller', 200, 50, 3));
+      assert.deepEqual(a.names(at), GIVE_SQ);
+      assert.equal(a.world.snap('@1').layout, ref);
+      const b = rig((x) => { x.view('@1', 1, [200, 50]); });
+      assert.deepEqual(await b.putf('%2', 220, 60, true), ans('fitted', 'terminal', 220, 60, 3));
+      assert.deepEqual(b.names(), ['list', 'option', 'layout', 'list', 'layout', 'option', 'tag', 'zoom', 'size', 'list', 'layout']);
+      const bt = b.at();
+      assert.deepEqual(await b.putf('%2', 220, 60, false), ans('terminal', null, 200, 50, 3));
+      assert.deepEqual(b.names(bt), GIVE_PLAIN, 'a grown window gets no select-layout: F9 as before');
+    });
+
+    test('(−) unfocused (no focus key, or focus false) with a smaller panel: zoom only, no resize-window, zoomed / panel-smaller', async () => {
+      for (const send of [(r) => r.put('%2', 100, 30), (r) => r.putf('%2', 100, 30, false)]) {
+        const r = rig((x) => { x.drift = true; });
+        assert.deepEqual(await send(r), ans('zoomed', 'panel-smaller', 200, 50, 3));
+        assert.deepEqual(sizesOf(r, 0), []);
+        assert.deepEqual(r.names(), ['list', 'option', 'layout', 'list', 'layout', 'option', 'tag', 'zoom', 'list', 'layout']);
+      }
+    });
+
+    test('(−) a user\'s zoom of another pane still blocks with focus: blocked / user-zoom, nothing resized', async () => {
+      const r = rig((x) => { const w = x.wins.get('@1'); w.zoomed = true; w.active = '%3'; });
+      const res = await r.putf('%2', 100, 30, true);
+      assert.deepEqual([res.body.fit.state, res.body.fit.reason], ['blocked', 'user-zoom']);
+      assert.deepEqual(changes(r), []);
+      assert.equal(r.fit.size(), 0);
+    });
+
+    test('(+) renew with focus on a zoomed lease: the take runs in the same request, the layout is read inside the lock right before the resize (exact argv)', async () => {
+      const { r } = await zoomedRig();
+      const at = r.at();
+      assert.deepEqual(await r.putf('%2', 100, 30, true), ans('fitted', null, 100, 30, 3));
+      assert.deepEqual(r.names(at), TAKE_SQ);
+      assert.deepEqual(changes(r, at), [['resize-window', '-t', '@1', '-x', '100', '-y', '30']]);
+      assert.deepEqual(r.world.calls.slice(at).filter((c) => c.name === 'layout').map((c) => c.locked), [1, 0], 'the layout to put back is read in the lock; the read-back after it');
+      assert.deepEqual(r.world.calls.slice(at).filter((c) => c.name === 'size').map((c) => c.locked), [1]);
+    });
+
+    test('(+) the watch takes for a focused zoomed lease (a focus change that the lock refused first): TAKE also when the state is zoomed', async () => {
+      const r = rig((x) => { x.drift = true; });
+      const { fit, gate } = busyRig(r);
+      assert.deepEqual(await fit.hold('%2', { cols: 100, rows: 30, open: true, focus: false }), ans('zoomed', 'panel-smaller', 200, 50, 3));
+      gate.busy = true;
+      assert.deepEqual(await fit.hold('%2', { cols: 100, rows: 30, open: false, focus: true }), BUSY);
+      assert.equal(win(r).width, 200, 'nothing changed yet');
+      gate.busy = false;
+      const at = r.at();
+      await r.tick();
+      assert.deepEqual(r.names(at), TAKE_SQ);
+      assert.deepEqual([win(r).width, win(r).height], [100, 30]);
+      assert.deepEqual(await fit.hold('%2', { cols: 100, rows: 30, open: false, focus: true }), ans('fitted', null, 100, 30, 3));
+    });
+
+    test('(−) the layout cannot be read when the take wants to squeeze (a layout with a #): fail closed, no resize-window, zoomed / panel-smaller', async () => {
+      const { r } = await zoomedRig();
+      win(r).pinned = '{"w":200,"h":50,"s":"x#y"}';
+      r.world.after = (name) => { if (name === 'layout') win(r).pinned = undefined; }; // only the read inside the take is bad
+      const at = r.at();
+      assert.deepEqual(await r.putf('%2', 100, 30, true), ans('zoomed', 'panel-smaller', 200, 50, 3));
+      assert.deepEqual(sizesOf(r, at), []);
+      assert.equal(r.fit.size(), 1);
+    });
+
+    test('(−) a renew that wants to squeeze a window at its own size but cannot keep its layout (a layout with a #): fail closed, no resize-window, zoomed / panel-smaller; the next take squeezes', async () => {
+      const r = rig((x) => { x.drift = true; });
+      assert.deepEqual(await r.putf('%2', 200, 50, true), ans('fitted', null, 200, 50, 3));
+      win(r).pinned = '{"w":200,"h":50,"s":"x#y"}';
+      r.world.after = (name) => { if (name === 'layout') win(r).pinned = undefined; }; // only the read inside the renew is bad
+      const at = r.at();
+      assert.deepEqual(await r.putf('%2', 100, 30, true, false), ans('zoomed', 'panel-smaller', 200, 50, 3));
+      assert.deepEqual(sizesOf(r, at), []);
+      assert.equal(r.fit.size(), 1);
+      const t = r.at();
+      await r.tick(); // focus and zoomed: the watch takes, and this time the layout reads
+      assert.deepEqual(r.names(t), TAKE_SQ);
+      assert.deepEqual(await r.putf('%2', 100, 30, true, false), ans('fitted', null, 100, 30, 3));
+    });
+
+    test('(+) the take counts: 12 focus takes per window in a minute, the 13th waits (zoomed / panel-smaller, never "switching"), the watch takes when the minute frees up', async () => {
+      const { r } = await zoomedRig();
+      const t0 = r.clock.t;
+      for (let i = 0; i < 12; i += 1) {
+        r.clock.t = t0 + 2000 * i + 1000;
+        assert.deepEqual(await r.putf('%2', 100, 30, true), ans('fitted', null, 100, 30, 3), `take ${i + 1}`);
+        r.clock.t = t0 + 2000 * i + 2000;
+        assert.deepEqual(await r.putf('%2', 100, 30, false), ans('zoomed', 'panel-smaller', 200, 50, 3), `give ${i + 1}`);
+      }
+      const first = t0 + 1000;
+      r.clock.t = t0 + 25000;
+      const at = r.at();
+      assert.deepEqual(await r.putf('%2', 100, 30, true), ans('zoomed', 'panel-smaller', 200, 50, 3), 'the 13th take waits');
+      assert.deepEqual(r.names(at), ['list'], 'no lock, no resize');
+      for (const t of [t0 + 35000, t0 + 45000, t0 + 55000, first + 59999]) {
+        r.clock.t = t;
+        await r.putf('%2', 100, 30, true, false); // the heartbeat keeps the lease
+        const mark = r.at();
+        await r.tick();
+        assert.deepEqual(r.names(mark), ['list'], `the watch waits at ${t - first} ms after the first take`);
+      }
+      r.clock.t = first + 60000;
+      await r.putf('%2', 100, 30, true, false);
+      const mark = r.at();
+      await r.tick();
+      assert.deepEqual(r.names(mark), TAKE_SQ, 'the minute is free: the watch takes');
+      assert.deepEqual(await r.putf('%2', 100, 30, true, false), ans('fitted', null, 100, 30, 3));
+    });
+
+    test('(+) a renew to a smaller panel under focus keeps the layout of the first squeeze: one resize-window in the lock, the give brings the original back', async () => {
+      const { r, ref } = await zoomedRig();
+      assert.deepEqual(await r.putf('%2', 150, 40, true), ans('fitted', null, 150, 40, 3));
+      const at = r.at();
+      assert.deepEqual(await r.putf('%2', 100, 30, true, false), ans('fitted', null, 100, 30, 3));
+      assert.deepEqual(r.names(at), ['list', 'list', 'size', 'list', 'layout']);
+      assert.deepEqual(sizesOf(r, at), ['-x 100 -y 30']);
+      assert.deepEqual(await r.putf('%2', 100, 30, false, false), ans('zoomed', 'panel-smaller', 200, 50, 3));
+      assert.deepEqual(r.world.snap('@1'), ref);
+    });
+
+    test('(+) a renew that squeezes a window at its own size (a focused lease whose panel was as big as the window) reads the layout in the lock right before the resize', async () => {
+      const r = rig((x) => { x.drift = true; });
+      const ref = strip(r.world.layoutOf(win(r)));
+      assert.deepEqual(await r.putf('%2', 200, 50, true), ans('fitted', null, 200, 50, 3)); // the panel is the window's size: nothing resized, nothing to put back yet
+      const at = r.at();
+      assert.deepEqual(await r.putf('%2', 100, 30, true, false), ans('fitted', null, 100, 30, 3));
+      assert.deepEqual(r.names(at), ['list', 'list', 'layout', 'size', 'list', 'layout']);
+      assert.deepEqual(r.world.calls.slice(at).filter((c) => c.name === 'layout').map((c) => c.locked), [1, 0]);
+      const g = r.at();
+      assert.deepEqual(await r.putf('%2', 100, 30, false, false), ans('zoomed', 'panel-smaller', 200, 50, 3));
+      assert.deepEqual(r.names(g), GIVE_SQ);
+      assert.deepEqual(changes(r, g)[2], ['select-layout', '-t', '@1', '--', ref]);
+      assert.equal(r.world.snap('@1').layout, ref);
+    });
+
+    test('(+) a give clears the layout it put back: a later take that grows the window keeps none, and its give is the plain one', async () => {
+      const r = rig((x) => { x.drift = true; x.view('@1', 1, [200, 50]); });
+      assert.deepEqual(await r.putf('%2', 100, 30, true), ans('fitted', 'terminal', 100, 30, 3));
+      const a = r.at();
+      assert.deepEqual(await r.putf('%2', 100, 30, false), ans('terminal', null, 200, 50, 3));
+      assert.deepEqual(r.names(a), GIVE_SQ);
+      const t = r.at();
+      assert.deepEqual(await r.putf('%2', 220, 60, true), ans('fitted', 'terminal', 220, 60, 3)); // a take that grows: nothing to squeeze, no layout read
+      assert.deepEqual(r.names(t), ['list', 'list', 'option', 'size', 'list', 'layout']);
+      const g = r.at();
+      assert.deepEqual(await r.putf('%2', 220, 60, false), ans('terminal', null, 200, 50, 3));
+      assert.deepEqual(r.names(g), GIVE_PLAIN, 'the layout of the first squeeze is not put back a second time');
+    });
+
+    test('(+) a renew that squeezes a window nika had grown has no own-size layout to read: no layout call, the give is the plain one, the release\'s R5 puts layout0 back', async () => {
+      const r = rig((x) => { x.drift = true; });
+      const before = r.world.snap('@1');
+      assert.deepEqual(await r.putf('%2', 220, 60, true), ans('fitted', null, 220, 60, 3)); // grown: no squeeze, nothing to put back
+      const at = r.at();
+      assert.deepEqual(await r.putf('%2', 100, 30, true, false), ans('fitted', null, 100, 30, 3));
+      assert.deepEqual(r.names(at), ['list', 'list', 'size', 'list', 'layout'], 'no layout read in the lock');
+      const g = r.at();
+      assert.deepEqual(await r.putf('%2', 100, 30, false, false), ans('zoomed', 'panel-smaller', 200, 50, 3));
+      assert.deepEqual(r.names(g), GIVE_PLAIN);
+      const rel = r.at();
+      assert.equal((await r.fit.release('%2')).body.released, true);
+      assert.deepEqual(r.names(rel), REL_FULL.filter((n) => n !== 'size'), 'the plain give left the window at its own size: no R3');
+      assert.deepEqual(r.world.snap('@1'), before);
+    });
+  });
+
+  describe('the give: size and layout back, the pane zoomed again', () => {
+    test('(+) blur with no terminal: R3, R4, select-layout of the layout read before the squeeze, resize-pane -Z, in that order; zoomed / panel-smaller; the window is as before the squeeze', async () => {
+      const { r, ref } = await squeezed();
+      const nonce = r.tag();
+      const at = r.at();
+      assert.deepEqual(await r.putf('%2', 100, 30, false), ans('zoomed', 'panel-smaller', 200, 50, 3));
+      assert.deepEqual(r.names(at), GIVE_SQ);
+      assert.deepEqual(changes(r, at), [
+        ['resize-window', '-t', '@1', '-x', '200', '-y', '50'], // R3
+        ['set-option', '-wu', '-t', '@1', 'window-size'], // R4
+        ['select-layout', '-t', '@1', '--', ref.layout], // unzooms the window
+        ['resize-pane', '-Z', '-t', '%2'], // the mirrored pane again
+      ]);
+      assert.equal(r.world.calls.slice(at).filter((c) => CHANGES.has(c.name)).every((c) => c.locked === 1), true, 'every change inside the pane lock');
+      assert.deepEqual(r.world.snap('@1'), ref, 'size, option, arrangement, zoom, active pane and the hidden panes\' sizes as before the squeeze');
+      assert.equal(r.tag(), nonce, 'the lease and the tag stay');
+      assert.equal(r.fit.size(), 1);
+      assert.equal(r.lease(nonce).resized, false);
+      assert.deepEqual(r.logs, []);
+    });
+
+    test('(+) blur with a terminal: the same order, then terminal; focus again takes again', async () => {
+      const r = rig((x) => { x.drift = true; x.view('@1', 1, [200, 50]); });
+      const L0 = strip(r.world.layoutOf(win(r)));
+      assert.deepEqual(await r.putf('%2', 100, 30, true), ans('fitted', 'terminal', 100, 30, 3));
+      const at = r.at();
+      assert.deepEqual(await r.putf('%2', 100, 30, false), ans('terminal', null, 200, 50, 3));
+      assert.deepEqual(r.names(at), GIVE_SQ);
+      assert.deepEqual(changes(r, at).map((a) => a[0]), ['resize-window', 'set-option', 'select-layout', 'resize-pane']);
+      assert.deepEqual(changes(r, at)[2], ['select-layout', '-t', '@1', '--', L0]);
+      const w = win(r);
+      assert.deepEqual([w.width, w.height, w.zoomed, w.active, w.sizeOpt, strip(r.world.layoutOf(w))], [200, 50, true, '%2', null, L0]);
+      const t = r.at();
+      assert.deepEqual(await r.putf('%2', 100, 30, true), ans('fitted', 'terminal', 100, 30, 3));
+      assert.deepEqual(r.names(t), TAKE_SQ);
+    });
+
+    test('(+) the watch gives for a blur that the lock refused, with no terminal (the hidden panes get their size back on blur whether or not a terminal shows the window)', async () => {
+      const r = rig((x) => { x.drift = true; });
+      const { fit, gate } = busyRig(r);
+      assert.deepEqual(await fit.hold('%2', { cols: 100, rows: 30, open: true, focus: false }), ans('zoomed', 'panel-smaller', 200, 50, 3));
+      const ref = r.world.snap('@1');
+      assert.deepEqual(await fit.hold('%2', { cols: 100, rows: 30, open: false, focus: true }), ans('fitted', null, 100, 30, 3));
+      gate.busy = true;
+      assert.deepEqual(await fit.hold('%2', { cols: 100, rows: 30, open: false, focus: false }), BUSY);
+      assert.equal(win(r).width, 100, 'nothing changed yet');
+      gate.busy = false;
+      const at = r.at();
+      await r.tick();
+      assert.deepEqual(r.names(at), GIVE_SQ);
+      assert.deepEqual(r.world.snap('@1'), ref);
+      assert.deepEqual(await fit.hold('%2', { cols: 100, rows: 30, open: false, focus: false }), ans('zoomed', 'panel-smaller', 200, 50, 3));
+    });
+
+    test('(+) the layout is read again at every take: a layout the window had at the next take is the one the next give puts back', async () => {
+      const { r } = await squeezed();
+      await r.putf('%2', 100, 30, false); // first give
+      win(r).arr = 'tall'; // the window now has another arrangement
+      const L1 = r.world.snap('@1').layout;
+      await r.putf('%2', 100, 30, true); // second take
+      assert.notEqual(win(r).arr, 'tall');
+      const at = r.at();
+      await r.putf('%2', 100, 30, false); // second give
+      assert.deepEqual(changes(r, at)[2], ['select-layout', '-t', '@1', '--', L1]);
+      assert.equal(win(r).arr, 'tall');
+    });
+
+    test('(+) release after five cycles (and while squeezed): R5 select-layout of layout0, markers stripped; the window is as before the lease', async () => {
+      const r = rig((x) => { x.drift = true; });
+      const before = r.world.snap('@1');
+      await r.put('%2', 100, 30);
+      for (let i = 0; i < 5; i += 1) {
+        r.clock.t += 1000;
+        assert.equal((await r.putf('%2', 100, 30, true)).body.fit.state, 'fitted');
+        assert.equal((await r.putf('%2', 100, 30, false)).body.fit.state, 'zoomed');
+      }
+      assert.equal((await r.putf('%2', 100, 30, true)).body.fit.state, 'fitted');
+      const at = r.at();
+      assert.equal((await r.fit.release('%2')).body.released, true);
+      assert.deepEqual(r.names(at), REL_FULL);
+      assert.deepEqual(changes(r, at).find((a) => a[0] === 'select-layout'), ['select-layout', '-t', '@1', '--', before.layout]);
+      assert.deepEqual(r.world.snap('@1'), before);
+      assert.deepEqual(r.logs, []);
+    });
+
+    test('(+) a crash while squeezed: recover puts the window back with layout0 (the layout of the take is memory only)', async () => {
+      const { r, before } = await squeezed();
+      const fresh = r.make();
+      const at = r.at();
+      assert.deepEqual(await fresh.recover(), { released: 1, dropped: 0 });
+      assert.deepEqual(r.names(at), REL_FULL);
+      assert.deepEqual(changes(r, at).find((a) => a[0] === 'select-layout'), ['select-layout', '-t', '@1', '--', before.layout]);
+      assert.deepEqual(r.world.snap('@1'), before);
+    });
+
+    test('(−) a layout the user changed during the squeeze: R5 skipped at the release (unchanged rule)', async () => {
+      const { r } = await squeezed((x) => { x.drift = false; });
+      win(r).arr = 'mine';
+      const at = r.at();
+      assert.equal((await r.fit.release('%2')).body.released, true);
+      assert.equal(count(r, 'select', at), 0);
+      assert.equal(win(r).arr, 'mine');
+    });
+
+    test('(−) 3 panes, no focus, a panel bigger than the window and no terminal: no give, the grown window stays (the F9 rule for a grown window is unchanged)', async () => {
+      const r = rig();
+      assert.deepEqual(await r.put('%2', 220, 60), ans('fitted', null, 220, 60, 3));
+      const at = r.at();
+      await r.tick();
+      assert.deepEqual(r.names(at), ['list']);
+      assert.deepEqual(await r.putf('%2', 220, 60, false, false), ans('fitted', null, 220, 60, 3));
+      assert.deepEqual([win(r).width, win(r).height], [220, 60]);
+    });
+  });
+
+  describe('the read-back of a give: any mismatch releases with changed, once', () => {
+    test('(−) another layout → blocked / changed, one select-layout, the lease released', async () => {
+      const { r } = await squeezed();
+      r.world.after = (name) => { if (name === 'select') win(r).arr = 'other'; };
+      const at = r.at();
+      const res = await r.putf('%2', 100, 30, false);
+      assert.deepEqual([res.body.fit.state, res.body.fit.reason], ['blocked', 'changed']);
+      assert.equal(r.fit.size(), 0);
+      assert.equal(r.tag(), '');
+      assert.equal(count(r, 'select', at), 1, 'no retry');
+      assert.equal((await r.putf('%2', 100, 30, false, false)).body.fit.reason, 'changed', 'the mark: off until the page opens again');
+    });
+
+    test('(−) no zoom after the give → blocked / changed, the lease released (with a terminal the pane sizes are not judged: the zoom flag alone decides)', async () => {
+      for (const terminal of [false, true]) {
+        const r = rig((x) => { x.drift = true; if (terminal) x.view('@1', 1, [200, 50]); });
+        assert.equal((await r.putf('%2', 100, 30, true)).body.fit.state, 'fitted');
+        r.world.after = (name) => { if (name === 'zoom') win(r).zoomed = false; };
+        const at = r.at();
+        const res = await r.putf('%2', 100, 30, false);
+        assert.deepEqual([res.body.fit.state, res.body.fit.reason], ['blocked', 'changed'], `terminal ${terminal}`);
+        assert.equal(r.fit.size(), 0);
+        assert.equal(count(r, 'select', at), 1);
+      }
+    });
+
+    test('(−) another window size (the layout string is the right one) → blocked / changed, with and without a terminal', async () => {
+      for (const terminal of [false, true]) {
+        const r = rig((x) => { x.drift = true; if (terminal) x.view('@1', 1, [200, 50]); });
+        const ref = strip(r.world.layoutOf(win(r)));
+        assert.equal((await r.putf('%2', 100, 30, true)).body.fit.state, 'fitted');
+        r.world.after = (name) => {
+          if (name !== 'zoom') return;
+          if (terminal) r.world.view('@1', 1, [199, 50]); // the terminal was resized meanwhile: the window follows it
+          else win(r).width = 199;
+          win(r).pinned = ref; // the layout text is the right one; only the size differs
+        };
+        const res = await r.putf('%2', 100, 30, false);
+        assert.deepEqual([res.body.fit.state, res.body.fit.reason], ['blocked', 'changed'], `terminal ${terminal}`);
+        assert.equal(r.fit.size(), 0);
+      }
+    });
+
+    test('(−) the mirrored pane left the window: 404, no zoom toggle, the lease released', async () => {
+      const { r } = await squeezed();
+      r.world.after = (name) => {
+        if (name !== 'select') return;
+        const w = win(r);
+        w.panes = w.panes.filter((p) => p.id !== '%2');
+        w.active = '%1';
+      };
+      const at = r.at();
+      const res = await r.putf('%2', 100, 30, false);
+      assert.equal(res.status, 404);
+      assert.equal(count(r, 'zoom', at), 0, 'a pane that left is not zoomed');
+      assert.equal(r.fit.size(), 0);
+    });
+
+    test('(−) select-layout left the window zoomed: no resize-pane -Z (it would end the zoom), the give still verifies', async () => {
+      const { r } = await squeezed();
+      r.world.after = (name) => { if (name === 'select') win(r).zoomed = true; };
+      const at = r.at();
+      assert.deepEqual(await r.putf('%2', 100, 30, false), ans('zoomed', 'panel-smaller', 200, 50, 3));
+      assert.equal(count(r, 'zoom', at), 0);
+      assert.equal(win(r).zoomed, true);
+    });
+  });
+
+  describe('what else still holds', () => {
+    test('(−) a user resize during a focused squeeze releases with user-change; the window is put back', async () => {
+      const { r } = await squeezed();
+      win(r).width = 90; // the user
+      const res = await r.putf('%2', 100, 31, true, false);
+      assert.deepEqual([res.body.fit.state, res.body.fit.reason], ['blocked', 'user-change']);
+      assert.equal(r.fit.size(), 0);
+      assert.deepEqual([win(r).width, win(r).height], [200, 50]);
+      assert.equal(win(r).zoomed, false, 'the zoom nika made is undone, as before');
+    });
+
+    test('(−) the user unzooms during a focused squeeze: user-change, no give of its own', async () => {
+      const { r } = await squeezed();
+      win(r).zoomed = false;
+      const at = r.at();
+      const res = await r.putf('%2', 100, 30, false);
+      assert.deepEqual([res.body.fit.state, res.body.fit.reason], ['blocked', 'user-change']);
+      assert.deepEqual(changes(r, at).map((a) => a[0]), ['resize-window', 'set-option', 'select-layout', 'select-pane', 'set-option'], 'only the restore (R3, R4, R5, R6, R8): no give of its own, no zoom');
+    });
+
+    test('(−) a window tmux cannot shrink to the panel: the take is read back, released with changed, no retry loop', async () => {
+      const { r } = await zoomedRig((x) => { x.minSize = [150, 40]; });
+      const at = r.at();
+      const res = await r.putf('%2', 100, 30, true);
+      assert.deepEqual([res.body.fit.state, res.body.fit.reason], ['blocked', 'changed']);
+      assert.equal(r.fit.size(), 0);
+      assert.deepEqual(sizesOf(r, at), ['-x 100 -y 30', '-x 200 -y 50'], 'the resize, then the restore: nothing else');
+      const mark = r.at();
+      assert.equal((await r.putf('%2', 100, 30, true, false)).body.fit.reason, 'changed');
+      await r.tick();
+      assert.deepEqual(changes(r, mark), [], 'blocked until the page opens again: no second try');
     });
   });
 });
