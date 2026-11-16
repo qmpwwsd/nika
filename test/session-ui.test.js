@@ -17,6 +17,7 @@ import { switchFailure as switchFailureReal, MODE_TARGETS, MODE_META } from '../
 import {
   createFitPlanner as createFitPlannerReal, panelSize as panelSizeReal, scaleFor as scaleForReal, chipView as chipViewReal, fitPanelView as fitPanelViewReal, stillOffSay as stillOffSayReal,
   createRedrawHold as createRedrawHoldReal, remeasure as remeasureReal, askSize as askSizeReal, roomStep as roomStepReal, refitFrom as refitFromReal, HOLD_MS as HOLD_MS_REAL, REFIT_MS as REFIT_MS_REAL, FOCUS_SETTLE_MS as FOCUS_SETTLE_REAL, BLUR_SETTLE_MS as BLUR_SETTLE_REAL,
+  hiddenRows as hiddenRowsReal, fillSize as fillSizeReal, drawnScale as drawnScaleReal, // F11
 } from '../public/fit-ui.js';
 import { createScrollPlanner as createScrollPlannerReal, routeFor as routeForReal, wheelRows as wheelRowsReal, scrollGate as scrollGateReal, viewRowsOf as viewRowsOfReal, pageRowsOf as pageRowsOfReal, refusalLine as refusalLineReal, noteView as scrollNoteViewReal, scrolledSay as scrolledSayReal, NOTE_MS as NOTE_MS_REAL } from '../public/scroll.js';
 import { h as hReal, icon as iconReal, roleTagEl as roleTagElReal, subStateEl as subStateElReal, subagentItemEl as subagentItemElReal, labelEl as labelElReal } from '../public/dom.js';
@@ -2995,15 +2996,16 @@ describe('0.5: drawing the mirror with the cut (design W6, section 5)', () => {
   const readable = (state = 'text', over = {}) => ({ state, mode: 'prompt', text: state === 'text' ? 'hello' : '', sig: '0000000000000001', box: BOX, cursorAtEnd: true, suggestion: null, queued: false, ...over });
   const unreadable = { state: 'unreadable', mode: 'prompt', text: '', sig: null, reason: 'pasted', box: BOX, cursorAtEnd: false, suggestion: null };
 
-  const draw = ({ body = BODY, draft, pass = false }) => {
-    const out = { calls: [], strip: { hidden: true } };
+  // F11: the page's terminal element is a stand-in with scrollTop / scrollHeight (drawMirror re-pins it), and M carries the cut drawn (`cut: 'unset'` before any draw)
+  const draw = ({ body = BODY, draft, pass = false, frozen = false }) => {
+    const out = { calls: [], strip: { hidden: true }, term: { scrollTop: 0, scrollHeight: 500 } };
     const ctx = {
-      M: { body, draft }, P: { on: pass }, cutAt: cutAtReal, cutCursor: cutCursorReal, toRenderModel: toRenderModelReal,
+      M: { body, draft, frozen, cut: 'unset' }, P: { on: pass }, cutAt: cutAtReal, cutCursor: cutCursorReal, toRenderModel: toRenderModelReal,
       applyMirror: (container, model, cursor) => out.calls.push({ container, rows: model.length, last: model.at(-1)?.[0]?.text, cursor }),
-      $: (id) => (id === 'term-cut' ? out.strip : id),
+      $: (id) => (id === 'term-cut' ? out.strip : id === 'term' ? out.term : id),
     };
     vm.runInNewContext(`${fnOf('function drawMirror()')}; drawMirror`, ctx)();
-    return { ...out, call: out.calls[0] };
+    return { ...out, call: out.calls[0], M: ctx.M };
   };
 
   test('(+) a readable draft with Type into pane off: the rows above the input box, no cursor, the strip shown', () => {
@@ -3055,6 +3057,36 @@ describe('0.5: drawing the mirror with the cut (design W6, section 5)', () => {
       const r = draw({ draft, pass });
       assert.deepEqual([r.call.rows, r.strip.hidden], [rows, hidden]);
     }
+  });
+
+  test('(+) F11: the cut drawn is kept in M.cut: the row of the box\'s top rule while the strip is shown', () => {
+    for (const state of ['text', 'empty']) assert.equal(draw({ draft: readable(state) }).M.cut, 8, state);
+  });
+
+  test('(−) F11: M.cut is null whenever no strip is drawn: an unreadable draft, no draft, Type into pane, a cut at or past the last row', () => {
+    assert.equal(draw({ draft: unreadable }).M.cut, null);
+    assert.equal(draw({ draft: null }).M.cut, null);
+    assert.equal(draw({ draft: readable(), pass: true }).M.cut, null);
+    assert.equal(draw({ draft: readable('text', { box: { top: 12, bottom: 15 } }) }).M.cut, null, 'a cut past the last row draws every row');
+    assert.equal(draw({ draft: readable('text', { box: { top: 11, bottom: 15 } }) }).M.cut, 11);
+  });
+
+  test('(−) F11: before the first capture drawMirror changes nothing: M.cut and the scroll position stay', () => {
+    const r = draw({ body: null, draft: null });
+    assert.equal(r.M.cut, 'unset');
+    assert.equal(r.term.scrollTop, 0);
+  });
+
+  test('(+) F11: drawMirror re-pins the mirror to the bottom when it is not paused, and leaves a paused one where the reader put it', () => {
+    assert.equal(draw({ draft: readable() }).term.scrollTop, 500);
+    assert.equal(draw({ draft: readable(), pass: true }).term.scrollTop, 500, 'with Type into pane on too (Claude\'s box is at the bottom)');
+    const paused = (() => {
+      const out = { calls: [], strip: { hidden: true }, term: { scrollTop: 123, scrollHeight: 500 } };
+      const ctx = { M: { body: BODY, draft: readable(), frozen: true, cut: null }, P: { on: false }, cutAt: cutAtReal, cutCursor: cutCursorReal, toRenderModel: toRenderModelReal, applyMirror() {}, $: (id) => (id === 'term-cut' ? out.strip : id === 'term' ? out.term : id) };
+      vm.runInNewContext(`${fnOf('function drawMirror()')}; drawMirror`, ctx)();
+      return out.term.scrollTop;
+    })();
+    assert.equal(paused, 123);
   });
 
   test('(+) setPass draws again, so the strip appears and goes the moment Type into pane flips, not at the next capture', () => {
@@ -4301,6 +4333,8 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     // F10 (design F10 2 to 6)
     'function fitProbe()', 'function fitCommit()', 'function fitChip(view, opts)', 'function flushChip()', 'function fitSized(pane)', 'function handleHeld(r)',
     'function applyHeld(r)', 'function refit(oldScale)', 'function endRefit()', 'function holdTimeout(pending, ctx)', 'function holdEnded()',
+    // F11 (design F11 2 to 6)
+    'function fitStrip()',
   ];
   /** An element that also answers contains() (the fake El has no tree search): the panel's focus and dismissal rules ask it. */
   class Box extends El {
@@ -4320,14 +4354,16 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
    * F1: the chip is a button in a hidden wrapper (`wrap`) with its panel (`pop`, `close`, `again`, ...); `outside` is a button elsewhere in
    * the header, `histToggle` the one focus goes to when the whole chip goes away; focus is the fake DOM's (focusState.el).
    */
-  const rig = ({ pane = '%12', box: size = { w: 827, h: 562 }, cell = { w: 800, h: 18 }, replies = [], observer = true } = {}) => {
+  const rig = ({ pane = '%12', box: size = { w: 827, h: 562 }, cell = { w: 800, h: 18 }, replies = [], observer = true, realDraw = false, strip = 27 } = {}) => {
     const clk = fakeClock();
-    const log = { calls: [], said: [], props: [], ro: null, observed: null, events: {}, gone: 0, overlays: [], placed: [], kicks: [], noted: [], drawn: [], lives: [], scrolled: [], rowsOn: {}, classOps: [] };
+    const log = { calls: [], said: [], props: [], ro: null, observed: null, events: {}, gone: 0, overlays: [], placed: [], kicks: [], noted: [], drawn: [], lives: [], scrolled: [], rowsOn: {}, classOps: [], cutRows: [] };
     // F10: the page measures the border box (getBoundingClientRect), here the same numbers as the client box; scrollTop / scrollHeight show the re-pin
     const term = { clientWidth: size.w, clientHeight: size.h, scrollTop: 0, scrollHeight: 0, rectExtra: { w: 0, h: 0 }, getBoundingClientRect: () => ({ width: term.clientWidth + term.rectExtra.w, height: term.clientHeight + term.rectExtra.h }), style: { setProperty: (k, v) => log.props.push([k, v]) } };
     // F10: the mirror's rows element: the refit class (classList), the custom property (style.setProperty, never a style attribute) and the animationend listener
     const classes = new Set();
-    const rows = { classes, classList: { add: (c) => { log.classOps.push(`+${c}`); classes.add(c); }, remove: (c) => { log.classOps.push(`-${c}`); classes.delete(c); }, contains: (c) => classes.has(c) }, offsetWidth: 0, style: { props: {}, setProperty(k, v) { this.props[k] = String(v); } }, addEventListener: (t, fn) => { log.rowsOn[t] = fn; } };
+    const rows = { classes, classList: { add: (c) => { log.classOps.push(`+${c}`); classes.add(c); }, remove: (c) => { log.classOps.push(`-${c}`); classes.delete(c); }, contains: (c) => classes.has(c) }, offsetWidth: 0, offsetTop: 10, offsetHeight: 300, style: { props: {}, setProperty(k, v) { this.props[k] = String(v); } }, addEventListener: (t, fn) => { log.rowsOn[t] = fn; } };
+    // F11: the strip stands 6 px under the rows (its margin); `strip` is its whole height in px, or null for a webview that gives no offsets
+    const cutEl = { hidden: true, offsetTop: strip === null ? undefined : 10 + 300 + 6, offsetHeight: strip === null ? undefined : strip - 6 };
     const probe = { getBoundingClientRect: () => ({ width: cell.w, height: cell.h }) };
     const wrap = box('span', true);
     const chip = box('button');
@@ -4341,19 +4377,22 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     wrap.append(chip, pop);
     const histToggle = box('button');
     const outside = box('button');
-    const els = { term, 'term-rows': rows, 'fit-probe': probe, 'fit-chip': chip, 'fit-wrap': wrap, 'fit-pop': pop, 'fit-pop-h': popH, 'fit-pop-why': popWhy, 'fit-pop-hint': popHint, 'fit-pop-note': popNote, 'fit-pop-close': close, 'fit-again': again, 'hist-toggle': histToggle };
+    const els = { term, 'term-rows': rows, 'term-cut': cutEl, 'fit-probe': probe, 'fit-chip': chip, 'fit-wrap': wrap, 'fit-pop': pop, 'fit-pop-h': popH, 'fit-pop-why': popWhy, 'fit-pop-hint': popHint, 'fit-pop-note': popNote, 'fit-pop-close': close, 'fit-again': again, 'hist-toggle': histToggle };
     const docOn = new Map(); // the document's listeners by type: the page adds pointerdown while the panel is open and removes it when it closes
     // F9: what the page reads for its focus: document.visibilityState and document.hasFocus(); `throws` makes hasFocus() throw
     const page = { visible: true, focus: false, throws: false };
     focusState.el = null;
     const ctx = {
-      paneId: pane, M: { cols: 0, rows: 0, gone: false, timer: 0, errors: 0, inputOff: false, frozen: false, body: null, draft: null, etag: null },
-      FIT: { planner: null, panel: null, frame: null, scale: 1, view: null, ui: { pending: false, note: false }, pop: false, state: null, room: false, d: 0, sentRows: 0, held: null, refitTimer: 0 }, SC: { planner: null, scrolled: false },
+      paneId: pane, M: { cols: 0, rows: 0, gone: false, timer: 0, errors: 0, inputOff: false, frozen: false, body: null, draft: null, etag: null, cut: null },
+      FIT: { planner: null, panel: null, frame: null, scale: 1, view: null, ui: { pending: false, note: false }, pop: false, state: null, room: false, d: 0, sentRows: 0, held: null, refitTimer: 0, hide: 0, strip: 0, sentCols: 0, scaledAt: null }, SC: { planner: null, scrolled: false },
+      P: { on: false }, // F11: Type into pane, read by the real drawMirror
       $: (id) => els[id],
       call: async (path, opts) => { log.calls.push({ path, ...opts }); return replies.length ? replies.shift() : FITTED; },
       announce: (m) => log.said.push(m), h: hReal, icon: iconReal, Node: El,
       panelSize: panelSizeReal, scaleFor: scaleForReal, createFitPlanner: createFitPlannerReal, fitPanelView: fitPanelViewReal, stillOffSay: stillOffSayReal,
       remeasure: remeasureReal, askSize: askSizeReal, roomStep: roomStepReal, refitFrom: refitFromReal, REFIT_MS: REFIT_MS_REAL,
+      hiddenRows: hiddenRowsReal, fillSize: fillSizeReal, drawnScale: drawnScaleReal, // F11
+      cutAt: cutAtReal, cutCursor: cutCursorReal, toRenderModel: toRenderModelReal, applyMirror: (container, model) => { log.drawn.push(1); log.cutRows.push(model.length); }, // F11: for the real drawMirror (`realDraw`)
       // F10: the capture path of handleCapture, with spies where the page would draw or judge the screen (noteScreen is what moves the mode chip)
       noteScreen: (b) => log.noted.push(b), drawMirror: () => log.drawn.push(1), cleanDraft: cleanDraftReal, ATT: { sending: () => false }, renderSuggestion() {}, Q: { queued: false }, renderQuick() {},
       scrollCaptured: (b) => log.scrolled.push(b), ETAG: /^[0-9a-f]{1,64}$/, MID: ' - ', TIMES: 'x', kickMirror: (ms) => log.kicks.push(ms),
@@ -4375,10 +4414,11 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     // F10: the redraw hold on the rig's clock; its timeout and end go to the page's own functions (resolved lazily, they are defined just below)
     let fns = null;
     ctx.HOLD = createRedrawHoldReal({ after: clk.setTimeout, cancel: clk.clearTimeout, timeout: (pending, c) => fns.holdTimeout(pending, c), ended: () => fns.holdEnded() });
-    fns = vm.runInNewContext(`${NAMES.map(fnOf).join('\n')}; ({ fitCall, fitMeasure, fitScale, fitResize, fitCaptured, drawFitPop, openFitPop, closeFitPop, fitAgainEvent, renderFit, wireFitPop, wireFit, setGone, handleCapture, fitFocused, fitProbe, fitCommit, fitChip, flushChip, fitSized, handleHeld, applyHeld, refit, endRefit, holdTimeout, holdEnded })`, ctx);
+    // F11: `realDraw` runs the page's own drawMirror (it sets M.cut and shows the strip) instead of the spy
+    fns = vm.runInNewContext(`${NAMES.concat(realDraw ? ['function drawMirror()'] : []).map(fnOf).join('\n')}; ({ fitCall, fitMeasure, fitScale, fitResize, fitCaptured, drawFitPop, openFitPop, closeFitPop, fitAgainEvent, renderFit, wireFitPop, wireFit, setGone, handleCapture, fitFocused, fitProbe, fitCommit, fitChip, flushChip, fitSized, handleHeld, applyHeld, refit, endRefit, holdTimeout, holdEnded, fitStrip${realDraw ? ', drawMirror' : ''} })`, ctx);
     const pointerdown = (target) => { for (const fn of [...(docOn.get('pointerdown') ?? [])]) fn({ type: 'pointerdown', target }); };
     return {
-      ...fns, ctx, log, clk, page, term, rows, chip, wrap, pop, popH, popWhy, popHint, popNote, close, again, histToggle, outside, pointerdown,
+      ...fns, ctx, log, clk, page, term, rows, cutEl, chip, wrap, pop, popH, popWhy, popHint, popNote, close, again, histToggle, outside, pointerdown,
       listeners: (type) => docOn.get(type)?.size ?? 0,
     };
   };
@@ -5037,6 +5077,7 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
       cleanDraft: cleanDraftReal, Q: { queued: false }, renderQuick() {}, DS: { capture() {} }, drawMirror: () => order.push('draw'), renderSuggestion() {},
       FIT: { planner: { start: () => order.push('start'), ...planner }, panel: { cols: 100, rows: 30 }, scale: 1 },
       scaleFor: scaleForReal, setGone() {}, serverMessage: () => '', setPaneState() {}, setInputEnabled() {}, showOverlay() {},
+      hiddenRows: hiddenRowsReal, drawnScale: drawnScaleReal, // F11 (requirement change: the scale is worked out by drawnScale, which is scaleFor when no rows are hidden)
     };
     const src = `${fnOf('function handleCapture(r)')}\n${fnOf('function fitScale()')}\n${fnOf('function fitCaptured()')}; handleCapture`;
     if (fitCaptured) ctx.fitCaptured = fitCaptured;
@@ -5957,7 +5998,8 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     assert.equal(r.log.noted.length, 1);
     assert.deepEqual([r.ctx.M.cols, r.ctx.M.rows], [210, 32]);
     r.openFitPop();
-    assert.equal(r.popHint.textContent, "Claude's input box and footer did not fit this panel's rows, so nika gave the pane 33 rows and scaled the text. Fit again tries the panel's own size.");
+    // F11 (owner answer Q3; requirement change): the room is "more rows" now, and Fit again asks for full-size text
+    assert.equal(r.popHint.textContent, "Claude's input box and footer did not fit this panel's rows, so nika gave the pane more rows and scaled the text. Fit again tries full-size text.");
     assert.equal(r.again.hidden, false);
     assert.equal(r.again.textContent, 'Fit again');
   });
@@ -6269,6 +6311,354 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
   test('(−) F10: the transition is a class and a custom property, never a style attribute in the markup', () => {
     assert.doesNotMatch(HTML, /\sstyle\s*=/i);
     assert.doesNotMatch(HTML, /refit/);
+  });
+
+  // ---- F11 (design F11 8.2): the rows hidden under the strip are filled with more of Claude's conversation -----------------------------------------
+  const inkRow = [{ t: 'x', s: {} }];
+  const boxAt = (top, over = {}) => ({ ...BOXED, box: { top, bottom: top + 3 }, ...over });
+  /** A capture of cols x rows with ink on every row and a readable input box whose top rule is row `top` (default: 6 rows from the bottom, so 6 hidden rows). */
+  const fshot = (cols, rows, top = rows - 6, over = {}) => ({ status: 200, body: { cols, rows: Array.from({ length: rows }, () => inkRow), alt: true, prompt: null, dialog: null, mode: 'auto', modeConfirmed: true, scrolled: false, etag: 'ab', cursor: null, draft: boxAt(top), ...over } });
+  const UNREADABLE = { state: 'unreadable', mode: 'prompt', text: '', sig: null, reason: 'pasted', box: { top: 39, bottom: 42 }, cursorAtEnd: false, suggestion: null };
+  // the design's example panel: 145 x 22 cells at a 7.2 x 16.2 px cell, inner height 362.88 px, a 27 px strip (the probe is 100 glyphs wide)
+  const FILL_BOX = { w: 1068.5, h: 382.88 };
+  const FILL_CELL = { w: 720, h: 16.2 };
+  const fillRig = (o = {}) => rig({ box: FILL_BOX, cell: FILL_CELL, realDraw: true, ...o });
+  const scaleProps = (r) => norm(r.log.props).filter(([k]) => k === '--fit-scale');
+
+  test('(+) F11: the first capture of a lease commits before it starts: the start PUT carries the hidden rows (exactly one PUT)', async () => {
+    const r = fillRig({ replies: [answerAt('fitted', { cols: 145, rows: 25 })] });
+    r.wireFit();
+    r.handleCapture(fshot(171, 45)); // 6 rows from the box's top rule down
+    await r.clk.advance(0);
+    assert.deepEqual(calls(r), [PUT(145, 26, true)], '20 rows above the 27 px strip + 6 hidden rows (no border row learned yet)');
+    assert.equal(r.ctx.FIT.hide, 6);
+    assert.equal(r.ctx.FIT.strip, 27);
+    r.handleCapture(fshot(171, 45));
+    r.handleCapture(fshot(171, 45));
+    await r.clk.advance(1000);
+    assert.equal(r.log.calls.length, 1, 'later captures commit nothing');
+  });
+
+  test('(−) F11: after setGone the first capture of the new lease commits again (one PUT, with that frame\'s hidden rows); a capture while started and a capture after a 403 commit nothing', async () => {
+    const r = fillRig({ replies: [answerAt('fitted', { cols: 145, rows: 25 }), answerAt('fitted', { cols: 145, rows: 28 })] });
+    let measures = 0;
+    const rect = r.term.getBoundingClientRect;
+    r.term.getBoundingClientRect = () => { measures += 1; return rect(); };
+    r.wireFit();
+    r.handleCapture(fshot(171, 45));
+    await r.clk.advance(0);
+    assert.equal(r.ctx.FIT.d, 1);
+    const seen = measures;
+    r.handleCapture(fshot(171, 45, 37)); // started: no commit
+    r.handleCapture(fshot(171, 45, 37));
+    assert.equal(measures, seen, 'a capture while started measures nothing');
+    assert.equal(r.log.calls.length, 1);
+    r.setGone();
+    r.handleCapture(fshot(171, 45, 37)); // the new lease's first frame: 8 hidden rows
+    await r.clk.advance(0);
+    assert.deepEqual(calls(r), [PUT(145, 26, true), DELETE, PUT(145, 29, false)], '20 + 8 + the border row');
+    assert.ok(measures > seen, 'and the new lease measured');
+    const dead = fillRig({ replies: [{ status: 403, body: null }] });
+    let m2 = 0;
+    const rect2 = dead.term.getBoundingClientRect;
+    dead.term.getBoundingClientRect = () => { m2 += 1; return rect2(); };
+    dead.wireFit();
+    dead.handleCapture(fshot(171, 45));
+    await dead.clk.advance(0);
+    const after = m2;
+    dead.handleCapture(fshot(171, 45));
+    dead.handleCapture(fshot(171, 45));
+    await dead.clk.advance(10000);
+    assert.equal(m2, after, 'after a 403 no capture commits (no measure)');
+    assert.equal(dead.log.calls.length, 1);
+  });
+
+  test('(+) F11: a focus with a readable draft and Type into pane off sends one PUT with the extra rows; captures after the answer, even one whose cut moved up, send no further PUT', async () => {
+    const r = fillRig({ replies: [answerAt('fitted', { cols: 145, rows: 25 }), answerAt('fitted', { cols: 145, rows: 26 })] });
+    r.wireFit();
+    r.handleCapture(fshot(171, 45));
+    await r.clk.advance(0);
+    assert.equal(r.ctx.FIT.d, 1, 'asked 26 rows, got 25: the border row is learned');
+    r.handleHeld(fshot(145, 25)); // Claude repainted at the new size
+    assert.equal(r.ctx.HOLD.active, false);
+    r.page.focus = true;
+    r.log.events.focus({ target: r.ctx.window });
+    await r.clk.advance(FOCUS_SETTLE_REAL);
+    assert.deepEqual(calls(r), [PUT(145, 26, true), PUT(145, 27, false, true)], '20 rows above the strip + 6 + the border row');
+    r.handleHeld(fshot(145, 26)); // the answer's frame, ready
+    assert.equal(r.ctx.HOLD.active, false);
+    r.handleHeld(fshot(145, 26, 18)); // the cut moved up 2 rows (a longer draft)
+    r.handleHeld(fshot(145, 26, 22)); // and down
+    await r.clk.advance(1000);
+    assert.equal(r.log.calls.length, 2, 'one resize for this focus, and no cascade from the cut moving');
+  });
+
+  test('(−) F11: the same focus with Type into pane on, a null draft or an unreadable draft asks the size F10 asked (145 x 22), at the start and at the focus', async () => {
+    const variants = [
+      ['Type into pane on', true, fshot(171, 45)],
+      ['no draft', false, fshot(171, 45, undefined, { draft: null })],
+      ['an unreadable draft', false, fshot(171, 45, undefined, { draft: UNREADABLE })],
+    ];
+    for (const [why, pass, first] of variants) {
+      const r = fillRig({ replies: [answerAt('fitted', { cols: 145, rows: 21 }), answerAt('fitted', { cols: 145, rows: 21 })] });
+      r.ctx.P.on = pass;
+      r.wireFit();
+      r.handleCapture(first);
+      await r.clk.advance(0);
+      assert.equal(r.ctx.FIT.hide, 0, why);
+      r.handleHeld({ status: 200, body: { ...fshot(145, 21).body, draft: first.body.draft } });
+      r.page.focus = true;
+      r.log.events.focus({ target: r.ctx.window });
+      await r.clk.advance(FOCUS_SETTLE_REAL);
+      assert.deepEqual(calls(r), [PUT(145, 22, true), PUT(145, 22, false, true)], why);
+    }
+  });
+
+  test('(+) F11: the border row d is learned from nika\'s own answer (the asked columns and rows minus one) and kept through a terminal answer: the next focus PUT still adds it', async () => {
+    const r = fillRig({ replies: [answerAt('fitted', { cols: 145, rows: 25 }), answerAt('terminal', { cols: 171, rows: 45 }), answerAt('terminal', { cols: 171, rows: 45 })] });
+    r.wireFit();
+    r.handleCapture(fshot(171, 45));
+    await r.clk.advance(0);
+    assert.deepEqual([r.ctx.FIT.sentCols, r.ctx.FIT.sentRows, r.ctx.FIT.d], [145, 26, 1]);
+    r.handleHeld(fshot(145, 25));
+    r.page.focus = true;
+    r.log.events.focus({ target: r.ctx.window });
+    await r.clk.advance(FOCUS_SETTLE_REAL);
+    assert.equal(r.ctx.FIT.d, 1, 'the terminal\'s 171 x 45 (other columns) is not nika\'s size: d is kept, not reset to 0 or set to -18');
+    r.handleHeld(fshot(171, 45));
+    r.page.focus = false;
+    r.log.events.blur({ target: r.ctx.window });
+    await r.clk.advance(BLUR_SETTLE_REAL);
+    assert.equal(r.ctx.FIT.d, 1);
+    r.page.focus = true;
+    r.log.events.focus({ target: r.ctx.window });
+    await r.clk.advance(FOCUS_SETTLE_REAL);
+    assert.deepEqual(calls(r).map((c) => [c.json.rows, c.json.focus]), [[26, false], [27, true], [27, false], [27, true]], 'with d reset to 0 this would ask 26');
+  });
+
+  test('(−) F11: an answer with other columns than asked, or rows that give a difference outside 0..1, keeps the border row it had', async () => {
+    const r = fillRig();
+    r.wireFit();
+    r.ctx.FIT.d = 1;
+    r.ctx.FIT.sentCols = 145;
+    r.ctx.FIT.sentRows = 27;
+    r.fitSized({ cols: 171, rows: 27 }); // other columns, and rows that look like "no border row": a terminal's size says nothing about d
+    assert.equal(r.ctx.FIT.d, 1);
+    r.ctx.FIT.d = 0;
+    r.fitSized({ cols: 171, rows: 26 }); // and rows that look like a border row
+    assert.equal(r.ctx.FIT.d, 0);
+    r.ctx.FIT.d = 1;
+    r.fitSized({ cols: 145, rows: 10 }); // 17 rows apart
+    assert.equal(r.ctx.FIT.d, 1);
+    r.fitSized({ cols: 145, rows: 29 }); // the pane is bigger than asked
+    assert.equal(r.ctx.FIT.d, 1);
+    r.fitSized({ cols: 145, rows: 27 }); // exactly the asked size: no border row
+    assert.equal(r.ctx.FIT.d, 0);
+    r.fitSized({ cols: 145, rows: 26 });
+    assert.equal(r.ctx.FIT.d, 1);
+  });
+
+  test('(+) F11: the text scale counts the rows drawn: after the answer 145 x 26 and a ready frame it is 1, not 22/26', async () => {
+    const r = fillRig({ replies: [answerAt('fitted', { cols: 145, rows: 26 })] });
+    r.ctx.FIT.d = 1; // learned earlier: the start asks 20 + 6 + 1 = 27 rows
+    r.wireFit();
+    r.handleCapture(fshot(171, 45));
+    await r.clk.advance(0);
+    assert.deepEqual(calls(r), [PUT(145, 27, true)]);
+    r.handleHeld(fshot(145, 26)); // a ready frame: 6 hidden rows
+    assert.equal(r.ctx.FIT.scale, 1);
+    assert.deepEqual(scaleProps(r).at(-1), ['--fit-scale', '1']);
+    assert.equal(scaleProps(r).some(([, v]) => Math.abs(Number(v) - 22 / 26) < 1e-6), false, 'F10 would have set 22 / 26');
+  });
+
+  test('(+) F11: while the terminal owns the size (171 x 45, 6 hidden rows) the text is 0.532, not 0.489 (owner answer Q1)', async () => {
+    const r = fillRig({ replies: [answerAt('terminal', { cols: 171, rows: 45 })] });
+    r.wireFit();
+    r.handleCapture(fshot(171, 45));
+    await r.clk.advance(0);
+    assert.ok(Math.abs(r.ctx.FIT.scale - 0.5316) < 1e-3, String(r.ctx.FIT.scale));
+    assert.ok(Math.abs(r.ctx.FIT.scale - 22 / 45) > 0.04);
+    assert.equal(r.ctx.FIT.state, 'terminal');
+  });
+
+  test('(−) F11: a capture at the same pane size whose cut turned off, moved up or moved down changes no text scale and sends no PUT', async () => {
+    const r = fillRig({ replies: [answerAt('terminal', { cols: 171, rows: 45 })] });
+    r.wireFit();
+    r.handleCapture(fshot(171, 45));
+    await r.clk.advance(0);
+    const [props, sent] = [scaleProps(r).length, r.log.calls.length];
+    assert.equal(r.ctx.M.cut, 39);
+    r.handleCapture(fshot(171, 45, 37)); // cut up 2: K 8
+    assert.equal(r.ctx.M.cut, 37);
+    r.handleCapture(fshot(171, 45, 41)); // cut down: K 4
+    assert.equal(r.ctx.M.cut, 41);
+    r.ctx.P.on = true; // Type into pane: no cut
+    r.handleCapture(fshot(171, 45));
+    assert.equal(r.ctx.M.cut, null);
+    r.ctx.P.on = false;
+    r.handleCapture(fshot(171, 45, undefined, { draft: null })); // a prompt, a dialog: no readable box
+    assert.equal(r.ctx.M.cut, null);
+    r.handleCapture(fshot(171, 45));
+    await r.clk.advance(1000);
+    assert.equal(scaleProps(r).length, props, 'the text is held between commits');
+    assert.equal(r.log.calls.length, sent, 'and nothing is asked');
+  });
+
+  test('(+) F11: a capture that changes the pane size recomputes the text from that frame\'s hidden rows (the hold\'s ready frame)', async () => {
+    const r = fillRig({ replies: [answerAt('fitted', { cols: 145, rows: 26 })] });
+    r.wireFit();
+    r.handleCapture(fshot(171, 45)); // committed with 6 hidden rows: 20 rows above the strip
+    await r.clk.advance(0);
+    r.handleHeld(fshot(145, 26, 24)); // Claude drew only 2 rows under the cut at the new size: 24 rows above it, 4 more than the panel holds
+    assert.ok(Math.abs(r.ctx.FIT.scale - (382.88 - 20 - 27) / (24 * 16.2)) < 1e-6, `the text shrinks so nothing is hidden: ${r.ctx.FIT.scale}`);
+    assert.ok(r.ctx.FIT.scale < 1);
+  });
+
+  test('(−) F11: a ready frame with more hidden rows than committed leaves the text at 1 (empty rows under the strip, never cut-off text)', async () => {
+    const r = fillRig({ replies: [answerAt('fitted', { cols: 145, rows: 26 })] });
+    r.wireFit();
+    r.handleCapture(fshot(171, 45));
+    await r.clk.advance(0);
+    r.handleHeld(fshot(145, 26, 16)); // 10 hidden rows
+    assert.equal(r.ctx.FIT.scale, 1);
+  });
+
+  test('(+) F11: the mirror is re-pinned to the bottom by drawMirror when not paused, and left alone when paused', () => {
+    const r = fillRig();
+    r.wireFit();
+    r.ctx.M.body = fshot(171, 45).body;
+    r.ctx.M.draft = cleanDraftReal(r.ctx.M.body.draft);
+    r.term.scrollHeight = 900;
+    r.term.scrollTop = 0;
+    r.drawMirror();
+    assert.equal(r.term.scrollTop, 900);
+    r.ctx.M.frozen = true;
+    r.term.scrollTop = 123;
+    r.drawMirror();
+    assert.equal(r.term.scrollTop, 123, 'the reader keeps the place');
+    assert.equal(r.ctx.M.cut, 39, 'the cut drawn is kept for the commit points');
+  });
+
+  test('(+) F11: Type into pane on and off redraws at once (no strip, then the strip) and re-pins the bottom; it sends no PUT and changes no text scale', () => {
+    const log = { commit: 0, scale: 0, size: 0, drawn: [] };
+    const term = { classList: { toggle() {} }, setAttribute() {}, focus() {}, scrollTop: 0, scrollHeight: 900 };
+    const strip = { hidden: false };
+    const els = { term, 'term-cut': strip, 'term-rows': 'rows', 'pass-banner': { hidden: true }, 'pass-toggle': { setAttribute() {} }, 'pass-onoff': {} };
+    const body = fshot(171, 45).body;
+    const ctx = {
+      P: { on: false, buf: '', timer: 0 }, paneId: '%12', composer: () => ({ disabled: false, focus() {} }), endArrows() {}, flushPass() {}, A: { name: 'agent' }, announce() {},
+      M: { gone: false, frozen: false, body, draft: cleanDraftReal(body.draft), cut: 39 }, $: (id) => els[id],
+      cutAt: cutAtReal, cutCursor: cutCursorReal, toRenderModel: toRenderModelReal, applyMirror: (c, model) => log.drawn.push(model.length),
+      fitCommit: () => { log.commit += 1; }, fitScale: () => { log.scale += 1; }, FIT: { planner: { size: () => { log.size += 1; } } },
+    };
+    const { setPass } = vm.runInNewContext(`${fnOf('function drawMirror()')}\n${fnOf('function setPass(on, keepFocus = false)')}; ({ setPass })`, ctx);
+    setPass(true);
+    assert.deepEqual([strip.hidden, ctx.M.cut, term.scrollTop, log.drawn.at(-1)], [true, null, 900, 45], 'every row, no strip, pinned to the bottom at once');
+    term.scrollTop = 0;
+    setPass(false, true);
+    assert.deepEqual([strip.hidden, ctx.M.cut, term.scrollTop, log.drawn.at(-1)], [false, 39, 900, 39], 'the strip is back');
+    assert.deepEqual([log.commit, log.scale, log.size], [0, 0, 0], 'no commit, no scale, no request');
+  });
+
+  test('(+) F11: the room step asks the room fill size at once (210 x 37), with the hidden rows and strip of the commit', async () => {
+    const r = fillRig({ replies: [answerAt('fitted', { cols: 145, rows: 25 }), answerAt('fitted', { cols: 210, rows: 36 })] });
+    r.wireFit();
+    r.handleCapture(fshot(171, 45));
+    await r.clk.advance(0);
+    r.handleHeld(fshot(145, 25, undefined, { draft: null })); // Claude's frame is cut: no input box
+    await r.clk.advance(HOLD_MS - 1);
+    assert.equal(r.log.calls.length, 1);
+    await r.clk.advance(1);
+    assert.deepEqual(calls(r), [PUT(145, 26, true), PUT(210, 37, false)], 'at once, no 250 ms wait');
+    assert.equal(r.ctx.FIT.room, true);
+  });
+
+  test('(−) F11: no room step when the room ask adds no rows (a 32-row panel: the focus ask and the room ask are both 37): the pending frame is applied, no second PUT', async () => {
+    const r = fillRig({ box: { w: 1068.5, h: 538.9 }, replies: [answerAt('fitted', { cols: 145, rows: 36 })] });
+    r.ctx.FIT.d = 1;
+    r.wireFit();
+    r.handleCapture(fshot(171, 45));
+    await r.clk.advance(0);
+    assert.deepEqual(calls(r), [PUT(145, 37, true)]);
+    assert.equal(r.ctx.FIT.frame.rows, 32);
+    r.handleHeld(fshot(145, 36, undefined, { draft: null }));
+    await r.clk.advance(HOLD_MS * 2);
+    assert.equal(r.log.calls.length, 1, 'the room ask equals the request last sent');
+    assert.equal(r.ctx.FIT.room, false);
+    assert.equal(r.ctx.HOLD.active, false);
+    assert.equal(r.ctx.M.rows, 36, 'the pending frame is drawn as it is');
+  });
+
+  test('(+) F11: the strip\'s measured height is used: a 40 px strip leaves 19 rows above it (25 asked), where the 27 px one leaves 20 (26)', async () => {
+    const r = fillRig({ strip: 40, replies: [answerAt('fitted', { cols: 145, rows: 24 })] });
+    r.wireFit();
+    r.handleCapture(fshot(171, 45));
+    await r.clk.advance(0);
+    assert.equal(r.ctx.FIT.strip, 40);
+    assert.deepEqual(calls(r), [PUT(145, 25, true)]);
+  });
+
+  test('(−) F11: a webview that gives no offsets uses the 2-cell fallback and still sends the PUT; a strip that is not shown measures 0', async () => {
+    const r = fillRig({ strip: null, replies: [answerAt('fitted', { cols: 145, rows: 25 })] });
+    r.wireFit();
+    r.handleCapture(fshot(171, 45));
+    await r.clk.advance(0);
+    assert.equal(r.ctx.FIT.strip, 0);
+    assert.deepEqual(calls(r), [PUT(145, 26, true)], 'the fallback leaves 20 rows above: nothing overfilled');
+    const shown = fillRig();
+    assert.equal(shown.fitStrip(), 0, 'hidden strip');
+    shown.cutEl.hidden = false;
+    assert.equal(shown.fitStrip(), 27);
+    shown.cutEl.offsetHeight = -50;
+    assert.equal(shown.fitStrip(), 0, 'a negative height is no height');
+    shown.cutEl.offsetTop = NaN;
+    assert.equal(shown.fitStrip(), 0);
+  });
+
+  test('(+) F11: Fit again reads the hidden rows again: Type into pane was on at the focus, now off, and Fit again\'s PUT carries the extra rows', async () => {
+    const r = fillRig({ replies: [answerAt('fitted', { cols: 145, rows: 21 }), answerAt('fitted', { cols: 145, rows: 26 })] });
+    r.ctx.P.on = true;
+    r.wireFit();
+    r.handleCapture(fshot(171, 45));
+    await r.clk.advance(0);
+    r.handleHeld(fshot(145, 21));
+    assert.equal(r.ctx.FIT.hide, 0);
+    r.ctx.P.on = false;
+    r.handleCapture(fshot(145, 21)); // the box is hidden under the strip again
+    r.ctx.FIT.room = true; // as if the room had been taken
+    r.openFitPop();
+    r.again.click();
+    await r.clk.advance(0);
+    assert.deepEqual(calls(r), [PUT(145, 22, true), PUT(145, 27, true)]);
+    assert.equal(r.ctx.FIT.room, false);
+    assert.equal(r.ctx.FIT.hide, 6);
+  });
+
+  test('(+) F11: the code reads the hidden rows only at commit points and at a pane-size change, never per capture', () => {
+    assert.match(fnOf('function fitCommit()'), /FIT\.hide = hiddenRows\(M\.body\?\.rows, M\.cut\);/);
+    assert.match(fnOf('function fitCommit()'), /FIT\.strip = FIT\.hide > 0 \? fitStrip\(\) : 0;/);
+    assert.match(fnOf('function fitCommit()'), /fillSize\(frame, FIT\.room, FIT\.d, FIT\.hide, FIT\.strip\)/);
+    assert.match(fnOf('function fitScale()'), /drawnScale\(\{ frame: FIT\.frame \?\? p,/);
+    for (const head of ['function drawMirror()', 'function handleCapture(r)', 'function fitResize()', 'function fitSized(pane)']) assert.doesNotMatch(fnOf(head), /hiddenRows\(|fitStrip\(|fillSize\(|drawnScale\(/, head);
+    const captured = fnOf('function fitCaptured()');
+    assert.doesNotMatch(captured, /hiddenRows\(|fitStrip\(|fillSize\(|drawnScale\(/);
+    assert.match(captured, /if \(FIT\.planner\?\.startable\) fitCommit\(\);\s*FIT\.planner\?\.start\(\);/, 'the first frame of a lease is committed before the start');
+    assert.match(captured, /FIT\.scaledAt/, 'and the text is recomputed only when the pane size changed');
+  });
+
+  test('(+) F11: drawMirror keeps the cut it drew, the planner\'s send keeps the asked columns, and holdTimeout passes the room gain', () => {
+    assert.match(fnOf('function drawMirror()'), /M\.cut = on \? cut : null;/);
+    assert.match(fnOf('function drawMirror()'), /if \(!M\.frozen\) term\.scrollTop = term\.scrollHeight;/);
+    assert.match(fnOf('function wireFit()'), /send: \(body\) => \{[^}]*FIT\.sentCols = body\.cols;[^}]*FIT\.sentRows = body\.rows;/);
+    assert.match(fnOf('function holdTimeout(pending, ctx)'), /gain: [a-z.]*rows > FIT\.sentRows/);
+    assert.match(fnOf('function holdTimeout(pending, ctx)'), /fillSize\(frame, true, FIT\.d, FIT\.hide, FIT\.strip\)/);
+  });
+
+  test('(−) F11: the new page code keeps constraint 6: no markup sink, no style attribute, the scale only through the one CSSOM call', () => {
+    const src = ['function fitStrip()', 'function fitCommit()', 'function fitScale()', 'function fitCaptured()', 'function fitSized(pane)', 'function holdTimeout(pending, ctx)', 'function drawMirror()'].map(fnOf).join('\n');
+    assert.deepEqual(findSinks(src), []);
+    assert.doesNotMatch(src, /setAttribute\('style'|\.style\.cssText|innerHTML|textContent =|\.style\.[a-z]+ =/);
+    assert.equal([...code(JS['session.js']).matchAll(/--fit-scale/g)].length, 1);
   });
 });
 

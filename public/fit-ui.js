@@ -3,7 +3,8 @@
 // keeps that lease alive, gives it back on close, scales the text while the pane is larger than the panel, and shows the state in a
 // header chip, a button that opens a panel with the reason and, where it helps, Fit again (F1, design F12). F10 (design F10): the panel is measured
 // only at fixed moments (remeasure), the page may ask once for room for Claude's footer (askSize, roomStep) and keeps drawing the last good frame
-// until Claude has repainted at the new size (frameReady, createRedrawHold). This file has no DOM and makes no request of its own: session.js hands
+// until Claude has repainted at the new size (frameReady, createRedrawHold). F11 (design F11): while the mirror hides Claude's input box and footer under its
+// one-row strip, the size asked also counts those hidden rows (hiddenRows, fillSize) and the text scale counts only the rows drawn (drawnScale). This file has no DOM and makes no request of its own: session.js hands
 // createFitPlanner a route, a clock and a chip sink, so Node tests every rule (test/fit-ui.test.js). A server answer is data: chipView looks its
 // words up in fixed tables, so no string of the server ever reaches the page.
 // Keep this file ASCII: write every symbol as an escape.
@@ -18,6 +19,7 @@ export const HOLD_MS = 1200; // after nika's own resize the last good frame stay
 export const HOLD_POLL_MS = 100; // the mirror polls this often while a hold runs (normal: 250 ms)
 export const ROOM_ROWS = 33; // the rows asked for once when Claude's input box and footer did not fit the panel (a pane of 32 holds a 7-line task list)
 export const REFIT_MS = 120; // the new frame fades (and zooms) in over this long; none with prefers-reduced-motion
+export const HIDE_MAX = 24; // more hidden rows than a readable box (13 + 2 rules) and a footer can make: the screen is not one F11 knows, so nothing is added
 const COLS = [40, 400]; // the route's range (design 5)
 const ROWS = [10, 200];
 const PAD_X = 24; // .term padding: 12 px left and right
@@ -68,6 +70,59 @@ export function askSize(frame, room, d) {
   return { cols: Math.max(cols, Math.min(COLS[1], Math.floor((cols * (ROOM_ROWS - border)) / rows))), rows: ROOM_ROWS };
 }
 
+// F11: a row has ink when some span of it holds a character other than a space or U+00A0
+const inked = (row) => Array.isArray(row) && row.some((span) => span !== null && typeof span === 'object' && typeof span.t === 'string' && /[^ \u00a0]/.test(span.t));
+
+/**
+ * F11: the rows Claude draws from the cut row down (its input box and footer, which the mirror hides under a one-row strip): the last row with ink + 1 - cut.
+ * `rows` is the capture's rows (arrays of spans { t, s }), `cut` the cut drawn. 0 with no cut, a cut that is not an integer 1..rows-1, no ink at or below it, or
+ * more than HIDE_MAX. Trailing blank rows are not counted: in Claude's classic view a short session leaves blank rows under the footer, and counting them would
+ * ask for rows that only add more blank rows.
+ */
+export function hiddenRows(rows, cut) {
+  if (!Array.isArray(rows) || !Number.isInteger(cut) || cut < 1 || cut >= rows.length) return 0;
+  let last = -1;
+  for (let i = rows.length - 1; i >= cut; i -= 1) {
+    if (inked(rows[i])) {
+      last = i;
+      break;
+    }
+  }
+  const k = last + 1 - cut;
+  return k >= 1 && k <= HIDE_MAX ? k : 0;
+}
+
+const validHide = (hide) => Number.isInteger(hide) && hide >= 1 && hide <= HIDE_MAX;
+/** F11: the strip's height in CSS px as measured; a value that is not a positive number up to 4 cells counts as 2 cells (a conservative fallback: never overfills). */
+const stripPx = (strip, cellH) => (typeof strip === 'number' && strip > 0 && strip <= 4 * cellH ? strip : 2 * cellH);
+
+/**
+ * F11: the size asked at a commit. Without hidden rows it is askSize (F10). With `hide` rows (1..HIDE_MAX) under the strip it keeps askSize's columns and
+ * text scale s0 and asks the rows that fill the panel above the strip at s0, plus the hidden rows, plus the border row: never fewer rows than askSize, at most 200.
+ * `frame` is the held frame ({ cols, rows, height, cellH }), `strip` the strip's height in CSS px (see stripPx).
+ */
+export function fillSize(frame, room, d, hide, strip) {
+  const base = askSize(frame, room, d);
+  if (!validHide(hide) || !finite(frame.height) || !finite(frame.cellH)) return base;
+  const border = d === 0 || d === 1 ? d : 0;
+  const s0 = scaleFor({ panelCols: frame.cols, panelRows: frame.rows, cols: base.cols, rows: base.rows - border });
+  const above = Math.floor((frame.height - PAD_Y - stripPx(strip, frame.cellH)) / (frame.cellH * s0));
+  if (!(above >= 1)) return base;
+  return { cols: base.cols, rows: Math.min(ROWS[1], Math.max(base.rows, above + hide + border)) };
+}
+
+/**
+ * F11: the text scale while `hide` rows of a cols x rows pane are cut off the bottom and the strip (`strip` px) is drawn in their place: the rows above the cut and
+ * the strip fill the panel's height (exact px), the columns its width; never above 1, never below SCALE_MIN. With no valid hide (0, not an integer, more than
+ * HIDE_MAX, or no row left above the cut), or a frame without a height or cell height, it is scaleFor of the panel's cells (F10).
+ */
+export function drawnScale({ frame, cols, rows, hide, strip }) {
+  const plain = () => scaleFor({ panelCols: frame.cols, panelRows: frame.rows, cols, rows });
+  if (!validHide(hide) || !finite(frame.height) || !finite(frame.cellH) || ![frame.cols, cols, rows].every(finite) || !(rows - hide >= 1)) return plain();
+  const byHeight = (frame.height - PAD_Y - stripPx(strip, frame.cellH)) / ((rows - hide) * frame.cellH);
+  return Math.min(1, Math.max(SCALE_MIN, Math.min(frame.cols / cols, byHeight)));
+}
+
 /**
  * F10: whether a capture is a finished frame at the size nika asked for. `body` is the capture, `draft` its cleaned draft (null when no input box is
  * readable), `want` the answered pane size { cols, rows }, `plainBefore` whether the frame drawn before the resize showed a readable input box. The
@@ -82,9 +137,10 @@ export function frameReady({ body, draft, want, plainBefore } = {}) {
  * F10: whether the redraw hold, ending by its timeout, takes the room step (one more resize, to ROOM_ROWS rows). Every one of these must hold: room is not on
  * yet, the panel has fewer than ROOM_ROWS rows (`frameRows`), the chip says `fitted` (nika resized the window), the frame before the resize showed a readable box
  * (`plainBefore`), and the latest capture `body` is at the answered size `want`, in the full-screen view, with no prompt, no dialog and no readable `draft`.
+ * F11: and `gain` is exactly true: the room ask has more rows than the request last sent (else the step would send nothing and only wait out another hold).
  */
-export function roomStep({ room, frameRows, state, plainBefore, want, body, draft } = {}) {
-  if (room === true || !Number.isInteger(frameRows) || frameRows >= ROOM_ROWS || state !== 'fitted' || plainBefore !== true) return false;
+export function roomStep({ room, frameRows, state, plainBefore, want, body, draft, gain } = {}) {
+  if (gain !== true || room === true || !Number.isInteger(frameRows) || frameRows >= ROOM_ROWS || state !== 'fitted' || plainBefore !== true) return false;
   if (!body || !want || body.cols !== want.cols || !Array.isArray(body.rows) || body.rows.length !== want.rows) return false;
   return body.alt === true && !body.prompt && body.dialog == null && !hasBox(draft);
 }
@@ -211,8 +267,9 @@ export function chipView(body) {
 // ---- the panel behind the chip (F1, design F12 2.3) ----------------------------------------------------------------------------
 
 const PANEL_NOTE = 'nika could not fit the window just now. It tries again within 5 seconds.';
-// F10: the panel of a fitted view while the page asked for ROOM_ROWS rows (the hint replaces the view's own; Fit again clears the room and asks for the panel's size)
-const ROOM_HINT = "Claude's input box and footer did not fit this panel's rows, so nika gave the pane 33 rows and scaled the text. Fit again tries the panel's own size.";
+// F10: the panel of a fitted view while the page asked for the room (the hint replaces the view's own; Fit again clears the room and asks for full-size text).
+// F11 (owner answer Q3): "33 rows" is no longer exact, the room ask can carry more
+const ROOM_HINT = "Claude's input box and footer did not fit this panel's rows, so nika gave the pane more rows and scaled the text. Fit again tries full-size text.";
 const FITTING = 'Fitting\u2026';
 // Looked up by the key of a chipView, never by a word of the server. `action` is the button's text: only where open: true can change
 // something (the server refuses it again for user-zoom, size-option and foreign-tag, and those recover once the user acts in tmux).
@@ -469,6 +526,8 @@ export function createFitPlanner(io) {
   }
 
   return {
+    /** F11: whether start() would start a lease now (not started, and no 403 has ended the fit): the page measures the first frame of a lease before it starts. */
+    get startable() { return !P.on && !P.dead; },
     /** The first capture answered: the pane is live, so the lease is asked for now. A no-op while started, and after a 403; after a close() it asks again. */
     start,
     /** The page came back from the back/forward cache: a new page load, so after a close() the lease opens like the first one (open: true). A no-op while started and after a 403. */

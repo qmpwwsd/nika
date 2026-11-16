@@ -10,6 +10,7 @@ import { pathToFileURL, fileURLToPath } from 'node:url';
 import {
   panelSize, scaleFor, chipView, fitPanelView, stillOffSay, createFitPlanner, BEAT_MS, DEBOUNCE_MS, SCALE_MIN, FOCUS_SETTLE_MS, BLUR_SETTLE_MS, FOCUS_POLL_MS,
   remeasure, askSize, frameReady, roomStep, refitFrom, createRedrawHold, HOLD_MS, HOLD_POLL_MS, ROOM_ROWS, REFIT_MS,
+  HIDE_MAX, hiddenRows, fillSize, drawnScale,
 } from '../public/fit-ui.js';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
@@ -1961,7 +1962,7 @@ describe('F10: frameReady, a frame that shows Claude\'s input box at the answere
 describe('F10: roomStep, one more resize when the footer did not come back (design F10 3.1)', () => {
   const want = { cols: 138, rows: 20 };
   const base = () => ({
-    room: false, frameRows: 22, state: 'fitted', plainBefore: true, want,
+    room: false, frameRows: 22, state: 'fitted', plainBefore: true, want, gain: true, // F11 (requirement change, not a weakened test): the room step needs the extra rows too
     body: { cols: 138, rows: new Array(20).fill([]), alt: true, prompt: null, dialog: null }, draft: null,
   });
 
@@ -2344,7 +2345,8 @@ describe('F10: createFitPlanner, io.sized and size(..., { now }) (design F10 4.2
 
 describe('F10: fitPanelView with ui.room (design F10 3.5)', () => {
   const body = (state, reason = null) => ({ fit: { state, reason, pane: { cols: 120, rows: 39 }, panes: 3, userZoom: false } });
-  const HINT = "Claude's input box and footer did not fit this panel's rows, so nika gave the pane 33 rows and scaled the text. Fit again tries the panel's own size.";
+  // F11 (owner answer Q3, 2026-11-16; requirement change): "33 rows" is no longer exact, and Fit again asks for full-size text
+  const HINT = "Claude's input box and footer did not fit this panel's rows, so nika gave the pane more rows and scaled the text. Fit again tries full-size text.";
   const IDLE = { pending: false, note: false };
 
   test('(+) fitted: with room the panel has the hint and the action Fit again; the heading and why are the chip\'s', () => {
@@ -2445,5 +2447,268 @@ describe('api.js: appFetch passes keepalive through (design 8.2)', () => {
     const api = await load();
     await api.appFetch('/api/app/pane/%2512/fit', { method: 'DELETE', keepalive: true, headers: { 'X-Nika-App': 'forged' } });
     assert.equal(calls[0][1].headers['X-Nika-App'], 'unit-test-secret');
+  });
+});
+
+// ---- F11 (design F11 2, 3, 6.2, 8.1): the rows nika hides under the input-box strip are filled with more of Claude's conversation ----------------
+
+describe('F11: hiddenRows, the rows Claude draws from the cut row down (design F11 2.1)', () => {
+  const ink = [{ t: 'x', s: {} }];
+  const blank = [{ t: '   ', s: {} }, { t: '  ', s: {} }]; // spaces and non-breaking spaces only
+  const rowsOf = (n, inkedTo = n) => Array.from({ length: n }, (_, i) => (i < inkedTo ? ink : blank));
+
+  test('(+) the limit is pinned: 24 hidden rows, no more', () => {
+    assert.equal(HIDE_MAX, 24);
+  });
+
+  test('(+) 26 rows with ink to the end, cut 20: the 6 rows from the cut down', () => {
+    assert.equal(hiddenRows(rowsOf(26), 20), 6);
+  });
+
+  test('(+) trailing blank rows (spaces and U+00A0 only) are not counted: ink in rows 20-23, blank 24-25 gives 4', () => {
+    assert.equal(hiddenRows(rowsOf(26, 24), 20), 4);
+  });
+
+  test('(+) a span without a string `t` is ignored, a later span with ink counts', () => {
+    const odd = [{ t: 5, s: {} }, { s: {} }, null, { t: undefined }, { t: ['x'] }];
+    const rows = rowsOf(26, 25); // ink down to row 24
+    rows[25] = odd; // nothing readable in the last row
+    assert.equal(hiddenRows(rows, 20), 5);
+    rows[25] = [{ t: ' ' }, { t: ' x' }];
+    assert.equal(hiddenRows(rows, 20), 6, 'ink in the second span of the last row');
+  });
+
+  test('(+) the limit itself is allowed: 24 hidden rows give 24', () => {
+    assert.equal(hiddenRows(rowsOf(30), 6), 24);
+  });
+
+  test('(−) a cut that is not a row 1..rows-1 gives 0: null, 1.5, -1, 0, NaN, a string, undefined, the length, past it', () => {
+    for (const cut of [null, 1.5, -1, 0, NaN, '20', undefined, 26, 27, Infinity]) assert.equal(hiddenRows(rowsOf(26), cut), 0, String(cut));
+    assert.equal(hiddenRows(rowsOf(10), 0), 0, 'a cut at row 0 hides the whole screen: no strip is drawn, and 10 rows would be under the limit');
+  });
+
+  test('(−) no ink at or below the cut gives 0 (rows above it may have ink)', () => {
+    assert.equal(hiddenRows(rowsOf(26, 20), 20), 0);
+    assert.equal(hiddenRows(rowsOf(26, 0), 20), 0);
+  });
+
+  test('(−) more hidden rows than a readable box and a footer can make (25 and up) give 0: the screen is not one the page knows', () => {
+    assert.equal(hiddenRows(rowsOf(30), 1), 0, 'cut 1 of 30 inked rows: 29');
+    assert.equal(hiddenRows(rowsOf(30), 5), 0, '25');
+  });
+
+  test('(−) rows that are not a list give 0', () => {
+    for (const rows of [null, undefined, 'abc', 26, {}, { length: 26 }]) assert.equal(hiddenRows(rows, 20), 0, String(rows));
+    assert.equal(hiddenRows(), 0);
+  });
+
+  test('(−) a row that is not a list (a hole, null, a string) counts as blank', () => {
+    const rows = rowsOf(26, 23);
+    rows[23] = null;
+    rows[24] = 'xxx';
+    rows[25] = undefined;
+    assert.equal(hiddenRows(rows, 20), 3);
+  });
+});
+
+describe('F11: fillSize, the size asked at a commit (design F11 2.2, 2.3)', () => {
+  const FRAME = { cols: 145, rows: 22, height: 382.88, cellH: 16.2 }; // the design's example panel: 145 x 22 cells, inner height 362.88 px
+  const STRIP = 27;
+
+  test('(+) no room, border row 1, 6 hidden rows, a 27 px strip: 145 x 27 (20 rows above the strip + 6 + the border row)', () => {
+    assert.deepEqual(fillSize(FRAME, false, 1, 6, STRIP), { cols: 145, rows: 27 });
+  });
+
+  test('(+) room on: 210 x 37 (the room columns, 30 rows above the strip at the room text scale + 6 + 1)', () => {
+    assert.deepEqual(fillSize(FRAME, true, 1, 6, STRIP), { cols: 210, rows: 37 });
+  });
+
+  test('(+) border row 0: one row fewer than with border row 1 (no room: 26)', () => {
+    assert.deepEqual(fillSize(FRAME, false, 0, 6, STRIP), { cols: 145, rows: 26 });
+    assert.deepEqual(fillSize(FRAME, false, 1, 6, STRIP), { cols: 145, rows: 27 });
+  });
+
+  test('(+) a strip of another height changes the rows above it: a measured 40 px strip gives 19 rows above, 26 in all', () => {
+    assert.deepEqual(fillSize(FRAME, false, 1, 6, 40), { cols: 145, rows: 26 });
+  });
+
+  test('(+) a strip that is not a positive number up to 4 cells (64.8 px) falls back to 2 cells: the same as a 27 px strip here', () => {
+    for (const strip of [NaN, 200, 0, -3, Infinity, undefined, null, '27', 64.81]) assert.deepEqual(fillSize(FRAME, false, 1, 6, strip), { cols: 145, rows: 27 }, String(strip));
+    assert.deepEqual(fillSize(FRAME, false, 1, 6, 64.8), { cols: 145, rows: 25 }, '4 cells itself is a measured strip: 18 rows above');
+  });
+
+  test('(+) the answer is capped at 200 rows, the route\'s limit', () => {
+    assert.deepEqual(fillSize({ cols: 145, rows: 190, height: 20 + 190 * 16.2, cellH: 16.2 }, false, 1, 20, STRIP), { cols: 145, rows: 200 });
+  });
+
+  test('(−) hide that is not an integer 1..24 asks exactly what F10 asked, with room on and off', () => {
+    for (const hide of [0, -1, 2.5, 25, 100, undefined, null, '6', NaN, Infinity]) {
+      for (const room of [false, true]) assert.deepEqual(fillSize(FRAME, room, 1, hide, STRIP), askSize(FRAME, room, 1), `${String(hide)} room ${room}`);
+    }
+  });
+
+  test('(−) a frame with no height or no cell height asks what F10 asked', () => {
+    for (const bad of [0, NaN, undefined, null, -5, '16']) {
+      assert.deepEqual(fillSize({ ...FRAME, height: bad }, false, 1, 6, STRIP), askSize(FRAME, false, 1), `height ${String(bad)}`);
+      assert.deepEqual(fillSize({ ...FRAME, cellH: bad }, true, 1, 6, STRIP), askSize(FRAME, true, 1), `cellH ${String(bad)}`);
+    }
+  });
+
+  test('(−) a panel with no room for a row above the strip asks what F10 asked', () => {
+    for (const hide of [6, 24]) { // 24 hidden rows + the border row is more than the frame's 22: only the base answer is right
+      assert.deepEqual(fillSize({ ...FRAME, height: 40 }, false, 1, hide, STRIP), askSize(FRAME, false, 1), String(hide));
+      assert.deepEqual(fillSize({ ...FRAME, height: 40 }, true, 1, hide, STRIP), askSize(FRAME, true, 1), String(hide));
+    }
+  });
+
+  test('(−) never fewer rows than F10 asks, even where the text scale is near its floor (a narrow, short panel with room)', () => {
+    const narrow = { cols: 40, rows: 10, height: 200, cellH: 18 };
+    const out = fillSize(narrow, true, 1, 1, STRIP);
+    assert.equal(out.rows, askSize(narrow, true, 1).rows);
+    assert.ok(out.rows >= 33);
+  });
+
+  test('(−) the columns are always F10\'s, and the size is always one the route accepts', () => {
+    for (const frame of [FRAME, { cols: 40, rows: 10, height: 200, cellH: 18 }, { cols: 390, rows: 12, height: 20 + 12 * 18, cellH: 18 }, { cols: 145, rows: 45, height: 20 + 45 * 18, cellH: 18 }]) {
+      for (const room of [false, true]) {
+        for (const d of [0, 1]) {
+          for (const hide of [1, 6, 24]) {
+            const out = fillSize(frame, room, d, hide, STRIP);
+            assert.equal(out.cols, askSize(frame, room, d).cols);
+            assert.ok(out.rows >= askSize(frame, room, d).rows && out.rows <= 200 && out.cols >= 40 && out.cols <= 400);
+          }
+        }
+      }
+    }
+  });
+
+  test('(−) a border row outside 0..1 is treated as 0 (as askSize does)', () => {
+    for (const d of [2, -1, 1.5, NaN, undefined, '1']) assert.deepEqual(fillSize(FRAME, false, d, 6, STRIP), fillSize(FRAME, false, 0, 6, STRIP), String(d));
+  });
+});
+
+describe('F11: drawnScale, the text scale from the rows actually drawn (design F11 3.1)', () => {
+  const FRAME = { cols: 145, rows: 22, height: 382.88, cellH: 16.2 };
+  const near = (a, b) => assert.ok(Math.abs(a - b) < 1e-4, `${a} vs ${b}`);
+
+  test('(+) a pane of 145 x 26 with 6 hidden rows and a 27 px strip: 20 rows and the strip fill the panel exactly at full size', () => {
+    assert.equal(drawnScale({ frame: FRAME, cols: 145, rows: 26, hide: 6, strip: 27 }), 1);
+  });
+
+  test('(+) the room pane 210 x 36: the width decides (145 / 210)', () => {
+    near(drawnScale({ frame: FRAME, cols: 210, rows: 36, hide: 6, strip: 27 }), 145 / 210);
+  });
+
+  test('(+) the terminal\'s 171 x 45 with 6 hidden rows: 0.5316 (scaleFor gives 0.4889)', () => {
+    near(drawnScale({ frame: FRAME, cols: 171, rows: 45, hide: 6, strip: 27 }), 0.5316);
+    near(scaleFor({ panelCols: 145, panelRows: 22, cols: 171, rows: 45 }), 0.4889);
+  });
+
+  test('(+) a strip that is not usable counts as 2 cells, like in fillSize', () => {
+    near(drawnScale({ frame: FRAME, cols: 171, rows: 45, hide: 6, strip: NaN }), (382.88 - 20 - 2 * 16.2) / (39 * 16.2));
+  });
+
+  test('(−) no valid hide, or no row left above the cut: exactly scaleFor of the whole pane', () => {
+    const plain = scaleFor({ panelCols: 145, panelRows: 22, cols: 171, rows: 45 });
+    for (const hide of [0, -1, 2.5, 25, undefined, null, '6', NaN]) assert.equal(drawnScale({ frame: FRAME, cols: 171, rows: 45, hide, strip: 27 }), plain, String(hide));
+    assert.equal(drawnScale({ frame: FRAME, cols: 171, rows: 6, hide: 6, strip: 27 }), scaleFor({ panelCols: 145, panelRows: 22, cols: 171, rows: 6 }), 'rows - hide < 1');
+    assert.equal(drawnScale({ frame: FRAME, cols: 171, rows: 3, hide: 6, strip: 27 }), scaleFor({ panelCols: 145, panelRows: 22, cols: 171, rows: 3 }));
+  });
+
+  test('(−) a frame without a height or cell height is scaleFor of the panel\'s cells', () => {
+    const plain = scaleFor({ panelCols: 145, panelRows: 22, cols: 171, rows: 45 });
+    for (const frame of [{ cols: 145, rows: 22 }, { ...FRAME, height: 0 }, { ...FRAME, cellH: NaN }]) assert.equal(drawnScale({ frame, cols: 171, rows: 45, hide: 6, strip: 27 }), plain);
+  });
+
+  test('(−) never above 1 and never below the floor: a small pane stays at 1, a 10-row panel with a 200-row pane stops at SCALE_MIN', () => {
+    assert.equal(drawnScale({ frame: FRAME, cols: 80, rows: 12, hide: 6, strip: 27 }), 1);
+    assert.equal(drawnScale({ frame: { cols: 40, rows: 10, height: 200, cellH: 18 }, cols: 40, rows: 200, hide: 6, strip: 27 }), SCALE_MIN);
+  });
+
+  test('(−) the width limit still binds when the hidden rows would allow a larger text', () => {
+    near(drawnScale({ frame: FRAME, cols: 300, rows: 26, hide: 6, strip: 27 }), 145 / 300);
+  });
+});
+
+describe('F11: roomStep needs the extra rows (design F11 6.2)', () => {
+  const want = { cols: 138, rows: 20 };
+  const base = () => ({
+    room: false, frameRows: 22, state: 'fitted', plainBefore: true, want, gain: true,
+    body: { cols: 138, rows: new Array(20).fill([]), alt: true, prompt: null, dialog: null }, draft: null,
+  });
+
+  test('(+) every F10 condition and gain: true takes the step', () => {
+    assert.equal(roomStep(base()), true);
+  });
+
+  test('(−) gain: false, a missing gain, 1 and the string "true" do not (only the boolean true counts)', () => {
+    for (const gain of [false, undefined, null, 1, 'true', 0]) assert.equal(roomStep({ ...base(), gain }), false, String(gain));
+    const { gain, ...without } = base();
+    assert.equal(gain, true);
+    assert.equal(roomStep(without), false);
+  });
+});
+
+describe('F11: the room hint says "more rows" (owner answer Q3)', () => {
+  const OLD = "Claude's input box and footer did not fit this panel's rows, so nika gave the pane 33 rows and scaled the text. Fit again tries the panel's own size.";
+  const NEW = "Claude's input box and footer did not fit this panel's rows, so nika gave the pane more rows and scaled the text. Fit again tries full-size text.";
+  const body = (state, reason = null) => ({ fit: { state, reason, pane: { cols: 120, rows: 39 }, panes: 3, userZoom: false } });
+
+  test('(+) fitted and fitted:terminal with ui.room show the new words and Fit again', () => {
+    for (const reason of [null, 'terminal']) {
+      const p = fitPanelView(chipView(body('fitted', reason)), { pending: false, note: false, room: true });
+      assert.equal(p.hint, NEW);
+      assert.deepEqual(p.action, { text: 'Fit again' });
+    }
+    assert.equal([...NEW].every((ch) => ch.codePointAt(0) < 128), true);
+  });
+
+  test('(−) the old words are gone from the module, and the hint no longer names a number of rows', () => {
+    const src = readSrc('fit-ui.js');
+    assert.equal(src.includes('gave the pane 33 rows'), false);
+    assert.equal(src.includes("Fit again tries the panel's own size"), false);
+    const p = fitPanelView(chipView(body('fitted')), { pending: false, note: false, room: true });
+    assert.notEqual(p.hint, OLD);
+    assert.doesNotMatch(p.hint, /\d/);
+  });
+
+  test('(−) without ui.room the panels have no room hint (unchanged cases)', () => {
+    assert.equal(fitPanelView(chipView(body('fitted')), { pending: false, note: false }).hint, null);
+    assert.equal(fitPanelView(chipView(body('zoomed', 'panel-smaller')), { pending: false, note: false, room: true }).hint.includes('more rows'), false);
+  });
+});
+
+describe('F11: the planner\'s `startable` (design F11 2.4)', () => {
+  test('(+) true before start(), false while started, true again after close()', async () => {
+    const r = rig();
+    assert.equal(r.planner.startable, true);
+    r.planner.size(100, 30);
+    r.planner.start();
+    assert.equal(r.planner.startable, false);
+    await r.answer(OK());
+    assert.equal(r.planner.startable, false);
+    r.planner.close();
+    assert.equal(r.planner.startable, true, 'a new lease starts at the next capture');
+    r.planner.start();
+    assert.equal(r.planner.startable, false);
+  });
+
+  test('(−) false after a 403: nothing starts the planner again', async () => {
+    const r = rig();
+    r.planner.size(100, 30);
+    r.planner.start();
+    await r.answer({ status: 403, body: null });
+    assert.equal(r.planner.startable, false);
+    r.planner.close();
+    assert.equal(r.planner.startable, false);
+    r.planner.start();
+    assert.deepEqual(r.log.sent.length, 1, 'start after a 403 sends nothing');
+  });
+
+  test('(−) a getter only: reading it changes nothing and it cannot be set from outside', async () => {
+    const r = rig();
+    for (let i = 0; i < 3; i += 1) assert.equal(r.planner.startable, true);
+    assert.deepEqual(r.log.sent, []);
+    assert.throws(() => { 'use strict'; r.planner.startable = false; }, TypeError);
   });
 });

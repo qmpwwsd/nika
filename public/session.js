@@ -22,7 +22,7 @@ import { MODEL_ID, MODEL_HINT, CUSTOM, fillModelSelect } from './models-ui.js';
 import { openEndDialog } from './end-dialog.js';
 import { paletteQuery, cleanCommands, paletteView, commandsButton, shouldFetch, sourceLabel, insertion, moveActive } from './palette.js';
 import { isMac, isTextEntry, wantsHelp, wantsBack, wantsHistToggle, backHint, helpHint, histHint, passKeyLabel, openShortcuts, wireWindowKeys } from './shortcuts.js';
-import { panelSize, scaleFor, createFitPlanner, fitPanelView, stillOffSay, remeasure, askSize, roomStep, refitFrom, createRedrawHold, HOLD_POLL_MS, REFIT_MS } from './fit-ui.js';
+import { panelSize, createFitPlanner, fitPanelView, stillOffSay, remeasure, hiddenRows, fillSize, drawnScale, roomStep, refitFrom, createRedrawHold, HOLD_POLL_MS, REFIT_MS } from './fit-ui.js';
 import { createScrollPlanner, routeFor, wheelRows, scrollGate, viewRowsOf, pageRowsOf, refusalLine, noteView, scrolledSay, NOTE_MS } from './scroll.js';
 import { createAttachTray } from './attach.js';
 import { createDialogForm, cleanDialog } from './dialog-form.js';
@@ -1210,7 +1210,7 @@ function startHistoryPoll() {
 
 // ---- terminal mirror ---------------------------------------------------------------------------------------------
 
-const M = { etag: null, timer: 0, busy: false, gone: false, frozen: false, errors: 0, cols: 0, rows: 0, fatal: false, inputOff: false, sent: 0, waiters: [], body: null, draft: null };
+const M = { etag: null, timer: 0, busy: false, gone: false, frozen: false, errors: 0, cols: 0, rows: 0, fatal: false, inputOff: false, sent: 0, waiters: [], body: null, draft: null, cut: null };
 
 function setLive(state, text) {
   $('term-head').dataset.s = state;
@@ -1282,14 +1282,21 @@ function recovered() {
   }
 }
 
-/** Draws the last capture: every row, or, while the message box carries Claude's input box (a readable draft, Type into pane off), the rows above it and the one-row strip in its place. */
+/**
+ * Draws the last capture: every row, or, while the message box carries Claude's input box (a readable draft, Type into pane off), the rows above it and the one-row strip in its place.
+ * F11: the cut drawn is kept in M.cut (null with no strip) for the commit points, and an unpaused mirror is pinned to the bottom at once (a Type into pane toggle shows
+ * Claude's box and footer, or the strip, without waiting for the next capture).
+ */
 function drawMirror() {
   const body = M.body;
   if (!body) return;
   const cut = cutAt(M.draft, P.on);
   const on = cut !== null && cut < body.rows.length;
+  M.cut = on ? cut : null;
   applyMirror($('term-rows'), toRenderModel(body, { cutAt: on ? cut : null }), cutCursor(body.cursor, on ? cut : null));
   $('term-cut').hidden = !on;
+  const term = $('term');
+  if (!M.frozen) term.scrollTop = term.scrollHeight;
 }
 
 function handleCapture(r) {
@@ -1403,10 +1410,12 @@ function jumpToLive() {
 // planner: the request planner of fit-ui.js, made when the window has a pane. panel: the held frame's size, { cols, rows } in cells (null before one).
 // frame: the held frame, { cols, rows, width, height, cellW, cellH, iw, ih } (F10: measured only at the commit points of fitCommit). scale: the --fit-scale now
 // set. view: the chip's last drawn view (null while there is no chip). ui: the chip panel's own state (F1): pending, a Fit again is on its way; note, it was
-// refused or lost. pop: the panel is open. F10: state, the chip state of the latest answer (drawn or held); room, the page asked for 33 rows because Claude's
+// refused or lost. pop: the panel is open. F10: state, the chip state of the latest answer (drawn or held); room, the page asked for the room (33 rows or more, F11) because Claude's
 // footer did not fit (kept for this window until Fit again or a new window size); d, the border row (asked rows minus the pane's rows, 0 or 1); sentRows, the
 // rows of the request on its way; held, the chip view an answer brought during a redraw hold, { view, opts }; refitTimer, the timer that ends the transition.
-const FIT = { planner: null, panel: null, frame: null, scale: 1, view: null, ui: { pending: false, note: false }, pop: false, state: null, room: false, d: 0, sentRows: 0, held: null, refitTimer: 0 };
+// F11: hide and strip, the hidden rows under the strip and its height in px as read at the last commit point; sentCols, the columns of the request on its way (an answer
+// with those columns is nika's own size); scaledAt, the pane size { cols, rows } the text scale was last worked out for (null before the first).
+const FIT = { planner: null, panel: null, frame: null, scale: 1, view: null, ui: { pending: false, note: false }, pop: false, state: null, room: false, d: 0, sentRows: 0, held: null, refitTimer: 0, hide: 0, strip: 0, sentCols: 0, scaledAt: null };
 // F10, design F10 4: after nika's own resize the last good frame stays drawn until a capture at the new size shows Claude's input box, for 1.2 s at most
 const HOLD = createRedrawHold({
   after: (fn, ms) => setTimeout(fn, ms),
@@ -1455,11 +1464,27 @@ function fitMeasure() {
   return FIT.panel;
 }
 
+/**
+ * F11: the height in CSS px of the one-row strip that stands in for Claude's input box and footer: from the bottom of the rows to the bottom of the strip, both
+ * layout values of the same offset parent (.term), so the refit transform does not distort them. 0 while the strip is not shown or the webview gives no
+ * usable offsets (fillSize and drawnScale then count 2 cells).
+ */
+function fitStrip() {
+  const cut = $('term-cut');
+  const rows = $('term-rows');
+  if (!cut || !rows || cut.hidden) return 0;
+  const px = cut.offsetTop + cut.offsetHeight - (rows.offsetTop + rows.offsetHeight);
+  return px > 0 ? px : 0; // NaN (no offsets) fails the comparison too
+}
+
 /** The text scale: 1 while the pane fits the panel, smaller while it is larger (not below fit-ui.js SCALE_MIN, never above 1). Set through CSSOM only: the CSP allows no style attribute. */
 function fitScale() {
   const p = FIT.panel;
   if (!p || !M.cols) return;
-  const s = scaleFor({ panelCols: p.cols, panelRows: p.rows, cols: M.cols, rows: M.rows });
+  FIT.scaledAt = { cols: M.cols, rows: M.rows };
+  // F11: the rows actually drawn count (the rows above the cut and the strip), not the hidden ones; with no strip it is F10's scale
+  const hide = hiddenRows(M.body?.rows, M.cut);
+  const s = drawnScale({ frame: FIT.frame ?? p, cols: M.cols, rows: M.rows, hide, strip: hide > 0 ? fitStrip() || FIT.strip : 0 });
   if (s === FIT.scale) return;
   FIT.scale = s;
   $('term').style.setProperty('--fit-scale', String(s));
@@ -1468,6 +1493,7 @@ function fitScale() {
 /**
  * A commit point (F10: the start, a focus, a change of the window, the font or the panel's width, Fit again): the frame is measured and held, its size is
  * asked for (the room size while FIT.room is on), and the text scale follows. A new window size ends the room: it deserves a try at the panel's own size.
+ * F11: the hidden rows under the strip and the strip's height are read here, from the frame drawn now, and the size asked counts them (fillSize); never per capture.
  */
 function fitCommit() {
   const prev = FIT.frame;
@@ -1475,7 +1501,9 @@ function fitCommit() {
   const frame = FIT.frame;
   if (!frame) return;
   if (FIT.room && prev && (frame.iw !== prev.iw || frame.ih !== prev.ih || Math.abs(frame.width - prev.width) >= prev.cellW)) FIT.room = false;
-  const ask = askSize(frame, FIT.room, FIT.d);
+  FIT.hide = hiddenRows(M.body?.rows, M.cut);
+  FIT.strip = FIT.hide > 0 ? fitStrip() : 0;
+  const ask = fillSize(frame, FIT.room, FIT.d, FIT.hide, FIT.strip);
   FIT.planner?.size(ask.cols, ask.rows);
   fitScale();
 }
@@ -1493,18 +1521,26 @@ function fitResize() {
   fitCommit();
 }
 
-/** After every drawn capture: the first one starts the fit (the pane answered, so it is live), and the scale follows the pane's size. */
+/**
+ * After every drawn capture: the first one of a lease starts the fit (the pane answered, so it is live), and the scale follows the pane's size.
+ * F11: that first frame is a commit point (its hidden rows go into the start request, which is still one request), and the text is worked out again only when the
+ * pane's size is not the one it was worked out for (held between those moments, so a draft growing a line never moves the text).
+ */
 function fitCaptured() {
+  if (FIT.planner?.startable) fitCommit();
   FIT.planner?.start();
-  fitScale();
+  const at = FIT.scaledAt;
+  if (!at || at.cols !== M.cols || at.rows !== M.rows) fitScale();
 }
 
 // ---- the redraw hold (F10, design F10 4): the last good frame stays up while Claude repaints after nika's own resize ----
 
 /** The planner's word on a 200 answer's pane size: the border row is learned, and a pane that is not the drawn size starts a hold (a first capture is kept for the new size). */
 function fitSized(pane) {
-  const d = FIT.sentRows - pane.rows;
-  FIT.d = d === 0 || d === 1 ? d : 0;
+  if (pane.cols === FIT.sentCols) { // F11: only nika's own size tells the border row; a terminal's or a zoomed size says nothing about it, so the old one stays
+    const d = FIT.sentRows - pane.rows;
+    if (d === 0 || d === 1) FIT.d = d;
+  }
   if (!M.body) return; // nothing drawn yet: nothing to hold
   if (pane.cols === M.cols && pane.rows === M.rows) { // the drawn frame is the answered size: nothing to wait for
     HOLD.end();
@@ -1579,11 +1615,11 @@ function endRefit() {
  */
 function holdTimeout(pending, ctx) {
   const frame = FIT.frame;
-  if (pending && frame && roomStep({ room: FIT.room, frameRows: frame.rows, state: FIT.state, plainBefore: ctx.plainBefore, want: ctx.want, body: pending.body, draft: pending.draft })) {
+  const ask = frame ? fillSize(frame, true, FIT.d, FIT.hide, FIT.strip) : null; // F11: the room fill size, with the hidden rows of the last commit
+  if (pending && frame && roomStep({ room: FIT.room, frameRows: frame.rows, state: FIT.state, plainBefore: ctx.plainBefore, want: ctx.want, body: pending.body, draft: pending.draft, gain: ask.rows > FIT.sentRows })) {
     FIT.room = true;
     if (FIT.pop) drawFitPop();
     HOLD.start({ want: null, plainBefore: ctx.plainBefore });
-    const ask = askSize(frame, true, FIT.d);
     FIT.planner?.size(ask.cols, ask.rows, { now: true });
     return;
   }
@@ -1743,6 +1779,7 @@ function wireFitPop() {
 function wireFit() {
   FIT.planner = createFitPlanner({
     send: (body) => {
+      FIT.sentCols = body.cols; // F11: an answer with these columns is nika's own size
       FIT.sentRows = body.rows; // F10: with the answer's pane rows it gives the border row
       return fitCall('PUT', { json: body });
     },
