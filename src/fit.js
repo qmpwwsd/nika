@@ -11,9 +11,13 @@
 // never applies a saved layout when the layout, the pane count or a zoom changed. The one exception is nika's own doing (F2,
 // design-F12 section 3): a split or an exit of a pane tagged `@nika-role` agent or sub-orchestrator is not the user's, so the
 // window is given back and fitted again at once ("refit"); a new pane with no role yet gets one watch tick to be tagged.
-// F4 (design-F4): nika never resizes a window that a terminal shows (`#{window_active_clients}` above 0). It only zooms the pane and the page
-// scales the text (state `terminal`). A terminal that comes to a window nika resized gets the size back at once (a refit); a `terminal`
-// lease is sized to the panel again only after no terminal showed the window for GROW_MS. The restore resizes back only a size nika set.
+// F4 (design-F4): while the session window has no focus nika never resizes a window that a terminal shows (`#{window_active_clients}` above 0).
+// It only zooms the pane and the page scales the text (state `terminal`). A `terminal` lease is sized to the panel again only after no terminal
+// showed the window for GROW_MS. The restore resizes back only a size nika set.
+// F9 (design-F9, owner ruling 2026-11-16, "the focused one wins"): the page sends its focus with every request (`focus`, a boolean, false when
+// absent). A page with focus gets the panel's size even while a terminal shows the window (the terminal shows dots); a page without focus yields
+// as in F4. Every size switch is one in place move on the same lease, with no release and no change of tag or zoom: GIVE (the window's own size
+// back, then its `window-size` option) and TAKE (the panel's size). At most TAKE_MAX focus takes per window in TAKE_SPAN_MS; a give is never limited.
 import { randomBytes } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -29,6 +33,9 @@ export const RELEASE_ALL_MS = 3000; // bound of releaseAll() and recover()
 export const LEASE_FILE_MAX = 16 * 1024;
 export const LEASE_FILES_MAX = 20;
 export const FIT_RATE = 4; // requests per second per pane for each method (PUT and DELETE have separate buckets); enforced by the route
+export const TAKE_MAX = 12; // F9: at most this many focus takes that resize, per window, in TAKE_SPAN_MS
+export const TAKE_SPAN_MS = 60000;
+const TAKES_MAX = 64; // F9: windows remembered by `takes` (the oldest is dropped first), like MARKS_MAX
 const MARKS_MAX = 64;
 const NOTE_MS = 2000; // a PUT open:false this soon after the page's own DELETE is a late heartbeat, not a page that wants the window
 const NOTES_MAX = 64;
@@ -41,7 +48,7 @@ const FIT_FORMAT = ['#{pane_id}', '#{window_id}', '#{window_panes}', '#{window_z
 /** The `@nika-role` values of the panes nika's own spawn splits into a window (F2). Never `orchestrator`; any other text is no role. */
 const NIKA_PANES = new Set(['agent', 'sub-orchestrator']);
 const FILE_KEYS = ['v', 'nonce', 'window', 'pane', 'panes', 'zoomed0', 'active0', 'width0', 'height0', 'size0', 'layout0', 'layout1', 'cols', 'rows', 'resized', 'userZoom', 'at'];
-const BODY_MESSAGE = 'cols must be an integer 40–400, rows 10–200, open a boolean';
+const BODY_MESSAGE = 'cols must be an integer 40–400, rows 10–200, open a boolean, focus a boolean when present';
 
 const isInt = (v, lo, hi) => Number.isInteger(v) && v >= lo && v <= hi;
 const matches = (re, v) => typeof v === 'string' && re.test(v);
@@ -60,11 +67,16 @@ const BUSY = { status: 409, body: { error: 'busy', message: 'another fit request
 const PANE_BUSY = { status: 409, body: { error: 'busy', message: 'Claude is busy with another action on this pane. Try again.' } };
 const paneBusy = (e) => e?.code === 'EPANEBUSY';
 
-/** `{ value: { cols, rows, open } }` for exactly `{ cols, rows, open }` in range, else `{ error: <message> }`. The route and the controller share it. */
+/**
+ * `{ value: { cols, rows, open, focus } }` for exactly `{ cols, rows, open }` or `{ cols, rows, open, focus }` in range (F9: `focus` a boolean; absent
+ * reads as false, the safe side: an unfocused page yields to a terminal as in F4), else `{ error: <message> }`. The route and the controller share it.
+ */
 export function checkFitBody(body) {
-  const ok = body !== null && typeof body === 'object' && !Array.isArray(body) && Object.keys(body).length === 3
-    && isInt(body.cols, 40, 400) && isInt(body.rows, 10, 200) && typeof body.open === 'boolean';
-  return ok ? { value: { cols: body.cols, rows: body.rows, open: body.open } } : { error: BODY_MESSAGE };
+  const keys = body !== null && typeof body === 'object' && !Array.isArray(body) ? Object.keys(body) : null;
+  const hasFocus = keys !== null && Object.hasOwn(body, 'focus');
+  const ok = keys !== null && keys.length === (hasFocus ? 4 : 3)
+    && isInt(body.cols, 40, 400) && isInt(body.rows, 10, 200) && typeof body.open === 'boolean' && (!hasFocus || typeof body.focus === 'boolean');
+  return ok ? { value: { cols: body.cols, rows: body.rows, open: body.open, focus: body.focus === true } } : { error: BODY_MESSAGE };
 }
 
 /** `list-panes -a` text → Map pane id → row; a row that does not parse is dropped. A tag that is not a nonce reads `?` (foreign), never trusted. */
@@ -127,8 +139,9 @@ function parseLease(text, nonce, at) {
   if (!ok) return null;
   const lease = {};
   for (const k of FILE_KEYS) lease[k] = o[k];
-  // F4: a lease read from a file may have resized its window before the crash, so its restore sends the resize back (`sized`); `awayAt` is memory only
-  return { ...lease, lastBeat: at, state: null, reason: null, seen: null, done: false, known: null, waitAt: null, sized: true, awayAt: null };
+  // F4: a lease read from a file may have resized its window before the crash, so its restore sends the resize back (`sized`); `awayAt` is memory only.
+  // F9: `focus` and `viewed` are memory only too (a lease from a file is only released, never moved)
+  return { ...lease, lastBeat: at, state: null, reason: null, seen: null, done: false, known: null, waitAt: null, sized: true, awayAt: null, focus: false, viewed: false };
 }
 const fileOf = (l) => Object.fromEntries(FILE_KEYS.map((k) => [k, l[k]]));
 const leaseText = (l) => JSON.stringify(fileOf(l));
@@ -136,18 +149,18 @@ const leaseName = (nonce) => `fit-${nonce_(nonce)}.json`;
 /** The window size nika expects while it holds the lease: the panel's after a resize, else the original. */
 const expOf = (l) => (l.resized ? [l.cols, l.rows] : [l.width0, l.height0]);
 /**
- * F4: never resize a window a terminal shows (`viewed`); else resize only when it cannot squeeze other panes: one pane, or a panel at least as
- * big as the window (design 2.1 rows 8, 11, 12; design-F4 section 3.1).
+ * F4 + F9: `yields` = a terminal shows the window and the page has no focus (or a refit keeps the terminal form): then nika never resizes it. Else
+ * resize only when it cannot squeeze other panes: one pane, or a panel at least as big as the window (design 2.1 rows 8, 11, 12; design-F4 section 3.1).
  */
-function plan(panes, C, R, w0, h0, viewed = false) {
-  if (viewed) return { target: [w0, h0], state: 'terminal', reason: null };
+function plan(panes, C, R, w0, h0, yields = false) {
+  if (yields) return { target: [w0, h0], state: 'terminal', reason: null };
   const fits = panes === 1 || (C >= w0 && R >= h0);
   return { target: fits ? [C, R] : [w0, h0], state: fits ? 'fitted' : 'zoomed', reason: fits ? null : 'panel-smaller' };
 }
 /** F4: the lease is in the terminal form: a terminal sizes the window, nika only keeps the tag and the zoom. Memory only, never in the lease file. */
 const toTerminal = (l) => { l.state = 'terminal'; l.reason = null; l.awayAt = null; };
-/** F4: the lease keeps the terminal form: it has it, and no terminal has been away for GROW_MS yet. */
-const holdsTerminal = (l, at) => l.state === 'terminal' && !(l.awayAt !== null && at - l.awayAt >= GROW_MS);
+/** F4 + F9: the lease keeps the terminal form: the page has no focus, the lease has the form, and no terminal has been away for GROW_MS yet. */
+const holdsTerminal = (l, at) => !l.focus && l.state === 'terminal' && !(l.awayAt !== null && at - l.awayAt >= GROW_MS);
 
 const defaultLog = (m) => process.stderr.write(`${m}\n`);
 const defaultSleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms).unref?.(); });
@@ -161,7 +174,7 @@ const defaultSchedule = (fn, ms) => {
  * exec(cmd, argv) is the shared execFile wrapper; `lock(paneId, fn)` runs fn as the only control action on the pane (the
  * session controller's per-pane lock) and resolves with fn's result; `stateDir` is nika's state dir (the lease files live in
  * `<stateDir>/fit/`); `schedule(fn, ms)` starts the watch and returns its cancel function; `sleep(ms)` bounds releaseAll and recover.
- * hold(id, { cols, rows, open }) and release(id) return { status, body } like the other controllers; releaseWindow(w) → boolean;
+ * hold(id, { cols, rows, open, focus }) and release(id) return { status, body } like the other controllers; releaseWindow(w) → boolean;
  * releaseAll() → number of leases released; recover() → { released, dropped }; size() → number of leases held.
  */
 export function createFit({
@@ -174,6 +187,7 @@ export function createFit({
   const queues = new Map(); // @W → { tail, ops: [{ pane }] }: one acquire, renew or release at a time per window
   const marks = new Map(); // @W → 'user-change' | 'changed': the window stays off until the page sends open:true
   const notes = new Map(); // @W → time of the page's own DELETE (M1): a late heartbeat of the closed page must not fit the window again
+  const takes = new Map(); // F9: @W → times of the last focus takes that sent resize-window (memory only, TAKES_MAX windows)
   let finished = 0; // queued operations finished so far: a listing taken across a change is stale
   let cancel = null;
   let ticking = false;
@@ -290,7 +304,7 @@ export function createFit({
     const snap = await listing();
     const me = claudePane(snap, lease.pane);
     if (!me || me.window !== lease.window) return out;
-    await decide(lease.pane, lease.cols, lease.rows, false, snap, me, stay);
+    await decide(lease.pane, lease.cols, lease.rows, false, lease.focus, snap, me, stay);
     const next = leases.get(lease.window);
     if (next && next !== lease && next.pane === lease.pane) {
       next.lastBeat = lease.lastBeat;
@@ -298,23 +312,46 @@ export function createFit({
     }
     return out;
   });
+  /**
+   * F9: one in place move (`give` or `take`) from the watch, inside the window queue like a refit. A move that cannot start because the pane is busy keeps
+   * the lease (the next tick tries again); any other failure logs one line and gives the window back with no mark: never a retry loop.
+   */
+  const moveQueued = (lease, act) => enqueue(lease.window, lease.pane, false, async () => {
+    if (lease.done || leases.get(lease.window) !== lease) return 'dropped';
+    try {
+      return await (act === 'give' ? give(lease) : take(lease));
+    } catch (e) {
+      fail(lease, act, e);
+      if (!paneBusy(e)) await releaseNow(lease).catch((x) => fail(lease, 'cleanup', x));
+      return 'failed';
+    }
+  });
+  /** F9: the same move from a page request (inside the window queue already): a failure other than a busy pane gives the window back, then reaches the caller. */
+  async function inPlace(lease, act, size) {
+    try {
+      return await (act === 'give' ? give(lease, size) : take(lease, size));
+    } catch (e) {
+      if (!paneBusy(e)) await releaseNow(lease).catch((x) => fail(lease, 'cleanup', x));
+      throw e;
+    }
+  }
 
   // ---- what the watch and a renew look at ---------------------------------------------------------------------------------
   const USER = { act: 'release', mark: 'user-change' };
-  const AGAIN = Symbol('again'); // renew gave the window back for a refit, or verify saw a terminal come: decide goes on to acquire
-  // F4 verdicts (design-F4 section 4.1). VIEW and AWAY only change memory; both refits give the window back and take it again (F2's refit).
+  const AGAIN = Symbol('again'); // renew gave the window back for F2's refit: decide goes on to acquire
+  // F4 verdicts (design-F4 section 4.1). VIEW and AWAY only change memory.
   const VIEW = { act: 'view' }; // a terminal shows a window nika did not resize: the lease becomes `terminal`, no tmux call
   const AWAY = { act: 'away' }; // terminal lease, no terminal now, the GROW_MS grace is not over: the watch notes when it started
-  const SHRINK = { act: 'refit' }; // a terminal shows a window nika resized: give the size back now
-  const GROW = { act: 'refit', grow: true }; // terminal lease, no terminal for GROW_MS: fit to the panel again
+  // F9 verdicts (replace F4's SHRINK and GROW refits): in place moves on the same lease
+  const GIVE = { act: 'give' }; // the page has no focus and a terminal shows a window nika resized: the window's size goes back to the terminal
+  const TAKE = { act: 'take' }; // the page has focus (or the terminal has been away for GROW_MS): plan the window again with the panel's size
   /** F2: the panes of the lease's window as nika last saw them: true for a pane whose role is one of NIKA_PANES. Memory only, never in the lease file. */
   const remember = (lease, snap) => { lease.known = new Map(rowsOf(snap, lease.window).map((r) => [r.pane, NIKA_PANES.has(r.role)])); };
   /**
    * null (all as nika left it), { act: 'drop' } (tag or window gone: ids may be reused, touch nothing), { act: 'release', mark? },
-   * { act: 'refit' } (only nika's own agent panes came or went, or a terminal came to a window nika resized, or the GROW_MS grace of a
-   * terminal lease is over: give the window back and fit it again), { act: 'wait' } (a new pane has no role yet: nika's spawn tags it right
-   * after the split, so look again at the next tick), or (F4) { act: 'view' } / { act: 'away' } (memory only, see VIEW and AWAY).
-   * `at` is now().
+   * { act: 'refit' } (only nika's own agent panes came or went: give the window back and fit it again), { act: 'wait' } (a new pane has no role
+   * yet: nika's spawn tags it right after the split, so look again at the next tick), (F4) { act: 'view' } / { act: 'away' } (memory only, see VIEW
+   * and AWAY), or (F9) { act: 'give' } / { act: 'take' } (an in place move, see GIVE and TAKE). `at` is now().
    */
   function observe(lease, snap, at) {
     const win = rowsOf(snap, lease.window);
@@ -329,10 +366,15 @@ export function createFit({
     const unzoomed = lease.panes > 1 && (m.zoomed !== 1 || m.active !== 1);
     const sameSet = !lease.known || (win.length === lease.known.size && win.every((r) => lease.known.has(r.pane)));
     if (!unzoomed && m.panes === lease.panes && sizeOk && sameSet) {
-      // Judged here, inside "nothing else changed": a user who unzooms in the tick a terminal arrives stays a user change (W7 Q6)
-      if (viewed) return lease.resized ? SHRINK : lease.state === 'terminal' ? null : VIEW;
+      // Judged here, inside "nothing else changed": a user who unzooms in the tick a terminal arrives or the focus changes stays a user change (W7 Q6)
+      if (lease.focus) { // F9: the page has focus: the panel wins over any terminal
+        if (lease.resized) return null; // the window has the panel's size (manual): nothing to do
+        // the terminal form, or a window that followed its terminal to another size: plan it again
+        return lease.state === 'terminal' || m.winW !== lease.width0 || m.winH !== lease.height0 ? TAKE : null;
+      }
+      if (viewed) return lease.resized ? GIVE : lease.state === 'terminal' ? null : VIEW;
       if (lease.state !== 'terminal') return null;
-      return holdsTerminal(lease, at) ? AWAY : GROW;
+      return holdsTerminal(lease, at) ? AWAY : TAKE;
     }
     // Something changed. Only nika's own agent panes coming or going keeps the fit on. A split (without -Z) unzooms the window and
     // makes the new pane active, and so does a pane that exits: when panes came or went, the zoom and the active pane say nothing about the user.
@@ -368,9 +410,15 @@ export function createFit({
       for (const lease of [...leases.values()]) {
         // a window whose request is still running is left to that request
         if (queues.has(lease.window) || leases.get(lease.window) !== lease) continue;
+        const row = snap.get(lease.pane);
+        if (row) lease.viewed = row.clients > 0; // F9: the answer of a heartbeat says `terminal` for a fitted window a terminal shows; it reads this
         let verdict = observe(lease, snap, now());
-        // a page that is gone (no heartbeat for LAPSE_MS) is never kept waiting for, never refitted and never moved to the terminal form: its window is only given back
-        if (now() - lease.lastBeat > LAPSE_MS && (!verdict || ['wait', 'refit', 'view', 'away'].includes(verdict.act))) verdict = { act: 'release' };
+        // a page that is gone (no heartbeat for LAPSE_MS) is never kept waiting for, never refitted, given a move or moved to the terminal form: its window is only given back
+        if (now() - lease.lastBeat > LAPSE_MS && (!verdict || ['wait', 'refit', 'view', 'away', 'give', 'take'].includes(verdict.act))) verdict = { act: 'release' };
+        if (verdict?.act === 'take' && lease.focus && capped(lease.window, now())) { // F9: 12 focus takes in the last minute: wait for it to free up (memory only)
+          if (lease.state === 'terminal') lease.reason = 'switching';
+          verdict = null;
+        }
         if (!verdict || verdict.act === 'view' || verdict.act === 'away') {
           remember(lease, snap); // the roles may have been set since the last look
           lease.waitAt = null;
@@ -385,6 +433,7 @@ export function createFit({
         }
         if (verdict.act === 'drop') await dropLease(lease);
         else if (verdict.act === 'refit') await refitQueued(lease).catch((e) => fail(lease, 'refit', e));
+        else if (verdict.act === 'give' || verdict.act === 'take') await moveQueued(lease, verdict.act);
         else await releaseQueued(lease, verdict.mark).catch((e) => fail(lease, 'watch', e));
       }
     } finally {
@@ -395,7 +444,12 @@ export function createFit({
   // ---- answers ------------------------------------------------------------------------------------------------------------
   const reply = (state, reason, size, panes, userZoom) => ({ status: 200, body: { fit: { state, reason, pane: { cols: size[0], rows: size[1] }, panes, userZoom } } });
   const fromRow = (state, reason, row) => reply(state, reason, [row.paneW, row.paneH], row.panes, row.zoomed === 1 && row.active === 1);
-  const answer = (l) => reply(l.state, l.reason, l.seen, l.panes, l.userZoom);
+  /**
+   * F9: `fitted` says when a terminal shows the window too (nika sized it to the panel because the page has focus; the terminal shows dots), and
+   * `switching` is said only to a page with focus (a blur after the cap leaves a plain `terminal`).
+   */
+  const reasonOf = (l) => (l.state === 'fitted' && l.viewed ? 'terminal' : l.state === 'terminal' ? (l.focus && l.reason === 'switching' ? 'switching' : null) : l.reason);
+  const answer = (l) => reply(l.state, reasonOf(l), l.seen, l.panes, l.userZoom);
   /**
    * The answer of a fit that ended in a release (F2): the pane as the window is after it, not as the fit left it. `userZoom` is the user's own
    * zoom only: it needs the lease's and the listing's. If the listing fails, the pre-fit snapshot is what nika restored to.
@@ -516,10 +570,6 @@ export function createFit({
     // The pane height may be eh or eh-1: tmux reserves one row for `pane-border-status top|bottom` even on a zoomed or only pane.
     const ok = m.tag === lease.nonce && m.panes === lease.panes && (lease.panes === 1 || (m.zoomed === 1 && m.active === 1))
       && (term || (m.winW === ew && m.winH === eh && m.paneW === ew && (m.paneH === eh || m.paneH === eh - 1)));
-    if (ok && lease.resized && m.clients > 0) { // F4 (spike S16 race): a terminal came between nika's resize and this read-back: give the size back, no mark
-      await releaseNow(lease);
-      return AGAIN;
-    }
     const layout = ok ? await readLayout(lease.window) : null;
     if (layout !== null) lease.layout1 = layout;
     const text = layout !== null ? leaseText(lease) : null;
@@ -531,11 +581,107 @@ export function createFit({
     lease.seen = [m.paneW, m.paneH];
     remember(lease, snap); // F2: the panes of the window as nika left it
     lease.waitAt = null;
+    lease.viewed = m.clients > 0;
+    // F9 (spike S16 race): a terminal came between nika's resize and this read-back while the page has no focus: give the size back in place, in this
+    // request. `give` ends in this function with `resized` false, so it can never come back here to give again.
+    if (lease.resized && m.clients > 0 && !lease.focus) return give(lease);
     return answer(lease);
   }
 
-  /** `noResize`: the caller already knows a terminal has the window (a retry after verify saw one, or a refit inside the terminal grace). */
-  async function acquire(id, C, R, snap, me, noResize = false) {
+  // ---- GIVE and TAKE (F9): in place, inside the window queue; each tmux change inside the pane lock --------------------------------
+  const capped = (w, at) => (takes.get(w) ?? []).filter((t) => at - t < TAKE_SPAN_MS).length >= TAKE_MAX;
+  function noteTake(w, at) {
+    const t = (takes.get(w) ?? []).filter((x) => at - x < TAKE_SPAN_MS);
+    t.push(at);
+    takes.delete(w);
+    takes.set(w, t.slice(-TAKE_MAX));
+    if (takes.size > TAKES_MAX) takes.delete(takes.keys().next().value);
+  }
+  /**
+   * Plan the window again with the panel's size: focus came, the terminal has been away for GROW_MS, or a terminal resized a window nika did not.
+   * No release, no tag change, no zoom change. A page with focus is held to TAKE_MAX resizing takes per window in TAKE_SPAN_MS; a take that is
+   * not allowed answers `terminal / switching` and the watch takes when the minute frees up.
+   */
+  async function take(lease, size = null) {
+    const w = lease.window;
+    // `size` = [cols, rows] of the request that asked for the move: kept only once the move is allowed to go on (the lease is judged against the
+    // size it holds, so a new panel size is never written before the window has been looked at)
+    const adopt = () => { if (size) Object.assign(lease, { cols: size[0], rows: size[1] }); };
+    if (lease.focus && capped(w, now())) {
+      if (lease.state === 'terminal') lease.reason = 'switching';
+      adopt(); // a take that is not allowed: nothing is resized or judged, and the watch takes with the newest panel size when the minute frees up
+      return answer(lease);
+    }
+    let out = 'skip';
+    await lock(lease.pane, async () => {
+      const snap = await listing();
+      const v = observe(lease, snap, now());
+      if (v?.act !== 'take') {
+        out = v?.act === 'release' && v.mark ? 'user' : 'skip';
+        return;
+      }
+      // a window-size the user set while nika held none is the user's: while nika holds a size it set, the option is `manual` (its own resize-window)
+      if ((await readOption(w)) !== (lease.sized ? 'manual' : lease.size0)) {
+        out = 'user';
+        return;
+      }
+      const m = snap.get(lease.pane);
+      adopt();
+      if (!lease.sized) { // the window's own size now (it followed its terminal): the restore's R3 target. A size nika set is not the window's own.
+        lease.width0 = m.winW;
+        lease.height0 = m.winH;
+      }
+      lease.viewed = m.clients > 0;
+      const { target, state, reason } = plan(lease.panes, lease.cols, lease.rows, m.winW, m.winH, lease.viewed && !lease.focus);
+      Object.assign(lease, { state, reason, awayAt: null, resized: target[0] !== lease.width0 || target[1] !== lease.height0 });
+      if (target[0] !== m.winW || target[1] !== m.winH) {
+        lease.sized = true; // set before the call, as in A4: a call that failed may still have resized the window
+        if (lease.focus) noteTake(w, now());
+        await tmux(ARGV.size(w, target[0], target[1]));
+      }
+      out = 'done';
+    });
+    if (out === 'user') {
+      await releaseNow(lease, 'user-change');
+      return restored(lease, 'user-change');
+    }
+    return out === 'done' ? verify(lease) : answer(lease);
+  }
+  /**
+   * Give the window's size back to the terminal that shows it: the page lost focus, or a terminal came to a window nika resized while the page has none.
+   * The lease, the tag and the zoom stay. The resize back goes to the window's own size from just before nika's last resize (width0/height0).
+   */
+  async function give(lease, size = null) {
+    const w = lease.window;
+    let out = 'skip';
+    await lock(lease.pane, async () => {
+      const snap = await listing();
+      const row = snap.get(lease.pane);
+      if (row) lease.viewed = row.clients > 0; // the terminal may have left since the verdict: the answer below must not say it still shows the window
+      const v = observe(lease, snap, now());
+      if (v?.act !== 'give') {
+        out = v?.act === 'release' && v.mark ? 'user' : 'skip';
+        return;
+      }
+      const m = snap.get(lease.pane);
+      if (lease.sized && (m.winW !== lease.width0 || m.winH !== lease.height0)) await tmux(ARGV.size(w, lease.width0, lease.height0)); // R3
+      await tmux(lease.size0 === null ? ARGV.optUnset(w) : ARGV.optSet(w, lease.size0)); // R4: the window follows its terminal again
+      lease.resized = false;
+      lease.sized = false; // only after both calls: a call that failed leaves the restore's R3 armed
+      lease.viewed = true;
+      toTerminal(lease);
+      if (size) Object.assign(lease, { cols: size[0], rows: size[1] }); // only now: while the lease was resized, its cols and rows are the size the window must have
+      out = 'done';
+    });
+    if (out === 'user') {
+      await releaseNow(lease, 'user-change');
+      return restored(lease, 'user-change');
+    }
+    return out === 'done' ? verify(lease) : answer(lease);
+  }
+
+  /** `noResize`: the caller already knows a terminal has the window (a refit inside the terminal grace). `focus`: the page has focus (F9). */
+  async function acquire(id, C, R, snap, me, noResize = false, focus = false) {
     const w = me.window;
     const a0 = rowsOf(snap, w).find((r) => r.active === 1)?.pane;
     const o0 = await readOption(w);
@@ -544,11 +690,12 @@ export function createFit({
     if (!a0) return fromRow('blocked', 'changed', me);
     const layout0 = await readLayout(w);
     if (layout0 === null) return fromRow('blocked', 'changed', me);
-    const { target, state, reason } = plan(me.panes, C, R, me.winW, me.winH, noResize || me.clients > 0);
+    const { target, state, reason } = plan(me.panes, C, R, me.winW, me.winH, noResize || (me.clients > 0 && !focus));
     const lease = {
       v: 1, nonce: randomBytes(8).toString('hex'), window: w, pane: id, panes: me.panes, zoomed0: me.zoomed, active0: a0, width0: me.winW, height0: me.winH,
       size0: o0, layout0, layout1: layout0, cols: C, rows: R, resized: target[0] !== me.winW || target[1] !== me.winH, userZoom: me.zoomed === 1, at: now(), lastBeat: now(),
       state, reason, seen: [me.paneW, me.paneH], pre: [me.paneW, me.paneH], done: false, known: null, waitAt: null, sized: false, awayAt: null,
+      focus, viewed: me.clients > 0, // F9: memory only
     };
     const text = leaseText(lease);
     if (Buffer.byteLength(text) > LEASE_FILE_MAX) return fromRow('blocked', 'changed', me);
@@ -574,7 +721,7 @@ export function createFit({
           refusal = fromRow('blocked', 'changed', m);
           return;
         }
-        if (m.clients > 0) { // F4: a terminal came during the wait (the window still has the size nika planned on): no resize
+        if (m.clients > 0 && !focus) { // F4: a terminal came during the wait (the window still has the size nika planned on) and the page has no focus: no resize
           toTerminal(lease);
           lease.resized = false;
         }
@@ -608,6 +755,7 @@ export function createFit({
   /** The page asks again with the lease it holds and a new size (design 2.2). */
   async function renew(lease, C, R, snap, me) {
     const v = observe(lease, snap, now());
+    lease.viewed = me.clients > 0;
     if (v?.act === 'refit') { // nika's own agent pane came or went before the watch saw it: give the window back, decide() fits it again
       await releaseNow(lease);
       return AGAIN;
@@ -615,6 +763,10 @@ export function createFit({
     if (v?.act === 'wait') { // an untagged new pane: no resize this time (only the watch starts and ends the grace)
       lease.lastBeat = now();
       return answer(lease);
+    }
+    if (v?.act === 'give' || v?.act === 'take') { // F9: the focus changed, a terminal came or left: the move runs in this request, at the page's size
+      lease.lastBeat = now();
+      return inPlace(lease, v.act, [C, R]);
     }
     if (v && v.act !== 'view' && v.act !== 'away') { // the user changed the window since the last tick: release, never re-assert
       await releaseNow(lease, 'user-change');
@@ -641,6 +793,7 @@ export function createFit({
       let refit = false;
       let waiting = false;
       let viewing = false;
+      let move = null; // F9: 'give' | 'take'
       await lock(lease.pane, async () => {
         // N1: `snap` is older than the lock wait; a window the user changed meanwhile is released, never resized over. Judged against
         // the size nika holds (`kept`), not the one it is about to set. Nika's own agent split or exit (F2) is never resized over either,
@@ -650,6 +803,7 @@ export function createFit({
           if (v2.act === 'refit') refit = true;
           else if (v2.act === 'wait') waiting = true;
           else if (v2.act === 'view') viewing = true;
+          else if (v2.act === 'give' || v2.act === 'take') move = v2.act;
           else changed = true; // 'away' needs a terminal lease, which returned above: only a user change is left
           return;
         }
@@ -665,6 +819,10 @@ export function createFit({
         toTerminal(lease);
         Object.assign(lease, { cols: C, rows: R });
         return answer(lease);
+      }
+      if (move) { // F9: nothing was resized in this turn; the lease goes on as it was, and the move runs in this same request with the page's size
+        Object.assign(lease, kept);
+        return await (move === 'give' ? give(lease, [C, R]) : take(lease, [C, R]));
       }
       if (refit) {
         Object.assign(lease, kept); // the lease must describe what nika did, not what it was about to do
@@ -688,7 +846,7 @@ export function createFit({
   }
 
   /** Inside the window queue, with a listing that is fresh enough: the decision table of design 2.1, first matching row wins. */
-  async function decide(id, C, R, open, snap0, me0, noResize = false) {
+  async function decide(id, C, R, open, focus, snap0, me0, noResize = false) {
     let snap = snap0;
     let me = me0;
     const w = me.window;
@@ -736,12 +894,7 @@ export function createFit({
       if (now() - notes.get(w) <= NOTE_MS) return fromRow('blocked', 'user-change', me); // M1: the page just closed; this is its last heartbeat in flight
       notes.delete(w);
     }
-    let r = await acquire(id, C, R, snap, me, noResize);
-    if (r === AGAIN) { // F4: a terminal came to the window after nika resized it: it was given back; take it once more, never resizing
-      if (!(await look())) return NOT_FOUND;
-      r = await acquire(id, C, R, snap, me, true); // noResize: this one cannot answer AGAIN, so at most one retry
-    }
-    return r;
+    return acquire(id, C, R, snap, me, noResize, focus);
   }
 
   // ---- the interface ------------------------------------------------------------------------------------------------------
@@ -749,10 +902,12 @@ export function createFit({
     const checked = checkFitBody(req);
     if (!matches(PANE_ID, id)) return invalid('invalid pane id');
     if (checked.error) return invalid(checked.error);
-    const { cols, rows, open } = checked.value;
+    const { cols, rows, open, focus } = checked.value;
     try {
       const mine = byPane(id);
-      if (mine && mine.cols === cols && mine.rows === rows) { // a heartbeat at the held size: nothing to ask tmux
+      const moved = mine !== undefined && mine.focus !== focus;
+      if (mine) mine.focus = focus; // F9: memory only, recorded before anything can refuse the request: the watch acts on it within a second
+      if (mine && !moved && mine.cols === cols && mine.rows === rows) { // a heartbeat at the held size and focus: nothing to ask tmux
         mine.lastBeat = now();
         return answer(mine);
       }
@@ -761,11 +916,11 @@ export function createFit({
       const me = claudePane(snap, id);
       if (!me) return NOT_FOUND;
       return await enqueue(me.window, id, true, async (waited) => {
-        if (!waited && f0 === finished) return decide(id, cols, rows, open, snap, me);
+        if (!waited && f0 === finished) return decide(id, cols, rows, open, focus, snap, me);
         const again = await listing(); // something ran on tmux since the first listing: decide on a fresh one
         const now_ = claudePane(again, id);
         if (!now_) return NOT_FOUND;
-        return now_.window === me.window ? decide(id, cols, rows, open, again, now_) : BUSY;
+        return now_.window === me.window ? decide(id, cols, rows, open, focus, again, now_) : BUSY;
       });
     } catch (e) {
       if (e?.tmux) return tmuxFailure(e);

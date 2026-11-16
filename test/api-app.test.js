@@ -4256,20 +4256,49 @@ function fakeFit(answers = {}) {
 }
 const fitPane = (a, id, opts = {}) => a.call(opts.method ?? 'PUT', `/api/app/pane/${id.replace('%', '%25')}/fit`, opts);
 const FIT_BODY = { cols: 120, rows: 39, open: true };
+/** What the controller is handed for a 3-key body (F9): the route fills in the boolean `focus`, false when the page sent none. */
+const FIT_SEEN = { ...FIT_BODY, focus: false };
+const FIT_MESSAGE = 'cols must be an integer 40–400, rows 10–200, open a boolean, focus a boolean when present';
 const FIT_LIST = [TMUX, '-u', 'list-panes', '-a', '-F', ['#{pane_id}', '#{window_id}', '#{window_panes}', '#{window_zoomed_flag}', '#{pane_active}', '#{window_width}', '#{window_height}', '#{pane_width}', '#{pane_height}', '#{pane_current_command}', '#{@nika-fit}', '#{@nika-role}', '#{window_active_clients}'].join('\t')];
 
 describe('PUT|DELETE /api/app/pane/:id/fit', () => {
-  test('(+) PUT hands the pane and exactly { cols, rows, open } to the controller and relays its status, body and no-store', async () => {
+  // F9 (requirement changed): the controller is handed { cols, rows, open, focus }; a 3-key body arrives with focus false (the safe side)
+  test('(+) PUT hands the pane and exactly { cols, rows, open, focus } to the controller and relays its status, body and no-store', async () => {
     const fit = fakeFit();
     const { a } = await bootScreens({ over: { createFit: fit.factory } });
     const r = await fitPane(a, '%6', { json: FIT_BODY });
     assert.deepEqual([r.status, r.body], [200, FIT_OK(FIT_BODY).body]);
-    assert.deepEqual(fit.calls, [['hold', '%6', FIT_BODY]]);
+    assert.deepEqual(fit.calls, [['hold', '%6', FIT_SEEN]]);
     assert.equal(r.headers['cache-control'], 'no-store');
     fit.answers.hold = { status: 200, body: { fit: { state: 'zoomed', reason: 'panel-smaller', pane: { cols: 200, rows: 50 }, panes: 3, userZoom: false } } };
     a.clock.t += 2000;
     assert.deepEqual((await fitPane(a, '%6', { json: { cols: 40, rows: 10, open: false } })).body.fit.reason, 'panel-smaller');
-    assert.deepEqual(fit.calls.at(-1), ['hold', '%6', { cols: 40, rows: 10, open: false }]);
+    assert.deepEqual(fit.calls.at(-1), ['hold', '%6', { cols: 40, rows: 10, open: false, focus: false }]);
+  });
+
+  test('(+) F9: a PUT with focus true or false reaches the controller with that boolean, and a 200 relays its answer', async () => {
+    const fit = fakeFit();
+    const { a } = await bootScreens({ over: { createFit: fit.factory } });
+    const yes = await fitPane(a, '%6', { json: { ...FIT_BODY, focus: true } });
+    assert.deepEqual([yes.status, yes.body], [200, FIT_OK(FIT_BODY).body]);
+    assert.deepEqual(fit.calls.at(-1), ['hold', '%6', { ...FIT_BODY, focus: true }]);
+    a.clock.t += 2000;
+    assert.equal((await fitPane(a, '%6', { json: { ...FIT_BODY, focus: false } })).status, 200);
+    assert.deepEqual(fit.calls.at(-1), ['hold', '%6', { ...FIT_BODY, focus: false }]);
+  });
+
+  test('(−) F9: a focus that is not a boolean is 400 with the new message before the pane check (an eligible and an ineligible pane), the controller is not called and no rate slot is used', async () => {
+    const fit = fakeFit();
+    const { a } = await bootScreens({ over: { createFit: fit.factory } });
+    for (const focus of ['yes', 'true', 1, 0, null, [], {}]) { // (JSON drops `undefined`: that body has three keys and is the valid focus-less one)
+      for (const id of ['%6', '%5']) {
+        const r = await fitPane(a, id, { json: { ...FIT_BODY, focus } });
+        assert.equal(r.status, 400, `${String(focus)} on ${id}`);
+        assert.deepEqual([r.body.error, r.body.message], ['invalid', FIT_MESSAGE]);
+      }
+    }
+    assert.deepEqual(fit.calls, []);
+    for (let i = 0; i < 4; i += 1) assert.equal((await fitPane(a, '%6', { json: { ...FIT_BODY, focus: true } })).status, 200, 'all four slots are still free');
   });
 
   test('(+) a started pane is eligible for a fit like for any control', async () => {
@@ -4277,7 +4306,7 @@ describe('PUT|DELETE /api/app/pane/:id/fit', () => {
     const { a } = await bootScreens({ over: { createFit: fit.factory } });
     a.ctx.started.set('%8', { key: w.project.key, name: 'x', sessionId: null, role: 'agent', mode: 'plan' });
     assert.equal((await fitPane(a, '%8', { json: FIT_BODY })).status, 200);
-    assert.deepEqual(fit.calls, [['hold', '%8', FIT_BODY]]);
+    assert.deepEqual(fit.calls, [['hold', '%8', FIT_SEEN]]);
   });
 
   test('(+) DELETE hands the pane id to release and relays { released }', async () => {
@@ -4439,7 +4468,7 @@ describe('PUT|DELETE /api/app/pane/:id/fit', () => {
       for (const id of ['%6', '%5']) {
         const r = await fitPane(a, id, { json });
         assert.equal(r.status, 400, `${JSON.stringify(json)} on ${id}`);
-        assert.deepEqual([r.body.error, r.body.message], ['invalid', 'cols must be an integer 40–400, rows 10–200, open a boolean']);
+        assert.deepEqual([r.body.error, r.body.message], ['invalid', FIT_MESSAGE]); // F9 (requirement changed): the message names focus
       }
     }
     assert.deepEqual((await a.call('PUT', '/api/app/pane/%256/fit', { body: '[]', headers: { 'content-type': 'application/json' } })).body.error, 'invalid');

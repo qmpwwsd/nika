@@ -252,6 +252,8 @@ JS
 # F4 (0.5): and two checks with a terminal. A control-mode client (`tmux -C attach`, stdin held open by a pipe, like iTerm2's tmux integration)
 # counts as a terminal in #{window_active_clients}: (a) it shows the 3-pane window -> nika zooms it and never resizes it (state terminal);
 # (b) it attaches to a window nika resized -> within 2.5 s nika has given the size back, and the restore (R9) logs no difference.
+# F9 (0.5): and two checks with the page's focus. With a control-mode client attached, `focus: true` makes nika resize the window to the panel anyway
+# (a: one pane; b: three panes, the pane stays zoomed), and `focus: false` gives the size back in place: the lease, the tag and the zoom stay.
 check_fit() {
   local hold=(node -e 'setInterval(()=>{},1e9)') pa p3 p1 w3 w1
   CUR=fit
@@ -368,6 +370,62 @@ try {
   rec(del1b.body.released === true && differs().length === 0, 'e. fit F4b: the restore (R9) logs no difference', show(del1b.body) + ' ' + show(differs()));
 } finally {
   ctl1?.stop();
+}
+
+// F9 (a): the focused page wins. One pane, a control-mode client shows the window. focus true -> fitted (the terminal shows dots), the pane is the panel's size and
+// window-size is manual; focus false -> terminal, the size is the terminal's again, window-size is not manual, the tag is still the lease's nonce, the lease is held;
+// focus true again -> fitted; the release removes the tag and logs no difference (R9).
+let ctl1f = null;
+try {
+  await until(async () => (await clientsOf(w1)) === '0'); // the control client of F4b is gone
+  ctl1f = control(sess1);
+  const attached1f = await until(async () => (await clientsOf(w1)) === '1');
+  rec(attached1f, 'e. fit F9a: a control-mode client attaches and #{window_active_clients} reads 1 for its window', 'count ' + show(await clientsOf(w1)));
+  const diffs0 = differs().length;
+  const optionOf = (w) => tmux('show-options', '-w', '-t', w, 'window-size');
+  const tagOf = (w) => tmux('display-message', '-p', '-t', w, '#{@nika-fit}');
+  const take1 = await fit.hold(p1, { cols: 90, rows: 28, open: true, focus: true });
+  const nonce1 = await tagOf(w1);
+  rec(take1.status === 200 && take1.body.fit.state === 'fitted' && take1.body.fit.reason === 'terminal' && (await sized(p1)) === '90x28' && (await optionOf(w1)) === 'window-size manual' && nonce1.length === 16,
+    'e. fit F9a: focus true with a terminal -> fitted / terminal, pane 90x28, window-size manual', show(take1.body) + ' ' + (await sized(p1)) + ' option=' + show(await optionOf(w1)));
+  const give1 = await fit.hold(p1, { cols: 90, rows: 28, open: false, focus: false });
+  const gave1 = await until(async () => (await sized(p1)) !== '90x28', 2500);
+  rec(give1.status === 200 && give1.body.fit.state === 'terminal' && gave1 && (await optionOf(w1)) !== 'window-size manual' && (await tagOf(w1)) === nonce1 && fit.size() === 1,
+    'e. fit F9a: focus false -> terminal, the terminal has its size again, window-size not manual, the tag is still the nonce, the lease is held', show(give1.body) + ' ' + (await sized(p1)) + ' option=' + show(await optionOf(w1)) + ' size ' + fit.size());
+  const again1 = await fit.hold(p1, { cols: 90, rows: 28, open: false, focus: true });
+  rec(again1.status === 200 && again1.body.fit.state === 'fitted' && again1.body.fit.reason === 'terminal' && (await sized(p1)) === '90x28',
+    'e. fit F9a: focus true again -> fitted / terminal, pane 90x28', show(again1.body) + ' ' + (await sized(p1)));
+  const del1f = await fit.release(p1);
+  rec(del1f.body.released === true && (await tagOf(w1)) === '' && differs().length === diffs0 && fit.size() === 0,
+    'e. fit F9a: the release removes the tag and logs no difference (R9)', show(del1f.body) + ' tag=' + show(await tagOf(w1)) + ' ' + show(differs()));
+} finally {
+  ctl1f?.stop();
+}
+
+// F9 (b): three panes, a control-mode client (80x24), a panel bigger than that. focus true -> fitted and zoomed; focus false -> terminal, still zoomed, still 3 panes
+// (no flash of the other panes); the release unzooms and logs no difference.
+let ctl3f = null;
+try {
+  await until(async () => (await clientsOf(w3)) === '0'); // the control client of F4a is gone
+  ctl3f = control(sess3);
+  const attached3f = await until(async () => (await clientsOf(w3)) === '1');
+  rec(attached3f, 'e. fit F9b: a control-mode client attaches and #{window_active_clients} reads 1 for the 3-pane window', 'count ' + show(await clientsOf(w3)));
+  const diffs3 = differs().length;
+  const take3 = await fit.hold(p3, { cols: 120, rows: 40, open: true, focus: true });
+  const during3f = await snap(w3);
+  rec(take3.status === 200 && take3.body.fit.state === 'fitted' && during3f.window.includes('zoomed=1') && (await sized(p3)) === '120x40',
+    'e. fit F9b: focus true -> fitted, the window is zoomed, pane 120x40', show(take3.body) + ' ' + during3f.window + ' ' + (await sized(p3)));
+  const give3 = await fit.hold(p3, { cols: 120, rows: 40, open: false, focus: false });
+  const gave3 = await until(async () => (await sized(p3)) !== '120x40', 2500);
+  const mid3f = await snap(w3);
+  rec(give3.status === 200 && give3.body.fit.state === 'terminal' && gave3 && mid3f.window.includes('zoomed=1') && mid3f.window.includes('panes=3'),
+    'e. fit F9b: focus false -> terminal, the window is still zoomed and still has 3 panes', show(give3.body) + ' ' + mid3f.window + ' ' + (await sized(p3)));
+  const del3f = await fit.release(p3);
+  const after3f = await snap(w3);
+  rec(del3f.body.released === true && !after3f.window.includes('zoomed=1') && after3f.window.includes('tag=[]') && differs().length === diffs3,
+    'e. fit F9b: the release unzooms, removes the tag and logs no difference (R9)', show(del3f.body) + ' ' + after3f.window + ' ' + show(differs()));
+} finally {
+  ctl3f?.stop();
 }
 
 rec((await fit.releaseAll()) === 0 && fit.size() === 0, 'e. fit: nothing left held after the releases', 'size ' + fit.size());
