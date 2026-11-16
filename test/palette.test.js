@@ -47,7 +47,7 @@ describe('paletteQuery: when the message box is asking for a command', () => {
   });
 });
 
-describe('rankCommands: exact name, name prefix, name substring, description; stable; at most 50', () => {
+describe('rankCommands: exact name, name prefix, name substring, description; stable; no cap below the server\'s 1000', () => {
   const LIST = [
     cmd('copy', 'Copy the last response'),
     cmd('compact', 'Summarize the conversation'),
@@ -89,12 +89,33 @@ describe('rankCommands: exact name, name prefix, name substring, description; st
     assert.deepEqual(names(rankCommands(LIST, '')), names(LIST));
   });
 
-  test('(+) it returns at most 50 entries', () => {
-    const many = Array.from({ length: 80 }, (_, i) => cmd(`cmd${i}`, 'x'));
-    assert.equal(PALETTE_MAX, 50);
-    assert.equal(rankCommands(many, 'cmd').length, 50);
-    assert.equal(rankCommands(many, '').length, 50);
-    assert.deepEqual(names(rankCommands(many, 'cmd')), names(many.slice(0, 50)));
+  test('(+) a bare "/" lists every command, not 50: the owner\'s 162 entries all show', () => {
+    const all = Array.from({ length: 162 }, (_, i) => cmd(`cmd${i}`, 'x'));
+    assert.equal(rankCommands(all, '').length, 162);
+    assert.deepEqual(names(rankCommands(all, '')), names(all));
+    assert.equal(rankCommands(all, 'cmd').length, 162);
+  });
+
+  test('(+) the cap is the server\'s bound of 1000 entries', () => {
+    const many = Array.from({ length: 1200 }, (_, i) => cmd(`cmd${i}`, 'x'));
+    assert.equal(PALETTE_MAX, 1000);
+    assert.equal(rankCommands(many, 'cmd').length, 1000);
+    assert.equal(rankCommands(many, '').length, 1000);
+    assert.deepEqual(names(rankCommands(many, 'cmd')), names(many.slice(0, 1000)));
+  });
+
+  test('(+) the four tiers win over the order of the groups: the server order only breaks ties inside a tier', () => {
+    // the server order: project, personal, applied plugin, built-in, other plugin
+    const grouped = [
+      cmd('my-lint-helper', '', { source: 'project' }),
+      cmd('lint-all', '', { source: 'user' }),
+      cmd('team:lint', 'Run it', { source: 'plugin', plugin: 'team' }),
+      cmd('lint', 'The built-in', { source: 'builtin' }),
+      cmd('other:x', 'Runs lint on save', { source: 'plugin', plugin: 'other' }),
+      cmd('other:lint-fix', '', { source: 'plugin', plugin: 'other' }),
+    ];
+    assert.deepEqual(names(rankCommands(grouped, 'lint')), ['lint', 'lint-all', 'my-lint-helper', 'team:lint', 'other:lint-fix', 'other:x']);
+    assert.deepEqual(names(rankCommands(grouped, '')), names(grouped), 'a bare "/" keeps the group order');
   });
 
   test('(+) it does not change its input', () => {
@@ -229,6 +250,14 @@ describe('paletteView: what the list shows, in the exact copy of spec 9.7', () =
     const all = paletteView({ list: LIST, failed: false, query: '' });
     assert.equal(all.head, '3 commands');
     assert.equal(paletteView({ list: [LIST[0]], failed: false, query: '' }).head, '1 command');
+  });
+
+  test('(+) a bare "/" counts the real total (162), not 50, in the header and the announcement', () => {
+    const all = Array.from({ length: 162 }, (_, i) => cmd(`cmd${i}`));
+    const v = paletteView({ list: all, failed: false, query: '' });
+    assert.equal(v.items.length, 162);
+    assert.equal(v.head, '162 commands');
+    assert.equal(v.say, '162 commands. Up and Down to choose, Enter to insert, Escape to close.');
   });
 
   test('(+) nothing matches: the empty line names the query and says Enter still sends', () => {

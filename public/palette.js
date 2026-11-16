@@ -4,7 +4,7 @@
 
 const DOTS = String.fromCharCode(0x2026);
 
-export const PALETTE_MAX = 50; // options shown
+export const PALETTE_MAX = 1000; // options shown: the server's own bound (MAX_ENTRIES), so a bare "/" lists everything
 export const REFETCH_MS = 10000; // a later open fetches again only when the last good answer is older than this
 
 /** The text after a leading "/" while it has no whitespace, else null: that is when the message box is asking for a command. */
@@ -16,7 +16,8 @@ export function paletteQuery(value) {
 
 /**
  * The commands that match `query`, best first: exact name, name prefix, name substring, description substring. Case-insensitive,
- * stable inside a tier, at most PALETTE_MAX. An empty query keeps the server order. A plugin entry matches on its full
+ * stable inside a tier, at most PALETTE_MAX. An empty query keeps the server order (yours first: project, personal, applied
+ * plugins, built-ins, other plugins), and that order also breaks ties inside a tier. A plugin entry matches on its full
  * "<plugin>:<name>". The query is text, never a pattern.
  */
 export function rankCommands(list, query) {

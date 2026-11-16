@@ -18,6 +18,7 @@ const MAX_OPENS = 2000; // files opened per scan, whatever they turn out to hold
 const TEXT_MAX = 200;
 const CACHE_MS = 10_000;
 const CACHE_MAX = 16; // listings kept: a listing is reused for 10 s only, so this is more projects than ever ask within that time
+const ORDERINGS_MAX = 8; // orderings kept with one scan (one per applied list asked for within its 10 s)
 
 const KEY_LINE = /^([A-Za-z_][\w-]*):(?:[ \t]+(.*))?$/;
 const BLOCK_HEADER = /^[>|][+-]?\d?$/;
@@ -139,20 +140,31 @@ async function readSource(src, scan, limit) {
   return [...found.values()];
 }
 
-/** Appends the entries of one source to `out`; plugin entries are named `<plugin>:<name>` and the first of a full name wins (`seen`). */
-async function addSource(out, src, scan, source, plugin, seen) {
+/**
+ * Appends the entries of one source to `out`; plugin entries are named `<plugin>:<name>` and the first of a full name wins
+ * (`seen`). `plugin` is `{ key, name }` for a plugin source: `key` is the installed `name@marketplace`, which `keys` remembers
+ * for each of its entries (outside the entries themselves, so the key never reaches the answer).
+ */
+async function addSource(out, src, scan, source, plugin, seen, keys) {
   const room = MAX_ENTRIES - out.length;
   if (room <= 0) return;
   for (const e of await readSource(src, scan, room)) {
-    const name = plugin ? `${plugin}:${e.name}` : e.name;
+    const name = plugin ? `${plugin.name}:${e.name}` : e.name;
     if (seen?.has(name) || out.length >= MAX_ENTRIES) continue;
     seen?.add(name);
-    out.push(plugin ? { ...e, name, source, plugin } : { ...e, source });
+    const entry = plugin ? { ...e, name, source, plugin: plugin.name } : { ...e, source };
+    if (plugin) keys.set(entry, plugin.key);
+    out.push(entry);
   }
 }
 
+/**
+ * What a scan finds: `entries` in scan order (built-ins, user, project, plugins), `keys` (plugin entry → its `name@marketplace`)
+ * and `orderings` (applied list → the ordered answer, see `ordered`).
+ */
 async function scanAll(claudeDir, projectDir) {
   const scan = { opens: 0 };
+  const keys = new Map();
   const entries = BUILTIN_COMMANDS.map(({ name, description, argHint, dialog }) => (
     { name, description, argHint: argHint ?? '', source: 'builtin', ...(dialog && { dialog }) }
   ));
@@ -164,29 +176,64 @@ async function scanAll(claudeDir, projectDir) {
     const seen = new Set();
     for (const { name, installPath } of await listPluginDirs(claudeDir)) {
       if (scan.opens >= MAX_OPENS || entries.length >= MAX_ENTRIES) break;
-      await addSource(entries, { base: installPath, boundary: cacheReal }, scan, 'plugin', name.split('@')[0], seen);
+      await addSource(entries, { base: installPath, boundary: cacheReal }, scan, 'plugin', { key: name, name: name.split('@')[0] }, seen, keys);
     }
   }
   entries.forEach((e) => Object.freeze(e));
-  return Object.freeze(entries);
+  return { entries: Object.freeze(entries), keys, orderings: new Map() };
+}
+
+/** The plugin keys of an applied list: its strings; anything that is not a list of them gives none. */
+const appliedKeys = (applied) => (Array.isArray(applied) ? applied.filter((k) => typeof k === 'string') : []);
+
+/**
+ * The order the palette shows, from a scan and the plugins applied to the project (their `name@marketplace` keys, from nika's
+ * own project config): project commands, personal commands, commands of the applied plugins, built-ins, then the commands of
+ * every other installed plugin. Inside a group the scan order stays. A key that matches no installed plugin adds nothing, and
+ * a key is matched whole, never by its plugin name. A new frozen array each time; the entries are the scan's own frozen objects.
+ */
+export function orderCommands({ entries, keys }, applied = []) {
+  const on = new Set(appliedKeys(applied));
+  const group = { project: [], user: [], applied: [], builtin: [], other: [] };
+  for (const e of entries) {
+    if (e.source === 'plugin') group[on.has(keys.get(e)) ? 'applied' : 'other'].push(e);
+    else group[e.source].push(e);
+  }
+  return Object.freeze([...group.project, ...group.user, ...group.applied, ...group.builtin, ...group.other]);
 }
 
 const cache = lru(CACHE_MAX);
 const inflight = new Map();
 
+/** `orderCommands` once per applied list for one scan, so a repeated call returns the same frozen array while the scan is cached. */
+function ordered(scan, applied) {
+  const list = appliedKeys(applied);
+  const id = JSON.stringify(list);
+  let out = scan.orderings.get(id);
+  if (!out) {
+    if (scan.orderings.size >= ORDERINGS_MAX) scan.orderings.clear();
+    out = orderCommands(scan, list);
+    scan.orderings.set(id, out);
+  }
+  return out;
+}
+
 /**
- * Palette entries, frozen: built-ins first, then user, project (only with `projectDir`) and plugin entries.
- * `claudeDir` and `projectDir` come from the caller (nika's own project registry), never from a request. Cached 10 s per
- * claudeDir/projectDir pair; calls that arrive during a scan share it. `now` is injectable for tests.
+ * Palette entries, frozen, in the order of `orderCommands`: project commands (only with `projectDir`), personal ones, those of
+ * the plugins in `applied`, built-ins, then every other installed plugin's. `claudeDir`, `projectDir` and `applied` come from
+ * the caller (nika's own project registry and config), never from a request. The scan is cached 10 s per claudeDir/projectDir
+ * pair and calls that arrive during a scan share it; the order is applied per call, after the cache (and kept per applied
+ * list with the scan), so one project's plugin list never reaches another and a newly applied list shows at once. `now` is
+ * injectable for tests.
  */
-export function listCommands({ claudeDir, projectDir, now = Date.now() }) {
+export async function listCommands({ claudeDir, projectDir, applied = [], now = Date.now() }) {
   const key = `${claudeDir}\0${projectDir ?? ''}`;
   const hit = cache.get(key);
-  if (hit && now - hit.at >= 0 && now - hit.at < CACHE_MS) return Promise.resolve(hit.entries);
+  if (hit && now - hit.at >= 0 && now - hit.at < CACHE_MS) return ordered(hit.scan, applied);
   if (!inflight.has(key)) {
     inflight.set(key, scanAll(claudeDir, projectDir)
-      .then((entries) => { cache.set(key, { at: now, entries }); return entries; })
+      .then((scan) => { cache.set(key, { at: now, scan }); return scan; })
       .finally(() => inflight.delete(key)));
   }
-  return inflight.get(key);
+  return ordered(await inflight.get(key), applied);
 }

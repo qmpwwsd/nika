@@ -776,12 +776,14 @@ export function createAppApi({ secret, ctx, deps }) {
 
   route('GET', /^\/api\/app\/commands$/, 0, async ({ query }) => {
     let projectDir;
+    let applied = []; // the plugins applied to the project (nika's own saved list, never anything from the request): they come before the built-ins
     if (query.has('project')) {
       const { project, failure } = await projectOf({ project: query.get('project') });
       if (failure) return failure;
       projectDir = project.dir;
+      applied = (await getProjectConfig(project.key, ctx.env)).plugins;
     }
-    return { status: 200, body: { commands: await deps.listCommands({ claudeDir: ctx.claudeDir, projectDir, now: ctx.now() }) } };
+    return { status: 200, body: { commands: await deps.listCommands({ claudeDir: ctx.claudeDir, projectDir, applied, now: ctx.now() }) } };
   });
 
   route('GET', /^\/api\/app\/models$/, 0, async () => ({ status: 200, body: { models: MODEL_CATALOG } }));

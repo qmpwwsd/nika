@@ -13,6 +13,7 @@ import { createAppApi } from '../src/api-app.js';
 import { readHistory, readSubagentHistory } from '../src/collect/history.js';
 import { loadConfig, addProject, removeProject, getOrchestrator, setOrchestrator } from '../src/store.js';
 import { collect, findSession, findSessions } from '../src/model.js';
+import { listCommands as realListCommands } from '../src/collect/commands.js';
 import { startOrchestrator } from '../src/orchestrate.js';
 import { spawnAgent } from '../src/spawn.js';
 import { configDir, stateDir, reportsDir } from '../src/paths.js';
@@ -3152,6 +3153,87 @@ describe('GET /api/app/commands', () => {
       assert.equal(r.body.error, 'invalid');
     }
     assert.equal(f.calls.length, 0);
+  });
+
+  // 0.5: the plugins applied to the project (its saved list in nika's own config) decide the order of the answer
+  const saveList = (a, plugins, key = w.project.key) => a.call('PUT', `/api/app/projects/${key}/config`, { json: { plugins } });
+
+  test('(+) with a project key the plugins applied to it (its saved list, in nika\'s own config) are passed as `applied`', async () => {
+    const f = withList();
+    const a = await boot({ deps: makeDeps(f.deps) });
+    try {
+      assert.equal((await saveList(a, ['beta@market', 'alpha@market'])).status, 200);
+      assert.equal((await a.call('GET', `/api/app/commands?project=${w.project.key}`)).status, 200);
+      assert.deepEqual(f.calls[0].applied, ['beta@market', 'alpha@market']);
+    } finally {
+      await saveList(a, []);
+    }
+  });
+
+  test('(+) without a project key, and for a project with no saved list, `applied` is empty', async () => {
+    const f = withList();
+    const a = await boot({ deps: makeDeps(f.deps) });
+    await a.call('GET', '/api/app/commands');
+    await a.call('GET', `/api/app/commands?project=${w.project.key}`);
+    assert.deepEqual(f.calls.map((c) => c.applied), [[], []]);
+  });
+
+  test('(−) the list saved for one project never reaches another project\'s answer', async () => {
+    const extra = fs.mkdtempSync(path.join(os.tmpdir(), 'nika-api-cmds-proj-'));
+    const f = withList();
+    const a = await boot({ deps: makeDeps(f.deps) });
+    try {
+      const other = await addProject(extra, w.env);
+      assert.equal((await saveList(a, ['alpha@market'])).status, 200); // saved for w.project only
+      await a.call('GET', `/api/app/commands?project=${other.key}`);
+      await a.call('GET', '/api/app/commands');
+      await a.call('GET', `/api/app/commands?project=${w.project.key}`);
+      assert.deepEqual(f.calls.map((c) => c.applied), [[], [], ['alpha@market']]);
+      await a.call('DELETE', `/api/app/projects/${other.key}`);
+    } finally {
+      await saveList(a, []);
+      fs.rmSync(extra, { recursive: true, force: true });
+    }
+  });
+
+  test('(−) a plugin list in the request is ignored: `applied` comes only from the saved config', async () => {
+    const f = withList();
+    const a = await boot({ deps: makeDeps(f.deps) });
+    const q = `project=${w.project.key}&applied=alpha%40market&plugins=beta%40market&plugin=beta%40market`;
+    assert.equal((await a.call('GET', `/api/app/commands?${q}`)).status, 200);
+    assert.deepEqual(f.calls[0].applied, []);
+    assert.equal((await a.call('GET', '/api/app/commands?applied=alpha%40market')).status, 200);
+    assert.deepEqual(f.calls[1].applied, []);
+  });
+
+  test('(+) end to end with the real collector: the saved list decides which plugin\'s commands come before the built-ins, at once', async () => {
+    const claudeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nika-api-cmds-claude-'));
+    const md = (file) => { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, '---\ndescription: d\n---\n'); };
+    const install = (name) => {
+      const dir = path.join(claudeDir, 'plugins', 'cache', 'market', name, '1.0.0');
+      md(path.join(dir, 'commands', 'run.md'));
+      return dir;
+    };
+    md(path.join(claudeDir, 'commands', 'mine.md'));
+    const record = (name) => [{ scope: 'user', installPath: install(name), version: '1.0.0' }];
+    fs.writeFileSync(path.join(claudeDir, 'plugins', 'installed_plugins.json'), JSON.stringify({ version: 2, plugins: { 'alpha@market': record('alpha'), 'beta@market': record('beta') } }));
+    const a = await boot({ deps: makeDeps({ listCommands: realListCommands }), ctxOver: { claudeDir } });
+    const url = `/api/app/commands?project=${w.project.key}`;
+    const head = async () => {
+      const list = (await a.call('GET', url)).body.commands;
+      const firstBuiltin = list.findIndex((c) => c.source === 'builtin');
+      return { before: list.slice(0, firstBuiltin).map((c) => c.name), after: list.slice(firstBuiltin).filter((c) => c.source !== 'builtin').map((c) => c.name) };
+    };
+    try {
+      assert.deepEqual(await head(), { before: ['mine'], after: ['alpha:run', 'beta:run'] }, 'no list: plugins stay after the built-ins');
+      assert.equal((await saveList(a, ['beta@market'])).status, 200);
+      assert.deepEqual(await head(), { before: ['mine', 'beta:run'], after: ['alpha:run'] }, 'the new list shows at once, though the scan is cached');
+      assert.equal((await saveList(a, [])).status, 200);
+      assert.deepEqual(await head(), { before: ['mine'], after: ['alpha:run', 'beta:run'] });
+    } finally {
+      await saveList(a, []);
+      fs.rmSync(claudeDir, { recursive: true, force: true });
+    }
   });
 
   test('(−) POST is 405; without the secret 403', async () => {
