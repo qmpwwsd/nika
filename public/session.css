@@ -155,6 +155,10 @@ button.fit:hover, button.fit[aria-expanded="true"] { border-color: currentColor;
 .term:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
 .term.pass { box-shadow: inset 0 0 0 2px var(--accent); }
 .term-rows { width: max-content; min-width: 100%; font: var(--fs-term)/1.35 var(--mono); font-size: calc(var(--fs-term) * var(--fit-scale, 1)); white-space: pre; tab-size: 8; }   /* --fit-scale (W7): set by session.js through CSSOM when the pane is larger than the panel; ch and the row height are em-based, so the pane's grid stays exact */
+/* F10 (design F10 6.2): a new frame after nika's own resize fades in over 120 ms and, when the text grows, zooms in from the old size (--refit-from, set by session.js through CSSOM), anchored bottom-left where the input box and footer are; transform does not change layout. No animation under reduced motion (session.js removes the class after a timer then). */
+@keyframes nika-refit { from { opacity: 0.4; transform: scale(var(--refit-from, 1)); } to { opacity: 1; transform: none; } }
+.term-rows.refit { animation: nika-refit 120ms ease-out; transform-origin: 0 100%; }
+@media (prefers-reduced-motion: reduce) { .term-rows.refit { animation: none; } }
 /* the fit probe (W7): 100 glyphs in the unscaled terminal font, measured for the size of one cell; hidden, and at the top so it adds nothing to the scroll area */
 .fit-probe { position: absolute; top: 0; left: -9999px; visibility: hidden; pointer-events: none; font: var(--fs-term)/1.35 var(--mono); white-space: pre; }
 .tl { display: block; min-height: 1.35em; }

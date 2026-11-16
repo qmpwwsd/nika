@@ -7,7 +7,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
-import { panelSize, scaleFor, chipView, fitPanelView, stillOffSay, createFitPlanner, BEAT_MS, DEBOUNCE_MS, SCALE_MIN, FOCUS_SETTLE_MS, BLUR_SETTLE_MS, FOCUS_POLL_MS } from '../public/fit-ui.js';
+import {
+  panelSize, scaleFor, chipView, fitPanelView, stillOffSay, createFitPlanner, BEAT_MS, DEBOUNCE_MS, SCALE_MIN, FOCUS_SETTLE_MS, BLUR_SETTLE_MS, FOCUS_POLL_MS,
+  remeasure, askSize, frameReady, roomStep, refitFrom, createRedrawHold, HOLD_MS, HOLD_POLL_MS, ROOM_ROWS, REFIT_MS,
+} from '../public/fit-ui.js';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const DOT = '·';
@@ -304,10 +307,11 @@ const OK = (state = 'fitted', reason = null) => ({ status: 200, body: { fit: { s
  * A planner with a fake route: every body sent waits in `pending` until answer() gives its reply.
  * F9: `page.focus` is what io.focused() reads (change it, then call planner.focusChanged like the page's events do); `page.throws` makes it throw;
  * `focus: false` in the options and `noFocusIo: true` leave io.focused out altogether. log.quiet holds the `quiet` flag of each chip call that got one.
+ * F10: io.sized is the optional sink for the pane size of each 200 answer (`noSized: true` leaves it out); log.order is the order of the chip and sized calls.
  */
-function rig({ again = true, focus = false, noFocusIo = false } = {}) {
+function rig({ again = true, focus = false, noFocusIo = false, noSized = false } = {}) {
   const clk = clock();
-  const log = { sent: [], released: 0, chips: [], again: [], quiet: [] };
+  const log = { sent: [], released: 0, chips: [], again: [], quiet: [], sized: [], order: [] };
   const page = { focus, throws: false };
   const pending = [];
   const io = {
@@ -315,8 +319,9 @@ function rig({ again = true, focus = false, noFocusIo = false } = {}) {
     release: () => { log.released += 1; return Promise.resolve({ status: 200, body: { released: true } }); },
     after: clk.after,
     cancel: clk.cancel,
-    chip: (v, opts) => { log.chips.push(v); if (opts !== undefined) log.quiet.push(opts.quiet); },
+    chip: (v, opts) => { log.order.push('chip'); log.chips.push(v); if (opts !== undefined) log.quiet.push(opts.quiet); },
   };
+  if (!noSized) io.sized = (pane) => { log.order.push('sized'); log.sized.push(pane); }; // F10: the pane size of each 200 answer
   if (!noFocusIo) io.focused = () => { if (page.throws) throw new Error('focus unreadable'); return page.focus; };
   if (again) io.fitAgain = (e) => log.again.push(e); // F1: the optional sink for the user's Fit again; a rig without it proves it is optional
   const planner = createFitPlanner(io);
@@ -1339,8 +1344,9 @@ describe('F9: createFitPlanner, the focus the page sends (design F9 3.3, 3.4)', 
     return r;
   };
 
-  test('(+) the three timings are the owner\'s Q3: focus 400 ms, blur 200 ms, a poll every second', () => {
-    assert.deepEqual([FOCUS_SETTLE_MS, BLUR_SETTLE_MS, FOCUS_POLL_MS], [400, 200, 1000]);
+  // F10 (requirement change, not a weakened test): the owner's Q2 answer of 2026-11-16 replaces F9's 400 / 200 with 150 / 150
+  test('(+) the three timings are the owner\'s F10 Q2: focus 150 ms, blur 150 ms, a poll every second', () => {
+    assert.deepEqual([FOCUS_SETTLE_MS, BLUR_SETTLE_MS, FOCUS_POLL_MS], [150, 150, 1000]);
   });
 
   // -- what the first body carries
@@ -1383,12 +1389,12 @@ describe('F9: createFitPlanner, the focus the page sends (design F9 3.3, 3.4)', 
   });
 
   // -- blur and focus settle, then go out at once
-  test('(+) blur: exactly one PUT focus: false at +200 ms, not waiting for the 5 s beat', async () => {
+  test('(+) blur: exactly one PUT focus: false at +150 ms, not waiting for the 5 s beat', async () => {
     const r = await started(true);
     r.page.focus = false;
     r.planner.focusChanged(false);
     await r.clk.advance(BLUR_SETTLE_MS - 1);
-    assert.equal(r.log.sent.length, 1, '199 ms: still settling');
+    assert.equal(r.log.sent.length, 1, '149 ms: still settling');
     await r.clk.advance(1);
     assert.deepEqual(r.log.sent.slice(1), [{ cols: 100, rows: 30, open: false, focus: false }]);
     await r.answer(OK());
@@ -1396,17 +1402,17 @@ describe('F9: createFitPlanner, the focus the page sends (design F9 3.3, 3.4)', 
     assert.equal(r.log.sent.length, 2, 'and nothing else before the beat');
   });
 
-  test('(+) focus: exactly one PUT focus: true at +400 ms', async () => {
+  test('(+) focus: exactly one PUT focus: true at +150 ms', async () => {
     const r = await started(false);
     r.page.focus = true;
     r.planner.focusChanged(false);
     await r.clk.advance(FOCUS_SETTLE_MS - 1);
-    assert.equal(r.log.sent.length, 1, '399 ms: still settling');
+    assert.equal(r.log.sent.length, 1, '149 ms: still settling');
     await r.clk.advance(1);
     assert.deepEqual(r.log.sent.slice(1), [{ cols: 100, rows: 30, open: false, focus: true }]);
   });
 
-  test('(−) blur then focus within 200 ms sends nothing, and the settle timer is gone', async () => {
+  test('(−) blur then focus within 150 ms sends nothing, and the settle timer is gone', async () => {
     const r = await started(true);
     r.page.focus = false;
     r.planner.focusChanged(false);
@@ -1418,14 +1424,14 @@ describe('F9: createFitPlanner, the focus the page sends (design F9 3.3, 3.4)', 
     assert.equal(r.clk.pending, 2, 'only the beat and the poll are left');
   });
 
-  test('(−) focus then blur within 400 ms sends nothing', async () => {
+  test('(−) focus then blur within 150 ms sends nothing', async () => {
     const r = await started(false);
     r.page.focus = true;
     r.planner.focusChanged(false);
-    await r.clk.advance(300);
+    await r.clk.advance(100);
     r.page.focus = false;
     r.planner.focusChanged(false);
-    await r.clk.advance(BEAT_MS - 300 - 1);
+    await r.clk.advance(BEAT_MS - 100 - 1);
     assert.equal(r.log.sent.length, 1);
     assert.equal(r.clk.pending, 2);
   });
@@ -1440,17 +1446,17 @@ describe('F9: createFitPlanner, the focus the page sends (design F9 3.3, 3.4)', 
     assert.equal(r.log.sent.length, 1);
   });
 
-  test('(+) a change called twice in the same direction keeps its first settle (200 ms from the first call, not from the second)', async () => {
+  test('(+) a change called twice in the same direction keeps its first settle (150 ms from the first call, not from the second)', async () => {
     const r = await started(true);
     r.page.focus = false;
     r.planner.focusChanged(false);
-    await r.clk.advance(150);
+    await r.clk.advance(100);
     r.planner.focusChanged(false);
     await r.clk.advance(50);
     assert.deepEqual(focusOf(r), [true, false]);
   });
 
-  test('(+) a settle that changed direction starts over: blur, focus, blur again sends at 200 ms after the last blur', async () => {
+  test('(+) a settle that changed direction starts over: blur, focus, blur again sends at 150 ms after the last blur', async () => {
     const r = await started(true);
     r.page.focus = false;
     r.planner.focusChanged(false);
@@ -1800,6 +1806,588 @@ describe('F9: createFitPlanner, the focus the page sends (design F9 3.3, 3.4)', 
     r.page.throws = true;
     await r.clk.advance(FOCUS_POLL_MS + BLUR_SETTLE_MS);
     assert.deepEqual(focusOf(r), [true, false]);
+  });
+});
+
+// ---- F10 (design F10 2 to 6, 8.2): steady size, room for the footer, the redraw hold ------------------------------------------------
+
+describe('F10: the constants and the file (design F10 9)', () => {
+  test('(+) the new constants have the design\'s values; the transition is at most 150 ms', () => {
+    assert.deepEqual([HOLD_MS, HOLD_POLL_MS, ROOM_ROWS, REFIT_MS], [1200, 100, 33, 120]);
+    assert.ok(REFIT_MS <= 150);
+  });
+
+  test('(+) fit-ui.js stays ASCII and has no DOM', () => {
+    const src = readSrc('fit-ui.js');
+    assert.equal([...src].every((ch) => ch.codePointAt(0) < 128), true);
+    assert.doesNotMatch(src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, ''), /\b(document|window|navigator|globalThis)\s*[.[]|localStorage|getElementById|querySelector|addEventListener|createElement|\bfetch\s*\(/);
+  });
+});
+
+describe('F10: remeasure, when the panel is measured again (design F10 2.2)', () => {
+  const F = { cols: 100, rows: 30, width: 827, height: 562, cellW: 8, cellH: 18, iw: 1200, ih: 800 };
+  const next = (over) => ({ ...F, ...over });
+
+  test('(+) no previous frame: measure', () => {
+    assert.equal(remeasure(null, F), true);
+    assert.equal(remeasure(undefined, F), true);
+  });
+
+  test('(+) the window\'s inner width or height changed', () => {
+    assert.equal(remeasure(F, next({ iw: 1201 })), true);
+    assert.equal(remeasure(F, next({ ih: 799 })), true);
+  });
+
+  test('(+) the cell changed by more than 0.01 px (a font or zoom change)', () => {
+    assert.equal(remeasure(F, next({ cellW: 8.02 })), true);
+    assert.equal(remeasure(F, next({ cellH: 17.98 })), true);
+  });
+
+  test('(+) the width changed by one cell or more, either way (the transcript toggle, the narrow tabs)', () => {
+    assert.equal(remeasure(F, next({ width: 827 + 8 })), true);
+    assert.equal(remeasure(F, next({ width: 827 - 80 })), true);
+  });
+
+  test('(−) a change of the height alone with the same window size is never a commit (a composer line, a banner, a prompt panel, the textarea)', () => {
+    for (const height of [562 - 18, 562 + 300, 562 - 400, 1]) assert.equal(remeasure(F, next({ height })), false, String(height));
+  });
+
+  test('(−) a width change of less than one cell is not one either; nor is a cell change of 0.01 or less', () => {
+    assert.equal(remeasure(F, next({ width: 827 + 7.99 })), false);
+    assert.equal(remeasure(F, next({ width: 827 - 7.99 })), false);
+    assert.equal(remeasure(F, next({ cellW: 8.005 })), false);
+    assert.equal(remeasure(F, next({ cellH: 18.005 })), false);
+  });
+
+  test('(−) an identical frame, and a frame that could not be measured, are not commits', () => {
+    assert.equal(remeasure(F, { ...F }), false);
+    assert.equal(remeasure(F, null), false);
+    assert.equal(remeasure(F, undefined), false);
+  });
+});
+
+describe('F10: askSize, the size the page asks for (design F10 3.3)', () => {
+  const frame = { cols: 145, rows: 22 };
+
+  test('(−) the columns never go below the frame\'s, even for a frame wider than the cap (the room only adds rows)', () => {
+    assert.deepEqual(askSize({ cols: 500, rows: 20 }, true, 0), { cols: 500, rows: 33 });
+    assert.deepEqual(askSize({ cols: 400, rows: 32 }, true, 1), { cols: 400, rows: 33 });
+  });
+
+  test('(+) room on, 22 rows, 145 columns, border row 1: 33 rows and 210 columns (the panel\'s proportion)', () => {
+    assert.deepEqual(askSize(frame, true, 1), { cols: 210, rows: 33 });
+  });
+
+  test('(+) border row 0: 217 columns', () => {
+    assert.deepEqual(askSize(frame, true, 0), { cols: 217, rows: 33 });
+  });
+
+  test('(+) the columns are capped at 400', () => {
+    assert.deepEqual(askSize({ cols: 390, rows: 12 }, true, 1), { cols: 400, rows: 33 });
+  });
+
+  test('(−) room off: the frame, whatever d is', () => {
+    assert.deepEqual(askSize(frame, false, 1), { cols: 145, rows: 22 });
+    assert.deepEqual(askSize(frame, undefined, 0), { cols: 145, rows: 22 });
+  });
+
+  test('(−) a frame that already has 33 rows or more: the frame, even with room on', () => {
+    assert.deepEqual(askSize({ cols: 145, rows: 33 }, true, 1), { cols: 145, rows: 33 });
+    assert.deepEqual(askSize({ cols: 145, rows: 45 }, true, 1), { cols: 145, rows: 45 });
+  });
+
+  test('(−) d outside 0..1 (or not a number) is treated as 0', () => {
+    for (const d of [2, -1, 1.5, NaN, null, undefined, '1']) assert.deepEqual(askSize(frame, true, d), { cols: 217, rows: 33 }, String(d));
+  });
+
+  test('(−) the columns are never below the frame\'s', () => {
+    for (const rows of [10, 22, 32]) {
+      const out = askSize({ cols: 145, rows }, true, 1);
+      assert.ok(out.cols >= 145, String(rows));
+      assert.equal(out.rows, 33);
+    }
+  });
+
+  test('(+) the asked size is always one the route accepts (40..400 columns, 10..200 rows)', () => {
+    const out = askSize({ cols: 40, rows: 10 }, true, 1);
+    assert.ok(out.cols >= 40 && out.cols <= 400 && out.rows >= 10 && out.rows <= 200);
+  });
+});
+
+describe('F10: frameReady, a frame that shows Claude\'s input box at the answered size (design F10 4.3)', () => {
+  const want = { cols: 210, rows: 32 };
+  const rows = new Array(32).fill([]);
+  const body = (over = {}) => ({ cols: 210, rows, alt: true, prompt: null, dialog: null, ...over });
+  const BOX = { state: 'empty' };
+
+  test('(+) the new size with a readable input box', () => {
+    assert.equal(frameReady({ body: body(), draft: BOX, want, plainBefore: true }), true);
+  });
+
+  test('(+) the new size with a prompt', () => {
+    assert.equal(frameReady({ body: body({ prompt: { question: 'x', options: [] } }), draft: null, want, plainBefore: true }), true);
+  });
+
+  test('(+) the new size with a dialog', () => {
+    assert.equal(frameReady({ body: body({ dialog: { state: 'unreadable' } }), draft: null, want, plainBefore: true }), true);
+  });
+
+  test('(+) the new size, not in the full-screen view (alt false)', () => {
+    assert.equal(frameReady({ body: body({ alt: false }), draft: null, want, plainBefore: true }), true);
+  });
+
+  test('(+) the new size, no box, but there was no box to wait for (!plainBefore)', () => {
+    assert.equal(frameReady({ body: body(), draft: null, want, plainBefore: false }), true);
+  });
+
+  test('(−) the old size, even with a box: the resize has not shown yet', () => {
+    assert.equal(frameReady({ body: body({ cols: 138 }), draft: BOX, want, plainBefore: true }), false);
+    assert.equal(frameReady({ body: body({ rows: new Array(20).fill([]) }), draft: BOX, want, plainBefore: true }), false);
+  });
+
+  test('(−) the new size, alt true, no draft, prompt or dialog, plainBefore: Claude has not repainted', () => {
+    assert.equal(frameReady({ body: body(), draft: null, want, plainBefore: true }), false);
+    assert.equal(frameReady({ body: body(), draft: undefined, want, plainBefore: true }), false);
+  });
+
+  test('(−) no want (the room step waits for its answer), no body, rows that are not a list: never ready', () => {
+    assert.equal(frameReady({ body: body(), draft: BOX, want: null, plainBefore: false }), false);
+    assert.equal(frameReady({ body: null, draft: BOX, want, plainBefore: false }), false);
+    assert.equal(frameReady({ body: body({ rows: 'x' }), draft: BOX, want, plainBefore: false }), false);
+    assert.equal(frameReady(), false);
+  });
+});
+
+describe('F10: roomStep, one more resize when the footer did not come back (design F10 3.1)', () => {
+  const want = { cols: 138, rows: 20 };
+  const base = () => ({
+    room: false, frameRows: 22, state: 'fitted', plainBefore: true, want,
+    body: { cols: 138, rows: new Array(20).fill([]), alt: true, prompt: null, dialog: null }, draft: null,
+  });
+
+  test('(+) every condition true: take the step', () => {
+    assert.equal(roomStep(base()), true);
+  });
+
+  const each = [
+    ['room is already on (at most one step per window)', { room: true }],
+    ['the frame already has 33 rows', { frameRows: 33 }],
+    ['the frame has more than 33 rows', { frameRows: 45 }],
+    ['the chip state is zoomed', { state: 'zoomed' }],
+    ['the chip state is terminal', { state: 'terminal' }],
+    ['the chip state is blocked', { state: 'blocked' }],
+    ['the chip state is other', { state: 'other' }],
+    ['no chip state yet', { state: null }],
+    ['there was no readable box before (!plainBefore)', { plainBefore: false }],
+    ['there is no capture', { body: null }],
+    ['the capture is not at the answered size (columns)', { body: { cols: 171, rows: new Array(20).fill([]), alt: true, prompt: null, dialog: null } }],
+    ['the capture is not at the answered size (rows)', { body: { cols: 138, rows: new Array(45).fill([]), alt: true, prompt: null, dialog: null } }],
+    ['a prompt is on screen', { body: { cols: 138, rows: new Array(20).fill([]), alt: true, prompt: { question: 'x', options: [] }, dialog: null } }],
+    ['a dialog is on screen', { body: { cols: 138, rows: new Array(20).fill([]), alt: true, prompt: null, dialog: { state: 'unreadable' } } }],
+    ['Claude is not in its full-screen view', { body: { cols: 138, rows: new Array(20).fill([]), alt: false, prompt: null, dialog: null } }],
+    ['a readable draft is present (the box is there)', { draft: { state: 'empty' } }],
+    ['no answered size', { want: null }],
+  ];
+  for (const [why, over] of each) {
+    test(`(−) not when ${why}`, () => {
+      assert.equal(roomStep({ ...base(), ...over }), false);
+    });
+  }
+
+  test('(−) the frame needs a number of rows', () => {
+    assert.equal(roomStep({ ...base(), frameRows: undefined }), false);
+    assert.equal(roomStep(), false);
+  });
+});
+
+describe('F10: refitFrom, where the zoom starts (design F10 6.2)', () => {
+  test('(+) text that grows starts from the old size, never below half', () => {
+    assert.equal(refitFrom(0.49, 1), 0.5);
+    assert.equal(refitFrom(0.8, 1), 0.8);
+    assert.ok(Math.abs(refitFrom(0.66, 0.75) - 0.88) < 1e-9);
+  });
+
+  test('(−) text that gets smaller or stays: 1 (a fade only, no transform above 1)', () => {
+    assert.equal(refitFrom(1, 0.5), 1);
+    assert.equal(refitFrom(0.6, 0.6), 1);
+  });
+
+  test('(−) a value that is not a positive number gives 1', () => {
+    for (const bad of [NaN, 0, -1, Infinity, undefined, null, '0.5']) {
+      assert.equal(refitFrom(bad, 1), 1, `old ${String(bad)}`);
+      assert.equal(refitFrom(0.5, bad), 1, `new ${String(bad)}`);
+    }
+  });
+});
+
+describe('F10: createRedrawHold, the last good frame stays until Claude has repainted (design F10 4)', () => {
+  const WANT = { cols: 210, rows: 32 };
+  const rows = new Array(32).fill([]);
+  const cap = (over = {}) => ({ body: { cols: 210, rows, alt: true, prompt: null, dialog: null }, draft: null, ...over });
+  const ready = () => cap({ draft: { state: 'empty' } });
+  const make = (opts = {}) => {
+    const clk = clock();
+    const log = { timeouts: [], ended: 0 };
+    const hold = createRedrawHold({
+      after: clk.after,
+      cancel: clk.cancel,
+      timeout: opts.timeout ?? ((pending, ctx) => log.timeouts.push([pending, ctx])),
+      ended: () => { log.ended += 1; },
+    });
+    return { hold, clk, log, waiter() { const w = { done: false }; hold.wait().then(() => { w.done = true; }); return w; } };
+  };
+
+  test('(+) start, then a ready offer: apply, the hold is over, waiters resolve, ended is told once', async () => {
+    const r = make();
+    r.hold.start({ want: WANT, plainBefore: true });
+    assert.equal(r.hold.active, true);
+    const w = r.waiter();
+    await flush();
+    assert.equal(w.done, false);
+    assert.equal(r.hold.offer(ready()), 'apply');
+    await flush();
+    assert.deepEqual([r.hold.active, w.done, r.log.ended], [false, true, 1]);
+  });
+
+  test('(−) ending the hold cancels its timer with the timer it was given: nothing fires later, io.timeout is not called', async () => {
+    const clk = clock();
+    const cancelled = [];
+    const hold = createRedrawHold({ after: clk.after, cancel: (t) => { cancelled.push(t); clk.cancel(t); }, timeout: () => { throw new Error('timeout must not run'); } });
+    hold.start({ want: WANT, plainBefore: true });
+    hold.end();
+    assert.equal(cancelled.length, 1, 'the one timer was cancelled');
+    await clk.advance(HOLD_MS * 2);
+    assert.equal(hold.active, false);
+    hold.start({ want: WANT, plainBefore: true });
+    hold.offer(ready());
+    assert.equal(cancelled.length, 2, 'a ready offer cancels it too');
+  });
+
+  test('(+) wait() with no hold resolves at once', async () => {
+    const r = make();
+    const w = r.waiter();
+    await flush();
+    assert.equal(w.done, true);
+  });
+
+  test('(+) the timeout at HOLD_MS calls io.timeout with the latest pending capture and the hold\'s want and plainBefore; the hold ends and waiters resolve', async () => {
+    const r = make();
+    r.hold.start({ want: WANT, plainBefore: true });
+    const w = r.waiter();
+    const first = cap();
+    const second = cap();
+    assert.equal(r.hold.offer(first), 'keep');
+    assert.equal(r.hold.offer(second), 'keep');
+    await r.clk.advance(HOLD_MS - 1);
+    assert.deepEqual([r.log.timeouts.length, w.done, r.hold.active], [0, false, true], 'one millisecond before');
+    await r.clk.advance(1);
+    assert.equal(r.log.timeouts.length, 1);
+    assert.equal(r.log.timeouts[0][0], second, 'the latest capture, not the first');
+    assert.deepEqual(r.log.timeouts[0][1], { want: WANT, plainBefore: true });
+    assert.deepEqual([w.done, r.hold.active, r.log.ended], [true, false, 1]);
+  });
+
+  test('(+) the timeout with no capture at all passes null', async () => {
+    const r = make();
+    r.hold.start({ want: WANT, plainBefore: true });
+    await r.clk.advance(HOLD_MS);
+    assert.equal(r.log.timeouts[0][0], null);
+  });
+
+  test('(+) a second start restarts the timer with the new want, and keeps plainBefore of the first start', async () => {
+    const r = make();
+    r.hold.start({ want: { cols: 100, rows: 20 }, plainBefore: true });
+    await r.clk.advance(600);
+    r.hold.start({ want: WANT, plainBefore: false });
+    await r.clk.advance(HOLD_MS - 1);
+    assert.equal(r.log.timeouts.length, 0, 'the timer began again at the second start');
+    await r.clk.advance(1);
+    assert.deepEqual(r.log.timeouts[0][1], { want: WANT, plainBefore: true });
+  });
+
+  test('(+) after a restart the new want decides what is ready', () => {
+    const r = make();
+    r.hold.start({ want: { cols: 100, rows: 20 }, plainBefore: true });
+    r.hold.start({ want: WANT, plainBefore: true });
+    assert.equal(r.hold.offer(cap({ body: { cols: 100, rows: new Array(20).fill([]), alt: true, prompt: null, dialog: null }, draft: { state: 'empty' } })), 'keep', 'the first want is gone');
+    assert.equal(r.hold.offer(ready()), 'apply');
+  });
+
+  test('(+) io.timeout may start the hold again (the room step): the hold stays, waiters wait, ended is not told; the next timeout ends it', async () => {
+    let n = 0;
+    const r = make({ timeout: (pending, ctx) => { n += 1; if (n === 1) r.hold.start({ want: null, plainBefore: ctx.plainBefore }); } });
+    r.hold.start({ want: WANT, plainBefore: true });
+    const w = r.waiter();
+    await r.clk.advance(HOLD_MS);
+    assert.deepEqual([n, r.hold.active, w.done, r.log.ended], [1, true, false, 0]);
+    assert.equal(r.hold.offer(ready()), 'keep', 'with no want nothing is ready');
+    await r.clk.advance(HOLD_MS);
+    assert.deepEqual([n, r.hold.active, w.done, r.log.ended], [2, false, true, 1]);
+  });
+
+  test('(−) offer while no hold runs: apply, and nothing is kept', async () => {
+    const r = make();
+    assert.equal(r.hold.offer(cap()), 'apply');
+    r.hold.start({ want: WANT, plainBefore: true });
+    await r.clk.advance(HOLD_MS);
+    assert.equal(r.log.timeouts[0][0], null, 'the earlier offer was not stored');
+  });
+
+  test('(−) a not-ready offer is kept: the hold goes on and nothing resolves before HOLD_MS', async () => {
+    const r = make();
+    r.hold.start({ want: WANT, plainBefore: true });
+    const w = r.waiter();
+    for (const c of [cap(), cap({ draft: { state: 'empty' }, body: { cols: 138, rows, alt: true, prompt: null, dialog: null } })]) assert.equal(r.hold.offer(c), 'keep');
+    await r.clk.advance(HOLD_MS - 1);
+    assert.deepEqual([w.done, r.hold.active, r.log.ended, r.log.timeouts.length], [false, true, 0, 0]);
+  });
+
+  test('(−) end() resolves the waiters and no timeout follows; ended is told once', async () => {
+    const r = make();
+    r.hold.start({ want: WANT, plainBefore: true });
+    const w = r.waiter();
+    r.hold.end();
+    await flush();
+    assert.deepEqual([w.done, r.hold.active, r.log.ended], [true, false, 1]);
+    await r.clk.advance(HOLD_MS * 3);
+    assert.equal(r.log.timeouts.length, 0);
+    assert.equal(r.clk.pending, 0, 'the timer is gone');
+  });
+
+  test('(−) end() with no hold does nothing (ended is not told)', () => {
+    const r = make();
+    r.hold.end();
+    assert.equal(r.log.ended, 0);
+  });
+
+  test('(−) a ready offer cancels the timer: no timeout after it', async () => {
+    const r = make();
+    r.hold.start({ want: WANT, plainBefore: true });
+    r.hold.offer(ready());
+    await r.clk.advance(HOLD_MS * 2);
+    assert.equal(r.log.timeouts.length, 0);
+    assert.equal(r.clk.pending, 0);
+  });
+
+  test('(−) an io.timeout that throws still ends the hold and frees the waiters', async () => {
+    const r = make({ timeout: () => { throw new Error('boom'); } });
+    r.hold.start({ want: WANT, plainBefore: true });
+    const w = r.waiter();
+    await r.clk.advance(HOLD_MS);
+    assert.deepEqual([r.hold.active, w.done], [false, true]);
+  });
+
+  test('(−) a hold works with only after and cancel (timeout and ended are optional)', async () => {
+    const clk = clock();
+    const hold = createRedrawHold({ after: clk.after, cancel: clk.cancel });
+    hold.start({ want: WANT, plainBefore: true });
+    await clk.advance(HOLD_MS);
+    assert.equal(hold.active, false);
+  });
+});
+
+describe('F10: createFitPlanner, io.sized and size(..., { now }) (design F10 4.2, 3.1)', () => {
+  const answer = (pane) => ({ status: 200, body: { fit: { state: 'fitted', reason: null, pane, panes: 1, userZoom: false } } });
+  const started = async (opts = {}) => {
+    const r = rig(opts);
+    r.planner.size(100, 30);
+    r.planner.start();
+    return r;
+  };
+
+  test('(+) a 200 answer with a pane of integers calls io.sized once with { cols, rows }', async () => {
+    const r = await started();
+    await r.answer(answer({ cols: 138, rows: 20 }));
+    assert.deepEqual(r.log.sized, [{ cols: 138, rows: 20 }]);
+    r.planner.size(110, 30);
+    await r.clk.advance(DEBOUNCE_MS);
+    await r.answer(answer({ cols: 110, rows: 29 }));
+    assert.deepEqual(r.log.sized, [{ cols: 138, rows: 20 }, { cols: 110, rows: 29 }]);
+  });
+
+  test('(+) io.sized is told before the chip of the same answer (so the page can hold the chip in the frame of the mirror)', async () => {
+    const r = await started();
+    await r.answer(answer({ cols: 138, rows: 20 }));
+    assert.deepEqual(r.log.order, ['sized', 'chip']);
+  });
+
+  test('(+) an answer that is not a fit answer still tells the pane size when it has one (the chip stays as it was)', async () => {
+    const r = await started();
+    await r.answer({ status: 200, body: { fit: { state: 'nonsense', pane: { cols: 138, rows: 20 } } } });
+    assert.deepEqual(r.log.sized, [{ cols: 138, rows: 20 }]);
+    assert.deepEqual(r.log.chips, []);
+  });
+
+  const bad = [
+    ['no pane', { fit: { state: 'fitted', reason: null } }],
+    ['pane null', { fit: { state: 'fitted', reason: null, pane: null } }],
+    ['cols not an integer', { fit: { state: 'fitted', reason: null, pane: { cols: 138.5, rows: 20 } } }],
+    ['rows not an integer', { fit: { state: 'fitted', reason: null, pane: { cols: 138, rows: '20' } } }],
+    ['cols 0', { fit: { state: 'fitted', reason: null, pane: { cols: 0, rows: 20 } } }],
+    ['rows 0', { fit: { state: 'fitted', reason: null, pane: { cols: 138, rows: 0 } } }],
+    ['rows negative', { fit: { state: 'fitted', reason: null, pane: { cols: 138, rows: -3 } } }],
+    ['cols above 10000', { fit: { state: 'fitted', reason: null, pane: { cols: 10001, rows: 20 } } }],
+    ['rows above 10000', { fit: { state: 'fitted', reason: null, pane: { cols: 138, rows: 10001 } } }],
+    ['no body', null],
+  ];
+  for (const [why, body] of bad) {
+    test(`(−) ${why}: io.sized is not called, nothing throws`, async () => {
+      const r = await started();
+      await r.answer({ status: 200, body });
+      assert.deepEqual(r.log.sized, []);
+    });
+  }
+
+  test('(−) a non-200 answer (409, 429, 502, a lost request) does not call io.sized', async () => {
+    for (const status of [409, 429, 502, 0]) {
+      const r = await started();
+      await r.answer({ status, body: answer({ cols: 138, rows: 20 }).body });
+      assert.deepEqual(r.log.sized, [], String(status));
+    }
+    const lost = await started();
+    await lost.fail();
+    assert.deepEqual(lost.log.sized, []);
+  });
+
+  test('(−) the answer of a lease that is over (closed meanwhile) does not call io.sized', async () => {
+    const r = await started();
+    r.planner.close();
+    await r.answer(answer({ cols: 138, rows: 20 }));
+    assert.deepEqual(r.log.sized, []);
+  });
+
+  test('(−) a 403 does not call io.sized', async () => {
+    const r = await started();
+    await r.answer({ status: 403, body: null });
+    assert.deepEqual(r.log.sized, []);
+  });
+
+  test('(−) a planner without io.sized throws nothing and the chip is still told', async () => {
+    const r = await started({ noSized: true });
+    await r.answer(answer({ cols: 138, rows: 20 }));
+    assert.equal(r.log.chips.length, 1);
+  });
+
+  test('(−) an io.sized that throws does not stop the chip or the planner', async () => {
+    const r = rig();
+    const io = { send: (b) => { r.log.sent.push(b); return Promise.resolve(answer({ cols: 138, rows: 20 })); }, release() {}, after: r.clk.after, cancel: r.clk.cancel, chip: (v) => r.log.chips.push(v), sized: () => { throw new Error('boom'); } };
+    const planner = createFitPlanner(io);
+    planner.size(100, 30);
+    planner.start();
+    await flush();
+    await flush();
+    assert.equal(r.log.chips.length, 1);
+    planner.size(110, 30);
+    await r.clk.advance(DEBOUNCE_MS);
+    await flush();
+    assert.equal(r.log.sent.length, 2);
+  });
+
+  test('(+) size(c, r, { now: true }) goes out at once, with no 250 ms wait, open: false', async () => {
+    const r = await started();
+    await r.answer(answer({ cols: 138, rows: 20 }));
+    r.planner.size(210, 33, { now: true });
+    assert.deepEqual(r.log.sent.slice(1), [{ cols: 210, rows: 33, open: false, focus: false }]);
+    await r.answer(answer({ cols: 210, rows: 32 }));
+    await r.clk.advance(DEBOUNCE_MS * 2);
+    assert.equal(r.log.sent.length, 2, 'and the debounce found nothing new');
+  });
+
+  test('(−) without now the debounce holds: 249 ms nothing, 250 ms one request', async () => {
+    const r = await started();
+    await r.answer(answer({ cols: 138, rows: 20 }));
+    r.planner.size(210, 33);
+    await r.clk.advance(DEBOUNCE_MS - 1);
+    assert.equal(r.log.sent.length, 1);
+    await r.clk.advance(1);
+    assert.deepEqual(r.log.sent.slice(1), [{ cols: 210, rows: 33, open: false, focus: false }]);
+  });
+
+  test('(−) now while a request is in flight goes after it (the latest wins), as size() does', async () => {
+    const r = await started();
+    r.planner.size(210, 33, { now: true }); // the first request has not been answered
+    assert.equal(r.log.sent.length, 1);
+    r.planner.size(220, 34, { now: true });
+    await r.clk.advance(DEBOUNCE_MS * 2);
+    assert.equal(r.log.sent.length, 1, 'one in flight');
+    await r.answer(answer({ cols: 138, rows: 20 }));
+    await r.clk.advance(DEBOUNCE_MS);
+    assert.deepEqual(r.log.sent.slice(1), [{ cols: 220, rows: 34, open: false, focus: false }]);
+  });
+
+  test('(−) now with the size already answered sends nothing; now before start sends nothing; an invalid size is dropped', async () => {
+    const r = rig();
+    r.planner.size(210, 33, { now: true });
+    assert.deepEqual(r.log.sent, [], 'before start');
+    r.planner.size(100, 30);
+    r.planner.start();
+    await r.answer(answer({ cols: 100, rows: 29 }));
+    r.planner.size(100, 30, { now: true });
+    r.planner.size(5, 5, { now: true });
+    r.planner.size(500, 30, { now: true });
+    assert.equal(r.log.sent.length, 1);
+  });
+
+  test('(+) the focus settle and a now-size together: one request carries the new size with the focus', async () => {
+    const r = await started({ focus: false });
+    await r.answer(answer({ cols: 100, rows: 29 }));
+    r.page.focus = true;
+    r.planner.size(145, 22); // the page measures at the focus event ...
+    r.planner.focusChanged(false); // ... and then asks for the focus
+    await r.clk.advance(FOCUS_SETTLE_MS);
+    assert.deepEqual(r.log.sent.slice(1), [{ cols: 145, rows: 22, open: false, focus: true }]);
+    await r.answer(answer({ cols: 145, rows: 21 }));
+    await r.clk.advance(DEBOUNCE_MS * 2);
+    assert.equal(r.log.sent.length, 2, 'the debounce found the size already sent: one resize per focus');
+  });
+});
+
+describe('F10: fitPanelView with ui.room (design F10 3.5)', () => {
+  const body = (state, reason = null) => ({ fit: { state, reason, pane: { cols: 120, rows: 39 }, panes: 3, userZoom: false } });
+  const HINT = "Claude's input box and footer did not fit this panel's rows, so nika gave the pane 33 rows and scaled the text. Fit again tries the panel's own size.";
+  const IDLE = { pending: false, note: false };
+
+  test('(+) fitted: with room the panel has the hint and the action Fit again; the heading and why are the chip\'s', () => {
+    const view = chipView(body('fitted'));
+    const p = fitPanelView(view, { ...IDLE, room: true });
+    assert.equal(p.hint, HINT);
+    assert.deepEqual(p.action, { text: 'Fit again' });
+    assert.equal(p.heading, view.label);
+    assert.equal(p.why, view.title);
+  });
+
+  test('(+) fitted:terminal (a terminal shows the window too) gets the same hint and action with room', () => {
+    const p = fitPanelView(chipView(body('fitted', 'terminal')), { ...IDLE, room: true });
+    assert.equal(p.hint, HINT);
+    assert.deepEqual(p.action, { text: 'Fit again' });
+  });
+
+  test('(+) the action reads Fitting... while an ask is pending, and the note still shows', () => {
+    const p = fitPanelView(chipView(body('fitted')), { pending: true, note: true, room: true });
+    assert.equal(p.action.text, 'Fitting…');
+    assert.match(p.note, /could not fit/);
+  });
+
+  test('(−) without ui.room the panels are as before (no hint, no action for fitted; the terminal hint for fitted:terminal)', () => {
+    for (const ui of [IDLE, { ...IDLE, room: false }, { ...IDLE, room: undefined }, { ...IDLE, room: 'yes' }, undefined]) {
+      const a = fitPanelView(chipView(body('fitted')), ui);
+      assert.deepEqual([a.hint, a.action], [null, null], JSON.stringify(ui));
+      const b = fitPanelView(chipView(body('fitted', 'terminal')), ui);
+      assert.match(b.hint, /Your terminal shows dots/);
+      assert.equal(b.action, null);
+    }
+  });
+
+  test('(−) every other key ignores ui.room', () => {
+    const others = [['zoomed', 'panel-smaller'], ['blocked', 'user-change'], ['blocked', 'changed'], ['blocked', null], ['blocked', 'user-zoom'], ['blocked', 'size-option'], ['blocked', 'foreign-tag'], ['other', null], ['terminal', null], ['terminal', 'switching']];
+    for (const [state, reason] of others) {
+      const view = chipView(body(state, reason));
+      assert.deepEqual(fitPanelView(view, { ...IDLE, room: true }), fitPanelView(view, IDLE), `${state}:${reason}`);
+    }
+  });
+
+  test('(−) a hint with the word 33 is plain ASCII', () => {
+    assert.equal([...HINT].every((ch) => ch.codePointAt(0) < 128), true);
   });
 });
 

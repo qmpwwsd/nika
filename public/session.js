@@ -22,7 +22,7 @@ import { MODEL_ID, MODEL_HINT, CUSTOM, fillModelSelect } from './models-ui.js';
 import { openEndDialog } from './end-dialog.js';
 import { paletteQuery, cleanCommands, paletteView, commandsButton, shouldFetch, sourceLabel, insertion, moveActive } from './palette.js';
 import { isMac, isTextEntry, wantsHelp, wantsBack, wantsHistToggle, backHint, helpHint, histHint, passKeyLabel, openShortcuts, wireWindowKeys } from './shortcuts.js';
-import { panelSize, scaleFor, createFitPlanner, fitPanelView, stillOffSay } from './fit-ui.js';
+import { panelSize, scaleFor, createFitPlanner, fitPanelView, stillOffSay, remeasure, askSize, roomStep, refitFrom, createRedrawHold, HOLD_POLL_MS, REFIT_MS } from './fit-ui.js';
 import { createScrollPlanner, routeFor, wheelRows, scrollGate, viewRowsOf, pageRowsOf, refusalLine, noteView, scrolledSay, NOTE_MS } from './scroll.js';
 import { createAttachTray } from './attach.js';
 import { createDialogForm, cleanDialog } from './dialog-form.js';
@@ -580,6 +580,7 @@ async function switchTo(target) {
   W.msg = null;
   renderMode();
   try {
+    if (HOLD.active) await HOLD.wait(); // F10: the segment shows busy while the redraw hold runs
     const r = await call(`/api/app/pane/${encodeURIComponent(paneId)}/mode`, { method: 'POST', json: { target } });
     const presses = r.body?.presses; // the echo only, never a live count
     if (Number.isInteger(presses) && presses > 0 && presses <= 6) say(`Sent ${presses} ${TIMES} Shift-Tab to ${paneId}`);
@@ -686,6 +687,7 @@ async function sendCommand(text) {
   if (Q.busy || M.gone || !paneId) return;
   Q.busy = text.slice(1).split(' ')[0]; // compact | clear | model | rewind: the button that shows it is busy
   renderQuick();
+  if (HOLD.active) await HOLD.wait(); // F10
   const r = await call(`/api/app/pane/${encodeURIComponent(paneId)}/command`, { method: 'POST', json: { text } });
   Q.busy = null;
   renderQuick();
@@ -717,7 +719,7 @@ async function stop() {
 }
 
 function openEnd() {
-  openEndDialog({
+  const open = () => openEndDialog({
     pane: paneId,
     name: A.name,
     working: A.kind === 'busy',
@@ -727,6 +729,8 @@ function openEnd() {
       setGone(); // the pane no longer runs Claude: the mirror shows its pane-gone state now instead of at the next capture
     },
   });
+  if (HOLD.active) HOLD.wait().then(open); // F10: the dialog's own request is sent by end-dialog.js, so the dialog opens after the redraw hold
+  else open();
 }
 
 /** Short-lived status message at the bottom of the window (polite, never takes focus). */
@@ -1358,7 +1362,7 @@ function kickMirror(ms) {
   M.timer = setTimeout(tickMirror, ms);
 }
 
-// One request in flight; ~4 Hz while the tab is visible and the view is live. Paused states re-kick themselves.
+// One request in flight; ~4 Hz while the tab is visible and the view is live (10 Hz during a redraw hold, F10). Paused states re-kick themselves.
 async function tickMirror() {
   M.timer = 0;
   if (M.gone || M.fatal || M.busy || document.hidden) return; // a paused mirror keeps polling: the mode and the prompt must stay true
@@ -1369,7 +1373,7 @@ async function tickMirror() {
   try {
     const r = await call(`/api/app/pane/${encodeURIComponent(paneId)}/capture`, { headers: M.etag ? { 'If-None-Match': `"${M.etag}"` } : {} });
     try {
-      handleCapture(r);
+      handleHeld(r);
     } catch {
       M.errors += 1;
       M.inputOff = true;
@@ -1381,7 +1385,7 @@ async function tickMirror() {
   } finally {
     M.busy = false;
   }
-  kickMirror(M.errors ? 2000 : Math.max(0, 250 - (Date.now() - t0)));
+  kickMirror(M.errors ? 2000 : Math.max(0, (HOLD.active ? HOLD_POLL_MS : 250) - (Date.now() - t0))); // F10: 100 ms while a redraw hold waits for Claude's repaint
 }
 
 function jumpToLive() {
@@ -1396,10 +1400,20 @@ function jumpToLive() {
 
 // ---- fit (design W7): the panel in cells goes to the server, which fits the pane to it; a pane that stays larger is drawn at a smaller text scale ----
 
-// planner: the request planner of fit-ui.js, made when the window has a pane. panel: the last size measured, { cols, rows } in cells (null
-// before one). scale: the --fit-scale now set. view: the chip's last view (null while there is no chip). ui: the chip panel's own state
-// (F1): pending, a Fit again is on its way; note, it was refused or lost. pop: the panel is open.
-const FIT = { planner: null, panel: null, scale: 1, view: null, ui: { pending: false, note: false }, pop: false };
+// planner: the request planner of fit-ui.js, made when the window has a pane. panel: the held frame's size, { cols, rows } in cells (null before one).
+// frame: the held frame, { cols, rows, width, height, cellW, cellH, iw, ih } (F10: measured only at the commit points of fitCommit). scale: the --fit-scale now
+// set. view: the chip's last drawn view (null while there is no chip). ui: the chip panel's own state (F1): pending, a Fit again is on its way; note, it was
+// refused or lost. pop: the panel is open. F10: state, the chip state of the latest answer (drawn or held); room, the page asked for 33 rows because Claude's
+// footer did not fit (kept for this window until Fit again or a new window size); d, the border row (asked rows minus the pane's rows, 0 or 1); sentRows, the
+// rows of the request on its way; held, the chip view an answer brought during a redraw hold, { view, opts }; refitTimer, the timer that ends the transition.
+const FIT = { planner: null, panel: null, frame: null, scale: 1, view: null, ui: { pending: false, note: false }, pop: false, state: null, room: false, d: 0, sentRows: 0, held: null, refitTimer: 0 };
+// F10, design F10 4: after nika's own resize the last good frame stays drawn until a capture at the new size shows Claude's input box, for 1.2 s at most
+const HOLD = createRedrawHold({
+  after: (fn, ms) => setTimeout(fn, ms),
+  cancel: (timer) => clearTimeout(timer),
+  timeout: holdTimeout,
+  ended: holdEnded,
+});
 
 /** The pane's fit route; a window with no pane has none, and asks nothing. */
 function fitCall(method, opts = {}) {
@@ -1419,12 +1433,25 @@ function fitFocused() {
   }
 }
 
-/** The panel in cells: the terminal's client box over one glyph cell, taken from the probe (100 glyphs in the unscaled font). A box that cannot be measured (a hidden tab) keeps the last good size. */
-function fitMeasure() {
-  const term = $('term');
+/**
+ * The panel as it is now (F10): the terminal's border box over one glyph cell (the probe: 100 glyphs in the unscaled font), with the window's inner size. null while
+ * any number cannot be measured (a hidden tab). Nothing is stored: only fitMeasure holds a frame.
+ */
+function fitProbe() {
+  const rect = $('term').getBoundingClientRect();
   const cell = $('fit-probe').getBoundingClientRect();
-  const panel = panelSize({ width: term.clientWidth, height: term.clientHeight, cellW: cell.width / 100, cellH: cell.height });
-  if (panel) FIT.panel = panel;
+  const cellW = cell.width / 100;
+  const panel = panelSize({ width: rect.width, height: rect.height, cellW, cellH: cell.height });
+  return panel && { ...panel, width: rect.width, height: rect.height, cellW, cellH: cell.height, iw: window.innerWidth, ih: window.innerHeight };
+}
+
+/** Holds the frame measured now and its size in cells. A box that cannot be measured (a hidden tab) keeps the last good one. */
+function fitMeasure() {
+  const frame = fitProbe();
+  if (frame) {
+    FIT.frame = frame;
+    FIT.panel = { cols: frame.cols, rows: frame.rows };
+  }
   return FIT.panel;
 }
 
@@ -1438,17 +1465,129 @@ function fitScale() {
   $('term').style.setProperty('--fit-scale', String(s));
 }
 
-/** The box changed size, or the font arrived: the scale follows at once, the request after its debounce. */
-function fitResize() {
-  const p = fitMeasure();
-  if (p) FIT.planner?.size(p.cols, p.rows);
+/**
+ * A commit point (F10: the start, a focus, a change of the window, the font or the panel's width, Fit again): the frame is measured and held, its size is
+ * asked for (the room size while FIT.room is on), and the text scale follows. A new window size ends the room: it deserves a try at the panel's own size.
+ */
+function fitCommit() {
+  const prev = FIT.frame;
+  fitMeasure();
+  const frame = FIT.frame;
+  if (!frame) return;
+  if (FIT.room && prev && (frame.iw !== prev.iw || frame.ih !== prev.ih || Math.abs(frame.width - prev.width) >= prev.cellW)) FIT.room = false;
+  const ask = askSize(frame, FIT.room, FIT.d);
+  FIT.planner?.size(ask.cols, ask.rows);
   fitScale();
+}
+
+/**
+ * The box changed size, or the font arrived. Only a change of the window, the font or the panel's width is a commit; a box that only got taller or shorter (a
+ * line, a chip or a panel came or went) asks nothing, scales nothing, and keeps the mirror pinned to the bottom (F10).
+ */
+function fitResize() {
+  const next = fitProbe();
+  if (next && !remeasure(FIT.frame, next)) {
+    if (!M.frozen) $('term').scrollTop = $('term').scrollHeight;
+    return;
+  }
+  fitCommit();
 }
 
 /** After every drawn capture: the first one starts the fit (the pane answered, so it is live), and the scale follows the pane's size. */
 function fitCaptured() {
   FIT.planner?.start();
   fitScale();
+}
+
+// ---- the redraw hold (F10, design F10 4): the last good frame stays up while Claude repaints after nika's own resize ----
+
+/** The planner's word on a 200 answer's pane size: the border row is learned, and a pane that is not the drawn size starts a hold (a first capture is kept for the new size). */
+function fitSized(pane) {
+  const d = FIT.sentRows - pane.rows;
+  FIT.d = d === 0 || d === 1 ? d : 0;
+  if (!M.body) return; // nothing drawn yet: nothing to hold
+  if (pane.cols === M.cols && pane.rows === M.rows) { // the drawn frame is the answered size: nothing to wait for
+    HOLD.end();
+    return;
+  }
+  HOLD.start({ want: { cols: pane.cols, rows: pane.rows }, plainBefore: M.body.alt === true && M.draft !== null });
+  kickMirror(0);
+}
+
+/** The chip sink of the planner: the latest state is kept, and a view that comes during a hold waits for the frame (null hides the chip at once). */
+function fitChip(view, opts) {
+  FIT.state = view ? view.state : null;
+  if (view && HOLD.active) {
+    FIT.held = { view, opts };
+    return;
+  }
+  FIT.held = null;
+  renderFit(view, opts);
+}
+
+/** The hold is over: the chip an answer brought meanwhile is drawn now, in the step of the frame. */
+function flushChip() {
+  const held = FIT.held;
+  FIT.held = null;
+  if (held) renderFit(held.view, held.opts);
+}
+
+function holdEnded() {
+  flushChip();
+}
+
+/** One answered capture: kept back while a hold waits for Claude's repaint; else drawn. A gone pane, a refusal or an error ends the hold at once and is handled as always. */
+function handleHeld(r) {
+  if (HOLD.active) {
+    if (r.status === 200 && Array.isArray(r.body?.rows) && Number.isInteger(r.body.cols)) {
+      if (HOLD.offer({ r, body: r.body, draft: cleanDraft(r.body.draft) }) === 'keep') return;
+      applyHeld(r);
+      return;
+    }
+    if (r.status !== 304) HOLD.end();
+  }
+  handleCapture(r);
+}
+
+/** Draws a capture a hold let through; when it has another size than the drawn one, the new frame fades in (and zooms in when the text grows). */
+function applyHeld(r) {
+  const was = { cols: M.cols, rows: M.rows, scale: FIT.scale };
+  handleCapture(r);
+  if (was.cols && (M.cols !== was.cols || M.rows !== was.rows)) refit(was.scale);
+}
+
+/** The new frame's transition (F10 6.2): --refit-from through CSSOM, the class restarted; it ends on animationend or, with no animation (reduced motion), after REFIT_MS + 50 ms. */
+function refit(oldScale) {
+  const rows = $('term-rows');
+  rows.style.setProperty('--refit-from', String(refitFrom(oldScale, FIT.scale)));
+  rows.classList.remove('refit');
+  void rows.offsetWidth; // the animation starts again
+  rows.classList.add('refit');
+  clearTimeout(FIT.refitTimer);
+  FIT.refitTimer = setTimeout(endRefit, REFIT_MS + 50);
+}
+
+function endRefit() {
+  clearTimeout(FIT.refitTimer);
+  FIT.refitTimer = 0;
+  $('term-rows').classList.remove('refit');
+}
+
+/**
+ * The hold ran out (F10 4.4). With the room conditions (fit-ui.js roomStep) the page asks once for 33 rows and the hold goes on until that answer; else the
+ * latest kept capture is drawn as it is, so the page then shows the truth (the server refuses what it must).
+ */
+function holdTimeout(pending, ctx) {
+  const frame = FIT.frame;
+  if (pending && frame && roomStep({ room: FIT.room, frameRows: frame.rows, state: FIT.state, plainBefore: ctx.plainBefore, want: ctx.want, body: pending.body, draft: pending.draft })) {
+    FIT.room = true;
+    if (FIT.pop) drawFitPop();
+    HOLD.start({ want: null, plainBefore: ctx.plainBefore });
+    const ask = askSize(frame, true, FIT.d);
+    FIT.planner?.size(ask.cols, ask.rows, { now: true });
+    return;
+  }
+  if (pending) applyHeld(pending.r);
 }
 
 /**
@@ -1487,7 +1626,7 @@ function renderFit(view, opts) {
  * unless the action button it was on has just gone: then it goes to Close.
  */
 function drawFitPop() {
-  const v = fitPanelView(FIT.view, FIT.ui);
+  const v = fitPanelView(FIT.view, { ...FIT.ui, room: FIT.room });
   if (!v) return;
   const again = $('fit-again');
   const held = document.activeElement === again;
@@ -1578,6 +1717,8 @@ function wireFitPop() {
   $('fit-pop-close').addEventListener('click', () => closeFitPop(true));
   $('fit-again').addEventListener('click', () => {
     if ($('fit-again').getAttribute('aria-disabled') === 'true') return; // an ask is on its way
+    FIT.room = false; // F10: Fit again tries the panel's own size
+    fitCommit();
     FIT.planner?.reopen();
   });
   const onKey = (e) => {
@@ -1601,28 +1742,34 @@ function wireFitPop() {
 
 function wireFit() {
   FIT.planner = createFitPlanner({
-    send: (body) => fitCall('PUT', { json: body }),
+    send: (body) => {
+      FIT.sentRows = body.rows; // F10: with the answer's pane rows it gives the border row
+      return fitCall('PUT', { json: body });
+    },
     release: () => fitCall('DELETE', { keepalive: true }), // the lease goes back when the page does
     after: (fn, ms) => setTimeout(fn, ms),
     cancel: (timer) => clearTimeout(timer),
-    chip: renderFit,
+    chip: fitChip, // F10: held during a redraw hold
     fitAgain: fitAgainEvent,
     focused: fitFocused, // F9: the focus every request carries
+    sized: fitSized, // F10: the pane size of each answer starts the redraw hold
   });
   wireFitPop();
   if (typeof ResizeObserver === 'function') new ResizeObserver(fitResize).observe($('term')); // the app's zoom changes the box too
   document.fonts?.ready.then(fitResize, () => {});
+  $('term-rows').addEventListener('animationend', (e) => { if (e?.animationName === 'nika-refit') endRefit(); });
   window.addEventListener('pagehide', () => FIT.planner.close());
   // F9: events are only triggers, the planner reads the value itself; hidden (visibilitychange, in boot) is sent at once, these two settle first. e.target is the window
   // itself: the focus and blur of an element inside the page are not the window's
-  window.addEventListener('focus', (e) => { if (e?.target === window) FIT.planner.focusChanged(false); });
+  // F10: a focus is a commit point (the take gets the size of the resting layout of this moment); a blur measures nothing
+  window.addEventListener('focus', (e) => { if (e?.target === window) { fitCommit(); FIT.planner.focusChanged(false); } });
   window.addEventListener('blur', (e) => { if (e?.target === window) FIT.planner.focusChanged(false); });
   window.addEventListener('pageshow', (e) => { // back from the back/forward cache: pagehide gave the window back, so this is a new page load (open: true)
     if (!e || e.persisted !== true || M.gone || !M.cols) return; // a first load, a pane that is gone, or no capture yet: nothing to restart
-    fitResize();
+    fitCommit();
     FIT.planner.restart();
   });
-  fitResize();
+  fitCommit();
 }
 
 // ---- scroll (design W3): the wheel, PgUp/PgDn/Home/End and Jump to live move Claude's own full-screen view (POST /api/app/pane/:id/scroll) ----
@@ -1636,6 +1783,7 @@ const SCROLL_KEYS = new Map([['PageUp', ['page', 'up', -1]], ['PageDown', ['page
 /** The scroll route; a window with no pane, or a pane that is gone, has none. A call that does not answer within 10 s is cut off and settles as a lost request (status 0), so the planner is never stuck waiting. */
 function scrollCall(body) {
   if (!paneId || M.gone) return Promise.resolve({ status: 0, body: null });
+  if (HOLD.active) return HOLD.wait().then(() => scrollCall(body)); // F10: after the redraw hold; the server still decides on its own fresh capture
   const ctl = new AbortController(); // AbortSignal.timeout() is missing in older macOS web views (project.js does the same)
   const timer = setTimeout(() => ctl.abort(), 10000);
   return call(`/api/app/pane/${encodeURIComponent(paneId)}/scroll`, { method: 'POST', json: body, signal: ctl.signal }).finally(() => clearTimeout(timer));
@@ -1907,6 +2055,7 @@ async function pushThenSubmit(route) {
 
 /** A Send without a readable box: the text goes through the keys route (Shell: Ctrl-U and "!" + the command; no Enter), then the guarded Enter with no base. */
 async function typeThenSubmit(payloads) {
+  if (HOLD.active) await HOLD.wait(); // F10: no key is typed on the strength of a held frame
   const r = await deliverAll(payloads);
   return r.ok ? submitEnter() : r;
 }
@@ -1917,6 +2066,7 @@ async function typeThenSubmit(payloads) {
  * it while it works. Returns { ok, taken, message }: not ok keeps the text in the box. The fixed copy is draft-sync.js (submitResult).
  */
 async function submitEnter(base) {
+  if (HOLD.active) await HOLD.wait(); // F10: the server decides on its own fresh capture; the page only waits for nika's own redraw
   if (M.gone || !paneId) return { ok: false, message: 'The pane is gone.' };
   const r = await postRetry('submit', base ? { base } : {});
   DS.submitted(r); // the answer's draft is the screen after the Enter
@@ -1961,13 +2111,19 @@ function renderDraftNote(view) {
   el.replaceChildren(icon(view.icon), h('b', { text: view.label }), h('span', { text: ` ${view.text}` }));
 }
 
+/** The sync's write into Claude's input (F10: it waits for nika's own redraw hold; the server decides on its own fresh capture). */
+async function putDraft(body) {
+  if (HOLD.active) await HOLD.wait();
+  return call(`/api/app/pane/${encodeURIComponent(paneId)}/draft`, { method: 'PUT', json: body });
+}
+
 const DS = createDraftSync({
   now: () => Date.now(),
   after: (fn, ms) => setTimeout(fn, ms),
   cancel: (timer) => clearTimeout(timer),
   box: () => ({ value: composer().value, shell: S.on }),
   setBox: pullIntoBox,
-  put: (body) => call(`/api/app/pane/${encodeURIComponent(paneId)}/draft`, { method: 'PUT', json: body }),
+  put: putDraft,
   suggest: (body) => call(`/api/app/pane/${encodeURIComponent(paneId)}/suggestion`, { method: 'POST', json: body }),
   note: renderDraftNote,
   problem: (message) => showProblem(message, 'warn', 6000),

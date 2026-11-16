@@ -77,7 +77,7 @@ export function scrollGate(body, draft) {
 // Fixed copy chosen by status and code (design 6.4); the server's own text is never shown.
 const LINE = {
   'prompt-open': "A prompt is open, so nika doesn't send scroll keys. Answer it first, or scroll in the terminal.",
-  'screen-unclear': "A dialog or menu is open in Claude, so nika doesn't send scroll keys. Close it first, or scroll in the terminal.",
+  'screen-unclear': "Claude's input box isn't on screen (a dialog or menu may be open), so nika doesn't send scroll keys. Close it first, or scroll in the terminal.",
   'menu-open': "Claude's / menu may be open, so nika doesn't send scroll keys. Finish or clear the command first.",
   'no-view': "Claude isn't in its full-screen view here, so there is nothing for nika to scroll. The transcript shows the whole conversation.",
   'busy-switching': 'Another action is running on this session. Scroll again in a moment.',

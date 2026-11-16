@@ -652,7 +652,8 @@ describe('scrollGate: the page twin of the server\'s gate', () => {
 describe('refusalLine: fixed copy chosen by status and code', () => {
   const COPY = {
     'prompt-open': "A prompt is open, so nika doesn't send scroll keys. Answer it first, or scroll in the terminal.",
-    'screen-unclear': "A dialog or menu is open in Claude, so nika doesn't send scroll keys. Close it first, or scroll in the terminal.",
+    // F10 (requirement change, design F10 4.4): the refusal can also mean a panel too short for Claude's footer, so the words say what nika saw
+    'screen-unclear': "Claude's input box isn't on screen (a dialog or menu may be open), so nika doesn't send scroll keys. Close it first, or scroll in the terminal.",
     'menu-open': "Claude's / menu may be open, so nika doesn't send scroll keys. Finish or clear the command first.",
     'no-view': "Claude isn't in its full-screen view here, so there is nothing for nika to scroll. The transcript shows the whole conversation.",
     'busy-switching': 'Another action is running on this session. Scroll again in a moment.',

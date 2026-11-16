@@ -1,17 +1,23 @@
 // The fit, the page side (nika 0.5, design W7 sections 5, 8 and 9; the routes: docs/contracts/api-app.md, PUT and DELETE
 // /api/app/pane/:id/fit). The session window measures its terminal panel in cells, asks the server to fit the mirrored pane to it,
 // keeps that lease alive, gives it back on close, scales the text while the pane is larger than the panel, and shows the state in a
-// header chip, a button that opens a panel with the reason and, where it helps, Fit again (F1, design F12). This file has no DOM and makes no request of its own: session.js hands createFitPlanner a route, a clock and a chip
-// sink, so Node tests every rule (test/fit-ui.test.js). A server answer is data: chipView looks its words up in fixed tables, so no
-// string of the server ever reaches the page.
+// header chip, a button that opens a panel with the reason and, where it helps, Fit again (F1, design F12). F10 (design F10): the panel is measured
+// only at fixed moments (remeasure), the page may ask once for room for Claude's footer (askSize, roomStep) and keeps drawing the last good frame
+// until Claude has repainted at the new size (frameReady, createRedrawHold). This file has no DOM and makes no request of its own: session.js hands
+// createFitPlanner a route, a clock and a chip sink, so Node tests every rule (test/fit-ui.test.js). A server answer is data: chipView looks its
+// words up in fixed tables, so no string of the server ever reaches the page.
 // Keep this file ASCII: write every symbol as an escape.
 
 export const BEAT_MS = 5000; // heartbeat; the server lets a lease lapse after 15 s without one
 export const DEBOUNCE_MS = 250; // a resized panel is asked for this long after the last change
 export const SCALE_MIN = 0.4; // below this the text stops shrinking and the terminal scrolls instead
-export const FOCUS_SETTLE_MS = 400; // focus must hold this long before nika takes the size (a glance at nika costs nothing)
-export const BLUR_SETTLE_MS = 200; // blur must hold this long before nika gives it back (a menu or a flick back costs nothing)
+export const FOCUS_SETTLE_MS = 150; // focus must hold this long before nika takes the size (a glance at nika costs nothing); F10, owner answer Q2 (F9: 400)
+export const BLUR_SETTLE_MS = 150; // blur must hold this long before nika gives it back (a menu or a flick back costs nothing); F10, owner answer Q2 (F9: 200)
 export const FOCUS_POLL_MS = 1000; // hasFocus() is read this often while started: a missed event is caught within a second
+export const HOLD_MS = 1200; // after nika's own resize the last good frame stays up this long at most (Claude repaints within 340-680 ms)
+export const HOLD_POLL_MS = 100; // the mirror polls this often while a hold runs (normal: 250 ms)
+export const ROOM_ROWS = 33; // the rows asked for once when Claude's input box and footer did not fit the panel (a pane of 32 holds a 7-line task list)
+export const REFIT_MS = 120; // the new frame fades (and zooms) in over this long; none with prefers-reduced-motion
 const COLS = [40, 400]; // the route's range (design 5)
 const ROWS = [10, 200];
 const PAD_X = 24; // .term padding: 12 px left and right
@@ -31,6 +37,128 @@ export function panelSize({ width, height, cellW, cellH }) {
 export function scaleFor({ panelCols, panelRows, cols, rows }) {
   if (![panelCols, panelRows, cols, rows].every(finite)) return 1;
   return Math.min(1, Math.max(SCALE_MIN, Math.min(panelCols / cols, panelRows / rows)));
+}
+
+const isFrame = (f) => f !== null && typeof f === 'object';
+const hasBox = (draft) => draft !== null && typeof draft === 'object'; // cleanDraft's answer: an object when Claude's input box is readable
+
+/**
+ * F10: whether the panel is measured again. `prev` is the held frame, `next` a frame just taken, both { width, height, cellW, cellH, iw, ih } (the
+ * terminal box's border box and one glyph cell in CSS px, the window's inner size). True with no `prev`, when the window's inner width or height
+ * differs, when a cell side differs by more than 0.01 px, or when the width moved by one cell or more. A change of the height alone is never a
+ * reason (a header wrap, a banner, a composer line, a prompt panel, the textarea), nor is a width change of less than one cell.
+ */
+export function remeasure(prev, next) {
+  if (!isFrame(next)) return false;
+  if (!isFrame(prev)) return true;
+  if (next.iw !== prev.iw || next.ih !== prev.ih) return true;
+  if (Math.abs(next.cellW - prev.cellW) > 0.01 || Math.abs(next.cellH - prev.cellH) > 0.01) return true;
+  return Math.abs(next.width - prev.width) >= prev.cellW;
+}
+
+/**
+ * F10: the size the page asks the route for. `frame` is the held frame ({ cols, rows }); without `room`, or when it already has ROOM_ROWS rows or more, that
+ * is the frame. With `room` it is ROOM_ROWS rows and as many columns as keep the panel's proportion once the border row `d` is taken off (0 or 1, else 0),
+ * so the scaled text fills the panel's width too: never fewer than the frame's columns, never more than the route's 400.
+ */
+export function askSize(frame, room, d) {
+  const { cols, rows } = frame;
+  if (room !== true || rows >= ROOM_ROWS) return { cols, rows };
+  const border = d === 0 || d === 1 ? d : 0;
+  return { cols: Math.max(cols, Math.min(COLS[1], Math.floor((cols * (ROOM_ROWS - border)) / rows))), rows: ROOM_ROWS };
+}
+
+/**
+ * F10: whether a capture is a finished frame at the size nika asked for. `body` is the capture, `draft` its cleaned draft (null when no input box is
+ * readable), `want` the answered pane size { cols, rows }, `plainBefore` whether the frame drawn before the resize showed a readable input box. The
+ * size must match, and then at least one of: a readable box, a prompt, a dialog, no full-screen view, or nothing to wait for (!plainBefore).
+ */
+export function frameReady({ body, draft, want, plainBefore } = {}) {
+  if (!body || !want || body.cols !== want.cols || !Array.isArray(body.rows) || body.rows.length !== want.rows) return false;
+  return hasBox(draft) || Boolean(body.prompt) || body.dialog != null || body.alt !== true || plainBefore !== true;
+}
+
+/**
+ * F10: whether the redraw hold, ending by its timeout, takes the room step (one more resize, to ROOM_ROWS rows). Every one of these must hold: room is not on
+ * yet, the panel has fewer than ROOM_ROWS rows (`frameRows`), the chip says `fitted` (nika resized the window), the frame before the resize showed a readable box
+ * (`plainBefore`), and the latest capture `body` is at the answered size `want`, in the full-screen view, with no prompt, no dialog and no readable `draft`.
+ */
+export function roomStep({ room, frameRows, state, plainBefore, want, body, draft } = {}) {
+  if (room === true || !Number.isInteger(frameRows) || frameRows >= ROOM_ROWS || state !== 'fitted' || plainBefore !== true) return false;
+  if (!body || !want || body.cols !== want.cols || !Array.isArray(body.rows) || body.rows.length !== want.rows) return false;
+  return body.alt === true && !body.prompt && body.dialog == null && !hasBox(draft);
+}
+
+/** F10: where the zoom of a new frame starts, as a scale: the old text scale over the new one when the text grows (never below 0.5), else 1 (a fade only). */
+export function refitFrom(oldScale, newScale) {
+  if (!finite(oldScale) || !finite(newScale)) return 1;
+  const k = oldScale / newScale;
+  return k >= 1 ? 1 : Math.max(0.5, k);
+}
+
+const validPane = (p) => p !== null && typeof p === 'object' && Number.isInteger(p.cols) && p.cols >= 1 && p.cols <= 10000 && Number.isInteger(p.rows) && p.rows >= 1 && p.rows <= 10000;
+
+/**
+ * F10, design F10 4: the redraw hold. After nika's own resize the page keeps drawing the last good frame until a capture shows Claude's input box at the
+ * new size, for HOLD_MS at most. `io.after(fn, ms)` / `io.cancel(timer)` are the clock; `io.timeout(pending, { want, plainBefore })` (optional) is told when
+ * the time is up, with the latest capture that was kept (or null), and may start the hold again from inside (the room step), which keeps it going; if it
+ * does not, the hold is over. `io.ended()` (optional) is told every time a hold stops (a ready frame, end(), a timeout that did not start it again).
+ * - start({ want, plainBefore }): a hold begins (or, while one runs, goes on with the new `want` and a restarted timer; plainBefore stays that of the first
+ *   start). `want` is the answered pane size { cols, rows }, or null while the answer is awaited (nothing is ready then).
+ * - offer(capture = { body, draft, ... }): 'apply' with no hold, or when the capture is ready (the hold ends); else 'keep' (it becomes the pending one).
+ * - wait(): a promise that resolves when no hold runs (at once when none does). end(): the hold stops now; active: whether one runs.
+ */
+export function createRedrawHold(io) {
+  const H = { on: false, want: null, plainBefore: false, pending: null, timer: null, waiters: [] };
+
+  const stop = () => {
+    if (H.timer !== null) io.cancel(H.timer);
+    H.timer = null;
+    H.on = false;
+    H.want = null;
+    H.pending = null;
+    const waiting = H.waiters;
+    H.waiters = [];
+    for (const resolve of waiting) resolve();
+    try { io.ended?.(); } catch { /* a sink that throws must not strand the page */ }
+  };
+  const arm = () => {
+    if (H.timer !== null) io.cancel(H.timer);
+    H.timer = io.after(() => {
+      H.timer = null;
+      if (!H.on) return;
+      try { io.timeout?.(H.pending, { want: H.want, plainBefore: H.plainBefore }); } catch { /* the hold ends below all the same */ }
+      if (H.on && H.timer === null) stop(); // io.timeout did not start it again
+    }, HOLD_MS);
+  };
+
+  return {
+    start({ want, plainBefore } = {}) {
+      if (!H.on) {
+        H.on = true;
+        H.plainBefore = plainBefore === true;
+        H.pending = null;
+      }
+      H.want = validPane(want) ? { cols: want.cols, rows: want.rows } : null;
+      arm();
+    },
+    offer(capture) {
+      if (!H.on) return 'apply';
+      if (frameReady({ body: capture?.body, draft: capture?.draft, want: H.want, plainBefore: H.plainBefore })) {
+        stop();
+        return 'apply';
+      }
+      H.pending = capture;
+      return 'keep';
+    },
+    wait() {
+      return H.on ? new Promise((resolve) => { H.waiters.push(resolve); }) : Promise.resolve();
+    },
+    end() {
+      if (H.on) stop();
+    },
+    get active() { return H.on; },
+  };
 }
 
 // ---- the chip --------------------------------------------------------------------------------------------------------------
@@ -83,6 +211,8 @@ export function chipView(body) {
 // ---- the panel behind the chip (F1, design F12 2.3) ----------------------------------------------------------------------------
 
 const PANEL_NOTE = 'nika could not fit the window just now. It tries again within 5 seconds.';
+// F10: the panel of a fitted view while the page asked for ROOM_ROWS rows (the hint replaces the view's own; Fit again clears the room and asks for the panel's size)
+const ROOM_HINT = "Claude's input box and footer did not fit this panel's rows, so nika gave the pane 33 rows and scaled the text. Fit again tries the panel's own size.";
 const FITTING = 'Fitting\u2026';
 // Looked up by the key of a chipView, never by a word of the server. `action` is the button's text: only where open: true can change
 // something (the server refuses it again for user-zoom, size-option and foreign-tag, and those recover once the user acts in tmux).
@@ -110,16 +240,19 @@ const PANEL = {
  * What the chip's panel shows: { heading, why, hint, code, action, note } for a chipView and the panel's own state `ui` ({ pending, note }),
  * or null when `view` is not one. heading and why are the view's label and title; hint, code (a command shown as text) and action
  * ({ text }, "Fitting..." while pending) come from a fixed table by the view's key, and a key it does not know has none of them.
+ * F10: `ui.room` (exactly true) turns the hint into ROOM_HINT and the action into Fit again for `fitted:` and `fitted:terminal`; every other key ignores it.
  */
 export function fitPanelView(view, ui) {
   if (view === null || typeof view !== 'object' || typeof view.key !== 'string') return null;
   const row = Object.hasOwn(PANEL, view.key) ? PANEL[view.key] : {};
+  const room = ui?.room === true && (view.key === 'fitted:' || view.key === 'fitted:terminal');
+  const action = room ? 'Fit again' : row.action;
   return {
     heading: typeof view.label === 'string' ? view.label : '',
     why: typeof view.title === 'string' ? view.title : '',
-    hint: row.hint ?? null,
+    hint: room ? ROOM_HINT : row.hint ?? null,
     code: row.code ?? null,
-    action: row.action ? { text: ui?.pending === true ? FITTING : row.action } : null,
+    action: action ? { text: ui?.pending === true ? FITTING : action } : null,
     note: ui?.note === true ? PANEL_NOTE : null,
   };
 }
@@ -148,6 +281,8 @@ const same = (a, b) => a !== null && b !== null && a.cols === b.cols && a.rows =
  * - 409, 429, 502, a lost request or any other refusal waits for the next heartbeat. 403 stops everything for good.
  * - close() (the page leaves, the pane is gone) gives the window back with one release; start() after it is a new lease, and restart()
  *   (the page is back from the back/forward cache) is a new lease that opens like a page load.
+ * - F10: `io.sized({ cols, rows })` (optional) is told the pane size of every 200 answer that carries one (`fit.pane`, integers 1 to 10000), before the chip of
+ *   that answer, so the page can hold the chip until the new frame is drawn. A stale answer, a refusal and a body of another shape tell nothing.
  * - F9, the focused window wins the pane's size: every body carries `focus`, the boolean `io.focused()` answers (anything but the boolean true, a throw
  *   and a missing io.focused all read as false: a page that cannot tell holds nothing). The page tells the planner of a possible change with
  *   focusChanged(immediate); the value is always read fresh from io.focused(), so an event is only a trigger. A change must hold for a moment before it is
@@ -240,6 +375,10 @@ export function createFitPlanner(io) {
     }
     P.opened = true;
     P.sent = want;
+    const pane = r.body?.fit?.pane;
+    if (validPane(pane)) { // F10: the page learns what the pane is now (before the chip: it may hold both until the new frame is ready)
+      try { io.sized?.({ cols: pane.cols, rows: pane.rows }); } catch { /* the planner goes on without the page's hold */ }
+    }
     // F9: a state change that follows a change of the page's focus is not announced again (the user made it); the user's own Fit again always is
     const quiet = !asked && P.acked !== null && focus !== P.acked;
     P.acked = focus;
@@ -338,13 +477,20 @@ export function createFitPlanner(io) {
       P.opened = false;
       start();
     },
-    /** The panel is cols x rows now. Remembered before start; asked for at once while nothing has been answered, else after the debounce. */
-    size(cols, rows) {
+    /**
+     * The panel is cols x rows now. Remembered before start; asked for at once while nothing has been answered, else after the debounce.
+     * F10: `opts.now` (exactly true) asks at once even after an answer (the room step), unless a request is in flight or a refusal waits for the heartbeat:
+     * then it goes after them like any size.
+     */
+    size(cols, rows, opts) {
       if (!validSize(cols, rows)) return;
       P.want = { cols, rows };
       if (!P.on) return;
       if (P.sent === null) flush(true);
-      else schedule();
+      else if (opts?.now === true && !P.busy && !P.hold) {
+        clear('debounce');
+        flush(false);
+      } else schedule();
     },
     /** The window shows again (timers may have been suspended): one request now, and the next heartbeat 5 s on. It carries the focus read now (F9). */
     beat,

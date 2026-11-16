@@ -14,7 +14,10 @@ import { quickState as quickStateReal, sendGate as sendGateReal, keysRefusal as 
 import { planSend as planSendReal, arrowEcho as arrowEchoReal, keyForEvent as keyForEventReal, planPaste as planPasteReal, toRenderModel as toRenderModelReal, cutCursor as cutCursorReal } from '../public/mirror-render.js';
 import { draftSendPlan as draftSendPlanReal, cleanDraft as cleanDraftReal, cutAt as cutAtReal, caretAfter as caretAfterReal, noteView as noteViewReal, suggestionFor as suggestionForReal, submitResult as submitResultReal, submitMessage as submitMessageReal } from '../public/draft-sync.js';
 import { switchFailure as switchFailureReal, MODE_TARGETS, MODE_META } from '../public/modes.js';
-import { createFitPlanner as createFitPlannerReal, panelSize as panelSizeReal, scaleFor as scaleForReal, chipView as chipViewReal, fitPanelView as fitPanelViewReal, stillOffSay as stillOffSayReal } from '../public/fit-ui.js';
+import {
+  createFitPlanner as createFitPlannerReal, panelSize as panelSizeReal, scaleFor as scaleForReal, chipView as chipViewReal, fitPanelView as fitPanelViewReal, stillOffSay as stillOffSayReal,
+  createRedrawHold as createRedrawHoldReal, remeasure as remeasureReal, askSize as askSizeReal, roomStep as roomStepReal, refitFrom as refitFromReal, HOLD_MS as HOLD_MS_REAL, REFIT_MS as REFIT_MS_REAL, FOCUS_SETTLE_MS as FOCUS_SETTLE_REAL, BLUR_SETTLE_MS as BLUR_SETTLE_REAL,
+} from '../public/fit-ui.js';
 import { createScrollPlanner as createScrollPlannerReal, routeFor as routeForReal, wheelRows as wheelRowsReal, scrollGate as scrollGateReal, viewRowsOf as viewRowsOfReal, pageRowsOf as pageRowsOfReal, refusalLine as refusalLineReal, noteView as scrollNoteViewReal, scrolledSay as scrolledSayReal, NOTE_MS as NOTE_MS_REAL } from '../public/scroll.js';
 import { h as hReal, icon as iconReal, roleTagEl as roleTagElReal, subStateEl as subStateElReal, subagentItemEl as subagentItemElReal, labelEl as labelElReal } from '../public/dom.js';
 import { subagentView as subagentViewReal, subagentHref as subagentHrefReal, SUBAGENT_ID as SUBAGENT_ID_REAL, agentLabelView as agentLabelViewReal, subLabelView as subLabelViewReal } from '../public/dash-model.js';
@@ -68,7 +71,8 @@ const jsonClone = (v) => JSON.parse(JSON.stringify(v)); // objects built inside 
 /** The log of what went out: `keys` (bodies the keys route got), `posts` ([route tail, body] of the submit route), `order` (their order, with the sync's calls added by the rig). `sent` is both. */
 const sendLog = () => ({ keys: [], posts: [], order: [], get sent() { return [...this.keys, ...this.posts]; } });
 /** The context members the chain needs besides the page's own state. `submit(tail, body)` answers the submit route (default: taken). */
-const sendIo = (log, submit = () => TAKEN) => ({
+const sendIo = (log, submit = () => TAKEN, hold = { active: false }) => ({
+  HOLD: hold, // F10: Send waits for the redraw hold; a hold that is not running is nothing to wait for
   enqueueJob: (run) => run(),
   deliver: async (payload) => { log.order.push('keys'); log.keys.push(jsonClone(payload)); return { ok: true }; },
   postRetry: async (tail, body) => { log.order.push(tail); log.posts.push([tail, jsonClone(body)]); return submit(tail, body); },
@@ -1340,7 +1344,7 @@ describe('Task 14b: wiring of the page rules', () => {
       DS: { screen: () => null, beginSend() {}, endSend() {}, sent() {}, submitted() {} }, draftSendPlan: draftSendPlanReal, M: { cols: 120, gone: false }, ATT: { pending: () => false },
       ...sendIo(log),
     };
-    return { log, ta, send: mk(SEND_FUNCS, ctx).sendComposer };
+    return { log, ta, ctx, send: mk(SEND_FUNCS, ctx).sendComposer };
   };
   const GATE = 'Answer the prompt with the buttons above or in the terminal.';
   const NO_BUTTONS = 'Answer the prompt in the terminal, or turn on Type into pane.';
@@ -1500,7 +1504,7 @@ describe('Task 14b: wiring of the page rules', () => {
     const log = { paths: [], bodies: [], problems: [], cleared: 0, gone: 0, sleeps: [], submitted: [] };
     const queue = [...answers];
     const ctx = {
-      M: { gone }, paneId: '%12', call: async (path, o) => { log.paths.push(path); log.bodies.push(jsonClone(o.json)); return queue.length > 1 ? queue.shift() : queue[0]; },
+      HOLD: { active: false }, M: { gone }, paneId: '%12', call: async (path, o) => { log.paths.push(path); log.bodies.push(jsonClone(o.json)); return queue.length > 1 ? queue.shift() : queue[0]; },
       showProblem: (m, k, ms) => log.problems.push([m, k, ms]), clearProblem: () => { log.cleared += 1; }, setGone: () => { log.gone += 1; },
       sleep: async (ms) => { log.sleeps.push(ms); }, RATE_MSG: 'Too fast.', submitResult: submitResultReal, DS: { submitted: (r) => log.submitted.push(jsonClone(r)) },
     };
@@ -1910,14 +1914,30 @@ describe('Task 14b: wiring of the page rules', () => {
   });
 
   // -- B5: Rewind is /rewind through the command route
-  const cmdRig = ({ status = 200, body = { sent: true } } = {}) => {
+  const cmdRig = ({ status = 200, body = { sent: true }, hold = { active: false } } = {}) => {
     const log = { calls: [], said: [], problems: [], gone: 0 };
     const ctx = {
-      Q: { busy: null }, M: { gone: false }, paneId: '%12', renderQuick() {}, call: async (path, opts) => { log.calls.push([path, opts]); return { status, body }; }, clearProblem() {},
+      HOLD: hold, Q: { busy: null }, M: { gone: false }, paneId: '%12', renderQuick() {}, call: async (path, opts) => { log.calls.push([path, opts]); return { status, body }; }, clearProblem() {},
       say: (m) => log.said.push(m), setGone: () => { log.gone += 1; }, showProblem: (m, k) => log.problems.push([m, k]), commandFailure: commandFailureReal, commandSaid: commandSaidReal, problemKind: problemKindReal,
     };
     return { log, sendCommand: mk(['async function sendCommand(text)'], ctx).sendCommand };
   };
+
+  test('(+) F10: a quick-action command (sendCommand) during the hold goes after it, with the button busy meanwhile; with no hold it goes in the same tick', async () => {
+    const hold = createRedrawHoldReal({ after: () => 1, cancel() {} });
+    const r = cmdRig({ hold });
+    hold.start({ want: { cols: 100, rows: 30 }, plainBefore: true });
+    const p = r.sendCommand('/compact');
+    await new Promise((resolve) => { setImmediate(resolve); });
+    assert.deepEqual(r.log.calls, [], 'held');
+    hold.end();
+    await p;
+    assert.equal(r.log.calls.length, 1);
+    assert.equal(r.log.calls[0][0], '/api/app/pane/%2512/command');
+    const idle = cmdRig();
+    idle.sendCommand('/compact');
+    assert.equal(idle.log.calls.length, 1, 'no hold: not even a tick of delay');
+  });
 
   test('(+) B5: Rewind posts /rewind to the command route and says it opened the menu in the pane', async () => {
     const r = cmdRig();
@@ -3174,7 +3194,9 @@ describe('0.5: the note, the pull and the edits (wiring)', () => {
   test('(+) the page hands the sync its box, a PUT to the draft route, the clock, the note and the gone state', () => {
     const src = fnOf('const DS = createDraftSync({').length ? SRC.slice(SRC.indexOf('const DS = createDraftSync({'), SRC.indexOf('});', SRC.indexOf('const DS = createDraftSync({')) + 3) : '';
     assert.match(src, /box: \(\) => \(\{ value: composer\(\)\.value, shell: S\.on \}\)/);
-    assert.match(src, /put: \(body\) => call\(`\/api\/app\/pane\/\$\{encodeURIComponent\(paneId\)\}\/draft`, \{ method: 'PUT', json: body \}\)/);
+    // F10 (requirement change, not a weakened test): the write waits for the redraw hold, so the config names putDraft, and the PUT to the draft route is asserted on that function
+    assert.match(src, /put: putDraft,/);
+    assert.match(fnOf('async function putDraft(body)'), /return call\(`\/api\/app\/pane\/\$\{encodeURIComponent\(paneId\)\}\/draft`, \{ method: 'PUT', json: body \}\);/);
     assert.match(src, /setBox: pullIntoBox/);
     assert.match(src, /note: renderDraftNote/);
     assert.match(src, /gone: setGone/);
@@ -3281,7 +3303,7 @@ describe('0.5: Send with the synced box (design W5, section 4)', () => {
    * sendComposer for real, with the real plans (draftSendPlan, planSend, planShell, sendGate, submitResult), a fake sync and fake routes.
    * `pushAnswer`: what DS.send answers; `submit(tail, body)`: what the submit route answers (default: taken); `kind`: the agent's status.
    */
-  const rig = ({ value, screen, shell = false, promptOpen = false, pushAnswer = { ok: true, sig: PUSHED }, submit, kind = 'idle', att = { pending: () => false }, footer = { mode: 'default', confirmed: true } } = {}) => {
+  const rig = ({ value, screen, shell = false, promptOpen = false, pushAnswer = { ok: true, sig: PUSHED }, submit, kind = 'idle', att = { pending: () => false }, footer = { mode: 'default', confirmed: true }, hold = { active: false } } = {}) => {
     const log = Object.assign(sendLog(), { problems: [], said: [], pushed: [], told: [], shellOff: 0 });
     const ta = { value, disabled: false };
     const ctx = {
@@ -3296,9 +3318,9 @@ describe('0.5: Send with the synced box (design W5, section 4)', () => {
         send: async (text) => { log.order.push('push'); log.pushed.push(text); return pushAnswer; },
       },
       ATT: att,
-      ...sendIo(log, submit),
+      ...sendIo(log, submit, hold),
     };
-    return { log, ta, send: mk(SEND_FUNCS, ctx).sendComposer };
+    return { log, ta, ctx, send: mk(SEND_FUNCS, ctx).sendComposer };
   };
   const SUBMIT = (base) => [['submit', base === undefined ? {} : { base }]];
 
@@ -3598,6 +3620,63 @@ describe('0.5: Send with the synced box (design W5, section 4)', () => {
     assert.match(submit, /postRetry\('submit'/);
     assert.doesNotMatch(submit, /deliver\(|\/keys|keys:/);
     for (const f of [src, fnOf('async function pushThenSubmit(route)'), fnOf('async function typeThenSubmit(payloads)'), submit]) assert.doesNotMatch(f, /'Enter'|"Enter"|keys:/);
+  });
+
+
+  // ---- F10 (design F10 4.5): Send waits for the redraw hold; every server gate stays ------------------------------------------------------------
+  const holdOf = () => createRedrawHoldReal({ after: () => 1, cancel() {} });
+  const WANT = { cols: 100, rows: 30 };
+
+  test('(+) F10: a Send whose box already holds the text (only the Enter) goes out after the hold', async () => {
+    const hold = holdOf();
+    const r = rig({ value: 'hello', screen: D('text', 'hello'), hold });
+    hold.start({ want: WANT, plainBefore: true });
+    const p = r.send();
+    await new Promise((resolve) => { setImmediate(resolve); });
+    assert.deepEqual(r.log.sent, [], 'held: nothing is sent on the strength of the held frame');
+    hold.end();
+    await p;
+    assert.deepEqual(r.log.posts.map(([tail]) => tail), ['submit']);
+  });
+
+  test('(+) F10: a pushed Send (text copied into Claude\'s input first) waits before the guarded Enter, and a typed Send before its first key', async () => {
+    const pushed = holdOf();
+    const a = rig({ value: 'hello', screen: D('empty'), hold: pushed });
+    pushed.start({ want: WANT, plainBefore: true });
+    const pa = a.send();
+    await new Promise((resolve) => { setImmediate(resolve); });
+    assert.deepEqual(a.log.posts, [], 'the Enter waits');
+    pushed.end();
+    await pa;
+    assert.equal(a.log.posts.length, 1);
+    const typed = holdOf();
+    const b = rig({ value: 'hello', screen: null, hold: typed });
+    typed.start({ want: WANT, plainBefore: true });
+    const pb = b.send();
+    await new Promise((resolve) => { setImmediate(resolve); });
+    assert.deepEqual(b.log.keys, [], 'no key is typed while the frame is held');
+    typed.end();
+    await pb;
+    assert.ok(b.log.keys.length >= 1);
+  });
+
+  test('(−) F10: a pane that is gone by the time the hold ends gets no Enter', async () => {
+    const hold = holdOf();
+    const r = rig({ value: 'hello', screen: D('text', 'hello'), hold });
+    hold.start({ want: WANT, plainBefore: true });
+    const p = r.send();
+    await new Promise((resolve) => { setImmediate(resolve); });
+    r.ctx.M.gone = true;
+    hold.end();
+    await p;
+    assert.deepEqual(r.log.posts, []);
+    assert.equal(r.ta.value, 'hello', 'the text stays in the box');
+  });
+
+  test('(−) F10: with no hold a Send runs exactly as before (the same order of calls)', async () => {
+    const r = rig({ value: 'hello', screen: D('text', 'hello'), hold: { active: false } });
+    await r.send();
+    assert.deepEqual(r.log.order, ['begin', 'submit', 'submitted', 'sent', 'end']);
   });
 });
 
@@ -4219,6 +4298,9 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     'function fitCall(', 'function fitMeasure()', 'function fitScale()', 'function fitResize()', 'function fitCaptured()',
     'function drawFitPop()', 'function openFitPop()', 'function closeFitPop(refocus)', 'function fitAway(e)', 'function fitAgainEvent(e)',
     'function renderFit(view, opts)', 'function wireFitPop()', 'function wireFit()', 'function setGone()', 'function handleCapture(r)', 'function fitFocused()',
+    // F10 (design F10 2 to 6)
+    'function fitProbe()', 'function fitCommit()', 'function fitChip(view, opts)', 'function flushChip()', 'function fitSized(pane)', 'function handleHeld(r)',
+    'function applyHeld(r)', 'function refit(oldScale)', 'function endRefit()', 'function holdTimeout(pending, ctx)', 'function holdEnded()',
   ];
   /** An element that also answers contains() (the fake El has no tree search): the panel's focus and dismissal rules ask it. */
   class Box extends El {
@@ -4240,8 +4322,12 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
    */
   const rig = ({ pane = '%12', box: size = { w: 827, h: 562 }, cell = { w: 800, h: 18 }, replies = [], observer = true } = {}) => {
     const clk = fakeClock();
-    const log = { calls: [], said: [], props: [], ro: null, observed: null, events: {}, gone: 0, overlays: [], placed: [] };
-    const term = { clientWidth: size.w, clientHeight: size.h, style: { setProperty: (k, v) => log.props.push([k, v]) } };
+    const log = { calls: [], said: [], props: [], ro: null, observed: null, events: {}, gone: 0, overlays: [], placed: [], kicks: [], noted: [], drawn: [], lives: [], scrolled: [], rowsOn: {}, classOps: [] };
+    // F10: the page measures the border box (getBoundingClientRect), here the same numbers as the client box; scrollTop / scrollHeight show the re-pin
+    const term = { clientWidth: size.w, clientHeight: size.h, scrollTop: 0, scrollHeight: 0, rectExtra: { w: 0, h: 0 }, getBoundingClientRect: () => ({ width: term.clientWidth + term.rectExtra.w, height: term.clientHeight + term.rectExtra.h }), style: { setProperty: (k, v) => log.props.push([k, v]) } };
+    // F10: the mirror's rows element: the refit class (classList), the custom property (style.setProperty, never a style attribute) and the animationend listener
+    const classes = new Set();
+    const rows = { classes, classList: { add: (c) => { log.classOps.push(`+${c}`); classes.add(c); }, remove: (c) => { log.classOps.push(`-${c}`); classes.delete(c); }, contains: (c) => classes.has(c) }, offsetWidth: 0, style: { props: {}, setProperty(k, v) { this.props[k] = String(v); } }, addEventListener: (t, fn) => { log.rowsOn[t] = fn; } };
     const probe = { getBoundingClientRect: () => ({ width: cell.w, height: cell.h }) };
     const wrap = box('span', true);
     const chip = box('button');
@@ -4255,17 +4341,22 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     wrap.append(chip, pop);
     const histToggle = box('button');
     const outside = box('button');
-    const els = { term, 'fit-probe': probe, 'fit-chip': chip, 'fit-wrap': wrap, 'fit-pop': pop, 'fit-pop-h': popH, 'fit-pop-why': popWhy, 'fit-pop-hint': popHint, 'fit-pop-note': popNote, 'fit-pop-close': close, 'fit-again': again, 'hist-toggle': histToggle };
+    const els = { term, 'term-rows': rows, 'fit-probe': probe, 'fit-chip': chip, 'fit-wrap': wrap, 'fit-pop': pop, 'fit-pop-h': popH, 'fit-pop-why': popWhy, 'fit-pop-hint': popHint, 'fit-pop-note': popNote, 'fit-pop-close': close, 'fit-again': again, 'hist-toggle': histToggle };
     const docOn = new Map(); // the document's listeners by type: the page adds pointerdown while the panel is open and removes it when it closes
     // F9: what the page reads for its focus: document.visibilityState and document.hasFocus(); `throws` makes hasFocus() throw
     const page = { visible: true, focus: false, throws: false };
     focusState.el = null;
     const ctx = {
-      paneId: pane, M: { cols: 0, rows: 0, gone: false, timer: 0, errors: 0, inputOff: false }, FIT: { planner: null, panel: null, scale: 1, view: null, ui: { pending: false, note: false }, pop: false }, SC: { planner: null, scrolled: false },
+      paneId: pane, M: { cols: 0, rows: 0, gone: false, timer: 0, errors: 0, inputOff: false, frozen: false, body: null, draft: null, etag: null },
+      FIT: { planner: null, panel: null, frame: null, scale: 1, view: null, ui: { pending: false, note: false }, pop: false, state: null, room: false, d: 0, sentRows: 0, held: null, refitTimer: 0 }, SC: { planner: null, scrolled: false },
       $: (id) => els[id],
       call: async (path, opts) => { log.calls.push({ path, ...opts }); return replies.length ? replies.shift() : FITTED; },
       announce: (m) => log.said.push(m), h: hReal, icon: iconReal, Node: El,
       panelSize: panelSizeReal, scaleFor: scaleForReal, createFitPlanner: createFitPlannerReal, fitPanelView: fitPanelViewReal, stillOffSay: stillOffSayReal,
+      remeasure: remeasureReal, askSize: askSizeReal, roomStep: roomStepReal, refitFrom: refitFromReal, REFIT_MS: REFIT_MS_REAL,
+      // F10: the capture path of handleCapture, with spies where the page would draw or judge the screen (noteScreen is what moves the mode chip)
+      noteScreen: (b) => log.noted.push(b), drawMirror: () => log.drawn.push(1), cleanDraft: cleanDraftReal, ATT: { sending: () => false }, renderSuggestion() {}, Q: { queued: false }, renderQuick() {},
+      scrollCaptured: (b) => log.scrolled.push(b), ETAG: /^[0-9a-f]{1,64}$/, MID: ' - ', TIMES: 'x', kickMirror: (ms) => log.kicks.push(ms),
       placeMenuX: (m, btn) => log.placed.push(['place', m === pop, btn === chip, pop.hidden]),
       clearMenuPlacement: (m) => log.placed.push(['clear', m === pop, pop.hidden]),
       setTimeout: clk.setTimeout, clearTimeout: clk.clearTimeout,
@@ -4278,13 +4369,16 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
         addEventListener: (type, fn) => { if (!docOn.has(type)) docOn.set(type, new Set()); docOn.get(type).add(fn); },
         removeEventListener: (type, fn) => { docOn.get(type)?.delete(fn); },
       },
-      window: { addEventListener: (type, fn) => { log.events[type] = fn; } },
-      DS: { stop() {} }, setLive() {}, setPaneState() {}, setInputEnabled() {}, showOverlay: (title) => log.overlays.push(title), recovered() {}, serverMessage: () => '',
+      window: { addEventListener: (type, fn) => { log.events[type] = fn; }, innerWidth: 1200, innerHeight: 800 },
+      DS: { stop() {}, capture() {} }, setLive: (state, text) => log.lives.push([state, text]), setPaneState() {}, setInputEnabled() {}, showOverlay: (title) => log.overlays.push(title), recovered() {}, serverMessage: () => '',
     };
-    const fns = vm.runInNewContext(`${NAMES.map(fnOf).join('\n')}; ({ fitCall, fitMeasure, fitScale, fitResize, fitCaptured, drawFitPop, openFitPop, closeFitPop, fitAgainEvent, renderFit, wireFitPop, wireFit, setGone, handleCapture, fitFocused })`, ctx);
+    // F10: the redraw hold on the rig's clock; its timeout and end go to the page's own functions (resolved lazily, they are defined just below)
+    let fns = null;
+    ctx.HOLD = createRedrawHoldReal({ after: clk.setTimeout, cancel: clk.clearTimeout, timeout: (pending, c) => fns.holdTimeout(pending, c), ended: () => fns.holdEnded() });
+    fns = vm.runInNewContext(`${NAMES.map(fnOf).join('\n')}; ({ fitCall, fitMeasure, fitScale, fitResize, fitCaptured, drawFitPop, openFitPop, closeFitPop, fitAgainEvent, renderFit, wireFitPop, wireFit, setGone, handleCapture, fitFocused, fitProbe, fitCommit, fitChip, flushChip, fitSized, handleHeld, applyHeld, refit, endRefit, holdTimeout, holdEnded })`, ctx);
     const pointerdown = (target) => { for (const fn of [...(docOn.get('pointerdown') ?? [])]) fn({ type: 'pointerdown', target }); };
     return {
-      ...fns, ctx, log, clk, page, term, chip, wrap, pop, popH, popWhy, popHint, popNote, close, again, histToggle, outside, pointerdown,
+      ...fns, ctx, log, clk, page, term, rows, chip, wrap, pop, popH, popWhy, popHint, popNote, close, again, histToggle, outside, pointerdown,
       listeners: (type) => docOn.get(type)?.size ?? 0,
     };
   };
@@ -4464,7 +4558,8 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     assert.match(fnOf('function wireFit()'), /focused:\s*fitFocused\b/);
   });
 
-  test('(+) F9: wireFit listens for the window\'s focus and blur; both call planner.focusChanged(false) (a blur is sent 200 ms on, a focus 400 ms on)', async () => {
+  // F10 (requirement change, not a weakened test): the owner's Q2 answer replaces F9's 200 / 400 ms settles with 150 / 150
+  test('(+) F9: wireFit listens for the window\'s focus and blur; both call planner.focusChanged(false) (a blur is sent 150 ms on, a focus 150 ms on)', async () => {
     const r = rig();
     r.page.focus = true;
     r.wireFit();
@@ -4476,13 +4571,13 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     assert.equal(typeof r.log.events.blur, 'function');
     r.page.focus = false;
     r.log.events.blur({ target: r.ctx.window });
-    await r.clk.advance(199);
+    await r.clk.advance(149);
     assert.equal(r.log.calls.length, 1);
     await r.clk.advance(1);
     assert.deepEqual(calls(r).slice(1), [PUT(100, 30, false, false)]);
     r.page.focus = true;
     r.log.events.focus({ target: r.ctx.window });
-    await r.clk.advance(399);
+    await r.clk.advance(149);
     assert.equal(r.log.calls.length, 2);
     await r.clk.advance(1);
     assert.deepEqual(calls(r).slice(2), [PUT(100, 30, false, true)]);
@@ -4516,14 +4611,15 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     assert.deepEqual(calls(r), []);
   });
 
-  test('(+) F9: the poll catches a change no event reported: hasFocus() flips, the PUT follows within about 1.2 s', async () => {
+  // F10 (requirement change, not a weakened test): the poll finds the change at 1 s and the blur settle is 150 ms now, so the PUT follows at 1.15 s (F9: 1.2 s)
+  test('(+) F9: the poll catches a change no event reported: hasFocus() flips, the PUT follows within about 1.15 s', async () => {
     const r = rig();
     r.page.focus = true;
     r.wireFit();
     r.fitCaptured();
     await r.clk.advance(0);
     r.page.focus = false;
-    await r.clk.advance(1199);
+    await r.clk.advance(1149);
     assert.equal(r.log.calls.length, 1);
     await r.clk.advance(1);
     assert.deepEqual(calls(r).slice(1), [PUT(100, 30, false, false)]);
@@ -5567,6 +5663,613 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     // F9 (requirement change): the window's focus and blur are wired here too (the visibilitychange of the document is boot's)
     assert.deepEqual(Object.keys(r.log.events).sort(), ['blur', 'focus', 'pagehide', 'pageshow', 'resize']);
   });
+
+  // ---- F10 (design F10 2 to 6, 8.3): one steady resize per focus, room for Claude's footer, the redraw hold, the transition -----------------------------
+  const HOLD_MS = HOLD_MS_REAL;
+  const flushAll = () => new Promise((resolve) => { setImmediate(resolve); });
+  const answerAt = (state, pane, reason = null) => ({ status: 200, body: { fit: { state, reason, pane, panes: 1, userZoom: false } } });
+  /** A capture of cols x rows; `over` is merged into the body (the draft is the raw one the server sends). */
+  const shot = (cols, rows, over = {}) => ({ status: 200, body: { cols, rows: Array.from({ length: rows }, () => []), alt: true, prompt: null, dialog: null, mode: 'auto', modeConfirmed: true, scrolled: false, etag: 'ab', cursor: null, draft: null, ...over } });
+  const BOXED = { state: 'empty', mode: 'prompt', text: '', sig: '0000000000000001', box: { top: 18, bottom: 20 }, cursorAtEnd: true, suggestion: null, queued: false };
+  const PANEL_145X22 = { w: 24 + 8 * 145, h: 20 + 18 * 22 }; // a 145 x 22 cell panel at the 8 x 18 cell
+  const PANEL_145X40 = { w: 24 + 8 * 145, h: 20 + 18 * 40 }; // 40 rows: never needs the room step
+
+  /**
+   * The page with a mirror drawn at 171 x 45 (the terminal's size), the fit started and its first answer given: `pane` is the pane size nika's
+   * resize made, so a redraw hold runs (`plain`: the drawn frame showed a readable input box). The replies after it are `more`.
+   */
+  const heldRig = async ({ box = PANEL_145X22, pane = { cols: 145, rows: 21 }, plain = true, state = 'fitted', more = [], focus = false } = {}) => {
+    const r = rig({ box, replies: [answerAt(state, pane), ...more] });
+    r.page.focus = focus;
+    r.wireFit();
+    r.ctx.M.cols = 171;
+    r.ctx.M.rows = 45;
+    r.ctx.M.body = shot(171, 45, { draft: plain ? BOXED : null }).body;
+    r.ctx.M.draft = plain ? cleanDraftReal(BOXED) : null;
+    r.fitCaptured();
+    await r.clk.advance(0);
+    return r;
+  };
+
+  // -- steady size: the panel is measured only at fixed moments
+  test('(+) F10: the border box is what is measured (getBoundingClientRect), with the window\'s inner size; the held frame carries both', () => {
+    const r = rig({ box: PANEL_145X22 });
+    r.ctx.window.innerWidth = 1300;
+    r.ctx.window.innerHeight = 700;
+    assert.deepEqual(norm(r.fitMeasure()), { cols: 145, rows: 22 });
+    assert.deepEqual(norm(r.ctx.FIT.frame), { cols: 145, rows: 22, width: PANEL_145X22.w, height: PANEL_145X22.h, cellW: 8, cellH: 18, iw: 1300, ih: 700 });
+  });
+
+  test('(+) F10: a width change of the box (the transcript toggle) sends one PUT after the debounce', async () => {
+    const r = rig();
+    r.wireFit();
+    r.fitCaptured();
+    await r.clk.advance(0);
+    r.term.clientWidth = 24 + 8 * 70;
+    r.log.ro();
+    await r.clk.advance(249);
+    assert.equal(r.log.calls.length, 1);
+    await r.clk.advance(1);
+    assert.deepEqual(calls(r), [PUT(100, 30, true), PUT(70, 30, false)]);
+  });
+
+  test('(+) F10: a change of the window\'s inner size is a commit even with the box\'s height moving too: one PUT with the new rows', async () => {
+    const r = rig();
+    r.wireFit();
+    r.fitCaptured();
+    await r.clk.advance(0);
+    r.ctx.window.innerHeight = 900;
+    r.term.clientHeight = 562 + 90;
+    r.log.ro();
+    await r.clk.advance(250);
+    assert.deepEqual(calls(r), [PUT(100, 30, true), PUT(100, 35, false)]);
+    assert.equal(r.ctx.FIT.frame.ih, 900);
+  });
+
+  test('(−) F10: a change of the box\'s height alone (a composer line, the problem line, a prompt panel) sends no PUT, changes no text scale and re-pins the bottom', async () => {
+    const r = rig();
+    r.wireFit();
+    r.ctx.M.cols = 120;
+    r.ctx.M.rows = 39;
+    r.fitCaptured();
+    await r.clk.advance(0);
+    const props = r.log.props.length;
+    for (const h of [562 - 54, 562 - 300, 562 + 120]) {
+      r.term.clientHeight = h;
+      r.term.scrollHeight = 900;
+      r.term.scrollTop = 0;
+      r.log.ro();
+      await r.clk.advance(1000);
+      assert.equal(r.term.scrollTop, 900, `pinned to the bottom at ${h}`);
+    }
+    assert.deepEqual(calls(r), [PUT(100, 30, true)]);
+    assert.equal(r.log.props.length, props, 'the text scale was not touched');
+    assert.deepEqual(norm(r.ctx.FIT.panel), { cols: 100, rows: 30 });
+  });
+
+  test('(−) F10: the same height-only change does not re-pin a paused (frozen) mirror', async () => {
+    const r = rig();
+    r.wireFit();
+    r.fitCaptured();
+    await r.clk.advance(0);
+    r.ctx.M.frozen = true;
+    r.term.clientHeight = 562 - 54;
+    r.term.scrollHeight = 900;
+    r.term.scrollTop = 123;
+    r.log.ro();
+    assert.equal(r.term.scrollTop, 123, 'the reader keeps the place');
+  });
+
+  test('(−) F10: a width change of less than one cell and the font arriving with the same cell are no commits', async () => {
+    const r = rig();
+    r.wireFit();
+    r.fitCaptured();
+    await r.clk.advance(0);
+    r.term.clientWidth += 7;
+    r.log.ro();
+    await r.clk.advance(1000);
+    assert.equal(r.log.calls.length, 1);
+    assert.equal(r.ctx.FIT.frame.width, 827, 'the frame is still the one held');
+  });
+
+  test('(+) F10: the border box decides, not the client box: a scrollbar or border the client box leaves out counts', () => {
+    const r = rig({ box: PANEL_145X22 });
+    r.term.rectExtra = { w: 16, h: 0 }; // 2 columns of 8 px more in the border box
+    assert.deepEqual(norm(r.fitMeasure()), { cols: 147, rows: 22 });
+  });
+
+  // -- one resize per focus
+  test('(+) F10: a focus event measures the box of that moment; the settle\'s PUT carries that size with focus: true, and the debounce sends nothing more', async () => {
+    const r = rig();
+    r.wireFit();
+    r.fitCaptured();
+    await r.clk.advance(0);
+    r.term.clientHeight = 562 - 90; // the resting layout moved the box's height with no commit (height alone)
+    r.log.ro();
+    assert.equal(r.ctx.FIT.panel.rows, 30);
+    r.page.focus = true;
+    r.log.events.focus({ target: r.ctx.window });
+    assert.equal(r.ctx.FIT.panel.rows, 25, 'measured at the focus event');
+    await r.clk.advance(FOCUS_SETTLE_REAL);
+    assert.deepEqual(calls(r), [PUT(100, 30, true), PUT(100, 25, false, true)]);
+    await r.clk.advance(1000);
+    assert.equal(r.log.calls.length, 2, 'one resize for this focus');
+  });
+
+  test('(−) F10: blur is no commit point: it measures nothing and the give-back keeps the size it had', async () => {
+    const r = rig();
+    r.page.focus = true;
+    r.wireFit();
+    r.fitCaptured();
+    await r.clk.advance(0);
+    r.term.clientHeight = 562 - 90;
+    r.log.ro();
+    r.page.focus = false;
+    r.log.events.blur({ target: r.ctx.window });
+    await r.clk.advance(BLUR_SETTLE_REAL);
+    assert.deepEqual(calls(r), [PUT(100, 30, true, true), PUT(100, 30, false, false)]);
+  });
+
+  test('(−) F10: chrome changes during the hold that follows a take send no PUT and keep the frame', async () => {
+    const r = await heldRig();
+    assert.equal(r.ctx.HOLD.active, true);
+    for (const h of [416 - 36, 416 + 54, 416 - 72]) {
+      r.term.clientHeight = h;
+      r.log.ro();
+    }
+    await r.clk.advance(HOLD_MS - 1);
+    assert.deepEqual(calls(r), [PUT(145, 22, true)]);
+    assert.equal(r.ctx.FIT.frame.rows, 22);
+  });
+
+  // -- the redraw hold
+  test('(+) F10: after a fit answer with a new pane size a hold runs and the mirror is polled at once; captures at the new size without a box are not drawn and the mode chip keeps its state', async () => {
+    const r = await heldRig();
+    assert.equal(r.ctx.HOLD.active, true);
+    assert.ok(r.log.kicks.includes(0), 'the first capture after the answer is asked for at once');
+    r.handleHeld(shot(145, 21, { mode: 'unknown', modeConfirmed: false })); // Claude has not repainted: no footer
+    r.handleHeld(shot(145, 21, { mode: 'unknown', modeConfirmed: false }));
+    assert.deepEqual([r.log.noted.length, r.log.drawn.length, r.log.lives.length, r.log.scrolled.length], [0, 0, 0, 0], 'not drawn, not judged, not counted');
+    assert.deepEqual([r.ctx.M.cols, r.ctx.M.rows], [171, 45], 'the last good frame stays');
+    r.handleHeld(shot(171, 45, { draft: BOXED })); // an old-size frame, even with a box, is not the answer either
+    assert.deepEqual([r.log.noted.length, r.log.drawn.length], [0, 0]);
+    r.handleHeld(shot(145, 21, { draft: BOXED })); // the box is back
+    assert.deepEqual([r.log.noted.length, r.log.drawn.length, r.ctx.M.cols, r.ctx.M.rows], [1, 1, 145, 21]);
+    assert.equal(r.ctx.HOLD.active, false);
+    assert.equal(r.rows.classes.has('refit'), true, 'the new frame fades in');
+    assert.deepEqual(r.log.lives.at(-1), ['live', 'Live - 145 x 21']);
+  });
+
+  test('(+) F10: the fit chip of the answer is held and drawn in the same step as the new frame', async () => {
+    const r = await heldRig();
+    assert.equal(r.wrap.hidden, true, 'not yet: the frame has not come');
+    assert.equal(r.chip.getAttribute('data-k'), null);
+    r.handleHeld(shot(145, 21));
+    assert.equal(r.wrap.hidden, true);
+    r.handleHeld(shot(145, 21, { draft: BOXED }));
+    assert.equal(r.wrap.hidden, false);
+    assert.equal(r.chip.getAttribute('data-k'), 'fitted');
+    assert.deepEqual(norm(r.log.said), ['Fit: fills the panel. nika sized the tmux window to this panel and puts it back when this window closes']);
+  });
+
+  test('(+) F10: the held chip is drawn when the hold times out too, and a chip view with no hold is drawn at once', async () => {
+    const r = await heldRig({ box: PANEL_145X40, pane: { cols: 145, rows: 39 } });
+    r.handleHeld(shot(145, 39)); // no box
+    await r.clk.advance(HOLD_MS);
+    assert.equal(r.chip.getAttribute('data-k'), 'fitted');
+    const plain = rig({ replies: [answerAt('fitted', { cols: 100, rows: 30 })] });
+    plain.wireFit();
+    plain.fitCaptured();
+    await plain.clk.advance(0);
+    assert.equal(plain.chip.getAttribute('data-k'), 'fitted', 'no frame was drawn before: nothing to hold');
+  });
+
+  test('(−) F10: after HOLD_MS a capture without a box is drawn as it is, and the mode chip reads what it says (unconfirmed)', async () => {
+    const r = await heldRig({ box: PANEL_145X40, pane: { cols: 145, rows: 39 } }); // 40 rows: no room step
+    r.handleHeld(shot(145, 39, { mode: 'unknown', modeConfirmed: false }));
+    await r.clk.advance(HOLD_MS - 1);
+    assert.equal(r.log.noted.length, 0, 'one millisecond before');
+    await r.clk.advance(1);
+    assert.equal(r.log.noted.length, 1);
+    assert.equal(r.log.noted[0].modeConfirmed, false);
+    assert.equal(r.log.drawn.length, 1);
+    assert.equal(r.ctx.HOLD.active, false);
+    assert.equal(r.log.calls.length, 1, 'and no extra resize');
+  });
+
+  test('(−) F10: a 404 during the hold shows the gone overlay at once', async () => {
+    const r = await heldRig();
+    r.handleHeld(shot(145, 21));
+    r.handleHeld({ status: 404, body: { error: 'not-found' } });
+    assert.equal(r.ctx.M.gone, true);
+    assert.deepEqual(r.log.overlays, ['Pane %12 is gone']);
+    assert.equal(r.ctx.HOLD.active, false);
+  });
+
+  test('(−) F10: a 500 or a lost request during the hold ends it and is handled as always; a 304 changes nothing', async () => {
+    const a = await heldRig();
+    a.handleHeld({ status: 304, body: null });
+    assert.equal(a.ctx.HOLD.active, true, '304 leaves the hold alone');
+    a.handleHeld({ status: 500, body: { message: 'x' } });
+    assert.equal(a.ctx.HOLD.active, false);
+    assert.deepEqual(a.log.overlays, ['tmux did not answer']);
+    const b = await heldRig();
+    b.handleHeld({ status: 0, body: null });
+    assert.equal(b.ctx.HOLD.active, false);
+    assert.equal(b.ctx.M.errors, 1);
+  });
+
+  test('(−) F10: a capture with a prompt, a dialog, or no full-screen view at the new size ends the hold at once', async () => {
+    for (const over of [{ prompt: { kind: 'tool', question: 'x', options: [] } }, { dialog: { state: 'unreadable' } }, { alt: false }]) {
+      const r = await heldRig();
+      r.handleHeld(shot(145, 21, over));
+      assert.equal(r.ctx.HOLD.active, false, JSON.stringify(over));
+      assert.equal(r.log.noted.length, 1);
+    }
+  });
+
+  test('(−) F10: when nothing was readable before the resize there is nothing to wait for: the first capture at the new size is drawn', async () => {
+    const r = await heldRig({ plain: false });
+    r.handleHeld(shot(145, 21));
+    assert.equal(r.log.noted.length, 1);
+    await r.clk.advance(HOLD_MS * 2);
+    assert.equal(r.log.calls.length, 1, 'and no room step');
+  });
+
+  test('(−) F10: an answer with the pane size already drawn starts no hold; a drawn mirror is required to hold anything', async () => {
+    const same = rig({ replies: [answerAt('fitted', { cols: 171, rows: 45 })] });
+    same.wireFit();
+    same.ctx.M.cols = 171;
+    same.ctx.M.rows = 45;
+    same.ctx.M.body = shot(171, 45).body;
+    same.fitCaptured();
+    await same.clk.advance(0);
+    assert.equal(same.ctx.HOLD.active, false);
+    const none = rig({ replies: [answerAt('fitted', { cols: 145, rows: 21 })] });
+    none.wireFit();
+    none.fitCaptured();
+    await none.clk.advance(0);
+    assert.equal(none.ctx.HOLD.active, false, 'no frame drawn yet');
+    assert.deepEqual(none.log.kicks, []);
+  });
+
+  test('(+) F10: the border row d is the asked rows minus the answered pane rows, kept only when it is 0 or 1', async () => {
+    const one = await heldRig({ pane: { cols: 145, rows: 21 } });
+    assert.equal(one.ctx.FIT.d, 1);
+    const zero = await heldRig({ pane: { cols: 145, rows: 22 } });
+    assert.equal(zero.ctx.FIT.d, 0);
+    const odd = await heldRig({ pane: { cols: 145, rows: 10 } });
+    assert.equal(odd.ctx.FIT.d, 0, 'outside 0..1: 0');
+  });
+
+  // -- the room step
+  test('(+) F10: hold timeout with every condition true -> exactly one PUT { cols: 210, rows: 33 } at once; the hold goes on; the chip panel then shows the room hint', async () => {
+    const r = await heldRig({ more: [answerAt('fitted', { cols: 210, rows: 32 })] }); // frame 145 x 22, pane 145 x 21 (d 1)
+    r.handleHeld(shot(145, 21)); // Claude's frame is cut: no input box
+    await r.clk.advance(HOLD_MS - 1);
+    assert.equal(r.log.calls.length, 1);
+    await r.clk.advance(1);
+    assert.deepEqual(calls(r), [PUT(145, 22, true), PUT(210, 33, false)], 'at once, no 250 ms wait');
+    assert.equal(r.ctx.FIT.room, true);
+    assert.equal(r.log.noted.length, 0, 'the old frame stays drawn meanwhile');
+    assert.equal(r.ctx.HOLD.active, true, 'the new hold starts at the answer');
+    r.handleHeld(shot(210, 32, { draft: BOXED })); // the footer fits now
+    assert.equal(r.log.noted.length, 1);
+    assert.deepEqual([r.ctx.M.cols, r.ctx.M.rows], [210, 32]);
+    r.openFitPop();
+    assert.equal(r.popHint.textContent, "Claude's input box and footer did not fit this panel's rows, so nika gave the pane 33 rows and scaled the text. Fit again tries the panel's own size.");
+    assert.equal(r.again.hidden, false);
+    assert.equal(r.again.textContent, 'Fit again');
+  });
+
+  test('(−) F10: the room step is taken once: after the second hold the latest capture is applied whatever it shows', async () => {
+    const r = await heldRig({ more: [answerAt('fitted', { cols: 210, rows: 32 })] });
+    r.handleHeld(shot(145, 21));
+    await r.clk.advance(HOLD_MS);
+    assert.equal(r.log.calls.length, 2);
+    r.handleHeld(shot(210, 32, { mode: 'unknown', modeConfirmed: false })); // still no footer
+    await r.clk.advance(HOLD_MS);
+    assert.equal(r.log.calls.length, 2, 'no third PUT');
+    assert.equal(r.log.noted.length, 1);
+    assert.equal(r.log.noted[0].modeConfirmed, false, 'the honest state');
+    assert.equal(r.ctx.HOLD.active, false);
+  });
+
+  test('(−) F10: the room answer never comes: the second timeout applies the pending capture and sends nothing more', async () => {
+    const r = await heldRig({ more: [{ status: 409, body: { error: 'busy' } }] });
+    r.handleHeld(shot(145, 21));
+    await r.clk.advance(HOLD_MS);
+    assert.equal(r.log.calls.length, 2);
+    await r.clk.advance(HOLD_MS);
+    assert.equal(r.log.calls.length, 2);
+    assert.equal(r.log.noted.length, 1);
+    assert.equal(r.ctx.HOLD.active, false);
+  });
+
+  test('(−) F10: no room step when the frame has 33 rows or more, when nothing was readable before, or for a state other than fitted', async () => {
+    const tall = await heldRig({ box: PANEL_145X40, pane: { cols: 145, rows: 39 } });
+    tall.handleHeld(shot(145, 39));
+    await tall.clk.advance(HOLD_MS * 2);
+    assert.deepEqual([tall.log.calls.length, tall.ctx.FIT.room], [1, false], '40 rows');
+    const blind = await heldRig({ plain: false });
+    blind.handleHeld(shot(145, 21));
+    await blind.clk.advance(HOLD_MS * 2);
+    assert.deepEqual([blind.log.calls.length, blind.ctx.FIT.room], [1, false], '!plainBefore');
+    for (const state of ['zoomed', 'terminal', 'blocked', 'other']) {
+      const r = await heldRig({ state });
+      r.handleHeld(shot(145, 21));
+      await r.clk.advance(HOLD_MS * 2);
+      assert.deepEqual([r.log.calls.length, r.ctx.FIT.room], [1, false], state);
+    }
+  });
+
+  test('(−) F10: no room step when the capture is not at the answered size, shows a prompt, or Claude is not in its full-screen view', async () => {
+    for (const [why, c] of [['old size', shot(171, 45)], ['prompt', shot(145, 21, { prompt: { kind: 'tool', question: 'x', options: [] } })], ['no full-screen view', shot(145, 21, { alt: false })]]) {
+      const r = await heldRig();
+      r.handleHeld(c);
+      await r.clk.advance(HOLD_MS * 2);
+      assert.deepEqual([r.log.calls.length, r.ctx.FIT.room], [1, false], why);
+    }
+  });
+
+  test('(+) F10: later focus takes ask the room size straight away: the settle\'s PUT carries it, with no second resize', async () => {
+    const r = await heldRig({ more: [answerAt('fitted', { cols: 210, rows: 32 })] });
+    r.handleHeld(shot(145, 21));
+    await r.clk.advance(HOLD_MS);
+    r.handleHeld(shot(210, 32, { draft: BOXED }));
+    r.page.focus = true;
+    r.log.events.focus({ target: r.ctx.window });
+    await r.clk.advance(FOCUS_SETTLE_REAL);
+    assert.deepEqual(calls(r).slice(2), [PUT(210, 33, false, true)]);
+    await r.clk.advance(1000);
+    assert.equal(r.log.calls.length, 3);
+  });
+
+  test('(−) F10: Fit again clears the room and the next PUT is the panel\'s own size (open: true)', async () => {
+    const r = await heldRig({ more: [answerAt('fitted', { cols: 210, rows: 32 }), answerAt('fitted', { cols: 145, rows: 21 })] });
+    r.handleHeld(shot(145, 21));
+    await r.clk.advance(HOLD_MS);
+    r.handleHeld(shot(210, 32, { draft: BOXED }));
+    r.openFitPop();
+    r.again.click();
+    await r.clk.advance(0);
+    assert.equal(r.ctx.FIT.room, false);
+    assert.deepEqual(calls(r).slice(2), [PUT(145, 22, true)]);
+  });
+
+  test('(−) F10: a commit with a new window size (or a box one cell wider) clears the room; a commit with the same window keeps it', async () => {
+    const same = await heldRig({ more: [answerAt('fitted', { cols: 210, rows: 32 })] });
+    same.handleHeld(shot(145, 21));
+    await same.clk.advance(HOLD_MS);
+    assert.equal(same.ctx.FIT.room, true);
+    same.page.focus = true;
+    same.log.events.focus({ target: same.ctx.window });
+    assert.equal(same.ctx.FIT.room, true, 'a focus commit in the same window keeps it');
+    const moved = await heldRig({ more: [answerAt('fitted', { cols: 210, rows: 32 })] });
+    moved.handleHeld(shot(145, 21));
+    await moved.clk.advance(HOLD_MS);
+    moved.ctx.window.innerWidth = 1100;
+    moved.term.clientWidth += 80;
+    moved.log.ro();
+    assert.equal(moved.ctx.FIT.room, false, 'a new window size deserves a try at the panel\'s size');
+    await moved.clk.advance(250);
+    assert.deepEqual(norm(calls(moved).at(-1)), norm(PUT(155, 22, false)));
+  });
+
+  test('(−) F10: holdTimeout takes no room step for a hold that had nothing readable before (plainBefore false), whatever the capture shows', async () => {
+    const r = await heldRig(); // fitted, 145 x 22 frame: only plainBefore stands in the way
+    r.ctx.HOLD.end();
+    assert.equal(r.ctx.FIT.state, 'fitted');
+    const pending = { r: shot(145, 21), body: shot(145, 21).body, draft: null };
+    const before = r.log.calls.length;
+    r.holdTimeout(pending, { want: { cols: 145, rows: 21 }, plainBefore: false });
+    assert.equal(r.ctx.FIT.room, false);
+    assert.equal(r.log.calls.length, before, 'no resize');
+    assert.equal(r.log.noted.length, 1, 'the capture is drawn as it is');
+    r.holdTimeout(pending, { want: { cols: 145, rows: 21 }, plainBefore: true });
+    assert.equal(r.ctx.FIT.room, true, 'and with plainBefore the same call does take the step');
+  });
+
+  test('(−) F10: fitSized with nothing drawn yet does nothing and does not throw', () => {
+    const r = rig({ box: PANEL_145X22 });
+    r.wireFit();
+    assert.doesNotThrow(() => r.fitSized({ cols: 145, rows: 21 }));
+    assert.equal(r.ctx.HOLD.active, false);
+    assert.deepEqual(r.log.kicks, []);
+  });
+
+  test('(−) F10: applyHeld with no frame drawn before starts no transition', () => {
+    const r = rig({ box: PANEL_145X22 });
+    r.wireFit();
+    r.applyHeld(shot(145, 21));
+    assert.deepEqual(r.log.classOps, []);
+    assert.equal('--refit-from' in r.rows.style.props, false);
+  });
+
+  test('(+) F10: the class is restarted: removed, then added again, so a transition still running begins anew', async () => {
+    const r = await heldRig();
+    r.handleHeld(shot(145, 21, { draft: BOXED }));
+    r.rows.classes.add('refit'); // as if the earlier one still ran
+    r.log.classOps.length = 0;
+    r.handleHeld(shot(171, 45, { draft: BOXED })); // no hold now: handled as always, no transition
+    assert.deepEqual(r.log.classOps, []);
+    r.ctx.HOLD.start({ want: { cols: 100, rows: 30 }, plainBefore: true });
+    r.handleHeld(shot(100, 30, { draft: BOXED }));
+    assert.deepEqual(r.log.classOps.slice(0, 2), ['-refit', '+refit']);
+  });
+
+  // -- the transition
+  test('(+) F10: the applied frame starts --refit-from through style.setProperty (never a style attribute) and restarts the class; animationend removes it', async () => {
+    const r = await heldRig();
+    r.handleHeld(shot(145, 21, { draft: BOXED }));
+    assert.equal(r.rows.classes.has('refit'), true);
+    assert.equal(r.rows.style.props['--refit-from'], '0.5', 'the old text was 0.49, the new is 1: zoom in from half');
+    assert.equal(typeof r.log.rowsOn.animationend, 'function');
+    r.log.rowsOn.animationend({ animationName: 'nika-refit' });
+    assert.equal(r.rows.classes.has('refit'), false);
+  });
+
+  test('(+) F10: without animationend (reduced motion: no animation runs) the class goes after REFIT_MS + 50 ms', async () => {
+    const r = await heldRig();
+    r.handleHeld(shot(145, 21, { draft: BOXED }));
+    await r.clk.advance(REFIT_MS_REAL + 49);
+    assert.equal(r.rows.classes.has('refit'), true);
+    await r.clk.advance(1);
+    assert.equal(r.rows.classes.has('refit'), false);
+  });
+
+  test('(−) F10: an animationend of another animation leaves the class alone', async () => {
+    const r = await heldRig();
+    r.handleHeld(shot(145, 21, { draft: BOXED }));
+    r.log.rowsOn.animationend({ animationName: 'something-else' });
+    r.log.rowsOn.animationend({});
+    assert.equal(r.rows.classes.has('refit'), true);
+  });
+
+  test('(−) F10: no refit when the applied frame has the drawn size, and none for the first frame ever drawn', async () => {
+    const r = await heldRig({ box: PANEL_145X40, pane: { cols: 145, rows: 39 } });
+    r.handleHeld(shot(171, 45)); // the drawn size, no box: kept; applied at the timeout
+    await r.clk.advance(HOLD_MS);
+    assert.equal(r.log.drawn.length, 1);
+    assert.equal(r.rows.classes.has('refit'), false);
+    assert.equal('--refit-from' in r.rows.style.props, false);
+    const first = rig();
+    first.wireFit();
+    first.handleHeld(shot(100, 30)); // no hold, nothing drawn before
+    assert.equal(first.rows.classes.has('refit'), false);
+  });
+
+  test('(−) F10: a shrinking text only fades: --refit-from is 1', async () => {
+    const r = await heldRig({ pane: { cols: 171, rows: 45 } }); // the same size as drawn: no hold ... so make one by hand
+    r.ctx.HOLD.start({ want: { cols: 300, rows: 90 }, plainBefore: true });
+    r.ctx.FIT.scale = 1;
+    r.handleHeld(shot(300, 90, { draft: BOXED }));
+    assert.equal(r.rows.style.props['--refit-from'], '1');
+  });
+
+  // -- the code
+  test('(+) F10: the page code keeps constraint 6 for the new parts: refit uses the class and the CSSOM property only, in the fit-ui.js and session.js sources', () => {
+    const src = [fnOf('function refit(oldScale)'), fnOf('function endRefit()'), fnOf('function fitChip(view, opts)'), fnOf('function handleHeld(r)')].join('\n');
+    assert.match(src, /style\.setProperty\('--refit-from', String\(/);
+    assert.match(src, /classList\.remove\('refit'\)/);
+    assert.match(src, /classList\.add\('refit'\)/);
+    assert.deepEqual(findSinks(src), []);
+    assert.doesNotMatch(src, /setAttribute\('style'|\.style\.cssText|innerHTML|textContent =/);
+  });
+
+  test('(+) F10: wireFit hands the planner sized: fitSized and the chip sink fitChip, listens for animationend on the mirror rows, and commits on the focus event before it asks for the focus', () => {
+    const wire = fnOf('function wireFit()');
+    assert.match(wire, /sized:\s*fitSized\b/);
+    assert.match(wire, /chip:\s*fitChip\b/);
+    assert.match(wire, /\$\('term-rows'\)\.addEventListener\('animationend'/);
+    assert.match(wire, /addEventListener\('focus', \(e\) => \{[^}]*fitCommit\(\);\s*FIT\.planner\.focusChanged\(false\)/);
+    assert.match(wire, /send: \(body\) => \{[^}]*FIT\.sentRows = body\.rows;/);
+    assert.doesNotMatch(wire, /addEventListener\('blur', \(e\) => \{[^}]*fitCommit/, 'blur measures nothing');
+  });
+
+  test('(+) F10: the mirror is read again at once after the answer and every HOLD_POLL_MS during a hold; the capture path goes through handleHeld', () => {
+    const tick = fnOf('async function tickMirror()');
+    assert.match(tick, /handleHeld\(r\)/);
+    assert.doesNotMatch(tick, /handleCapture\(r\)/);
+    assert.match(tick, /HOLD\.active \? HOLD_POLL_MS : 250/);
+    assert.match(fnOf('function fitSized(pane)'), /kickMirror\(0\)/);
+  });
+
+  test('(+) F10: the page asks nothing of its own for the hold: the only new route traffic is the planner\'s PUT with the same four keys', () => {
+    for (const f of ['function fitProbe()', 'function fitCommit()', 'function fitSized(pane)', 'function handleHeld(r)', 'function applyHeld(r)', 'function holdTimeout(pending, ctx)']) {
+      assert.doesNotMatch(fnOf(f), /\bcall\(|fetch\(|appFetch/, f);
+    }
+    assert.match(fnOf('function fitCall(method, opts = {})'), /\/api\/app\/pane\/\$\{encodeURIComponent\(paneId\)\}\/fit/);
+  });
+
+  // ---- F10: the requests that wait for the redraw hold (design F10 4.5) ---------------------------------------------------------------------
+  /** One function of session.js (or several) run alone in a vm against `ctx`. */
+  const runFns = (heads, names, ctx) => vm.runInNewContext(`${heads.map(fnOf).join('\n')}; ({ ${names.join(', ')} })`, ctx);
+
+  test('(+) F10: a mode switch during the hold sends its request after the hold ends; the segment shows busy meanwhile', async () => {
+    const log = { calls: [], rendered: [] };
+    const hold = createRedrawHoldReal({ after: () => 1, cancel() {} });
+    const ctx = {
+      HOLD: hold, SW: { busy: null }, M: { gone: false }, paneId: '%12', W: { struck: new Set(), mode: 'default', confirmed: true, promptOpen: false, msg: null, last: null, pane: 'ok' }, A: { kind: 'idle', name: 'agent' },
+      switcherState: () => ({ disabled: false, pressed: 'default', reason: null }), renderMode: () => log.rendered.push(ctx.SW.busy),
+      call: async (path, o) => { log.calls.push([path, norm(o)]); return { status: 200, body: { mode: 'auto', presses: 1 } }; },
+      say() {}, TIMES: 'x', modeKey: (m) => m ?? 'unknown', announceMode() {}, modeNote: () => ({ msg: '', last: 'auto' }), nextCapture: async () => {}, failSwitch() {}, setGone() {}, encodeURIComponent,
+    };
+    const { switchTo } = runFns(['async function switchTo(target)'], ['switchTo'], ctx);
+    hold.start({ want: { cols: 100, rows: 30 }, plainBefore: true });
+    const p = switchTo('auto');
+    await flushAll();
+    assert.deepEqual(log.calls, [], 'held');
+    assert.equal(ctx.SW.busy, 'auto');
+    hold.end();
+    await p;
+    assert.deepEqual(log.calls, [['/api/app/pane/%2512/mode', { method: 'POST', json: { target: 'auto' } }]]);
+    assert.equal(ctx.SW.busy, null);
+  });
+
+  test('(−) F10: a mode switch with no hold sends at once, in the same tick', () => {
+    const log = { calls: [] };
+    const ctx = {
+      HOLD: { active: false }, SW: { busy: null }, M: { gone: false }, paneId: '%12', W: { struck: new Set(), mode: 'default', confirmed: true, promptOpen: false, msg: null, last: null, pane: 'ok' }, A: { kind: 'idle', name: 'agent' },
+      switcherState: () => ({ disabled: false, pressed: 'default', reason: null }), renderMode() {},
+      call: async (path, o) => { log.calls.push([path, norm(o)]); return { status: 200, body: { mode: 'auto', presses: 1 } }; },
+      say() {}, TIMES: 'x', modeKey: (m) => m ?? 'unknown', announceMode() {}, modeNote: () => ({ msg: '', last: 'auto' }), nextCapture: async () => {}, failSwitch() {}, setGone() {}, encodeURIComponent,
+    };
+    runFns(['async function switchTo(target)'], ['switchTo'], ctx).switchTo('auto');
+    assert.equal(log.calls.length, 1);
+  });
+
+
+  test('(+) F10: the draft sync\'s write (put) waits for the hold; the End dialog opens after it; Stop, the keys of Type into pane and the prompt answers do not wait', async () => {
+    const log = [];
+    const hold = createRedrawHoldReal({ after: () => 1, cancel() {} });
+    const fn = runFns(['async function putDraft(body)'], ['putDraft'], { HOLD: hold, call: async (path, o) => { log.push([path, norm(o)]); return { status: 200, body: {} }; }, encodeURIComponent, paneId: '%12' }).putDraft;
+    hold.start({ want: { cols: 100, rows: 30 }, plainBefore: true });
+    const p = fn({ text: 'hi' });
+    await flushAll();
+    assert.deepEqual(log, [], 'held');
+    hold.end();
+    await p;
+    assert.deepEqual(log, [['/api/app/pane/%2512/draft', { method: 'PUT', json: { text: 'hi' } }]]);
+
+    const opened = [];
+    const endHold = createRedrawHoldReal({ after: () => 1, cancel() {} });
+    const end = runFns(['function openEnd()'], ['openEnd'], { HOLD: endHold, paneId: '%12', A: { name: 'a', kind: 'idle' }, W: { promptOpen: false }, openEndDialog: (o) => opened.push(o.pane), toast() {}, setGone() {} }).openEnd;
+    endHold.start({ want: { cols: 100, rows: 30 }, plainBefore: true });
+    end();
+    await flushAll();
+    assert.deepEqual(opened, [], 'the dialog waits for the hold');
+    endHold.end();
+    await flushAll();
+    assert.deepEqual(opened, ['%12']);
+    end();
+    assert.deepEqual(opened, ['%12', '%12'], 'no hold: opens in the same tick');
+
+    for (const head of ['async function stop()', 'async function deliver(payload)', 'function flushPass()', 'async function answer(n)', 'async function escNo()', 'function queueArrow(key, repeat)']) {
+      assert.doesNotMatch(fnOf(head), /\bHOLD\b/, `${head} does not wait`);
+    }
+  });
+
+  test('(+) F10: the waits are the Send chain\'s own (typeThenSubmit, submitEnter, putDraft), the scroll call and the mode and command calls, in the source', () => {
+    for (const head of ['async function submitEnter(base)', 'async function typeThenSubmit(payloads)', 'async function switchTo(target)', 'async function sendCommand(text)', 'async function putDraft(body)']) {
+      assert.match(fnOf(head), /if \(HOLD\.active\) await HOLD\.wait\(\);/, head);
+    }
+    assert.match(fnOf('function scrollCall(body)'), /if \(HOLD\.active\) return HOLD\.wait\(\)\.then\(\(\) => scrollCall\(body\)\);/);
+  });
+
+  // ---- F10: the stylesheet (design F10 6.2) ------------------------------------------------------------------------------------------------
+  test('(+) F10: session.css has the nika-refit keyframes (fade and zoom from --refit-from), the 120 ms class anchored bottom-left, and no animation under reduced motion', () => {
+    const css = strip(CSS);
+    assert.match(css, /@keyframes nika-refit \{\s*from \{\s*opacity: 0\.4;\s*transform: scale\(var\(--refit-from, 1\)\);\s*\}\s*to \{\s*opacity: 1;\s*transform: none;\s*\}\s*\}/);
+    assert.match(css, /\.term-rows\.refit \{[^}]*animation: nika-refit 120ms ease-out;[^}]*transform-origin: 0 100%;/);
+    assert.match(css, /@media \(prefers-reduced-motion: reduce\) \{[^@]*\.term-rows\.refit \{ animation: none; \}/);
+    assert.match(css, new RegExp(`${REFIT_MS_REAL}ms`));
+  });
+
+  test('(−) F10: the transition is a class and a custom property, never a style attribute in the markup', () => {
+    assert.doesNotMatch(HTML, /\sstyle\s*=/i);
+    assert.doesNotMatch(HTML, /refit/);
+  });
 });
 
 // ---- 0.5, W3-T3: scrolling Claude's view (the wheel, PgUp/PgDn/Home/End, Jump to live, the corner note) ----------------------------------
@@ -5717,7 +6420,7 @@ describe('W3-T3: scroll in the session window (wiring)', () => {
    * The scroll functions of session.js with a pane, a mirror box (term: scrollTop / scrollHeight / clientHeight), the last capture, and the route's
    * replies in order (then a 200 that says scrolled). The default box has no overflow, so the wheel and the keys are Claude's.
    */
-  const rig = ({ pane = '%12', box = { top: 0, height: 400, client: 400 }, body = bodyOf(), replies = [] } = {}) => {
+  const rig = ({ pane = '%12', box = { top: 0, height: 400, client: 400 }, body = bodyOf(), replies = [], hold = false } = {}) => {
     const clk = clock();
     const log = { calls: [], signals: [], problems: [], said: [], kicks: [], lives: [], events: {}, focus: [] };
     const el = (id) => { const e = new El('div'); e.id = id; return e; };
@@ -5735,6 +6438,8 @@ describe('W3-T3: scroll in the session window (wiring)', () => {
       showProblem: (m, k, ms) => log.problems.push([m, k, ms]), announce: (m) => log.said.push(m), kickMirror: (ms) => log.kicks.push(ms),
       setLive: (state, text) => log.lives.push([state, text]), MID: ' - ', TIMES: 'x', h: hReal, icon: iconReal, AbortController,
       window: { addEventListener: (type, fn) => { log.events[type] = fn; } }, setTimeout: clk.setTimeout, clearTimeout: clk.clearTimeout, Date: clk.Date,
+      // F10: a scroll request waits for the redraw hold; `hold: true` gives the rig a real one on the rig's clock
+      HOLD: hold ? createRedrawHoldReal({ after: clk.setTimeout, cancel: clk.clearTimeout }) : { active: false },
       createScrollPlanner: createScrollPlannerReal, routeFor: routeForReal, wheelRows: wheelRowsReal, scrollGate: scrollGateReal, viewRowsOf: viewRowsOfReal, pageRowsOf: pageRowsOfReal,
       refusalLine: refusalLineReal, noteView: scrollNoteViewReal, scrolledSay: scrolledSayReal, NOTE_MS: NOTE_MS_REAL, encodeURIComponent,
       // setGone's other collaborators
@@ -6224,6 +6929,60 @@ describe('W3-T3: scroll in the session window (wiring)', () => {
     assert.match(src, /method: 'POST', json: body/);
     assert.doesNotMatch(src, /PPage|NPage|C-Home|C-End|keys:/);
   });
+
+  // ---- F10 (design F10 4.5): a scroll request waits for the redraw hold; the server's gate still decides ---------------------------------------
+  const tick = () => new Promise((resolve) => { setImmediate(resolve); });
+
+  test('(+) F10: a wheel during the hold sends its scroll request only after the hold ends', async () => {
+    const r = wired({ hold: true });
+    r.ctx.HOLD.start({ want: { cols: 120, rows: 36 }, plainBefore: true });
+    fire(r, 'wheel', wheel());
+    await tick();
+    assert.deepEqual(calls(r), [], 'held');
+    r.ctx.HOLD.end();
+    await tick();
+    assert.deepEqual(calls(r), [POST({ dir: 'down', pages: 1 })]);
+  });
+
+  test('(+) F10: the hold timing out releases the request too (no box came back: the server decides, and its 409 shows the new words)', async () => {
+    const r = wired({ hold: true, replies: [{ status: 409, body: { error: 'screen-unclear' } }] });
+    r.ctx.HOLD.start({ want: { cols: 120, rows: 36 }, plainBefore: true });
+    fire(r, 'wheel', wheel());
+    await r.clk.advance(HOLD_MS_REAL - 1);
+    assert.deepEqual(calls(r), []);
+    await r.clk.advance(1);
+    assert.deepEqual(calls(r), [POST({ dir: 'down', pages: 1 })]);
+    assert.deepEqual(norm(r.log.problems), [["Claude's input box isn't on screen (a dialog or menu may be open), so nika doesn't send scroll keys. Close it first, or scroll in the terminal.", 'warn', 3000]]);
+  });
+
+  test('(+) F10: PgDn and End wait the same way: the request already asked for goes first, then the jump, both after the hold', async () => {
+    const r = wired({ hold: true });
+    r.ctx.HOLD.start({ want: { cols: 120, rows: 36 }, plainBefore: true });
+    fire(r, 'keydown', key('PageDown'));
+    fire(r, 'keydown', key('End'));
+    await tick();
+    assert.deepEqual(calls(r), []);
+    r.ctx.HOLD.end();
+    await r.clk.advance(0);
+    await r.clk.advance(100);
+    assert.deepEqual(calls(r), [POST({ dir: 'down', pages: 1 }), POST({ to: 'bottom' })]);
+  });
+
+  test('(−) F10: without a hold the request goes at once, in the same tick (nothing is delayed)', () => {
+    const r = wired({ hold: true });
+    fire(r, 'wheel', wheel());
+    assert.deepEqual(calls(r), [POST({ dir: 'down', pages: 1 })]);
+  });
+
+  test('(−) F10: a pane that is gone by the time the hold ends gets no request', async () => {
+    const r = wired({ hold: true });
+    r.ctx.HOLD.start({ want: { cols: 120, rows: 36 }, plainBefore: true });
+    fire(r, 'wheel', wheel());
+    r.ctx.M.gone = true;
+    r.ctx.HOLD.end();
+    await tick();
+    assert.deepEqual(calls(r), []);
+  });
 });
 
 describe('W1-T3: question dialogs and plan approvals in the session window (hooks P1-P6, markup, stylesheet)', () => {
@@ -6378,7 +7137,7 @@ describe('W1-T3: question dialogs and plan approvals in the session window (hook
       ATT: { pending: att.pending, send: (v) => { log.atts.push(v); } },
       ...sendIo(log),
     };
-    return { log, ta, send: mk(SEND_FUNCS, ctx).sendComposer };
+    return { log, ta, ctx, send: mk(SEND_FUNCS, ctx).sendComposer };
   };
 
   test('(+) P5: with a dialog form on screen, Send names the buttons above, as an error, and sends nothing; the text stays', async () => {
