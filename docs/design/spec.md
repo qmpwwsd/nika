@@ -2065,9 +2065,9 @@ wiring is `public/session.js`. App tier only. The window can change the user's t
 
 | What the user sees | When |
 |---|---|
-| the pane has the panel's size: the mirror shows it with no scrolling and no scaling | `fitted`: nika sized the tmux window to the panel (a window with several panes is also zoomed on this pane) |
+| the pane has the panel's size: the mirror shows it with no scrolling and no scaling | `fitted`: nika sized the tmux window to the panel (a window with several panes is also zoomed on this pane); since F9 also while a terminal shows the window, when this window has focus (key `fitted:terminal`) |
 | the pane is zoomed in its tmux window and keeps its own size; the text is drawn smaller | `zoomed`: the panel is smaller than a window with several panes, and resizing would squeeze them |
-| the pane keeps the size the user's terminal gives the tmux window (nika resizes nothing); the text is drawn smaller when the pane is larger than the panel | `terminal` (0.5, F4): a terminal shows the tmux window; a window with several panes is also zoomed on this pane |
+| the pane keeps the size the user's terminal gives the tmux window (nika resizes nothing); the text is drawn smaller when the pane is larger than the panel | `terminal` (0.5, F4, F9): a terminal shows the tmux window and this window does not have focus; a window with several panes is also zoomed on this pane |
 | the pane keeps its real size (text scaled when it is larger than the panel) | `blocked` or `other`: nika changed nothing |
 
 The tmux window is given back when this window closes, 15 s after the page goes quiet, or on the first change the user makes in
@@ -2076,8 +2076,10 @@ such a change nika does not fit again until the session window is opened again o
 A split or an exit of nika's own agent pane (a pane tagged `agent` or `sub-orchestrator`) is not a change of the user's (0.5, F2): nika
 gives the window back and fits it again within about a second, and the chip stays as it was ("When nika's own agents come and go", below).
 A terminal that starts or stops showing the window, or resizes it, is not a change of the user's either (0.5, F4): while a terminal shows the
-window the chip reads "Fit · your terminal's size" and nika resizes nothing, and it sizes the window to the panel again only after no terminal
-has shown it for 30 seconds ("When a terminal shows the window", below).
+window and this window does not have focus the chip reads "Fit · your terminal's size" and nika resizes nothing, and it sizes the window to the panel
+again after no terminal has shown it for 30 seconds ("When a terminal shows the window", below). Nor is a change of this window's own focus (0.5, F9,
+the focused one wins): with focus nika sizes the window to the panel even while a terminal shows it, and gives the size back within about a second when
+the focus goes ("When this window has focus", below).
 
 **Measuring the panel** (`panelSize`)
 
@@ -2102,11 +2104,11 @@ wraps (`flex-wrap`) when the chip does not fit, so the window never scrolls side
 
 | `state` | Icon | Text / fill / edge | Words | `title` (hover) |
 |---|---|---|---|---|
-| `fitted` | `i-fit` | `--accent` / `--accent-soft` / `--accent-line` | Fit · fills the panel | nika sized the tmux window to this panel and puts it back when this window closes |
+| `fitted` | `i-fit` | `--accent` / `--accent-soft` / `--accent-line` | Fit · fills the panel | nika sized the tmux window to this panel and puts it back when this window closes (F9, key `fitted:terminal`, the answer's reason `terminal`: "nika sized the tmux window to this panel because this window has focus; your terminal shows it too and gets its size back when you click into it") |
 | `zoomed` | `i-zoom` | `--idle` / `--idle-soft` / `--idle-line` | Fit · zoomed, text scaled | Other panes in this tmux window would be squeezed, so nika zoomed the pane and scaled the text |
 | `blocked` | `i-off` | `--text-muted` / none / dashed `--line-strong` | Fit · off | the reason below; "nika is not fitting this tmux window" for a reason the page does not know |
 | `other` | `i-window` | `--fit-other` / `--fit-other-soft` / `--fit-other-line` | Fit · another window | Another nika window shows a pane of this tmux window |
-| `terminal` (0.5, F4) | `i-term` | `--fit-term` / `--fit-term-soft` / `--fit-term-line` | Fit · your terminal's size | A terminal shows this tmux window, so nika leaves its size to the terminal and scales the text to this panel (two titles, below) |
+| `terminal` (0.5, F4) | `i-term` | `--fit-term` / `--fit-term-soft` / `--fit-term-line` | Fit · your terminal's size | A terminal shows this tmux window and this window does not have focus, so nika leaves the size to the terminal and scales the text to this panel (three titles, below) |
 
 The words of the `blocked` chip are always "Fit · off"; the reason is its `title`, picked from a fixed table (the page never shows
 a string of the server):
@@ -2119,12 +2121,15 @@ a string of the server):
 | `changed` | The tmux window changed while nika was fitting it, so nika put it back |
 | `user-change` | You changed this tmux window, so nika put it back |
 
-The `terminal` chip has two titles (0.5, F4), chosen by `chipView` from the answer's `panes` and `userZoom` (read as data, never shown): with
-one pane, or when the pane is the one the user zoomed, "A terminal shows this tmux window, so nika leaves its size to the terminal and scales
-the text to this panel" (chip key `terminal:`); with an integer `panes` above 1 and a `userZoom` that is not `true`, nika zoomed the pane, and
-the title is "A terminal shows this tmux window, so nika only zoomed this pane, leaves the size to the terminal and scales the text to this
-panel" (key `terminal:zoom`). A `reason` on `terminal` is ignored (the server sends `null`), and the zoom sentence is not in the reason table
-above, so a server reason can never select it.
+The `terminal` chip has three titles (0.5, F4, F9), chosen by `chipView` from the answer's `reason`, `panes` and `userZoom` (read as data, never
+shown): with one pane, or when the pane is the one the user zoomed, "A terminal shows this tmux window and this window does not have focus, so nika
+leaves the size to the terminal and scales the text to this panel" (chip key `terminal:`); with an integer `panes` above 1 and a `userZoom` that is not
+`true`, nika zoomed the pane, and the title is "A terminal shows this tmux window and this window does not have focus, so nika only zoomed this pane,
+leaves the size to the terminal and scales the text to this panel" (key `terminal:zoom`); and when the answer's reason is exactly `switching` (this
+window has focus, but nika took the size back 12 times in the last minute), "You switched between this window and your terminal often in the last
+minute, so nika leaves the size to the terminal for now and scales the text to this panel" (key `terminal:switching`, also with several panes). Any
+other `reason` on `terminal` is ignored, and `fitted` takes only the reason `terminal` (key `fitted:terminal`, title above, same state, colour and
+icon as `fitted:`); the three sentences are not in the reason table above, so no server reason can select them but the exact pair of state and reason.
 
 Each state has its own colour (owner decision, Q5), so `other` has its own cerulean pair of tokens in `tokens.css`, used by this chip
 only (light `#0f68a2` on `#ddf2ff`, edge `#3786c3`; dark `#4abce9` on `#0e2a36`, edge `#1c8cb4`): text on its fill 5.17:1 (light)
@@ -2137,7 +2142,10 @@ the `--fit-other` test: text on its fill 5.89:1 (light) and 7.20:1 (dark); the t
 `--surface-3` and `--attn-row` at least 5.60:1 (light) and 6.02:1 (dark); the edge over `--bg`, `--surface` and `--surface-2` at least 3.39:1
 (light) and 3.95:1 (dark); the nearest other chip, status or mode colour in OKLab is `--attn` at 0.085 (light) and `--m-dontask` at 0.062 (dark),
 above the 0.05 floor. The icon (`i-term`, a frame with a prompt, unlike `i-hist-off`) and the words carry the state, so colour is never the only
-cue. `test/session-ui.test.js` asserts the tokens, the contrast and the distances.
+cue. `test/session-ui.test.js` asserts the tokens, the contrast and the distances. F9 adds no token, colour, sprite symbol or CSS rule: `fitted:terminal`
+and `terminal:switching` use the pairs of `fitted` and `terminal` (measured on the shipped tokens: `fitted` text on its fill 5.43:1 light and 5.98:1
+dark, at least 5.19:1 and 5.26:1 over the five surfaces; `terminal` as above; the `fitted` edge is translucent, 1.72:1 light and 1.96:1 dark, as before,
+and the chip is identified by its words and icon, so WCAG 1.4.11 does not need it).
 
 **The panel (0.5, F1; owner request 2026-11-15).** The chip is a button, and in every state (fitted and zoomed too): the reason was a `title` and one
 announcement, which a keyboard or touch user never reads, so it now has a place to be read, and where `open: true` can help the panel offers the way
@@ -2152,6 +2160,7 @@ the action are looked up by the chip's key, never by a word of the server.
 | Chip key | Hint | Code (text only) | Action |
 |---|---|---|---|
 | `fitted` | none | none | none |
+| `fitted` with a terminal (key `fitted:terminal`, F9) | "Your terminal shows dots around this tmux window while this window has focus. Click into the terminal and it gets its own size back within a second." | none | none |
 | `zoomed` | "To fill the panel without scaled text, make this window larger or hide the transcript (Ctrl+Shift+H)." | none | none |
 | `blocked` / `user-change` | "Fit again turns the fit on once more. After a change of your own nika stays off until you ask." (reworded in F4: Fit again over a window a terminal shows lands on `terminal`, so it no longer promises a size) | none | **Fit again** |
 | `blocked` / `changed` | "Fit again tries once more." | none | **Fit again** |
@@ -2160,14 +2169,15 @@ the action are looked up by the chip's key, never by a word of the server.
 | `blocked` / `size-option` | none | none | none |
 | `blocked` / `foreign-tag` | "If no other nika runs, clear the mark in that tmux window, then nika fits it by itself:" | `tmux set-option -wu @nika-fit` | none |
 | `other` | "The other nika window stops fitting it." | none | **Fit here** |
-| `terminal` (key `terminal:`) | "When no terminal has shown this tmux window for 30 seconds, nika sizes it to this panel by itself. Switch your terminal to another window or detach it to get there." | none | none |
-| `terminal` with several panes that nika zoomed (key `terminal:zoom`) | "Your terminal shows this pane zoomed too, until this session window closes. When no terminal has shown the tmux window for 30 seconds, nika sizes it to this panel by itself." | none | none |
+| `terminal` (key `terminal:`) | "Click into this window and nika sizes the tmux window to this panel; your terminal gets its size back when you click into it again. With no terminal on the window for 30 seconds, nika also sizes it to this panel by itself." | none | none |
+| `terminal` with several panes that nika zoomed (key `terminal:zoom`) | "Your terminal shows this pane zoomed too, until this session window closes. Click into this window and nika sizes the tmux window to this panel." (no 30-second sentence: the plain hint keeps it) | none | none |
+| `terminal` / `switching` (key `terminal:switching`, F9) | "nika sizes the tmux window to this panel again within a minute while this window keeps focus." | none | none |
 
 No action for `user-zoom`, `size-option` and `foreign-tag`: `open: true` changes nothing there (the server refuses again), so a button would only
 fail; `user-zoom` and `foreign-tag` recover on the next heartbeat once the user acts in tmux. "Fit here" says that this window takes the tmux window
-over from the other nika window, which "Fit again" would not. `terminal` has no action either (0.5, F4): `open: true` cannot override the terminal
-rule, a request would land on `terminal` again. The 30 seconds in its two hints are typed text; they are the server's `GROW_MS`, and `PANEL` in
-`public/fit-ui.js` changes with it.
+over from the other nika window, which "Fit again" would not. `terminal` has no action either (0.5, F4, F9): `open: true` cannot override the terminal
+rule, a request would land on `terminal` again; a click into this window is the way to the size now. The 30 seconds in the plain `terminal:` hint are
+typed text; they are the server's `GROW_MS`, and `PANEL` in `public/fit-ui.js` changes with it.
 
 Words: the button's name and the panel's heading are the state's label ("Fit: fills the panel", "Fit: zoomed, text scaled", "Fit: off", "Fit: another
 window", "Fit: your terminal's size"); the actions read "Fit again", "Fit here" and, while a request is on its way, "Fitting…" (the button gets `aria-disabled="true"`, not
@@ -2183,7 +2193,7 @@ within 5 seconds." (with the `i-warn` icon, in the `--idle` colour; there is no 
 | a new chip state while open | the panel is drawn again in place (announced once by the chip as before); focus stays, unless the focused action has just gone: then Close |
 | the chip hides (a 403, the window given back, the pane gone) | closes; focus goes to the transcript button if it was inside |
 | Fit again (click, Enter or Space; ignored while `aria-disabled`) | the page's next request is `open: true`; the button reads "Fitting…" |
-| the answer is 200 with `fitted`, `zoomed` or `terminal` | the panel closes; focus on the chip; the chip announces its state |
+| the answer is 200 with `fitted`, `zoomed` or `terminal` | the panel closes; focus on the chip; the chip announces its state (always for the answer to Fit again, also when it followed a change of focus, F9) |
 | 200 with `blocked` or `other` and a new key | the panel stays, drawn again; the chip announces its state |
 | 200 with the same key as before | the panel stays; "Fit is still off. <title>" is announced |
 | any other status, or no answer | the note shows, the button is enabled again; the planner asks `open: true` again at the next beat; the note is announced |
@@ -2195,7 +2205,7 @@ tokens as the chip; the primary action is the existing `.btn.primary`. At ≤ 76
 stays on screen. States: no chip before the first 200 answer (no button, no panel); fitted, zoomed and terminal open an information-only panel; a blocked state
 with an action shows heading, why, hint, Close and the action; pending shows "Fitting…"; a failed ask shows the note under the hint.
 
-**When the page asks** (`createFitPlanner`; one request at a time, the newest size wins)
+**When the page asks** (`createFitPlanner`; one request at a time, the newest size wins; since F9 every body is `{ cols, rows, open, focus }`)
 
 | Event | Request |
 |---|---|
@@ -2203,7 +2213,11 @@ with an action shows heading, why, hint, Close and the action; pending shows "Fi
 | the user presses Fit again or Fit here (F1) | `PUT { open: true }` at once: a waiting heartbeat is cleared and the beat re-armed, and a request in flight finishes first, then this one goes out. A refused or lost ask is tried again by the next beat, again with `open: true`; later requests are `open: false` once one is answered 200. Not before the first capture, not after the pane is gone or a 403, and not while an ask is pending |
 | the panel changes size | `PUT { open: false }` 250 ms after the last change |
 | every 5 s | `PUT { open: false }` with the current size (the beat: the server lets a lease lapse after 15 s without one) |
-| the window is shown again (`visibilitychange`) | one `PUT` at once: timers may have been suspended and the lease may have lapsed |
+| the window is shown again (`visibilitychange`) | one `PUT` at once: timers may have been suspended and the lease may have lapsed; it carries the focus read now |
+| this window loses focus (`blur`, F9) | `PUT` with `focus: false` 200 ms after the blur, if it still holds (a flick back sends nothing); the server answers with the give |
+| this window gains focus (`focus`, F9) | `PUT` with `focus: true` 400 ms after the focus, if it still holds; the server answers with the take |
+| this window is hidden (minimized, closed to the tray; `visibilitychange`, F9) | `PUT` with `focus: false` at once |
+| every second (F9) | the page reads `hasFocus()` again (a missed event is caught within a second) and sends a refused or lost focus change again; a refused request without a new focus waits for the beat |
 | the window closes or leaves the page (`pagehide`) | one `DELETE` with `keepalive: true` |
 | the capture answers 404 (the pane is gone) | one `DELETE`; the beats stop. If the pane comes back, the lease is asked for again with `open: false` |
 | the page returns from the back/forward cache (`pageshow`, `persisted`) | it measures again and sends `PUT { open: true }` |
@@ -2240,7 +2254,8 @@ announcement, and a user who turned the fit off (any change of their own) is not
 used to get the window resized to the panel, with dots around it. Now nika does not resize a window that a terminal shows: any terminal client of
 that window counts (a plain terminal, control mode, `ignore-size`, read-only; `docs/security.md` T52). It zooms the pane when the window has
 several panes, keeps the lease, and the page scales the text as it does for `zoomed`. One chip, "Fit · your terminal's size", covers one pane and
-several; its title says "only zoomed this pane" when nika zoomed the pane. What the user sees:
+several; its title says "only zoomed this pane" when nika zoomed the pane. Since F9 this holds for a session window **without focus**; the table is
+what the user sees then (with focus, see the next section):
 
 | Situation | Before F4 | Now |
 |---|---|---|
@@ -2254,11 +2269,43 @@ several; its title says "only zoomed this pane" when nika zoomed the pane. What 
 | The user unzooms in their terminal | off (a user change) | off (a user change, unchanged); Fit again lands on `terminal` |
 | The session window closes while the terminal shows the window | the window was resized back (a frame of dots) | the terminal gets the window back unzoomed; nothing is resized back |
 
-Shrink at once, grow after 30 s: a window does at most one grow and one shrink per 30 s. A size nika set is still a user change when someone else
-changes it (no terminal can resize a `manual` window).
+A size nika set is still a user change when someone else changes it (no terminal can resize a `manual` window). Since F9 the size goes back to the
+terminal in place, within about a second of this window losing focus (a give), not by a refit.
 
 Not built: a settings switch, a per-project option, anything on the browser tier, a fit that re-asserts after the user changed the
-window, taking over a pane the user zoomed, a countdown of the 30 s on the page, a setting for that delay, a fit that overrides the terminal rule.
+window, taking over a pane the user zoomed, a countdown of the 30 s on the page, a setting for that delay. (A fit that overrides the terminal rule
+exists since F9: it is a click into this window.)
+
+**When this window has focus (0.5, F9; owner ruling 2026-11-16, "the focused one wins").** With the terminal and the session window side by side, F4's
+rule left the pane scaled with empty space in the wide panel. Now the window that has focus wins: while this window has focus nika sizes the tmux
+window to the panel even when a terminal shows it (the terminal shows dots around it), and when you click into the terminal the terminal gets its
+full size back within about a second. The cost, accepted: Claude redraws on each switch (once or twice per pane of the window), and the side not in
+use looks off. The page sends whether it has focus with every request (`focus`, contract `api-app.md`); a blur is sent after 200 ms, a focus after
+400 ms (a flick back sends nothing), a hidden window at once, and the page reads the focus again every second. No new chip state, colour or icon:
+to the person in nika the panel is filled, so "Fit · fills the panel" is true; only its title and panel line (above) tell about the terminal.
+Owner decisions of 2026-11-16 (design-F9 §11, all as recommended): Q1, keep "Fit · fills the panel" with its own title and panel line instead of a new
+chip state; Q2, one in place move for every size switch (give back, take), not a release and a new fit; Q3, a blur sent after 200 ms, a focus after
+400 ms, and at most 12 takes a minute per window (giving back is never limited); Q4, a hidden or minimized window gives the size back but keeps its
+lease, as F4 does.
+What the user sees (a terminal and the session window show the orchestrator's window):
+
+| Situation | Now |
+|---|---|
+| this window has focus, a terminal shows the window | panel filled; chip "Fit · fills the panel" with the longer title; the terminal shows dots |
+| you click into the terminal | within about 0.3 s (at most a second) the terminal has its full size; several panes stay zoomed (no flash of the other panes); the chip reads "Fit · your terminal's size" and the text is scaled |
+| you click back into this window | within about 0.5 s the panel is filled again |
+| you minimize or hide this window | the terminal keeps its size (hidden is sent at once); the lease stays until this window is shown again, goes quiet for 15 s or closes |
+| the terminal leaves and this window has no focus | `terminal` for 30 s more, then filled (F4) |
+| you switch more than 12 times in a minute | nika stops taking the size for the rest of that minute; chip "Fit · your terminal's size" with the title "You switched between this window and your terminal often…" and a panel line that says it sizes the window again within a minute |
+| a native dialog (the attach chooser) opens | the dialog takes focus, so the size goes back to the terminal while it is open and comes again after |
+
+**Announcements.** A state change that follows a change of this window's own focus is drawn but not announced (`renderFit(view, { quiet: true })`):
+the chip, its `title` and its `aria-label` still change (WCAG 4.1.3: the status stays readable), and a switch you made is not announced twice per
+round trip. The first answer of a page load, the answers to size changes and heartbeats, and **the answer to your own Fit again** are always announced
+(the Fit again handler says nothing for an unchanged chip, so a quiet answer would leave a screen-reader user with no word).
+
+Not built: a focused window taking over another window's lease by itself ("Fit here" exists for that), a focus signal from the desktop shell (the
+fallback if the webview misses focus events).
 
 ### 9.14 Attachments (0.5, W2)
 

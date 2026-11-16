@@ -80,13 +80,25 @@ Session window (desktop app):
   fit it again until you open the session window again or press Fit again (a resize you make while the window is fitted is also undone: nika puts the
   window back to its old size; a split or an exit of one of nika's own agent panes is not your change, see above). A zoom you made yourself is never undone. Spawning an agent into a fitted window puts it back
   first. The restore is exact except for tmux's last-pane order: which pane `last-pane` jumps back to is not restored.
-- **nika no longer resizes a tmux window your terminal shows**, so your terminal never gets dots around it because of nika. While a
-  terminal shows the window, nika only zooms the pane (when the window has several) and the session window scales the text; the chip reads
+- **nika no longer resizes a tmux window your terminal shows while the session window has no focus**, so your terminal does not get dots around
+  it because of nika (with focus, the next entry applies). While a terminal shows the window, nika only zooms the pane (when the window has several) and the session window scales the text; the chip reads
   "Fit · your terminal's size" (its own plum colour and a terminal icon, with a hint in its panel). When no terminal has shown the window for 30
   seconds, nika sizes it to the panel again. A terminal that comes to a window nika has already sized gets the window back within about a
   second, and your terminal resizing the window is never taken for a change of yours. Your own unzoom, focus change, split or kill still turns
   the fit off. Closing the session window puts back a size only when nika set it, so a window your terminal shows is not resized at the close
   either. If you close the session window while nika is fitting the window again (an agent started or ended), the new fit is given back too.
+- **The focused window wins the pane's size.** With your terminal and the session window side by side, the session window showed the pane scaled
+  with empty space while your terminal had the window. Now, while the session window has focus, nika sizes the tmux window to its panel even when
+  your terminal shows it (your terminal shows dots around it), and when you click into your terminal it gets its full size back within about a second.
+  Click back into the session window and the panel is filled again within about half a second. The size is moved in place, with one window resize
+  per switch and no unzoom, so a window with several panes does not flash in your terminal; every pane of the window still redraws once or twice per
+  switch. A blur is sent after 200 ms and a focus after 400 ms (a glance sends nothing), hiding or minimizing the window gives the size back at once, and
+  nika takes the size at most 12 times a minute per window (giving it back is never limited), then the chip reads "Fit · your terminal's size" with a
+  title that says why. There is no new chip colour: with a terminal on the window, "Fit · fills the panel" has a longer title and panel line about the
+  dots. A change of the chip that follows your own click into or out of the window is not announced to a screen reader a second time. The new
+  `linux-verify` checks F9a and F9b (a control-mode client as the terminal) pass in the CI job. Untried: how WebKit reports focus and blur in the
+  app's window on macOS and on Linux (if events are missed, a once-a-second check of `document.hasFocus()` catches them), and the redraw count per
+  switch with a real Claude.
 - Known limits: the fit was tried on tmux 3.8, and the `linux-verify` check on CI runs it on the Linux runner's tmux (3.6a on
   ubuntu-latest: a 3-pane and a single-pane window fitted and given back exactly, `select-layout --` accepted, `window-size`
   unset reads empty); tmux 3.2, the lowest supported, and every version other than 3.6a and 3.8 are not checked yet; a crash leaves the window at nika's size until

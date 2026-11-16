@@ -192,6 +192,9 @@ side only, in `src/fit.js`; **no new route, body field, file key, tmux command o
 
 ## Amendment 2026-11-16 (0.5, F4): nika never resizes a tmux window that a terminal shows
 
+*F9 (the amendment at the end of this file) narrows this: the rule below holds for a session window without focus; the SHRINK and GROW refits are
+replaced by in place moves.*
+
 Owner ruling (2026-11-16, "need to fix it"): with the user's own terminal attached to the orchestrator's tmux window and the session window open,
 the fit resized the window to the panel (`window-size manual`) and the terminal showed fill characters (dots) around the smaller window. From now
 on, while any terminal client views the tmux window nika never resizes it: it zooms the pane (a window with several panes) and the page scales the
@@ -275,3 +278,93 @@ unchanged). Evidence: spike S16 (tmux 3.8, a private socket) and the two live ch
 - **Not built:** tmux hooks, a faster watch, a per-session or server-wide viewer test, a countdown of the 30 s on the page, a setting for the delay,
   skipping R3 for a resized lease while a terminal watches the release (it needs the window's global `window-size`, which nika does not read), and a
   Fit again that overrides the terminal rule.
+
+## Amendment 2026-11-16 (0.5, F9): the focused window wins the pane's size
+
+Owner ruling (2026-11-16, "Focused one wins"), after the F4 live check: a terminal 64 columns wide showed the orchestrator's window, and nika's
+wide panel showed the pane scaled with empty space. While nika's session window has focus, nika sizes the tmux window to its panel **even when a
+terminal shows it**. Click into the terminal and it gets its full size back within about 1 s. The owner accepts the cost: Claude redraws on each
+switch, and the side not in use looks off (the terminal shows dots while you work in nika). F4 stays for a session window **without** focus. The owner
+also decided design-F9 §11 Q1 to Q4 on 2026-11-16, all as recommended (marked Q1 to Q4 below). Server
+side in `src/fit.js`, page side in `public/fit-ui.js` and `public/session.js`. **One new optional request field (`focus`), and no new route, lease-file
+key, tmux command or argv shape** (`ARGV` and `FILE_KEYS` are unchanged). Evidence: the unit tests of the fake tmux world, spike S16 for the tmux facts,
+and the live checks F9a and F9b of the `linux-verify` fit group, which pass in the CI job (confirmed on commit `2836505`; they do not run on macOS).
+
+- **The one rule.** `yields = (a terminal shows the window) && !focus`. While `yields`, the lease behaves as F4's `terminal` form; otherwise the panel
+  decides as in W7 (resize when that squeezes no pane, else zoom only). A page with focus, a terminal and a smaller panel over a window with several
+  panes lands on `zoomed / panel-smaller`, not `terminal`: the reason nika does not resize is the squeeze rule, and the `zoomed` hint is the action that
+  helps. For a page without focus F4's "`terminal` wins over `zoomed`" stays.
+- **The page sends its focus.** Every fit `PUT` carries `focus`, a strict boolean: `document.visibilityState === 'visible' && document.hasFocus() === true`,
+  and anything unreadable is `false`, so a page that cannot tell never holds the size of a window a terminal shows. The body is `{ cols, rows, open }` or
+  `{ cols, rows, open, focus }`; an absent `focus` reads as `false` (the safe side, F4's behaviour; every older 3-key body and a page loaded before an
+  update keep working). A `focus` that is not a boolean is `400`. Window `focus` and `blur` (target the window itself) and `visibilitychange` are only
+  triggers: the value is always read fresh, a 1 s poll (`FOCUS_POLL_MS`) re-reads it, because WebKit changed these events in 2026 and the two webviews
+  differ. A blur is sent after 200 ms (`BLUR_SETTLE_MS`), a focus after 400 ms (`FOCUS_SETTLE_MS`; a flick back sends nothing), a hidden window at once;
+  not on the 5 s beat (owner decision 2026-11-16, Q3: about 0.3 s to the terminal, about 0.5 s to nika). A focus change refused or lost is sent again by
+  the poll, at most once a second.
+- **Two in place moves replace F4's two refits** (owner decision 2026-11-16, Q2: one in place move for every size switch, also for a terminal that
+  arrives and for the 30 s grow, instead of release-and-acquire refits; about one redraw per pane per switch instead of three or four, and no flash of
+  the unzoomed panes in the terminal). GIVE (the page has no focus and a terminal shows a window nika resized): `resize-window` back to the
+  window's own size (`width0` × `height0`, only while nika holds a size and the window is not at it), then the `window-size` option back. TAKE (focus
+  came, or the terminal has been away for `GROW_MS`, or a terminal resized a window nika did not): the window is planned again with the panel's size and
+  `resize-window` is sent when the plan resizes. Each is one change of the window's size inside the window queue and the pane lock; the lease, the tag and
+  the zoom stay (no unzoom, no flash of the other panes in a terminal that shows the window with several panes), so the mirrored pane sees about one
+  size change per switch instead of F4's four to six. tmux resizes the whole layout of a zoomed window, so every pane of it (the hidden agent panes too)
+  redraws once per move. The request that carries the change runs the move at once (a blur → give, a focus → take, in that request); the watch runs it
+  within a second as the fallback, using the `focus` recorded from the last request, even a refused one (recorded before any check can refuse it).
+  `layout0` is not refreshed by a move, so the final restore puts back the user's proportions and not tmux's rounded rescales; `verify` reads `layout1`
+  again after each move. `verify`'s F4 retry after a terminal showed up between nika's resize and the read-back is now a give in the same request (for a
+  page without focus); it can never give twice, because a give ends in the same read-back with nothing resized.
+- **The cap** (owner decision 2026-11-16, Q3: at most 12 takes a minute per window, giving back never limited). A take for a page with focus that sent `resize-window` is noted per window; at most 12 (`TAKE_MAX`) in 60 000 ms (`TAKE_SPAN_MS`), kept in
+  memory for 64 windows (the oldest dropped first). The thirteenth is not made: the lease stays `terminal` and the answer carries `reason: switching` to
+  the page with focus (a blur after the cap answers a plain `terminal`); the watch takes when the minute frees up. A give is never limited, the unfocused
+  take after `GROW_MS` and a renew to a new panel size do not count.
+- **Answers and the chip** (owner decision 2026-11-16, Q1: "Fit · fills the panel" keeps its look when a terminal shows the window too, with its own title
+  and panel line about the dots; a new colour would flip on every switch). No new state and no new colour: `fitted` gains the reason `terminal` (a terminal shows the window too: own title and panel line
+  about the dots) and `terminal` gains the reason `switching`. Both are selected only by the exact pair of state and reason, never by a free reason text.
+  A state change that follows a change of the page's own focus is drawn but not announced a second time; the answer to the user's own Fit again always is.
+  `docs/design/spec.md` §9.13 has the words, and `docs/contracts/api-app.md` the rows.
+- **The restore.** `sized` is set before every `resize-window` of an acquire, a renew or a take, and cleared only by a give whose calls both succeeded, so a
+  failed call leaves the restore's resize back armed. Closing the session window (`pagehide`, a `DELETE`) after a give sends no resize back; after a take
+  it sends one to the refreshed `width0` × `height0`. **Hiding** the window (close button, minimize) is a blur: it gives the size back and keeps the lease
+  (owner decision 2026-11-16, Q4, as F4 does: hiding is usually brief, and a full release would unzoom and zoom on every hide and show).
+- **Four details settled in the build (orchestrator rulings, 2026-11-16).** The design text was refined where the code and its tests showed a defect:
+  1. A take expects the `window-size` option to be `manual` when nika holds a size it set earlier, and the value saved at the acquire otherwise. With the
+     saved value only, a lease nika had sized and then given back (or renewed back to the original size) was released as `user-change` although the
+     `manual` was nika's own.
+  2. A take refreshes `width0` × `height0` (the restore's resize-back target) only when nika holds no size of its own; a size nika set is not the window's
+     own, and the target must stay the original.
+  3. `take` and `give` adopt the page's new `cols` and `rows` only after their own look inside the lock (and a take held back by the cap adopts them
+     too, so the watch takes with the newest size). Written before the look, the new size made the lease look like a window nika had not set, and the
+     move answered a false `blocked / user-change`.
+  4. A give refreshes what the lease knows of the terminal from its own in-lock listing, so a terminal that left before the give looked is not reported
+     in the answer (`terminal`, not `fitted / terminal`).
+- **Two page details settled in the build.** The `terminal:zoom` panel hint no longer ends with the 30-second sentence (it says to click into the window);
+  the plain `terminal:` hint keeps it. The answer to the user's own Fit again is announced even when it followed a focus change, because the Fit again
+  handler announces nothing for an unchanged chip and a silent answer would leave a screen reader with no word (WCAG 4.1.3).
+- **Alternatives rejected.** *F4's refits for every switch* (release + acquire): three or four size changes of the mirrored pane per switch, every pane
+  resized more than once, and the terminal shows the unzoomed layout for about 100 ms at the moment the user looks at it. *Two mechanisms* (refits for
+  SHRINK and GROW, in place moves for focus): two code paths for one tmux transition. *Release on blur, acquire on focus*: an unzoom and a zoom per
+  switch, a flash, more redraws. *Delaying the blur on the server*: 1.3 to 1.5 s; the page's settle gives about 0.3 s and the server stays simple.
+  *Focus from the Tauri shell* (`WindowEvent::Focused` over stdio): native and exact, but a Rust change, a protocol change and a mapping from one
+  window to the leases; kept as the fallback if WebKit misses events. *No cap*: a flapping focus (focus-follows-mouse, a webview bug) would resize
+  without bound. *Cap both directions*: it would hold the size for an unfocused page, against the ruling. *A new chip state* for "filled while a terminal
+  shows it": in nika the panel is filled and the same words are true, and a new colour would flip on every switch. *`focus` required* (exactly four
+  keys): about 70 test bodies change for nothing, and a missing `focus` already fails safe. *Refresh `layout0` on each move*: bakes tmux's rounded
+  rescales into the restore. *The cap per lease*: a refit replaces the lease and would reset the count.
+- **Consequences.** (1) WebKit's focus events changed in 2026: if `blur` stops firing the 1 s poll still catches `hasFocus()`; if that is wrong too, nika
+  behaves as F4 (false is the default; it never holds the size while unfocused). Only the owner's live check proves macOS, and nothing proves WebKitGTK
+  until a Linux user runs it. (2) Every pane of the window redraws once or twice per switch (the owner accepted redraws; the count per agent is new
+  information). (3) The terminal shows dots while nika has focus (the ruling), or a cropped view when the terminal is smaller than the panel. (4) A
+  native dialog (the attach chooser) blurs nika: the size goes back while it is open and comes again after, two resizes per pick. (5) The final restore's
+  `select-layout` applies the acquire's `layout0` to a window that may have another size by then; tmux resizes the window to the layout and then gives it
+  the client's size again, from the tmux source and unverified on 3.8 (F4 had the same case after a refit). (6) Focus-follows-mouse window managers: the
+  400 ms settle filters a pass of the pointer, the cap bounds the rest. (7) A page that flaps faster than the settles allow can meet the route's 429; the
+  poll resends within a second. (8) A hidden nika keeps its lease: a terminal showing a window with several panes keeps the pane zoomed until nika is
+  shown, the page lapses (15 s without a request, if the webview stops its timers) or it leaves. (9) The `fitted` chip's translucent edge is 1.72:1
+  (light) and 1.96:1 (dark), as before; its text is at least 5.19:1, and the chip is identified by text and icon (WCAG 1.4.11 does not need the edge).
+  The F4 tests of SHRINK, GROW and `verify`'s retry were replaced, each listed in the build report; the mutation set gained equivalents for the new
+  paths. Rule 12's Fit sentences change in three places (approved 2026-11-16, `rules/project-rules.md`); `docs/security.md` T52 and residual m items
+  20 to 24 list the rest.
+- **Not built:** a focused page taking over another page's lease by itself (the app tier has one window; Fit here exists for that), a focus signal from
+  the Tauri shell (the fallback above), and a cap that survives a restart of nika (the take counts are memory only, never in the lease file).

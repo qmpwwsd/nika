@@ -4,7 +4,8 @@
 //
 // Where the truth lives (design-W7 section 3): server memory (`leases`), a 0600 lease file in nika's state dir (crash
 // recovery) and the window tag `@nika-fit <nonce>` (proof that the window is the same one and ours). Every tmux target and
-// every stored value comes from tmux's own listing in the same call; the request contributes only `cols`, `rows` and `open`.
+// every stored value comes from tmux's own listing in the same call; the request contributes only `cols`, `rows`, `open` and (F9)
+// the boolean `focus`.
 //
 // nika never fights the user: once the window differs from what nika set it releases and stays off (`blocked`) until the
 // session window is opened again or the user presses Fit again (both `open: true`). It never toggles a zoom it did not make and
