@@ -30,7 +30,10 @@ const SECRET = 'Zm9vYmFyZm9vYmFyZm9vYmFyZm9vYmFyZm9vYmFyZm9v'.slice(0, 43);
 const REQ_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const WRONG_SAME_LENGTH = 'x'.repeat(SECRET.length);
 const APP_COPY = { state: 'missing', managed: false, dismissed: false, version: null, available: '9.9.9', running: false };
-const SNAPSHOT = { groups: [{ agents: [{ live: true, state: 'idle', pane: { id: '%6' } }, { live: false, state: 'ended', pane: { id: '%7' } }, { live: true, state: 'idle', pane: null }] }] };
+// a real snapshot always carries `sources` (src/model.js collect): one word per collector, 'ok' or why it failed. The saved orchestrator's state is
+// read only while sources.registry is 'ok' (R1 F2): without the registry a live session cannot be told from an ended one
+const SOURCES_OK = { registry: 'ok', processes: 'ok', transcripts: 'ok', tmux: 'ok', reports: 'ok' };
+const SNAPSHOT = { sources: SOURCES_OK, groups: [{ agents: [{ live: true, state: 'idle', pane: { id: '%6' } }, { live: false, state: 'ended', pane: { id: '%7' } }, { live: true, state: 'idle', pane: null }] }] };
 
 const w = await makeWorld();
 const fx = makeFixture();
@@ -1693,7 +1696,7 @@ describe('orchestrator pick: PUT|DELETE /api/app/projects/:key/orchestrator and 
   });
 
   test('(+) GET /projects: a live pick, an ended pick (from the 24 h snapshot, no extra lookup) and a pick outside the snapshot (from the index)', async () => {
-    const snap = { groups: [] };
+    const snap = { sources: SOURCES_OK, groups: [] };
     const r = await rig({ depsOver: { collect: async () => snap } });
     snap.groups.push({ key: r.world.project.key, root: r.world.project.dir, agents: [
       { id: ID.live, name: 'planner', live: true, state: 'idle', pane: { id: '%6' } },
@@ -1780,7 +1783,7 @@ describe('orchestrator pick: PUT|DELETE /api/app/projects/:key/orchestrator and 
   });
 
   test("(−) GET /projects: the same when the other project's session is in the 24 h snapshot", async () => {
-    const snap = { groups: [{ key: 'fedcba9876543210', root: '/work/other-project', agents: [{ id: ID.other, name: 'stranger', live: true, state: 'idle', pane: { id: '%6' } }] }] };
+    const snap = { sources: SOURCES_OK, groups: [{ key: 'fedcba9876543210', root: '/work/other-project', agents: [{ id: ID.other, name: 'stranger', live: true, state: 'idle', pane: { id: '%6' } }] }] };
     const r = await rig({ depsOver: { collect: async () => snap } });
     await setOrchestrator(r.world.project.key, ID.other, r.world.env);
     const o = (await r.a.call('GET', '/api/app/projects')).body.projects[0].orchestrator;
@@ -1803,6 +1806,80 @@ describe('orchestrator pick: PUT|DELETE /api/app/projects/:key/orchestrator and 
     assert.equal(res.status, 200);
     assert.equal(res.body.projects[0].orchestrator, null);
     assert.deepEqual([r.lookups, r.batches], [[], []]);
+  });
+
+  // --- R1 F2 (final review): an unreadable session registry. Without it no session reads live, so a pick would read ended and Start would resume it ---
+
+  const NO_REGISTRY = { ...SOURCES_OK, registry: 'EACCES: permission denied' };
+  const withSnapshot = async (sources) => {
+    const snap = { sources, groups: [] };
+    const r = await rig({ depsOver: { collect: async () => snap } });
+    snap.groups.push({ key: r.world.project.key, root: r.world.project.dir, agents: [
+      { id: ID.live, name: 'planner', live: true, state: 'idle', pane: { id: '%6' } },
+      { id: ID.ended, name: 'old-planner', live: false, state: 'ended', pane: null },
+    ] });
+    return r;
+  };
+
+  test('(−) GET /projects: with the session registry unreadable every pick is unknown (null), never ended: even one the snapshot holds, with no index lookup', async () => {
+    for (const id of [ID.live, ID.ended, ID.unknown]) {
+      const r = await withSnapshot(NO_REGISTRY);
+      await setOrchestrator(r.world.project.key, id, r.world.env);
+      const res = await r.a.call('GET', '/api/app/projects');
+      assert.equal(res.status, 200);
+      assert.equal(res.body.projects[0].orchestrator, null, id);
+      assert.deepEqual([r.lookups, r.batches], [[], []], 'nothing is asked: the answer cannot be better than the registry');
+    }
+    for (const registry of [undefined, '', 'ps unavailable']) { // not exactly 'ok' (a snapshot of another shape included): the same
+      const r = await withSnapshot({ ...SOURCES_OK, registry });
+      await setOrchestrator(r.world.project.key, ID.ended, r.world.env);
+      assert.equal((await r.a.call('GET', '/api/app/projects')).body.projects[0].orchestrator, null, String(registry));
+    }
+  });
+
+  test('(+) GET /projects: with the registry read fine the picks read as before (live, ended, gone)', async () => {
+    const r = await withSnapshot(SOURCES_OK);
+    const get = async () => (await r.a.call('GET', '/api/app/projects')).body.projects[0].orchestrator;
+    await setOrchestrator(r.world.project.key, ID.live, r.world.env);
+    assert.deepEqual(await get(), { sessionId: ID.live, state: 'live', name: 'planner', pane: '%6' });
+    await setOrchestrator(r.world.project.key, ID.ended, r.world.env);
+    assert.deepEqual(await get(), { sessionId: ID.ended, state: 'ended', name: 'old-planner', pane: null });
+    await setOrchestrator(r.world.project.key, ID.unknown, r.world.env);
+    assert.deepEqual(await get(), { sessionId: ID.unknown, state: 'gone', name: null, pane: null });
+  });
+
+  test('(−) POST orchestrator/start with the registry unreadable: 503 index_unavailable, the pick is not read, no tmux command, nothing recorded, the pick stays', async () => {
+    const real = await rig({ depsOver: { startOrchestrator, collect: async () => ({ sources: NO_REGISTRY, groups: [] }) } });
+    await setOrchestrator(real.world.project.key, ID.ended, real.world.env);
+    const res = await real.a.call('POST', '/api/app/orchestrator/start', { json: { project: real.world.project.key } });
+    assert.deepEqual([res.status, res.body.error], [503, 'index_unavailable'], JSON.stringify(res.body));
+    assert.deepEqual([real.lookups, real.exec.calls], [[], []], 'no lookup, no tmux command: no pane, no claude');
+    assert.equal(real.a.ctx.started.size, 0);
+    assert.equal(await real.pick(), ID.ended);
+  });
+
+  test('(+) POST orchestrator/start with the registry read fine resumes the ended pick as before', async () => {
+    const real = await rig({ depsOver: { startOrchestrator } });
+    await setOrchestrator(real.world.project.key, ID.ended, real.world.env);
+    const res = await real.a.call('POST', '/api/app/orchestrator/start', { json: { project: real.world.project.key } });
+    assert.deepEqual([res.status, res.body.created, res.body.sessionId], [200, true, ID.ended], JSON.stringify(res.body));
+    assert.deepEqual(real.lookups, [ID.ended]);
+    assert.equal(real.exec.of('new-session').length + real.exec.of('new-window').length, 1);
+  });
+
+  test('(+) ctx.registryReadable is true only for a snapshot whose registry is ok, read fresh every time (Start acts on it); (−) a failed collect is false', async () => {
+    let snap = { sources: SOURCES_OK, groups: [] };
+    let reads = 0;
+    const a = await boot({ deps: makeDeps({ collect: async () => { reads += 1; if (snap === null) throw new Error('collect failed'); return snap; } }) });
+    assert.equal(typeof a.ctx.registryReadable, 'function');
+    assert.equal(await a.ctx.registryReadable(), true);
+    snap = { sources: NO_REGISTRY, groups: [] };
+    assert.equal(await a.ctx.registryReadable(), false, 'the 1 s snapshot was dropped: the change is seen at once');
+    snap = { groups: [] };
+    assert.equal(await a.ctx.registryReadable(), false, 'no sources at all is not ok');
+    snap = null;
+    assert.equal(await a.ctx.registryReadable(), false);
+    assert.equal(reads, 4);
   });
 
   test('(+) POST orchestrator/start relays the module\'s answer, `cleared: gone` included, and the module gets the shared ctx (with findSession)', async () => {
@@ -1863,7 +1940,7 @@ describe('orchestrator pick end to end: the real store, model and orchestrate mo
     const tmuxExec = fakeTmux({ panes: [{ id: '%6', session: 'work', window: 2, windowName: 'main', command: 'claude' }] });
     const collectExec = fakeExec();
     const ctxOver = { exec: tmuxExec, findSession: (id) => findSession(id, { config: real.config, exec: collectExec, now: NOW }), findSessions: (ids) => findSessions(ids, { config: real.config, now: NOW }) };
-    const a = await boot({ world, ctxOver, deps: makeDeps({ startOrchestrator, collect: async () => ({ groups: [] }) }) });
+    const a = await boot({ world, ctxOver, deps: makeDeps({ startOrchestrator, collect: async () => ({ sources: SOURCES_OK, groups: [] }) }) });
     return { world, project, tmuxExec, a, url: `/api/app/projects/${project.key}/orchestrator`, pick: () => getOrchestrator(project.key, world.env) };
   }
 
@@ -2562,6 +2639,15 @@ describe('session control: wiring', () => {
     await assert.rejects(() => control.opts.paneCommand('%6'));
   });
 
+  test('(+) paneCommand answers null for a dead pane (remain-on-exit keeps its command at claude), so End reads it as gone; (−) a running pane, or a row with no dead field, keeps its command (R1 F1)', async () => {
+    const control = fakeControl();
+    const a = await boot({ deps: makeDeps({ createSessionControl: control.factory }) });
+    a.deps.state.panes = new Map([['%6', { command: 'claude', dead: true }], ['%7', { command: 'claude', dead: false }], ['%8', { command: ' claude\n' }]]);
+    assert.equal(await control.opts.paneCommand('%6'), null);
+    assert.equal(await control.opts.paneCommand('%7'), 'claude');
+    assert.equal(await control.opts.paneCommand('%8'), 'claude');
+  });
+
   test('(+) vimOf is true after a capture whose mode line shows -- INSERT --; (−) a reused pane id that left the eligible set starts false', async () => {
     const { a, screens, control } = await bootScreens();
     assert.equal((await pane(a, '%6', 'mode', { method: 'POST', json: { target: 'plan' } })).status, 200); // builds nothing new; opts are set at boot
@@ -2796,6 +2882,25 @@ describe('POST /api/app/pane/:id/end', () => {
       await pane(a, '%6', 'capture');
       assert.equal(a.deps.calls.filter((c) => c[0] === 'collect').length, 2);
     }
+  });
+
+  // R1 F1 (final review): the real controller, a busy pane whose Escape fails to send (429) and a pane that is gone or dead by then.
+  // tmux's remain-on-exit keeps a dead pane listed with its command still at claude (src/collect/tmux.js), so only pane_dead says it ended.
+  async function endBusy(afterKey) {
+    const holder = {};
+    const keys = { send: async () => { afterKey(holder.a.deps.state.panes.get('%6')); return { status: 429, body: { error: 'busy', message: 'slow' } }; } };
+    const collect = async () => ({ sources: SOURCES_OK, groups: [{ agents: [{ live: true, state: 'busy', pane: { id: '%6' } }] }] });
+    const { a, screens } = await bootScreens({ fake: false, over: { keys, collect } });
+    holder.a = a;
+    screens['%6'] = rowsOf(['working', FOOTER.plan]);
+    return end(a);
+  }
+
+  test('(+) End on a pane that turns dead (remain-on-exit, command still claude) after the key went wrong: ended true; (−) a live pane that still runs claude: ended false with reason keys', async () => {
+    const dead = await endBusy((p) => { p.dead = true; });
+    assert.deepEqual([dead.status, dead.body], [200, { ended: true }]);
+    const live = await endBusy(() => {});
+    assert.deepEqual([live.status, live.body], [200, { ended: false, reason: 'keys' }]);
   });
 
   test('(−) a pane that is not in list-panes (or not Claude) is 404 and endSession is not called', async () => {
@@ -5098,10 +5203,10 @@ describe('attachments: upload', () => {
     assert.equal(store.calls.length, 1);
   });
 
-  test('(−) F3: a body named .envrc, *.p12, *.pfx, *.jks, *.keystore or an SSH private key (any case, path in front) is 400 secret-file before the pane is looked at; the store is not called', async () => {
+  test('(−) F3: a body named .envrc, *.p12, *.pfx, *.jks, *.keystore, an SSH private key or .netrc (any case, path in front) is 400 secret-file before the pane is looked at; the store is not called', async () => {
     const store = fakeStore();
     const { a } = await bootScreens({ over: { attachments: store, collect: async () => keyedSnapshot('%6') } });
-    for (const name of ['.envrc', '.ENVRC', '.envrc.dev', '.ENVRC.BAK', '/x/y/.envrc.dev', '.envrc.', 'cert.p12', 'CERT.PFX', 'store.jks', 'App.KeyStore', 'id_rsa', 'ID_RSA', '/x/y/ID_RSA', 'id_dsa', 'id_ecdsa', 'id_ed25519', 'Id_Ecdsa_Sk', 'id_ed25519_sk']) {
+    for (const name of ['.envrc', '.ENVRC', '.envrc.dev', '.ENVRC.BAK', '/x/y/.envrc.dev', '.envrc.', 'cert.p12', 'CERT.PFX', 'store.jks', 'App.KeyStore', 'id_rsa', 'ID_RSA', '/x/y/ID_RSA', 'id_dsa', 'id_ecdsa', 'id_ed25519', 'Id_Ecdsa_Sk', 'id_ed25519_sk', '.netrc', '.NETRC', '/x/y/.netrc']) { // the .netrc rows: G2's list (src/attachments.js)
       for (const id of ['%6', '%99']) {
         const r = await att(a, id, 'attachments', { method: 'POST', json: { name, data: UPLOAD.data } });
         assert.deepEqual([r.status, r.body.error], [400, 'secret-file'], `${name} ${id}`);
@@ -5113,7 +5218,7 @@ describe('attachments: upload', () => {
   test('(+) F3: a public key and the look-alikes of the new kinds still go to the store', async () => {
     const store = fakeStore();
     const { a } = await bootScreens({ over: { attachments: store, collect: async () => keyedSnapshot('%6') } });
-    const names = ['id_rsa.pub', 'id_ed25519.pub', 'id_rsa_backup.txt', 'my.keystore.md', 'notes.envrc.txt', 'p12.txt', 'envrc.dev', '.envrcx'];
+    const names = ['id_rsa.pub', 'id_ed25519.pub', 'id_rsa_backup.txt', 'my.keystore.md', 'notes.envrc.txt', 'p12.txt', 'envrc.dev', '.envrcx', 'netrc', '.netrc.bak'];
     for (const name of names) assert.equal((await att(a, '%6', 'attachments', { method: 'POST', json: { name, data: UPLOAD.data } })).status, 200, name);
     assert.equal(store.calls.length, names.length);
   });

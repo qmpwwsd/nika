@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { ensureDir, writeAtomic, checkComponents, backupFile, verifyInside, pruneBackups, removeOwnFile } from '../src/fwrite.js';
+import { ensureDir, writeAtomic, checkComponents, backupFile, verifyInside, pruneBackups, removeOwnFile, removeOwnDir } from '../src/fwrite.js';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nika-fwrite-'));
 after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -309,5 +309,91 @@ describe('removeOwnFile (W7): unlink one regular file of nika\'s own, never foll
     fs.chmodSync(loose, 0o770);
     await assert.rejects(removeOwnFile(loose, 'x'), { code: 'EMODE' });
     assert.equal(fs.readFileSync(path.join(loose, 'x'), 'utf8'), 'X');
+  });
+});
+
+describe('removeOwnDir (R3 F4): rmdir one empty folder of nika\'s own, never follow a link', () => {
+  test('(+) an empty real folder owned by the user is removed: true; its siblings and its parent stay', async () => {
+    const parent = sub('d1');
+    const empty = path.join(parent, 'empty');
+    fs.mkdirSync(empty, { mode: 0o700 });
+    fs.mkdirSync(path.join(parent, 'sibling'));
+    assert.equal(await removeOwnDir(empty), true);
+    assert.deepEqual(fs.readdirSync(parent), ['sibling']);
+  });
+
+  test('(+) a folder that holds anything stays: false, with its content untouched (rmdir never removes a non-empty folder)', async () => {
+    const parent = sub('d2');
+    const full = path.join(parent, 'full');
+    fs.mkdirSync(full);
+    fs.writeFileSync(path.join(full, 'keep.txt'), 'KEEP');
+    fs.mkdirSync(path.join(full, 'inner'));
+    assert.equal(await removeOwnDir(full), false);
+    assert.equal(fs.readFileSync(path.join(full, 'keep.txt'), 'utf8'), 'KEEP');
+    assert.equal(fs.existsSync(path.join(full, 'inner')), true);
+    fs.rmSync(path.join(full, 'keep.txt'));
+    assert.equal(await removeOwnDir(full), false, 'an inner folder is content too');
+    assert.equal(fs.existsSync(full), true);
+  });
+
+  test('(+) an absent folder is false, not an error (idempotent)', async () => {
+    const gone = path.join(sub('d3'), 'gone');
+    assert.equal(await removeOwnDir(gone), false);
+    assert.equal(await removeOwnDir(gone), false);
+  });
+
+  test('(−) a symlink to a folder is refused (ESYMLINK) and stays in place; its target and the target\'s content are untouched', async () => {
+    const parent = sub('d4');
+    const target = sub('d4-target');
+    fs.writeFileSync(path.join(target, 'keep.txt'), 'KEEP');
+    const link = path.join(parent, 'link');
+    fs.symlinkSync(target, link);
+    await assert.rejects(removeOwnDir(link), { code: 'ESYMLINK' });
+    assert.equal(fs.lstatSync(link).isSymbolicLink(), true, 'the link is still there');
+    assert.equal(fs.readFileSync(path.join(target, 'keep.txt'), 'utf8'), 'KEEP');
+    const emptyTarget = sub('d4-empty-target');
+    const link2 = path.join(parent, 'link-to-empty');
+    fs.symlinkSync(emptyTarget, link2);
+    await assert.rejects(removeOwnDir(link2), { code: 'ESYMLINK' }, 'an EMPTY target behind a link is not removed either');
+    assert.equal(fs.existsSync(emptyTarget), true);
+    assert.equal(fs.lstatSync(link2).isSymbolicLink(), true);
+  });
+
+  test('(−) a dangling symlink, a regular file, a FIFO and a symlink to a file are refused and left where they are', async () => {
+    const parent = sub('d5');
+    const decoy = path.join(root, 'd5-decoy');
+    fs.writeFileSync(decoy, 'DECOY');
+    fs.symlinkSync(path.join(root, 'd5-nowhere'), path.join(parent, 'dangling'));
+    fs.symlinkSync(decoy, path.join(parent, 'to-file'));
+    fs.writeFileSync(path.join(parent, 'a-file'), 'F');
+    execFileSync('mkfifo', [path.join(parent, 'pipe')]);
+    await assert.rejects(removeOwnDir(path.join(parent, 'dangling')), { code: 'ESYMLINK' });
+    await assert.rejects(removeOwnDir(path.join(parent, 'to-file')), { code: 'ESYMLINK' });
+    await assert.rejects(removeOwnDir(path.join(parent, 'a-file')), { code: 'ENOTDIR' });
+    await assert.rejects(removeOwnDir(path.join(parent, 'pipe')), { code: 'ENOTDIR' });
+    assert.deepEqual(fs.readdirSync(parent).sort(), ['a-file', 'dangling', 'pipe', 'to-file']);
+    assert.equal(fs.readFileSync(decoy, 'utf8'), 'DECOY');
+    assert.equal(fs.readFileSync(path.join(parent, 'a-file'), 'utf8'), 'F');
+  });
+
+  test('(−) a trailing slash does not make a link followable: `link/` is refused like `link`, the folder behind it stays', async () => {
+    const parent = sub('d6');
+    const target = sub('d6-target');
+    const link = path.join(parent, 'link');
+    fs.symlinkSync(target, link);
+    await assert.rejects(removeOwnDir(`${link}/`), { code: 'EPATH' });
+    await assert.rejects(removeOwnDir(`${link}/.`), { code: 'EPATH' });
+    assert.equal(fs.existsSync(target), true);
+    assert.equal(fs.lstatSync(link).isSymbolicLink(), true);
+  });
+
+  test('(−) a path that is not an absolute, normalized string is refused before anything is looked at: relative, "..", empty, a NUL, a non-string', async () => {
+    const parent = sub('d7');
+    const keep = path.join(parent, 'keep');
+    fs.mkdirSync(keep);
+    for (const bad of ['', 'keep', `${parent}/../d7/keep`, `${parent}//keep`, `${keep}\0`, undefined, null, 5, ['x'], {}]) {
+      await assert.rejects(removeOwnDir(bad), { code: 'EPATH' }, JSON.stringify(bad));
+    }
+    assert.equal(fs.existsSync(keep), true);
   });
 });

@@ -1379,8 +1379,9 @@ async function tickMirror() {
   const t0 = Date.now();
   try {
     const r = await call(`/api/app/pane/${encodeURIComponent(paneId)}/capture`, { headers: M.etag ? { 'If-None-Match': `"${M.etag}"` } : {} });
+    let applied = true; // R2 #7: a capture the redraw hold kept back was not drawn, so it is no look at where a mode switch stopped
     try {
-      handleHeld(r);
+      applied = handleHeld(r, sent) !== false;
     } catch {
       M.errors += 1;
       M.inputOff = true;
@@ -1388,7 +1389,7 @@ async function tickMirror() {
       setInputEnabled(false, 'tmux is not answering');
       showOverlay('The terminal could not be drawn', 'nika retries every 2 seconds.', { retry: 'Retry now', alert: true });
     }
-    captureHandled(sent);
+    if (applied) captureHandled(sent);
   } finally {
     M.busy = false;
   }
@@ -1575,17 +1576,22 @@ function holdEnded() {
   flushChip();
 }
 
-/** One answered capture: kept back while a hold waits for Claude's repaint; else drawn. A gone pane, a refusal or an error ends the hold at once and is handled as always. */
-function handleHeld(r) {
+/**
+ * One answered capture (`n`: the number of its request): kept back while a hold waits for Claude's repaint; else drawn. A gone pane, a refusal or an error ends
+ * the hold at once and is handled as always. Returns false for a capture that was kept back (not drawn), true for any other: only a drawn one tells the
+ * waiters of nextCapture (R2 #7); a kept one carries `n`, so that holdTimeout can tell them when it draws it.
+ */
+function handleHeld(r, n) {
   if (HOLD.active) {
     if (r.status === 200 && Array.isArray(r.body?.rows) && Number.isInteger(r.body.cols)) {
-      if (HOLD.offer({ r, body: r.body, draft: cleanDraft(r.body.draft) }) === 'keep') return;
+      if (HOLD.offer({ r, body: r.body, draft: cleanDraft(r.body.draft), n }) === 'keep') return false;
       applyHeld(r);
-      return;
+      return true;
     }
     if (r.status !== 304) HOLD.end();
   }
   handleCapture(r);
+  return true;
 }
 
 /** Draws a capture a hold let through; when it has another size than the drawn one, the new frame fades in (and zooms in when the text grows). */
@@ -1626,7 +1632,10 @@ function holdTimeout(pending, ctx) {
     FIT.planner?.size(ask.cols, ask.rows, { now: true });
     return;
   }
-  if (pending) applyHeld(pending.r);
+  if (pending) {
+    applyHeld(pending.r);
+    if (Number.isInteger(pending.n)) captureHandled(pending.n); // R2 #7: drawn now, so the waiters that were there before its request see it
+  }
 }
 
 /**
@@ -2157,6 +2166,17 @@ async function putDraft(body) {
   return call(`/api/app/pane/${encodeURIComponent(paneId)}/draft`, { method: 'PUT', json: body });
 }
 
+/** Tab or the right arrow on Claude's suggestion (F10, R2 #3: it waits for nika's own redraw hold like the sync's write; the server decides on its own fresh capture). */
+async function suggestDraft(body) {
+  if (HOLD.active) await HOLD.wait();
+  return call(`/api/app/pane/${encodeURIComponent(paneId)}/suggestion`, { method: 'POST', json: body });
+}
+
+/** Resolves at once with no redraw hold, else when it ends (F10, R2 #3): the attachment tray's request goes after it. */
+async function waitHold() {
+  if (HOLD.active) await HOLD.wait();
+}
+
 const DS = createDraftSync({
   now: () => Date.now(),
   after: (fn, ms) => setTimeout(fn, ms),
@@ -2164,7 +2184,7 @@ const DS = createDraftSync({
   box: () => ({ value: composer().value, shell: S.on }),
   setBox: pullIntoBox,
   put: putDraft,
-  suggest: (body) => call(`/api/app/pane/${encodeURIComponent(paneId)}/suggestion`, { method: 'POST', json: body }),
+  suggest: suggestDraft,
   note: renderDraftNote,
   problem: (message) => showProblem(message, 'warn', 6000),
   gone: setGone,
@@ -2179,6 +2199,7 @@ const ATT = createAttachTray({
   appFetch,
   ds: DS,
   enqueueJob,
+  waitHold,
   say,
   announce,
   showProblem,

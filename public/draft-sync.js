@@ -221,11 +221,16 @@ export function draftSendPlan({ value, shell = false, screen = null, cols = 0, f
   return { act: 'refuse', message: LONG_REFUSAL };
 }
 
-/** The line for a Send whose push did not land. Fixed copy: only the status and the server's `error` code pick it. */
-function sendMessage({ status, code, reason }) {
+/**
+ * The line for a Send whose push did not land. Fixed copy: only the status and the server's `error` code pick it. `kept`: the terminal's change was not
+ * pulled over the box (the user had edited it since the last capture), so the line says the text is kept instead of saying nika shows Claude's.
+ */
+function sendMessage({ status, code, reason, kept = false }) {
   if (status === 409) {
     if (code === 'draft-changed' || code === 'screen-changed' || code === 'draft-mismatch') {
-      return "Claude's input changed while nika was copying your text. nika shows what it holds now. Nothing was sent.";
+      return kept
+        ? "Claude's input changed while nika was copying your text. Nothing was sent. Your text is kept."
+        : "Claude's input changed while nika was copying your text. nika shows what it holds now. Nothing was sent.";
     }
     if (code === 'draft-unreadable') return pausedLine(reason);
     if (code === 'not-idle') return "A prompt is open in Claude or Stop is running, so nika can't change its input now. Nothing was sent. Your text is kept.";
@@ -306,10 +311,13 @@ const unreadableDraft = (reason, like) => ({
  * Clear), composition(on) around an IME composition, reset() when the connection came back, stop() when the pane is gone.
  */
 export function createDraftSync(io) {
-  // seenSig: the screen's sig at the last time box and screen matched or were pulled (null: none yet on this connection). dirty: the
-  // box holds text the screen does not. editedAt / sentAt: when the box was last edited / the last write left. retryAt: no push before.
+  // seenSig: the screen's sig at the last time box and screen matched or were pulled (null: none yet on this connection; '' after sent() or an
+  // adopted 409, where the next capture wins). adopted: seenSig is '' because a refused write's screen was adopted (the terminal won), not
+  // because sent() forgot the screen: only then does a Send keep writing against '' (the route refuses it); after sent() it writes against the
+  // screen's own sig (R2 #1). dirty: the box holds text the screen does not. editedAt / sentAt / capturedAt: when the box was last edited / the
+  // last write left / the last capture was applied. retryAt: no push before.
   const D = {
-    seenSig: null, screen: null, cols: 0, dirty: false, editedAt: -Infinity, sentAt: 0, flight: null, timer: null, composing: false,
+    seenSig: null, adopted: false, screen: null, cols: 0, dirty: false, editedAt: -Infinity, sentAt: 0, capturedAt: -Infinity, flight: null, timer: null, composing: false,
     sending: false, stopped: false, retryAt: 0, fails: 0, told: false, held: null, blocked: false, shown: '', // held: null | 'hold' | 'cursor' (the last write was refused); told: the problem line already showed in this run of failures
   };
   const now = () => io.now();
@@ -379,8 +387,8 @@ export function createDraftSync(io) {
     write(text, d.sig);
   }
 
-  /** One PUT. Settles the state from the answer and returns { ok, status, code, reason }. */
-  async function write(text, base) {
+  /** One PUT. Settles the state from the answer and returns { ok, status, code, reason }. `own`: it is Send's push (settle keeps the box on a refusal after a fresh edit). */
+  async function write(text, base, own = false) {
     D.sentAt = now();
     D.flight = Promise.resolve().then(() => io.put({ text, base }));
     let r;
@@ -390,7 +398,7 @@ export function createDraftSync(io) {
       r = null;
     }
     D.flight = null;
-    return settle(r && typeof r === 'object' ? r : { status: 0, body: null });
+    return settle(r && typeof r === 'object' ? r : { status: 0, body: null }, own);
   }
 
   /**
@@ -406,14 +414,18 @@ export function createDraftSync(io) {
     io.problem(status === 0 ? 'nika did not answer. Your text is kept.' : "nika couldn't copy your text into Claude's input. It is kept here.");
   }
 
-  function settle(r) {
+  function settle(r, own = false) {
     const body = r.body && typeof r.body === 'object' && !Array.isArray(r.body) ? r.body : {};
     const code = r.status === 409 && typeof body.error === 'string' ? body.error : '';
     const typedSince = D.editedAt >= D.sentAt; // the user kept typing after the request left
+    // R2 #1: Send's own push, refused because the terminal changed: a box the user edited after the last applied capture is newer than anything the screen
+    // told the page, so it is kept (never pulled over), whichever way the clock ran against the request
+    const keep = typedSince || (own && Number.isFinite(D.editedAt) && D.editedAt >= D.capturedAt);
     const d = cleanDraft(body.draft);
     const out = { ok: r.status === 200, status: r.status, code, reason: body.reason, sig: r.status === 200 && d?.sig ? d.sig : null };
     if (d) D.screen = d; // every answer that carries a draft says where the screen is
-    D.held = code === 'not-idle' ? 'hold' : code === 'cursor-not-at-end' ? 'cursor' : null; // the note names the last refusal: a later answer of another kind ends it
+    // the note names the last refusal: a later answer of another kind ends it. busy-switching and a 429 are not an answer about the draft: the note stays through them (R2 #6)
+    if (code !== 'busy-switching' && r.status !== 429) D.held = code === 'not-idle' ? 'hold' : code === 'cursor-not-at-end' ? 'cursor' : null;
     if (r.status === 200) {
       if (d?.sig) D.seenSig = d.sig;
       D.dirty = typedSince;
@@ -422,10 +434,13 @@ export function createDraftSync(io) {
       D.blocked = false;
       D.retryAt = 0;
     } else if (ADOPT.has(code) && d) {
-      if (!typedSince) { // the terminal wins: forget the edit; the next step pulls the screen's text
+      if (!keep) { // the terminal wins: forget the edit; the next step pulls the screen's text
         D.dirty = false;
         D.seenSig = '';
+        D.adopted = true;
         D.editedAt = -Infinity;
+      } else if (own) {
+        out.kept = true; // Send's push was refused and the box stays as it is: the refusal line says so
       }
     } else if (code === 'draft-unreadable') {
       D.screen = unreadableDraft(body.reason, D.screen);
@@ -469,6 +484,7 @@ export function createDraftSync(io) {
     /** Every handled 200 capture: `draft` is cleanDraft's answer (null: no readable box). */
     capture(draft, cols) {
       D.screen = draft;
+      D.capturedAt = now();
       D.cols = Number.isInteger(cols) ? cols : 0;
       step();
     },
@@ -505,7 +521,10 @@ export function createDraftSync(io) {
       if (!D.screen || D.screen.state === 'unreadable') {
         return { ok: false, message: D.screen ? pausedLine(D.screen.reason) : CANT_READ };
       }
-      const out = await write(text, D.seenSig ?? D.screen.sig);
+      // After sent() the sync has forgotten the screen it matched (seenSig ''): the base is then the screen's own sig, like the background push; ''
+      // stays the base only after an adopted 409 (the route refuses it, as it did).
+      const base = D.seenSig === '' && !D.adopted ? D.screen.sig : (D.seenSig ?? D.screen.sig);
+      const out = await write(text, base, true);
       return out.ok ? { ok: true, sig: out.sig } : { ok: false, message: sendMessage(out) };
     },
     /**
@@ -525,6 +544,7 @@ export function createDraftSync(io) {
       D.dirty = false;
       D.held = null;
       D.seenSig = '';
+      D.adopted = false;
       cancelTimer();
     },
     endSend() {

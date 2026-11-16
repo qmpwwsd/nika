@@ -787,6 +787,44 @@ describe('startOrchestrator: the saved orchestrator (the project\'s pick)', () =
     assert.equal(await pickNow(w), PICK);
   });
 
+  // R1 F2 (final review): an unreadable session registry cannot tell a live pick from an ended one, so Start answers before it reads the pick
+  test('(−) the session registry cannot be read (ctx.registryReadable → false): 503 index_unavailable before the pick is looked up; no tmux command, no claude, the pick stays', async () => {
+    for (const hook of [async () => false, async () => { throw new Error('collect failed'); }, async () => undefined, async () => 'ok']) {
+      const w = await world();
+      await setOrchestrator(w.project.key, PICK, w.env);
+      const exec = fakeTmux();
+      let looked = 0;
+      const ctx = w.ctx(exec, { registryReadable: hook, findSession: async (id) => { looked += 1; return sessionLookup({}, w.project.key)(id); } });
+      const r = await startOrchestrator(w.project.key, ctx);
+      assert.deepEqual([r.status, r.body.error], [503, 'index_unavailable'], String(hook));
+      assert.equal(typeof r.body.message, 'string');
+      assert.equal(looked, 0, 'the pick is not read');
+      assert.deepEqual(exec.calls, [], 'no pane, no claude');
+      assert.equal(ctx.started.size, 0);
+      assert.equal(await pickNow(w), PICK);
+    }
+  });
+
+  test('(+) the registry reads fine (registryReadable → true): the ended pick is resumed as before; a missing hook (the CLI) changes nothing', async () => {
+    for (const extra of [{ registryReadable: async () => true }, {}]) {
+      const w = await world();
+      await setOrchestrator(w.project.key, PICK, w.env);
+      const exec = fakeTmux();
+      const r = await startOrchestrator(w.project.key, w.ctx(exec, { findSession: sessionLookup({}, w.project.key), ...extra }));
+      assert.deepEqual([r.status, r.body.sessionId, r.body.created], [200, PICK, true], JSON.stringify(Object.keys(extra)));
+      assert.deepEqual(claudeFlags(exec.of('new-session')[0]).slice(0, 2), ['--resume', PICK]);
+    }
+  });
+
+  test('(+) without a saved pick the registry does not matter: a fresh start runs even when it cannot be read, and the hook is not asked', async () => {
+    const w = await world();
+    const exec = fakeTmux();
+    let asked = 0;
+    const r = await startOrchestrator(w.project.key, w.ctx(exec, { registryReadable: async () => { asked += 1; return false; } }));
+    assert.deepEqual([r.status, r.body.created], [200, true]);
+    assert.equal(asked, 0);
+  });
+
   test('(−) a pick with no way to look it up fails closed: no tmux command, the pick stays', async () => {
     const w = await world();
     await setOrchestrator(w.project.key, PICK, w.env);

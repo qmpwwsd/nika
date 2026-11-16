@@ -11,6 +11,7 @@ import { spawn as nodeSpawn } from 'node:child_process';
 import { defaultConfig, findClaude, parseSince, DEFAULT_SINCE } from './config.js';
 import { makeExec } from './exec.js';
 import { collect, findSession } from './model.js';
+import { readRegistry } from './collect/registry.js';
 import { createServer } from './server.js';
 import { clean, cleanBlock } from './text.js';
 import { configDir, stateDir, backupsRoot } from './paths.js';
@@ -592,10 +593,19 @@ export function sessionTarget(o, tail) {
   throw new CliError("cannot attach: the orchestrator's tmux session name is not one nika can target", 1);
 }
 
+/**
+ * Whether the session registry can be read: the same question as `sources.registry` of a snapshot (src/model.js), asked of the registry alone.
+ * Start asks it while a pick is saved (R1 F2): with the sessions folder unreadable no session reads live, so a live pick would read ended
+ * and be resumed in a second claude. startOrchestrator answers 503 index_unavailable, which `ok()` turns into exit 1; nothing is started.
+ */
+async function registryReadable(cx) {
+  return (await readRegistry(cx.config.claudeDir)).error == null;
+}
+
 async function orchestrateCmd(rest, cx) {
   const { values, positionals } = parse(rest, { detached: B }, 1);
   const project = await findProject(positionals[0], cx);
-  const ctx = toolCtx(cx);
+  const ctx = { ...toolCtx(cx), registryReadable: () => registryReadable(cx) };
   const o = ok(await startOrchestrator(project.key, ctx));
   cx.out.write(`session: ${clean(o.session, 60)}\npane: ${o.pane}\n${o.created ? 'started a new orchestrator' : 'the orchestrator is already running'}\n`);
   if (values.detached || !cx.out.isTTY) return 0;

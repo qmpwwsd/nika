@@ -24,6 +24,7 @@ const SRC = read('public', 'attach.js');
 const SESSION = read('public', 'session.js');
 const code = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|\s)\/\/.*$/gm, '$1');
 
+const SECRET_LINE = "nika doesn't attach .env, key, certificate or credential files."; // the fixed line of a refused credential file (owner decision 2026-11-16)
 const DOTS = String.fromCharCode(0x2026);
 const MID = String.fromCharCode(0xb7);
 const SIG = 'a1b2c3d4e5f60718';
@@ -215,7 +216,7 @@ describe('uploadView: section 8.6, upload rows', () => {
   });
 
   test('(+) M4: a credential file (.env, .env.*, *.key, *.pem) has its fixed chip word and line', () => {
-    assert.deepEqual(v(400, 'secret-file', '.env'), { short: 'Not attached', line: "nika doesn't attach .env, key or certificate files." });
+    assert.deepEqual(v(400, 'secret-file', '.env'), { short: 'Not attached', line: SECRET_LINE });
     assert.deepEqual(v(400, 'secret-file', 'x.pem'), v(400, 'secret-file', 'other.key'), 'the line does not echo the name');
   });
 
@@ -379,7 +380,7 @@ describe('adding files', () => {
       assert.equal(reads, 0, `${name}: never read`);
       assert.equal(r.log.calls.length, 0, `${name}: no request`);
       assert.deepEqual([view(r.chips()[0]).s, view(r.chips()[0]).meta], ['failed', 'Not attached'], name);
-      assert.deepEqual(r.log.problem.at(-1), ["nika doesn't attach .env, key or certificate files.", 'error', 8000], name);
+      assert.deepEqual(r.log.problem.at(-1), [SECRET_LINE, 'error', 8000], name);
     }
   });
 
@@ -387,6 +388,39 @@ describe('adding files', () => {
   // Fix round 1 (orchestrator ruling): .envrc.* is refused like .env.* (.envrc.dev, .envrc.bak, .envrc. ...).
   const NEW_KINDS = ['.envrc', '.envrc.dev', '.envrc.bak', '.envrc.', 'cert.p12', 'cert.pfx', 'store.jks', 'app.keystore', 'id_rsa', 'id_dsa', 'id_ecdsa', 'id_ed25519', 'id_ecdsa_sk', 'id_ed25519_sk'];
   const mixedCase = (n) => [...n].map((c, i) => (i % 2 ? c.toUpperCase() : c.toLowerCase())).join('');
+  // Owner decision 2026-11-16: the credential stores of common tools and the VPN profile are refused like the keys. The name alone decides.
+  const CRED_KINDS = ['.netrc', '.git-credentials', '.pgpass', '.npmrc', 'credentials', 'client.ovpn', 'x.y.ovpn'];
+  const CRED_LOOKALIKES = ['credentials.md', 'my-credentials', 'git-credentials', '.git-credentials.txt', 'netrc', '.netrc.bak', '.netrcx', 'pgpass', '.pgpass.old', 'npmrc', '.npmrc2', 'credential', 'ovpn', 'x.ovpn.txt', 'ovpn.md'];
+
+  test('(−) owner decision 2026-11-16: a pasted or dropped .netrc, .git-credentials, .pgpass, .npmrc, credentials or *.ovpn (any case, with a path in front) is "Not attached": no read, no request, the new fixed line', async () => {
+    for (const kind of CRED_KINDS) {
+      for (const name of [kind, kind.toUpperCase(), mixedCase(kind), `/x/y/${kind.toUpperCase()}`, `~/.aws/${kind}`]) {
+        let reads = 0;
+        const r = rig({ read: async () => { reads += 1; return 'QUJD'; } });
+        await r.add(file(name));
+        assert.equal(reads, 0, `${name}: never read`);
+        assert.equal(r.log.calls.length, 0, `${name}: no request`);
+        assert.deepEqual([view(r.chips()[0]).s, view(r.chips()[0]).meta], ['failed', 'Not attached'], name);
+        assert.deepEqual(r.log.problem.at(-1), [SECRET_LINE, 'error', 8000], name);
+      }
+    }
+  });
+
+  test('(+) owner decision 2026-11-16: the look-alikes of the new kinds are read and uploaded as before (only the exact names and *.ovpn are refused)', async () => {
+    let reads = 0;
+    const r = rig({ read: async () => { reads += 1; return 'QUJD'; } });
+    await r.add(...CRED_LOOKALIKES.slice(0, MAX_FILES).map((n) => file(n)));
+    assert.equal(reads, MAX_FILES);
+    assert.deepEqual(r.chips().map((li) => view(li).s), Array(MAX_FILES).fill('ready'));
+    for (const n of CRED_LOOKALIKES) assert.equal(isSecretName(n), false, n);
+    for (const n of CRED_KINDS) assert.equal(isSecretName(n), true, n);
+  });
+
+  test('(+) owner decision 2026-11-16: the fixed line is exactly the approved text, and the page\'s pattern is exactly the approved one (the server\'s copy is G2\'s, compared in the agreement test)', () => {
+    assert.equal(SECRET_LINE, "nika doesn't attach .env, key, certificate or credential files.");
+    assert.ok(SRC.includes(`const SECRET_LINE = "${SECRET_LINE}";`));
+    assert.ok(SRC.includes('const SECRET_NAME = /^(?:\\.env(?:\\..*)?|\\.envrc(?:\\..*)?|id_(?:rsa|dsa|ecdsa|ed25519|ecdsa_sk|ed25519_sk)|\\.netrc|\\.git-credentials|\\.pgpass|\\.npmrc|credentials|.*\\.(?:key|pem|p12|pfx|jks|keystore|ovpn))$/is;'));
+  });
 
   test('(−) F3: a pasted or dropped .envrc, *.p12, *.pfx, *.jks, *.keystore or SSH private key (any case, with a path in front) is "Not attached": no read, no request, the same fixed line', async () => {
     for (const kind of NEW_KINDS) {
@@ -397,7 +431,7 @@ describe('adding files', () => {
         assert.equal(reads, 0, `${name}: never read`);
         assert.equal(r.log.calls.length, 0, `${name}: no request`);
         assert.deepEqual([view(r.chips()[0]).s, view(r.chips()[0]).meta], ['failed', 'Not attached'], name);
-        assert.deepEqual(r.log.problem.at(-1), ["nika doesn't attach .env, key or certificate files.", 'error', 8000], name);
+        assert.deepEqual(r.log.problem.at(-1), [SECRET_LINE, 'error', 8000], name);
       }
     }
   });
@@ -437,11 +471,15 @@ describe('adding files', () => {
     // F3: every new kind in four spellings, and the names that must stay attachable
     for (const kind of NEW_KINDS) names.push(kind, kind.toUpperCase(), mixedCase(kind), `/x/y/${kind.toUpperCase()}`, `dir\\sub\\${kind}`, `${kind} `);
     names.push('id_rsa.pub', 'id_ed25519.pub', 'ID_ECDSA.PUB', 'id_ecdsa_sk.pub', 'id_rsa_backup.txt', 'id_rsa_sk', 'my_id_rsa', 'id_', 'my.keystore.md', 'notes.envrc.txt', 'envrc', 'envrc.dev', 'my.envrc.dev', '.envrcx', '.envrc-old', 'p12.txt', 'p12', 'x.p12x', 'cert.p12.txt');
+    // owner decision 2026-11-16: the credential stores and *.ovpn, in the same spellings, and their look-alikes
+    for (const kind of CRED_KINDS) names.push(kind, kind.toUpperCase(), mixedCase(kind), `/x/y/${kind.toUpperCase()}`, `dir\\sub\\${kind}`, `${kind} `);
+    names.push(...CRED_LOOKALIKES, 'multi\nline.ovpn', 'Credentials', 'CREDENTIALS ');
     for (const n of names) assert.equal(isSecretName(n), serverIsSecretName(n), JSON.stringify(n));
     for (const n of [undefined, null, 5, {}]) assert.equal(isSecretName(n), false);
     assert.equal(names.filter(isSecretName).length >= 12, true, 'the table has secret names in it');
     assert.equal(names.filter((n) => !isSecretName(n)).length >= 15, true, 'the table has ordinary names in it');
     assert.equal(NEW_KINDS.every((k) => isSecretName(k) && serverIsSecretName(k)), true, 'every new kind is secret on both sides');
+    assert.equal(CRED_KINDS.every((k) => isSecretName(k) && serverIsSecretName(k)), true, 'every credential-store kind is secret on both sides');
   });
 
   test('(+) a 9 MB file: a failed chip "Too big", no read, no request', async () => {
@@ -606,7 +644,7 @@ describe('the file chooser: the paperclip opens the shell\'s own dialog (W2-T6)'
     r.state.polls = [done(badFile('secret-file', '.env.dev'), { ok: true, name: 'notes.md', id: uploadId(1), size: 10, type: 'text' })];
     await click(r);
     assert.deepEqual(r.chips().map((li) => [view(li).name, view(li).s, view(li).meta]), [['.env.dev', 'failed', 'Not attached'], ['notes.md', 'ready', formatSize(10)]]);
-    assert.deepEqual(r.log.problem.map((x) => x[0]), ["nika doesn't attach .env, key or certificate files."]);
+    assert.deepEqual(r.log.problem.map((x) => x[0]), [SECRET_LINE]);
   });
 
   test('(+) the problem lines of the upload path show for a picked file too (wrong type names the file; storage full says why), and never the server\'s own text', async () => {
@@ -1240,6 +1278,27 @@ describe('removing a chip', () => {
     release();
     await settle();
   });
+
+  // Final review fix G3, R2 #2: a subagent link navigates this very window, so pagehide fires although the user comes back (Back restores the page from the
+  // back/forward cache with its chips still saying ready): the files must still be there. The server's expiry covers a page that never returns.
+  test('(+) R2 #2: a pagehide that puts the page into the back/forward cache (persisted true) deletes nothing and the chips stay ready', async () => {
+    const r = rig();
+    await r.add(file('a.md'), file('b.md'));
+    const before = r.log.calls.length;
+    r.win.fire('pagehide', { persisted: true });
+    assert.equal(r.log.calls.length, before, 'no DELETE went out');
+    assert.deepEqual(r.chips().map((li) => view(li).s), ['ready', 'ready']);
+  });
+
+  test('(−) R2 #2: a real close (persisted false, no flag, or anything but exactly true) still deletes every ready chip', async () => {
+    for (const ev of [{ persisted: false }, {}, { persisted: 'true' }, { persisted: 1 }, { persisted: undefined }]) {
+      const r = rig();
+      await r.add(file('a.md'));
+      const before = r.log.calls.length;
+      r.win.fire('pagehide', ev);
+      assert.deepEqual(r.log.calls.slice(before).map((c) => [c.method, c.keepalive]), [['DELETE', true]], JSON.stringify(ev));
+    }
+  });
 });
 
 // ---- Send ------------------------------------------------------------------------------------------------------------------------------
@@ -1290,6 +1349,55 @@ describe('Send with attachments: the table of section 6', () => {
     assert.equal(sends[0].json.base, SIG2);
     assert.equal(r.chips().length, 0, 'sent: the tray is empty');
     assert.deepEqual(r.log.clear, ['look at this']);
+  });
+
+  // Final review fix G3, R2 #3 (design F10 4.5): the send waits for nika's own redraw hold like the draft sync's write does; the server still decides on its own fresh capture.
+  test('(+) R2 #3: during a redraw hold the attach-send (no text push) waits and goes after the hold ends', async () => {
+    const r = rig();
+    await r.add(file('a.png'));
+    let release;
+    let waits = 0;
+    r.io.waitHold = () => { waits += 1; return new Promise((resolve) => { release = resolve; }); };
+    const p = r.att.send(''); // an empty message with a readable empty box: the attachments alone, no push
+    await settle();
+    assert.equal(waits, 1);
+    assert.equal(sends(r).length, 0, 'held: nothing went out');
+    assert.equal(r.att.sending(), true, 'the tray still shows the send');
+    release();
+    await p;
+    assert.equal(sends(r).length, 1, 'and goes once the hold is over');
+    assert.deepEqual(sends(r)[0].json, { ids: [uploadId(1)], base: SIG });
+    assert.equal(r.chips().length, 0);
+  });
+
+  test('(−) R2 #3: with no hold the attach-send goes at once (the same ticks as before), and a tray whose io has no waitHold works too', async () => {
+    const r = rig();
+    await r.add(file('a.png'));
+    let waits = 0;
+    r.io.waitHold = async () => { waits += 1; }; // session.js: resolves at once when no hold runs
+    await r.att.send('');
+    assert.equal(waits, 1);
+    assert.equal(sends(r).length, 1);
+
+    const plain = rig();
+    assert.equal('waitHold' in plain.io, false, 'the default rig has none');
+    await plain.add(file('b.png'));
+    await plain.att.send('');
+    assert.equal(sends(plain).length, 1, 'an io without the member sends at once');
+  });
+
+  test('(+) R2 #3: the text-push road waits too, after its push (a hold that began meanwhile), and reads the sig of the screen then', async () => {
+    const r = rig();
+    await r.add(file('a.png'));
+    let release;
+    r.io.waitHold = () => new Promise((resolve) => { release = resolve; });
+    const p = r.att.send('look at this');
+    await settle();
+    assert.deepEqual(r.log.ds.filter((x) => x[0] === 'send'), [['send', 'look at this']], 'the push went');
+    assert.equal(sends(r).length, 0, 'held');
+    release();
+    await p;
+    assert.deepEqual(sends(r)[0].json, { ids: [uploadId(1)], base: SIG2 });
   });
 
   test('(−) W13: the old refusal is gone from the page: no `working` in attach.js, no "when Claude is waiting" line', () => {
@@ -1718,7 +1826,7 @@ describe('the hooks in session.js (H6)', () => {
     const att = src.indexOf('const ATT = createAttachTray(');
     assert.ok(ds >= 0 && att > ds);
     const call = src.slice(att, src.indexOf('});', att) + 3);
-    for (const k of ['paneId', 'path:', 'call', 'appFetch', 'ds: DS', 'enqueueJob', 'say', 'announce', 'showProblem', 'clearProblem', 'showNotice', 'setGone', 'box:', 'cols:', 'clearBox', 'focusBox']) assert.ok(call.includes(k), k);
+    for (const k of ['paneId', 'path:', 'call', 'appFetch', 'ds: DS', 'enqueueJob', 'waitHold', 'say', 'announce', 'showProblem', 'clearProblem', 'showNotice', 'setGone', 'box:', 'cols:', 'clearBox', 'focusBox']) assert.ok(call.includes(k), k);
     assert.doesNotMatch(call, /working|A\.kind/, 'W13: the tray is not told whether Claude works; attachments go while it does (Claude queues them)');
   });
 

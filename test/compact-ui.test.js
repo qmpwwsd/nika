@@ -90,6 +90,8 @@ function rig({ compaction = DEFAULT, attachments, put = { status: 200 }, hold = 
     projects: [],
   };
   const hooks = {};
+  const rxFields = []; // the [data-rx] inputs on the page: none unless a test adds the Name prefix (see breakField)
+  const RX = {};
   const $ = (sel) => {
     const m = /^input\[name="(\w+)"\]:checked$/.exec(sel);
     if (m) return radios[m[1]].find((r) => r.checked) ?? null;
@@ -101,12 +103,13 @@ function rig({ compaction = DEFAULT, attachments, put = { status: 200 }, hold = 
     if (sel === '[data-step]') return Object.values(buttons);
     if (sel === '[aria-invalid="true"]') return [...nodes.values()].filter((n) => n.attrs['aria-invalid'] === 'true');
     if (sel === '[data-step-for="set-compact-pct"]') return [buttons.compactDec, buttons.compactInc];
+    if (sel === '[data-rx]') return rxFields;
     return [];
   };
   const ctx = {
     h, icon, $, $$, state, hooks, CUSTOM, MODEL_ID, MODEL_HINT, fillModelSelect, compactPreview, JSON, Number, Promise, Object, Array, Set, Math, String,
     Event: class { constructor(type) { this.type = type; } },
-    RX: {}, toast: (msg) => toasts.push(msg), announce: (m) => announced.push(m), errText: (r) => r?.body?.message ?? 'x',
+    RX, toast: (msg) => toasts.push(msg), announce: (m) => announced.push(m), errText: (r) => r?.body?.message ?? 'x',
     fieldError: (input, msg) => { input.setAttribute('aria-invalid', msg ? 'true' : 'false'); input.errMsg = msg; }, syncRadioCards: () => {}, applyTheme: () => {}, render: () => {},
     setBusy: (b, on, label) => { b.disabled = on; b.busy = on ? label : null; },
     loadSettings: async () => ({ status: 200 }), loadModels: async () => ({ status: 200 }),
@@ -123,7 +126,7 @@ function rig({ compaction = DEFAULT, attachments, put = { status: 200 }, hold = 
   };
   runModule('settings.js', ctx, '({ hooks })');
   const r = {
-    node, buttons, calls, toasts, announced, state, form, pct, release,
+    node, buttons, calls, toasts, announced, state, form, pct, release, rxFields, RX,
     keep: node('#set-keep-days'),
     sw: node('#set-compact'),
     win: node('#set-compact-win'),
@@ -723,16 +726,30 @@ describe('Attachments: Save', () => {
     }
   });
 
-  test('(−) a bad number next to a bad Auto-compact number: both are marked, the first in the page gets the focus', async () => {
+  test('(−) a bad number next to a bad Auto-compact number: both are marked, the first in the page (Auto-compact) gets the focus', async () => {
     const s = rig();
     await s.enter();
+    focus.el = null;
     s.type('10');
     s.typeKeep('0');
     s.submit();
     await settle();
     assert.deepEqual(s.puts(), []);
     assert.equal(s.node('#set-sum-text').textContent, '2 fields need a fix before saving. Each one is marked below.');
-    assert.equal(focus.el, s.keep, 'the Attachments row comes before Auto-compact in the validation order');
+    assert.deepEqual([s.pct.attrs['aria-invalid'], s.keep.attrs['aria-invalid']], ['true', 'true'], 'both are marked');
+    assert.equal(focus.el, s.pct, 'the Auto-compact row comes before the Attachments row in the page, so it takes the focus');
+  });
+
+  test('(−) only the lower field (Attachments) is bad: it gets the focus, and the Auto-compact number is not marked', async () => {
+    const s = rig();
+    await s.enter();
+    focus.el = null;
+    s.typeKeep('0');
+    s.submit();
+    await settle();
+    assert.equal(s.node('#set-sum-text').textContent, '1 field needs a fix before saving. Each one is marked below.');
+    assert.equal(s.pct.attrs['aria-invalid'], 'false');
+    assert.equal(focus.el, s.keep);
   });
 
   test('(−) a refused save keeps the bar and the edit and shows the server\'s message', async () => {
@@ -814,4 +831,82 @@ describe('settings.js source checks for Attachments', () => {
     assert.match(src, /s\.attachments\?\.keepDays \?\? 7/);
     assert.match(src, /Choose a whole number from 1 to 30\./);
   });
+});
+
+// ---- R2 #4 (final review): Save checks the fields in the order of the page and focuses the first bad one ----------------------------
+
+// How a test makes each checked field invalid, in the order the fields appear in index.html (the 'page order' test below pins that order).
+// The Name prefix is a [data-rx] input that the rig does not have by default, so it is added here with its own rule (written out, not read back).
+const BREAK = {
+  model: (s) => {
+    const sel = s.node('#set-model-orchestrator');
+    sel.value = CUSTOM;
+    const custom = s.node('#set-model-orchestrator-custom');
+    custom.hidden = false;
+    custom.value = 'not an id!';
+    s.form.fire('input');
+    return custom;
+  },
+  compact: (s) => { s.type('10'); return s.pct; },
+  prefix: (s) => {
+    const p = s.node('#set-rc-prefix');
+    Object.assign(p, { disabled: false, value: 'Bad Name' });
+    p.attrs['data-rx'] = 'prefix';
+    s.RX.prefix = [/^(?:[a-z0-9][a-z0-9-]{0,19})?$/, 'Lowercase letters, digits and dashes.'];
+    s.rxFields.push(p);
+    s.form.fire('input');
+    return p;
+  },
+  max: (s) => {
+    const m = s.node('#set-max');
+    m.value = '9';
+    s.form.fire('input');
+    return m;
+  },
+  keep: (s) => { s.typeKeep('0'); return s.keep; },
+};
+const PAGE_ORDER = ['model', 'compact', 'prefix', 'max', 'keep'];
+
+describe('Settings: Save focuses the first invalid field in the page', () => {
+  test('(+) the checks run in the order of index.html: Models, Auto-compact, Name prefix, Agents per orchestrator, Keep attachments for', () => {
+    const at = (id) => HTML.indexOf(`id="${id}"`);
+    const ids = ['set-model-orchestrator-custom', 'set-model-scout-custom', 'set-compact-pct', 'set-rc-prefix', 'set-max', 'set-keep-days'];
+    for (const id of ids) assert.ok(at(id) > 0, `${id} is on the page`);
+    assert.deepEqual([...ids].sort((a, b) => at(a) - at(b)), ids, 'the ids appear in this order in index.html');
+  });
+
+  for (const which of PAGE_ORDER) {
+    test(`(+) only the ${which} field is bad: it is marked, nothing is sent and it gets the focus`, async () => {
+      const s = rig();
+      await s.enter();
+      focus.el = null;
+      const field = BREAK[which](s);
+      s.submit();
+      await settle();
+      assert.deepEqual(s.puts(), []);
+      assert.equal(field.attrs['aria-invalid'], 'true');
+      assert.equal(s.node('#set-sum-text').textContent, '1 field needs a fix before saving. Each one is marked below.');
+      assert.equal(focus.el, field);
+    });
+  }
+
+  for (let i = 0; i < PAGE_ORDER.length; i++) {
+    for (let j = i + 1; j < PAGE_ORDER.length; j++) {
+      const [first, second] = [PAGE_ORDER[i], PAGE_ORDER[j]];
+      test(`(−) ${first} and ${second} are both bad: both are marked, the ${first} field (higher in the page) gets the focus`, async () => {
+        const s = rig();
+        await s.enter();
+        focus.el = null;
+        // break the lower field first, so the order of the edits cannot be what decides
+        const lower = BREAK[second](s);
+        const upper = BREAK[first](s);
+        s.submit();
+        await settle();
+        assert.deepEqual(s.puts(), []);
+        assert.equal(s.node('#set-sum-text').textContent, '2 fields need a fix before saving. Each one is marked below.');
+        assert.deepEqual([upper.attrs['aria-invalid'], lower.attrs['aria-invalid']], ['true', 'true']);
+        assert.equal(focus.el, upper);
+      });
+    }
+  }
 });

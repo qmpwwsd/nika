@@ -257,7 +257,7 @@ function rawOption(rows, n) {
 
 /**
  * mirror.capture(pane, undefined, { fresh }) → { status, body: { rows, cursor, cols } }; keys.send(pane, { text?, paste?, keys? }) → { status, body };
- * paneCommand(pane) → Promise<string|null> (null = pane gone); stateOf(pane) → the live session's registry state or null;
+ * paneCommand(pane) → Promise<string|null> (null = pane gone, or dead: a remain-on-exit pane keeps its command named claude); stateOf(pane) → the live session's registry state or null;
  * vimOf(pane) → boolean: this pane's mode line has shown `-- INSERT --` before (Claude's input is in vim mode);
  * plainOf(pane) → boolean (optional, default false): a probe `i` landed as text on this pane, so its input is not in vim mode;
  * setEdit(pane, 'vim' | 'plain' | 'none') (optional): the draft route reports what it learned about the pane's edit mode.

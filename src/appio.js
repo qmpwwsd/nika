@@ -83,7 +83,7 @@ export function createPicker({ send, env, attachments }) {
     const name = pickedName(p);
     const bad = (error) => ({ ok: false, name, error });
     if (typeof p !== 'string' || p.length > PICK_PATH_MAX || p.includes('\0') || !path.isAbsolute(p)) return bad('invalid');
-    if (isSecretName(path.basename(p))) return bad('secret-file'); // a credential file's name (`isSecretName`: .env*, .envrc*, *.key, *.pem, keystores, SSH private keys): refused before the file is opened (rule 4)
+    if (isSecretName(path.basename(p))) return bad('secret-file'); // a credential file's name (`isSecretName`: .env*, .envrc*, *.key, *.pem, keystores, SSH private keys, .netrc, .git-credentials, .pgpass, .npmrc, credentials, *.ovpn): refused before the file is opened (rule 4)
     let handle;
     try {
       let st;
@@ -246,11 +246,19 @@ export function serveApp({ config, env = process.env, stdin, stdout, stderr, exe
       if (!server) return resolve(code);
       // The server stops taking requests first (a late heartbeat must not fit a window again), then every window nika holds is given back:
       // the exit code waits for both, but for the release only up to releaseMs. What a hung tmux leaves is recovered at the next start.
+      // The shell sends SIGTERM 2 s after it closes stdin, and the release may take its full 3 s (app/src-tauri/src/child.rs): with no listener
+      // left Node's default action would end the process halfway through the restore. `hold` only keeps that default away; it is dropped as
+      // soon as the release has resolved or hit its bound, so the exit after it is as it always was. SIGINT is not held: a second Ctrl-C still ends it.
+      const hold = () => {};
+      process.on('SIGTERM', hold);
       const closed = new Promise((ok) => {
         server.close(ok);
         server.closeAllConnections();
       });
-      Promise.all([closed, bounded(fit?.releaseAll())]).then(() => resolve(code));
+      Promise.all([closed, bounded(fit?.releaseAll())]).then(() => {
+        process.off('SIGTERM', hold);
+        resolve(code);
+      });
     }
 
     // fixed messages only: a JSON.parse error message quotes the input, which may hold the secret

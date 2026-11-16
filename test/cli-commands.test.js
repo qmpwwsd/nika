@@ -36,6 +36,7 @@ async function world(settings, extraEnv = {}) {
   const w = await makeWorld(settings);
   worlds.push(w);
   fs.mkdirSync(path.join(w.root, 'bin'));
+  fs.mkdirSync(path.join(w.root, 'claude', 'sessions'), { recursive: true }); // a readable session registry (an unreadable one stops Start, R1 F2)
   w.claude = path.join(w.root, 'bin', 'claude');
   fs.writeFileSync(w.claude, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
   w.cliEnv = { ...w.env, PATH: '', CLAUDE_CONFIG_DIR: path.join(w.root, 'claude'), NIKA_TMUX: TMUX, NIKA_CLAUDE: w.claude, NO_COLOR: '1', ...extraEnv };

@@ -148,21 +148,28 @@ function populate() {
   $('#set-bar').hidden = true;
 }
 
-/** Fields that fail their format check, each with its message shown. */
+/**
+ * Fields that fail their format check, each with its message shown. They are checked in the order of the page (Models, Auto-compact,
+ * Remote Control's name prefix, Panes and limits, Attachments), so `bad[0]`, the field Save focuses, is the first bad one a reader
+ * meets going down the form. test/compact-ui.test.js pins this order against index.html.
+ */
 function validate() {
   const bad = [];
-  for (const input of $$('[data-rx]', form())) {
-    if (input.disabled) continue;
-    const [re, msg] = RX[input.dataset.rx];
-    const ok = re.test(input.value.trim()) && (input.dataset.rx === 'prefix' || input.value.trim() !== '');
-    fieldError(input, ok ? '' : msg);
-    if (!ok) bad.push(input);
-  }
   for (const r of ROLES) {
     const input = roleCustom(r);
     const invalid = !input.hidden && !MODEL_ID.test(input.value.trim());
     fieldError(input, invalid ? MODEL_HINT : '');
     if (invalid) bad.push(input);
+  }
+  const okPct = !$('#set-compact').checked || compactPctOk();
+  compactError(okPct ? '' : PCT_MSG);
+  if (!okPct) bad.push($('#set-compact-pct'));
+  for (const input of $$('[data-rx]', form())) { // the Name prefix
+    if (input.disabled) continue;
+    const [re, msg] = RX[input.dataset.rx];
+    const ok = re.test(input.value.trim()) && (input.dataset.rx === 'prefix' || input.value.trim() !== '');
+    fieldError(input, ok ? '' : msg);
+    if (!ok) bad.push(input);
   }
   const max = $('#set-max');
   const n = Number(max.value);
@@ -174,9 +181,6 @@ function validate() {
   const okKeep = Number.isInteger(k) && k >= 1 && k <= 30;
   fieldError(keep, okKeep ? '' : 'Choose a whole number from 1 to 30.');
   if (!okKeep) bad.push(keep);
-  const okPct = !$('#set-compact').checked || compactPctOk();
-  compactError(okPct ? '' : PCT_MSG);
-  if (!okPct) bad.push($('#set-compact-pct'));
   return bad;
 }
 

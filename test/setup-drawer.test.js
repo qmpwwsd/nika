@@ -329,7 +329,7 @@ function rig({ narrow = false, matchMedia = true, rules = 'nika', sub = true } =
     q, drawer: q('dlg-setup'), column: q('proj-setup'), body: q('su-body'), actions: q('proj-actions'),
     host: q('proj-settings'),
     setupBtn: () => r.host.byFk(`setup:${KEY}`),
-    titles: (host) => host.all((n) => n.tag === 'h2').map((n) => n.textContent),
+    titles: (host) => host.all((n) => n.className === 'card').map((c) => c.kids[0].textContent), // the card titles: h2 in the column, h3 in the drawer
     ids: () => page.body.all((n) => 'id' in n.attrs).map((n) => n.attrs.id),
     /** A click as the page sees it: the element's own handlers, then the document-level ones (initDialogs, initMenus). */
     press(el) {

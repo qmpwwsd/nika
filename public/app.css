@@ -361,6 +361,10 @@ details.ended > summary:hover { color: var(--text); }
 .card h2 { margin: 0 0 -2px; font-size: var(--fs-h2); }
 .card h3 { margin: 0; font-size: var(--fs-h3); }
 .card h3 .help { margin-left: 4px; font-weight: 400; }
+/* in the Settings drawer (its title is the h2) the cards' headings are one element lower, with the look they have in the column: h3 titles like .card h2, h4 like .card h3 */
+#su-body .card h3 { margin: 0 0 -2px; font-size: var(--fs-h2); }
+#su-body .card h4 { margin: 0; font-size: var(--fs-h3); }
+#su-body .card h4 .help { margin-left: 4px; font-weight: 400; }
 .card p { margin: 0; }
 .card .muted { font-size: var(--fs-small); }
 .card > .rules { justify-self: start; }

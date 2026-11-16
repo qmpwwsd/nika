@@ -32,10 +32,10 @@ const PICK_STATUS = {
 // ---- the copy (section 8.6 and 6): fixed lines, picked by status and code only ------------------------------------------------------------
 
 const TOO_BIG = `Too big ${MID} max 8 MB`;
-const SECRET_LINE = "nika doesn't attach .env, key or certificate files.";
+const SECRET_LINE = "nika doesn't attach .env, key, certificate or credential files.";
 // A credential file's name (rule 4): a copy of `isSecretName` in src/attachments.js, which browser code cannot import; a test pins that the two agree.
-const SECRET_NAME = /^(?:\.env(?:\..*)?|\.envrc(?:\..*)?|id_(?:rsa|dsa|ecdsa|ed25519|ecdsa_sk|ed25519_sk)|.*\.(?:key|pem|p12|pfx|jks|keystore))$/is;
-/** True for the name of a credential file (`.env`, `.env.*`, `.envrc`, `.envrc.*`, `*.key`, `*.pem`, `*.p12`, `*.pfx`, `*.jks`, `*.keystore`, an SSH private key), any case. The tray refuses such a file before it reads a byte; the server refuses it again. */
+const SECRET_NAME = /^(?:\.env(?:\..*)?|\.envrc(?:\..*)?|id_(?:rsa|dsa|ecdsa|ed25519|ecdsa_sk|ed25519_sk)|\.netrc|\.git-credentials|\.pgpass|\.npmrc|credentials|.*\.(?:key|pem|p12|pfx|jks|keystore|ovpn))$/is;
+/** True for the name of a credential file (`.env`, `.env.*`, `.envrc`, `.envrc.*`, `*.key`, `*.pem`, `*.p12`, `*.pfx`, `*.jks`, `*.keystore`, `*.ovpn`, an SSH private key, `.netrc`, `.git-credentials`, `.pgpass`, `.npmrc`, `credentials`), any case. The tray refuses such a file before it reads a byte; the server refuses it again. */
 export const isSecretName = (name) => typeof name === 'string' && SECRET_NAME.test(name.split(/[\\/]/).pop().trimEnd());
 const FAILED = 'Upload failed';
 const SESSION_GONE = 'The session is gone.';
@@ -179,7 +179,8 @@ const wait = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
  * call(path, { method, json }) -> { status, body } (never rejects); appFetch(path, { method, keepalive }) (the pagehide delete);
  * ds = the draft sync (screen, send, submitted, beginSend, endSend); enqueueJob(run) -> Promise (the keys chain); say, announce, showProblem(msg, kind, ms),
  * clearProblem, showNotice, setGone; box() -> { value, shell }; cols(); clearBox(value) (clears the message
- * box when it still holds `value`); focusBox(). Optional: read(file) -> base64 (default: FileReader), sleep(ms).
+ * box when it still holds `value`); focusBox(). Optional: read(file) -> base64 (default: FileReader), sleep(ms), waitHold() -> Promise
+ * (resolves at once with no redraw hold, else when it ends; the attach-send request goes after it).
  * Returns { wire, enable, pending, sending, send }.
  */
 export function createAttachTray(io) {
@@ -450,6 +451,7 @@ export function createAttachTray(io) {
           const p = await io.ds.send(plan.text);
           if (!p.ok) return { blocked: p.message };
         }
+        await io.waitHold?.(); // F10: the request waits for nika's own redraw hold, as the draft sync's write does (the server decides on its own fresh capture)
         const sig = io.ds.screen()?.sig;
         if (typeof sig !== 'string' || !SIG.test(sig)) return { blocked: CANT_READ };
         return io.call(io.path('attach-send'), { method: 'POST', json: { ids, base: sig } });
@@ -544,7 +546,8 @@ export function createAttachTray(io) {
       if (!box.contains(e.target)) e.dataTransfer.dropEffect = 'none';
     });
     document.addEventListener('drop', (e) => { if (hasFiles(e)) e.preventDefault(); });
-    window.addEventListener('pagehide', () => { // files attached by mistake should not wait for the expiry
+    window.addEventListener('pagehide', (e) => { // files attached by mistake should not wait for the expiry
+      if (e?.persisted === true) return; // the page goes into the back/forward cache (a subagent link opens in this window) and may come back with its chips: the expiry covers one that never does
       for (const chip of chips) {
         if (chip.state !== 'ready') continue;
         try {

@@ -48,7 +48,7 @@ const DIALOGS = {
 };
 const SURVEY = ['● How is Claude doing this session? (optional)', '  1: Bad    2: Fine    3: Good    0: Dismiss'];
 
-/** A scripted pane + fakes. `o`: cols, insert (vim INSERT shown), vim / plain (nika's memory), spaces ('none' | 'claude'), lag (captures before a paste shows), imageStaysText, drop, text, records, lockBusy, registry (false = the caller passes no stateOf), queued (the empty box shows Claude's queued placeholder), busy (false | 'auto' | 'unknown': a running turn's rows above the box and `· esc to interrupt` in its mode line; the footer is a known mode line or not; `pane.busy` changes it mid-send). */
+/** A scripted pane + fakes. `o`: cols, insert (vim INSERT shown), vim / plain (nika's memory), spaces ('none' | 'claude'), lag (captures before a paste shows), imageStaysText, drop, text, records, lockBusy, registry (false = the caller passes no stateOf), queued (the empty box shows Claude's queued placeholder), busy (false | 'auto' | 'unknown': a running turn's rows above the box and `· esc to interrupt` in its mode line; the footer is a known mode line or not; `pane.busy` changes it mid-send), trimLead (a paste into an empty box loses its leading whitespace, as if Claude trimmed it: R1 F3). */
 function rig(o = {}) {
   const opt = { cols: 100, insert: false, vim: false, plain: false, spaces: 'none', lag: 0, imageStaysText: false, drop: false, text: '', lockBusy: false, registry: true, queued: false, busy: false, ...o };
   const pane = { text: opt.text, n: 0, prompt: false, screen: null, mode: 'prompt', state: 'idle', gap: false, cursor: undefined, pending: [], submitted: [], stateThrows: false, ghost: null, busy: opt.busy };
@@ -92,7 +92,7 @@ function rig(o = {}) {
         const apply = () => {
           const hit = [...records.values()].find((r) => r.path === body.paste.trim());
           if (hit && IMAGES.has(hit.type) && !opt.imageStaysText) pane.text += `${opt.spaces === 'claude' && pane.text.endsWith(']') ? ' ' : ''}[Image #${(pane.n += 1)}]`;
-          else pane.text += `${opt.spaces === 'claude' && pane.text !== '' && !body.paste.startsWith(' ') ? ' ' : ''}${body.paste}`;
+          else pane.text += `${opt.spaces === 'claude' && pane.text !== '' && !body.paste.startsWith(' ') ? ' ' : ''}${opt.trimLead && pane.text === '' ? body.paste.trimStart() : body.paste}`;
         };
         if (opt.lag > 0) pane.pending.push({ left: opt.lag, apply }); else apply();
       }
@@ -203,10 +203,59 @@ describe('send: the road that works', () => {
     assert.deepEqual(rg.marked, [PNG.id, PDF.id, TXT.id], 'marked in the order of the ids');
   });
 
-  test('(+) a PDF into an empty box has no leading space; the next file has one (the box is not empty any more)', async () => {
+  // R1 F3 (owner ruling 2026-11-16): every non-image path is pasted with one leading space, also into an empty box, so the box never starts with `/`
+  // (Claude reads a box that starts with `/` as a slash command). An image path is never prefixed: Claude turns it into `[Image #N]` at once.
+  test('(+) R1 F3: a PDF-only send into an empty box: the pasted text starts with a space (never with `/`), the box reads that way, and Enter goes', async () => {
+    const rg = rig();
+    const r = await go(rg, [PDF]);
+    assert.deepEqual(r, { status: 200, body: { sent: 1, images: 0 } });
+    assert.deepEqual(rg.sent, [{ paste: ` ${PDF.path}` }, { keys: ['Enter'] }]);
+    assert.ok(pastes(rg).every((p) => p.startsWith(' ') && !p.startsWith('/')), 'the first character of the paste is a space');
+    assert.deepEqual(rg.pane.submitted, [` ${PDF.path}`]);
+    assert.deepEqual(rg.marked, [PDF.id]);
+  });
+
+  test('(+) R1 F3: a PDF and then a text file into an empty box: both with a leading space (the first one no longer goes bare)', async () => {
     const rg = rig();
     await go(rg, [PDF, TXT]);
-    assert.deepEqual(rg.sent, [{ paste: PDF.path }, { paste: ` ${TXT.path}` }, { keys: ['Enter'] }]);
+    assert.deepEqual(rg.sent, [{ paste: ` ${PDF.path}` }, { paste: ` ${TXT.path}` }, { keys: ['Enter'] }]);
+    assert.deepEqual(rg.pane.submitted, [` ${PDF.path} ${TXT.path}`]);
+  });
+
+  test('(+) R1 F3: a text file into an empty box showing Claude\'s queued placeholder, a busy pane or a vim INSERT box: the same leading space', async () => {
+    for (const o of [{ queued: true }, { busy: 'auto' }, { insert: true, vim: true }, { plain: true }]) {
+      const rg = rig(o);
+      assert.equal((await go(rg, [TXT])).status, 200, JSON.stringify(o));
+      assert.deepEqual(rg.sent, [{ paste: ` ${TXT.path}` }, { keys: ['Enter'] }], JSON.stringify(o));
+    }
+  });
+
+  test('(+) R1 F3: a wrapped long path into an empty box (60 columns) keeps its leading space and reads back', async () => {
+    const long = rec('7777777777777777', 'pdf', 'pdf', `/srv/nika/${'deep-folder-name/'.repeat(5)}${KEY}`);
+    const rg = rig({ cols: 60, records: [...ALL, long] });
+    assert.equal((await go(rg, [long])).status, 200);
+    assert.deepEqual(rg.pane.submitted, [` ${long.path}`]);
+  });
+
+  test('(−) R1 F3: an image-only send into an empty box is unchanged: the bare path, no leading space', async () => {
+    const rg = rig();
+    assert.equal((await go(rg, [PNG, PNG2])).status, 200);
+    assert.deepEqual(rg.sent, [{ paste: PNG.path }, { paste: PNG2.path }, { keys: ['Enter'] }]);
+    assert.ok(pastes(rg).every((p) => p.startsWith('/')), 'an image path is pasted bare: Claude replaces it with [Image #N]');
+  });
+
+  test('(−) R1 F3: an image first, then a text file, into an empty box: the image bare, the text file with its space (as before)', async () => {
+    const rg = rig();
+    await go(rg, [PNG, TXT]);
+    assert.deepEqual(rg.sent, [{ paste: PNG.path }, { paste: ` ${TXT.path}` }, { keys: ['Enter'] }]);
+  });
+
+  test('(+) R1 F3: a draft of the user that starts with `/` (a slash command they typed) is not touched by the guard: the file goes after it as before', async () => {
+    const rg = rig({ text: '/review' });
+    const r = await go(rg, [PDF]);
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.deepEqual(rg.sent, [{ paste: ` ${PDF.path}` }, { keys: ['Enter'] }]);
+    assert.deepEqual(rg.pane.submitted, [`/review ${PDF.path}`]);
   });
 
   test('(+) two images in a row, then a text file: [Image #1][Image #2] and a space before the path', async () => {
@@ -499,6 +548,27 @@ describe('send: it stops when the screen is not what was built (T38, T51)', () =
     await stopped(rg, [PDF], 'screen-changed', 1);
   });
 
+  // R1 F3: the box was empty, so the first character of its text is nika's own paste: it must be the leading space, never `/`.
+  test('(−) R1 F3: Claude shows the pasted path without its leading space (the empty box would start with `/`): screen-changed { pasted: 1 }, no Enter, nothing cleared', async () => {
+    const rg = rig({ trimLead: true });
+    await stopped(rg, [PDF], 'screen-changed', 1);
+    assert.deepEqual(pastes(rg), [` ${PDF.path}`]);
+    assert.equal(rg.pane.text, PDF.path, 'the box is left as it is');
+  });
+
+  test('(−) R1 F3: the same for a send of several files: the first paste decides, and no second paste goes out', async () => {
+    const rg = rig({ trimLead: true });
+    await stopped(rg, [PDF, TXT], 'screen-changed', 1);
+    assert.deepEqual(pastes(rg), [` ${PDF.path}`], 'no second paste after the box began with `/`');
+  });
+
+  test('(−) R1 F3: the leading space goes between the last paste and the Enter (the read before Enter shows the box starting with `/`): no Enter', async () => {
+    const rg = rig();
+    rg.pane.onCapture = (n) => { if (n === 3) rg.pane.text = rg.pane.text.trimStart(); }; // 1 first look, 2 wait, 3 the capture before Enter
+    await stopped(rg, [PDF], 'screen-changed', 1);
+    assert.equal(rg.pane.submitted.length, 0);
+  });
+
   test('(−) the paste lands as something else (the box shows other text): screen-changed after the polls', async () => {
     const rg = rig();
     rg.pane.onSend = () => { rg.pane.text = 'something else'; };
@@ -699,7 +769,7 @@ describe('source', () => {
     assert.match(src, /^[\x00-\x7f]*$/);
     assert.deepEqual([...src.matchAll(/^import .* from '([^']+)'/gm)].map((m) => m[1]).sort(), ['./attachments.js', './draft.js', './mode.js', './session-control.js']);
     const bodies = [...src.matchAll(/\bpress\(\{ (.*) \}\)/g)].map((m) => m[1].trim());
-    assert.deepEqual(bodies, ["paste: image || expect === '' ? r.path : ` ${r.path}`", "keys: ['Enter']"], 'the only two key bodies the module builds');
+    assert.deepEqual(bodies, ['paste: image ? r.path : ` ${r.path}`', "keys: ['Enter']"], 'the only two key bodies the module builds (R1 F3: a non-image path always has its leading space)');
     const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '').replace(/\s\/\/ .*$/gm, '');
     assert.doesNotMatch(code, /\b(Escape|BSpace|BTab|C-u|send-keys|execFile|child_process)\b/);
     assert.doesNotMatch(code, /stateOf|\bstate\(/, 'W13: the send reads no registry state');

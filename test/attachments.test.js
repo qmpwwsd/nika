@@ -277,6 +277,47 @@ describe('isSecretName and the credential-file refusal (rule 4, the owner\'s "do
     assert.equal((await upload(att, PNG, 'a.png')).status, 200, 'the refused uploads did not use up the rate limit or the one-at-a-time slot');
   });
 
+  // Owner decision 2026-11-16 (final review R1 F4, R3 open question 1): also the credential files `.netrc`, `.git-credentials`, `.pgpass`, `.npmrc`,
+  // `credentials` (exact base names) and `*.ovpn` (by extension), any case. Look-alikes stay attachable.
+  const CRED_KINDS = ['.netrc', '.git-credentials', '.pgpass', '.npmrc', 'credentials', 'vpn.ovpn', '.ovpn'];
+  const CRED_CASES = ['.NETRC', '.Netrc', '.GIT-CREDENTIALS', '.PgPass', '.NPMRC', 'Credentials', 'CREDENTIALS', 'VPN.OVPN', 'Work.Ovpn', '.OVPN'];
+  const CRED_FINE = ['netrc', '.netrc.bak', 'credentials.txt', 'my-credentials', 'npmrc', '.pgpass2', 'git-credentials', 'credentials.json', 'credentials.md', 'mycredentials', 'netrc.txt', 'a.netrc',
+    '.netrcx', 'x.npmrc', '.npmrc.bak', 'npmrc.txt', 'pgpass', '.pgpass.bak', '.git-credentials.bak', 'git-credentials.txt', 'ovpn', 'vpn.ovpn.txt', 'x.ovpnx', 'vpn.ovpn2', 'ovpn.md', 'my ovpn', 'dir.ovpn/readme.md', 'dir/credentials/readme.md'];
+
+  test('(+) owner 2026-11-16: .netrc, .git-credentials, .pgpass, .npmrc, credentials and *.ovpn are secret, in any case, as the last part of a path (/ and \\), with a trailing space', () => {
+    for (const kind of [...CRED_KINDS, ...CRED_CASES]) for (const name of variants(kind)) assert.equal(isSecretName(name), true, JSON.stringify(name));
+    for (const name of ['/srv/x/.aws/credentials', '~/.aws/Credentials', 'C:\\Users\\x\\.aws\\credentials', '/srv/x/.netrc', '/srv/x/.git-credentials', '/srv/x/.pgpass', '/srv/x/.npmrc', '/srv/vpn/office.OVPN']) {
+      assert.equal(isSecretName(name), true, JSON.stringify(name));
+    }
+  });
+
+  test('(−) owner 2026-11-16: the near names are not secret: netrc, .netrc.bak, credentials.txt, my-credentials, npmrc, .pgpass2, git-credentials and the rest of the look-alikes', () => {
+    for (const name of CRED_FINE) assert.equal(isSecretName(name), false, JSON.stringify(name));
+  });
+
+  test('(−) owner 2026-11-16: checkUploadBody: every new credential name (any case, with a path in front) is 400 secret-file with a good body; the near names pass', () => {
+    for (const kind of [...CRED_KINDS, ...CRED_CASES]) {
+      for (const name of variants(kind)) {
+        const r = checkUploadBody({ name, data: 'QUJD' });
+        assert.deepEqual([r?.status, r?.body.error], [400, 'secret-file'], JSON.stringify(name));
+      }
+    }
+    for (const name of CRED_FINE) assert.equal(checkUploadBody({ name, data: 'QUJD' }), null, JSON.stringify(name));
+  });
+
+  test('(−) owner 2026-11-16: save: a new credential name is refused with nothing written, logged or counted; the near names are stored', async () => {
+    const { att, env, logs } = make();
+    for (const name of [...CRED_KINDS, ...CRED_CASES, '/srv/x/.aws/credentials']) {
+      const r = await att.save({ pane: PANE, key: KEY, name, data: b64(Buffer.from('synthetic\n')) });
+      assert.deepEqual([r.status, r.body.error], [400, 'secret-file'], name);
+    }
+    assert.equal(fs.existsSync(stateDir(env)), false);
+    assert.deepEqual(logs, []);
+    for (const name of ['netrc', '.netrc.bak', 'credentials.txt', 'my-credentials', 'npmrc', '.pgpass2', 'git-credentials']) {
+      assert.equal((await att.save({ pane: PANE, key: KEY, name, data: b64(Buffer.from('synthetic\n')) })).status, 200, name);
+    }
+  });
+
   test('(+) save: the same bytes under an ordinary name are stored', async () => {
     const { att } = make();
     assert.equal((await att.save({ pane: PANE, key: KEY, name: 'notes.txt', data: b64(Buffer.from('TOKEN=synthetic\n')) })).status, 200);
@@ -1137,6 +1178,44 @@ describe('review fixes (W2-T1, round 1)', () => {
     const b = await saved(att, PNG);
     assert.equal(await att.remove(PANE, b.id), true);
     assert.deepEqual(leftovers(env), []);
+  });
+
+  // R3 F4 (ruling: code fix, no rule change): the empty <key> folders go through src/fwrite.js (removeOwnDir), like every other removal.
+  test('(+) R3 F4: an emptied key folder is removed through removeOwnDir, and src/attachments.js calls no fs.rmdir itself', () => {
+    const src = fs.readFileSync(new URL('../src/attachments.js', import.meta.url), 'utf8');
+    assert.match(src, /import \{[^}]*\bremoveOwnDir\b[^}]*\} from '\.\/fwrite\.js'/);
+    assert.match(src, /removeOwnDir\(dir\)/);
+    assert.doesNotMatch(src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '').replace(/\s\/\/ .*$/gm, ''), /\brmdir\b/, 'no direct rmdir: the folder goes through fwrite');
+  });
+
+  test('(−) R3 F4: a key folder swapped for a symlink to an EMPTY folder after it was listed is refused: the link stays, its target stays, the log has the code only', async () => {
+    const { att, env, logs } = make();
+    fs.mkdirSync(keyDir(env), { recursive: true, mode: 0o700 }); // an empty key folder
+    const victim = path.join(root, 'victim-r3f4');
+    fs.mkdirSync(victim);
+    const real = fsp.readdir;
+    mock.method(fsp, 'readdir', async (p, ...rest) => {
+      const names = await real(p, ...rest);
+      if (String(p) === keyDir(env)) { // the listing of the key folder is done; the swap lands before the folders are tidied
+        fs.rmdirSync(keyDir(env));
+        fs.symlinkSync(victim, keyDir(env));
+      }
+      return names;
+    });
+    assert.deepEqual(await att.prune(), { removed: 0, total: 0 });
+    mock.restoreAll();
+    assert.equal(fs.lstatSync(keyDir(env)).isSymbolicLink(), true, 'the link was not removed');
+    assert.equal(fs.existsSync(victim), true, 'the folder behind the link was not removed');
+    assert.deepEqual(logs, ['nika: attachments: ESYMLINK']);
+  });
+
+  test('(+) R3 F4: an empty key folder and a stale one are tidied away by a save into another key; a folder that holds a young file stays', async () => {
+    const { att, env, clock } = make();
+    fs.mkdirSync(keyDir(env, KEY2), { recursive: true, mode: 0o700 });
+    const young = plant(env, clock, { key: 'c1c2c3c4c5c6c7c8', age: HOUR });
+    assert.equal((await upload(att, PNG)).status, 200);
+    assert.equal(fs.existsSync(keyDir(env, KEY2)), false, 'the empty folder is gone');
+    assert.ok(fs.existsSync(young), 'a folder with a young file stays');
   });
 
   test('(+) M4: src/attachments.js is ASCII; this file has non-ASCII only in the minus of test titles, and says so', () => {

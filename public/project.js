@@ -570,7 +570,7 @@ function placeSetup(p, g) {
   const from = $(narrow ? '#proj-setup' : '#su-body'); // the home that is emptied
   const fk = focusKey(from); // not null: the window crossed 1030 px under a focused card control (in any other render the focus is in the new home, which swap keeps)
   $('#su-d').textContent = p.name;
-  swap($(narrow ? '#su-body' : '#proj-setup'), setupCards(p, g));
+  swap($(narrow ? '#su-body' : '#proj-setup'), setupCards(p, g, narrow));
   swap(from, []);
   if (fk !== null) landFocus(fk, g.key);
 }
@@ -703,7 +703,15 @@ async function saveAgentItem(p, field, value) {
   toast(saved === null ? `${it.label} for ${name} now follows Settings: ${it.word(settingsValue(state.settings ?? {}, field))}.${tail}` : `${it.label} saved for ${name}: ${it.word(saved)}.${tail}`);
 }
 
-function setupCards(p, g) {
+/**
+ * The three cards. `inDrawer` is true when they are put in the Settings drawer, whose own title is an h2: the card titles are then h3 and
+ * the Plugins and Models headings inside the Project setup card h4, so the heading list reads Settings > Rules / Project setup / New
+ * agents. In the column they are h2 and h3 as always. They are real heading elements (ARIA in HTML advises against aria-level on an h2);
+ * app.css gives the drawer's h3 / h4 the look the column's h2 / h3 have (`#su-body .card h3`, `#su-body .card h4`).
+ */
+function setupCards(p, g, inDrawer = false) {
+  const title = inDrawer ? 'h3' : 'h2'; // a card's title
+  const part = inDrawer ? 'h4' : 'h3'; // a heading inside the Project setup card
   const rs = p.rules?.state ?? 'none';
   const picked = sortIds(state.settings?.perProject?.[p.key]?.plugins ?? []);
   const lim = limitsOf(g, null);
@@ -721,7 +729,7 @@ function setupCards(p, g) {
   };
   return [
     h('div', { class: 'card' },
-      h('h2', { text: 'Rules' }), rulesEl(rs), h('p', { text: RULE_TEXT[rs] ?? RULE_TEXT.none }),
+      h(title, { text: 'Rules' }), rulesEl(rs), h('p', { text: RULE_TEXT[rs] ?? RULE_TEXT.none }),
       p.rules && !p.rules.settingsIgnored ? h('p', { class: 'muted', text: '.claude/settings.local.json is not in .gitignore.' }) : null,
       p.rules?.git === false ? h('p', { class: 'muted', text: 'No .git folder here: this is not a git repository.' }) : null,
       h('div', null, h('button', {
@@ -729,23 +737,23 @@ function setupCards(p, g) {
         onclick: focusing(() => openRules(p)), text: rs === 'nika' ? 'Preview rules' : rs === 'none' ? 'Set up rules…' : 'Update rules…',
       }))),
     h('div', { class: 'card' },
-      h('h2', { text: 'Project setup' }),
+      h(title, { text: 'Project setup' }),
       h('p', { class: 'help' }, 'Applies to this project only. Defaults are in ', h('a', { href: '#settings', text: 'Settings' }), '.'),
-      h('h3', null, picked.length ? ['Plugins ', h('span', { class: 'help', text: `${picked.length} on` })] : 'Plugins'),
+      h(part, null, picked.length ? ['Plugins ', h('span', { class: 'help', text: `${picked.length} on` })] : 'Plugins'),
       picked.length
         ? h('ul', { class: 'chips', 'data-fk': 'setup-chips', 'aria-label': 'Plugins turned on' }, picked.slice(0, CHIPS_MAX).map(chip))
         : h('p', { class: 'muted', text: 'No plugins chosen. Agents use only what the project already enables.' }),
       picked.length > CHIPS_MAX ? h('p', { class: 'help', 'data-fk': 'setup-more', text: `+${picked.length - CHIPS_MAX} more` }) : null,
       h('p', { class: 'muted', text: 'Written into .claude/settings.local.json when you apply rules.' }),
       h('div', null, h('button', { type: 'button', class: 'btn', 'aria-haspopup': 'dialog', 'data-fk': 'choose-plugins', onclick: focusing(() => openPlugins(p)), text: 'Choose plugins…' })),
-      h('h3', null, set.length ? ['Models ', h('span', { class: 'help', text: `${set.length} set here` })] : 'Models'),
+      h(part, null, set.length ? ['Models ', h('span', { class: 'help', text: `${set.length} set here` })] : 'Models'),
       !s ? h('p', { class: 'muted', text: 'Not loaded yet.' })
         : set.length ? h('dl', { class: 'kv', 'data-fk': 'setup-models' }, set.flatMap((r) => modelRow(r, own[r])))
           : h('p', { class: 'muted', text: 'All roles use the defaults from Settings.' }),
       h('p', { class: 'muted', text: "Used when nika starts this project's orchestrator or spawns its agents." }),
       h('div', null, h('button', { type: 'button', class: 'btn', 'aria-haspopup': 'dialog', 'data-fk': 'choose-models', onclick: focusing(() => openModels(p)), text: 'Choose models…' }))),
     h('div', { class: 'card' },
-      h('h2', { text: 'New agents' }),
+      h(title, { text: 'New agents' }),
       h('dl', { class: 'kv' },
         h('dt', { text: 'Permission mode' }), h('dd', null, s ? agentItemEl(p, 'permissionMode', s, mine) : '–'),
         h('dt', { text: 'Pane' }), h('dd', null, s ? agentItemEl(p, 'panePlacement', s, mine) : '–'),

@@ -94,7 +94,8 @@ async function listTemplates(dir) {
  * @param {object} o
  * @param {string} o.secret  the 43-char secret received on stdin
  * @param {object} o.ctx     { env, exec, tmuxBin, claudeBin, nikaArgv, claudeDir, now, started, fit (added here: the fit controller, which spawn
- *                           and appio.js use; src/fit.js), findSession(id) → { agent, group } | null
+ *                           and appio.js use; src/fit.js), registryReadable() → Promise<boolean> (added here: the session registry was read, which
+ *                           Start asks before it reads a saved orchestrator; src/orchestrate.js), findSession(id) → { agent, group } | null
  *                           (src/model.js: one session by id whatever its age, live state included; throws EINDEX when the index is unreadable),
  *                           findSessions(ids) → Map id → { agent, group } (src/model.js: ended sessions by id, ONE transcript-index walk for
  *                           all of them, no ps and no tmux; throws EINDEX) }; handed to the modules as is
@@ -192,16 +193,28 @@ export function createAppApi({ secret, ctx, deps }) {
     return (await loadEligibility()).live.get(id) ?? null;
   };
 
+  /**
+   * Whether the session registry could be read (the snapshot's `sources.registry` is 'ok'), from a fresh snapshot: Start acts on the answer.
+   * Without the registry no session reads live, so a live saved orchestrator would read ended and Start would resume it in a second claude.
+   * A snapshot that could not be taken, or has no `sources` at all, is not readable. startOrchestrator asks it through ctx (src/orchestrate.js).
+   */
+  ctx.registryReadable = async () => {
+    eligibility = null;
+    const e = await loadEligibility().catch(() => null);
+    return e?.snapshot?.sources?.registry === 'ok';
+  };
+
   // One controller for the whole server: its per-pane lock covers mode, answer, command and End together.
   const control = (deps.createSessionControl ?? createSessionControl)({
     mirror: deps.mirror,
     keys: deps.keys,
-    // a failed listing throws: it proves nothing about the pane (null would read as "gone")
+    // a failed listing throws: it proves nothing about the pane (null would read as "gone"). A dead pane is gone too (0.5): with remain-on-exit
+    // tmux keeps it listed after /exit with its command still named claude (from the pane's argv), so only pane_dead says Claude ended
     paneCommand: async (id) => {
       const { panes, error } = await deps.listPanes();
       if (error) throw new Error(error);
       const pane = panes.get(id);
-      return pane ? String(pane.command ?? '').trim() : null;
+      return pane && pane.dead !== true ? String(pane.command ?? '').trim() : null;
     },
     stateOf: registryState,
     vimOf: (id) => vim.get(id) === true,
@@ -265,15 +278,17 @@ export function createAppApi({ secret, ctx, deps }) {
    * One snapshot and at most ONE transcript-index lookup for the whole request, whatever the number of projects (the page polls this every
    * 3 s): a pick the cached 24 h snapshot (shared with /modes) holds costs nothing, and a live session is always in it; the ones it
    * misses are ended or gone, and findSessions settles all of them in one walk. Each is read with pickState, the reading Start uses
-   * (a session of another project reads gone, T47). null = unknown (no snapshot, or the index could not be read): the page keeps what it had.
+   * (a session of another project reads gone, T47). null = unknown (no snapshot, the session registry could not be read, or the index could not be read): the page keeps what it had.
    */
   async function orchestrators(config, projects) {
     const picks = projects.map((p) => [p, config.perProject[p.key]?.orchestratorSessionId]).filter(([, id]) => id);
     const out = new Map();
     if (!picks.length) return out;
     const snapshot = (await loadEligibility().catch(() => null))?.snapshot;
-    if (!snapshot) {
-      for (const [p] of picks) out.set(p.key, null); // without it a live session could not be told from an ended one
+    // without the snapshot, or with a registry that could not be read (0.5; the sessions folder is unreadable), a live session could not be told
+    // from an ended one: every pick is unknown, whatever else the snapshot holds, and the index is not asked
+    if (!snapshot || snapshot.sources?.registry !== 'ok') {
+      for (const [p] of picks) out.set(p.key, null);
       return out;
     }
     const known = new Map();

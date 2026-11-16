@@ -5,6 +5,11 @@ import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import os from 'node:os';
+import { Readable, Writable } from 'node:stream';
+import { main } from '../src/cli.js';
+import { getOrchestrator, setOrchestrator } from '../src/store.js';
+import { fakeTmux, makeWorld, TMUX } from './tmux-fake.js';
 import { makeFixture, cleanup } from './helpers.js';
 
 const BIN = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'nika');
@@ -407,5 +412,77 @@ describe('renderStatus: folders not added to nika (0.4.0)', async () => {
     const out = renderStatus(snapshot, { ended: true, full: false }, plainPaint, isAdded);
     for (const l of ['acme-api', 'web-shop', 'scratch-1', 'scratch-2']) assert.match(out, new RegExp(`^${l}\\s`, 'm'));
     assert.doesNotMatch(out, /not added to nika/);
+  });
+});
+
+// --- R1 F2 (final review): `nika orchestrate` with a saved orchestrator asks the same question as the app tier -----------------------------
+// The session registry reads live sessions; when it cannot be read a live pick would read "ended" and be resumed in a second claude.
+
+describe('orchestrate: the session registry (R1 F2, the CLI)', () => {
+  const PICK = '11111111-1111-4111-8111-111111111111';
+  const worlds = [];
+  after(() => worlds.forEach((w) => w.cleanup()));
+
+  /** A temp world with a fake claude, a transcript for PICK (not running), and an in-memory tmux with no session. `sessions`: what to make of <claude dir>/sessions. */
+  async function rig({ sessions, pick = PICK } = {}) {
+    const w = await makeWorld();
+    worlds.push(w);
+    fs.mkdirSync(path.join(w.root, 'bin'));
+    const claude = path.join(w.root, 'bin', 'claude');
+    fs.writeFileSync(claude, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    const claudeDir = path.join(w.root, 'claude');
+    const proj = path.join(claudeDir, 'projects', '-synthetic-project');
+    fs.mkdirSync(proj, { recursive: true });
+    fs.writeFileSync(path.join(proj, `${PICK}.jsonl`), `${JSON.stringify({ type: 'user', cwd: w.project.dir, sessionId: PICK, timestamp: '2026-11-01T10:00:00.000Z', message: { role: 'user', content: 'synthetic' } })}\n`);
+    if (sessions === 'dir') fs.mkdirSync(path.join(claudeDir, 'sessions'));
+    if (sessions === 'file') fs.writeFileSync(path.join(claudeDir, 'sessions'), 'not a folder');
+    if (pick) await setOrchestrator(w.project.key, pick, w.env);
+    const tmux = fakeTmux({ panes: [] });
+    // tmux answers from the in-memory server; ps and anything else fails like a missing binary (nika then falls back to signal 0)
+    const exec = async (cmd, args) => {
+      if (cmd === TMUX) return tmux(cmd, args);
+      throw Object.assign(new Error(`spawn ${cmd} ENOENT`), { code: 'ENOENT' });
+    };
+    const env = { ...w.env, PATH: '', CLAUDE_CONFIG_DIR: claudeDir, NIKA_TMUX: TMUX, NIKA_CLAUDE: claude, NO_COLOR: '1' };
+    const run = async () => {
+      const sink = () => Object.assign(new Writable({ write(chunk, enc, cb) { this.text += chunk; cb(); } }), { text: '', isTTY: false });
+      const out = sink();
+      const err = sink();
+      const code = await main(['orchestrate', '--detached'], env, { out, err, in: Object.assign(Readable.from([]), { isTTY: false }), cwd: w.project.dir, home: os.tmpdir(), brewApps: [], sleep: async () => {}, exec });
+      return { code, out: out.text, err: err.text };
+    };
+    const started = () => tmux.of('new-session').length + tmux.of('new-window').length;
+    return { w, tmux, run, started, pick: () => getOrchestrator(w.project.key, w.env) };
+  }
+
+  test('(−) the sessions folder cannot be read (missing, or not a folder): index_unavailable, exit 1 (the 5xx exit), nothing started, the pick stays', async () => {
+    for (const sessions of ['none', 'file']) {
+      const r = await rig({ sessions });
+      const res = await r.run();
+      assert.equal(res.code, 1, `${sessions}: ${res.err}`);
+      assert.match(res.err, /index_unavailable: nika couldn't check the saved orchestrator, so nothing was started/);
+      assert.equal(res.out, '');
+      assert.equal(r.started(), 0, `${sessions}: no pane, no claude`);
+      assert.deepEqual(r.tmux.calls, [], `${sessions}: no tmux command at all`);
+      assert.equal(await r.pick(), PICK);
+    }
+  });
+
+  test('(+) the sessions folder reads fine (empty: the pick is not running): the ended pick is resumed with claude --resume, exit 0', async () => {
+    const r = await rig({ sessions: 'dir' });
+    const res = await r.run();
+    assert.equal(res.code, 0, res.err);
+    assert.match(res.out, /started a new orchestrator/);
+    assert.equal(r.started(), 1);
+    const argv = r.tmux.of('new-session')[0];
+    assert.deepEqual(argv.slice(argv.indexOf('--') + 2, argv.indexOf('--') + 4), ['--resume', PICK]);
+    assert.equal(await r.pick(), PICK);
+  });
+
+  test('(+) with no saved pick the registry does not matter: a fresh start runs although the sessions folder cannot be read', async () => {
+    const r = await rig({ sessions: 'none', pick: null });
+    const res = await r.run();
+    assert.equal(res.code, 0, res.err);
+    assert.equal(r.started(), 1);
   });
 });

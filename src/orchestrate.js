@@ -209,7 +209,9 @@ async function findOrchestratorPane(ctx, session, key) {
  * and `cleared: 'gone'` in the answer. A fresh start saves its own session id as the pick.
  * @param {string} projectKey registered PROJECT_KEY
  * @param {object} ctx { env, exec, tmuxBin, claudeBin, started: Map<paneId, { key, name, sessionId, role, mode }>,
- *                       findSession(id) → { agent, group } | null (src/model.js; needed only while a pick is saved) }
+ *                       findSession(id) → { agent, group } | null (src/model.js; needed only while a pick is saved),
+ *                       registryReadable?() → Promise<boolean> (the app tier: the session registry was read; asked only while a pick is saved,
+ *                       and anything but true is 503 index_unavailable before the pick is looked up) }
  * @returns {Promise<{ status: number, body: object }>} 200 { pane, session, sessionId, created, cleared? }
  */
 export async function startOrchestrator(projectKey, ctx) {
@@ -227,6 +229,13 @@ export async function startOrchestrator(projectKey, ctx) {
   let saved = null;
   if (pick) {
     if (typeof ctx.findSession !== 'function') return fail(500, 'internal', 'session lookup unavailable');
+    // The pick reads live only through the session registry. When that cannot be read (0.5), a live pick would read "ended" and be resumed
+    // in a second claude, so nothing is read or started: the same 503 as an unreadable transcript index. ctx.registryReadable() is the app
+    // tier's (src/api-app.js); a ctx without it (the CLI) is not asked. A hook that fails or answers anything but true is "not readable".
+    if (typeof ctx.registryReadable === 'function') {
+      const readable = await Promise.resolve().then(() => ctx.registryReadable()).catch(() => false);
+      if (readable !== true) return fail(503, 'index_unavailable', "nika couldn't check the saved orchestrator, so nothing was started");
+    }
     try {
       saved = await ctx.findSession(pick);
     } catch {

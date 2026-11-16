@@ -12,7 +12,7 @@ import { loadConfig, effectiveAgents, effectiveModels } from './store.js';
 import { reportsDir } from './paths.js';
 import { ensureDir, writeAtomic } from './fwrite.js';
 import { openRegular, readAt, readHead } from './fsafe.js';
-import { listPanes } from './collect/tmux.js';
+import { listPanes, paneDead } from './collect/tmux.js';
 import { clean } from './text.js';
 import { NO_TMUX_SERVER } from './tmuxerr.js';
 import { compactLaunch, compactEnv, PCT_ENV } from './compact.js';
@@ -93,14 +93,18 @@ function serial(key, fn) {
 
 /**
  * `tmux list-panes -a` in AGENT_LIST form → Map<paneId, tags>. Every tag is kept as tmux wrote it: only an exact match is trusted later.
- * A dead pane (remain-on-exit) is left out, so it is never live (the caps, the duplicate-name check) and never a parent.
+ * `pane_dead` is read with paneDead (src/collect/tmux.js), the one rule of every listing: a pane that is dead (remain-on-exit; exactly `1`) is
+ * left out, so it is never live (the caps, the duplicate-name check) and never a parent. A value that is neither `0` nor `1` is unknown (0.5, owner
+ * ruling): the row stays and counts as live, the cautious way for the caps and the duplicate-name check, and carries `unknown: true`, so
+ * resolveParent never takes it for a parent.
  */
 async function readTags(ctx) {
   const { stdout } = await tmux(ctx, 'list-panes', '-a', '-F', AGENT_LIST);
   const tags = new Map();
   for (const line of String(stdout).split('\n')) {
     const [pane, dead = '', role = '', agent = '', depth = '', parent = '', session = '', ...window] = line.split('\t');
-    if (PANE_ID.test(pane ?? '') && dead.trim() !== '1') tags.set(pane, { role, agent, depth, parent, session, window: window.join('\t') });
+    const gone = paneDead(dead);
+    if (PANE_ID.test(pane ?? '') && gone !== true) tags.set(pane, { role, agent, depth, parent, session, window: window.join('\t'), unknown: gone === null });
   }
   return tags;
 }
@@ -159,9 +163,13 @@ function resolveParent(v, project, tags, ctx) {
   const t = v.parent ? tags.get(v.parent) : undefined;
   if (v.parent && !t && !ctx.lenientParent) return { failure: fail(404, 'not_found', 'The parent session is no longer running, so nothing was started.') };
   const kind = t && t.role !== '' ? kindOf(t, project) : null;
+  const who = () => clean(parseAgentTag(t.agent)?.[1], 48) ?? v.parent;
   if (t && t.role !== '' && !kind) {
-    const who = clean(parseAgentTag(t.agent)?.[1], 48) ?? v.parent;
-    return { failure: fail(409, 'depth', `${who} can't start agents for this project: only this project's orchestrator and its sub-orchestrators can. Nothing was started.`) };
+    return { failure: fail(409, 'depth', `${who()} can't start agents for this project: only this project's orchestrator and its sub-orchestrators can. Nothing was started.`) };
+  }
+  // fail closed: a pane whose pane_dead tmux did not print as 0 or 1 may be dead, so it is never accepted as a parent (it still counts as live below)
+  if (kind && t.unknown) {
+    return { failure: fail(409, 'depth', `${who()} can't start agents right now: tmux did not say whether that session still runs. Nothing was started.`) };
   }
   const depth = kind === 'main' ? 2 : kind === 'sub' ? 3 : 1;
   if (v.role === 'orchestrator' && depth !== 2) return { failure: fail(409, 'depth', `That session can't start a sub-orchestrator. Only the main orchestrator can: ${LEVELS}`) };

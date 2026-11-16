@@ -31,7 +31,7 @@ const hello = (secret = SECRET, extra = {}) => `${JSON.stringify({ type: 'hello'
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** serveApp on PassThrough streams with its own temp config/state dirs. */
-function harness({ tty = false, helloMs = 2000, intervalMs = 60_000, secret = SECRET, appCopy, exec = fakeExec(), releaseMs, attachments, state } = {}) {
+function harness({ tty = false, helloMs = 2000, intervalMs = 60_000, secret = SECRET, appCopy, exec = fakeExec(), releaseMs, attachments, state, config = fx.config } = {}) {
   counter += 1;
   const base = path.join(ROOT, `h${counter}`);
   fs.mkdirSync(path.join(base, 'cfg'), { recursive: true });
@@ -53,7 +53,7 @@ function harness({ tty = false, helloMs = 2000, intervalMs = 60_000, secret = SE
   stderr.on('data', (c) => { errText += c; });
   // the app copy never looks at the real ~/Applications or the real Homebrew folders here
   const copy = { home: path.join(base, 'home'), brewApps: [], ...appCopy };
-  const done = serveApp({ config: fx.config, env, stdin, stdout, stderr, exec, now: () => NOW, intervalMs, helloMs, appCopy: copy, ...(releaseMs ? { releaseMs } : {}), ...(attachments ? { attachments } : {}) });
+  const done = serveApp({ config, env, stdin, stdout, stderr, exec, now: () => NOW, intervalMs, helloMs, appCopy: copy, ...(releaseMs ? { releaseMs } : {}), ...(attachments ? { attachments } : {}) });
   const h = {
     env, stdin, secret, base, done,
     lines,
@@ -740,10 +740,10 @@ describe('file chooser', () => {
   });
 
   // F3 (owner answer 2026-11-15): .envrc, the keystores and the SSH private keys are refused the same way. The picked path is absolute, so a directory is always in front.
-  test('(−) F3: a picked .envrc, *.p12, *.pfx, *.jks, *.keystore or SSH private key (any case) is refused as secret-file before it is opened: nothing stored, no path in the entry', async () => {
+  test('(−) F3: a picked .envrc, *.p12, *.pfx, *.jks, *.keystore, SSH private key or .netrc (any case) is refused as secret-file before it is opened: nothing stored, no path in the entry', async () => {
     const r = rig();
     const good = r.put('good.md', 'fine\n');
-    const kinds = ['.envrc', '.envrc.dev', '.envrc.bak', '.envrc.', 'cert.p12', 'cert.pfx', 'store.jks', 'app.keystore', 'id_rsa', 'id_dsa', 'id_ecdsa', 'id_ed25519', 'id_ecdsa_sk', 'id_ed25519_sk'];
+    const kinds = ['.envrc', '.envrc.dev', '.envrc.bak', '.envrc.', 'cert.p12', 'cert.pfx', 'store.jks', 'app.keystore', 'id_rsa', 'id_dsa', 'id_ecdsa', 'id_ed25519', 'id_ecdsa_sk', 'id_ed25519_sk', '.netrc']; // '.netrc': G2's list (src/attachments.js), pinned here for the chooser
     for (const kind of kinds) { // one pick per kind (the store admits 30 saves a minute): three spellings, then one good file
       const names = [kind, kind.toUpperCase(), [...kind].map((c, i) => (i % 2 ? c.toUpperCase() : c)).join('')];
       const { answer } = await r.pick([...names.map((n) => r.put(n, 'synthetic\n')), good], { room: 4 });
@@ -780,11 +780,11 @@ describe('file chooser', () => {
     assert.deepEqual(answer.files.map((f) => f.ok), [true, true, true, true]);
   });
 
-  test('(+) F3: a public key and the look-alikes of the new kinds are picked as before: id_rsa.pub, id_ed25519.pub, id_rsa_backup.txt, my.keystore.md, notes.envrc.txt, p12.txt', async () => {
+  test('(+) F3: a public key and the look-alikes of the new kinds are picked as before: id_rsa.pub, id_ed25519.pub, id_rsa_backup.txt, my.keystore.md, notes.envrc.txt, p12.txt, netrc, .netrc.bak', async () => {
     const r = rig();
-    const paths = ['id_rsa.pub', 'id_ed25519.pub', 'id_rsa_backup.txt', 'my.keystore.md', 'notes.envrc.txt', 'p12.txt'].map((n) => r.put(n, `${n}\n`));
-    const { answer } = await r.pick(paths, { room: 6 });
-    assert.deepEqual(answer.files.map((f) => f.ok), [true, true, true, true, true, true]);
+    const paths = ['id_rsa.pub', 'id_ed25519.pub', 'id_rsa_backup.txt', 'my.keystore.md', 'notes.envrc.txt', 'p12.txt', 'netrc', '.netrc.bak'].map((n) => r.put(n, `${n}\n`));
+    const { answer } = await r.pick(paths, { room: 8 });
+    assert.deepEqual(answer.files.map((f) => f.ok), [true, true, true, true, true, true, true, true]);
   });
 
   test('(−) the name decides before any open: a FIFO or a dangling link named .env or *.key answers secret-file, not unreadable', async () => {
@@ -1183,6 +1183,195 @@ describe('the fit: recover() at start, releaseAll() at finish (design W7 section
     gate?.();
     assert.equal(await h.done, 0);
     assert.equal(h.lines().some((l) => l.type === 'ready'), false);
+  });
+});
+
+// --- quit (R3 F1, final review): the shell sends SIGTERM 2 s after it closes stdin (app/src-tauri/src/child.rs), and the fit's release may
+// take 3 s (RELEASE_ALL_MS). finish() has to keep a SIGTERM listener until the release is done, or the default action ends the process
+// halfway through the restore and the window stays zoomed or at a manual size until the next start.
+
+describe('quit: a SIGTERM during the fit release does not end the process (R3 F1)', () => {
+  test('(+) finish() holds a SIGTERM listener while the release runs and drops it when the release is done; (−) without a release nothing is held', async () => {
+    const tmux = fitTmux(fakeExec());
+    const before = process.listenerCount('SIGTERM');
+    const h = harness({ exec: tmux });
+    assert.equal(process.listenerCount('SIGTERM'), before + 1, 'the running server listens (stop)');
+    await h.up();
+    assert.equal((await h.call('PUT', '/api/app/pane/%256/fit', FIT_PUT)).status, 200);
+    let gate;
+    tmux.st.gate = (name) => (name === 'size' ? new Promise((res) => { gate = res; }) : undefined);
+    const fitted = tmux.st.calls.length;
+    h.stdin.end();
+    await sleep(120);
+    assert.ok(tmux.st.calls.length > fitted && tmux.st.calls.at(-1) === 'size', `the restore is held at its resize: ${tmux.st.calls.slice(fitted)}`);
+    assert.equal(process.listenerCount('SIGTERM'), before + 1, 'one listener is held during the release, so Node does not take its default action');
+    gate();
+    assert.equal(await h.done, 0);
+    assert.equal(process.listenerCount('SIGTERM'), before, 'dropped once the release is done: nothing leaks');
+    // a quit with nothing to release, and a start that never got to run, hold nothing either
+    const quiet = harness({ exec: fitTmux(fakeExec()) });
+    await quiet.up();
+    await quiet.close();
+    assert.equal(process.listenerCount('SIGTERM'), before);
+    const refused = harness({ tty: true });
+    assert.equal(await refused.done, 2);
+    assert.equal(process.listenerCount('SIGTERM'), before);
+  });
+
+  test('(−) a hung release is still bounded by releaseMs, and the listener is gone after the bound', async () => {
+    const tmux = fitTmux(fakeExec());
+    const before = process.listenerCount('SIGTERM');
+    const h = harness({ exec: tmux, releaseMs: 150 });
+    await h.up();
+    assert.equal((await h.call('PUT', '/api/app/pane/%256/fit', FIT_PUT)).status, 200);
+    tmux.st.gate = (name) => (name === 'list' ? new Promise(() => {}) : undefined);
+    h.stdin.end();
+    assert.equal(await h.done, 0);
+    assert.equal(process.listenerCount('SIGTERM'), before);
+  });
+
+  /**
+   * A real process: serveApp on its own stdio with the same synthetic tmux as the harness (fitTmux, shipped to the child as source), whose
+   * `resize-window` takes `slowMs` once arm() has been called (after the window is fitted, so only the restore is slow). It writes where
+   * the window ended up when it exits on its own.
+   */
+  async function realProcess({ slowMs }) {
+    const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
+    const base = path.join(ROOT, `sigterm-${counter += 1}`);
+    fs.mkdirSync(base, { recursive: true });
+    const outFile = path.join(base, 'final.json');
+    const armFile = path.join(base, 'armed'); // the restore step is slow once this file exists (after the window was fitted)
+    const script = `
+      import fs from 'node:fs';
+      import { serveApp } from ${JSON.stringify(path.join(root, 'src', 'appio.js'))};
+      import { fakeExec } from ${JSON.stringify(path.join(root, 'test', 'helpers.js'))};
+      const FIT_FORMAT = ${JSON.stringify(FIT_FORMAT)};
+      ${fitTmux.toString()}
+      const tmux = fitTmux(fakeExec(), {});
+      tmux.st.gate = (name) => (name === 'size' && fs.existsSync(${JSON.stringify(armFile)}) ? (process.stderr.write('slow-release\\n'), new Promise((ok) => setTimeout(ok, ${slowMs}))) : undefined);
+      process.on('exit', () => fs.writeFileSync(${JSON.stringify(outFile)}, JSON.stringify({ w: tmux.st.w, h: tmux.st.h, tag: tmux.st.tag })));
+      process.exitCode = await serveApp({ config: ${JSON.stringify(fx.config)}, env: process.env, stdin: process.stdin, stdout: process.stdout, stderr: process.stderr, exec: tmux, now: () => ${NOW} });
+    `;
+    const child = spawn(process.execPath, ['--input-type=module', '-e', script], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { PATH: process.env.PATH, NIKA_CONFIG_DIR: path.join(base, 'cfg'), XDG_STATE_HOME: path.join(base, 'state'), CLAUDE_CONFIG_DIR: fx.claudeDir, NIKA_TMP_ROOT: fx.tmpRoot, NIKA_TMUX: 'tmux', NIKA_CLAUDE: '/nonexistent/claude' },
+    });
+    let out = '';
+    let err = '';
+    child.stdout.on('data', (c) => { out += c; });
+    child.stderr.on('data', (c) => { err += c; });
+    const exited = new Promise((resolve) => child.on('exit', (code, signal) => resolve({ code, signal })));
+    const killer = setTimeout(() => child.kill('SIGKILL'), 8000);
+    const until = async (pred) => { for (let i = 0; i < 400 && !pred(); i += 1) await sleep(25); return pred(); };
+    child.stdin.write(hello());
+    assert.equal(await until(() => out.includes('"ready"')), true, `no ready line; stderr: ${err}`);
+    const port = JSON.parse(out.split('\n')[0]).port;
+    return {
+      child, err: () => err, port,
+      fit: () => new Promise((resolve, reject) => {
+        const payload = JSON.stringify(FIT_PUT.json);
+        const r = http.request({ host: '127.0.0.1', port, method: 'PUT', path: '/api/app/pane/%256/fit', agent: false, headers: { host: `127.0.0.1:${port}`, 'x-nika-app': SECRET, 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload) } }, (res) => { res.resume(); res.on('end', () => resolve(res.statusCode)); });
+        r.on('error', reject);
+        r.end(payload);
+      }),
+      arm: () => fs.writeFileSync(armFile, ''),
+      slow: () => until(() => err.includes('slow-release')),
+      exit: async () => { const r = await exited; clearTimeout(killer); return r; },
+      final: () => JSON.parse(fs.readFileSync(outFile, 'utf8')),
+    };
+  }
+
+  test('(+) a SIGTERM that lands during the release (the shell sends it 2 s after closing stdin): the restore finishes first, then the exit is 0; the window is back, untagged', async () => {
+    const p = await realProcess({ slowMs: 700 });
+    assert.equal(await p.fit(), 200, p.err());
+    p.arm();
+    p.child.stdin.end();
+    assert.equal(await p.slow(), true, `the release never began; stderr: ${p.err()}`);
+    p.child.kill('SIGTERM');
+    assert.deepEqual(await p.exit(), { code: 0, signal: null }, p.err()); // without the held listener: { code: null, signal: 'SIGTERM' } (shell status 143)
+    assert.deepEqual(p.final(), { w: 100, h: 30, tag: '' }, 'the restore ran to its end');
+  });
+
+  test('(−) a SIGTERM with no release running keeps today\'s behavior: the server stops at once, exit 0', async () => {
+    const p = await realProcess({ slowMs: 700 });
+    const t0 = Date.now();
+    p.child.kill('SIGTERM'); // running, nothing fitted: stop() → finish(0)
+    p.child.stdin.end(); // the child script keeps no exit of its own: the process leaves when its stdin pipe is closed (the shell closes it first, in the app)
+    assert.deepEqual(await p.exit(), { code: 0, signal: null }, p.err());
+    assert.ok(Date.now() - t0 < 3000, `exit came after ${Date.now() - t0} ms`);
+    assert.deepEqual(p.final(), { w: 100, h: 30, tag: '' });
+  });
+
+  test('(+) a SIGTERM while running with a window held: stop() begins the release and a second SIGTERM during it does not cut it short', async () => {
+    const p = await realProcess({ slowMs: 700 });
+    assert.equal(await p.fit(), 200, p.err());
+    p.arm();
+    p.child.kill('SIGTERM'); // the quit starts from the signal: stop() → finish(0)
+    p.child.stdin.end();
+    assert.equal(await p.slow(), true, `the release never began; stderr: ${p.err()}`);
+    p.child.kill('SIGTERM');
+    assert.deepEqual(await p.exit(), { code: 0, signal: null }, p.err());
+    assert.deepEqual(p.final(), { w: 100, h: 30, tag: '' });
+  });
+});
+
+// --- R3 F10 (final review): the real module behind the route, not a source check ----------------------------------------------
+
+describe('GET /api/app/session/:id/subagents/:agentId/history through serveApp (R3 F10)', () => {
+  const SESSION = '12121212-1212-4212-8212-121212121212';
+  const AGENT = 'a0000000000000001';
+  const ts = (i) => new Date(Date.UTC(2026, 10, 7, 12, 0, i)).toISOString();
+  const user = (text, i) => ({ type: 'user', timestamp: ts(i), message: { role: 'user', content: text } });
+  const say = (text, i) => ({ type: 'assistant', timestamp: ts(i), message: { role: 'assistant', model: 'claude-sonnet-5-5', content: [{ type: 'text', text }] } });
+  const lines = (...ls) => `${ls.map((l) => JSON.stringify(l)).join('\n')}\n`;
+
+  /** A synthetic Claude dir: one session with its own transcript and one subagent transcript, with different texts. */
+  function claudeWithSubagent() {
+    const claudeDir = path.join(ROOT, `sub-claude-${counter += 1}`);
+    const dir = path.join(claudeDir, 'projects', '-demo-project');
+    fs.mkdirSync(path.join(dir, SESSION, 'subagents'), { recursive: true });
+    fs.writeFileSync(path.join(dir, `${SESSION}.jsonl`), lines(user('parent question', 1), say('parent answer', 2)));
+    fs.writeFileSync(path.join(dir, SESSION, 'subagents', `agent-${AGENT}.jsonl`), lines(user('child question', 3), say('child answer', 4)));
+    fs.writeFileSync(path.join(dir, SESSION, 'subagents', `agent-${AGENT}.meta.json`), JSON.stringify({ agentType: 'Explore', description: 'List files', finished: true }));
+    return { ...fx.config, claudeDir };
+  }
+  const get = (h, id, agent, q = '') => h.call('GET', `/api/app/session/${id}/subagents/${agent}/history${q}`);
+
+  test('(+) the route reads the subagent\'s own transcript (not the session\'s) and pages it', async () => {
+    const h = harness({ config: claudeWithSubagent() });
+    await h.up();
+    try {
+      const r = await get(h, SESSION, AGENT);
+      assert.equal(r.status, 200, JSON.stringify(r.body));
+      assert.deepEqual(r.body.entries.map((e) => e.text), ['child question', 'child answer']);
+      assert.equal(r.body.nextBefore, null);
+      const page = await get(h, SESSION, AGENT, '?limit=1');
+      assert.deepEqual(page.body.entries.map((e) => e.text), ['child answer']);
+      assert.equal(typeof page.body.nextBefore, 'number');
+      const own = await h.call('GET', `/api/app/session/${SESSION}/history`);
+      assert.deepEqual(own.body.entries.map((e) => e.text), ['parent question', 'parent answer'], 'control: the session\'s own history is the other transcript');
+    } finally {
+      await h.close();
+    }
+  });
+
+  test('(−) an agent id the session has no transcript for, a malformed one and an unknown session are the route\'s 404s, with nothing read', async () => {
+    const h = harness({ config: claudeWithSubagent() });
+    await h.up();
+    try {
+      const unknown = await get(h, SESSION, 'a0000000000000002');
+      assert.deepEqual([unknown.status, unknown.body.error, unknown.body.message], [404, 'not_found', 'no such subagent']);
+      const malformed = await get(h, SESSION, 'a.b');
+      assert.deepEqual([malformed.status, malformed.body.error, malformed.body.message], [404, 'not_found', 'no such subagent']);
+      const nosession = await get(h, '99999999-9999-4999-8999-999999999999', AGENT);
+      assert.deepEqual([nosession.status, nosession.body.error], [404, 'not_found']);
+      const notUuid = await get(h, 'nope', AGENT);
+      assert.deepEqual([notUuid.status, notUuid.body.message], [404, 'no such session']);
+      const noSecret = await h.call('GET', `/api/app/session/${SESSION}/subagents/${AGENT}/history`, { headers: { 'x-nika-app': OTHER } });
+      assert.equal(noSecret.status, 403);
+    } finally {
+      await h.close();
+    }
   });
 });
 

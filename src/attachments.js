@@ -6,7 +6,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { stateDir } from './paths.js';
-import { ensureDir, writeAtomic, removeOwnFile } from './fwrite.js';
+import { ensureDir, writeAtomic, removeOwnFile, removeOwnDir } from './fwrite.js';
 import { openRegular } from './fsafe.js';
 import { loadConfig } from './store.js';
 import { PANE_ID, PROJECT_KEY } from './ids.js';
@@ -71,11 +71,13 @@ export function sniff(buf, name) {
 }
 
 // A file nika never takes, whatever its bytes are (rule 4, the owner's "don't collect sensitive data"): by base name, any case, `.env`, `.env.*`,
-// `.envrc`, `.envrc.*`, `*.key`, `*.pem`, the keystores `*.p12`, `*.pfx`, `*.jks` and `*.keystore`, and the SSH private keys by exact name (`id_rsa`, `id_dsa`,
-// `id_ecdsa`, `id_ed25519` and the FIDO forms `id_ecdsa_sk`, `id_ed25519_sk`; never their `.pub` files, never another name that only starts with `id_`).
+// `.envrc`, `.envrc.*`, `*.key`, `*.pem`, the keystores `*.p12`, `*.pfx`, `*.jks` and `*.keystore`, the OpenVPN profiles `*.ovpn`, the credential files
+// `.netrc`, `.git-credentials`, `.pgpass`, `.npmrc` and `credentials` (exact base names; owner decision 2026-11-16), and the SSH private keys by exact name
+// (`id_rsa`, `id_dsa`, `id_ecdsa`, `id_ed25519` and the FIDO forms `id_ecdsa_sk`, `id_ed25519_sk`; never their `.pub` files, never another name that only
+// starts with `id_`). A name that only contains one of the exact names (`netrc`, `.netrc.bak`, `credentials.txt`, `my-credentials`) is not on the list.
 // public/attach.js keeps a copy of this pattern (browser code cannot import it); a test pins that the two agree.
-const SECRET_NAME = /^(?:\.env(?:\..*)?|\.envrc(?:\..*)?|id_(?:rsa|dsa|ecdsa|ed25519|ecdsa_sk|ed25519_sk)|.*\.(?:key|pem|p12|pfx|jks|keystore))$/is;
-/** True for the name (or the last part of a path) of a credential file (`.env`, `.env.*`, `.envrc`, `.envrc.*`, `*.key`, `*.pem`, `*.p12`, `*.pfx`, `*.jks`, `*.keystore`, an SSH private key), case-insensitive. */
+const SECRET_NAME = /^(?:\.env(?:\..*)?|\.envrc(?:\..*)?|id_(?:rsa|dsa|ecdsa|ed25519|ecdsa_sk|ed25519_sk)|\.netrc|\.git-credentials|\.pgpass|\.npmrc|credentials|.*\.(?:key|pem|p12|pfx|jks|keystore|ovpn))$/is;
+/** True for the name (or the last part of a path) of a credential file (`.env`, `.env.*`, `.envrc`, `.envrc.*`, `*.key`, `*.pem`, `*.p12`, `*.pfx`, `*.jks`, `*.keystore`, `*.ovpn`, `.netrc`, `.git-credentials`, `.pgpass`, `.npmrc`, `credentials`, an SSH private key), case-insensitive. */
 export const isSecretName = (name) => typeof name === 'string' && SECRET_NAME.test(name.split(/[\\/]/).pop().trimEnd());
 
 /** Step 1 of the upload: exactly `name` (a string, at most 255 UTF-16 units) and `data` (standard base64). null = fine, else the 400 (`secret-file` for a credential file's name). */
@@ -108,7 +110,7 @@ export function createAttachments({
 
   /**
    * Prune (design 4.4). Only names nika writes, in real user-owned key folders, as regular single-link files, are looked at, and every
-   * removal goes through removeOwnFile, which follows nothing. The folder in `writing` is never rmdir'd.
+   * removal goes through src/fwrite.js (removeOwnFile for a file, removeOwnDir for an emptied key folder), which follow nothing. The folder in `writing` is never removed.
    * Never throws; `full` = still over a cap for `need` more bytes (and one more file) after removing everything that may go;
    * `failed` = the caps could not be checked (an error at the top level, or a key folder that could not be listed): a save then refuses.
    */
@@ -172,7 +174,14 @@ export function createAttachments({
           count -= 1;
         }
       }
-      for (const { key, dir } of folders) if (key !== writing) await fs.rmdir(dir).catch(() => {}); // rmdir never removes a non-empty folder
+      for (const { key, dir } of folders) {
+        if (key === writing) continue;
+        try {
+          await removeOwnDir(dir); // an empty folder only (a non-empty one stays), looked at with lstat and never followed (R3 F4)
+        } catch (err) {
+          note(err); // swapped for a link or a file since it was listed: left alone, a code in the log
+        }
+      }
       out.total = total;
       out.full = over();
     } catch (err) {

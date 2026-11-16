@@ -883,6 +883,45 @@ describe('spawnAgent: a broken tmux listing, dead panes and a lost race (F4, fix
     assert.equal(live[2], '2', 'control: a live main orchestrator makes depth 2');
   });
 
+  // R1 F6 (final review, owner ruling): one parse of pane_dead (paneDead in src/collect/tmux.js). 1 = dead: not live. 0 = running. Anything
+  // else is unknown: it still counts toward the caps and the duplicate-name check (the cautious direction) but is never accepted as a parent.
+  const ODD = ['x', '2', '', 'true', '01'];
+
+  test('(+) a pane_dead that is neither 0 nor 1 still counts: per-parent cap, project cap and the duplicate-name check (a known-dead pane counts for none)', async () => {
+    const w = await world({ limits: { maxAgents: 1 } });
+    const spawnWith = (panes, over = {}) => spawnAgent(req(w, { name: 'fresh', ...over }), w.ctx(fakeTmux({ panes })));
+    for (const dead of ODD) {
+      const one = [...BASE_PANES(), agent(w, '%31', 'old', { dead })]; // maxAgents 1: one counted agent of "you" is the cap
+      const parent = await spawnWith(one);
+      assert.deepEqual([parent.status, parent.body.error, parent.body.scope], [409, 'limit', 'parent'], JSON.stringify(dead));
+      const three = [...BASE_PANES(), ...['x', 'y', 'z'].map((n, i) => agent(w, `%${41 + i}`, n, { parent: `%9${i}`, depth: '2', dead }))]; // min(3 × 1, 24) = 3 for the project
+      const project = await spawnWith(three);
+      assert.deepEqual([project.status, project.body.error, project.body.scope], [409, 'limit', 'project'], JSON.stringify(dead));
+      const same = await spawnWith([...BASE_PANES(), agent(w, '%31', 'old', { dead })], { name: 'old' });
+      assert.deepEqual([same.status, same.body.error], [409, 'conflict'], JSON.stringify(dead));
+    }
+    assert.equal((await spawnWith([...BASE_PANES(), agent(w, '%31', 'old', { dead: '1' })])).status, 200, 'control: known dead counts for none');
+    assert.equal((await spawnWith([...BASE_PANES(), agent(w, '%31', 'old', { dead: '1' })], { name: 'old' })).status, 200);
+  });
+
+  test('(−) a main or sub-orchestrator pane whose pane_dead is neither 0 nor 1 is never accepted as a parent: 409 depth for the page and for the CLI, nothing split', async () => {
+    const w = await world();
+    const SUB = (over = {}) => ({ id: '%2', session: 'My-App', window: 1, windowName: 'zsh', command: 'claude', role: 'sub-orchestrator', agent: `${w.project.key}/lead`, depth: '2', parent: '%1', ...over });
+    const outcome = async (panes, parent, extra = {}) => {
+      const exec = fakeTmux({ panes });
+      const r = await spawnAgent(req(w, { parent }), w.ctx(exec, extra));
+      return [r.status, r.body.error, r.status === 200 ? exec.panes.find((p) => p.id === r.body.pane).depth : null, exec.of('split-window').length];
+    };
+    for (const dead of ODD) {
+      for (const extra of [{}, { lenientParent: true }]) {
+        assert.deepEqual(await outcome([MAIN(w, { dead })], '%1', extra), [409, 'depth', null, 0], `main ${JSON.stringify(dead)} ${JSON.stringify(extra)}`);
+        assert.deepEqual(await outcome([MAIN(w), SUB({ dead })], '%2', extra), [409, 'depth', null, 0], `sub ${JSON.stringify(dead)} ${JSON.stringify(extra)}`);
+      }
+    }
+    assert.deepEqual(await outcome([MAIN(w)], '%1'), [200, undefined, '2', 1], 'control: running (0) is the parent');
+    assert.deepEqual(await outcome([MAIN(w), SUB()], '%2'), [200, undefined, '3', 1], 'control: a running sub-orchestrator is the parent');
+  });
+
   test('(−) new-session losing a race ("duplicate session"): 502 tmux_failed, nothing recorded, no .last-pane, no check, no title', async () => {
     const w = await world();
     const base = fakeTmux({ panes: [{ id: '%1', session: 'My-App', window: 0, windowName: 'zsh', command: 'zsh' }] }); // another process created the session meanwhile

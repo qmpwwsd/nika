@@ -3876,7 +3876,8 @@ describe('W4: Claude\'s prompt suggestion in the message box (wiring)', () => {
   test('(+) the sync gets a POST to the suggestion route with exactly the body it makes, and nothing else', () => {
     const at = SRC.indexOf('const DS = createDraftSync({');
     const src = SRC.slice(at, SRC.indexOf('});', at) + 3);
-    assert.match(src, /suggest: \(body\) => call\(`\/api\/app\/pane\/\$\{encodeURIComponent\(paneId\)\}\/suggestion`, \{ method: 'POST', json: body \}\)/);
+    assert.match(src, /suggest: suggestDraft,/); // final review fix G3, R2 #3: the wrapper that waits for the redraw hold; the route and the body are as they were
+    assert.match(fnOf('async function suggestDraft(body)'), /return call\(`\/api\/app\/pane\/\$\{encodeURIComponent\(paneId\)\}\/suggestion`, \{ method: 'POST', json: body \}\);/);
   });
 
   test('(−) accepting is not an edit of the box by the user: the pull inside DS.accept sets the text, the page never calls DS.edited for it', () => {
@@ -4331,8 +4332,10 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     'function drawFitPop()', 'function openFitPop()', 'function closeFitPop(refocus)', 'function fitAway(e)', 'function fitAgainEvent(e)',
     'function renderFit(view, opts)', 'function wireFitPop()', 'function wireFit()', 'function setGone()', 'function handleCapture(r)', 'function fitFocused()',
     // F10 (design F10 2 to 6)
-    'function fitProbe()', 'function fitCommit()', 'function fitChip(view, opts)', 'function flushChip()', 'function fitSized(pane)', 'function handleHeld(r)',
+    'function fitProbe()', 'function fitCommit()', 'function fitChip(view, opts)', 'function flushChip()', 'function fitSized(pane)', 'function handleHeld(r, n)',
     'function applyHeld(r)', 'function refit(oldScale)', 'function endRefit()', 'function holdTimeout(pending, ctx)', 'function holdEnded()',
+    // final review fix G3, R2 #7: the waiters of a failed mode switch
+    'function nextCapture(ms = 2500)', 'function captureHandled(n)',
     // F11 (design F11 2 to 6)
     'function fitStrip()',
   ];
@@ -4383,7 +4386,7 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     const page = { visible: true, focus: false, throws: false };
     focusState.el = null;
     const ctx = {
-      paneId: pane, M: { cols: 0, rows: 0, gone: false, timer: 0, errors: 0, inputOff: false, frozen: false, body: null, draft: null, etag: null, cut: null },
+      paneId: pane, M: { cols: 0, rows: 0, gone: false, timer: 0, errors: 0, inputOff: false, frozen: false, body: null, draft: null, etag: null, cut: null, waiters: [], sent: 0 },
       FIT: { planner: null, panel: null, frame: null, scale: 1, view: null, ui: { pending: false, note: false }, pop: false, state: null, room: false, d: 0, sentRows: 0, held: null, refitTimer: 0, hide: 0, strip: 0, sentCols: 0, scaledAt: null }, SC: { planner: null, scrolled: false },
       P: { on: false }, // F11: Type into pane, read by the real drawMirror
       $: (id) => els[id],
@@ -4416,7 +4419,7 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     let fns = null;
     ctx.HOLD = createRedrawHoldReal({ after: clk.setTimeout, cancel: clk.clearTimeout, timeout: (pending, c) => fns.holdTimeout(pending, c), ended: () => fns.holdEnded() });
     // F11: `realDraw` runs the page's own drawMirror (it sets M.cut and shows the strip) instead of the spy
-    fns = vm.runInNewContext(`${NAMES.concat(realDraw ? ['function drawMirror()'] : []).map(fnOf).join('\n')}; ({ fitCall, fitMeasure, fitScale, fitResize, fitCaptured, drawFitPop, openFitPop, closeFitPop, fitAgainEvent, renderFit, wireFitPop, wireFit, setGone, handleCapture, fitFocused, fitProbe, fitCommit, fitChip, flushChip, fitSized, handleHeld, applyHeld, refit, endRefit, holdTimeout, holdEnded, fitStrip${realDraw ? ', drawMirror' : ''} })`, ctx);
+    fns = vm.runInNewContext(`${NAMES.concat(realDraw ? ['function drawMirror()'] : []).map(fnOf).join('\n')}; ({ fitCall, fitMeasure, fitScale, fitResize, fitCaptured, drawFitPop, openFitPop, closeFitPop, fitAgainEvent, renderFit, wireFitPop, wireFit, setGone, handleCapture, fitFocused, fitProbe, fitCommit, fitChip, flushChip, fitSized, handleHeld, applyHeld, refit, endRefit, holdTimeout, holdEnded, fitStrip, nextCapture, captureHandled${realDraw ? ', drawMirror' : ''} })`, ctx);
     const pointerdown = (target) => { for (const fn of [...(docOn.get('pointerdown') ?? [])]) fn({ type: 'pointerdown', target }); };
     return {
       ...fns, ctx, log, clk, page, term, rows, cutEl, chip, wrap, pop, popH, popWhy, popHint, popNote, close, again, histToggle, outside, pointerdown,
@@ -6277,7 +6280,7 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
 
   // -- the code
   test('(+) F10: the page code keeps constraint 6 for the new parts: refit uses the class and the CSSOM property only, in the fit-ui.js and session.js sources', () => {
-    const src = [fnOf('function refit(oldScale)'), fnOf('function endRefit()'), fnOf('function fitChip(view, opts)'), fnOf('function handleHeld(r)')].join('\n');
+    const src = [fnOf('function refit(oldScale)'), fnOf('function endRefit()'), fnOf('function fitChip(view, opts)'), fnOf('function handleHeld(r, n)')].join('\n');
     assert.match(src, /style\.setProperty\('--refit-from', String\(/);
     assert.match(src, /classList\.remove\('refit'\)/);
     assert.match(src, /classList\.add\('refit'\)/);
@@ -6297,14 +6300,14 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
 
   test('(+) F10: the mirror is read again at once after the answer and every HOLD_POLL_MS during a hold; the capture path goes through handleHeld', () => {
     const tick = fnOf('async function tickMirror()');
-    assert.match(tick, /handleHeld\(r\)/);
+    assert.match(tick, /handleHeld\(r, sent\)/);
     assert.doesNotMatch(tick, /handleCapture\(r\)/);
     assert.match(tick, /HOLD\.active \? HOLD_POLL_MS : 250/);
     assert.match(fnOf('function fitSized(pane)'), /kickMirror\(0\)/);
   });
 
   test('(+) F10: the page asks nothing of its own for the hold: the only new route traffic is the planner\'s PUT with the same four keys', () => {
-    for (const f of ['function fitProbe()', 'function fitCommit()', 'function fitSized(pane)', 'function handleHeld(r)', 'function applyHeld(r)', 'function holdTimeout(pending, ctx)']) {
+    for (const f of ['function fitProbe()', 'function fitCommit()', 'function fitSized(pane)', 'function handleHeld(r, n)', 'function applyHeld(r)', 'function holdTimeout(pending, ctx)']) {
       assert.doesNotMatch(fnOf(f), /\bcall\(|fetch\(|appFetch/, f);
     }
     assert.match(fnOf('function fitCall(method, opts = {})'), /\/api\/app\/pane\/\$\{encodeURIComponent\(paneId\)\}\/fit/);
@@ -6379,10 +6382,163 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
   });
 
   test('(+) F10: the waits are the Send chain\'s own (typeThenSubmit, submitEnter, putDraft), the scroll call and the mode and command calls, in the source', () => {
-    for (const head of ['async function submitEnter(base)', 'async function typeThenSubmit(payloads)', 'async function switchTo(target)', 'async function sendCommand(text)', 'async function putDraft(body)']) {
+    for (const head of ['async function submitEnter(base)', 'async function typeThenSubmit(payloads)', 'async function switchTo(target)', 'async function sendCommand(text)', 'async function putDraft(body)', 'async function suggestDraft(body)', 'async function waitHold()']) {
       assert.match(fnOf(head), /if \(HOLD\.active\) await HOLD\.wait\(\);/, head);
     }
     assert.match(fnOf('function scrollCall(body)'), /if \(HOLD\.active\) return HOLD\.wait\(\)\.then\(\(\) => scrollCall\(body\)\);/);
+  });
+
+  // ---- final review fix G3, R2 #3: the suggestion accept and the attachment send wait for the redraw hold like the draft sync's write ---------------------
+  test('(+) R2 #3: the suggestion accept\'s request (suggestDraft) waits for the hold and goes after it ends', async () => {
+    const log = [];
+    const hold = createRedrawHoldReal({ after: () => 1, cancel() {} });
+    const fn = runFns(['async function suggestDraft(body)'], ['suggestDraft'], { HOLD: hold, call: async (path, o) => { log.push([path, norm(o)]); return { status: 200, body: {} }; }, encodeURIComponent, paneId: '%12' }).suggestDraft;
+    hold.start({ want: { cols: 100, rows: 30 }, plainBefore: true });
+    const p = fn({ text: 'run the tests' });
+    await flushAll();
+    assert.deepEqual(log, [], 'held');
+    hold.end();
+    assert.deepEqual(norm(await p), { status: 200, body: {} }, 'the route\'s answer comes back as it was');
+    assert.deepEqual(log, [['/api/app/pane/%2512/suggestion', { method: 'POST', json: { text: 'run the tests' } }]]);
+  });
+
+  test('(−) R2 #3: with no hold the suggestion accept\'s request goes at once, in the same tick', () => {
+    const log = [];
+    const fn = runFns(['async function suggestDraft(body)'], ['suggestDraft'], { HOLD: { active: false }, call: async (path, o) => { log.push([path, norm(o)]); return { status: 200, body: {} }; }, encodeURIComponent, paneId: '%12' }).suggestDraft;
+    fn({ text: 'run the tests' });
+    assert.equal(log.length, 1);
+  });
+
+  test('(+) R2 #3: waitHold (the attachment tray\'s io) resolves only when the hold has ended, and at once when none runs', async () => {
+    const hold = createRedrawHoldReal({ after: () => 1, cancel() {} });
+    const { waitHold } = runFns(['async function waitHold()'], ['waitHold'], { HOLD: hold });
+    hold.start({ want: { cols: 100, rows: 30 }, plainBefore: true });
+    let done = false;
+    waitHold().then(() => { done = true; });
+    await flushAll();
+    assert.equal(done, false, 'held');
+    hold.end();
+    await flushAll();
+    assert.equal(done, true);
+    done = false;
+    waitHold().then(() => { done = true; });
+    await flushAll();
+    assert.equal(done, true, 'no hold: nothing to wait for');
+  });
+
+  test('(+) R2 #3: the draft sync takes the waiting accept call and the attachment tray takes waitHold, in session.js', () => {
+    const ds = JS['session.js'].slice(JS['session.js'].indexOf('const DS = createDraftSync('), JS['session.js'].indexOf('const ATT = createAttachTray('));
+    assert.match(ds, /suggest: suggestDraft,/);
+    assert.doesNotMatch(ds, /suggest: \(body\) =>/, 'not the bare call');
+    const att = JS['session.js'].slice(JS['session.js'].indexOf('const ATT = createAttachTray('));
+    assert.match(att.slice(0, att.indexOf('});')), /\bwaitHold,/);
+  });
+
+  // ---- final review fix G3, R2 #7: a failed mode switch names the mode from a capture the page applied ----------------------------------------------------
+  /** The F10 rig's capture path with a real tickMirror: the replies of the capture route are scripted, the page's drawing is spied. */
+  const tickRig = () => {
+    const hold = createRedrawHoldReal({ after: () => 1, cancel() {} });
+    const log = { handled: [], applied: [], kicks: [] };
+    const answers = [];
+    const ctx = {
+      HOLD: hold, HOLD_POLL_MS: 100, M: { timer: 0, gone: false, fatal: false, busy: false, sent: 0, errors: 0, etag: null, waiters: [] },
+      document: { hidden: false }, paneId: '%12', encodeURIComponent, call: async () => answers.shift(), kickMirror: (ms) => log.kicks.push(ms),
+      cleanDraft: cleanDraftReal, handleCapture: (r) => log.handled.push(r), applyHeld: (r) => log.applied.push(r),
+      setPaneState() {}, setInputEnabled() {}, showOverlay() {}, setTimeout, clearTimeout, Date,
+    };
+    const fns = runFns(['function nextCapture(ms = 2500)', 'function captureHandled(n)', 'function handleHeld(r, n)', 'async function tickMirror()'], ['nextCapture', 'captureHandled', 'handleHeld', 'tickMirror'], ctx);
+    return { hold, log, answers, ctx, ...fns };
+  };
+
+  test('(+) R2 #7: nextCapture does not resolve on a capture the redraw hold kept back; the next capture that is applied resolves it', async () => {
+    const r = tickRig();
+    r.hold.start({ want: { cols: 145, rows: 21 }, plainBefore: true });
+    let done = false;
+    r.nextCapture().then(() => { done = true; });
+    assert.deepEqual(r.log.kicks, [0], 'a capture is asked for at once');
+    r.answers.push(shot(171, 45, { draft: BOXED })); // not the answered size: kept back
+    await r.tickMirror();
+    await flushAll();
+    assert.deepEqual([r.log.handled.length, r.log.applied.length], [0, 0], 'neither drawn nor judged');
+    assert.equal(done, false, 'a kept capture is no look at where the cycle stopped');
+    assert.equal(r.ctx.M.waiters.length, 1);
+    r.answers.push(shot(145, 21, { draft: BOXED })); // the box is back at the answered size: applied
+    await r.tickMirror();
+    await flushAll();
+    assert.deepEqual([r.log.handled.length, r.log.applied.length], [0, 1]);
+    assert.equal(done, true);
+    assert.equal(r.ctx.M.waiters.length, 0);
+  });
+
+  test('(−) R2 #7: with no hold the next capture resolves it as before, and so does a refusal or an error answer (handled, not kept)', async () => {
+    for (const answer of [shot(120, 30), { status: 304, body: null }, { status: 500, body: { message: 'x' } }, { status: 0, body: null }]) {
+      const r = tickRig();
+      let done = false;
+      r.nextCapture().then(() => { done = true; });
+      r.answers.push(answer);
+      await r.tickMirror();
+      await flushAll();
+      assert.equal(done, true, String(answer.status));
+    }
+    const r = tickRig();
+    r.hold.start({ want: { cols: 145, rows: 21 }, plainBefore: true });
+    let done = false;
+    r.nextCapture().then(() => { done = true; });
+    r.answers.push({ status: 500, body: { message: 'x' } }); // an error ends the hold at once and is handled as always
+    await r.tickMirror();
+    await flushAll();
+    assert.equal(done, true);
+    assert.equal(r.hold.active, false);
+  });
+
+  test('(−) R2 #7: a waiter that started after the capture was requested is not resolved by it (only a capture started after the call counts)', async () => {
+    const r = tickRig();
+    r.answers.push(shot(120, 30));
+    const pending = r.tickMirror(); // request 1 is out
+    let done = false;
+    r.nextCapture().then(() => { done = true; });
+    await pending;
+    await flushAll();
+    assert.equal(done, false, 'request 1 started before the call');
+    r.answers.push(shot(120, 30));
+    await r.tickMirror();
+    await flushAll();
+    assert.equal(done, true);
+  });
+
+  test('(+) R2 #7: a capture the hold kept back and its timeout then draws resolves the waiters that were there before that capture was requested', async () => {
+    const r = await heldRig({ box: PANEL_145X40, pane: { cols: 145, rows: 39 } }); // 40 rows: the timeout draws, it takes no room step
+    assert.equal(r.ctx.HOLD.active, true);
+    let early = false;
+    let late = false;
+    r.nextCapture().then(() => { early = true; }); // before request 1
+    r.ctx.M.sent = 1;
+    r.handleHeld(shot(145, 39), 1); // request 1 comes back without a box: kept
+    r.nextCapture().then(() => { late = true; }); // after request 1 was sent
+    await flushAll();
+    assert.deepEqual([early, late], [false, false]);
+    await r.clk.advance(HOLD_MS); // the hold ends by its timeout and draws the kept capture as it is
+    await flushAll();
+    assert.equal(r.ctx.HOLD.active, false);
+    assert.deepEqual([r.log.noted.length, early, late], [1, true, false], 'drawn: the early waiter sees it, the late one waits for a capture of its own');
+  });
+
+  test('(−) R2 #7: a kept capture that carries no request number resolves nobody (and drops no waiter)', async () => {
+    const r = await heldRig({ box: PANEL_145X40, pane: { cols: 145, rows: 39 } });
+    let done = false;
+    r.nextCapture().then(() => { done = true; });
+    r.handleHeld(shot(145, 39)); // the older call shape: no number
+    await r.clk.advance(HOLD_MS);
+    await flushAll();
+    assert.equal(done, false);
+    assert.equal(r.ctx.M.waiters.length, 1, 'the waiter stays until a capture of its own or its own timeout');
+  });
+
+  test('(+) R2 #7: tickMirror tells the waiters only for a capture handleHeld applied', () => {
+    const tick = fnOf('async function tickMirror()');
+    assert.match(tick, /applied = handleHeld\(r, sent\) !== false;/);
+    assert.match(tick, /if \(applied\) captureHandled\(sent\);/);
+    assert.match(fnOf('function holdTimeout(pending, ctx)'), /applyHeld\(pending\.r\);\s*if \(Number\.isInteger\(pending\.n\)\) captureHandled\(pending\.n\);/);
   });
 
   // ---- F10: the stylesheet (design F10 6.2) ------------------------------------------------------------------------------------------------

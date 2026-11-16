@@ -101,6 +101,11 @@ export function createAttachSend({ mirror, keys, store, lock, keyGap, vimOf, pla
 
     // 10.-12. one paste per file, each after a fresh look and read back before the next
     let expect = box.squash; // what the box must read now (squashed); grows by each piece
+    // R1 F3: a box that starts with `/` is Claude's slash-command input, so every non-image path goes in with one leading space, an empty
+    // box too. The squash cannot see that space (it ignores whitespace on purpose), so when the box was empty this read looks at its real
+    // first character instead: a box nika filled must never begin with `/`. A draft the user typed is theirs and is not judged.
+    const ours = draft.state === 'empty';
+    const slashFirst = (s) => ours && s.draft.state === 'text' && s.draft.text.startsWith('/');
     for (let k = 0; k < records.length; k += 1) {
       const r = records[k];
       const image = IMAGES.has(r.type);
@@ -111,7 +116,7 @@ export function createAttachSend({ mirror, keys, store, lock, keyGap, vimOf, pla
       const before = promptFromRows(seen.rows) === null ? readSeen(seen) : null;
       // a prompt, a menu, a search, the user typed, or a `!` typed into the box (the glyph is not part of the squash): Enter would run a shell line
       if (before === null || before.draft.mode !== 'prompt' || before.squash !== expect) return refuse('screen-changed');
-      const sent = await press({ paste: image || expect === '' ? r.path : ` ${r.path}` });
+      const sent = await press({ paste: image ? r.path : ` ${r.path}` }); // an image path is bare: Claude turns it into `[Image #N]` at once
       if (sent) return sent;
       count.pasted += 1;
       const piece = (s) => (image ? s.startsWith(expect) && PLACEHOLDER.test(s.slice(expect.length)) : s === expect + squash(r.path));
@@ -124,6 +129,7 @@ export function createAttachSend({ mirror, keys, store, lock, keyGap, vimOf, pla
         if (promptFromRows(now.rows) !== null) return refuse('screen-changed');
         last = readSeen(now);
         if (last !== null && piece(last.squash)) {
+          if (slashFirst(last)) return refuse('screen-changed'); // the leading space did not show: the box would begin with `/`
           expect = last.squash;
           taken = true;
         }
@@ -141,6 +147,7 @@ export function createAttachSend({ mirror, keys, store, lock, keyGap, vimOf, pla
     const closing = promptFromRows(final.rows) === null ? readSeen(final) : null;
     // prompt mode only, and no ghost text: what Enter does with a ghost completion is untested (M-4), as for End and the commands
     if (closing === null || closing.draft.mode !== 'prompt' || closing.ghost || closing.squash !== expect) return refuse('screen-changed');
+    if (slashFirst(closing)) return refuse('screen-changed'); // R1 F3: Enter on a box that begins with `/` could run a command (the squash is blind to the leading space)
     // 14. the one Enter
     const enter = await press({ keys: ['Enter'] });
     if (enter) return enter;

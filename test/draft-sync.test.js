@@ -1037,6 +1037,135 @@ describe('send: the push before Enter (design 4)', () => {
 });
 
 
+// Final review fix G3, R2 #1: after sent() the sync has "forgotten" the screen (seenSig ''), but a Send in that state must not write against the
+// base '' (the route answers 409, "matches no screen") and must not pull Claude's input over text the user typed after the last capture.
+describe('R2 #1: a quick second Send after sent()', () => {
+  /** Message 1 went out through the attachments road: the screen is gone (no readable box after the Enter) and the box was cleared. */
+  const afterSent = (first = 'first') => {
+    const r = rig({ value: first });
+    r.ds.capture(text(first, { sig: sig(5) }), 120);
+    r.ds.beginSend();
+    r.ds.submitted({ status: 200, body: { draft: null } });
+    r.st.box = { value: '', shell: false };
+    r.ds.sent();
+    r.ds.endSend();
+    assert.equal(r.ds.screen(), null);
+    return r;
+  };
+
+  test('(+) sent(), the user types message 2, one capture is applied, Send: the put\'s base is that capture\'s sig and the text goes', async () => {
+    const r = afterSent();
+    await r.advance(10);
+    r.type('second message');
+    await r.advance(10);
+    r.ds.capture(empty({ sig: sig(9) }), 120); // the screen is readable again: Send takes the push road
+    await r.advance(10); // inside the 250 ms push debounce
+    r.ds.beginSend();
+    const out = await r.ds.send('second message');
+    assert.deepEqual(r.log.puts, [{ text: 'second message', base: sig(9) }], 'not base ""');
+    assert.equal(out.ok, true);
+    assert.deepEqual(r.log.sets, [], 'the box is not touched');
+    assert.equal(r.st.box.value, 'second message');
+  });
+
+  test('(+) the same without any edit in between: the base is the screen\'s sig (an empty message is Enter alone, so only the text case writes)', async () => {
+    const r = afterSent();
+    r.ds.capture(empty({ sig: sig(9) }), 120);
+    r.ds.beginSend();
+    await r.ds.send('third');
+    assert.deepEqual(r.log.puts, [{ text: 'third', base: sig(9) }]);
+  });
+
+  test('(−) a 409 the page adopted keeps today\'s rule: the next Send in that state still writes with base "" (the route refuses it)', async () => {
+    const r = rig();
+    r.ds.capture(empty({ sig: sig(4) }), 120);
+    r.answer = () => ({ status: 409, body: { error: 'draft-changed', draft: text('typed over there', { sig: sig(7) }) } });
+    r.ds.beginSend();
+    assert.equal((await r.ds.send('mine')).ok, false);
+    r.answer = () => ({ status: 409, body: { error: 'draft-changed', draft: text('typed over there', { sig: sig(7) }) } });
+    await r.ds.send('mine');
+    assert.deepEqual(r.log.puts.map((p) => p.base), [sig(4), ''], 'the adopted 409 forgot the screen it last matched; only sent() makes the next capture the base');
+  });
+
+  test('(−) the base is the screen\'s sig only after sent(): a page that never sent still writes against the sig it last synced on', async () => {
+    const r = rig();
+    r.ds.capture(empty({ sig: sig(4) }), 120);
+    r.type('abc');
+    r.ds.capture(text('typed over there', { sig: sig(7) }), 120); // the terminal moved on; unsent text is never pulled over
+    r.ds.beginSend();
+    await r.ds.send('abc');
+    assert.deepEqual(r.log.puts, [{ text: 'abc', base: sig(4) }]);
+  });
+
+  const REFUSED = { status: 409, body: { error: 'draft-changed', draft: text('typed over there', { sig: sig(7) }) } };
+
+  test('(−) Send\'s own push is refused after the user edited since the last capture: the box keeps its text, the refusal says it is kept, and nothing is pulled over it', async () => {
+    const r = rig();
+    r.ds.capture(empty({ sig: sig(4) }), 120);
+    await r.advance(10);
+    r.type('abc'); // an edit after the last applied capture
+    await r.advance(20); // and the request leaves later than the edit: the user did not type after it left
+    r.answer = () => REFUSED;
+    r.ds.beginSend();
+    const out = await r.ds.send('abc');
+    assert.deepEqual(out, { ok: false, message: "Claude's input changed while nika was copying your text. Nothing was sent. Your text is kept." });
+    r.ds.endSend();
+    assert.deepEqual(r.log.sets, [], 'nothing pulled');
+    assert.equal(r.st.box.value, 'abc');
+    r.answer = (body) => ({ status: 200, body: { draft: text(body.text, { sig: sig(60) }) } });
+    await r.advance(10_000);
+    assert.deepEqual(r.log.sets, [], 'and the retry that follows does not pull either');
+    assert.equal(r.st.box.value, 'abc');
+    assert.equal(r.log.puts.at(-1).text, 'abc', 'the user\'s text goes on against the new sig, as any edit would');
+    assert.equal(r.log.puts.at(-1).base, sig(7));
+  });
+
+  test('(−) no edit since the last capture: Send\'s refused push keeps today\'s rule (the terminal wins, its text is pulled, the old line)', async () => {
+    const r = rig({ value: 'abc' });
+    r.type('abc');
+    await r.advance(10);
+    r.ds.capture(empty({ sig: sig(4) }), 120); // the capture is newer than the edit
+    await r.advance(10);
+    r.answer = () => REFUSED;
+    r.ds.beginSend();
+    const out = await r.ds.send('abc');
+    assert.equal(out.message, "Claude's input changed while nika was copying your text. nika shows what it holds now. Nothing was sent.");
+    r.ds.endSend();
+    assert.deepEqual(r.log.sets, [['typed over there', false]]);
+  });
+
+  test('(−) the refusals other than draft-changed do not change: screen-changed and draft-mismatch keep the box too after a fresh edit (same rule), with the same kept line', async () => {
+    for (const error of ['screen-changed', 'draft-mismatch']) {
+      const r = rig();
+      r.ds.capture(empty({ sig: sig(4) }), 120);
+      await r.advance(10);
+      r.type('abc');
+      await r.advance(20);
+      r.answer = () => ({ status: 409, body: { error, draft: text('typed over there', { sig: sig(7) }) } });
+      r.ds.beginSend();
+      const out = await r.ds.send('abc');
+      assert.match(out.message, /Nothing was sent\. Your text is kept\.$/, error);
+      r.ds.endSend();
+      assert.deepEqual(r.log.sets, [], error);
+    }
+  });
+
+  test('(+) a Send whose push lands is unchanged by the edit rule: a 200 never marks the box dirty', async () => {
+    const r = rig();
+    r.ds.capture(empty({ sig: sig(4) }), 120);
+    await r.advance(10);
+    r.type('abc');
+    r.ds.beginSend();
+    const out = await r.ds.send('abc');
+    assert.deepEqual(out, { ok: true, sig: sig(101) });
+    r.ds.sent();
+    r.st.box = { value: '', shell: false };
+    r.ds.endSend();
+    await r.advance(10_000);
+    assert.equal(r.log.puts.length, 1, 'nothing is pushed over the sent text');
+  });
+});
+
 describe('suggestionFor (W4): the suggestion the message box shows as its placeholder and Tab accepts', () => {
   const SUG = 'run the tests in acme-api';
   const e = (over = {}) => empty({ suggestion: SUG, ...over });
@@ -1415,7 +1544,7 @@ describe('W13: the writes Claude refuses while it works (hold, cursor, clear-sto
       [{ error: 'not-idle' }, { error: 'clear-stopped', draft: text('half', { sig: sig(7) }) }, 'hold'],
       [{ error: 'cursor-not-at-end', draft: text('older', { sig: sig(7) }) }, { error: 'clear-stopped', draft: text('half', { sig: sig(8) }) }, 'cursor'],
       [{ error: 'not-idle' }, { error: 'input-unreadable' }, 'hold'],
-      [{ error: 'cursor-not-at-end', draft: text('older', { sig: sig(7) }) }, { error: 'busy-switching' }, 'cursor'],
+      // (final review fix G3, R2 #6: busy-switching and 429 no longer end the note; they have their own tests below)
     ]) {
       const r = await setup(409, first);
       assert.equal(r.lastNote().kind, firstKind, 'the first refusal is named');
@@ -1424,6 +1553,48 @@ describe('W13: the writes Claude refuses while it works (hold, cursor, clear-sto
       assert.ok(r.log.puts.length >= 2, 'the retry ran');
       assert.equal(r.lastNote(), null, `${second.error} after ${first.error}: no stale ${firstKind} note`);
     }
+  });
+
+  // Final review fix G3, R2 #6: the note must not blink or be announced twice when a busy-switching or 429 answer sits between two refusals.
+  test('(+) R2 #6: not-idle, busy-switching, not-idle: the "On hold" note never clears and is told once (also for a cursor refusal)', async () => {
+    const r = await setup(409, { error: 'not-idle' });
+    assert.deepEqual(r.log.notes.map((n) => n?.kind ?? null), ['hold']);
+    r.answer = () => ({ status: 409, body: { error: 'busy-switching' } });
+    await r.advance(3000);
+    assert.equal(r.log.puts.length, 2, 'the busy-switching answer came');
+    r.answer = () => ({ status: 409, body: { error: 'not-idle' } });
+    await r.advance(300);
+    assert.equal(r.log.puts.length, 3, 'and the next not-idle after the quiet 300 ms retry');
+    assert.deepEqual(r.log.notes.map((n) => n?.kind ?? null), ['hold'], 'told once, never hidden in between');
+
+    const c = await setup(409, { error: 'cursor-not-at-end', draft: text('older', { sig: sig(7) }) });
+    c.answer = () => ({ status: 409, body: { error: 'busy-switching' } });
+    await c.advance(3000);
+    assert.deepEqual(c.log.notes.map((n) => n?.kind ?? null), ['cursor'], 'the cursor note stays through busy-switching as well');
+  });
+
+  test('(+) R2 #6: a 429 between two refusals keeps the note too (no blink, told once)', async () => {
+    const r = await setup(409, { error: 'not-idle' });
+    r.answer = () => ({ status: 429, body: { error: 'rate_limited' } });
+    await r.advance(3000);
+    assert.equal(r.log.puts.length, 2, 'the 429 answer came');
+    assert.equal(r.lastNote().kind, 'hold');
+    r.answer = () => ({ status: 409, body: { error: 'not-idle' } });
+    await r.advance(700);
+    assert.equal(r.log.puts.length, 3);
+    assert.deepEqual(r.log.notes.map((n) => n?.kind ?? null), ['hold']);
+  });
+
+  test('(−) R2 #6: the note ends at the next answer of any other kind (a 200 ends it too), and busy-switching with no note before it does not make one', async () => {
+    const r = await setup(409, { error: 'not-idle' });
+    r.answer = () => ({ status: 409, body: { error: 'busy-switching' } });
+    await r.advance(3000);
+    ok(r);
+    await r.advance(300);
+    assert.equal(r.lastNote(), null, 'a 200 ends the note after the busy-switching answer');
+
+    const fresh = await setup(409, { error: 'busy-switching' });
+    assert.deepEqual(fresh.log.notes, [], 'no refusal before it: no note');
   });
 
   test('(−) fix round 1: a 500 or no answer at all (status 0) after a hold ends the note as well', async () => {
