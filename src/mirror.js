@@ -12,7 +12,7 @@ const MAX_ROWS = 2000;
 const MAX_SPANS = 20000; // beyond this, style changes are ignored and text coalesces into the last span
 const MAX_COLS = 1000;
 const MAX_CSI = 128; // parameter + intermediate bytes of one CSI
-const TTL_MS = 250;
+const TTL_MS = 100; // F10 (0.5): was 250, so a page polling every 100 ms after a resize sees Claude's redraw sooner
 const SIZE_FORMAT = '#{pane_width}\t#{pane_height}\t#{cursor_x}\t#{cursor_y}\t#{cursor_flag}\t#{alternate_on}';
 
 const fresh = () => ({ b: false, d: false, i: false, u: false, r: false, fg: null, bg: null });
@@ -174,7 +174,7 @@ export function matches(header, etag) {
 }
 
 /**
- * Pane mirror with a 250 ms cache per pane and one tmux capture in flight per pane (others wait for it).
+ * Pane mirror with a 100 ms cache per pane and one tmux capture in flight per pane (others wait for it).
  * `now` is a () => ms clock. capture(pane, ifNoneMatch, { fresh }) → { status, body, etag }; status 304 has body null.
  * A 200 body is { cols, rows, cursor, alt, scrolled, etag }; `alt` and `scrolled` (0.5) tell whether Claude's full-screen view is on and scrolled up.
  * `fresh: true` skips the cache and starts its own tmux capture (it refreshes the cache), for the control actions.

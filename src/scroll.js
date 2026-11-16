@@ -112,7 +112,7 @@ export function createScroll({ mirror, keys, lock, keyGap, now = Date.now, sleep
     let scrolled = null; // the keys are out whatever happens next, so a failed look afterwards is an unknown, not an error
     try {
       await sleep(SETTLE_MS);
-      const after = await mirror.capture(pane, undefined, { fresh: true }); // also refreshes the 250 ms cache the page reads next
+      const after = await mirror.capture(pane, undefined, { fresh: true }); // also refreshes the 100 ms cache the page reads next
       if (after.status === 200) scrolled = after.body.scrolled === true;
     } catch {
       // scrolled stays null

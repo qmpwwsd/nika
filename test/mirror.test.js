@@ -239,7 +239,7 @@ describe('createMirror', () => {
     assert.equal(r.body.cols, 100);
   });
 
-  test('(+) the result is cached 250 ms per pane, then fetched again', async () => {
+  test('(+) the result is cached 100 ms per pane, then fetched again', async () => {
     t = 5_000;
     const exec = fakeTmux();
     const mirror = createMirror({ exec, now: clock });
@@ -247,7 +247,7 @@ describe('createMirror', () => {
     await tick(exec);
     await first;
     assert.equal(exec.calls.length, 2);
-    t += 249;
+    t += 99;
     const cached = await mirror.capture('%1');
     assert.equal(cached.status, 200);
     assert.equal(exec.calls.length, 2, 'served from cache');
@@ -259,10 +259,49 @@ describe('createMirror', () => {
     const again = mirror.capture('%1');
     await tick(exec);
     await again;
-    assert.equal(exec.calls.length, 6, 'refetched at 250 ms');
+    assert.equal(exec.calls.length, 6, 'refetched at 100 ms');
   });
 
-  test('(+) capture with fresh: true runs tmux again inside the 250 ms window and refreshes the cache', async () => {
+  test('(+) two plain captures of one pane 100 ms apart run two tmux captures (F10: the cache is 100 ms, not 250 ms)', async () => {
+    t = 60_000;
+    const exec = fakeTmux();
+    const mirror = createMirror({ exec, now: clock });
+    const first = mirror.capture('%1');
+    await tick(exec);
+    await first;
+    assert.equal(exec.calls.length, 2, 'the first capture: one capture-pane and one display-message');
+    t += 100;
+    const second = mirror.capture('%1');
+    await tick(exec);
+    assert.equal((await second).status, 200);
+    assert.equal(exec.calls.length, 4, 'a second capture ran, nothing was served from the cache');
+    assert.equal(exec.calls.filter((c) => c.includes('capture-pane')).length, 2);
+  });
+
+  test('(−) two plain captures of one pane 99 ms apart share one capture, and fresh: true still always captures', async () => {
+    t = 70_000;
+    const exec = fakeTmux();
+    const mirror = createMirror({ exec, now: clock });
+    const first = mirror.capture('%1');
+    await tick(exec);
+    const a = await first;
+    assert.equal(exec.calls.length, 2);
+    t += 99;
+    const second = await mirror.capture('%1'); // answered from the cache at once: it needs no tick
+    assert.equal(second.status, 200);
+    assert.equal(second.etag, a.etag);
+    assert.equal(exec.calls.length, 2, 'cache hit: no tmux call');
+    const forced = mirror.capture('%1', undefined, { fresh: true });
+    await tick(exec);
+    assert.equal((await forced).status, 200);
+    assert.equal(exec.calls.length, 4, 'fresh: true ran a capture inside the 100 ms window');
+    t += 99; // still inside the window of the fresh capture, which refreshed the cache
+    const after = await mirror.capture('%1');
+    assert.equal(after.status, 200);
+    assert.equal(exec.calls.length, 4, 'plain again hits the cache the fresh capture refreshed');
+  });
+
+  test('(+) capture with fresh: true runs tmux again inside the 100 ms window and refreshes the cache', async () => {
     t = 30_000;
     const exec = fakeTmux();
     const mirror = createMirror({ exec, now: clock });
@@ -278,7 +317,7 @@ describe('createMirror', () => {
     await tick(exec);
     assert.equal((await fresh).status, 200);
     assert.equal(exec.calls.length, 4, 'fresh skips the cache');
-    t += 245; // 255 ms after the first capture (expired), 245 after the fresh one: the fresh result is what the cache holds
+    t += 90; // 100 ms after the first capture (expired), 90 after the fresh one: the fresh result is what the cache holds
     const after = await mirror.capture('%1');
     assert.equal(after.status, 200);
     assert.equal(exec.calls.length, 4, 'the fresh capture refreshed the cache');
