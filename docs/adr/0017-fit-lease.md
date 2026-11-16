@@ -374,6 +374,9 @@ and the live checks F9a and F9b of the `linux-verify` fit group, which pass in t
 
 ## Amendment 2026-11-16 (0.5, F10): a steady size, room for Claude's footer, a redraw hold, and faster settles
 
+*F11 (the amendment at the end of this file) adds the rows the mirror hides under its input-box strip to the size asked at a commit, so the room ask is 33 rows or more and the room hint says "more rows";
+the first capture of a lease becomes a commit point; the rest of this amendment holds.*
+
 Owner words after the build-9 live check (2026-11-16): "need to do smoother fitting size after focus (also faster). Bug - if nika is focused then can't scroll into nika
 app". Owner setup: tmux 3.8, `pane-border-status top`, terminal and nika side by side, Claude in its full-screen view with a 7-line task list. The owner decided
 design-F10 §12 Q1 to Q4 on 2026-11-16, all as recommended (marked Q1 to Q4 below). **Page side only** (`public/fit-ui.js`, `public/session.js`, `public/session.css`,
@@ -429,3 +432,47 @@ above) are replaced by Q2 below.
   puts up to two columns under a classic vertical scrollbar, only while the mirror overflows. (9) More tmux load: at most one `capture-pane` and one `display-message` per pane per
   100 ms instead of per 250 ms, one capture in flight per pane as before; the 100 ms page polls run only during a hold.
 - **Not built:** fixed slots for every transient line, a server-side hold, a setting for the room or the hold, and a change of the scroll and key rules.
+
+## Amendment 2026-11-16 (0.5, F11): more of Claude's conversation under the input-box strip
+
+Owner words after the build-10 live check (2026-11-16): about 4 to 5 empty rows of panel under the dashed strip "Input box · mirrored in the message box below", "use this empty space also". The
+owner decided **"More conversation"**: when the mirror hides Claude's input box and footer, nika asks tmux for those rows too, in the same single resize at each commit point; the text size
+stays as F10 sets it; the box and the footer stay hidden (they stay on Claude's screen, since nika reads the draft and the mode from them). The owner also decided design-F11 §12 Q1 to Q3
+on 2026-11-16, all as recommended (marked Q1 to Q3 below). **Page side only** (`public/fit-ui.js`, `public/session.js`; `public/draft-sync.js`, `public/mirror-render.js`, `public/session.css`
+and everything under `src/` are unchanged). **No new route, body key, answer field, lease-file key, tmux command or argv shape** (`ARGV` and `FILE_KEYS` unchanged), no change of the route's
+ranges or of any gate. Evidence: design-F11, the unit and rig tests (fit-ui 304 tests; fit-ui and session-ui together 1009; 48 of 48 code reversions caught) and the full suite. Nothing was run against a
+live Claude or tmux for this amendment: the owner's live checklist (design-F11 §10) is the proof.
+
+- **Root cause.** The mirror draws only the rows above Claude's input box and a one-row strip in its place, but the fit asked for and scaled to all of the pane's rows, so the rows under the cut
+  (the box and the footer, about 6) stayed empty panel: 5.7 rows in a 145 × 22 panel, 4.2 and 3.4 scaled rows where the room or the terminal's size is in force.
+- **The size asked** (`hiddenRows`, `fillSize`). At a commit the page counts the hidden rows K in the capture it drew (the last row with ink + 1 − the cut row; none for a cut that is not a row
+  1 to rows − 1, and none when more than `HIDE_MAX` 24 would be hidden) and asks `rows = max(F10's rows, the rows that fit above the strip at F10's text scale + K + d)`, at most 200, with F10's
+  columns. 145 × 27 instead of 145 × 22, and 210 × 37 instead of 210 × 33 with the room (the example panel). Still one request per commit, the same body, the same 12 takes a minute.
+- **When K is read.** Only at the commit points (the start, a focus, Fit again, a change of the window, the width or the cell), never per capture and never on a change of K or of the box's height
+  alone, so there is no resize cascade. **The first capture of a lease is a commit point** (orchestrator ruling 2026-11-16, accepted with the T1 deviations): the start request used to carry the
+  size measured at boot, when no frame was drawn; it now carries the K of the first frame, still as one request.
+- **The text scale counts the rows drawn** (`drawnScale`): the rows above the cut and the strip fill the panel's height, the columns its width, never above 1 and never below 0.4. At nika's own sizes the
+  width decides and the text is F10's. **Q1:** the same rule while the terminal owns the size (nika cannot add rows there): 0.53 instead of 0.49 for a 171 × 45 pane, nothing empty under the strip, no resize.
+  It is worked out at a commit and when an applied capture changes the pane's size, and held in between.
+- **Between commits** nothing is asked and the text does not change: a cut that turns off (Type into pane, a draft nika cannot read, a prompt or a dialog) overflows about 4 rows at the top (the mirror stays
+  pinned to the bottom), a cut that moves up leaves empty rows, one that moves down overflows; the next commit corrects it.
+- **With F10.** `frameReady`, `remeasure`, the redraw hold, the 150 ms settles, the 12 takes a minute, `ROOM_ROWS` and the chip's states, words, colours and icons are unchanged. The room step asks the room's fill
+  size and is taken only when it adds rows (`gain`: the room ask has more rows than the request last sent; else the step would send nothing and wait out another hold). The border row d is learned only from
+  nika's own answers (the asked columns came back) and kept through a terminal's or a zoomed window's size, because F11 adds d to the rows. **Q3:** the room hint reads "Claude's input box and footer did not
+  fit this panel's rows, so nika gave the pane more rows and scaled the text. Fit again tries full-size text." ("33 rows" is no longer exact).
+- **Rule text** (Q2). Constraint 12's Fit sentence gains one sentence: while the mirror hides Claude's input box and the footer under its one-row strip, the same request asks for the rows that fill the panel down to
+  the strip at that text size plus the hidden rows, never fewer rows than without them, counted only when it asks (`rules/project-rules.md`, approved 2026-11-16, word for word from design-F11 §7).
+- **Alternatives not picked.** The owner chose conversation over *showing Claude's footer under the strip* and over *giving the space to the message box*. Q1 (b), keeping F10's all-rows scale while the terminal owns the size:
+  smaller text and about 3 empty rows there. Q2 (b), keeping the rule as it was: the rule would then describe fewer rows than the page asks. Q3 (b), keeping the build-10 hint words. Considered in the design and
+  rejected: `max(33, panel + K)` rows (at a text scale below 1 the panel holds more rows than its cell count, so about 8 scaled rows would stay empty with the room on); making the Type into pane toggle or a change
+  of the cut a commit point (a resize with a redraw hold on a user action that needs a steady screen, and a cut that follows nika's own resize would start the cascade F10 removed); counting blank rows under
+  Claude's footer in K (the next commit would count the rows just added, growing the pane to 200 rows).
+- **Consequences.** (1) K is read from the frame drawn at the commit, which at a focus is the terminal's (about 64 columns), and applied at about 200 columns: a draft or footer line that wraps differently makes Claude's
+  box 1 or 2 rows taller or shorter than committed. The text then adapts at the pane-size change (smaller when fewer rows are hidden than counted, empty rows when more); it repeats at each focus while the draft stays, and an
+  empty draft has no such drift. (2) While the strip is off (Type into pane on, a prompt, a dialog) the top 4 or so rows of conversation sit above the panel's edge until the next commit; with classic scrollbars a vertical bar
+  covers up to 2 columns, more often than in F10. (3) Typing a multi-line message in the message box leaves one empty row per extra line until Send. (4) Before nika's first own answer d is 0, so the first ask of a window can be one row short
+  until the next commit. (5) For a split tmux window the larger ask counts as the panel in the squeeze rule, as F10's room did: a window that was `zoomed` (the panel smaller than the window) can now be zoomed and resized (`fitted`); the other
+  panes get the extra rows too, hidden by the zoom, and nothing shrinks. (6) The strip's height is read from layout offsets in whole pixels (1 or 2 px of error is absorbed by the rounding down); a strip that is not a positive height up to 4 cells
+  counts as 2 cells, which underfills and never overfills. (7) The first capture of a lease measures the panel once (a layout read per lease start, not per capture). The server cannot tell any of these asks from a panel of that size, and every
+  rule of the lease, the squeeze rule, the cap and the rate applies to them (`docs/security.md` T52, item 25).
+- **Not built:** a commit when the Type into pane toggle or the box's height changes, a setting for the extra rows, and a change of the server, the route or its gates.

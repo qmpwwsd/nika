@@ -867,8 +867,8 @@ files).
 
 ### `PUT /api/app/pane/:id/fit` (body ≤ 4 KB, `CAP.small`)
 The session window asks for its terminal panel's size in cells (0.5, W7; ADR 0017, `docs/security.md` T52, the page: spec §9.13; since F10 the page may
-instead ask once for 33 rows with the columns in the panel's proportion when Claude's input box and footer do not fit the panel, in the same body and ranges, see "The page's size, room for
-Claude's footer and the redraw hold" below).
+instead ask once for 33 rows with the columns in the panel's proportion when Claude's input box and footer do not fit the panel, in the same body and ranges, and since F11 it asks for
+the rows its mirror hides under the input-box strip as well, again in the same body and ranges, see "The page's size, room for Claude's footer and the redraw hold" below).
 The server zooms the mirrored pane and sizes its tmux window to the panel **when that cannot squeeze another pane and either no terminal shows
 the window or the session window has focus** (0.5, F4 and F9, the focused one wins: while a terminal shows the window, nika resizes it only for
 a session window that has focus, and the terminal then shows dots around it; without focus nika never resizes it), keeps a lease on that
@@ -1185,8 +1185,8 @@ anything. Hiding the session window (close button, minimize) is a blur, so it gi
 **The page's size, room for Claude's footer and the redraw hold (0.5, F10; owner decisions 2026-11-16, Q1 to Q4, ADR 0017; the page: spec §9.13).** No route,
 body key, answer field, lease-file key, `ARGV` entry or server gate changes; the server only caches a capture for 100 ms instead of 250 ms (the capture route
 above). Everything below is the page's behaviour, written here because it decides which sizes the route is asked for and when the page's other requests go out.
-- **A steady size.** The page measures its panel (the terminal box's border box, one glyph cell and the window's inner size) only at fixed moments: the start and
-  `document.fonts.ready`, a window `focus` (measured before the focus settle starts, so the take gets the size of that moment), Fit again and a `pageshow` from the
+- **A steady size.** The page measures its panel (the terminal box's border box, one glyph cell and the window's inner size) only at fixed moments: the start
+  (`document.fonts.ready` and, since F11, the first capture of a lease), a window `focus` (measured before the focus settle starts, so the take gets the size of that moment), Fit again and a `pageshow` from the
   back/forward cache, and a `ResizeObserver` change that counts: the window's inner width or height changed, a cell side changed by more than 0.01 px, or the box's width
   moved by one cell or more (the transcript toggle, the narrow tabs, the app's zoom). A change of the box's height alone with the same window size (a header wrap, a chip,
   a banner, a composer line, a prompt panel, the textarea growing) and a width change of less than one cell send no request and change no text size; the mirror stays
@@ -1195,12 +1195,38 @@ above). Everything below is the page's behaviour, written here because it decide
 - **The asked size.** The body is still exactly `{ cols, rows, open, focus }` in the route's ranges (40–400 × 10–200); the server does not know that the page asked
   for more rows than it measured. The page asks for its panel's size, and, once a window needs it, for room: 33 rows (`ROOM_ROWS`) and as many columns as keep the
   panel's proportion, `floor(panel cols × (33 − d) / panel rows)`, never fewer than the panel's, at most 400, where `d` is the border row (the asked rows minus the
-  pane rows of the last 200 answer, kept only when 0 or 1, else 0; `pane-border-status` makes it 1), and scales the text to the panel (never below 0.4). A panel of 33
-  rows or more is asked as it is.
+  pane rows of nika's own last 200 answer, kept only when 0 or 1; `pane-border-status` makes it 1), and scales the text to the panel (never below 0.4). A panel of 33
+  rows or more is asked as it is. These are the sizes without hidden rows (`askSize`); with hidden rows the next bullet applies.
+  Since F11 `d` is learned only from nika's own answer, the one whose columns are the columns last sent. An answer with other columns (the terminal's size while the
+  window is unfocused, a zoomed window's size) says nothing about the border row, so the earlier `d` stays (F10 reset it to 0, which made the next ask one row short). Before nika's first own answer `d` is 0.
+- **More of Claude's conversation (0.5, F11; owner decision 2026-11-16, "More conversation").** While the mirror hides Claude's input box and the footer below it under
+  its one-row strip (a readable draft and Type into pane off: it draws the rows above the box's top rule, the cut row, and the strip; spec §9.12), the pane's rows
+  under the cut would stay empty panel. The same request asks for them, in the same single resize at each commit point; the text size stays as F10 sets it, and the box and the footer stay on
+  Claude's screen (nika reads the draft and the mode from them). The body, its ranges and the answer are unchanged.
+  - *Hidden rows K* (`hiddenRows`): from the capture drawn at the commit, the last row with ink + 1 − the cut row; a row has ink when a span holds a character other than a space or U+00A0, so blank rows
+    under Claude's footer (its classic view) are not counted. K is 0 with no cut, a cut that is not a row from 1 to rows − 1, no ink at or below the cut, or more than 24 (`HIDE_MAX`: the screen is
+    not one nika knows, so nothing is added).
+  - *The fill size* (`fillSize`): with K from 1 to 24 it keeps the columns of the sizes above and asks `rows = min(200, max(F10's rows, above + K + d))`, where `above` is the number of
+    rows that fit the panel above the strip at F10's text scale s0: `floor((box height − 20 − strip) / (cell height × s0))`, `s0` being F10's scale for that ask (1 without room;
+    with the room `min(1, panel cols / room cols, panel rows / (33 − d))`) and `strip` the strip's height in CSS px as measured (`offsetTop` and `offsetHeight` of `#term-cut` against `#term-rows`),
+    or 2 cells when that is not a positive number up to 4 cells. Never fewer rows than without hidden rows; with no valid K, no usable box or cell height, or no row left above the strip it is
+    exactly the F10 size. Example: a 145 × 22 panel, K 6, a 27 px strip, `d` 1 asks 145 × 27 without the room and 210 × 37 with it (F10: 145 × 22 and 210 × 33).
+  - *When K is read.* Only at the commit points: the start, a focus, Fit again and a change of the window, the width or the cell (the list in "A steady size" above). **The first capture of a
+    lease is a commit point:** the page measures and reads K from that first frame before the start request, so the start request carries K and is still one request (before F11 the start
+    was sent with the size measured at boot, when no frame was drawn). Never per capture, never on a change of K or of the box's height alone, so no resize cascade follows.
+  - *The text scale* (`drawnScale`). Since F11 the scale counts the rows actually drawn, the rows above the cut and the strip, not the hidden ones:
+    `min(1, panel cols / pane cols, (box height − 20 − strip) / ((pane rows − K) × cell height))`, never below 0.4; with no hidden rows (or no usable box or cell height) it is F10's `min(1, panel cols / pane cols,
+    panel rows / pane rows)`. It is worked out at a commit and when an applied capture changes the pane's size, and held in between. At nika's own sizes the width decides and the text is
+    F10's (1 without the room, about 0.69 with it). It uses the same rule while the terminal owns the size and nika can add no rows (the 171 × 45 pane of the example: about 0.53 where F10 gave 0.49), so
+    the conversation fills the panel there too; no resize.
+  - *Between commits* nothing is asked and the text does not change when K does: a cut that turns off (Type into pane, a draft nika cannot read, a prompt or a dialog) shows every row, so K rows minus the strip's
+    height overflow at the top (about 4 rows in the example), the mirror staying pinned to the bottom; a cut that moves up (a longer draft) leaves that many empty rows; one that moves down overflows; the next commit corrects it.
 - **The room step.** The page asks for room once for a window, at once (no debounce, `size(…, { now: true })`), when the redraw hold below ran out and all of these
   hold: the frame drawn before the resize showed a readable input box; the latest capture is at the answered size, in the full-screen view (`alt`), with no prompt, no
-  dialog and no readable draft; the chip's state is `fitted` (never `zoomed`, `terminal`, `blocked` or `other`); the panel has fewer than 33 rows; and the room is not
-  already on. At most one room step per window: after its own hold the latest capture is applied whatever it shows. The room stays on across focus changes (each later
+  dialog and no readable draft; the chip's state is `fitted` (never `zoomed`, `terminal`, `blocked` or `other`); the panel has fewer than 33 rows; the room is not
+  already on; and (F11) the room ask has more rows than the request last sent. The room step asks the room's fill size (at least 33 rows, from the K of the last commit: its pending frame
+  has no readable box, so K is not read again); when that ask would be the size already sent the step would send nothing and only wait out another hold, so it is not taken and the
+  pending frame is applied. At most one room step per window: after its own hold the latest capture is applied whatever it shows. The room stays on across focus changes (each later
   focus is one resize straight to the room size, a take that counts in the 12 a minute like any other) until Fit again, a commit with a new window size or width, or a
   page load; it lives in page memory only. For the route the room step is a request with a larger `cols` and `rows` from a page that holds the lease (a renew of a
   fitted window, not a take, so it is not counted in the cap of 12), and every rule above applies to the asked size: the squeeze rule, the rate of 4 requests a second per

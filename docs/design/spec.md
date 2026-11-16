@@ -2091,7 +2091,7 @@ the focus goes ("When this window has focus", below).
 |---|---|
 | probe | `#fit-probe` inside `.term`: 100 zeros in the unscaled terminal font (`var(--fs-term)/1.35 var(--mono)`, `white-space: pre`), `aria-hidden`, hidden and off to the left. One cell is the probe's width / 100 wide and its height tall |
 | box | since F10 the `.term` **border box** (`getBoundingClientRect()`: the client box plus any scrollbar), with the window's inner size, minus its padding: 12 px left and right, 10 px top and bottom (`PAD_X` 24, `PAD_Y` 20). It is held as the **frame** `{ cols, rows, width, height, cellW, cellH, iw, ih }` and measured again only at the commit points of the next row (before F10 the page measured the client box at every change) |
-| size | `cols = floor((width − 24) / cellW)` clamped to 40–400, `rows = floor((height − 20) / cellH)` clamped to 10–200. Nothing is asked while a number is missing or not positive (a hidden tab keeps the last good size). The cut strip of §9.12 is not subtracted |
+| size | `cols = floor((width − 24) / cellW)` clamped to 40–400, `rows = floor((height − 20) / cellH)` clamped to 10–200. Nothing is asked while a number is missing or not positive (a hidden tab keeps the last good size). The cut strip of §9.12 is not subtracted from the panel's cells; since F11 the rows the mirror hides under it are added to the size asked at a commit (see "More conversation under the strip", below) |
 | when | the **commit points** (F10, `remeasure`, `fitCommit`): the start and `document.fonts.ready`; a window `focus` (measured before the focus settle, so the take gets the size of that moment); Fit again and a `pageshow` from the back/forward cache; and a `ResizeObserver` change on `.term` only when the window's inner width or height changed, a cell side changed by more than 0.01 px, or the box's width moved by one cell or more (the transcript toggle, the narrow tabs, the app's zoom). A commit's request follows 250 ms after the last one (a focus: the 150 ms settle sends it); an unchanged size is not asked for. A change of the box's **height alone** with the same window size (a header wrap, a chip, a banner, a composer line, a prompt panel, the textarea growing), and a width change of less than a cell, send nothing and change no text size: the mirror stays pinned to the bottom (not while it is paused) and the top rows may be hidden while the box is shorter (orchestrator ruling 2026-11-16, T2) |
 
 **Text scale** (`scaleFor`). `scale = min(1, panelCols / paneCols, panelRows / paneRows)` from the capture's size, clamped to
@@ -2100,7 +2100,11 @@ zoom, Cmd or Ctrl + and −, makes text larger). It is `--fit-scale` on `.term`,
 style attribute). `.term-rows` uses `font-size: calc(var(--fs-term) * var(--fit-scale, 1))`; `ch` and the row height are em-based, so
 the pane's grid stays exact. Below 0.4 the text stops shrinking and the terminal scrolls, as before. The header keeps the pane's
 real size ("Live · 120 × 39", §9.12). Since F10 the panel side of the scale is the held frame's (not the momentary box), so the scale changes only when a frame is committed or an applied capture
-changes the pane's size.
+changes the pane's size. **Since F11 the scale counts the rows drawn** (`drawnScale`): while the strip stands in for Claude's input box and footer, the rows above the cut and the strip fill the
+panel's height, `min(1, panelCols / paneCols, (box height − 20 px − strip) / ((paneRows − K) × cellH))` with K the hidden rows and the strip's measured height (2 cells when it cannot be measured),
+never above 1 and never below 0.4; with no strip it is the formula above. The same rule holds **while your terminal owns the size** (`terminal`, nika unfocused: nika cannot add rows there), so the text counts only
+the rows nika draws and fills the panel: in the 145 × 22 panel with a 171 × 45 pane and 6 hidden rows the text is about 0.53 (6.4 px) where F10's rule gave 0.49 (5.9 px). It is worked out at a commit and when an applied
+capture changes the pane's size, and held in between: a draft that grows a line never moves the text.
 
 **The chip.** `#fit-chip`, a button inside `#fit-wrap` since F1 (the panel below), sits in the terminal header after "Live · C × R". It follows the rule of §9.6: colour, icon and words,
 never colour alone. It is hidden (its wrapper is) until the first 200 answer, and again after the window gives the lease back or a 403. The header
@@ -2166,7 +2170,7 @@ the action are looked up by the chip's key, never by a word of the server.
 |---|---|---|---|
 | `fitted` | none | none | none |
 | `fitted` with a terminal (key `fitted:terminal`, F9) | "Your terminal shows dots around this tmux window while this window has focus. Click into the terminal and it gets its own size back within a second." | none | none |
-| `fitted` or `fitted:terminal` while the room is on (F10: nika asked for 33 rows because Claude's input box and footer did not fit) | "Claude's input box and footer did not fit this panel's rows, so nika gave the pane 33 rows and scaled the text. Fit again tries the panel's own size." (replaces the row's own hint) | none | **Fit again** (clears the room, measures, and asks `open: true`) |
+| `fitted` or `fitted:terminal` while the room is on (F10: nika asked for 33 rows or more, F11, because Claude's input box and footer did not fit) | "Claude's input box and footer did not fit this panel's rows, so nika gave the pane more rows and scaled the text. Fit again tries full-size text." (F11, owner decision 2026-11-16, Q3; replaces the row's own hint) | none | **Fit again** (clears the room, measures, and asks `open: true`) |
 | `zoomed` | "To fill the panel without scaled text, make this window larger or hide the transcript (Ctrl+Shift+H)." | none | none |
 | `blocked` / `user-change` | "Fit again turns the fit on once more. After a change of your own nika stays off until you ask." (reworded in F4: Fit again over a window a terminal shows lands on `terminal`, so it no longer promises a size) | none | **Fit again** |
 | `blocked` / `changed` | "Fit again tries once more." | none | **Fit again** |
@@ -2215,10 +2219,10 @@ with an action shows heading, why, hint, Close and the action; pending shows "Fi
 
 | Event | Request |
 |---|---|
-| the first capture answers (the pane is live) | `PUT { open: true }`, repeated until one is answered 200; every later request is `open: false`, also after `blocked / user-change` and `blocked / changed`, until the user asks (next row) |
+| the first capture answers (the pane is live) | `PUT { open: true }`, repeated until one is answered 200; every later request is `open: false`, also after `blocked / user-change` and `blocked / changed`, until the user asks (next row). F11: that first frame is a commit point, so it is measured before the request goes out and the request carries the rows hidden under the strip; still one request |
 | the user presses Fit again or Fit here (F1) | `PUT { open: true }` at once: a waiting heartbeat is cleared and the beat re-armed, and a request in flight finishes first, then this one goes out. A refused or lost ask is tried again by the next beat, again with `open: true`; later requests are `open: false` once one is answered 200. Not before the first capture, not after the pane is gone or a 403, and not while an ask is pending |
 | the panel changes size (a commit point of "Measuring the panel", F10: not a change of the height alone) | `PUT { open: false }` 250 ms after the last change |
-| a redraw hold ends by timeout with the room conditions (F10, "Steady size, room and the redraw hold", below) | one `PUT` at once (no debounce) for 33 rows and the columns in the panel's proportion, with `focus` read now |
+| a redraw hold ends by timeout with the room conditions (F10, "Steady size, room and the redraw hold", below) | one `PUT` at once (no debounce) for the room's size: 33 rows or more (F11 adds the hidden rows) and the columns in the panel's proportion, with `focus` read now; not sent (the pending frame is applied) when it would ask no more rows than the request last sent |
 | every 5 s | `PUT { open: false }` with the current size (the beat: the server lets a lease lapse after 15 s without one) |
 | the window is shown again (`visibilitychange`) | one `PUT` at once: timers may have been suspended and the lease may have lapsed; it carries the focus read now |
 | this window loses focus (`blur`, F9) | `PUT` with `focus: false` 150 ms after the blur (F10; F9 had 200 ms), if it still holds (a flick back sends nothing); the server answers with the give |
@@ -2325,9 +2329,9 @@ the half-redrawn screen while Claude repainted. What the user sees now (the numb
 |---|---|
 | you click into this window | the panel is measured once, at the focus (§9.13 "Measuring the panel"), and the pane is resized once; after the 150 ms settle and Claude's repaint (about 0.55 s, at most about 0.9 s) the new frame appears in one step with a 120 ms fade, and when the text grows it also zooms in from the old text size (anchored bottom-left, where the input box and footer are). No animation with `prefers-reduced-motion`. The chip's words, the mode chip and the "Live · C × R" label change in the same step as the mirror, and the header, the toolbar and the composer do not move |
 | a line, a chip, a prompt panel or a taller draft makes the terminal box shorter or taller | nothing is asked and the text keeps its size; the mirror stays pinned to the bottom, so the input box and footer stay visible and the top rows are hidden while the box is shorter (the mirror scrolls); the text size changes again only at the next commit point |
-| Claude's input box and footer did not fit the panel (a tall task list) | nika first asks for the panel's size, waits for the redraw (the hold, below) and, when the box is still not on screen, asks once for 33 rows (`ROOM_ROWS`) with the columns in the panel's proportion and scales the text to the panel: about 8–9 px for a panel of 21–24 rows (text 66–75 %), 100 % wherever the footer fits. That first focus of a window takes about 1.1–1.4 s and two resizes; the room then stays on for the window, so every later focus is one resize straight to the room size. The chip's panel says why ("Fit · fills the panel", its panel line in the table above) and Fit again asks for the panel's own size |
+| Claude's input box and footer did not fit the panel (a tall task list) | nika first asks for the panel's size, waits for the redraw (the hold, below) and, when the box is still not on screen, asks once for 33 rows (`ROOM_ROWS`; F11: or more, see "More conversation under the strip", below) with the columns in the panel's proportion and scales the text to the panel: about 8–9 px for a panel of 21–24 rows (text 66–75 %), 100 % wherever the footer fits. That first focus of a window takes about 1.1–1.4 s and two resizes; the room then stays on for the window, so every later focus is one resize straight to the room size. The chip's panel says why ("Fit · fills the panel", its panel line in the table above) and Fit again asks for full-size text |
 | you scroll, send, switch the mode or run a quick action right after the click | the request waits for the redraw hold (at most 1.2 s, 2.4 s with a room step) and then goes; no "dialog or menu" line appears for nika's own redraw |
-| you press Fit again | the room is cleared, the panel measured, and the next request is `open: true` with the panel's own size |
+| you press Fit again | the room is cleared, the panel measured, the rows hidden under the strip read again (F11), and the next request is `open: true` with the panel's own columns and the rows that fill it (no room) |
 
 **The redraw hold.** After nika's own resize (the 200 answer's pane size differs from the drawn one) the page keeps drawing the last good frame until a capture at the
 answered size shows Claude's input box, a prompt, a dialog or no full-screen view, 1.2 s at most; it reads the capture at once and every 100 ms meanwhile. A capture that is
@@ -2345,6 +2349,33 @@ No new chip state, colour, icon or token.
 
 Not built (design-F10 §2.5): fixed slots or overlays for every transient line (header chip width, the notes row, the refusal lines, the prompt panels) to keep the box steady; with the commit rule
 none of them can change the size.
+
+**More conversation under the strip (0.5, F11; owner decisions 2026-11-16: "More conversation", Q1 to Q3 of design-F11).** After the build-10 check the owner saw about 4 to 5 empty rows of panel under the
+dashed strip "Input box · mirrored in the message box below" (§9.12) and asked to use that space. The mirror draws only the rows above Claude's input box plus the strip, but the fit asked for and scaled to
+all of the pane's rows, so the rows under the cut (the input box and the footer, about 6) stayed empty. Now a commit asks for those rows too, in the same single resize, so Claude's conversation reaches
+down to the strip; the text size stays as F10 sets it; the input box and the footer stay hidden (they stay on Claude's screen, since nika reads the draft and the mode from them). The chip's states,
+words, colours and icons do not change ("Fit · fills the panel" now describes the drawn conversation); no new token. The numbers below are for a 145 × 22 panel (a 27 px strip, 6 hidden rows, border row 1).
+
+| Situation | Now |
+|---|---|
+| you click into this window with the strip shown | the same one resize as in F10, for 145 × 27 instead of 145 × 22 (210 × 37 instead of 210 × 33 where the room is on): the conversation fills the panel down to the strip, with less than one row of empty panel under it; the text size is F10's (100 %; about 0.69 with the room) |
+| the window opens | the first frame of a lease is measured before the start request, so that request already carries the hidden rows; still one request |
+| you click into your terminal | it gets its size back as before, and the blur asks for no new size. The mirror's text counts only the rows it draws, so it is a little bigger (0.53 against 0.49 for a 171 × 45 pane) and nothing is empty under the strip |
+| you turn Type into pane on or off | no resize and no change of the text size; the mirror is pinned to the bottom at once. On: every row, with Claude's input box and footer at the bottom and about 4 rows of conversation above the panel's top edge (scroll up to see them; the mirror pauses as usual). Off: the strip is back |
+| a draft nika cannot read, a prompt or a dialog replaces Claude's box | the same as Type into pane on, until the box is readable again or the next commit |
+| the draft grows or shrinks by a line | nothing is asked and the text keeps its size: a longer draft leaves one empty row more under the strip, a shorter one (after Send) pushes one row more above the panel's top edge; the next commit corrects it |
+| you press Fit again | the hidden rows are read again, which also corrects every state above |
+
+**What is read, and when.** The hidden rows K are counted in the capture drawn at the commit: the last row with ink + 1 − the cut row (blank rows under Claude's footer in its classic view are not counted); 0 with no cut or when
+more than 24 would be hidden. The strip's height is measured from the page (2 cells when that fails). Both are read only at the commit points of "Measuring the panel" and, new in F11, at the first capture of a
+lease; never per capture, so a changing draft cannot start a chain of resizes. The size asked is the rows that fill the panel above the strip at F10's text size, plus K, plus the border row, never fewer rows than F10 asks and at most 200;
+the columns are F10's. The server, the body, the ranges and every gate are unchanged (contract `api-app.md`, "More of Claude's conversation").
+
+**Border row.** The border row (`pane-border-status`) is learned only from nika's own answers and kept through a terminal's or a zoomed window's size, so the next ask is not one row short (before nika's first own answer it counts 0: at most one empty
+row until the next commit).
+
+Not built (the alternatives the owner did not pick, 2026-11-16): Claude's footer shown under the strip, and the space given to the message box. Also not built (design-F11 §4): a
+commit when Type into pane is toggled or the box changes height (each would add a resize with a redraw hold to a user action that needs a steady screen, and a cut that follows nika's own resize would start the cascade F10 removed).
 
 ### 9.14 Attachments (0.5, W2)
 

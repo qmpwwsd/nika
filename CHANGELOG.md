@@ -114,9 +114,18 @@ Session window (desktop app):
 - **Room for Claude's input box and footer.** With a tall task list Claude draws its input box and footer below the screen, so nika could
   read no mode and refused to scroll (it needs about 30 rows with a 7-line task list). When that happens after a resize, nika asks once for 33
   rows with the columns in your panel's proportion and scales the text to your panel (about 8 to 9 px for a panel of 21 to 24 rows) for that
-  window; where the footer fits, the text stays at full size. The chip's panel says why, and **Fit again** tries your panel's own size. Untried:
-  these timings and the room size against a real Claude in the app's window (your live check); the 30-row figure is read from captures
+  window (33 rows or more, see the next entry); where the footer fits, the text stays at full size. The chip's panel says why, and **Fit again** tries
+  full-size text. Untried: these timings and the room size against a real Claude in the app's window (your live check); the 30-row figure is read from captures
   of Claude 2.1.319 and 2.1.325, not from Claude's code.
+- **More of Claude's conversation in the terminal view.** The view stops above Claude's input box with a thin line, and under that line 4 to 5
+  rows of your panel stayed empty. nika now asks for those rows too, in the same single resize, so Claude's conversation fills the panel down to
+  the line. The text keeps its size, and Claude's input box and footer stay hidden but are still read for the draft and the mode. The extra rows
+  are counted when you click into the window, open it, press Fit again or change its size, and never while the screen changes. While your terminal
+  has the pane, the text is a little bigger instead (0.53 against 0.49 for a 171 × 45 pane in a 145 × 22 panel), because it counts only the
+  rows nika draws. Turn **Type into pane** on, or open a prompt or a menu, and every row shows again, with the top 4 or so rows of conversation
+  above the panel's edge until your next click into the window or Fit again (the view stays at the bottom; scroll up to see them). The fit
+  chip's panel now says "nika gave the pane more rows" and "Fit again tries full-size text". Untried: the extra rows against a real Claude in
+  the app's window (your live check).
 - **The `/` palette lists yours first, and all of them.** The project's commands come first, then your personal ones, then those of the
   plugins applied to the project, then Claude's built-ins, then every other installed plugin's. The list no longer stops at 50: a bare `/`
   shows everything, and the number in its header is the real total.

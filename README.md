@@ -427,8 +427,9 @@ Desktop app only. None of this is on the browser dashboard.
   the text). With no focus on the session window and no terminal for 30 seconds, nika sizes the window to the panel again by itself.
   Clicking into the session window changes the pane once, within about half a second: the panel is measured at that moment and
   not again while a line, a chip or a panel opens, and nika keeps showing the last good frame until Claude has redrawn. When Claude's
-  input box and footer do not fit the panel (a tall task list), nika gives the pane 33 rows once and scales the text to the panel;
-  the chip's panel says so, and Fit again tries the panel's own size.
+  input box and footer do not fit the panel (a tall task list), nika gives the pane 33 rows or more once and scales the text to the panel;
+  the chip's panel says so, and Fit again tries full-size text. The terminal view stops above Claude's input box with a thin line; nika asks
+  for the rows hidden under that line in the same resize, so Claude's conversation fills the panel down to the line.
 - **Question forms.** When Claude asks a question or for a plan approval, a form above the message box answers it one step at a
   time (options, your own text under Other, the review, the plan's choices, Decline). When nika cannot read the dialog, or it
   mentions bypass, you answer in the terminal. Why: [ADR 0015](docs/adr/0015-dialogs-from-the-screen.md).

@@ -255,8 +255,8 @@ Accepted, with the reason.
      resizes per pick). A window manager with focus-follows-mouse could flip the focus fast: the page's 150 ms settle (F10; 400 ms in F9) filters less of a pass of
      the pointer and the cap bounds the rest. In the app tier there is one session window today (the shell denies new windows), so no second page can take the
      size.
-  25. *The page may ask for a size larger than its panel, and it holds its own drawing for 1.2 s* (F10). To make room for Claude's input box and footer the page asks once for
-     33 rows with the columns in the panel's proportion, still the same body `{ cols, rows, open, focus }` and still inside the route's ranges (40–400 × 10–200, checked at the route
+  25. *The page may ask for a size larger than its panel, and it holds its own drawing for 1.2 s* (F10, F11). To make room for Claude's input box and footer the page asks once for
+     33 rows or more (F11: at any commit it also asks for the rows its mirror hides under the input-box strip, at most 200 in all) with the columns in the panel's proportion, still the same body `{ cols, rows, open, focus }` and still inside the route's ranges (40–400 × 10–200, checked at the route
      and again in `src/fit.js`); the server cannot tell it from a panel of that size, and every rule of this entry applies to it (the squeeze rule, 4 requests a second per pane, the
      lock, the lease). It is a renew from a page that holds the lease, not a take, so `TAKE_MAX` is not touched by it; later focus takes ask the same size and count in the 12 a minute
      as any take, so a forged or looping page gains nothing the existing bounds do not already stop. The page's redraw hold and its waiting requests (scroll, Send, the draft write,
