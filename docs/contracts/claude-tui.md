@@ -1273,3 +1273,23 @@ to the window) and with a real tty client. tmux 3.2, the floor, the versions in 
   asked, so the window ends larger than the panel and only a read-back shows it.
 - **Not verified:** how long every pane is visible between `select-layout` and `resize-pane -Z`; a user changing focus between the take and the give; a client of
   another size at give time; mixed grids (rows of columns); tmux 3.2; a shell's or editor's redraw (the panes ran `sleep`).
+
+## 16. The "Adding a new directory" question for `--add-dir` (2.1.326, spike S-ADD)
+
+Checked 2026-11-17, Claude Code 2.1.326, tmux 3.8, macOS, a 120 x 40 pane, throwaway folders, no model turn.
+
+- A folder passed with `--add-dir` that Claude has not been started in shows, at start, after the folder trust of the working directory if
+  that is new: `Adding a new directory:` and the path, `This session hasn't worked here before. Is this a directory you created or one you
+  trust?`, a paragraph ending `Your answer holds for this session.`, then `❯ No, exit` and `Yes, add it` (no numbers; focus on No), footer
+  `Enter to confirm · Esc to cancel`. Same in `default` and `auto` permission mode.
+- "This session" is the claude process: a restart with the same folder (and the same `--session-id`) asks again.
+- `No, exit` and `Esc` end claude with status 1 and print `To go on without it, start again with the same flags but without --add-dir <dir>.`
+  An `Enter` that reaches this screen answers No. A typed character selects nothing; the footer then reads `Esc to exit · To add it, press ↓ to
+  Yes, then Enter (your text is kept)`. Only `Down` moves to Yes.
+- Not asked: a folder inside the working directory; a folder under one Claude was started and trusted in (that trust lasts); a folder given in
+  `--settings` as `permissions.additionalDirectories`, which `/permissions` then lists under Workspace like an `--add-dir` folder. With both,
+  only the `--add-dir` folder asks.
+- The `.claude/commands` of an `--add-dir` folder load into the session; those of a `permissions.additionalDirectories` folder do not.
+- nika reads nothing on this screen: the footer is no mode line, `promptFromRows`, `dialogCapture`, `readDraft` and `surveyOf` are null, so
+  the page shows no form and plain-input routes answer 409 `screen-unclear`. Since 0.5 (F18) `nika spawn` passes its reports dir in
+  `permissions.additionalDirectories` (`agentSettings`, `src/spawn.js`), so its agents never see this question.

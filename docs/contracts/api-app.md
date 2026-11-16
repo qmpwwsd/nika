@@ -2294,13 +2294,15 @@ Session targets always carry the trailing colon (`=<session>:`) where tmux expec
 - `_run-agent <key> <name>` reads `<reportsDir>/<name>.brief.md` (0600, written by `spawn` before `split-window`,
   read through `fsafe`; the brief never passes through tmux argv, but it is claude's own argv, see below), writes `<name>.session` (the UUID), `<name>.remote`
   (the RC name or empty) and `<name>.pane`, then runs `claude --session-id <UUID> --model <model> [--permission-mode <m>] -n <name>
-  [--remote-control=<prefix>-<name>] --add-dir <reportsDir> --append-system-prompt <templates/guard-prompt.txt
-  rendered with name, report path> --settings <deny JSON> --disallowedTools Bash(nika:*) Bash(tmux:*)
+  [--remote-control=<prefix>-<name>] --append-system-prompt <templates/guard-prompt.txt
+  rendered with name, report path> --settings <settings JSON> --disallowedTools Bash(nika:*) Bash(tmux:*)
   Bash(claude:*) "Bash(git add:*)" "Bash(git commit:*)" "Bash(git push:*)" -- <brief>` with inherited stdio, writes
   claude's exit code to `<name>.rc` and exits with it. `_run-agent` refuses (exit 3) a brief that is empty, contains NUL
   or is a single word. The brief, the guard prompt and the deny settings are claude's argv, so any local process can
-  read them with `ps` (single-user assumption, `docs/security.md` residual risk a). RC names match `RC_NAME`. `--disallowedTools` is variadic, so it is always followed by `--`. Deny JSON:
-  `{"permissions":{"deny":["Read(**/.env*)","Edit(**/.env*)","Read(**/*.key)","Edit(**/*.key)"]}}` (T3, T4). The deny
+  read them with `ps` (single-user assumption, `docs/security.md` residual risk a); that includes the reports dir in the settings JSON. RC names match `RC_NAME`. `--disallowedTools` is variadic, so it is always followed by `--`. Settings JSON (`agentSettings`):
+  `{"permissions":{"deny":["Read(**/.env*)","Edit(**/.env*)","Read(**/*.key)","Edit(**/*.key)"],"additionalDirectories":["<reportsDir>"]}}` (T3, T4).
+  The reports dir goes there, not through `--add-dir` (0.5, F18): Claude Code 2.1.326 asks to trust an `--add-dir` folder each time claude
+  starts, and "No, exit", Esc or a stray Enter ends the agent (`claude-tui.md` §16). The deny
   lists are advisory, not a boundary: Claude Code matches the literal command text, so `/opt/homebrew/bin/tmux …`,
   `sh -c 'tmux …'`, `git -C . commit` or a script written with Write and run with Bash all pass, and Read/Edit denies do
   not cover subprocesses. They stop the common invocation and honest mistakes; the boundary is the single-user trust

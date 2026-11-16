@@ -258,6 +258,11 @@ Labels (both tiers; spawning in the desktop app and the CLI):
 
 Fixes:
 
+- **Agents started with `nika spawn` no longer stop at Claude's "Adding a new directory" question.** Claude Code 2.1.326 asks every
+  agent to trust nika's report folder when it is passed with `--add-dir`, at every start; "No, exit", Esc or a stray Enter ended the
+  agent, and nika could not show the question. nika now passes the folder in the agent's settings (`permissions.additionalDirectories`),
+  which Claude does not ask about. The agent still reads and writes its report there, and commands files in that shared folder no
+  longer load into other agents.
 - **Send no longer types into Claude's agent list or onto the shells pill.** With the keyboard selection on a row of the agent list
   or on the `<n> shells` pill, Claude hides its input cursor, and a typed key either left the selection or opened the Background
   dialog. When nika can read no input box and no mode line (a menu, the agent list), Send now refuses before typing anything: "nika

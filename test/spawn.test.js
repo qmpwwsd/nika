@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawnAgent, runAgent, deniedTools } from '../src/spawn.js';
+import { spawnAgent, runAgent, deniedTools, agentSettings } from '../src/spawn.js';
 import { startOrchestrator, sessionNameFor } from '../src/orchestrate.js';
 import { TMUX_SESSION, AGENT_NAME } from '../src/ids.js';
 import { NO_TMUX_SERVER } from '../src/tmuxerr.js';
@@ -32,7 +32,8 @@ const LIST_ALL = [TMUX, '-u', 'list-panes', '-a', '-F', '#{pane_id}\t#{session_n
 const LIST_AGENTS = [TMUX, '-u', 'list-panes', '-a', '-F', '#{pane_id}\t#{pane_dead}\t#{@nika-role}\t#{@nika-agent}\t#{@nika-depth}\t#{@nika-parent}\t#{session_name}\t#{window_name}'];
 const OTHER_KEY = '0123456789abcdef'; // the key of some other project
 const CHECK = (pane) => [TMUX, '-u', 'display-message', '-p', '-t', pane, '#{pane_dead}']; // the early-exit check (F4), made once the pane is created and tagged
-const DENY_SETTINGS = '{"permissions":{"deny":["Read(**/.env*)","Edit(**/.env*)","Read(**/*.key)","Edit(**/*.key)"]}}';
+// Written out by hand (not built with agentSettings), so a change of the JSON shape fails here.
+const SETTINGS = (dir) => `{"permissions":{"deny":["Read(**/.env*)","Edit(**/.env*)","Read(**/*.key)","Edit(**/*.key)"],"additionalDirectories":[${JSON.stringify(dir)}]}}`;
 const DENIED = ['Bash(nika:*)', 'Bash(tmux:*)', 'Bash(claude:*)', 'Bash(git add:*)', 'Bash(git commit:*)', 'Bash(git push:*)'];
 const COMPACT_1M = { window: 400000, pct: '84.2106' }; // the default setting on a 1M model such as `sonnet`: W = 400k, 80 %
 const BASE_PANES = () => [{ id: '%1', session: 'My-App', window: 0, windowName: 'orchestrator', command: 'claude' }];
@@ -1461,8 +1462,8 @@ describe('runAgent', () => {
     assert.match(guard, /never run nika, tmux or claude/i);
     assert.match(guard, /git add, git commit or git push/);
     assert.deepEqual(args, [
-      '--session-id', sid, '--model', 'sonnet', '-n', 'builder-1', '--add-dir', rd(w), '--append-system-prompt', guard,
-      '--settings', DENY_SETTINGS, '--disallowedTools', ...DENIED, '--', 'Do the thing.',
+      '--session-id', sid, '--model', 'sonnet', '-n', 'builder-1', '--append-system-prompt', guard,
+      '--settings', SETTINGS(rd(w)), '--disallowedTools', ...DENIED, '--', 'Do the thing.',
     ]);
   });
 
@@ -1472,7 +1473,7 @@ describe('runAgent', () => {
     const sid = read(w, 'builder-1.session').trim();
     const args = spawn.calls[0].args;
     assert.deepEqual(args.slice(0, 9), ['--session-id', sid, '--model', 'sonnet', '--permission-mode', 'plan', '-n', 'builder-1', '--remote-control=my-app-builder-1']);
-    assert.equal(args[9], '--add-dir');
+    assert.equal(args[9], '--append-system-prompt');
     assert.equal(read(w, 'builder-1.remote'), 'my-app-builder-1\n');
   });
 
@@ -1703,8 +1704,8 @@ describe('runAgent: a sub-orchestrator (0.4)', () => {
     const args = spawn.calls[0].args;
     const guard = args[args.indexOf('--append-system-prompt') + 1];
     assert.deepEqual(args, [
-      '--session-id', sid, '--model', 'sonnet', '-n', 'planner', '--add-dir', rd(w), '--append-system-prompt', guard,
-      '--settings', DENY_SETTINGS, '--disallowedTools', ...SUB_DENIED, '--', 'Do the thing.',
+      '--session-id', sid, '--model', 'sonnet', '-n', 'planner', '--append-system-prompt', guard,
+      '--settings', SETTINGS(rd(w)), '--disallowedTools', ...SUB_DENIED, '--', 'Do the thing.',
     ]);
     assert.ok(!SUB_DENIED.includes('Bash(nika:*)') && !SUB_DENIED.includes('Bash(nika spawn:*)') && !SUB_DENIED.includes('Bash(nika status:*)'));
   });
@@ -2250,5 +2251,30 @@ describe('spawnAgent: the kind label (0.5, W9)', () => {
     const ctx = w.ctx(fakeTmux({ panes: BASE_PANES() }));
     await spawnAgent(req(w, { kind: 'tester' }), ctx);
     assert.deepEqual(ctx.started.get('%20'), { key: w.project.key, name: 'builder-1', sessionId: null, role: 'agent', parent: null, depth: 1, mode: 'manual' });
+  });
+});
+
+describe("agentSettings: the agent's --settings JSON (0.5, F18; spike S-ADD)", () => {
+  test('(+) the deny list as before, and the reports dir as the one additional directory, nothing else', () => {
+    const dir = path.join(path.sep, 'state', 'nika', 'projects', 'abcdef0123456789', 'reports');
+    const s = JSON.parse(agentSettings(dir));
+    assert.deepEqual(Object.keys(s), ['permissions']);
+    assert.deepEqual(Object.keys(s.permissions), ['deny', 'additionalDirectories']);
+    assert.deepEqual(s.permissions.deny, ['Read(**/.env*)', 'Edit(**/.env*)', 'Read(**/*.key)', 'Edit(**/*.key)']);
+    assert.deepEqual(s.permissions.additionalDirectories, [dir]);
+    assert.equal(agentSettings(dir), SETTINGS(dir));
+  });
+
+  test('(−) a dir with quotes, spaces or a backslash stays one JSON string: it never adds a key or a second directory', () => {
+    const dir = path.join(path.sep, 'state', 'a "b" c\\d', '"],"allow":["Bash(*)');
+    const s = JSON.parse(agentSettings(dir));
+    assert.deepEqual(s.permissions.additionalDirectories, [dir]);
+    assert.deepEqual(Object.keys(s.permissions), ['deny', 'additionalDirectories']);
+    assert.equal(s.permissions.allow, undefined);
+  });
+
+  test('(−) spawn never passes --add-dir: Claude Code 2.1.326 asks to trust such a folder at every start', () => {
+    const src = fs.readFileSync(new URL('../src/spawn.js', import.meta.url), 'utf8');
+    assert.ok(!/'--add-dir'/.test(src));
   });
 });

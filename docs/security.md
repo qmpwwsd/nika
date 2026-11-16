@@ -83,7 +83,9 @@ Accepted, with the reason.
   the boundary is the single-user trust model plus the app secret, and the check still stops honest mistakes, such as
   typing into a shell pane or into a pane id that tmux reused (contract section 5). A pane nika started is held to the
   same test: it qualifies only while its current command looks like claude.
-- **c. Spawned agents share a reports dir.** Each gets `--add-dir <reports dir>` (`src/spawn.js:266`). An agent can
+- **c. Spawned agents share a reports dir.** Each gets it as its one `permissions.additionalDirectories` entry in the `--settings` JSON
+  (`agentSettings`, `src/spawn.js`; 0.5, F18: not `--add-dir`, whose folder Claude Code 2.1.326 asks to trust at every start and whose
+  `.claude/commands` it loads, so one agent could plant a command for the others). An agent can
   therefore read and write the report and brief files of sibling agents of the same project. Accepted because they
   work in the same repository anyway. `_run-agent` re-validates what it reads (`.agent.json`, bypass refused), and
   the dashboard cleans every string. The `<name>.pane` files in that folder are display only: the agent limit and the

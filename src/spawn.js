@@ -46,7 +46,12 @@ export function deniedTools(role, commands) {
   if (role !== SUB_ROLE || !table) return DENIED_TOOLS;
   return [...DENIED_TOOLS.slice(1), 'Bash(nika)', ...commands.filter((c) => !SUB_ALLOWED.has(c)).map((c) => `Bash(nika ${c}:*)`)];
 }
-const DENY_SETTINGS = JSON.stringify({ permissions: { deny: ['Read(**/.env*)', 'Edit(**/.env*)', 'Read(**/*.key)', 'Edit(**/*.key)'] } });
+const DENY = ['Read(**/.env*)', 'Edit(**/.env*)', 'Read(**/*.key)', 'Edit(**/*.key)'];
+// The agent's --settings: the deny list, and nika's reports dir as an extra working directory. Not `--add-dir`: since 2.1.326 Claude Code asks
+// to trust an --add-dir folder every time claude starts ("No, exit", Esc or a stray Enter ends the agent, and nika cannot read that screen),
+// and it loads the `.claude/commands` of an --add-dir folder, which every agent of the project can write to. A folder in
+// `permissions.additionalDirectories` is not asked about and loads nothing (spike S-ADD, 2026-11-17).
+export const agentSettings = (dir) => JSON.stringify({ permissions: { deny: DENY, additionalDirectories: [dir] } });
 const isPlainObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 // The brief is claude's positional prompt after `--`; a lone word such as `update` or `doctor` can be read as a subcommand.
 const isOneWord = (brief) => !/\s/.test(brief.trim());
@@ -463,8 +468,8 @@ export async function runAgent(key, name, ctx) {
   }
   const argv = [
     '--session-id', sessionId, '--model', meta.model, ...permissionFlags(meta.permissionMode), '-n', name,
-    ...(meta.rc ? [`--remote-control=${meta.rc}`] : []), '--add-dir', dir, '--append-system-prompt', guard,
-    '--settings', DENY_SETTINGS, '--disallowedTools', ...deniedTools(meta.role, ctx.commands), '--', brief,
+    ...(meta.rc ? [`--remote-control=${meta.rc}`] : []), '--append-system-prompt', guard,
+    '--settings', agentSettings(dir), '--disallowedTools', ...deniedTools(meta.role, ctx.commands), '--', brief,
   ];
   // the inherited env, plus the two compaction variables when auto-compact is on (a new object: ctx.env itself is never written to)
   const env = ctx.env ?? process.env;
