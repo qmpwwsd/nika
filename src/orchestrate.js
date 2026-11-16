@@ -2,7 +2,7 @@
 // Leaf module: the router and the CLI call startOrchestrator() with injected deps; every subprocess goes through
 // ctx.exec (execFile, fixed argv arrays, never a shell). src/spawn.js reuses the helpers exported here.
 import crypto from 'node:crypto';
-import { loadConfig, setOrchestrator, effectiveModels } from './store.js';
+import { loadConfig, setOrchestrator, effectiveModels, effectiveAgents } from './store.js';
 import { compactLaunch, WINDOW_ENV, PCT_ENV } from './compact.js';
 import { clean } from './text.js';
 import { PROJECT_KEY, UUID, PANE_ID, TMUX_SESSION, RC_PREFIX, RC_NAME, CLAUDE_COMMAND } from './ids.js';
@@ -40,6 +40,33 @@ export function tmuxFail(err) {
   if (err?.code === 'ENOENT') return fail(503, 'tmux_unavailable', 'tmux not found (add it to PATH or set NIKA_TMUX)');
   const why = clean(String(err?.stderr || err?.message || 'unknown error').trim().split('\n')[0], 200) ?? 'unknown error';
   return fail(502, 'tmux_failed', `tmux failed: ${why}`);
+}
+
+// How long Claude has to die at launch before a start or spawn counts as a success, and what the user is told when it did (contract §3).
+const SETTLE_MS = 1000;
+const CLAUDE_EXITED = 'Claude exited right after it started. Run `claude` once in a terminal in this folder to see why (for example, to log in).';
+// a resume that fails inside claude (an id it no longer knows) needs the same --resume to show why; a plain `claude` starts a fresh session
+const resumeExited = (id) => `Claude exited right after it started. Run \`claude --resume ${id}\` in a terminal in this folder to see why.`;
+const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * The early-exit check of Start, Resume and spawn, called once the new pane is created and tagged: waits 1 s (`ctx.sleep(ms)`, injectable
+ * so tests don't wait), then asks tmux whether the pane still exists and is not dead (`display-message -p -t <%pane> '#{pane_dead}'`,
+ * fixed argv, a constant format). Only `0` is running; a dead pane, a gone pane, a gone server and any tmux error all mean claude is
+ * gone → 502 `claude_exited`, else null. A claude that dies later than that is not caught here (`shortcut: one check at 1 s`).
+ * `resumeId`: the session Start resumed (a UUID, checked again here); the refusal then carries it as `resume` and names `claude --resume`.
+ */
+export async function earlyExit(ctx, pane, resumeId = null) {
+  if (!PANE_ID.test(pane)) return fail(502, 'tmux_failed', 'tmux did not return a pane id');
+  await (ctx.sleep ?? pause)(SETTLE_MS);
+  try {
+    const { stdout } = await tmux(ctx, 'display-message', '-p', '-t', pane, '#{pane_dead}');
+    if (String(stdout).trim() === '0') return null;
+  } catch {
+    // gone: the pane, or the whole server with its last session
+  }
+  if (typeof resumeId === 'string' && UUID.test(resumeId)) return { status: 502, body: { error: 'claude_exited', resume: resumeId, message: resumeExited(resumeId) } };
+  return fail(502, 'claude_exited', CLAUDE_EXITED);
 }
 
 /** The project name reduced to TMUX_SESSION (invalid chars → `-`, no leading `-`, ≤ 48); the key when nothing is left. */
@@ -94,17 +121,19 @@ export function pickState(project, id, hit) {
 /**
  * claude's own arguments for a project's orchestrator (everything after the binary): the one place that builds them. With
  * `resume` the saved session `sessionId` continues (`--resume`); otherwise `sessionId` names the new session (`--session-id`).
- * `--model` is the project's own orchestrator model, else Settings' (`effectiveModels`). Throws EINVAL for an id that is not a
- * UUID (it becomes one argv element and must never read as a flag) and for bypassPermissions (rules constraint 12).
+ * `--model` is the project's own orchestrator model, else Settings' (`effectiveModels`); the permission mode likewise
+ * (`effectiveAgents`). Throws EINVAL for an id that is not a UUID (it becomes one argv element and must never read as a flag) and
+ * for bypassPermissions (rules constraint 12).
  */
 export function launchArgv(config, project, { sessionId, resume = false }) {
   const invalid = (message) => Object.assign(new Error(message), { code: 'EINVAL' });
   if (typeof sessionId !== 'string' || !UUID.test(sessionId)) throw invalid('session id must be a UUID');
-  if (config.permissionMode === 'bypassPermissions') throw invalid('bypassPermissions is never allowed');
+  const { permissionMode } = effectiveAgents(config, project.key);
+  if (permissionMode === 'bypassPermissions') throw invalid('bypassPermissions is never allowed');
   const session = sessionNameFor(project);
   const rc = config.remoteControl.enabled ? reduceRc(config.remoteControl.prefix || session, project.key, true) : null;
   return [
-    resume ? '--resume' : '--session-id', sessionId, '--model', effectiveModels(config, project.key).orchestrator, ...permissionFlags(config.permissionMode),
+    resume ? '--resume' : '--session-id', sessionId, '--model', effectiveModels(config, project.key).orchestrator, ...permissionFlags(permissionMode),
     '-n', session, ...(rc ? [`--remote-control=${rc}`] : []),
   ];
 }
@@ -136,7 +165,7 @@ async function unsetCompactEnv(ctx, session, run) {
 
 // every pane of every tmux session: the pane's own record of who started it (`@nika-role`, `@nika-agent`), then the session and window
 // names (free text, so last)
-const PANE_LIST = '#{pane_id}\t#{pane_current_command}\t#{@nika-role}\t#{@nika-agent}\t#{session_name}\t#{window_name}';
+const PANE_LIST = '#{pane_id}\t#{pane_current_command}\t#{pane_dead}\t#{@nika-role}\t#{@nika-agent}\t#{session_name}\t#{window_name}';
 
 /**
  * Pane of the project's main orchestrator, `{ id, session }`, or null. Only `@nika-role` orchestrator running claude counts (a
@@ -154,8 +183,9 @@ async function findOrchestratorPane(ctx, session, key) {
   }
   let adopted = null;
   for (const line of String(stdout).split('\n')) {
-    const [id, command = '', role = '', tag = '', where = '', ...window] = line.split('\t');
-    if (!PANE_ID.test(id ?? '') || role.trim() !== 'orchestrator' || !CLAUDE_COMMAND.test(command.trim())) continue;
+    const [id, command = '', dead = '', role = '', tag = '', where = '', ...window] = line.split('\t');
+    // a dead pane (remain-on-exit) still names its command claude (tmux falls back to the pane's argv): it is not an orchestrator
+    if (!PANE_ID.test(id ?? '') || dead.trim() === '1' || role.trim() !== 'orchestrator' || !CLAUDE_COMMAND.test(command.trim())) continue;
     const inOrchestratorWindow = where === session && window.join('\t').trim() === 'orchestrator';
     if (tag !== `${key}/orchestrator` && !(tag === '' && inOrchestratorWindow)) continue;
     if (inOrchestratorWindow) return { id, session: where };
@@ -177,10 +207,11 @@ export async function startOrchestrator(projectKey, ctx) {
   if (typeof projectKey !== 'string' || !PROJECT_KEY.test(projectKey)) return fail(400, 'invalid', 'invalid project key');
   const missing = binsMissing(ctx);
   if (missing) return missing;
-  const { config } = await loadConfig(ctx.env);
+  const { config } = await (ctx.loadConfig ?? loadConfig)(ctx.env); // ctx.loadConfig: tests only, to pin the bypass check below on a config load would never give
   const project = config.projects.find((p) => p.key === projectKey);
   if (!project) return fail(404, 'not_found', 'project is not registered');
-  if (config.permissionMode === 'bypassPermissions') return fail(400, 'invalid', 'bypassPermissions is never allowed');
+  const { permissionMode } = effectiveAgents(config, project.key);
+  if (permissionMode === 'bypassPermissions') return fail(400, 'invalid', 'bypassPermissions is never allowed');
 
   // the saved orchestrator: a lookup that fails proves nothing (never "gone"), so it ends the request without forgetting anything
   const pick = config.perProject[projectKey]?.orchestratorSessionId ?? null;
@@ -224,8 +255,14 @@ export async function startOrchestrator(projectKey, ctx) {
     if (!exists) await unsetCompactEnv(ctx, session, run); // `new-session -e` is session-wide; new-window -e is this pane only
     const pane = String(stdout).trim();
     if (!PANE_ID.test(pane)) return fail(502, 'tmux_failed', 'tmux did not return a pane id');
-    ctx.started?.set(pane, { key: projectKey, name: 'orchestrator', sessionId, role: 'orchestrator', mode: launchMode(config.permissionMode) });
+    ctx.started?.set(pane, { key: projectKey, name: 'orchestrator', sessionId, role: 'orchestrator', mode: launchMode(permissionMode) });
+    // tagged before the wait, so a second Start during it finds this orchestrator instead of opening another window
     await tagPane(ctx, pane, 'orchestrator', `${projectKey}/orchestrator`, 1);
+    const exited = await earlyExit(ctx, pane, resume ? sessionId : null);
+    if (exited) {
+      ctx.started?.delete(pane);
+      return exited; // nothing is saved: the pick stays as it was, and the page stays where it is
+    }
     // the pane already runs: failing to remember it (the project was removed meanwhile) must not fail the start
     if (!resume) await setOrchestrator(projectKey, sessionId, ctx.env).catch(() => {});
     return { status: 200, body: { pane, session, sessionId, created: true, ...cleared } };

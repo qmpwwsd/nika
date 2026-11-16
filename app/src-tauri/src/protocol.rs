@@ -35,6 +35,32 @@ pub struct ProjectStatus {
     pub attention: u32,
 }
 
+/// What the page may ask the shell to do with its window, through the server (`{"type":"window","action":...}`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowAction {
+    Quit,
+    Close,
+    Minimize,
+    ZoomIn,
+    ZoomOut,
+    ZoomReset,
+}
+
+impl WindowAction {
+    /// Exactly the six names of the contract; anything else is `None`.
+    fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "quit" => Self::Quit,
+            "close" => Self::Close,
+            "minimize" => Self::Minimize,
+            "zoom-in" => Self::ZoomIn,
+            "zoom-out" => Self::ZoomOut,
+            "zoom-reset" => Self::ZoomReset,
+            _ => return None,
+        })
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum Msg {
     Ready { port: u16 },
@@ -42,6 +68,7 @@ pub enum Msg {
     BadReady,
     Status(Status),
     PickFolder { req_id: String },
+    Window(WindowAction),
     Error { message: String },
 }
 
@@ -130,6 +157,7 @@ pub fn parse_line(line: &str) -> Option<Msg> {
             let id = obj.get("reqId")?.as_str()?;
             valid_req_id(id).then(|| Msg::PickFolder { req_id: id.to_string() })
         }
+        "window" => WindowAction::from_name(obj.get("action")?.as_str()?).map(Msg::Window),
         "error" => Some(Msg::Error { message: clean(obj.get("message").and_then(Value::as_str).unwrap_or("")) }),
         _ => None,
     }
@@ -391,6 +419,60 @@ mod tests {
         let tricky = folder_line(REQ, Some("/tmp/a\"b\nc"));
         assert_eq!(tricky.matches('\n').count(), 1);
         assert_eq!(serde_json::from_str::<Value>(&tricky).unwrap()["path"], "/tmp/a\"b\nc");
+    }
+
+    #[test]
+    fn window_actions_map_one_to_one() {
+        // (+) each of the six actions parses to its own variant
+        for (name, want) in [
+            ("quit", WindowAction::Quit),
+            ("close", WindowAction::Close),
+            ("minimize", WindowAction::Minimize),
+            ("zoom-in", WindowAction::ZoomIn),
+            ("zoom-out", WindowAction::ZoomOut),
+            ("zoom-reset", WindowAction::ZoomReset),
+        ] {
+            let line = format!(r#"{{"type":"window","action":"{name}"}}"#);
+            assert_eq!(parse_line(&line), Some(Msg::Window(want)), "{name}");
+        }
+    }
+
+    #[test]
+    fn window_with_a_bad_action_is_ignored() {
+        // (-) unknown, wrong case, padded, empty, missing, null, number, bool, array, object
+        for line in [
+            r#"{"type":"window","action":"maximize"}"#,
+            r#"{"type":"window","action":"Quit"}"#,
+            r#"{"type":"window","action":" quit"}"#,
+            r#"{"type":"window","action":"quit\n"}"#,
+            r#"{"type":"window","action":""}"#,
+            r#"{"type":"window"}"#,
+            r#"{"type":"window","action":null}"#,
+            r#"{"type":"window","action":1}"#,
+            r#"{"type":"window","action":true}"#,
+            r#"{"type":"window","action":["quit"]}"#,
+            r#"{"type":"window","action":{"quit":1}}"#,
+            r#"{"type":"window","act":"quit"}"#,
+        ] {
+            assert_eq!(parse_line(line), None, "{line}");
+        }
+    }
+
+    #[test]
+    fn an_overlong_window_line_never_reaches_the_parser() {
+        let head = r#"{"type":"window","action":"quit","pad":""#;
+        let fits = format!("{head}{}\"}}", "a".repeat(MAX_LINE - head.len() - 2));
+        assert_eq!(fits.len(), MAX_LINE);
+        // (+) a line of exactly the limit is delivered and parses
+        let got = lines(format!("{fits}\n").as_bytes());
+        assert_eq!(got.len(), 1);
+        assert_eq!(parse_line(&got[0]), Some(Msg::Window(WindowAction::Quit)));
+        // (-) one byte over: dropped, and the next line is still read
+        let long = format!("{head}{}\"}}", "a".repeat(MAX_LINE - head.len() - 1));
+        assert_eq!(long.len(), MAX_LINE + 1);
+        let got = lines(format!("{long}\n{{\"type\":\"window\",\"action\":\"close\"}}\n").as_bytes());
+        assert_eq!(got.len(), 1);
+        assert_eq!(parse_line(&got[0]), Some(Msg::Window(WindowAction::Close)));
     }
 
     #[test]

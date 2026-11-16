@@ -12,7 +12,7 @@ export const NIKA_ARGV = ['/usr/bin/node', '/opt/nika/bin/nika'];
 const tmuxError = (message, code = 1) => Object.assign(new Error(message), { code, stderr: `${message}\n` });
 
 /**
- * panes: [{ id, session, window, windowName, title, command, role, agent, depth, parent }] (role = @nika-role, agent = @nika-agent = `<project key>/<name>`, depth = @nika-depth, parent = @nika-parent, '' = untagged). Options: enoent (every call fails like a missing
+ * panes: [{ id, session, window, windowName, title, command, role, agent, depth, parent }] (role = @nika-role, agent = @nika-agent = `<project key>/<name>`, depth = @nika-depth, parent = @nika-parent, '' = untagged; dead = pane_dead, '0' running or '1' dead). Options: enoent (every call fails like a missing
  * binary), failOn (sub-commands that exit 1), commandOf (pane_current_command of a pane created by new-session /
  * new-window / split-window, by default `claude` for the first two and `node` for split-window).
  * Environment scope (tmux 3.2+, verified on 3.8): `new-session -e` sets the SESSION environment (exec.sessionEnv, which every later pane of the
@@ -20,7 +20,7 @@ const tmuxError = (message, code = 1) => Object.assign(new Error(message), { cod
  * the session environment, not from panes already running. A pane's own environment is `pane.env`.
  */
 export function fakeTmux({ panes = [], enoent = false, failOn = [], nextId = 20 } = {}) {
-  const state = panes.map((p) => ({ window: 0, windowName: 'zsh', title: '', command: 'zsh', role: '', agent: '', depth: '', parent: '', ...p }));
+  const state = panes.map((p) => ({ window: 0, windowName: 'zsh', title: '', command: 'zsh', role: '', agent: '', depth: '', parent: '', dead: '0', ...p }));
   const calls = [];
   let counter = nextId;
   const sessions = () => new Set(state.map((p) => p.session));
@@ -39,13 +39,13 @@ export function fakeTmux({ panes = [], enoent = false, failOn = [], nextId = 20 
     return out;
   };
   const create = (session, windowName, command, own = {}) => {
-    const pane = { id: `%${counter++}`, session, window: state.filter((p) => p.session === session).length, windowName, title: '', command, role: '', agent: '', depth: '', parent: '', env: { ...sessionEnv.get(session), ...own } };
+    const pane = { id: `%${counter++}`, session, window: state.filter((p) => p.session === session).length, windowName, title: '', command, role: '', agent: '', depth: '', parent: '', dead: '0', env: { ...sessionEnv.get(session), ...own } };
     state.push(pane);
     return `${pane.id}\n`;
   };
   const after = (args, flag) => args[args.indexOf(flag) + 1];
   // the format variables nika uses; like tmux, an unset @option expands to an empty string
-  const fields = { pane_id: 'id', session_name: 'session', window_index: 'window', window_name: 'windowName', pane_title: 'title', pane_current_command: 'command', '@nika-role': 'role', '@nika-agent': 'agent', '@nika-depth': 'depth', '@nika-parent': 'parent' };
+  const fields = { pane_id: 'id', session_name: 'session', window_index: 'window', window_name: 'windowName', pane_title: 'title', pane_current_command: 'command', '@nika-role': 'role', '@nika-agent': 'agent', '@nika-depth': 'depth', '@nika-parent': 'parent', pane_dead: 'dead' };
   const expand = (format, p) => format.replace(/#\{([^}]+)\}/g, (m, k) => {
     if (!Object.hasOwn(fields, k)) throw new Error(`unexpected format variable ${k}`);
     return String(p[fields[k]] ?? '');
@@ -113,6 +113,14 @@ export function fakeTmux({ panes = [], enoent = false, failOn = [], nextId = 20 
         target[field] = value;
         return { stdout: '', stderr: '' };
       }
+      case 'display-message': { // only `-p -t %n #{pane_dead}`, nika's early-exit check: 0 = running, 1 = dead (remain-on-exit); a pane that exited is gone
+        const [p, t, target, format] = rest;
+        if (rest.length !== 4 || p !== '-p' || t !== '-t' || format !== '#{pane_dead}') throw new Error(`unexpected display-message ${rest.join(' ')}`);
+        if (!state.length) throw noServer();
+        const pane = state.find((x) => x.id === target);
+        if (!pane) throw tmuxError(`can't find pane: ${target}`);
+        return { stdout: `${pane.dead}\n`, stderr: '' };
+      }
       case 'select-pane': {
         const pane = state.find((p) => p.id === after(rest, '-t'));
         if (!pane) throw tmuxError("can't find pane");
@@ -140,6 +148,10 @@ export async function makeWorld(settings = {}) {
   fs.mkdirSync(dir);
   const project = await addProject(dir, env);
   if (Object.keys(settings).length) await updateSettings(settings, env);
-  const ctx = (exec, extra = {}) => ({ env, exec, tmuxBin: TMUX, claudeBin: CLAUDE, nikaArgv: NIKA_ARGV, claudeDir: path.join(root, 'claude'), now: Date.now, started: new Map(), ...extra });
+  // `sleep` is the early-exit wait of a start or spawn (1 s in production): it returns at once here and records how long it was asked to wait
+  const ctx = (exec, extra = {}) => {
+    const slept = [];
+    return { env, exec, tmuxBin: TMUX, claudeBin: CLAUDE, nikaArgv: NIKA_ARGV, claudeDir: path.join(root, 'claude'), now: Date.now, started: new Map(), sleep: async (ms) => { slept.push(ms); }, slept, ...extra };
+  };
   return { root, env, project, ctx, cleanup: () => fs.rmSync(root, { recursive: true, force: true }) };
 }

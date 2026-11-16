@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { configDir, stateDir, reportsDir, backupsDir } from '../src/paths.js';
-import { defaults, loadConfig, saveConfig, addProject, removeProject, listProjects, updateSettings, getProjectConfig, updateProjectConfig, getOrchestrator, setOrchestrator, effectiveModels, keyFor } from '../src/store.js';
+import { defaults, loadConfig, saveConfig, addProject, removeProject, listProjects, updateSettings, getProjectConfig, updateProjectConfig, getOrchestrator, setOrchestrator, effectiveModels, effectiveAgents, keyFor } from '../src/store.js';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nika-store-'));
 after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -331,6 +331,7 @@ describe('mutation queue', () => {
 describe('per-project config (0.3.4: perProject[key].plugins)', () => {
   const KEY = '0123456789abcdef';
   const NO_MODELS = { orchestrator: null, reasoner: null, builder: null, scout: null };
+  const NO_ITEMS = { permissionMode: null, panePlacement: null, maxAgents: null };
   const cfgFile = (env) => { fs.mkdirSync(configDir(env), { recursive: true, mode: 0o700 }); return path.join(configDir(env), 'config.json'); };
   const project = async (env, name = 'repo') => {
     const dir = path.join(root, env.NIKA_CONFIG_DIR.split(path.sep).at(-2), name);
@@ -378,15 +379,15 @@ describe('per-project config (0.3.4: perProject[key].plugins)', () => {
   test('(+) get, update (deduplicated, saved), replace and remove through [] (the entry goes when it becomes empty)', async () => {
     const env = fresh('pp4');
     const p = await project(env);
-    assert.deepEqual(await getProjectConfig(p.key, env), { plugins: [], models: NO_MODELS });
-    assert.deepEqual(await updateProjectConfig(p.key, { plugins: ['b@demo-market', 'a@demo-market', 'b@demo-market'] }, env), { plugins: ['b@demo-market', 'a@demo-market'], models: NO_MODELS });
-    assert.deepEqual(await getProjectConfig(p.key, env), { plugins: ['b@demo-market', 'a@demo-market'], models: NO_MODELS });
+    assert.deepEqual(await getProjectConfig(p.key, env), { plugins: [], models: NO_MODELS, ...NO_ITEMS });
+    assert.deepEqual(await updateProjectConfig(p.key, { plugins: ['b@demo-market', 'a@demo-market', 'b@demo-market'] }, env), { plugins: ['b@demo-market', 'a@demo-market'], models: NO_MODELS, ...NO_ITEMS });
+    assert.deepEqual(await getProjectConfig(p.key, env), { plugins: ['b@demo-market', 'a@demo-market'], models: NO_MODELS, ...NO_ITEMS });
     assert.deepEqual((await loadConfig(env)).config.perProject, { [p.key]: { plugins: ['b@demo-market', 'a@demo-market'] } });
     assert.equal(fs.statSync(cfgFile(env)).mode & 0o777, 0o600);
-    assert.deepEqual(await updateProjectConfig(p.key, { plugins: ['c@demo-market'] }, env), { plugins: ['c@demo-market'], models: NO_MODELS });
-    assert.deepEqual(await updateProjectConfig(p.key, { plugins: [] }, env), { plugins: [], models: NO_MODELS });
+    assert.deepEqual(await updateProjectConfig(p.key, { plugins: ['c@demo-market'] }, env), { plugins: ['c@demo-market'], models: NO_MODELS, ...NO_ITEMS });
+    assert.deepEqual(await updateProjectConfig(p.key, { plugins: [] }, env), { plugins: [], models: NO_MODELS, ...NO_ITEMS });
     assert.deepEqual((await loadConfig(env)).config.perProject, {});
-    assert.deepEqual(await getProjectConfig(p.key, env), { plugins: [], models: NO_MODELS });
+    assert.deepEqual(await getProjectConfig(p.key, env), { plugins: [], models: NO_MODELS, ...NO_ITEMS });
   });
 
   test('(+) a project keeps its own list; removeProject deletes it; updateSettings keeps perProject untouched', async () => {
@@ -622,6 +623,7 @@ describe('per-project orchestrator pick (0.4: perProject[key].orchestratorSessio
 
 describe('per-project models (0.4: perProject[key].models)', () => {
   const KEY = '0123456789abcdef';
+  const NO_ITEMS = { permissionMode: null, panePlacement: null, maxAgents: null };
   const ID = '11111111-1111-4111-8111-111111111111';
   const NONE = { orchestrator: null, reasoner: null, builder: null, scout: null };
   const cfgFile = (env) => { fs.mkdirSync(configDir(env), { recursive: true, mode: 0o700 }); return path.join(configDir(env), 'config.json'); };
@@ -635,14 +637,14 @@ describe('per-project models (0.4: perProject[key].models)', () => {
   test('(+) get answers { plugins, models } with all four roles null for a project without an entry', async () => {
     const env = fresh('pm1');
     const p = await project(env);
-    assert.deepEqual(await getProjectConfig(p.key, env), { plugins: [], models: NONE });
+    assert.deepEqual(await getProjectConfig(p.key, env), { plugins: [], models: NONE, ...NO_ITEMS });
   });
 
   test('(+) set, replace and clear roles: only non-null roles are stored (in role order, 0600); the answer has all four keys', async () => {
     const env = fresh('pm2');
     const p = await project(env);
     const set = await updateProjectConfig(p.key, { models: { scout: 'haiku', builder: 'claude-opus-5-5', reasoner: null, orchestrator: null } }, env);
-    assert.deepEqual(set, { plugins: [], models: { orchestrator: null, reasoner: null, builder: 'claude-opus-5-5', scout: 'haiku' } });
+    assert.deepEqual(set, { plugins: [], models: { orchestrator: null, reasoner: null, builder: 'claude-opus-5-5', scout: 'haiku' }, ...NO_ITEMS });
     assert.deepEqual(await getProjectConfig(p.key, env), set);
     assert.deepEqual(onDisk(env), { [p.key]: { models: { builder: 'claude-opus-5-5', scout: 'haiku' } } });
     assert.equal(fs.statSync(cfgFile(env)).mode & 0o777, 0o600);
@@ -655,7 +657,7 @@ describe('per-project models (0.4: perProject[key].models)', () => {
     const env = fresh('pm3');
     const p = await project(env);
     await updateProjectConfig(p.key, { models: { ...NONE, scout: 'haiku' } }, env);
-    assert.deepEqual(await updateProjectConfig(p.key, { models: NONE }, env), { plugins: [], models: NONE });
+    assert.deepEqual(await updateProjectConfig(p.key, { models: NONE }, env), { plugins: [], models: NONE, ...NO_ITEMS });
     assert.deepEqual(onDisk(env), {});
     assert.deepEqual((await loadConfig(env)).config.perProject, {});
   });
@@ -667,7 +669,7 @@ describe('per-project models (0.4: perProject[key].models)', () => {
     await setOrchestrator(p.key, ID, env);
     await updateProjectConfig(p.key, { models: { ...NONE, builder: 'sonnet' } }, env);
     assert.deepEqual(onDisk(env)[p.key], { plugins: ['a@demo-market'], orchestratorSessionId: ID, models: { builder: 'sonnet' } });
-    assert.deepEqual(await updateProjectConfig(p.key, { plugins: [] }, env), { plugins: [], models: { ...NONE, builder: 'sonnet' } }, 'a plugins save keeps the models');
+    assert.deepEqual(await updateProjectConfig(p.key, { plugins: [] }, env), { plugins: [], models: { ...NONE, builder: 'sonnet' }, ...NO_ITEMS }, 'a plugins save keeps the models');
     assert.deepEqual(onDisk(env)[p.key], { orchestratorSessionId: ID, models: { builder: 'sonnet' } });
     await updateProjectConfig(p.key, { models: NONE }, env);
     assert.deepEqual(onDisk(env), { [p.key]: { orchestratorSessionId: ID } }, 'a models save keeps the pick');
@@ -776,6 +778,191 @@ describe('per-project models (0.4: perProject[key].models)', () => {
     for (const key of ['', 'short', '0123456789ABCDEF', '__proto__', 5, null, undefined]) {
       await assert.rejects(updateProjectConfig(key, { models: NONE }, env), { code: 'EINVAL' }, String(key));
     }
+  });
+});
+
+describe('per-project agent settings (0.4.0: permissionMode, panePlacement, maxAgents in perProject[key])', () => {
+  const KEY = '0123456789abcdef';
+  const ID = '11111111-1111-4111-8111-111111111111';
+  const NONE = { orchestrator: null, reasoner: null, builder: null, scout: null };
+  const NO_ITEMS = { permissionMode: null, panePlacement: null, maxAgents: null };
+  const cfgFile = (env) => { fs.mkdirSync(configDir(env), { recursive: true, mode: 0o700 }); return path.join(configDir(env), 'config.json'); };
+  const project = async (env, name = 'repo') => {
+    const dir = path.join(root, env.NIKA_CONFIG_DIR.split(path.sep).at(-2), name);
+    fs.mkdirSync(dir, { recursive: true });
+    return addProject(dir, env);
+  };
+  const onDisk = (env) => JSON.parse(fs.readFileSync(cfgFile(env), 'utf8')).perProject;
+
+  test('(+) get answers the three as null for a project without an entry', async () => {
+    const env = fresh('pa1');
+    const p = await project(env);
+    assert.deepEqual(await getProjectConfig(p.key, env), { plugins: [], models: NONE, ...NO_ITEMS });
+  });
+
+  test('(+) set, replace and clear each of the three: stored in 0600 config.json, the answer has all three keys, null removes the key and then the entry', async () => {
+    const env = fresh('pa2');
+    const p = await project(env);
+    const base = { plugins: [], models: NONE };
+    assert.deepEqual(await updateProjectConfig(p.key, { permissionMode: 'plan' }, env), { ...base, ...NO_ITEMS, permissionMode: 'plan' });
+    assert.deepEqual(await updateProjectConfig(p.key, { panePlacement: 'under-last' }, env), { ...base, permissionMode: 'plan', panePlacement: 'under-last', maxAgents: null });
+    assert.deepEqual(await updateProjectConfig(p.key, { maxAgents: 8 }, env), { ...base, permissionMode: 'plan', panePlacement: 'under-last', maxAgents: 8 });
+    assert.deepEqual(await getProjectConfig(p.key, env), { ...base, permissionMode: 'plan', panePlacement: 'under-last', maxAgents: 8 });
+    assert.deepEqual(onDisk(env), { [p.key]: { permissionMode: 'plan', panePlacement: 'under-last', maxAgents: 8 } });
+    assert.equal(fs.statSync(cfgFile(env)).mode & 0o777, 0o600);
+    for (const mode of ['default', 'manual', 'acceptEdits', 'plan', 'auto', 'dontAsk']) assert.equal((await updateProjectConfig(p.key, { permissionMode: mode }, env)).permissionMode, mode, mode);
+    for (const n of [1, 5]) assert.equal((await updateProjectConfig(p.key, { maxAgents: n }, env)).maxAgents, n);
+    assert.equal((await updateProjectConfig(p.key, { panePlacement: 'beside' }, env)).panePlacement, 'beside');
+    assert.deepEqual(await updateProjectConfig(p.key, { panePlacement: null }, env), { ...base, permissionMode: 'dontAsk', panePlacement: null, maxAgents: 5 });
+    assert.deepEqual(onDisk(env), { [p.key]: { permissionMode: 'dontAsk', maxAgents: 5 } });
+    await updateProjectConfig(p.key, { permissionMode: null }, env);
+    assert.deepEqual(await updateProjectConfig(p.key, { maxAgents: null }, env), { ...base, ...NO_ITEMS });
+    assert.deepEqual(onDisk(env), {}, 'the entry goes when nothing is left in it');
+    assert.deepEqual(await updateProjectConfig(p.key, { maxAgents: null }, env), { ...base, ...NO_ITEMS }, 'clearing what is not set is fine');
+  });
+
+  test('(+) the three, plugins, models and the orchestrator pick do not overwrite each other', async () => {
+    const env = fresh('pa3');
+    const p = await project(env);
+    await updateProjectConfig(p.key, { plugins: ['a@demo-market'] }, env);
+    await updateProjectConfig(p.key, { models: { ...NONE, scout: 'haiku' } }, env);
+    await setOrchestrator(p.key, ID, env);
+    await updateProjectConfig(p.key, { permissionMode: 'auto' }, env);
+    await updateProjectConfig(p.key, { maxAgents: 2 }, env);
+    assert.deepEqual(onDisk(env)[p.key], { plugins: ['a@demo-market'], orchestratorSessionId: ID, models: { scout: 'haiku' }, permissionMode: 'auto', maxAgents: 2 });
+    await updateProjectConfig(p.key, { plugins: [] }, env);
+    await updateProjectConfig(p.key, { models: NONE }, env);
+    assert.deepEqual(onDisk(env)[p.key], { orchestratorSessionId: ID, permissionMode: 'auto', maxAgents: 2 }, 'a plugins or models save keeps the three');
+    await updateProjectConfig(p.key, { permissionMode: null }, env);
+    await updateProjectConfig(p.key, { maxAgents: null }, env);
+    assert.deepEqual(onDisk(env)[p.key], { orchestratorSessionId: ID }, 'clearing the three keeps the pick');
+    await updateProjectConfig(p.key, { panePlacement: 'under-last' }, env);
+    await setOrchestrator(p.key, null, env);
+    assert.deepEqual(onDisk(env), { [p.key]: { panePlacement: 'under-last' } }, 'forgetting the pick keeps the three');
+  });
+
+  test('(+) an entry that holds only the three survives load and save with no warning; updateSettings keeps it; removeProject deletes it', async () => {
+    const env = fresh('pa4');
+    fs.writeFileSync(cfgFile(env), JSON.stringify({ perProject: { [KEY]: { permissionMode: 'acceptEdits', panePlacement: 'under-last', maxAgents: 4 } } }));
+    const r = await loadConfig(env);
+    assert.deepEqual(r.warnings, []);
+    assert.deepEqual(r.config.perProject, { [KEY]: { permissionMode: 'acceptEdits', panePlacement: 'under-last', maxAgents: 4 } });
+    await updateSettings({ permissionMode: 'plan', limits: { maxAgents: 2 } }, env);
+    assert.deepEqual(onDisk(env), r.config.perProject, 'a Settings save writes the project values back unchanged');
+    const env2 = fresh('pa4b');
+    const p = await project(env2);
+    await updateProjectConfig(p.key, { maxAgents: 6 }, env2);
+    assert.equal(await removeProject(p.key, env2), true);
+    assert.deepEqual((await loadConfig(env2)).config.perProject, {});
+  });
+
+  test('(+) effectiveAgents: the project\'s value wins per item, Settings fills the rest; the config is not changed', async () => {
+    const env = fresh('pa5');
+    const p = await project(env);
+    const q = await project(env, 'other');
+    await updateSettings({ permissionMode: 'plan', panePlacement: 'under-last', limits: { maxAgents: 5 } }, env);
+    await updateProjectConfig(p.key, { permissionMode: 'auto' }, env);
+    await updateProjectConfig(p.key, { maxAgents: 2 }, env);
+    const { config } = await loadConfig(env);
+    const before = JSON.stringify(config);
+    assert.deepEqual(effectiveAgents(config, p.key), { permissionMode: 'auto', panePlacement: 'under-last', maxAgents: 2 });
+    assert.deepEqual(effectiveAgents(config, q.key), { permissionMode: 'plan', panePlacement: 'under-last', maxAgents: 5 }, 'a project without an entry uses Settings');
+    assert.deepEqual(effectiveAgents(config, KEY), { permissionMode: 'plan', panePlacement: 'under-last', maxAgents: 5 }, 'so does a key that is not registered');
+    assert.equal(JSON.stringify(config), before);
+    await updateProjectConfig(p.key, { panePlacement: 'beside' }, env); // the project's value may equal the default and still wins over a changed Settings value
+    assert.equal(effectiveAgents((await loadConfig(env)).config, p.key).panePlacement, 'beside');
+    const { perProject, ...noProjects } = config;
+    assert.deepEqual(effectiveAgents(noProjects, p.key), { permissionMode: 'plan', panePlacement: 'under-last', maxAgents: 5 }, 'a config without perProject is Settings');
+  });
+
+  test('(−) a hand-edited file: a bad value drops only that key, with a warning; the others and the entry stay; bypassPermissions is dropped', async () => {
+    const env = fresh('pa6');
+    fs.writeFileSync(cfgFile(env), JSON.stringify({
+      perProject: {
+        [KEY]: { plugins: ['ok@demo-market'], permissionMode: 'bypassPermissions', panePlacement: 'above', maxAgents: 4 },
+        fedcba9876543210: { permissionMode: 'plan', maxAgents: 0 },
+        '0000000000000000': { maxAgents: 9, panePlacement: 'beside' },
+        '1111111111111111': { maxAgents: 2.5, permissionMode: 5 },
+        '2222222222222222': { maxAgents: '3', panePlacement: ['beside'], permissionMode: null },
+        '3333333333333333': { maxAgents: 3, helper: 1 },
+      },
+    }));
+    const r = await loadConfig(env);
+    assert.deepEqual(r.config.perProject, {
+      [KEY]: { plugins: ['ok@demo-market'], maxAgents: 4 },
+      fedcba9876543210: { permissionMode: 'plan' },
+      '0000000000000000': { panePlacement: 'beside' },
+      '3333333333333333': { maxAgents: 3 },
+    });
+    const w = r.warnings.join('\n');
+    assert.match(w, new RegExp(`perProject\\.${KEY}\\.permissionMode invalid, dropped`));
+    assert.match(w, new RegExp(`perProject\\.${KEY}\\.panePlacement invalid, dropped`));
+    assert.match(w, /perProject\.fedcba9876543210\.maxAgents invalid, dropped/);
+    assert.match(w, /perProject\.0000000000000000\.maxAgents invalid, dropped/);
+    for (const k of ['1111111111111111', '2222222222222222']) assert.match(w, new RegExp(`perProject\\.${k}\\.maxAgents invalid, dropped`));
+    assert.match(w, /perProject\.1111111111111111\.permissionMode invalid, dropped/);
+    assert.match(w, /perProject\.2222222222222222\.panePlacement invalid, dropped/);
+    assert.match(w, /perProject\.2222222222222222\.permissionMode invalid, dropped/);
+    assert.match(w, /unknown key perProject\.3333333333333333\.helper dropped/);
+    assert.equal(r.config.permissionMode, 'default', 'Settings itself is untouched');
+  });
+
+  test('(−) bypassPermissions is EINVAL ("never allowed") and nothing is written; a saved value stays', async () => {
+    const env = fresh('pa7');
+    const p = await project(env);
+    await updateProjectConfig(p.key, { permissionMode: 'plan' }, env);
+    const saved = fs.readFileSync(cfgFile(env), 'utf8');
+    await assert.rejects(updateProjectConfig(p.key, { permissionMode: 'bypassPermissions' }, env), { code: 'EINVAL', message: 'bypassPermissions is never allowed' });
+    assert.equal(fs.readFileSync(cfgFile(env), 'utf8'), saved);
+    assert.equal(effectiveAgents((await loadConfig(env)).config, p.key).permissionMode, 'plan');
+  });
+
+  test('(−) a mode that is not a PERMISSION_MODE, a placement that is not beside/under-last, a limit outside 1 to 8 or not a whole number is EINVAL; nothing is written', async () => {
+    const env = fresh('pa8');
+    const p = await project(env);
+    await updateProjectConfig(p.key, { maxAgents: 3 }, env);
+    const saved = fs.readFileSync(cfgFile(env), 'utf8');
+    const bad = [
+      ['permissionMode', ['', 'Plan', 'plan ', 'yolo', 'bypass', 5, true, ['plan'], {}, undefined]],
+      ['panePlacement', ['', 'above', 'Beside', 'under_last', 'under-last ', 5, true, ['beside'], {}, undefined]],
+      ['maxAgents', [0, 9, -1, 1.5, NaN, Infinity, '3', '', true, [3], {}, undefined, 1e9]],
+    ];
+    for (const [field, values] of bad) {
+      for (const v of values) await assert.rejects(updateProjectConfig(p.key, { [field]: v }, env), { code: 'EINVAL' }, `${field} ${String(v)}`);
+    }
+    assert.equal(fs.readFileSync(cfgFile(env), 'utf8'), saved, 'refused updates write nothing');
+  });
+
+  test('(−) a patch with two fields (also one of the three next to another), a stray key, none or an own __proto__ is EINVAL; nothing is written', async () => {
+    const env = fresh('pa9');
+    const p = await project(env);
+    const saved = fs.readFileSync(cfgFile(env), 'utf8');
+    for (const patch of [
+      { permissionMode: 'plan', maxAgents: 2 }, { panePlacement: 'beside', maxAgents: 2 }, { permissionMode: null, panePlacement: null, maxAgents: null },
+      { permissionMode: 'plan', plugins: [] }, { maxAgents: 2, models: NONE }, { maxAgents: 2, limits: {} },
+      { limits: { maxAgents: 2 } }, { permission: 'plan' }, JSON.parse('{"__proto__":{"maxAgents":2}}'), JSON.parse('{"maxAgents":2,"__proto__":[]}'), Object.create({ maxAgents: 2 }),
+    ]) {
+      await assert.rejects(updateProjectConfig(p.key, patch, env), { code: 'EINVAL' }, JSON.stringify(patch));
+    }
+    assert.equal(fs.readFileSync(cfgFile(env), 'utf8'), saved);
+  });
+
+  test('(−) a key that is not a registered project is ENOENT and nothing is written; a bad key is EINVAL', async () => {
+    const env = fresh('pa10');
+    for (const patch of [{ permissionMode: 'plan' }, { panePlacement: 'beside' }, { maxAgents: 2 }, { maxAgents: null }]) {
+      await assert.rejects(updateProjectConfig(KEY, patch, env), { code: 'ENOENT' }, JSON.stringify(patch));
+    }
+    assert.equal(fs.existsSync(cfgFile(env)), false);
+    for (const key of ['', 'short', '0123456789ABCDEF', '__proto__', 5, null, undefined]) {
+      await assert.rejects(updateProjectConfig(key, { maxAgents: 2 }, env), { code: 'EINVAL' }, String(key));
+    }
+  });
+
+  test('(+) concurrent one-field saves of the same project all survive (one serial queue)', async () => {
+    const env = fresh('pa11');
+    const p = await project(env);
+    await Promise.all([updateProjectConfig(p.key, { permissionMode: 'dontAsk' }, env), updateProjectConfig(p.key, { panePlacement: 'under-last' }, env), updateProjectConfig(p.key, { maxAgents: 7 }, env)]);
+    assert.deepEqual(onDisk(env), { [p.key]: { permissionMode: 'dontAsk', panePlacement: 'under-last', maxAgents: 7 } });
   });
 });
 

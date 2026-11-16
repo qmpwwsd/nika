@@ -58,6 +58,7 @@ function makeDeps(over = {}) {
     mirror: { capture: rec('capture', async (pane, inm) => (inm === '"abc"' ? { status: 304, body: null, etag: 'abc' } : { status: 200, body: { cols: 80, rows: [], cursor: { x: 0, y: 0, visible: true }, etag: 'abc' }, etag: 'abc' })) },
     keys: { send: rec('keys', async (pane, body) => (body.text === 'busy' ? { status: 429, body: { error: 'busy', message: 'x' } } : body.text === 'bad' ? { status: 400, body: { error: 'invalid', message: 'x' } } : { status: 200, body: { sent: { text: 1, paste: 0, keys: 0 } } })) },
     picker: { start: () => null, status: () => null },
+    window: rec('window', async () => {}),
     appCopy: {
       state: rec('appCopyState', async () => APP_COPY),
       install: rec('appCopyInstall', async () => ({ state: 'current', version: '9.9.9', restart: false, changed: 'added' })),
@@ -349,6 +350,60 @@ describe('app copy (ADR 0011)', () => {
   });
 });
 
+describe('POST /api/app/window (F2): the page asks the shell to act on its window', () => {
+  const ACTIONS = ['quit', 'close', 'minimize', 'zoom-in', 'zoom-out', 'zoom-reset'];
+  const windowCalls = (b) => b.deps.calls.filter((c) => c[0] === 'window');
+  let a;
+  before(async () => { a = await boot(); });
+
+  test('(+) each action answers 204 with no body and hands exactly that action to the shell, once', async () => {
+    for (const action of ACTIONS) {
+      const before = windowCalls(a).length;
+      const r = await a.call('POST', '/api/app/window', { json: { action } });
+      assert.equal(r.status, 204, action);
+      assert.equal(r.raw, '', action);
+      assert.equal(r.headers['cache-control'], 'no-store', action);
+      assert.deepEqual(windowCalls(a).slice(before), [['window', action]], action);
+    }
+  });
+
+  test('(−) an unknown, missing, non-string or extra field is 400 invalid and the shell hears nothing', async () => {
+    const before = windowCalls(a).length;
+    for (const json of [{ action: 'maximize' }, { action: 'Quit' }, { action: ' quit' }, { action: '' }, {}, { action: 1 }, { action: ['quit'] }, { action: null }, { action: 'quit', extra: 1 }, { acton: 'quit' }]) {
+      const r = await a.call('POST', '/api/app/window', { json });
+      assert.equal(r.status, 400, JSON.stringify(json));
+      assert.equal(r.body.error, 'invalid', JSON.stringify(json));
+    }
+    assert.equal((await a.call('POST', '/api/app/window', { body: '{"action":"quit"', headers: { 'content-type': 'application/json' } })).status, 400);
+    for (const body of ['[]', 'null', '"quit"', '[{"action":"quit"}]']) { // JSON, but not an object: the shared reader refuses it here too
+      const r = await a.call('POST', '/api/app/window', { body, headers: { 'content-type': 'application/json' } });
+      assert.equal(r.status, 400, body);
+    }
+    assert.equal(windowCalls(a).length, before);
+  });
+
+  test('(−) a body that is not JSON is 415; (−) a body over the 4 KB cap is 413; neither reaches the shell', async () => {
+    const before = windowCalls(a).length;
+    for (const type of ['text/plain', 'application/x-www-form-urlencoded', null]) {
+      assert.equal((await a.call('POST', '/api/app/window', { body: '{"action":"quit"}', headers: { 'content-type': type } })).status, 415, String(type));
+    }
+    assert.equal((await a.call('POST', '/api/app/window', { json: { action: 'quit', pad: 'x'.repeat(5000) } })).status, 413);
+    assert.equal(windowCalls(a).length, before);
+  });
+
+  test('(−) the usual app checks apply: no secret or a wrong one is 403, a foreign Origin is 403, GET is 405', async () => {
+    const before = windowCalls(a).length;
+    assert.equal((await a.call('POST', '/api/app/window', { json: { action: 'quit' }, headers: { 'x-nika-app': null } })).status, 403);
+    assert.equal((await a.call('POST', '/api/app/window', { json: { action: 'quit' }, headers: { 'x-nika-app': WRONG_SAME_LENGTH } })).status, 403);
+    assert.equal((await a.call('POST', '/api/app/window', { json: { action: 'quit' }, headers: { origin: 'http://evil.example' } })).status, 403);
+    assert.equal((await a.call('POST', '/api/app/window', { json: { action: 'quit' }, headers: { 'sec-fetch-site': 'cross-site' } })).status, 403);
+    const get = await a.call('GET', '/api/app/window');
+    assert.equal(get.status, 405);
+    assert.equal(get.headers.allow, 'POST');
+    assert.equal(windowCalls(a).length, before);
+  });
+});
+
 describe('projects', () => {
   let a;
   before(async () => { a = await boot(); });
@@ -432,7 +487,7 @@ describe('project config (GET|PUT /api/app/projects/:key/config)', () => {
   after(() => fs.rmSync(extra, { recursive: true, force: true }));
   const put = (json, key) => a.call('PUT', url(key), { json });
   const NONE = { orchestrator: null, reasoner: null, builder: null, scout: null };
-  const only = (plugins, models = NONE) => ({ plugins, models });
+  const only = (plugins, models = NONE, items = {}) => ({ plugins, models, permissionMode: null, panePlacement: null, maxAgents: null, ...items });
 
   test('(+) GET answers { plugins: [], models: all null } for a project without a list or models', async () => {
     const r = await a.call('GET', url());
@@ -564,6 +619,87 @@ describe('project config (GET|PUT /api/app/projects/:key/config)', () => {
     assert.equal((await put({ models }, 'short')).status, 400);
     assert.equal((await a.call('PUT', url(), { body: JSON.stringify({ models }), headers: { 'content-type': 'text/plain' } })).status, 415);
     assert.equal((await a.call('PUT', url(), { json: { models }, headers: { 'x-nika-app': null } })).status, 403);
+    assert.deepEqual((await loadConfig(w.env)).config.perProject, {});
+  });
+
+  test('(+) PUT { permissionMode | panePlacement | maxAgents } saves that one value and answers 200 with the whole config; GET, the settings and config.json read it back; null clears it', async () => {
+    const bodies = [{ permissionMode: 'auto' }, { panePlacement: 'under-last' }, { maxAgents: 5 }];
+    let items = {};
+    for (const body of bodies) {
+      items = { ...items, ...body };
+      const r = await put(body);
+      assert.deepEqual([r.status, r.body], [200, only([], NONE, items)], JSON.stringify(body));
+    }
+    assert.deepEqual((await a.call('GET', url())).body, only([], NONE, items));
+    assert.deepEqual((await loadConfig(w.env)).config.perProject[w.project.key], items);
+    assert.deepEqual((await a.call('GET', '/api/app/settings')).body.perProject[w.project.key], items);
+    const settings = (await a.call('GET', '/api/app/settings')).body;
+    assert.deepEqual([settings.permissionMode, settings.panePlacement, settings.limits.maxAgents], ['default', 'beside', 3], 'Settings itself is not changed');
+    for (const mode of ['default', 'manual', 'acceptEdits', 'plan', 'dontAsk']) assert.equal((await put({ permissionMode: mode })).body.permissionMode, mode, mode);
+    assert.equal((await put({ maxAgents: 1 })).body.maxAgents, 1);
+    assert.equal((await put({ maxAgents: 8 })).body.maxAgents, 8);
+    assert.equal((await put({ panePlacement: 'beside' })).body.panePlacement, 'beside');
+    assert.deepEqual((await put({ panePlacement: null })).body, only([], NONE, { permissionMode: 'dontAsk', maxAgents: 8 }));
+    assert.deepEqual((await put({ permissionMode: null })).body, only([], NONE, { maxAgents: 8 }));
+    assert.deepEqual((await put({ maxAgents: null })).body, only([]), 'null = use Settings');
+    assert.deepEqual((await loadConfig(w.env)).config.perProject, {});
+  });
+
+  test('(+) a save of the three leaves plugins and models untouched, and the other way round', async () => {
+    const models = { ...NONE, builder: 'claude-opus-5-5' };
+    assert.equal((await put({ models })).status, 200);
+    assert.equal((await put({ plugins: ['alpha@market'] })).status, 200);
+    assert.deepEqual((await put({ maxAgents: 2 })).body, only(['alpha@market'], models, { maxAgents: 2 }));
+    assert.deepEqual((await put({ permissionMode: 'plan' })).body, only(['alpha@market'], models, { maxAgents: 2, permissionMode: 'plan' }));
+    assert.deepEqual((await put({ models: NONE })).body, only(['alpha@market'], NONE, { maxAgents: 2, permissionMode: 'plan' }));
+    assert.deepEqual((await put({ plugins: [] })).body, only([], NONE, { maxAgents: 2, permissionMode: 'plan' }));
+    await put({ maxAgents: null });
+    assert.deepEqual((await put({ permissionMode: null })).body, only([]));
+    assert.deepEqual((await loadConfig(w.env)).config.perProject, {});
+  });
+
+  test('(−) bypassPermissions is 400 invalid, never saved, and a saved value stays', async () => {
+    assert.equal((await put({ permissionMode: 'plan' })).status, 200);
+    const saved = JSON.stringify((await loadConfig(w.env)).config.perProject);
+    const r = await put({ permissionMode: 'bypassPermissions' });
+    assert.deepEqual([r.status, r.body.error, r.body.message], [400, 'invalid', 'bypassPermissions is never allowed']);
+    assert.equal(JSON.stringify((await loadConfig(w.env)).config.perProject), saved, 'nothing was written');
+    assert.equal((await a.call('GET', url())).body.permissionMode, 'plan');
+    assert.equal((await put({ permissionMode: null })).status, 200);
+    const none = await put({ permissionMode: 'bypassPermissions' });
+    assert.equal(none.status, 400);
+    assert.deepEqual((await loadConfig(w.env)).config.perProject, {}, 'no entry was created for it');
+  });
+
+  test('(−) a body with two fields, a stray key, or a value that is not a mode, a placement or a whole number from 1 to 8 is 400 invalid and nothing is written', async () => {
+    assert.equal((await put({ maxAgents: 3 })).status, 200);
+    const saved = JSON.stringify((await loadConfig(w.env)).config.perProject);
+    const bad = [
+      { permissionMode: 'plan', maxAgents: 2 }, { panePlacement: 'beside', maxAgents: 2 }, { permissionMode: null, panePlacement: null, maxAgents: null }, // two or three fields
+      { maxAgents: 2, plugins: [] }, { permissionMode: 'plan', models: NONE }, { maxAgents: 2, extra: 1 },
+      { permissionMode: 'yolo' }, { permissionMode: '' }, { permissionMode: 5 }, { permissionMode: ['plan'] }, { permissionMode: true },
+      { panePlacement: 'above' }, { panePlacement: 'under_last' }, { panePlacement: 5 }, { panePlacement: [] },
+      { maxAgents: 0 }, { maxAgents: 9 }, { maxAgents: -1 }, { maxAgents: 1.5 }, { maxAgents: '3' }, { maxAgents: '' }, { maxAgents: true }, { maxAgents: [3] }, { maxAgents: {} },
+      { limits: { maxAgents: 2 } }, { permission: 'plan' },
+    ];
+    for (const body of bad) {
+      const r = await put(body);
+      assert.equal(r.status, 400, JSON.stringify(body));
+      assert.equal(r.body.error, 'invalid');
+      assert.ok(r.body.message.length < 160, 'the message is short');
+    }
+    const proto = await a.call('PUT', url(), { body: '{"maxAgents":2,"__proto__":{"permissionMode":"plan"}}', headers: { 'content-type': 'application/json' } });
+    assert.equal(proto.status, 400);
+    assert.equal(JSON.stringify((await loadConfig(w.env)).config.perProject), saved, 'every refusal left the config as it was');
+    assert.equal((await put({ maxAgents: null })).status, 200);
+  });
+
+  test('(−) a PUT of one of the three for an unknown project is 404, for a malformed key 400, as non-JSON 415, and without the secret 403', async () => {
+    const missing = await put({ maxAgents: 2 }, '0123456789abcdef');
+    assert.deepEqual([missing.status, missing.body.error], [404, 'not_found']);
+    assert.equal((await put({ permissionMode: 'plan' }, 'short')).status, 400);
+    assert.equal((await a.call('PUT', url(), { body: '{"maxAgents":2}', headers: { 'content-type': 'text/plain' } })).status, 415);
+    assert.equal((await a.call('PUT', url(), { json: { panePlacement: 'beside' }, headers: { 'x-nika-app': null } })).status, 403);
     assert.deepEqual((await loadConfig(w.env)).config.perProject, {});
   });
 
@@ -1030,6 +1166,22 @@ describe('spawn and orchestrator', () => {
       const under = await r.post({ name: 'worker', parent: '%20' });
       assert.equal(under.status, 200, under.raw);
       assert.deepEqual(r.exec.panes.find((x) => x.id === '%21').depth, '3');
+    });
+
+    test('(+) F4: with no tmux server a spawn through the route creates the project session; (−) a claude that dies at launch is a 502 claude_exited body, for spawn and for start', async () => {
+      const world = await makeWorld();
+      const exec = fakeTmux();
+      const ctxOver = { exec, tmuxBin: TMUX, claudeBin: CLAUDE };
+      const a = await boot({ world, deps: makeDeps({ spawnAgent, startOrchestrator }), ctxOver });
+      const body = { project: world.project.key, name: 'builder-1', model: 'sonnet', brief: 'Do the thing.' };
+      const made = await a.call('POST', '/api/app/spawn', { json: body });
+      assert.deepEqual([made.status, made.body.pane, made.body.session, exec.of('new-session').length], [200, '%20', 'My-App', 1], made.raw);
+      const dying = fakeTmux();
+      const d = await boot({ world, deps: makeDeps({ spawnAgent, startOrchestrator }), ctxOver: { ...ctxOver, exec: dying, sleep: async () => { dying.panes.splice(0); } } });
+      for (const [route, json] of [['/api/app/spawn', { ...body, name: 'builder-2' }], ['/api/app/orchestrator/start', { project: world.project.key }]]) {
+        const r = await d.call('POST', route, { json });
+        assert.deepEqual([r.status, r.body.error, r.body.message], [502, 'claude_exited', 'Claude exited right after it started. Run `claude` once in a terminal in this folder to see why (for example, to log in).'], route);
+      }
     });
 
     test('(−) the 409 depth and 404 parent-gone answers reach the page with their codes and nothing is started', async () => {

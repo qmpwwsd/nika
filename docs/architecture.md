@@ -158,7 +158,7 @@ latency. `--optimize-for-size` saved about 10 MB more but made history requests 
 | `rules.js` | Renders, previews, hashes and applies the orchestration rules to a project. |
 | `server.js` | The HTTP server both tiers share: Host check, static files with the CSP, the 0.1 routes, a mount hook for the app tier. |
 | `session-control.js` | The four controls on a live pane: switch the mode, End, run a slash command, answer a prompt. One lock per pane, keys only through `keys.js`, fail closed, never kills. |
-| `spawn.js` | `spawnAgent()` splits a pane (resolving the parent and depth from tmux's tags and applying the per-parent and per-project limits, ADR 0013); `runAgent()` is the `_run-agent` wrapper that runs `claude` with the safety flags. |
+| `spawn.js` | `spawnAgent()` splits a pane, or creates the project's tmux session (window `agents`) when there is no server or no session (resolving the parent and depth from tmux's tags and applying the per-parent and per-project limits, ADR 0013); `runAgent()` is the `_run-agent` wrapper that runs `claude` with the safety flags. |
 | `store.js` | The validated `config.json`, the project registry and each project's saved orchestrator id. |
 | `text.js` | `clean()` and `cleanBlock()`: strip controls and bidi marks from agent-controlled text. |
 | `tmuxerr.js` | Maps a failed tmux call to a contract error body. |
@@ -186,7 +186,7 @@ latency. `--optimize-for-size` saved about 10 MB more but made history requests 
 | `tokens.css`, `app.css`, `session.css` | Design tokens and styles (light, dark, system). |
 | `api.js` | The only client of the app tier: takes the secret once and sends `X-Nika-App`. In the browser tier it refuses to run. |
 | `app-copy.js` | The Add to Applications banner: which banner `appCopy` shows and its fixed copy. Pure; the two POSTs live in `project.js`. |
-| `dash-model.js` | The dashboard's Show ended rule (`endedPlan`, `resetEndedState`), the sidebar's Projects and Detected lists (`sidebarModel`) and the orchestrator's state and badge (`orchState`, `savedPick`, `otherRunning`, `roleTag`, `ROLE_TAGS`). Pure, both tiers. |
+| `dash-model.js` | The Show ended rule of the dashboard and the project page (`endedPlan`, `resetEndedState`, per view; ended sessions and finished subagents stay hidden until it is on), the sidebar's Projects and Detected lists (`sidebarModel`) and the orchestrator's state and badge (`orchState`, `savedPick`, `otherRunning`, `roleTag`, `ROLE_TAGS`). Pure, both tiers. |
 | `app.js` | Main page: shell, dashboard (in the app tier: mode tags, the row menu's End and the Add to Applications banner), router, the poll loop and the Keyboard shortcuts keys. Runs in both tiers. |
 | `ui.js` | Shared state and widgets for the main page. |
 | `dom.js` | `h()`: builds DOM with `textContent`, never parses markup; `roleTagEl()` draws the orchestrator badge. |
@@ -230,8 +230,10 @@ regular single-link files, an O_EXCL temp file with fsync, then rename. nika wri
 
 - its own config and state files (above);
 - into a registered project, only after a diff preview, your confirmation and a hash check: `rules/orchestration.md`,
-  one `@rules/orchestration.md` line in `CLAUDE.md`, `enabledPlugins` in `.claude/settings.local.json`, and,
-  if you opt in, one `.gitignore` line;
+  one `@rules/orchestration.md` line in `CLAUDE.md` and in a regular `AGENTS.md` (a `CLAUDE.md` that imports `@AGENTS.md` gets
+  the rules through it and is left as it is, a lone `AGENTS.md` gets a new `CLAUDE.md` that is just `@AGENTS.md`; non-regular
+  `AGENTS.md` is skipped, never followed; `docs/templates.md`), `enabledPlugins` in
+  `.claude/settings.local.json`, and, if you opt in, one `.gitignore` line;
 - macOS only, on `nika app install`, the app's Add/Update button, or a launch command refreshing a copy nika made
   earlier: `~/Applications/nika.app`, a `ditto` copy of the app that came with this install. Fixed target, never
   `/Applications`; it is replaced only when it is a real folder you own that is nika's bundle, built in a temp folder

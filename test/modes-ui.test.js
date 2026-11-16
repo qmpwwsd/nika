@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { MODE_META, MODE_TARGETS, modeKey, modeEl, bypassTag, switcherState, modeNote, switchFailure } from '../public/modes.js';
+import { MODE_META, MODE_TARGETS, modeKey, modeEl, settingModeEl, bypassTag, switcherState, modeNote, switchFailure } from '../public/modes.js';
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const read = (...p) => fs.readFileSync(path.join(ROOT, ...p), 'utf8');
@@ -163,6 +163,56 @@ describe('modeEl', () => {
   });
 });
 
+// ---- settingModeEl: a Settings value on a card (F6) -------------------------------------------------------------------
+
+describe('settingModeEl (the project page\'s New agents card)', () => {
+  const textOf = (el) => el.textContent;
+  const icons = (el) => el.find((n) => n.tag === 'svg');
+
+  test('(+) a mode a pane can be in gives modeEl\'s chip (same class, icon, label and title) without the spoken "Permission mode: " prefix, which the card\'s own label already says', () => {
+    for (const m of ['manual', 'acceptEdits', 'plan', 'auto', 'dontAsk']) {
+      const a = settingModeEl(m);
+      const b = modeEl(m);
+      assert.equal(a.className, b.className, m);
+      assert.equal(textOf(a), MODE_META[m].label, m);
+      assert.equal(textOf(b), `Permission mode: ${MODE_META[m].label}`, m);
+      assert.equal(a.getAttribute('title'), b.getAttribute('title'), m);
+      assert.equal(icons(a)[0].kids[0].getAttribute('href'), icons(b)[0].kids[0].getAttribute('href'), m);
+    }
+  });
+
+  test('(+) default (Claude Code\'s own default, no flag) is a chip of its own: the word Default, the gear icon, its own colour', () => {
+    const el = settingModeEl('default');
+    assert.equal(el.className, 'mode m-default');
+    assert.equal(el.find((n) => n.className === 'ml')[0].textContent, 'Default');
+    assert.equal(icons(el)[0].kids[0].getAttribute('href'), '#i-gear');
+    assert.equal(el.getAttribute('title'), 'Permission mode: Default');
+    assert.equal(textOf(el), 'Default');
+    assert.notEqual(icons(el)[0].kids[0].getAttribute('href'), `#i-${MODE_META.manual.icon}`, 'not the Manual icon: the two are told apart without colour');
+    for (const meta of Object.values(MODE_META)) assert.notEqual(el.className, `mode ${meta.cls}`, `not the colour of ${meta.label}`);
+    assert.match(read('public', 'index.html'), /<symbol id="i-gear"/, 'the icon exists in the sprite');
+  });
+
+  test('(−) default stays out of MODE_META: a pane can never be in it, so modeKey still calls it unknown', () => {
+    assert.equal(Object.hasOwn(MODE_META, 'default'), false);
+    assert.equal(modeKey('default'), 'unknown');
+    assert.equal(modeEl('default').className, 'mode m-unknown');
+  });
+
+  test('(−) a value that is not a setting falls back to "Mode ?", and text never becomes markup', () => {
+    for (const bad of ['<img src=x onerror=alert(1)>', '__proto__', 'toString', null, undefined, 7]) {
+      const el = settingModeEl(bad);
+      assert.equal(el.className, 'mode m-unknown');
+      assert.doesNotMatch(textOf(el), /img|onerror|alert/);
+    }
+  });
+
+  test('(+) the chip is confirmed (a setting has no footer to read): no unconfirmed note', () => {
+    assert.equal(settingModeEl('plan').getAttribute('data-confirmed'), 'true');
+    assert.doesNotMatch(textOf(settingModeEl('default')), /unconfirmed/);
+  });
+});
+
 // ---- tokens.css ---------------------------------------------------------------------------------------------------
 
 describe('tokens.css mode tokens', () => {
@@ -243,6 +293,24 @@ describe('tokens.css mode tokens', () => {
       }
     });
   }
+
+  // The Settings value `default` (settingModeEl) has its own colour too: one rule, three tokens in every block, the same contrast floors
+  test('(+) .m-default reads its own three tokens, defined in every block (both dark blocks equal), with the mode contrast floors', () => {
+    const rule = /\.m-default\s*\{([^}]*)\}/.exec(TOKENS);
+    assert.ok(rule, '.m-default rule');
+    assert.match(rule[1], /--mc:\s*var\(--m-default\)/);
+    assert.match(rule[1], /--mc-soft:\s*var\(--m-default-soft\)/);
+    assert.match(rule[1], /--mc-line:\s*var\(--m-default-line\)/);
+    const names = ['--m-default', '--m-default-soft', '--m-default-line'];
+    for (const n of names) assert.equal(vars(BLOCKS.dark)[n], vars(BLOCKS.darkPinned)[n], n);
+    for (const [name, block] of Object.entries(BLOCKS)) {
+      const v = { ...vars(BLOCKS.light), ...vars(block) };
+      for (const n of names) assert.match(v[n] ?? '', /^#[0-9a-f]{6}$/i, `${n} in ${name}`);
+      for (const ground of [v['--m-default-soft'], v['--surface'], v['--attn-row']]) assert.ok(ratio(v['--m-default'], ground) >= 4.5, `default text on ${ground} (${name})`);
+      for (const ground of [v['--bg'], v['--surface'], v['--surface-2']]) assert.ok(ratio(v['--m-default-line'], ground) >= 3, `default edge on ${ground} (${name})`);
+      for (const m of MODES) assert.notEqual(v['--m-default'], v[`--m-${MODE_META[m].cls.slice(2)}`], `not ${m}'s colour (${name})`);
+    }
+  });
 
   test('(−) tokens.css stays free of color-mix(), :has() and non-ASCII', () => {
     const css = TOKENS.replace(/\/\*[\s\S]*?\*\//g, '');

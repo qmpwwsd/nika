@@ -165,8 +165,8 @@ describe('index.html: the Auto-compact section', () => {
   });
 
   test('(+) the stepper: minus and plus step 5 for #set-compact-pct, the number is 20 to 95 with its name and descriptions', () => {
-    assert.match(sec, /<button type="button" class="btn" data-fk="compact-dec" data-step="-5" data-step-for="set-compact-pct" aria-label="5 percent less">−<\/button>/);
-    assert.match(sec, /<button type="button" class="btn" data-fk="compact-inc" data-step="5" data-step-for="set-compact-pct" aria-label="5 percent more">\+<\/button>/);
+    assert.match(sec, /<button type="button" class="btn" data-fk="compact-dec" data-step="-5" data-step-for="set-compact-pct" aria-label="5 percent less" title="5 percent less">−<\/button>/);
+    assert.match(sec, /<button type="button" class="btn" data-fk="compact-inc" data-step="5" data-step-for="set-compact-pct" aria-label="5 percent more" title="5 percent more">\+<\/button>/);
     const t = tagOf('set-compact-pct');
     assert.match(t, /type="number"/);
     assert.match(t, /min="20"/);
@@ -204,8 +204,8 @@ describe('index.html: the Auto-compact section', () => {
   });
 
   test('(+) the max-agents stepper keeps its default target: no data-step-for, so it steps #set-max by 1', () => {
-    assert.match(HTML, /<button type="button" class="btn" data-step="-1" aria-label="One fewer">−<\/button><input type="number" id="set-max" min="1" max="8"/);
-    assert.match(HTML, /<button type="button" class="btn" data-step="1" aria-label="One more">\+<\/button>/);
+    assert.match(HTML, /<button type="button" class="btn" data-step="-1" aria-label="One fewer" title="One fewer">−<\/button><input type="number" id="set-max" min="1" max="8"/);
+    assert.match(HTML, /<button type="button" class="btn" data-step="1" aria-label="One more" title="One more">\+<\/button>/);
   });
 
   test('(+) app.css: .compact-row wraps and its select is auto width; .onoff-st has an On look (accent) and a dashed Off look (muted)', () => {

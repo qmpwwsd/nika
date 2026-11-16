@@ -1,7 +1,7 @@
 // Merges every source into Agent records and groups them by project.
 import fs from 'node:fs';
 import path from 'node:path';
-import { readRegistry, processTable, isAlive } from './collect/registry.js';
+import { readRegistry, processTable, isAlive, procStarts } from './collect/registry.js';
 import { indexTranscripts, readTranscript, createTranscriptCache, CACHE_SLACK } from './collect/transcripts.js';
 import { readSubagents } from './collect/subagents.js';
 import { listPanes } from './collect/tmux.js';
@@ -13,6 +13,8 @@ import { UUID } from './ids.js';
 import { MODEL_CATALOG, modelWindow } from './models.js';
 import { compactLaunch } from './compact.js';
 import { keyFor, loadConfig, defaults } from './store.js';
+// tmux's own wording when no server is running; "error connecting to <socket> (Permission denied)" is a real failure and stays an error
+import { NO_TMUX_SERVER } from './tmuxerr.js';
 
 const PROMPT_MAX = 200;
 const IO_LIMIT = 16;
@@ -163,11 +165,11 @@ async function compactionOf(config) {
  * @returns {{ snapshot: object, reportPaths: Map<string,string> }}
  *   snapshot is the public JSON (no file paths of reports); reportPaths stays server-side.
  */
-export async function collect({ config, exec, now = Date.now(), sinceMs, since = null, cache = {}, include = [], indexOnly = false }) {
+export async function collect({ config, exec, now = Date.now(), sinceMs, since = null, cache = {}, include = [], indexOnly = false, platform = process.platform }) {
   cache.transcripts ??= createTranscriptCache();
   // indexOnly: just the transcript index (findSessions); no registry, ps, tmux or reports, so nothing is live
   const [registry, table, index, tmux, reportDirs] = indexOnly
-    ? [{ entries: [], error: null }, null, await indexTranscripts(config.claudeDir), { panes: new Map(), error: null }, []]
+    ? [{ entries: [], skipped: [], error: null }, null, await indexTranscripts(config.claudeDir), { panes: new Map(), error: null }, []]
     : await Promise.all([
       readRegistry(config.claudeDir),
       processTable(exec),
@@ -181,13 +183,17 @@ export async function collect({ config, exec, now = Date.now(), sinceMs, since =
     registry: registry.error ?? 'ok',
     processes: table ? 'ok' : 'ps unavailable: liveness by signal 0',
     transcripts: index.error ?? 'ok',
-    tmux: tmux.error ?? 'ok',
+    // no tmux server is a normal state (nothing runs under tmux yet), not a failure: no panes and no warning
+    tmux: tmux.error && !NO_TMUX_SERVER.test(tmux.error) ? tmux.error : 'ok',
     reports: 'ok',
   };
 
+  // /proc is read only on Linux, only to compare with a ps table, and only for pids ps listed (isAlive drops the others first); with no
+  // table liveness is signal 0 and nothing under /proc is opened
+  const starts = table && platform === 'linux' ? await procStarts(registry.entries.filter((e) => table.has(e.pid))) : new Map();
   const live = new Map();
   for (const e of registry.entries) {
-    if (!isAlive(e, table)) continue;
+    if (!isAlive(e, table, starts)) continue;
     const prev = live.get(e.sessionId);
     if (!prev || (prev.updatedAt ?? 0) < (e.updatedAt ?? 0)) live.set(e.sessionId, e);
   }
@@ -297,7 +303,8 @@ export async function collect({ config, exec, now = Date.now(), sinceMs, since =
   sorted.sort((a, b) => b.lastActivity - a.lastActivity || a.label.localeCompare(b.label));
 
   return {
-    snapshot: { generatedAt: now, since, sources, counts, groups: sorted },
+    // registry files that were unreadable or not in Claude's format: those sessions are missing from the list without a word otherwise
+    snapshot: { generatedAt: now, since, sources, skipped: { registry: registry.skipped.length }, counts, groups: sorted },
     reportPaths,
   };
 }

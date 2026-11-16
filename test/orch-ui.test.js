@@ -11,8 +11,8 @@ import { fileURLToPath } from 'node:url';
 import { El, installDom, withClass, focus } from './fake-dom.js';
 import { h, icon, roleTagEl, ctxEl } from '../public/dom.js';
 import { menuEl, sessionHref } from '../public/ui.js';
-import { orchState, roleTag, savedPick, otherRunning, parentOf, spawnLimits } from '../public/dash-model.js';
-import { parseModes, modesAfter } from '../public/modes.js';
+import { orchState, roleTag, savedPick, otherRunning, parentOf, spawnLimits, effectiveAgents } from '../public/dash-model.js';
+import { parseModes, modesAfter, settingModeEl, MODE_META } from '../public/modes.js';
 import { pluginView, pluginSave, sortIds, countText, filterNote } from '../public/plugin-view.js';
 import { ROLES, ROLE_LABEL, modelLabel, fillRoleOverride, effectiveRoleModels } from '../public/models-ui.js';
 
@@ -255,7 +255,7 @@ function flowRig({ project = {}, agents = [], answers = {}, me = { tmux: true, c
     return typeof a === 'function' ? a(opts) : a;
   };
   const ctx = {
-    h, icon, $: node, state, hooks: {}, appFetch, menuEl, sessionHref, roleTag, orchState, savedPick, otherRunning, spawnLimits, parseModes, modesAfter,
+    h, icon, $: node, state, hooks: {}, appFetch, menuEl, sessionHref, roleTag, orchState, savedPick, otherRunning, spawnLimits, effectiveAgents, parseModes, modesAfter, settingModeEl, MODE_META,
     pluginView, pluginSave, sortIds, countText, filterNote, ROLES, ROLE_LABEL, modelLabel, fillRoleOverride, effectiveRoleModels,
     location: { set href(v) { navs.push(v); }, get href() { return ''; }, hash: '' },
     document: { title: '' },
@@ -350,6 +350,15 @@ describe('groupActions: the first button follows the orchestrator state (design 
     const out = r.api.groupActions({ ...r.g, project: null }, {});
     assert.equal(out.length, 1);
     assert.equal(out[0].attrs['data-fk'], `add:${KEY}`);
+  });
+
+  test('(+) Add project hides its word below 900 px, so the title carries it (0.4.0); the (−) side: the other header buttons keep their own titles', () => {
+    const r = flowRig();
+    const [add] = r.api.groupActions({ ...r.g, project: null }, {});
+    assert.equal(add.attrs.title, 'Add project');
+    assert.equal(add.all((n) => n.className === 'lbl')[0].textContent, 'Add project', 'equal to the word the breakpoint hides');
+    const [first] = r.api.groupActions(r.g, { primary: true });
+    assert.notEqual(first.attrs.title, 'Add project');
   });
 });
 
@@ -456,6 +465,60 @@ describe('start and resume from the header', () => {
     const down = flowRig({ answers: {} });
     await down.api.startOrchestrator(down.proj);
     assert.deepEqual([down.last().kind, down.last().msg], ['error', 'Could not reach the nika server.']);
+  });
+
+  // F4: a Start or Resume that tmux or claude stopped says what to do next, stays on this page and never opens the session window
+  const EXITED = 'Claude exited right after it started. Run `claude` once in a terminal in this folder to see why (for example, to log in).';
+  const STOPPED = [
+    [{ status: 503, body: { error: 'tmux_unavailable', message: 'tmux not found (add it to PATH or set NIKA_TMUX)' } }, 'tmux not found. Install tmux 3.2 or newer, then try again.'],
+    [{ status: 502, body: { error: 'tmux_failed', message: 'tmux failed: no space left on device' } }, 'tmux failed: no space left on device'],
+    [{ status: 502, body: { error: 'tmux_failed', message: 'unknown error' } }, 'tmux failed: unknown error'],
+    [{ status: 502, body: { error: 'claude_exited', message: 'server words' } }, EXITED],
+  ];
+
+  test('(+) Start: tmux_unavailable, tmux_failed and claude_exited each show their sentence as an error toast that stays long enough to read; the page stays', async () => {
+    for (const [answer, text] of STOPPED) {
+      const r = flowRig({ answers: { [START]: answer } });
+      await r.api.startOrchestrator(r.proj);
+      assert.deepEqual([r.last().kind, r.last().msg], ['error', text]);
+      assert.ok(r.last().ms >= 8000, 'a long sentence is not gone in 4 s');
+      assert.deepEqual([r.navs, r.toastLog[0].removed], [[], true], 'no navigation, the spinner is gone');
+    }
+  });
+
+  test('(+) a resume that claude ended at once names `claude --resume <id>` instead of the login hint; (−) a `resume` that is no session id is ignored', async () => {
+    const resumed = { status: 502, body: { error: 'claude_exited', message: 'server words', resume: ID } };
+    const r = flowRig({ answers: { [START]: resumed } });
+    await r.api.startOrchestrator(r.proj); // Start resumes too when the saved pick has ended: the server says so, not the button
+    assert.equal(r.last().msg, `Claude exited right after it started. Run \`claude --resume ${ID}\` in a terminal in this folder to see why.`);
+    for (const bad of ['../x', 'not-an-id', 7, null]) {
+      const q = flowRig({ answers: { [START]: { status: 502, body: { error: 'claude_exited', message: 'server words', resume: bad } } } });
+      await q.api.startOrchestrator(q.proj);
+      assert.equal(q.last().msg, EXITED, String(bad));
+    }
+  });
+
+  test('(+) Resume shows the same sentences', async () => {
+    for (const [answer, text] of STOPPED) {
+      const r = flowRig({ answers: { [START]: answer } });
+      await r.api.startOrchestrator(r.proj, { resume: { name: 'planner' } });
+      assert.equal(r.last().msg, text);
+      assert.equal(r.navs.length, 0);
+    }
+  });
+
+  test('(+) Resume as orchestrator on a row (the pick is saved first): the sentence is part of the "saved, but it didn\'t start" toast', async () => {
+    const put = { status: 200, body: pick('ended') };
+    const r = flowRig({ answers: { [`PUT ${URL_PICK}`]: put, [START]: STOPPED[3][0], 'GET /api/app/projects': { status: 200, body: { projects: [] } } } });
+    await r.api.startOrchestrator(r.proj, { resume: { name: 'planner' }, save: { id: ID, other: null } });
+    assert.equal(r.last().msg, `planner is saved as the orchestrator, but it didn't start: ${EXITED} Try Resume orchestrator in the header.`);
+    assert.equal(r.navs.length, 0);
+  });
+
+  test('(−) any other refusal keeps the server\'s own words and the short toast', async () => {
+    const r = flowRig({ answers: { [START]: { status: 503, body: { error: 'claude_unavailable', message: 'claude not found (add it to PATH or set NIKA_CLAUDE)' } } } });
+    await r.api.startOrchestrator(r.proj);
+    assert.deepEqual([r.last().msg, r.last().ms], ['claude not found (add it to PATH or set NIKA_CLAUDE)', undefined]);
   });
 });
 
@@ -749,6 +812,33 @@ describe('Stop using as orchestrator (DELETE) and the header menu item', () => {
     assert.equal(r.calls.length, 0);
     const shown = globalThis.document.toastBox.kids.at(-1); // menuEl raises its own toast (ui.js)
     assert.deepEqual([shown.attrs['data-kind'], shown.textContent], ['error', OFFLINE]);
+  });
+});
+
+describe('the project page asks for its own "Show ended" toggle (F5)', () => {
+  const asked = (r) => { const seen = []; r.ctx.agentNodes = (...args) => { seen.push(args.map((a) => (typeof a === 'object' && a !== null && !('agents' in a) ? plain(a) : a))); return [new El('ul')]; }; r.api.renderProject(true); return seen; };
+
+  test('(+) by default it asks for the ended rows hidden: { showEnded: false } under the project scope', () => {
+    const seen = asked(flowRig());
+    assert.equal(seen.length, 1);
+    assert.deepEqual([seen[0][1], seen[0][2], seen[0][3]], ['', `pv:${KEY}`, { showEnded: false }]);
+  });
+
+  test('(+) once the project toggle is on it asks for them shown, and the dashboard flag changes nothing either way', () => {
+    const on = flowRig();
+    on.state.showEndedProject = true;
+    assert.equal(asked(on)[0][3].showEnded, true);
+    const mixed = flowRig();
+    mixed.state.showEnded = true; // the dashboard checkbox only
+    assert.equal(asked(mixed)[0][3].showEnded, false);
+  });
+
+  test('(−) a garbage value in state never turns it on: only a real true does', () => {
+    for (const bad of ['true', 1, {}, [true], 'yes', undefined, null]) {
+      const r = flowRig();
+      r.state.showEndedProject = bad;
+      assert.equal(asked(r)[0][3].showEnded, false, String(bad));
+    }
   });
 });
 

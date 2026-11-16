@@ -62,7 +62,7 @@ const input = (text = '', isTTY = false) => Object.assign(Readable.from(text ? [
 async function cli(argv, { env, cwd, stdin, tty = false, ...io } = {}) {
   const out = new Sink(tty);
   const err = new Sink();
-  const code = await main(argv, env, { out, err, in: stdin ?? input(), cwd, home: COPY_HOME, brewApps: [], ...io });
+  const code = await main(argv, env, { out, err, in: stdin ?? input(), cwd, home: COPY_HOME, brewApps: [], sleep: async () => {}, ...io }); // sleep: the 1 s early-exit wait of orchestrate and spawn
   return { code, out: out.text, err: err.text };
 }
 
@@ -612,6 +612,7 @@ describe('projects', () => {
 });
 
 describe('rules', () => {
+  const AGENTS_LINE = '@AGENTS.md'; // used inside template literals: an escaped newline right before it would look like an email address to test/hygiene.test.js
   test('(+) preview from a nested cwd finds the project and prints a diff per file', async () => {
     const w = await world();
     const r = await cli(['rules', 'preview'], { env: w.cliEnv, cwd: w.nested });
@@ -631,6 +632,102 @@ describe('rules', () => {
     assert.equal(r.code, 0, r.err);
     assert.match(r.out, /^\.gitignore \(create, only with --gitignore\)$/m);
     assert.match(r.out, /^warning: settings\.local\.json is not gitignored$/m);
+  });
+
+  test('(+) on a project with only AGENTS.md, preview and apply show the AGENTS.md update and a new CLAUDE.md that imports it', async () => {
+    const w = await world();
+    const agents = path.join(w.project.dir, 'AGENTS.md');
+    fs.writeFileSync(agents, '# acme-api agents\n');
+    const p = await cli(['rules', 'preview'], { env: w.cliEnv, cwd: w.nested });
+    assert.equal(p.code, 0, p.err);
+    assert.match(p.out, /^AGENTS\.md \(update\)$/m);
+    assert.match(p.out, /^CLAUDE\.md \(create\)$/m);
+    assert.match(p.out, /^\+@AGENTS\.md$/m);
+    assert.equal(p.out.match(/^\+@rules\/orchestration\.md$/gm).length, 1, 'the import line goes into AGENTS.md only; CLAUDE.md just imports AGENTS.md');
+    assert.ok(p.out.indexOf('AGENTS.md (update)') < p.out.indexOf('CLAUDE.md (create)'), 'listed in write order');
+    assert.doesNotMatch(p.out, /skipped/);
+    const a = await cli(['rules', 'apply', '--yes'], { env: w.cliEnv, cwd: w.nested });
+    assert.equal(a.code, 0, a.err);
+    assert.match(a.out, /written: rules\/orchestration\.md, AGENTS\.md, CLAUDE\.md\n/);
+    assert.equal(fs.readFileSync(agents, 'utf8'), '# acme-api agents\n\n@rules/orchestration.md\n');
+    assert.equal(fs.readFileSync(path.join(w.project.dir, 'CLAUDE.md'), 'utf8'), '@AGENTS.md\n');
+    const backupDir = /^backups: (.+)$/m.exec(a.out)[1];
+    assert.equal(fs.readFileSync(path.join(backupDir, 'AGENTS.md'), 'utf8'), '# acme-api agents\n');
+    const again = await cli(['rules', 'apply', '--yes'], { env: w.cliEnv, cwd: w.nested });
+    assert.equal(again.code, 0, again.err);
+    assert.match(again.out, /^CLAUDE\.md \(unchanged\)\nGets the rules through @AGENTS\.md\.$/m, 'the note prints under the file line');
+    assert.match(again.out, /Nothing to apply/);
+    assert.doesNotMatch(again.out, /written:|backups?:/i);
+  });
+
+  test('(+) a CLAUDE.md that imports @AGENTS.md stays as it is: AGENTS.md gets the line and the note prints under CLAUDE.md', async () => {
+    const w = await world();
+    fs.writeFileSync(path.join(w.project.dir, 'CLAUDE.md'), `# acme-api\n\n${AGENTS_LINE}\n`);
+    fs.writeFileSync(path.join(w.project.dir, 'AGENTS.md'), '# acme-api agents\n');
+    const p = await cli(['rules', 'preview'], { env: w.cliEnv, cwd: w.nested });
+    assert.equal(p.code, 0, p.err);
+    assert.match(p.out, /^AGENTS\.md \(update\)$/m);
+    assert.match(p.out, /^CLAUDE\.md \(unchanged\)\nGets the rules through @AGENTS\.md\.$/m);
+    const a = await cli(['rules', 'apply', '--yes'], { env: w.cliEnv, cwd: w.nested });
+    assert.equal(a.code, 0, a.err);
+    assert.match(a.out, /written: rules\/orchestration\.md, AGENTS\.md\n/);
+    assert.equal(fs.readFileSync(path.join(w.project.dir, 'CLAUDE.md'), 'utf8'), `# acme-api\n\n${AGENTS_LINE}\n`);
+  });
+
+  test('(+) a CLAUDE.md with the import and its own rules line prints the whole "may be read twice" note, and apply leaves it alone', async () => {
+    const w = await world();
+    const claude = `# acme-api\n\n${AGENTS_LINE}\n\n@rules/orchestration.md\n`;
+    fs.writeFileSync(path.join(w.project.dir, 'CLAUDE.md'), claude);
+    fs.writeFileSync(path.join(w.project.dir, 'AGENTS.md'), '# acme-api agents\n');
+    const p = await cli(['rules', 'preview'], { env: w.cliEnv, cwd: w.nested });
+    assert.equal(p.code, 0, p.err);
+    assert.match(p.out, /^CLAUDE\.md \(unchanged\)\nGets the rules through @AGENTS\.md\. It also has its own @rules\/orchestration\.md line \(from an earlier apply\), so Claude may read the rules twice; nika never removes a line, so delete that line by hand if you want them once\.$/m);
+    const a = await cli(['rules', 'apply', '--yes'], { env: w.cliEnv, cwd: w.nested });
+    assert.equal(a.code, 0, a.err);
+    assert.equal(fs.readFileSync(path.join(w.project.dir, 'CLAUDE.md'), 'utf8'), claude);
+  });
+
+  test('(+) a symlinked AGENTS.md beside CLAUDE.md is listed as skipped with its note, and apply --yes leaves it alone', async () => {
+    const w = await world();
+    fs.writeFileSync(path.join(w.project.dir, 'CLAUDE.md'), '# acme-api\n');
+    fs.symlinkSync('CLAUDE.md', path.join(w.project.dir, 'AGENTS.md'));
+    const p = await cli(['rules', 'preview'], { env: w.cliEnv, cwd: w.nested });
+    assert.equal(p.code, 0, p.err);
+    assert.match(p.out, /^AGENTS\.md \(skipped\)\nAGENTS\.md is a symbolic link; nika does not follow links/m);
+    assert.match(p.out, /^CLAUDE\.md \(update\)$/m);
+    const a = await cli(['rules', 'apply', '--yes'], { env: w.cliEnv, cwd: w.nested });
+    assert.equal(a.code, 0, a.err);
+    assert.match(a.out, /written: rules\/orchestration\.md, CLAUDE\.md\n/);
+    assert.equal(fs.readFileSync(path.join(w.project.dir, 'CLAUDE.md'), 'utf8'), '# acme-api\n\n@rules/orchestration.md\n');
+    assert.equal(fs.readlinkSync(path.join(w.project.dir, 'AGENTS.md')), 'CLAUDE.md');
+    const again = await cli(['rules', 'apply', '--yes'], { env: w.cliEnv, cwd: w.nested });
+    assert.equal(again.code, 0, again.err);
+    assert.match(again.out, /AGENTS\.md \(skipped\)/);
+    assert.match(again.out, /Nothing to apply/, 'a skipped entry alone is nothing to apply');
+    assert.doesNotMatch(again.out, /written:|backups?:/i);
+    const asked = await cli(['rules', 'apply'], { env: w.cliEnv, cwd: w.nested, tty: true, stdin: input('n\n', true) });
+    assert.equal(asked.code, 0, asked.err);
+    assert.doesNotMatch(asked.out, /Apply\? \[y\/N\]/);
+  });
+
+  test('(−) a lone symlinked AGENTS.md makes preview and apply fail with the refusal, and nothing is written', async () => {
+    const w = await world();
+    fs.symlinkSync(path.join(w.root, 'no-such-file'), path.join(w.project.dir, 'AGENTS.md'));
+    for (const argv of [['rules', 'preview'], ['rules', 'apply', '--yes']]) {
+      const r = await cli(argv, { env: w.cliEnv, cwd: w.nested });
+      assert.notEqual(r.code, 0, argv.join(' '));
+      assert.match(r.err, /AGENTS\.md is a symlink/);
+    }
+    assert.deepEqual(fs.readdirSync(w.project.dir).sort(), ['AGENTS.md', 'sub']);
+  });
+
+  test('(+) nika projects list shows a project outdated while AGENTS.md lacks the rules line, and current once Apply wrote it', async () => {
+    const w = await world();
+    fs.writeFileSync(path.join(w.project.dir, 'AGENTS.md'), '# acme-api agents\n');
+    assert.equal((await cli(['rules', 'apply', '--yes'], { env: w.cliEnv, cwd: w.nested })).code, 0);
+    assert.match((await cli(['projects', 'list'], { env: w.cliEnv })).out, new RegExp(`${w.project.key}\\s+\\S.*\\snika\\s`));
+    fs.writeFileSync(path.join(w.project.dir, 'AGENTS.md'), '# acme-api agents\n');
+    assert.match((await cli(['projects', 'list'], { env: w.cliEnv })).out, new RegExp(`${w.project.key}\\s+\\S.*\\soutdated\\s`));
   });
 
   test('(+) preview takes an explicit dir', async () => {
@@ -860,6 +957,20 @@ describe('spawn', () => {
     assert.equal(noClaude.code, 1);
     assert.match(noClaude.err, /claude/);
   });
+
+  test('(+) F4: with no tmux server `spawn` creates the project session (new-session) and prints its pane; (−) a claude that dies at launch is exit 1 with the reason', async () => {
+    const w = await world();
+    const exec = tmuxExec([]);
+    const made = await cli(['spawn', 'builder-1', 'sonnet', '-'], base(w, { exec, stdin: input(brief) }));
+    assert.equal(made.code, 0, made.err);
+    assert.match(made.out, /pane: %20\nsession: My-App\n/);
+    assert.deepEqual([exec.tmux.of('new-session').length, exec.tmux.of('split-window').length], [1, 0]);
+    const w2 = await world();
+    const dying = tmuxExec([]);
+    const gone = await cli(['spawn', 'builder-1', 'sonnet', '-'], base(w2, { exec: dying, stdin: input(brief), sleep: async () => { dying.tmux.panes.splice(0); } }));
+    assert.equal(gone.code, 1);
+    assert.match(gone.err, /claude_exited: Claude exited right after it started\. Run `claude` once in a terminal/);
+  });
 });
 
 describe('orchestrate', () => {
@@ -1034,6 +1145,15 @@ describe('orchestrate', () => {
       assert.equal(argv.includes('--session-id'), true);
       assert.notEqual(await getOrchestrator(w.project.key, w.env), PICK);
     });
+  });
+
+  test('(−) F4: an orchestrator whose claude dies at launch is exit 1 with the reason, and attaches to nothing', async () => {
+    const w = await world();
+    const exec = tmuxExec([]);
+    const r = await cli(['orchestrate', '--detached'], at(w, { exec, sleep: async () => { exec.tmux.panes.splice(0); } }));
+    assert.equal(r.code, 1);
+    assert.match(r.err, /claude_exited: Claude exited right after it started/);
+    assert.equal(r.out, '');
   });
 
   test('(−) an unregistered cwd is refused (3), two directories are a usage error (2), missing tmux or claude is exit 1', async () => {

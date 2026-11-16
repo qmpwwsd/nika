@@ -51,7 +51,8 @@ commands:
   status [options]     print agents grouped by project
       --json             machine-readable output
       --since <window>   24h | 7d | 30d | all (default ${DEFAULT_SINCE})
-      --full             list every ended agent, not only the latest ${ENDED_SHOWN}
+      --ended            also list ended agents (the latest ${ENDED_SHOWN} per project)
+      --full             list every ended agent, not only the latest ${ENDED_SHOWN} (implies --ended)
   projects list        list registered projects with their rules state
   projects add <dir>   register a project folder
   projects remove <key>  unregister a project (its files are never touched)
@@ -97,11 +98,12 @@ class CliError extends Error {
 }
 
 function parseStatusArgs(args) {
-  const o = { json: false, full: false, since: DEFAULT_SINCE };
+  const o = { json: false, ended: false, full: false, since: DEFAULT_SINCE };
   for (let i = 0; i < args.length; i += 1) {
     const a = args[i];
     if (a === '--json') o.json = true;
-    else if (a === '--full') o.full = true;
+    else if (a === '--ended') o.ended = true;
+    else if (a === '--full') o.full = o.ended = true;
     else if (a === '--since') o.since = args[(i += 1)];
     else if (a.startsWith('--since=')) o.since = a.slice('--since='.length);
     else throw new UsageError(`unknown option ${a}`);
@@ -136,27 +138,51 @@ function painter(stream, env) {
   return { busy: wrap('32'), idle: wrap('33'), other: wrap('34'), ended: wrap('2'), bold: wrap('1') };
 }
 
-function renderStatus(snapshot, { full }, paint) {
+/**
+ * The test "is this group a project added to nika", by key or folder, the same as the app's sidebar (public/dash-model.js
+ * sidebarModel): a folder never added shows in the default view only while something runs there.
+ */
+export function addedTo(projects) {
+  const keys = new Set(projects.map((p) => p.key));
+  const dirs = new Set(projects.map((p) => p.dir));
+  return (g) => keys.has(g.key) || dirs.has(g.root);
+}
+
+export function renderStatus(snapshot, { ended: withEnded, full }, paint, isAdded = () => true, projects = []) {
   const now = snapshot.generatedAt;
   const lines = [];
-  if (snapshot.groups.length === 0) lines.push(`No agents in the last ${snapshot.since}.`);
-  for (const g of snapshot.groups) {
+  // an added project no group matches (the same key-or-folder test as isAdded): listed like the app's sidebar does
+  const empty = projects.filter((q) => !snapshot.groups.some(addedTo([q])));
+  if (snapshot.groups.length === 0) lines.push(`No agents in the last ${snapshot.since}.`, ...(empty.length ? [''] : []));
+  const groups = withEnded ? snapshot.groups : snapshot.groups.filter((g) => isAdded(g) || g.agents.some((a) => a.live));
+  for (const g of groups) {
     const c = g.counts;
     lines.push(`${paint.bold(clean(g.label, 120) ?? '')}  ${tilde(g.root)}   busy ${c.busy} · idle ${c.idle}${c.other ? ` · other ${c.other}` : ''} · ended ${c.ended}`);
     const live = g.agents.filter((a) => a.live);
     const ended = g.agents.filter((a) => !a.live);
-    const shown = full ? ended : ended.slice(0, ENDED_SHOWN);
+    const shown = !withEnded ? [] : full ? ended : ended.slice(0, ENDED_SHOWN);
     for (const a of [...live, ...shown]) {
       const kind = !a.live ? 'ended' : (a.state === 'busy' || a.state === 'idle' ? a.state : 'other');
       const dot = a.live ? '●' : '○';
       const where = [a.worktree, a.gitBranch].filter(Boolean).join(' · ');
       lines.push(`  ${paint[kind](`${dot} ${fit(a.state, 7)}`)} ${fit(a.name, 28)} ${fit(a.modelLabel ?? '-', 11)} ${fit(where, 34)} ${fit(a.pane?.id ?? '', 6)} ${ago(a.lastActivity, now)}`);
     }
-    if (shown.length < ended.length) lines.push(paint.ended(`  … ${ended.length - shown.length} more ended (nika status --full)`));
+    if (!withEnded && ended.length) lines.push(paint.ended(`  … ${ended.length} ended hidden (nika status --ended)`));
+    else if (shown.length < ended.length) lines.push(paint.ended(`  … ${ended.length - shown.length} more ended (nika status --full)`));
     lines.push('');
   }
+  // "yet" is true only for the window "all"; a shorter window may hide older sessions, so it names the window
+  const none = snapshot.since === 'all' ? 'no sessions yet' : `no sessions in the last ${snapshot.since}`;
+  for (const p of empty) {
+    lines.push(`${paint.bold(clean(p.name, 120) ?? '')}  ${tilde(p.dir)}   ${none}`, '');
+  }
+  const left = snapshot.groups.length - groups.length;
+  if (left) lines.push(paint.ended(`… ${left} folder${left === 1 ? '' : 's'} not added to nika, with only ended sessions, hidden (nika status --ended)`));
   const bad = Object.entries(snapshot.sources).filter(([, v]) => v !== 'ok');
   for (const [k, v] of bad) lines.push(paint.ended(`note: ${k}: ${clean(v, 300)}`));
+  // same words as the dashboard note (public/dash-model.js skippedText)
+  const n = snapshot.skipped?.registry;
+  if (Number.isInteger(n) && n > 0) lines.push(paint.ended(`${n} session file${n === 1 ? '' : 's'} skipped (unreadable or not in Claude's format)`));
   return `${lines.join('\n').trimEnd()}\n`;
 }
 
@@ -401,7 +427,7 @@ async function findProject(dirArg, cx) {
 function toolCtx(cx) {
   return {
     env: cx.env, exec: cx.execT(5000), tmuxBin: cx.config.tmuxBin, claudeBin: findClaude(cx.env),
-    nikaArgv: [process.execPath, NIKA_BIN], claudeDir: cx.config.claudeDir, now: Date.now, started: new Map(),
+    nikaArgv: [process.execPath, NIKA_BIN], claudeDir: cx.config.claudeDir, now: Date.now, started: new Map(), sleep: cx.sleep,
     lenientParent: true, // a `$TMUX_PANE` that tmux no longer lists is "no parent", not an error (a page request names a gone pane: 404)
     findSession: (id) => findSession(id, { config: cx.config, exec: cx.execT(5000) }), // the saved orchestrator, whatever its age
   };
@@ -455,6 +481,7 @@ function showPreview(project, p, cx) {
     const tags = [f.action, f.foreign && 'not written by nika', f.optional && 'only with --gitignore'].filter(Boolean).join(', ');
     cx.out.write(`\n${paint.bold(f.path)} (${tags})\n`);
     if (f.diff) cx.out.write(`${cleanBlock(f.diff, DIFF_MAX) ?? ''}\n`); // diffs contain project file text: no terminal escapes
+    if (f.note) cx.out.write(`${clean(f.note, 400)}\n`);
   }
   if (p.warnings.length) cx.out.write('\n');
   for (const w of p.warnings) cx.out.write(`warning: ${clean(w, 300)}\n`);
@@ -485,7 +512,7 @@ async function rulesCmd(rest, cx) {
 
   const overwrite = values['overwrite-foreign'] === true;
   const gitignore = values.gitignore === true;
-  if (!p.files.some((f) => f.action !== 'unchanged' && (!f.optional || gitignore))) {
+  if (!p.files.some((f) => f.action !== 'unchanged' && f.action !== 'skipped' && (!f.optional || gitignore))) {
     cx.out.write('\nNothing to apply.\n');
     return 0;
   }
@@ -676,7 +703,16 @@ const COMMANDS = {
   status: async (rest, cx) => {
     const o = parseStatusArgs(rest);
     const { snapshot } = await collect({ config: cx.config, exec: makeExec(), now: Date.now(), sinceMs: parseSince(o.since), since: o.since });
-    cx.out.write(o.json ? `${toJson(snapshot)}\n` : renderStatus(snapshot, o, painter(cx.out, cx.env)));
+    if (o.json) {
+      cx.out.write(`${toJson(snapshot)}\n`);
+      return 0;
+    }
+    // nika's project list decides which folders the default view keeps and which empty projects are listed (every text view)
+    const added = await loadConfig(cx.env);
+    const paint = painter(cx.out, cx.env);
+    cx.out.write(renderStatus(snapshot, o, paint, addedTo(added.config.projects), added.config.projects));
+    // config.json warnings (an unusable file leaves no project "added", a dropped key may drop one): said here, like nika doctor
+    for (const w of added.warnings) cx.out.write(`${paint.ended(`note: config.json: ${clean(w, 200)}`)}\n`);
     return 0;
   },
   serve: async (rest, cx, io) => {
@@ -705,11 +741,11 @@ export const COMMAND_NAMES = Object.freeze(Object.keys(COMMANDS));
 export async function main(argv, env = process.env, io = { out: process.stdout, err: process.stderr }) {
   const [cmd = 'open', ...rest] = argv;
   const config = defaultConfig(env);
-  // `io` may carry test doubles: in (stdin), cwd, platform, exec, spawn, serveApp, and for the app copy home, root, brewApps.
+  // `io` may carry test doubles: in (stdin), cwd, platform, exec, spawn, sleep (the 1 s early-exit wait of orchestrate and spawn), serveApp, and for the app copy home, root, brewApps.
   const cx = {
     env, config, out: io.out, err: io.err, stdin: io.in ?? process.stdin, cwd: io.cwd ?? process.cwd(),
     platform: io.platform ?? process.platform, spawn: io.spawn ?? nodeSpawn, execT: (timeout) => io.exec ?? makeExec({ timeout }),
-    home: io.home ?? os.homedir(), root: io.root ?? INSTALL_ROOT, brewApps: io.brewApps,
+    home: io.home ?? os.homedir(), root: io.root ?? INSTALL_ROOT, brewApps: io.brewApps, sleep: io.sleep,
   };
   try {
     if (!Object.hasOwn(COMMANDS, cmd)) throw new UsageError(`unknown command ${clean(cmd, 60)}`);

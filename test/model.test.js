@@ -1,8 +1,10 @@
 import { test, describe, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import fsp from 'node:fs/promises';
 import path from 'node:path';
-import { makeFixture, cleanup, fakeExec, SID, NOW, jsonl } from './helpers.js';
+import { makeFixture, cleanup, fakeExec, SID, NOW, PROC_START, jsonl } from './helpers.js';
+import { parseStarttime } from '../src/collect/registry.js';
 import { collect, findSession, findSessions, modelLabel, shellQuote, bridgeUrl } from '../src/model.js';
 import { parseSince } from '../src/config.js';
 import { keyFor } from '../src/store.js';
@@ -172,6 +174,114 @@ describe('collect', () => {
     assert.equal(byId(s, SID.busy).pane, null);
     assert.equal(byId(s, SID.busy).name, 'build-7-1');
     assert.match(s.snapshot.sources.tmux, /tmux/);
+  });
+
+  // F1b: with no tmux server running there are no panes and nothing is wrong, so the dashboard shows no "sources unavailable" banner
+  test('(+) no tmux server running is a normal state: source ok, no panes, the agents still listed', async () => {
+    for (const msg of ['no server running on /tmp/tmux-501/default', 'error connecting to /private/tmp/tmux-501/default (No such file or directory)', 'error connecting to /tmp/tmux-501/default (Connection refused)']) {
+      const s = await snap(7 * DAY, fakeExec({ tmuxError: msg }));
+      assert.equal(s.snapshot.sources.tmux, 'ok', msg);
+      assert.equal(byId(s, SID.busy).pane, null);
+      assert.equal(byId(s, SID.busy).live, true);
+    }
+  });
+
+  test('(−) any other tmux failure still shows: a missing binary, a version mismatch', async () => {
+    assert.match((await snap(7 * DAY, fakeExec({ tmuxError: 'ENOENT' }))).snapshot.sources.tmux, /^tmux unavailable: tmux not found/);
+    assert.equal((await snap(7 * DAY, fakeExec({ tmuxError: 'protocol version mismatch (client 8, server 7)' }))).snapshot.sources.tmux, 'tmux unavailable: protocol version mismatch (client 8, server 7)');
+  });
+
+  // M-2: tmux says "error connecting to <socket> (Permission denied)" for a socket that is not yours: a real failure, not "no server"
+  test('(−) "error connecting to" with Permission denied (or any reason but a missing or refusing socket) still shows the banner source', async () => {
+    for (const why of ['Permission denied', 'Not a directory']) {
+      const msg = `error connecting to /tmp/tmux-0/default (${why})`;
+      assert.equal((await snap(7 * DAY, fakeExec({ tmuxError: msg }))).snapshot.sources.tmux, `tmux unavailable: ${msg}`, why);
+    }
+  });
+
+  // review I1: the contract says that with no ps table nika uses signal 0 and does not read /proc
+  test('(−) no ps table, a pid ps did not list, or not Linux: /proc is not opened; (+) on Linux a listed digits procStart is read', async () => {
+    const fx2 = makeFixture();
+    const pid = 2_000_000_001; // no such process anywhere: the default reader fails on it, and no real process is looked at
+    const unlisted = 2_000_000_002; // a registry file naming a pid ps did not list
+    const opened = [];
+    const real = fsp.open;
+    fsp.open = async (file, ...rest) => {
+      if (String(file).startsWith('/proc/')) opened.push(String(file));
+      return real(file, ...rest);
+    };
+    try {
+      for (const [p, id] of [[pid, 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'], [unlisted, 'dddddddd-dddd-4ddd-8ddd-dddddddddddd']]) {
+        fs.writeFileSync(path.join(fx2.claudeDir, 'sessions', `${p}.json`), JSON.stringify({ pid: p, sessionId: id, cwd: fx2.repo, procStart: '3304488' }));
+      }
+      const withPs = fakeExec({ psLines: [`  ${pid} ${PROC_START}`] });
+      const noPs = async (cmd, args, opts) => {
+        if (cmd.endsWith('ps')) throw new Error('ps missing');
+        return withPs(cmd, args, opts);
+      };
+      const down = await collect({ config: fx2.config, exec: noPs, now: NOW, sinceMs: 7 * DAY, platform: 'linux' });
+      assert.match(down.snapshot.sources.processes, /^ps unavailable/);
+      assert.deepEqual(opened, [], 'signal 0 decides; nothing under /proc is opened');
+      await collect({ config: fx2.config, exec: withPs, now: NOW, sinceMs: 7 * DAY, platform: 'darwin' });
+      assert.deepEqual(opened, [], 'macOS has no /proc: a digits procStart (a copied or forged file) is not looked up');
+      await collect({ config: fx2.config, exec: withPs, now: NOW, sinceMs: 7 * DAY, platform: 'linux' });
+      assert.deepEqual(opened, [`/proc/${pid}/stat`], 'only the pid ps listed');
+    } finally {
+      fsp.open = real;
+      cleanup(fx2);
+    }
+  });
+
+  test('(+) skipped.registry counts the registry files nika could not use (the fixture has one corrupt file)', async () => {
+    assert.deepEqual((await snap()).snapshot.skipped, { registry: 1 });
+  });
+
+  test('(−) no unusable registry file: skipped.registry is 0, and so is the index-only lookup', async () => {
+    const fx2 = makeFixture();
+    try {
+      fs.rmSync(path.join(fx2.claudeDir, 'sessions', '105.json'));
+      const s = await collect({ config: fx2.config, exec: fakeExec(), now: NOW, sinceMs: 7 * DAY });
+      assert.deepEqual(s.snapshot.skipped, { registry: 0 });
+      assert.deepEqual((await collect({ config: fx2.config, exec: null, now: NOW, sinceMs: 7 * DAY, indexOnly: true })).snapshot.skipped, { registry: 0 });
+    } finally {
+      cleanup(fx2);
+    }
+  });
+
+  test('(+) an upper-case session id in the registry is one live session, under its lower-case id', async () => {
+    const fx2 = makeFixture();
+    try {
+      fs.writeFileSync(path.join(fx2.claudeDir, 'sessions', '201.json'), JSON.stringify({
+        pid: 201, sessionId: 'AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA', cwd: fx2.repo, name: 'caps', status: 'idle', procStart: PROC_START,
+      }));
+      const id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+      const s = await collect({ config: fx2.config, exec: fakeExec({ psLines: [`  201 ${PROC_START}`] }), now: NOW, sinceMs: 7 * DAY });
+      assert.equal(byId(s, id)?.live, true);
+      assert.equal(byId(s, id)?.pid, 201);
+      assert.equal(s.snapshot.skipped.registry, 1, 'only the corrupt 105.json');
+    } finally {
+      cleanup(fx2);
+    }
+  });
+
+  // F1a review, Minor 1: collect() must hand the /proc starttime to isAlive. The real reader runs on this process, so this is Linux only.
+  test('(−) Linux only: a digits procStart that differs from the real starttime is a reused pid: not live; the real one is live', { skip: process.platform !== 'linux' }, async () => {
+    const real = parseStarttime(fs.readFileSync(`/proc/${process.pid}/stat`, 'utf8'));
+    assert.match(real ?? '', /^\d+$/);
+    const fx2 = makeFixture();
+    const id = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    const file = path.join(fx2.claudeDir, 'sessions', `${process.pid}.json`);
+    const live = async (procStart) => {
+      fs.writeFileSync(file, JSON.stringify({ pid: process.pid, sessionId: id, cwd: fx2.repo, name: 'probe', status: 'idle', procStart }));
+      const s = await collect({ config: fx2.config, exec: fakeExec({ psLines: [`  ${process.pid} ${PROC_START}`] }), now: NOW, sinceMs: 7 * DAY });
+      return byId(s, id)?.live === true;
+    };
+    try {
+      assert.equal(await live(String(Number(real) + 1)), false);
+      assert.equal(await live(real), true);
+    } finally {
+      cleanup(fx2);
+    }
   });
 });
 

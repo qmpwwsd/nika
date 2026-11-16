@@ -37,6 +37,14 @@ export async function appFetch(path, { method = 'GET', json, signal, headers } =
   return { status: res.status, body: parsed, headers: res.headers };
 }
 
+/**
+ * Asks the desktop shell to act on its window: 'quit' | 'close' | 'minimize' | 'zoom-in' | 'zoom-out' | 'zoom-reset' (POST /api/app/window,
+ * answered 204). Fire and forget: a failure, or the browser tier, changes nothing and throws nothing.
+ */
+export function windowCommand(action) {
+  return appFetch('/api/app/window', { method: 'POST', json: { action } }).catch(() => {});
+}
+
 /** GET a public route (both tiers) as JSON; throws on a non-2xx status. */
 export async function getJSON(path, signal) {
   const res = await fetch(path, { cache: 'no-store', signal });

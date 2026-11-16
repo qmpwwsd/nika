@@ -1,6 +1,9 @@
 // Maps a failed tmux call to a contract error body (api-app.md §2). Shared by the pane mirror and the keystroke sender.
 import { clean } from './text.js';
 
+/** What tmux says when no server runs (socket absent or refusing): the one listing failure that means "no sessions yet"; any other is a real failure. */
+export const NO_TMUX_SERVER = /no server running|error connecting to .*\((No such file or directory|Connection refused)\)/;
+
 /** tmux binary missing or no server → 503 tmux_unavailable; unknown pane → 404 not_found; anything else → 502 tmux_failed. */
 export function tmuxFailure(err) {
   const first = String(err?.stderr || err?.message || '').trim().split('\n')[0];

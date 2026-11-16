@@ -146,7 +146,7 @@ describe('HTML pages under the strict CSP', () => {
     assert.match(src, /<nav\b/);
     assert.match(src, /id="announce"[^>]*aria-live="polite"/);
     assert.equal((src.match(/<h1\b/g) ?? []).length, 3, 'dashboard, project and settings');
-    assert.equal((src.match(/<dialog\b/g) ?? []).length, 8, 'spawn, rules, plugins, models, confirm, report, end, keyboard shortcuts');
+    assert.equal((src.match(/<dialog\b/g) ?? []).length, 9, 'setup drawer, spawn, rules, plugins, models, confirm, report, end, keyboard shortcuts');
   });
 
   test('(+) index.html: app-only controls are marked so the browser tier removes them', () => {
@@ -556,6 +556,38 @@ describe('Back button and the Keyboard shortcuts window on the dashboard (spec 3
     assert.deepEqual(buttons.map((b) => [b.title, b.attrs['aria-keyshortcuts']]), Array(2).fill(['Keyboard shortcuts (Ctrl+/)', 'Control+Slash']));
   });
 
+  test('(−) F2: the dashboard\'s own key handler swallows no editing key in a text field: copy, cut, paste, select all, undo, redo, on both platforms', () => {
+    const editing = [['a', {}], ['c', {}], ['x', {}], ['v', {}], ['z', {}], ['y', {}], ['Z', { shiftKey: true }]];
+    for (const [mac, mod] of [[false, 'ctrlKey'], [true, 'metaKey']]) {
+      for (const route of ['dashboard', 'project', 'settings']) {
+        const r = keyRig({ mac, route });
+        for (const [key, more] of editing) assert.equal(r.press(key, { [mod]: true, ...more }, { tagName: 'INPUT' }), 0, `${mac ? 'Command' : 'Ctrl'}+${key} on ${route}`);
+        assert.deepEqual(r.log.hash, []);
+      }
+    }
+  });
+
+  test('(+) F2: app.js wires the window keys once, in the app tier only, with the platform and the shell relay (windowCommand from api.js)', () => {
+    const app = read('app.js');
+    const boot = /\nasync function boot\(\) \{[^]*?\n\}\n/.exec(app)?.[0] ?? '';
+    assert.match(boot, /if \(isApp\) \{[^}]*wireWindowKeys\(\{ mac: MAC, send: windowCommand \}\);/);
+    assert.equal((code(app).match(/wireWindowKeys\(/g) ?? []).length, 1);
+    assert.match(app, /import \{[^}]*\bisApp\b[^}]*\bwindowCommand\b[^}]*\} from '\.\/api\.js';/);
+    assert.match(app, /import \{[^}]*\bwireWindowKeys\b[^}]*\} from '\.\/shortcuts\.js';/);
+  });
+
+  test('(+) F2: api.js sends the window action through appFetch to POST /api/app/window, never throws, and sends nothing on the browser tier', () => {
+    const c = code(read('api.js'));
+    assert.match(c, /export function windowCommand\(action\) \{\s*return appFetch\('\/api\/app\/window', \{ method: 'POST', json: \{ action \} \}\)\.catch\(\(\) => \{\}\);\s*\}/);
+    const calls = [];
+    const ctx = { appFetch: async (path, opts) => { calls.push([path, opts]); throw new Error('app tier only'); } };
+    const run = vm.runInNewContext(`${/export (function windowCommand[\s\S]*?\n\})/.exec(read('api.js'))[1]}; windowCommand`, ctx);
+    return run('zoom-in').then((r) => {
+      assert.equal(r, undefined, 'a refusal is swallowed');
+      assert.deepEqual(JSON.parse(JSON.stringify(calls)), [['/api/app/window', { method: 'POST', json: { action: 'zoom-in' } }]]); // objects built in the vm have another prototype
+    });
+  });
+
   test('(+) every back link gets its title and aria-keyshortcuts from backHint with its own label', () => {
     const src = code(read('app.js'));
     assert.match(src, /for \(const a of \$\$\('a\.back'\)\) \{[^}]*backHint\(\{ label: \$\('span', a\)\.textContent, mac: MAC \}\)/);
@@ -763,6 +795,21 @@ describe('Add to Applications notice (spec 3.14)', () => {
     assert.equal(bannerRig({ route: 'settings' }).get(), undefined);
     assert.equal(bannerRig({ me: { appCopy: { ...MISSING, dismissed: true } } }).get(), undefined);
     assert.equal(bannerRig({ me: null }).get(), undefined);
+  });
+
+  // F1b: collect() now answers `tmux: 'ok'` when no tmux server runs (test/model.test.js); the banner follows the sources it is given
+  test('(+) sources all ok (also with no tmux server): no "Some sources are unavailable" banner; (−) a real failure still shows it, naming the source', () => {
+    const NO_COPY = { state: 'unsupported', available: null };
+    const rig = (sources) => {
+      const r = bannerRig({ me: { tmux: true, claude: true, appCopy: NO_COPY } });
+      r.ctx.state.data = { sources };
+      return r;
+    };
+    const ok = { registry: 'ok', processes: 'ok', transcripts: 'ok', tmux: 'ok', reports: 'ok' };
+    assert.equal(rig(ok).byId('sources'), undefined);
+    const bad = rig({ ...ok, tmux: 'tmux unavailable: protocol version mismatch' }).byId('sources');
+    assert.equal(bad.title, 'Some sources are unavailable');
+    assert.match(bad.text, /tmux: tmux unavailable: protocol version mismatch/);
   });
 
   test('(+) the tmux banner names the install command of the platform: brew on macOS, apt on Linux', () => {
@@ -1076,19 +1123,19 @@ describe('ui.js restoreFocus: a dialog opened from a menu item gives focus back 
   const head = src.indexOf('function restoreFocus(dlg)');
   const body = src.slice(head, src.indexOf('\n}\n', head) + 2);
   const node = (name, over = {}) => ({ name, isConnected: true, focused: 0, focus() { this.focused += 1; }, closest: () => null, ...over });
-  /** restoreFocus as shipped, run against a tiny page: `$` answers from `byQuery`, `openers` holds what openDialog would have stored. */
+  /** restoreFocus as shipped, run against a tiny page: `$` answers from `byQuery`, `$$` lists the open dialogs, `openers` holds what openDialog would have stored. */
   const rig = ({ opener, fk = null, menu = null, button = null, openDialogs = false, heading = node('h1') }) => {
     const asked = [];
     const byQuery = (sel) => {
       asked.push(sel);
-      if (sel === 'dialog[open]') return openDialogs ? node('dialog') : null;
       if (menu && sel === `[aria-controls="${menu.id}"]`) return button;
       if (sel === '.screen:not([hidden]) h1') return heading;
       return null;
     };
     const dlg = {};
     const openers = new Map([[dlg, { el: opener, fk }]]);
-    const run = vm.runInNewContext(`${body}; restoreFocus`, { $: byQuery, openers, CSS: { escape: (s) => s } });
+    const all = (sel) => (sel === 'dialog[open]' && openDialogs ? [node('dialog')] : []); // restoreFocus asks for every open dialog
+    const run = vm.runInNewContext(`${body}; restoreFocus`, { $: byQuery, $$: all, openers, CSS: { escape: (s) => s } });
     return { run: () => run(dlg), asked, heading, openers, dlg };
   };
   const menuItem = (menu, over = {}) => node('item', { closest: (s) => (s === '.menu' ? menu : null), ...over });

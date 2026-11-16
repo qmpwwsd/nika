@@ -51,6 +51,7 @@
   --m-bypass: #b3261e;  --m-bypass-soft: #fde7e5;  --m-bypass-line: #c0261c; --m-bypass-on: #ffffff; --m-bypass-stripe: #16181d;
   --m-dontask: #8a2597; --m-dontask-soft: #f7e4f8; --m-dontask-line: #a843b3;
   --m-unknown: #545b66; --m-unknown-soft: #ffffff; --m-unknown-line: #7c8490;
+  --m-default: #3b5b84; --m-default-soft: #e6edf6; --m-default-line: #6f8fb8;
   --shell: var(--text); --on-shell: var(--surface);
 }
 
@@ -80,6 +81,7 @@
     --m-bypass: #ff6b61;  --m-bypass-soft: #46191a;  --m-bypass-line: #ff5a4f; --m-bypass-on: #2a0605; --m-bypass-stripe: #ffd8d4;
     --m-dontask: #eaa0ea; --m-dontask-soft: #3a1d3d; --m-dontask-line: #c46fc8;
     --m-unknown: #a4abb6; --m-unknown-soft: #202328; --m-unknown-line: #6f7783;
+    --m-default: #a9c3e6; --m-default-soft: #1e2a3a; --m-default-line: #5f7fa8;
   }
 }
 
@@ -111,6 +113,7 @@
   --m-bypass: #ff6b61;  --m-bypass-soft: #46191a;  --m-bypass-line: #ff5a4f; --m-bypass-on: #2a0605; --m-bypass-stripe: #ffd8d4;
   --m-dontask: #eaa0ea; --m-dontask-soft: #3a1d3d; --m-dontask-line: #c46fc8;
   --m-unknown: #a4abb6; --m-unknown-soft: #202328; --m-unknown-line: #6f7783;
+  --m-default: #a9c3e6; --m-default-soft: #1e2a3a; --m-default-line: #5f7fa8;
 }
 
 /* permission modes (docs/design/spec.md 2.8.1, 2.8.5, 9.3): one class per mode sets the local trio the tag, the frame, the
@@ -122,6 +125,7 @@
 .m-bypass  { --mc: var(--m-bypass);  --mc-soft: var(--m-bypass-soft);  --mc-line: var(--m-bypass-line); }
 .m-dontask { --mc: var(--m-dontask); --mc-soft: var(--m-dontask-soft); --mc-line: var(--m-dontask-line); }
 .m-unknown { --mc: var(--m-unknown); --mc-soft: var(--m-unknown-soft); --mc-line: var(--m-unknown-line); }
+.m-default { --mc: var(--m-default); --mc-soft: var(--m-default-soft); --mc-line: var(--m-default-line); }
 
 .mode { display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 8px 0 6px;
   border: 1px solid var(--mc-line); border-radius: var(--r-sm); background: var(--mc-soft); color: var(--mc);

@@ -1,9 +1,12 @@
 import { test, describe, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
+import fsp from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { makeFixture, cleanup, fakeExec, SID, NOW, PROC_START, jsonl } from './helpers.js';
-import { readRegistry, processTable, isAlive } from '../src/collect/registry.js';
+import { readRegistry, processTable, isAlive, parseStarttime, procStarts } from '../src/collect/registry.js';
 import { indexTranscripts, readTranscript, createTranscriptCache } from '../src/collect/transcripts.js';
 import { readSubagents } from '../src/collect/subagents.js';
 import { listPanes, parsePaneLines } from '../src/collect/tmux.js';
@@ -69,6 +72,202 @@ describe('registry', () => {
     assert.equal(await processTable(exec), null);
     assert.equal(isAlive({ pid: process.pid }, null), true);
     assert.equal(isAlive({ pid: 2 ** 30 }, null), false);
+  });
+
+  describe('Linux procStart (digits: starttime in clock ticks, issue #14)', () => {
+    // Synthetic /proc/<pid>/stat: field 22 (starttime) is the 20th token after the comm's closing parenthesis.
+    const stat = (pid, comm, start) => `${pid} (${comm}) S 1 ${pid} ${pid} 0 -1 4194304 100 0 0 0 5 3 0 0 20 0 8 0 ${start} 1000000 500 18446744073709551615 1 1 0 0 0 0 0 0 0 0 0 0 17 2 0 0 0 0 0\n`;
+    const table = new Map([[201, 'Sat Nov 7 18:57:14 2026']]);
+    const entry = { pid: 201, procStart: '3304488' };
+
+    test('(+) a digits procStart equal to the stat starttime is alive', async () => {
+      const starts = await procStarts([entry], async (pid) => stat(pid, 'claude', '3304488'));
+      assert.equal(starts.get(201), '3304488');
+      assert.equal(isAlive(entry, table, starts), true);
+    });
+
+    test('(−) a digits procStart that differs from the stat starttime (reused pid) is not alive', async () => {
+      const starts = await procStarts([entry], async (pid) => stat(pid, 'claude', '3304999'));
+      assert.equal(isAlive(entry, table, starts), false);
+    });
+
+    test('(+) an unreadable stat leaves the pid out and the session alive, because ps listed the pid', async () => {
+      const starts = await procStarts([entry], async () => { throw Object.assign(new Error('gone'), { code: 'ENOENT' }); });
+      assert.equal(starts.size, 0);
+      assert.equal(isAlive(entry, table, starts), true);
+      assert.equal(isAlive(entry, table), true);
+    });
+
+    test('(−) a pid ps does not list is not alive whatever the stat says', async () => {
+      const starts = await procStarts([{ pid: 202, procStart: '5' }], async (pid) => stat(pid, 'claude', '5'));
+      assert.equal(isAlive({ pid: 202, procStart: '5' }, table, starts), false);
+    });
+
+    test('(−) only digits procStart entries are read: date strings and missing values never touch /proc', async () => {
+      const seen = [];
+      const starts = await procStarts(
+        [{ pid: 1, procStart: PROC_START }, { pid: 2, procStart: null }, { pid: 3, procStart: '12ab' }, { pid: 4, procStart: '77' }],
+        async (pid) => { seen.push(pid); return stat(pid, 'x', '77'); },
+      );
+      assert.deepEqual(seen, [4]);
+      assert.deepEqual([...starts], [[4, '77']]);
+    });
+
+    test('(+) parseStarttime takes field 22 after the last parenthesis, whatever the comm holds', () => {
+      assert.equal(parseStarttime(stat(201, 'claude', '3304488')), '3304488');
+      assert.equal(parseStarttime(stat(201, 'a ) (b c) d', '42')), '42');
+      assert.equal(parseStarttime(stat(201, '(((', '9')), '9');
+      assert.equal(parseStarttime(stat(201, 'a\nb) c', '7')), '7', 'a newline in the comm');
+    });
+
+    test('(−) parseStarttime needs more than the 20 tokens up to field 22: a line cut right after the value is not trusted (F1b M3)', () => {
+      const cut = '201 (claude) S 1 201 201 0 -1 4194304 100 0 0 0 5 3 0 0 20 0 8 0 3304488'; // field 22 is the last token
+      assert.equal(parseStarttime(cut), null);
+      assert.equal(parseStarttime(`${cut} 1000000`), '3304488');
+    });
+
+    test('(−) parseStarttime returns null for garbage, a short line or a non-numeric field', () => {
+      for (const bad of ['', 'garbage', '201 claude S 1', '201 (claude) S 1 2 3', stat(201, 'claude', 'abc'), stat(201, 'claude', '-5'), null, undefined, 42]) {
+        assert.equal(parseStarttime(bad), null, String(bad));
+      }
+    });
+
+    test('(+) the macOS date-string path is unchanged: starts is ignored for a date procStart', () => {
+      const starts = new Map([[101, '1']]);
+      const t = new Map([[101, 'Sat Nov 7 18:57:14 2026']]);
+      assert.equal(isAlive({ pid: 101, procStart: PROC_START }, t, starts), true);
+      assert.equal(isAlive({ pid: 101, procStart: 'Mon Oct  5 10:00:00 2026' }, t, starts), false);
+      assert.equal(isAlive({ pid: 101, procStart: null }, t, starts), true);
+    });
+
+    test('(+) Linux only: the real reader on this process gives a starttime that isAlive accepts', { skip: process.platform !== 'linux' }, async () => {
+      const probe = { pid: process.pid, procStart: '1' };
+      const first = await procStarts([probe]);
+      assert.match(first.get(process.pid) ?? '', /^\d+$/);
+      const real = { pid: process.pid, procStart: first.get(process.pid) };
+      const starts = await procStarts([real]);
+      assert.equal(isAlive(real, new Map([[process.pid, 'x']]), starts), true);
+      assert.equal(isAlive({ pid: process.pid, procStart: String(Number(real.procStart) + 1) }, new Map([[process.pid, 'x']]), starts), false);
+    });
+  });
+});
+
+describe('registry: procStart as an instant, skipped files, session id case (F1b)', () => {
+  const PS = 'Sat Nov 7 18:57:14 2026'; // what ps prints in UTC (whitespace squashed)
+  const table = new Map([[301, PS]]);
+  const alive = (procStart, t = table) => isAlive({ pid: 301, procStart }, t);
+  // The writer's local zone is a property of the process: it is set in a child node (TZ=<zone>), never in this one, so no other test sees it.
+  const REGISTRY_URL = new URL('../src/collect/registry.js', import.meta.url).href;
+  const aliveIn = (tz, cases) => JSON.parse(execFileSync(process.execPath, ['--input-type=module', '-e',
+    `import { isAlive } from ${JSON.stringify(REGISTRY_URL)};\nconsole.log(JSON.stringify(JSON.parse(process.argv[1]).map(([s, ps]) => isAlive({ pid: 1, procStart: s }, new Map([[1, ps]])))));`,
+    JSON.stringify(cases)], { env: { ...process.env, TZ: tz }, encoding: 'utf8' }));
+  // Asia/Kolkata is UTC+5:30 all year (no DST): 18:57:14Z on Nov 7 is 00:27:14 on Nov 8.
+  const KOLKATA = 'Asia/Kolkata';
+
+  test('(+) the UTC date string, with the day padded or not, is alive', () => {
+    assert.equal(alive(PS), true);
+    assert.equal(alive('Sat Nov  7 18:57:14 2026'), true);
+  });
+
+  // Re-review N-1: the instant is month, day, time and year. A writer that pads the day with a zero or names another weekday still names it.
+  test('(+) a day padded with a zero, or another weekday word, for the same instant is alive (UTC and local)', () => {
+    assert.equal(alive('Sat Nov 07 18:57:14 2026'), true);
+    assert.equal(alive('Mon Nov 7 18:57:14 2026'), true);
+    assert.equal(alive('Sat Nov 17 18:57:14 2026'), false, 'a two-digit day is still compared');
+    assert.deepEqual(aliveIn(KOLKATA, [['Sun Nov 08 00:27:14 2026', PS], ['Fri Nov 8 00:27:14 2026', PS], ['Sun Nov 18 00:27:14 2026', PS]]), [true, true, false]);
+  });
+
+  test('(+) a local-time date string for the same instant is alive', () => {
+    assert.deepEqual(aliveIn(KOLKATA, [['Sun Nov 8 00:27:14 2026', PS], ['Sun Nov  8 00:27:14 2026', PS]]), [true, true], 'the second is padded like ps');
+  });
+
+  // M-1: a repeated local hour (fall back) names two instants. The local form is made from the ps instant, so both passes match.
+  test('(+) the repeated hour of a DST fall-back: the local time 01:30 is alive for the first pass (EDT) and for the second (EST)', () => {
+    const NY = 'America/New_York'; // 2026-11-01: 01:30 EDT is 05:30Z, 01:30 EST is 06:30Z
+    assert.deepEqual(aliveIn(NY, [
+      ['Sun Nov 1 01:30:00 2026', 'Sun Nov 1 05:30:00 2026'],
+      ['Sun Nov 1 01:30:00 2026', 'Sun Nov 1 06:30:00 2026'],
+      ['Sun Nov 1 06:30:00 2026', 'Sun Nov 1 06:30:00 2026'],
+    ]), [true, true, true]);
+  });
+
+  test('(−) the repeated hour does not make a different second alive, in either pass', () => {
+    assert.deepEqual(aliveIn('America/New_York', [
+      ['Sun Nov 1 01:30:01 2026', 'Sun Nov 1 05:30:00 2026'],
+      ['Sun Nov 1 01:30:01 2026', 'Sun Nov 1 06:30:00 2026'],
+      ['Sun Nov 1 00:30:00 2026', 'Sun Nov 1 06:30:00 2026'],
+    ]), [false, false, false]);
+  });
+
+  test('(+) an ISO string for the same instant is alive, with Z, an offset or milliseconds; the comparison is to the second', () => {
+    assert.equal(alive('2026-11-07T18:57:14Z'), true);
+    assert.equal(alive('2026-11-07T20:57:14+02:00'), true);
+    assert.equal(alive('2026-11-07T18:57:14.987Z'), true);
+  });
+
+  test('(+) a string nobody can parse is alive, like a missing procStart: ps lists the pid', () => {
+    for (const odd of ['not a date', 'Sat Foo 7 18:57:14 2026', 'pid-reuse-unknown']) assert.equal(alive(odd), true, odd);
+  });
+
+  // M-4: V8's legacy Date.parse reads many nonsense strings as dates; only an ISO date-time (YYYY-MM-DDT…) counts as a parsed instant
+  test('(+) text that only V8 would read as a date is unparseable, so alive: "hello 1", "12 3", a bare year, a date without a time', () => {
+    for (const odd of ['hello 1', '12 3', '2026', '1', '2026-11-07', 'Nov 7 2026']) assert.equal(alive(odd), true, odd);
+  });
+
+  test('(+) the ps side cannot be read as a date: nothing to compare, the pid ps lists stays alive', () => {
+    assert.equal(alive('Mon Oct 5 10:00:00 2026', new Map([[301, 'garbled']])), true);
+  });
+
+  test('(−) a parsed instant that differs is a reused pid: not alive, in every format', () => {
+    assert.equal(alive('Mon Oct  5 10:00:00 2026'), false);
+    assert.equal(alive('Sat Nov 7 18:57:15 2026'), false, 'one second off');
+    assert.equal(alive('2026-11-07T18:57:15Z'), false);
+    assert.equal(alive('2026-11-07T18:57:13.999Z'), false);
+    assert.equal(alive('2026-11-07T18:57:14'.replace('18', '19') + 'Z'), false);
+    assert.deepEqual(aliveIn(KOLKATA, [['Sun Nov 8 00:27:15 2026', PS], ['Sun Nov 8 00:27:14 2026', PS]]), [false, true]);
+  });
+
+  test('(−) a pid ps does not list is not alive, whatever the format', () => {
+    assert.equal(isAlive({ pid: 999, procStart: '2026-11-07T18:57:14Z' }, table), false);
+  });
+
+  describe('files', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nika-reg-'));
+    after(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const UP = 'AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA';
+    const sessions = path.join(dir, 'sessions');
+    fs.mkdirSync(sessions);
+    const put = (name, body) => fs.writeFileSync(path.join(sessions, name), typeof body === 'string' ? body : JSON.stringify(body));
+    put('401.json', { pid: 401, sessionId: UP, cwd: '/x' });
+    put('402.json', { pid: 402, sessionId: 'not-a-uuid' });
+    put('403.json', { pid: 403, sessionId: UP.toLowerCase() });
+    put('404.json', '{broken');
+
+    test('(+) an upper-case UUID session id is accepted and stored in lower case', async () => {
+      const r = await readRegistry(dir);
+      const e = r.entries.find((x) => x.pid === 401);
+      assert.equal(e?.sessionId, UP.toLowerCase());
+      assert.equal(r.entries.find((x) => x.pid === 403)?.sessionId, UP.toLowerCase(), 'both spellings are one session id');
+    });
+
+    // M-3: Claude deletes <pid>.json when a session exits, so a file can be listed by readdir and gone by the time it is read
+    test('(−) a file that is gone between readdir and read is not a skipped file, but an unreadable one still is', async () => {
+      const real = fsp.readdir;
+      fsp.readdir = async (...args) => [...await real(...args), '405.json'];
+      try {
+        const r = await readRegistry(dir);
+        assert.deepEqual(r.skipped, ['402.json', '404.json']);
+        assert.equal(r.entries.length, 2);
+      } finally {
+        fsp.readdir = real;
+      }
+    });
+
+    test('(−) an id that is no UUID in any case, and a file that is not JSON, are skipped and listed', async () => {
+      const r = await readRegistry(dir);
+      assert.deepEqual(r.skipped, ['402.json', '404.json']);
+      assert.deepEqual(r.entries.map((x) => x.pid).sort(), [401, 403]);
+    });
   });
 });
 

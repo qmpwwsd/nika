@@ -1,6 +1,6 @@
 // 0.4, O2b: the nesting tree, the spawn items and the spawn sheet, the page side (design 0.4 sections 2 and 3).
 // The real page code runs in a vm against the small fake DOM (test/fake-dom.js) and recorded requests; the browser is exercised by
-// hand. The pure helpers (treeRows, capRoots, spawnLimits) are tested in test/dash-model.test.js. The copy strings are written out
+// hand. The pure helpers (treeRows, spawnLimits) are tested in test/dash-model.test.js. The copy strings are written out
 // here from design 2.4 / 2.5 / 3 on purpose: the tests must not read them back from the code under test. Names and ids are synthetic.
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -12,9 +12,9 @@ import { El, installDom, withClass, focus } from './fake-dom.js';
 import { h, icon, roleTagEl, ctxEl } from '../public/dom.js';
 import { menuEl, sessionHref, RX } from '../public/ui.js';
 import {
-  orchState, roleTag, savedPick, otherRunning, parentOf, spawnLimits, statusOf, treeRows, capRoots, hasTree, endedPlan, STATUS_ORDER,
+  orchState, roleTag, savedPick, otherRunning, parentOf, spawnLimits, effectiveAgents, statusOf, treeRows, hasTree, endedPlan, STATUS_ORDER,
 } from '../public/dash-model.js';
-import { parseModes, modesAfter } from '../public/modes.js';
+import { parseModes, modesAfter, modeEl, settingModeEl, MODE_META } from '../public/modes.js';
 import { pluginView, pluginSave, sortIds, countText, filterNote } from '../public/plugin-view.js';
 import { ROLES, ROLE_LABEL, CUSTOM, MODEL_ID, MODEL_HINT, modelLabel, fillModelSelect, fillRoleOverride, effectiveRoleModels } from '../public/models-ui.js';
 
@@ -74,7 +74,7 @@ const fn = (src, head) => {
 const line = (re) => re.exec(APP)[0];
 const TREE_SRC = [
   fn(APP, 'export function sOf(').replace('export ', ''), fn(APP, 'function matches('), line(/const byStatus = [^\n]+/), line(/const endedScope = [^\n]+/),
-  fn(APP, 'function treeSlot('), fn(APP, 'function rowEl('), line(/const rowsEl = [^\n]+/), line(/const treeEl = [^\n]+/),
+  fn(APP, 'function subagentsEl('), fn(APP, 'function treeSlot('), fn(APP, 'function rowEl('), line(/const rowsEl = [^\n]+/), line(/const treeEl = [^\n]+/),
   fn(APP, 'export function agentNodes(').replace('export ', ''), fn(APP, 'export function swap(').replace('export ', ''),
 ].join('\n');
 
@@ -84,9 +84,9 @@ function treeRig({ isApp = true, open = [], expanded = [], rowItems = null } = {
   const seen = [];
   const ctx = {
     isApp, state, hooks: rowItems ? { rowItems: (...args) => { seen.push(args); return rowItems; } } : {}, ORDER: STATUS_ORDER, ROW_CAP: 12,
-    endedPlan, statusOf, treeRows, capRoots, hasTree, parentOf, roleTag, roleTagEl, ctxEl, h, icon, menuEl, sessionHref, SHAPE,
+    endedPlan, statusOf, treeRows, hasTree, parentOf, roleTag, roleTagEl, ctxEl, h, icon, menuEl, sessionHref, SHAPE,
     rowMode: () => null, canEndRow: () => false, reasonOf: () => 'Needs you', endedText: () => 'Ended',
-    statusEl: () => new El('span'), modeEl: () => new El('span'), modelEl: () => new El('span'), timeEl: () => new El('span'), subagentsEl: () => new El('details'),
+    statusEl: () => new El('span'), modeEl: () => new El('span'), modelEl: () => new El('span'), timeEl: () => new El('span'),
     copyText: () => {}, showReport: () => {}, focusPane: () => {}, endSession: () => {},
     render: (force) => renders.push(force), document: { getSelection: () => ({ isCollapsed: true }), activeElement: null }, location: {},
     CSS: { escape: (s) => s }, $: (sel, root) => root.byFk(/data-fk="(.*)"\]/.exec(sel)[1]),
@@ -180,6 +180,17 @@ describe('the tree rows (design 2.1)', () => {
     assert.equal(hid.all(withClass('attn')).length, 0);
     assert.equal(toggleOf(rows[1]).attrs['aria-label'], 'Show the 1 agent under api-lead');
     assert.equal(rows[0].all(withClass('tree-hid')).length, 0, 'an expanded row shows no count');
+  });
+
+  test('(+) the toggle is an icon-only button, so its title is its aria-label, folded or not; the empty slot is not a control and has none (0.4.0)', () => {
+    const open = rowsOf(treeRig().agentNodes(group(family()), '', 'g:k')[0]);
+    assert.equal(toggleOf(open[0]).attrs.title, 'Hide the 3 agents under planner');
+    assert.equal(toggleOf(open[0]).attrs.title, toggleOf(open[0]).attrs['aria-label']);
+    assert.equal(toggleOf(open[1]).attrs.title, 'Hide the 1 agent under api-lead');
+    const folded = rowsOf(treeRig({ open: [`!tree:g:k:${MAIN}`] }).agentNodes(group(family()), '', 'g:k')[0]);
+    assert.equal(toggleOf(folded[0]).attrs.title, 'Show the 3 agents under planner, 1 needs you');
+    assert.equal(toggleOf(folded[0]).attrs.title, toggleOf(folded[0]).attrs['aria-label'], 'the count of agents that need you is in the tooltip too');
+    assert.equal(open[2].all(withClass('tree-sp'))[0].attrs.title, undefined);
   });
 
   test('(+) clicking the toggle flips the folded mark in state.open (the "!" pattern of the Ended sections) and asks for a render', () => {
@@ -319,27 +330,141 @@ describe('flat lists: the filter, the queue and Ended (design 2.1)', () => {
   });
 });
 
-describe('the root cap (design 2.1)', () => {
-  const many = (n) => Array.from({ length: n }, (_, i) => ag(`${String(i + 1).padStart(8, '0')}-0000-4000-8000-000000000000`, `agent-${i + 1}`, { pane: { id: `%${i + 20}`, command: 'claude' }, lastActivity: 100 - i }));
+// F5 (0.4): finished and stopped subagents hide with the ended sessions; the running ones stay. One toggle per view.
+describe('Claude\'s own subagents under a row: hidden when finished until "Show ended" (F5)', () => {
+  const sub = (id, state, over = {}) => ({ id, type: 'Explore', description: `task ${id}`, model: 'haiku', modelLabel: 'Haiku 4.5', state, lastActivity: 5, ...over });
+  const SUBS = [sub('s1', 'running'), sub('s2', 'finished'), sub('s3', 'stopped')];
+  const busy = () => ag(B1, 'builder-1', { state: 'busy', subagents: SUBS });
+  const subsOf = (nodes) => nodes.flatMap((n) => n.all(withClass('subs')));
+  const summaryOf = (d) => d.all((n) => n.tag === 'summary')[0];
+  const itemsOf = (d) => d.all((n) => n.tag === 'li').map((li) => li.all(withClass('sub-desc'))[0].textContent);
 
-  test('(+) 12 root subtrees show; the button counts every agent left out, a whole subtree at a time', () => {
-    const roots = many(13);
-    const kid = ag('99999999-9999-4999-8999-999999999999', 'kid', { parent: roots[12].id, pane: { id: '%60', command: 'claude' }, lastActivity: 1 });
-    const { agentNodes } = treeRig();
-    const [ul] = agentNodes(group([...roots, kid]), '', 'g:k');
-    assert.equal(rowsOf(ul).length, 12);
-    const more = ul.all((n) => n.tag === 'button' && n.attrs['data-fk'] === 'more:g:k')[0];
-    assert.equal(more.textContent, 'Show 2 more live agents');
+  test('(+) by default only the running subagent is listed; the summary counts what is shown and a muted "+2 ended" hint says the rest is hidden', () => {
+    const r = treeRig();
+    const [d] = subsOf(r.agentNodes(group([busy()]), '', 'g:k'));
+    assert.deepEqual(itemsOf(d), ['task s1']);
+    assert.equal(summaryOf(d).textContent, '1 subagent · 1 running +2 ended');
+    const hint = summaryOf(d).all(withClass('muted'))[0];
+    assert.equal(hint.textContent, '+2 ended');
   });
 
-  test('(+) "Show more" asks for a render and the expanded group shows all of it', () => {
-    const roots = many(13);
+  test('(+) with the toggle on every subagent is listed, the summary counts all of them and there is no hint', () => {
     const r = treeRig();
-    const [ul] = r.agentNodes(group(roots), '', 'g:k');
-    ul.all((n) => n.attrs['data-fk'] === 'more:g:k')[0].fire('click');
+    r.state.showEnded = true;
+    const [d] = subsOf(r.agentNodes(group([busy()]), '', 'g:k'));
+    assert.deepEqual(itemsOf(d).sort(), ['task s1', 'task s2', 'task s3']);
+    assert.equal(summaryOf(d).textContent, '3 subagents · 1 running');
+    assert.equal(summaryOf(d).all(withClass('muted')).length, 0);
+  });
+
+  test('(+) a row whose subagents are all finished or stopped draws no subagent line at all while they are hidden', () => {
+    const a = ag(B1, 'builder-1', { state: 'busy', subagents: [sub('s2', 'finished'), sub('s3', 'stopped')] });
+    const r = treeRig();
+    assert.equal(subsOf(r.agentNodes(group([a]), '', 'g:k')).length, 0);
+    r.state.showEnded = true;
+    assert.equal(itemsOf(subsOf(r.agentNodes(group([a]), '', 'g:k'))[0]).length, 2);
+  });
+
+  test('(+) the project page has its own toggle: the option decides, the dashboard flag does not leak in, either way round', () => {
+    const r = treeRig();
+    r.state.showEnded = true; // the dashboard checkbox is on, the project page one is off
+    assert.deepEqual(itemsOf(subsOf(r.agentNodes(group([busy()]), '', 'pv:k', { showEnded: false }))[0]), ['task s1']);
+    r.state.showEnded = false;
+    assert.equal(itemsOf(subsOf(r.agentNodes(group([busy()]), '', 'pv:k', { showEnded: true }))[0]).length, 3);
+  });
+
+  test('(+) an ended session in the Ended section keeps its subagents hidden with the toggle off (the section itself is not drawn) and shows them with it on', () => {
+    const gone = ag(B2, 'builder-2', { live: false, state: 'ended', pane: null, subagents: [sub('s4', 'stopped')] });
+    const r = treeRig();
+    assert.equal(subsOf(r.agentNodes(group([gone]), '', 'g:k')).length, 0);
+    const nodes = r.agentNodes(group([gone]), '', 'g:k', { showEnded: true });
+    assert.deepEqual(itemsOf(subsOf(nodes)[0]), ['task s4']);
+  });
+
+  test('(−) a subagent state that is not "running" is never shown by default, whatever the word', () => {
+    const odd = ag(B1, 'builder-1', { state: 'busy', subagents: [sub('s5', 'Running'), sub('s6', undefined), sub('s7', 'running')] });
+    const [d] = subsOf(treeRig().agentNodes(group([odd]), '', 'g:k'));
+    assert.deepEqual(itemsOf(d), ['task s7']);
+    assert.equal(summaryOf(d).textContent, '1 subagent · 1 running +2 ended');
+  });
+
+  test('(+) the open mark of the disclosure survives the redraw as before (same id per session)', () => {
+    const r = treeRig({ open: [`subs:${B1}`] });
+    const [d] = subsOf(r.agentNodes(group([busy()]), '', 'g:k'));
+    assert.ok(d.hasAttribute('open'));
+    assert.ok(!subsOf(treeRig().agentNodes(group([busy()]), '', 'g:k'))[0].hasAttribute('open'), 'closed unless opened by hand');
+  });
+});
+
+describe('row caps (design 2.1, F1b): live rows are never capped, the Ended section is', () => {
+  const idOf = (i) => `${String(i + 1).padStart(8, '0')}-0000-4000-8000-000000000000`;
+  const many = (n) => Array.from({ length: n }, (_, i) => ag(idOf(i), `agent-${i + 1}`, { pane: { id: `%${i + 20}`, command: 'claude' }, lastActivity: 100 - i }));
+  const done = (n) => Array.from({ length: n }, (_, i) => ag(idOf(i + 500), `done-${i + 1}`, { live: false, state: 'ended', pane: null, lastActivity: 100 - i }));
+  const sectionOf = (nodes) => nodes.find((n) => n.tag === 'details');
+  const endedRows = (nodes) => rowsOf(sectionOf(nodes).all((n) => n.tag === 'ul')[0]);
+  const moreOf = (node) => node.all((n) => n.tag === 'button' && /^more:/.test(n.attrs['data-fk'] ?? ''));
+
+  test('(+) 20 live root rows in one group all render, and there is no "Show more" button', () => {
+    const [ul, ...rest] = treeRig().agentNodes(group(many(20)), '', 'g:k');
+    assert.equal(rowsOf(ul).length, 20);
+    assert.equal(moreOf(ul).length, 0);
+    assert.deepEqual(rest, []);
+  });
+
+  test('(+) a live tree is never cut: 20 roots and a child under the last one give 21 rows', () => {
+    const roots = many(20);
+    const kid = ag('99999999-9999-4999-8999-999999999999', 'kid', { parent: roots[19].id, pane: { id: '%90', command: 'claude' }, lastActivity: 1 });
+    const [ul] = treeRig().agentNodes(group([...roots, kid]), '', 'g:k');
+    assert.equal(rowsOf(ul).length, 21);
+    assert.equal(moreOf(ul).length, 0);
+  });
+
+  test('(+) 20 live rows beside 3 ended ones: all live rows draw and the 3 ended fit, so no button at all', () => {
+    const r = treeRig();
+    r.state.showEnded = true;
+    const nodes = r.agentNodes(group([...many(20), ...done(3)]), '', 'g:k');
+    assert.equal(rowsOf(nodes[0]).length, 20);
+    assert.equal(endedRows(nodes).length, 3);
+    assert.equal(nodes.flatMap(moreOf).length, 0);
+  });
+
+  test('(+) 13 ended rows: the Ended section draws 12 and a button that counts the one left out; its summary still counts all 13', () => {
+    const r = treeRig();
+    r.state.showEnded = true;
+    const nodes = r.agentNodes(group(done(13)), '', 'g:k');
+    assert.equal(endedRows(nodes).length, 12);
+    assert.equal(sectionOf(nodes).all((n) => n.tag === 'summary')[0].textContent, 'Ended (13)');
+    const [more] = moreOf(sectionOf(nodes));
+    assert.equal(more.textContent, 'Show 1 more ended agent', 'singular for one');
+    assert.equal(more.attrs['data-fk'], 'more:g:k');
+  });
+
+  test('(+) "Show more" on the Ended section asks for a render and the expanded section then shows all of it, without the button', () => {
+    const r = treeRig();
+    r.state.showEnded = true;
+    const first = r.agentNodes(group(done(30)), '', 'g:k');
+    assert.equal(moreOf(sectionOf(first))[0].textContent, 'Show 18 more ended agents');
+    moreOf(sectionOf(first))[0].fire('click');
     assert.ok(r.state.expanded.has('cap:g:k'));
     assert.deepEqual(r.renders, [true]);
-    assert.equal(rowsOf(r.agentNodes(group(roots), '', 'g:k')[0]).length, 13);
+    const again = r.agentNodes(group(done(30)), '', 'g:k');
+    assert.equal(endedRows(again).length, 30);
+    assert.equal(moreOf(sectionOf(again)).length, 0);
+  });
+
+  test('(−) exactly 12 ended rows: nothing is cut, no button', () => {
+    const r = treeRig();
+    r.state.showEnded = true;
+    const nodes = r.agentNodes(group(done(12)), '', 'g:k');
+    assert.equal(endedRows(nodes).length, 12);
+    assert.equal(moreOf(sectionOf(nodes)).length, 0);
+  });
+
+  test('(−) the project page counts its own scope: expanding the dashboard group leaves the project page capped', () => {
+    const r = treeRig({ expanded: ['cap:g:k'] });
+    r.state.showEnded = true;
+    assert.equal(endedRows(r.agentNodes(group(done(13)), '', 'g:k')).length, 13);
+    assert.equal(endedRows(r.agentNodes(group(done(13)), '', 'pv:k', { showEnded: true })).length, 12);
   });
 });
 
@@ -387,7 +512,7 @@ function projRig({ agents = family(), project = {}, settings = SETTINGS, me = { 
     return typeof a === 'function' ? a(opts) : a;
   };
   const ctx = {
-    h, icon, $: node, state, hooks: {}, appFetch, menuEl, sessionHref, roleTag, orchState, savedPick, otherRunning, spawnLimits, parseModes, modesAfter, RX,
+    h, icon, $: node, state, hooks: {}, appFetch, menuEl, sessionHref, roleTag, orchState, savedPick, otherRunning, spawnLimits, effectiveAgents, parseModes, modesAfter, settingModeEl, MODE_META, RX,
     pluginView, pluginSave, sortIds, countText, filterNote, ROLES, ROLE_LABEL, CUSTOM, MODEL_ID, MODEL_HINT, modelLabel, fillModelSelect, fillRoleOverride, effectiveRoleModels,
     location: { set href(v) { navs.push(v); }, get href() { return ''; }, hash: '' }, document: { title: '' },
     toast: (msg, o) => {
@@ -401,7 +526,7 @@ function projRig({ agents = family(), project = {}, settings = SETTINGS, me = { 
     render: (force) => renders.push(force), buildGroups: () => [g], agentNodes: () => [new El('ul')], swap: (host, list) => host.replaceChildren(...list), interacting: () => false,
     rulesEl: () => new El('span'), setTimeout, clearTimeout, AbortController, TextEncoder, window: { addEventListener: () => {} },
   };
-  const api = vm.runInNewContext(`${PROJECT_SRC}\n({ groupActions, rowItems, openSpawn, changeRole, submitSpawn, setupCards, confirmRemove, limitCopy, limitReason, spawnPrefs, sp })`, ctx);
+  const api = vm.runInNewContext(`${PROJECT_SRC}\n({ groupActions, rowItems, openSpawn, changeRole, submitSpawn, setupCards, confirmRemove, limitCopy, limitReason, spawnPrefs, sp, renderProject })`, ctx);
   const set = (sel, patch) => Object.assign(node(sel), patch);
   const role = (which) => { // the radios say which role is chosen
     set('#sp-role-agent', { checked: which === 'agent' });
@@ -414,6 +539,24 @@ function projRig({ agents = family(), project = {}, settings = SETTINGS, me = { 
 const mainRow = () => family()[0];
 const subRow = () => family()[1];
 const textOf = (n) => n.textContent;
+
+describe('renderProject: the "Show ended" box', () => {
+  test('(−) a project that is not registered shows no "Show ended" box: there is nothing to show', () => {
+    const r = projRig();
+    r.state.route = { name: 'project', key: 'ffffffffffffffff' };
+    r.api.renderProject(true);
+    assert.equal(r.node('#proj-h').textContent, 'Project not found');
+    assert.equal(r.node('#proj-ended-wrap').hidden, true);
+  });
+
+  test('(+) a registered project shows it again', () => {
+    const r = projRig();
+    r.node('#proj-ended-wrap').hidden = true;
+    try { r.api.renderProject(true); } catch { /* the rest of the page needs more of the DOM than this rig has */ }
+    assert.equal(r.node('#proj-h').textContent, 'demo-api');
+    assert.equal(r.node('#proj-ended-wrap').hidden, false);
+  });
+});
 
 describe('rowItems: the Spawn columns of the menu matrix (design 1.2)', () => {
   const texts = (items) => Array.from(items, (i) => i.text);
@@ -850,6 +993,26 @@ describe('the spawn sheet: the request and the toasts (design 3)', () => {
     assert.equal(r.texts().length, 0, 'no success toast');
   });
 
+  test('(+) F4: tmux_unavailable, tmux_failed and claude_exited show their sentence in the sheet\'s alert; the sheet stays open, nothing navigates, no toast', async () => {
+    const EXITED = 'Claude exited right after it started. Run `claude` once in a terminal in this folder to see why (for example, to log in).';
+    for (const [reply, text] of [
+      [refuse(503, { error: 'tmux_unavailable', message: 'tmux not found (add it to PATH or set NIKA_TMUX)' }), 'tmux not found. Install tmux 3.2 or newer, then try again.'],
+      [refuse(502, { error: 'tmux_failed', message: 'tmux failed: no space left on device' }), 'tmux failed: no space left on device'],
+      [refuse(502, { error: 'claude_exited', message: 'server words' }), EXITED],
+    ]) {
+      const r = await run({ reply });
+      assert.deepEqual(alertOf(r), { text, shown: true, focused: true });
+      assert.equal(r.node('#dlg-spawn').open, true);
+      assert.deepEqual([r.navs, r.texts()], [[], []]);
+      assert.equal(r.node('#sp-brief').value, 'Add the /health route and a test for it.', 'the fields are kept');
+    }
+  });
+
+  test('(−) F4: any other code keeps the server\'s words in the alert', async () => {
+    const r = await run({ reply: refuse(503, { error: 'claude_unavailable', message: 'claude not found (add it to PATH or set NIKA_CLAUDE)' }) });
+    assert.equal(alertOf(r).text, 'claude not found (add it to PATH or set NIKA_CLAUDE)');
+  });
+
   test('(+) 409 limit, scope parent, from the header ("you"): the "You already run..." line', async () => {
     const r = await run({ reply: refuse(409, { error: 'limit', scope: 'parent', running: 3, max: 3 }) });
     assert.equal(alertOf(r).text, `You already run 3 of 3 agents spawned from nika in demo-api. ${TAIL}`);
@@ -914,10 +1077,15 @@ describe('the spawn sheet: the request and the toasts (design 3)', () => {
 });
 
 describe('Settings, the New agents card and Remove project (design 2.5)', () => {
+  // what a row shows: a value that is a menu button reads as its button plus the muted "from Settings" after it (the menu list stays out)
+  const shown = (dd) => {
+    const button = dd.all((n) => n.attrs['data-menu-btn'] !== undefined)[0];
+    return button ? [button.textContent, ...dd.all(withClass('muted')).map((m) => m.textContent)].join(' ') : dd.textContent;
+  };
   const cardRows = (card) => {
     const dl = card.all((n) => n.tag === 'dl')[0];
     const pairs = [];
-    for (let i = 0; i < dl.kids.length; i += 2) pairs.push([dl.kids[i].textContent, dl.kids[i + 1].textContent]);
+    for (let i = 0; i < dl.kids.length; i += 2) pairs.push([dl.kids[i].textContent, shown(dl.kids[i + 1])]);
     return pairs;
   };
   const newAgents = (r, ...args) => r.api.setupCards(r.proj, r.g, ...args).find((c) => c.all((n) => n.tag === 'h2')[0]?.textContent === 'New agents');
@@ -925,15 +1093,72 @@ describe('Settings, the New agents card and Remove project (design 2.5)', () => 
   test('(+) the New agents card: Permission mode, Pane, Per orchestrator, Spawned from nika, This project', () => {
     const r = projRig();
     assert.deepEqual(cardRows(newAgents(r)), [
-      ['Permission mode', 'Claude Code default (no flag)'], ['Pane', 'Beside'], ['Per orchestrator', '3 at once'], ['Spawned from nika', '0 of 3'], ['This project', '3 of 9 running'],
+      ['Permission mode', 'Default from Settings'], ['Pane', 'Beside from Settings'], ['Per orchestrator', '3 at once from Settings'], ['Spawned from nika', '0 of 3'], ['This project', '3 of 9 running'],
     ]);
     assert.equal(newAgents(r).all(withClass('limit')).length, 0, 'no note below the limits');
+  });
+
+  // F6: the card shows the mode as the session header's chip (colour class, icon, short word), not as a sentence. Written out here on purpose.
+  const CHIPS = {
+    default: ['m-default', '#i-gear', 'Default'],
+    manual: ['m-manual', '#i-m-manual', 'Manual'],
+    acceptEdits: ['m-edits', '#i-m-edits', 'Accept edits'],
+    plan: ['m-plan', '#i-m-plan', 'Plan'],
+    auto: ['m-auto', '#i-m-auto', 'Auto'],
+    dontAsk: ['m-dontask', '#i-m-dontask', "Don't ask"],
+  };
+
+  test('(+) the Permission mode value is a mode chip with the short label, the mode\'s icon and its colour class, for every mode', () => {
+    for (const [mode, [cls, href, label]] of Object.entries(CHIPS)) {
+      const r = projRig({ settings: { ...SETTINGS, permissionMode: mode } });
+      const dd = newAgents(r).all((n) => n.tag === 'dd')[0];
+      const chip = dd.all(withClass('mode'))[0];
+      assert.ok(chip, mode);
+      assert.equal(chip.className, `mode ${cls}`, mode);
+      assert.equal(chip.all((n) => n.tag === 'use')[0].attrs.href, href, mode);
+      assert.equal(chip.all(withClass('ml'))[0].textContent, label, mode);
+      const btn = dd.all((n) => n.attrs['data-menu-btn'] !== undefined)[0];
+      assert.equal(btn.all(withClass('mode')).length, 1, 'one chip in the menu button');
+      assert.equal(btn.all(withClass('mode'))[0], chip, mode);
+      assert.equal(dd.all(withClass('menu'))[0].all(withClass('mode')).length, 7, 'and one per menu item: "Use Settings" and the six modes');
+    }
+  });
+
+  test('(+) the chip is the one the session header builds (modeEl): same class and title; its text drops only the spoken "Permission mode: ", which the card\'s label says', () => {
+    for (const mode of ['manual', 'acceptEdits', 'plan', 'auto', 'dontAsk']) {
+      const r = projRig({ settings: { ...SETTINGS, permissionMode: mode } });
+      const chip = newAgents(r).all(withClass('mode'))[0];
+      const header = modeEl(mode);
+      assert.equal(chip.className, header.className, mode);
+      assert.equal(`Permission mode: ${chip.textContent}`, header.textContent, mode);
+      assert.equal(chip.attrs.title, header.attrs.title, mode);
+    }
+  });
+
+  test('(−) the long descriptions are not on the card: they stay in the spawn sheet\'s select', () => {
+    for (const mode of Object.keys(CHIPS)) {
+      const r = projRig({ settings: { ...SETTINGS, permissionMode: mode } });
+      const text = newAgents(r).textContent;
+      for (const gone of ['classifier', 'approves actions', 'ask every time', 'no flag', 'Claude Code default', 'without asking you']) assert.ok(!text.includes(gone), `${mode}: ${gone}`);
+    }
+    const r = projRig({ settings: { ...SETTINGS, permissionMode: 'auto' } });
+    r.api.openSpawn(r.g);
+    const options = r.node('#sp-perm').kids.map((o) => o.textContent);
+    assert.ok(options.includes('Auto: a classifier approves actions without asking you'), 'the select keeps the warning copy');
+    assert.ok(options.includes('Manual: ask every time') && options.includes('Claude Code default (no flag)'));
+  });
+
+  test('(−) a value Settings cannot hold shows the "Mode ?" chip, never raw text', () => {
+    const r = projRig({ settings: { ...SETTINGS, permissionMode: '<b>x</b>' } });
+    const chip = newAgents(r).all(withClass('mode'))[0];
+    assert.equal(chip.className, 'mode m-unknown');
+    assert.ok(!newAgents(r).textContent.includes('<b>'));
   });
 
   test('(+) the counts follow the snapshot and Settings', () => {
     const r = projRig({ settings: { ...SETTINGS, limits: { maxAgents: 5 } } });
     const rows = cardRows(newAgents(r));
-    assert.deepEqual(rows.slice(2), [['Per orchestrator', '5 at once'], ['Spawned from nika', '0 of 5'], ['This project', '3 of 15 running']]);
+    assert.deepEqual(rows.slice(2), [['Per orchestrator', '5 at once from Settings'], ['Spawned from nika', '0 of 5'], ['This project', '3 of 15 running']]);
   });
 
   test('(+) the project cap reached: the note says so and that spawning is off until one ends', () => {
@@ -958,7 +1183,7 @@ describe('Settings, the New agents card and Remove project (design 2.5)', () => 
   test('(+) Remove project: the dialog says what is forgotten and that running agents keep running', () => {
     const r = projRig();
     r.api.confirmRemove(r.proj);
-    assert.equal(r.node('#cf-d').textContent, 'nika stops listing this project and forgets its plugin and model choices and its saved orchestrator. No files change and running agents keep running.');
+    assert.equal(r.node('#cf-d').textContent, 'nika stops listing this project and forgets its plugin, model, permission mode, pane and agent limit choices and its saved orchestrator. No files change and running agents keep running.');
     assert.equal(r.node('#cf-h').textContent, 'Remove demo-api from nika?');
     assert.equal(r.node('#cf-ok').textContent, 'Remove project');
     assert.equal(r.opened.length, 1);

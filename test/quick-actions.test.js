@@ -827,9 +827,15 @@ describe('composerKey (0.3.3): what a key in the message box does', () => {
     for (const m of [{ shiftKey: true }, { altKey: true }, { metaKey: true }, { ctrlKey: true }]) assert.deepEqual(K('ArrowDown', m), { act: 'none' }, JSON.stringify(m));
   });
 
-  test('(+) Ctrl+C while Claude works stops the turn (also with Shift, as in 0.3)', () => {
+  test('(+) Ctrl+C while Claude works stops the turn (also as C, with Caps Lock on)', () => {
     assert.deepEqual(K('c', { ctrlKey: true }, { status: 'busy' }), { act: 'stop' });
-    assert.deepEqual(K('C', { ctrlKey: true, shiftKey: true }, { status: 'busy' }), { act: 'stop' });
+    assert.deepEqual(K('C', { ctrlKey: true }, { status: 'busy' }), { act: 'stop' });
+  });
+  test('(−) 0.4.0: Ctrl+Shift+C is the copy key everywhere in nika (as in Type into pane and Linux terminals), never Stop', () => {
+    for (const status of ['busy', 'idle', 'attn']) {
+      assert.deepEqual(K('C', { ctrlKey: true, shiftKey: true }, { status }), { act: 'none' }, status);
+      assert.deepEqual(K('c', { ctrlKey: true, shiftKey: true }, { status }), { act: 'none' }, status);
+    }
   });
   test('(−) Ctrl+C with a selection is a copy; a held Ctrl+C acts once', () => {
     assert.deepEqual(K('c', { ctrlKey: true }, { status: 'busy', selection: true }), { act: 'none' });
