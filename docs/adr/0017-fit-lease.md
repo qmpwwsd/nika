@@ -91,7 +91,7 @@ values must not be steerable from a request, a tag or a file.
   Rejected: stay off until the window is opened again.
 - **Refusing a spawn into a fitted window, or splitting with `-Z`.** The first blocks the orchestrator's main action; the second
   leaves a nika-sized window with an extra pane. Rejected (Q3): release first.
-- **Putting the fit on the capture route.** The capture's ETag and 250 ms cache stay untouched (the draft sync relies on them), a
+- **Putting the fit on the capture route.** The capture's ETag and cache (250 ms then, 100 ms since F10) stay untouched (the draft sync relies on them), a
   beat has to run while the mirror is hidden, and the capture must never change tmux. Rejected: two routes.
 - **A settings switch.** Draft sync has none either; the chip tells the user when nika holds a window. Not built.
 
@@ -281,6 +281,9 @@ unchanged). Evidence: spike S16 (tmux 3.8, a private socket) and the two live ch
 
 ## Amendment 2026-11-16 (0.5, F9): the focused window wins the pane's size
 
+*F10 (the amendment at the end of this file) changes the page's settle times below to 150 ms for a blur and 150 ms for a focus (they were 200 and 400 ms), and measures
+the panel only at commit points; the rest of this amendment holds.*
+
 Owner ruling (2026-11-16, "Focused one wins"), after the F4 live check: a terminal 64 columns wide showed the orchestrator's window, and nika's
 wide panel showed the pane scaled with empty space. While nika's session window has focus, nika sizes the tmux window to its panel **even when a
 terminal shows it**. Click into the terminal and it gets its full size back within about 1 s. The owner accepts the cost: Claude redraws on each
@@ -368,3 +371,61 @@ and the live checks F9a and F9b of the `linux-verify` fit group, which pass in t
   20 to 24 list the rest.
 - **Not built:** a focused page taking over another page's lease by itself (the app tier has one window; Fit here exists for that), a focus signal from
   the Tauri shell (the fallback above), and a cap that survives a restart of nika (the take counts are memory only, never in the lease file).
+
+## Amendment 2026-11-16 (0.5, F10): a steady size, room for Claude's footer, a redraw hold, and faster settles
+
+Owner words after the build-9 live check (2026-11-16): "need to do smoother fitting size after focus (also faster). Bug - if nika is focused then can't scroll into nika
+app". Owner setup: tmux 3.8, `pane-border-status top`, terminal and nika side by side, Claude in its full-screen view with a 7-line task list. The owner decided
+design-F10 §12 Q1 to Q4 on 2026-11-16, all as recommended (marked Q1 to Q4 below). **Page side only** (`public/fit-ui.js`, `public/session.js`, `public/session.css`,
+`public/scroll.js` for one copy line) plus the mirror's capture cache (`src/mirror.js`, 250 → 100 ms). **No new route, body key, answer field, lease-file key, tmux
+command or argv shape** (`ARGV` and `FILE_KEYS` unchanged). Evidence: the recordings and the pane-size log of the check (design-F10 §1), spike S17 to S17d for Claude's
+repaint times, the unit and rig tests (fit-ui 266, session-ui 680 and scroll-ui 103 tests, with 113 of 115 code reversions caught and the two survivors equivalent), and the full
+suite. Nothing was run against a live Claude or tmux for this amendment: the owner's live checklist (design-F10 §10) is the proof. F9's settle times (200 and 400 ms,
+above) are replaced by Q2 below.
+
+- **Root causes.** (A) The page sent every change of the terminal box as a new panel size, and the box changes because of what the resize itself causes (the mode chip
+  reads "unconfirmed", lines and panels come and go): one focus gave five window sizes in four seconds, down to the route's floor of 10 rows. (B) In its full-screen view
+  Claude gives the conversation about half of the screen and draws its bottom area (task list, notices, input box, footer) below it without clipping, so a pane of about
+  21 rows with a 7-line task list loses its input box and footer (the footer is whole only from about `2 × bottom area + 2` pane rows; this model, H1, is fitted to Claude 2.1.319 and 2.1.325
+  captures and is used for one number only, `ROOM_ROWS`). (C) The page judged the screen during nika's own resize and showed it as Claude's state: the mode chip flipped to
+  "unconfirmed" and the scroll gate answered `screen-unclear`.
+- **A steady size** (Q1's frame; part of the bug fix). The panel is measured from the terminal's border box, with one glyph cell and the window's inner size, only at commit
+  points (the start, a window focus, Fit again, a window, font or width change); a change of the box's height alone sends nothing and keeps the text size, the mirror pinned to
+  the bottom. One focus change is one resize.
+- **Room for Claude's footer** (Q1, adaptive). The page asks for the panel's size first. When, after nika's resize, Claude's input box is not on screen (the hold ran out) and
+  the other conditions hold (the screen was plain before, the chip is `fitted`, the panel has fewer than 33 rows, no room step yet), it asks once, at once, for 33 rows
+  (`ROOM_ROWS`) with the columns in the panel's proportion and scales the text; the room stays on for the window until Fit again, a new window size or a page load. It is an
+  ordinary request of the body `{ cols, rows, open, focus }` inside the route's ranges, from a page that holds the lease: a renew, not a take, so `TAKE_MAX` is not touched by
+  it (later focus takes ask the room size straight away and count as any take). The server does not know that the page asked for more rows than it measured.
+- **The redraw hold** (Q4). For up to 1.2 s (`HOLD_MS`) after nika's own resize the page keeps drawing the last good frame, reading the capture at once and every 100 ms, until a
+  capture at the answered size shows Claude's input box, a prompt, a dialog or no full-screen view. The mode chip, the quick actions, the scroll gate and the Live label do not see
+  the half-drawn frames. The page's scroll, Send, draft write, mode switch and quick-action requests wait for the hold; **every server gate is unchanged**: nothing is sent on the
+  strength of the held frame. At the timeout the room step is taken if its conditions hold, else the frame is drawn as it is and the page shows the truth.
+- **Faster** (Q2): focus settle 400 → 150 ms and blur settle 200 → 150 ms (the cap of 12 takes a minute per window stays), the capture cache 250 → 100 ms, and an immediate capture
+  plus 100 ms polls during the hold. Focus to a finished new frame is about 0.55 s (at most about 0.9 s); the first focus of a window that needs room about 1.1–1.4 s.
+- **Smoother.** The new frame fades in over 120 ms (`REFIT_MS`) and, when the text grows, zooms in from the old size, anchored bottom-left; none under `prefers-reduced-motion`.
+  The fit chip and the Live label change in the same step as the mirror.
+- **Rule text** (Q3). Constraint 12's Fit sentence gains one sentence: the page asks for its panel's size or, once, for 33 rows with the columns in the panel's proportion
+  (`rules/project-rules.md`, approved 2026-11-16, word for word from design-F10 §7). The scroll and key rules are unchanged.
+- **Four details settled in the build (orchestrator rulings, 2026-11-16).** The design text was refined where the code and its tests showed the need:
+  1. The answer's pane size reaches the page **before** the chip (the design said after), because the chip has to wait with the frame; the chip can appear up to 1.2 s after the answer.
+  2. Send waits inside its own steps (the copy into Claude's input, the draft write, the Enter), never in the shared key delivery, which also carries the passthrough and the arrow
+     keys (those do not wait).
+  3. End opens its dialog after the hold; the dialog sends its own request, which therefore does not wait, and End's own gate re-reads the screen.
+  4. A change of the panel's height alone sends nothing and keeps the text size; the mirror is pinned to the bottom, so the top rows may be hidden while a panel or a taller draft is open.
+- **Alternatives rejected.** *Q1 (b), always the panel's size*: 100 % text, but with a tall task list the mode stays unconfirmed and scroll stays refused (today's bug).
+  *Q1 (c), never fewer than 33 rows*: about two thirds text and one resize on every focus, also where the footer fits. *Q2 (b), 250 ms and 200 ms settles*: more filtering of flicks,
+  but only about 0.15 s faster. *Q4 (b), show Claude's repaint live*: faster first pixels, but the half-drawn frame, the flashing chip and the refusals stay. *Fixed slots or
+  overlays for every transient line* (chip width, notes, refusal lines, prompt panels): they touch the header, the notes row and the prompt panels, and still leave scrollbars and
+  the textarea; with the commit rule none of them can change the size. *Doing the hold on the server*: the server cannot tell its own redraw from a real dialog without a new
+  contract field or a timed exemption in the gates, which would weaken them; the page knows when it asked and what it drew before. *Deciding the room from H1 alone*: the model is fitted to
+  two Claude versions; the decision to give room is taken from what the screen shows.
+- **Consequences.** (1) H1 is a fitted model: a Claude update that needs more rows than 33 leaves the room step without effect, and the page shows the honest state (unconfirmed, scroll
+  refused), with no safety impact. (2) A menu or dialog nika does not know that opens exactly during the hold, on a plain frame, costs one extra resize and smaller text until Fit again or a
+  window resize. (3) After a growth (a blur give, a user resize) tmux keeps the old frame plus blank rows and the frame can read as ready before Claude repaints, so a second visible
+  change can follow. (4) With a height-only change the top rows of Claude's frame are hidden while a prompt panel or a tall draft is open. (5) A request made during a hold waits up to 1.2 s
+  (2.4 s with a room step), only in the first moment after nika's own resize. (6) 150 ms filters fewer flicks: on a focus-follows-mouse desktop a pass of the pointer may take the size more
+  often, and the cap of 12 takes a minute per window still bounds it. (7) In the owner's setup the room size means about 8 px text for the orchestrator pane. (8) Measuring the border box
+  puts up to two columns under a classic vertical scrollbar, only while the mirror overflows. (9) More tmux load: at most one `capture-pane` and one `display-message` per pane per
+  100 ms instead of per 250 ms, one capture in flight per pane as before; the 100 ms page polls run only during a hold.
+- **Not built:** fixed slots for every transient line, a server-side hold, a setting for the room or the hold, and a change of the scroll and key rules.

@@ -346,11 +346,20 @@ never settings, hooks or keys), ≤ 200, sorted.
                 { "name": "config", "description": "…", "argHint": "[key=value]", "source": "builtin", "dialog": true },
                 { "name": "demo:lint", "description": "…", "argHint": "", "source": "plugin", "plugin": "demo" } ] }
 ```
-`source` ∈ `builtin user project plugin`; built-ins come first. `name` has no leading `/` (the palette inserts
+`source` ∈ `builtin user project plugin`. **Order (0.5, P1; owner request 2026-11-16: yours first):** project entries, then user
+(personal) entries, then the entries of the plugins applied to the project, then the built-ins, then the entries of every
+other installed plugin; inside a group the scan order stays (built-ins in their curated order, user, project and plugin
+entries as found). Built-ins are no longer first. `name` has no leading `/` (the palette inserts
 `/<name> `): the bare name for built-in, user and project entries, `<plugin>:<name>` for plugin entries. `argHint` is
 `""` when none; `dialog: true` marks a built-in that opens a TUI dialog (`claude-tui.md` §4); `plugin` is set for
-plugin entries. Without `project`: built-in, user and plugin entries (plugins install at user level); with it, project
-entries too.
+plugin entries. Without `project`: built-in, user and plugin entries (plugins install at user level), ordered user,
+built-ins, plugins (no project and no applied list, so those two groups are empty); with it, project entries too, and the
+plugins in that project's saved plugin list (nika's own config, `perProject[key].plugins`, the list the plugins route reads and
+writes) come before the built-ins. The list is read by the route from nika's own config for the project it already
+validated; it is never taken from the request, and an entry of the list is matched against an installed plugin's whole
+`name@marketplace` key (the same name from another marketplace is "another plugin"; a key that is not installed adds
+nothing). A project without a saved list has no applied group. The answer keeps its shape: no key, flag or position field is
+added, and no plugin key reaches the body.
 
 | Source | Files (top-level only) | Name |
 |---|---|---|
@@ -372,8 +381,13 @@ cache is skipped. `COMMAND_NAME` applies to the bare name (before the `<plugin>:
 command files in subfolders are skipped (they still work when typed). Text through `clean()`, description ≤ 200
 chars; the page renders with `textContent`. Same name within one source: a skill wins over a command. Across sources
 every entry is kept, each with its `source`. Bounds: ≤ 200 files per folder, ≤ 2000 files opened per scan, ≤ 1000 entries in total
-(built-ins count), cached 10 s per project with one scan in flight per project; within the plugin source the first entry
-with a given full name wins. Paths are never returned (T22).
+(built-ins count; the scan order, built-ins then user, project and plugins, decides which entries survive the cap, and the new order
+does not change that), cached 10 s per project with one scan in flight per project (0.5, P1: the cache holds the scan; the order above is applied on every
+call, after the cache, and kept per applied list for the life of that scan, at most 8 lists, so a repeated call inside the 10 s returns the same
+answer and one project's plugin list never reaches another's answer, while a plugin list saved meanwhile shows at once); within the plugin source the first entry
+with a given full name wins. Paths are never returned (T22). The page shows the answer as it comes (`PALETTE_MAX` 1000, the server's own bound, so a bare `/`
+lists every entry and the header count is the real total); a query still ranks exact name, name prefix, name substring, then description, and the server order
+breaks ties inside a tier (spec §9.7).
 
 ### `GET /api/app/models`
 ```json
@@ -453,7 +467,8 @@ state itself comes from the snapshot's `subagents` (below), read again on every 
 look like claude (`CLAUDE_COMMAND`: `claude`, `node`, a version string) at that moment, for a started pane too (tmux can
 reuse a pane id after a restart), **and** the pane must not be dead (0.5: `#{pane_dead}` is `0`; with `remain-on-exit` tmux keeps a
 pane whose process ended and still names its command after the pane's argv, so it would otherwise pass). Else 404. A listing row
-whose `pane_dead` is neither `0` nor `1` is dropped, so that pane is not in the listing at all. Cached 250 ms per pane,
+whose `pane_dead` is neither `0` nor `1` is dropped, so that pane is not in the listing at all. Cached 100 ms per pane (0.5, F10: was 250 ms, so the
+page sees Claude's repaint after a resize sooner; this is the mirror's cache, `src/mirror.js` `TTL_MS`, the same one every mention below means),
 one capture in flight per pane (others wait for it), `ETag` = hash of the mirror's rows hash **and** the `mode` and `modeConfirmed` the
 response shows (so a held mode that changed over unchanged rows is never hidden behind a 304); `If-None-Match` → 304.
 ```json
@@ -566,7 +581,7 @@ wrap rule in `claude-tui.md` §10); the page mirrors it into the message box (sp
 ### `GET /api/app/modes`
 `200 { "modes": { "%3": { "mode": "plan", "confirmed": true } } }` — one entry per eligible pane (same rule as
 capture), keyed by `PANE_ID`; `mode` and `confirmed` as capture's `mode` and `modeConfirmed` (the key stays
-`confirmed`). Reads go through the mirror's capture cache (250 ms per pane, one capture in flight per pane), at most 4
+`confirmed`). Reads go through the mirror's capture cache (100 ms per pane, one capture in flight per pane), at most 4
 captures at once; a pane whose capture fails is left out. The app-tier dashboard polls it every 3 s. This route is the
 "app-tier snapshot" mode of spec §6.1: `/api/agents`, shared by both tiers, stays unchanged and gains no mode.
 
@@ -594,7 +609,7 @@ milliseconds to about 300 ms (`docs/security.md` T7, T26); with `send: true` eve
 
 Bypass-prompt guard (0.3, T26). `Enter` confirms the highlighted option of a permission prompt, a digit picks one, and
 `BTab` (Shift-Tab) can pick "allow for this session", so a request whose `keys` contains `Enter` or `BTab`, whose `text`
-contains an ASCII digit `[0-9]`, or that has any `paste`, first takes a fresh capture (never the 250 ms cache) and looks at
+contains an ASCII digit `[0-9]`, or that has any `paste`, first takes a fresh capture (never the 100 ms cache) and looks at
 the screen:
 
 - the capture fails → that status and body, nothing sent;
@@ -851,7 +866,9 @@ prompt drawn inside it takes the `Enter`.
 files).
 
 ### `PUT /api/app/pane/:id/fit` (body ≤ 4 KB, `CAP.small`)
-The session window asks for its terminal panel's size in cells (0.5, W7; ADR 0017, `docs/security.md` T52, the page: spec §9.13).
+The session window asks for its terminal panel's size in cells (0.5, W7; ADR 0017, `docs/security.md` T52, the page: spec §9.13; since F10 the page may
+instead ask once for 33 rows with the columns in the panel's proportion when Claude's input box and footer do not fit the panel, in the same body and ranges, see "The page's size, room for
+Claude's footer and the redraw hold" below).
 The server zooms the mirrored pane and sizes its tmux window to the panel **when that cannot squeeze another pane and either no terminal shows
 the window or the session window has focus** (0.5, F4 and F9, the focused one wins: while a terminal shows the window, nika resizes it only for
 a session window that has focus, and the terminal then shows dots around it; without focus nika never resizes it), keeps a lease on that
@@ -877,7 +894,7 @@ pane, nothing is executed on a refusal); then the controller (`src/fit.js`).
 ```
 `pane` is the mirrored pane's size as tmux reports it (for `fitted` and `zoomed` the read-back after nika's change; for `terminal` the size in
 the last listing of that request, the read-back after an acquire or the request's own listing at a beat: the terminal sizes the window, so it
-can change between requests, and the capture carries the live size), `panes` the number of panes in its tmux window, `userZoom` whether the
+can change between requests, and the capture carries the live size; since F10 the page also reads it as the size nika's own resize is under way to, which starts its redraw hold), `panes` the number of panes in its tmux window, `userZoom` whether the
 user had the mirrored pane zoomed. `state` and `reason`:
 
 | `state` | `reason` | Meaning | What nika changed |
@@ -1105,8 +1122,8 @@ A refit of a `terminal` lease that has no focus and is still inside its 30 s gra
 30 s) takes the window again with `noResize`, so it stays `terminal` and never ends the grace early; a refit of a lease with focus resizes. The watch's
 refit carries the grace (`awayAt`) to the new lease; a refit that a page request meets first does not, so the 30 s start over (longer, never
 shorter). The F4 and F9 rows of the watch table apply only when nothing else changed, so a user who unzooms in the tick a terminal arrives or the
-focus changes stays a user change (W7 Q6). A page that flaps its focus cannot resize without end: the page settles a blur for 200 ms and a focus for
-400 ms before it sends them (a flick back sends nothing), and the server takes at most 12 times a minute per window.
+focus changes stays a user change (W7 Q6). A page that flaps its focus cannot resize without end: the page settles a blur for 150 ms and a focus for
+150 ms before it sends them (F10; F9 had 200 and 400 ms; a flick back sends nothing), and the server takes at most 12 times a minute per window.
 
 A `DELETE` of the session window that meets a refit, a give or a take releases the lease the pane holds at its turn (see `DELETE` below).
 
@@ -1151,18 +1168,59 @@ nothing and wait for the next beat (5 s), so a refusal is never retried faster (
 `blocked / changed` the page keeps sending `open: false`; only a page load (or a `pageshow` from the back/forward cache) or the user's
 Fit again / Fit here (0.5, F1) sends `open: true` again.
 
-**The page's focus (0.5, F9; owner decisions 2026-11-16, Q3: the settle times, and Q4: a hidden window keeps its lease; no route change).** Every request carries `focus`, read fresh from the page (`document.visibilityState === 'visible'
+**The page's focus (0.5, F9; owner decisions 2026-11-16, Q3: the settle times (F10, Q2, changed them to 150 ms each, below), and Q4: a hidden window keeps its lease; no route change).** Every request carries `focus`, read fresh from the page (`document.visibilityState === 'visible'
 && document.hasFocus() === true`; a throw, a missing `hasFocus` or any value but the boolean `true` is `false`). The window's `focus` and `blur`
 events (only when the event's target is the window itself, not an element inside the page) and `visibilitychange` are triggers only: the planner
 reads the value itself on every one of them, on a 1 s poll (`FOCUS_POLL_MS`, so a missed event is caught within a second) and on every request,
 because the webviews' focus events differ (WebKit changed them in 2026). A change must hold before it is sent, so a menu or a flick back costs
-nothing: a blur 200 ms (`BLUR_SETTLE_MS`), a focus 400 ms (`FOCUS_SETTLE_MS`), and a window that was hidden (minimized, closed to the tray) or shown again
+nothing: a blur 150 ms (`BLUR_SETTLE_MS`), a focus 150 ms (`FOCUS_SETTLE_MS`) (both 150 ms since 0.5 F10, owner decision 2026-11-16, Q2; F9 had 200 and 400 ms),
+and a window that was hidden (minimized, closed to the tray) or shown again
 none: sent at once. The change goes out as its own request at once, not on the 5 s beat, or right after the request in flight; the server answers it with
-the give or the take (above), so the terminal has its size about 0.3 s after a click into it and the panel is filled about 0.5 s after a click into the
-session window. A change that was refused or lost (`409`, `429`, `502`, a lost request) is sent again by the next poll, at most once a second (inside
+the give or the take (above), so the terminal has its size about 0.2 s after a click into it (plus its own repaint) and the panel is filled, as one finished
+frame, about 0.55 s after a click into the session window (at most about 0.9 s; the first focus of a window that needs room for Claude's footer, below, takes one more resize, about 1.1–1.4 s). A change that was refused or lost (`409`, `429`, `502`, a lost request) is sent again by the next poll, at most once a second (inside
 the route's 4 per second); a refused request that carries no new focus still waits for the beat. After `close()` or a `403` no event or poll sends
 anything. Hiding the session window (close button, minimize) is a blur, so it gives the size back; the lease stays until the page is shown again, lapses
 (15 s without a request, when the webview stops its timers) or the page leaves.
+
+**The page's size, room for Claude's footer and the redraw hold (0.5, F10; owner decisions 2026-11-16, Q1 to Q4, ADR 0017; the page: spec §9.13).** No route,
+body key, answer field, lease-file key, `ARGV` entry or server gate changes; the server only caches a capture for 100 ms instead of 250 ms (the capture route
+above). Everything below is the page's behaviour, written here because it decides which sizes the route is asked for and when the page's other requests go out.
+- **A steady size.** The page measures its panel (the terminal box's border box, one glyph cell and the window's inner size) only at fixed moments: the start and
+  `document.fonts.ready`, a window `focus` (measured before the focus settle starts, so the take gets the size of that moment), Fit again and a `pageshow` from the
+  back/forward cache, and a `ResizeObserver` change that counts: the window's inner width or height changed, a cell side changed by more than 0.01 px, or the box's width
+  moved by one cell or more (the transcript toggle, the narrow tabs, the app's zoom). A change of the box's height alone with the same window size (a header wrap, a chip,
+  a banner, a composer line, a prompt panel, the textarea growing) and a width change of less than one cell send no request and change no text size; the mirror stays
+  pinned to the bottom (not while it is paused), so the top rows may be hidden while a panel is open. A blur measures nothing. So one focus change is one resize
+  (the take carries the size measured at the focus); the one extra resize is the room step below.
+- **The asked size.** The body is still exactly `{ cols, rows, open, focus }` in the route's ranges (40–400 × 10–200); the server does not know that the page asked
+  for more rows than it measured. The page asks for its panel's size, and, once a window needs it, for room: 33 rows (`ROOM_ROWS`) and as many columns as keep the
+  panel's proportion, `floor(panel cols × (33 − d) / panel rows)`, never fewer than the panel's, at most 400, where `d` is the border row (the asked rows minus the
+  pane rows of the last 200 answer, kept only when 0 or 1, else 0; `pane-border-status` makes it 1), and scales the text to the panel (never below 0.4). A panel of 33
+  rows or more is asked as it is.
+- **The room step.** The page asks for room once for a window, at once (no debounce, `size(…, { now: true })`), when the redraw hold below ran out and all of these
+  hold: the frame drawn before the resize showed a readable input box; the latest capture is at the answered size, in the full-screen view (`alt`), with no prompt, no
+  dialog and no readable draft; the chip's state is `fitted` (never `zoomed`, `terminal`, `blocked` or `other`); the panel has fewer than 33 rows; and the room is not
+  already on. At most one room step per window: after its own hold the latest capture is applied whatever it shows. The room stays on across focus changes (each later
+  focus is one resize straight to the room size, a take that counts in the 12 a minute like any other) until Fit again, a commit with a new window size or width, or a
+  page load; it lives in page memory only. For the route the room step is a request with a larger `cols` and `rows` from a page that holds the lease (a renew of a
+  fitted window, not a take, so it is not counted in the cap of 12), and every rule above applies to the asked size: the squeeze rule, the rate of 4 requests a second per
+  pane, the lock, the lease. The fit chip's panel says why while the room is on and offers Fit again (spec §9.13); the chip's states, words, colours and icons do not change.
+- **The redraw hold.** The planner tells the page the pane size of every 200 answer (`fit.pane`, when both numbers are integers 1–10000; before the chip is told, so the
+  chip can wait). When a frame is drawn and the answered size differs from the drawn pane size, nika's own resize is under way, and the page keeps drawing the last good frame
+  until a 200 capture at the answered size (columns and row count) shows a readable input box, a prompt, a dialog or no full-screen view (or there was no readable box
+  before the resize), for at most 1.2 s (`HOLD_MS`). It reads the capture route at once and then every 100 ms (`HOLD_POLL_MS`; normally every 250 ms). A capture that is not
+  ready is kept and not applied: not drawn, not given to the mode chip, the draft sync, the scroll gate, the quick actions or the Live label, which keep the last good state.
+  A 304 changes nothing; a 404, a 403 or an error ends the hold at once and is handled as always (a pane that is gone is never hidden). A chip view that arrives during the
+  hold is drawn when it ends, in the same frame as the mirror (up to 1.2 s after the answer). When the hold runs out the room step above is taken if its conditions hold,
+  else the latest kept capture is drawn as it is and the page shows the truth (the mode "unconfirmed", the scroll refusal `screen-unclear`).
+- **What waits for the hold, and what does not.** These page requests wait until the hold is over, at most `HOLD_MS` (twice that with a room step), then go out as they
+  always do: the scroll route's request, Send's own steps (the copy into Claude's input, the draft write `PUT …/draft`, the `Enter` through `…/submit`), the mode switch,
+  and the quick-action commands. End opens its dialog after the hold (the dialog sends its own request, so that request is not delayed). These do not wait: the user's own
+  keys typed into the pane (the passthrough and the arrow keys, `…/keys`), the answers to a prompt or a dialog (a prompt or a dialog ends the hold at once), and Stop.
+  **Every server gate is unchanged:** each request takes its own fresh capture under the same lock and refuses on the same rules as before; the page never sends anything on the
+  strength of the held frame, and the wait only keeps the page from asking while nika's own resize has the screen half drawn.
+- **Unchanged:** the routes and their bodies, the answers, `FILE_KEYS`, the lease file, `ARGV`, `LAPSE_MS`, `GROW_MS`, `TAKE_MAX` 12 and `TAKE_SPAN_MS` 60 s, the rule that hiding
+  keeps the lease, the chip's states, words, colours and icons.
 
 **Fit again and Fit here (0.5, F1; no server change).** The chip is a button that opens a panel (spec §9.13). Its action, shown only where
 `open: true` can change something (`blocked / user-change`, `blocked / changed`, a `blocked` the page has no reason for, and `other`), makes the
@@ -1227,7 +1285,7 @@ Checks, in this order (the first that fails answers; nothing is sent after a ref
 
 8. The keys, one `keys.send`. Its non-200 answer (`429 busy`: the keys route's 20 requests per second per pane is shared; a tmux failure)
    passes through with its status and body.
-9. After 30 ms, one fresh capture, which also refreshes the 250 ms cache the page reads next.
+9. After 30 ms, one fresh capture, which also refreshes the 100 ms cache the page reads next.
 
 Success: `200 { "sent": n, "scrolled": true | false | null }`. `sent` is the number of keys sent (1 to 8). `scrolled` is the capture's
 `scrolled` after the keys, `null` when that capture failed (the keys are out whatever happens next).
@@ -1396,7 +1454,7 @@ added.
 { "target": "plan" }
 ```
 Success: `200 { "mode": "plan", "presses": 2 }`. In this route, answer and End a *fresh capture* skips the mirror's
-250 ms cache, and one control action (mode switch, answer or End) runs per pane at a time. Checks and steps, in this
+100 ms cache, and one control action (mode switch, answer or End) runs per pane at a time. Checks and steps, in this
 order:
 
 1. `target` ∉ `MODE_TARGETS` (`bypassPermissions`, `dontAsk`, `default`, missing, …) → `400 invalid`.

@@ -92,13 +92,34 @@ Session window (desktop app):
   your terminal shows it (your terminal shows dots around it), and when you click into your terminal it gets its full size back within about a second.
   Click back into the session window and the panel is filled again within about half a second. The size is moved in place, with one window resize
   per switch and no unzoom, so a window with several panes does not flash in your terminal; every pane of the window still redraws once or twice per
-  switch. A blur is sent after 200 ms and a focus after 400 ms (a glance sends nothing), hiding or minimizing the window gives the size back at once, and
+  switch. A blur is sent after 150 ms and a focus after 150 ms (a glance sends nothing), hiding or minimizing the window gives the size back at once, and
   nika takes the size at most 12 times a minute per window (giving it back is never limited), then the chip reads "Fit · your terminal's size" with a
   title that says why. There is no new chip colour: with a terminal on the window, "Fit · fills the panel" has a longer title and panel line about the
   dots. A change of the chip that follows your own click into or out of the window is not announced to a screen reader a second time. The new
   `linux-verify` checks F9a and F9b (a control-mode client as the terminal) pass in the CI job. Untried: how WebKit reports focus and blur in the
   app's window on macOS and on Linux (if events are missed, a once-a-second check of `document.hasFocus()` catches them), and the redraw count per
   switch with a real Claude.
+- **Clicking into the session window changes the pane once, and faster.** One click into nika used to resize the pane five times in four
+  seconds, because nika measured its panel again every time a line, a chip or a panel appeared, and each resize made the next one. Now nika
+  measures the panel when you click in, when you resize the window and when the text size changes, and not while the screen changes under
+  it. A box that only gets taller or shorter because a line or a panel opened sends nothing and keeps the text size; the view stays pinned to
+  the bottom, so the top rows may be hidden while it is shorter. It also waits less: 150 ms for a click into the window or out of it (it was 400
+  and 200), and it reads Claude's screen after 100 ms instead of 250 ms. You get one change within about half a second (at most about 0.9
+  seconds), with a short fade and, when the text grows, a zoom in from the old size; no animation with Reduce motion on.
+- **nika no longer shows Claude's half-drawn screen after its own resize.** For up to 1.2 seconds nika keeps the last good frame until Claude
+  has redrawn, so the mode chip stops flashing "unconfirmed" and the scroll, Send, mode and command buttons wait for the redraw instead of
+  being refused. The fit chip appears with the new frame, up to 1.2 seconds after nika's answer. No check was loosened: every
+  request still looks at Claude's screen when it goes out. The refusal line for a screen without Claude's input box now says
+  so: "Claude's input box isn't on screen (a dialog or menu may be open)…".
+- **Room for Claude's input box and footer.** With a tall task list Claude draws its input box and footer below the screen, so nika could
+  read no mode and refused to scroll (it needs about 30 rows with a 7-line task list). When that happens after a resize, nika asks once for 33
+  rows with the columns in your panel's proportion and scales the text to your panel (about 8 to 9 px for a panel of 21 to 24 rows) for that
+  window; where the footer fits, the text stays at full size. The chip's panel says why, and **Fit again** tries your panel's own size. Untried:
+  these timings and the room size against a real Claude in the app's window (your live check); the 30-row figure is read from captures
+  of Claude 2.1.319 and 2.1.325, not from Claude's code.
+- **The `/` palette lists yours first, and all of them.** The project's commands come first, then your personal ones, then those of the
+  plugins applied to the project, then Claude's built-ins, then every other installed plugin's. The list no longer stops at 50: a bare `/`
+  shows everything, and the number in its header is the real total.
 - Known limits: the fit was tried on tmux 3.8, and the `linux-verify` check on CI runs it on the Linux runner's tmux (3.6a on
   ubuntu-latest: a 3-pane and a single-pane window fitted and given back exactly, `select-layout --` accepted, `window-size`
   unset reads empty); tmux 3.2, the lowest supported, and every version other than 3.6a and 3.8 are not checked yet; a crash leaves the window at nika's size until

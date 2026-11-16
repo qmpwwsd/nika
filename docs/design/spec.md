@@ -1577,7 +1577,7 @@ B: centred column max 760 px; drawer pushes ≥ 1180 px and overlays below. C: l
 |---|---|
 | shell: skip link, sidebar frame, nav, main, empty screen sections with `h1`s, dialogs (`<dialog>` frames with headers and footers), SVG sprite, announcer, toast host | project list + counts, queue, groups, rows, project cards, settings values and plugin list, rules file list + diffs, transcript entries, mirror rows, toasts, banners |
 
-Rendering cadence: dashboard data every 3 s (as 0.1); session mirror capture every 500 ms while the session is visible and the window focused (server caches 250 ms, use `If-None-Match` → 304); pause polling when the window is hidden. Update the mirror per changed row only (compare row text + style), so selection and scroll survive.
+Rendering cadence: dashboard data every 3 s (as 0.1); session mirror capture every 250 ms (2 s after an error) while the session window is visible, focused or not (server caches 100 ms since F10, was 250 ms; use `If-None-Match` → 304; the page polls every 100 ms for up to 1.2 s after nika's own resize, §9.13); pause polling when the window is hidden. Update the mirror per changed row only (compare row text + style), so selection and scroll survive.
 
 ### 8.4 Tier detection
 
@@ -1831,7 +1831,11 @@ Anatomy: header row "**Commands**" + muted "6 match /co" on the left, key hints 
 
 - Source tag: "Built-in", "Personal" (`~/.claude`), "Project", "Plugin demo-tools". 11 px 600, `--surface-2`, `--line` edge, `--text-muted`.
 - Active option: `--accent-soft` fill + 3 px `--accent` left edge; its description turns `--text`.
-- Order: `rankCommands` (exact name match first, then name prefix, then name substring, then description), ≤ 50.
+- Order (0.5, P1; owner request 2026-11-16: yours first): the server answers **project** commands, **personal** (user) commands, the commands of the **plugins applied to this
+  project** (the project's saved plugin list), the **built-ins**, then **every other installed plugin**; inside a group the scan order stays. A bare `/` shows that order. With
+  text, `rankCommands` ranks exact name match first, then name prefix, then name substring, then description, and the server order breaks ties inside a tier, so a query still
+  wins over the group order. **All of them are shown** (no cut at 50; `PALETTE_MAX` 1000 is the server's own bound), the list scrolls (max-height 360 px), and the count in the
+  header is the real total ("6 match /co", "162 commands"). Without a project, the groups are personal, built-ins, plugins. The source tag on each row (below) names its source; it does not tell an applied plugin from another one.
 - **The first option is active on open and after every keystroke that filters**, so Enter always has a target while the list has one.
 - Empty: "No command matches /xyz. Enter sends the text as typed." Loading: "Loading commands…". Error: "Couldn't load the command list. Enter sends the text as typed."
 - **(built amendment 2026-11-09 (0.3.3))** The notes row (once the hint line) has no "/ commands" tip any more (the Commands button and the Keyboard shortcuts window name it). After insert, it shows the argument hint: "Arguments: [model]" (a textarea placeholder can't show it once there is text).
@@ -2086,16 +2090,17 @@ the focus goes ("When this window has focus", below).
 | Part | Rule |
 |---|---|
 | probe | `#fit-probe` inside `.term`: 100 zeros in the unscaled terminal font (`var(--fs-term)/1.35 var(--mono)`, `white-space: pre`), `aria-hidden`, hidden and off to the left. One cell is the probe's width / 100 wide and its height tall |
-| box | the `.term` client box minus its padding: 12 px left and right, 10 px top and bottom (`PAD_X` 24, `PAD_Y` 20) |
+| box | since F10 the `.term` **border box** (`getBoundingClientRect()`: the client box plus any scrollbar), with the window's inner size, minus its padding: 12 px left and right, 10 px top and bottom (`PAD_X` 24, `PAD_Y` 20). It is held as the **frame** `{ cols, rows, width, height, cellW, cellH, iw, ih }` and measured again only at the commit points of the next row (before F10 the page measured the client box at every change) |
 | size | `cols = floor((width − 24) / cellW)` clamped to 40–400, `rows = floor((height − 20) / cellH)` clamped to 10–200. Nothing is asked while a number is missing or not positive (a hidden tab keeps the last good size). The cut strip of §9.12 is not subtracted |
-| when | a `ResizeObserver` on `.term` (the app's zoom changes the box too) and `document.fonts.ready`; the request follows 250 ms after the last change; an unchanged size is not asked for |
+| when | the **commit points** (F10, `remeasure`, `fitCommit`): the start and `document.fonts.ready`; a window `focus` (measured before the focus settle, so the take gets the size of that moment); Fit again and a `pageshow` from the back/forward cache; and a `ResizeObserver` change on `.term` only when the window's inner width or height changed, a cell side changed by more than 0.01 px, or the box's width moved by one cell or more (the transcript toggle, the narrow tabs, the app's zoom). A commit's request follows 250 ms after the last one (a focus: the 150 ms settle sends it); an unchanged size is not asked for. A change of the box's **height alone** with the same window size (a header wrap, a chip, a banner, a composer line, a prompt panel, the textarea growing), and a width change of less than a cell, send nothing and change no text size: the mirror stays pinned to the bottom (not while it is paused) and the top rows may be hidden while the box is shorter (orchestrator ruling 2026-11-16, T2) |
 
 **Text scale** (`scaleFor`). `scale = min(1, panelCols / paneCols, panelRows / paneRows)` from the capture's size, clamped to
 `SCALE_MIN` 0.4 below and **never above 1** (owner decision, Q2: a pane smaller than the panel stays at its real size; the app's own
 zoom, Cmd or Ctrl + and −, makes text larger). It is `--fit-scale` on `.term`, set with `style.setProperty` (the CSP allows no
 style attribute). `.term-rows` uses `font-size: calc(var(--fs-term) * var(--fit-scale, 1))`; `ch` and the row height are em-based, so
 the pane's grid stays exact. Below 0.4 the text stops shrinking and the terminal scrolls, as before. The header keeps the pane's
-real size ("Live · 120 × 39", §9.12).
+real size ("Live · 120 × 39", §9.12). Since F10 the panel side of the scale is the held frame's (not the momentary box), so the scale changes only when a frame is committed or an applied capture
+changes the pane's size.
 
 **The chip.** `#fit-chip`, a button inside `#fit-wrap` since F1 (the panel below), sits in the terminal header after "Live · C × R". It follows the rule of §9.6: colour, icon and words,
 never colour alone. It is hidden (its wrapper is) until the first 200 answer, and again after the window gives the lease back or a 403. The header
@@ -2161,6 +2166,7 @@ the action are looked up by the chip's key, never by a word of the server.
 |---|---|---|---|
 | `fitted` | none | none | none |
 | `fitted` with a terminal (key `fitted:terminal`, F9) | "Your terminal shows dots around this tmux window while this window has focus. Click into the terminal and it gets its own size back within a second." | none | none |
+| `fitted` or `fitted:terminal` while the room is on (F10: nika asked for 33 rows because Claude's input box and footer did not fit) | "Claude's input box and footer did not fit this panel's rows, so nika gave the pane 33 rows and scaled the text. Fit again tries the panel's own size." (replaces the row's own hint) | none | **Fit again** (clears the room, measures, and asks `open: true`) |
 | `zoomed` | "To fill the panel without scaled text, make this window larger or hide the transcript (Ctrl+Shift+H)." | none | none |
 | `blocked` / `user-change` | "Fit again turns the fit on once more. After a change of your own nika stays off until you ask." (reworded in F4: Fit again over a window a terminal shows lands on `terminal`, so it no longer promises a size) | none | **Fit again** |
 | `blocked` / `changed` | "Fit again tries once more." | none | **Fit again** |
@@ -2211,11 +2217,12 @@ with an action shows heading, why, hint, Close and the action; pending shows "Fi
 |---|---|
 | the first capture answers (the pane is live) | `PUT { open: true }`, repeated until one is answered 200; every later request is `open: false`, also after `blocked / user-change` and `blocked / changed`, until the user asks (next row) |
 | the user presses Fit again or Fit here (F1) | `PUT { open: true }` at once: a waiting heartbeat is cleared and the beat re-armed, and a request in flight finishes first, then this one goes out. A refused or lost ask is tried again by the next beat, again with `open: true`; later requests are `open: false` once one is answered 200. Not before the first capture, not after the pane is gone or a 403, and not while an ask is pending |
-| the panel changes size | `PUT { open: false }` 250 ms after the last change |
+| the panel changes size (a commit point of "Measuring the panel", F10: not a change of the height alone) | `PUT { open: false }` 250 ms after the last change |
+| a redraw hold ends by timeout with the room conditions (F10, "Steady size, room and the redraw hold", below) | one `PUT` at once (no debounce) for 33 rows and the columns in the panel's proportion, with `focus` read now |
 | every 5 s | `PUT { open: false }` with the current size (the beat: the server lets a lease lapse after 15 s without one) |
 | the window is shown again (`visibilitychange`) | one `PUT` at once: timers may have been suspended and the lease may have lapsed; it carries the focus read now |
-| this window loses focus (`blur`, F9) | `PUT` with `focus: false` 200 ms after the blur, if it still holds (a flick back sends nothing); the server answers with the give |
-| this window gains focus (`focus`, F9) | `PUT` with `focus: true` 400 ms after the focus, if it still holds; the server answers with the take |
+| this window loses focus (`blur`, F9) | `PUT` with `focus: false` 150 ms after the blur (F10; F9 had 200 ms), if it still holds (a flick back sends nothing); the server answers with the give |
+| this window gains focus (`focus`, F9) | the panel is measured at once (F10), then `PUT` with `focus: true` 150 ms after the focus (F10; F9 had 400 ms), if it still holds; the server answers with the take |
 | this window is hidden (minimized, closed to the tray; `visibilitychange`, F9) | `PUT` with `focus: false` at once |
 | every second (F9) | the page reads `hasFocus()` again (a missed event is caught within a second) and sends a refused or lost focus change again; a refused request without a new focus waits for the beat |
 | the window closes or leaves the page (`pagehide`) | one `DELETE` with `keepalive: true` |
@@ -2226,7 +2233,7 @@ with an action shows heading, why, hint, Close and the action; pending shows "Fi
 
 **With the rest of the window.** A resize re-wraps Claude's input box, so the server changes the tmux window under the pane's control
 lock: a draft push that meets a fit step gets 409 `busy-switching` and the draft sync pushes again about 300 ms later (§9.12). The
-next capture after a resize carries the new size, rows and `draft.box`, so the cut strip follows. Spawning an agent from the app's sheet
+next capture after a resize carries the new size, rows and `draft.box`, so the cut strip follows (since F10 captures that nika's own resize leaves half drawn are not applied for up to 1.2 s, so the cut strip keeps its last good state, and the draft sync's write and Send's steps wait for that hold before they ask; the server's checks are unchanged). Spawning an agent from the app's sheet
 into a tmux window that is fitted gives the window back first, and the page fits it again, with the new pane count, on its next beat. An
 agent that the orchestrator starts with `nika spawn` splits into the fitted window on its own (another process, no release first), and
 since F2 the watch fits the window again within about a second.
@@ -2280,20 +2287,20 @@ exists since F9: it is a click into this window.)
 rule left the pane scaled with empty space in the wide panel. Now the window that has focus wins: while this window has focus nika sizes the tmux
 window to the panel even when a terminal shows it (the terminal shows dots around it), and when you click into the terminal the terminal gets its
 full size back within about a second. The cost, accepted: Claude redraws on each switch (once or twice per pane of the window), and the side not in
-use looks off. The page sends whether it has focus with every request (`focus`, contract `api-app.md`); a blur is sent after 200 ms, a focus after
-400 ms (a flick back sends nothing), a hidden window at once, and the page reads the focus again every second. No new chip state, colour or icon:
+use looks off. The page sends whether it has focus with every request (`focus`, contract `api-app.md`); a blur is sent after 150 ms, a focus after
+150 ms (F10, Q2; F9 had 200 and 400 ms; a flick back sends nothing), a hidden window at once, and the page reads the focus again every second. No new chip state, colour or icon:
 to the person in nika the panel is filled, so "Fit · fills the panel" is true; only its title and panel line (above) tell about the terminal.
 Owner decisions of 2026-11-16 (design-F9 §11, all as recommended): Q1, keep "Fit · fills the panel" with its own title and panel line instead of a new
 chip state; Q2, one in place move for every size switch (give back, take), not a release and a new fit; Q3, a blur sent after 200 ms, a focus after
-400 ms, and at most 12 takes a minute per window (giving back is never limited); Q4, a hidden or minimized window gives the size back but keeps its
+400 ms (both 150 ms since F10, Q2 of design-F10), and at most 12 takes a minute per window (giving back is never limited); Q4, a hidden or minimized window gives the size back but keeps its
 lease, as F4 does.
 What the user sees (a terminal and the session window show the orchestrator's window):
 
 | Situation | Now |
 |---|---|
 | this window has focus, a terminal shows the window | panel filled; chip "Fit · fills the panel" with the longer title; the terminal shows dots |
-| you click into the terminal | within about 0.3 s (at most a second) the terminal has its full size; several panes stay zoomed (no flash of the other panes); the chip reads "Fit · your terminal's size" and the text is scaled |
-| you click back into this window | within about 0.5 s the panel is filled again |
+| you click into the terminal | within about 0.2 s (F10; F9 said 0.3 s; at most a second) the terminal has its full size; several panes stay zoomed (no flash of the other panes); the chip reads "Fit · your terminal's size" and the text is scaled |
+| you click back into this window | within about 0.55 s (at most about 0.9 s; F9 said 0.5 s) the panel is filled again, as one finished frame (see "Steady size, room and the redraw hold", below) |
 | you minimize or hide this window | the terminal keeps its size (hidden is sent at once); the lease stays until this window is shown again, goes quiet for 15 s or closes |
 | the terminal leaves and this window has no focus | `terminal` for 30 s more, then filled (F4) |
 | you switch more than 12 times in a minute | nika stops taking the size for the rest of that minute; chip "Fit · your terminal's size" with the title "You switched between this window and your terminal often…" and a panel line that says it sizes the window again within a minute |
@@ -2306,6 +2313,38 @@ round trip. The first answer of a page load, the answers to size changes and hea
 
 Not built: a focused window taking over another window's lease by itself ("Fit here" exists for that), a focus signal from the desktop shell (the
 fallback if the webview misses focus events).
+
+**Steady size, room for Claude's footer and the redraw hold (0.5, F10; owner decisions 2026-11-16, Q1 to Q4 of design-F10, all as recommended).** After the
+build-9 check the owner asked for a smoother and faster size change when nika gets focus, and reported that scrolling was refused while nika had focus. Three causes: the
+page measured its panel at every change of the box, and a resize changes the box (chip, lines and panels come and go with the screen state), so one focus gave five window
+sizes in four seconds; Claude's full-screen view draws its task list, notices, input box and footer below at least half of the screen without clipping them, so a short
+pane (about 21 rows with a 7-line task list; Claude needs about 30) lost its input box and footer, and nika then read no mode and refused scroll keys; and the page showed
+the half-redrawn screen while Claude repainted. What the user sees now (the numbers are the page's constants in `public/fit-ui.js`):
+
+| Situation | Now |
+|---|---|
+| you click into this window | the panel is measured once, at the focus (§9.13 "Measuring the panel"), and the pane is resized once; after the 150 ms settle and Claude's repaint (about 0.55 s, at most about 0.9 s) the new frame appears in one step with a 120 ms fade, and when the text grows it also zooms in from the old text size (anchored bottom-left, where the input box and footer are). No animation with `prefers-reduced-motion`. The chip's words, the mode chip and the "Live · C × R" label change in the same step as the mirror, and the header, the toolbar and the composer do not move |
+| a line, a chip, a prompt panel or a taller draft makes the terminal box shorter or taller | nothing is asked and the text keeps its size; the mirror stays pinned to the bottom, so the input box and footer stay visible and the top rows are hidden while the box is shorter (the mirror scrolls); the text size changes again only at the next commit point |
+| Claude's input box and footer did not fit the panel (a tall task list) | nika first asks for the panel's size, waits for the redraw (the hold, below) and, when the box is still not on screen, asks once for 33 rows (`ROOM_ROWS`) with the columns in the panel's proportion and scales the text to the panel: about 8–9 px for a panel of 21–24 rows (text 66–75 %), 100 % wherever the footer fits. That first focus of a window takes about 1.1–1.4 s and two resizes; the room then stays on for the window, so every later focus is one resize straight to the room size. The chip's panel says why ("Fit · fills the panel", its panel line in the table above) and Fit again asks for the panel's own size |
+| you scroll, send, switch the mode or run a quick action right after the click | the request waits for the redraw hold (at most 1.2 s, 2.4 s with a room step) and then goes; no "dialog or menu" line appears for nika's own redraw |
+| you press Fit again | the room is cleared, the panel measured, and the next request is `open: true` with the panel's own size |
+
+**The redraw hold.** After nika's own resize (the 200 answer's pane size differs from the drawn one) the page keeps drawing the last good frame until a capture at the
+answered size shows Claude's input box, a prompt, a dialog or no full-screen view, 1.2 s at most; it reads the capture at once and every 100 ms meanwhile. A capture that is
+not ready is not drawn and is not given to the mode chip, "Waiting for Claude to confirm the mode.", the quick actions, the scroll gate or the Live label, so none of them flashes.
+The fit chip's new view waits with the frame, so **the answer's pane size reaches the page before the chip, and the chip can appear up to 1.2 s after the answer** (with nothing
+drawn yet it appears at once; orchestrator ruling 2026-11-16, T2). When the hold runs out, the latest capture is drawn as it is: if Claude's footer is still not on screen the
+page shows the truth ("unconfirmed", and the scroll refusal "Claude's input box isn't on screen (a dialog or menu may be open)…"). Which requests wait: scroll, Send's own steps
+(the copy into Claude's input, the draft write and the Enter; **never the passthrough or the arrow keys**), the mode switch and the quick-action commands; **End opens its dialog after
+the hold, and the End request itself takes a fresh capture and its own gate** as always; Stop, the user's own keys and the answers to a prompt or a dialog do not wait. The server
+gates are all unchanged (contract `api-app.md`, "The page's size, room for Claude's footer and the redraw hold").
+
+**Accessibility.** The transition is a 120 ms opacity and transform animation on the pane's text, none under `prefers-reduced-motion` (the class is removed by a timer then). The room
+hint is text in the chip's panel (`p#fit-pop-hint`), reachable by keyboard like the other hints. The hold announces nothing, and a state change is announced when the chip is drawn.
+No new chip state, colour, icon or token.
+
+Not built (design-F10 §2.5): fixed slots or overlays for every transient line (header chip width, the notes row, the refusal lines, the prompt panels) to keep the box steady; with the commit rule
+none of them can change the size.
 
 ### 9.14 Attachments (0.5, W2)
 
@@ -2466,7 +2505,7 @@ problem slot (warning, 3 s). The server's words never show:
 | Answer or page gate | Line |
 |---|---|
 | `prompt-open` | "A prompt is open, so nika doesn't send scroll keys. Answer it first, or scroll in the terminal." |
-| `screen-unclear` | "A dialog or menu is open in Claude, so nika doesn't send scroll keys. Close it first, or scroll in the terminal." |
+| `screen-unclear` | "Claude's input box isn't on screen (a dialog or menu may be open), so nika doesn't send scroll keys. Close it first, or scroll in the terminal." (F10: reworded, because the same refusal also happens when the panel is too short for Claude's footer; the server's code `screen-unclear` is unchanged) |
 | `menu-open` | "Claude's / menu may be open, so nika doesn't send scroll keys. Finish or clear the command first." |
 | `no-view` | "Claude isn't in its full-screen view here, so there is nothing for nika to scroll. The transcript shows the whole conversation." |
 | `busy-switching` | "Another action is running on this session. Scroll again in a moment." |
@@ -2604,7 +2643,7 @@ subagents**, the children of its `Agent` tool that run inside the parent session
 
 Decisions (owner, 2026-11-15, as recommended): a subagent opens in the same session window, read-only, and Back goes up to the parent session; the
 session window lists them folded at the top of the Transcript column (anything above the terminal would resize Claude's pane under the fit, §9.13,
-every time a subagent started, and Claude already draws its running subagents under the footer in the mirror); that list has its own remembered box
+every time a subagent started (since F10 a change of the terminal box's height alone sends no size, so that reason no longer applies; the decision stands), and Claude already draws its running subagents under the footer in the mirror); that list has its own remembered box
 (§1.2); the dashboard's lines stay folded by default, the summary says how many run.
 
 **The state badge** (`subStateEl` in `public/dom.js`; rules in `public/tokens.css`, shared by both pages). Colour, glyph and word, never colour alone;

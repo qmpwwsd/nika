@@ -361,6 +361,8 @@ screen, so a screen nika does not recognize shows "Mode ?" or leaves a control d
   transcript starts over) instead of showing the ended one.
 - **Commands.** Type `/` at the start of an empty message box, or press Commands, to filter Claude's built-in commands
   and the commands and skills from your Claude config folder, the project and installed plugins, each with a source tag.
+  Your own come first: the project's commands, then your personal ones, then those of the plugins applied to the project,
+  then the built-ins, then every other installed plugin's. The list shows all of them, with the real count in its header.
   Enter inserts `/name `; a second Enter sends it.
 
 If a screen nika cannot read blocks a control, use the keys in the message box (Esc, Shift+Tab, the arrows in an empty
@@ -423,6 +425,10 @@ Desktop app only. None of this is on the browser dashboard.
   session window has focus nika sizes the tmux window to its panel even when your own terminal shows it (the terminal shows dots around it), and
   when you click into the terminal it gets its size back within about a second ("Fit · your terminal's size": the session window then only scales
   the text). With no focus on the session window and no terminal for 30 seconds, nika sizes the window to the panel again by itself.
+  Clicking into the session window changes the pane once, within about half a second: the panel is measured at that moment and
+  not again while a line, a chip or a panel opens, and nika keeps showing the last good frame until Claude has redrawn. When Claude's
+  input box and footer do not fit the panel (a tall task list), nika gives the pane 33 rows once and scales the text to the panel;
+  the chip's panel says so, and Fit again tries the panel's own size.
 - **Question forms.** When Claude asks a question or for a plan approval, a form above the message box answers it one step at a
   time (options, your own text under Other, the review, the plan's choices, Decline). When nika cannot read the dialog, or it
   mentions bypass, you answer in the terminal. Why: [ADR 0015](docs/adr/0015-dialogs-from-the-screen.md).
