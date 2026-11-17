@@ -376,6 +376,124 @@ describe('stepText and announcement: the words', () => {
   });
 });
 
+// ---- 0.5.1 item D, the pure rules: checked, typed, the move body, the moved answer ---------------------------------------------------
+
+const ask2 = (over = {}) => ask({ tabs: [{ header: 'Project', answered: true }, { header: 'Mode', answered: false }], current: 0, final: false, ...over });
+const TYPED = { text: 'my own words', answered: true };
+
+describe('cleanDialog: checked on every option and typed (0.5.1, D)', () => {
+  test('(+) a single-select option keeps its boolean checked; typed comes through as { text, answered }', () => {
+    const c = cleanDialog(ask2({ options: [{ n: 1, label: 'sqlite', description: null, checked: false }, { n: 2, label: 'postgres', description: null, checked: true }], typed: TYPED }));
+    assert.deepEqual(c.options.map((o) => o.checked), [false, true]);
+    assert.deepEqual(c.typed, { text: 'my own words', answered: true });
+    assert.deepEqual(cleanDialog(ask2({ typed: { text: 'x', answered: false } })).typed, { text: 'x', answered: false });
+  });
+
+  test('(+) no typed, or typed: null, is null; a text of exactly 500 characters is kept; control and bidi marks are removed', () => {
+    assert.equal(cleanDialog(ask()).typed, null, 'an older server has no field');
+    assert.equal(cleanDialog(ask({ typed: null })).typed, null);
+    assert.equal(cleanDialog(ask({ typed: { text: 'x'.repeat(500), answered: true } })).typed.text.length, 500);
+    assert.equal(cleanDialog(ask({ typed: { text: `a${String.fromCharCode(0x202e)}b${String.fromCharCode(0)}c`, answered: true } })).typed.text, 'abc');
+  });
+
+  test('(−) a typed text over 500 characters, empty, not text, or with a non-boolean answered is dropped to null; so is a typed that is not an object', () => {
+    for (const typed of [
+      { text: 'x'.repeat(600), answered: true }, { text: 'x'.repeat(501), answered: true }, { text: '', answered: true }, { text: 5, answered: true },
+      { text: 'x', answered: 'yes' }, { text: 'x' }, { answered: true }, 'x', 7, [], [{ text: 'x', answered: true }], true,
+    ]) assert.equal(cleanDialog(ask({ typed })).typed, null, JSON.stringify(typed).slice(0, 60));
+    assert.equal(cleanDialog(ask({ typed: { text: String.fromCharCode(0x202e), answered: true } })).typed, null, 'nothing left after cleaning');
+  });
+
+  test('(−) a checked that is not the boolean true is false, on single and multi options alike; the dialog is still a form', () => {
+    for (const checked of ['yes', 1, 'true', {}, [], null, undefined]) {
+      const c = cleanDialog(ask({ options: [{ n: 1, label: 'a', description: null, checked }] }));
+      assert.equal(c.state, 'ready');
+      assert.equal(c.options[0].checked, false, String(checked));
+    }
+  });
+});
+
+describe('answerBody: the move and the typed text (0.5.1, D)', () => {
+  const m = cleanDialog(multi({ tabs: tabs(3, 1), current: 1 }));
+  const rv = cleanDialog(review());
+
+  test('(+) a move to another step is { sig, tab }; Review is the tab count', () => {
+    assert.deepEqual(answerBody(m, { tab: 0 }), { sig: SIG, tab: 0 });
+    assert.deepEqual(answerBody(m, { tab: 2 }), { sig: SIG, tab: 2 });
+    assert.deepEqual(answerBody(m, { tab: 3 }), { sig: SIG, tab: 3 }, 'Review');
+    assert.deepEqual(answerBody(rv, { tab: 0 }), { sig: SIG2, tab: 0 }, 'from the review');
+    assert.deepEqual(answerBody(rv, { tab: 1 }), { sig: SIG2, tab: 1 });
+  });
+
+  test('(−) no move to the current step, past Review, below 0, to a non-integer or a string, with more in the request, on a single question, a plan or an unreadable dialog', () => {
+    assert.equal(answerBody(m, { tab: 1 }), null, 'the current step');
+    assert.equal(answerBody(rv, { tab: 2 }), null, 'the review is the current step on the review');
+    for (const tab of [4, 9, -1, 1.5, '2', null, undefined, NaN, Infinity]) assert.equal(answerBody(m, { tab }), null, String(tab));
+    assert.equal(answerBody(m, { tab: 2, picks: [1] }), null, 'a move carries nothing else');
+    assert.equal(answerBody(m, { tab: 2, cancel: true })?.cancel, true, 'cancel still wins and carries no tab');
+    assert.equal(answerBody(cleanDialog(ask()), { tab: 0 }), null, 'one question');
+    assert.equal(answerBody(cleanDialog(plan()), { tab: 0 }), null);
+    assert.equal(answerBody(cleanDialog(unreadable()), { tab: 0 }), null);
+    assert.equal(answerBody(null, { tab: 0 }), null);
+  });
+
+  test('(+) single-select with typed text: Other sends { picks: [], text: <the typed text> }; a pick sends the pick alone', () => {
+    const d = cleanDialog(ask2({ typed: TYPED }));
+    assert.deepEqual(answerBody(d, { picks: [], text: 'my own words' }), { sig: SIG, picks: [], text: 'my own words' });
+    assert.deepEqual(answerBody(d, { picks: [2] }), { sig: SIG, picks: [2] });
+  });
+
+  test('(−) single-select with typed text: Other with any other text is refused (the page never edits Claude\'s text row)', () => {
+    const d = cleanDialog(ask2({ typed: TYPED }));
+    assert.equal(answerBody(d, { picks: [], text: 'something else' }), null);
+    assert.equal(answerBody(d, { picks: [], text: 'my own' }), null);
+    assert.equal(answerBody(d, { picks: [] }), null, 'nothing chosen is nothing to send');
+  });
+
+  test('(+) multi-select with typed text: every body carries the same text, whatever the request holds', () => {
+    const d = cleanDialog(multi({ other: true, typed: TYPED }));
+    assert.deepEqual(answerBody(d, { picks: [1], text: '' }), { sig: SIG, picks: [1], text: 'my own words' });
+    assert.deepEqual(answerBody(d, { picks: [] }), { sig: SIG, picks: [], text: 'my own words' });
+    assert.deepEqual(answerBody(d, { picks: [3, 1], text: 'other words' }), { sig: SIG, picks: [1, 3], text: 'my own words' });
+  });
+
+  test('(−) typed text the route would refuse (first digit, over 300) makes no body; typed on a form without Other is ignored', () => {
+    assert.equal(answerBody(cleanDialog(multi({ other: true, typed: { text: '3 words', answered: true } })), { picks: [1] }), null);
+    assert.equal(answerBody(cleanDialog(multi({ other: true, typed: { text: 'x'.repeat(301), answered: true } })), { picks: [1] }), null);
+    assert.deepEqual(answerBody(cleanDialog(multi({ other: false, typed: TYPED })), { picks: [1] }), { sig: SIG, picks: [1] }, 'no Other row: the text is not ours to send');
+  });
+});
+
+describe('dialogOutcome: the moved answer and text-focus (0.5.1, D)', () => {
+  const o = (status, code, extra = {}) => dialogOutcome({ status, code, name: 'builder-1', ...extra });
+
+  test('(+) 200 moved: phase moving, locked, no announcement, no word; the keys sent are counted', () => {
+    const r = o(200, undefined, { done: 'moved', sent: 2 });
+    assert.deepEqual([r.ok, r.phase, r.lock, r.announce, r.word, r.message, r.gone, r.sent], [true, 'moving', true, null, '', '', false, 2]);
+    assert.equal(o(200, undefined, { done: 'moved' }).sent, 0);
+  });
+
+  test('(−) a near miss is just an answered step (Answered), never a move', () => {
+    for (const done of ['Moved', 'move', 'moved ', undefined, 7]) {
+      const r = o(200, undefined, { done });
+      assert.equal(r.phase, 'answered', String(done));
+      assert.equal(r.announce, 'Answered.');
+    }
+  });
+
+  test('(+) 409 text-focus: its fixed line, a warning, the form live again; keys pressed before it stopped are named', () => {
+    const line = "Claude's text field has the focus. Move off it in the terminal, then try again.";
+    const r = o(409, 'text-focus');
+    assert.deepEqual([r.ok, r.phase, r.lock, r.kind, r.message], [false, 'failed', false, 'warn', line]);
+    assert.equal(o(409, 'text-focus', { sent: 3 }).message, `${line} nika had pressed 3 keys in the pane before it stopped.`);
+  });
+
+  test('(−) text-focus with another status or a near-miss code gets the generic line', () => {
+    const generic = "nika couldn't send this answer. Check it and try again.";
+    for (const [status, code] of [[400, 'text-focus'], [409, 'text-focused'], [409, 'TEXT-FOCUS'], [418, 'text-focus']]) assert.equal(o(status, code).message, generic, `${status} ${code}`);
+  });
+});
+
 // ---- the form: harness ----------------------------------------------------------------------------------------------------------
 
 class TEl extends El {
@@ -1090,56 +1208,516 @@ describe('the question step', () => {
 
 // ---- the tabs list --------------------------------------------------------------------------------------------------------------
 
-describe('the tabs list: it shows where Claude is and never moves it', () => {
-  test('(+) one item per tab plus Review; the current one is aria-current="step"; answered tabs have the check icon and the words', () => {
+describe('the step strip: every step is a button that asks Claude to move there (0.5.1, D)', () => {
+  const strip = (root) => one(root, 'dlg-tabs');
+  const steps = (root) => q(root, 'dlg-tab');
+  const BODY = (over = {}) => multi({ tabs: [{ header: 'Project', answered: true }, { header: 'Mode', answered: false }, { header: 'Scope', answered: false }], current: 0, ...over });
+
+  test('(+) one button per tab plus Review in an ordered list named Steps; the current one is aria-current="step" and aria-disabled', () => {
     const r = rig();
     r.render(multi({ tabs: tabs(4, 1), current: 1 }));
-    const ol = one(r.root, 'dlg-tabs');
+    const ol = strip(r.root);
     assert.equal(ol.tag, 'ol');
-    assert.equal(ol.getAttribute('aria-label'), 'Questions');
-    const items = q(r.root, 'dlg-tab');
+    assert.equal(ol.getAttribute('aria-label'), 'Steps');
+    const items = steps(r.root);
     assert.equal(items.length, 5);
+    assert.ok(items.every((b) => b.tag === 'button' && b.getAttribute('type') === 'button'));
     assert.deepEqual(items.map((i) => i.getAttribute('aria-current')), [null, 'step', null, null, null]);
+    assert.deepEqual(items.map((i) => i.getAttribute('data-tab')), ['0', '1', '2', '3', '4'], 'Review is n');
+    assert.deepEqual(items.map((i) => i.getAttribute('aria-disabled')), [null, 'true', null, null, null], 'only the current one is off');
     assert.deepEqual(hrefs(items[0]), ['#i-check']);
-    assert.match(items[0].textContent, /Tools/);
-    assert.match(items[0].accName, /answered/);
-    assert.match(items[1].textContent, /Project not answered/);
     assert.deepEqual(hrefs(items[1]), [], 'an empty ring is drawn with CSS, not an icon');
     assert.ok(one(items[1], 'dlg-ring'));
-    assert.equal(items[4].textContent, 'Review');
+    assert.deepEqual(items.slice(0, 4).map((i) => i.getAttribute('data-answered')), ['true', 'false', 'false', 'false']);
+    assert.ok(items.every((b) => b.parent.tag === 'li' && b.parent.parent === ol), 'li > button');
   });
 
-  test('(+) on the review step the Review item is the current one', () => {
+  test('(+) the accessible names are "<header>, answered" / "<header>, not answered", the header first, and "Review"', () => {
+    const r = rig();
+    r.render(BODY());
+    const items = steps(r.root);
+    assert.deepEqual(items.map((b) => b.accName), ['Project, answered', 'Mode, not answered', 'Scope, not answered', 'Review']);
+    assert.equal(items[0].textContent.startsWith('Project'), true, 'the visible word comes first (WCAG 2.5.3)');
+  });
+
+  test('(+) every button points at one hidden description that says nothing is answered', () => {
+    const r = rig();
+    r.render(BODY());
+    assert.ok(steps(r.root).every((b) => b.getAttribute('aria-describedby') === 'dlg-steps-desc'));
+    const desc = r.root.all((n) => n.attrs.id === 'dlg-steps-desc');
+    assert.equal(desc.length, 1);
+    assert.equal(desc[0].tag, 'p');
+    assert.ok(withClass('sr-only')(desc[0]));
+    assert.equal(desc[0].textContent, "Opens this step in Claude's dialog. Nothing is answered.");
+  });
+
+  test('(+) on the review step the Review button is the current one', () => {
     const r = rig();
     r.render(review());
-    const items = q(r.root, 'dlg-tab');
+    const items = steps(r.root);
     assert.equal(items.at(-1).getAttribute('aria-current'), 'step');
+    assert.equal(items.at(-1).getAttribute('aria-disabled'), 'true');
     assert.equal(items.filter((i) => i.getAttribute('aria-current') === 'step').length, 1);
+    assert.equal(items[0].getAttribute('aria-disabled'), null);
   });
 
-  test('(+) the narrow text names the question and the tab', () => {
+  test('(+) the narrow text names the question and the tab (it stays in the DOM)', () => {
     const r = rig();
     r.render(multi({ current: 2, tabs: tabs(4, 2) }));
     assert.equal(one(r.root, 'dlg-step').textContent, `Question 3 of 4 ${MID} Scope`);
   });
 
-  test('(−) a single question has no tabs list and no step text', () => {
-    const r = rig();
-    r.render(ask());
-    assert.equal(one(r.root, 'dlg-tabs'), null);
-    assert.equal(one(r.root, 'dlg-step'), null);
+  test('(+) a click on a step that is not the current one posts { sig, tab }; Review posts tab: n; nothing else is sent', async () => {
+    const r = rig({ reply: () => ({ status: 200, body: { done: 'moved', sent: 2 } }) });
+    r.render(BODY());
+    steps(r.root)[2].click();
+    await settle();
+    assert.deepEqual(sentBodies(r), [{ sig: SIG, tab: 2 }]);
+    assert.equal(r.log.calls[0].path, '/pane/%2512/dialog');
+    assert.equal(r.log.calls[0].method, 'POST');
+    const s = rig({ reply: () => ({ status: 200, body: { done: 'moved', sent: 1 } }) });
+    s.render(BODY());
+    steps(s.root).at(-1).click();
+    await settle();
+    assert.deepEqual(sentBodies(s), [{ sig: SIG, tab: 3 }]);
   });
 
-  test('(−) the items are not buttons, not focusable and listen to nothing', () => {
+  test('(+) from the review a click on a question posts that tab', async () => {
+    const r = rig({ reply: () => ({ status: 200, body: { done: 'moved', sent: 3 } }) });
+    r.render(review());
+    steps(r.root)[0].click();
+    await settle();
+    assert.deepEqual(sentBodies(r), [{ sig: SIG2, tab: 0 }]);
+  });
+
+  test('(+) 200 moved: the chip is "Moving" with the spinner, every step is aria-disabled, and it stays so until a capture with another sig', async () => {
+    const r = rig({ reply: () => ({ status: 200, body: { done: 'moved', sent: 2 } }) });
+    r.render(BODY());
+    steps(r.root)[1].click();
+    await settle();
+    const c = chip(r.root);
+    assert.equal(c.textContent, 'Moving');
+    assert.equal(c.attrs['data-s'], 'moving');
+    assert.ok(one(c, 'spin'));
+    assert.equal(r.root.attrs['data-s'], 'moving');
+    assert.ok(steps(r.root).every((b) => b.getAttribute('aria-disabled') === 'true'));
+    r.render(BODY());
+    assert.ok(steps(r.root).every((b) => b.getAttribute('aria-disabled') === 'true'), 'the same sig again changes nothing');
+    steps(r.root)[2].click();
+    await settle();
+    assert.equal(r.log.calls.length, 1, 'locked: a second click posts nothing');
+    r.render(BODY({ sig: SIG2, current: 1, question: 'Which mode?' }));
+    assert.equal(chip(r.root).textContent, 'Needs you');
+    assert.deepEqual(steps(r.root).map((b) => b.getAttribute('aria-disabled')), [null, 'true', null, null]);
+  });
+
+  test('(+) while the move request runs the chip says Moving, not Answering, and the steps are off', async () => {
+    let release;
+    const r = rig({ reply: () => new Promise((resolve) => { release = resolve; }) });
+    r.render(BODY());
+    steps(r.root)[1].click();
+    assert.equal(chip(r.root).textContent, 'Moving');
+    assert.ok(steps(r.root).every((b) => b.getAttribute('aria-disabled') === 'true'));
+    release({ status: 200, body: { done: 'moved', sent: 1 } });
+    await settle();
+    assert.equal(chip(r.root).textContent, 'Moving');
+  });
+
+  test('(+) a move says nothing aloud; the new step gets its normal announcement when it is drawn', async () => {
+    const r = rig({ reply: () => ({ status: 200, body: { done: 'moved', sent: 1 } }) });
+    r.render(BODY());
+    const before = r.log.announce.length;
+    steps(r.root)[1].click();
+    await settle();
+    assert.equal(r.log.announce.length, before, 'no "Answered."');
+    r.render(BODY({ sig: SIG2, current: 1, question: 'Which mode?' }));
+    assert.equal(r.log.announce.at(-1), 'Question 2 of 3: Which mode?');
+    assert.deepEqual(r.log.say, ['Sent 1 key to %12']);
+  });
+
+  test('(+) text-focus: its own line, a warning, and the steps are enabled again (nothing was moved)', async () => {
+    const r = rig({ reply: () => ({ status: 409, body: { error: 'text-focus', sent: 3 } }) });
+    r.render(BODY());
+    steps(r.root)[2].click();
+    await settle();
+    assert.deepEqual(r.log.problem.at(-1), ["Claude's text field has the focus. Move off it in the terminal, then try again. nika had pressed 3 keys in the pane before it stopped.", 'warn']);
+    assert.equal(chip(r.root).textContent, 'Not answered');
+    assert.deepEqual(steps(r.root).map((b) => b.getAttribute('aria-disabled')), ['true', null, null, null], 'only the current step is off');
+    steps(r.root)[1].click();
+    await settle();
+    assert.equal(r.log.calls.length, 2, 'a second try goes out');
+  });
+
+  test('(+) focus: a rebuild after a click keeps the focus on the step button of the same index', async () => {
+    const r = rig({ reply: () => ({ status: 200, body: { done: 'moved', sent: 1 } }) });
+    r.render(BODY());
+    const b = steps(r.root)[2];
+    b.focus();
+    b.click();
+    await settle();
+    r.render(BODY({ sig: SIG2, current: 2, question: 'Which scope?' }));
+    assert.equal(focus.el, steps(r.root)[2]);
+    assert.equal(focus.el.tag, 'button');
+    assert.equal(focus.el.getAttribute('data-tab'), '2');
+  });
+
+  test('(+) focus: when the step button that had it no longer exists after the rebuild, the form root takes it (design 3.2: not the heading)', () => {
     const r = rig();
-    r.render(multi());
-    for (const el of [one(r.root, 'dlg-tabs'), ...q(r.root, 'dlg-tab')]) {
-      assert.notEqual(el.tag, 'button');
-      assert.equal(el.getAttribute('tabindex'), null);
-      assert.equal(el.getAttribute('role'), null);
-      assert.deepEqual(Object.keys(el.listeners), []);
+    r.render(BODY());
+    assert.equal(steps(r.root).length, 4, 'premise: three questions and the review');
+    const review = steps(r.root)[3];
+    review.focus();
+    assert.equal(focus.el, review);
+    r.render(BODY({ sig: SIG2, tabs: [{ header: 'Project', answered: true }, { header: 'Mode', answered: false }], current: 1 }));
+    assert.equal(steps(r.root).length, 3, 'premise: two questions and the review');
+    assert.equal(focus.el, r.root);
+  });
+
+  test('(−) the form root takes the focus only from a step button that is gone: an option keeps the heading rule, and a focus outside the form moves nothing', () => {
+    const r = rig();
+    r.render(BODY());
+    inputs(r.root, 'checkbox')[0].focus();
+    r.render(BODY({ sig: SIG2, current: 1, question: 'Which scope?' }));
+    assert.notEqual(focus.el, r.root);
+    assert.equal(focus.el.tag, 'legend');
+    focus.el = r.box;
+    r.render(BODY({ sig: '1122334455667788', current: 2, question: 'Which name?' }));
+    assert.equal(focus.el, r.box);
+  });
+
+  test('(+) the form root can take focus: #dialog-form carries tabindex="-1" in the page', () => {
+    const html = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public', 'session.html'), 'utf8');
+    assert.match(html, /<div[^>]*\bid="dialog-form"[^>]*\btabindex="-1"/);
+  });
+
+  test('(−) the current step posts nothing, and a disabled step is still a button with its name', async () => {
+    const r = rig();
+    r.render(BODY());
+    const cur = steps(r.root)[0];
+    assert.equal(cur.getAttribute('aria-disabled'), 'true');
+    assert.equal(cur.disabled, false, 'aria-disabled, not disabled: it keeps its focus and its name');
+    cur.click();
+    await settle();
+    assert.deepEqual(r.log.calls, []);
+  });
+
+  test('(−) no post while an answer is on its way, while the form is locked after an answer, or after a failure that locks', async () => {
+    let release;
+    const r = rig({ reply: () => new Promise((resolve) => { release = resolve; }) });
+    r.render(BODY());
+    byText(r.root, 'Answer').click();
+    steps(r.root)[1].click();
+    assert.equal(r.log.calls.length, 1, 'answering: the click does nothing');
+    assert.ok(steps(r.root).every((b) => b.getAttribute('aria-disabled') === 'true'));
+    release({ status: 200, body: { done: 'next', sent: 2 } });
+    await settle();
+    steps(r.root)[1].click();
+    assert.equal(r.log.calls.length, 1, 'locked after an answer');
+    const l = rig({ reply: () => ({ status: 409, body: { error: 'dialog-touched' } }) });
+    l.render(BODY());
+    byText(l.root, 'Answer').click();
+    await settle();
+    steps(l.root)[1].click();
+    assert.equal(l.log.calls.length, 1, 'locked after dialog-touched');
+  });
+
+  test('(−) no post in terminal mode, and the steps are aria-disabled', async () => {
+    const r = rig();
+    r.render(BODY({ bypass: true }));
+    assert.ok(steps(r.root).every((b) => b.getAttribute('aria-disabled') === 'true'));
+    steps(r.root)[1].click();
+    await settle();
+    assert.deepEqual(r.log.calls, []);
+  });
+
+  test('(−) no post while the form is kept for an unreadable capture, and none from an unreadable dialog (it has no strip)', async () => {
+    const r = rig();
+    r.render(BODY());
+    r.render(unreadable());
+    assert.ok(steps(r.root).every((b) => b.getAttribute('aria-disabled') === 'true'), 'kept: off');
+    steps(r.root)[1].click();
+    await settle();
+    assert.deepEqual(r.log.calls, []);
+    const u = rig();
+    u.render(unreadable());
+    assert.equal(strip(u.root), null);
+  });
+
+  test('(−) a single question and a plan have no strip', () => {
+    const r = rig();
+    r.render(ask());
+    assert.equal(strip(r.root), null);
+    assert.equal(one(r.root, 'dlg-step'), null);
+    assert.equal(r.root.all((n) => n.attrs.id === 'dlg-steps-desc').length, 0);
+    const p = rig();
+    p.render(plan());
+    assert.equal(strip(p.root), null);
+  });
+
+  test('(−) a move that fails with 409 dialog-changed locks the form (the answer is the existing line)', async () => {
+    const r = rig({ reply: () => ({ status: 409, body: { error: 'dialog-changed' } }) });
+    r.render(BODY());
+    steps(r.root)[2].click();
+    await settle();
+    assert.equal(r.log.problem.at(-1)[0], 'The question changed; check the session.');
+    assert.ok(steps(r.root).every((b) => b.getAttribute('aria-disabled') === 'true'));
+  });
+
+  test('(−) the strip never sends a key or a digit: the click handler only posts { sig, tab }', () => {
+    assert.doesNotMatch(code(SRC), /tab:\s*\d|keys\s*:|\.press\(/);
+  });
+});
+
+// ---- changing an answer: checked, typed, the kept draft (0.5.1, D) ----------------------------------------------------------------
+
+describe('changing an answer (0.5.1, D)', () => {
+  const steps = (root) => q(root, 'dlg-tab');
+  const noteOf = (root, text) => root.all((n) => n.tag === 'p' && n.textContent === text);
+  const AGAIN = 'Already answered. Answer again to change it, or choose another step.';
+  const TYPED_NOTE = 'To change typed text, use the terminal.';
+  const sigN = (i, c = 'a') => c.repeat(15) + i.toString(16);
+  const pickRadio = (input) => { input.checked = true; input.fire('change'); };
+  const moved = () => ({ status: 200, body: { done: 'moved', sent: 1 } });
+
+  test('(+) a single-select dialog pre-selects the option Claude has ticked, and its card is marked', () => {
+    const r = rig();
+    r.render(ask2({ options: [{ n: 1, label: 'sqlite', description: null, checked: false }, { n: 2, label: 'postgres', description: null, checked: true }] }));
+    const radios = inputs(r.root, 'radio');
+    assert.deepEqual(radios.map((x) => x.checked), [false, true, false], 'the last radio is Other');
+    assert.deepEqual(radios.slice(0, 2).map((x) => x.parent.getAttribute('data-on')), ['false', 'true']);
+    assert.equal(one(r.root, 'dlg-other').getAttribute('data-on'), 'false', 'Other is not');
+  });
+
+  test('(+) pressing Answer on the ticked option sends it again; picking another option sends that one', async () => {
+    const r = rig();
+    r.render(ask2({ options: [{ n: 1, label: 'sqlite', description: null, checked: true }, { n: 2, label: 'postgres', description: null, checked: false }] }));
+    byText(r.root, 'Answer').click();
+    await settle();
+    assert.deepEqual(sentBodies(r), [{ sig: SIG, picks: [1] }]);
+    const s = rig();
+    s.render(ask2({ options: [{ n: 1, label: 'sqlite', description: null, checked: true }, { n: 2, label: 'postgres', description: null, checked: false }] }));
+    pickRadio(inputs(s.root, 'radio')[1]);
+    byText(s.root, 'Answer').click();
+    await settle();
+    assert.deepEqual(sentBodies(s), [{ sig: SIG, picks: [2] }]);
+  });
+
+  test('(−) a single-select dialog with nothing ticked pre-selects nothing, and Answer is off', async () => {
+    const r = rig();
+    r.render(ask2());
+    assert.ok(inputs(r.root, 'radio').every((x) => x.checked === false));
+    assert.equal(off(byText(r.root, 'Answer')), true);
+    byText(r.root, 'Answer').click();
+    await settle();
+    assert.deepEqual(r.log.calls, []);
+  });
+
+  test('(+) typed text fills Other, read-only, with the note; Other is selected when Claude answered with it', () => {
+    const r = rig();
+    r.render(ask2({ typed: TYPED }));
+    const txt = one(r.root, 'dlg-text');
+    assert.equal(txt.value, 'my own words');
+    assert.equal(txt.getAttribute('readonly'), '');
+    assert.equal(inputs(r.root, 'radio').at(-1).checked, true, 'Other is selected');
+    assert.equal(noteOf(r.root, TYPED_NOTE).length, 1);
+    assert.equal(off(byText(r.root, 'Answer')), false, 'the typed answer can be sent again');
+  });
+
+  test('(+) typed text that Claude has not taken as the answer fills Other but leaves it unselected', () => {
+    const r = rig();
+    r.render(ask2({ typed: { text: 'my own words', answered: false }, options: [{ n: 1, label: 'sqlite', description: null, checked: true }, { n: 2, label: 'postgres', description: null, checked: false }] }));
+    assert.equal(one(r.root, 'dlg-text').value, 'my own words');
+    assert.deepEqual(inputs(r.root, 'radio').map((x) => x.checked), [true, false, false]);
+    assert.equal(noteOf(r.root, TYPED_NOTE).length, 1);
+  });
+
+  test('(+) the typed field stays read-only through the captures and the paints; the other fields still follow the live state', () => {
+    const r = rig();
+    r.render(ask2({ typed: TYPED }));
+    r.render(ask2({ typed: TYPED }));
+    assert.equal(one(r.root, 'dlg-text').getAttribute('readonly'), '');
+    const e = rig();
+    e.render(ask2());
+    assert.equal(one(e.root, 'dlg-text').getAttribute('readonly'), null, 'no typed text: the field is for typing');
+    assert.equal(noteOf(e.root, TYPED_NOTE).length, 0, '(−) and no note');
+  });
+
+  test('(+) Answer with the typed Other selected sends { picks: [], text }; choosing an option instead sends the option alone', async () => {
+    const r = rig();
+    r.render(ask2({ typed: TYPED }));
+    byText(r.root, 'Answer').click();
+    await settle();
+    assert.deepEqual(sentBodies(r), [{ sig: SIG, picks: [], text: 'my own words' }]);
+    const s = rig();
+    s.render(ask2({ typed: TYPED }));
+    pickRadio(inputs(s.root, 'radio')[0]);
+    assert.equal(inputs(s.root, 'radio').at(-1).checked, false, 'one radio at a time');
+    byText(s.root, 'Answer').click();
+    await settle();
+    assert.deepEqual(sentBodies(s), [{ sig: SIG, picks: [1] }]);
+  });
+
+  test('(+) a multi tab with typed text: the Other box is ticked and aria-disabled, the text read-only, and every body carries the text', async () => {
+    const r = rig();
+    r.render(multi({ other: true, typed: TYPED }));
+    const boxes = inputs(r.root, 'checkbox');
+    const other = boxes.at(-1);
+    assert.equal(other.checked, true);
+    assert.equal(other.getAttribute('aria-disabled'), 'true');
+    assert.equal(one(r.root, 'dlg-text').value, 'my own words');
+    assert.equal(one(r.root, 'dlg-text').getAttribute('readonly'), '');
+    const click = other.fire('click');
+    assert.equal(click.defaultPrevented, true, 'the box cannot be unticked');
+    r.render(multi({ other: true, typed: TYPED }));
+    assert.equal(other.getAttribute('aria-disabled'), 'true', 'still locked after the next capture');
+    byText(r.root, 'Answer').click();
+    await settle();
+    assert.deepEqual(sentBodies(r), [{ sig: SIG, picks: [2], text: 'my own words' }]);
+  });
+
+  test('(−) a multi tab without typed text keeps Other free: not ticked, not aria-disabled', () => {
+    const r = rig();
+    r.render(multi({ other: true }));
+    const other = inputs(r.root, 'checkbox').at(-1);
+    assert.equal(other.checked, false);
+    assert.equal(other.getAttribute('aria-disabled'), null);
+    assert.equal(other.fire('click').defaultPrevented, false);
+  });
+
+  test('(+) the answered note stands above the options of an answered tab; (−) not on an unanswered one', () => {
+    const r = rig();
+    r.render(multi({ tabs: tabs(4, 1), current: 0 }));
+    assert.equal(noteOf(r.root, AGAIN).length, 1);
+    const fs = one(r.root, 'dlg-fs');
+    const note = noteOf(r.root, AGAIN)[0];
+    assert.ok(fs.contains(note), 'it is inside the question group');
+    assert.ok(fs.kids.indexOf(note) < fs.kids.findIndex((k) => k.tag === 'label'), 'above the first option');
+    const n = rig();
+    n.render(multi({ tabs: tabs(4, 1), current: 1 }));
+    assert.equal(noteOf(n.root, AGAIN).length, 0);
+  });
+
+  test('(+) the unsent ticks of a question come back when you return to it, and Claude\'s own ticks do not override them', async () => {
+    const r = rig({ reply: moved });
+    const first = (over = {}) => multi({ tabs: tabs(3), current: 0, ...over });
+    r.render(first());
+    const boxes = inputs(r.root, 'checkbox');
+    boxes[0].checked = true;
+    boxes[0].fire('change');
+    steps(r.root)[1].click();
+    await settle();
+    r.render(first({ sig: SIG2, current: 1, question: 'Which scope?' }));
+    r.render(first({ sig: SIG3 }));
+    assert.deepEqual(inputs(r.root, 'checkbox').map((b) => b.checked), [true, true, false], 'lint (kept) and build (Claude\'s)');
+    assert.equal(inputs(r.root, 'checkbox')[0].parent.getAttribute('data-on'), 'true');
+  });
+
+  test('(+) typed Other text and the radio come back too', async () => {
+    const r = rig({ reply: moved });
+    r.render(ask2());
+    const text = one(r.root, 'dlg-text');
+    text.value = 'half a thought';
+    text.fire('input');
+    steps(r.root)[1].click();
+    await settle();
+    r.render(ask2({ sig: SIG2, current: 1, question: 'Which mode?' }));
+    r.render(ask2({ sig: SIG3 }));
+    assert.equal(one(r.root, 'dlg-text').value, 'half a thought');
+    assert.equal(inputs(r.root, 'radio').at(-1).checked, true);
+  });
+
+  test('(−) Claude\'s typed text wins over a kept draft: its text, its read-only field and its selection', async () => {
+    const r = rig({ reply: moved });
+    r.render(ask2());
+    const text = one(r.root, 'dlg-text');
+    text.value = 'half a thought';
+    text.fire('input');
+    steps(r.root)[1].click();
+    await settle();
+    r.render(ask2({ sig: SIG2, current: 1, question: 'Which mode?' }));
+    r.render(ask2({ sig: SIG3, typed: TYPED }));
+    assert.equal(one(r.root, 'dlg-text').value, 'my own words');
+    assert.equal(one(r.root, 'dlg-text').getAttribute('readonly'), '');
+    const p = rig({ reply: moved });
+    p.render(ask2());
+    pickRadio(inputs(p.root, 'radio')[0]);
+    steps(p.root)[1].click();
+    await settle();
+    p.render(ask2({ sig: SIG2, current: 1, question: 'Which mode?' }));
+    p.render(ask2({ sig: SIG3, typed: TYPED }));
+    assert.deepEqual(inputs(p.root, 'radio').map((x) => x.checked), [false, false, true], 'not the draft\'s pick: the typed answer is the one Claude holds');
+  });
+
+  test('(−) a click that is refused (terminal-only) keeps no draft either', async () => {
+    const r = rig({ reply: moved });
+    r.render(multi({ tabs: tabs(3), bypass: true }));
+    inputs(r.root, 'checkbox')[0].checked = true;
+    steps(r.root)[1].click();
+    await settle();
+    assert.deepEqual(r.log.calls, []);
+    r.render(multi({ tabs: tabs(3), sig: SIG2, current: 1, question: 'Which scope?', bypass: true }));
+    r.render(multi({ tabs: tabs(3), sig: SIG3 }));
+    assert.deepEqual(inputs(r.root, 'checkbox').map((b) => b.checked), [false, true, false], 'only Claude\'s tick');
+  });
+
+  test('(−) a draft is not kept when the dialog closes', async () => {
+    const r = rig({ reply: moved });
+    r.render(multi({ tabs: tabs(3) }));
+    inputs(r.root, 'checkbox')[0].checked = true;
+    steps(r.root)[1].click();
+    await settle();
+    r.render(null);
+    r.render(multi({ tabs: tabs(3), sig: SIG3 }));
+    assert.deepEqual(inputs(r.root, 'checkbox').map((b) => b.checked), [false, true, false], 'only Claude\'s tick');
+  });
+
+  test('(−) a draft is not kept when the headers change', async () => {
+    const r = rig({ reply: moved });
+    r.render(multi({ tabs: tabs(3) }));
+    inputs(r.root, 'checkbox')[0].checked = true;
+    steps(r.root)[1].click();
+    await settle();
+    r.render(multi({ tabs: [{ header: 'Other', answered: false }, ...tabs(3).slice(1)], sig: SIG3 }));
+    assert.deepEqual(inputs(r.root, 'checkbox').map((b) => b.checked), [false, true, false]);
+  });
+
+  test('(−) a draft is dropped once the question is answered, so a later return shows Claude\'s state', async () => {
+    const r = rig({ reply: moved });
+    r.render(multi({ tabs: tabs(3) }));
+    inputs(r.root, 'checkbox')[0].checked = true;
+    steps(r.root)[1].click();
+    await settle();
+    r.render(multi({ tabs: tabs(3), sig: SIG2, current: 1, question: 'Which scope?' }));
+    r.render(multi({ tabs: tabs(3), sig: SIG3 })); // back: the draft is restored
+    inputs(r.root, 'checkbox')[1].checked = false; // the user changes it and answers
+    r.state.reply = () => ({ status: 200, body: { done: 'next', sent: 2 } });
+    byText(r.root, 'Answer').click();
+    await settle();
+    r.render(multi({ tabs: tabs(3, 1), sig: SIG2, current: 1, question: 'Which scope?' }));
+    r.render(multi({ tabs: tabs(3, 1), sig: '99999999999999aa' }));
+    assert.deepEqual(inputs(r.root, 'checkbox').map((b) => b.checked), [false, true, false], 'not the draft from before the answer');
+  });
+
+  test('(−) at most 8 drafts: a 9th question evicts the oldest', async () => {
+    const r = rig({ reply: moved });
+    const qn = (i, over = {}) => multi({ tabs: tabs(2), question: `Q${i}`, sig: sigN(i), ...over });
+    for (let i = 0; i < 9; i += 1) {
+      r.render(qn(i));
+      inputs(r.root, 'checkbox')[0].checked = true;
+      steps(r.root)[1].click();
+      await settle();
+      r.render(qn(i, { sig: sigN(i, 'b'), current: 1, question: 'Elsewhere' }));
     }
-    assert.equal(buttons(one(r.root, 'dlg-tabs')).length, 0);
+    r.render(qn(0, { sig: sigN(0, 'c') }));
+    assert.deepEqual(inputs(r.root, 'checkbox').map((b) => b.checked), [false, true, false], 'Q0 was evicted');
+    r.render(qn(1, { sig: sigN(1, 'c') }));
+    assert.deepEqual(inputs(r.root, 'checkbox').map((b) => b.checked), [true, true, false], 'Q1 is still kept');
+    r.render(qn(8, { sig: sigN(8, 'c') }));
+    assert.deepEqual(inputs(r.root, 'checkbox').map((b) => b.checked), [true, true, false], 'so is the newest');
+  });
+
+  test('(−) the drafts live in memory only: no storage, no cookie', () => {
+    assert.doesNotMatch(code(SRC), /localStorage|sessionStorage|indexedDB|document\.cookie/);
   });
 });
 
@@ -1681,10 +2259,33 @@ describe('the review list shows each answer under its question, at every width',
     const cols = own.flatMap((r) => [...r.body.matchAll(/grid-template-columns:\s*([^;]+);/g)].map((m) => m[1].trim()));
     assert.deepEqual(cols, ['minmax(0, 1fr)']);
     assert.match(body('.dlg-review'), /(?:^|[;\s])display:\s*grid\s*;/);
-    assert.notEqual(CSS.indexOf(NARROW), -1, 'the narrow composer query exists');
-    const narrow = blockAt(CSS, CSS.indexOf(NARROW));
-    assert.ok(narrow.includes('.dlg-tabs'), 'the scan found the narrow composer block');
-    assert.deepEqual(reviewRules(narrow), [], 'no .dlg-review rule in the 560 px query: the wide rule is the only one');
+    const narrows = [];
+    for (let at = CSS.indexOf(NARROW); at !== -1; at = CSS.indexOf(NARROW, at + 1)) narrows.push(blockAt(CSS, at));
+    assert.ok(narrows.length > 0, 'the narrow composer query exists');
+    assert.ok(narrows.every((n) => n.trim() !== ''), 'the scan found every narrow composer block');
+    assert.deepEqual(narrows.flatMap(reviewRules), [], 'no .dlg-review rule in the 560 px query: the wide rule is the only one');
+  });
+
+  test('(+) the step strip is a row of buttons at every width: pointer on the live ones, the default cursor on the disabled ones, a hover edge, and the Moving chip has its own look (0.5.1, D)', () => {
+    const rule = (sel) => [...CSS.matchAll(/(?<![^}{])\s*([^{}]+)\{([^}]*)\}/g)].filter((m) => m[1].trim() === sel).map((m) => m[2]).join(';');
+    assert.match(rule('.dlg-tab'), /(?:^|[;\s])cursor:\s*pointer\s*(?:;|$)/);
+    assert.match(rule('.dlg-tab'), /(?:^|[;\s])background:\s*none\s*(?:;|$)/);
+    assert.match(rule('.dlg-tab'), /(?:^|[;\s])font-family:\s*inherit\s*(?:;|$)/);
+    assert.match(rule('.dlg-tab[aria-disabled="true"]'), /cursor:\s*default/);
+    assert.match(rule('.dlg-tab:hover:not([aria-disabled="true"])'), /border-color:\s*var\(--line-strong\)/);
+    assert.match(rule('.dlg-chip[data-s="moving"]'), /color:\s*var\(--text\)[^}]*background:\s*var\(--surface-2\)|background:\s*var\(--surface-2\)[^}]*color:\s*var\(--text\)/);
+  });
+
+  test('(−) no query hides the strip or shows the step text instead of it: the strip stays at every width', () => {
+    const narrows = [];
+    for (let at = CSS.indexOf(NARROW); at !== -1; at = CSS.indexOf(NARROW, at + 1)) narrows.push(blockAt(CSS, at));
+    for (const n of narrows) {
+      assert.doesNotMatch(n, /\.dlg-tabs\b/, 'the 560 px query does not touch the strip');
+      assert.doesNotMatch(n, /\.dlg-step\b/, 'nor the step text');
+    }
+    assert.doesNotMatch(CSS, /\.dlg-tabs\s*\{[^}]*display:\s*none/, 'no rule hides the strip');
+    assert.match(rule2('.dlg-step'), /display:\s*none/, 'the step text stays hidden at every width');
+    function rule2(sel) { return [...CSS.matchAll(/(?<![^}{])\s*([^{}]+)\{([^}]*)\}/g)].filter((m) => m[1].trim() === sel).map((m) => m[2]).join(';'); }
   });
 
   test('(+) the answer is indented 12 px under its question, and 8 px lie between one pair and the next (no gap on the list that would add to it)', () => {

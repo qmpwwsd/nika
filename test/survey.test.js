@@ -38,10 +38,37 @@ const sigFor = (above, q = Q, o = O) => createHash('sha256').update(JSON.stringi
 describe('surveyOf (+): the rating question', () => {
   test('(+) the two exact rows above an empty box: ready, kind rating, four options in Claude\'s order, a 16-hex sig', () => {
     const r = ready(screen());
-    assert.deepEqual(Object.keys(r).sort(), ['kind', 'options', 'sig', 'state']);
+    assert.deepEqual(Object.keys(r).sort(), ['kind', 'options', 'sig', 'state', 'top']);
     assert.deepEqual([r.state, r.kind], ['ready', 'rating']);
     assert.deepEqual(r.options, READY_OPTIONS);
     assert.match(r.sig, SIG16);
+  });
+
+  // 0.5.1 E: `top` is the screen row of the question, display only (the page crops the terminal view there). Never part of the sig.
+  test('(+) top is the screen row of the question: after the transcript rows above it, whatever their number', () => {
+    for (const above of [[''], ABOVE, ['a', 'b', 'c', 'd', 'e'], ['a', '', '', 'b', '', '']]) {
+      const s = screen({ above });
+      const r = ready(s);
+      assert.equal(r.top, above.length, `${above.length} rows above`);
+      assert.equal(s.rows[r.top].map((x) => x.t).join(''), Q, 'the row at top is the question row');
+    }
+    assert.equal(ready(screen({ cols: 60, free: '                    ◐ medium · /effort' })).top, ABOVE.length, 'width and the free row do not move it');
+  });
+
+  test('(−) top is not in the sig: the same survey two rows further down has the same sig and another top', () => {
+    const a = ready(screen({ above: ['same line', ''] }));
+    const b = ready(screen({ above: ['same line', '', ''] }));
+    assert.equal(a.sig, b.sig);
+    assert.notEqual(a.top, b.top);
+  });
+
+  test('(−) a terminal-only survey, and no survey at all, carry no top', () => {
+    const consent = surveyOf(screen({ between: [`${BULLET} Can Anthropic look at your session transcript?`] }));
+    assert.deepEqual(consent, { state: 'terminal', reason: 'consent' });
+    assert.equal('top' in surveyOf(screen({ footer: '⏵⏵ bypass permissions on (shift+tab to cycle)' })), false);
+    assert.equal('top' in surveyOf(screen({ lines: ['hello'], ghost: null })), false, 'text in the box');
+    assert.equal('top' in surveyOf(screen(), { vim: true, insert: false }), false, 'vim normal');
+    assert.equal(surveyOf(boxRows({ cols: 120 })), null);
   });
 
   test('(+) the sig is sha256 over [question, options, up to 3 non-blank rows above], trimmed, 16 hex', () => {

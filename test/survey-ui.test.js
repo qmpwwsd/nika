@@ -960,7 +960,7 @@ describe('session.js hooks (noteScreen, renderMode, sendComposer), run in a vm',
     const W = { pane: 'ok', mode: 'default', confirmed: true, msg: null, promptOpen: false, survey: cleanSurvey(rating()), dialog: null, ...over.W };
     const ctx = {
       paneId: '%12', SW: { parts: [{}], busy: null }, W, A: { kind: 'idle', name: 'builder-1', attention: '', ...over.A }, switcherState: () => ({ reason: '' }),
-      renderTag() {}, renderSegments() {}, renderWhy() {}, renderQuick() {}, renderAttn() {}, renderPrompt() {}, DF: null,
+      renderTag() {}, renderSegments() {}, renderWhy() {}, renderQuick() {}, renderAttn() {}, renderPrompt() {}, panelsChanged() {}, DF: null,
       SV: over.SV === undefined ? { render: (a) => calls.push(norm(a)) } : over.SV,
     };
     return { calls, W, render: mk(['function renderMode()'], ctx).renderMode };

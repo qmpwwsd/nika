@@ -60,7 +60,8 @@ const sigOf = (texts, q) => createHash('sha256')
  * What the screen of a capture `{ rows, cursor, cols }` offers of Claude's feedback survey, given how the pane's input is edited
  * (`edit`: `vim` true once the pane's mode line showed `-- INSERT --`, `insert` true while it shows it now):
  *   null                                     no survey on screen, or a permission prompt or a dialog owns the slot (their own gates hold)
- *   { state: 'ready', kind: 'rating', sig, options }   exactly the captured rating question: options 1 Bad, 2 Fine, 3 Good, 0 Dismiss
+ *   { state: 'ready', kind: 'rating', sig, top, options }   exactly the captured rating question: options 1 Bad, 2 Fine, 3 Good, 0 Dismiss.
+ *     `top` (0.5.1, E) is the screen row of the question: display only, the page crops the terminal view there. It is not in `sig`.
  *   { state: 'terminal', reason }            a survey nika never answers, or not now: the user answers it in the terminal. In this order:
  *     consent     the transcript question shows (anywhere on the screen, also next to a rating)
  *     bypass      one of the last 15 non-blank rows mentions bypass (the same window every key guard reads)
@@ -82,5 +83,5 @@ export function surveyOf(seen, edit) {
   const box = input === null ? null : surveyBox(input.rows, input.cursor, input.cols);
   if (box === null || box.state !== 'empty' || box.mode !== 'prompt' || box.box.top !== found.top) return terminal('input');
   if (edit?.vim === true && edit?.insert !== true) return terminal('normal');
-  return { state: 'ready', kind: 'rating', sig: sigOf(texts, found.q), options: OPTIONS.map((o) => ({ ...o })) };
+  return { state: 'ready', kind: 'rating', sig: sigOf(texts, found.q), top: found.q, options: OPTIONS.map((o) => ({ ...o })) };
 }

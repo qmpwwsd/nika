@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import * as dialog from '../src/dialog.js';
 import {
   REASONS, TABS_MAX, NUMBER_MAX, HEADER_MAX, QUESTION_MAX, LABEL_MAX, DESC_MAX, ANSWER_MAX, TEXT_MAX, STEPS_MAX, MULTI_OTHER, PLAN_PICK,
-  PLAIN_TEXT, PLAN_TEXT_LABEL, dialogOnScreen, readDialogScreen, identityOf, sigOf, otherAllowed, dialogCapture,
+  PLAIN_TEXT, PLAN_TEXT_LABEL, dialogOnScreen, readDialogScreen, identityOf, sigOf, otherAllowed, dialogCapture, stripOf,
 } from '../src/dialog.js';
 import { promptFromRows, modeFromRows, lastNonBlank, bypassWindow, isDialogEnd } from '../src/mode.js';
 import { readDraft, promptSig } from '../src/session-control.js';
@@ -203,7 +203,7 @@ describe('constants', () => {
   test('(−) nothing else is exported by accident', () => {
     assert.deepEqual(Object.keys(dialog).sort(), [
       'ANSWER_MAX', 'DESC_MAX', 'HEADER_MAX', 'LABEL_MAX', 'MULTI_OTHER', 'NUMBER_MAX', 'PLAIN_TEXT', 'PLAN_PICK', 'PLAN_TEXT_LABEL', 'QUESTION_MAX', 'REASONS',
-      'STEPS_MAX', 'TABS_MAX', 'TEXT_MAX', 'dialogCapture', 'dialogOnScreen', 'identityOf', 'otherAllowed', 'readDialogScreen', 'sigOf',
+      'STEPS_MAX', 'TABS_MAX', 'TEXT_MAX', 'dialogCapture', 'dialogOnScreen', 'identityOf', 'otherAllowed', 'readDialogScreen', 'sigOf', 'stripOf',
     ]);
   });
 });
@@ -219,7 +219,7 @@ describe('readDialogScreen: a question step', () => {
         { n: 2, label: 'web-shop', description: 'Open the web-shop project.', ticked: false },
         { n: 3, label: 'demo-api', description: 'Open the demo-api project.', ticked: false },
       ],
-      textRow: { n: 4, value: null, ticked: false }, chat: 5, button: null, focus: 1, insert: false, bypass: false,
+      textRow: { n: 4, value: null, ticked: false }, chat: 5, button: null, focus: 1, insert: false, bypass: false, top: 2,
     });
     assert.match(sigOf(S), /^[0-9a-f]{16}$/);
   });
@@ -380,7 +380,7 @@ describe('readDialogScreen: the review step', () => {
     assert.deepEqual(S, {
       kind: 'ask', at: 'review', tabs: [{ header: 'Project', answered: true }, { header: 'Tools', answered: true }], warn: false,
       pairs: [{ question: 'Which project should I open?', answer: 'web-shop' }, { question: 'Which checks should I run?', answer: 'lint, my custom check' }],
-      focus: 1, insert: false, bypass: false,
+      focus: 1, insert: false, bypass: false, top: 2,
     });
   });
 
@@ -434,7 +434,7 @@ describe('readDialogScreen: the plan approval', () => {
     assert.deepEqual(S, {
       kind: 'plan', at: 'plan',
       options: [{ n: 1, label: 'Yes, and use auto mode', text: false }, { n: 2, label: 'Yes, manually approve edits', text: false }, { n: 3, label: 'Tell Claude what to change', text: true }],
-      textRow: { n: 3, value: null }, planRows: ['- Reply with the single word done.', '- Stop.'], focus: 1, insert: false, bypass: false,
+      textRow: { n: 3, value: null }, planRows: ['- Reply with the single word done.', '- Stop.'], focus: 1, insert: false, bypass: false, top: 18,
     });
   });
 
@@ -635,8 +635,10 @@ describe('dialogOnScreen', () => {
   test('(−) a lookalike footer, strip or rule in the conversation ABOVE a real dialog does not change what is read', () => {
     const plain = read(ask());
     const fakes = [footerText(), '←  ☐ Fake  ✔ Submit  →', '─'.repeat(COLS), 'ctrl+g to edit in Vim · <plans>/x.md', 'Ready to code?', 'Review your answers'];
-    assert.deepEqual(read(ask({ above: fakes })), plain);
-    assert.deepEqual(read(rowsFrom(planParts({ above: fakes }))), read(rowsFrom(planParts())));
+    const withoutTop = ({ top, ...rest }) => rest; // the cut (0.5.1 E) moves down with the rows above; nothing else may change
+    assert.deepEqual(withoutTop(read(ask({ above: fakes }))), withoutTop(plain));
+    assert.deepEqual(withoutTop(read(rowsFrom(planParts({ above: fakes })))), withoutTop(read(rowsFrom(planParts()))));
+    assert.equal(read(ask({ above: fakes })).top, plain.top + fakes.length - 2, 'moved by the rows added above (the default has two)');
   });
 
   test('(−) a permission prompt is a prompt: dialogCapture is null while one parses', () => {
@@ -995,12 +997,13 @@ describe('unreadable: every rule of design 2.3 has a fixture', () => {
 });
 
 describe('dialogCapture (design W1 3)', () => {
-  test('(+) a question step: the ready shape with the checked marks only for multi', () => {
+  test('(+) a question step: the ready shape, with a checked mark on every option', () => {
     const c = dialogCapture(ask(), COLS);
     assert.deepEqual(c, {
-      state: 'ready', kind: 'ask', at: 'question', sig: sigOf(read(ask())), bypass: false,
+      state: 'ready', kind: 'ask', at: 'question', sig: sigOf(read(ask())), bypass: false, top: 2,
       tabs: [{ header: 'Project', answered: false }, { header: 'Tools', answered: false }], current: 0, final: false, question: 'Which project should I open?', multi: false, other: true,
-      options: [{ n: 1, label: 'acme-api', description: 'Open the acme-api project.' }, { n: 2, label: 'web-shop', description: 'Open the web-shop project.' }, { n: 3, label: 'demo-api', description: 'Open the demo-api project.' }],
+      options: [{ n: 1, label: 'acme-api', description: 'Open the acme-api project.', checked: false }, { n: 2, label: 'web-shop', description: 'Open the web-shop project.', checked: false }, { n: 3, label: 'demo-api', description: 'Open the demo-api project.', checked: false }],
+      typed: null,
     });
     const m = dialogCapture(ask({ tabs: ['Tools', 'Project'], multi: true, options: CHECKS, checks: [2] }), COLS);
     assert.equal(m.multi, true);
@@ -1016,11 +1019,11 @@ describe('dialogCapture (design W1 3)', () => {
 
   test('(+) the review and the plan shapes', () => {
     const r = dialogCapture(rowsFrom(reviewParts({ warn: true, answered: [0], pairs: [{ q: 'Which project should I open?', a: 'web-shop' }] })), COLS);
-    assert.deepEqual(Object.keys(r), ['state', 'kind', 'at', 'sig', 'bypass', 'tabs', 'warn', 'pairs']);
+    assert.deepEqual(Object.keys(r), ['state', 'kind', 'at', 'sig', 'bypass', 'top', 'tabs', 'warn', 'pairs']);
     assert.equal(r.warn, true);
     const p = dialogCapture(rowsFrom(planParts()), COLS);
     assert.deepEqual(p.options[2], { n: 3, label: 'Tell Claude what to change', text: true });
-    assert.deepEqual(Object.keys(p), ['state', 'kind', 'at', 'sig', 'bypass', 'options']);
+    assert.deepEqual(Object.keys(p), ['state', 'kind', 'at', 'sig', 'bypass', 'top', 'options']);
     assert.equal(p.kind, 'plan');
   });
 
@@ -1046,6 +1049,101 @@ describe('dialogCapture (design W1 3)', () => {
   });
 });
 
+// ---- 0.5.1 E: `top`, the screen row a crop of the terminal view starts at (display only; never part of sig or identity) -------------------------------
+describe('dialogCapture: top (0.5.1 E)', () => {
+  const isRule = (rows, x) => /^ *─+ *$/.test(text(rows[x]));
+  /** The strip row of a question or review fixture: the row with a tab token of the first tab. */
+  const stripAt = (rows) => rowAt(rows, (t) => /[☐☒] (?:Project|Tools)/.test(t));
+  const planPromptAt = (rows) => rowAt(rows, (t) => t.includes('Claude has written up a plan'));
+  // sigOf of the default fixtures as the code computed them before `top` existed: adding the field must not move them.
+  const PIN = { question: '5a9df54a8c7b5ef8', review: 'fd92069bce804954', plan: 'e5cec1b227b8a3e7' };
+
+  test('(+) a question step: top is the rule row directly above the tab strip, for every tab shape and any rows around it', () => {
+    const shapes = {
+      'several tabs': {}, 'one tab': { tabs: ['Project'] }, 'multi, last tab': { tabs: ['Tools', 'Project'], multi: true, options: CHECKS, current: 1, button: 'Submit' },
+      'long transcript above': { above: ['⏺ one', '', '⏺ two', '', '⏺ three', ''] }, 'no row above the rule': { above: [] },
+    };
+    for (const [name, o] of Object.entries(shapes)) {
+      for (const shape of [undefined, { pad: true, trail: 3 }, { tree: 2 }]) {
+        const rows = ask(o, shape);
+        const c = dialogCapture(rows, COLS);
+        assert.equal(c.state, 'ready', name);
+        assert.equal(c.top, stripAt(rows) - 1, `${name} ${JSON.stringify(shape)}`);
+        assert.equal(isRule(rows, c.top), true, `${name}: the row at top is the rule`);
+        assert.equal(read(rows).top, c.top, `${name}: the step carries the same row`);
+      }
+    }
+  });
+
+  test('(+) the review step: top is the rule row directly above the strip, with or without the warning and the brackets', () => {
+    for (const o of [{}, { warn: true, answered: [0], pairs: [{ q: 'Which project should I open?', a: 'web-shop' }] }, { bracket: true }]) {
+      for (const shape of [undefined, { pad: true, trail: 2 }]) {
+        const rows = rowsFrom(reviewParts(o), shape);
+        const c = dialogCapture(rows, COLS);
+        assert.equal(c.at, 'review');
+        assert.equal(c.top, stripAt(rows) - 1, JSON.stringify(o));
+        assert.equal(isRule(rows, c.top), true);
+      }
+    }
+  });
+
+  test('(+) the plan approval: top is the plain rule row under the closing dashed rule, so the whole plan stays above it', () => {
+    for (const o of [{}, { blanks: 0 }, { blanks: 20 }, { prose: ['- one', '- two', '', '- three'] }, { focus: 3, value: 'typed words' }]) {
+      for (const shape of [undefined, { pad: true, trail: 4 }, { tree: 1 }]) {
+        const rows = rowsFrom(planParts(o), shape);
+        const c = dialogCapture(rows, COLS);
+        assert.equal(c.at, 'plan', JSON.stringify(o));
+        assert.equal(c.top, planPromptAt(rows) - 1, `${JSON.stringify(o)} ${JSON.stringify(shape)}`);
+        assert.equal(/^ *─+ *$/.test(text(rows[c.top])), true, 'a plain rule');
+        const lastPlanRow = rows.findLastIndex((r, x) => x < c.top && /^ *╌+ *$/.test(text(r)));
+        assert.ok(lastPlanRow > 0 && lastPlanRow < c.top, 'the closing dashed rule is above the cut');
+        assert.ok(rowAt(rows, (t) => t.includes('Here is Claude')) < c.top, 'the intro is above the cut');
+        assert.ok(rowAt(rows, (t) => t.includes('Ready to code?')) < c.top, 'the title is above the cut');
+      }
+    }
+  });
+
+  test('(+) top is an integer from 1 to the last row on every ready fixture (a crop of 0 would draw nothing)', () => {
+    for (const rows of [ask(), ask({ tabs: ['Project'] }), rowsFrom(reviewParts()), rowsFrom(planParts())]) {
+      const c = dialogCapture(rows, COLS);
+      assert.ok(Number.isInteger(c.top) && c.top >= 1 && c.top < rows.length, `${c.at}: ${c.top}`);
+    }
+  });
+
+  test('(+) top is the second key group of the ready object: after bypass, before the dialog fields', () => {
+    assert.deepEqual(Object.keys(dialogCapture(ask(), COLS)).slice(0, 6), ['state', 'kind', 'at', 'sig', 'bypass', 'top']);
+    assert.deepEqual(Object.keys(dialogCapture(rowsFrom(reviewParts()), COLS)).slice(0, 6), ['state', 'kind', 'at', 'sig', 'bypass', 'top']);
+    assert.deepEqual(Object.keys(dialogCapture(rowsFrom(planParts()), COLS)).slice(0, 6), ['state', 'kind', 'at', 'sig', 'bypass', 'top']);
+  });
+
+  test('(−) an unreadable dialog and no dialog carry no top', () => {
+    for (const rows of [ask({ mark: 'none' }), rowsFrom({ ...planParts(), d1: [] }), nudgeScreen().rows, ask({ tabs: Array(9).fill('T') })]) {
+      const c = dialogCapture(rows, COLS);
+      assert.equal(c.state, 'unreadable');
+      assert.equal('top' in c, false, c.reason);
+      assert.equal('top' in read(rows), false, 'the reader returns no step either');
+    }
+    assert.equal(dialogCapture(boxRows({ cols: COLS }).rows, COLS), null);
+  });
+
+  test('(−) sig and identity do not change: top is in neither, so rows above the dialog never move them', () => {
+    assert.equal(sigOf(read(ask())), PIN.question);
+    assert.equal(sigOf(read(rowsFrom(reviewParts()))), PIN.review);
+    assert.equal(sigOf(read(rowsFrom(planParts()))), PIN.plan);
+    const low = ask({ above: ['⏺ I have a question first.', '', '⏺ more', '', '⏺ still more', ''] });
+    assert.notEqual(dialogCapture(low, COLS).top, dialogCapture(ask(), COLS).top, 'the cut moved');
+    assert.equal(dialogCapture(low, COLS).sig, dialogCapture(ask(), COLS).sig, 'the sig did not');
+    assert.equal(identityOf(read(low)), identityOf(read(ask())), 'the identity is the same string');
+    for (const rows of [ask(), rowsFrom(reviewParts()), rowsFrom(planParts())]) assert.equal(identityOf(read(rows)).includes('"top"'), false);
+  });
+
+  test('(−) a bypass dialog still says so, and top does not stand in for the guard', () => {
+    const c = dialogCapture(ask({ question: 'Allow bypass?' }), COLS);
+    assert.equal(c.bypass, true);
+    assert.ok(Number.isInteger(c.top), 'the page, not the server, decides to withhold a crop from a bypass dialog');
+  });
+});
+
 describe('source hygiene', () => {
   test('(−) src/dialog.js is pure ASCII, pure (no I/O imports) and holds no home path', () => {
     const src = fs.readFileSync(new URL('../src/dialog.js', import.meta.url), 'utf8');
@@ -1057,6 +1155,200 @@ describe('source hygiene', () => {
 
   test('(−) src/mode.js stays ASCII after the dialog additions', () => {
     assert.equal(/[^\x00-\x7f]/.test(fs.readFileSync(new URL('../src/mode.js', import.meta.url), 'utf8')), false);
+  });
+});
+
+// ---- 0.5.1 D: stripOf (where Claude's dialog stands in its strip) and the capture's `checked` and `typed` ------------------------------------------
+
+describe('stripOf (0.5.1, D)', () => {
+  const T3 = ['Project', 'Tools', 'Scope'];
+  const strip3 = (o = {}, shape) => stripOf(ask({ tabs: T3, ...o }, shape), COLS);
+  const NONE = { input: false, insert: false, bypass: false };
+
+  test('(+) tab 0, 1 and 2 of a 3-tab form: where it stands, the headers, the answered marks, and nothing else', () => {
+    for (const at of [0, 1, 2]) {
+      const T = strip3({ current: at, answered: at === 0 ? [] : [0] });
+      assert.deepEqual(T, { at, n: 3, headers: T3, answered: [at !== 0, false, false], ...NONE }, `tab ${at}`);
+    }
+  });
+
+  test('(+) the review step: at is the number of questions, with the Submit token marked', () => {
+    const rows = rowsFrom(reviewParts({ tabs: T3, answered: [0, 1, 2], pairs: T3.map((h) => ({ q: `Question ${h}?`, a: 'yes' })) }));
+    assert.deepEqual(stripOf(rows, COLS), { at: 3, n: 3, headers: T3, answered: [true, true, true], ...NONE });
+    const bracket = rowsFrom(reviewParts({ tabs: T3, answered: [0, 1, 2], bracket: true, pairs: T3.map((h) => ({ q: `Question ${h}?`, a: 'yes' })) }));
+    assert.equal(stripOf(bracket, COLS)?.at, 3, 'the bracketed Submit token');
+  });
+
+  test('(+) input is true while the focus is on the text row, Chat or a multi question\'s Next button (the ctrl+g footer); false on an option row', () => {
+    assert.equal(strip3({ focus: 1 }).input, false);
+    assert.equal(strip3({ focus: 3 }).input, false, 'the last option');
+    assert.equal(strip3({ focus: 4 }).input, true, 'the text row (option k + 1)');
+    assert.equal(strip3({ focus: 5, ctrl: true }).input, true, 'Chat about this');
+    const multi = { tabs: ['Tools', 'Scope'], multi: true, options: CHECKS };
+    assert.equal(stripOf(ask({ ...multi, focus: 1 }), COLS).input, false);
+    assert.equal(stripOf(ask({ ...multi, focus: 'button' }), COLS).input, true, 'Next');
+  });
+
+  test('(+) insert is true with the vim INSERT prefix in the footer, and false without it', () => {
+    const T = strip3({ focus: 4, insert: true });
+    assert.deepEqual([T.insert, T.input], [true, true]);
+    assert.equal(strip3({ focus: 4 }).insert, false);
+    assert.equal(strip3({ focus: 1 }).insert, false);
+  });
+
+  test('(+) the answered marks come from the strip, one per tab', () => {
+    assert.deepEqual(strip3({ current: 2, answered: [0, 1] }).answered, [true, true, false]);
+    assert.deepEqual(strip3({ current: 1, answered: [2] }).answered, [false, false, true]);
+  });
+
+  test('(+) a step whose options are clipped (the step itself is unreadable) still gives the strip', () => {
+    const rows = ask({ tabs: T3, current: 1, options: [{ label: 'acme-api…', desc: 'Open it.' }, OPTS[1], OPTS[2]] });
+    assert.equal(reason(rows), 'clipped', 'premise: the step is not readable');
+    assert.deepEqual(stripOf(rows, COLS), { at: 1, n: 3, headers: T3, answered: [false, false, false], ...NONE });
+  });
+
+  test('(+) padded rows, trailing blank rows and a subagent list under the footer do not matter', () => {
+    for (const shape of [{ pad: true }, { trail: 3 }, { tree: 2 }, { pad: true, tree: 3 }, { pad: true, trail: 2 }]) assert.equal(strip3({ current: 1 }, shape)?.at, 1, JSON.stringify(shape));
+  });
+
+  test('(+) bypass uses the dialog\'s rule: a mention in the question', () => {
+    assert.equal(strip3({ question: 'Allow bypass permissions?' }).bypass, true);
+    assert.equal(strip3({}).bypass, false);
+  });
+
+  test('(−) null for no dialog, a plan, a permission prompt, the exit and nudge shapes, an empty screen and non-rows', () => {
+    const permission = [lineOf('Do you want to proceed?'), lineOf('❯ 1. Yes'), lineOf('  2. No'), lineOf('Esc to cancel')];
+    for (const rows of [boxRows({ cols: COLS }).rows, rowsFrom(planParts()), permission, rowsFrom(exitParts()), nudgeScreen().rows, [], null, undefined, 'x']) {
+      assert.equal(stripOf(rows, COLS), null);
+    }
+  });
+
+  test('(−) null for a one-question form: the single-select one has no strip, the multi one has only itself and the Submit token', () => {
+    assert.equal(stripOf(ask({ tabs: ['Project'] }), COLS), null);
+    assert.equal(stripOf(ask({ tabs: ['Tools'], multi: true, options: CHECKS, button: 'Submit' }), COLS), null);
+    assert.equal(stripOf(rowsFrom(reviewParts({ tabs: ['Project'], answered: [0], pairs: [{ q: 'Which project should I open?', a: 'web-shop' }] })), COLS), null);
+  });
+
+  test('(−) null for two marked tokens, none marked, a half-marked token, and a review whose Submit token is not the marked one', () => {
+    assert.equal(strip3({ current: [0, 1] }), null, 'two marked');
+    assert.equal(strip3({ mark: 'none' }), null, 'none marked');
+    assert.equal(strip3({ current: [1, 'submit'] }), null, 'a tab and the Submit token');
+    const review = (o) => stripOf(rowsFrom(reviewParts({ tabs: T3, answered: [0, 1, 2], pairs: T3.map((h) => ({ q: `Question ${h}?`, a: 'yes' })), ...o })), COLS);
+    assert.equal(review({ current: 0 }), null, 'the review with a question tab marked');
+    assert.equal(review({ current: [0, 'submit'] }), null, 'both');
+    assert.equal(review({ mark: 'none' }), null, 'none');
+  });
+
+  test('(−) null for an unknown footer, a wrapped footer, a footer that disagrees with the strip, and a pane too narrow to read', () => {
+    assert.equal(strip3({ footer: 'Enter to select' }), null, 'an unknown footer');
+    assert.equal(strip3({ footer: ['Enter to select · Tab/Arrow keys to', 'navigate · Esc to cancel'] }), null, 'wrapped over two rows');
+    assert.equal(strip3({ nav: '↑/↓' }), null, 'up/down arrows in the footer mean one question');
+    assert.equal(stripOf(ask({ tabs: T3 }), 10), null, 'narrower than the reader reads');
+    for (const cols of [undefined, null, '120', NaN]) assert.equal(stripOf(ask({ tabs: T3 }), cols), null, String(cols));
+  });
+
+  test('(−) null for a header that is empty, too long, or holds a checkbox glyph; nine tabs', () => {
+    assert.equal(stripOf(ask({ tabs: ['Project', 'x'.repeat(HEADER_MAX + 1)] }), COLS), null);
+    assert.equal(stripOf(ask({ tabs: ['Project', 'To☐ls'] }), COLS), null);
+    const names = (n) => Array.from({ length: n }, (_, i) => `T${i}`);
+    assert.equal(stripOf(ask({ tabs: names(TABS_MAX + 1), submit: false }), COLS), null, 'nine tabs');
+    assert.equal(stripOf(ask({ tabs: names(TABS_MAX), submit: false }), COLS)?.n, TABS_MAX, 'eight tabs');
+  });
+
+  test('(−) null when the rule above the strip is off the screen (the strip is its first row)', () => {
+    const rows = ask({ tabs: T3 });
+    const x = rows.findIndex((r) => r.some((sp) => sp.t.includes(' \u2610 Project ')));
+    assert.equal(stripOf(rows.slice(x - 1), COLS)?.at, 0, 'control: the rule row is kept');
+    assert.equal(stripOf(rows.slice(x), COLS), null);
+  });
+
+  test('(−) null for a plan or a permission prompt that carries a strip-like row: the strip is read from a question dialog only', () => {
+    const withStrip = {};
+    for (const [k, v] of Object.entries(planParts())) {
+      if (k === 'footer') Object.assign(withStrip, { rule3: [[span('\u2500'.repeat(COLS), DIM)]], strip: [strip({ tabs: T3, current: 0 })] });
+      withStrip[k] = v;
+    }
+    const planRows = rowsFrom(withStrip);
+    assert.equal(dialogOnScreen(planRows), true, 'premise: the plan is still a dialog');
+    assert.equal(stripOf(planRows, COLS), null, 'a plan');
+    const permission = [lineOf('Do you want to proceed?'), lineOf('❯ 1. Yes'), lineOf('  2. No'), lineOf('Esc to cancel')];
+    assert.notEqual(promptFromRows([...ask({ tabs: T3 }), ...permission]), null, 'premise: the prompt parses under the dialog');
+    assert.equal(stripOf([...ask({ tabs: T3 }), ...permission], COLS), null, 'a permission prompt under the dialog');
+  });
+
+  test('(−) null for a tab token that is only partly marked, and a review with no Submit token', () => {
+    const half = ask({ tabs: T3, current: 0 }).map((r) => (r.some((sp) => sp.t === ' \u2610 Tools ') ? r.flatMap((sp) => (sp.t === ' \u2610 Tools ' ? [span(' \u2610 ', MARK.bg), span('Tools ')] : [sp])) : r));
+    assert.equal(half.some((r) => r.some((sp) => sp.t === 'Tools ')), true, 'premise: the token is split');
+    assert.equal(stripOf(half, COLS), null);
+    const noSubmit = { ...reviewParts({ tabs: T3, answered: [0, 1, 2], pairs: T3.map((h) => ({ q: `Question ${h}?`, a: 'yes' })) }), strip: [strip({ tabs: T3, current: 'submit', answered: [0, 1, 2], submit: false, mark: 'none' })] };
+    assert.equal(stripOf(rowsFrom(noSubmit), COLS), null);
+  });
+
+  test('(+) bypass: a mention far above the last 15 rows still counts (the strip-to-footer window), and so does one in a list under the footer (the last-15 window)', () => {
+    const many = Array.from({ length: 12 }, (_, i) => ({ label: `option-${i + 1}`, desc: `Pick option-${i + 1}.` }));
+    const tall = ask({ tabs: T3, question: 'Allow bypass permissions?', options: many });
+    assert.equal(bypassWindow(tall), false, 'premise: the last 15 rows do not show it');
+    assert.equal(stripOf(tall, COLS).bypass, true, 'the question');
+    const tree = rowsFrom(askParts({ tabs: T3 }), { tree: 0 }).concat(subagentRows({ agents: [{ label: 'bypass permissions check' }] }));
+    assert.equal(bypassWindow(tree), true, 'premise: the last 15 rows show it');
+    assert.equal(stripOf(tree, COLS).bypass, true, 'the list under the footer');
+  });
+
+  test('(−) the result holds exactly the seven fields and shares nothing with the screen', () => {
+    const T = strip3({});
+    assert.deepEqual(Object.keys(T), ['at', 'n', 'headers', 'answered', 'input', 'insert', 'bypass']);
+    T.headers.push('x');
+    assert.deepEqual(strip3({}).headers, T3);
+  });
+});
+
+describe('dialogCapture: checked on every option and typed (0.5.1, D)', () => {
+  const tickedRow = (rows, from, to) => rows.map((r) => r.map((sp) => ({ ...sp, t: sp.t.replace(from, to) })));
+
+  test('(+) single-select options carry checked, true on the ticked one', () => {
+    assert.deepEqual(dialogCapture(ask({ ticks: [2] }), COLS).options.map((o) => o.checked), [false, true, false]);
+    assert.deepEqual(dialogCapture(ask({ ticks: [] }), COLS).options.map((o) => o.checked), [false, false, false]);
+    assert.deepEqual(Object.keys(dialogCapture(ask(), COLS).options[0]), ['n', 'label', 'description', 'checked']);
+  });
+
+  test('(+) multi-select options keep Claude\'s checkbox marks', () => {
+    assert.deepEqual(dialogCapture(ask({ tabs: ['Tools', 'Project'], multi: true, options: CHECKS, checks: [1, 3] }), COLS).options.map((o) => o.checked), [true, false, true]);
+  });
+
+  test('(+) typed on a single-select tab: the text, answered when Claude ticked it', () => {
+    assert.deepEqual(dialogCapture(ask({ text: 'kiwi ✔' }), COLS).typed, { text: 'kiwi', answered: true });
+    assert.deepEqual(dialogCapture(ask({ text: 'kiwi' }), COLS).typed, { text: 'kiwi', answered: false });
+    assert.deepEqual(dialogCapture(ask({ text: ['a long typed answer', 'that wraps onto a second row'] }), COLS).typed, { text: 'a long typed answer that wraps onto a second row', answered: false });
+  });
+
+  test('(+) typed on a multi tab: answered when its checkbox is ticked', () => {
+    const multi = { tabs: ['Tools', 'Project'], multi: true, options: CHECKS, current: 1, button: 'Submit', text: 'kiwi' };
+    assert.deepEqual(dialogCapture(ask(multi), COLS).typed, { text: 'kiwi', answered: true });
+    assert.deepEqual(dialogCapture(tickedRow(ask(multi), '[\u2714]', '[ ]'), COLS).typed, { text: 'kiwi', answered: false });
+  });
+
+  test('(−) typed is null with an empty text row, on a single and a multi tab', () => {
+    assert.equal(dialogCapture(ask(), COLS).typed, null);
+    assert.equal(dialogCapture(ask({ tabs: ['Tools', 'Project'], multi: true, options: CHECKS }), COLS).typed, null);
+  });
+
+  test('(−) neither checked nor typed is part of the sig: it does not move with ticks or typed text', () => {
+    const base = sigOf(read(ask()));
+    assert.equal(sigOf(read(ask({ ticks: [2] }))), base);
+    assert.equal(sigOf(read(ask({ text: 'kiwi' }))), base);
+    assert.equal(sigOf(read(ask({ text: 'kiwi ✔', ticks: [] }))), base);
+    assert.equal(dialogCapture(ask({ text: 'kiwi', ticks: [1] }), COLS).sig, base);
+  });
+
+  test('(−) a typed text of 500 characters is kept whole; one over it makes the step unreadable (layout), so there is nothing to send', () => {
+    assert.equal(dialogCapture(ask({ text: 'x'.repeat(500) }), COLS).typed.text.length, 500);
+    assert.deepEqual(dialogCapture(ask({ text: 'x'.repeat(501) }), COLS), { state: 'unreadable', kind: 'ask', reason: 'layout' });
+  });
+
+  test('(−) the review and the plan have no typed and no checked', () => {
+    assert.equal('typed' in dialogCapture(rowsFrom(reviewParts()), COLS), false);
+    assert.equal('typed' in dialogCapture(rowsFrom(planParts()), COLS), false);
+    assert.equal(dialogCapture(rowsFrom(planParts()), COLS).options.some((o) => 'checked' in o), false);
   });
 });
 
@@ -1173,7 +1465,10 @@ describe('a task list under the dialog or the prompt (F13-A v2)', () => {
         assert.equal(got.state, 'ready', `${tabs.join()} / ${rows} / ${named}`);
         assert.match(got.sig, /^[0-9a-f]{16}$/);
         assert.equal(got.sig, want.sig);
-        assert.deepEqual(got, want);
+        const { top: gotTop, ...gotRest } = got;
+        const { top: wantTop, ...wantRest } = want;
+        assert.deepEqual(gotRest, wantRest);
+        assert.equal(gotTop, wantTop + 12, 'taskScreen puts the dialog 12 rows down: the cut moves with it, and the block below does not change it');
         assert.equal(got.bypass, false);
       }
     }

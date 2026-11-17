@@ -162,3 +162,24 @@ export function placeMenuX(m, btn) {
   m.style.setProperty('min-width', '0px');
   m.style.setProperty('width', `${s.width}px`);
 }
+
+/* ---------- time ---------- */
+/** "now" (under a minute), "N min", "N h", "N d". */
+export function ago(ms, now = Date.now()) {
+  if (!Number.isFinite(ms)) return '–';
+  const m = Math.max(0, (now - ms) / 60000);
+  if (m < 1) return 'now';
+  if (m < 60) return `${Math.floor(m)} min`;
+  if (m < 1440) return `${Math.floor(m / 60)} h`;
+  return `${Math.floor(m / 1440)} d`;
+}
+export function timeEl(ms) {
+  // an out-of-range number would make toISOString() throw and stop the refresh loop
+  const ok = Number.isFinite(ms) && Number.isFinite(new Date(ms).getTime());
+  return h('time', {
+    'data-ts': ok ? ms : null,
+    datetime: ok ? new Date(ms).toISOString() : null,
+    title: ok ? new Date(ms).toLocaleString() : null,
+    text: ok ? ago(ms) : '–',
+  });
+}

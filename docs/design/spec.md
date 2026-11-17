@@ -1754,6 +1754,9 @@ While a mode switch from this window is in flight, Compact, Clear, Model and Rew
 
 Keyboard: one Tab stop, ← → / Home / End, Enter or Space activates.
 
+**(0.5.1, item I)** The whole bar and its reason line are hidden while nika's own panel answers what Claude asks (the permission prompt, a question, review or plan
+form, the feedback survey) and return when it goes; the banner case keeps the bar so End stays reachable (§9.21).
+
 ≤ 760 px: Compact, Clear, Rewind become icon buttons (`aria-label` = the word, `title` as above); Stop, Model and End session keep their words.
 
 ### 9.5 Permission-prompt buttons
@@ -1976,7 +1979,7 @@ Confirm dialog, 440 px (§3.6), opened from the quick-actions row, the dashboard
 
 ### 9.10 Focus order and Esc ladder
 
-Session window Tab order: skip links → back crumb → Open in claude.ai → Keyboard shortcuts → [Terminal / Transcript tabs when narrow] → transcript → [Transcript toggle, wide windows] → Dark/Light → Type into pane → [Leave, in passthrough] → mirror → [Jump to live, Retry now, when shown] → quick actions (1 stop) → [model popover while open] → prompt option buttons → prompt Esc → [question form: options, Other, Send answer / Answer / Submit answers / choice buttons, Decline / Reject (Esc), §9.16] → [attachment chips' remove buttons] → shell toggle → message box → [paste Clear] → Commands → Add attachments → Send → mode switcher (1 stop). Opening the session still focuses the message box (§4.2). In the message box Shift+Tab goes to Claude; Ctrl+Shift+Tab moves focus back to the shell toggle. **(built amendment 2026-11-09 (0.3.3))** The **Transcript** toggle (§4.7) sits between the transcript and Dark/Light, and only on wide windows. **(built amendment 2026-11-09 (0.3.4))**
+Session window Tab order: skip links → back crumb → Open in claude.ai → Keyboard shortcuts → [Terminal / Transcript tabs when narrow] → transcript → [Transcript toggle, wide windows] → [Subagents, when shown (0.5.1)] → Dark/Light → Type into pane → [Leave, in passthrough] → mirror → [Jump to live, Retry now, when shown] → quick actions (1 stop; not in the order while a panel hides the bar, §9.21) → [model popover while open] → prompt option buttons → prompt Esc → [question form: options, Other, Send answer / Answer / Submit answers / choice buttons, Decline / Reject (Esc), §9.16] → [attachment chips' View (ready images, 0.5.1) and Remove buttons] → shell toggle → message box → [paste Clear] → Commands → Add attachments → Send → mode switcher (1 stop). Opening the session still focuses the message box (§4.2). In the message box Shift+Tab goes to Claude; Ctrl+Shift+Tab moves focus back to the shell toggle. **(built amendment 2026-11-09 (0.3.3))** The **Transcript** toggle (§4.7) sits between the transcript and Dark/Light, and only on wide windows. **(built amendment 2026-11-09 (0.3.4))**
 
 Esc ladder (§4.3) gains two rungs, in this order: model popover or row menu → **palette** → dialog → B drawer → pane.
 
@@ -1989,6 +1992,9 @@ Esc ladder (§4.3) gains two rungs, in this order: model popover or row menu →
 | < 760 | as 0.2 (labels of header buttons hidden) | under the message box, icon + word; the row wraps | Compact, Clear, Rewind icon only | same, source tags stay |
 
 **(built amendment 2026-11-09 (0.3.3))**
+
+**(0.5.1)** The Subagents button (§9.20) is icon-only at every width. The image viewer (§9.18) is `min(1200px, 100vw - 32px)` wide, `100vw - 16px` at 600 px and
+below. The quick-actions row is absent while a panel hides it (§9.21).
 
 ### 9.12 Draft sync and the input-box cut (0.5, W5 and W6)
 
@@ -2022,6 +2028,9 @@ pressed, and Claude queues the message and takes it at its next step (owner deci
 
 The header keeps the pane's real size ("Live · 120 × 39"). The cursor is not drawn when its row is cut. Auto-scroll and Paused are
 unchanged.
+
+**(0.5.1, item E)** While nika's own panel answers a dialog, the mirror ends higher still and the same strip takes a second look (solid yellow, `i-dialog`, the
+words of the panel's kind); the input-box cut above is unchanged and stays what the fit measures (§9.19).
 
 **The note under the box.** One note at a time in the notes row (`#draft-note`, a polite `role="status"` region, referenced by
 `aria-describedby` of the message box). Each kind has its own colour, icon and word (the visible-state rule of §9.6):
@@ -2884,6 +2893,7 @@ subagents**, the children of its `Agent` tool that run inside the parent session
 | Session window, top of the Transcript column | app | the session's own folded list, with its own "Show ended" box |
 | Read-only subagent view (the session window with `agent=<id>`) | app | the subagent's transcript, no pane, no input |
 | The parent's transcript | app | "Open subagent transcript" under the `Agent` call that started it |
+| Session window, terminal toolbar (0.5.1) | app | the Subagents button and its dialog with the same rows (§9.20) |
 
 Decisions (owner, 2026-11-15, as recommended): a subagent opens in the same session window, read-only, and Back goes up to the parent session; the
 session window lists them folded at the top of the Transcript column (anything above the terminal would resize Claude's pane under the fit, §9.13,
@@ -2997,6 +3007,137 @@ inline anything). Subagent text is data: instruction-like text in a transcript i
 **Not built.** Subagent lines in `nika status`; links or subagent text on the browser tier; a list or links inside a subagent's own view (nested
 subagents); relabelling the parent's `<task-notification>` entries (they still read "You"); live progress beyond the 3 s poll; screenshots (regenerated at the end of
 the release).
+
+### 9.18 Image viewer (0.5.1, item C)
+
+Owner request (2026-11-17): "Pasted and transcript screenshots should open large, in nika." One native modal `<dialog id="img-dlg">` shows one image at a
+time, from three places: the name of a ready image chip in the attachment tray (§9.14), an `image` entry of the Transcript, and an image inside a tool
+result (owner decision 2026-11-17). Routes and fields: `docs/contracts/api-app.md` (history `image` entries and `images` on a tool result; the three image
+routes); the threats: `docs/security.md` T59 to T61; the decision: `docs/adr/0020-images-in-the-app-tier.md`. The viewer shows images only: PNG, JPEG, GIF and
+WebP up to 8 MB, never SVG. There is no zoom and no download.
+
+**Attachment chip.** A chip that is `ready`, has the id the server gave and an image type shows its name as `button.att-n.att-open` (type `button`, `aria-label`
+"View <name>", `title` the name; underlined, the chip's own text colour). A click or Enter opens the viewer with the chip's name and size line; the bytes come
+from `GET …/attachments/<id>/image` when the viewer asks. An uploading, failed, PDF or text chip keeps the plain name and has no button. A chip never goes back
+from the button to a plain name, and a repaint (the tray locks during a send) keeps the same button, so focus on it is not lost. Removing the chip removes
+the button.
+
+**Transcript tiles.** Under the speaker label, an `image` entry draws one tile; a tool result with `images` draws a `.hx-imgs` row under its folded result
+(up to 8 tiles, then the line "+N more images in this result (not shown)", "+1 more image …" for one). The `[Image #N]` text entry stays and sits next to its
+tile. A tile is one of:
+
+| Case | What shows |
+|---|---|
+| a PNG, JPEG, GIF or WebP up to 8 MiB | `button.hx-img`: the thumbnail (`img.hx-thumb`, `alt=""`, hidden until it has loaded) and a placeholder (`i-image`, "PNG · 841 KB": the type in capitals, the size when known) |
+| `media` is null (SVG, any other type, a source that is not base64) | `p.hx-img-off`: `i-image` and "Image · nika shows PNG, JPEG, GIF and WebP only"; not focusable |
+| over 8 MiB | `p.hx-img-off`: `i-image` and "Image · too large to show here (over 8 MB)"; not focusable |
+
+- The button's name: "View image from your message, 14:02 (PNG, 841 KB)". The speaker is "your message", "Claude", "the parent" (the read-only subagent view) or "a
+  tool result"; the time and the size are left out when unknown.
+- **Thumbnails load lazily.** One `IntersectionObserver` on the Transcript scroller with a 200 px margin starts a tile's fetch the first time it nears the
+  screen (`GET …/image/<ref>` or, in the subagent view, `…/subagents/<id>/image/<ref>`; the ref is percent-encoded). At most 24 thumbnails are held at once
+  (`MAX_THUMBS`): a tile that finds no room stays watched and keeps its placeholder, and loads when a place is free. A tile whose entry leaves the page (the
+  list is trimmed, or reset) is unobserved and gives its place back; an answer still on its way for it is dropped.
+- The thumbnail's `src` is a `data:` URL the page built itself from the route's `{ type, data }` (one of the four types, canonical base64 up to the 8 MiB
+  limit); anything else is never made a `src`. There is no `blob:` URL and no `<a download>`.
+- **Failed thumbnails.** An answer that is not a good image, or any status but 200, shows "Image not available" in the placeholder; a thumbnail the browser
+  cannot decode shows "Image could not be shown". Either way the tile stays clickable: the viewer then asks again and says why it cannot show it.
+
+**The viewer.** Heading (`#img-h`): "Image from your message" (or Claude, the parent, a tool result), or the chip's file name. `#img-meta` beside it: "PNG · 841 KB",
+and "· 1280 × 800" once the picture has loaded. A click on a tile whose thumbnail has loaded reuses its data URL (no second request); otherwise the viewer
+fetches. Initial focus is the ✕ button; Tab stays inside the dialog (native modal); Esc, ✕, Close and a click on the backdrop close it; focus returns to the
+tile or chip that opened it, or to the message box when that one has left the page.
+
+| State | What shows (fixed lines; the server's own words never show) |
+|---|---|
+| Loading | `#img-state` (`role="status"`): "Loading image…", no warning icon; the picture and Retry hidden |
+| Loaded | the picture at its natural size, scaled down to fit (`alt` = the heading), the size in `#img-meta` |
+| 404 | `i-warn` and "This image is no longer available." |
+| 413 | `i-warn` and "This image is too large to show here (over 8 MB)." |
+| 415, or an answer that is not a good image | `i-warn` and "nika shows PNG, JPEG, GIF and WebP images only." |
+| 0, 5xx, anything else | `i-warn`, "The image could not be loaded." and a **Retry** button (it asks again; focus moves to ✕ first so it never falls out of the dialog) |
+| the picture cannot be decoded | `i-warn` and "The image data could not be shown." |
+
+404, 413 and 415 offer no Retry (the same request would give the same answer). There is no empty state: the viewer opens only from a chip or tile that has a reference.
+
+**Responsive and accessibility.** The dialog is `min(1200px, 100vw - 32px)` wide and `100vw - 16px` at 600 px and below; the picture scrolls inside the stage if it
+is still larger. Tiles shrink to the Transcript column (`max-width: min(100%, 320px)`); thumbnails are at most 180 px high. Tokens only (`--surface-2`, `--line`,
+`--text-muted`, `--focus`, `--scrim`); every state has its own words and, where it is a problem, its own icon, never colour alone. No animation is added.
+
+**Not built.** Zoom, download, a gallery that steps between images, SVG, and a viewer on the browser tier.
+
+### 9.19 The terminal view ends above Claude's dialog (0.5.1, item E)
+
+**(0.5.1.)** While nika shows its own panel for what Claude asks, the mirror ends above Claude's version of it and the strip under the last row names where to
+answer. This repeats nothing: the panel below is the answer surface; the cropped part of the screen is what it already shows.
+
+**When.** `panelOf` (`public/crop.js`) names the panel that is up: the permission-prompt panel, the question, review or plan form in live (not terminal) mode with
+a ready dialog, or the feedback survey panel with a ready survey. The mirror is cropped at the row the server reports (`prompt.top`, `dialog.top`,
+`survey.top`: whole numbers from 1 to the last row, display only, never part of a sig or a guard). What stays above the strip:
+
+| Panel | Rows kept | Strip text |
+|---|---|---|
+| question, review | everything above the dialog's top rule | "Claude's question · answer it in the form below" · "Your answers · submit them in the form below" |
+| plan approval | the plan text and its dashed rules; the strip sits under the plain rule below the plan, so the prompt and the options are hidden | "Plan approval · the plan is above, answer in the form below" |
+| permission prompt | the tool title and the command; the strip starts at "Do you want to …?" | "Permission prompt · answer it in the panel below" |
+| feedback survey | everything above the question row | "Feedback question · answer it in the panel below" |
+
+**No crop (the whole screen shows, as before)** when: the dialog is unreadable (the attention banner, or "Reading…" with no ready capture); the form is in
+terminal mode, or the survey is terminal-only; the permission prompt has any bypass option or the window mentions bypass; Type into pane is on; `top` is
+missing, 0 or out of range; or the dialog's `sig` is not the one the form was drawn for. A crop that appears or goes between two frames never glides.
+
+**The strip.** The same element as the input-box cut (§9.12, `#term-cut`), one line in both looks (`white-space: nowrap`, the words ellipsise, the icon keeps its
+size), so its height is identical and the fit's strip height stays valid. It stays `aria-hidden`; the panel below announces itself.
+
+| State | `data-kind` | Look | Icon | Text |
+|---|---|---|---|---|
+| input-box cut (§9.12) | `input` | dashed top edge, terminal grey `--a8` | `i-kbd` | "Input box · mirrored in the message box below" |
+| dialog crop | `panel` | solid top edge and text in the terminal's ANSI yellow `--a11` (readable on both mirror surfaces) | `i-dialog` | the table above |
+| neither | – | hidden | – | – |
+
+**Effects on the rest.** The crop is its own number (`M.crop`); the input-box cut (`M.cut`) is untouched, so the fit (§9.13: `hiddenRows`, the scale, the grow)
+sees exactly what it saw before, and the text scale does not jump when a panel appears. The crop takes the smaller of itself and the input-box cut (a prompt,
+dialog or survey has no plain box, so in practice they never overlap). Scrolling and the glide take the crop's top, so page sizes and frames stay honest.
+Known effect: with the crop, fewer rows than the panel holds can be drawn; the strip then sits under the last drawn row with blank panel below.
+
+### 9.20 Subagents button (0.5.1, item H)
+
+**(0.5.1.)** An icon-only button (`i-branch`) in the terminal toolbar `.term-head`, after the spacer and before the colour group, opens a dialog with the same
+subagent rows as the project page (§9.17). It is the third place the session window lists Claude's subagents; the Transcript column's folded list (`#sess-subs`)
+stays as it is (owner decision 2026-11-17).
+
+| State | Button | Dialog |
+|---|---|---|
+| no subagents, or before the first agent poll | hidden | closed (closes itself if open) |
+| some running (N) | shown; badge N in the busy colour; the icon in the text colour; name "Subagents (N running)" | the running rows, newest activity first; "+M ended" when M > 0 |
+| none running, some ended | shown; no badge; the icon muted; name "Subagents (0 running)" | "None running." and the "+M ended" disclosure |
+| read-only subagent view | hidden (that window has no terminal column and no button) | – |
+| a poll error | keeps its last state | keeps its last rows |
+
+- **Dialog.** Heading "Subagents of <session name>", a summary "N running · M ended", the running list, "None running.", and a closed `details` "+M ended" (its open
+  state is kept while the window lives) with the finished and stopped rows, newest first; a Close button. Rows are the shared `subagentItemEl`: badge, description link,
+  kind chip, model and time; a link opens the read-only subagent view (§9.17) in the same window. The dialog redraws on an agent poll only when what it shows changes
+  (ids, states, descriptions, labels, models and the minute, so the times tick); keyboard focus on a row survives a redraw (`data-fk`). When every subagent disappears
+  (`/clear`) the dialog closes and focus goes to the message box.
+- **Keyboard.** Native button and modal dialog: Esc, ✕ and Close close it; focus returns to the button (or the message box when the button went). Tab order: the button
+  comes right before the colour group (§9.10). The accessible name is "Subagents (N running)"; the badge is `aria-hidden` (the number is in the name).
+- **Responsive.** An icon-only button fits the wrapped head at every width. The dialog is `min(520px, 100vw - 32px)` wide and its lists scroll inside at 50 vh.
+- **A window without a pane** (the terminal column is hidden) has no button; its Transcript column list (§9.17) is the way in there.
+
+### 9.21 The quick-actions bar hides while a panel answers (0.5.1, item I)
+
+**(0.5.1.)** `#qa` (Stop, Compact, Clear, Model, Rewind, End session) and its reason line `#qa-why` are hidden, not just disabled, while one of nika's panels shows
+what Claude asks: the permission-prompt panel (with or without a bypass option; Esc = No always works), a question, review or plan form in live mode, or the feedback
+survey with a ready survey. The bar returns the moment the panel goes.
+
+**The bar stays** when nika's panel offers no way out: the attention banner (an unreadable dialog), the form still "Reading…", the form in terminal (bypass) mode, a
+survey that says "Terminal only". There End session must stay reachable (owner decision 2026-11-17).
+
+Nothing needed is lost: while a prompt or dialog is open `quickState` already turns every button off except End; the prompt panel keeps "Esc, Cancel, same as No",
+the form keeps Decline or Reject (Esc), the survey keeps "0 Dismiss"; no keyboard shortcut triggers a quick action. When the bar hides, the model popover closes. If focus
+was inside the bar, it moves to the panel's own root (`#ask-q`, `#dialog-form` or `#survey-panel`, each `tabindex="-1"`), never to a button, so a held Enter answers
+nothing unseen. The toolbar leaves the accessibility tree while hidden; the panel announces itself as before. No new copy; the reason lines "Answer the prompt first…"
+and "Answer the question above first." are never visible while the bar is hidden and stay for the banner case.
 
 ### 8.8 WebView support
 

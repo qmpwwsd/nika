@@ -13,7 +13,7 @@ import { CLAUDE_COMMAND } from './ids.js';
 import { clean } from './text.js';
 import { MODE_TARGETS, OPTION, PROMPT_ROWS, bypassWindow, lastNonBlank, mentionsBypass, modeFromRows, promptFromRows, rowText } from './mode.js';
 import { RULE_ROW, SIG, parseDraft, boxSquash, boxInput, normDraft, sameDraft, inEnvelope, chunks, CHUNK_GAP_MS } from './draft.js';
-import { TEXT_MAX, STEPS_MAX, PLAIN_TEXT, PLAN_PICK, dialogOnScreen, readDialogScreen, identityOf, sigOf, otherAllowed } from './dialog.js';
+import { TEXT_MAX, STEPS_MAX, PLAIN_TEXT, PLAN_PICK, dialogOnScreen, readDialogScreen, identityOf, sigOf, otherAllowed, stripOf } from './dialog.js';
 import { surveyOf, SURVEY_UNDO_MS } from './survey.js';
 import { turnRunning } from './turn.js';
 
@@ -199,17 +199,19 @@ export function checkSurveyBody(body) {
 // neither can sit in front of that digit (W1-T2 re-review, I1 residual).
 const DIALOG_TEXT_REFUSED = /[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]|\p{Cf}|^\p{M}/u;
 const DIALOG_PICKS_MAX = 7; // a digit answers without Enter, so options are numbered 1-9 and two of them are the text and chat rows
-const DIALOG_SHAPES = new Map([['picks,sig', 'picks'], ['picks,sig,text', 'picks'], ['sig,submit', 'submit'], ['choice,sig', 'choice'], ['cancel,sig', 'cancel']]);
-const DIALOG_BODY = 'body must be { sig, picks, text? }, { sig, submit: true }, { sig, choice } or { sig, cancel: true }';
+const DIALOG_SHAPES = new Map([['picks,sig', 'picks'], ['picks,sig,text', 'picks'], ['sig,submit', 'submit'], ['choice,sig', 'choice'], ['cancel,sig', 'cancel'], ['sig,tab', 'tab']]);
+const DIALOG_BODY = 'body must be { sig, picks, text? }, { sig, submit: true }, { sig, choice }, { sig, cancel: true } or { sig, tab }';
+const DIALOG_TAB_MAX = 8; // TABS_MAX of src/dialog.js: the tab of a move is a question index, or the number of questions for the review
 const whole = (v, lo, hi) => Number.isInteger(v) && v >= lo && v <= hi;
 
-/** The body of the dialog route: exactly one of the four shapes (see DIALOG_BODY): null when it is valid, else the 400 answer. The router and answerDialog both call it. */
+/** The body of the dialog route: exactly one of the five shapes (see DIALOG_BODY): null when it is valid, else the 400 answer. The router and answerDialog both call it. */
 export function checkDialogBody(body) {
   const names = body !== null && typeof body === 'object' && !Array.isArray(body) ? Object.keys(body).sort().join() : '';
   const shape = DIALOG_SHAPES.get(names);
   if (shape === undefined || typeof body.sig !== 'string' || !SIG.test(body.sig)) return invalid(DIALOG_BODY);
   if (shape === 'submit' || shape === 'cancel') return body[shape] === true ? null : invalid(DIALOG_BODY);
   if (shape === 'choice') return whole(body.choice, 1, 9) ? null : invalid('choice must be an integer from 1 to 9');
+  if (shape === 'tab') return whole(body.tab, 0, DIALOG_TAB_MAX) ? null : invalid(`tab must be an integer from 0 to ${DIALOG_TAB_MAX}`);
   const { picks, text } = body;
   const listed = Array.isArray(picks) && picks.length <= DIALOG_PICKS_MAX && Array.from(picks, (p) => whole(p, 1, DIALOG_PICKS_MAX)).every(Boolean) && new Set(picks).size === picks.length;
   if (!listed) return invalid(`picks must be at most ${DIALOG_PICKS_MAX} distinct integers from 1 to ${DIALOG_PICKS_MAX}`);
@@ -367,6 +369,24 @@ export function createSessionControl({
 
   /** The footer is unreadable and no input box (src/draft.js) explains it: a dialog may be open. A `!` box reads unknown in modeFromRows and is not one. */
   const unknownScreen = (seen) => modeFromRows(seen.rows) === 'unknown' && draftOf(seen) === null;
+
+  // The dialog routes' shared pieces (answerDialog and moveTab). `count()` is the number of keys the request has sent so far: every non-200 after a key carries it as `sent`.
+  const dialogReplies = (count) => {
+    const out = (status, b) => ({ status, body: count() > 0 ? { ...b, sent: count() } : b });
+    return {
+      out,
+      refuse: (error) => out(409, { error }),
+      relay: (res) => out(res.status, res.body), // a failed capture or key send, with its own status and body
+      terminalOnly: () => out(400, { error: 'terminal-only', message: 'answer this in the terminal' }),
+    };
+  };
+  const dialogView = (seen) => (promptFromRows(seen.rows) !== null ? null : readDialogScreen(seen.rows, seen.cols));
+  // The reason a screen is not a readable dialog, else null. No dialog and no sign of one is `no-dialog`; a screen with no readable footer and
+  // no input box may hold a dialog nika cannot read (a wrapped footer, "Exit plan mode?", the auto-mode nudge): `dialog-changed`, never "plain box".
+  const dialogLost = (seen, S) => {
+    if (S === null) return promptFromRows(seen.rows) === null && unknownScreen(seen) ? 'dialog-changed' : 'no-dialog';
+    return S.unreadable === undefined ? null : 'dialog-changed';
+  };
 
   /** Step 4 of the mode route: an idle pane's fresh capture, else { res: 409 not-idle }. */
   async function idleLook(pane) {
@@ -605,6 +625,9 @@ export function createSessionControl({
     return exclusive(pane, async (ctx) => {
       let seen = await readIdle(pane, ctx);
       if (seen.res) return seen.res;
+      // 0.5.1 (T64): a screen with no readable mode line and no input box (a subagent's view, the subagent list or the shells pill under the parent's
+      // box) is not Claude's own input: an Escape there would stop the viewed subagent. A permission prompt or a dialog keeps its path (Escape = No).
+      if (!promptOpen(seen.rows) && unknownScreen(seen)) return conflict('mode-unknown');
       if (!seen.idle) {
         const stopped = await interrupt(pane, seen.rows, seen.state, ctx); // cancels a turn or answers a prompt with No
         if (stopped.res) return stopped.res;
@@ -1159,6 +1182,90 @@ export function createSessionControl({
   }
 
   /**
+   * Moves Claude's question dialog to another step (0.5.1, D, design-051b 3.1): `want` is { sig, tab }, `tab` an integer from 0 to the number
+   * of questions (the number itself is the Review step). Nothing is answered on the way. Under the per-pane lock (409 busy-switching).
+   *
+   * Read phase, nothing sent: a fresh capture, a readable ask dialog on a question or the review whose sig is `sig` (else 409 no-dialog |
+   * dialog-changed), a dialog with more than one step (else 400 invalid), no bypass (400 terminal-only), a `tab` that is one of the steps and
+   * not the current one (400 invalid). Then at most STEPS_MAX rounds of: a FRESH capture; the strip of tabs (src/dialog.js stripOf) must still
+   * have the same headers (else 409 dialog-changed) and the same answered marks (409 dialog-touched) and sit where our last key left it (409
+   * dialog-changed); on the asked step, 200 { done: 'moved' } and the answer hold of the pane is forgotten; otherwise one key:
+   *   - on an input row of Claude's step (its text row, `Chat about this`, a multi question's Next button): `Up`, which leaves it (one Up from the
+   *     text row, two from Chat, three from Next), in vim INSERT and NORMAL alike (S-VIM rows 24 and 27); at most 3, then 409 text-focus. On an
+   *     input row of any other step the focus was moved in the terminal: 409 dialog-focus. It settles when a full read of the same step shows
+   *     another focus;
+   *   - else `Right` (toward a later step) or `Left` (toward an earlier one) from an option row; it settles when the strip's step changed.
+   * A move sends no `Enter`, digit, `Escape`, `Tab`, `BTab` or text: `Left` rather than `BTab`, since a `BTab` that lands after the dialog
+   * closed would cycle the permission mode (T63). A key never goes right behind a Stop/End Escape (409 not-idle). Every non-200 after a key
+   * carries `sent`; a key that did not take is 409 not-taken (not repeated), the budget is the distance plus 3 keys.
+   */
+  function moveTab(pane, want) {
+    return exclusive(pane, async (ctx) => {
+      let sent = 0;
+      const { out, refuse, relay, terminalOnly } = dialogReplies(() => sent);
+
+      // --- read phase: nothing is sent ---
+      const first = await look(pane, ctx);
+      if (first.res) return relay(first.res);
+      const S0 = dialogView(first);
+      const gone0 = dialogLost(first, S0);
+      if (gone0) return refuse(gone0);
+      if (S0.kind !== 'ask' || (S0.at !== 'question' && S0.at !== 'review') || sigOf(S0) !== want.sig) return refuse('dialog-changed');
+      if (S0.tabs.length < 2) return invalid('this dialog has one question');
+      if (S0.bypass) return terminalOnly();
+      const n = S0.tabs.length;
+      if (want.tab > n) return invalid('tab is not one of the steps');
+      const pos0 = S0.at === 'review' ? n : S0.i;
+      if (want.tab === pos0) return invalid('tab is the current step');
+      const headers = JSON.stringify(S0.tabs.map((t) => t.header));
+      const marks = JSON.stringify(S0.tabs.map((t) => t.answered));
+      const max = Math.abs(want.tab - pos0) + 3; // the distance plus the Ups that can be needed to leave an input row
+      let ups = 0;
+      let expect = null; // the step our last Right or Left should have brought Claude to
+
+      // --- one key per round, each after a fresh capture ---
+      for (let round = 0; round < STEPS_MAX; round += 1) {
+        const seen = await look(pane, ctx);
+        if (seen.res) return relay(seen.res);
+        const T = stripOf(seen.rows, seen.cols); // null on a permission prompt too
+        if (T === null) return refuse('dialog-changed');
+        if (JSON.stringify(T.headers) !== headers) return refuse('dialog-changed');
+        if (JSON.stringify(T.answered) !== marks) return refuse('dialog-touched');
+        if (T.bypass) return terminalOnly();
+        if (expect !== null && T.at !== expect) return refuse('dialog-changed'); // the person pressed a key too, or Claude redrew elsewhere
+        if (T.at === want.tab) {
+          answered.delete(pane); // the next answer is a new one, not a repeat of the one just given
+          return out(200, { done: 'moved' });
+        }
+        if (sent >= max) return refuse('not-taken');
+        let key;
+        let hit;
+        if (T.input) { // the text row, Chat or Next: Right and Left do nothing there, Up leaves it
+          if (T.at !== pos0) return refuse('dialog-focus'); // the focus sits on an input row of another step: the person moved it in the terminal
+          if (ups >= 3) return refuse('text-focus');
+          const before = dialogView(seen);
+          if (before === null || before.unreadable !== undefined) return refuse('dialog-changed'); // the focus cannot be proven to change on a step nika cannot read whole
+          key = 'Up';
+          hit = (cap) => { const S2 = dialogView(cap); return S2 !== null && S2.unreadable === undefined && S2.at === 'question' && S2.i === S0.i && S2.focus !== before.focus; };
+        } else {
+          key = want.tab > T.at ? 'Right' : 'Left';
+          hit = (cap) => { const T2 = stripOf(cap.rows, cap.cols); return T2 !== null && T2.at !== T.at; };
+        }
+        if (interrupting.has(pane) || escapeGap(pane)) return refuse('not-idle'); // a key right behind a Stop/End Escape would be Meta+key
+        const res = await keys.send(pane, { keys: [key] });
+        if (res.status !== 200) return relay(res);
+        sent += 1;
+        if (key === 'Up') ups += 1;
+        else expect = key === 'Right' ? T.at + 1 : T.at - 1;
+        const got = await settled(pane, (rows, cap) => hit(cap), ctx);
+        if (got.res) return relay(got.res);
+        if (!got.rows) return refuse((got.lastSeen && stripOf(got.lastSeen.rows, got.lastSeen.cols) === null && 'dialog-changed') || 'not-taken');
+      }
+      return refuse('not-taken'); // STEPS_MAX rounds and still not there
+    });
+  }
+
+  /**
    * Answers Claude's question dialog (AskUserQuestion: the current tab, or the review step) or plan approval (ExitPlanMode), ONE STEP per
    * request (design W1 4, ADR 0015), or declines it. `body` is checkDialogBody's: { sig, picks, text? } answers the current question,
    * { sig, submit: true } presses Submit on the review, { sig, choice } picks a plan choice, { sig, cancel: true } declines. The screen is the
@@ -1181,29 +1288,22 @@ export function createSessionControl({
    * review's `1. Submit answers`), the free text as one `send-keys -l` (vim INSERT shown, a pane known to be plain, or the focus brought to
    * the text row by nika's own Down with no INSERT coming; a request that starts on the text row with no INSERT is 409 text-mode),
    * `Escape` for a Decline only (a second one only after a fresh read shows vim INSERT gone). Never Up, Left, Tab, BTab, Space, C-c or C-u,
-   * a key on `Chat about this`, or any key after the dialog closed; nika never moves between Claude's tabs. Nothing of a body, a dialog
+   * a key on `Chat about this`, or any key after the dialog closed; moving between Claude's tabs is moveTab's job (a body with `tab`), not an answer's. Nothing of a body, a dialog
    * string or a sig is logged. 200 { done: 'next' | 'review' | 'submitted' | 'chosen' | 'declined', sent }.
    */
   function answerDialog(pane, body) {
     const bad = checkDialogBody(body);
     if (bad) return Promise.resolve(bad);
+    if (body.tab !== undefined) return moveTab(pane, { sig: body.sig, tab: body.tab });
     // fixed here, before any await: a body changed later cannot change the keys
     const want = { sig: body.sig, picks: body.picks === undefined ? undefined : [...body.picks], text: body.text, submit: body.submit === true, choice: body.choice, cancel: body.cancel === true };
     const target = want.text === undefined ? undefined : clean(want.text); // the text as the screen shows it (whitespace collapsed)
     return exclusive(pane, async (ctx) => {
       let sent = 0; // keys.send calls that went out
       let escapes = 0;
-      const out = (status, b) => ({ status, body: sent > 0 ? { ...b, sent } : b });
-      const refuse = (error) => out(409, { error });
-      const relay = (res) => out(res.status, res.body); // a failed capture or key send, with its own status and body
-      const terminalOnly = () => out(400, { error: 'terminal-only', message: 'answer this in the terminal' });
-      const view = (seen) => (promptFromRows(seen.rows) !== null ? null : readDialogScreen(seen.rows, seen.cols));
-      // The reason a screen is not a readable dialog, else null. No dialog and no sign of one is `no-dialog`; a screen with no readable footer and
-      // no input box may hold a dialog nika cannot read (a wrapped footer, "Exit plan mode?", the auto-mode nudge): `dialog-changed`, never "plain box".
-      const lost = (seen, S) => {
-        if (S === null) return promptFromRows(seen.rows) === null && unknownScreen(seen) ? 'dialog-changed' : 'no-dialog';
-        return S.unreadable === undefined ? null : 'dialog-changed';
-      };
+      const { out, refuse, relay, terminalOnly } = dialogReplies(() => sent);
+      const view = dialogView;
+      const lost = dialogLost;
 
       // --- read phase: nothing is sent ---
       const first = await look(pane, ctx);
@@ -1257,8 +1357,9 @@ export function createSessionControl({
         const onOption = Number.isInteger(S.focus) && S.focus >= 1 && S.focus <= k;
         const onText = S.focus === k + 1;
         const value = S.textRow.value;
-        if (!S.multi && S.tabs[S.i].answered) return { error: 'dialog-touched' }; // someone came back to this tab in the terminal
-        if (value !== null && value !== target) return { error: 'dialog-touched' }; // text the user typed there, not this request's
+        // 0.5.1, D: an answered single tab is answered again like any other (the user came back to it, or the page moved there). Text the user typed in
+        // the row is not this request's: a multi tab and a text request refuse it; a single-select pick (a digit on an option) leaves the row alone.
+        if (value !== null && value !== target && (S.multi || target !== undefined)) return { error: 'dialog-touched' };
         const down = () => {
           const next = onText && S.button !== null ? 'button' : S.focus + 1;
           return { send: { keys: ['Down'] }, hit: (S2) => same(S2) && S2.focus === next };
@@ -1274,7 +1375,7 @@ export function createSessionControl({
         const enter = { send: { keys: ['Enter'] }, hit: (S2) => moved(S, S2) };
         if (!S.multi) {
           if (target === undefined) return onOption ? { send: { text: String(want.picks[0]) }, hit: (S2) => moved(S, S2) } : { error: 'dialog-focus' };
-          if (value === target) return onText ? enter : { error: 'dialog-focus' };
+          if (value === target) return onText ? enter : onOption ? down() : { error: 'dialog-focus' }; // the typed text again: Down to the text row, then Enter re-confirms it
           if (onOption) return down();
           return onText ? type() : { error: 'dialog-focus' };
         }

@@ -427,6 +427,21 @@ read's own slot of the shared limiter, read again on every request (no cache; a 
 leaves the page without links, never without entries. A page that gets no field (an older server) draws no link. Entries of the subagent route below
 never carry the field.
 
+**Pictures (0.5.1, C; ADR 0020, `docs/security.md` T59).** Images used to be skipped. Now:
+- An `image` content block of a message is an entry with `"kind": "image"`, `"text": ""` and two more fields, `"media": "png" | "jpeg" | "gif" | "webp" | null` and
+  `"size": <n> | null`. `media` is set only when the block's source is base64 and its `media_type` is exactly one of the four; `size` is the decoded size estimated from the
+  length of the base64 string and its `=` padding (null when `media` is null, when the data is not a string, or when its length is not a multiple of 4). Nothing is decoded or
+  tested here, so a forged block still lists (and fails on the image route below). The entry's `id` is the `ref` the image routes take.
+- A `tool_result` entry whose content is an array gains `"images": [ { "ref": "<offset>:<block>.<part>", "media", "size" } ]` (the `image` parts among the first 1000 parts, at most 8,
+  in order) and `"imagesMore": <n>` (image parts not listed). A result with no picture has neither field. The result's text is unchanged (text parts only).
+- A block of any other type, and an `image` block inside a `thinking` or `text` block, are skipped as before.
+
+**Long lines (0.5.1, C; T60).** A transcript line over the 1 MB window used to be skipped (a screenshot is one such line). A line is now read whole up to 16 MiB (`LINE_MAX`,
+newline included); its start is searched at most 32 MiB back (`SCAN_MAX`); a line beyond either limit is skipped as before, and `nextBefore` steps over it. A long line comes
+back as a page of its own (its entries, and `nextBefore` its start). Long reads and image reads share one slot (`longLimited`, always taken inside the 4 in flight above); a
+16-entry cache keyed by device, inode and line end keeps the parsed entries of a long line (copies, never bytes), only for a line that ends with a newline. The 32 KB cut per
+entry applies as before; picture bytes are in no entry.
+
 ### `GET /api/app/session/:id/subagents/:agentId/history?before=<n>&limit=<n>` (0.5, W8)
 The read-only view of one of Claude's own subagents (spec §9.17). The request carries two ids and byte offsets, never a path. `id` must be a `UUID`
 present in nika's transcript index (as for the route above); `agentId` must match `SUBAGENT_ID` and be a name in nika's own listing of that session's
@@ -462,6 +477,44 @@ subagent's meta means its loop has stopped, and Claude removes it again when the
 as installed, 2026-11-15, `claude-tui.md` §14). The page stops only when the state reads `stopped` (the parent session is gone), after one last read at the live edge. The
 state itself comes from the snapshot's `subagents` (below), read again on every poll; nothing is latched. Until the file exists the route answers 404
 "no such subagent" and the page keeps asking.
+
+### `GET /api/app/session/:id/image/:ref` and `GET /api/app/session/:id/subagents/:agentId/image/:ref` (0.5.1, C)
+The picture a history entry names (ADR 0020, `docs/security.md` T59). The request carries ids and a transcript offset, never a path. `id` must be a `UUID` present in
+nika's transcript index and `agentId` a `SUBAGENT_ID` in nika's own listing of that session's `subagents/` folder (both as for the history routes). `ref` is an entry's `id`
+(`"<line offset>:<block>"`) or an `images[].ref` (`"<line offset>:<block>.<part>"`): decimal digits only, the offset 1 to 15 digits, the block 1 to 5, the part 1 to 3
+(`IMAGE_REF` in `src/ids.js`); the colon may arrive percent-encoded (`%3A`). `GET` only (other methods: 405). App tier only: the browser tier mounts none of them (404, §4). No
+body is read and none is sent; the file is found from the index, then the one line that starts at that offset is read whole (up to 16 MiB; the offset must be the start of a line) and
+the one block or part is taken from it.
+
+Checks, in this order; the first that fails answers:
+
+| Check | Answer |
+|---|---|
+| `id` is not a `UUID` | 404 `not_found` "no such session" |
+| (subagent route) `agentId` does not match `SUBAGENT_ID` | 404 `not_found` "no such subagent" |
+| `ref` does not match `IMAGE_REF` | 404 `not_found` "no such image" |
+| the session is not in nika's transcript index | 404 "no such session" |
+| (subagent route) `agentId` is not in the session's listing | 404 "no such subagent" |
+| no line starts at the offset, the line does not parse, has no such block or part, or the block is not an `image` | 404 "no such image" (one answer for all of them) |
+| the file cannot be opened through `fsafe` or read | 404 "no such image" |
+| the base64 is longer than 11 184 812 characters, or decodes to more than 8 MiB | 413 `too-large` "image too large" |
+| the source is not base64, the declared type is not png, jpeg, gif or webp, the data is not valid base64, or the magic bytes are not the declared type (SVG and every other type included) | 415 `not-image` "not a supported image" |
+
+200: `{ "type": "png" | "jpeg" | "gif" | "webp", "data": "<standard base64>" }`. `data` is the server's own encoding of the decoded bytes (the transcript's string is never relayed, so
+unused bits of the last character or any other variation cannot pass through). `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, JSON. No refusal carries a byte, a type
+name or a path from the block. The reads take a slot of the history limiter (4 in flight) and the one long slot. The page turns the answer into a `data:` URL from a fixed MIME table
+(png, jpeg, gif, webp) and a validated base64 string and sets it as an `<img>` source only; there is no `blob:` and no raw image route (an `<img>` cannot send the secret).
+
+### `GET /api/app/pane/:id/attachments/:attId/image` (0.5.1, C)
+The picture of an **unsent image attachment** of this pane, for the composer's thumbnail (ADR 0020, `docs/security.md` T61). The one route that serves a stored file back. App tier only
+(the browser tier: 404); `GET` only. Order: `id` pane 404 (an eligible Claude pane, as for the other attachment routes), `attId` 404 (16 lowercase hex characters, else
+404 `not_found` "no such image"), then the store. The store answers only for a record this process made, for this pane, not yet sent, of type png, jpeg, gif or webp; it opens the
+file with `O_NOFOLLOW` (regular, owned by the user, one link), checks that the size is the record's and that the folder's `realpath` did not change, reads it (at most two such reads
+at a time) and checks that the magic bytes are still the recorded type. Every other case, and any error, is **one and the same** 404 `not_found` "no such image": an unknown id, another
+pane's, a sent one, a PDF or text file, a file that is gone, swapped, resized or retyped.
+- 200: `{ "type": "png" | "jpeg" | "gif" | "webp", "data": "<standard base64>" }`, `no-store`, `nosniff`. The route rebuilds the object from those two fields and refuses (404) any
+  other store answer, so no path, size or name can leave. A store error is logged as `nika: attachments: <code>` and answered as the 404.
+- `/api/app/pane/:id/attachments/pick/image` is the chooser poll route (below), not an attachment: it answers its own 404 "no such chooser request".
 
 ### `GET /api/app/pane/:id/capture`
 `id` `PANE_ID`, must appear in the current `tmux list-panes -a`, be either a live Claude session's pane
@@ -516,6 +569,8 @@ Only SGR codes 0, 1, 2, 3, 4, 7, 22–24, 27, 30–37, 39, 40–47, 49, 90–97,
   question) mentions bypass (NFKC, letters only, any case). When `true` the page draws no answer button at all (every
   option as text with "Answer this one in the terminal"; Esc stays), because the answer route refuses every option
   with 400 then. An option whose label contains `bypass` (any case) also gets no button when `bypass` is `false` (rule 12). Labels can hold the user's folder paths: shown in the app only, never logged.
+  **`top` (0.5.1, E):** the prompt carries `"top": <n>`, the index in `rows` of the row of its question (the row directly above option 1). Display only: the page crops the terminal
+  view there while it shows nika's own prompt panel. It is in no `sig`, no guard reads it and no route reads it back.
 
 0.5 fields, scroll state (W3, ADR 0018), read from the capture the route already took:
 - `alt` (boolean): Claude draws in tmux's alternate screen, its full-screen view. It comes from `#{alternate_on}` in the same
@@ -578,6 +633,9 @@ wrap rule in `claude-tui.md` §10); the page mirrors it into the message box (sp
 - `{ "state": "ready", "kind": "plan", "at": "plan", "sig", "bypass", "options": [ { "n", "label", "text" } ] }`: the plan approval's
   choices; `text` marks the last option, Claude's free-text one (`Tell Claude what to change`, which nika never answers). The plan text is not
   in the field.
+- `top` (0.5.1, E; every `ready` state, not in `unreadable`): the index in `rows` of the row a crop of the terminal view starts at, an integer. Question and review step: the rule
+  row directly above the tab strip. Plan approval: the single plain rule row under the plan's closing dashed rule (the plan text stays above it). Display only: it is in no `sig` or
+  identity, no key is decided on it and no route reads it back; the page uses it only for a dialog it reads exactly and never with bypass in the guard's window.
 - `sig` is the first 16 hex characters of sha256 over the parsed step (the strip headers, the current tab, the question, the labels and
   descriptions; or every review pair; or the visible plan rows and the choices), never over raw rows: it does not change with the focus, a tick
   or typed text. `bypass` is true when the step's region, or the prompt window (`bypassWindow`), mentions bypass; the route then answers only
@@ -589,13 +647,13 @@ wrap rule in `claude-tui.md` §10); the page mirrors it into the message box (sp
 - `survey` is `null` when no survey is on screen, and also while a permission `prompt` parses or a dialog is on screen (that panel owns the slot, and its own gates hold). It stays `null`
   while Claude's post-rating row `(Optional) Press [1] to tell us more` shows (M1): that row is no survey and offers nothing to answer, so there is no panel; but for those seconds the
   capture's `draft` is `null` too (the draft sync pauses and nothing is typed), the keys route with `send: true` answers `409 prompt-open`, and the dialog reads `unreadable / survey`.
-- `{ "state": "ready", "kind": "rating", "sig": "<16 hex>", "options": [ { "n": 1, "label": "Bad" }, { "n": 2, "label": "Fine" }, { "n": 3, "label": "Good" }, { "n": 0, "label": "Dismiss" } ] }`:
+- `{ "state": "ready", "kind": "rating", "sig": "<16 hex>", "top": <n>, "options": [ { "n": 1, "label": "Bad" }, { "n": 2, "label": "Fine" }, { "n": 3, "label": "Good" }, { "n": 0, "label": "Dismiss" } ] }`:
   exactly the captured rating survey and nothing in the way of a digit. All of these must hold: the rows `● How is Claude doing this session? (optional)` (the bullet at column 0)
   and `  1: Bad … 2: Fine … 3: Good … 0: Dismiss` (indent exactly 2) once, the second directly below the first; no other row that looks like a survey question or options
   row; exactly one row (any content) between the options row and the input box's top rule; the box an empty prompt-mode box (ghost text allowed) with the cursor in it; the
   pane not in vim NORMAL (the pane's memory: `-- INSERT --` was seen on it and is not shown now). `kind` is always `rating` in 0.5 (the field is reserved for a later kind, see
   Consent below). `sig` is the first 16 hex characters of sha256 over the trimmed question row, the trimmed options row and the up to 3 non-blank rows above the question: it
-  identifies this occurrence and does not change with the cursor or the free row.
+  identifies this occurrence and does not change with the cursor or the free row. `top` (0.5.1, E) is the index in `rows` of the question row: display only, the page crops the terminal view there; it is not in `sig` and nothing reads it back.
 - `{ "state": "terminal", "reason": "consent" | "bypass" | "unreadable" | "input" | "normal" }`: a survey is on screen and nika does not offer it (the page says to answer it in the
   terminal), checked in this order, the first that holds decides. `consent`: a row starts the transcript question (`Can Anthropic look at your session transcript`, an optional `●`
   before it), anywhere on the screen, also next to a rating. `bypass`: one of the last 15 non-blank rows mentions bypass (`bypassWindow`). `unreadable`: the rows are not exactly the
@@ -1423,7 +1481,7 @@ page keeps sending the user's own `PPage`, `NPage`, `Home` and `End` through the
 ### `POST /api/app/pane/:id/attachments` (body ≤ 12 MiB, `UPLOAD_CAP`)
 Stores one file for the next Send (0.5, W2; ADR 0016, `docs/security.md` T38). It is the way in for a pasted or dropped file; the
 paperclip's file chooser stores through the same store (below). App tier only; the browser tier has no such route (404). Nothing reaches
-Claude before Send, and no route serves a file back.
+Claude before Send, and exactly one route serves a stored file back (the image read, `GET …/attachments/:attId/image` below, 0.5.1).
 ```json
 { "name": "notes.md", "data": "<standard base64>" }
 ```

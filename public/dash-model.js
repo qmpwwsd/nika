@@ -158,6 +158,34 @@ export function subagentView(subs, showEnded) {
 }
 
 /**
+ * What the session window's Subagents button and dialog draw (0.5.1 H), or null when there is nothing to list (not an array, or no plain object
+ * in it). `running` holds the running ones and `ended` every other state (finished, stopped, one the page does not know), each newest activity
+ * first (a `lastActivity` that is not a finite number sorts last; equal times keep their order). `label` is the button's name ("Subagents (2 running)"),
+ * `summary` the dialog's line (the two counts with a middle dot between them) and `hint` the "+3 ended" caption of the closed list, or null when none ended. The entries are the
+ * caller's own objects, handed through; the input list is not changed. This function stays ASCII: the middle dot is an escape.
+ */
+export function subagentGroups(subs) {
+  const list = Array.isArray(subs) ? subs.filter((s) => s && typeof s === 'object' && !Array.isArray(s)) : [];
+  if (!list.length) return null;
+  const at = (s) => (typeof s.lastActivity === 'number' && Number.isFinite(s.lastActivity) ? s.lastActivity : null);
+  const newest = (a, b) => {
+    const x = at(a);
+    const y = at(b);
+    if (x !== null && y !== null) return y - x;
+    return x === null ? (y === null ? 0 : 1) : -1;
+  };
+  const running = list.filter((s) => s.state === 'running').sort(newest);
+  const ended = list.filter((s) => s.state !== 'running').sort(newest);
+  return {
+    running,
+    ended,
+    label: `Subagents (${running.length} running)`,
+    summary: `${running.length} running \u00b7 ${ended.length} ended`,
+    hint: ended.length ? `+${ended.length} ended` : null,
+  };
+}
+
+/**
  * The link to a subagent's read-only view in the session window: `session.html?session=<uuid>&agent=<id>[&project=<key>]`, or null
  * unless `session` is a session id and `agent` a subagent id. A project key is added only when it has the key shape.
  */

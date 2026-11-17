@@ -88,7 +88,7 @@ function rig(opts = {}) {
     for (const fn of docListeners[type] ?? []) fn(e);
     return e;
   };
-  const log = { calls: [], say: [], announce: [], problem: [], notice: [], gone: 0, ds: [], clear: [], order: [], focus: 0, jobs: 0, sleeps: [] };
+  const log = { calls: [], say: [], announce: [], problem: [], notice: [], gone: 0, ds: [], clear: [], order: [], focus: 0, jobs: 0, sleeps: [], views: [], gets: [] };
   const state = { screen: opts.screen === undefined ? screenOf() : opts.screen, shell: false, pushed: null, sentReply: null, n: 0, pickStart: null, polls: [], gate: null };
   const reply = opts.reply ?? ((p, o) => {
     if (isUpload(p, o)) {
@@ -134,6 +134,8 @@ function rig(opts = {}) {
     cols: () => 120,
     clearBox: (v) => { log.clear.push(v); log.order.push('clearBox'); },
     focusBox: () => { log.focus += 1; },
+    view: (o) => { log.views.push(o); }, // session.js opens the image viewer here (0.5.1 C)
+    get: async (p) => { log.gets.push(p); return reply(p, { method: 'GET' }); },
     read: opts.read ?? (async () => 'QUJD'),
     sleep: async (ms) => { log.sleeps.push(ms); },
   };
@@ -1740,11 +1742,11 @@ describe('public/attach.js source', () => {
     assert.match(c, /\.textContent/, 'strings from files and the server are text');
   });
 
-  test('(+) it reaches the server only through the io the page gives it: no route string of its own (tier separation), five routes asked of io.path', () => {
+  test('(+) it reaches the server only through the io the page gives it: no route string of its own (tier separation), six routes asked of io.path', () => {
     const c = code(SRC);
     assert.doesNotMatch(c, /\/api\//, 'ui.test.js: only the app-tier modules name /api/app, and session.js builds the paths');
-    for (const call of ["io.path('attachments')", "io.path('attach-send')", 'io.path(`attachments/${id}`)', "io.path('attachments/pick')", 'io.path(`attachments/pick/${reqId}`)']) assert.ok(c.includes(call), call);
-    assert.equal([...c.matchAll(/io\.path\(/g)].length, 5, 'the upload, the send, the delete, and the chooser start and poll paths only');
+    for (const call of ["io.path('attachments')", "io.path('attach-send')", 'io.path(`attachments/${id}`)', "io.path('attachments/pick')", 'io.path(`attachments/pick/${reqId}`)', 'io.path(`attachments/${chip.id}/image`)']) assert.ok(c.includes(call), call);
+    assert.equal([...c.matchAll(/io\.path\(/g)].length, 6, 'the upload, the send, the delete, the chooser start and poll, and the image (viewer) paths only');
   });
 
   test('(−) the page has no webview file input anywhere: attach.js and session.html hold no att-input, no type="file", no input.click()', () => {
@@ -1815,7 +1817,7 @@ describe('session.html: the markup of section 8.1', () => {
 });
 
 describe('session.css: the rules of section 8.7, tokens only', () => {
-  const rules = CSS.slice(CSS.indexOf('.att-tray')).replace(/\/\*[\s\S]*?\*\//g, '');
+  const rules = CSS.slice(CSS.indexOf('.att-tray'), CSS.indexOf('/* 0.5.1 C, E, H, I */')).replace(/\/\*[\s\S]*?\*\//g, ''); // the 0.5.1 block at the end has its own scan (session-ui.test.js)
 
   test('(+) the tray, chip, name, meta, remove and drop rules exist', () => {
     assert.ok(CSS.indexOf('.att-tray') > 0);
@@ -1976,5 +1978,128 @@ describe('the static list and the desktop shell', () => {
     assert.doesNotMatch(lib, /on_drag_drop|DragDropEvent|WindowEvent::DragDrop/);
     assert.match(lib, /\.on_navigation\(/);
     assert.match(lib, /NewWindowResponse::Deny/);
+  });
+});
+
+// ---- 0.5.1 C: a ready image chip opens the viewer (design DES-A 2.8) -------------------------------------------------------------
+
+describe('0.5.1 C: a ready image chip shows its name as a button that opens the viewer', () => {
+  const upload = (type) => (p, o) => (isUpload(p, o) ? { status: 200, body: { id: uploadId(1), type, size: 5000 } } : { status: 200, body: { removed: true } });
+  const nameOf = (li) => li.kids[1];
+
+  test('(+) a ready PNG chip: button.att-n.att-open "View x.png" in the name\'s place (same four children), the name as text and title', async () => {
+    const r = rig();
+    await r.add(file('x.png', 5000));
+    const [li] = r.chips();
+    const n = nameOf(li);
+    assert.equal(n.tag, 'button');
+    assert.equal(n.attrs.type, 'button');
+    assert.equal(n.className, 'att-n att-open');
+    assert.equal(n.attrs['aria-label'], 'View x.png');
+    assert.equal(n.attrs.title, 'x.png');
+    assert.equal(n.textContent, 'x.png');
+    assert.equal(li.kids.length, 4, 'holder, name, meta, remove');
+    assert.deepEqual(li.kids.map((k) => k.className), ['att-i', 'att-n att-open', 'att-m', 'att-x']);
+    assert.equal(view(li).name, 'x.png');
+    assert.equal(view(li).meta, '123 B');
+  });
+
+  test('(+) a click calls io.view with the name, the size line, the button as opener and a load() that GETs attachments/<id>/image through io.get', async () => {
+    const r = rig();
+    await r.add(file('x.png', 5000));
+    const n = nameOf(r.chips()[0]);
+    n.click();
+    assert.equal(r.log.views.length, 1);
+    const o = r.log.views[0];
+    assert.equal(o.name, 'x.png');
+    assert.equal(o.meta, '123 B');
+    assert.equal(o.opener, n);
+    assert.equal(r.log.gets.length, 0, 'nothing is fetched until the viewer asks');
+    const answer = await o.load();
+    assert.deepEqual(r.log.gets, [`/api/app/pane/%257/attachments/${uploadId(1)}/image`]);
+    assert.equal(answer.status, 200);
+  });
+
+  test('(+) each of the four image types gets the button', async () => {
+    for (const type of ['png', 'jpeg', 'gif', 'webp']) {
+      const r = rig({ reply: upload(type) });
+      await r.add(file('pic.bin', 5000));
+      assert.equal(nameOf(r.chips()[0]).tag, 'button', type);
+    }
+  });
+
+  test('(−) an uploading chip keeps the plain name: no button until the upload is ready', async () => {
+    let release;
+    const r = rig({ read: () => new Promise((resolve) => { release = () => resolve('QUJD'); }) });
+    r.els.composer.fire('paste', { clipboardData: { files: [file('x.png', 5000)] } });
+    await settle();
+    const [li] = r.chips();
+    assert.equal(li.attrs['data-s'], 'uploading');
+    assert.equal(nameOf(li).tag, 'span');
+    release();
+    await settle();
+    assert.equal(r.chips()[0].attrs['data-s'], 'ready');
+    assert.equal(nameOf(r.chips()[0]).tag, 'button', 'ready now');
+  });
+
+  test('(−) a failed chip (credential name, or a server error) keeps the plain name', async () => {
+    const r = rig();
+    await r.add(file('.env', 10));
+    assert.equal(r.chips()[0].attrs['data-s'], 'failed');
+    assert.equal(nameOf(r.chips()[0]).tag, 'span');
+    const bad = rig({ reply: () => ({ status: 500, body: null }) });
+    await bad.add(file('x.png', 10));
+    assert.equal(bad.chips()[0].attrs['data-s'], 'failed');
+    assert.equal(nameOf(bad.chips()[0]).tag, 'span');
+  });
+
+  test('(−) PDF and text chips keep the plain name (the viewer shows images only)', async () => {
+    for (const [type, name] of [['pdf', 'a.pdf'], ['text', 'notes.md']]) {
+      const r = rig({ reply: upload(type) });
+      await r.add(file(name, 5000));
+      assert.equal(r.chips()[0].attrs['data-s'], 'ready');
+      assert.equal(nameOf(r.chips()[0]).tag, 'span', type);
+      assert.equal(r.log.views.length, 0);
+    }
+  });
+
+  test('(−) a server answer with an id or type outside the rules never gets a button', async () => {
+    for (const body of [{ id: 'nothex', type: 'png', size: 5 }, { id: uploadId(1), type: 'svg', size: 5 }]) {
+      const r = rig({ reply: (p, o) => (isUpload(p, o) ? { status: 200, body } : { status: 200, body: null }) });
+      await r.add(file('x.png', 5000));
+      assert.equal(nameOf(r.chips()[0]).tag, 'span', JSON.stringify(body));
+    }
+  });
+
+  test('(+) a repaint (the tray locks while a send is on its way, and unlocks when it fails) keeps the same button, so focus on it is not lost', async () => {
+    const reply = (p, o) => {
+      if (isUpload(p, o)) return { status: 200, body: { id: uploadId(1), type: 'png', size: 123 } };
+      if (isSend(p, o)) return { status: 500, body: null };
+      return { status: 200, body: { removed: true } };
+    };
+    const r = rig({ reply });
+    await r.add(file('x.png', 5000));
+    const before = nameOf(r.chips()[0]);
+    await r.att.send('hi');
+    assert.equal(sends(r).length, 1, 'the send ran, and failed');
+    assert.equal(r.chips().length, 1, 'the chip stays after a failed send');
+    assert.equal(nameOf(r.chips()[0]), before, 'the same element, not a new button');
+    assert.equal(r.chips()[0].kids.length, 4);
+  });
+
+  test('(−) removing the chip takes its button with it', async () => {
+    const r = rig();
+    await r.add(file('x.png', 5000));
+    const [li] = r.chips();
+    const x = li.kids[3];
+    x.click();
+    assert.equal(r.chips().length, 0);
+    assert.ok(!r.tray.kids.includes(li), 'the chip, and with it the button, left the tray');
+  });
+
+  test('(+) session.js hands the tray the viewer (view) and the GET helper (get)', () => {
+    const call = code(SESSION).match(/createAttachTray\(\{[\s\S]*?\n\}\);/)?.[0] ?? '';
+    assert.match(call, /\bview:\s*\(o\)\s*=>\s*imageViewer\(\)\.open\(o\)/);
+    assert.match(call, /\bget:\s*call\b/);
   });
 });

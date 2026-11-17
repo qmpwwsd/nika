@@ -83,10 +83,21 @@ the history hint all follow) leaves the block out **only when every one of these
 reads `unknown` (fail closed):
 
 1. The last non-blank row may be the overflow row `  ↓ <n> more` (two spaces, `↓`, a number, `more`); it is accepted only there.
-2. Above it, one or more agent rows: two spaces (or the hover pointer, below), `◯`, one word (the agent type), two spaces, the
-   label, a space, then the elapsed time (`5s`, `1m 11s`, `2h 3m 4s`) and, optionally, ` · ↑ <n> tokens` or ` · ↓ <n> tokens`
-   (`<n>` is digits with at most one dot and an optional `k` or `m`). A row is recognised by this fixed prefix and suffix, never
-   by the label: the label is text the model writes.
+2. Above it, one or more agent rows: two spaces (or the hover pointer, below), `◯`, one space, one word (the agent type: no space in it),
+   exactly two spaces, then text with at least one character that is not a space (trailing spaces are padding). A row is recognised
+   by this fixed prefix only (0.5.1, K2); what follows the two spaces is never read, because it is text the model writes and its end
+   varies. Every ending seen live is therefore accepted without being listed:
+   - the label, a gap and the elapsed time (`5s`, `1m 11s`, `2h 3m 4s`) and, optionally, ` · ↑ <n> tokens` or ` · ↓ <n> tokens`
+     (`<n>` is digits with at most one dot and an optional `k` or `m`), 2.1.325;
+   - a stopped agent: the label, then `stopped · <elapsed>` and optionally the tokens, 2.1.326;
+   - an agent whose turn ended while its own background shell runs: `waiting on <n> shell(s) · <label> · since <h:mm> AM|PM`
+     (the label moved into the status, no elapsed time; plain space before AM or PM), 2.1.326;
+   - the agent's current activity (text the agent wrote, for example `Closing a browser session`) with **nothing after it**, then
+     spaces to the pane width: seen at 64 columns, 2.1.326. Either a narrow pane cuts the suffix or the row shows the activity; both are normal.
+   Reading only the prefix is safe because of the other gates: the rows count only as the bottom of the screen, directly under
+   `⏺ main`, one blank row and a mode line or a dialog's last row. A row of the same shape anywhere else is not cut, and a prefix
+   that is off (another glyph, an indent of one or three spaces, a type with a space, one space or a no-break space after the type,
+   no text after the two spaces, a line separator in the text) is no row, so the footer reads `unknown`.
 3. Above them, exactly `  ⏺ main` (two spaces, or the hover pointer, below). Across `main` and the agent rows at most one row
    starts with the pointer; two or more leave the block uncut.
 4. Above that, exactly one blank row.
@@ -102,6 +113,10 @@ whole block goes when none is left; at most five agent rows, then `  ↓ <n> mor
 label changes while the agent works; at 60 columns the label and the footer are cut with `…` and no row wraps; `⏺ main` is bold and
 the agent rows are fg 246, but nika reads text only. In a pane of 5 to 11 rows tmux clips Claude's bottom, so footer and list are
 simply not on the screen.
+
+The mode line itself may end in more segments while a list shows: `-- INSERT -- ⏵⏵ auto mode on · PR #17 · 3 shells` (2.1.326, a 64-column pane).
+Only the start of the row is read (the token after the optional `-- INSERT --` and glyphs), so `· PR #<n>` and `· <n> shell(s)` need no handling and every mode
+reads the same with them (`test/mode.test.js`, K2 note 1).
 
 Hover pointer (Claude Code 2.1.325, 171 x 45 and 120 x 40, spike D1-S): on the `⏺ main` row or an agent row under the mouse, columns
 0-1 read `❯` (U+276F) and then a plain space (0x20; the input box uses a no-break space, the list does not) instead of two spaces.
@@ -1018,6 +1033,22 @@ So nika types at most 700 characters or 2 newlines at a time and waits about 300
 `CHUNK_NEWLINES`, `CHUNK_GAP_MS`; the keys route chunks a text of 701 to 1024 characters the same way). 1023 and 1024 printable
 characters sent that way arrived as two chunks about 330 ms apart and read back exactly.
 
+**Pictures in the transcript (0.5.1, C; [ADR 0020](../adr/0020-images-in-the-app-tier.md), `docs/security.md` T59)**
+
+What nika reads from a transcript line to show a picture (`src/collect/history.js`, `src/image.js`; the routes are in `api-app.md`):
+
+- A message's `content` array holds, next to its `text` blocks, `{ "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": "<base64>" } }`
+  for a pasted or attached image (spike S4). The text block `[Image #N]` stays next to it: the history shows the text entry and the image entry side by side, one each.
+- A `tool_result` block's `content` may be an array of parts: `text` parts and `image` parts of the same shape (a Read of a PNG). nika lists up to 8 of the first 1000 parts
+  as `images[]` of the result's entry and counts the rest.
+- Only `source.type: "base64"` and a `media_type` of exactly `image/png`, `image/jpeg`, `image/gif` or `image/webp` are shown. A `url` or `file` source, SVG and every other type
+  list as an image entry with no media type and answer 415 on the image route. The bytes must start with the signature of the declared type: PNG `89 50 4E 47 0D 0A 1A 0A`,
+  JPEG `FF D8 FF`, GIF `GIF87a` or `GIF89a`, WebP `RIFF` + four size bytes + `WEBP`.
+- Such a line is large (a screenshot is megabytes of base64 on one line): lines up to 16 MiB are read whole, longer ones are skipped (T60). The transcript is Claude's storage and
+  is only read, never changed.
+- Verified so far: the user-message form (spike S4) and, by fixtures written from that shape, the tool-result form. The live check of a Read of a PNG through nika's window is
+  the design's check 3 for 0.5.1; until it is done the tool-result part shape is "as the API defines tool_result content", not "seen in a capture".
+
 **Not verified**
 
 - A message with a large image (several MB) submitted to a model (only the paste and the box were checked).
@@ -1314,6 +1345,23 @@ layout of the form; the first `Down` onto a single-select text row on a plain pa
 INSERT or a prior probe); `Enter` after text on the plan's free-text option; Stop and End during a long busy turn with a real subagent list
 (only the status line and the shells pill were tried); a taller dialog than the pane at the fit's smallest size (it reads `cut`; since F16 the page asks for more rows then, and how Claude redraws the dialog at 42, 84 or 120 rows, and how
 tmux shows a window taller than a terminal that also shows it, are not verified against a real Claude).
+
+### 13.8 `top`: where the crop of the terminal view starts (0.5.1, E)
+
+While nika shows its own panel for a permission prompt, a question or plan dialog or the feedback survey, the page may draw only the rows of the terminal view from a
+given row down, so Claude's old transcript rows above the panel are not shown twice. The capture names that row as `top`, an index into `rows` (`api-app.md`, capture). It is
+derived from the rows the panel was read from and is display only: it is in no `sig` or identity, and no key, guard or route is decided on it.
+
+| Panel | `top` is the row of |
+|---|---|
+| permission prompt | the question, the row directly above option `1.` (`promptTopRow` in `src/mode.js`; same window and cuts as `promptFromRows`) |
+| question step (13.1) | the rule row directly above the tab strip |
+| review step (13.2) | the same rule row above the tab strip |
+| plan approval (13.3) | the single plain rule row under the plan's closing dashed rule; the plan text stays above it |
+| feedback survey (10.13) | the question row `● How is Claude doing this session? (optional)` |
+
+A screen that does not read exactly (`unreadable`, `terminal`, a nudge, bypass in the guard's window) carries no `top`, and the page never crops it. Rows below `top` are
+only not drawn; Type into pane shows the whole screen.
 
 ## 14. Claude's own subagents: their files while they run (0.5, W8)
 

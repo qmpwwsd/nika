@@ -10,9 +10,11 @@ import { loadConfig, removeProject, updateSettings, getProjectConfig, updateProj
 import { openRegular, isRealDir } from './fsafe.js';
 import { configDir, stateDir } from './paths.js';
 import { clean } from './text.js';
-import { UUID, SUBAGENT_ID, PANE_ID, PROJECT_KEY, CLAUDE_COMMAND, COMMAND_NAME } from './ids.js';
+import { UUID, SUBAGENT_ID, PANE_ID, PROJECT_KEY, CLAUDE_COMMAND, COMMAND_NAME, IMAGE_REF } from './ids.js';
+import { readImage } from './collect/history.js';
+import { IMAGE_MEDIA } from './image.js';
 import { mapLimit } from './util.js';
-import { MODE_TARGETS, bypassWindow, modeFromRows, promptFromRows, surveyOrFollowUpShown } from './mode.js';
+import { MODE_TARGETS, bypassWindow, modeFromRows, promptFromRows, promptTopRow, surveyOrFollowUpShown } from './mode.js';
 import { MODEL_CATALOG } from './models.js';
 import { matches as etagMatches } from './mirror.js';
 import { createSessionControl, promptSig, insertShown, editMode, readDraft, checkDraftBody, checkSubmitBody, checkSuggestionBody, checkDialogBody, checkSurveyBody } from './session-control.js';
@@ -38,6 +40,7 @@ const CAP = { small: 4 * 1024, submit: 1024, settings: 16 * 1024, keys: 20 * 102
 // and Shift-Tab (BTab) can pick "allow for this session".
 const answersPrompt = (b) => (Array.isArray(b.keys) && (b.keys.includes('Enter') || b.keys.includes('BTab'))) || (typeof b.text === 'string' && /[0-9]/.test(b.text)) || (b.paste !== undefined && b.paste !== null);
 const isPlain = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+const IMAGE_TYPE_NAMES = Object.values(IMAGE_MEDIA); // png, jpeg, gif, webp: the types an image route may answer with
 const err = (status, error, message) => ({ status, body: { error, message } });
 // App copy (ADR 0011): fixed codes and texts only, never a path or OS error text (the module's errors carry just a code)
 const COPY_ERRORS = {
@@ -108,7 +111,8 @@ async function listTemplates(dir) {
  *                           createSessionControl, a test seam for the factory in session-control.js;
  *                           createFit, the same for the factory in fit.js;
  *                           createScroll, the same for the factory in scroll.js;
- *                           attachments, the attachment store (src/attachments.js, built by appio.js: save, lookup, remove, markSent);
+ *                           readImage, a test seam for the one in collect/history.js (the picture a history entry names; default: the real one);
+ *                           attachments, the attachment store (src/attachments.js, built by appio.js: save, lookup, remove, markSent, readImage);
  *                           createAttachSend, the same seam for the factory in attach-send.js;
  *                           log(line), where the attachment lines (`nika: attachments: <code>`) go: appio's stderr, the same as the store's (default: process.stderr) }
  * @returns {(req, res, url, port) => Promise<boolean>} true when it handled the request (every /api/app/* request)
@@ -177,7 +181,8 @@ export function createAppApi({ secret, ctx, deps }) {
    * { mode, modeConfirmed, prompt } of a pane's screen (contract §3). A footer that reads is shown and remembered; when it
    * does not (a prompt or dialog covers it) the last remembered mode, else the mode a nika-started pane was launched with,
    * is shown with modeConfirmed false; with neither the mode is `unknown`. The prompt carries the sig the answer route checks and
-   * `bypass`, the answer route's own window test, so the page hides the buttons exactly when the route would refuse them.
+   * `bypass`, the answer route's own window test, so the page hides the buttons exactly when the route would refuse them. It also carries `top` (0.5.1, E),
+   * the screen row of the prompt's question: display only, the page crops the terminal view there; no route reads it back and it is in no sig.
    */
   function readScreen(id, rows) {
     const footer = modeFromRows(rows);
@@ -185,7 +190,7 @@ export function createAppApi({ secret, ctx, deps }) {
     if (footer !== 'unknown') held.set(id, footer);
     const mode = footer !== 'unknown' ? footer : (held.get(id) ?? ctx.started.get(id)?.mode ?? 'unknown');
     const prompt = promptFromRows(rows);
-    return { mode, modeConfirmed: footer !== 'unknown' || mode === 'unknown', prompt: prompt && { ...prompt, sig: promptSig(rows), bypass: bypassWindow(rows) } };
+    return { mode, modeConfirmed: footer !== 'unknown' || mode === 'unknown', prompt: prompt && { ...prompt, sig: promptSig(rows), bypass: bypassWindow(rows), top: promptTopRow(rows) } };
   }
 
   // Registry state of a pane's live agent. `{ fresh: true }`: the caller is about to act on the answer (a second Escape, an Enter), so the 1 s snapshot is dropped first.
@@ -548,6 +553,29 @@ export function createAppApi({ secret, ctx, deps }) {
     return deps.readSubagentHistory(id, agentId, { before: query.get('before') ?? undefined, limit: query.get('limit') ?? undefined }, { claudeDir: ctx.claudeDir, cache: historyCache, now: ctx.now });
   });
 
+  // 0.5.1, C (T59): the picture a history entry names, as { type, data } (canonical base64 of the decoded bytes). The request names an offset in
+  // the transcript, never a path: the module finds the file in nika's own index. Order: session id, (agent id,) ref, then the module. Every miss
+  // is one 404 `no such image` (inside the module as here), so a ref is no oracle for what a transcript holds. The ref's colon may arrive percent-encoded.
+  const readImg = deps.readImage ?? readImage;
+  const imageOpts = () => ({ claudeDir: ctx.claudeDir, cache: historyCache, now: ctx.now });
+  route('GET', /^\/api\/app\/session\/([^/]+)\/image\/([^/]+)$/, 0, async ({ params }) => {
+    const id = param(params[0], UUID);
+    if (!id) return err(404, 'not_found', 'no such session');
+    const ref = param(params[1], IMAGE_REF);
+    if (!ref) return err(404, 'not_found', 'no such image');
+    return readImg(id, null, ref, imageOpts());
+  });
+
+  route('GET', /^\/api\/app\/session\/([^/]+)\/subagents\/([^/]+)\/image\/([^/]+)$/, 0, async ({ params }) => {
+    const id = param(params[0], UUID);
+    if (!id) return err(404, 'not_found', 'no such session');
+    const agentId = param(params[1], SUBAGENT_ID);
+    if (!agentId) return err(404, 'not_found', 'no such subagent');
+    const ref = param(params[2], IMAGE_REF);
+    if (!ref) return err(404, 'not_found', 'no such image');
+    return readImg(id, agentId, ref, imageOpts());
+  });
+
   route('GET', /^\/api\/app\/pane\/([^/]+)\/capture$/, 0, async ({ params, req }) => {
     const { id, failure } = await eligiblePane(params[0]);
     if (failure) return failure;
@@ -686,8 +714,8 @@ export function createAppApi({ secret, ctx, deps }) {
   });
 
   // Attachments (0.5, W2): upload (JSON { name, data }, base64), delete before sending, and the send that pastes the stored paths into Claude's input
-  // and presses Enter. App tier only. Order: body 400, pane 404, project 409, then the store or the sender. No route serves a file back, and
-  // nothing of name, data, path or id is logged: a store error is logged as its code only.
+  // and presses Enter. App tier only. Order: body 400, pane 404, project 409, then the store or the sender. Exactly one route serves a stored file
+  // back, the image read below (T61), and nothing of name, data, path or id is logged: a store error is logged as its code only.
   route('POST', /^\/api\/app\/pane\/([^/]+)\/attachments$/, UPLOAD_CAP, async ({ params, body }) => {
     const bad = checkUploadBody(body);
     if (bad) return bad;
@@ -723,6 +751,26 @@ export function createAppApi({ secret, ctx, deps }) {
     const reqId = param(params[1], UUID);
     const answer = id && reqId && deps.picker.filesStatus(id, reqId);
     return answer ? { status: 200, body: answer } : err(404, 'not_found', 'no such chooser request'); // unknown and another pane's read alike
+  });
+
+  // 0.5.1, C (T61): the one read-back of a stored file. The picture of an UNSENT image attachment of this pane, as { type, data }, for the composer's
+  // thumbnail. Order: pane 404 (eligible Claude panes only), id 404, then the store, which answers null for every miss (unknown, another pane's, sent, not
+  // an image, gone, changed on disk): one 404 `no such image`, no oracle. Registered after the chooser poll so that /attachments/pick/image is the poll's.
+  // The answer is rebuilt as exactly { type, data } and only for the four image types; a throw is logged as its code only.
+  route('GET', /^\/api\/app\/pane\/([^/]+)\/attachments\/([^/]+)\/image$/, 0, async ({ params }) => {
+    const { id, failure } = await eligiblePane(params[0]);
+    if (failure) return failure;
+    const attId = param(params[1], ID);
+    if (!attId) return err(404, 'not_found', 'no such image');
+    let found;
+    try {
+      found = await deps.attachments.readImage(id, attId);
+    } catch (e) {
+      attachLog(logLine(e));
+      return err(404, 'not_found', 'no such image');
+    }
+    if (!isPlain(found) || !IMAGE_TYPE_NAMES.includes(found.type) || typeof found.data !== 'string') return err(404, 'not_found', 'no such image');
+    return { status: 200, body: { type: found.type, data: found.data } };
   });
 
   // Not eligibility-gated: the pane may be gone, and the file must still go. false for an unknown, another pane's or an already sent id (no oracle).

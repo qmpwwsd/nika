@@ -3,7 +3,8 @@
 // is opened through fsafe (O_NOFOLLOW, regular, owned by this user, single link). Every string is agent-controlled, so
 // text goes through cleanBlock() and the page renders it with textContent.
 import { openRegular } from '../fsafe.js';
-import { SUBAGENT_ID, TOOL_USE_ID, UUID } from '../ids.js';
+import { IMAGE_REF, SUBAGENT_ID, TOOL_USE_ID, UUID } from '../ids.js';
+import { IMAGE_MEDIA, base64Size, checkImageBlock } from '../image.js';
 import { clean, cleanBlock } from '../text.js';
 import { readSubagents, subagentTranscripts } from './subagents.js';
 import { indexTranscripts } from './transcripts.js';
@@ -15,6 +16,11 @@ const ENTRY_MAX = 32 * 1024; // bytes per entry text
 const MAX_READS = 4;
 const INDEX_TTL_MS = 10_000;
 const LINKED_TOOLS = new Set(['Agent', 'Task']); // Claude's subagent tool: `Agent` in 2.1.325, `Task` in older builds
+const LINE_MAX = 16 * 1024 * 1024; // 0.5.1 (C): one transcript line (newline included) is read whole up to this size; a longer line is skipped
+const SCAN_MAX = 32 * 1024 * 1024; // how far back the start of a long line is searched
+const IMAGES_MAX = 8; // pictures listed per tool result; the rest are counted in `imagesMore`
+const PART_MAX = 1000; // parts of a tool result looked at for pictures (the part index in a ref has at most three digits)
+const LONG_CACHE_MAX = 16; // remembered long-line pages
 
 /** Runs at most `max` async tasks at once; the rest wait in FIFO order. A slot is released even when a task throws. */
 export function createLimiter(max) {
@@ -34,6 +40,9 @@ export function createLimiter(max) {
 }
 
 const limited = createLimiter(MAX_READS); // module-level: shared by every request
+// One long-line read or one picture read at a time across the server (T60). Always taken inside a `limited` slot, never the other way round, so
+// the two cannot wait for each other.
+const longLimited = createLimiter(1);
 
 const fail = (status, error, message) => ({ status, body: { error, message } });
 const notFound = (message = 'no such session') => fail(404, 'not_found', message);
@@ -88,13 +97,37 @@ function fit(raw) {
   return { text: cleanBlock(s) ?? '', truncated };
 }
 
+/**
+ * `{ media, size }` of an `image` block: the name of the media type when the source is base64 and its media type is exactly one of the four
+ * (`png`, `jpeg`, `gif`, `webp`), else null; `size` is the decoded size estimated from the base64 length (null when the data is not a string or
+ * its length is not a multiple of 4, and when `media` is null). Nothing is decoded or tested here: this runs for every block of every page.
+ */
+function imageMeta(b) {
+  const s = b.source;
+  if (s === null || typeof s !== 'object' || s.type !== 'base64' || typeof s.media_type !== 'string' || !Object.hasOwn(IMAGE_MEDIA, s.media_type)) {
+    return { media: null, size: null };
+  }
+  return { media: IMAGE_MEDIA[s.media_type], size: base64Size(s.data) };
+}
+
+/** The `image` parts among the first PART_MAX parts of a tool result's content: `{ list: [{ j, media, size }] (at most IMAGES_MAX), more }`. */
+function resultImages(content) {
+  if (!Array.isArray(content)) return { list: [], more: 0 };
+  const found = [];
+  for (let j = 0; j < content.length && j < PART_MAX; j += 1) {
+    const p = content[j];
+    if (p && typeof p === 'object' && p.type === 'image') found.push({ j, ...imageMeta(p) });
+  }
+  return { list: found.slice(0, IMAGES_MAX), more: Math.max(0, found.length - IMAGES_MAX) };
+}
+
 function resultText(content) {
   if (typeof content === 'string') return content;
   if (!Array.isArray(content)) return '';
   return content.filter((c) => c?.type === 'text' && typeof c.text === 'string').map((c) => c.text).join('\n');
 }
 
-/** One content block → { kind, raw, tool?, call? } or null when it carries nothing worth showing. */
+/** One content block -> { kind, raw, tool?, call?, media?, size?, images?, more? } or null when it carries nothing worth showing. */
 function fromBlock(b) {
   if (!b || typeof b !== 'object') return null;
   if (b.type === 'text') return typeof b.text === 'string' ? { kind: 'text', raw: b.text } : null;
@@ -103,7 +136,11 @@ function fromBlock(b) {
     const call = LINKED_TOOLS.has(b.name) && typeof b.id === 'string' && TOOL_USE_ID.test(b.id) ? b.id : null;
     return { kind: 'tool_use', raw: JSON.stringify(b.input) ?? '', tool: clean(b.name, 100), call };
   }
-  if (b.type === 'tool_result') return { kind: 'tool_result', raw: resultText(b.content) };
+  if (b.type === 'image') return { kind: 'image', raw: '', ...imageMeta(b) };
+  if (b.type === 'tool_result') {
+    const { list, more } = resultImages(b.content);
+    return { kind: 'tool_result', raw: resultText(b.content), images: list, more };
+  }
   return null;
 }
 
@@ -121,10 +158,18 @@ function entriesOf(line, off) {
     const part = fromBlock(b);
     if (!part) continue;
     const { text, truncated } = fit(part.raw);
-    if (!text && part.kind !== 'tool_result') continue; // empty text/thinking is noise; an empty tool result still happened
+    if (!text && part.kind !== 'tool_result' && part.kind !== 'image') continue; // empty text/thinking is noise; an empty tool result or a picture still happened
     const entry = { id: `${off}:${i}`, at, role: line.type, kind: part.kind, text };
     if (part.kind === 'tool_use' && part.tool) entry.tool = part.tool;
+    if (part.kind === 'image') {
+      entry.media = part.media;
+      entry.size = part.size;
+    }
     entry.truncated = truncated;
+    if (part.images?.length) {
+      entry.images = part.images.map((p) => ({ ref: `${off}:${i}.${p.j}`, media: p.media, size: p.size }));
+      entry.imagesMore = part.more;
+    }
     if (part.call) CALL_ID.set(entry, part.call);
     out.push(entry);
   }
@@ -134,7 +179,8 @@ function entriesOf(line, off) {
 /**
  * Entries of the window bytes [start, start + buf.length). The first line is skipped unless the window starts at 0
  * (it is cut). Lines are kept whole: when `limit` falls inside a line, the whole line stays, so no entry is lost between
- * pages; a page can therefore hold a few entries more than `limit`. Lines over one window are skipped.
+ * pages; a page can therefore hold a few entries more than `limit`. `noLine` is true when the window starts inside a line and holds no complete
+ * line (it lies inside one line that is longer than the window, 0.5.1): the caller then reads that line whole (longPage).
  */
 function pageOf(buf, start, limit) {
   let from = 0;
@@ -169,7 +215,82 @@ function pageOf(buf, start, limit) {
   // the window start when it holds none (one line longer than the window), so every page moves back.
   const next = kept.length ? kept[0].off : start + (from < buf.length ? from : 0);
   const exhausted = start === 0 && i === 0; // the window reaches the file start and every entry line in it is kept
-  return { entries: kept.flatMap((l) => l.entries), nextBefore: exhausted || next === 0 ? null : next };
+  return { entries: kept.flatMap((l) => l.entries), nextBefore: exhausted || next === 0 ? null : next, noLine: start > 0 && from >= buf.length };
+}
+
+/** Fills `buf` from the file at `start` (up to `len` bytes); returns the number of bytes read, fewer only when the file shrank. */
+async function fill(handle, buf, start, len) {
+  let got = 0;
+  while (got < len) {
+    const { bytesRead } = await handle.read(buf, got, len - got, start + got);
+    if (bytesRead === 0) break;
+    got += bytesRead;
+  }
+  return got;
+}
+
+/**
+ * The start of the line that ends at `end`, by scanning back from `end - 2` (the byte at `end - 1` is the line's own newline, or the last byte of
+ * a line cut by `end`) in WINDOW chunks for the last newline: the offset after it, 0 when the file start is reached first, null when SCAN_MAX
+ * bytes hold no newline. Throws when the file shrank under the scan.
+ */
+async function lineStart(handle, end) {
+  const top = end - 1;
+  const floor = Math.max(0, top - SCAN_MAX);
+  const chunk = Buffer.allocUnsafe(WINDOW);
+  for (let hi = top; hi > floor;) {
+    const lo = Math.max(floor, hi - WINDOW);
+    if (await fill(handle, chunk, lo, hi - lo) < hi - lo) throw new Error('transcript shrank');
+    const nl = chunk.lastIndexOf(0x0a, hi - lo - 1);
+    if (nl >= 0) return lo + nl + 1;
+    hi = lo;
+  }
+  return floor === 0 ? 0 : null;
+}
+
+/** The page for the one line that ends at `end`: its entries (none for a line that is cut, still being written, or over LINE_MAX) and where the next page ends. */
+async function readLongLine(handle, end) {
+  const ls = await lineStart(handle, end);
+  if (ls === null) return { entries: [], nextBefore: Math.max(0, end - SCAN_MAX) || null }; // moves back as a window would
+  if (end - ls > LINE_MAX) return { entries: [], nextBefore: ls || null };
+  let entries = [];
+  try {
+    const v = JSON.parse((await readRange(handle, ls, end)).toString('utf8'));
+    if (v && typeof v === 'object') entries = entriesOf(v, ls);
+  } catch {
+    // a line cut by `end`, or one still being written
+  }
+  return { entries, nextBefore: ls || null };
+}
+
+/** Entry copies that keep the tool-use id of a call entry (CALL_ID is keyed by object) and share nothing mutable with the original. */
+function copyEntries(entries) {
+  return entries.map((e) => {
+    const c = { ...e };
+    if (e.images) c.images = e.images.map((p) => ({ ...p }));
+    if (CALL_ID.has(e)) CALL_ID.set(c, CALL_ID.get(e));
+    return c;
+  });
+}
+
+// Long-line pages already read, by `dev:ino:end` (entries only, never bytes), oldest dropped first. A transcript only grows, so the line that ends at
+// `end` stays the same once it has ended with a newline; a line still being written is never kept. Stored and returned as copies, taken before
+// linkSubagents adds `subagent` to the entries of the response.
+const longCache = new Map();
+
+/** The page for a window that lies inside one line (pageOf's `noLine`): from the cache, or read whole inside longLimited. `terminated`: the byte at `end - 1` is a newline. */
+function longPage(opened, end, terminated) {
+  return longLimited(async () => {
+    const key = `${opened.st.dev}:${opened.st.ino}:${end}`;
+    const hit = longCache.get(key);
+    if (hit) return { entries: copyEntries(hit.entries), nextBefore: hit.nextBefore };
+    const page = await readLongLine(opened.handle, end);
+    if (terminated) {
+      longCache.set(key, { entries: copyEntries(page.entries), nextBefore: page.nextBefore });
+      if (longCache.size > LONG_CACHE_MAX) longCache.delete(longCache.keys().next().value);
+    }
+    return page;
+  });
 }
 
 /**
@@ -205,7 +326,7 @@ function paging({ before, limit }) {
 
 /**
  * One page of the transcript at `file`, inside the shared limiter (4 reads in flight across both routes): open it through fsafe, read the
- * window that ends at `bef` (default the end), cut the page, close. `after(entries)` runs inside the same slot once the file is closed.
+ * window that ends at `bef` (default the end), cut the page (a window inside one long line is read whole, longPage), close. `after(entries)` runs inside the same slot once the file is closed.
  */
 function readPage(file, bef, lim, after) {
   return limited(async () => {
@@ -220,14 +341,16 @@ function readPage(file, bef, lim, after) {
       const end = bef ?? opened.st.size;
       if (end > opened.st.size) return fail(400, 'invalid', 'before is beyond the end of the transcript');
       const start = Math.max(0, end - WINDOW);
-      page = pageOf(await readRange(opened.handle, start, end), start, lim);
+      const win = await readRange(opened.handle, start, end);
+      page = pageOf(win, start, lim);
+      if (page.noLine) page = await longPage(opened, end, win[win.length - 1] === 0x0a);
     } catch {
       return notFound('transcript not readable');
     } finally {
       await opened.handle.close();
     }
     if (after) await after(page.entries);
-    return { status: 200, body: page };
+    return { status: 200, body: { entries: page.entries, nextBefore: page.nextBefore } };
   });
 }
 
@@ -267,4 +390,85 @@ export async function readSubagentHistory(sessionId, agentId, { before, limit } 
   if (!target) return notFound('no such subagent');
 
   return readPage(target, bef, lim);
+}
+
+/** Bytes of the line that starts at `off`, its newline included when it has one; null when that is more than LINE_MAX bytes (nothing more is read). */
+async function readLineAt(handle, off, size) {
+  const chunk = Buffer.allocUnsafe(WINDOW);
+  const pieces = [];
+  let total = 0;
+  for (let pos = off; pos < size;) {
+    const got = await fill(handle, chunk, pos, Math.min(WINDOW, size - pos));
+    if (got === 0) break;
+    const nl = chunk.subarray(0, got).indexOf(0x0a);
+    const take = nl >= 0 ? nl + 1 : got;
+    total += take;
+    if (total > LINE_MAX) return null;
+    pieces.push(Buffer.from(chunk.subarray(0, take)));
+    if (nl >= 0) break;
+    pos += got;
+  }
+  return Buffer.concat(pieces, total);
+}
+
+/** One picture of the transcript `file`: the line that starts at `off`, its block `i` and, for a tool result, its part `j`. Every miss is the same 404. */
+async function imageAt(file, off, i, j) {
+  const noImage = () => notFound('no such image');
+  let opened;
+  try {
+    opened = await openRegular(file);
+  } catch {
+    return noImage();
+  }
+  try {
+    const { handle, st } = opened;
+    if (off >= st.size) return noImage();
+    if (off > 0) {
+      const prev = Buffer.alloc(1);
+      const { bytesRead } = await handle.read(prev, 0, 1, off - 1);
+      if (bytesRead !== 1 || prev[0] !== 0x0a) return noImage(); // not the start of a line
+    }
+    const raw = await readLineAt(handle, off, st.size);
+    if (raw === null) return fail(413, 'too-large', 'image too large');
+    const v = JSON.parse(raw.toString('utf8'));
+    const content = v?.message?.content;
+    if ((v?.type !== 'user' && v?.type !== 'assistant') || !Array.isArray(content)) return noImage();
+    let part = content[i];
+    if (j !== null) {
+      if (part?.type !== 'tool_result' || !Array.isArray(part.content)) return noImage();
+      part = part.content[j];
+    }
+    if (part === null || typeof part !== 'object' || part.type !== 'image') return noImage();
+    const checked = checkImageBlock(part);
+    if (checked.error) return fail(checked.status, checked.error, checked.message);
+    return { status: 200, body: { type: checked.type, data: checked.bytes.toString('base64') } };
+  } catch {
+    return noImage(); // not JSON, or the file went away
+  } finally {
+    await opened.handle.close();
+  }
+}
+
+/**
+ * GET /api/app/session/:id/image/:ref and .../subagents/:agentId/image/:ref (0.5.1, C; T59): the picture a history entry names. `agentId` is null
+ * for the session's own transcript. `ref` is "<line offset>:<block>" or "<line offset>:<block>.<part>" (an entry id, or an `images[].ref`). Checks, in
+ * order: session id, agent id, ref, the session in the index, the agent in the listing, then the file inside one limited slot and one longLimited
+ * slot. Returns { status, body }: 200 `{ type, data }` (canonical base64 of the decoded bytes, never the transcript's own string), 404 `not_found`
+ * for every miss, 413 `too-large`, 415 `not-image` (checkImageBlock). The request names an offset, never a path.
+ */
+export async function readImage(sessionId, agentId, ref, { claudeDir, cache, now = Date.now } = {}) {
+  if (typeof sessionId !== 'string' || !UUID.test(sessionId)) return notFound();
+  if (agentId !== null && (typeof agentId !== 'string' || !SUBAGENT_ID.test(agentId))) return notFound('no such subagent');
+  const m = typeof ref === 'string' ? IMAGE_REF.exec(ref) : null;
+  if (!m) return notFound('no such image');
+
+  const clock = typeof now === 'function' ? now : Date.now;
+  const file = await findTranscript(claudeDir, cache, sessionId, clock);
+  if (!file) return notFound();
+  let target = file.path;
+  if (agentId !== null) {
+    target = (await subagentTranscripts(file)).get(agentId);
+    if (!target) return notFound('no such subagent');
+  }
+  return limited(() => longLimited(() => imageAt(target, Number(m[1]), Number(m[2]), m[3] === undefined ? null : Number(m[3]))));
 }

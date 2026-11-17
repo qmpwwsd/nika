@@ -13,13 +13,18 @@ const clean = (t) => t.replace(/\u00a0/g, ' ').trimEnd();
  * A frame for the matcher: the conversation rows (above Claude's input box) as texts, with the pane size and whether Claude's view is at its bottom (the capture's
  * `scrolled` is false). Claude's task list, pinned between the conversation and the box, is not conversation: it neither votes nor slides, so the frame ends at the
  * list's header row, `draft.box.tasks` (src/draft.js), when that is an integer from 0 to the box's top; anything else is ignored and the frame ends at the box.
+ * `crop` (0.5.1 E, crop.js cropOf's `top`) is the row where the mirror ends while nika's own panel stands in for Claude's dialog: the frame then ends at the
+ * smallest of the box, the list's header and the crop, and carries the crop (a whole number from 0 up, else null) so findShift can tell two crops apart.
  */
-export function frameOf(body, draft) {
+export function frameOf(body, draft, crop = null) {
   const rows = Array.isArray(body?.rows) ? body.rows : [];
-  const view = Math.min(rows.length, viewRowsOf(body, draft));
+  const view = Math.min(rows.length, viewRowsOf(body, draft, crop));
   const tasks = draft?.box?.tasks;
   const end = Number.isInteger(tasks) && tasks >= 0 && tasks <= view ? tasks : view;
-  return { texts: rows.slice(0, end).map((r) => clean(rowText(r))), end, cols: body?.cols, rows: rows.length, bottom: body?.scrolled === false };
+  return {
+    texts: rows.slice(0, end).map((r) => clean(rowText(r))), end, cols: body?.cols, rows: rows.length, bottom: body?.scrolled === false,
+    crop: Number.isInteger(crop) && crop >= 0 ? crop : null,
+  };
 }
 
 /** text -> index for the texts that occur exactly once and are not blank (-1: it occurs more than once). */
@@ -31,9 +36,12 @@ function uniques(texts) {
   return seen;
 }
 
-/** The shift between two frames: { k, votes, total, tie } or null when the frames differ in size. k > 0: the content moved down. */
+/**
+ * The shift between two frames: { k, votes, total, tie } or null when the frames differ in size or in crop (a crop that appears or goes between two frames
+ * never slides; a frame with no crop field counts as an uncropped one). k > 0: the content moved down.
+ */
 export function findShift(before, after) {
-  if (!before || !after || before.cols !== after.cols || before.rows !== after.rows) return null;
+  if (!before || !after || before.cols !== after.cols || before.rows !== after.rows || (before.crop ?? null) !== (after.crop ?? null)) return null;
   const a = uniques(before.texts);
   const b = uniques(after.texts);
   const count = new Map();

@@ -30,17 +30,24 @@ export const SHELL_FOOTER = /^\s{0,2}(?:-- INSERT --\s*)?! for shell mode/;
 const isModeLine = (text) => FOOTER.some((f) => f.match.test(text)) || BYPASS.test(text) || SHELL_FOOTER.test(text);
 
 // The list of running background subagents that Claude 2.1.325 draws BELOW the footer (spike S15; F2 live, 60 and 120 columns): one
-// blank row, `  <U+23FA> main`, one row per agent `  <U+25EF> <type>  <label>  <elapsed>[ <U+00B7> <arrow> <n> tokens]` and, when more than
-// five run, `  <U+2193> <n> more`. The rows are recognised by their fixed prefix and suffix, never by the label (the model writes it).
-// shortcut: the elapsed forms `1m`, `2h 3m 4s` and tokens such as `1.2m` were not seen (`5s`, `1m 11s`, `20.5k`, `300` were); they are
-// accepted by the same formatter's pattern. Upgrade if Claude draws another unit.
+// blank row, `  <U+23FA> main`, one row per agent `  <U+25EF> <type>  <text>` and, when more than five run, `  <U+2193> <n> more`. The rows are
+// recognised by their fixed prefix, never by the text (the model writes it, and Claude puts an elapsed time, a status or nothing at its end).
 // Columns 0-1 of `main` and of an agent row are two spaces, or, on the one row under the mouse (hover) or the one picked with the arrow
 // keys, the pointer U+276F and a plain space (spike D1-S, 2.1.325: no-break space was not seen there). Picking with the keys also
 // replaces the mode line with a hint, which gate 5 refuses; the overflow row never carries the pointer.
 const POINTER = '\u276f';
 const LIST_LEAD = `(?: {2}|${POINTER} )`;
 const MAIN_ROW = new RegExp(String.raw`^${LIST_LEAD}\u23fa main\s*$`);
-const AGENT_ROW = new RegExp(String.raw`^${LIST_LEAD}\u25ef \S+ {2}.* (?:\d+[dhm](?: \d+[hms])*|\d+s)(?: \u00b7 [\u2191\u2193] \d+(?:\.\d+)?[km]? tokens)?\s*$`);
+// An agent row is `<lead><U+25EF> <type>  <text>`: the glyph, ONE word as the type (no space in it), exactly two spaces, and at least one
+// character that is not a space somewhere after them; trailing spaces are padding. What follows the two spaces is not read, so every end Claude
+// has drawn is accepted without being listed: `<label>  <elapsed>[ <U+00B7> <arrow> <n> tokens]` (2.1.325), `<label>  stopped <U+00B7> <elapsed>[...]`,
+// `waiting on <n> shell(s) <U+00B7> <label> <U+00B7> since <h:mm> AM|PM` (K2, 2.1.326: the label moves into the status, no elapsed time) and, K2
+// note 1 (2.1.326, a pane 64 columns wide), the agent's current activity with nothing after it (a narrow pane cuts the suffix, or the row shows
+// the activity). Reading only the prefix is safe because the row counts only inside the block subagentEnd anchors from the bottom of the screen:
+// the last rows are agent rows, above them `<U+23FA> main`, above that one blank row, above that a mode line or a dialog end. A similar row anywhere
+// else is not cut. An earlier K2 draft read the waiting and elapsed endings exactly (hour 1 to 12, a count that agrees with its word); the owner's
+// live capture showed rows with no ending, so that strictness was dropped and the structural gates carry the check.
+const AGENT_ROW = new RegExp(String.raw`^${LIST_LEAD}\u25ef \S+ {2}.*\S\s*$`);
 const MORE_ROW = /^ {2}\u2193 \d+ more\s*$/;
 
 // Claude's question and plan dialogs (0.5, design W1 2.2 and 2.6). Their footers anchor a dialog on the screen. They live here, not in
@@ -294,9 +301,21 @@ export function rowText(row) {
  * `! for shell mode` line, the history hint).
  */
 export function lastNonBlank(rows, n) {
-  if (!Array.isArray(rows) || !Number.isInteger(n) || n < 1) return [];
+  return nonBlankAt(rows, n).texts;
+}
+
+/**
+ * The last n non-blank rows, as lastNonBlank selects them, with the screen row index of each: `{ texts, at }`, oldest first, `at[i]` the index in
+ * `rows` of `texts[i]`. Empty unless n is a positive integer. One selection for the texts and for their places (promptTopRow).
+ */
+function nonBlankAt(rows, n) {
+  if (!Array.isArray(rows) || !Number.isInteger(n) || n < 1) return { texts: [], at: [] };
   const texts = rows.map(rowText);
-  return texts.slice(0, footerEnd(texts) + 1).filter((t) => t.trim()).slice(-n);
+  const end = footerEnd(texts);
+  const at = [];
+  for (let x = 0; x <= end && x < texts.length; x += 1) if (texts[x].trim()) at.push(x);
+  const kept = at.slice(-n);
+  return { texts: kept.map((x) => texts[x]), at: kept };
 }
 
 // Claude's feedback survey takes the digits 0-3 as its answer, and a consent question after it takes 1-3: a draft that starts with a
@@ -387,8 +406,25 @@ const MAX_OPTIONS = 9;
  */
 export const promptFromRows = (rows) => promptOf(lastNonBlank(rows, PROMPT_ROWS));
 
+/**
+ * The screen row (an index into `rows`) of the permission prompt's question, the row directly above option `1.` that promptFromRows reads as its
+ * `question`, or null when no prompt parses (0.5.1, E). Display only: the page crops the terminal view there while nika shows its own prompt panel.
+ * It is never part of a sig, an identity or a guard, and no route reads it back. Same window and same cuts as promptFromRows (nonBlankAt).
+ */
+export function promptTopRow(rows) {
+  const { texts, at } = nonBlankAt(rows, PROMPT_ROWS);
+  const parts = promptParts(texts);
+  return parts === null ? null : at[parts.first - 1];
+}
+
 /** The permission prompt in `win`, the last PROMPT_ROWS non-blank rows ending at its `Esc to cancel` row (see promptFromRows), or null. */
 function promptOf(win) {
+  const parts = promptParts(win);
+  return parts === null ? null : { question: parts.question, options: parts.options };
+}
+
+/** promptOf plus `first`, the index in `win` of option 1 (the question is the row above it). */
+function promptParts(win) {
   const hint = win.length - 1;
   if (hint < 0 || !win[hint].trimStart().startsWith('Esc to cancel')) return null;
   const first = win.slice(0, hint).findLastIndex((t) => OPTION.exec(t)?.[1] === '1');
@@ -411,5 +447,5 @@ function promptOf(win) {
     if (!label) return null;
     options.push({ n: i + 1, label });
   }
-  return { question: clean(question, 200), options };
+  return { question: clean(question, 200), options, first };
 }

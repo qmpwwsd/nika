@@ -149,6 +149,41 @@ describe('sniff', () => {
   });
 });
 
+describe('sniff: the answers pinned before imageTypeOf moved into src/image.js (0.5.1, C)', () => {
+  // Written against the code before the change and kept green through it: the four image signatures are now read by imageTypeOf, and
+  // sniff must answer exactly as before at the edges (a bare signature, a header one byte short, ASCII that only looks like a header).
+  const SIG = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+  const table = [
+    ['bare PNG signature', Buffer.from(SIG), { type: 'png', ext: 'png' }],
+    ['PNG signature, one byte short', Buffer.from(SIG.slice(0, 7)), { error: 'wrong-type' }],
+    ['bare JPEG signature', Buffer.from([0xff, 0xd8, 0xff]), { type: 'jpeg', ext: 'jpg' }],
+    ['JPEG signature, one byte short', Buffer.from([0xff, 0xd8]), { error: 'wrong-type' }],
+    ['bare GIF87a', Buffer.from('GIF87a', 'latin1'), { type: 'gif', ext: 'gif' }],
+    ['bare GIF89a', Buffer.from('GIF89a', 'latin1'), { type: 'gif', ext: 'gif' }],
+    ['GIF89 without the a', Buffer.from('GIF89', 'latin1'), { type: 'text', ext: 'txt' }],
+    ['GIF88a', Buffer.from('GIF88a', 'latin1'), { type: 'text', ext: 'txt' }],
+    ['GIF90a', Buffer.from('GIF90a', 'latin1'), { type: 'text', ext: 'txt' }],
+    ['exactly 12 bytes of WebP', bytes('RIFF', [0, 0, 0, 0], 'WEBP'), { type: 'webp', ext: 'webp' }],
+    ['WebP with any size bytes', bytes('RIFF', [0xff, 0xff, 0xff, 0xff], 'WEBP', 'x'), { type: 'webp', ext: 'webp' }],
+    ['11 bytes of WebP (ASCII)', Buffer.from('RIFFsizeWEB', 'latin1'), { type: 'text', ext: 'txt' }],
+    ['RIFF WAVE (ASCII)', Buffer.from('RIFFsizeWAVEfmt ', 'latin1'), { type: 'text', ext: 'txt' }],
+    ['RIFF WEBP in the wrong place (ASCII)', Buffer.from('xRIFFsizeWEBP', 'latin1'), { type: 'text', ext: 'txt' }],
+    ['PNG signature after one byte', bytes([0x20], SIG), { error: 'wrong-type' }],
+    ['PDF', Buffer.from('%PDF-1.4', 'latin1'), { type: 'pdf', ext: 'pdf' }],
+    ['an SVG is text, never an image', Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"></svg>'), { type: 'text', ext: 'txt' }],
+  ];
+  test('(+) and (−) each edge answers as it did before', () => {
+    for (const [label, buf, want] of table) assert.deepEqual(sniff(buf, 'x'), want, label);
+  });
+
+  test('(+) the name never changes an image answer', () => {
+    for (const name of ['x.txt', 'x.svg', 'x.png', '', undefined, 'x.PDF']) {
+      assert.deepEqual(sniff(Buffer.from(SIG), name), { type: 'png', ext: 'png' }, String(name));
+      assert.deepEqual(sniff(bytes('RIFF', [0, 0, 0, 0], 'WEBP'), name), { type: 'webp', ext: 'webp' }, String(name));
+    }
+  });
+});
+
 describe('extension of a text file', () => {
   const ext = (name) => sniff(Buffer.from('hello'), name);
   test('(+) a listed extension is kept, lower-cased; no extension is txt', () => {
@@ -773,6 +808,266 @@ describe('lookup, remove and markSent', () => {
     fs.rmSync(path.join(keyDir(env), `${b.id}.png`));
     assert.equal(await att.remove(PANE, b.id), false);
     assert.equal(await att.lookup(PANE, b.id), null);
+  });
+});
+
+describe('readImage (0.5.1, C: the one read-back, T61)', () => {
+  test('(+) an own, unsent image of the pane comes back as { type, data } with the base64 of the stored bytes, all four types', async () => {
+    const { att, logs } = make();
+    for (const [buf, type] of [[PNG, 'png'], [JPEG, 'jpeg'], [GIF89, 'gif'], [GIF87, 'gif'], [WEBP, 'webp']]) {
+      const b = await saved(att, buf, `x.${type}`);
+      const r = await att.readImage(PANE, b.id);
+      assert.deepEqual(Object.keys(r), ['type', 'data']);
+      assert.deepEqual(r, { type, data: buf.toString('base64') }, type);
+    }
+    assert.deepEqual(logs, []);
+  });
+
+  test('(+) reading it back changes nothing: lookup still finds it, the file is the same, and it can be read again or sent', async () => {
+    const { att, env } = make();
+    const b = await saved(att, PNG);
+    const first = await att.readImage(PANE, b.id);
+    assert.deepEqual(await att.readImage(PANE, b.id), first);
+    assert.ok(await att.lookup(PANE, b.id));
+    assert.deepEqual(fs.readFileSync(path.join(keyDir(env), `${b.id}.png`)), PNG);
+    att.markSent([b.id]);
+    assert.equal(await att.readImage(PANE, b.id), null, 'and once sent it is gone for good');
+  });
+
+  test('(+) the largest upload (8 MiB) is read back whole', async () => {
+    const { att } = make();
+    const big = Buffer.concat([PNG, Buffer.alloc(MAX_BYTES - PNG.length, 5)]);
+    const b = await saved(att, big);
+    const r = await att.readImage(PANE, b.id);
+    assert.equal(r.type, 'png');
+    assert.equal(Buffer.from(r.data, 'base64').length, MAX_BYTES);
+  });
+
+  test('(−) a PDF, a text file, an unknown id, a malformed id, another pane and a removed file give null, and log nothing', async () => {
+    const { att, logs } = make();
+    const pdf = await saved(att, PDF, 'a.pdf');
+    const txt = await saved(att, Buffer.from('hello'), 'a.txt');
+    const png = await saved(att, PNG);
+    const gone = await saved(att, JPEG);
+    assert.equal(await att.remove(PANE, gone.id), true);
+    for (const [pane, id] of [[PANE, pdf.id], [PANE, txt.id], [PANE, '0000000000000000'], [PANE, ''], [PANE, undefined], [PANE, '../x'], [PANE, ['x']], [PANE, '__proto__'],
+      [PANE, 'constructor'], ['%8', png.id], [undefined, png.id], [PANE, gone.id]]) {
+      assert.equal(await att.readImage(pane, id), null, `${pane} ${id}`);
+    }
+    assert.deepEqual(logs, []);
+    assert.ok(await att.readImage(PANE, png.id));
+  });
+
+  test('(−) a store that did not issue the id knows nothing of the file on disk', async () => {
+    const one = make();
+    const b = await saved(one.att, PNG);
+    assert.equal(await make(one.env).att.readImage(PANE, b.id), null);
+    assert.ok(await one.att.readImage(PANE, b.id));
+  });
+
+  test('(−) the file replaced by a symlink, hard-linked, grown, shrunk or removed behind our back is null, and only codes are logged', async () => {
+    const { att, env, logs } = make();
+    const outside = path.join(root, 'outside-img-1');
+    fs.writeFileSync(outside, PNG);
+    const swap = await saved(att, PNG);
+    const swapFile = path.join(keyDir(env), `${swap.id}.png`);
+    fs.rmSync(swapFile);
+    fs.symlinkSync(outside, swapFile);
+    assert.equal(await att.readImage(PANE, swap.id), null);
+
+    const linked = await saved(att, JPEG);
+    fs.linkSync(path.join(keyDir(env), `${linked.id}.jpg`), path.join(root, 'second-link-img'));
+    assert.equal(await att.readImage(PANE, linked.id), null);
+
+    const grown = await saved(att, GIF89);
+    fs.appendFileSync(path.join(keyDir(env), `${grown.id}.gif`), 'x');
+    assert.equal(await att.readImage(PANE, grown.id), null);
+
+    const shrunk = await saved(att, WEBP);
+    fs.truncateSync(path.join(keyDir(env), `${shrunk.id}.webp`), WEBP.length - 1);
+    assert.equal(await att.readImage(PANE, shrunk.id), null);
+
+    const gone = await saved(att, PNG);
+    fs.rmSync(path.join(keyDir(env), `${gone.id}.png`));
+    assert.equal(await att.readImage(PANE, gone.id), null);
+    assert.ok(logs.length > 0 && onlyCodes(logs), logs.join('|'));
+    assert.ok(logs.every((l) => !l.includes(root) && !l.includes(swap.id)), 'no path and no id in the log');
+  });
+
+  test('(−) the same size but other bytes (the magic no longer matches the record) is null', async () => {
+    const { att, env } = make();
+    const b = await saved(att, PNG);
+    const other = Buffer.concat([JPEG, Buffer.alloc(PNG.length - JPEG.length, 0)]);
+    assert.equal(other.length, PNG.length);
+    fs.writeFileSync(path.join(keyDir(env), `${b.id}.png`), other);
+    assert.equal(await att.readImage(PANE, b.id), null);
+    const c = await saved(att, WEBP);
+    const hdr = Buffer.from(WEBP);
+    hdr[8] ^= 1; // WEBP -> VEBP
+    fs.writeFileSync(path.join(keyDir(env), `${c.id}.webp`), hdr);
+    assert.equal(await att.readImage(PANE, c.id), null);
+  });
+
+  test('(−) a folder on the way turned into a symlink is null, although the file opens', async () => {
+    const { att, env } = make();
+    const b = await saved(att, PNG);
+    const moved = `${keyDir(env)}-moved`;
+    fs.renameSync(keyDir(env), moved);
+    fs.symlinkSync(moved, keyDir(env));
+    assert.equal(fs.readFileSync(path.join(keyDir(env), `${b.id}.png`)).length, PNG.length, 'the file is reachable through the link');
+    assert.equal(await att.readImage(PANE, b.id), null);
+  });
+
+  test('(−) a file that grew past its record and past 8 MiB is null', async () => {
+    const { att, env } = make();
+    const b = await saved(att, PNG);
+    const file = path.join(keyDir(env), `${b.id}.png`);
+    const big = Buffer.concat([PNG, Buffer.alloc(MAX_BYTES - PNG.length + 1, 5)]);
+    fs.writeFileSync(file, big);
+    assert.equal(await att.readImage(PANE, b.id), null);
+  });
+
+  test('(+) at most two read-backs run at once, all of them complete, and every handle is closed', async () => {
+    const { att } = make();
+    const ids = [];
+    for (let i = 0; i < 6; i += 1) ids.push((await saved(att, PNG)).id);
+    const realOpen = fsp.open;
+    const stat = { open: 0, peak: 0, opened: 0 };
+    fsp.open = async (file, ...rest) => {
+      const h = await realOpen.call(fsp, file, ...rest);
+      if (!/\.png$/.test(String(file))) return h;
+      stat.opened += 1;
+      stat.open += 1;
+      stat.peak = Math.max(stat.peak, stat.open);
+      const realRead = h.read.bind(h);
+      const realClose = h.close.bind(h);
+      h.read = async (...a) => {
+        await new Promise((r) => setTimeout(r, 15));
+        return realRead(...a);
+      };
+      h.close = async () => {
+        stat.open -= 1;
+        return realClose();
+      };
+      return h;
+    };
+    let rs;
+    try {
+      rs = await Promise.all(ids.map((id) => att.readImage(PANE, id)));
+    } finally {
+      fsp.open = realOpen;
+    }
+    assert.ok(rs.every((r) => r?.type === 'png'));
+    assert.equal(stat.opened, 6);
+    assert.equal(stat.peak, 2);
+    assert.equal(stat.open, 0);
+  });
+
+  test('(−) a PDF or a text attachment is not even opened', async () => {
+    const { att } = make();
+    const pdf = await saved(att, PDF, 'a.pdf');
+    const txt = await saved(att, Buffer.from('hello'), 'a.txt');
+    const realOpen = fsp.open;
+    let opened = 0;
+    fsp.open = async (file, ...rest) => {
+      if (/\.(pdf|txt)$/.test(String(file))) opened += 1;
+      return realOpen.call(fsp, file, ...rest);
+    };
+    try {
+      assert.equal(await att.readImage(PANE, pdf.id), null);
+      assert.equal(await att.readImage(PANE, txt.id), null);
+    } finally {
+      fsp.open = realOpen;
+    }
+    assert.equal(opened, 0);
+  });
+
+  test('(−) a file that shrinks while it is read is null, not a zero-padded picture', async () => {
+    const { att, env } = make();
+    const b = await saved(att, PNG);
+    const file = path.join(keyDir(env), `${b.id}.png`);
+    const realOpen = fsp.open;
+    fsp.open = async (f, ...rest) => {
+      const h = await realOpen.call(fsp, f, ...rest);
+      if (!/\.png$/.test(String(f))) return h;
+      const realRead = h.read.bind(h);
+      h.read = async (...a) => {
+        fs.truncateSync(file, PNG.length - 1); // the header stays; the tail is gone
+        return realRead(...a);
+      };
+      return h;
+    };
+    try {
+      assert.equal(await att.readImage(PANE, b.id), null);
+    } finally {
+      fsp.open = realOpen;
+    }
+  });
+
+  test('(+) a miss does not wait for a slot: with both slots busy, an unknown id answers at once', async () => {
+    const { att } = make();
+    const ids = [];
+    for (let i = 0; i < 3; i += 1) ids.push((await saved(att, PNG)).id);
+    const realOpen = fsp.open;
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    fsp.open = async (file, ...rest) => {
+      const h = await realOpen.call(fsp, file, ...rest);
+      if (!/\.png$/.test(String(file))) return h;
+      const realRead = h.read.bind(h);
+      h.read = async (...a) => {
+        await gate;
+        return realRead(...a);
+      };
+      return h;
+    };
+    try {
+      const busy = ids.slice(0, 2).map((id) => att.readImage(PANE, id));
+      await new Promise((r) => setTimeout(r, 20));
+      const quick = await Promise.race([att.readImage(PANE, '0000000000000000'), new Promise((r) => setTimeout(() => r('waited'), 100))]);
+      assert.equal(quick, null);
+      assert.equal(await Promise.race([att.readImage('%8', ids[0]), new Promise((r) => setTimeout(() => r('waited'), 100))]), null);
+      release();
+      await Promise.all(busy);
+    } finally {
+      release();
+      fsp.open = realOpen;
+    }
+  });
+
+  test('(−) an id sent while its read waits for a slot is not read', async () => {
+    const { att } = make();
+    const ids = [];
+    for (let i = 0; i < 3; i += 1) ids.push((await saved(att, PNG)).id);
+    const realOpen = fsp.open;
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    let opened = 0;
+    fsp.open = async (file, ...rest) => {
+      const h = await realOpen.call(fsp, file, ...rest);
+      if (!/\.png$/.test(String(file))) return h;
+      opened += 1;
+      const realRead = h.read.bind(h);
+      h.read = async (...a) => {
+        await gate;
+        return realRead(...a);
+      };
+      return h;
+    };
+    let rs;
+    try {
+      const pending = ids.map((id) => att.readImage(PANE, id)); // two take the slots, the third waits
+      await new Promise((r) => setTimeout(r, 20));
+      att.markSent([ids[2]]);
+      release();
+      rs = await Promise.all(pending);
+    } finally {
+      fsp.open = realOpen;
+    }
+    assert.equal(rs[0]?.type, 'png');
+    assert.equal(rs[1]?.type, 'png');
+    assert.equal(rs[2], null);
+    assert.equal(opened, 2, 'the third file was never opened');
   });
 });
 

@@ -43,6 +43,7 @@
   <symbol id="i-chev" viewBox="0 0 16 16"><path d="m4.5 6.5 3.5 3.5 3.5-3.5"/></symbol>
   <symbol id="i-cmd" viewBox="0 0 16 16"><rect x="1.8" y="1.8" width="12.4" height="12.4" rx="2"/><path d="M9.8 4.5 6.2 11.5"/></symbol>
   <symbol id="i-dialog" viewBox="0 0 16 16"><rect x="1.8" y="2.8" width="12.4" height="10.4" rx="1.5"/><path d="M1.8 5.8h12.4"/></symbol>
+  <symbol id="i-branch" viewBox="0 0 16 16"><circle cx="4.5" cy="3.5" r="1.5"/><circle cx="4.5" cy="12.5" r="1.5"/><circle cx="11.5" cy="5.5" r="1.5"/><path d="M4.5 5v6M11.5 7c0 2.5-2 3.5-7 4"/></symbol>
   <symbol id="i-hist-on" viewBox="0 0 16 16"><rect x="1.8" y="2.8" width="12.4" height="10.4" rx="1.5"/><path d="M6.4 2.8v10.4M3.4 5.8h1.6M3.4 8h1.6M3.4 10.2h1.6"/></symbol>
   <symbol id="i-hist-off" viewBox="0 0 16 16"><rect x="1.8" y="2.8" width="12.4" height="10.4" rx="1.5"/><path d="M6.4 2.8v10.4"/></symbol>
   <symbol id="i-fit" viewBox="0 0 16 16"><path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4"/></symbol>
@@ -123,6 +124,7 @@
           </div>
         </span>
         <span class="sp"></span>
+        <button type="button" class="btn icon subs-btn" id="subs-btn" aria-label="Subagents" title="Subagents" aria-haspopup="dialog" aria-controls="subs-dlg" hidden><svg class="ic" aria-hidden="true"><use href="#i-branch"/></svg><span class="subs-n" id="subs-n" aria-hidden="true" hidden></span></button>
         <span class="seg" role="group" aria-label="Terminal colours">
           <button type="button" aria-pressed="true" data-surface="dark">Dark</button>
           <button type="button" aria-pressed="false" data-surface="light">Light</button>
@@ -134,7 +136,7 @@
         <button type="button" class="btn" id="pass-leave">Leave</button>
       </div>
       <div class="termbox">
-        <div class="term" id="term" data-surface="dark" tabindex="0" role="region" aria-label="Live terminal" aria-keyshortcuts="PageUp PageDown Home End"><div class="term-rows" id="term-rows"></div><div class="tl cut" id="term-cut" aria-hidden="true" hidden><svg class="ic" aria-hidden="true"><use href="#i-kbd"/></svg><span>Input box &middot; mirrored in the message box below</span></div><div class="fit-probe" id="fit-probe" aria-hidden="true">0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000</div></div>
+        <div class="term" id="term" data-surface="dark" tabindex="0" role="region" aria-label="Live terminal" aria-keyshortcuts="PageUp PageDown Home End"><div class="term-rows" id="term-rows"></div><div class="tl cut" id="term-cut" data-kind="input" aria-hidden="true" hidden><svg class="ic" aria-hidden="true"><use id="term-cut-ic" href="#i-kbd"/></svg><span id="term-cut-t">Input box &middot; mirrored in the message box below</span></div><div class="fit-probe" id="fit-probe" aria-hidden="true">0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000</div></div>
         <span class="paused-note" id="paused-note" hidden></span>
         <button type="button" class="btn primary jump" id="jump-live" hidden><svg class="ic" aria-hidden="true"><use href="#i-down"/></svg>Jump to live</button>
         <div class="term-over" id="term-over"><div><h3 id="over-title">Connecting&hellip;</h3><p id="over-text"></p><button type="button" class="btn" id="over-retry" hidden>Retry now</button></div></div>
@@ -169,8 +171,8 @@
           <div class="ask-opts" id="ask-opts"></div>
           <p class="ask-hint">Each button presses its number in the pane. Claude answers at once; no Enter. <span class="ask-lock" id="ask-lock" hidden>Buttons stay off until the question changes.</span></p>
         </div>
-        <div class="ask dlg" id="dialog-form" role="group" aria-labelledby="dlg-q" hidden></div>
-        <div class="ask svy" id="survey-panel" role="group" aria-labelledby="svy-q" hidden></div>
+        <div class="ask dlg" id="dialog-form" role="group" aria-labelledby="dlg-q" tabindex="-1" hidden></div>
+        <div class="ask svy" id="survey-panel" role="group" aria-labelledby="svy-q" tabindex="-1" hidden></div>
         <ul class="att-tray" id="att-tray" aria-label="Attachments" hidden></ul>
         <div class="inbox">
           <button type="button" class="shell" id="shell-toggle" aria-pressed="false" title="Shell mode: send the text as a ! command"><svg class="ic" aria-hidden="true"><use href="#i-shell"/></svg><span>Shell</span><span class="onoff" aria-hidden="true">off</span></button>
@@ -225,6 +227,29 @@
   <div class="dlg-head"><h2 id="clear-h" tabindex="-1">Clear conversation?</h2></div>
   <div class="dlg-body"><p id="clear-d">Claude starts a new conversation with empty context.</p></div>
   <div class="dlg-foot"><span class="sp"></span><button type="button" class="btn" id="clear-cancel" autofocus>Cancel</button><button type="button" class="btn danger" id="clear-go">Clear conversation</button></div>
+</dialog>
+
+<dialog id="subs-dlg" class="dlg-subs" aria-labelledby="subs-dlg-h" aria-describedby="subs-dlg-sum">
+  <div class="dlg-head"><h2 id="subs-dlg-h">Subagents</h2><span class="sp"></span>
+    <button type="button" class="btn icon" id="subs-dlg-x" aria-label="Close" title="Close"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button></div>
+  <div class="dlg-body subs">
+    <p class="muted" id="subs-dlg-sum"></p>
+    <ul class="subs-list" id="subs-dlg-run" aria-label="Running subagents"></ul>
+    <p class="muted" id="subs-dlg-none" hidden>None running.</p>
+    <details class="subs" id="subs-dlg-ended" hidden><summary id="subs-dlg-hint"></summary><ul class="subs-list" id="subs-dlg-end" aria-label="Ended subagents"></ul></details>
+  </div>
+  <div class="dlg-foot"><span class="sp"></span><button type="button" class="btn" id="subs-dlg-close">Close</button></div>
+</dialog>
+
+<dialog id="img-dlg" class="dlg-img" aria-labelledby="img-h">
+  <div class="dlg-head"><h2 id="img-h">Image</h2><span class="muted img-meta" id="img-meta"></span><span class="sp"></span>
+    <button type="button" class="btn icon" id="img-x" aria-label="Close image" title="Close image"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button></div>
+  <div class="img-stage" id="img-stage">
+    <img id="img-full" alt="" hidden>
+    <p class="img-state" id="img-state" role="status"><svg class="ic" aria-hidden="true"><use href="#i-warn"/></svg><span id="img-state-t"></span>
+      <button type="button" class="btn" id="img-retry" hidden>Retry</button></p>
+  </div>
+  <div class="dlg-foot"><span class="sp"></span><button type="button" class="btn" id="img-close">Close</button></div>
 </dialog>
 
 <dialog id="kbd-dlg" class="dlg-kbd" data-own-focus aria-labelledby="kbd-h" aria-describedby="kbd-sub">

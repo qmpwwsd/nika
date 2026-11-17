@@ -28,6 +28,10 @@ import { SESSION_ID as SESSION_ID_REAL, PANE_ID as PANE_ID_REAL } from '../publi
 import { cleanDialog as cleanDialogReal, createDialogForm as createDialogFormReal } from '../public/dialog-form.js';
 import { cleanSurvey as cleanSurveyReal } from '../public/survey-panel.js';
 import { installDom, El, withClass, focus as focusState } from './fake-dom.js';
+import { panelOf as panelOfReal, cropOf as cropOfReal, INPUT_TEXT as INPUT_TEXT_REAL, CROP_TEXT as CROP_TEXT_REAL } from '../public/crop.js';
+import { subagentGroups as subagentGroupsReal } from '../public/dash-model.js';
+import { timeEl as timeElReal } from '../public/dom.js';
+import { dataUrlOf as dataUrlOfReal, sizeLabel as sizeLabelReal, MAX_THUMBS as MAX_THUMBS_REAL, IMAGE_MIME as IMAGE_MIME_REAL } from '../public/image-viewer.js';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const read = (f) => fs.readFileSync(path.join(PUBLIC, f), 'utf8');
@@ -40,6 +44,8 @@ const JS = {
 const TOKENS = read('tokens.css');
 const CSS = read('session.css');
 const strip = (css) => css.replace(/\/\*[\s\S]*?\*\//g, '');
+/** The 0.5.1 rules (C, E, H, I) are appended at the end of session.css under this heading; the older "tokens only" scans stop before it and the block has its own scan. */
+const NEW_CSS_MARK = '/* 0.5.1 C, E, H, I */';
 
 /** Source with // and block comments removed (a `//` right after `:` is a URL, not a comment). */
 const code = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|\s)\/\/.*$/gm, '$1');
@@ -174,7 +180,7 @@ describe('session.html under the strict CSP', () => {
 describe('contracts with the other UI modules', () => {
   test('(+) session.js imports only names the shared modules export, from sibling files', () => {
     const imports = [...JS['session.js'].matchAll(/import \{([^}]+)\} from '([^']+)'/g)];
-    assert.deepEqual(imports.map((m) => m[2]), ['./dom.js', './api.js', './dash-model.js', './mirror-render.js', './draft-sync.js', './modes.js', './quick-actions.js', './models-ui.js', './end-dialog.js', './palette.js', './shortcuts.js', './fit-ui.js', './scroll.js', './glide.js', './attach.js', './dialog-form.js', './survey-panel.js']);
+    assert.deepEqual(imports.map((m) => m[2]), ['./dom.js', './api.js', './dash-model.js', './mirror-render.js', './draft-sync.js', './modes.js', './quick-actions.js', './models-ui.js', './end-dialog.js', './palette.js', './shortcuts.js', './fit-ui.js', './scroll.js', './glide.js', './crop.js', './attach.js', './image-viewer.js', './dialog-form.js', './survey-panel.js']);
     for (const [, names, from] of imports) {
       const exported = read(from.slice(2));
       for (const n of names.split(',').map((x) => x.trim())) assert.match(exported, new RegExp(`export (async )?(function|const|let) ${n}\\b`), `${from} exports ${n}`);
@@ -1789,7 +1795,7 @@ describe('Task 14b: wiring of the page rules', () => {
       const b = Object.fromEntries(['stop', 'compact', 'clear', 'model', 'rewind', 'end'].map((id) => [id, { attrs: {}, title: '', classList: { toggle() {} }, setAttribute(k, v) { this.attrs[k] = String(v); }, removeAttribute(k) { delete this.attrs[k]; } }]));
       const why = { hidden: true, replaceChildren() {} };
       const ctx = {
-        Q: { ready: true, b, busy: null, stopping: false, whySig: null, pop: false, queued }, W: { pane: 'ok', promptOpen: false }, A: { kind }, SW: { busy: null },
+        Q: { ready: true, b, busy: null, stopping: false, whySig: null, pop: false, queued }, BAR: { up: false }, W: { pane: 'ok', promptOpen: false }, A: { kind }, SW: { busy: null },
         quickState: quickStateReal, $: () => why, icon: () => ({}), h: () => ({}), closeModelPop() {},
       };
       mk(['function renderQuick()'], ctx).renderQuick();
@@ -1808,7 +1814,7 @@ describe('Task 14b: wiring of the page rules', () => {
       let reason = null;
       const why = { hidden: true, replaceChildren: (...nodes) => { reason = nodes.map((n) => n.text).filter(Boolean).join(''); } };
       const ctx = {
-        Q: { ready: true, b, busy: null, stopping: false, whySig: null, pop: false }, W: { pane: 'ok', promptOpen: true, dialog }, A: { kind: 'attn' }, SW: { busy: null },
+        Q: { ready: true, b, busy: null, stopping: false, whySig: null, pop: false }, BAR: { up: false }, W: { pane: 'ok', promptOpen: true, dialog }, A: { kind: 'attn' }, SW: { busy: null },
         quickState: quickStateReal, $: () => why, icon: () => ({}), h: (tag, o) => o, closeModelPop() {},
       };
       mk(['function renderQuick()'], ctx).renderQuick();
@@ -2943,7 +2949,7 @@ describe('0.5: the cut and the draft note (markup and stylesheet)', () => {
     assert.match(t, /\bhidden\b/);
     assert.match(t, /\baria-hidden="true"/);
     const block = /<div class="tl cut"[\s\S]*?<\/div>/.exec(HTML)?.[0] ?? '';
-    assert.match(block, /<use href="#i-kbd"\/>/);
+    assert.match(block, /<use id="term-cut-ic" href="#i-kbd"\/>/);
     assert.match(block, /Input box &middot; mirrored in the message box below/);
     const term = HTML.slice(HTML.indexOf('<div class="term"'), HTML.indexOf('<span class="paused-note"'));
     assert.ok(term.indexOf('id="term-rows"') < term.indexOf('id="term-cut"'), 'after the rows');
@@ -2994,6 +3000,7 @@ describe('0.5: drawing the mirror with the cut (design W6, section 5)', () => {
     return SRC.slice(at, SRC.indexOf('\n}\n', at) + 2);
   };
   const row = (t) => [{ t, s: {} }];
+  const DRAW = ['function drawMirror()', 'function cropFor(body, cut)', 'function paintStrip(kind)'].map(fnOf).join('\n'); // 0.5.1 E: drawMirror and the two helpers it calls
   const BODY = { cols: 120, rows: Array.from({ length: 12 }, (_, i) => row(`row ${i}`)), cursor: { x: 2, y: 10, visible: true } };
   const BOX = { top: 8, bottom: 11 };
   const readable = (state = 'text', over = {}) => ({ state, mode: 'prompt', text: state === 'text' ? 'hello' : '', sig: '0000000000000001', box: BOX, cursorAtEnd: true, suggestion: null, queued: false, ...over });
@@ -3003,11 +3010,12 @@ describe('0.5: drawing the mirror with the cut (design W6, section 5)', () => {
   const draw = ({ body = BODY, draft, pass = false, frozen = false }) => {
     const out = { calls: [], strip: { hidden: true }, term: { scrollTop: 0, scrollHeight: 500 } };
     const ctx = {
-      M: { body, draft, frozen, cut: 'unset' }, P: { on: pass }, cutAt: cutAtReal, cutCursor: cutCursorReal, toRenderModel: toRenderModelReal,
+      M: { body, draft, frozen, cut: 'unset', crop: null, stripKind: null }, P: { on: pass }, cutAt: cutAtReal, cutCursor: cutCursorReal, toRenderModel: toRenderModelReal,
+      W: { pane: 'ok', dialog: null }, panelNow: () => null, cropOf: cropOfReal, INPUT_TEXT: INPUT_TEXT_REAL, CROP_TEXT: CROP_TEXT_REAL, // 0.5.1 E: no panel up, so the crop stays out of these tests
       applyMirror: (container, model, cursor) => out.calls.push({ container, rows: model.length, last: model.at(-1)?.[0]?.text, cursor }),
       $: (id) => (id === 'term-cut' ? out.strip : id === 'term' ? out.term : id),
     };
-    vm.runInNewContext(`${fnOf('function drawMirror()')}; drawMirror`, ctx)();
+    vm.runInNewContext(`${DRAW}; drawMirror`, ctx)();
     return { ...out, call: out.calls[0], M: ctx.M };
   };
 
@@ -3085,8 +3093,8 @@ describe('0.5: drawing the mirror with the cut (design W6, section 5)', () => {
     assert.equal(draw({ draft: readable(), pass: true }).term.scrollTop, 500, 'with Type into pane on too (Claude\'s box is at the bottom)');
     const paused = (() => {
       const out = { calls: [], strip: { hidden: true }, term: { scrollTop: 123, scrollHeight: 500 } };
-      const ctx = { M: { body: BODY, draft: readable(), frozen: true, cut: null }, P: { on: false }, cutAt: cutAtReal, cutCursor: cutCursorReal, toRenderModel: toRenderModelReal, applyMirror() {}, $: (id) => (id === 'term-cut' ? out.strip : id === 'term' ? out.term : id) };
-      vm.runInNewContext(`${fnOf('function drawMirror()')}; drawMirror`, ctx)();
+      const ctx = { M: { body: BODY, draft: readable(), frozen: true, cut: null, crop: null, stripKind: null }, P: { on: false }, W: { pane: 'ok', dialog: null }, panelNow: () => null, cropOf: cropOfReal, INPUT_TEXT: INPUT_TEXT_REAL, CROP_TEXT: CROP_TEXT_REAL, cutAt: cutAtReal, cutCursor: cutCursorReal, toRenderModel: toRenderModelReal, applyMirror() {}, $: (id) => (id === 'term-cut' ? out.strip : id === 'term' ? out.term : id) };
+      vm.runInNewContext(`${DRAW}; drawMirror`, ctx)();
       return out.term.scrollTop;
     })();
     assert.equal(paused, 123);
@@ -4678,13 +4686,14 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     const page = { visible: true, focus: false, throws: false };
     focusState.el = null;
     const ctx = {
-      paneId: pane, M: { cols: 0, rows: 0, gone: false, timer: 0, errors: 0, inputOff: false, frozen: false, body: null, draft: null, etag: null, cut: null, waiters: [], sent: 0 },
+      paneId: pane, M: { cols: 0, rows: 0, gone: false, timer: 0, errors: 0, inputOff: false, frozen: false, body: null, draft: null, etag: null, cut: null, crop: null, stripKind: null, waiters: [], sent: 0 },
       FIT: { planner: null, panel: null, frame: null, scale: 1, view: null, ui: { pending: false, note: false }, pop: false, state: null, room: false, d: 0, sentRows: 0, held: null, refitTimer: 0, hide: 0, strip: 0, sentCols: 0, scaledAt: null, base: null, short: false }, SC: { planner: null, scrolled: false },
       // F16: the grow's state, the pure rules, what the form is told, the page's dialog and a clock the test sets (growTick reads Date.now())
       GR: GROW_IDLE_REAL, GROW_IDLE: GROW_IDLE_REAL, growStep: growStepReal, growRebase: growRebaseReal, growAsk: growAskReal, scaleRows: scaleRowsReal, cutQuestion: cutQuestionReal,
       W: { dialog: null, pane: 'ok' }, renderMode: () => log.df.push(fns.growing()), Date: { now: () => clk.now },
       GL: { arm: null, timer: 0 }, // F17: no arm here (a spy goes in where a test needs one)
       P: { on: false }, // F11: Type into pane, read by the real drawMirror
+      panelNow: () => null, cropOf: cropOfReal, INPUT_TEXT: INPUT_TEXT_REAL, CROP_TEXT: CROP_TEXT_REAL, // 0.5.1 E: no panel up in the fit rig (the crop has its own tests)
       $: (id) => els[id],
       call: async (path, opts) => { log.calls.push({ path, ...opts }); return replies.length ? replies.shift() : FITTED; },
       announce: (m) => log.said.push(m), h: hReal, icon: iconReal, Node: El,
@@ -4715,7 +4724,7 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     let fns = null;
     ctx.HOLD = createRedrawHoldReal({ after: clk.setTimeout, cancel: clk.clearTimeout, timeout: (pending, c) => fns.holdTimeout(pending, c), ended: () => fns.holdEnded() });
     // F11: `realDraw` runs the page's own drawMirror (it sets M.cut and shows the strip) instead of the spy
-    fns = vm.runInNewContext(`${NAMES.concat(realDraw ? ['function drawMirror()'] : []).map(fnOf).join('\n')}; ({ fitCall, fitMeasure, fitScale, fitResize, fitCaptured, drawFitPop, openFitPop, closeFitPop, fitAgainEvent, renderFit, wireFitPop, wireFit, setGone, handleCapture, fitFocused, fitProbe, fitCommit, fitChip, flushChip, fitSized, handleHeld, applyHeld, refit, endRefit, holdTimeout, holdEnded, fitStrip, nextCapture, captureHandled, growing, growTick, boxShortened, fitPanelClosed, fitBaseFresh${realDraw ? ', drawMirror' : ''} })`, ctx);
+    fns = vm.runInNewContext(`${NAMES.concat(realDraw ? ['function drawMirror()', 'function cropFor(body, cut)', 'function paintStrip(kind)'] : []).map(fnOf).join('\n')}; ({ fitCall, fitMeasure, fitScale, fitResize, fitCaptured, drawFitPop, openFitPop, closeFitPop, fitAgainEvent, renderFit, wireFitPop, wireFit, setGone, handleCapture, fitFocused, fitProbe, fitCommit, fitChip, flushChip, fitSized, handleHeld, applyHeld, refit, endRefit, holdTimeout, holdEnded, fitStrip, nextCapture, captureHandled, growing, growTick, boxShortened, fitPanelClosed, fitBaseFresh${realDraw ? ', drawMirror' : ''} })`, ctx);
     const pointerdown = (target) => { for (const fn of [...(docOn.get('pointerdown') ?? [])]) fn({ type: 'pointerdown', target }); };
     return {
       ...fns, ctx, log, clk, page, term, rows, cutEl, chip, wrap, pop, popH, popWhy, popHint, popNote, close, again, histToggle, outside, pointerdown,
@@ -7158,11 +7167,12 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     const body = fshot(171, 45).body;
     const ctx = {
       P: { on: false, buf: '', timer: 0 }, paneId: '%12', composer: () => ({ disabled: false, focus() {} }), endArrows() {}, flushPass() {}, A: { name: 'agent' }, announce() {},
-      M: { gone: false, frozen: false, body, draft: cleanDraftReal(body.draft), cut: 39 }, $: (id) => els[id],
+      M: { gone: false, frozen: false, body, draft: cleanDraftReal(body.draft), cut: 39, crop: null, stripKind: 'input' }, $: (id) => els[id], // the strip shows the input look
+      W: { pane: 'ok', dialog: null }, panelNow: () => null, cropOf: cropOfReal, INPUT_TEXT: INPUT_TEXT_REAL, CROP_TEXT: CROP_TEXT_REAL,
       cutAt: cutAtReal, cutCursor: cutCursorReal, toRenderModel: toRenderModelReal, applyMirror: (c, model) => log.drawn.push(model.length),
       fitCommit: () => { log.commit += 1; }, fitScale: () => { log.scale += 1; }, FIT: { planner: { size: () => { log.size += 1; } } },
     };
-    const { setPass } = vm.runInNewContext(`${fnOf('function drawMirror()')}\n${fnOf('function setPass(on, keepFocus = false)')}; ({ setPass })`, ctx);
+    const { setPass } = vm.runInNewContext(`${['function drawMirror()', 'function cropFor(body, cut)', 'function paintStrip(kind)', 'function setPass(on, keepFocus = false)'].map(fnOf).join('\n')}; ({ setPass })`, ctx);
     setPass(true);
     assert.deepEqual([strip.hidden, ctx.M.cut, term.scrollTop, log.drawn.at(-1)], [true, null, 900, 45], 'every row, no strip, pinned to the bottom at once');
     term.scrollTop = 0;
@@ -7219,6 +7229,8 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     const shown = fillRig();
     assert.equal(shown.fitStrip(), 0, 'hidden strip');
     shown.cutEl.hidden = false;
+    assert.equal(shown.fitStrip(), 0, '0.5.1: a strip with no input-box cut (M.cut null) only stands for a dialog crop');
+    shown.ctx.M.cut = 8;
     assert.equal(shown.fitStrip(), 27);
     shown.cutEl.offsetHeight = -50;
     assert.equal(shown.fitStrip(), 0, 'a negative height is no height');
@@ -8258,7 +8270,7 @@ describe('W3-T3: scroll in the session window (wiring)', () => {
       DS: { stop() {}, capture() {} }, setPaneState() {}, setInputEnabled() {}, showOverlay() {},
       // F17: the capture path of handleCapture (spies where the page would judge or draw the screen), postRetry's collaborators, and the glide's pure parts
       recovered() {}, noteScreen() {}, cleanDraft: cleanDraftReal, ETAG: /^[0-9a-f]{1,64}$/, Q: { queued: false }, renderQuick() {}, ATT: { sending: () => false }, renderSuggestion() {}, fitCaptured() {},
-      drawMirror: () => log.drawn.push(1), serverMessage: () => '', sleep: async () => {}, RATE_MSG: 'Too fast.',
+      drawMirror: () => log.drawn.push(1), cropFor: () => null, serverMessage: () => '', sleep: async () => {}, RATE_MSG: 'Too fast.', // 0.5.1 E: no dialog crop in the glide rig (crop.js and the wiring have their own tests)
       createGlideArm: createGlideArmReal, frameOf: frameOfReal, glideFrom: glideFromReal, matrixY: matrixYReal, GLIDE_MS: GLIDE_MS_REAL, getComputedStyle: (e) => ({ transform: e.transform }),
     };
     const src = `${constOf('const SC = ')}\n${constOf('const GL = ')}\n${constOf('const SCROLL_KEYS = ')}\n${[...NAMES, ...GLIDE_NAMES].map(fnOf).join('\n')}; ({ scrollCall, renderNote, setScrolled, scrollCaptured, scrollLine, scrollDone, scrollOpen, scrollWheel, scrollKey, wireScroll, setFrozen, jumpToLive, setGone, startGlide, endGlide, handleCapture, postRetry, SC, GL })`;
@@ -9139,10 +9151,10 @@ describe('W3-T3: scroll in the session window (wiring)', () => {
 
   test('(+) F17: the hooks sit where the design puts them: offer before the new frame is kept, startGlide after it is drawn, arm after the hold wait, extend before the kick, disarm first in postRetry', () => {
     const cap = fnOf('function handleCapture(r)');
-    assert.match(cap, /const draft = cleanDraft\(r\.body\.draft\);[\s\S]*GL\.arm\?\.armed\(\)[\s\S]*GL\.arm\.offer\(frameOf\(r\.body, draft\)\)[\s\S]*M\.body = r\.body;\s*M\.draft = draft;\s*drawMirror\(\);\s*if \(glide\?\.act === 'glide'\)[\s\S]*startGlide\(glide\)[\s\S]*endGlide\(\)/);
+    assert.match(cap, /const draft = cleanDraft\(r\.body\.draft\);[\s\S]*GL\.arm\?\.armed\(\)[\s\S]*GL\.arm\.offer\(frameOf\(r\.body, draft, cropFor\(r\.body, null\)\?\.top \?\? null\)\)[\s\S]*M\.body = r\.body;\s*M\.draft = draft;\s*drawMirror\(\);\s*if \(glide\?\.act === 'glide'\)[\s\S]*startGlide\(glide\)[\s\S]*endGlide\(\)/);
     assert.match(cap, /if \(r\.status === 403\) \{[^}]*GL\.arm\?\.disarm\(\);\s*endGlide\(\);/);
     const call = fnOf('function scrollCall(body)');
-    assert.ok(call.indexOf('HOLD.wait()') < call.indexOf('GL.arm?.arm(body, { scrolled: SC.scrolled, before: frameOf(M.body, M.draft) })'));
+    assert.ok(call.indexOf('HOLD.wait()') < call.indexOf('GL.arm?.arm(body, { scrolled: SC.scrolled, before: frameOf(M.body, M.draft, M.crop?.top ?? null) })'));
     assert.ok(call.indexOf('GL.arm?.arm(') < call.indexOf('return call('));
     assert.match(call, /if \(!lessMotion\(\) && M\.body\) GL\.arm\?\.arm\(/);
     assert.match(fnOf('function scrollDone(r)'), /GL\.arm\?\.extend\(\);\s*kickMirror\(0\);/);
@@ -9361,7 +9373,7 @@ describe('W1-T3: question dialogs and plan approvals in the session window (hook
   test('(−) the hooks are exactly P2 to P6 and the Shift+Tab wording line: past its declaration, DF is named in renderMode, renderAttn, sendComposer, wireComposer (that one line) and boot, and nowhere else', () => {
     const body = SRC.replace(/^let DF = null;.*$/m, '');
     const places = [...body.matchAll(/\bDF\b/g)].map((m) => [...body.slice(0, m.index).matchAll(/\n(?:async )?function (\w+)\(/g)].at(-1)?.[1]);
-    assert.deepEqual(places, ['renderMode', 'renderAttn', 'sendComposer', 'wireComposer', 'boot']);
+    assert.deepEqual(places, ['renderMode', 'panelNow', 'panelNow', 'renderAttn', 'sendComposer', 'wireComposer', 'boot']); // panelNow (0.5.1 I): shown() and live(), to find out whether the bar hides
     assert.equal((fnOf('function wireComposer()').match(/\bDF\b/g) ?? []).length, 1, 'wireComposer: the one wording line');
   });
 
@@ -9423,11 +9435,11 @@ describe('W1-T3: question dialogs and plan approvals in the session window (hook
     const ctx = {
       paneId: '%12', SW: { parts: [{}], busy: null }, W: { pane: 'ok', dialog: 'D', mode: 'default', confirmed: true, msg: null, promptOpen: true },
       A: { kind: 'attn', name: 'builder-1', attention: 'Claude has a question' }, switcherState: () => ({ reason: '' }),
-      renderTag: stub('tag'), renderSegments: stub('segments'), renderWhy: stub('why'), renderQuick: stub('quick'), renderAttn: stub('attn'), renderPrompt: stub('prompt'),
+      renderTag: stub('tag'), renderSegments: stub('segments'), renderWhy: stub('why'), renderQuick: stub('quick'), renderAttn: stub('attn'), renderPrompt: stub('prompt'), panelsChanged: stub('bar'),
       DF: { render: (a) => { order.push('form'); args = a; } }, SV: null, growing: () => false, // F16 (requirement change): the form is also told whether nika is growing the pane
     };
     mk(['function renderMode()'], ctx).renderMode();
-    assert.deepEqual(order, ['tag', 'segments', 'why', 'quick', 'attn', 'prompt', 'form']);
+    assert.deepEqual(order, ['tag', 'segments', 'why', 'quick', 'attn', 'prompt', 'form', 'bar'], 'the bar last: it reads what the panels just decided');
     assert.deepEqual(norm(args), { pane: 'ok', dialog: 'D', name: 'builder-1', attention: 'Claude has a question', growing: false });
     ctx.growing = () => true;
     mk(['function renderMode()'], ctx).renderMode();
@@ -9437,7 +9449,7 @@ describe('W1-T3: question dialogs and plan approvals in the session window (hook
   test('(−) P3: before the form exists (no pane, or boot not done) renderMode draws no form and does not fail', () => {
     const ctx = {
       paneId: '%12', SW: { parts: [{}], busy: null }, W: { pane: 'ok', mode: 'default', confirmed: true, msg: null }, A: { kind: 'idle', name: 'x', attention: '' }, switcherState: () => ({ reason: '' }),
-      renderTag() {}, renderSegments() {}, renderWhy() {}, renderQuick() {}, renderAttn() {}, renderPrompt() {}, DF: null, SV: null,
+      renderTag() {}, renderSegments() {}, renderWhy() {}, renderQuick() {}, renderAttn() {}, renderPrompt() {}, panelsChanged() {}, DF: null, SV: null,
     };
     assert.doesNotThrow(() => mk(['function renderMode()'], ctx).renderMode());
   });
@@ -9572,7 +9584,7 @@ describe('W1-T3: question dialogs and plan approvals in the session window (hook
   // -- stylesheet
 
   const START = CSS.indexOf('/* question dialogs (0.5, W1)');
-  const BLOCK = strip(CSS.slice(START));
+  const BLOCK = strip(CSS.slice(START, CSS.indexOf(NEW_CSS_MARK)));
 
   test('(+) the form rules are appended at the end of session.css', () => {
     assert.ok(START > 0);
@@ -9593,10 +9605,10 @@ describe('W1-T3: question dialogs and plan approvals in the session window (hook
     assert.match(BLOCK, /\.dlg-kind\[data-k="plan"\]\s*\{[^}]*color:\s*var\(--m-plan\)/);
   });
 
-  test('(+) a ticked row has the accent fill and edge; the narrow composer swaps the tabs for the step text', () => {
+  test('(+) a ticked row has the accent fill and edge; the step strip stays at every width and the step text stays hidden (0.5.1, D)', () => {
     assert.match(BLOCK, /\.ch\[data-on="true"\]\s*\{[^}]*background:\s*var\(--accent-soft\)[^}]*border-color:\s*var\(--accent\)/);
-    assert.match(BLOCK, /@container composer \(max-width:\s*560px\)\s*\{[^@]*\.dlg-tabs\s*\{[^}]*display:\s*none[^}]*\}[^@]*\.dlg-step\s*\{[^}]*display:\s*block/);
-    assert.match(BLOCK, /\.dlg-step\s*\{[^}]*display:\s*none/, 'hidden where the tabs show');
+    assert.doesNotMatch(BLOCK, /\.dlg-tabs\s*\{[^}]*display:\s*none/, 'no rule hides the strip');
+    assert.match(BLOCK, /\.dlg-step\s*\{[^}]*display:\s*none/, 'the step text stays hidden at every width');
   });
 
   test('(+) the option rows share the permission buttons\' metrics (32 px, line-strong edge, surface fill) and a description is clamped to 3 lines', () => {
@@ -9751,7 +9763,7 @@ describe('W8-T3: the subagent list and the read-only subagent view (design W8, 4
   test('(−) the new rules use tokens only: every var() is a token of tokens.css, no colour literal, no custom property of its own', () => {
     const at = css.indexOf('#sess-subs');
     assert.ok(at >= 0);
-    const block = css.slice(at);
+    const block = strip(CSS.slice(0, CSS.indexOf(NEW_CSS_MARK))).slice(at);
     const defined = new Set([...TOKENS.matchAll(/(--[a-z0-9-]+)\s*:/g)].map((m) => m[1]));
     const used = [...block.matchAll(/var\((--[a-z0-9-]+)/g)].map((m) => m[1]);
     assert.ok(used.length >= 6, 'the scan found the variables');
@@ -9800,7 +9812,7 @@ describe('W8-T3: the subagent list and the read-only subagent view (design W8, 4
 
   // -- boot (4.4: 2 to 6)
 
-  const BOOT_SPIES = ['setBackHref', 'setBack', 'syncKbdHint', 'syncHistHint', 'syncPassKeys', 'watchNotes', 'showUrlNotice', 'wireTabs', 'wireHistory', 'wireHist', 'wireTerminal', 'wireComposer', 'wireSubs', 'wireSwitcher', 'wireQuick', 'wireFit', 'loadSettings', 'startAgentPoll', 'startHistoryPoll', 'kickMirror', 'refreshHistory', 'refreshAgent', 'wireWindowKeys', 'createDialogForm', 'createSurveyPanel'];
+  const BOOT_SPIES = ['setBackHref', 'setBack', 'syncKbdHint', 'syncHistHint', 'syncPassKeys', 'watchNotes', 'showUrlNotice', 'wireTabs', 'wireHistory', 'wireHist', 'wireTerminal', 'wireComposer', 'wireSubs', 'wireSwitcher', 'wireQuick', 'wireFit', 'loadSettings', 'startAgentPoll', 'startHistoryPoll', 'kickMirror', 'refreshHistory', 'refreshAgent', 'wireWindowKeys', 'createDialogForm', 'createSurveyPanel', 'watchPanels', 'wireSubsDlg'];
   const bootRig = ({ sub = false, bad = false, session = S, pane = null, project = KEY, app = true, search = '' } = {}) => {
     const p = page();
     const log = { calls: [], doc: [] };
@@ -9815,7 +9827,7 @@ describe('W8-T3: the subagent list and the read-only subagent view (design W8, 4
     const { boot } = mk(['function showEmpty(text)', 'function showNotice(msg)', 'function readOnlyView()', 'function boot()'], ctx);
     return { boot, p, log, ctx };
   };
-  const MIRROR = ['wireTabs', 'wireHist', 'wireTerminal', 'wireComposer', 'ATT.wire', 'wireSubs', 'wireSwitcher', 'wireQuick', 'wireFit', 'createDialogForm', 'createSurveyPanel', 'kickMirror'];
+  const MIRROR = ['wireTabs', 'wireHist', 'wireTerminal', 'wireComposer', 'ATT.wire', 'wireSubs', 'wireSwitcher', 'wireQuick', 'wireFit', 'createDialogForm', 'createSurveyPanel', 'watchPanels', 'wireSubsDlg', 'kickMirror'];
 
   test('(+) 4.4: boot in subagent mode: no terminal column, the Transcript alone, no tabs, no "Skip to message input", the read-only notice, the body class', () => {
     const r = bootRig({ sub: true, search: `?session=${S}&agent=${AG}&project=${KEY}` });
@@ -10283,7 +10295,7 @@ describe('W8-T3: the subagent list and the read-only subagent view (design W8, 4
       SUB: sub, sessionId: S, projectKey: project, A: { subs }, h: hReal, subagentHref: subagentHrefReal, SUBAGENT_ID: SUBAGENT_ID_REAL, H: { items: [], ids: new Set() },
       Date, ENTRY_ID: vm.runInNewContext(constOf('ENTRY_ID') + '; ENTRY_ID'), KINDS: vm.runInNewContext(constOf('KINDS') + '; KINDS'),
     };
-    const api = mk(['function cleanEntries(list)', 'function textBlock(e)', 'function foldBlock(e)', 'function subLinkEl(e)', 'function entryEl(e)', 'function linkLate(entries)'], ctx, `${constOf('DOTS')}\n${constOf('clip')}`);
+    const api = mk(['function cleanImages(e)', 'function cleanEntries(list)', 'function textBlock(e)', 'function foldBlock(e)', 'function subLinkEl(e)', 'function entryEl(e)', 'function linkLate(entries)'], ctx, `${constOf('DOTS')}\n${constOf('clip')}`);
     return { ...api, ctx };
   };
   const RAW = (over = {}) => ({ id: '100:0', at: '2026-11-15T10:00:00.000Z', role: 'assistant', kind: 'tool_use', tool: 'Agent', text: '{"description":"List project files"}', truncated: false, ...over });
@@ -10435,7 +10447,7 @@ describe('W8-T3: the subagent list and the read-only subagent view (design W8, 4
       getItem(k) { if (broken) throw new Error('blocked'); return store.has(k) ? store.get(k) : null; },
       setItem(k, v) { if (broken) throw new Error('blocked'); store.set(k, String(v)); },
     };
-    const ctx = { $: p.$, h: hReal, subagentView: subagentViewReal, subagentHref: subagentHrefReal, subagentItemEl: subagentItemElReal, projectKey: KEY, A: { name, subs: [] }, document: doc, localStorage };
+    const ctx = { $: p.$, h: hReal, subagentView: subagentViewReal, subagentHref: subagentHrefReal, subagentItemEl: subagentItemElReal, projectKey: KEY, A: { name, subs: [] }, document: doc, localStorage, renderSubsBtn() {}, renderSubsDlg() {} }; // 0.5.1 H: the button and the dialog have their own tests
     const api = mk(['function storeGet(key)', 'function storeSet(key, value)', 'function renderSubs(agent)', 'function wireSubs()'], ctx, subsLine());
     return { ...api, p, root, sum, box, list, log, store, doc, ctx };
   };
@@ -10683,5 +10695,1210 @@ describe('the session header: the kind chip of an agent (W9 4.4)', () => {
     assert.ok(fn.indexOf('applySubagent(agent)') < fn.indexOf('renderKind(agent)'), 'the subagent view is handled first');
     assert.match(JS['session.js'], /import \{[^}]*\blabelEl\b[^}]*\} from '\.\/dom\.js'/);
     assert.match(JS['session.js'], /import \{[^}]*\bagentLabelView\b[^}]*\bsubLabelView\b[^}]*\} from '\.\/dash-model\.js'|import \{[^}]*\bsubLabelView\b[^}]*\bagentLabelView\b[^}]*\} from '\.\/dash-model\.js'/);
+  });
+});
+
+// ======================================================================================================================================
+// 0.5.1 (design DES-A): I the quick-actions bar hides under a panel, E the dialog crop, H the Subagents button, C images in a viewer.
+// B3's pure modules (public/crop.js, public/image-viewer.js, dash-model.js subagentGroups, dom.js timeEl) are imported from their files.
+// ======================================================================================================================================
+class Box051 extends El {
+  contains(n) {
+    for (let x = n; x; x = x.parent) if (x === this) return true;
+    return false;
+  }
+}
+const box051 = (tag, hidden = false) => {
+  const e = new Box051(tag);
+  e.hidden = hidden;
+  return e;
+};
+
+describe('0.5.1 I: the quick-actions bar hides while a panel shows (design section 5)', () => {
+  const SRC = code(JS['session.js']);
+  const fnOf = (head) => {
+    const at = SRC.indexOf(head);
+    assert.ok(at >= 0, head);
+    return SRC.slice(at, SRC.indexOf('\n}\n', at) + 2);
+  };
+  const READY = { state: 'ready', kind: 'ask', at: 'question', sig: '0123456789abcdef', bypass: false };
+  const PROMPT = { question: 'Do you want to proceed?', sig: '0123456789abcdef', options: [{ n: 1, label: 'Yes', bypass: false }, { n: 2, label: 'No', bypass: false }] };
+
+  /** The page's bar logic with the panels it reads: each panel's root, the bar, its reason line, the model popover and the focus of the fake DOM. */
+  const rig = (over = {}) => {
+    const els = {
+      qa: box051('div'), 'qa-why': box051('p', true), 'model-pop': box051('div', true), 'ask-q': box051('p'), 'dialog-form': box051('div', true), 'survey-panel': box051('div', true), 'prompt-btns': box051('div', true),
+    };
+    const qaBtn = box051('button');
+    els.qa.append(qaBtn);
+    const popSel = box051('select');
+    els['model-pop'].append(popSel);
+    const log = { pop: [], draws: [] };
+    focusState.el = null;
+    const ctx = {
+      $: (id) => els[id],
+      document: { get activeElement() { return focusState.el; } },
+      W: { pane: 'ok', prompt: null, dialog: null, survey: null },
+      Q: { pop: false, whySig: null },
+      BAR: { up: false },
+      DF: { shown: () => false, live: () => false },
+      SV: { shown: () => false },
+      panelOf: panelOfReal,
+      closeModelPop: (refocus) => { log.pop.push(refocus); ctx.Q.pop = false; els['model-pop'].hidden = true; },
+      ...over,
+    };
+    const fns = vm.runInNewContext(`${['function panelNow()', 'function renderBar()', 'function focusPanel()'].map(fnOf).join('\n')}; ({ panelNow, renderBar, focusPanel })`, ctx);
+    return { ...fns, els, ctx, log, qaBtn, popSel };
+  };
+  const showPrompt = (r, options = PROMPT.options) => { r.ctx.W.prompt = { ...PROMPT, options }; r.els['prompt-btns'].hidden = false; };
+  const showForm = (r, dialog = READY, live = true) => { r.ctx.W.dialog = dialog; r.ctx.DF = { shown: () => true, live: () => live }; r.els['dialog-form'].hidden = false; };
+  const showSurvey = (r, survey = { state: 'ready', kind: 'rating', sig: '0123456789abcdef', options: [] }) => { r.ctx.W.survey = survey; r.ctx.SV = { shown: () => true }; r.els['survey-panel'].hidden = false; };
+
+  test('(+) the permission-prompt panel hides the bar and its reason line, with or without a bypass option (Esc = No always works)', () => {
+    for (const options of [PROMPT.options, [{ n: 1, label: 'Yes', bypass: true }, { n: 2, label: 'No', bypass: true }]]) {
+      const r = rig();
+      r.ctx.Q.whySig = 'Claude is working';
+      r.els['qa-why'].hidden = false;
+      showPrompt(r, options);
+      r.renderBar();
+      assert.equal(r.els.qa.hidden, true);
+      assert.equal(r.els['qa-why'].hidden, true);
+      assert.equal(r.ctx.BAR.up, true);
+    }
+  });
+
+  test('(+) a live question form, review or plan approval hides the bar', () => {
+    for (const at of ['question', 'review', 'plan']) {
+      const r = rig();
+      showForm(r, { ...READY, at });
+      r.renderBar();
+      assert.equal(r.els.qa.hidden, true, at);
+    }
+  });
+
+  test('(+) a ready survey hides the bar', () => {
+    const r = rig();
+    showSurvey(r);
+    r.renderBar();
+    assert.equal(r.els.qa.hidden, true);
+  });
+
+  test('(+) the bar comes back as soon as the panel goes, and the reason line returns when a reason is still held (the Q.whySig path)', () => {
+    const r = rig();
+    r.ctx.Q.whySig = 'Claude is working';
+    showPrompt(r);
+    r.renderBar();
+    assert.equal(r.els['qa-why'].hidden, true);
+    r.els['prompt-btns'].hidden = true;
+    r.renderBar();
+    assert.equal(r.els.qa.hidden, false);
+    assert.equal(r.els['qa-why'].hidden, false, 'not left hidden after the panel goes');
+    assert.equal(r.ctx.BAR.up, false);
+    r.ctx.Q.whySig = null;
+    showPrompt(r);
+    r.renderBar();
+    r.els['prompt-btns'].hidden = true;
+    r.renderBar();
+    assert.equal(r.els['qa-why'].hidden, true, 'no reason held: the line stays empty');
+  });
+
+  test('(+) focus that was in the bar moves to the shown panel: #ask-q, #dialog-form or #survey-panel (never a button, so a held Enter answers nothing unseen)', () => {
+    const cases = [['ask-q', showPrompt], ['dialog-form', showForm], ['survey-panel', showSurvey]];
+    for (const [id, show] of cases) {
+      const r = rig();
+      focusState.el = r.qaBtn;
+      show(r);
+      r.renderBar();
+      assert.equal(focusState.el, r.els[id], id);
+    }
+  });
+
+  test('(−) focus anywhere else is left alone', () => {
+    const r = rig();
+    const elsewhere = box051('textarea');
+    focusState.el = elsewhere;
+    showPrompt(r);
+    r.renderBar();
+    assert.equal(focusState.el, elsewhere);
+  });
+
+  test('(+) the model popover closes without taking focus when the bar hides; focus inside it moves to the panel', () => {
+    const r = rig();
+    r.ctx.Q.pop = true;
+    r.els['model-pop'].hidden = false;
+    focusState.el = r.popSel;
+    showForm(r);
+    r.renderBar();
+    assert.deepEqual(r.log.pop, [false]);
+    assert.equal(r.els['model-pop'].hidden, true);
+    assert.equal(focusState.el, r.els['dialog-form']);
+  });
+
+  test('(−) the bar stays while nika\'s panel cannot answer: no panel, the attention banner, the form\'s "Reading" state, a terminal-mode form, a "Terminal only" survey', () => {
+    const cases = {
+      'no panel': () => {},
+      'the form reads': (r) => showForm(r, { state: 'unreadable', kind: 'ask', reason: 'layout' }),
+      'a terminal-mode form': (r) => showForm(r, READY, false),
+      'a terminal-only survey': (r) => showSurvey(r, { state: 'terminal', reason: 'vim' }),
+      'a prompt panel that is not shown': (r) => { r.ctx.W.prompt = PROMPT; },
+    };
+    for (const [label, setup] of Object.entries(cases)) {
+      const r = rig();
+      setup(r);
+      r.renderBar();
+      assert.equal(r.els.qa.hidden, false, label);
+      assert.equal(r.ctx.BAR.up, false, label);
+    }
+  });
+
+  test('(−) a pane that is not ok (connecting, gone, tmux) never hides the bar: End must stay reachable', () => {
+    for (const pane of ['connecting', 'gone', 'tmux']) {
+      const r = rig();
+      r.ctx.W.pane = pane;
+      showPrompt(r);
+      r.renderBar();
+      assert.equal(r.els.qa.hidden, false, pane);
+    }
+  });
+
+  test('(−) the bar is touched only when the state changes (a capture every 250 ms must not rewrite the DOM or steal focus again)', () => {
+    const r = rig();
+    showPrompt(r);
+    r.renderBar();
+    r.els.qa.hidden = false; // somebody else un-hid it: an unchanged state does not hide it again
+    r.renderBar();
+    assert.equal(r.els.qa.hidden, false);
+  });
+
+  test('(+) wiring: renderMode ends with panelsChanged (the bar, then the mirror) after the panels are drawn; renderQuick keeps the reason line hidden while the bar is hidden', () => {
+    const mode = fnOf('function renderMode()');
+    assert.ok(mode.indexOf('SV?.render(') < mode.indexOf('panelsChanged();'), 'after the form and the survey have drawn');
+    assert.match(fnOf('function renderQuick()'), /why\.hidden = !st\.reason \|\| BAR\.up;/);
+  });
+
+  test('(+) wiring: a change of the three panels\' `hidden` redraws the bar without waiting for a capture (a MutationObserver per root)', () => {
+    const src = code(JS['session.js']);
+    assert.match(src, /new MutationObserver\(panelsChanged\)/);
+    for (const id of ['prompt-btns', 'dialog-form', 'survey-panel']) assert.match(src, new RegExp(`'${id}'`), id);
+    assert.match(src, /attributeFilter: \['hidden'\]/);
+  });
+
+  test('(+) markup: the form and the survey roots take programmatic focus (tabindex -1); the question line of the prompt already does', () => {
+    for (const id of ['dialog-form', 'survey-panel', 'ask-q']) assert.match(new RegExp(`<[a-z]+\\b[^>]*\\bid="${id}"[^>]*>`).exec(HTML)?.[0] ?? '', /\btabindex="-1"/, id);
+  });
+});
+
+describe('0.5.1 E: the mirror ends above Claude\'s dialog while nika\'s panel answers it (design section 3)', () => {
+  const SRC = code(JS['session.js']);
+  const fnOf = (head) => {
+    const at = SRC.indexOf(head);
+    assert.ok(at >= 0, head);
+    return SRC.slice(at, SRC.indexOf('\n}\n', at) + 2);
+  };
+  const row = (t) => [{ t, s: {} }];
+  const SIG = '0123456789abcdef';
+  const BODY = (over = {}) => ({ cols: 120, rows: Array.from({ length: 14 }, (_, i) => row(`row ${i}`)), cursor: { x: 2, y: 12, visible: true }, ...over });
+  const READY = (at, over = {}) => ({ state: 'ready', kind: 'ask', at, sig: SIG, bypass: false, top: 5, ...over });
+  const OPTS = [{ n: 1, label: 'Yes', bypass: false }, { n: 2, label: 'No', bypass: false }];
+  /** One panel kind of nika's, with the capture body and the page state that go with it (top 5 for every kind). */
+  const SCENES = {
+    prompt: { body: { prompt: { question: 'Proceed?', sig: SIG, options: OPTS, bypass: false, top: 5 } }, panel: { kind: 'prompt', bypass: false }, w: { dialog: null } },
+    question: { body: { dialog: READY('question') }, panel: { kind: 'question', bypass: false }, w: { dialog: READY('question') } },
+    review: { body: { dialog: READY('review') }, panel: { kind: 'review', bypass: false }, w: { dialog: READY('review') } },
+    plan: { body: { dialog: READY('plan') }, panel: { kind: 'plan', bypass: false }, w: { dialog: READY('plan') } },
+    survey: { body: { survey: { state: 'ready', kind: 'rating', sig: SIG, top: 5 } }, panel: { kind: 'survey', bypass: false }, w: { dialog: null } },
+  };
+  const BOX = { top: 10, bottom: 13 };
+  const draft = (over = {}) => ({ state: 'text', mode: 'prompt', text: 'hello', sig: '0000000000000001', box: BOX, cursorAtEnd: true, suggestion: null, queued: false, ...over });
+
+  /** An element that logs each write (`<id>.<what>`), so a test can see what drawMirror / paintStrip touched. */
+  const spyEl = (id, log, text = '') => {
+    let t = text;
+    let hidden = true;
+    return {
+      attrs: {}, setAttribute(k, v) { this.attrs[k] = String(v); log.push(`${id}.${k}`); },
+      get textContent() { return t; }, set textContent(v) { t = v; log.push(`${id}.text`); },
+      get hidden() { return hidden; }, set hidden(v) { hidden = v; log.push(`${id}.hidden`); },
+    };
+  };
+  const rig = ({ body = BODY(), dr = null, pass = false, pane = 'ok', panel = null, wdialog = null, cut = 'unset' } = {}) => {
+    const log = [];
+    const els = { 'term-cut': spyEl('strip', log), 'term-cut-ic': spyEl('ic', log), 'term-cut-t': spyEl('txt', log, INPUT_TEXT_REAL), term: { scrollTop: 0, scrollHeight: 500 } };
+    const drawn = [];
+    const ctx = {
+      M: { body, draft: dr, frozen: false, cut, crop: null, stripKind: null }, P: { on: pass }, W: { pane, dialog: wdialog },
+      cutAt: cutAtReal, cutCursor: cutCursorReal, toRenderModel: toRenderModelReal, cropOf: cropOfReal, INPUT_TEXT: INPUT_TEXT_REAL, CROP_TEXT: CROP_TEXT_REAL,
+      applyMirror: (container, model, cursor) => drawn.push({ rows: model.length, last: model.at(-1)?.[0]?.text, cursor }),
+      panelNow: () => ctx.panel, panel, bars: 0, renderBar: () => { ctx.bars += 1; },
+      $: (id) => els[id] ?? id,
+    };
+    const fns = vm.runInNewContext(`${['function drawMirror()', 'function paintStrip(kind)', 'function cropFor(body, cut)', 'function panelsChanged()'].map(fnOf).join('\n')}; ({ drawMirror, paintStrip, cropFor, panelsChanged })`, ctx);
+    return { ...fns, ctx, els, log, drawn };
+  };
+  const scene = (kind, over = {}) => {
+    const sc = SCENES[kind];
+    return { body: BODY(sc.body), panel: sc.panel, wdialog: sc.w.dialog, ...over };
+  };
+
+  test('(+) a ready panel of every kind ends the mirror at the server\'s `top`, drops the cursor, and the strip shows the panel look: data-kind panel, #i-dialog, that kind\'s words', () => {
+    for (const kind of Object.keys(SCENES)) {
+      const r = rig(scene(kind));
+      r.drawMirror();
+      assert.equal(r.drawn.length, 1, kind);
+      assert.equal(r.drawn[0].rows, 5, kind);
+      assert.equal(r.drawn[0].last, 'row 4', kind);
+      assert.equal(r.drawn[0].cursor, null, `${kind}: the cursor sat under the strip`);
+      assert.equal(r.els['term-cut'].hidden, false, kind);
+      assert.equal(r.els['term-cut'].attrs['data-kind'], 'panel', kind);
+      assert.equal(r.els['term-cut-ic'].attrs.href, '#i-dialog', kind);
+      assert.equal(r.els['term-cut-t'].textContent, CROP_TEXT_REAL[kind], kind);
+      assert.deepEqual(norm(r.ctx.M.crop), { top: 5, kind }, kind);
+      assert.equal(r.ctx.M.stripKind, kind, kind);
+    }
+  });
+
+  test('(+) F11: the crop never becomes M.cut: M.cut stays the input-box cut only (null here), so the fit sees what it saw before', () => {
+    for (const kind of Object.keys(SCENES)) assert.equal((() => { const r = rig(scene(kind)); r.drawMirror(); return r.ctx.M.cut; })(), null, kind);
+  });
+
+  test('(−) Type into pane on: every row and the cursor, no crop, no strip (the user types into the real screen)', () => {
+    const r = rig(scene('question', { pass: true }));
+    r.drawMirror();
+    assert.equal(r.drawn[0].rows, 14);
+    assert.deepEqual(norm(r.drawn[0].cursor), { x: 2, y: 12, visible: true });
+    assert.equal(r.ctx.M.crop, null);
+    assert.equal(r.els['term-cut'].hidden, true);
+  });
+
+  test('(−) no panel up (an unreadable dialog, the form still reading, a terminal-only survey, the banner): every row, no crop', () => {
+    const r = rig(scene('question', { panel: null }));
+    r.drawMirror();
+    assert.equal(r.drawn[0].rows, 14);
+    assert.equal(r.ctx.M.crop, null);
+    assert.equal(r.els['term-cut'].hidden, true);
+  });
+
+  test('(−) bypass anywhere: a prompt option, the dialog\'s flag or the capture\'s own flag shows every row (nika never hides what the terminal must answer)', () => {
+    const cases = {
+      'a bypass option': scene('prompt', { panel: { kind: 'prompt', bypass: true } }),
+      'the capture says bypass (prompt)': scene('prompt', { body: BODY({ prompt: { ...SCENES.prompt.body.prompt, bypass: true } }) }),
+      'the capture says bypass (dialog)': scene('question', { body: BODY({ dialog: READY('question', { bypass: true }) }) }),
+    };
+    for (const [label, args] of Object.entries(cases)) {
+      const r = rig(args);
+      r.drawMirror();
+      assert.equal(r.drawn[0].rows, 14, label);
+      assert.equal(r.ctx.M.crop, null, label);
+    }
+  });
+
+  test('(−) a dialog read for another screen (sig differs from the form\'s), a missing or zero top, or a pane that is not ok: no crop', () => {
+    const cases = {
+      'sig mismatch': scene('question', { wdialog: READY('question', { sig: 'fedcba9876543210' }) }),
+      'no top': scene('question', { body: BODY({ dialog: READY('question', { top: undefined }) }) }),
+      'top 0': scene('question', { body: BODY({ dialog: READY('question', { top: 0 }) }) }),
+      'top past the rows': scene('question', { body: BODY({ dialog: READY('question', { top: 14 }) }) }),
+      'pane gone': scene('question', { pane: 'gone' }),
+    };
+    for (const [label, args] of Object.entries(cases)) {
+      const r = rig(args);
+      r.drawMirror();
+      assert.equal(r.drawn[0].rows, 14, label);
+      assert.equal(r.ctx.M.crop, null, label);
+      assert.equal(r.els['term-cut'].hidden, true, label);
+    }
+  });
+
+  test('(+) the strip goes back to the input look when the crop goes while the box is cut, and hides when nothing is cut', () => {
+    const r = rig(scene('question', { dr: null }));
+    r.drawMirror();
+    assert.equal(r.els['term-cut'].attrs['data-kind'], 'panel');
+    r.ctx.panel = null;
+    r.ctx.M.draft = draft();
+    r.drawMirror();
+    assert.equal(r.ctx.M.cut, 10);
+    assert.equal(r.els['term-cut'].hidden, false);
+    assert.equal(r.els['term-cut'].attrs['data-kind'], 'input');
+    assert.equal(r.els['term-cut-ic'].attrs.href, '#i-kbd');
+    assert.equal(r.els['term-cut-t'].textContent, INPUT_TEXT_REAL);
+    r.ctx.M.draft = null;
+    r.drawMirror();
+    assert.equal(r.els['term-cut'].hidden, true);
+    assert.equal(r.ctx.M.stripKind, null);
+  });
+
+  test('(+) the crop and the input-box cut both apply: the smaller row wins; a crop at or below the cut leaves the cut (and the input look)', () => {
+    const above = rig(scene('question', { dr: draft({ box: { top: 12, bottom: 13 } }) })); // crop 5 < cut 12
+    above.drawMirror();
+    assert.equal(above.drawn[0].rows, 5);
+    assert.equal(above.ctx.M.cut, 12, 'M.cut stays the box cut');
+    assert.equal(above.ctx.M.crop.top, 5);
+    assert.equal(above.els['term-cut'].attrs['data-kind'], 'panel');
+    const below = rig(scene('question', { dr: draft({ box: { top: 4, bottom: 13 } }) })); // crop 5 >= cut 4
+    below.drawMirror();
+    assert.equal(below.drawn[0].rows, 4);
+    assert.equal(below.ctx.M.crop, null);
+    assert.equal(below.els['term-cut'].attrs['data-kind'], undefined, 'the markup\'s own input look stands');
+    assert.equal(below.ctx.M.stripKind, 'input');
+    const tie = rig(scene('question', { dr: draft({ box: { top: 5, bottom: 13 } }) })); // crop 5 == cut 5: the cut stays, the strip keeps the input look
+    tie.drawMirror();
+    assert.equal(tie.drawn[0].rows, 5);
+    assert.equal(tie.ctx.M.crop, null);
+    assert.equal(tie.ctx.M.stripKind, 'input');
+  });
+
+  test('(−) the strip is rewritten only when its kind changes: a draw every 250 ms with the same crop writes nothing', () => {
+    const r = rig(scene('prompt'));
+    r.drawMirror();
+    const first = r.log.length;
+    assert.ok(first >= 4, 'hidden, data-kind, href, text');
+    r.drawMirror();
+    r.drawMirror();
+    assert.equal(r.log.length, first);
+    r.ctx.M.body = BODY({ prompt: { ...SCENES.prompt.body.prompt, top: 6 } }); // another top, same kind: the rows move, the strip does not
+    r.drawMirror();
+    assert.equal(r.log.length, first);
+    assert.equal(r.drawn.at(-1).rows, 6);
+  });
+
+  test('(−) only the input look and none: the null/input switches write `hidden` alone (the markup\'s default look is the input look)', () => {
+    const r = rig({ dr: draft() });
+    r.drawMirror();
+    assert.deepEqual(r.log, ['strip.hidden']);
+  });
+
+  test('(+) panelsChanged: the bar redraws, and the mirror only when the crop that would be drawn now differs from the one drawn', () => {
+    const r = rig(scene('question'));
+    r.drawMirror();
+    let draws = 0;
+    const real = r.ctx.drawMirror;
+    r.ctx.drawMirror = () => { draws += 1; return real?.(); };
+    r.panelsChanged();
+    assert.equal(r.ctx.bars, 1);
+    assert.equal(draws, 0, 'same crop: no redraw');
+    r.ctx.panel = null; // the form went (its hidden flipped)
+    r.panelsChanged();
+    assert.equal(draws, 1, 'the crop goes: the mirror shows every row again');
+    assert.equal(r.ctx.bars, 2);
+    const k = rig(scene('question'));
+    k.drawMirror();
+    let kindDraws = 0;
+    const realK = k.ctx.drawMirror;
+    k.ctx.drawMirror = () => { kindDraws += 1; return realK?.(); };
+    k.ctx.panel = { kind: 'review', bypass: false }; // the same row, another kind of dialog: the strip's words change
+    k.ctx.W.dialog = READY('review');
+    k.ctx.M.body = BODY({ dialog: READY('review') });
+    k.panelsChanged();
+    assert.equal(kindDraws, 1, 'another kind is another crop');
+  });
+
+  test('(−) panelsChanged before the first capture draws nothing and does not throw', () => {
+    const r = rig({ body: null, panel: null });
+    assert.doesNotThrow(() => r.panelsChanged());
+    assert.equal(r.drawn.length, 0);
+  });
+
+  test('(+) fitStrip is 0 while only a crop shows (M.cut is null): the fit counts the input-box cut alone', () => {
+    const mkStrip = (cutVal) => {
+      const ctx = { M: { cut: cutVal }, $: (id) => (id === 'term-cut' ? { hidden: false, offsetTop: 400, offsetHeight: 27 } : { offsetTop: 0, offsetHeight: 400 }) };
+      return vm.runInNewContext(`${fnOf('function fitStrip()')}; fitStrip`, ctx)();
+    };
+    assert.equal(mkStrip(null), 0, 'a crop strip: the fit ignores it');
+    assert.equal(mkStrip(8), 27, 'the input-box strip is measured as before');
+  });
+
+  test('(+) wiring: the glide frame, the scroll request and the wheel all carry the crop (a crop that appears or goes between frames never slides)', () => {
+    assert.match(fnOf('function handleCapture(r)'), /frameOf\(r\.body, draft, cropFor\(r\.body, null\)\?\.top \?\? null\)/);
+    assert.match(fnOf('function scrollCall(body)'), /before: frameOf\(M\.body, M\.draft, M\.crop\?\.top \?\? null\)/);
+    const wheel = SRC.slice(SRC.indexOf('viewRowsOf(M.body'), SRC.indexOf('viewRowsOf(M.body') + 400);
+    assert.match(wheel, /viewRowsOf\(M\.body, M\.draft, M\.crop\?\.top \?\? null\)/);
+    assert.match(SRC, /pageRowsOf\(M\.body, M\.draft, M\.crop\?\.top \?\? null\)/);
+  });
+
+  test('(+) wiring: drawMirror keeps `M.cut = on ? cut : null` untouched and takes the smaller of crop and cut', () => {
+    const src = fnOf('function drawMirror()');
+    assert.match(src, /M\.cut = on \? cut : null;/);
+    assert.match(src, /M\.crop = cropFor\(body, M\.cut\);/);
+    assert.match(src, /const end = M\.crop\?\.top \?\? M\.cut;/);
+    assert.match(src, /paintStrip\(M\.crop\?\.kind \?\? \(M\.cut !== null \? 'input' : null\)\);/);
+    assert.doesNotMatch(src, /textContent =|setAttribute\(/, 'the strip\'s words are written in paintStrip only');
+  });
+
+  test('(+) markup: #term-cut carries data-kind input, the sprite <use id="term-cut-ic">, the text span #term-cut-t, and stays aria-hidden and hidden', () => {
+    const tag = /<div[^>]*\bid="term-cut"[^>]*>/.exec(HTML)?.[0] ?? '';
+    for (const part of ['class="tl cut"', 'data-kind="input"', 'aria-hidden="true"', 'hidden']) assert.ok(tag.includes(part), part);
+    assert.match(HTML, /<use id="term-cut-ic" href="#i-kbd"\/>/);
+    assert.match(HTML, /<span id="term-cut-t">Input box &middot; mirrored in the message box below<\/span>/);
+    assert.ok(/id="i-dialog"/.test(HTML), 'the panel look\'s icon is in the sprite');
+  });
+
+  test('(+) the input look\'s words in the markup equal INPUT_TEXT (one wording, two places)', () => {
+    const text = /<span id="term-cut-t">([^<]*)<\/span>/.exec(HTML)?.[1].replace('&middot;', '·');
+    assert.equal(text, INPUT_TEXT_REAL);
+  });
+});
+
+describe('0.5.1 stylesheet block (C, E, H, I): tokens only, appended at the end of session.css', () => {
+  const START = CSS.indexOf(NEW_CSS_MARK);
+  const BLOCK = strip(CSS.slice(START));
+  /** The terminal palette (--a0 to --a15) is declared by session.css itself, once per mirror surface; the strip uses --a11 and --a8 like the colour classes do. */
+  const PALETTE = new Set([...strip(CSS).matchAll(/(--a\d+)\s*:/g)].map((m) => m[1]));
+
+  test('(+) the block is the last thing in session.css, under its heading', () => {
+    assert.ok(START > CSS.indexOf('.hx-sub'), 'after the 0.5 rules');
+    assert.equal(CSS.indexOf(NEW_CSS_MARK, START + 1), -1, 'one heading');
+  });
+
+  test('(−) every var() is a token of tokens.css or a palette colour of the terminal; no custom property of its own, no colour literal', () => {
+    const defined = new Set([...TOKENS.matchAll(/(--[a-z0-9-]+)\s*:/g)].map((m) => m[1]));
+    const used = [...BLOCK.matchAll(/var\((--[a-z0-9-]+)/g)].map((m) => m[1]);
+    assert.ok(used.length >= 2, 'the scan found the variables');
+    assert.deepEqual([...new Set(used)].filter((n) => !defined.has(n) && !PALETTE.has(n)), []);
+    assert.deepEqual([...BLOCK.matchAll(/(--[a-z0-9-]+)\s*:/g)].map((m) => m[1]), []);
+    assert.doesNotMatch(BLOCK, /#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\(|color-mix\(|:has\(|@import|url\(/);
+  });
+
+  test('(+) E: the strip stays one line in both looks (nowrap, hidden overflow, ellipsis on the words, a fixed icon), and the panel look is the solid ANSI yellow', () => {
+    assert.match(BLOCK, /\.tl\.cut\s*\{[^}]*white-space:\s*nowrap[^}]*overflow:\s*hidden/);
+    assert.match(BLOCK, /\.tl\.cut > \.ic\s*\{[^}]*flex:\s*none/);
+    assert.match(BLOCK, /\.tl\.cut > span\s*\{[^}]*overflow:\s*hidden[^}]*text-overflow:\s*ellipsis/);
+    assert.match(BLOCK, /\.tl\.cut\[data-kind="panel"\]\s*\{[^}]*border-top:\s*1px solid var\(--a11\)[^}]*color:\s*var\(--a11\)/);
+  });
+});
+
+describe('0.5.1 H: the Subagents button and dialog (design section 4)', () => {
+  const SRC = code(JS['session.js']);
+  const fnOf = (head) => {
+    const at = SRC.indexOf(head);
+    assert.ok(at >= 0, head);
+    return SRC.slice(at, SRC.indexOf('\n}\n', at) + 2);
+  };
+  const S1 = '11111111-1111-4111-8111-111111111111';
+  const KEY1 = '0123456789abcdef';
+  const AGA = 'a0000000000000001';
+  const AGB = 'aaa111';
+  const AGC = 'bbb222';
+  const SUBAG = (over = {}) => ({ id: AGA, type: 'Explore', label: 'scout', description: 'List project files', model: 'claude-haiku-5-5', modelLabel: 'Haiku 5.5', state: 'running', lastActivity: 1700000000000, ...over });
+  let restoreDom;
+  before(() => { restoreDom = installDom(); });
+  after(() => restoreDom());
+
+  /** A fake page: any id gives an element that knows contains(), a class list and querySelectorAll('a') over the tree. */
+  class Node extends Box051 {
+    constructor(tag) {
+      super(tag);
+      const set = new Set();
+      this.classes = set;
+      this.classList = { toggle: (c, on) => { if (on ?? !set.has(c)) set.add(c); else set.delete(c); return set.has(c); }, add: (c) => set.add(c), remove: (c) => set.delete(c), contains: (c) => set.has(c) };
+      this.title = '';
+    }
+
+    querySelectorAll() { return this.all((n) => n.tag === 'a'); }
+
+    querySelector() { return this.querySelectorAll()[0] ?? null; }
+  }
+  const mkPage = () => {
+    const nodes = new Map();
+    return { $: (id) => { if (!nodes.has(id)) nodes.set(id, new Node('div')); return nodes.get(id); } };
+  };
+  const rig = ({ sub = false, subs = [], name = 'acme-api', last = { id: S1 } } = {}) => {
+    const pg = mkPage();
+    const composerEl = new Node('textarea');
+    focusState.el = null;
+    const log = { redraws: 0 };
+    const ctx = {
+      $: pg.$, SUB: sub, A: { name, subs }, SUBS: { last }, projectKey: KEY1, subagentGroups: subagentGroupsReal, subagentItemEl: subagentItemElReal, subagentHref: subagentHrefReal, timeEl: timeElReal,
+      composer: () => composerEl, document: { get activeElement() { return focusState.el; } }, Date,
+    };
+    const run = pg.$('subs-dlg-run');
+    // the dialog's tree as the markup has it: head (X), body (summary, running list, "None running.", the ended details with its summary and list), foot (Close)
+    pg.$('subs-dlg-ended').append(pg.$('subs-dlg-hint'), pg.$('subs-dlg-end'));
+    pg.$('subs-dlg').append(pg.$('subs-dlg-h'), pg.$('subs-dlg-x'), pg.$('subs-dlg-sum'), run, pg.$('subs-dlg-none'), pg.$('subs-dlg-ended'), pg.$('subs-dlg-close'));
+    const replace = run.replaceChildren.bind(run);
+    run.replaceChildren = (...nodes) => { log.redraws += 1; replace(...nodes); };
+    const sdLine = /^const SD = [^\n]*$/m.exec(SRC)?.[0] ?? '';
+    const fns = vm.runInNewContext(`${sdLine}\n${['function renderSubsBtn()', 'function subRows(list)', 'function renderSubsDlg()', 'function wireSubsDlg()'].map(fnOf).join('\n')}; ({ renderSubsBtn, renderSubsDlg, wireSubsDlg, SD })`, ctx);
+    return { ...fns, ctx, pg, $: pg.$, composerEl, log, btn: pg.$('subs-btn'), dlg: pg.$('subs-dlg') };
+  };
+  const rowsOf = (ul) => ul.kids.filter((k) => k.tag === 'li');
+  const linkOf = (li) => li.all((n) => n.tag === 'a')[0] ?? null;
+
+  test('(−) the button is hidden with no subagents (none, a non-list, only junk) and in the read-only subagent view', () => {
+    for (const subs of [[], null, 'x', [null, 5]]) {
+      const r = rig({ subs });
+      r.btn.hidden = false;
+      r.renderSubsBtn();
+      assert.equal(r.btn.hidden, true, JSON.stringify(subs));
+    }
+    const sub = rig({ sub: true, subs: [SUBAG()] });
+    sub.btn.hidden = false;
+    sub.renderSubsBtn();
+    assert.equal(sub.btn.hidden, true, 'a subagent window has no terminal column and no button');
+  });
+
+  test('(+) running ones: the button shows with the badge N, the busy look (class on) and the name "Subagents (N running)" on aria-label and title', () => {
+    const r = rig({ subs: [SUBAG(), SUBAG({ id: AGB }), SUBAG({ id: AGC, state: 'finished' })] });
+    r.renderSubsBtn();
+    assert.equal(r.btn.hidden, false);
+    assert.equal(r.btn.getAttribute('aria-label'), 'Subagents (2 running)');
+    assert.equal(r.btn.title, 'Subagents (2 running)');
+    assert.equal(r.btn.classList.contains('on'), true);
+    assert.equal(r.$('subs-n').hidden, false);
+    assert.equal(r.$('subs-n').textContent, '2');
+  });
+
+  test('(+) only ended ones: the button shows, no badge, the muted look (no class on), and the name still counts "(0 running)"', () => {
+    const r = rig({ subs: [SUBAG({ state: 'finished' }), SUBAG({ id: AGB, state: 'stopped' })] });
+    r.renderSubsBtn();
+    assert.equal(r.btn.hidden, false);
+    assert.equal(r.btn.getAttribute('aria-label'), 'Subagents (0 running)');
+    assert.equal(r.btn.classList.contains('on'), false);
+    assert.equal(r.$('subs-n').hidden, true);
+  });
+
+  test('(+) the look follows the list: the last running one finishes, the badge goes and the class goes; a new one running brings both back', () => {
+    const r = rig({ subs: [SUBAG()] });
+    r.renderSubsBtn();
+    assert.equal(r.btn.classList.contains('on'), true);
+    r.ctx.A.subs = [SUBAG({ state: 'finished' })];
+    r.renderSubsBtn();
+    assert.deepEqual([r.btn.classList.contains('on'), r.$('subs-n').hidden], [false, true]);
+    r.ctx.A.subs = [SUBAG({ state: 'finished' }), SUBAG({ id: AGB })];
+    r.renderSubsBtn();
+    assert.deepEqual([r.btn.classList.contains('on'), r.$('subs-n').hidden, r.$('subs-n').textContent], [true, false, '1']);
+  });
+
+  const open = (r) => {
+    r.wireSubsDlg();
+    r.btn.fire('click');
+  };
+
+  test('(+) a click opens the dialog modally: the heading names the session, the summary counts, running rows first (newest first) with links, then the "+M ended" list', () => {
+    const r = rig({ subs: [SUBAG({ id: AGB, lastActivity: 1700000000000 }), SUBAG({ lastActivity: 1700000050000 }), SUBAG({ id: AGC, state: 'finished', lastActivity: 1700000090000 })] });
+    open(r);
+    assert.equal(r.dlg.open, true);
+    assert.equal(r.$('subs-dlg-h').textContent, 'Subagents of acme-api');
+    assert.equal(r.$('subs-dlg-sum').textContent, '2 running · 1 ended');
+    const running = rowsOf(r.$('subs-dlg-run'));
+    assert.deepEqual(running.map((li) => linkOf(li).getAttribute('data-fk')), [`dlg:${AGA}`, `dlg:${AGB}`], 'newest activity first');
+    assert.equal(linkOf(running[0]).getAttribute('href'), subagentHrefReal({ session: S1, agent: AGA, project: KEY1 }));
+    assert.equal(r.$('subs-dlg-none').hidden, true);
+    assert.equal(r.$('subs-dlg-run').hidden, false);
+    assert.equal(r.$('subs-dlg-ended').hidden, false);
+    assert.equal(r.$('subs-dlg-hint').textContent, '+1 ended');
+    assert.equal(rowsOf(r.$('subs-dlg-end')).length, 1);
+  });
+
+  test('(+) each row carries the badge, the kind chip, the model and a time element (the project page\'s row, with the time)', () => {
+    const r = rig({ subs: [SUBAG()] });
+    open(r);
+    const li = rowsOf(r.$('subs-dlg-run'))[0];
+    assert.ok(li.all((n) => n.tag === 'time').length === 1, 'time');
+    assert.match(li.textContent, /Haiku 5\.5/);
+    assert.match(li.textContent, /List project files/);
+    assert.ok(li.all(withClass('sst')).length >= 1, 'the state badge');
+  });
+
+  test('(+) nothing running: "None running." shows, the empty list is hidden, and the ended ones wait in the closed details', () => {
+    const r = rig({ subs: [SUBAG({ state: 'finished' })] });
+    open(r);
+    assert.equal(r.$('subs-dlg-none').hidden, false);
+    assert.equal(r.$('subs-dlg-run').hidden, true);
+    assert.equal(r.$('subs-dlg-ended').hidden, false);
+    assert.equal(r.$('subs-dlg-ended').open, false, 'closed by default');
+  });
+
+  test('(−) no ended ones: no details and no hint', () => {
+    const r = rig({ subs: [SUBAG()] });
+    open(r);
+    assert.equal(r.$('subs-dlg-ended').hidden, true);
+  });
+
+  test('(−) a subagent with a bad id gets no link (subagentHref says null), as in the Transcript list', () => {
+    const r = rig({ subs: [SUBAG({ id: '../x' })] });
+    open(r);
+    const li = rowsOf(r.$('subs-dlg-run'))[0];
+    assert.equal(linkOf(li), null);
+    assert.match(li.textContent, /List project files/);
+  });
+
+  test('(+) focus moves to the first link on open; to Close when there are none', () => {
+    const withLink = rig({ subs: [SUBAG()] });
+    open(withLink);
+    assert.equal(focusState.el, linkOf(rowsOf(withLink.$('subs-dlg-run'))[0]));
+    const none = rig({ subs: [SUBAG({ id: '../x' })] });
+    open(none);
+    assert.equal(focusState.el, none.$('subs-dlg-close'));
+  });
+
+  test('(+) an open dialog redraws on a change of the list or the minute, and not otherwise (a poll every 2 s rewrites nothing)', () => {
+    const r = rig({ subs: [SUBAG()] });
+    open(r);
+    const first = r.log.redraws;
+    r.renderSubsDlg();
+    r.renderSubsDlg();
+    assert.equal(r.log.redraws, first, 'same list, same minute: untouched');
+    r.ctx.A.subs = [SUBAG(), SUBAG({ id: AGB })];
+    r.renderSubsDlg();
+    assert.equal(r.log.redraws, first + 1);
+    r.ctx.A.subs = [SUBAG(), SUBAG({ id: AGB, description: 'Another task' })];
+    r.renderSubsDlg();
+    assert.equal(r.log.redraws, first + 2, 'a description is part of what is drawn');
+    const realNow = Date.now;
+    try {
+      Date.now = () => realNow() + 61000; // the vm context shares Date with the test, so the minute ticks
+      r.ctx.Date = Date;
+      r.renderSubsDlg();
+    } finally {
+      Date.now = realNow;
+    }
+    assert.equal(r.log.redraws, first + 3, 'the minute ticks the times');
+  });
+
+  test('(+) a redraw keeps the focus on the same link (by data-fk); the link of a subagent that is gone sends focus to Close', () => {
+    const r = rig({ subs: [SUBAG(), SUBAG({ id: AGB })] });
+    open(r);
+    const second = linkOf(rowsOf(r.$('subs-dlg-run'))[1]);
+    second.focus();
+    r.ctx.A.subs = [SUBAG(), SUBAG({ id: AGB, description: 'Renamed task' })];
+    r.renderSubsDlg();
+    const again = linkOf(rowsOf(r.$('subs-dlg-run'))[1]);
+    assert.notEqual(again, second, 'the row was rebuilt');
+    assert.equal(focusState.el, again);
+    again.focus();
+    r.ctx.A.subs = [SUBAG()];
+    r.renderSubsDlg();
+    assert.equal(focusState.el, r.$('subs-dlg-close'));
+  });
+
+  test('(+) focus on Close or X stays where it is across a redraw', () => {
+    const r = rig({ subs: [SUBAG()] });
+    open(r);
+    const x = r.$('subs-dlg-x');
+    x.focus();
+    r.ctx.A.subs = [SUBAG(), SUBAG({ id: AGB })];
+    r.renderSubsDlg();
+    assert.equal(focusState.el, x);
+  });
+
+  test('(+) every subagent gone (/clear): the open dialog closes itself and focus goes to the message box', () => {
+    const r = rig({ subs: [SUBAG()] });
+    open(r);
+    r.ctx.A.subs = [];
+    r.renderSubsBtn();
+    r.renderSubsDlg();
+    assert.equal(r.dlg.open, false);
+    assert.equal(focusState.el, r.composerEl);
+  });
+
+  test('(−) a closed dialog is not drawn: the poll changes nothing in it', () => {
+    const r = rig({ subs: [SUBAG()] });
+    r.wireSubsDlg();
+    r.renderSubsDlg();
+    assert.equal(r.log.redraws, 0);
+    assert.equal(r.$('subs-dlg-sum').textContent, '');
+  });
+
+  test('(+) Close, the X and a click on the backdrop close it; a click on a row\'s content does not', () => {
+    for (const how of ['close', 'x', 'backdrop']) {
+      const r = rig({ subs: [SUBAG()] });
+      open(r);
+      if (how === 'close') r.$('subs-dlg-close').fire('click');
+      if (how === 'x') r.$('subs-dlg-x').fire('click');
+      if (how === 'backdrop') r.dlg.fire('click', { target: r.dlg });
+      assert.equal(r.dlg.open, false, how);
+    }
+    const inside = rig({ subs: [SUBAG()] });
+    open(inside);
+    inside.dlg.fire('click', { target: inside.$('subs-dlg-sum') });
+    assert.equal(inside.dlg.open, true);
+  });
+
+  test('(+) on close, focus returns to the button when it shows, else to the message box', () => {
+    const shown = rig({ subs: [SUBAG()] });
+    shown.btn.hidden = false;
+    open(shown);
+    shown.dlg.close();
+    assert.equal(focusState.el, shown.btn);
+    const hidden = rig({ subs: [SUBAG()] });
+    hidden.btn.hidden = true;
+    open(hidden);
+    hidden.dlg.close();
+    assert.equal(focusState.el, hidden.composerEl);
+  });
+
+  test('(+) a reopened dialog shows the current list (changed while it was closed), and keeps the ended list as the reader left it', () => {
+    const r = rig({ subs: [SUBAG(), SUBAG({ id: AGB, state: 'finished' })] });
+    open(r);
+    r.$('subs-dlg-ended').open = true;
+    r.dlg.close();
+    r.ctx.A.subs = [SUBAG(), SUBAG({ id: AGB, state: 'finished' }), SUBAG({ id: AGC, state: 'finished' })];
+    r.btn.fire('click');
+    assert.equal(rowsOf(r.$('subs-dlg-end')).length, 2);
+    assert.equal(r.$('subs-dlg-ended').open, true, 'its open state is kept while the window lives');
+  });
+
+  test('(+) wiring: renderSubs feeds the button and the dialog before it can return early (nothing to list included), wireSubsDlg is wired with wireSubs', () => {
+    const render = fnOf('function renderSubs(agent)');
+    assert.ok(render.indexOf('renderSubsBtn();') > render.indexOf('A.subs ='), 'after the list is kept');
+    assert.ok(render.indexOf('renderSubsBtn();') < render.indexOf('if (!v)'), 'before the early return');
+    assert.ok(render.indexOf('renderSubsDlg();') < render.indexOf('if (!v)'));
+    assert.match(fnOf('function boot()'), /wireSubs\(\);\s*wireSubsDlg\(\);/);
+  });
+
+  test('(+) markup: the sprite has i-branch; the button sits in .term-head after span.sp and before the colour group; the dialog is a labelled modal with the contract ids', () => {
+    assert.match(HTML, /<symbol id="i-branch" viewBox="0 0 16 16">/);
+    const head = HTML.slice(HTML.indexOf('<div class="term-head"'), HTML.indexOf('<div class="term-head"') + 6000);
+    const at = head.indexOf('id="subs-btn"');
+    assert.ok(at > head.indexOf('<span class="sp"></span>'), 'after the spacer');
+    assert.ok(at < head.indexOf('class="seg'), 'before the colour group');
+    const btn = /<button[^>]*\bid="subs-btn"[^>]*>/.exec(HTML)?.[0] ?? '';
+    for (const part of ['type="button"', 'class="btn icon subs-btn"', 'aria-haspopup="dialog"', 'aria-controls="subs-dlg"', 'hidden']) assert.ok(btn.includes(part), part);
+    assert.match(HTML, /<span class="subs-n" id="subs-n" aria-hidden="true" hidden><\/span>/);
+    const dlg = /<dialog[^>]*\bid="subs-dlg"[^>]*>/.exec(HTML)?.[0] ?? '';
+    for (const part of ['class="dlg-subs"', 'aria-labelledby="subs-dlg-h"', 'aria-describedby="subs-dlg-sum"']) assert.ok(dlg.includes(part), part);
+    for (const id of ['subs-dlg-h', 'subs-dlg-x', 'subs-dlg-sum', 'subs-dlg-run', 'subs-dlg-none', 'subs-dlg-ended', 'subs-dlg-hint', 'subs-dlg-end', 'subs-dlg-close']) assert.match(HTML, new RegExp(`\\bid="${id}"`), id);
+    assert.match(HTML, /<ul class="subs-list" id="subs-dlg-run" aria-label="Running subagents">/);
+    assert.match(HTML, /<ul class="subs-list" id="subs-dlg-end" aria-label="Ended subagents">/);
+  });
+
+  test('(+) tab order (spec 9.10): the button comes right before the Dark/Light group in document order, with nothing focusable between them', () => {
+    const at = HTML.indexOf('id="subs-btn"');
+    const seg = HTML.indexOf('<span class="seg"');
+    assert.ok(at > 0 && seg > 0, 'both exist');
+    assert.ok(at < seg);
+    assert.doesNotMatch(HTML.slice(at, seg).replace(/<button[^>]*id="subs-btn"[\s\S]*?<\/button>/, ''), /<button|<a |<input|<select|tabindex="0"/);
+  });
+
+  test('(+) CSS: the badge, the dialog width and the scrolling list; the badge text on the busy fill is AA (4.5:1) in the light theme and in both dark blocks', () => {
+    const block = strip(CSS.slice(CSS.indexOf(NEW_CSS_MARK)));
+    assert.match(block, /\.subs-btn\s*\{[^}]*position:\s*relative/);
+    assert.match(block, /\.subs-btn:not\(\.on\) \.ic\s*\{[^}]*color:\s*var\(--text-muted\)/);
+    assert.match(block, /\.subs-n\s*\{[^}]*position:\s*absolute[^}]*background:\s*var\(--busy\)[^}]*color:\s*var\(--on-accent\)/);
+    assert.match(block, /dialog\.dlg-subs\s*\{[^}]*width:\s*min\(520px, calc\(100vw - 32px\)\)/);
+    assert.match(block, /\.dlg-subs \.subs-list\s*\{[^}]*max-height:\s*50vh[^}]*overflow:\s*auto/);
+    const lum = (hex) => {
+      const c = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255).map((v) => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4));
+      return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+    };
+    const ratio = (a, b) => { const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x); return (hi + 0.05) / (lo + 0.05); };
+    const busy = [...TOKENS.matchAll(/--busy:\s*(#[0-9a-fA-F]{6})/g)].map((m) => m[1]);
+    const on = [...TOKENS.matchAll(/--on-accent:\s*(#[0-9a-fA-F]{6})/g)].map((m) => m[1]);
+    assert.equal(busy.length, on.length);
+    assert.ok(busy.length >= 2, 'light and dark');
+    busy.forEach((b, i) => assert.ok(ratio(b, on[i]) >= 4.5, `${on[i]} on ${b}: ${ratio(b, on[i]).toFixed(2)}`));
+  });
+});
+
+describe('0.5.1 C: image tiles in the transcript and their wiring (design section 2.5)', () => {
+  const SRC = code(JS['session.js']);
+  const fnOf = (head) => {
+    const at = SRC.indexOf(head);
+    assert.ok(at >= 0, head);
+    return SRC.slice(at, SRC.indexOf('\n}\n', at) + 2);
+  };
+  const constOf = (name) => {
+    const m = new RegExp(`const ${name} = [^\\n]*`).exec(SRC);
+    assert.ok(m, name);
+    return m[0];
+  };
+  const S1 = '11111111-1111-4111-8111-111111111111';
+  const KEY1 = '0123456789abcdef';
+  const AGX = 'a0000000000000001';
+  const NAMES = ['function cleanImages(e)', 'function cleanEntries(list)', 'function textBlock(e)', 'function foldBlock(e)', 'function subLinkEl(e)', 'function entryEl(e)', 'function imageViewer()', 'function imageTile(',
+    'function watchTile(t)', 'function seenTiles(list)', 'function failThumb(t, line)', 'async function loadThumb(t)', 'function forgetTiles(li)', 'function openTile(t)'];
+  const CONSTS = ['DOTS', 'MID', 'clip', 'ENTRY_ID', 'KINDS', 'IMG_REF', 'IMG_MAX', 'IMG', 'cleanMedia', 'cleanSize', 'whoLong', 'imagePath'];
+  const STAMP = (at) => new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const IMGE = (over = {}) => ({ id: '100:1', at: '2026-11-17T10:02:03.000Z', role: 'user', kind: 'image', text: '', media: 'png', size: 861234, truncated: false, ...over });
+  const RES = (over = {}) => ({ id: '100:4', at: '2026-11-17T10:02:03.000Z', role: 'user', kind: 'tool_result', tool: '', text: 'ok', truncated: false, images: [{ ref: '100:4.0', media: 'png', size: 40211 }], imagesMore: 0, ...over });
+  const GOOD = { status: 200, body: { type: 'png', data: 'QUJD' } };
+  const GOOD_URL = 'data:image/png;base64,QUJD';
+  const tick = () => new Promise((resolve) => { setImmediate(resolve); });
+  let restoreDom;
+  before(() => { restoreDom = installDom(); });
+  after(() => restoreDom());
+
+  /** The history region with a scripted route, a fake IntersectionObserver and a fake viewer. `reply(path)` answers every image fetch. */
+  const rig = ({ sub = false, reply = async () => GOOD } = {}) => {
+    const log = { calls: [], observers: [], opened: [], viewers: [] };
+    class FakeObserver {
+      constructor(cb, opts) { this.cb = cb; this.opts = opts; this.watched = new Set(); this.gone = []; log.observers.push(this); }
+
+      observe(el) { this.watched.add(el); }
+
+      unobserve(el) { this.watched.delete(el); this.gone.push(el); }
+
+      disconnect() { this.watched.clear(); }
+    }
+    const sc = new El('div');
+    const dlg = new El('dialog');
+    const viewer = { open: (o) => { log.opened.push(o); } };
+    const ctx = {
+      h: hReal, icon: iconReal, SUB: sub, sessionId: S1, agentId: sub ? AGX : null, projectKey: KEY1, A: { subs: [] }, subagentHref: subagentHrefReal, SUBAGENT_ID: SUBAGENT_ID_REAL, Date,
+      IntersectionObserver: FakeObserver, scroller: () => sc, $: (id) => { assert.equal(id, 'img-dlg'); return dlg; }, dataUrlOf: dataUrlOfReal, sizeLabel: sizeLabelReal, MAX_THUMBS: MAX_THUMBS_REAL, IMAGE_MIME: IMAGE_MIME_REAL,
+      createImageViewer: (o) => { log.viewers.push(o); return viewer; }, call: async (p) => { log.calls.push(p); return reply(p); },
+    };
+    const pre = CONSTS.map(constOf).join('\n');
+    const api = vm.runInNewContext(`${pre}\n${NAMES.map(fnOf).join('\n')}; ({ cleanEntries, entryEl, imageTile, loadThumb, forgetTiles, openTile, imageViewer, seenTiles, IMG })`, ctx);
+    return { ...api, ctx, log, sc, dlg, viewer, seen: (el, on = true) => log.observers[0].cb([{ target: el, isIntersecting: on }]) };
+  };
+  const tilesOf = (li) => li.all(withClass('hx-img'));
+  const phOf = (btn) => btn.all(withClass('hx-img-ph'))[0];
+  const imgOf = (btn) => btn.all((n) => n.tag === 'img')[0];
+  const one = (r, over = {}) => { const [e] = r.cleanEntries([IMGE(over)]); const li = r.entryEl(e); return { e, li, btn: tilesOf(li)[0] }; };
+
+  // -- cleanEntries (+ and -)
+
+  test('(+) an image entry passes cleanEntries with its media and size (text is empty)', () => {
+    const r = rig();
+    const [e] = r.cleanEntries([IMGE()]);
+    assert.equal(e.kind, 'image');
+    assert.equal(e.media, 'png');
+    assert.equal(e.size, 861234);
+    assert.equal(e.text, '');
+  });
+
+  test('(−) media outside the four types, and a size that is not a safe integer >= 0, are cleaned to null', () => {
+    const r = rig();
+    for (const media of ['svg', 'image/png', 'PNG', '', 5, null, undefined, {}, '__proto__']) assert.equal(r.cleanEntries([IMGE({ media })])[0].media, null, String(media));
+    for (const media of ['png', 'jpeg', 'gif', 'webp']) assert.equal(r.cleanEntries([IMGE({ media })])[0].media, media);
+    for (const size of [-1, 1.5, '5', NaN, Infinity, 2 ** 60, null, undefined, {}]) assert.equal(r.cleanEntries([IMGE({ size })])[0].size, null, String(size));
+    assert.equal(r.cleanEntries([IMGE({ size: 0 })])[0].size, 0);
+  });
+
+  test('(+) a tool result keeps up to 8 images whose ref starts with its own entry id, and imagesMore 0 to 999', () => {
+    const r = rig();
+    const images = Array.from({ length: 10 }, (_, i) => ({ ref: `100:4.${i}`, media: 'jpeg', size: 10 + i }));
+    const [e] = r.cleanEntries([RES({ images, imagesMore: 7 })]);
+    assert.equal(e.images.length, 8, 'the ninth and tenth are dropped');
+    assert.deepEqual(JSON.parse(JSON.stringify(e.images[0])), { ref: '100:4.0', media: 'jpeg', size: 10 });
+    assert.equal(e.imagesMore, 7);
+    assert.equal(r.cleanEntries([RES({ imagesMore: 999 })])[0].imagesMore, 999);
+    assert.equal(r.cleanEntries([RES({ imagesMore: 0 })])[0].imagesMore, 0);
+  });
+
+  test('(−) an image ref that is not "<this entry id>.<part>" is dropped; images on other kinds, a non-list and a bad imagesMore are ignored', () => {
+    const r = rig();
+    const bad = ['999:4.0', '100:4', '100:4.', '100:44.0', '100:4.0.1', '100:4.x', '100:4.1234', '../100:4.0', '100:4.0 ', '', 5, null, { ref: '100:4.0' }];
+    for (const ref of bad) assert.equal(r.cleanEntries([RES({ images: [{ ref, media: 'png', size: 1 }] })])[0].images.length, 0, String(ref));
+    assert.equal(r.cleanEntries([RES({ images: [null, 5, 'x'] })])[0].images.length, 0);
+    assert.equal(r.cleanEntries([RES({ images: 'x' })])[0].images.length, 0);
+    for (const imagesMore of [-1, 1000, 1.5, '3', NaN, null]) assert.equal(r.cleanEntries([RES({ imagesMore })])[0].imagesMore, 0, String(imagesMore));
+    const other = r.cleanEntries([{ id: '100:0', at: '', role: 'assistant', kind: 'text', text: 'hi', images: [{ ref: '100:0.0', media: 'png', size: 1 }], imagesMore: 4 }])[0];
+    assert.equal(other.images.length, 0);
+    assert.equal(other.imagesMore, 0);
+    assert.equal(other.media, null, 'a text entry has no media');
+  });
+
+  // -- tiles in entryEl
+
+  test('(+) an image entry draws a button.hx-img under the speaker label, named "View image from your message, <time> (PNG, 841 KB)", with a hidden thumbnail and the placeholder', () => {
+    const r = rig();
+    const { li, btn } = one(r);
+    assert.ok(btn, 'a tile button');
+    assert.equal(btn.tag, 'button');
+    assert.equal(btn.attrs.type, 'button');
+    assert.equal(btn.attrs['data-ref'], '100:1');
+    assert.equal(btn.attrs['aria-label'], `View image from your message, ${STAMP(IMGE().at)} (PNG, 841 KB)`);
+    const img = imgOf(btn);
+    assert.equal(img.className, 'hx-thumb');
+    assert.equal(img.attrs.alt, '');
+    assert.equal(img.attrs.decoding, 'async');
+    assert.equal(img.hidden, true);
+    assert.equal(img.attrs.src, undefined, 'no request before the tile is seen');
+    assert.equal(phOf(btn).textContent, 'PNG · 841 KB');
+    assert.ok(phOf(btn).all((n) => n.tag === 'use' && n.attrs.href === '#i-image').length === 1, 'the image icon');
+    assert.ok(li.kids.indexOf(btn) > li.kids.findIndex((k) => k.className === 'hx-meta') && li.kids.includes(btn), 'after the speaker label');
+    assert.equal(li.all(withClass('hx-who'))[0].textContent, 'You');
+  });
+
+  test('(+) the name says who sent it: Claude, the parent (subagent view), a tool result; a missing time or size is left out', () => {
+    const r = rig();
+    assert.equal(one(r, { role: 'assistant' }).btn.attrs['aria-label'], `View image from Claude, ${STAMP(IMGE().at)} (PNG, 841 KB)`);
+    const sub = rig({ sub: true });
+    assert.equal(one(sub, { role: 'user' }).btn.attrs['aria-label'], `View image from the parent, ${STAMP(IMGE().at)} (PNG, 841 KB)`);
+    const tool = rig();
+    const [e] = tool.cleanEntries([RES()]);
+    assert.equal(tilesOf(tool.entryEl(e))[0].attrs['aria-label'], `View image from a tool result, ${STAMP(RES().at)} (PNG, 39 KB)`);
+    const bare = one(r, { at: '', size: null }).btn;
+    assert.equal(bare.attrs['aria-label'], 'View image from your message (PNG)');
+    assert.equal(phOf(bare).textContent, 'PNG');
+  });
+
+  test('(+) a tool result with images draws .hx-imgs after the fold, one tile per image; imagesMore adds the not-shown line (singular and plural)', () => {
+    const r = rig();
+    const images = [{ ref: '100:4.0', media: 'png', size: 1000 }, { ref: '100:4.1', media: 'webp', size: 2000 }];
+    const [e] = r.cleanEntries([RES({ images, imagesMore: 3 })]);
+    const li = r.entryEl(e);
+    const box = li.all(withClass('hx-imgs'))[0];
+    assert.ok(box, '.hx-imgs');
+    assert.deepEqual(box.kids.map((k) => k.attrs['data-ref']), ['100:4.0', '100:4.1']);
+    assert.ok(li.kids.indexOf(box) > li.kids.findIndex((k) => k.tag === 'details'), 'after the folded result');
+    const more = li.all(withClass('hx-img-off')).map((n) => n.textContent);
+    assert.deepEqual(more, ['+3 more images in this result (not shown)']);
+    const one1 = r.entryEl(r.cleanEntries([RES({ imagesMore: 1 })])[0]);
+    assert.deepEqual(one1.all(withClass('hx-img-off')).map((n) => n.textContent), ['+1 more image in this result (not shown)']);
+    const none = r.entryEl(r.cleanEntries([RES({ images: [], imagesMore: 0 })])[0]);
+    assert.equal(none.all(withClass('hx-imgs')).length, 0, 'no images, no box');
+    assert.equal(none.all(withClass('hx-img-off')).length, 0);
+  });
+
+  test('(−) media null draws the not-shown line and no button; over 8 MiB draws the too-large line; neither is watched or focusable', () => {
+    const r = rig();
+    const noMedia = one(r, { media: null });
+    assert.equal(noMedia.btn, undefined);
+    const off = noMedia.li.all(withClass('hx-img-off'))[0];
+    assert.equal(off.tag, 'p');
+    assert.equal(off.textContent, 'Image · nika shows PNG, JPEG, GIF and WebP only');
+    assert.equal(off.attrs.tabindex, undefined);
+    assert.ok(off.all((n) => n.tag === 'use' && n.attrs.href === '#i-image').length === 1);
+    const big = one(r, { size: 8 * 1024 * 1024 + 1 });
+    assert.equal(big.btn, undefined);
+    assert.equal(big.li.all(withClass('hx-img-off'))[0].textContent, 'Image · too large to show here (over 8 MB)');
+    assert.equal(r.log.observers.length, 0, 'nothing to watch: no observer was made');
+    assert.equal(r.IMG.tiles.size, 0);
+    assert.ok(one(r, { size: 8 * 1024 * 1024 }).btn, 'exactly 8 MiB still shows');
+  });
+
+  // -- the lazy thumbnails
+
+  test('(−) without IntersectionObserver the tiles still draw and still open the viewer (no thumbnails, no throw)', () => {
+    const r = rig();
+    delete r.ctx.IntersectionObserver; // the sliced code reads the global of its own context
+    const { btn } = (() => { const [e] = r.cleanEntries([IMGE()]); const li = r.entryEl(e); return { btn: tilesOf(li)[0] }; })();
+    assert.ok(btn);
+    assert.equal(r.log.observers.length, 0);
+    btn.fire('click');
+    assert.equal(r.log.opened.length, 1);
+  });
+
+  test('(+) tiles share one IntersectionObserver on the transcript scroller with a 200px margin, and each tile is watched', () => {
+    const r = rig();
+    const a = one(r).btn;
+    const b = one(r, { id: '101:1' }).btn;
+    assert.equal(r.log.observers.length, 1);
+    const [obs] = r.log.observers;
+    assert.equal(obs.opts.root, r.sc);
+    assert.equal(obs.opts.rootMargin, '200px');
+    assert.deepEqual([...obs.watched], [a, b]);
+  });
+
+  test('(+) the first sighting unobserves the tile and fetches the session path (ref encoded), then the image shows once it has loaded', async () => {
+    const r = rig();
+    const { btn } = one(r);
+    r.seen(btn);
+    assert.deepEqual(r.log.observers[0].gone, [btn]);
+    await tick();
+    assert.deepEqual(r.log.calls, [`/api/app/session/${S1}/image/100%3A1`]);
+    const img = imgOf(btn);
+    assert.equal(img.attrs.src, GOOD_URL);
+    assert.equal(img.hidden, true, 'hidden until the browser has decoded it');
+    img.fire('load');
+    assert.equal(img.hidden, false);
+    assert.equal(phOf(btn).hidden, true);
+    assert.equal(r.IMG.held, 1);
+  });
+
+  test('(+) the subagent view fetches the subagent route; a tool-result tile uses its "<off>:<block>.<part>" ref', async () => {
+    const r = rig({ sub: true });
+    const [e] = r.cleanEntries([RES()]);
+    const btn = tilesOf(r.entryEl(e))[0];
+    r.seen(btn);
+    await tick();
+    assert.deepEqual(r.log.calls, [`/api/app/session/${S1}/subagents/${AGX}/image/100%3A4.0`]);
+  });
+
+  test('(−) an answer that is not a good image keeps the placeholder with "Image not available", and the tile stays clickable', async () => {
+    for (const answer of [{ status: 404, body: { error: 'not_found' } }, { status: 500, body: null }, { status: 0, body: null }, { status: 500, body: GOOD.body }, { status: 404, body: GOOD.body }, { status: 200, body: { type: 'svg', data: 'QUJD' } }, { status: 200, body: { type: 'png', data: '<b>' } }, { status: 200, body: null }]) {
+      const r = rig({ reply: async () => answer });
+      const { btn } = one(r);
+      r.seen(btn);
+      await tick();
+      assert.equal(phOf(btn).textContent, 'Image not available', JSON.stringify(answer));
+      assert.equal(phOf(btn).hidden ?? false, false);
+      assert.equal(imgOf(btn).hidden, true);
+      assert.equal(imgOf(btn).attrs.src, undefined, 'a bad payload is never made a src');
+      assert.equal(r.IMG.held, 0, 'a failed tile holds nothing');
+      btn.fire('click');
+      assert.equal(r.log.opened.length, 1, 'still opens the viewer');
+    }
+  });
+
+  test('(−) a decode failure of the thumbnail shows "Image could not be shown" and drops the data; the tile stays clickable', async () => {
+    const r = rig();
+    const { btn } = one(r);
+    r.seen(btn);
+    await tick();
+    imgOf(btn).fire('error');
+    assert.equal(phOf(btn).textContent, 'Image could not be shown');
+    assert.equal(imgOf(btn).hidden, true);
+    assert.equal(imgOf(btn).attrs.src, undefined);
+    assert.equal(r.IMG.held, 0);
+    btn.fire('click');
+    assert.equal(r.log.opened[0].src ?? null, null, 'the broken data is not handed to the viewer');
+  });
+
+  test('(−) a sighting that is not an intersection fetches nothing; a tile seen twice fetches once', async () => {
+    const r = rig();
+    const { btn } = one(r);
+    r.seen(btn, false);
+    await tick();
+    assert.deepEqual(r.log.calls, []);
+    assert.deepEqual(r.log.observers[0].gone, []);
+    r.seen(btn);
+    r.seen(btn);
+    await tick();
+    assert.equal(r.log.calls.length, 1);
+  });
+
+  test('(+) at most MAX_THUMBS (24) thumbnails are held: the 25th tile is not fetched and keeps the placeholder, and stays watched', async () => {
+    const r = rig();
+    const tiles = Array.from({ length: 25 }, (_, i) => one(r, { id: `${200 + i}:1` }).btn);
+    for (const t of tiles.slice(0, 24)) r.seen(t);
+    await tick();
+    assert.equal(r.log.calls.length, 24);
+    r.seen(tiles[24]);
+    await tick();
+    assert.equal(r.log.calls.length, 24, 'no 25th request');
+    assert.equal(imgOf(tiles[24]).attrs.src, undefined);
+    assert.equal(r.log.observers[0].watched.has(tiles[24]), true, 'still watched: it loads when there is room again');
+    assert.equal(r.IMG.held, 24);
+  });
+
+  test('(+) a tile that leaves the page frees its place: a later sighting of the 25th tile fetches it', async () => {
+    const r = rig();
+    const made = Array.from({ length: 25 }, (_, i) => one(r, { id: `${200 + i}:1` }));
+    for (const t of made.slice(0, 24)) r.seen(t.btn);
+    await tick();
+    r.forgetTiles(made[0].li);
+    assert.equal(r.IMG.held, 23);
+    r.seen(made[24].btn);
+    await tick();
+    assert.equal(r.log.calls.length, 25);
+    assert.equal(r.IMG.held, 24);
+  });
+
+  // -- leaving the page: trim, reset
+
+  test('(−) a trimmed or reset entry unobserves its tiles and forgets them (and a fetch still on its way is dropped)', async () => {
+    const r = rig();
+    const a = one(r);
+    const b = one(r, { id: '101:1' });
+    r.forgetTiles(a.li);
+    assert.deepEqual(r.log.observers[0].gone, [a.btn]);
+    assert.equal(r.IMG.tiles.has(a.btn), false);
+    assert.equal(r.IMG.tiles.has(b.btn), true);
+    r.forgetTiles(a.li); // twice is harmless
+    assert.deepEqual(r.log.observers[0].gone, [a.btn]);
+    let release;
+    const slow = rig({ reply: () => new Promise((resolve) => { release = () => resolve(GOOD); }) });
+    const c = one(slow);
+    slow.seen(c.btn);
+    assert.equal(slow.IMG.held, 1, 'counted from the moment it is fetched');
+    slow.forgetTiles(c.li);
+    assert.equal(slow.IMG.held, 0);
+    release();
+    await tick();
+    assert.equal(imgOf(c.btn).attrs.src, undefined, 'the late answer is dropped');
+    assert.equal(slow.IMG.held, 0);
+  });
+
+  test('(−) trim() and resetHistory() call forgetTiles for every entry they remove', () => {
+    const gone = [];
+    const mkH = (names, extra) => vm.runInNewContext(`${constOf('offsetOf')}\n${names.map(fnOf).join('\n')}; ({ ${names.map((n) => n.replace(/^function /, '').replace(/\(.*$/, '')).join(', ')} })`, {
+      MAX_ENTRIES: 2, forgetTiles: (el) => gone.push(el.id), ...extra,
+    });
+    const items = ['1:0', '2:0', '3:0', '4:0'].map((id) => ({ e: { id }, el: { id: `el${id}`, remove() {} } }));
+    const H = { items: [...items], ids: new Set(items.map((i) => i.e.id)), older: null, liveEdge: true, loaded: true };
+    mkH(['function trim(side)'], { H }).trim('start');
+    assert.deepEqual(gone, ['el1:0', 'el2:0'], 'the two oldest');
+    gone.length = 0;
+    const H2 = { items: [...items], ids: new Set(), older: null, liveEdge: true, loaded: false };
+    mkH(['function resetHistory(entries, before)'], { H: H2, mount: () => 0, scroller: () => ({ scrollTop: 0, scrollHeight: 0 }), updateHistoryChrome() {} }).resetHistory([], null);
+    assert.deepEqual(gone, ['el1:0', 'el2:0', 'el3:0', 'el4:0']);
+  });
+
+  // -- opening the viewer
+
+  test('(+) a click opens the viewer with the heading, "PNG · 841 KB", the loaded data URL (no second fetch) and the tile as opener', async () => {
+    const r = rig();
+    const { btn } = one(r);
+    r.seen(btn);
+    await tick();
+    btn.fire('click');
+    assert.equal(r.log.opened.length, 1);
+    const o = r.log.opened[0];
+    assert.equal(o.name, 'Image from your message');
+    assert.equal(o.meta, 'PNG · 841 KB');
+    assert.equal(o.src, GOOD_URL);
+    assert.equal(o.opener, btn);
+    assert.equal(r.log.calls.length, 1, 'the thumbnail was reused');
+  });
+
+  test('(+) a tile not loaded yet gives the viewer a load() that fetches the same route; the heading follows the speaker', async () => {
+    const r = rig();
+    const { btn } = one(r, { role: 'assistant' });
+    btn.fire('click');
+    const o = r.log.opened[0];
+    assert.equal(o.name, 'Image from Claude');
+    assert.equal(o.src ?? null, null);
+    const answer = await o.load();
+    assert.deepEqual(answer, GOOD);
+    assert.deepEqual(r.log.calls, [`/api/app/session/${S1}/image/100%3A1`]);
+    const tool = rig();
+    tool.cleanEntries([RES()]);
+    const li = tool.entryEl(tool.cleanEntries([RES()])[0]);
+    tilesOf(li)[0].fire('click');
+    assert.equal(tool.log.opened[0].name, 'Image from a tool result');
+    assert.equal(tool.log.opened[0].meta, 'PNG · 39 KB');
+  });
+
+  test('(+) the viewer is made once, on the first click, from #img-dlg', () => {
+    const r = rig();
+    const { btn } = one(r);
+    assert.equal(r.log.viewers.length, 0, 'nothing at import or render');
+    btn.fire('click');
+    btn.fire('click');
+    assert.equal(r.log.viewers.length, 1);
+    assert.equal(r.log.viewers[0].dialog, r.dlg);
+  });
+
+  // -- static: wiring, markup, stylesheet
+
+  test('(+) session.js imports the viewer and the thumbnail cap from image-viewer.js, and KINDS knows "image"', () => {
+    assert.match(SRC, /import \{[^}]*\bcreateImageViewer\b[^}]*\} from '\.\/image-viewer\.js'/);
+    for (const name of ['dataUrlOf', 'sizeLabel', 'MAX_THUMBS', 'IMAGE_MIME']) assert.match(SRC.match(/import \{[^}]*\} from '\.\/image-viewer\.js'/)?.[0] ?? '', new RegExp(`\\b${name}\\b`), name);
+    assert.match(constOf('KINDS'), /'image'/);
+  });
+
+  test('(−) the page never builds an image URL out of server text: src is set only through setAttribute("src", <checked data URL>), never "href", never an <a download>', () => {
+    const sets = [...SRC.matchAll(/setAttribute\(\s*'src'\s*,\s*([^)]*)\)/g)].map((m) => m[1].trim());
+    assert.ok(sets.length >= 1, 'the thumbnail is set');
+    for (const arg of sets) assert.equal(arg, 'url', arg);
+    assert.doesNotMatch(SRC, /\.src\s*=[^=]/);
+    assert.doesNotMatch(SRC, /\bdownload\b\s*[:=]/);
+    assert.match(fnOf('async function loadThumb(t)'), /dataUrlOf\(/, 'checked by dataUrlOf first');
+  });
+
+  test('(+) the page has #img-dlg with the ids the viewer looks up, labelled by its heading, the state line a status, Retry hidden', () => {
+    const dlg = /<dialog id="img-dlg"[\s\S]*?<\/dialog>/.exec(HTML)?.[0] ?? '';
+    assert.ok(dlg, '<dialog id="img-dlg">');
+    assert.match(dlg, /<dialog id="img-dlg" class="dlg-img" aria-labelledby="img-h">/);
+    for (const id of ['img-h', 'img-meta', 'img-x', 'img-stage', 'img-full', 'img-state', 'img-state-t', 'img-retry', 'img-close']) assert.match(dlg, new RegExp(`id="${id}"`), id);
+    assert.match(dlg, /<h2 id="img-h">Image<\/h2>/);
+    assert.match(dlg, /<img id="img-full" alt="" hidden>/);
+    assert.match(dlg, /id="img-state" role="status"><svg class="ic" aria-hidden="true"><use href="#i-warn"\/><\/svg>/, 'the viewer hides the first child (the icon) while loading');
+    assert.match(dlg, /id="img-retry" hidden>Retry</);
+    assert.match(dlg, /id="img-x" aria-label="Close image"/);
+    assert.match(dlg, /id="img-close">Close</);
+    assert.ok(dlg.indexOf('id="img-x"') < dlg.indexOf('id="img-close"'), 'the X is the first control');
+    for (const sym of ['i-image', 'i-warn', 'i-x']) assert.match(HTML, new RegExp(`<symbol id="${sym}"`), sym);
+  });
+
+  test('(+) the stylesheet block carries the tile, chip and viewer rules (tokens only, no inline style)', () => {
+    const block = strip(CSS.slice(CSS.indexOf(NEW_CSS_MARK)));
+    for (const re of [/\.att-open\s*\{[^}]*background:\s*none[^}]*cursor:\s*pointer/, /\.hx-img:focus-visible[^{]*\{[^}]*var\(--focus\)/, /\.hx-imgs\s*\{[^}]*flex-wrap:\s*wrap/, /\.hx-img\s*\{[^}]*cursor:\s*pointer/,
+      /\.hx-thumb\s*\{[^}]*max-height:\s*180px/, /\.hx-img-ph,\s*\.hx-img-off\s*\{[^}]*var\(--text-muted\)/, /dialog\.dlg-img\s*\{[^}]*width:\s*min\(1200px/, /dialog\.dlg-img::backdrop\s*\{[^}]*var\(--scrim\)/,
+      /\.img-stage\s*\{[^}]*overflow:\s*auto/, /\.img-stage img\s*\{[^}]*max-width:\s*100%/, /\.img-state\s*\{[^}]*display:\s*flex/, /@media \(max-width:\s*600px\)\s*\{\s*dialog\.dlg-img/]) assert.match(block, re, String(re));
   });
 });

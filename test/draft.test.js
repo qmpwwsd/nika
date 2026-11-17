@@ -1171,12 +1171,25 @@ describe('parseDraft: the subagent list below the footer (F2, live capture 2.1.3
     }
   });
 
+  test('(+) K2 note 1 (0.5.1): an agent row with no elapsed time, or one that does not parse, is an agent row: the box is read through the block', () => {
+    const bare = read({ lines: ['hello'] });
+    assert.notEqual(bare, null);
+    assert.deepEqual(readTree({ lines: ['hello'] }, { agents: [{ label: 'a', elapsed: 'soon' }] }), bare, 'an elapsed time that does not parse');
+    const s = withTree({ lines: ['hello'] }, { agents: 1 });
+    assert.deepEqual(parseDraft([...s.rows.slice(0, -1), [span('  ◯ Explore  a')], ...s.rows.slice(-1)], s.cursor, s.cols), bare, 'a row with no elapsed time');
+    assert.deepEqual(parseDraft([...s.rows.slice(0, -1), [span('  ◯ general-purpose  Closing a browser session'.padEnd(64))]], s.cursor, s.cols), bare, 'the live activity row, padded with spaces');
+  });
+
   test('(−) a block that is not exactly the captured shape leaves the footer unknown: null', () => {
-    const shapes = [{ blank: false }, { main: false }, { agents: 0 }, { agents: [{ label: 'a', elapsed: 'soon' }] }];
+    const shapes = [{ blank: false }, { main: false }, { agents: 0 }];
     for (const tree of shapes) assert.equal(readTree({ lines: ['hello'] }, tree), null, JSON.stringify(tree));
     const s = withTree({ lines: ['hello'] }, { agents: 1 });
     assert.equal(parseDraft([...s.rows, [span('junk below the list')]], s.cursor, s.cols), null, 'junk after the block');
-    assert.equal(parseDraft([...s.rows.slice(0, -1), [span('  ◯ Explore  a')], ...s.rows.slice(-1)], s.cursor, s.cols), null, 'an agent row without its elapsed time');
+    // K2 note 1 (0.5.1): the end of an agent row is no longer read (a live row had none), so a row without an elapsed time, or with one that does not
+    // parse, is an agent row; what makes a row not one is its prefix: the glyph, the indent, a one-word type, exactly two spaces, then some text.
+    for (const row of ['  ● Explore  a', ' ◯ Explore  a', '   ◯ Explore  a', '  ◯ Explore a', '  ◯ Explore  ', '  ◯ Explore', '  ◯  a', '  ◯ Explore two  a']) {
+      assert.equal(parseDraft([...s.rows.slice(0, -1), [span(row)], ...s.rows.slice(-1)], s.cursor, s.cols), null, `a row that is not an agent row: ${JSON.stringify(row)}`);
+    }
     const bare = boxRows({ lines: ['hello'] });
     assert.equal(parseDraft([...bare.rows, [span('junk below the footer')]], bare.cursor, bare.cols), null, 'junk below the footer, no block');
   });
