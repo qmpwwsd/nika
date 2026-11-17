@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { INPUT_TEXT, CROP_TEXT, PROMPT_LABEL_CUT, PROMPT_QUESTION_CUT, panelOf, cropOf, trimTop } from '../public/crop.js';
+import { INPUT_TEXT, CROP_TEXT, PROMPT_LABEL_CUT, PROMPT_QUESTION_CUT, panelOf, cropOf, trimTop, layoutOf } from '../public/crop.js';
 import { clean } from '../src/text.js';
 import { promptFromRows, promptTopRow } from '../src/mode.js';
 
@@ -348,6 +348,39 @@ describe('cropOf: row 0 for the kinds whose panel holds everything, and the blan
     const before = JSON.stringify(rows);
     cropOf(body({ rows, dialog: DIALOG('review', { top: 3 }) }), R, OK);
     assert.equal(JSON.stringify(rows), before);
+  });
+});
+
+// ---- 0.5.2 R2 (design 051c section 2): the terminal column's layout ----------------------------------------------------------------------------
+describe('layoutOf: the terminal column\'s layout while a panel is up (R2)', () => {
+  const up = (crop) => ({ measured: true, panelShown: true, crop });
+
+  test('(+) a question, review or survey crop under a shown panel is the crop layout', () => {
+    for (const kind of ['question', 'review', 'survey']) assert.equal(layoutOf(up({ top: 0, kind })), 'crop', kind);
+  });
+
+  test('(+) a prompt crop, a plan crop, and a panel with no crop (bypass, Type into pane, unreadable, Reading) are the panel layout', () => {
+    assert.equal(layoutOf(up({ top: 3, kind: 'prompt' })), 'panel');
+    assert.equal(layoutOf(up({ top: 3, kind: 'plan' })), 'panel');
+    assert.equal(layoutOf(up(null)), 'panel');
+    assert.equal(layoutOf(up(undefined)), 'panel');
+  });
+
+  test('(−) no frame measured with no panel up: no layout, whatever else is true', () => {
+    for (const measured of [false, undefined, null, 1, 'true']) assert.equal(layoutOf({ ...up({ top: 0, kind: 'review' }), measured }), null, String(measured));
+  });
+
+  test('(−) no panel shown: no layout, even with a crop object', () => {
+    for (const panelShown of [false, undefined, null, 1, 'true']) assert.equal(layoutOf({ ...up({ top: 0, kind: 'review' }), panelShown }), null, String(panelShown));
+  });
+
+  test('(−) a crop of another kind, or not an object, is the panel layout, never the crop layout', () => {
+    for (const crop of [{ kind: 'other' }, { kind: '' }, { kind: 'constructor' }, { kind: '__proto__' }, { top: 0 }, 5, 'review', true]) assert.equal(layoutOf(up(crop)), 'panel', JSON.stringify(crop));
+  });
+
+  test('(−) nothing at all, or a value that is not an object, gives no layout and never throws', () => {
+    for (const v of [undefined, null, {}, 5, 'x', []]) assert.equal(layoutOf(v), null, JSON.stringify(v));
+    assert.equal(layoutOf(), null);
   });
 });
 

@@ -46,6 +46,17 @@ export const PROMPT_LABEL_CUT = 80;
 export const PROMPT_QUESTION_CUT = 200;
 
 /**
+ * R2 (0.5.2, design 051c 2.2): the terminal column's layout: 'crop' while a question, review or survey crop is drawn under a shown panel, 'panel' while any other
+ * panel or the attention note is shown, null otherwise or before the Fit has a frame measured with no panel up (`measured` false: the box keeps the flex layout and
+ * the Fit measures as before). Only the value true counts for `measured` and `panelShown`; `crop` is cropOf's answer.
+ */
+export function layoutOf(v) {
+  if (v?.measured !== true || v.panelShown !== true) return null;
+  const crop = v.crop;
+  return crop !== null && typeof crop === 'object' && ROOM_KINDS.has(crop.kind) ? 'crop' : 'panel';
+}
+
+/**
  * Which of nika's own panels is up, or null. `v` is { promptShown, prompt, formShown, formLive, dialog, surveyShown, survey }: what the page has
  * drawn (the *Shown and formLive flags) and the cleaned values it drew from. Checked in this order, and a flag counts only when it is `true`:
  *   1. the permission-prompt panel                      -> { kind: 'prompt', bypass }, bypass when any option is marked bypass (cleanPrompt marks

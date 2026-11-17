@@ -499,3 +499,13 @@ dialog.dlg-img::backdrop { background: var(--scrim); }
 .img-stage > * { grid-area: 1 / 1; }
 .img-state { display: flex; align-items: center; gap: var(--sp-2); color: var(--text-muted); }
 @media (max-width: 600px) { dialog.dlg-img { width: calc(100vw - 16px); max-height: calc(100vh - 16px); } }
+/* 0.5.2 R2: while nika's panel or note is up, the terminal box holds only what the mirror draws and the panel takes the rest; the space left over sits
+   between the panel and the message box. The Fit never measures this box (session.js fitCommit, fit-ui.js panelFrame). */
+.termcol[data-lay] > .termbox { flex: 0 1000 auto; min-height: 120px; }
+.termcol[data-lay="crop"] > .termbox { min-height: calc(var(--fs-small) * 1.35 + 32px); }   /* the strip alone: 10 + 6 + 1 + 4 px around one small line, 10 px under it */
+.termcol[data-lay] #term { flex: 0 1 auto; }   /* by id: the padding test of fit-ui.js reads the one .term rule */
+.termcol[data-lay] > .composer { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }   /* no overflow here: the palette opens upward out of .inbox */
+.termcol[data-lay] > .composer > * { flex: none; min-width: 0; }
+.termcol[data-lay] > .composer > .ask:not([hidden]) { position: relative; flex: 0 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; margin-bottom: auto; }
+.termcol[data-lay] > .composer > .attn-note:not([hidden]) { margin-bottom: auto; }
+.termcol[data-lay="crop"] > .composer > .ask.dlg { max-height: none; }
