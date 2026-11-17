@@ -287,7 +287,10 @@ Fixes:
   (and in front of no short one, and of no answer). nika read that as a screen it could not understand ("nika can't read Claude's dialog
   right now"), so you had to press Submit in the terminal. It now shows the review as a form, with Submit answers and Decline. A
   question row that Claude fills to the pane's width and carries on in the next row (two questions of about 300 characters did it at
-  106 and 147 columns) is read as well. Tried against a live Claude, except the wide-row case, which that check found.
+  106 and 147 columns) is read as well. In the form, a long question wraps at 60 % of the row and its answer keeps the rest; under
+  560 px each answer stays under its question. Tried against a live Claude, including two long questions whose first rows were exactly as
+  wide as the pane (147 columns): the review showed as a form, Submit answers worked, and the pane was back at the panel's size about
+  a second later.
 - **After you switch away and back while a question form is open, Claude's pane returns to the panel's size.** Switching back measured
   the terminal view while the form was taking some of its height, and when the question closed the pane went back to that smaller size
   (2 to 6 rows short) and stayed there. nika now measures the panel again once the form (or the prompt buttons, the feedback survey or
