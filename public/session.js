@@ -24,6 +24,7 @@ import { paletteQuery, cleanCommands, paletteView, commandsButton, shouldFetch, 
 import { isMac, isTextEntry, wantsHelp, wantsBack, wantsHistToggle, backHint, helpHint, histHint, passKeyLabel, openShortcuts, wireWindowKeys } from './shortcuts.js';
 import { panelSize, createFitPlanner, fitPanelView, stillOffSay, remeasure, hiddenRows, fillSize, drawnScale, roomStep, refitFrom, createRedrawHold, HOLD_POLL_MS, REFIT_MS, GROW_IDLE, growStep, growRebase, growAsk, scaleRows, cutQuestion } from './fit-ui.js';
 import { createScrollPlanner, routeFor, wheelRows, scrollGate, viewRowsOf, pageRowsOf, refusalLine, noteView, scrolledSay, NOTE_MS } from './scroll.js';
+import { createGlideArm, frameOf, glideFrom, matrixY, paneWriteDisarms, GLIDE_MS } from './glide.js';
 import { createAttachTray } from './attach.js';
 import { createDialogForm, cleanDialog } from './dialog-form.js';
 import { createSurveyPanel, cleanSurvey } from './survey-panel.js';
@@ -93,8 +94,13 @@ let sessionId = param('session', SESSION_ID); // follows the pane to its new ses
 const paneId = SUB ? null : param('pane', PANE_ID); // a subagent has no pane of its own: the parameter is ignored and nothing below can reach a pane route
 const projectKey = param('project', PROJECT_KEY);
 
-/** appFetch that never throws: { status, body }; status 0 = network failure. */
+// F17 (design F17): arm, the matcher of glide.js made by wireScroll (a scroll request arms it; any write to the pane but the scroll, the capture and the fit heartbeat disarms it, see call); timer, the fallback that ends a slide.
+// Declared before call(), which reads it from the first request on.
+const GL = { arm: null, timer: 0 };
+
+/** appFetch that never throws: { status, body }; status 0 = network failure. A write to the pane (a key, a submit, a command, a dialog answer, Stop, a mode switch, ...) first ends a pending glide (F17): this is the one place they all pass. */
 async function call(path, opts = {}) {
+  if (paneWriteDisarms(path, opts.method)) GL.arm?.disarm();
   try {
     const r = await appFetch(path, opts);
     return { status: r.status, body: r.body ?? null };
@@ -723,6 +729,7 @@ async function stop() {
 }
 
 function openEnd() {
+  GL.arm?.disarm(); // F17: its own request is sent by end-dialog.js (not through call), and ending the session redraws everything
   const open = () => openEndDialog({
     pane: paneId,
     name: A.name,
@@ -1257,6 +1264,8 @@ function setGone() {
   DS.stop();
   FIT.planner?.close(); // the heartbeat stops and the tmux window comes back (one DELETE); the next capture that answers starts a new lease
   SC.planner?.close();
+  GL.arm?.disarm(); // F17
+  endGlide();
   setLive('off', 'Not live');
   setPaneState('gone');
   setInputEnabled(false, 'Pane is gone');
@@ -1323,9 +1332,23 @@ function handleCapture(r) {
     M.rows = r.body.rows.length;
     M.etag = typeof r.body.etag === 'string' && ETAG.test(r.body.etag) ? r.body.etag : null;
     $('term-rows').style.minWidth = `${cols}ch`;
+    const draft = cleanDraft(r.body.draft);
+    let glide = null; // F17: the first changed frame after a scroll request, matched with the one drawn (null: nothing to slide)
+    try {
+      if (GL.arm?.armed()) glide = GL.arm.offer(frameOf(r.body, draft)) ?? null; // a frame is built only inside the window of a scroll request
+    } catch {
+      glide = null; // the mirror keeps working without the glide
+    }
     M.body = r.body;
-    M.draft = cleanDraft(r.body.draft);
+    M.draft = draft;
     drawMirror();
+    if (glide?.act === 'glide') {
+      try {
+        startGlide(glide);
+      } catch {
+        endGlide();
+      }
+    }
     try {
       if (!ATT.sending()) DS.capture(M.draft, cols); // the box holds placeholders for a moment while attachments go in: no paused note then
       renderSuggestion(); // the placeholder follows the screen's draft
@@ -1360,6 +1383,8 @@ function handleCapture(r) {
     clearTimeout(M.timer);
     SC.planner?.close();
     GR = GROW_IDLE; // F16
+    GL.arm?.disarm(); // F17
+    endGlide();
     setLive('off', 'Not live');
     setPaneState('tmux');
     showOverlay('nika lost its connection to the app', 'The app refused this request. Close this window and open it again from the nika app.', { alert: true });
@@ -1643,7 +1668,11 @@ function handleHeld(r, n) {
 function applyHeld(r) {
   const was = { cols: M.cols, rows: M.rows, scale: FIT.scale };
   handleCapture(r);
-  if (was.cols && (M.cols !== was.cols || M.rows !== was.rows)) refit(was.scale);
+  if (was.cols && (M.cols !== was.cols || M.rows !== was.rows)) {
+    GL.arm?.disarm(); // F17: nika's own resize is never a scroll; a slide still running ends before the refit starts
+    endGlide();
+    refit(was.scale);
+  }
 }
 
 /** The new frame's transition (F10 6.2): --refit-from through CSSOM, the class restarted; it ends on animationend or, with no animation (reduced motion), after REFIT_MS + 50 ms. */
@@ -1853,7 +1882,10 @@ function wireFit() {
   wireFitPop();
   if (typeof ResizeObserver === 'function') new ResizeObserver(fitResize).observe($('term')); // the app's zoom changes the box too
   document.fonts?.ready.then(fitResize, () => {});
-  $('term-rows').addEventListener('animationend', (e) => { if (e?.animationName === 'nika-refit') endRefit(); });
+  $('term-rows').addEventListener('animationend', (e) => {
+    if (e?.animationName === 'nika-refit') endRefit();
+    if (e?.animationName === 'nika-glide') endGlide(); // F17: each sliding row ends one; endGlide is idempotent
+  });
   window.addEventListener('pagehide', () => FIT.planner.close());
   // F9: events are only triggers, the planner reads the value itself; hidden (visibilitychange, in boot) is sent at once, these two settle first. e.target is the window
   // itself: the focus and blur of an element inside the page are not the window's
@@ -1882,6 +1914,11 @@ function scrollCall(body) {
   if (HOLD.active) return HOLD.wait().then(() => scrollCall(body)); // F10: after the redraw hold; the server still decides on its own fresh capture
   const ctl = new AbortController(); // AbortSignal.timeout() is missing in older macOS web views (project.js does the same)
   const timer = setTimeout(() => ctl.abort(), 10000);
+  try {
+    if (!lessMotion() && M.body) GL.arm?.arm(body, { scrolled: SC.scrolled, before: frameOf(M.body, M.draft) }); // F17: the frame drawn as the keys go is the base
+  } catch {
+    // scrolling works without the glide
+  }
   return call(`/api/app/pane/${encodeURIComponent(paneId)}/scroll`, { method: 'POST', json: body, signal: ctl.signal }).finally(() => clearTimeout(timer));
 }
 
@@ -1924,11 +1961,50 @@ function scrollLine(answer) {
 
 /** The route answered (the planner has already dropped what was queued behind a refusal): 200 says where Claude's view is now, 404 the pane is gone, the rest is a line. */
 function scrollDone(r) {
+  if (r.status !== 200) GL.arm?.drop(); // F17: refused or lost, so no frame of this request will come: it must not leave the arm open for a prompt or for output
   if (r.status === 200) {
     if (typeof r.body?.scrolled === 'boolean') setScrolled(r.body.scrolled);
+    GL.arm?.extend(); // F17: the frame comes after the answer, so the window is renewed
     kickMirror(0); // the route refreshed the capture: the mirror shows the new view on its next tick
   } else if (r.status === 404) setGone();
   else scrollLine({ status: r.status, code: r.body?.error });
+}
+
+/** F17: the OS asks for less motion (read fresh each time; unreadable counts as no). */
+function lessMotion() {
+  try {
+    return window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches === true;
+  } catch {
+    return false;
+  }
+}
+
+/** F17: slides the conversation rows from where they were; the rows below (Claude's box, footer, task list) stay and cover them. Class and CSSOM only. */
+function startGlide(g) {
+  if (lessMotion()) return;
+  const rows = $('term-rows');
+  const els = rows.children;
+  const rowPx = $('fit-probe').getBoundingClientRect().height * FIT.scale; // the drawn row height, as the wheel counts it
+  const current = rows.classList.contains('glide') && els[0] ? matrixY(getComputedStyle(els[0]).transform) : 0; // a slide still running: continue from where the rows are
+  const from = glideFrom({ k: g.k, rowPx, current, maxPx: g.end * rowPx });
+  if (from === 0) {
+    endGlide();
+    return;
+  }
+  for (let i = 0; i < els.length; i += 1) els[i].classList.toggle('gl', i < g.end);
+  rows.style.setProperty('--glide-from', `${from}px`);
+  rows.classList.remove('glide');
+  void rows.offsetWidth; // the animation starts again
+  rows.classList.add('glide');
+  clearTimeout(GL.timer);
+  GL.timer = setTimeout(endGlide, GLIDE_MS + 50); // the fallback for a web view that gives no animationend
+}
+
+function endGlide() {
+  clearTimeout(GL.timer);
+  GL.timer = 0;
+  const rows = $('term-rows');
+  if (rows.classList.contains('glide')) rows.classList.remove('glide'); // idempotent: setGone, the 403 branch and every animationend may call it
 }
 
 /** After the native check chose Claude: true when a request may go. A pane that is not in its full-screen view, or not read yet, gets nothing at all (no line); a closed gate gets the line. */
@@ -1971,6 +2047,7 @@ function wireScroll() {
     now: () => Date.now(),
     done: scrollDone,
   });
+  GL.arm = createGlideArm({ now: () => Date.now() }); // F17
   const term = $('term');
   term.addEventListener('wheel', scrollWheel, { passive: false }); // not passive: preventDefault must work
   term.addEventListener('keydown', scrollKey);
@@ -1984,6 +2061,7 @@ let chain = Promise.resolve(); // sends go out in the order they were made, one 
 
 /** One POST to a pane route (`keys` or `submit`); a 429 waits a moment and sends again (nothing was sent). */
 async function postRetry(tail, payload) {
+  GL.arm?.disarm(); // F17: a typed key or Send is not a scroll (Claude jumps to the bottom on submit); the next frame never glides
   let r;
   for (let attempt = 0; attempt < 4; attempt += 1) {
     r = await call(`/api/app/pane/${encodeURIComponent(paneId)}/${tail}`, { method: 'POST', json: payload });

@@ -21,6 +21,7 @@ import {
   GROW_IDLE as GROW_IDLE_REAL, growStep as growStepReal, growRebase as growRebaseReal, growAsk as growAskReal, scaleRows as scaleRowsReal, cutQuestion as cutQuestionReal, // F16
 } from '../public/fit-ui.js';
 import { createScrollPlanner as createScrollPlannerReal, routeFor as routeForReal, wheelRows as wheelRowsReal, scrollGate as scrollGateReal, viewRowsOf as viewRowsOfReal, pageRowsOf as pageRowsOfReal, refusalLine as refusalLineReal, noteView as scrollNoteViewReal, scrolledSay as scrolledSayReal, NOTE_MS as NOTE_MS_REAL } from '../public/scroll.js';
+import { createGlideArm as createGlideArmReal, frameOf as frameOfReal, glideFrom as glideFromReal, matrixY as matrixYReal, paneWriteDisarms as paneWriteDisarmsReal, GLIDE_MS as GLIDE_MS_REAL } from '../public/glide.js';
 import { h as hReal, icon as iconReal, roleTagEl as roleTagElReal, subStateEl as subStateElReal, subagentItemEl as subagentItemElReal, labelEl as labelElReal } from '../public/dom.js';
 import { subagentView as subagentViewReal, subagentHref as subagentHrefReal, SUBAGENT_ID as SUBAGENT_ID_REAL, agentLabelView as agentLabelViewReal, subLabelView as subLabelViewReal } from '../public/dash-model.js';
 import { SESSION_ID as SESSION_ID_REAL, PANE_ID as PANE_ID_REAL } from '../public/quick-actions.js';
@@ -34,7 +35,7 @@ const HTML = read('session.html');
 const JS = {
   'session.js': read('session.js'), 'mirror-render.js': read('mirror-render.js'), 'modes.js': read('modes.js'),
   'quick-actions.js': read('quick-actions.js'), 'models-ui.js': read('models-ui.js'), 'end-dialog.js': read('end-dialog.js'),
-  'palette.js': read('palette.js'), 'shortcuts.js': read('shortcuts.js'), 'draft-sync.js': read('draft-sync.js'), 'fit-ui.js': read('fit-ui.js'), 'scroll.js': read('scroll.js'), 'dialog-form.js': read('dialog-form.js'),
+  'palette.js': read('palette.js'), 'shortcuts.js': read('shortcuts.js'), 'draft-sync.js': read('draft-sync.js'), 'fit-ui.js': read('fit-ui.js'), 'scroll.js': read('scroll.js'), 'glide.js': read('glide.js'), 'dialog-form.js': read('dialog-form.js'),
 };
 const TOKENS = read('tokens.css');
 const CSS = read('session.css');
@@ -173,7 +174,7 @@ describe('session.html under the strict CSP', () => {
 describe('contracts with the other UI modules', () => {
   test('(+) session.js imports only names the shared modules export, from sibling files', () => {
     const imports = [...JS['session.js'].matchAll(/import \{([^}]+)\} from '([^']+)'/g)];
-    assert.deepEqual(imports.map((m) => m[2]), ['./dom.js', './api.js', './dash-model.js', './mirror-render.js', './draft-sync.js', './modes.js', './quick-actions.js', './models-ui.js', './end-dialog.js', './palette.js', './shortcuts.js', './fit-ui.js', './scroll.js', './attach.js', './dialog-form.js', './survey-panel.js']);
+    assert.deepEqual(imports.map((m) => m[2]), ['./dom.js', './api.js', './dash-model.js', './mirror-render.js', './draft-sync.js', './modes.js', './quick-actions.js', './models-ui.js', './end-dialog.js', './palette.js', './shortcuts.js', './fit-ui.js', './scroll.js', './glide.js', './attach.js', './dialog-form.js', './survey-panel.js']);
     for (const [, names, from] of imports) {
       const exported = read(from.slice(2));
       for (const n of names.split(',').map((x) => x.trim())) assert.match(exported, new RegExp(`export (async )?(function|const|let) ${n}\\b`), `${from} exports ${n}`);
@@ -1441,7 +1442,7 @@ describe('Task 14b: wiring of the page rules', () => {
   const deliverRig = (response) => {
     const log = { problems: [], gone: 0 };
     const ctx = {
-      M: { gone: false }, paneId: '%12', call: async () => response, showProblem: (m, k, ms) => log.problems.push([m, k, ms]), clearProblem() {}, setGone: () => { log.gone += 1; },
+      GL: { arm: null }, M: { gone: false }, paneId: '%12', call: async () => response, showProblem: (m, k, ms) => log.problems.push([m, k, ms]), clearProblem() {}, setGone: () => { log.gone += 1; },
       sleep: async () => {}, RATE_MSG: 'Too fast.', keysRefusal: keysRefusalReal, submitMessage: submitMessageReal, serverMessage: (r, fb) => (typeof r.body?.message === 'string' ? r.body.message : fb),
     };
     return { log, deliver: mk(['async function postRetry(tail, payload)', 'function sendRefusal(payload, r)', 'async function deliver(payload)'], ctx).deliver };
@@ -1507,7 +1508,7 @@ describe('Task 14b: wiring of the page rules', () => {
     const log = { paths: [], bodies: [], problems: [], cleared: 0, gone: 0, sleeps: [], submitted: [] };
     const queue = [...answers];
     const ctx = {
-      HOLD: { active: false }, M: { gone }, paneId: '%12', call: async (path, o) => { log.paths.push(path); log.bodies.push(jsonClone(o.json)); return queue.length > 1 ? queue.shift() : queue[0]; },
+      GL: { arm: null }, HOLD: { active: false }, M: { gone }, paneId: '%12', call: async (path, o) => { log.paths.push(path); log.bodies.push(jsonClone(o.json)); return queue.length > 1 ? queue.shift() : queue[0]; },
       showProblem: (m, k, ms) => log.problems.push([m, k, ms]), clearProblem: () => { log.cleared += 1; }, setGone: () => { log.gone += 1; },
       sleep: async (ms) => { log.sleeps.push(ms); }, RATE_MSG: 'Too fast.', submitResult: submitResultReal, DS: { submitted: (r) => log.submitted.push(jsonClone(r)) },
     };
@@ -4498,6 +4499,8 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     // F10 (design F10 2 to 6)
     'function fitProbe()', 'function fitCommit()', 'function fitChip(view, opts)', 'function flushChip()', 'function fitSized(pane)', 'function handleHeld(r, n)',
     'function applyHeld(r)', 'function refit(oldScale)', 'function endRefit()', 'function holdTimeout(pending, ctx)', 'function holdEnded()',
+    // F17 (design F17): setGone, the 403 branch and applyHeld end a running glide
+    'function endGlide()',
     // final review fix G3, R2 #7: the waiters of a failed mode switch
     'function nextCapture(ms = 2500)', 'function captureHandled(n)',
     // F11 (design F11 2 to 6)
@@ -4557,6 +4560,7 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
       // F16: the grow's state, the pure rules, what the form is told, the page's dialog and a clock the test sets (growTick reads Date.now())
       GR: GROW_IDLE_REAL, GROW_IDLE: GROW_IDLE_REAL, growStep: growStepReal, growRebase: growRebaseReal, growAsk: growAskReal, scaleRows: scaleRowsReal, cutQuestion: cutQuestionReal,
       W: { dialog: null, pane: 'ok' }, renderMode: () => log.df.push(fns.growing()), Date: { now: () => clk.now },
+      GL: { arm: null, timer: 0 }, // F17: no arm here (a spy goes in where a test needs one)
       P: { on: false }, // F11: Type into pane, read by the real drawMirror
       $: (id) => els[id],
       call: async (path, opts) => { log.calls.push({ path, ...opts }); return replies.length ? replies.shift() : FITTED; },
@@ -6427,6 +6431,78 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     assert.equal(r.rows.classes.has('refit'), true);
   });
 
+  // ---- F17 (design F17): the glide ends with its animation, and with a resize, a gone pane or a lost connection ----
+  test('(+) F17: animationend of nika-glide ends the glide, again and again; the refit\'s and any other animationend leave it alone', () => {
+    const r = rig();
+    r.wireFit();
+    r.rows.classes.add('glide');
+    r.log.rowsOn.animationend({ animationName: 'nika-refit' });
+    r.log.rowsOn.animationend({ animationName: 'something-else' });
+    r.log.rowsOn.animationend({});
+    r.log.rowsOn.animationend(undefined);
+    assert.equal(r.rows.classes.has('glide'), true);
+    r.log.rowsOn.animationend({ animationName: 'nika-glide' });
+    assert.equal(r.rows.classes.has('glide'), false);
+    assert.doesNotThrow(() => r.log.rowsOn.animationend({ animationName: 'nika-glide' }), 'each sliding row fires one');
+  });
+
+  test('(+) F17: a nika-refit animationend ends the refit and leaves a running glide alone (the two animations are separate)', () => {
+    const r = rig();
+    r.wireFit();
+    r.rows.classes.add('glide');
+    r.rows.classes.add('refit');
+    r.log.rowsOn.animationend({ animationName: 'nika-refit' });
+    assert.deepEqual([r.rows.classes.has('refit'), r.rows.classes.has('glide')], [false, true]);
+  });
+
+  test('(+) F17: a capture with another size (applyHeld) disarms the glide and ends a running one before the refit starts', async () => {
+    const r = await heldRig();
+    const seen = [];
+    r.ctx.GL.arm = { armed: () => false, disarm: () => seen.push('disarm') };
+    r.rows.classes.add('glide');
+    r.log.classOps.length = 0;
+    r.handleHeld(shot(145, 21, { draft: BOXED }));
+    assert.deepEqual(seen, ['disarm']);
+    assert.equal(r.rows.classes.has('glide'), false);
+    assert.deepEqual(r.log.classOps.slice(0, 3), ['-glide', '-refit', '+refit'], 'the glide ends first, then the refit restarts');
+  });
+
+  test('(−) F17: a capture of the drawn size (applyHeld) neither disarms nor ends the glide', async () => {
+    const r = await heldRig();
+    r.handleHeld(shot(145, 21, { draft: BOXED }));
+    const seen = [];
+    r.ctx.GL.arm = { armed: () => false, disarm: () => seen.push('disarm') };
+    r.rows.classes.add('glide');
+    r.applyHeld(shot(145, 21, { draft: BOXED }));
+    assert.deepEqual(seen, []);
+    assert.equal(r.rows.classes.has('glide'), true);
+  });
+
+  test('(+) F17: a pane that is gone (404, setGone) and a lost connection (403) disarm the glide and end a running one', () => {
+    for (const status of [404, 403]) {
+      const r = rig();
+      r.wireFit();
+      const seen = [];
+      r.ctx.GL.arm = { armed: () => false, disarm: () => seen.push('disarm') };
+      r.rows.classes.add('glide');
+      r.handleCapture({ status, body: null });
+      assert.deepEqual(seen, ['disarm'], String(status));
+      assert.equal(r.rows.classes.has('glide'), false, String(status));
+    }
+  });
+
+  test('(−) F17: a capture that only changes the text (no size change, no gone, no 403) leaves a running glide alone', () => {
+    const r = rig();
+    r.wireFit();
+    const seen = [];
+    r.ctx.GL.arm = { armed: () => false, disarm: () => seen.push('disarm') };
+    r.rows.classes.add('glide');
+    r.handleCapture(shot(100, 30));
+    r.handleCapture({ status: 304, body: null });
+    assert.deepEqual(seen, []);
+    assert.equal(r.rows.classes.has('glide'), true);
+  });
+
   test('(−) F10: no refit when the applied frame has the drawn size, and none for the first frame ever drawn', async () => {
     const r = await heldRig({ box: PANEL_145X40, pane: { cols: 145, rows: 39 } });
     r.handleHeld(shot(171, 45)); // the drawn size, no box: kept; applied at the timeout
@@ -6535,7 +6611,7 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
 
     const opened = [];
     const endHold = createRedrawHoldReal({ after: () => 1, cancel() {} });
-    const end = runFns(['function openEnd()'], ['openEnd'], { HOLD: endHold, paneId: '%12', A: { name: 'a', kind: 'idle' }, W: { promptOpen: false }, openEndDialog: (o) => opened.push(o.pane), toast() {}, setGone() {} }).openEnd;
+    const end = runFns(['function openEnd()'], ['openEnd'], { HOLD: endHold, GL: { arm: null }, paneId: '%12', A: { name: 'a', kind: 'idle' }, W: { promptOpen: false }, openEndDialog: (o) => opened.push(o.pane), toast() {}, setGone() {} }).openEnd;
     endHold.start({ want: { cols: 100, rows: 30 }, plainBefore: true });
     end();
     await flushAll();
@@ -7502,6 +7578,49 @@ describe('W3-T3: scroll (markup and stylesheet)', () => {
     assert.ok(server.indexOf("'/fit-ui.js'") < server.indexOf("'/scroll.js'"));
   });
 
+  // ---- F17 (design F17): the glide ----
+  test('(+) F17: /glide.js is served: right after /scroll.js on the static list, as JavaScript', () => {
+    const server = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'src', 'server.js'), 'utf8');
+    assert.match(server, /\['\/glide\.js', \['glide\.js', 'text\/javascript; charset=utf-8'\]\]/);
+    assert.ok(server.indexOf("'/scroll.js'") < server.indexOf("'/glide.js'"));
+    assert.ok(server.indexOf("'/glide.js'") < server.indexOf("'/attach.js'"));
+  });
+
+  test('(+) F17: nika-glide slides from --glide-from to none (a transform only), over 150 ms ease-out, on the conversation rows only', () => {
+    assert.match(css, /@keyframes nika-glide \{ from \{ transform: translateY\(var\(--glide-from, 0px\)\); \} to \{ transform: none; \} \}/);
+    const slide = rules('.term-rows.glide > .tl.gl');
+    assert.equal(slide.length, 2, 'the rule and its twin in the reduced-motion block');
+    assert.match(slide[0], /animation:\s*nika-glide 150ms ease-out/);
+    assert.match(slide[1], /animation:\s*none/);
+    assert.doesNotMatch(slide[0], /\b(top|left|margin|height|width)\s*:/, 'no layout property moves');
+  });
+
+  test('(+) F17: reduced motion sets the slide to none', () => {
+    assert.match(css, /@media \(prefers-reduced-motion: reduce\) \{ \.term-rows\.glide > \.tl\.gl \{ animation: none; \} \}/);
+  });
+
+  test('(+) F17: the rows box clips: overflow hidden, then clip (hidden is the fallback), and the mirror\'s own box still scrolls', () => {
+    const box = rules('.term-rows');
+    assert.equal(box.length, 1);
+    assert.match(box[0], /overflow:\s*hidden;\s*overflow:\s*clip;/);
+    assert.match(rules('.term')[0], /overflow:\s*auto/, 'the scroll area itself is unchanged');
+  });
+
+  test('(+) F17: the rows below the conversation paint over the sliding ones: z-index 1 and the terminal background, only while a glide runs', () => {
+    const m = /\.term-rows\.glide > \.tl:not\(\.gl\) \{([^}]*)\}/.exec(css);
+    assert.ok(m);
+    assert.match(m[1], /position:\s*relative/);
+    assert.match(m[1], /z-index:\s*1\b/);
+    assert.match(m[1], /background:\s*var\(--term-bg\)/);
+  });
+
+  test('(−) F17: no :has(), no style attribute in the page, and no new token: the glide is a class, one custom property set through CSSOM and the existing --term-bg', () => {
+    assert.doesNotMatch(css, /:has\(/);
+    assert.doesNotMatch(HTML, /\sstyle\s*=/i);
+    assert.ok(TOKENS.includes('--term-bg:') || CSS.includes('--term-bg:'));
+    assert.doesNotMatch(css.slice(css.indexOf('@keyframes nika-glide')), /^[^]*?--glide-from\s*:/, 'the stylesheet never sets --glide-from: only session.js does');
+  });
+
   test('(+) the Keyboard shortcuts window lists the scroll keys for the session window only (shortcuts.js)', async () => {
     const { shortcutsFor } = await import('../public/shortcuts.js');
     const names = (win) => shortcutsFor({ window: win, tier: 'app', mac: false }).flatMap((g) => g.rows).map((r) => r.name);
@@ -7531,6 +7650,8 @@ describe('W3-T3: scroll in the session window (wiring)', () => {
     'function scrollDone(r)', 'function scrollOpen()', 'function scrollWheel(e)', 'function scrollKey(e)', 'function wireScroll()',
     'function setFrozen(on)', 'function jumpToLive()', 'function setGone()',
   ];
+  // F17 (design F17): the glide's own functions run beside them; apart from NAMES because startGlide writes the CSSOM property, which the sink check of the scroll code below does not cover
+  const GLIDE_NAMES = ['function lessMotion()', 'function startGlide(g)', 'function endGlide()', 'function handleCapture(r)', 'async function postRetry(tail, payload)'];
   const BOX = { top: 32, bottom: 34 }; // 32 rows above the input box: a page is 16 rows, 288 px at an 18 px cell
   const draftOf = (over = {}) => ({ state: 'empty', mode: 'prompt', text: '', sig: '0000000000000001', box: BOX, cursorAtEnd: true, suggestion: null, ...over });
   const bodyOf = (over = {}) => ({ alt: true, scrolled: false, prompt: null, cols: 120, rows: Array.from({ length: 36 }, () => []), draft: draftOf(), ...over });
@@ -7567,7 +7688,7 @@ describe('W3-T3: scroll in the session window (wiring)', () => {
    */
   const rig = ({ pane = '%12', box = { top: 0, height: 400, client: 400 }, body = bodyOf(), replies = [], hold = false } = {}) => {
     const clk = clock();
-    const log = { calls: [], signals: [], problems: [], said: [], kicks: [], lives: [], events: {}, focus: [] };
+    const log = { calls: [], signals: [], problems: [], said: [], kicks: [], lives: [], events: {}, focus: [], drawn: [], reflows: 0 };
     const el = (id) => { const e = new El('div'); e.id = id; return e; };
     const term = Object.assign(el('term'), { scrollTop: box.top, scrollHeight: box.height, clientHeight: box.client, scrollLeft: 5 });
     const jump = el('jump-live');
@@ -7576,24 +7697,38 @@ describe('W3-T3: scroll in the session window (wiring)', () => {
     note.hidden = true;
     const composer = Object.assign(el('composer'), { focus() { log.focus.push('composer'); } });
     const probe = Object.assign(el('fit-probe'), { getBoundingClientRect: () => ({ width: 800, height: 18 }) });
-    const byId = { term, 'jump-live': jump, 'paused-note': note, composer, 'hist-scroll': el('hist-scroll'), 'fit-probe': probe };
+    // F17: the mirror's rows box (class list, the CSSOM property, a reflow counter) with 36 row elements; `page.reduce` is the OS setting prefers-reduced-motion
+    const classSet = () => {
+      const s = new Set();
+      return { s, classList: { add: (c) => s.add(c), remove: (c) => s.delete(c), contains: (c) => s.has(c), toggle: (c, on) => { if (on) s.add(c); else s.delete(c); return on; } } };
+    };
+    const boxCls = classSet();
+    const rowEls = Array.from({ length: 36 }, () => ({ ...classSet(), transform: 'none' }));
+    const rowsEl = { listeners: {}, classes: boxCls.s, classList: boxCls.classList, children: rowEls, style: { props: {}, setProperty(k, v) { this.props[k] = String(v); } }, get offsetWidth() { log.reflows += 1; return 0; } };
+    const page = { reduce: false };
+    const byId = { term, 'jump-live': jump, 'paused-note': note, composer, 'hist-scroll': el('hist-scroll'), 'fit-probe': probe, 'term-rows': rowsEl };
     const ctx = {
       paneId: pane, M: { gone: false, fatal: false, frozen: false, cols: 120, rows: 36, etag: 'ab', timer: 0, body, draft: cleanDraftReal(body?.draft) }, P: { on: false }, FIT: { scale: 1, planner: null }, GR: GROW_IDLE_REAL, GROW_IDLE: GROW_IDLE_REAL, // F16 (requirement change): setGone resets the grow
       $: (id) => byId[id], call: async (path, { signal, ...opts } = {}) => { log.calls.push({ path, ...opts }); log.signals.push(signal); return replies.length ? replies.shift() : { status: 200, body: { sent: 1, scrolled: true } }; },
       showProblem: (m, k, ms) => log.problems.push([m, k, ms]), announce: (m) => log.said.push(m), kickMirror: (ms) => log.kicks.push(ms),
       setLive: (state, text) => log.lives.push([state, text]), MID: ' - ', TIMES: 'x', h: hReal, icon: iconReal, AbortController,
-      window: { addEventListener: (type, fn) => { log.events[type] = fn; } }, setTimeout: clk.setTimeout, clearTimeout: clk.clearTimeout, Date: clk.Date,
+      window: { addEventListener: (type, fn) => { log.events[type] = fn; }, matchMedia: (q) => ({ matches: page.reduce && q === '(prefers-reduced-motion: reduce)' }) }, setTimeout: clk.setTimeout, clearTimeout: clk.clearTimeout, Date: clk.Date,
       // F10: a scroll request waits for the redraw hold; `hold: true` gives the rig a real one on the rig's clock
       HOLD: hold ? createRedrawHoldReal({ after: clk.setTimeout, cancel: clk.clearTimeout }) : { active: false },
       createScrollPlanner: createScrollPlannerReal, routeFor: routeForReal, wheelRows: wheelRowsReal, scrollGate: scrollGateReal, viewRowsOf: viewRowsOfReal, pageRowsOf: pageRowsOfReal,
       refusalLine: refusalLineReal, noteView: scrollNoteViewReal, scrolledSay: scrolledSayReal, NOTE_MS: NOTE_MS_REAL, encodeURIComponent,
       // setGone's other collaborators
-      DS: { stop() {} }, setPaneState() {}, setInputEnabled() {}, showOverlay() {},
+      DS: { stop() {}, capture() {} }, setPaneState() {}, setInputEnabled() {}, showOverlay() {},
+      // F17: the capture path of handleCapture (spies where the page would judge or draw the screen), postRetry's collaborators, and the glide's pure parts
+      recovered() {}, noteScreen() {}, cleanDraft: cleanDraftReal, ETAG: /^[0-9a-f]{1,64}$/, Q: { queued: false }, renderQuick() {}, ATT: { sending: () => false }, renderSuggestion() {}, fitCaptured() {},
+      drawMirror: () => log.drawn.push(1), serverMessage: () => '', sleep: async () => {}, RATE_MSG: 'Too fast.',
+      createGlideArm: createGlideArmReal, frameOf: frameOfReal, glideFrom: glideFromReal, matrixY: matrixYReal, GLIDE_MS: GLIDE_MS_REAL, getComputedStyle: (e) => ({ transform: e.transform }),
     };
-    const src = `${constOf('const SC = ')}\n${constOf('const SCROLL_KEYS = ')}\n${NAMES.map(fnOf).join('\n')}; ({ scrollCall, renderNote, setScrolled, scrollCaptured, scrollLine, scrollDone, scrollOpen, scrollWheel, scrollKey, wireScroll, setFrozen, jumpToLive, setGone, SC })`;
+    const src = `${constOf('const SC = ')}\n${constOf('const GL = ')}\n${constOf('const SCROLL_KEYS = ')}\n${[...NAMES, ...GLIDE_NAMES].map(fnOf).join('\n')}; ({ scrollCall, renderNote, setScrolled, scrollCaptured, scrollLine, scrollDone, scrollOpen, scrollWheel, scrollKey, wireScroll, setFrozen, jumpToLive, setGone, startGlide, endGlide, handleCapture, postRetry, SC, GL })`;
     const fns = vm.runInNewContext(src, ctx);
     ctx.SC = fns.SC; // the file's own const, so tests read the state the functions use
-    return { ...fns, ctx, log, clk, term, jump, note, composer, byId };
+    ctx.GL = fns.GL;
+    return { ...fns, ctx, log, clk, term, jump, note, composer, byId, rowsEl, rowEls, page };
   };
   const ROUTE = '/api/app/pane/%2512/scroll';
   const POST = (json) => ({ path: ROUTE, method: 'POST', json });
@@ -8127,6 +8262,529 @@ describe('W3-T3: scroll in the session window (wiring)', () => {
     r.ctx.HOLD.end();
     await tick();
     assert.deepEqual(calls(r), []);
+  });
+
+  // ---- F17 (design F17): the glide -------------------------------------------------------------------------------------------------------------
+  // Frames are a made-up document of numbered lines seen through a 32-row window above Claude's input box (BOX.top 32), then the 4 box rows.
+  const DOC_LINE = (n) => [{ t: `line ${n} of the made-up document` }];
+  const BOX_ROWS = [[{ t: '-----' }], [{ t: '> ' }], [{ t: '-----' }], [{ t: '? for shortcuts' }]];
+  const shotAt = (o, over = {}) => bodyOf({ rows: [...Array.from({ length: 32 }, (_, i) => DOC_LINE(o + i)), ...BOX_ROWS], scrolled: o > 0, etag: 'ab12', ...over });
+  const capture = (r, body) => {
+    r.handleCapture({ status: 200, body });
+    r.term.scrollTop = 0; // handleCapture pins to the bottom; a browser clamps that to no overflow (the fake box has none), so the next PgUp is Claude's again
+  };
+  const glideOf = (r) => ({ on: r.rowsEl.classes.has('glide'), from: r.rowsEl.style.props['--glide-from'] ?? null });
+  const sliding = (r) => r.rowEls.map((e, i) => (e.s.has('gl') ? i : -1)).filter((i) => i >= 0);
+  const NONE = { on: false, from: null };
+  /** Counts how many frames the matcher was handed (frameOf is the page's only way to build one). */
+  const countFrames = (r) => {
+    const n = { frames: 0 };
+    r.ctx.frameOf = (...a) => { n.frames += 1; return frameOfReal(...a); };
+    return n;
+  };
+
+  test('(+) F17: PgUp arms with the frame drawn; the next capture, moved down 16 rows, slides the 32 rows above the box from 16 rows up (16 x 18 px), once', () => {
+    const r = wired({ body: shotAt(16) });
+    fire(r, 'keydown', key('PageUp'));
+    assert.deepEqual(calls(r), [POST({ dir: 'up', pages: 1 })]);
+    capture(r, shotAt(0));
+    assert.deepEqual(glideOf(r), { on: true, from: '-288px' });
+    assert.deepEqual(sliding(r), Array.from({ length: 32 }, (_, i) => i), 'the rows above the box slide; the box rows (32 to 35) stay');
+    assert.equal(r.log.reflows, 1, 'the class is restarted with one forced reflow');
+    assert.equal(r.log.drawn.length, 1, 'the frame is drawn once, as before');
+    assert.equal(r.ctx.M.body.rows[0][0].t, 'line 0 of the made-up document');
+    const n = countFrames(r);
+    capture(r, shotAt(0));
+    assert.equal(n.frames, 0, 'the arm was used up: the next capture builds no frame');
+  });
+
+  test('(+) F17: PgDn while Claude\'s view is scrolled up slides the other way (the new rows come from below: +16 rows)', () => {
+    const r = wired({ body: shotAt(0) });
+    r.ctx.SC.scrolled = true;
+    fire(r, 'keydown', key('PageDown'));
+    capture(r, shotAt(16));
+    assert.deepEqual(glideOf(r), { on: true, from: '288px' });
+  });
+
+  test('(−) F17: PgDn at the bottom of Claude\'s view arms nothing: the request still goes, the frame is drawn as today', () => {
+    const r = wired({ body: shotAt(0) });
+    fire(r, 'keydown', key('PageDown'));
+    assert.deepEqual(calls(r), [POST({ dir: 'down', pages: 1 })]);
+    const n = countFrames(r);
+    capture(r, shotAt(16));
+    assert.deepEqual(glideOf(r), NONE);
+    assert.equal(n.frames, 0);
+    assert.equal(r.log.drawn.length, 1);
+  });
+
+  test('(−) F17: a capture with no scroll request before it is drawn as today: no class, no property, no frame built', () => {
+    const r = wired({ body: shotAt(16) });
+    const n = countFrames(r);
+    capture(r, shotAt(0));
+    assert.deepEqual(glideOf(r), NONE);
+    assert.deepEqual(sliding(r), []);
+    assert.equal(n.frames, 0, 'outside the window of a request a capture costs one check');
+    assert.equal(r.log.drawn.length, 1);
+  });
+
+  test('(+) F17: Home and End with no row in common slide half the conversation (16 rows) in their direction', () => {
+    const top = wired({ body: shotAt(100) });
+    fire(top, 'keydown', key('Home'));
+    assert.deepEqual(calls(top), [POST({ to: 'top' })]);
+    capture(top, shotAt(0));
+    assert.deepEqual(glideOf(top), { on: true, from: '-288px' });
+    const end = wired({ body: shotAt(0) });
+    end.ctx.SC.scrolled = true;
+    fire(end, 'keydown', key('End'));
+    capture(end, shotAt(200));
+    assert.deepEqual(glideOf(end), { on: true, from: '288px' });
+  });
+
+  test('(+) F17: a capture that did not move (a spinner tick before the keys land) does not use up the arm: the scroll frame after it glides', () => {
+    const r = wired({ body: shotAt(16) });
+    fire(r, 'keydown', key('PageUp'));
+    capture(r, shotAt(16));
+    assert.deepEqual(glideOf(r), NONE);
+    capture(r, shotAt(0));
+    assert.deepEqual(glideOf(r), { on: true, from: '-288px' });
+  });
+
+  test('(−) F17: a frame of another size is never a glide (nika\'s own resize between the request and the frame)', () => {
+    const r = wired({ body: shotAt(16) });
+    fire(r, 'keydown', key('PageUp'));
+    capture(r, shotAt(0, { cols: 100 }));
+    assert.deepEqual(glideOf(r), NONE);
+    capture(r, shotAt(0));
+    assert.deepEqual(glideOf(r), NONE, 'and the arm is gone');
+  });
+
+  test('(+) F17: the arm is made after the redraw hold, from the frame drawn when the keys go (not the one at the key press)', async () => {
+    const r = wired({ hold: true, body: shotAt(16) });
+    r.ctx.HOLD.start({ want: { cols: 120, rows: 36 }, plainBefore: true });
+    fire(r, 'keydown', key('PageUp'));
+    await tick();
+    assert.deepEqual(calls(r), [], 'held');
+    capture(r, shotAt(8)); // a frame is drawn while the request waits
+    assert.deepEqual(glideOf(r), NONE, 'nothing was armed yet');
+    r.ctx.HOLD.end();
+    await tick();
+    assert.deepEqual(calls(r), [POST({ dir: 'up', pages: 1 })]);
+    capture(r, shotAt(0));
+    assert.deepEqual(glideOf(r), { on: true, from: '-144px' }, '8 rows from the frame that was drawn when the keys went');
+  });
+
+  test('(+) F17: reduced motion arms nothing and computes nothing: the request goes, the frame is drawn as today', () => {
+    const r = wired({ body: shotAt(16) });
+    r.page.reduce = true;
+    const n = countFrames(r);
+    fire(r, 'keydown', key('PageUp'));
+    assert.deepEqual(calls(r), [POST({ dir: 'up', pages: 1 })]);
+    assert.equal(r.GL.arm.armed(), false);
+    capture(r, shotAt(0));
+    assert.deepEqual(glideOf(r), NONE);
+    assert.deepEqual(sliding(r), []);
+    assert.equal(n.frames, 0, 'no frame was built, before or after');
+    assert.equal(r.log.drawn.length, 1);
+  });
+
+  test('(−) F17: the setting is read fresh: motion allowed arms (the same rig), and a setting turned on between the arm and the frame still starts no slide', () => {
+    const on = wired({ body: shotAt(16) });
+    fire(on, 'keydown', key('PageUp'));
+    assert.equal(on.GL.arm.armed(), true);
+    on.page.reduce = true; // changed after the arm
+    capture(on, shotAt(0));
+    assert.deepEqual(glideOf(on), NONE);
+    assert.equal(on.log.reflows, 0);
+    assert.deepEqual(sliding(on), []);
+  });
+
+  test('(−) F17: no frame drawn yet (M.body null): the request is not armed; and an exception while arming never stops the request', () => {
+    const none = wired({ body: shotAt(16) });
+    none.ctx.M.body = null;
+    none.scrollCall({ dir: 'up', pages: 1 });
+    assert.equal(none.GL.arm.armed(), false);
+    const bad = wired({ body: shotAt(16) });
+    bad.ctx.frameOf = () => { throw new Error('boom'); };
+    fire(bad, 'keydown', key('PageUp'));
+    assert.deepEqual(calls(bad), [POST({ dir: 'up', pages: 1 })], 'the route is still asked');
+    assert.equal(bad.GL.arm.armed(), false);
+  });
+
+  test('(+) F17: the route\'s 200 renews the window by 700 ms (the frame comes after the answer); a refusal does not', async () => {
+    const run = async (status) => {
+      const r = wired({ body: shotAt(16) });
+      r.ctx.call = () => new Promise((resolve) => { r.ctx.setTimeout(() => resolve(status === 200 ? { status: 200, body: { sent: 1, scrolled: true } } : { status, body: { error: 'busy-switching' } }), 600); });
+      fire(r, 'keydown', key('PageUp'));
+      await r.clk.advance(600); // the answer
+      await r.clk.advance(600); // 1200 ms after the send: past its own 700 ms, inside 700 ms of the answer
+      capture(r, shotAt(0));
+      return glideOf(r).on;
+    };
+    assert.equal(await run(200), true);
+    assert.equal(await run(409), false);
+  });
+
+  test('(−) F17: a frame that comes more than 700 ms after the request (and its answer) is drawn as today', async () => {
+    const r = wired({ body: shotAt(16) });
+    fire(r, 'keydown', key('PageUp'));
+    await r.clk.advance(0);
+    await r.clk.advance(701);
+    capture(r, shotAt(0));
+    assert.deepEqual(glideOf(r), NONE);
+  });
+
+  test('(+) F17: a flick: the second request goes out before the first frame is drawn, and both frames glide (the second from where the rows are)', async () => {
+    const r = wired({ body: shotAt(48) });
+    fire(r, 'keydown', key('PageUp'));
+    await r.clk.advance(100); // the planner's gap: request 2 goes at 100 ms, before frame 1 (70 to 110 ms) is drawn
+    fire(r, 'keydown', key('PageUp'));
+    assert.equal(calls(r).length, 2, 'both requests are out');
+    capture(r, shotAt(32));
+    assert.deepEqual(glideOf(r), { on: true, from: '-288px' });
+    r.rowEls[0].transform = 'matrix(1, 0, 0, 1, 0, -60)';
+    capture(r, shotAt(16));
+    assert.equal(glideOf(r).from, '-348px', '-60 - 16 rows of 18 px');
+    assert.equal(r.log.reflows, 2, 'frame 2 started its own animation');
+    assert.equal(r.GL.arm.armed(), false, 'and the arm ended with the last request');
+  });
+
+  test('(+) F17: a second jump during a slide starts from where the first row is now (the running transform) plus the new shift', async () => {
+    const r = wired({ body: shotAt(48) });
+    fire(r, 'keydown', key('PageUp'));
+    capture(r, shotAt(32));
+    assert.equal(glideOf(r).from, '-288px');
+    await r.clk.advance(100); // the planner's gap between two requests; the 150 ms slide is still running
+    r.rowEls[0].transform = 'matrix(1, 0, 0, 1, 0, -120)'; // what getComputedStyle says of the first row now
+    fire(r, 'keydown', key('PageUp'));
+    capture(r, shotAt(16));
+    assert.equal(glideOf(r).from, '-408px', '-120 - 16 rows of 18 px');
+    assert.equal(r.log.reflows, 2, 'the animation starts again');
+  });
+
+  test('(+) F17: a slide is read from the running transform only while one runs; a slide that is over starts from zero', async () => {
+    const r = wired({ body: shotAt(48) });
+    fire(r, 'keydown', key('PageUp'));
+    capture(r, shotAt(32));
+    await r.clk.advance(GLIDE_MS_REAL + 50); // the timer ended it
+    assert.equal(glideOf(r).on, false);
+    r.rowEls[0].transform = 'matrix(1, 0, 0, 1, 0, -120)'; // stale: nothing is running
+    fire(r, 'keydown', key('PageUp'));
+    capture(r, shotAt(16));
+    assert.equal(glideOf(r).from, '-288px');
+  });
+
+  test('(+) F17: a slide that would start where the rows already are (the running offset cancels the jump) ends the running slide instead of restarting it', async () => {
+    const r = wired({ body: shotAt(0) });
+    r.ctx.SC.scrolled = true;
+    fire(r, 'keydown', key('PageDown'));
+    capture(r, shotAt(16));
+    assert.equal(glideOf(r).from, '288px');
+    await r.clk.advance(100);
+    r.rowEls[0].transform = 'matrix(1, 0, 0, 1, 0, 288)';
+    fire(r, 'keydown', key('PageUp'));
+    const reflows = r.log.reflows;
+    capture(r, shotAt(0)); // up 16 rows: 288 - 16 x 18 = 0
+    assert.equal(glideOf(r).on, false);
+    assert.equal(r.log.reflows, reflows, 'no new animation');
+  });
+
+  test('(+) F17: the slide starts from rows of the drawn height: the probe\'s height times the text scale (FIT.scale)', () => {
+    const r = wired({ body: shotAt(16) });
+    r.ctx.FIT.scale = 0.5; // 9 px per row
+    fire(r, 'keydown', key('PageUp'));
+    capture(r, shotAt(0));
+    assert.equal(glideOf(r).from, '-144px');
+  });
+
+  test('(+) F17: a slide never starts more than the conversation\'s height away (32 rows x 18 px), however far the running one is', async () => {
+    const r = wired({ body: shotAt(48) });
+    fire(r, 'keydown', key('PageUp'));
+    capture(r, shotAt(32));
+    await r.clk.advance(100);
+    r.rowEls[0].transform = 'matrix(1, 0, 0, 1, 0, -600)'; // beyond one region
+    fire(r, 'keydown', key('PageUp'));
+    capture(r, shotAt(16));
+    assert.equal(glideOf(r).from, '-576px');
+  });
+
+  test('(+) F17: a second slide replaces the timer of the first: the first one\'s timer never ends the second early', async () => {
+    const r = wired({ body: shotAt(48) });
+    fire(r, 'keydown', key('PageUp'));
+    capture(r, shotAt(32));
+    await r.clk.advance(100);
+    fire(r, 'keydown', key('PageUp'));
+    capture(r, shotAt(16)); // the second slide: its timer is 200 ms from now (300 from the first)
+    await r.clk.advance(150); // 250 ms after the first: its timer would have run at 200
+    assert.equal(glideOf(r).on, true);
+    await r.clk.advance(49);
+    assert.equal(glideOf(r).on, true);
+    await r.clk.advance(1);
+    assert.equal(glideOf(r).on, false);
+  });
+
+  test('(+) F17: ending a slide clears its timer (GL.timer is 0 when none runs)', () => {
+    const r = wired({ body: shotAt(16) });
+    assert.equal(r.GL.timer, 0);
+    fire(r, 'keydown', key('PageUp'));
+    capture(r, shotAt(0));
+    assert.notEqual(r.GL.timer, 0);
+    r.endGlide();
+    assert.equal(r.GL.timer, 0);
+    assert.equal(glideOf(r).on, false);
+  });
+
+  test('(+) F17: without animationend the class goes after GLIDE_MS + 50 ms', async () => {
+    const r = wired({ body: shotAt(16) });
+    fire(r, 'keydown', key('PageUp'));
+    capture(r, shotAt(0));
+    await r.clk.advance(GLIDE_MS_REAL + 49);
+    assert.equal(glideOf(r).on, true);
+    await r.clk.advance(1);
+    assert.equal(glideOf(r).on, false);
+  });
+
+  test('(+) F17: a key or Send (postRetry: the keys and submit routes) ends the arm: a frame after it never glides', async () => {
+    for (const tail of ['keys', 'submit']) {
+      const r = wired({ body: shotAt(16) });
+      fire(r, 'keydown', key('PageUp'));
+      assert.equal(r.GL.arm.armed(), true, tail);
+      await r.postRetry(tail, tail === 'keys' ? { text: 'x' } : {});
+      assert.equal(r.GL.arm.armed(), false, tail);
+      capture(r, shotAt(0));
+      assert.deepEqual(glideOf(r), NONE, tail);
+    }
+  });
+
+  test('(+) F17: a pane that is gone and a lost connection (403) end a running slide and disarm the next one', () => {
+    for (const how of ['gone', '403']) {
+      const r = wired({ body: shotAt(16) });
+      fire(r, 'keydown', key('PageUp'));
+      capture(r, shotAt(8));
+      assert.equal(glideOf(r).on, true, how);
+      r.GL.arm.arm({ dir: 'up', pages: 1 }, { scrolled: true, before: frameOfReal(r.ctx.M.body, r.ctx.M.draft) }); // armed again, as a second request would
+      assert.equal(r.GL.arm.armed(), true, how);
+      if (how === 'gone') r.setGone();
+      else r.handleCapture({ status: 403, body: null });
+      assert.equal(r.GL.arm.armed(), false, how);
+      assert.equal(glideOf(r).on, false, how);
+      capture(r, shotAt(0));
+      assert.deepEqual(glideOf(r), { on: false, from: '-144px' }, `${how}: the property of the first slide is left, the class is not`);
+    }
+  });
+
+  test('(−) F17: an exception in the matcher or in the slide never stops the mirror: the capture is drawn, no class is left behind', () => {
+    const offer = wired({ body: shotAt(16) });
+    fire(offer, 'keydown', key('PageUp'));
+    offer.GL.arm.offer = () => { throw new Error('boom'); };
+    assert.doesNotThrow(() => capture(offer, shotAt(0)));
+    assert.equal(offer.log.drawn.length, 1);
+    assert.equal(offer.ctx.M.body.rows[0][0].t, 'line 0 of the made-up document', 'the new frame is kept');
+    assert.deepEqual(glideOf(offer), NONE);
+    const slide = wired({ body: shotAt(16) });
+    fire(slide, 'keydown', key('PageUp'));
+    slide.byId['fit-probe'].getBoundingClientRect = () => { throw new Error('boom'); };
+    slide.rowsEl.classes.add('glide'); // as if a slide still ran
+    assert.doesNotThrow(() => capture(slide, shotAt(0)));
+    assert.equal(slide.log.drawn.length, 1);
+    assert.equal(slide.rowsEl.classes.has('glide'), false, 'endGlide cleaned up');
+  });
+
+  test('(−) F17: a slide is a class and one custom property: startGlide and endGlide use classList and style.setProperty only, never a style attribute or markup', () => {
+    const src = [fnOf('function startGlide(g)'), fnOf('function endGlide()'), fnOf('function lessMotion()')].join('\n');
+    assert.deepEqual(findSinks(src), []);
+    assert.match(src, /style\.setProperty\('--glide-from', `\$\{from\}px`\)/);
+    assert.match(src, /classList\.remove\('glide'\)/);
+    assert.match(src, /classList\.add\('glide'\)/);
+    assert.match(src, /classList\.toggle\('gl', i < g\.end\)/);
+    assert.doesNotMatch(src, /setAttribute|innerText|textContent|\.style\.[a-z]+\s*=/);
+    assert.match(src, /matchMedia\?\.\('\(prefers-reduced-motion: reduce\)'\)\?\.matches === true/);
+  });
+
+  test('(+) F17: the hooks sit where the design puts them: offer before the new frame is kept, startGlide after it is drawn, arm after the hold wait, extend before the kick, disarm first in postRetry', () => {
+    const cap = fnOf('function handleCapture(r)');
+    assert.match(cap, /const draft = cleanDraft\(r\.body\.draft\);[\s\S]*GL\.arm\?\.armed\(\)[\s\S]*GL\.arm\.offer\(frameOf\(r\.body, draft\)\)[\s\S]*M\.body = r\.body;\s*M\.draft = draft;\s*drawMirror\(\);\s*if \(glide\?\.act === 'glide'\)[\s\S]*startGlide\(glide\)[\s\S]*endGlide\(\)/);
+    assert.match(cap, /if \(r\.status === 403\) \{[^}]*GL\.arm\?\.disarm\(\);\s*endGlide\(\);/);
+    const call = fnOf('function scrollCall(body)');
+    assert.ok(call.indexOf('HOLD.wait()') < call.indexOf('GL.arm?.arm(body, { scrolled: SC.scrolled, before: frameOf(M.body, M.draft) })'));
+    assert.ok(call.indexOf('GL.arm?.arm(') < call.indexOf('return call('));
+    assert.match(call, /if \(!lessMotion\(\) && M\.body\) GL\.arm\?\.arm\(/);
+    assert.match(fnOf('function scrollDone(r)'), /GL\.arm\?\.extend\(\);\s*kickMirror\(0\);/);
+    assert.match(fnOf('async function postRetry(tail, payload)'), /^async function postRetry\(tail, payload\) \{\s*GL\.arm\?\.disarm\(\);/);
+    assert.match(fnOf('function setGone()'), /SC\.planner\?\.close\(\);\s*GL\.arm\?\.disarm\(\);\s*endGlide\(\);/);
+    assert.match(fnOf('function applyHeld(r)'), /GL\.arm\?\.disarm\(\);\s*endGlide\(\);\s*refit\(was\.scale\);/);
+    assert.match(fnOf('function wireScroll()'), /GL\.arm = createGlideArm\(\{ now: \(\) => Date\.now\(\) \}\);/);
+    assert.match(fnOf('function wireFit()'), /e\?\.animationName === 'nika-glide'\) endGlide\(\)/);
+    assert.match(SRC, /import \{ createGlideArm, frameOf, glideFrom, matrixY, paneWriteDisarms, GLIDE_MS \} from '\.\/glide\.js';/);
+  });
+
+  // ---- round 2 (review RV17): I1 a refused request, I2 the bottom, I3 every write to the pane, M1 ----
+  test('(+) F17: a scroll request the route refused (409 prompt-open, 429, 500) or lost (0) leaves no arm: the next frame, even a shifted one, is drawn as today', async () => {
+    for (const reply of [{ status: 409, body: { error: 'prompt-open' } }, { status: 429, body: { error: 'rate' } }, { status: 500, body: null }, { status: 0, body: null }]) {
+      const r = wired({ body: shotAt(16), replies: [reply] });
+      fire(r, 'keydown', key('PageUp'));
+      await r.clk.advance(0);
+      assert.equal(r.GL.arm.armed(), false, String(reply.status));
+      capture(r, shotAt(0));
+      assert.deepEqual(glideOf(r), NONE, String(reply.status));
+    }
+  });
+
+  test('(+) F17: the review\'s case: End refused (a permission prompt opened), then the prompt screen shares no row with the base: no far slide of the whole screen', async () => {
+    const r = wired({ body: shotAt(16), replies: [{ status: 409, body: { error: 'prompt-open' } }] });
+    r.ctx.SC.scrolled = true;
+    fire(r, 'keydown', key('End'));
+    assert.deepEqual(calls(r), [POST({ to: 'bottom' })]);
+    await r.clk.advance(0);
+    capture(r, shotAt(200));
+    assert.deepEqual(glideOf(r), NONE);
+    assert.equal(r.log.reflows, 0);
+  });
+
+  test('(+) F17: a refusal of the second of two merged requests gives up that one only: frame 1 still slides, and nothing is left for the next frame', () => {
+    const r = wired({ body: shotAt(16) });
+    const base = () => frameOfReal(r.ctx.M.body, r.ctx.M.draft);
+    r.GL.arm.arm({ dir: 'up', pages: 1 }, { scrolled: false, before: base() });
+    r.GL.arm.arm({ dir: 'up', pages: 1 }, { scrolled: false, before: base() });
+    r.scrollDone({ status: 409, body: { error: 'prompt-open' } });
+    assert.equal(r.GL.arm.armed(), true);
+    capture(r, shotAt(0));
+    assert.deepEqual(glideOf(r), { on: true, from: '-288px' });
+    assert.equal(r.GL.arm.armed(), false);
+    const n = r.log.reflows;
+    capture(r, shotAt(0));
+    assert.equal(r.log.reflows, n);
+  });
+
+  test('(−) F17: a 200 still keeps the arm (and renews it), and a 404 ends it with the pane (setGone), whatever drop does', () => {
+    const ok = wired({ body: shotAt(16) });
+    ok.GL.arm.arm({ dir: 'up', pages: 1 }, { scrolled: false, before: frameOfReal(ok.ctx.M.body, ok.ctx.M.draft) });
+    ok.scrollDone({ status: 200, body: { sent: 1, scrolled: true } });
+    assert.equal(ok.GL.arm.armed(), true);
+    const gone = wired({ body: shotAt(16) });
+    gone.GL.arm.arm({ dir: 'up', pages: 1 }, { scrolled: false, before: frameOfReal(gone.ctx.M.body, gone.ctx.M.draft) });
+    assert.doesNotThrow(() => gone.scrollDone({ status: 404, body: null }));
+    assert.equal(gone.GL.arm.armed(), false);
+    assert.equal(gone.ctx.M.gone, true);
+  });
+
+  test('(+) F17: PgDn to the bottom slides (the frame that reaches it is the scroll), and the output that streams in next does not', () => {
+    const r = wired({ body: shotAt(16) });
+    r.ctx.SC.scrolled = true;
+    fire(r, 'keydown', key('PageDown'));
+    capture(r, shotAt(32, { scrolled: false }));
+    assert.deepEqual(glideOf(r), { on: true, from: '288px' });
+    assert.equal(r.GL.arm.armed(), false, 'Claude\'s view is at the bottom: no down request can move anything now');
+    const n = r.log.reflows;
+    capture(r, shotAt(35, { scrolled: false })); // output streams in: the content moves up 3 rows
+    assert.equal(r.log.reflows, n);
+    assert.equal(r.rowsEl.style.props['--glide-from'], '288px', 'the property of the first slide is left alone');
+  });
+
+  test('(−) F17: a flick down to the bottom: both PgDn glide frame by frame until the view is at the bottom, then streaming does not', async () => {
+    const r = wired({ body: shotAt(0, { scrolled: true }) });
+    r.ctx.SC.scrolled = true;
+    fire(r, 'keydown', key('PageDown'));
+    await r.clk.advance(100);
+    fire(r, 'keydown', key('PageDown'));
+    capture(r, shotAt(16, { scrolled: true }));
+    assert.equal(glideOf(r).on, true);
+    assert.equal(r.GL.arm.armed(), true, 'the second request still waits, and Claude is not at the bottom yet');
+    capture(r, shotAt(32, { scrolled: false }));
+    assert.equal(r.log.reflows, 2, 'frame 2 glided too');
+    assert.equal(r.GL.arm.armed(), false, 'and it reached the bottom');
+    capture(r, shotAt(35, { scrolled: false }));
+    assert.equal(r.log.reflows, 2, 'streaming');
+  });
+
+  test('(+) F17: PgUp is unaffected by the bottom flag: a frame at the bottom while the arm is up does not end it', () => {
+    const r = wired({ body: shotAt(16) });
+    fire(r, 'keydown', key('PageUp'));
+    capture(r, shotAt(16, { scrolled: false })); // nothing moved yet: a rebase
+    assert.equal(r.GL.arm.armed(), true);
+    capture(r, shotAt(0));
+    assert.equal(glideOf(r).on, true);
+  });
+
+  test('(+) F17: a second PgDn sent after the first one\'s answer said "bottom" does not wipe the arm: frame 1, the real scroll, still slides', async () => {
+    const r = wired({ body: shotAt(16), replies: [{ status: 200, body: { sent: 1, scrolled: false } }] });
+    r.ctx.SC.scrolled = true;
+    fire(r, 'keydown', key('PageDown'));
+    await r.clk.advance(100);
+    assert.equal(r.ctx.SC.scrolled, false, 'the answer says bottom');
+    fire(r, 'keydown', key('PageDown'));
+    assert.equal(r.GL.arm.armed(), true);
+    capture(r, shotAt(32, { scrolled: false }));
+    assert.deepEqual(glideOf(r), { on: true, from: '288px' });
+  });
+
+  // I3: the page's request helper is the one place every write to the pane passes
+  const callRig = ({ fail = false, reply = { status: 200, body: { ok: 1 } } } = {}) => {
+    const log = [];
+    const ctx = { GL: { arm: createGlideArmReal({ now: () => 1000 }), timer: 0 }, paneWriteDisarms: paneWriteDisarmsReal, appFetch: async (path, opts) => { log.push([path, opts]); if (fail) throw new Error('network'); return reply; } };
+    const { call } = vm.runInNewContext(`${fnOf('async function call(path, opts = {})')}; ({ call })`, ctx);
+    const arm = () => ctx.GL.arm.arm({ dir: 'up', pages: 1 }, { scrolled: false, before: frameOfReal(shotAt(16), shotAt(16).draft) });
+    return { call, log, GL: ctx.GL, arm };
+  };
+  const PANE = '/api/app/pane/%2512';
+
+  test('(+) F17: call ends a pending glide for every write to the pane: keys, submit, command, attach-send, answer, dialog, survey, stop, mode, draft, suggestion, attachments, and a route not invented yet', async () => {
+    for (const [tail, method] of [['keys', 'POST'], ['submit', 'POST'], ['command', 'POST'], ['attach-send', 'POST'], ['answer', 'POST'], ['dialog', 'POST'], ['survey', 'POST'], ['stop', 'POST'], ['end', 'POST'], ['mode', 'POST'], ['draft', 'PUT'], ['suggestion', 'POST'], ['attachments', 'POST'], ['attachments/abc', 'DELETE'], ['brand-new', 'POST']]) {
+      const r = callRig();
+      assert.equal(r.arm(), true);
+      assert.equal(r.GL.arm.armed(), true);
+      const out = await r.call(`${PANE}/${tail}`, { method, json: {} });
+      assert.equal(r.GL.arm.armed(), false, `${method} ${tail}`);
+      assert.deepEqual(norm(out), { status: 200, body: { ok: 1 } }, `${tail}: the answer still comes back`);
+      assert.equal(r.log.length, 1, `${tail}: and the request went out`);
+    }
+  });
+
+  test('(−) F17: call keeps the arm for the scroll route, the capture poll and the fit heartbeat, for reads, and for requests that are not for a pane', async () => {
+    for (const [path, method] of [[`${PANE}/scroll`, 'POST'], [`${PANE}/capture`, undefined], [`${PANE}/fit`, 'PUT'], [`${PANE}/fit`, 'POST'], [`${PANE}/fit`, 'DELETE'], [`${PANE}/state`, 'GET'], ['/api/app/settings', 'PUT'], ['/api/app/projects', undefined], ['/api/app/session/abc/history?x=1', undefined]]) {
+      const r = callRig();
+      r.arm();
+      await r.call(path, method === undefined ? {} : { method, json: {} });
+      assert.equal(r.GL.arm.armed(), true, `${method} ${path}`);
+    }
+  });
+
+  test('(+) F17: a write that fails on the network (status 0) still ended the arm: the keys may have gone out', async () => {
+    const r = callRig({ fail: true });
+    r.arm();
+    assert.deepEqual(norm(await r.call(`${PANE}/command`, { method: 'POST', json: { text: '/compact' } })), { status: 0, body: null });
+    assert.equal(r.GL.arm.armed(), false);
+  });
+
+  test('(+) F17: a quick action (/command) within 700 ms of a scroll: the jump to the bottom on submit is not slid', async () => {
+    const r = wired({ body: shotAt(16) });
+    const real = callRig();
+    real.GL.arm = r.GL.arm; // the rig's arm, behind the real call()
+    real.GL.timer = 0;
+    fire(r, 'keydown', key('PageUp'));
+    assert.equal(r.GL.arm.armed(), true);
+    await real.call(`${PANE}/command`, { method: 'POST', json: { text: '/compact' } });
+    capture(r, shotAt(0));
+    assert.deepEqual(glideOf(r), NONE);
+  });
+
+  test('(+) F17: opening the End dialog ends a pending glide (its own request does not pass through call)', async () => {
+    let n = 0;
+    const GL = { arm: { disarm() { n += 1; } } };
+    const { openEnd } = vm.runInNewContext(`${fnOf('function openEnd()')}; ({ openEnd })`, { GL, HOLD: { active: false }, paneId: '%12', A: { name: 'a', kind: 'idle' }, W: { promptOpen: false }, openEndDialog() {}, toast() {}, setGone() {} });
+    openEnd();
+    assert.equal(n, 1);
+  });
+
+  test('(+) F17: the pins: GL is declared before call, call disarms first, scrollDone drops first, openEnd disarms first, and no other module sends a pane write around call', () => {
+    assert.ok(SRC.indexOf('const GL = ') >= 0 && SRC.indexOf('const GL = ') < SRC.indexOf('async function call(path, opts = {})'), 'call runs at boot, before the scroll code: GL must exist by then');
+    assert.match(fnOf('async function call(path, opts = {})'), /^async function call\(path, opts = \{\}\) \{\s*if \(paneWriteDisarms\(path, opts\.method\)\) GL\.arm\?\.disarm\(\);\s*try \{/);
+    assert.match(fnOf('function scrollDone(r)'), /^function scrollDone\(r\) \{\s*if \(r\.status !== 200\) GL\.arm\?\.drop\(\);\s*if \(r\.status === 200\) \{/);
+    assert.match(fnOf('function openEnd()'), /^function openEnd\(\) \{\s*GL\.arm\?\.disarm\(\);/);
+    const direct = fs.readdirSync(PUBLIC).filter((f) => f.endsWith('.js') && f !== 'api.js')
+      .filter((f) => /(?<![.\w])appFetch\(\s*[`'"]\/api\/app\/pane\//.test(read(f)));
+    assert.deepEqual(direct, ['end-dialog.js'], 'a pane write that does not use call() must disarm itself (openEnd does for End)');
+    for (const creator of ['createDialogForm', 'createSurveyPanel']) assert.match(SRC, new RegExp(`${creator}\\(\\{[^}]*\\bcall,`), `${creator} gets the page's call`);
+    assert.match(constOf('const ATT = createAttachTray({') + SRC.slice(SRC.indexOf('const ATT = createAttachTray({'), SRC.indexOf('const ATT = createAttachTray({') + 400), /\bcall,/);
   });
 });
 

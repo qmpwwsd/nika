@@ -26,6 +26,7 @@ const STATIC = new Map([
   ['/draft-sync.js', ['draft-sync.js', 'text/javascript; charset=utf-8']],
   ['/fit-ui.js', ['fit-ui.js', 'text/javascript; charset=utf-8']],
   ['/scroll.js', ['scroll.js', 'text/javascript; charset=utf-8']],
+  ['/glide.js', ['glide.js', 'text/javascript; charset=utf-8']],
   ['/attach.js', ['attach.js', 'text/javascript; charset=utf-8']],
   ['/dialog-form.js', ['dialog-form.js', 'text/javascript; charset=utf-8']],
   ['/survey-panel.js', ['survey-panel.js', 'text/javascript; charset=utf-8']],

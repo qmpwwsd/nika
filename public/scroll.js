@@ -53,7 +53,7 @@ export const pageRowsOf = (body, draft) => Math.max(PAGE_MIN, Math.floor(viewRow
 
 // ---- the gate, a twin of src/scroll.js scrollGate on what the last capture carried ------------------------------------------
 
-const rowText = (row) => (Array.isArray(row) ? row.map((sp) => (typeof sp?.t === 'string' ? sp.t : '')).join('') : '');
+export const rowText = (row) => (Array.isArray(row) ? row.map((sp) => (typeof sp?.t === 'string' ? sp.t : '')).join('') : '');
 // The first input-box row of an unreadable draft: up to 2 spaces, the prompt glyph, its space (no-break spaces read as spaces), then a slash.
 const SLASH_FIRST_ROW = /^ {0,2}\u276f \//;
 
