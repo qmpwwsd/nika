@@ -1309,6 +1309,120 @@ describe('readHistory: bounds on long reads (0.5.1, C)', () => {
   });
 });
 
+// Round RV, I4: a long line used to give one entry per block, however many (a forged line of 15 MiB made 925,214 entries and a 740 MiB process).
+// Now a long-line page keeps the LAST 500 entries of the line and says so with `cut: true`; a page that was cut, or whose entry text is over 1 MiB, is not cached.
+describe('readHistory: very many blocks on one long line (0.5.1, round RV, I4)', () => {
+  const CAP = 500;
+  /** An assistant line of `n` text blocks `b0` ... `b<n-1>`; with `big`, block 0 is a 1.2 MB text instead (so the line is long whatever `n` is). */
+  const crowd = (n, { big = false, text = (i) => `b${i}` } = {}) => assistant(
+    Array.from({ length: n }, (_, i) => ({ type: 'text', text: big && i === 0 ? 'z'.repeat(1_200_000) : text(i) })), 3);
+  const reread = async (fx) => (await traced(async () => { await get(fx); })).bytes;
+
+  test('(−) a line of 100k small blocks gives at most 500 entries, the last 500, marked cut, and quickly', async () => {
+    const fx = setup([say('first', 1), crowd(100_000), say('last', 4)]);
+    const o = lineOffsets(fx.file);
+    assert.ok(o[2] - o[1] > 2 * MIB, 'the line is longer than a window');
+    const t0 = performance.now();
+    const r = await get(fx, { before: o[2] });
+    const ms = performance.now() - t0;
+    assert.equal(r.status, 200);
+    assert.equal(r.body.entries.length, CAP);
+    assert.deepEqual(r.body.entries.map((e) => e.text).slice(0, 2).concat(r.body.entries.at(-1).text), ['b99500', 'b99501', 'b99999']);
+    assert.equal(r.body.entries[0].id, `${o[1]}:99500`);
+    assert.equal(r.body.entries.at(-1).id, `${o[1]}:99999`);
+    assert.equal(r.body.cut, true);
+    assert.equal(r.body.nextBefore, o[1], 'the next page is what comes before the line');
+    assert.ok(ms < 5000, `${ms} ms`);
+    assert.deepEqual(texts(await get(fx, { before: r.body.nextBefore })), ['first']);
+  });
+
+  test('(−) a page that was cut is not cached: every request reads the line again', async () => {
+    const fx = setup([say('first', 1), crowd(100_000)]);
+    const a = await reread(fx);
+    const b = await reread(fx);
+    assert.ok(a > 2 * MIB && b > 2 * MIB, `read ${a} then ${b} bytes`);
+  });
+
+  test('(−) a page whose entry text is over 1 MiB is not cached either, though it is under the entry cap', async () => {
+    const fx = setup([say('first', 1), crowd(40, { text: () => 'y'.repeat(32_768) })]); // 40 entries of 32 KiB: 1.25 MiB of text in a 1.25 MiB line
+    const r = await get(fx);
+    assert.equal(r.body.entries.length, 40);
+    assert.equal(r.body.cut, undefined, 'not cut');
+    const a = await reread(fx);
+    const b = await reread(fx);
+    assert.ok(a > MIB && b > MIB, `read ${a} then ${b} bytes`);
+  });
+
+  test('(+) a long line under both limits is as before: all its entries, no `cut`, cached', async () => {
+    const fx = setup([say('first', 1), crowd(CAP, { big: true })]); // exactly 500 entries; the first one is the 1.2 MB text, cut to 32 KB
+    const o = lineOffsets(fx.file);
+    const r = await get(fx);
+    assert.equal(r.body.entries.length, CAP);
+    assert.deepEqual([r.body.entries[0].id, r.body.entries[0].text.length, r.body.entries[0].truncated], [`${o[1]}:0`, 32768, true]);
+    assert.deepEqual(Object.keys(r.body), ['entries', 'nextBefore'], 'the answer has its old shape');
+    assert.equal(await reread(fx) <= MIB, true, 'the second request is a cache hit');
+    assert.deepEqual((await get(fx)).body, r.body);
+  });
+
+  test('(+) the text limit is 1 MiB of entry text: exactly 1 MiB is cached, one character more is not', async () => {
+    const chars = () => (i) => 'y'.repeat(i < 32 ? 32_768 : 1);
+    const at = setup([say('first', 1), crowd(32, { text: chars() })]); // 32 x 32768 = 1,048,576
+    assert.equal((await get(at)).body.entries.reduce((n, e) => n + e.text.length, 0), MIB);
+    assert.ok(await reread(at) <= MIB, 'exactly at the limit: remembered');
+    const over = setup([say('first', 1), crowd(33, { text: chars() })]); // the same and one more entry of one character
+    assert.equal((await get(over)).body.entries.reduce((n, e) => n + e.text.length, 0), MIB + 1);
+    assert.ok(await reread(over) > MIB, 'one character over the limit: read again');
+    assert.ok(await reread(over) > MIB, 'and again');
+  });
+
+  test('(−) one entry more than the cap is cut: block 0 goes, 500 stay, and the page is not cached', async () => {
+    const fx = setup([say('first', 1), crowd(CAP + 1, { big: true })]);
+    const o = lineOffsets(fx.file);
+    const r = await get(fx);
+    assert.equal(r.body.entries.length, CAP);
+    assert.equal(r.body.entries[0].id, `${o[1]}:1`);
+    assert.equal(r.body.cut, true);
+    assert.ok(await reread(fx) > MIB, 'read again');
+  });
+
+  test('(+) blocks that show nothing do not count towards the cap: 100k empty blocks and 3 real ones keep 3, not cut, cached', async () => {
+    const blocks = [...Array.from({ length: 100_000 }, () => ({ type: 'text', text: '' })), ...['p', 'q', 'r'].map((text) => ({ type: 'text', text }))];
+    const fx = setup([say('first', 1), assistant(blocks, 3)]);
+    const o = lineOffsets(fx.file);
+    const r = await get(fx);
+    assert.deepEqual(texts(r), ['p', 'q', 'r']);
+    assert.deepEqual(r.body.entries.map((e) => e.id), [100_000, 100_001, 100_002].map((i) => `${o[1]}:${i}`));
+    assert.equal(r.body.cut, undefined);
+    assert.ok(await reread(fx) <= MIB, 'cached');
+  });
+
+  test('(−) 100k blocks that each make an entry of their own kind (pictures with no source) are capped the same way', async () => {
+    const fx = setup([assistant(Array.from({ length: 100_000 }, () => ({ type: 'image' })), 3)]);
+    const r = await get(fx);
+    assert.equal(r.body.entries.length, CAP);
+    assert.equal(r.body.cut, true);
+    assert.equal(r.body.nextBefore, null, 'the line starts the file');
+  });
+
+  test('(+) the subagent route caps and marks a long line the same way', async () => {
+    const fx = setup([say('p', 1)]);
+    addSub(fx, AG, [say('s1', 1), crowd(2_000, { big: true })]); // long because of block 0, many blocks after it
+    const r = await getSub(fx, AG, {});
+    assert.equal(r.body.entries.length, CAP);
+    assert.equal(r.body.cut, true);
+    assert.equal(r.body.entries.at(-1).text, 'b1999');
+  });
+
+  test('(+) a window with several short lines is not capped or marked, even with more than 500 entries', async () => {
+    const fx = setup(Array.from({ length: 700 }, (_, i) => say(`m${i}`, i % 50)));
+    const r = await get(fx, { limit: 200 });
+    assert.ok(r.body.entries.length >= 200);
+    assert.equal(r.body.cut, undefined);
+    const all = await readAll(fx, 200);
+    assert.equal(all.entries.length, 700);
+  });
+});
+
 describe('readImage (0.5.1, C)', () => {
   const refsOf = async (fx, agent = null) => {
     const q = { limit: 200 };

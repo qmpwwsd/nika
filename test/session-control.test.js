@@ -883,6 +883,31 @@ describe('endSession (−)', () => {
     assert.deepEqual(w.slept, []);
   });
 
+  // Round RV (M9): the test above replaced "an unknown footer after Escape: 409 mode-unknown, nothing typed" and nothing else reached the check that stays after
+  // the Escape wait (`unknownScreen(seen)` in endSession). The only way to it now: a permission prompt is on screen (so the check before the Escape is skipped,
+  // the Escape is the No path), the Escape lands, and the NEXT capture is a screen with no readable mode line and no input box (a dialog or a subagent view).
+  test('(−) M9: a permission prompt, the Escape lands, the next capture has no mode line and no input box: 409 mode-unknown after the one Escape, nothing typed', async () => {
+    for (const state of ['busy', 'attn']) {
+      const w = world({ prompt: true, state });
+      w.onKeys = (b) => {
+        if (b.keys?.[0] === 'Escape') Object.assign(w, { prompt: false, state: 'idle', mode: 'unknown', box: null }); // the prompt is answered; what is drawn now is unreadable
+      };
+      assert.equal(promptFromRows(w.rows()) !== null, true, `${state}: premise, a permission prompt is on screen first`);
+      assert.deepEqual(await w.control().endSession('%2'), code(409, 'mode-unknown'), state);
+      assert.deepEqual(keysOf(w), ['Escape'], `${state}: the Escape that answered the prompt, and nothing typed after it`);
+      assert.equal(w.slept.length, 1, `${state}: it waited once after the Escape and read again`);
+      assert.equal(modeFromRows(w.rows()), 'unknown', `${state}: premise, no mode line now`);
+      assert.equal(readDraft({ rows: w.rows(), cursor: w.cursorIn(w.rows()), cols: 80 }), null, `${state}: premise, no input box now`);
+    }
+  });
+
+  test('(+) M9, the twin: the same prompt and Escape, but a readable screen after it, goes on to /exit', async () => {
+    const w = world({ prompt: true, state: 'busy' });
+    w.onKeys = (b) => { if (b.keys?.[0] === 'Escape') Object.assign(w, { prompt: false, state: 'idle' }); };
+    assert.deepEqual(await w.control().endSession('%2'), { status: 200, body: { ended: true } });
+    assert.deepEqual(keysOf(w), ['Escape', 'text:/', 'text:exit', 'Enter']);
+  });
+
   test('(−) an unknown footer on an idle pane (a dialog): no Escape, nothing typed, 409 mode-unknown', async () => {
     const w = world({ mode: 'unknown' });
     assert.deepEqual(await w.control().endSession('%2'), code(409, 'mode-unknown'));

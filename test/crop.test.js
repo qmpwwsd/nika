@@ -6,7 +6,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { INPUT_TEXT, CROP_TEXT, panelOf, cropOf } from '../public/crop.js';
+import { INPUT_TEXT, CROP_TEXT, PROMPT_LABEL_CUT, PROMPT_QUESTION_CUT, panelOf, cropOf } from '../public/crop.js';
+import { clean } from '../src/text.js';
+import { promptFromRows, promptTopRow } from '../src/mode.js';
 
 const SRC = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public', 'crop.js'), 'utf8');
 
@@ -251,5 +253,97 @@ describe('cropOf: where the mirror ends for a panel (1.5, 3.1)', () => {
     assert.equal(JSON.stringify(b), before);
     assert.notEqual(a, b.prompt);
     assert.deepEqual(Object.keys(a).sort(), ['kind', 'top']);
+  });
+});
+
+// ---- round RV, I3: a permission prompt the server cut is never cropped ----------------------------------------------------------------------------
+// src/mode.js cuts an option label at 80 characters and the question at 200 (clean(..., max) slices and leaves no marker), so the page cannot see
+// that a label was cut; the tail of "Yes, and don't ask again for ..." would be visible nowhere once the mirror ends above the prompt. A label or a
+// question at the cut length may have been cut, so the prompt is not cropped and the whole screen shows, as before 0.5.1.
+describe('cropOf: a prompt whose text the server cut gets no crop (RV I3)', () => {
+  const P = { kind: 'prompt', bypass: false };
+  const text = (n, c = 'x') => c.repeat(n);
+  const prompt = (over = {}) => ({ ...PROMPT, question: 'Do you want to proceed?', options: [opt(1), opt(2), opt(3)], ...over });
+  const labelled = (n, at = 1) => prompt({ options: [opt(1), opt(2, { label: text(n) }), opt(3)].map((o, i) => (i === at ? { ...o, label: text(n) } : o)) });
+  const crop = (p, o = OK) => cropOf(body({ prompt: p }), P, o);
+  const row = (t) => [{ t, s: {} }];
+
+  test('the two lengths are the numbers src/mode.js cuts at: read from its source, so a change there fails here', () => {
+    const src = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'src', 'mode.js'), 'utf8');
+    assert.equal(Number(/const label = clean\(p\.join\(' '\), (\d+)\);/.exec(src)?.[1]), PROMPT_LABEL_CUT, 'option label');
+    assert.equal(Number(/question: clean\(question, (\d+)\)/.exec(src)?.[1]), PROMPT_QUESTION_CUT, 'question');
+    assert.equal(PROMPT_LABEL_CUT, 80);
+    assert.equal(PROMPT_QUESTION_CUT, 200);
+  });
+
+  test('clean() marks a cut by nothing: the text is exactly max long, no ellipsis, so "at the cut length" is the only sign', () => {
+    for (const [max, cut] of [[PROMPT_LABEL_CUT, PROMPT_LABEL_CUT], [PROMPT_QUESTION_CUT, PROMPT_QUESTION_CUT]]) {
+      const out = clean(text(max + 50), max);
+      assert.equal(out.length, cut);
+      assert.equal(out, text(max), 'the first max characters, nothing appended');
+      assert.equal(clean(text(max - 1), max), text(max - 1), 'one under: untouched');
+      assert.equal(clean(text(max), max), text(max), 'exactly max: also untouched, so it cannot be told from a cut one');
+    }
+  });
+
+  test('(+) a label of 79 characters and a question of 199 crop as before', () => {
+    assert.deepEqual(crop(labelled(PROMPT_LABEL_CUT - 1)), { top: 12, kind: 'prompt' });
+    assert.deepEqual(crop(prompt({ question: text(PROMPT_QUESTION_CUT - 1) })), { top: 12, kind: 'prompt' });
+    assert.deepEqual(crop(prompt({ question: text(PROMPT_QUESTION_CUT - 1), options: [opt(1, { label: text(PROMPT_LABEL_CUT - 1) }), opt(2)] })), { top: 12, kind: 'prompt' });
+    assert.deepEqual(crop(prompt()), { top: 12, kind: 'prompt' }, 'the plain fixture');
+  });
+
+  test('(−) a label at the cut length gives no crop, whichever option carries it', () => {
+    for (const at of [0, 1, 2]) assert.equal(crop(labelled(PROMPT_LABEL_CUT, at)), null, `option ${at + 1}`);
+    assert.equal(crop(labelled(PROMPT_LABEL_CUT + 1)), null, 'a label past the cut (cannot come from the server) is no safer');
+    assert.equal(crop(labelled(500)), null);
+  });
+
+  test('(−) a question at the cut length gives no crop', () => {
+    assert.equal(crop(prompt({ question: text(PROMPT_QUESTION_CUT) })), null);
+    assert.equal(crop(prompt({ question: text(PROMPT_QUESTION_CUT + 1) })), null);
+  });
+
+  test('(−) one cut text is enough: a short question with a cut label, a short label with a cut question', () => {
+    assert.equal(crop(prompt({ question: 'Short?', options: [opt(1), opt(2, { label: text(PROMPT_LABEL_CUT) })] })), null);
+    assert.equal(crop(prompt({ question: text(PROMPT_QUESTION_CUT), options: [opt(1, { label: 'Yes' }), opt(2, { label: 'No' })] })), null);
+  });
+
+  test('(−) Type into pane on gives no crop either: for a cut prompt and for an uncut one (the cut check never turns a crop on)', () => {
+    const on = { passOn: true, dialogSig: SIG };
+    assert.equal(crop(labelled(PROMPT_LABEL_CUT), on), null);
+    assert.equal(crop(prompt({ question: text(PROMPT_QUESTION_CUT) }), on), null);
+    assert.equal(crop(labelled(PROMPT_LABEL_CUT - 1), on), null);
+    assert.equal(crop(prompt({ question: text(PROMPT_QUESTION_CUT - 1) }), on), null);
+    assert.equal(crop(prompt(), on), null);
+  });
+
+  test('(−) a prompt whose text cannot be measured gets no crop: no options list, a label or a question that is not text', () => {
+    for (const options of [undefined, null, 'abc', {}, 5]) assert.equal(crop(prompt({ options })), null, JSON.stringify(options));
+    for (const label of [undefined, null, 5, {}, ['a']]) assert.equal(crop(prompt({ options: [opt(1), opt(2, { label })] })), null, String(label));
+    for (const question of [5, {}, ['a'], true]) assert.equal(crop(prompt({ question })), null, JSON.stringify(question));
+  });
+
+  test('(+) a prompt with no question text at all (null) is not a cut one: the options decide', () => {
+    assert.deepEqual(crop(prompt({ question: null })), { top: 12, kind: 'prompt' });
+  });
+
+  test('the other kinds are not affected: a dialog and a survey crop whatever the prompt in the same capture says', () => {
+    const cutPrompt = labelled(PROMPT_LABEL_CUT);
+    assert.deepEqual(cropOf(body({ prompt: cutPrompt }), { kind: 'survey', bypass: false }, OK), { top: 20, kind: 'survey' });
+    assert.deepEqual(cropOf(body({ prompt: cutPrompt, dialog: DIALOG('plan', { top: 9 }) }), { kind: 'plan', bypass: false }, OK), { top: 9, kind: 'plan' });
+  });
+
+  test('end to end: the real parser cuts a 130-character label to the cut length, and the page then does not crop; a 70-character one still crops', () => {
+    const screen = (label, question = 'Do you want to proceed?') => [row('Bash command'), row('npm run build'), row(question), row('❯ 1. Yes'), row(`  2. ${label}`), row('  3. No'), row('Esc to cancel')];
+    const asCapture = (rows) => ({ rows, prompt: { ...promptFromRows(rows), bypass: false, top: promptTopRow(rows) } });
+    const long = asCapture(screen(`Yes, and don't ask again for curl commands in ${text(100)}`));
+    assert.equal(long.prompt.options[1].label.length, PROMPT_LABEL_CUT, 'the parser cut it');
+    assert.equal(cropOf(long, P, OK), null, 'a cut label: no crop');
+    const short = asCapture(screen('Yes, and always allow this'));
+    assert.deepEqual(cropOf(short, P, OK), { top: 2, kind: 'prompt' }, 'a whole label: the crop is at the question row');
+    const longQ = asCapture(screen('No', `${text(PROMPT_QUESTION_CUT + 40)} proceed?`));
+    assert.equal(longQ.prompt.question.length, PROMPT_QUESTION_CUT, 'the parser cut the question');
+    assert.equal(cropOf(longQ, P, OK), null, 'a cut question: no crop');
   });
 });

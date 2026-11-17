@@ -495,5 +495,7 @@ dialog.dlg-img[open] { display: flex; flex-direction: column; }
 dialog.dlg-img::backdrop { background: var(--scrim); }
 .img-stage { position: relative; flex: 1 1 auto; min-height: 120px; overflow: auto; display: grid; place-items: center; padding: var(--sp-3); background: var(--surface-2); }
 .img-stage img { max-width: 100%; max-height: calc(100vh - 160px); object-fit: contain; }
+/* The status line is always rendered (RV M5), empty when there is nothing to say: it shares the picture's cell, so an empty line takes no row of its own and the picture stays centred. */
+.img-stage > * { grid-area: 1 / 1; }
 .img-state { display: flex; align-items: center; gap: var(--sp-2); color: var(--text-muted); }
 @media (max-width: 600px) { dialog.dlg-img { width: calc(100vw - 16px); max-height: calc(100vh - 16px); } }

@@ -21,6 +21,8 @@ const SCAN_MAX = 32 * 1024 * 1024; // how far back the start of a long line is s
 const IMAGES_MAX = 8; // pictures listed per tool result; the rest are counted in `imagesMore`
 const PART_MAX = 1000; // parts of a tool result looked at for pictures (the part index in a ref has at most three digits)
 const LONG_CACHE_MAX = 16; // remembered long-line pages
+const LONG_ENTRIES_MAX = 500; // 0.5.1 (round RV, I4): entries kept from one long line, the LAST ones; more is a cut page (`cut: true`)
+const LONG_CACHE_TEXT_MAX = 1024 * 1024; // a long-line page whose entry text adds up to more than this (characters) is never remembered
 
 /** Runs at most `max` async tasks at once; the rest wait in FIFO order. A slot is released even when a task throws. */
 export function createLimiter(max) {
@@ -149,31 +151,59 @@ function fromBlock(b) {
  * `off` is the byte offset of the line; an entry id is "<off>:<index of its block>", the same on every page.
  */
 function entriesOf(line, off) {
-  if ((line.type !== 'user' && line.type !== 'assistant') || !line.message || typeof line.message !== 'object') return [];
-  const { content } = line.message;
-  const blocks = typeof content === 'string' ? [{ type: 'text', text: content }] : Array.isArray(content) ? content : [];
+  const blocks = blocksOf(line);
   const at = isoOf(line.timestamp);
   const out = [];
   for (const [i, b] of blocks.entries()) {
-    const part = fromBlock(b);
-    if (!part) continue;
-    const { text, truncated } = fit(part.raw);
-    if (!text && part.kind !== 'tool_result' && part.kind !== 'image') continue; // empty text/thinking is noise; an empty tool result or a picture still happened
-    const entry = { id: `${off}:${i}`, at, role: line.type, kind: part.kind, text };
-    if (part.kind === 'tool_use' && part.tool) entry.tool = part.tool;
-    if (part.kind === 'image') {
-      entry.media = part.media;
-      entry.size = part.size;
-    }
-    entry.truncated = truncated;
-    if (part.images?.length) {
-      entry.images = part.images.map((p) => ({ ref: `${off}:${i}.${p.j}`, media: p.media, size: p.size }));
-      entry.imagesMore = part.more;
-    }
-    if (part.call) CALL_ID.set(entry, part.call);
-    out.push(entry);
+    const entry = entryOf(b, i, off, at, line.type);
+    if (entry) out.push(entry);
   }
   return out;
+}
+
+/** The content blocks of a user/assistant line (a plain string is one text block); none for any other line. */
+function blocksOf(line) {
+  if ((line.type !== 'user' && line.type !== 'assistant') || !line.message || typeof line.message !== 'object') return [];
+  const { content } = line.message;
+  return typeof content === 'string' ? [{ type: 'text', text: content }] : Array.isArray(content) ? content : [];
+}
+
+/** The entry of block `i` of the line at `off`, or null when the block shows nothing. */
+function entryOf(b, i, off, at, role) {
+  const part = fromBlock(b);
+  if (!part) return null;
+  const { text, truncated } = fit(part.raw);
+  if (!text && part.kind !== 'tool_result' && part.kind !== 'image') return null; // empty text/thinking is noise; an empty tool result or a picture still happened
+  const entry = { id: `${off}:${i}`, at, role, kind: part.kind, text };
+  if (part.kind === 'tool_use' && part.tool) entry.tool = part.tool;
+  if (part.kind === 'image') {
+    entry.media = part.media;
+    entry.size = part.size;
+  }
+  entry.truncated = truncated;
+  if (part.images?.length) {
+    entry.images = part.images.map((p) => ({ ref: `${off}:${i}.${p.j}`, media: p.media, size: p.size }));
+    entry.imagesMore = part.more;
+  }
+  if (part.call) CALL_ID.set(entry, part.call);
+  return entry;
+}
+
+/**
+ * The last `max` entries of a line (oldest first), built from the end so that the blocks before them cost nothing but being skipped; `cut` is true
+ * when an earlier block would have shown an entry too (a block that shows nothing never counts). 0.5.1, round RV (I4).
+ */
+function tailEntriesOf(line, off, max) {
+  const blocks = blocksOf(line);
+  const at = isoOf(line.timestamp);
+  const out = [];
+  for (let i = blocks.length - 1; i >= 0; i -= 1) {
+    const entry = entryOf(blocks[i], i, off, at, line.type);
+    if (!entry) continue;
+    if (out.length === max) return { entries: out.reverse(), cut: true };
+    out.push(entry);
+  }
+  return { entries: out.reverse(), cut: false };
 }
 
 /**
@@ -248,20 +278,26 @@ async function lineStart(handle, end) {
   return floor === 0 ? 0 : null;
 }
 
-/** The page for the one line that ends at `end`: its entries (none for a line that is cut, still being written, or over LINE_MAX) and where the next page ends. */
+/**
+ * The page for the one line that ends at `end`: its entries (none for a line that is cut, still being written, or over LINE_MAX) and where the next
+ * page ends. At most LONG_ENTRIES_MAX entries, the last ones; `cut` is true when earlier ones were left out (0.5.1, round RV, I4).
+ */
 async function readLongLine(handle, end) {
   const ls = await lineStart(handle, end);
-  if (ls === null) return { entries: [], nextBefore: Math.max(0, end - SCAN_MAX) || null }; // moves back as a window would
-  if (end - ls > LINE_MAX) return { entries: [], nextBefore: ls || null };
-  let entries = [];
+  if (ls === null) return { entries: [], nextBefore: Math.max(0, end - SCAN_MAX) || null, cut: false }; // moves back as a window would
+  if (end - ls > LINE_MAX) return { entries: [], nextBefore: ls || null, cut: false };
+  let page = { entries: [], cut: false };
   try {
     const v = JSON.parse((await readRange(handle, ls, end)).toString('utf8'));
-    if (v && typeof v === 'object') entries = entriesOf(v, ls);
+    if (v && typeof v === 'object') page = tailEntriesOf(v, ls, LONG_ENTRIES_MAX);
   } catch {
     // a line cut by `end`, or one still being written
   }
-  return { entries, nextBefore: ls || null };
+  return { entries: page.entries, nextBefore: ls || null, cut: page.cut };
 }
+
+/** The characters of entry text a page holds (what decides whether it is worth remembering, LONG_CACHE_TEXT_MAX). */
+const textSize = (entries) => entries.reduce((n, e) => n + e.text.length, 0);
 
 /** Entry copies that keep the tool-use id of a call entry (CALL_ID is keyed by object) and share nothing mutable with the original. */
 function copyEntries(entries) {
@@ -285,7 +321,7 @@ function longPage(opened, end, terminated) {
     const hit = longCache.get(key);
     if (hit) return { entries: copyEntries(hit.entries), nextBefore: hit.nextBefore };
     const page = await readLongLine(opened.handle, end);
-    if (terminated) {
+    if (terminated && !page.cut && textSize(page.entries) <= LONG_CACHE_TEXT_MAX) {
       longCache.set(key, { entries: copyEntries(page.entries), nextBefore: page.nextBefore });
       if (longCache.size > LONG_CACHE_MAX) longCache.delete(longCache.keys().next().value);
     }
@@ -350,7 +386,9 @@ function readPage(file, bef, lim, after) {
       await opened.handle.close();
     }
     if (after) await after(page.entries);
-    return { status: 200, body: { entries: page.entries, nextBefore: page.nextBefore } };
+    const body = { entries: page.entries, nextBefore: page.nextBefore };
+    if (page.cut) body.cut = true; // only a long-line page that left out earlier entries of its line says so
+    return { status: 200, body };
   });
 }
 

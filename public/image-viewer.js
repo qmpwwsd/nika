@@ -75,15 +75,18 @@ export function createImageViewer({ dialog } = {}) {
   const icon = E.state.firstElementChild; // the warning icon in front of the line: hidden while loading
   const S = { gen: 0, load: null, opener: null, meta: '', shown: false };
 
+  // The state line is a role="status" live region, so it is never hidden: one that goes from hidden to visible together with its text may not be
+  // announced. It stays rendered and only its text changes (empty when there is nothing to say; the icon and Retry are hidden then).
   /** The state line: `text`, with the warning icon unless `warn` is false, and the Retry button when `retry` is true. */
   const note = (text, { warn = true, retry = false } = {}) => {
     E.text.textContent = text;
-    hide(E.state, false);
     if (icon) hide(icon, !warn);
     hide(E.retry, !retry);
   };
+  /** Nothing to say: the text empty, no icon, no Retry. The element itself stays in place. */
   const clearNote = () => {
-    hide(E.state, true);
+    E.text.textContent = '';
+    if (icon) hide(icon, true);
     hide(E.retry, true);
   };
   const hideImage = () => {

@@ -48,6 +48,13 @@ function makePage() {
 const flush = () => new Promise((r) => setImmediate(r));
 const answer = (status, body) => () => Promise.resolve({ status, body });
 const opener = (connected = true) => { const b = new El('button'); b.isConnected = connected; return b; };
+/** The status line with nothing to say (RV M5): still rendered and never hidden; only its text is empty, and the icon and Retry are off. */
+const quiet = (why = '') => {
+  assert.equal(P.state.hidden, false, `${why} status line not hidden`);
+  assert.equal(P.stateT.textContent, '', `${why} status text empty`);
+  assert.equal(P.warn.hidden, true, `${why} no icon`);
+  assert.equal(P.retry.hidden, true, `${why} no Retry`);
+};
 
 let restore;
 let P;
@@ -176,8 +183,7 @@ describe('createImageViewer: open with an image already in hand', () => {
     assert.equal(P.full.attrs.alt, 'Image from your message');
     assert.equal(P.full.attrs.src, PNG_URL);
     assert.equal(P.full.hidden, false);
-    assert.equal(P.state.hidden, true);
-    assert.equal(P.retry.hidden, true);
+    quiet();
     assert.equal(focus.el, P.x);
   });
 
@@ -350,7 +356,7 @@ describe('createImageViewer: open with a loader', () => {
     await p;
     assert.equal(P.full.attrs.src, PNG_URL);
     assert.equal(P.full.hidden, false);
-    assert.equal(P.state.hidden, true);
+    quiet();
     assert.equal(P.full.attrs.alt, 'Image from Claude');
   });
 
@@ -398,7 +404,7 @@ describe('createImageViewer: open with a loader', () => {
     assert.equal(focus.el, P.x, 'focus does not stay on a hidden button');
     await flush();
     assert.equal(P.full.attrs.src, `data:image/jpeg;base64,${JPEG}`);
-    assert.equal(P.state.hidden, true);
+    quiet();
   });
 
   test('(−) Retry that fails again shows the line and the button again', async () => {
@@ -512,7 +518,7 @@ describe('createImageViewer: the picture itself failing to decode', () => {
     P.full.fire('error');
     P.full.fire('load');
     assert.equal(P.stateT.textContent, before);
-    assert.equal(P.state.hidden, true);
+    quiet('after close');
   });
 });
 
@@ -530,5 +536,89 @@ describe('createImageViewer: the markup it needs', () => {
   test('(−) no dialog: a clear error, not a TypeError from deep inside', () => {
     for (const dialog of [undefined, null, {}]) assert.throws(() => createImageViewer({ dialog }), /dialog/i);
     assert.throws(() => createImageViewer(), /dialog/i);
+  });
+});
+
+// ---- round RV, M5: the status line stays rendered; only its text changes -------------------------------------------------------------------------
+describe('createImageViewer: the status line is never hidden (RV M5)', () => {
+  // role="status" is a live region. One that goes from hidden to visible together with its text may not be announced by a screen reader, so the
+  // element stays rendered for the whole life of the page and only its text changes (empty when there is nothing to say).
+  const watchAttrs = () => {
+    const names = [];
+    const set = P.state.setAttribute.bind(P.state);
+    P.state.setAttribute = (n, v) => { names.push(n); return set(n, v); };
+    return names;
+  };
+
+  test('(+) through a whole life (loading, each failure, Retry, success, a decode error, close, reopen) the element is never hidden and never gets the attribute', async () => {
+    const names = watchAttrs();
+    const seen = [];
+    const look = (want) => {
+      seen.push(P.state.hidden);
+      if (want === '') quiet(); else assert.equal(P.stateT.textContent, want);
+    };
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const first = V.open({ name: 'Image', load: () => gate, opener: opener() });
+    look('Loading image…');
+    release({ status: 0, body: null });
+    await first;
+    look('The image could not be loaded.');
+    P.retry.click(); // the second call of the same loader: the gate is spent, so it answers the same
+    await flush();
+    look('The image could not be loaded.');
+    for (const [status, line] of [[404, 'This image is no longer available.'], [413, 'This image is too large to show here (over 8 MB).'], [415, 'nika shows PNG, JPEG, GIF and WebP images only.'], [500, 'The image could not be loaded.']]) {
+      await V.open({ name: 'Image', load: answer(status, null), opener: opener() });
+      look(line);
+    }
+    await V.open({ name: 'Image', load: answer(200, { type: 'png', data: PNG }), opener: opener() });
+    look('');
+    P.full.fire('error');
+    look('The image data could not be shown.');
+    V.close();
+    look('');
+    await V.open({ name: 'Image', src: PNG_URL, opener: opener() });
+    look('');
+    await V.open({ name: 'Image', src: 'javascript:alert(1)', opener: opener() });
+    look('nika shows PNG, JPEG, GIF and WebP images only.');
+    assert.ok(seen.length >= 12, `${seen.length} checkpoints`);
+    assert.deepEqual(seen.filter((h) => h !== false), [], 'hidden at no checkpoint');
+    assert.equal(names.includes('hidden'), false, 'the attribute was never set on the element');
+  });
+
+  test('(+) the text goes away by being emptied: a failure line is replaced by an empty text, not by hiding the line', async () => {
+    await V.open({ name: 'Image', load: answer(404, null), opener: opener() });
+    assert.equal(P.stateT.textContent, 'This image is no longer available.');
+    await V.open({ name: 'Image', src: PNG_URL, opener: opener() });
+    quiet('after a success');
+    assert.equal(P.state.kids.includes(P.stateT), true, 'the text node is still in the line');
+  });
+
+  test('(−) a close while a failure with Retry shows leaves nothing behind: the text is empty and Retry is off, also when the next open shows a picture', async () => {
+    await V.open({ name: 'Image', load: answer(0, null), opener: opener() });
+    assert.equal(P.retry.hidden, false);
+    assert.equal(P.warn.hidden, false);
+    V.close();
+    quiet('after the close');
+    await V.open({ name: 'Image', src: PNG_URL, opener: opener() });
+    quiet('reopened with a picture');
+  });
+
+  test('(−) the page\'s markup: the line carries role="status" and no hidden attribute from the start', () => {
+    const html = fs.readFileSync(new URL('../public/session.html', import.meta.url), 'utf8');
+    const tag = /<p\b[^>]*\bid="img-state"[^>]*>/.exec(html)?.[0] ?? '';
+    assert.match(tag, /\brole="status"/);
+    assert.doesNotMatch(tag, /\bhidden\b/);
+  });
+
+  test('(−) the viewer\'s code never hides the status line: it is not passed to the hide helper', () => {
+    const src = fs.readFileSync(new URL('../public/image-viewer.js', import.meta.url), 'utf8').replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, '');
+    assert.doesNotMatch(src, /hide\(\s*E\.state\b/);
+    assert.doesNotMatch(src, /E\.state\.(?:hidden|setAttribute)/);
+  });
+
+  test('(+) the empty line takes no row of its own: the stage lays the picture and the line in one cell (the picture does not move up)', () => {
+    const css = fs.readFileSync(new URL('../public/session.css', import.meta.url), 'utf8');
+    assert.match(css, /\.img-stage\s*>\s*\*\s*\{[^}]*grid-area:\s*1\s*\/\s*1/);
   });
 });
