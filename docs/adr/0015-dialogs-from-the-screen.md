@@ -158,6 +158,7 @@ shows more.
 
 **Consequences.** (1) Under 2.1.326 the form, the banner, the grow (ADR 0017, F16) and the permission prompt's buttons read as they do without the list; the prompt's `sig` and options are unchanged. (2) In the 12 to 13 row pane the
 2.1.326 rule accepts fewer rows than the header counts, so a block cut by something else would also read; the anchor, the placement and the bottom position still have to hold. (3) The block's all-done frame
-(`N/N tasks done`, 3 to 4 s) reads like any other, and what is left after it (a lone rule row, or blank rows) is cut as before. (4) Both fixes are tested on synthetic rows built from the spike; a live re-check
-(LC17 K1 and K1b) is open. (5) The task-list sentence of rule 12 in `rules/project-rules.md` and threat T37 in `docs/security.md` still name the 2.1.325 header; this amendment does not change a rule text.
+(`N/N tasks done`, 3 to 4 s) reads like any other, and what is left after it (a lone rule row, or blank rows) is cut as before. (4) Both fixes are tested on synthetic rows built from the spike, and were re-checked live in LC18 (2026-11-17, Claude Code 2.1.326): the form, grow and prompt panel with a task list under them in a named and an unnamed session, a pane
+of 13 rows, and the review of two long questions as a form with Submit working from the page. (5) The task-list sentence of rule 12 in `rules/project-rules.md` (owner-approved 2026-11-17) and threat T37 in `docs/security.md` name both forms;
+this amendment itself changes no rule text.
 `docs/contracts/claude-tui.md` (§1, F13; §13.1, §13.2, §13.5), `docs/design/spec.md` §9.16 and `docs/contracts/api-app.md` (the capture's `dialog` field) carry the details.

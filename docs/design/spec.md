@@ -2183,7 +2183,7 @@ the focus goes ("When this window has focus", below).
 | probe | `#fit-probe` inside `.term`: 100 zeros in the unscaled terminal font (`var(--fs-term)/1.35 var(--mono)`, `white-space: pre`), `aria-hidden`, hidden and off to the left. One cell is the probe's width / 100 wide and its height tall |
 | box | since F10 the `.term` **border box** (`getBoundingClientRect()`: the client box plus any scrollbar), with the window's inner size, minus its padding: 12 px left and right, 10 px top and bottom (`PAD_X` 24, `PAD_Y` 20). It is held as the **frame** `{ cols, rows, width, height, cellW, cellH, iw, ih }` and measured again only at the commit points of the next row (before F10 the page measured the client box at every change) |
 | size | `cols = floor((width − 24) / cellW)` clamped to 40–400, `rows = floor((height − 20) / cellH)` clamped to 10–200. Nothing is asked while a number is missing or not positive (a hidden tab keeps the last good size). The cut strip of §9.12 is not subtracted from the panel's cells; since F11 the rows the mirror hides under it are added to the size asked at a commit (see "More conversation under the strip", below) |
-| when | the **commit points** (F10, `remeasure`, `fitCommit`): the start and `document.fonts.ready`; a window `focus` (measured before the focus settle, so the take gets the size of that moment); Fit again and a `pageshow` from the back/forward cache; and a `ResizeObserver` change on `.term` only when the window's inner width or height changed, a cell side changed by more than 0.01 px, or the box's width moved by one cell or more (the transcript toggle, the narrow tabs, the app's zoom). A commit's request follows 250 ms after the last one (a focus: the 150 ms settle sends it); an unchanged size is not asked for. A change of the box's **height alone** with the same window size (a header wrap, a chip, a banner, a composer line, a prompt panel, the textarea growing), and a width change of less than a cell, send nothing and change no text size: the mirror stays pinned to the bottom (not while it is paused) and the top rows may be hidden while the box is shorter (orchestrator ruling 2026-11-16, T2). **One more trigger since FX2 (2026-11-17):** a fresh commit when the last of the panels that a commit was measured under closes (below); a height change alone is still no commit |
+| when | the **commit points** (F10, `remeasure`, `fitCommit`): the start and `document.fonts.ready`; a window `focus` (measured before the focus settle, so the take gets the size of that moment); Fit again and a `pageshow` from the back/forward cache; and a `ResizeObserver` change on `.term` only when the window's inner width or height changed, a cell side changed by more than 0.01 px, or the box's width moved by one cell or more (the transcript toggle, the narrow tabs, the app's zoom). A commit's request follows 250 ms after the last one (a focus: the 150 ms settle sends it); an unchanged size is not asked for. A change of the box's **height alone** with the same window size (a header wrap, a chip, a banner, a composer line, a prompt panel, the textarea growing), and a width change of less than a cell, send nothing and change no text size: the mirror stays pinned to the bottom (not while it is paused) and the top rows may be hidden while the box is shorter (orchestrator ruling 2026-11-16, T2). **One more trigger since FX2 (2026-11-17):** a fresh commit when the last of the panels that a commit was measured under closes (below); a height change alone is still no commit. **FX3:** the way back of a grow also looks at the panel once, but that look is a read, not a commit point (below) |
 
 **Text scale** (`scaleFor`). `scale = min(1, panelCols / paneCols, panelRows / paneRows)` from the capture's size, clamped to
 `SCALE_MIN` 0.4 below and **never above 1** (owner decision, Q2: a pane smaller than the panel stays at its real size; the app's own
@@ -2525,7 +2525,21 @@ base: the window stayed 2 to 6 rows short of the panel until the next commit. No
 | the box changes height alone (a chip, a line, a banner, a composer line, a panel opening) | still no commit (F10): the look needs an earlier commit that was measured under a panel |
 
 No new timer, listener or request; the extra commit is the ordinary one (`fitCommit`) and the request, if any, follows its rules. Other causes of a shorter box at a focus (a grown composer, a
-problem line, a suggestion line, the chip's panel) are not covered. The logic is `boxShortened` and `fitPanelClosed` in `public/session.js`, called at the top of `growTick`. Decision: ADR 0017, amendment 2026-11-17 (FX2). Tested with the page's rig; the live repeat of LC17 K2 (a focus round trip under the form; the end size should equal the panel) is open.
+problem line, a suggestion line, the chip's panel) are not covered. The logic is `boxShortened` and `fitPanelClosed` in `public/session.js`, called at the top of `growTick`. Decision: ADR 0017, amendment 2026-11-17 (FX2). Re-checked live in LC18 (2026-11-17, Claude Code 2.1.326): a focus round trip under the question form with no terminal on the window ended at the panel's size (LC17 ended 2 to 6 rows short). A terminal that attached after the question had opened is the next paragraph (FX3).
+
+**A look at the panel when the grow sizes back (0.5, FX3; found in the live check LC18 R4b, 2026-11-17; page side only).** FX2 repairs a base that a commit measured under one of the four panels. A commit can still
+measure a box that no panel explains (the live case: a terminal that attached after the question had opened, then a blur and a focus; the window ended at 10 rows with a panel of 12), and the way back of a grow
+goes to the base, wherever it came from. So when the grow asks the base size back, the page looks at the panel once more first:
+
+| Situation | Now |
+|---|---|
+| the grow asks the base size back (the question has been gone for 1 s) and the box now measures the same columns and **more** rows than the held base | the look is the new base, and the held frame (the numbers the chip's panel shows) follows; the way back is asked from it, so the window ends at the panel's size, not the short one |
+| the box measures the same rows, fewer rows or other columns | the base stays as it was (a short box at that moment is not a new measurement: F10) |
+| the window is blurred or hidden, the chip is "Fit · off" or absent, or one of the four panels is shown | no look; the way back is asked from the base as it is |
+| a grow step (the size goes up), or while the grow runs or is held | no look: it applies only to the way back |
+
+The look is **not a commit point**: nothing is sent at the look (the way back is the one request, as before), no timer, listener or markup is added, and a height change alone is still no commit (F10). The base only ever grows at the look. One extra layout read per way back. The logic is
+`fitBaseFresh` in `public/session.js`, called from `growTick` when the ask is the way back. Decision: ADR 0017, amendment 2026-11-17 (FX3).
 
 ### 9.14 Attachments (0.5, W2)
 
@@ -2703,7 +2717,7 @@ bottom by itself when a message is submitted.
 the page compares the next frame with the one it drew: when the conversation moved as one block (at least 3 rows that occur once agree on the shift, they are at least 80 % of the matches, and the shift is in the request's direction),
 it draws the new frame and slides the conversation rows from where they were into place over 150 ms (`ease-out`, transform only). When a request of several pages, or a jump to the top or bottom, leaves fewer than 3 rows that agree on one shift (in practice none are shared), the page slides
 the new view in from half the conversation's height in its direction (it shows the direction, not the distance). Only the rows above Claude's input box move; the box, the footer and the task list (shown with Type into pane on) stay and
-cover the sliding rows. The rows box clips (`overflow: clip`), so a slide never changes the mirror's scroll area, "Paused while you scroll" or the pin to the bottom. A second jump during a slide continues from where the rows are, so a
+cover the sliding rows. Claude's task list pinned **above** its input box (the list, one blank row, the box's top rule; since GT, LC18 Finding 2) stays too: the capture's `draft.box.tasks` names its header row and the page ends the frame it compares there, so the list neither votes in the match nor slides (with it counted, 14 of 23 rows voted the shift, 0.61 against the 0.8 share, and the arm rebased: the view jumped); the conversation above it slides. A page that gets no `tasks` (an older server, no list, a list that does not match exactly) compares and slides as before. The rows box clips (`overflow: clip`), so a slide never changes the mirror's scroll area, "Paused while you scroll" or the pin to the bottom. A second jump during a slide continues from where the rows are, so a
 trackpad flick reads as one motion; requests sent before the first frame is drawn each get their own slide. Only a frame that comes within 0.7 s of a scroll request (renewed by the route's answer) can slide. Any other write to the pane
 (a key, Send, a command, a dialog or survey answer, Stop, a mode switch, a draft write, End) ends the pending slide, as does nika's own resize, a gone pane and a refused or lost scroll request, so output that streams in, Claude's return to
 the bottom after Send and nika's resizes never slide; the capture poll, the fit heartbeat and further scroll requests do not end it. Down and End slide only while Claude's view is scrolled up, and a down slide ends when a frame shows
@@ -2722,6 +2736,7 @@ shared rows were, so for the first instant the half of the conversation area awa
 | a frame lands between the send and the keys (a spinner tick, streaming at the bottom) | drawn at once; the arm stays and the scroll's frame slides |
 | a key, Send, a command, any other write to the pane; a resize; a refused scroll | the pending slide is dropped; the next frame replaces the rows as before |
 | Type into pane on | only the rows above Claude's input box slide |
+| Claude's task list is pinned above its input box (GT) | the conversation above the list slides into place; the list, the box and the footer stay; the list takes no part in the match |
 | `prefers-reduced-motion: reduce` | no slide |
 
 **Keyboard and screen readers.** The mirror is a focusable region (`tabindex="0"`) whose keys are listed in `aria-keyshortcuts`
@@ -2770,12 +2785,12 @@ under a dialog): any other shape cuts nothing, and the dialog stays the banner a
 does not change with it. A long question or option description is drawn by Claude with a bar `│ ` in front of every row (and a row as wide as the pane where one line continues
 on the next); nika reads such a question exactly, and a screen where only some rows have the bar is `unreadable`. The task text is never shown or sent to the page.
 Before T326 a 2.1.326 block under a dialog or a prompt (found in the live check LC17, 2026-11-17) was read as no block, so no form, no banner and no grow appeared; now the form, the banner, the grow
-and the prompt's buttons work as they do without the list (tested on made-up rows; not yet re-checked against a live Claude 2.1.326).
+and the prompt's buttons work as they do without the list (re-checked live in LC18, 2026-11-17, Claude Code 2.1.326: a named session with a six-task list and two long questions, an unnamed one, and a pane of 13 rows with a three-task list and no overflow row).
 
 **The review step with a barred question (2.1.326, FX2; spike S-T326).** On the review step Claude draws the same bar in front of a long question's rows (the first row and each wrapped row) and
 none in front of a short question or of any answer row; a review can hold both. nika reads each question on its own: all its rows barred or none, the bar removed before the text is read, the `sig` the
 same with or without it, so the review shows as the form (heading, pairs, **Submit answers**, **Decline**) and Submit works from the page. A mix inside one question, a barred answer row or a bar on
-Claude's own `Submit answers` and `Ready to submit your answers?` rows stays `unreadable / layout` and keeps the banner (`claude-tui.md` §13.2). Also not yet re-checked live.
+Claude's own `Submit answers` and `Ready to submit your answers?` rows stays `unreadable / layout` and keeps the banner (`claude-tui.md` §13.2). Re-checked live in LC18: the review of two long questions showed as a form (`at: review`, two pairs) and Submit from the page reached Claude.
 
 **States.** Every state has its own colour, icon and word.
 

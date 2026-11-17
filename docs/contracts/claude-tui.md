@@ -23,7 +23,8 @@ projects, Haiku), with made-up text. The orchestrator's own long-running Claude 
 
 Claude Code 2.1.326 draws the task list in another form (§1, F13) and the review step's question rows with the `│ ` bar (§13.1, §13.2). Both were checked on
 2026-11-17 (spike S-T326, Claude Code 2.1.326, tmux 3.8, macOS, a private tmux server, a throwaway git project, Haiku, 120-column panes, 45 rows unless a
-row says otherwise), with made-up text, and found in a live check of the same day (LC17). Every such paragraph says "2.1.326, spike S-T326".
+row says otherwise), with made-up text, and found in a live check of the same day (LC17). A second live check of the same day (LC18, a build with the readers
+below) read both shapes in a named and an unnamed session and in a pane of 13 rows. Every such paragraph says "2.1.326, spike S-T326".
 
 ## 1. Footer (mode line)
 
@@ -223,7 +224,8 @@ one; the block is the last row of the screen). What changed is the text. A made-
 - **All done.** Completing the last open task makes the header `<T>/<T> task[s] done` and the rows `✔`; the overflow row keeps `(<n> done)`. That frame
   lasts 3 to 4 s, then the **whole block goes**, header included: a named session keeps the lone rule row as its last row (the shape of 2.1.325's plan
   approval, which nika already cuts), an unnamed one ends at the dialog's footer and blank rows. No `all done` text exists; the only signal is D = T.
-- **At idle** the block sits above the input box (block, one blank row, the box's top rule, `❯`, the bottom rule, the mode line), and the mode line carries
+- **At idle** the block sits above the input box (block, **one** blank row, the box's top rule, `❯`, the bottom rule, the mode line; seen in a named session
+  where the box's top rule carries the session name), and the mode line carries
   the hint `· ctrl+t to hide tasks`. nika reads the mode from the start of that row, so the tail changes nothing. A mode line tail `· ← <n> agent` showed up
   in the same session from about the sixth prompt on, with no subagent started by the test; its cause is unknown, and it is a suffix like the others that
   nika ignores (§1).
@@ -254,6 +256,13 @@ reads **bottom-up on right-trimmed rows** and cuts **exactly one** of the follow
 4. Any other row (a second row under a task, a notification row) means **no cut**. Never under a mode line. A subagent list together with any of this
    is no cut. The bypass guard reads two windows: the 15 non-blank rows that end at the footer and those that end at the screen's last row, so the
    rows nika leaves out are read too, and the prompt's `sig`, options and question are the same with and without the block.
+
+**The block above the input box (0.5, GT; found in the live check LC18, Finding 2).** At idle (the "At idle" bullet above; while Claude works it draws the list another way, under its spinner line) the block is not under the footer: the mode line is
+the last row and nika cuts nothing there. nika still finds the block for one purpose, the scroll glide (spec §9.15): `taskBlockAbove(texts, top)` in `src/mode.js` takes the row of the box's top rule and,
+right above it, requires exactly **one blank row** and then the block, read by the same function as the block under a dialog (`blockHead`: either form, the same strictness and the same count rules,
+so the two readers cannot drift apart). It returns the header row, which `parseDraft` puts in the capture as `draft.box.tasks` (`api-app.md`, the `box` row), or `-1`. It returns `-1`, and the field is
+absent, for no block, two blank rows or none, any other row between the block and the blank row (a transient hint row such as `Esc again to clear` counts), a block whose numbers do not add up, a
+`top` that is not a rule row, and a block under the mode line. Nothing is cut and no key depends on it.
 
 ## 2. Permission prompt
 
