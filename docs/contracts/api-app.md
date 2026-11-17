@@ -557,14 +557,16 @@ wrap rule in `claude-tui.md` §10); the page mirrors it into the message box (sp
 (shapes, patterns and the `unreadable` rules in `claude-tui.md` §13); the page draws a form from it (spec §9.16):
 - `dialog` is `null` when no dialog is on screen, or when a permission `prompt` parses (the two anchors exclude each other). It is a
   pure function of the rows and the width, which the ETag already covers, so the ETag does not change.
-- `{ "state": "unreadable", "kind": "ask" | "plan" | null, "reason": "cut" | "wide" | "numbers" | "tab" | "layout" | "survey" }`:
+- `{ "state": "unreadable", "kind": "ask" | "plan" | null, "reason": "cut" | "clipped" | "wide" | "numbers" | "tab" | "layout" | "survey" }`:
   a dialog shape is on screen but is not read exactly (checked in that order, the first reason decides). `cut`: no top rule above the
-  strip, no strip, a text that ends in `…`, or a plan without its rules; `wide`: a row as wide as the pane (Claude may have cut it), a
+  strip, no strip, or a plan without its rules (the dialog is taller than the pane and Claude clipped its top: for a question the page may give the pane more rows, F16, see "A cut-off question" under `PUT …/fit`);
+  `clipped` (0.5, F16): a tab header, an option label (also a plan's), the question, or a review question or answer that ends in `…` (Claude shortened it to the pane's width; more rows never help, so the page never grows for it; before F16 this was `cut`);
+  `wide`: a row as wide as the pane (Claude may have cut it), a
   label that may have been word-wrapped, a wrapped footer, or fewer than 20 columns; `numbers`: option numbers not `1..k+2` without gaps,
   or above 9; `tab`: not exactly one current tab (two marked, or none); `layout`: any other shape (a duplicate label, a header with `☐`,
   `☒` or `✔`, a footer that disagrees with the strip, a string over its maximum); `survey`: a feedback survey is on screen, or Claude's row `(Optional) Press [1] to tell us more` that it draws for a few seconds after a rating (0.5, M1: a digit typed for an option could reach that row's `1`, which opens `/feedback`). `Exit plan
   mode?` and the auto-mode nudge are `unreadable` with `kind: null` and `reason: "layout"`: nika recognises them so that every control
-  that needs a plain box fails closed, and never answers them. The page keeps its banner for every `unreadable`.
+  that needs a plain box fails closed, and never answers them. The page keeps its banner for every `unreadable`, after Reading (2 s, longer while it gives a cut-off question more rows, F16). An unknown `reason` cleans to `layout` on the page.
 - `{ "state": "ready", "kind": "ask", "at": "question", "sig", "bypass", "tabs": [ { "header", "answered" } ], "current", "final",
   "question", "multi", "other", "options": [ { "n", "label", "description" | null, "checked"? } ] }`: one question, the current tab of
   Claude's strip. `final` is true for a single tab with a single-select question (the answer ends the dialog); `other` says whether free text
@@ -895,7 +897,8 @@ files).
 ### `PUT /api/app/pane/:id/fit` (body ≤ 4 KB, `CAP.small`)
 The session window asks for its terminal panel's size in cells (0.5, W7; ADR 0017, `docs/security.md` T52, the page: spec §9.13; since F10 the page may
 instead ask once for 33 rows with the columns in the panel's proportion when Claude's input box and footer do not fit the panel, in the same body and ranges, and since F11 it asks for
-the rows its mirror hides under the input-box strip as well, again in the same body and ranges, see "The page's size, room for Claude's footer and the redraw hold" below).
+the rows its mirror hides under the input-box strip as well, again in the same body and ranges, and since F16 it asks for up to 120 rows while a question dialog is cut off at its top, again in the same body and ranges,
+see "The page's size, room for Claude's footer and the redraw hold" below).
 The server zooms the mirrored pane and sizes its tmux window to the panel **when that cannot squeeze another pane, or, while the session window has focus,
 even when it does** (0.5, F15), and either no terminal shows the window or the session window has focus (0.5, F4 and F9, the focused one wins: while a terminal
 shows the window, nika resizes it only for a session window that has focus, and the terminal then shows dots around it; without focus nika never resizes it, and
@@ -1292,7 +1295,7 @@ above). Everything below is the page's behaviour, written here because it decide
   chip can wait). When a frame is drawn and the answered size differs from the drawn pane size, nika's own resize is under way, and the page keeps drawing the last good frame
   until a 200 capture at the answered size (columns and row count) shows a readable input box (and, F12, the mode line too when the frame drawn before showed it, see below),
   a prompt, a dialog or no full-screen view (or there was no readable box
-  before the resize), for at most 1.2 s (`HOLD_MS`). It reads the capture route at once and then every 100 ms (`HOLD_POLL_MS`; normally every 250 ms). A capture that is not
+  before the resize), for at most 1.2 s (`HOLD_MS`; a grow step for a cut-off question waits for the question instead, F16, see "A cut-off question" above). It reads the capture route at once and then every 100 ms (`HOLD_POLL_MS`; normally every 250 ms). A capture that is not
   ready is kept and not applied: not drawn, not given to the mode chip, the draft sync, the scroll gate, the quick actions or the Live label, which keep the last good state.
   A 304 changes nothing; a 404, a 403 or an error ends the hold at once and is handled as always (a pane that is gone is never hidden). A chip view that arrives during the
   hold is drawn when it ends, in the same frame as the mirror (up to 1.2 s after the answer). When the hold runs out the room step above is taken if its conditions hold,
@@ -1313,6 +1316,26 @@ above). Everything below is the page's behaviour, written here because it decide
   keys typed into the pane (the passthrough and the arrow keys, `…/keys`), the answers to a prompt or a dialog (a prompt or a dialog ends the hold at once), and Stop.
   **Every server gate is unchanged:** each request takes its own fresh capture under the same lock and refuses on the same rules as before; the page never sends anything on the
   strength of the held frame, and the wait only keeps the page from asking while nika's own resize has the screen half drawn.
+- **A cut-off question (0.5, F16; owner decision 2026-11-16, "Grow the pane", questions only 2026-11-17; the page: spec §9.13; ADR 0017 amendment; no server change).** Claude clips a question dialog that is taller than the pane
+  from the top, and the capture's `dialog` then says `unreadable` with `kind: "ask"` and `reason: "cut"` (above; a text ending in `…` is `clipped`, which rows never fix, and a plan approval is never grown for). While that holds and the
+  chip's state from the last answer is exactly `fitted` (also with a terminal on the window, F4), the page asks for more rows in the same body and ranges (40–400 × 10–200), through the planner's `size(cols, rows, { now: true })`
+  (no 250 ms debounce):
+  - *Rows.* `min(120, max(rows + 12, 2 × rows))` (`GROW_STEP_MIN` 12, `GROW_CAP` 120), counted from the size the fit asks without the grow (the last commit's `fillSize`, F11), columns unchanged. 120 is the reader's
+    reach: it finds a strip only within 100 rows above the footer, plus a rule, the task block under the footer and the border row. 145 × 21 asks 42; a base of 120 or more asks nothing.
+  - *When.* A question that reads `cut` on one capture and still reads `cut` 200 ms or more later on the next capture or 304 (`GROW_CONFIRM_MS`); then once per step: the drawn frame must have the asked row count (the border row d, 0 or 1,
+    included) and 800 ms (`GROW_SETTLE_MS`, Claude repaints 340–680 ms after a resize) must pass with the question still `cut`, then the next step counts from `max(rows, base)`. At most four steps from a base of 10 rows (22, 44, 88, 120).
+  - *Giving up.* Still `cut` at 120 rows, or the asked row count not in the drawn frame for 6 s while `fitted` (`GROW_WAIT_MS`, a refused request): the page asks the base size at once and does not grow again for this question
+    (a commit that changes the base size, a width alone included, gives a new try).
+  - *Staying.* A question that is no longer `cut` (readable, or unreadable for another reason) keeps the rows: answering takes a fresh capture of the screen, and sizing back first would clip it again. A later tab or the review that is
+    `cut` steps again.
+  - *Going back.* When no question dialog has been on screen for 1 s (`GROW_CLOSE_MS`; none, a plan or a prompt all count; a shorter gap between two tabs does not), the page asks the base size again.
+  - *Not `fitted`.* In `terminal`, `zoomed`, `blocked` and `other` the page takes no step and the step's clocks wait; it keeps the grown rows in what it asks, so a commit or a take that follows already carries them (`max(base, grown)`).
+  - *A renew, not a take.* The ask is a renew from a page that holds the lease, so `TAKE_MAX` (12 takes a minute) does not count it; the route's 4 PUT a second per pane, the lock, the lease and every other gate apply. The server cannot tell it from a
+    panel of that size.
+  - *The redraw hold of a step* (`cutBefore`: a step was asked while the drawn question was `cut`) ends on the first capture at the asked size whose question is no longer `cut`, whatever else is on screen (the F10 and F12 exits do not apply), or
+    after the usual 1.2 s, when the latest kept capture is drawn as it is; `io.timeout` is told `{ want, plainBefore, modeBefore, cutBefore }`.
+  - *The page.* The text scale stays that of the size without the grow (the base rows less the border row and less the hidden rows of the last commit), so the pane is taller than the panel and the mirror overflows natively, pinned to the bottom;
+    the dialog form shows "Reading Claude's question…" past 2 s while a step runs; the chip's panel says why. Answering is unchanged: `POST …/dialog` takes a fresh capture and checks the `sig`, the bypass window and every gate.
 - **Unchanged:** the routes and their bodies, the answers, `FILE_KEYS`, the lease file, `ARGV`, `LAPSE_MS`, `GROW_MS`, `TAKE_MAX` 12 and `TAKE_SPAN_MS` 60 s, the rule that hiding
   keeps the lease, the chip's states, words, colours and icons.
 

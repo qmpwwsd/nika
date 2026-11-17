@@ -549,3 +549,40 @@ Claude), `test/fit.test.js` (a describe block of its own, checked by reverting t
   restore's `select-layout` and the zoom again are named. Constraint 3's Fit targets are changed by the final review's text (a file gives them only at the
   next start, and only while tmux's listing shows the tag equal to the file's nonce); constraint 4 is unchanged.
 - **Not built:** a squeeze that waits for the other panes to be idle, a setting to turn the squeeze off, a layout kept in the lease file, a flash-free give.
+
+## Amendment 2026-11-17 (0.5, F16): a cut-off question gets more rows while it is open
+
+**Context.** Owner report (2026-11-16): the fit sizes the pane to the panel (the owner's case 145 × 21), and Claude draws a question dialog taller than the pane by clipping its **top** (rule, tab strip, question, first option).
+`src/dialog.js` finds no strip and answers `unreadable` / `cut`, so the page showed "Reading Claude's question…" for 2 s and then the banner "<name> needs you … Answer it in the terminal". 27 rows hold that dialog; 21 do not. The owner
+decided **"Grow the pane"** (2026-11-16): while a cut-off question is open, nika gives Claude more rows than the panel shows, reads the form, then sizes back. On 2026-11-17 the owner approved the rule-12 sentence (Q1) and chose questions
+only, never plan approvals (Q2). **Page side, plus one reason split in `src/dialog.js` and the reason set of `public/dialog-form.js`** (the split is an amendment of ADR 0015). **No new route, body key, answer field, lease-file key, tmux command or
+argv shape** (`ARGV` and `FILE_KEYS` unchanged), no change of the route's ranges, the rate limit or any gate. Evidence: design-F16, the unit and rig tests (81 new, the full suite 6807 tests on the build tree, 53 of 53 code reversions caught)
+and the build report. Nothing was run against a live Claude or tmux for this amendment: the live check (design-F16 §10) is the proof.
+
+**Decision.**
+- **When.** Only for `kind: "ask"`, `state: "unreadable"`, `reason: "cut"` (a question step or the review) while the chip's state is exactly `fitted` (also with a terminal on the window, F4). A plan approval is not grown for (a plan text is often
+  longer than any cap, so most grows would end in a give-up after 3 or 4 resizes). A text ending in `…` is `clipped` (below) and never grows.
+- **How many rows.** `growNext(rows) = min(120, max(rows + 12, 2 × rows))`, counted from the size the fit asks without the grow. The rows a clipped dialog needs cannot be read (the clipped part is gone), so the page doubles: from the
+  owner's 21 rows one step (42 ≥ 27), from 10 rows four steps (22, 44, 88, 120). The cap 120 is the reader's reach (`SPAN_MAX` 100 rows strip-to-footer, a rule, the task block under the footer, the border row); more rows can never make a
+  dialog readable.
+- **How it asks.** The planner's `size(cols, rows, { now: true })`, the same `PUT …/fit` body `{ cols, rows, open, focus }`; a renew from a page that holds the lease, not a take, so `TAKE_MAX` does not count it. A question that is still
+  `cut` 200 ms after it was first seen (`GROW_CONFIRM_MS`) steps; the next step waits for the drawn frame to have the asked row count and then 800 ms (`GROW_SETTLE_MS`; Claude repaints 340–680 ms after a resize); a step whose size never shows
+  in the frame in 6 s while `fitted` (`GROW_WAIT_MS`) or a question still `cut` at 120 rows is given up: the page asks the base size at once and does not grow again for this question until a commit changes the base size (`growRebase`).
+- **When it sizes back.** When no question dialog has been on screen for 1 s (`GROW_CLOSE_MS`), not when the form is read: `POST …/dialog` takes a fresh capture and needs the question whole, so sizing back while it is open would clip
+  it again. A gap between two tabs shorter than 1 s keeps the size.
+- **The redraw hold.** A grow step's hold (`cutBefore`) ends on the first capture at the asked size whose question is no longer `cut`, or after 1.2 s, so Claude's half-drawn frame is never shown (the F10 rule).
+- **The text keeps its size.** The scale is pinned to the rows without the grow (the base rows less the border row and the hidden rows of the last commit, `scaleRows`), so the pane is taller than the panel; the mirror overflows natively and stays
+  pinned to the bottom (the existing "Paused while you scroll" covers the rest).
+- **Not `fitted`.** In `terminal`, `zoomed`, `blocked` and `other` the page takes no step and the clocks wait; the grown rows stay in what it asks, so a commit or a take that follows already carries them.
+- **The dialog form** stays on "Reading Claude's question…" while a step runs (`growing`), also past 2 s; the chip keeps its states, words, colours and icons, and its panel gains one fixed line while grown. Nothing is announced.
+- **Rule text** (Q1, approved 2026-11-17, word for word from design-F16 §12.6). Constraint 12's Fit paragraph gains one sentence after the F11 one (`rules/project-rules.md`).
+
+**Alternatives** (the owner's other options of 2026-11-16, as listed to them, and plans). *Fit the dialog's needed rows exactly:* not knowable, the clipped part is gone. *Scale the text to show the whole grown pane:* the text
+shrinks and grows back around every tall question. *Grow until the form is read, then size back:* the answer route needs the readable screen, so the question would be cut off again before it is answered. *Grow for plans too* (Q2): rejected,
+see above.
+
+**Consequences.** (1) At most four steps and one size-back per question (a new question right after another costs a size-back and a new grow, two fades of the mirror). (2) The pane may be up to twice the needed rows: a capture of 120 × 400 cells at 4 Hz;
+its real cost is not measured. (3) While this window has focus and a terminal also shows the window (`fitted:terminal`, the dots of F4), the terminal shows only part of a window taller than itself until the question closes or the user clicks
+into the terminal (F9 then gives the terminal its size back); how tmux pans it is not verified. (4) A question the page gave up on, a plan, a `clipped`, `wide`, `numbers`, `tab`, `layout` or `survey` dialog keeps the banner, as before.
+(5) The server cannot tell any of these asks from a panel of that size, and every rule of the lease, the squeeze rule, the cap and the rate applies to them (`docs/security.md` T52, item 25).
+- **Not built:** growing for a plan approval, a setting for the grow, a size-back as soon as the form is read, text scaled to the grown pane, a server change.

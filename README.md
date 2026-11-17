@@ -434,8 +434,9 @@ Desktop app only. None of this is on the browser dashboard.
   for the rows hidden under that line in the same resize, so Claude's conversation fills the panel down to the line.
 - **Question forms.** When Claude asks a question or for a plan approval, a form above the message box answers it one step at a
   time (options, your own text under Other, the review, the plan's choices, Decline). It also works when Claude's task list is
-  drawn under the dialog or a permission prompt, and for long questions. When nika cannot read the dialog, or it
-  mentions bypass, you answer in the terminal. Why: [ADR 0015](docs/adr/0015-dialogs-from-the-screen.md).
+  drawn under the dialog or a permission prompt, and for long questions. A question taller than the terminal panel is read
+  too: while the chip says "Fit · fills the panel", nika gives the pane more rows until the question closes. When nika
+  cannot read the dialog, or it mentions bypass, you answer in the terminal. Why: [ADR 0015](docs/adr/0015-dialogs-from-the-screen.md).
 
 - **Feedback question.** When Claude asks "How is Claude doing this session? (optional)", a panel above the message box rates it
   with one click (Bad, Fine, Good or Dismiss): nika types that one number and presses no Enter. It never answers the follow-up
@@ -462,7 +463,8 @@ Desktop app only. None of this is on the browser dashboard.
 - **Scrolling.** The mouse wheel, the trackpad and PageUp, PageDown, Home and End (with **Type into pane** off) scroll Claude's
   own view, one page at a time. A note says "Scrolled up in Claude's view" while it is up, and **Jump to live** brings you
   back to the bottom. It works while Claude works and never interrupts it; with a permission prompt, a dialog, a menu or a
-  `/` command open, nika scrolls nothing and says why. Why: [ADR 0018](docs/adr/0018-scroll-with-claude-keys.md).
+  `/` command open, nika scrolls nothing and says why. Each jump slides into place over about 0.15 seconds (no slide with
+  "Reduce motion" on). Why: [ADR 0018](docs/adr/0018-scroll-with-claude-keys.md).
 - **One row per conversation.** After `/compact` Claude continues a conversation in the background under a new session id;
   nika shows one row for it, with the tmux pane that shows it, and keeps a spawned agent's report and a saved orchestrator
   with that row.

@@ -57,3 +57,34 @@ The questions: which keys, through which route, and under which guard.
 - Residual risks are in `docs/security.md` T39 and residual n.
 - Not built: a scrollback route, mouse reports, tmux copy-mode, line scrolling, an automatic `C-End` before or after Send, a setting,
   anything on the browser tier.
+
+## Amendment 2026-11-17 (0.5, F17): the page glides each jump
+
+**Context.** The owner reported that a wheel or trackpad flick moves the view by a jump of about 16 rows (a Claude page): the next capture replaces the mirror's rows in place, so the text jumps. The owner decided **"Glide the jumps"**
+(2026-11-16): each jump slides over about 150 ms, off with "reduce motion", page-only, no security change. On 2026-11-17 the owner also chose (design-F17 Q1), for a jump in which no rows can be matched, a slide of half the conversation's height in the scroll's direction.
+
+**Decision.** Page-only (`public/glide.js`, `public/session.js`, `public/session.css`, one static-file row in `src/server.js`, and `rowText` exported from `public/scroll.js`); the scroll route, its keys and its gate are unchanged.
+- After a scroll request the page arms a matcher for 700 ms (renewed by the route's 200). The next changed capture is compared with the frame drawn when the keys went: the rows above Claude's input box that occur exactly once and are not
+  blank each vote for the shift `k = new index − old index`. A shift is accepted when it has at least 3 votes, at least 80 % of all votes, no tie, and the request's sign (up and top: the content moved down; down and bottom: up).
+  The new frame is drawn at once and the conversation rows slide from `translateY(−k × row height)` to none over 150 ms, `ease-out`, transform only (compositor); the rows below (the input box, the footer, the task list with Type into pane on)
+  stay and cover them.
+- A frame with no shift, a shift of the wrong sign or a mixed shift **rebases** (it becomes the base frame, the arm stays), so a spinner tick or streaming output at the bottom between the send and the keys does not use the arm up.
+- Fewer than 3 matching rows after a request of 2 to 8 pages or a jump (`top`, `bottom`): the half-height slide, `k = ±ceil(conversation rows / 2)`. One page with no match does not slide (a page overlaps its neighbour by about half, so no match
+  means the screen is not a scroll result).
+- A second jump during a slide starts from the running offset (read from the computed transform, clamped to one region). Requests sent before the first frame is drawn are counted (`pending`): each gets its own slide, rebased on the previous
+  frame, so a flick is one motion.
+- The matcher is dropped by: every write to a pane except `/scroll`, `/capture` and `/fit` (one choke point, the page's `call()`, with the End dialog's own request covered where it opens; the default for a new route is to disarm), a resize of the pane,
+  a gone pane or a 403, and a scroll request that was refused or lost (`drop`). A down arm also ends on a frame that shows Claude's view at its bottom (the frame itself still slides). Down and bottom arm only while Claude's view is scrolled up.
+- `#term-rows` gets `overflow: hidden; overflow: clip`, so a translated row never changes the mirror's scroll area, "Paused while you scroll" or the pin to the bottom. `prefers-reduced-motion: reduce` arms nothing, computes nothing and has
+  `animation: none` as a second guard. The class and one CSSOM custom property holding a number the page computes (`--glide-from: <n>px`) are the only styling; row texts are compared, never rendered by `glide.js`.
+
+**Alternatives.** Row-by-row scrolling with Claude's mouse-wheel input: turned down in this ADR (with Claude's mouse mode off the bytes become typed text and the leading `ESC` can interrupt a turn); it would need a spike, a security-rule
+change and its own ADR. Glide now and study row-by-row for 0.6: the owner chose the glide alone. A fixed slide for every jump without matching: it would also slide frames that are not a scroll. No slide when no rows match: the owner chose the
+half-height slide, which shows the direction without claiming a distance.
+
+**Consequences.** No route, key, rule, argv, file or threat changes (`docs/security.md` needs no new entry; rule 6 already allows a CSSOM custom property with a number the page computes). A frame that is not a pure shift is drawn as before.
+A multi-page jump shows its direction, not its distance. For the first instant of a one-page slide the half of the conversation area away from the scroll direction shows the terminal background and fills as the rows arrive (the new frame is drawn at
+once and slid from where the shared rows were; a shorter slide or a fade is the fallback if it reads badly in the live check). A far slide can fire on a frame that changed for another reason inside the 700 ms window (Claude cleared the screen right after a
+jump): a 150 ms slide of an unrelated frame, rare and with no safety effect. `overflow: clip` needs WebKit 16 (Safari 16, WebKitGTK 2.38); `overflow: hidden` before it clips the same way in older web views. A new pane write that reaches `appFetch`
+without `call()` would bypass the choke point; a test lists the only module that does so today (`end-dialog.js`) and fails when another appears. Nothing was run in a browser for this amendment: animation events, `overflow: clip` painting and
+the z-order of the rows below are asserted on source and fakes only; the live check (design-F17 §9) is the proof.

@@ -112,3 +112,19 @@ blank row inside it. If that row is drawn as `│` alone, nika reads it as a que
 terminal (a missed feature, not a safety problem: it fails closed). A probe on synthetic rows shows `layout` for that shape and a normal read for the same question without the
 blank row. Whether Claude draws `│` on the blank row is for the next live capture; only then should a row that is exactly `│` count as barred and stay out of the question's text.
 `docs/contracts/claude-tui.md` §13.1 carries the same line.
+
+## Amendment 2026-11-17 (0.5, F16): `cut` and `clipped`
+
+**Context.** The reason `cut` meant two things: the dialog's top is clipped (Claude cuts a dialog taller than the pane from the top, so more rows show it), and a header, label, question or answer ends in `…` (Claude shortened the text
+to the pane's width, so rows never help). F16 lets the page ask for more rows while a question is `cut` (ADR 0017, amendment of the same date); with one word for both, the page would grow to the cap and back, three or four resizes
+and about 5 s, every time a question with a shortened label opens.
+
+**Decision.** `src/dialog.js` reports a text that ends in `…` as the new reason **`clipped`**; `cut` keeps "no top rule above the strip, no strip, a plan without its rules". `REASONS` is now
+`['cut', 'clipped', 'wide', 'numbers', 'tab', 'layout', 'survey']`: `cut` returns early in `readAsk`, so `clipped` right after it keeps every old precedence among the others, and a clipped top still wins over a shortened text. `clipped` is
+produced for tab headers, option labels (a question's and a plan's), the question, and a review question or answer; descriptions and the typed text value never were checked for it. `public/dialog-form.js` knows the new word (an unknown
+reason still cleans to `layout`, so an old page with a new server fails closed). The capture's ETag is unchanged (the field is a pure function of the rows), no copy shows the reason, and the banner is the same for both.
+
+**Alternatives.** Keeping `cut` for both: the cost above, every time such a question opens.
+
+**Consequences.** Only the page's grow reads the difference. A plan's option label ending in `…` now reads `clipped` (it read `cut`); plans are never grown, so the page shows the same banner. `docs/contracts/claude-tui.md` §13.5 and
+`docs/contracts/api-app.md` (the capture's `dialog` field) list both reasons.

@@ -1154,7 +1154,8 @@ Both take a digit or `Enter` that was meant for something else, so every control
 
 | Reason | Seen live / rule |
 |---|---|
-| `cut` | No top rule directly above the strip, or no strip (a pane shorter than the dialog: the dialog clips from the top, the option list scrolls, and `↑` / `↓` replace the two leading spaces of the first or last visible option row, which no option pattern matches); a plan without `Ready to code?`, either `╌` rule or the prompt row; a header, label, question or answer that ends in `…` |
+| `cut` | No top rule directly above the strip, or no strip (a pane shorter than the dialog: the dialog clips from the top, the option list scrolls, and `↑` / `↓` replace the two leading spaces of the first or last visible option row, which no option pattern matches); a plan without `Ready to code?`, either `╌` rule or the prompt row. More rows show it: since F16 (0.5) the page gives a cut-off question more rows (`api-app.md`, "A cut-off question"; never a plan) |
+| `clipped` | (0.5, F16; before it this was `cut`) A tab header, an option label (a question's or a plan's), the question, or a review question or answer that ends in `…`: Claude shortened the text to the pane's width. More rows never help. Descriptions and the typed text value are not checked for it |
 | `wide` | A row (not a rule, not the free-text row's wrapped value, not a plan row) as wide as the pane: Claude may have cut it. A row under an option row whose first word would **not** have fitted behind the option's last character: a wrapped label looks like a description by its indent, so nika cannot tell them apart unless the row's first word would have fitted behind the label (word wrap at `cols - 1` would then have kept it there, so the row is a description: `src/dialog.js:222-225`). A wrapped footer. Fewer than 20 columns. **Exempt (F13-B):** a row that reaches the pane's last column is accepted when the row right below it continues the same question
 paragraph or the same option's description (a question row followed by another question row, a description row followed by another row of the same description), because
 a long question is drawn that wide (§13.1). At 40 columns Claude wraps the question, the labels, the descriptions and the footer (2 rows, 3 with INSERT), so the old banner shows |
@@ -1210,7 +1211,8 @@ user brought the focus back, Claude re-entered INSERT on arrival and the request
 **Not verified:** Decline from vim INSERT through nika (two `Escape` presses with `sent: 2`); a digit on the multi-select text row; the 560 px
 layout of the form; the first `Down` onto a single-select text row on a plain pane that nika never saw (the live check always typed after an
 INSERT or a prior probe); `Enter` after text on the plan's free-text option; Stop and End during a long busy turn with a real subagent list
-(only the status line and the shells pill were tried); a taller dialog than the pane at the fit's smallest size (it would read `cut`).
+(only the status line and the shells pill were tried); a taller dialog than the pane at the fit's smallest size (it reads `cut`; since F16 the page asks for more rows then, and how Claude redraws the dialog at 42, 84 or 120 rows, and how
+tmux shows a window taller than a terminal that also shows it, are not verified against a real Claude).
 
 ## 14. Claude's own subagents: their files while they run (0.5, W8)
 

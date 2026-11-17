@@ -2479,6 +2479,37 @@ row until the next commit).
 Not built (the alternatives the owner did not pick, 2026-11-16): Claude's footer shown under the strip, and the space given to the message box. Also not built (design-F11 §4): a
 commit when Type into pane is toggled or the box changes height (each would add a resize with a redraw hold to a user action that needs a steady screen, and a cut that follows nika's own resize would start the cascade F10 removed).
 
+**A question taller than the panel (0.5, F16; owner decision 2026-11-16, "Grow the pane"; questions only, 2026-11-17).** Claude draws a question dialog that is taller than the pane by cutting off its top (the tabs, the question,
+the first options), so nika could not read it and showed the banner (the owner's case: a 145 × 21 pane cut a question that 27 rows hold). Now, while a question (not a plan approval) is cut off at the top and the chip
+reads `Fit · fills the panel`, the page asks the same fit route for more rows: twice the rows, at least 12 more, at most 120 (the reader finds a dialog's tabs only within 100 rows of its footer). It asks when the question still reads
+cut off 0.2 s after it was first seen, waits for Claude's repaint (the redraw hold keeps the last frame until the question is no longer cut off, 1.2 s at most, so Claude's half-drawn frame is never shown), and when the question is still
+cut off 0.8 s after the pane reached that size it steps again; at 120 rows it gives up and sizes back. The pane stays that tall while the question is open (answering reads the screen again) and goes back to the panel's size 1 s after
+the question closes. The text keeps the size it had without the grow (the rows the pin counts are the base rows less the border row and less the rows hidden under the strip): the mirror shows the bottom of the taller pane
+and scrolls up to the rest ("Paused while you scroll"). The form area shows "Reading Claude's question…" while a step runs, also past 2 s, then the form (§9.16). The chip's words, colours and icons do not change; its panel adds
+"Claude's question is taller than this panel, so nika gave the pane more rows while it is open. Scroll the terminal up to see all of it; the size goes back when the question closes." (over the room hint). Nothing is announced.
+The logic with no DOM is `growStep` in `public/fit-ui.js` (`GROW_*` constants); the wiring is `growTick` in `public/session.js`.
+
+| Situation | Now |
+|---|---|
+| a question is cut off and the chip reads `Fit · fills the panel` | after 0.2 s the page asks 2 × rows (at least +12, at most 120), 145 × 21 → 145 × 42; the last frame stays until Claude has repainted the question; "Reading Claude's question…" shows for about 1 s, then the form; the text keeps its size, "Live · 145 × 42" |
+| still cut off 0.8 s after the pane reached the size | one more step from the current rows (21 → 42 → 84 → 120) |
+| still cut off at 120 rows, or the asked size never shows in the drawn frame for 6 s while `fitted` | the page sizes back at once and does not grow again for this question: the banner after Reading, as before |
+| the question is readable | the pane stays tall (`held`); the form shows; the chip's panel carries the line above |
+| fully on screen but unreadable for another reason (`clipped`, `wide`, `numbers`, `tab`, `layout`, `survey`) | stays tall, no more steps; the banner after Reading, as before |
+| the next tab or the review (still a question) | stays tall; a cut-off step again waits 0.8 s, then steps from the current rows |
+| the question is answered, declined or answered in the terminal, or a plan or a prompt replaces it, for 1 s | the page asks the panel's size again; the redraw hold keeps the last frame until Claude's input box is back; one fade of the mirror. A gap between two tabs shorter than 1 s changes nothing |
+| a text of the question ends in `…` (`clipped`), or a plan approval is cut off | nothing is grown: the banner, as before (more rows cannot show a shortened text; a plan is often longer than any size) |
+| this window loses focus and a terminal shows the window (`terminal`), the window is zoomed without focus (`zoomed`), Fit is off (`blocked`), another nika window has it (`other`) | parked: no step, the clocks wait; the banner after Reading. When the fit comes back, the next take or commit already carries the grown rows |
+| a terminal shows the window and this window has focus (the dots of F4) | grows as for `fitted`; the terminal shows part of a window taller than itself until the question closes or you click into the terminal (how tmux pans it is not verified) |
+| Fit again, a new panel size, the app's zoom, the transcript toggle | the size asked is the larger of the panel's size and the grow's rows while the question is open; a question the page gave up on gets one new try when the base size changed |
+| you scroll the mirror up, or press Jump to live | "Paused while you scroll" as usual; Jump to live does not size back |
+| the pane is gone, or the lease ends | the grow is forgotten; the planner gives the window back as always |
+
+Bounds: at most four steps (from 10 rows: 22, 44, 88, 120) and one size-back per question; the page asks with `{ now: true }` (no 250 ms debounce) and the route's limit of 4 requests a second per pane applies. A grow is a renew
+from a page that holds the lease, not a take, so the 12 takes a minute do not count it. The form panel appearing changes only the box's height, which is never a commit (F10). Not built: growing for a plan approval, asking for the exact rows a dialog needs (the
+cut-off part is gone, so the page cannot count them), shrinking the text to show the whole grown pane, sizing back as soon as the form is read (answering takes a fresh capture and needs the question whole), a server change.
+Contract: `api-app.md` ("A cut-off question"); decisions: ADR 0017 and ADR 0015, both with an F16 amendment.
+
 ### 9.14 Attachments (0.5, W2)
 
 **(built 2026-11-14 (0.5); the file chooser 2026-11-15.)** The message box takes images, PDFs and text files. They go with the next
@@ -2651,6 +2682,31 @@ A scroll is allowed while Claude works (a scroll key never interrupts a turn), w
 an unreadable draft. W5 draft sync, the W6 cut, the W7 fit, Send and Stop are unchanged while Claude is scrolled up; Claude returns to the
 bottom by itself when a message is submitted.
 
+**The glide (0.5, F17; owner decision 2026-11-16, "Glide the jumps"; and, design-F17 Q1, 2026-11-17, the half-height slide for jumps with no shared rows).** A scroll moves Claude's view by whole pages, so the mirror used to jump. Now, after a scroll request,
+the page compares the next frame with the one it drew: when the conversation moved as one block (at least 3 rows that occur once agree on the shift, they are at least 80 % of the matches, and the shift is in the request's direction),
+it draws the new frame and slides the conversation rows from where they were into place over 150 ms (`ease-out`, transform only). When a request of several pages, or a jump to the top or bottom, leaves fewer than 3 rows that agree on one shift (in practice none are shared), the page slides
+the new view in from half the conversation's height in its direction (it shows the direction, not the distance). Only the rows above Claude's input box move; the box, the footer and the task list (shown with Type into pane on) stay and
+cover the sliding rows. The rows box clips (`overflow: clip`), so a slide never changes the mirror's scroll area, "Paused while you scroll" or the pin to the bottom. A second jump during a slide continues from where the rows are, so a
+trackpad flick reads as one motion; requests sent before the first frame is drawn each get their own slide. Only a frame that comes within 0.7 s of a scroll request (renewed by the route's answer) can slide. Any other write to the pane
+(a key, Send, a command, a dialog or survey answer, Stop, a mode switch, a draft write, End) ends the pending slide, as does nika's own resize, a gone pane and a refused or lost scroll request, so output that streams in, Claude's return to
+the bottom after Send and nika's resizes never slide; the capture poll, the fit heartbeat and further scroll requests do not end it. Down and End slide only while Claude's view is scrolled up, and a down slide ends when a frame shows
+Claude's view at its bottom. A frame that is not a pure shift (a re-render, a dialog that opened) is drawn at once, as before. Nothing is armed or computed with `prefers-reduced-motion: reduce`, and the stylesheet has `animation: none`
+for it as a second guard. No announcement, colour, icon or setting is added; the existing "Scrolled up in Claude's view" and "Back at the live bottom" announcements are unchanged. The logic with no DOM is `public/glide.js` (`frameOf`,
+`findShift`, `createGlideArm`, `paneWriteDisarms`, `glideFrom`, `matrixY`); the wiring is `startGlide`, `endGlide` and the arm calls in `public/session.js`. One visual to know: the new frame is drawn at once and the rows slide in from where the
+shared rows were, so for the first instant the half of the conversation area away from the scroll direction shows the terminal background and fills as the rows arrive (to be judged in the live check).
+
+| Case | Now |
+|---|---|
+| Page Up / one wheel page up, Claude at its bottom | the rows slide down into place, 150 ms |
+| Page Down while Claude's view is scrolled up | the rows slide up into place |
+| Page Down or End at Claude's bottom | nothing moves, nothing slides |
+| a trackpad flick (a request every 100 to 150 ms) | each page slides from where the rows are now: one motion that settles 150 ms after the last frame |
+| 2 to 8 pages in one request, or Home / End from far away | fewer than 3 rows agree: the half-height slide in the direction; when the view lands near the end and rows agree, the exact slide |
+| a frame lands between the send and the keys (a spinner tick, streaming at the bottom) | drawn at once; the arm stays and the scroll's frame slides |
+| a key, Send, a command, any other write to the pane; a resize; a refused scroll | the pending slide is dropped; the next frame replaces the rows as before |
+| Type into pane on | only the rows above Claude's input box slide |
+| `prefers-reduced-motion: reduce` | no slide |
+
 **Keyboard and screen readers.** The mirror is a focusable region (`tabindex="0"`) whose keys are listed in `aria-keyshortcuts`
 ("PageUp PageDown Home End") and in the Keyboard shortcuts window (two session rows). Focus never moves on a wheel; keys act only where
 focus already is (WCAG 2.1.1, 2.4.3). Jump to live stays in the Tab order after the mirror (§9.10). No new tokens or components: the note
@@ -2669,7 +2725,7 @@ the threat: `security.md` T37. The logic that has no DOM is `public/dialog-form.
 (`cleanDialog` in `noteScreen`, `DF.render` after `renderPrompt`, `DF.live()` in the send gate). App tier only: no route and no `dialog`
 field on :3335.
 
-The form reads **exactly or not at all**. A dialog nika cannot read (a cut-off or too-wide screen, a wrapped label, an unknown shape, a
+The form reads **exactly or not at all**. A dialog nika cannot read (a cut-off screen that more rows do not show, §9.13 (F16), a too-wide screen, a wrapped label, a text shortened with `…`, an unknown shape, a
 feedback survey, which is answered by its own panel, §9.5, not by this form) keeps the old banner ("<name> needs you: <reason>. Answer it in the terminal, or turn on Type into pane."), and the gates
 still count it as a prompt. The form shows **one step at a time** (the current question, the review, or the plan's choices) and follows
 Claude's own tabs; it never moves between them. After an answer the next question appears with a new `sig`.
@@ -2701,8 +2757,8 @@ on the next); nika reads such a question exactly, and a screen where only some r
 
 | State | When | Chip: colour, icon, word | Controls |
 |---|---|---|---|
-| reading | `unreadable`, no form shown yet, under 2 s (`READING_MS`) | `--ended` on `--ended-soft` · `i-clock` · "Reading" | none; the note "Reading Claude's question…" |
-| unreadable | the same, after 2 s | no form: the banner (above) takes over | |
+| reading | `unreadable`, no form shown yet, under 2 s (`READING_MS`), **or (0.5, F16) while nika gives a cut-off question more rows (§9.13): the note stays past 2 s until the grow reads the question, gives up or is parked** | `--ended` on `--ended-soft` · `i-clock` · "Reading" | none; the note "Reading Claude's question…" |
+| unreadable | the same, after 2 s and with no grow step running | no form: the banner (above) takes over | |
 | ready | `ready`, `bypass: false` | the existing "Needs you" pill (`--attn`) | live |
 | terminal only | `ready`, `bypass: true` | `--text-muted`, dashed edge, no fill · `i-off` · "Terminal only" | read-only (the options are shown, not offered); only Decline (Reject) is live; the note "This mentions bypass, so nika leaves it to you: answer it in the terminal." |
 | answering | a request is in flight | `--accent` on `--accent-soft` · spinner · "Answering" | everything aria-disabled; the pressed button has `aria-busy` |

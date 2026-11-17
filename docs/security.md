@@ -261,7 +261,7 @@ Accepted, with the reason.
      resizes per pick). A window manager with focus-follows-mouse could flip the focus fast: the page's 150 ms settle (F10; 400 ms in F9) filters less of a pass of
      the pointer and the cap bounds the rest. In the app tier there is one session window today (the shell denies new windows), so no second page can take the
      size.
-  25. *The page may ask for a size larger than its panel, and it holds its own drawing for 1.2 s* (F10, F11). To make room for Claude's input box and footer the page asks once for
+  25. *The page may ask for a size larger than its panel, and it holds its own drawing for 1.2 s* (F10, F11, F16). To make room for Claude's input box and footer the page asks once for
      33 rows or more (F11: at any commit it also asks for the rows its mirror hides under the input-box strip, at most 200 in all) with the columns in the panel's proportion, still the same body `{ cols, rows, open, focus }` and still inside the route's ranges (40–400 × 10–200, checked at the route
      and again in `src/fit.js`); the server cannot tell it from a panel of that size, and every rule of this entry applies to it (the squeeze rule, 4 requests a second per pane, the
      lock, the lease). It is a renew from a page that holds the lease, not a take, so `TAKE_MAX` is not touched by it; later focus takes ask the same size and count in the 12 a minute
@@ -269,6 +269,10 @@ Accepted, with the reason.
      the mode switch, quick-action commands, the End dialog) delay a request by up to 1.2 s (2.4 s with the room step) and send nothing on the strength of the held frame: every
      server gate (T23, T26, T39, T51, T54) takes its own fresh capture as before. The cost is visible, not a safety one: smaller text where the room is on, and the top rows
      of Claude's frame hidden while a prompt panel or a tall draft makes the box shorter (the mirror stays pinned to the bottom).
+     F16: while a question dialog is cut off at the top it asks for up to 120 rows, at most four steps and one size-back per question; the
+     grow never sends a key, and answering the question keeps every gate of T37 (the dialog route takes its own fresh capture, so the pane stays grown while the question is open). The ask is a renew, not a take, and
+     the rate of 4 requests a second per pane bounds a looping page. The cost is visible, not a safety one: while this window has focus and a terminal also shows the window (F9, item 20), the
+     terminal shows only part of a window taller than itself until the question closes or the user clicks into the terminal (how tmux pans it is not verified).
   26. *Any pane may be squeezed while the session window has focus, and the way back flashes every pane* (F15, owner decision 2026-11-16, "resize while
      zoomed", asked twice). (a) A shell or an editor in a hidden pane sees a narrow window while the page has focus and may keep lines wrapped at that
      width; nika does not ask the other panes what they run, because the zoom hides them. (b) On blur the give applies the saved layout, which unzooms the

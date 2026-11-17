@@ -196,6 +196,13 @@ Session window (desktop app):
   view" while it is up, and Jump to live returns to the bottom. Scrolling works while Claude works and never interrupts it.
   nika scrolls only when it can see a plain input box: with a permission prompt, a dialog, a menu or a draft that starts with `/`
   it sends nothing and says why. PageUp, PageDown, Home and End scroll Claude's view only while Type into pane is off.
+- **Scrolling Claude's view glides.** A wheel or trackpad flick, Page Up and Page Down, Home and End, and Jump to live used to make the
+  terminal view jump by half a screen. Now the text slides into its new place over about 0.15 seconds, and a flick reads as one
+  motion. A jump of several pages, or Home or End from far away, slides in by half the view from the side you scrolled toward. Only
+  Claude's conversation moves: its input box, the footer and the task list stay where they are. Nothing slides for output that streams
+  in, after Send or any key you type, or when nika resizes the pane, and with "Reduce motion" on in your system settings the view jumps
+  as before. Untried: the slide against a real Claude in the app's window (your live check); for the first instant of a one-page slide
+  the side of the view away from your scroll shows the terminal background until the text arrives.
 - **Answer Claude's questions and plan approvals from the session window.** When Claude asks you something (up to eight
   questions in tabs, then a review) or asks you to approve a plan, the window now shows a form above the message box instead of
   only "needs you". It shows one question at a time, following Claude's own tabs: pick an option (or several), or type your own
@@ -215,6 +222,16 @@ Session window (desktop app):
   exactly (header, one row per task, an optional "+N …" row, counts that add up), never reads a task's text, and reads the bar and a row as
   wide as the pane when the next row continues it. The prompt's buttons answer exactly as before, and a task that mentions bypass still
   keeps a prompt terminal-only. Anything that does not match keeps the old note: answer in the terminal.
+- **A question taller than the terminal panel is read anyway.** When Claude's question does not fit the panel, Claude cuts off its top (the
+  tabs, the question, the first options) and nika used to show only "needs you … Answer it in the terminal". Now, while the chip reads
+  "Fit · fills the panel", nika gives Claude's pane more rows while the question is open (twice as many, at least 12 more, at most 120),
+  waits for Claude to redraw it, and shows the form; "Reading Claude's question…" stays for about a second meanwhile. The pane keeps that
+  size while the question is open, because answering looks at the screen again, and goes back to the panel's size a second after the
+  question closes. The text in the terminal view keeps its size: scroll the view up to see the rest of the taller pane. The chip's panel
+  says why, and nothing is announced. Questions only: a plan approval, and a question with a word Claude shortened with "…", still show
+  the old note, and so does any time your terminal or another window has the size (focus in a terminal, Fit off, another nika window).
+  Untried: this against a real Claude in the app's window (your live check), and how tmux shows a window taller than a terminal that also
+  shows it.
 - **Long text in the keys route is typed in pieces.** Text of 701 to 1024 characters is sent in chunks of at most 700 characters
   about 300 ms apart, because Claude turns a burst of more than 800 characters into a pasted block and loses part of the text.
 - **One row per conversation after `/compact`.** Claude continues a compacted conversation in the background under a new session
