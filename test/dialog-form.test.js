@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  READING_MS, TEXT_MAX, cleanDialog, answerBody, dialogOutcome, announcement, stepText, createDialogForm, typable, wellFormed,
+  READING_MS, TEXT_MAX, cleanDialog, answerBody, dialogOutcome, announcement, stepText, createDialogForm, typable, wellFormed, reviewModel,
 } from '../public/dialog-form.js';
 import { installDom, El, focus, withClass } from './fake-dom.js';
 
@@ -37,6 +37,13 @@ const multi = (over = {}) => ask({
 const review = (over = {}) => ({
   ...head, sig: SIG2, at: 'review', tabs: tabs(2, 2), warn: false,
   pairs: [{ question: 'Which checks should I run?', answer: 'lint, build' }, { question: 'Which database should I use?', answer: 'sqlite' }], ...over,
+});
+// 0.5.2 R3: a three-question review; `flags` says which tabs are answered (the pairs list the answered ones only, in tab order, and Claude warns while one is open)
+const R3_Q = ['Which tools should the agent be allowed to use?', 'Which project should I open?', 'How wide should the change be?'];
+const R3_A = ['Bash, Read', 'web-shop', 'Only the tests'];
+const review3 = (flags = [true, true, true], over = {}) => ({
+  ...head, sig: SIG2, at: 'review', tabs: ['Tools', 'Project', 'Scope'].map((header, i) => ({ header, answered: flags[i] })), warn: flags.some((f) => !f),
+  pairs: flags.flatMap((f, i) => (f ? [{ question: R3_Q[i], answer: R3_A[i] }] : [])), ...over,
 });
 const plan = (over = {}) => ({
   ...head, kind: 'plan', sig: SIG3, at: 'plan',
@@ -364,7 +371,7 @@ describe('stepText and announcement: the words', () => {
   });
 
   test('(+) the review and the plan', () => {
-    assert.equal(announcement(cleanDialog(review()), { name: 'builder-1', first: false }), 'Review your answers: 2 answers, above the message box.');
+    assert.equal(announcement(cleanDialog(review()), { name: 'builder-1', first: false }), 'Review your answers: 2 of 2 answered, above the message box.'); // 0.5.2 R3: a review whose tabs and pairs line up says how many are answered (was '2 answers')
     assert.equal(announcement(cleanDialog(review({ pairs: [{ question: 'q', answer: 'a' }] })), { name: 'builder-1', first: true }), 'Review your answers: 1 answer, above the message box.');
     assert.equal(announcement(cleanDialog(plan()), { name: 'builder-1', first: true }), 'builder-1 asks you to approve a plan. Read it in the terminal view; choices above the message box.');
   });
@@ -886,7 +893,7 @@ describe('hysteresis, the rebuild for the next step, focus and announcements', (
     assert.deepEqual(r.log.announce, [
       'builder-1 asks: Which checks should I run? Question 1 of 4, above the message box.',
       'Question 2 of 4: Which scope?',
-      'Review your answers: 2 answers, above the message box.',
+      'Review your answers: 2 of 2 answered, above the message box.', // 0.5.2 R3 (was '2 answers')
     ]);
   });
 
@@ -1724,16 +1731,18 @@ describe('changing an answer (0.5.1, D)', () => {
 // ---- the review -----------------------------------------------------------------------------------------------------------------
 
 describe('the review step', () => {
-  test('(+) the heading, a pair list with each question and answer as Claude shows it, Submit answers and Decline', async () => {
+  test('(+) the heading, a card list with each question and answer as Claude shows it, Submit answers and Decline', async () => {
     const r = rig({ reply: () => ({ status: 200, body: { done: 'submitted', sent: 1 } }) });
     r.render(review());
     assert.equal(one(r.root, 'ask-q').textContent, 'Review your answers');
     assert.equal(r.root.getAttribute('aria-labelledby'), 'dlg-q');
-    const dl = one(r.root, 'dlg-review');
-    assert.equal(dl.tag, 'dl');
-    assert.deepEqual(dl.kids.map((k) => [k.tag, k.textContent]), [
-      ['dt', 'Which checks should I run?'], ['dd', 'lint, build'], ['dt', 'Which database should I use?'], ['dd', 'sqlite'],
+    // 0.5.2 R3: the dl.dlg-review became ol.dlg-rv, one li per question; the same two strings per pair (the answer sits in the span after its sr-only "Answer: ")
+    const list = one(r.root, 'dlg-rv');
+    assert.equal(list.tag, 'ol');
+    assert.deepEqual(q(list, 'dlg-rv-row').map((li) => [li.tag, one(li, 'dlg-rv-q').textContent, one(li, 'dlg-rv-a').kids[1].textContent]), [
+      ['li', 'Which checks should I run?', 'lint, build'], ['li', 'Which database should I use?', 'sqlite'],
     ]);
+    assert.equal(one(r.root, 'dlg-review'), null, 'the old dl is gone');
     assert.equal(one(r.root, 'dlg-warn'), null);
     const submit = byText(r.root, 'Submit answers');
     assert.ok(submit.className.includes('primary'));
@@ -1743,9 +1752,9 @@ describe('the review step', () => {
     assert.equal(chip(r.root).textContent, 'Submitted');
   });
 
-  test('(+) the warning row has the warning icon and the words when Claude says not every question is answered', () => {
+  test('(+) the warning row has the warning icon and the words when Claude says not every question is answered (a review whose pairs do not line up with the tabs: the fallback)', () => {
     const r = rig();
-    r.render(review({ warn: true }));
+    r.render(review({ warn: true })); // two answered tabs with warn: true do not line up (0.5.2 R3 falls back to the plain cards and Claude's own line)
     const w = one(r.root, 'dlg-warn');
     assert.equal(w.textContent, 'You have not answered all questions');
     assert.deepEqual(hrefs(w), ['#i-warn']);
@@ -1766,6 +1775,284 @@ describe('the review step', () => {
     assert.equal(byText(r.root, 'Submit answers'), null);
     r.render(review());
     assert.equal(inputs(r.root, 'radio').length + inputs(r.root, 'checkbox').length + inputs(r.root, 'text').length, 0);
+  });
+});
+
+// ---- 0.5.2 R3: the review as cards, one per question, with Change ---------------------------------------------------------------
+
+describe('reviewModel: the review as one row per question tab (0.5.2 R3)', () => {
+  const clean = (d) => cleanDialog(d);
+
+  test('(+) every tab answered: one row per tab, steps 0 to 2, the headers, and each tab\'s own pair', () => {
+    const m = reviewModel(clean(review3()));
+    assert.equal(m.mapped, true);
+    assert.deepEqual([m.total, m.answered], [3, 3]);
+    assert.deepEqual(m.rows.map((r) => [r.step, r.header, r.question, r.answer]), [
+      [0, 'Tools', R3_Q[0], R3_A[0]], [1, 'Project', R3_Q[1], R3_A[1]], [2, 'Scope', R3_Q[2], R3_A[2]],
+    ]);
+  });
+
+  test('(+) tab 1 not answered and warn: that row has no question or answer, and the two pairs go to tabs 0 and 2 in order', () => {
+    const m = reviewModel(clean(review3([true, false, true])));
+    assert.equal(m.mapped, true);
+    assert.deepEqual([m.total, m.answered], [3, 2]);
+    assert.deepEqual(m.rows.map((r) => [r.step, r.header, r.question, r.answer]), [
+      [0, 'Tools', R3_Q[0], R3_A[0]], [1, 'Project', null, null], [2, 'Scope', R3_Q[2], R3_A[2]],
+    ]);
+  });
+
+  test('(+) nothing answered yet: three rows, none with an answer, the pairs list empty, warn true', () => {
+    const m = reviewModel(clean(review3([false, false, false])));
+    assert.equal(m.mapped, true);
+    assert.deepEqual([m.total, m.answered, m.rows.map((r) => r.answer)], [3, 0, [null, null, null]]);
+  });
+
+  test('(−) the tabs and the pairs do not line up: not mapped, the rows are the pairs alone, with no step and no header', () => {
+    const pairs = [{ question: 'q1', answer: 'a1' }, { question: 'q2', answer: 'a2' }];
+    for (const [name, d] of [
+      ['2 pairs and 3 answered tabs', { tabs: tabs(3, 3), warn: false, pairs }],
+      ['3 pairs and 2 answered tabs, warn', { tabs: tabs(3, 2), warn: true, pairs: [...pairs, { question: 'q3', answer: 'a3' }] }],
+      ['warn: true with every tab answered', { tabs: tabs(2, 2), warn: true, pairs }],
+      ['warn: false with a tab open', { tabs: tabs(3, 2), warn: false, pairs }],
+      ['no tabs', { tabs: [], warn: false, pairs }],
+      ['tabs that are not a list', { tabs: 'x', warn: false, pairs }],
+    ]) {
+      const m = reviewModel(d);
+      assert.equal(m.mapped, false, name);
+      assert.deepEqual([m.total, m.answered], [d.pairs.length, d.pairs.length], name);
+      assert.deepEqual(m.rows.map((r) => [r.step, r.header, r.question, r.answer]), d.pairs.map((p) => [null, '', p.question, p.answer]), name);
+    }
+  });
+
+  test('(−) nothing, or something that is not a review, never throws and is not mapped; a pair that is not a pair never makes a row', () => {
+    for (const d of [undefined, null, 7, 'x', {}, { tabs: null, pairs: null }]) assert.deepEqual(reviewModel(d), { mapped: false, total: 0, answered: 0, rows: [] }, String(d));
+    const m = reviewModel({ tabs: tabs(2, 2), warn: false, pairs: [{ question: 'q', answer: 'a' }, null, 5, { question: 'x' }] });
+    assert.equal(m.mapped, false, 'one real pair, two answered tabs');
+    assert.deepEqual(m.rows.map((r) => r.question), ['q']);
+  });
+
+  test('(−) the model is a copy: changing a row changes nothing in the dialog', () => {
+    const d = clean(review3());
+    const m = reviewModel(d);
+    m.rows[0].answer = 'changed';
+    assert.equal(d.pairs[0].answer, R3_A[0]);
+    assert.equal(reviewModel(d).rows[0].answer, R3_A[0]);
+  });
+});
+
+describe('the review as cards: one per question, with Change (0.5.2 R3)', () => {
+  const steps = (root) => q(root, 'dlg-tab');
+  const rowsOf = (root) => q(root, 'dlg-rv-row');
+  const changes = (root) => q(root, 'dlg-rv-chg');
+  const count = (root) => one(root, 'dlg-rv-n');
+  const moved = { reply: () => ({ status: 200, body: { done: 'moved', sent: 2 } }) };
+
+  test('(+) mapped, all answered: an ordered list named Your answers with a card per question, the count "3 of 3 answered" in the busy colour, Change buttons named by their header, no warn line', () => {
+    const r = rig();
+    r.render(review3());
+    const list = one(r.root, 'dlg-rv');
+    assert.equal(list.tag, 'ol');
+    assert.equal(list.getAttribute('aria-label'), 'Your answers');
+    const rows = rowsOf(r.root);
+    assert.equal(rows.length, 3);
+    assert.ok(rows.every((li) => li.tag === 'li' && li.parent === list && li.getAttribute('data-state') === 'done'));
+    const n = count(r.root);
+    assert.equal(n.textContent, '3 of 3 answered');
+    assert.equal(n.getAttribute('data-all'), 'true');
+    assert.deepEqual(hrefs(n), ['#i-check']);
+    assert.equal(one(r.root, 'dlg-warn'), null);
+    assert.deepEqual(rows.map((li) => one(li, 'dlg-rv-h').accName), ['Tools, answered', 'Project, answered', 'Scope, answered']);
+    assert.deepEqual(rows.map((li) => hrefs(one(li, 'dlg-rv-h'))), [['#i-check'], ['#i-check'], ['#i-check']]);
+    assert.deepEqual(rows.map((li) => one(li, 'dlg-rv-q').textContent), R3_Q);
+    assert.deepEqual(rows.map((li) => one(li, 'dlg-rv-q').getAttribute('title')), R3_Q, 'the full question stays in the title when CSS clamps it to two lines');
+    assert.deepEqual(rows.map((li) => one(li, 'dlg-rv-a').accName), R3_A.map((a) => `Answer: ${a}`), 'an sr-only "Answer: " comes first');
+    assert.deepEqual(changes(r.root).map((b) => b.accName), ['Change answer 1: Tools', 'Change answer 2: Project', 'Change answer 3: Scope']);
+    assert.ok(changes(r.root).every((b) => b.textContent.startsWith('Change') && b.tag === 'button' && b.getAttribute('type') === 'button'), 'the visible word comes first (WCAG 2.5.3)');
+    assert.deepEqual(changes(r.root).map((b) => b.getAttribute('data-step')), ['0', '1', '2']);
+    assert.ok(changes(r.root).every((b) => b.getAttribute('data-tab') === null), 'data-step, not data-tab: the focus rule of build() must not take it for a step button');
+    assert.ok(changes(r.root).every((b) => b.getAttribute('aria-describedby') === 'dlg-steps-desc'));
+    assert.equal(r.root.all((n2) => n2.attrs.id === 'dlg-steps-desc').length, 1, 'the strip owns the one description');
+  });
+
+  test('(+) mapped, one question not answered: its card is data-state="none" with the words Not answered, an Answer button, and the count says 2 of 3 answered · 1 not answered', () => {
+    const r = rig();
+    r.render(review3([true, false, true]));
+    const rows = rowsOf(r.root);
+    assert.deepEqual(rows.map((li) => li.getAttribute('data-state')), ['done', 'none', 'done']);
+    const none = rows[1];
+    assert.equal(one(none, 'dlg-rv-a').textContent, 'Not answered');
+    assert.ok(withClass('dlg-rv-none')(one(none, 'dlg-rv-a')));
+    assert.equal(one(none, 'dlg-rv-q'), null, 'there is no question text to show');
+    assert.equal(one(none, 'dlg-rv-h').accName, 'Project, not answered');
+    assert.deepEqual(hrefs(one(none, 'dlg-rv-h')), ['#i-warn']);
+    assert.equal(one(none, 'dlg-rv-chg').accName, 'Answer question 2: Project');
+    assert.ok(one(none, 'dlg-rv-chg').textContent.startsWith('Answer'));
+    assert.deepEqual(changes(r.root).map((b) => b.accName), ['Change answer 1: Tools', 'Answer question 2: Project', 'Change answer 3: Scope']);
+    const n = count(r.root);
+    assert.equal(n.textContent, `2 of 3 answered ${MID} 1 not answered`);
+    assert.equal(n.getAttribute('data-all'), 'false');
+    assert.deepEqual(hrefs(n), ['#i-warn']);
+    assert.equal(one(r.root, 'dlg-warn'), null, 'the count says it; Claude\'s own line is not repeated');
+    assert.equal(byText(r.root, 'Submit answers').getAttribute('aria-disabled'), null, 'it does not block Submit (as before)');
+  });
+
+  test('(+) the focus order is the DOM order: the steps, then Change or Answer row by row, then Submit answers, then Decline', () => {
+    const r = rig();
+    r.render(review3([true, false, true]));
+    const order = buttons(r.root).map((b) => b.className.split(' ').find((c) => ['dlg-tab', 'dlg-rv-chg', 'dlg-send', 'dlg-decline'].includes(c)));
+    assert.deepEqual(order, ['dlg-tab', 'dlg-tab', 'dlg-tab', 'dlg-tab', 'dlg-rv-chg', 'dlg-rv-chg', 'dlg-rv-chg', 'dlg-send', 'dlg-decline']);
+    assert.ok(withClass('dlg-rv-btns')(byText(r.root, 'Submit answers').parent), 'Submit and Decline sit in the sticky footer');
+    assert.equal(byText(r.root, 'Decline').parent, byText(r.root, 'Submit answers').parent);
+  });
+
+  test('(+) Change posts exactly { sig, tab } for its step: one POST, no submit, no choice, no picks; Answer posts the same for its step', async () => {
+    const r = rig(moved);
+    r.render(review3([true, false, true]));
+    changes(r.root)[2].click();
+    await settle();
+    assert.deepEqual(sentBodies(r), [{ sig: SIG2, tab: 2 }]);
+    assert.equal(r.log.calls[0].path, '/pane/%2512/dialog');
+    assert.equal(r.log.calls[0].method, 'POST');
+    const s = rig(moved);
+    s.render(review3([true, false, true]));
+    changes(s.root)[1].click();
+    await settle();
+    assert.deepEqual(sentBodies(s), [{ sig: SIG2, tab: 1 }]);
+  });
+
+  test('(+) after the move the next capture of that question puts the focus on its heading (#dlg-q), not on a strip button; the chip says Moving until then', async () => {
+    const r = rig(moved);
+    r.render(review3());
+    const b = changes(r.root)[2];
+    b.focus();
+    b.click();
+    await settle();
+    assert.equal(chip(r.root).textContent, 'Moving');
+    r.render(multi({ sig: SIG3, tabs: tabs(3, 3), current: 2, question: R3_Q[2], final: true }));
+    assert.equal(focus.el.tag, 'legend');
+    assert.equal(focus.el.attrs.id, 'dlg-q');
+    assert.equal(focus.el.textContent, R3_Q[2]);
+    assert.equal(chip(r.root).textContent, 'Needs you');
+  });
+
+  test('(+) a move from the review says nothing aloud, and no automatic return to the review is sent: one request in all', async () => {
+    const r = rig(moved);
+    r.render(review3());
+    const before = r.log.announce.length;
+    changes(r.root)[0].click();
+    await settle();
+    assert.equal(r.log.announce.length, before);
+    r.render(multi({ sig: SIG3, tabs: tabs(3, 3), current: 0, question: R3_Q[0] }));
+    await settle();
+    assert.equal(r.log.calls.length, 1);
+  });
+
+  test('(+) every Change is live on a live form (none is the current step), and the cards are not dimmed', () => {
+    const r = rig();
+    r.render(review3());
+    assert.deepEqual(changes(r.root).map((b) => b.getAttribute('aria-disabled')), [null, null, null]);
+    assert.equal(r.root.getAttribute('data-inert'), 'false');
+  });
+
+  test('(−) while an answer is on its way (busy) every Change is aria-disabled and a click sends nothing more', async () => {
+    let release;
+    const r = rig({ reply: () => new Promise((resolve) => { release = resolve; }) });
+    r.render(review3());
+    byText(r.root, 'Submit answers').click();
+    assert.equal(r.log.calls.length, 1);
+    assert.ok(changes(r.root).every(off));
+    assert.equal(r.root.getAttribute('data-inert'), 'true', 'the cards dim through data-inert');
+    changes(r.root)[1].click();
+    await settle();
+    assert.equal(r.log.calls.length, 1);
+    release({ status: 200, body: { done: 'submitted', sent: 1 } });
+    await settle();
+  });
+
+  test('(−) locked after a move (until another capture) every Change is aria-disabled and a click sends nothing', async () => {
+    const r = rig(moved);
+    r.render(review3());
+    changes(r.root)[0].click();
+    await settle();
+    assert.ok(changes(r.root).every(off));
+    changes(r.root)[2].click();
+    await settle();
+    assert.equal(r.log.calls.length, 1);
+  });
+
+  test('(−) terminal only (the review mentions bypass): every Change is aria-disabled, a click sends nothing, and the rows are still shown', async () => {
+    const r = rig();
+    r.render(review3([true, true, true], { bypass: true }));
+    assert.equal(rowsOf(r.root).length, 3);
+    assert.ok(changes(r.root).every(off));
+    changes(r.root)[1].click();
+    await settle();
+    assert.deepEqual(r.log.calls, []);
+  });
+
+  test('(−) not mapped (the pairs and the tabs do not line up): plain cards, no count, no header, no Change; Claude\'s own warn line shows when it warns', () => {
+    const r = rig();
+    r.render(review({ tabs: tabs(3, 3), pairs: [{ question: 'Which checks should I run?', answer: 'lint, build' }, { question: 'Which database should I use?', answer: 'sqlite' }] }));
+    assert.equal(rowsOf(r.root).length, 2);
+    assert.equal(count(r.root), null);
+    assert.equal(q(r.root, 'dlg-rv-h').length, 0);
+    assert.equal(changes(r.root).length, 0);
+    assert.deepEqual(rowsOf(r.root).map((li) => li.getAttribute('data-state')), ['done', 'done']);
+    assert.deepEqual(rowsOf(r.root).map((li) => one(li, 'dlg-rv-a').kids[1].textContent), ['lint, build', 'sqlite']);
+    assert.equal(one(r.root, 'dlg-warn'), null, 'no warn when Claude does not warn');
+    assert.equal(r.root.all((n) => n.attrs.id === 'dlg-steps-desc').length, 1, 'only the strip\'s description: no Change points at it');
+    const w = rig();
+    w.render(review({ tabs: tabs(3, 2), warn: true, pairs: [{ question: 'q1', answer: 'a1' }] }));
+    assert.equal(one(w.root, 'dlg-warn').textContent, 'You have not answered all questions');
+    assert.equal(count(w.root), null);
+    assert.equal(changes(w.root).length, 0);
+  });
+
+  test('(−) the cards hold no markup sink: the question and the answer are text, a title is an attribute', () => {
+    const r = rig();
+    r.render(review3([true, true, true], { pairs: [{ question: '<b>Q</b> & "x"', answer: '<img src=x onerror=alert(1)>' }, { question: 'q', answer: 'a' }, { question: 'q', answer: 'a' }] }));
+    const li = rowsOf(r.root)[0];
+    assert.equal(one(li, 'dlg-rv-q').textContent, '<b>Q</b> & "x"');
+    assert.equal(one(li, 'dlg-rv-a').kids[1].textContent, '<img src=x onerror=alert(1)>');
+    assert.equal(r.root.all((n) => n.tag === 'img' || n.tag === 'b').length, 0);
+  });
+
+  test('(−) a one-question review has no strip and no Change button (the move is refused for one question): the card still shows the answer, the count reads 1 of 1 answered, Submit and Decline stay', () => {
+    const r = rig();
+    r.render(review({ tabs: tabs(1, 1), pairs: [{ question: 'Which database should I use?', answer: 'sqlite' }] }));
+    assert.equal(steps(r.root).length, 0, 'no strip with one tab');
+    assert.equal(changes(r.root).length, 0, 'no Change button');
+    assert.equal(r.root.all((n) => n.tag === 'button' && n.attrs['data-step'] !== undefined).length, 0, 'no step button of any class');
+    assert.equal(r.root.all((n) => n.attrs.id === 'dlg-steps-desc').length, 0, 'nothing points at the step note, so it is not rendered');
+    const rows = rowsOf(r.root);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].getAttribute('data-state'), 'done');
+    assert.equal(one(rows[0], 'dlg-rv-q').textContent, 'Which database should I use?');
+    assert.equal(one(rows[0], 'dlg-rv-a').kids[1].textContent, 'sqlite');
+    assert.equal(count(r.root).textContent, '1 of 1 answered');
+    assert.equal(q(r.root, 'dlg-send').length, 1);
+    assert.equal(q(r.root, 'dlg-decline').length, 1);
+  });
+
+  test('(+) two questions is the smallest review with Change: a button per card, and the one #dlg-steps-desc the strip owns', () => {
+    const r = rig();
+    r.render(review({ tabs: tabs(2, 2), pairs: [{ question: 'q1', answer: 'a1' }, { question: 'q2', answer: 'a2' }] }));
+    assert.equal(changes(r.root).length, 2);
+    assert.equal(r.root.all((n) => n.attrs.id === 'dlg-steps-desc').length, 1);
+  });
+
+  test('(+) the announcement says how many are answered when mapped, and the old count when not; a review that mentions bypass says it is terminal only', () => {
+    assert.equal(announcement(cleanDialog(review3([true, false, true])), { name: 'builder-1', first: true }), 'Review your answers: 2 of 3 answered, above the message box.');
+    assert.equal(announcement(cleanDialog(review3()), { name: 'builder-1', first: false }), 'Review your answers: 3 of 3 answered, above the message box.');
+    assert.equal(announcement(cleanDialog(review({ tabs: tabs(3, 3) })), { name: 'builder-1', first: true }), 'Review your answers: 2 answers, above the message box.');
+    assert.equal(announcement(cleanDialog(review({ tabs: tabs(3, 3), pairs: [{ question: 'q', answer: 'a' }] })), { name: 'builder-1', first: true }), 'Review your answers: 1 answer, above the message box.');
+    assert.match(announcement(cleanDialog(review3([true, false, true], { bypass: true })), { name: 'builder-1', first: true }), /^Review your answers: 2 of 3 answered\. This mentions bypass, so nika leaves it to you: answer it in the terminal\.$/);
+  });
+
+  test('(−) the old markup is gone from the page code: no dl, dt, dd or dlg-review', () => {
+    const src = code(SRC);
+    assert.doesNotMatch(src, /dlg-review|'dl'|'dt'|'dd'/);
+    assert.equal([...src.matchAll(/reviewModel\(/g)].length >= 3, true, 'the declaration, reviewBody and announcement');
   });
 });
 
@@ -2237,7 +2524,7 @@ describe('public/dialog-form.js source', () => {
 
 // ---- the review list: each answer under its question (owner decision 2026-11-17; it replaced the LC20 columns)---------------------------------------------------------------------------------
 
-describe('the review list shows each answer under its question, at every width', () => {
+describe('the review as cards, one column at every width (stylesheet; 0.5.2 R3 replaced the dl.dlg-review rules)', () => {
   const CSS = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public', 'session.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
   const NARROW = '@container composer (max-width: 560px)';
   /** The text inside the braces of the block that starts at `at` (the first "{" after it, to its matching "}"). */
@@ -2250,20 +2537,31 @@ describe('the review list shows each answer under its question, at every width',
     }
     return '';
   };
-  /** Every rule, anywhere in the sheet (inside a query too), whose selector text mentions .dlg-review. */
-  const reviewRules = (src) => [...src.matchAll(/(?<![^}{])\s*([^{}]*\.dlg-review[^{}]*)\{([^}]*)\}/g)].map((m) => ({ sel: m[1].trim(), body: m[2] })); // the lookbehind keeps the closing brace of the rule before free, so rules that follow each other are all found
+  /** Every rule, anywhere in the sheet (inside a query too), whose selector text mentions .dlg-rv (the cards: .dlg-rv, .dlg-rv-row, ...). */
+  const reviewRules = (src) => [...src.matchAll(/(?<![^}{])\s*([^{}]*\.dlg-rv[^{}]*)\{([^}]*)\}/g)].map((m) => ({ sel: m[1].trim(), body: m[2] })); // the lookbehind keeps the closing brace of the rule before free, so rules that follow each other are all found
   const own = reviewRules(CSS);
-  const body = (sel) => own.filter((r) => r.sel === sel).map((r) => r.body).join(';');
+  const NARROW_CARD = '@container composer (max-width: 360px)';
+  const cardAt = CSS.indexOf(NARROW_CARD);
+  const cardBlock = cardAt === -1 ? '' : blockAt(CSS, cardAt);
+  const baseCss = cardAt === -1 ? CSS : CSS.slice(0, cardAt) + CSS.slice(cardAt + CSS.slice(cardAt).indexOf('{') + cardBlock.length + 2);
+  const baseOwn = reviewRules(baseCss);
+  const body = (sel) => baseOwn.filter((r) => r.sel === sel).map((r) => r.body).join(';');
+  const inQuery = (sel) => reviewRules(cardBlock).filter((r) => r.sel === sel).map((r) => r.body).join(';');
 
-  test('(+) one single-track column at every width: one grid-template-columns in the whole sheet for the list, and the narrow composer restates nothing', () => {
-    const cols = own.flatMap((r) => [...r.body.matchAll(/grid-template-columns:\s*([^;]+);/g)].map((m) => m[1].trim()));
-    assert.deepEqual(cols, ['minmax(0, 1fr)']);
-    assert.match(body('.dlg-review'), /(?:^|[;\s])display:\s*grid\s*;/);
+  test('(+) one column at every width: the list is a grid with one gap and no tracks of its own; a card has two tracks (text, button) that the 360 px composer query makes one', () => {
+    assert.match(body('.dlg-rv'), /(?:^|[;\s])display:\s*grid\s*;/);
+    assert.match(body('.dlg-rv'), /(?:^|[;\s])gap:\s*6px\s*;/);
+    assert.match(body('.dlg-rv'), /(?:^|[;\s])max-width:\s*760px\s*;/);
+    assert.doesNotMatch(body('.dlg-rv'), /grid-template-columns/, 'the list has one column: the cards stack');
+    assert.match(body('.dlg-rv-row'), /(?:^|[;\s])grid-template-columns:\s*minmax\(0, 1fr\) auto\s*;/);
+    assert.match(inQuery('.dlg-rv-row'), /(?:^|[;\s])grid-template-columns:\s*minmax\(0, 1fr\)\s*;/);
+    assert.match(inQuery('.dlg-rv-chg'), /(?:^|[;\s])grid-column:\s*1\s*;[^}]*grid-row:\s*auto\s*;[^}]*justify-self:\s*start/);
+    assert.equal(cardAt > CSS.indexOf('.dlg-rv-chg {'), true, 'the query comes after the rules it restates');
     const narrows = [];
     for (let at = CSS.indexOf(NARROW); at !== -1; at = CSS.indexOf(NARROW, at + 1)) narrows.push(blockAt(CSS, at));
-    assert.ok(narrows.length > 0, 'the narrow composer query exists');
-    assert.ok(narrows.every((n) => n.trim() !== ''), 'the scan found every narrow composer block');
-    assert.deepEqual(narrows.flatMap(reviewRules), [], 'no .dlg-review rule in the 560 px query: the wide rule is the only one');
+    assert.ok(narrows.length > 0, 'the 560 px composer query exists');
+    assert.ok(narrows.every((n) => n.trim() !== ''), 'the scan found every 560 px block');
+    assert.deepEqual(narrows.flatMap(reviewRules), [], 'the cards restate nothing in the 560 px query');
   });
 
   test('(+) the step strip is a row of buttons at every width: pointer on the live ones, the default cursor on the disabled ones, a hover edge, and the Moving chip has its own look (0.5.1, D)', () => {
@@ -2288,16 +2586,58 @@ describe('the review list shows each answer under its question, at every width',
     function rule2(sel) { return [...CSS.matchAll(/(?<![^}{])\s*([^{}]+)\{([^}]*)\}/g)].filter((m) => m[1].trim() === sel).map((m) => m[2]).join(';'); }
   });
 
-  test('(+) the answer is indented 12 px under its question, and 8 px lie between one pair and the next (no gap on the list that would add to it)', () => {
-    assert.match(body('.dlg-review dd'), /(?:^|[;\s])margin:\s*0 0 0 12px\s*(?:;|$)/);
-    assert.match(body('.dlg-review dt:not(:first-child)'), /(?:^|[;\s])margin-top:\s*8px\s*(?:;|$)/);
-    assert.doesNotMatch(body('.dlg-review'), /(?:^|[;\s])(?:row-|column-)?gap:/);
+  test('(+) a card is the option card look (strong border, medium radius, surface); a question not answered is dashed on the idle fill', () => {
+    assert.match(body('.dlg-rv-row'), /(?:^|[;\s])border:\s*1px solid var\(--line-strong\)\s*;/);
+    assert.match(body('.dlg-rv-row'), /(?:^|[;\s])border-radius:\s*var\(--r-md\)\s*;/);
+    assert.match(body('.dlg-rv-row'), /(?:^|[;\s])background:\s*var\(--surface\)\s*;/);
+    const none = body('.dlg-rv-row[data-state="none"]');
+    assert.match(none, /border-style:\s*dashed/);
+    assert.match(none, /border-color:\s*var\(--idle-line\)/);
+    assert.match(none, /background:\s*var\(--idle-soft\)/);
   });
 
-  test('(+) the question is muted, the answer bold, and both wrap anywhere', () => {
-    assert.match(body('.dlg-review dt'), /(?:^|[;\s])color:\s*var\(--text-muted\)\s*;/);
-    assert.match(body('.dlg-review dd'), /(?:^|[;\s])font-weight:\s*600\s*;/);
-    for (const sel of ['.dlg-review dt', '.dlg-review dd']) assert.match(body(sel), /(?:^|[;\s])overflow-wrap:\s*anywhere\s*;/, sel);
+  test('(+) every state has its own colour: the header and the count are busy when answered and idle when not; the words Not answered are idle', () => {
+    assert.match(body('.dlg-rv-h'), /(?:^|[;\s])color:\s*var\(--busy\)\s*;/);
+    assert.match(body('.dlg-rv-row[data-state="none"] .dlg-rv-h'), /(?:^|[;\s])color:\s*var\(--idle\)\s*;/);
+    assert.match(body('.dlg-rv-n'), /(?:^|[;\s])color:\s*var\(--idle\)\s*;/);
+    assert.match(body('.dlg-rv-n[data-all="true"]'), /(?:^|[;\s])color:\s*var\(--busy\)\s*;/);
+    assert.match(body('.dlg-rv-none'), /(?:^|[;\s])color:\s*var\(--idle\)\s*;/);
+  });
+
+  test('(+) the question is muted and clamped to two lines, the answer is bold, and both wrap anywhere', () => {
+    assert.match(body('.dlg-rv-q'), /(?:^|[;\s])color:\s*var\(--text-muted\)\s*;/);
+    assert.match(body('.dlg-rv-q'), /-webkit-line-clamp:\s*2\s*;/);
+    assert.match(body('.dlg-rv-q'), /(?:^|[;\s])line-clamp:\s*2\s*;/);
+    assert.match(body('.dlg-rv-q'), /(?:^|[;\s])overflow:\s*hidden\s*;/);
+    assert.match(body('.dlg-rv-a'), /(?:^|[;\s])font-weight:\s*600\s*;/);
+    for (const sel of ['.dlg-rv-q', '.dlg-rv-a']) assert.match(body(sel), /(?:^|[;\s])overflow-wrap:\s*anywhere\s*;/, sel);
+  });
+
+  test('(+) Change sits top-right of its card across the rows of the text; the text stays in the first track', () => {
+    assert.match(body('.dlg-rv-chg'), /(?:^|[;\s])grid-column:\s*2\s*;/);
+    assert.match(body('.dlg-rv-chg'), /(?:^|[;\s])grid-row:\s*1 \/ span 3\s*;/);
+    assert.match(body('.dlg-rv-chg'), /(?:^|[;\s])align-self:\s*start\s*;/);
+    assert.match(body('.dlg-rv-chg'), /(?:^|[;\s])min-height:\s*24px\s*;/);
+    assert.match(body('.dlg-rv-row > :not(.dlg-rv-chg)'), /(?:^|[;\s])grid-column:\s*1\s*;/);
+  });
+
+  test('(+) Submit and Decline stay in view while a long review scrolls inside the form: a sticky footer on an opaque fill; a locked or busy form dims the cards like its options', () => {
+    const foot = body('.dlg-rv-btns');
+    assert.match(foot, /(?:^|[;\s])position:\s*sticky\s*;/);
+    assert.match(foot, /(?:^|[;\s])bottom:\s*0\s*;/);
+    assert.match(foot, /(?:^|[;\s])background:\s*var\(--attn-row\)\s*;/);
+    assert.match(foot, /(?:^|[;\s])border-top:\s*1px solid var\(--line\)\s*;/);
+    assert.match(body('.dlg[data-inert="true"] .dlg-rv-row'), /(?:^|[;\s])opacity:\s*0\.6\s*;/);
+  });
+
+  test('(−) the cards use tokens that exist and no colour of their own; the old dl.dlg-review rules are gone from the sheet', () => {
+    const tokens = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public', 'tokens.css'), 'utf8');
+    const defined = new Set([...tokens.matchAll(/(--[a-z0-9-]+)\s*:/g)].map((m) => m[1]));
+    const used = [...new Set(own.flatMap((r) => [...r.body.matchAll(/var\((--[a-z0-9-]+)/g)].map((m) => m[1])))];
+    assert.ok(used.length >= 8, 'the scan found the variables');
+    assert.deepEqual(used.filter((n) => !defined.has(n)), []);
+    for (const r of own) assert.doesNotMatch(r.body, /#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\(|color-mix\(/, r.sel);
+    assert.doesNotMatch(CSS, /\.dlg-review/);
   });
 
   test('(−) no two-column sizing is left: no fit-content and no max-content in any rule of the list', () => {

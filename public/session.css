@@ -419,13 +419,28 @@ button.fit:hover, button.fit[aria-expanded="true"] { border-color: currentColor;
 .dlg[data-inert="true"] .dlg-opt .ch { opacity: 1; }
 .dlg[data-inert="true"] .dlg-opt:not([data-on="true"]):hover { background: var(--surface); }
 .dlg[data-inert="true"] .dlg-opt .ch:hover { background: transparent; }   /* after the .ch:not(...):hover rule above (same weight): the label has no data-on, so that rule would paint it over the card */
-.dlg-review { display: grid; grid-template-columns: minmax(0, 1fr); margin: 0; font-size: var(--fs-body); }   /* one column at every width (owner decision 2026-11-17): each answer sits under its question, never beside it, so a long question or answer never squeezes the other (LC20); no gap here, the pair spacing is the dt margin */
-.dlg-review dt { color: var(--text-muted); overflow-wrap: anywhere; }
-.dlg-review dt:not(:first-child) { margin-top: 8px; }
-.dlg-review dd { margin: 0 0 0 12px; font-weight: 600; overflow-wrap: anywhere; }
+/* 0.5.2 R3: the review as cards (the .dlg-opt look), one column at every width (owner decision 2026-11-17), at most 760 px wide so Change stays near its text. Every state has its own colour, icon and word: answered busy with a check, not answered idle with a warning and dashed; tokens only. */
+.dlg-rv-n { display: flex; align-items: center; gap: 6px; margin: 0; color: var(--idle); font-size: var(--fs-small); font-weight: 600; }
+.dlg-rv-n[data-all="true"] { color: var(--busy); }
+.dlg-rv { display: grid; gap: 6px; max-width: 760px; margin: 0; padding: 0; list-style: none; }
+.dlg-rv-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 10px; row-gap: 2px; align-items: start; padding: 8px 10px; border: 1px solid var(--line-strong); border-radius: var(--r-md); background: var(--surface); }
+.dlg-rv-row > :not(.dlg-rv-chg) { grid-column: 1; }
+.dlg-rv-chg { grid-column: 2; grid-row: 1 / span 3; align-self: start; min-height: 24px; }
+.dlg-rv-row[data-state="none"] { border-style: dashed; border-color: var(--idle-line); background: var(--idle-soft); }
+.dlg-rv-h { display: flex; align-items: center; gap: 5px; margin: 0; color: var(--busy); font-size: var(--fs-small); font-weight: 700; }
+.dlg-rv-row[data-state="none"] .dlg-rv-h { color: var(--idle); }
+.dlg-rv-q { margin: 0; color: var(--text-muted); font-size: var(--fs-small); overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
+.dlg-rv-a { margin: 0; font-size: var(--fs-body); font-weight: 600; overflow-wrap: anywhere; }
+.dlg-rv-none { color: var(--idle); font-weight: 600; }
+.dlg-rv-btns { position: sticky; bottom: 0; margin: 0 -12px 0 -9px; padding: 8px 12px 8px 9px; border-top: 1px solid var(--line); background: var(--attn-row); }   /* Submit stays in view while a long review scrolls inside the form; --attn-row is opaque; -9px keeps the form's 3 px accent bar visible */
+.dlg[data-inert="true"] .dlg-rv-row { opacity: 0.6; }   /* a locked or busy review dims like a locked question */
 .dlg-warn { display: flex; align-items: center; gap: 6px; margin: 0; padding: 4px 8px; border-radius: var(--r-sm); background: var(--idle-soft); color: var(--idle); font-size: var(--fs-small); font-weight: 600; }
 .dlg-note { display: flex; align-items: flex-start; gap: 6px; margin: 0; color: var(--text-muted); font-size: var(--fs-small); }
 .dlg-btns { display: flex; flex-wrap: wrap; gap: 6px; }
+@container composer (max-width: 360px) {
+  .dlg-rv-row { grid-template-columns: minmax(0, 1fr); }
+  .dlg-rv-chg { grid-column: 1; grid-row: auto; justify-self: start; }
+}
 @media (prefers-reduced-motion: reduce) {
   .dlg-chip .spin { animation: none; border-right-color: currentColor; border-style: dotted; }
 }

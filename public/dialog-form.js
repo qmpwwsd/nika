@@ -233,6 +233,28 @@ export function answerBody(d, a) {
 
 // ---- the words --------------------------------------------------------------------------------------------------------------------
 
+/**
+ * R3 (0.5.2): the review as rows, one per question tab. The capture lists the answered questions only, in tab order, with no tab index, so the k-th answered tab gets
+ * the k-th pair; that map is trusted only when the pairs are as many as the answered tabs and Claude's warning is on exactly when a tab is open. Otherwise (`mapped`
+ * false) the rows are the pairs alone, with no step, header or Change. A row: { step (tab index, or null), header, question and answer (null when not answered) }.
+ */
+export function reviewModel(d) {
+  const tabs = Array.isArray(d?.tabs) ? d.tabs : [];
+  const pairs = (Array.isArray(d?.pairs) ? d.pairs : []).filter((p) => p !== null && typeof p === 'object' && typeof p.question === 'string' && typeof p.answer === 'string');
+  const answered = tabs.filter((t) => t?.answered === true).length;
+  const mapped = tabs.length > 0 && pairs.length === answered && (d?.warn === true) === (answered < tabs.length);
+  if (!mapped) return { mapped: false, total: pairs.length, answered: pairs.length, rows: pairs.map((p) => ({ step: null, header: '', question: p.question, answer: p.answer })) };
+  let k = 0;
+  const rows = tabs.map((t, i) => {
+    const header = typeof t.header === 'string' ? t.header : '';
+    if (t.answered !== true) return { step: i, header, question: null, answer: null };
+    const p = pairs[k];
+    k += 1;
+    return { step: i, header, question: p.question, answer: p.answer };
+  });
+  return { mapped: true, total: tabs.length, answered, rows };
+}
+
 /** The narrow strip text: "Question 2 of 4 . Tools", or "Review". */
 export const stepText = (d) => (d.at === 'review' ? 'Review' : `Question ${d.current + 1} of ${d.tabs.length}${MID}${d.tabs[d.current].header}`);
 
@@ -241,8 +263,10 @@ export function announcement(d, { name = 'the agent', first = true } = {}) {
   const where = d.bypass ? TERMINAL_NOTE : null;
   if (d.at === 'plan') return `${name} asks you to approve a plan. ${where ?? 'Read it in the terminal view; choices above the message box.'}`;
   if (d.at === 'review') {
-    const n = d.pairs.length;
-    return `Review your answers: ${n} ${n === 1 ? 'answer' : 'answers'}${where ? `. ${where}` : ', above the message box.'}`;
+    const m = reviewModel(d);
+    const n = m.answered;
+    const what = m.mapped ? `${n} of ${m.total} answered` : `${n} ${n === 1 ? 'answer' : 'answers'}`;
+    return `Review your answers: ${what}${where ? `. ${where}` : ', above the message box.'}`;
   }
   if (!first && d.tabs.length >= 2) return `Question ${d.current + 1} of ${d.tabs.length}: ${d.question}${where ? ` ${where}` : ''}`;
   const place = d.tabs.length >= 2 ? ` Question ${d.current + 1} of ${d.tabs.length}, above the message box.` : ' Above the message box.';
@@ -528,19 +552,51 @@ export function createDialogForm(io) {
     };
   }
 
+  /**
+   * R3 (0.5.2): one card per question (reviewModel), each with a Change button (Answer for a question not answered yet) that moves Claude's dialog to that step and answers
+   * nothing. When the tabs and the pairs do not line up the cards are the pairs alone, with Claude's own warning line and no button; a one-question dialog has no button
+   * either, because the move is refused for it (answerBody needs two tabs; ruling 3), so the strip, which owns #dlg-steps-desc, is there exactly when the buttons are. The
+   * buttons carry data-step, not data-tab, so build() puts the focus on the new step's heading after the move. paint() treats them as steps (aria-disabled unless the form is live).
+   */
   function reviewBody(f) {
     const d = f.dialog;
+    const m = reviewModel(d);
     const heading = h('h3', { class: 'ask-q', id: 'dlg-q', tabindex: '-1', text: 'Review your answers' });
-    const list = h('dl', { class: 'dlg-review' }, ...d.pairs.flatMap((p) => [h('dt', { text: p.question }), h('dd', { text: p.answer })]));
-    const primary = h('button', { type: 'button', class: 'btn primary dlg-send', onclick: () => act(f, answerBody(f.dialog, { submit: true }), primary) }, 'Submit answers');
-    const decline = declineEl(f, 'btn ghost dlg-decline', 'Decline');
     const nodes = [];
     const strip = d.tabs.length >= 2 ? stripEls(d, (j) => onStep(f, j)) : null;
     if (strip !== null) nodes.push(...strip.nodes);
     nodes.push(heading);
-    if (d.warn) nodes.push(h('p', { class: 'dlg-warn' }, icon('warn'), h('span', { text: 'You have not answered all questions' })));
-    nodes.push(list, h('div', { class: 'dlg-btns' }, primary, decline));
-    return { nodes, heading, inputs: [], texts: [], choices: [], steps: strip?.steps ?? [], pinned: [], primary, decline, canSend: () => true };
+    if (m.mapped) {
+      const all = m.answered === m.total;
+      nodes.push(h('p', { class: 'dlg-rv-n', 'data-all': String(all) }, icon(all ? 'check' : 'warn'),
+        h('span', { text: all ? `${m.answered} of ${m.total} answered` : `${m.answered} of ${m.total} answered${MID}${m.total - m.answered} not answered` })));
+    } else if (d.warn) {
+      nodes.push(h('p', { class: 'dlg-warn' }, icon('warn'), h('span', { text: 'You have not answered all questions' })));
+    }
+    const canMove = m.mapped && d.tabs.length >= 2; // the move needs two tabs, see answerBody
+    const changes = []; // [step, button]
+    const rows = m.rows.map((r) => {
+      const done = r.answer !== null;
+      const kids = [];
+      if (m.mapped) kids.push(h('p', { class: 'dlg-rv-h' }, icon(done ? 'check' : 'warn'), h('span', { text: r.header }), h('span', { class: 'sr-only', text: done ? ', answered' : ', not answered' })));
+      if (done) {
+        kids.push(h('p', { class: 'dlg-rv-q', title: r.question, text: r.question }));
+        kids.push(h('p', { class: 'dlg-rv-a' }, h('span', { class: 'sr-only', text: 'Answer: ' }), h('span', { text: r.answer })));
+      } else {
+        kids.push(h('p', { class: 'dlg-rv-a dlg-rv-none', text: 'Not answered' }));
+      }
+      if (canMove) {
+        const b = h('button', { type: 'button', class: 'btn dlg-rv-chg', 'data-step': String(r.step), 'aria-describedby': 'dlg-steps-desc', onclick: () => onStep(f, r.step) },
+          done ? 'Change' : 'Answer', h('span', { class: 'sr-only', text: done ? ` answer ${r.step + 1}: ${r.header}` : ` question ${r.step + 1}: ${r.header}` }));
+        changes.push([r.step, b]);
+        kids.push(b);
+      }
+      return h('li', { class: 'dlg-rv-row', 'data-state': done ? 'done' : 'none' }, ...kids);
+    });
+    const primary = h('button', { type: 'button', class: 'btn primary dlg-send', onclick: () => act(f, answerBody(f.dialog, { submit: true }), primary) }, 'Submit answers');
+    const decline = declineEl(f, 'btn ghost dlg-decline', 'Decline');
+    nodes.push(h('ol', { class: 'dlg-rv', 'aria-label': 'Your answers' }, ...rows), h('div', { class: 'dlg-btns dlg-rv-btns' }, primary, decline));
+    return { nodes, heading, inputs: [], texts: [], choices: [], steps: [...(strip?.steps ?? []), ...changes], pinned: [], primary, decline, canSend: () => true };
   }
 
   function planBody(f) {
