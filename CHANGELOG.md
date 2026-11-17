@@ -365,7 +365,7 @@ Fixes:
   and presses no Enter if it does. nika also removes an attachment folder once it is empty.
 - **The release check refuses an undated or unreleased changelog heading** (`(unreleased)` must become the release date before a tag).
 
-## 0.4.0 — 2026-11-13
+## 0.4.0 — 2026-11-16
 
 Orchestration (desktop app):
 
