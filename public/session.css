@@ -408,7 +408,7 @@ button.fit:hover, button.fit[aria-expanded="true"] { border-color: currentColor;
 .dlg-count { flex: none; color: var(--text-muted); font-size: var(--fs-cap); }
 .dlg[data-inert="true"] .ch { opacity: 0.6; cursor: not-allowed; }   /* paint() sets data-inert whenever the form cannot take an answer: answering, answered, terminal only, kept, locked */
 .dlg[data-inert="true"] .ch:not([data-on="true"]):hover { background: var(--surface); }
-.dlg-review { display: grid; grid-template-columns: minmax(0, max-content) minmax(0, 1fr); gap: 4px 12px; margin: 0; font-size: var(--fs-body); }
+.dlg-review { display: grid; grid-template-columns: fit-content(60%) minmax(0, 1fr); gap: 4px 12px; margin: 0; font-size: var(--fs-body); }   /* fit-content: a long question wraps at 60% of the row and its answer keeps the rest (max-content gave a long question the whole row and its answer one character, LC20) */
 .dlg-review dt { color: var(--text-muted); overflow-wrap: anywhere; }
 .dlg-review dd { margin: 0; font-weight: 600; overflow-wrap: anywhere; }
 .dlg-warn { display: flex; align-items: center; gap: 6px; margin: 0; padding: 4px 8px; border-radius: var(--r-sm); background: var(--idle-soft); color: var(--idle); font-size: var(--fs-small); font-weight: 600; }

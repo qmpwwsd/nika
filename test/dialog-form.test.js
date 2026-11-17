@@ -1656,3 +1656,27 @@ describe('public/dialog-form.js source', () => {
     assert.deepEqual([...c.matchAll(/io\.path\('([^']+)'\)/g)].map((m) => m[1]), ['dialog']);
   });
 });
+
+// ---- the review list's columns (live check LC20) ---------------------------------------------------------------------------------
+
+describe('the review list keeps room for the answers', () => {
+  const CSS = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public', 'session.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+  const columns = (block) => {
+    const rule = block.match(/\.dlg-review\s*\{([^}]*)\}/);
+    return rule ? (rule[1].match(/grid-template-columns:\s*([^;]+);/) ?? [])[1]?.trim() : undefined;
+  };
+  const wide = CSS.split(/@container composer \(max-width: 560px\)/)[0];
+  const narrow = CSS.split(/@container composer \(max-width: 560px\)/)[1] ?? '';
+
+  test('(+) a wide composer caps the question column, so a long question wraps and its answer keeps the rest of the row', () => {
+    assert.equal(columns(wide), 'fit-content(60%) minmax(0, 1fr)');
+  });
+
+  test('(−) the question column is never sized to its one-line width (a long question took the whole row, its answer one character)', () => {
+    assert.doesNotMatch(columns(wide) ?? '', /max-content/);
+  });
+
+  test('(+) a narrow composer still stacks each answer under its question', () => {
+    assert.equal(columns(narrow), 'minmax(0, 1fr)');
+  });
+});
