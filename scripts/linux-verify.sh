@@ -29,6 +29,17 @@ export npm_config_update_notifier=false npm_config_fund=false npm_config_audit=f
 
 tm() { tmux -u -L "$SOCK" -f /dev/null "$@"; }
 
+# kill-server returns before the server has exited, and a client started in that moment reaches the dying server and stops
+# with "server exited unexpectedly" (seen on CI when check_fit started right after check_tmux). Wait until the server's
+# process is gone (at most 5 s) before the next check uses the socket again.
+tm_stop() {
+  local pid i
+  pid="$(tm display-message -p '#{pid}' 2>/dev/null)" || pid=
+  tm kill-server 2>/dev/null || true
+  [[ $pid =~ ^[0-9]+$ ]] || return 0
+  for ((i = 0; i < 50; i++)); do kill -0 "$pid" 2>/dev/null || return 0; sleep 0.1; done
+}
+
 cleanup() {
   tm kill-server 2>/dev/null || true
   local p
@@ -243,7 +254,7 @@ r = await keys.send(pane, { keys: ['Enter'] });
 const gotEnter = await until(() => bytes() === expectText + expectPaste + '\r');
 rec(r.status === 200 && gotEnter, 'd. named key Enter arrives as CR', 'status ' + r.status);
 JS
-  tm kill-server 2>/dev/null || true
+  tm_stop
 }
 
 # ---- e. the session window's fit on this machine's tmux (0.5, W7): zoom, resize, and the exact way back ------------
@@ -484,7 +495,7 @@ try {
 
 rec((await fit.releaseAll()) === 0 && fit.size() === 0, 'e. fit: nothing left held after the releases', 'size ' + fit.size());
 JS
-  tm kill-server 2>/dev/null || true
+  tm_stop
 }
 
 check_cleanup() {
