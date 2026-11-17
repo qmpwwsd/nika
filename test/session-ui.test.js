@@ -9625,7 +9625,7 @@ describe('W1-T3: question dialogs and plan approvals in the session window (hook
 
   test('(+) the link button is the shared one: no .btn.link rule in session.css, the More button keeps only its own size, and tokens.css still draws a link button', () => {
     assert.doesNotMatch(strip(CSS), /\.btn\.link/);
-    assert.match(BLOCK, /\.dlg-more\s*\{[^}]*justify-self:\s*start[^}]*min-height:\s*24px[^}]*padding:\s*0 4px[^}]*font-size:\s*var\(--fs-small\)/);
+    assert.match(BLOCK, /\.dlg-more\s*\{[^}]*justify-self:\s*end[^}]*min-height:\s*24px[^}]*padding:\s*0 10px 6px[^}]*font-size:\s*var\(--fs-small\)/);
     assert.doesNotMatch(/\.dlg-more\s*\{([^}]*)\}/.exec(BLOCK)[1], /background|color:|text-decoration/, 'colour and underline come from tokens.css');
     const link = /\.btn\.link\s*\{([^}]*)\}/.exec(strip(TOKENS))?.[1] ?? '';
     assert.match(link, /border-color:\s*transparent[^}]*background:\s*transparent[^}]*color:\s*var\(--accent\)[^}]*text-decoration:\s*underline/);

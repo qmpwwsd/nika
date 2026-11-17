@@ -1657,26 +1657,240 @@ describe('public/dialog-form.js source', () => {
   });
 });
 
-// ---- the review list's columns (live check LC20) ---------------------------------------------------------------------------------
+// ---- the review list: each answer under its question (owner decision 2026-11-17; it replaced the LC20 columns)---------------------------------------------------------------------------------
 
-describe('the review list keeps room for the answers', () => {
+describe('the review list shows each answer under its question, at every width', () => {
   const CSS = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public', 'session.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
-  const columns = (block) => {
-    const rule = block.match(/\.dlg-review\s*\{([^}]*)\}/);
-    return rule ? (rule[1].match(/grid-template-columns:\s*([^;]+);/) ?? [])[1]?.trim() : undefined;
+  const NARROW = '@container composer (max-width: 560px)';
+  /** The text inside the braces of the block that starts at `at` (the first "{" after it, to its matching "}"). */
+  const blockAt = (src, at) => {
+    const open = src.indexOf('{', at);
+    let depth = 0;
+    for (let i = open; i < src.length; i += 1) {
+      if (src[i] === '{') depth += 1;
+      else if (src[i] === '}') { depth -= 1; if (depth === 0) return src.slice(open + 1, i); }
+    }
+    return '';
   };
-  const wide = CSS.split(/@container composer \(max-width: 560px\)/)[0];
-  const narrow = CSS.split(/@container composer \(max-width: 560px\)/)[1] ?? '';
+  /** Every rule, anywhere in the sheet (inside a query too), whose selector text mentions .dlg-review. */
+  const reviewRules = (src) => [...src.matchAll(/(?<![^}{])\s*([^{}]*\.dlg-review[^{}]*)\{([^}]*)\}/g)].map((m) => ({ sel: m[1].trim(), body: m[2] })); // the lookbehind keeps the closing brace of the rule before free, so rules that follow each other are all found
+  const own = reviewRules(CSS);
+  const body = (sel) => own.filter((r) => r.sel === sel).map((r) => r.body).join(';');
 
-  test('(+) a wide composer caps the question column, so a long question wraps and its answer keeps the rest of the row', () => {
-    assert.equal(columns(wide), 'fit-content(60%) minmax(0, 1fr)');
+  test('(+) one single-track column at every width: one grid-template-columns in the whole sheet for the list, and the narrow composer restates nothing', () => {
+    const cols = own.flatMap((r) => [...r.body.matchAll(/grid-template-columns:\s*([^;]+);/g)].map((m) => m[1].trim()));
+    assert.deepEqual(cols, ['minmax(0, 1fr)']);
+    assert.match(body('.dlg-review'), /(?:^|[;\s])display:\s*grid\s*;/);
+    assert.notEqual(CSS.indexOf(NARROW), -1, 'the narrow composer query exists');
+    const narrow = blockAt(CSS, CSS.indexOf(NARROW));
+    assert.ok(narrow.includes('.dlg-tabs'), 'the scan found the narrow composer block');
+    assert.deepEqual(reviewRules(narrow), [], 'no .dlg-review rule in the 560 px query: the wide rule is the only one');
   });
 
-  test('(−) the question column is never sized to its one-line width (a long question took the whole row, its answer one character)', () => {
-    assert.doesNotMatch(columns(wide) ?? '', /max-content/);
+  test('(+) the answer is indented 12 px under its question, and 8 px lie between one pair and the next (no gap on the list that would add to it)', () => {
+    assert.match(body('.dlg-review dd'), /(?:^|[;\s])margin:\s*0 0 0 12px\s*(?:;|$)/);
+    assert.match(body('.dlg-review dt:not(:first-child)'), /(?:^|[;\s])margin-top:\s*8px\s*(?:;|$)/);
+    assert.doesNotMatch(body('.dlg-review'), /(?:^|[;\s])(?:row-|column-)?gap:/);
   });
 
-  test('(+) a narrow composer still stacks each answer under its question', () => {
-    assert.equal(columns(narrow), 'minmax(0, 1fr)');
+  test('(+) the question is muted, the answer bold, and both wrap anywhere', () => {
+    assert.match(body('.dlg-review dt'), /(?:^|[;\s])color:\s*var\(--text-muted\)\s*;/);
+    assert.match(body('.dlg-review dd'), /(?:^|[;\s])font-weight:\s*600\s*;/);
+    for (const sel of ['.dlg-review dt', '.dlg-review dd']) assert.match(body(sel), /(?:^|[;\s])overflow-wrap:\s*anywhere\s*;/, sel);
+  });
+
+  test('(−) no two-column sizing is left: no fit-content and no max-content in any rule of the list', () => {
+    assert.ok(own.length >= 4, 'the scan found the list rules');
+    for (const r of own) assert.doesNotMatch(r.body, /fit-content|max-content/, r.sel);
+  });
+});
+
+// ---- a long option is one card: More sits inside its border (nika 0.5.1) --------------------------------------------------------
+
+describe('a long option is one card, and More sits inside its border (0.5.1)', () => {
+  const LONG = 'Embedded. '.repeat(40);
+  const longAsk = (over = {}) => ask({ options: [{ n: 1, label: 'sqlite', description: LONG }, { n: 2, label: 'postgres', description: 'Short.' }], ...over });
+  const longMulti = () => multi({
+    options: [
+      { n: 1, label: 'lint', description: LONG, checked: false },
+      { n: 2, label: 'build', description: LONG, checked: true },
+      { n: 3, label: 'test', description: 'Short.', checked: false },
+    ],
+  });
+  const cards = (root) => q(root, 'dlg-opt');
+  const dataOn = (nodes) => nodes.map((n) => n.getAttribute('data-on'));
+  const pick = (input) => { input.checked = true; input.fire('change'); };
+  const toggle = (input) => { input.checked = !input.checked; input.fire('change'); };
+  const moreOf = (root) => buttons(root).filter((b) => b.className.includes('dlg-more'));
+
+  test('(+) a long option is one dlg-opt card that holds the label.ch and then the More button; the button is not inside the label', () => {
+    const r = rig();
+    r.render(longAsk());
+    const found = cards(r.root);
+    assert.equal(found.length, 1, 'only the long option gets a card');
+    const card = found[0];
+    const labels = card.kids.filter((k) => k.tag === 'label');
+    assert.equal(labels.length, 1);
+    assert.ok(withClass('ch')(labels[0]), 'the label keeps the ch class (its padding and layout)');
+    const mores = moreOf(card);
+    assert.equal(mores.length, 1);
+    const more = mores[0];
+    assert.equal(more.parent, card, 'a direct child of the card');
+    assert.equal(more.attrs.type, 'button');
+    assert.equal(labels[0].all((n) => n === more).length, 0, 'not inside the label: no nested interactive content');
+    assert.ok(card.kids.indexOf(more) > card.kids.indexOf(labels[0]), 'the last row of the card');
+    assert.equal(card.kids.at(-1), more);
+  });
+
+  test('(+) More keeps its aria-expanded and aria-controls, and still opens and closes the description', () => {
+    const r = rig();
+    r.render(longAsk());
+    const [more] = moreOf(r.root);
+    const desc = r.root.all((n) => n.attrs.id === more.getAttribute('aria-controls'))[0];
+    assert.ok(desc, 'aria-controls names the description');
+    assert.equal(more.getAttribute('aria-expanded'), 'false');
+    more.click();
+    assert.equal(more.getAttribute('aria-expanded'), 'true');
+    assert.equal(desc.className.includes('clamp'), false);
+    assert.equal(more.textContent, 'Less');
+    more.click();
+    assert.equal(more.getAttribute('aria-expanded'), 'false');
+    assert.ok(desc.className.includes('clamp'));
+  });
+
+  test('(+) single select: picking the long option sets data-on="true" on its card, picking another sets it back to "false"', () => {
+    const r = rig();
+    r.render(longAsk());
+    const [card] = cards(r.root);
+    const [a, b] = inputs(r.root, 'radio');
+    assert.equal(card.getAttribute('data-on'), 'false', 'nothing picked yet');
+    pick(a);
+    assert.equal(card.getAttribute('data-on'), 'true');
+    pick(b);
+    assert.equal(card.getAttribute('data-on'), 'false');
+    pick(a);
+    assert.equal(card.getAttribute('data-on'), 'true');
+  });
+
+  test('(+) the label of a long option carries no state of its own: data-on lives on the card only', () => {
+    const r = rig();
+    r.render(longAsk());
+    const [card] = cards(r.root);
+    const label = card.kids.find((k) => k.tag === 'label');
+    const [a] = inputs(r.root, 'radio');
+    assert.equal(label.getAttribute('data-on'), null);
+    pick(a);
+    assert.equal(label.getAttribute('data-on'), null);
+  });
+
+  test('(+) multi select: a pre-checked long option has data-on="true" on its card from the first draw; a tick and an untick follow', () => {
+    const r = rig();
+    r.render(longMulti());
+    const found = cards(r.root);
+    assert.equal(found.length, 2, 'lint and build are long, test is short');
+    assert.deepEqual(dataOn(found), ['false', 'true'], 'build was ticked by Claude');
+    const boxes = inputs(r.root, 'checkbox');
+    toggle(boxes[0]);
+    assert.deepEqual(dataOn(found), ['true', 'true']);
+    toggle(boxes[1]);
+    assert.deepEqual(dataOn(found), ['true', 'false']);
+    toggle(boxes[0]);
+    assert.deepEqual(dataOn(found), ['false', 'false']);
+  });
+
+  test('(+) a short option is still a bare label.ch with its own data-on and no card around it; so is the Other row', () => {
+    const r = rig();
+    r.render(longAsk());
+    const [card] = cards(r.root);
+    const fieldset = one(r.root, 'dlg-fs');
+    const short = fieldset.kids.find((k) => k.tag === 'label' && k.textContent.includes('postgres'));
+    assert.ok(short, 'the short option sits directly in the fieldset');
+    assert.ok(withClass('ch')(short));
+    assert.equal(short.getAttribute('data-on'), 'false');
+    assert.equal(card.all((n) => n === short).length, 0);
+    const [a, b] = inputs(r.root, 'radio');
+    pick(b);
+    assert.equal(short.getAttribute('data-on'), 'true');
+    pick(a);
+    assert.equal(short.getAttribute('data-on'), 'false');
+    const other = one(r.root, 'dlg-other');
+    assert.equal(other.className, 'ch dlg-other');
+    assert.equal(other.tag, 'div');
+    assert.equal(other.parent, fieldset, 'the Other row is not wrapped');
+    assert.equal(other.getAttribute('data-on'), 'false');
+    const none = rig();
+    none.render(ask());
+    assert.equal(cards(none.root).length, 0, 'no long description, no card');
+  });
+
+  test('(−) a click on More changes no input, no card state and sends nothing (single select and multi select)', async () => {
+    for (const make of [() => longAsk(), longMulti]) {
+      const r = rig();
+      r.render(make());
+      const boxes = inputs(r.root, 'radio').concat(inputs(r.root, 'checkbox'));
+      const checked = boxes.map((i) => i.checked);
+      const marked = () => dataOn(r.root.all((n) => withClass('ch')(n) || withClass('dlg-opt')(n)));
+      const primary = () => off(byText(r.root, 'Send answer') ?? byText(r.root, 'Answer'));
+      const marks = marked();
+      const sendOff = primary();
+      for (const more of moreOf(r.root)) { more.click(); more.click(); more.click(); }
+      await settle();
+      assert.deepEqual(boxes.map((i) => i.checked), checked);
+      assert.deepEqual(marked(), marks);
+      assert.equal(primary(), sendOff, 'the answer button does not move');
+      assert.equal(r.log.calls.length, 0, 'More is page-only');
+    }
+  });
+
+  describe('the stylesheet (comments stripped): the card carries the look, the label inside carries none', () => {
+    const CSS = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public', 'session.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+    const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // the selector must start a rule or a list item: `.dlg-opt .ch:hover` must not be found at the tail of `.dlg[data-inert="true"] .dlg-opt .ch:hover`
+    const decls = (selector) => [...CSS.matchAll(new RegExp(`(?:^|[}{,])\\s*${esc(selector)}\\s*\\{([^}]*)\\}`, 'g'))].map((m) => m[1]).join(';');
+    const has = (selector, decl) => new RegExp(`(?:^|[;\\s])${decl}\\s*(?:;|$)`).test(decls(selector));
+
+    test('(+) .dlg-opt takes the border, radius, background and hover that .ch has, from the same tokens', () => {
+      assert.ok(has('.dlg-opt', 'border:\\s*1px solid var\\(--line-strong\\)'), decls('.dlg-opt'));
+      assert.ok(has('.dlg-opt', 'border-radius:\\s*var\\(--r-md\\)'));
+      assert.ok(has('.dlg-opt', 'background:\\s*var\\(--surface\\)'));
+      assert.ok(has('.dlg-opt:hover', 'background:\\s*var\\(--surface-2\\)'), decls('.dlg-opt:hover'));
+    });
+
+    test('(+) .dlg-opt[data-on="true"] uses the accent tokens, as .ch[data-on="true"] does', () => {
+      assert.ok(has('.dlg-opt[data-on="true"]', 'background:\\s*var\\(--accent-soft\\)'), decls('.dlg-opt[data-on="true"]'));
+      assert.ok(has('.dlg-opt[data-on="true"]', 'border-color:\\s*var\\(--accent\\)'));
+    });
+
+    test('(+) .dlg-opt .ch has no border, no background and no hover of its own', () => {
+      assert.ok(has('.dlg-opt .ch', 'border:\\s*(?:none|0)'), decls('.dlg-opt .ch'));
+      assert.ok(has('.dlg-opt .ch', 'background:\\s*(?:transparent|none)'));
+      assert.ok(has('.dlg-opt .ch:hover', 'background:\\s*(?:transparent|none)'), decls('.dlg-opt .ch:hover'));
+    });
+
+    test('(+) .dlg-more sits at the right end of the last row and lines up with the label padding', () => {
+      assert.ok(has('.dlg-more', 'justify-self:\\s*end'), decls('.dlg-more'));
+      assert.ok(has('.dlg-more', 'padding:\\s*0 10px 6px'));
+    });
+
+    test('(+) the ring: the label keeps its focus-within outline and the card clips nothing', () => {
+      assert.ok(has('.ch:focus-within', 'outline:\\s*2px solid var\\(--focus\\)'));
+      assert.equal(/overflow/.test(decls('.dlg-opt')), false, 'overflow on the card would cut the label\'s ring');
+    });
+
+    test('(+) a form that cannot take an answer dims the card once, not the card and its label twice', () => {
+      assert.ok(has('.dlg[data-inert="true"] .dlg-opt', 'opacity:\\s*0\\.6'), decls('.dlg[data-inert="true"] .dlg-opt'));
+      assert.ok(has('.dlg[data-inert="true"] .dlg-opt .ch', 'opacity:\\s*1'), decls('.dlg[data-inert="true"] .dlg-opt .ch'));
+      assert.ok(has('.dlg[data-inert="true"] .dlg-opt:not([data-on="true"]):hover', 'background:\\s*var\\(--surface\\)'));
+    });
+
+    test('(+) in a dimmed form the label of a card stays see-through on hover, and the rule that guarantees it comes after the one it beats', () => {
+      assert.ok(has('.dlg[data-inert="true"] .dlg-opt .ch:hover', 'background:\\s*(?:transparent|none)'), decls('.dlg[data-inert="true"] .dlg-opt .ch:hover'));
+      // .dlg[data-inert] .ch:not([data-on]):hover has the same weight and matches every label of a card (they carry no data-on): the later rule wins
+      assert.ok(CSS.indexOf('.dlg[data-inert="true"] .dlg-opt .ch:hover') > CSS.indexOf('.dlg[data-inert="true"] .ch:not([data-on="true"]):hover'));
+    });
+
+    test('(−) no :has() anywhere in the stylesheet (WebKitGTK support is uncertain); the card is styled from its own data-on', () => {
+      assert.equal(CSS.includes(':has('), false);
+    });
   });
 });

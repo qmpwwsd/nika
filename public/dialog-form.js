@@ -378,16 +378,24 @@ export function createDialogForm(io) {
       const input = h('input', { type: d.multi ? 'checkbox' : 'radio', name: d.multi ? null : 'dlg-pick', value: String(o.n), checked: d.multi && o.checked, onclick: guard, onchange: () => { if (input.checked) clearPicks(input); sync(); } });
       const long = typeof o.description === 'string' && o.description.length > CLAMP_FROM;
       const desc = o.description ? h('span', { class: long ? 'dlg-desc clamp' : 'dlg-desc', id: `dlg-d-${o.n}`, text: o.description }) : null;
-      const label = h('label', { class: 'ch', 'data-on': String(d.multi && o.checked) }, input, h('kbd', { text: String(o.n) }), h('span', { class: 'ch-b' }, h('span', { class: 'ch-t', text: o.label }), desc));
-      boxes.push({ n: o.n, input, row: label });
-      if (!long) return label;
+      const on = String(d.multi && o.checked);
+      // A short option is one label and that label is the card. A long one is a card (div.dlg-opt: border, hover, picked look) that holds the
+      // label and, under it, More: the button stays outside the label (a button in a label is nested interactive content), so the card, not
+      // the label, carries data-on.
+      const label = h('label', { class: 'ch', 'data-on': long ? null : on }, input, h('kbd', { text: String(o.n) }), h('span', { class: 'ch-b' }, h('span', { class: 'ch-t', text: o.label }), desc));
+      if (!long) {
+        boxes.push({ n: o.n, input, row: label });
+        return label;
+      }
       const more = h('button', { type: 'button', class: 'btn link dlg-more', 'aria-expanded': 'false', 'aria-controls': `dlg-d-${o.n}`, onclick: () => {
         const open = more.getAttribute('aria-expanded') !== 'true';
         more.setAttribute('aria-expanded', String(open));
         desc.className = open ? 'dlg-desc' : 'dlg-desc clamp';
         more.textContent = open ? 'Less' : 'More';
       } }, 'More');
-      return h('div', { class: 'dlg-opt' }, label, more);
+      const card = h('div', { class: 'dlg-opt', 'data-on': on }, label, more);
+      boxes.push({ n: o.n, input, row: card });
+      return card;
     });
     const texts = [];
     let otherRow;

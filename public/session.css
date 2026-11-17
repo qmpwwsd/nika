@@ -399,8 +399,12 @@ button.fit:hover, button.fit[aria-expanded="true"] { border-color: currentColor;
 .ch-t { font-weight: 500; }
 .dlg-desc { color: var(--text-muted); font-size: var(--fs-small); }
 .dlg-desc.clamp { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-clamp: 3; overflow: hidden; }
-.dlg-opt { display: grid; gap: 2px; }
-.dlg-more { justify-self: start; min-height: 24px; padding: 0 4px; border-width: 0; font-size: var(--fs-small); }   /* the link look (colour, underline, hover) is .btn.link in tokens.css */
+.dlg-opt { display: grid; border: 1px solid var(--line-strong); border-radius: var(--r-md); background: var(--surface); }   /* a long option: the card is this div (the label inside has no look of its own) so More, a sibling of the label, shows inside the border; no overflow here, it would cut the label's focus ring */
+.dlg-opt:hover { background: var(--surface-2); }
+.dlg-opt[data-on="true"] { background: var(--accent-soft); border-color: var(--accent); }   /* sync() sets data-on on the card itself, so no parent-state selector is needed (support for those on WebKitGTK is uncertain) */
+.dlg-opt .ch { border: 0; border-radius: 0; background: transparent; }
+.dlg-opt .ch:hover { background: transparent; }
+.dlg-more { justify-self: end; min-height: 24px; padding: 0 10px 6px; border-width: 0; font-size: var(--fs-small); }   /* the link look (colour, underline, hover) is .btn.link in tokens.css; the padding lines up with the label's */
 .dlg-other { flex-wrap: wrap; align-items: center; gap: 6px 10px; cursor: default; }
 .dlg-ol { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
 .dlg-text { flex: 1 1 180px; min-width: 0; min-height: 28px; padding: 2px 8px; border: 1px solid var(--line-strong); border-radius: var(--r-sm); background: var(--surface); color: var(--text); font: inherit; }
@@ -408,16 +412,20 @@ button.fit:hover, button.fit[aria-expanded="true"] { border-color: currentColor;
 .dlg-count { flex: none; color: var(--text-muted); font-size: var(--fs-cap); }
 .dlg[data-inert="true"] .ch { opacity: 0.6; cursor: not-allowed; }   /* paint() sets data-inert whenever the form cannot take an answer: answering, answered, terminal only, kept, locked */
 .dlg[data-inert="true"] .ch:not([data-on="true"]):hover { background: var(--surface); }
-.dlg-review { display: grid; grid-template-columns: fit-content(60%) minmax(0, 1fr); gap: 4px 12px; margin: 0; font-size: var(--fs-body); }   /* fit-content: a long question wraps at 60% of the row and its answer keeps the rest (max-content gave a long question the whole row and its answer one character, LC20) */
+.dlg[data-inert="true"] .dlg-opt { opacity: 0.6; cursor: not-allowed; }   /* a long option: the card dims once, so the label inside must not dim again */
+.dlg[data-inert="true"] .dlg-opt .ch { opacity: 1; }
+.dlg[data-inert="true"] .dlg-opt:not([data-on="true"]):hover { background: var(--surface); }
+.dlg[data-inert="true"] .dlg-opt .ch:hover { background: transparent; }   /* after the .ch:not(...):hover rule above (same weight): the label has no data-on, so that rule would paint it over the card */
+.dlg-review { display: grid; grid-template-columns: minmax(0, 1fr); margin: 0; font-size: var(--fs-body); }   /* one column at every width (owner decision 2026-11-17): each answer sits under its question, never beside it, so a long question or answer never squeezes the other (LC20); no gap here, the pair spacing is the dt margin */
 .dlg-review dt { color: var(--text-muted); overflow-wrap: anywhere; }
-.dlg-review dd { margin: 0; font-weight: 600; overflow-wrap: anywhere; }
+.dlg-review dt:not(:first-child) { margin-top: 8px; }
+.dlg-review dd { margin: 0 0 0 12px; font-weight: 600; overflow-wrap: anywhere; }
 .dlg-warn { display: flex; align-items: center; gap: 6px; margin: 0; padding: 4px 8px; border-radius: var(--r-sm); background: var(--idle-soft); color: var(--idle); font-size: var(--fs-small); font-weight: 600; }
 .dlg-note { display: flex; align-items: flex-start; gap: 6px; margin: 0; color: var(--text-muted); font-size: var(--fs-small); }
 .dlg-btns { display: flex; flex-wrap: wrap; gap: 6px; }
 @container composer (max-width: 560px) {
   .dlg-tabs { display: none; }
   .dlg-step { display: block; }
-  .dlg-review { grid-template-columns: minmax(0, 1fr); }
 }
 @media (prefers-reduced-motion: reduce) {
   .dlg-chip .spin { animation: none; border-right-color: currentColor; border-style: dotted; }
