@@ -285,7 +285,7 @@ function readQuestion(c) {
  * `\u25cf` row and its wrapped rest) either all start with Claude's bar or none does (some: `layout`, like the question step); different questions of the
  * step may differ (Claude bars a wide or multi-line question and not a short one; spike S-T326 item 9). The bar is removed before reading, so the same text
  * has the same sig with or without it. An answer row never carries it: a barred answer row is a `layout`, and so is a barred
- * option row below (it is not matched as one).
+ * option row below (it is not matched as one). Like the question step, it returns `exempt`: the question rows that are wrapped, not cut, when they reach the pane width.
  */
 function readReview(c) {
   const { texts, bad, s, last } = c;
@@ -305,11 +305,11 @@ function readReview(c) {
     const t = bm === null ? texts[x] : bm[1] + bm[2]; // the row as it reads without the bar
     const q = PAIR_Q.exec(t);
     const a = raw.length > 0 && part === 'q' ? PAIR_A.exec(t) : null;
-    if (q !== null) { raw.push({ q: [q[1]], a: [], bars: [bm !== null] }); part = 'q'; }
+    if (q !== null) { raw.push({ q: [q[1]], a: [], bars: [bm !== null], qx: [x] }); part = 'q'; }
     else if (a !== null) { raw.at(-1).a.push(a[1]); part = 'a'; if (bm !== null) bad.add('layout'); }
     else if (raw.length > 0 && /^ {3,}[^\s\u25cf\u2192]/.test(t)) { // the rest of a wrapped question or answer
       raw.at(-1)[part].push(t.trim());
-      if (part === 'q') raw.at(-1).bars.push(bm !== null);
+      if (part === 'q') { raw.at(-1).bars.push(bm !== null); raw.at(-1).qx.push(x); }
       else if (bm !== null) bad.add('layout');
     } else bad.add('layout');
   }
@@ -326,7 +326,11 @@ function readReview(c) {
   const pairs = raw.map((p) => ({ question: take(bad, p.q.join(' '), QUESTION_MAX), answer: take(bad, p.a.join(' '), ANSWER_MAX) }));
   const marks = ms.flatMap((m) => (m[1] === '\u276f' ? [Number(m[2])] : []));
   if (marks.length > 1) bad.add('layout');
-  return { warn, pairs, focus: marks.length === 1 ? marks[0] : null, exempt: new Set() };
+  // A question row as wide as the pane is a wrap, not a cut, when a rest row of the same question (same bar state) is directly below it (LC19 F2:
+  // Claude wraps a long question at the pane width, so its rows reach it). The question's last row, an answer row and every other row stay subject to `wide`.
+  const exempt = new Set();
+  for (const p of raw) for (let j = 0; j + 1 < p.qx.length; j += 1) if (p.qx[j + 1] === p.qx[j] + 1 && p.bars[j] === p.bars[j + 1]) exempt.add(p.qx[j]);
+  return { warn, pairs, focus: marks.length === 1 ? marks[0] : null, exempt };
 }
 
 /** A question step or the review step. `bad` collects reasons; S is only used when it stays empty. */

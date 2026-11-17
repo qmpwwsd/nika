@@ -1465,12 +1465,148 @@ describe('the bar in front of the review step\'s question rows (FX2)', () => {
     assert.equal(readC(swap(plain, submit, (r) => [span(' │ '), ...r])).unreadable, 'layout', 'the same without any bar on the pairs');
   });
 
-  test('(−) a barred review row as wide as the pane stays refused (the review has no wrapped-row exemption)', () => {
+  test('(−) a barred review row as wide as the pane with no rest row under it stays refused (the exemption needs a wrapped rest row, LC19 F2)', () => {
     const rows = review(pairRows([{ q: ['Which colour?'], a: 'amber' }]), { warn: true, answered: [0] });
     const at = rowAt(rows, (t) => t.startsWith(' │ ● Which colour?'));
     const filled = swap(rows, at, () => bar(`● ${'a'.repeat(C - 5)}`));
     assert.equal(widest(filled), C);
     assert.equal(readC(filled).unreadable, 'wide');
     assert.equal(readC(swap(rows, at, () => bar(`● ${'a'.repeat(C - 6)}`))).unreadable, undefined, 'control: one cell narrower reads');
+  });
+
+  // ---- LC19 F2 (live check LC19, 147 columns): a long question wrapped at the pane width draws its `●` row, and the rows after it, exactly as wide as the pane, -----
+  // each followed by its wrapped rest. That is a wrap, not a cut: like the question step, the review exempts a question row that has a rest row of the SAME
+  // question (same bar state) directly below it. Nothing else is exempt. The words below are made up; no captured text is copied.
+  describe('a review question wrapped at the pane width (LC19 F2)', () => {
+    const WORDS = ['lantern', 'harbour', 'keepers', 'rota', 'signal', 'quay', 'beacon', 'tide', 'ferry', 'mast', 'cargo', 'dock'];
+    /** A made-up sentence of exactly `n` characters: whole words from `from` on, then a filler word that closes the gap. */
+    const sentence = (n, from = 0) => {
+      let s = '';
+      for (let i = from; ; i += 1) {
+        const next = s === '' ? WORDS[i % WORDS.length] : `${s} ${WORDS[i % WORDS.length]}`;
+        if (next.length > n) break;
+        s = next;
+      }
+      const gap = n - s.length;
+      return gap === 0 ? s : gap === 1 ? `${s}z` : `${s} ${'z'.repeat(gap - 1)}`;
+    };
+    const BARRED = C - 5; // the text after ` │ ● ` or ` │   ` that makes a barred row exactly C columns
+    const PLAIN = C - 3; // the text after ` ● ` or `   ` that makes an unbarred row exactly C columns
+    const REST = 'so that the keepers can agree beforehand?';
+    const isFull = (t) => t.length === C && !/^─+$/.test(t);
+    const fullRows = (rows) => rows.map(text).filter(isFull).length;
+    const unbar = (r) => [span(`   ${text(r).slice(5)}`)]; // a barred rest row without its bar
+    const rebar = (r) => bar(`  ${text(r).slice(3)}`); // an unbarred rest row with its bar
+
+    test('(+) a barred `●` row exactly as wide as the pane with its wrapped rest reads: the pairs, the texts joined without the bar, and the sig of the same text wrapped elsewhere', () => {
+      const A = sentence(BARRED);
+      const rows = review(pairRows([{ q: [A, REST], a: 'amber' }, { q: Q2, a: 'two' }]));
+      assert.equal(rowAt(rows, (t) => t.startsWith(' │ ● ') && isFull(t)) >= 0, true, 'the fixture has a barred ● row as wide as the pane');
+      assert.equal(rowAt(rows, (t) => t === ` │   ${REST}`) >= 0, true, 'with its barred rest right below');
+      const S = readC(rows);
+      assert.equal(S.unreadable, undefined);
+      assert.deepEqual(S.pairs, [{ question: `${A} ${REST}`, answer: 'amber' }, { question: Q2[0], answer: 'two' }]);
+      assert.deepEqual(S.tabs.map((t) => t.answered), [true, true]);
+      assert.equal(S.focus, 1);
+      const at = A.lastIndexOf(' '); // the same text, wrapped one word earlier: no row reaches the pane
+      const narrow = review(pairRows([{ q: [A.slice(0, at), `${A.slice(at + 1)} ${REST}`], a: 'amber' }, { q: Q2, a: 'two' }]));
+      assert.equal(fullRows(narrow), 0);
+      assert.deepEqual(readC(narrow), S);
+      assert.equal(sigOf(S), sigOf(readC(narrow)), 'the sig is over the text, not the wrapping');
+      const got = dialogCapture(parseCapture(ansiOf(rows, C), C), C);
+      assert.equal(got.state, 'ready');
+      assert.equal(got.at, 'review');
+      assert.equal(got.sig, sigOf(S));
+      assert.deepEqual(got.pairs, S.pairs);
+    });
+
+    test('(+) the same shape without the bar (an unbarred long question), and next to a barred one', () => {
+      const A = sentence(PLAIN, 3);
+      const items = [{ q: [A, REST], a: 'amber' }, { q: Q2, a: 'two' }];
+      const rows = review(pairRows(items, [false, false]));
+      assert.equal(rowAt(rows, (t) => t.startsWith(' ● ') && isFull(t)) >= 0, true, 'the fixture has an unbarred ● row as wide as the pane');
+      const S = readC(rows);
+      assert.equal(S.unreadable, undefined);
+      assert.deepEqual(S.pairs, items.map(({ q, a }) => ({ question: q.join(' '), answer: a })));
+      const mixed = [{ q: [A, REST], a: 'amber' }, { q: [sentence(BARRED, 6), 'is the second rest?'], a: 'two' }];
+      const both = review(pairRows(mixed, [false, true]));
+      assert.equal(fullRows(both), 2, 'an unbarred and a barred question, each with a row as wide as the pane');
+      const T = readC(both);
+      assert.equal(T.unreadable, undefined);
+      assert.deepEqual(T.pairs, mixed.map(({ q, a }) => ({ question: q.join(' '), answer: a })));
+      assert.equal(sigOf(T), sigOf(readC(review(pairRows(mixed, [false, false])))), 'the sig does not depend on which question has the bar');
+    });
+
+    test('(+) both questions as wide as the pane and wrapped, one of them over three rows with two rows as wide as the pane', () => {
+      const long = [sentence(BARRED, 0), sentence(BARRED, 4), 'and who confirms it?'];
+      const short = [sentence(BARRED, 7), 'is the rest of the second one?'];
+      const rows = review(pairRows([{ q: long, a: 'amber' }, { q: short, a: ['two', 'on the quay'] }]));
+      assert.equal(fullRows(rows), 3, 'three rows as wide as the pane');
+      const S = readC(rows);
+      assert.equal(S.unreadable, undefined);
+      assert.deepEqual(S.pairs, [{ question: long.join(' '), answer: 'amber' }, { question: short.join(' '), answer: 'two on the quay' }]);
+      const got = dialogCapture(parseCapture(ansiOf(rows, C), C), C);
+      assert.equal(got.state, 'ready');
+      assert.deepEqual(got.pairs, S.pairs);
+    });
+
+    test('(−) a row as wide as the pane with no rest row under it is wide: a one-row question, in a review whose other question is exempt; barred or not', () => {
+      for (const flags of [[true, true], [false, false], [true, false], [false, true]]) {
+        const fit = (n, delta = 0) => sentence((flags[n] ? BARRED : PLAIN) + delta, n * 2); // question n's only or first row, `delta` cells off the pane width
+        const build = (delta) => review(pairRows([{ q: [fit(0), REST], a: 'amber' }, { q: [fit(1, delta)], a: 'two' }], flags));
+        assert.equal(fullRows(build(0)), 2, `${flags}: the fixture has two rows as wide as the pane`);
+        assert.equal(readC(build(0)).unreadable, 'wide', `${flags}: the second question's only row`);
+        assert.equal(readC(build(-1)).unreadable, undefined, `${flags}: control: one cell narrower reads`);
+      }
+      const single = review(pairRows([{ q: [sentence(BARRED)], a: 'amber' }, { q: Q2, a: 'two' }]));
+      assert.equal(readC(single).unreadable, 'wide', 'a full row directly followed by its answer row is not exempt');
+    });
+
+    test('(−) a row as wide as the pane that is the last row of its question is wide, though the row above it is exempt', () => {
+      const rows = review(pairRows([{ q: [sentence(BARRED), sentence(BARRED, 5)], a: 'amber' }, { q: Q2, a: 'two' }]));
+      assert.equal(fullRows(rows), 2);
+      assert.equal(readC(rows).unreadable, 'wide', 'the second of two full rows is the last row of the question');
+      const control = review(pairRows([{ q: [sentence(BARRED), sentence(BARRED - 1, 5)], a: 'amber' }, { q: Q2, a: 'two' }]));
+      assert.equal(readC(control).unreadable, undefined, 'control: the last row one cell narrower reads');
+      const plain = review(pairRows([{ q: [sentence(PLAIN), sentence(PLAIN, 5)], a: 'amber' }, { q: Q2, a: 'two' }], [false, false]));
+      assert.equal(readC(plain).unreadable, 'wide', 'unbarred');
+      const three = review(pairRows([{ q: ['Which flag goes up first?', sentence(BARRED, 8)], a: 'amber' }, { q: Q2, a: 'two' }]));
+      assert.equal(readC(three).unreadable, 'wide', 'a short first row and a full last row');
+    });
+
+    test('(−) a full-width answer row, a wrapped answer under it, and a full-width heading or question line stay wide, though the question above is exempt', () => {
+      const exempt = [{ q: [sentence(BARRED), REST], a: 'amber' }, { q: Q2, a: 'two' }];
+      assert.equal(readC(review(pairRows(exempt))).unreadable, undefined, 'control: the exempt question alone reads');
+      assert.equal(readC(review(pairRows([{ q: exempt[0].q, a: sentence(BARRED, 1) }, exempt[1]]))).unreadable, 'wide', 'an answer row as wide as the pane');
+      assert.equal(readC(review(pairRows([{ q: exempt[0].q, a: sentence(BARRED - 1, 1) }, exempt[1]]))).unreadable, undefined, 'control: one cell narrower reads');
+      assert.equal(readC(review(pairRows([{ q: exempt[0].q, a: [sentence(BARRED, 1), 'on the quay'] }, exempt[1]]))).unreadable, 'wide', 'a full answer row with its wrapped rest below');
+      assert.equal(readC(review(pairRows([exempt[0], { q: Q2, a: [sentence(BARRED, 1), 'on the quay'] }]))).unreadable, 'wide', 'the same in the second pair');
+      const rows = review(pairRows(exempt));
+      const pad = (find, t) => swap(rows, rowAt(rows, find), () => [span(`${' '.repeat(C - t.length)}${t}`)]);
+      assert.equal(readC(pad((t) => t === 'Ready to submit your answers?', 'Ready to submit your answers?')).unreadable, 'wide', 'the question line, indented to the pane width');
+      assert.equal(readC(pad((t) => t === 'Review your answers', 'Review your answers')).unreadable, 'wide', 'the heading, indented to the pane width');
+      assert.equal(readC(swap(rows, rowAt(rows, (t) => t === 'Ready to submit your answers?'), () => [span(`${' '.repeat(C - 30)}Ready to submit your answers?`)])).unreadable, undefined, 'control: one cell narrower reads');
+    });
+
+    test('(−) a row as wide as the pane followed by a rest row with the other bar state is not read (wide: the exemption needs the same bar state)', () => {
+      const barred = review(pairRows([{ q: [sentence(BARRED), REST], a: 'amber' }, { q: Q2, a: 'two' }]));
+      assert.equal(readC(barred).unreadable, undefined, 'control: both rows barred');
+      assert.equal(readC(swap(barred, rowAt(barred, (t) => t === ` │   ${REST}`), unbar)).unreadable, 'wide', 'a barred full row, an unbarred rest');
+      const plain = review(pairRows([{ q: [sentence(PLAIN), REST], a: 'amber' }, { q: Q2, a: 'two' }], [false, false]));
+      assert.equal(readC(plain).unreadable, undefined, 'control: both rows unbarred');
+      assert.equal(readC(swap(plain, rowAt(plain, (t) => t === `   ${REST}`), rebar)).unreadable, 'wide', 'an unbarred full row, a barred rest');
+      const three = review(pairRows([{ q: [sentence(BARRED), sentence(BARRED, 5), REST], a: 'amber' }, { q: Q2, a: 'two' }]));
+      assert.equal(readC(three).unreadable, undefined, 'control: three barred rows, two of them as wide as the pane');
+      assert.equal(readC(swap(three, rowAt(three, (t) => t === ` │   ${REST}`), unbar)).unreadable, 'wide', 'the second full row has an unbarred rest');
+      assert.equal(readC(swap(three, rowAt(three, (t) => isFull(t) && t.startsWith(' │   ')), unbar)).unreadable, 'wide', 'an unbarred second row: the first full row has a rest of the other bar state');
+    });
+
+    test('(−) a blank row between a row as wide as the pane and its rest means the rest is not directly below it: wide', () => {
+      const rows = review(pairRows([{ q: [sentence(BARRED), REST], a: 'amber' }, { q: Q2, a: 'two' }]));
+      assert.equal(readC(rows).unreadable, undefined, 'control');
+      const at = rowAt(rows, (t) => t.startsWith(' │ ● ') && isFull(t));
+      const gap = [...rows.slice(0, at + 1), [], ...rows.slice(at + 1)];
+      assert.equal(readC(gap).unreadable, 'wide');
+    });
   });
 });
