@@ -12,7 +12,7 @@ Session window (desktop app):
   errors. See `docs/design/spec.md` §9.18 and `docs/security.md` T59 to T61.
 - **The terminal view stops above Claude's question.** While nika shows its own form or panel for a question, a plan approval, a
   permission prompt or the feedback question, the terminal view ends above it with a yellow line that names what to answer below. A
-  plan's text and a prompt's command stay visible. Type into pane shows the whole screen again. A permission prompt whose question
+  plan's text and a prompt's command stay visible. Type into pane shows the whole screen again. When Claude's question fills the terminal from its first row, nika still shows the whole screen for now. A permission prompt whose question
   has 200 characters or more, or one of whose options has 80 or more, also shows the whole screen: nika cannot tell a long text
   from one it has shortened, and it will not hide the end of what you approve.
 - **Subagents button.** A branch button in the terminal toolbar shows how many subagents are running and opens a list of all of
