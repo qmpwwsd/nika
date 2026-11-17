@@ -55,7 +55,8 @@ The facts that shaped the design:
   nothing sent. The mode switch, the commands, draft writes, suggestion accepts and the attachment send refuse with nothing sent. End
   declines it first, like a permission prompt. The keys route and the page's passthrough are unchanged (rule 12 guard).
 - **The form stays locked after 409 `dialog-touched` and `dialog-focus`** (ruling 2026-11-15). The user changed the dialog in the terminal;
-  the problem line sends them there to finish it. A new `sig` or `dialog: null` unlocks the form.
+  the problem line sends them there to finish it. A new `sig` or `dialog: null` unlocks the form. *Amended 2026-11-17 (0.5.2, R4):* the user can also end the lock
+  with **Try again**. It sends nothing; the route checks the focus and the text again before any key of the next answer, and refuses again if the dialog is still off.
 - **`Escape` in the message box is a passthrough**, as in the terminal and as for a permission prompt: it declines the dialog without the
   form's `sig` check (ruling 2026-11-15; threat T37, residual p).
 - **App tier only.** No route and no `dialog` field on :3335.
