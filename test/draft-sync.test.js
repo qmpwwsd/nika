@@ -1413,6 +1413,7 @@ describe('accept: Tab or the right arrow on the suggestion (W4)', () => {
   test('(−) every refusal has fixed copy (no server word reaches the page), and a 404 says the session is gone', async () => {
     const want = [
       [{ status: 409, body: { error: 'not-idle', message: 'SERVER WORDS' } }, "Claude is working or a prompt is open, so nika can't accept the suggestion now. Nothing was sent."],
+      [{ status: 409, body: { error: 'busy', message: 'SERVER WORDS' } }, "Claude is answering right now, so nika can't accept the suggestion. Nothing was sent."],
       [{ status: 409, body: { error: 'input-unreadable' } }, "nika can't read Claude's input box right now (a menu may be open). Nothing was sent."],
       [{ status: 409, body: { error: 'mode-unknown' } }, "nika can't read Claude's input box right now (a menu may be open). Nothing was sent."],
       [{ status: 409, body: { error: 'busy-switching' } }, 'Another action is running on this session. Try again in a moment.'],

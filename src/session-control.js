@@ -15,6 +15,7 @@ import { MODE_TARGETS, OPTION, PROMPT_ROWS, bypassWindow, lastNonBlank, mentions
 import { RULE_ROW, SIG, parseDraft, boxSquash, boxInput, normDraft, sameDraft, inEnvelope, chunks, CHUNK_GAP_MS } from './draft.js';
 import { TEXT_MAX, STEPS_MAX, PLAIN_TEXT, PLAN_PICK, dialogOnScreen, readDialogScreen, identityOf, sigOf, otherAllowed } from './dialog.js';
 import { surveyOf, SURVEY_UNDO_MS } from './survey.js';
+import { turnRunning } from './turn.js';
 
 const EXIT_POLL_MS = 500;
 const LOCK_POLL_MS = 20; // withPaneLock: poll step and the longest wait (5 s) for a running control action
@@ -767,7 +768,8 @@ export function createSessionControl({
    *                   runs, apart from the lock, and for VIM_ESC_GAP_MS after it went out: a key right behind an Escape would be read as
    *                   Meta+key (M-2, N-2)
    *   idleNow()       null only when the registry says idle right now (a fresh read, skipping its cache) and no interrupt runs, else 409 not-idle:
-   *                   Escape could interrupt a running turn (claude-tui.md section 5), Tab could accept a suggestion into a busy one
+   *                   Escape could interrupt a running turn (claude-tui.md section 5). acceptSuggestion does not use it (item K: its Tab is a
+   *                   screen question, answered by turnRunning)
    */
   function draftTools(pane, ctx) {
     const view = async (seen) => {
@@ -1064,11 +1066,14 @@ export function createSessionControl({
    * Accept Claude's prompt suggestion (design W4): the page's Tab or right arrow in an empty message box that shows `body.text`
    * as its placeholder. Claude draws a suggestion as dim text in an empty input box; Tab takes it into the box. The page's copy can be
    * stale (the suggestion changed, vanished, a prompt opened), and a Tab sent then would land in the wrong place (T51), so this is not
-   * the plain keys route. Under the per-pane lock: the registry must say idle right now (fresh read) with no interrupt running; then one
-   * fresh capture that must show the plain box in prompt mode, no permission prompt, the cursor inside the box, state `empty` and a
-   * suggestion equal to `body.text` (anything else: 409 not-idle | mode-unknown | input-unreadable | draft-unreadable { reason } |
-   * draft-changed, nothing sent). Then exactly one key, `Tab` (counts toward the per-pane key limit), and a read-back until the box reads
-   * `text` equal to the suggestion: 200 { draft }, else 409 draft-mismatch { draft } (the Tab is never repeated). Never any other key:
+   * the plain keys route. Under the per-pane lock: one fresh capture that must show the plain box in prompt mode, no permission prompt or
+   * dialog, the cursor inside the box, state `empty` and a suggestion equal to `body.text` (anything else: 409 not-idle | mode-unknown |
+   * input-unreadable | draft-unreadable { reason } | draft-changed, nothing sent) and no turn running in main (409 busy: the spinner row or
+   * the footer's interrupt hint, src/turn.js). The registry is NOT asked (item K, 0.5.1): Claude reads `busy` while background agents run
+   * and `shell` while a background shell runs, also after the turn ended, and shows the suggestion and takes Tab then. No Stop/End
+   * interrupt may run and no Escape of one may be < 40 ms old (press: 409 not-idle). Then exactly one key, `Tab` (counts toward the
+   * per-pane key limit), and a read-back until the box reads `text` equal to the suggestion: 200 { draft }, else 409 draft-mismatch { draft }
+   * (the Tab is never repeated). Never any other key:
    * no Enter (the page's Send does that), no Escape, no text. Every answer that has a box carries `draft`.
    */
   function acceptSuggestion(pane, body) {
@@ -1076,9 +1081,7 @@ export function createSessionControl({
     if (bad) return Promise.resolve(bad);
     const { text } = body;
     return exclusive(pane, async (ctx) => {
-      const { view, reply, intake, press, idleNow } = draftTools(pane, ctx);
-      let res = await idleNow();
-      if (res) return res;
+      const { view, reply, intake, press } = draftTools(pane, ctx);
       const seen = await look(pane, ctx); // the one capture right before the key
       if (seen.res) return seen.res;
       const got = await intake(seen);
@@ -1086,7 +1089,11 @@ export function createSessionControl({
       const { draft } = got;
       if (!cursorInBox(seen, draft)) return reply(409, 'input-unreadable', null); // that box may be a status line: nothing of it goes to the page
       if (draft.state !== 'empty' || draft.mode !== 'prompt' || draft.suggestion !== text) return reply(409, 'draft-changed', seen);
-      if ((res = await press({ keys: ['Tab'] }))) return res;
+      // Item K: the screen, not the registry, says whether Claude answers right now. Background agents or a background shell keep the registry
+      // busy / shell after the turn ended, with the suggestion shown; a turn in main draws the spinner row or the footer's interrupt hint.
+      if (turnRunning(seen.rows, draft.box.top)) return reply(409, 'busy', seen);
+      const res = await press({ keys: ['Tab'] });
+      if (res) return res;
       const back = await settled(pane, (rows, cap) => {
         const d = readDraft(cap);
         return d !== null && d.state === 'text' && d.mode === 'prompt' && sameDraft(d.text, text);
